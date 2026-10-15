@@ -1,33 +1,31 @@
-"""Провод ACP v2 на соединении SDK; кадры пары сверяются со схемой ACP.
-
-Данные: `acp_schema/` — схема ACP v2, тег schema-v2.0.0-alpha.8.
-"""
+"""Провод ACP v2 на соединении SDK; кадры пары сверяются со схемой ACP."""
 
 from __future__ import annotations
 
 import asyncio
 import importlib.metadata
 import json
+import socket
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, ClassVar
 
 import pytest
 from acp._transport import memory_transport_pair
-from acp.connection import Connection, JsonValue, StreamDirection, StreamEvent
+from acp.connection import Connection, JsonValue
 from acp.exceptions import RequestError
 from acp.experimental.v2 import Agent, AgentSideConnection, Client, schema
 from acp.experimental.v2._router import MethodRouter
 from acp.experimental.v2.meta import AGENT_METHODS, CLIENT_METHODS
-from jsonschema import Draft202012Validator
 from mcp_types.jsonrpc import ErrorData
 from mcp_types.version import MODERN_PROTOCOL_VERSIONS
 
+from boba.stand.acp_frames import Frames
 from boba.transport.acp.protocol import (
     AcpErrorCode,
     AcpVersion,
     AgentSide,
+    BatchTransport,
     ClientConnection,
     IdleErrorNotification,
     IdleErrorUpdate,
@@ -110,24 +108,18 @@ class AcpPair:
     stand_client: StandClient
 
 
-@pytest.fixture(scope="module")
-def acp_schema() -> Draft202012Validator:
-    path = Path(__file__).parent / "acp_schema" / "schema.unstable.json"
-    return Draft202012Validator(json.loads(path.read_text(encoding="utf-8")))
-
-
 @pytest.fixture
-async def acp_pair(acp_schema: Draft202012Validator) -> AsyncIterator[AcpPair]:
+async def acp_pair() -> AsyncIterator[AcpPair]:
     agent_end, client_end = memory_transport_pair()
     info = schema.Implementation(name="boba-transport-acp-tests", version="0")
     stand_client = StandClient()
-    frames: list[StreamEvent] = []
+    frames = Frames()
 
-    agent = AgentSide(StandAgent, info, agent_end, None)
+    agent = AgentSide(StandAgent, info, agent_end)
     serving = asyncio.create_task(agent.serve())
 
     client = ClientConnection(
-        stand_client, stand_client.answer, client_end, None, observers=[frames.append]
+        stand_client, stand_client.answer, client_end, None, observers=[frames]
     )
     await client.initialize(protocol_version=AcpVersion.V2, info=info)
 
@@ -136,46 +128,120 @@ async def acp_pair(acp_schema: Draft202012Validator) -> AsyncIterator[AcpPair]:
     await client.close()
     await serving
 
-    root = acp_schema.schema
-    assert isinstance(root, dict)
-    defs = root["$defs"]
-    answered = {
-        StreamDirection.INCOMING: StreamDirection.OUTGOING,
-        StreamDirection.OUTGOING: StreamDirection.INCOMING,
+    frames.check_schema()
+
+
+@pytest.fixture
+async def batch_wire() -> AsyncIterator[
+    tuple[asyncio.StreamReader, asyncio.StreamWriter]
+]:
+    """Сторона клиента сокета, на другом конце которого AgentSide на BatchTransport."""
+    agent_socket, client_socket = socket.socketpair()
+    agent_reader, agent_writer = await asyncio.open_connection(sock=agent_socket)
+    client_reader, client_writer = await asyncio.open_connection(sock=client_socket)
+    info = schema.Implementation(name="stand-agent", version="0")
+    agent = AgentSide(StandAgent, info, BatchTransport(agent_reader, agent_writer))
+    serving = asyncio.create_task(agent.serve())
+
+    yield client_reader, client_writer
+
+    client_writer.close()
+    await client_writer.wait_closed()
+    async with asyncio.timeout(5):
+        await serving
+
+    agent_writer.close()
+    await agent_writer.wait_closed()
+
+
+class TestBatches:
+    INITIALIZE: ClassVar[dict[str, Any]] = {
+        "jsonrpc": "2.0",
+        "method": AGENT_METHODS["initialize"],
+        "params": {
+            "protocolVersion": AcpVersion.V2,
+            "info": {"name": "batch-client", "version": "0"},
+        },
     }
-    asked: dict[tuple[StreamDirection, object], str] = {}
 
-    for frame in frames:
-        message = frame.message
-        acp_schema.validate(message)
-
-        if "method" not in message:
-            method = asked.pop((answered[frame.direction], message["id"]))
-            part = "Response"
-            payload = message.get("result")
-        elif "id" in message:
-            method = message["method"]
-            asked[(frame.direction, message["id"])] = method
-            part = "Request"
-            payload = message["params"]
-        else:
-            method = message["method"]
-            part = "Notification"
-            payload = message["params"]
-
-        if payload is None:
-            continue
-
-        # корневая схема пускает любые params через Ext*, поэтому сверяем ещё и
-        # с определением метода по x-method
-        names = [
-            name
-            for name, body in defs.items()
-            if body.get("x-method") == method and name.endswith(part)
+    async def test_two_requests_get_one_array(
+        self, batch_wire: tuple[asyncio.StreamReader, asyncio.StreamWriter]
+    ) -> None:
+        reader, writer = batch_wire
+        batch = [
+            {**self.INITIALIZE, "id": 1},
+            {"jsonrpc": "2.0", "id": 2, "method": AGENT_METHODS["session_list"]},
         ]
-        (name,) = names
-        frame_schema = {"$ref": f"#/$defs/{name}", "$defs": defs}
-        acp_schema.evolve(schema=frame_schema).validate(payload)
+
+        writer.write(json.dumps(batch).encode() + b"\n")
+        async with asyncio.timeout(5):
+            answer = json.loads(await reader.readline())
+
+        assert isinstance(answer, list)
+        ids = sorted(reply["id"] for reply in answer)
+        assert ids == [1, 2]
+        (initialized,) = [reply for reply in answer if reply["id"] == 1]
+        assert initialized["result"]["protocolVersion"] == AcpVersion.V2
+
+    async def test_empty_batch_is_one_invalid_request(
+        self, batch_wire: tuple[asyncio.StreamReader, asyncio.StreamWriter]
+    ) -> None:
+        reader, writer = batch_wire
+
+        writer.write(b"[]\n")
+        async with asyncio.timeout(5):
+            answer = json.loads(await reader.readline())
+
+        assert answer["id"] is None
+        assert answer["error"]["code"] == -32600
+
+    async def test_notifications_only_get_nothing(
+        self, batch_wire: tuple[asyncio.StreamReader, asyncio.StreamWriter]
+    ) -> None:
+        reader, writer = batch_wire
+        batch = [
+            {
+                "jsonrpc": "2.0",
+                "method": "$/cancel_request",
+                "params": {"requestId": 7},
+            },
+            {"jsonrpc": "2.0", "method": "_boba/unknown", "params": {}},
+        ]
+
+        writer.write(json.dumps(batch).encode() + b"\n")
+        writer.write(json.dumps({**self.INITIALIZE, "id": 3}).encode() + b"\n")
+        async with asyncio.timeout(5):
+            answer = json.loads(await reader.readline())
+
+        assert answer["id"] == 3
+        assert answer["result"]["protocolVersion"] == AcpVersion.V2
+
+    async def test_scalar_entries_get_invalid_request_each(
+        self, batch_wire: tuple[asyncio.StreamReader, asyncio.StreamWriter]
+    ) -> None:
+        reader, writer = batch_wire
+
+        writer.write(b"[17,true,null]\n")
+        async with asyncio.timeout(5):
+            answer = json.loads(await reader.readline())
+
+        assert isinstance(answer, list)
+        assert len(answer) == 3
+        for reply in answer:
+            assert reply["id"] is None
+            assert reply["error"]["code"] == -32600
+
+    async def test_broken_json_is_parse_error(
+        self, batch_wire: tuple[asyncio.StreamReader, asyncio.StreamWriter]
+    ) -> None:
+        reader, writer = batch_wire
+
+        writer.write(b'{"jsonrpc": "2.0", "method"\n')
+        async with asyncio.timeout(5):
+            answer = json.loads(await reader.readline())
+
+        assert answer["id"] is None
+        assert answer["error"]["code"] == -32700
 
 
 class TestVersionNegotiation:
@@ -201,7 +267,7 @@ class TestVersionNegotiation:
     async def test_agent_answers_its_own_version(self, params: dict[str, Any]) -> None:
         agent_end, client_end = memory_transport_pair()
         info = schema.Implementation(name="stand-agent", version="0")
-        agent = AgentSide(StandAgent, info, agent_end, None)
+        agent = AgentSide(StandAgent, info, agent_end)
         serving = asyncio.create_task(agent.serve())
 
         async with Connection(self._reply_version_3, client_end) as raw:
