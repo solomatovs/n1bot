@@ -74,7 +74,7 @@
     host              = "${site.pg_host}"
     hostaddr          = "${site.pg_addr}"
     port              = "${site.pg_port}"
-    dbname            = "${site.pg_database}"
+    dbname            = "${site.aid_database}"
     sslmode           = "${site.pg_sslmode}"
     application_name  = "boba-mcp"
     connect_timeout   = 10

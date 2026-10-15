@@ -1,6 +1,6 @@
 enable     = true
 connection = "${postgres}"
-db_schema  = "describer"
+db_schema  = "mcp"
 tools      = [
     "describe_node",
     "describe_edge",

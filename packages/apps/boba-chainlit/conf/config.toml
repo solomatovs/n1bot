@@ -110,7 +110,7 @@
     host              = "${site.pg_host}"
     hostaddr          = "${site.pg_addr}"
     port              = "${site.pg_port}"
-    dbname            = "${site.pg_database}"
+    dbname            = "${site.aid_database}"
     sslmode           = "${site.pg_sslmode}"
     application_name  = "boba-chainlit"
     connect_timeout   = 10
@@ -129,7 +129,7 @@
 # схема chainlit data layer — квалифицируется в SQL явно
 [data_layer]
     postgres = "${postgres}"
-    schema   = "chainlit"
+    schema   = "aid"
 
 [agent]
     public_url = "http://127.0.0.1:${env.port}${env.url_prefix}"
@@ -143,7 +143,7 @@
     [agent.history]
         kind     = "postgres"
         postgres = "${postgres}"
-        schema   = "agent_history"
+        schema   = "boba"
     [agent.chat_mcp]
         enable              = true
         name                = "chat"
@@ -162,7 +162,7 @@
 [connections]
     enable         = true
     connection     = "${postgres}"
-    db_schema      = "chainlit"
+    db_schema      = "aid"
     ## 32 байта в base64; смена ключа делает сохранённые секреты нечитаемыми
     encryption_key = "${site.database_encryption_key}"
 
@@ -292,7 +292,7 @@
 [messaging]
     provider = "${env.messaging_provider}"
     postgres = "${postgres}"
-    schema   = "live"
+    schema   = "aid"
 
 [stream_groups]
     open_sec       = 60
