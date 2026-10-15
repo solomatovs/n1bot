@@ -67,7 +67,7 @@ from boba.toolkit.wire import (
     WirePart,
 )
 from boba.toolrun.hosted import ToolSchema
-from boba.toolrun.stream_calls import WorkflowTool
+from boba.toolrun.stream_calls import WorkflowNodeCall, WorkflowTool
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -339,10 +339,11 @@ class TestCall:
             raise AssertionError(f"the server declares extensions: {capabilities}")
 
         nested = NestedCallsFeature.model_validate(declared[NestedCallsFeature.ID])
-        tool = next(tool for tool in listed if tool.name == nested.tool)
-        schema = tool.input_schema
-        node_ref = schema["properties"][nested.nodes]["items"]["$ref"]
-        node_schema = schema["$defs"][node_ref.rsplit("/", 1)[-1]]
+        schemas: dict[str, dict[str, Any]] = {}
+        for tool in listed:
+            schemas[tool.name] = tool.input_schema
+
+        node_schema = schemas[nested.tool]["$defs"][WorkflowNodeCall.__name__]
 
         fields = sorted(node_schema["properties"])
         expected = sorted([nested.node_key, nested.node_tool, nested.node_args])

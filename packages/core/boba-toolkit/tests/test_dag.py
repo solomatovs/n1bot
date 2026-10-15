@@ -357,7 +357,7 @@ class TestNestedCalls:
     def _arguments() -> dict[str, JsonValue]:
         nodes: list[JsonValue] = [
             {"key": "src", "tool": "a", "args": {"out": "c1", "connection": "db"}},
-            {"key": "dst", "tool": "b", "args": {"feed": "c1"}, "call_id": "call-7"},
+            {"key": "dst", "tool": "b", "args": {"feed": "c1"}},
         ]
 
         return {"nodes": nodes, "note": "kept"}
@@ -402,12 +402,7 @@ class TestNestedCalls:
         expected = {
             "nodes": [
                 {"key": "src", "tool": "a", "args": {"sealed": "src"}},
-                {
-                    "key": "dst",
-                    "tool": "b",
-                    "args": {"sealed": "dst"},
-                    "call_id": "call-7",
-                },
+                {"key": "dst", "tool": "b", "args": {"sealed": "dst"}},
             ],
             "note": "kept",
         }
@@ -425,6 +420,10 @@ class TestNestedCalls:
             (
                 {"nodes": [{"key": "src", "args": {}}]},
                 "node #0 of 'nodes' expects 'key', 'tool' and an object 'args'",
+            ),
+            (
+                {"nodes": [{"key": "src", "tool": "a", "args": {}, "call_id": "c"}]},
+                "node #0 of 'nodes' carries fields outside the declared shape: call_id",
             ),
         ],
     )

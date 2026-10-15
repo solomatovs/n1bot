@@ -450,7 +450,7 @@ class TestAgentTurn:
         # запечатывает ретранслятор чата тем же HookSealing, что и вход хука
         app_log = _lines_since(app, since)
         assert any(
-            f"hook: connection {CONNECTION} of kind postgres sealed in connection "
+            f"sealing: connection {CONNECTION} of kind postgres sealed in connection "
             "of mcp__boba_general__pg_query" in line
             for line in app_log
         ), "\n".join(app_log[-40:])

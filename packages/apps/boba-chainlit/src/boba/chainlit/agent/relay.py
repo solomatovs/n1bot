@@ -57,7 +57,7 @@ from boba.mcp_client.client import (
     McpToolServer,
 )
 from boba.toolkit.chain import StreamPlanError
-from boba.toolkit.dag import DagNode, NestedCallsFeature
+from boba.toolkit.dag import DagNode
 from boba.toolkit.failure import InvokeErrorKind, ValidationText
 from boba.toolkit.mcp import McpToolNames
 from boba.toolrun.injected import ToolConfigError
@@ -322,14 +322,9 @@ class McpRelay:
             full = self._names.full(holder.server, tool.name)
             server = McpServerInfo(name=holder.server, features=port.features())
             try:
-                arguments = await self._sealing.seal(
-                    full, asked, tool.input_schema, server, caller
+                arguments = await self._sealed(
+                    port, tool, asked, offered, server, caller
                 )
-                if nested := port.nested_calls():
-                    if nested.tool == tool.name:
-                        arguments = await self._sealed_nodes(
-                            nested, arguments, offered, server, caller
-                        )
             except (RefusalError, ToolConfigError) as exc:
                 reason = f"{full}: {exc}"
                 logger.warning("mcp relay: sealing refused: %s", reason)
@@ -347,26 +342,40 @@ class McpRelay:
 
             return await port.call(sent, holder.thread_id, ctx.session.report_progress)
 
-    async def _sealed_nodes(
+    async def _sealed(  # noqa: PLR0913 — вызов запечатывается по порту, инструменту и вызывающему
         self,
-        nested: NestedCallsFeature,
-        arguments: Mapping[str, Any],
+        port: McpToolServer,
+        tool: mt.Tool,
+        asked: Mapping[str, Any],
         offered: Mapping[str, mt.Tool],
         server: McpServerInfo,
         caller: ChatCaller,
     ) -> dict[str, Any]:
-        """Аргументы вызова инструмента со вложенными вызовами: соединения
-        каждого узла запечатаны по схеме инструмента узла. Узлы разбираются
-        по форме, которую объявил сервер; вызов не по форме уходит как есть,
-        его отвергнет сервер.
+        """Аргументы вызова tool с запечатанными соединениями: по схеме
+        инструмента, а у инструмента, который сервер объявил несущим
+        вложенные вызовы, — и в каждом узле по схеме инструмента узла. Узлы
+        разбираются по форме, которую объявил сервер; вызов не по форме
+        уходит как есть, его отвергнет сервер.
 
         Ошибки:
-        RefusalError — инструмент узла не предложен модели, соединение узла
+        RefusalError — инструмент узла не предложен модели, соединение
             неизвестно или не выдано пользователю.
-        ToolConfigError — соединение не годится инструменту узла.
+        ToolConfigError — соединение не годится инструменту.
         ConnectionStoreError — таблица соединений недоступна.
         KerberosError — билет к соединению не выпущен.
         """
+        full = self._names.full(server.name, tool.name)
+        arguments = await self._sealing.seal(
+            full, asked, tool.input_schema, server, caller
+        )
+
+        nested = port.nested_calls()
+        if nested is None:
+            return arguments
+
+        if nested.tool != tool.name:
+            return arguments
+
         try:
             calls = nested.calls(arguments)
         except StreamPlanError as exc:
@@ -375,11 +384,11 @@ class McpRelay:
 
         sealed: list[DagNode] = []
         for call in calls:
-            full = self._names.full(server.name, call.tool)
-            tool = offered.get(call.tool)
-            if tool is None:
+            node_full = self._names.full(server.name, call.tool)
+            node_tool = offered.get(call.tool)
+            if node_tool is None:
                 msg = (
-                    f"node {call.key!r} ({full}): mcp server {server.name!r} "
+                    f"node {call.key!r} ({node_full}): mcp server {server.name!r} "
                     f"offers the model no tool {call.tool!r}; expected one of "
                     f"{sorted(offered)}"
                 )
@@ -387,13 +396,13 @@ class McpRelay:
 
             try:
                 args = await self._sealing.seal(
-                    full, call.args, tool.input_schema, server, caller
+                    node_full, call.args, node_tool.input_schema, server, caller
                 )
             except RefusalError as exc:
-                msg = f"node {call.key!r} ({full}): {exc}"
+                msg = f"node {call.key!r} ({node_full}): {exc}"
                 raise RefusalError(exc.kind, msg) from exc
             except ToolConfigError as exc:
-                msg = f"node {call.key!r} ({full}): {exc}"
+                msg = f"node {call.key!r} ({node_full}): {exc}"
                 raise ToolConfigError(msg) from exc
 
             sealed.append(call.model_copy(update={"args": args}))
