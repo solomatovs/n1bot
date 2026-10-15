@@ -4,9 +4,9 @@
 вверх: значения по умолчанию, файл пользователя, файл проекта, локальный
 файл проекта, файлы и строки `--settings`, аргументы запуска,
 административный слой `--policy`. Поле побеждает полем, таблицы (`models`,
-`env`, `hooks`, серверы MCP) сливаются по именам, списки правил
+`env`, серверы MCP) сливаются по именам, списки правил
 объединяются. Итог — одна модель EffectiveSettings, из которой строятся
-профиль модели, пределы, режим, хуки и серверы MCP для ядра. Серверы MCP
+профиль модели, пределы, режим и серверы MCP для ядра. Серверы MCP
 из ключа `mcpServers` слоёв настроек и из `.mcp.json` проекта подключаются
 к каждой сессии; серверы сессии по протоколу (`session/new`) приходят той
 же моделью McpServerJson и побеждают по имени. Способ входа на сервер —
@@ -32,7 +32,6 @@ SettingsError — файл не прочитан или не разобран, �
 from __future__ import annotations
 
 import json
-import re
 import stat
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
@@ -49,12 +48,10 @@ from pydantic import (
     Field,
     SecretStr,
     ValidationError,
-    field_validator,
     model_validator,
 )
 from pydantic.alias_generators import to_camel
 
-from boba.agent.hooks import HookFailure
 from boba.agent.profile import (
     CompactionSettings,
     ModelProfile,
@@ -79,11 +76,6 @@ __all__ = [
     "EffectiveSettings",
     "EnvName",
     "HistoryKind",
-    "HookEvent",
-    "HookFailure",
-    "HookMatcherGroup",
-    "HookType",
-    "HttpHook",
     "JsonlHistorySettings",
     "McpServerJson",
     "MemoryHistorySettings",
@@ -162,26 +154,6 @@ class SecretKey(StrEnum):
     DSN = "dsn"
     MCP_SERVERS = "mcpServers"
     AUTH = "auth"
-
-
-class HookEvent(StrEnum):
-    """События, на которые в настройках навешиваются хуки."""
-
-    PRE_TOOL_USE = "PreToolUse"
-    POST_TOOL_USE = "PostToolUse"
-    POST_TOOL_USE_FAILURE = "PostToolUseFailure"
-    USER_PROMPT_SUBMIT = "UserPromptSubmit"
-    SESSION_START = "SessionStart"
-    SESSION_END = "SessionEnd"
-    STOP = "Stop"
-    PRE_COMPACT = "PreCompact"
-    POST_COMPACT = "PostCompact"
-
-
-class HookType(StrEnum):
-    """Виды обработчиков хука, которые умеет исполнять агент."""
-
-    HTTP = "http"
 
 
 class McpTransportJson(StrEnum):
@@ -339,48 +311,6 @@ HistorySettings = Annotated[
 ]
 
 
-class HttpHook(SettingsModel):
-    """Обработчик хука: `POST` JSON события на `url` с заголовками; срок в
-    секундах; `onFailure` решает, блокирует ли молчание обработчика действие."""
-
-    DEFAULT_TIMEOUT_SEC: ClassVar[float] = 600.0
-
-    type: Literal[HookType.HTTP]
-    url: str = Field(min_length=1)
-    headers: Mapping[str, str] = Field(default_factory=dict)
-    timeout: float = Field(default=DEFAULT_TIMEOUT_SEC, gt=0)
-    on_failure: HookFailure = HookFailure.CONTINUE
-
-    @field_validator("url")
-    @classmethod
-    def _absolute_http(cls, value: str) -> str:
-        HttpUrls().absolute(value, "hook url")
-
-        return value
-
-
-class HookMatcherGroup(SettingsModel):
-    """Группа обработчиков под одним матчером имени инструмента: пустой
-    матчер или `*` подходит ко всему, иначе это регулярное выражение."""
-
-    matcher: str = ""
-    hooks: Sequence[HttpHook] = Field(min_length=1)
-
-    @field_validator("matcher")
-    @classmethod
-    def _compiles(cls, value: str) -> str:
-        try:
-            re.compile(value)
-        except re.error as exc:
-            msg = f"hook matcher '{value}' is not a valid regular expression: {exc}"
-            raise ValueError(msg) from exc
-
-        return value
-
-
-HooksSettings = Mapping[HookEvent, Sequence[HookMatcherGroup]]
-
-
 class CompactionJson(SettingsModel):
     compact_at: float | None = Field(default=None, gt=0, lt=1)
     block_at: float | None = Field(default=None, gt=0, le=1)
@@ -460,7 +390,6 @@ class SettingsLayer(SettingsModel):
     limits: LimitsJson | None = None
     mcp: McpClientJson | None = None
     mcp_servers: Mapping[str, McpServerJson] = Field(default_factory=dict)
-    hooks: HooksSettings = Field(default_factory=dict)
     env: Mapping[str, str] = Field(default_factory=dict)
     system_prompt_file: str | None = None
     skills_dir: str | None = None
@@ -697,7 +626,6 @@ class EffectiveSettings(BaseModel):
     limits: TurnLimits
     mcp: McpClientJson
     mcp_servers: Mapping[str, McpServerJson]
-    hooks: HooksSettings
     env: Mapping[str, str]
     system_prompt: Sequence[str]
     skills_dir: str | None
@@ -1207,7 +1135,6 @@ class Settings:
             limits=limits,
             mcp=mcp,
             mcp_servers=self._servers(mcp, layer.mcp_servers),
-            hooks=layer.hooks,
             env=layer.env,
             system_prompt=list(self._system_prompt(layer)),
             skills_dir=layer.skills_dir,

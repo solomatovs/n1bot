@@ -1,6 +1,6 @@
 """Слои настроек: порядок приоритета, слияние таблиц и списков, профиль из
 переменных окружения, `.mcp.json` формата Claude Code, секреты значениями в
-файле с правами 0600, секция `hooks`, история `memory`, понятные отказы."""
+файле с правами 0600, история `memory`, понятные отказы."""
 
 from __future__ import annotations
 
@@ -18,8 +18,6 @@ from boba.cli.settings import (
     Arguments,
     EnvName,
     HistoryKind,
-    HookEvent,
-    HookFailure,
     JsonlHistorySettings,
     McpServerBuilder,
     MemoryHistorySettings,
@@ -40,7 +38,6 @@ OWNER_ONLY = 0o600
 WORLD_READABLE = 0o644
 API_KEY = "sk-file-secret"
 DSN = "postgresql://agent:pg-file-secret@db.example.org:5432/boba"
-HOOK_URL = "http://127.0.0.1:8000/chat/hooks/pre-tool-use"
 SESSION = SessionId(value="settings-memory-1")
 
 ENV = {
@@ -360,27 +357,6 @@ def secret_document() -> dict[str, object]:
     }
 
 
-def hooks_document() -> dict[str, object]:
-    return {
-        "hooks": {
-            "PreToolUse": [
-                {
-                    "matcher": "mcp__boba_base__.*",
-                    "hooks": [
-                        {
-                            "type": "http",
-                            "url": HOOK_URL,
-                            "headers": {"Authorization": "Bearer jwt-1"},
-                            "timeout": 10,
-                            "onFailure": "block",
-                        }
-                    ],
-                }
-            ]
-        }
-    }
-
-
 class TestSecretsInFile:
     def test_private_file_with_secrets_is_parsed(self, tmp_path: Path) -> None:
         path = tmp_path / "settings.json"
@@ -476,118 +452,6 @@ class TestSecretsInFile:
         assert effective.history.dsn is not None
         assert effective.history.dsn.get_secret_value() == DSN
         assert effective.agent_name == "Project"
-
-
-class TestHooks:
-    def test_section_is_parsed_into_events_matchers_and_handlers(
-        self, tmp_path: Path
-    ) -> None:
-        write(tmp_path / "home" / ".boba" / "settings.json", hooks_document())
-
-        effective = settings(tmp_path).effective()
-
-        groups = effective.hooks[HookEvent.PRE_TOOL_USE]
-        assert len(groups) == 1
-        assert groups[0].matcher == "mcp__boba_base__.*"
-        hook = groups[0].hooks[0]
-        assert hook.url == HOOK_URL
-        assert hook.headers == {"Authorization": "Bearer jwt-1"}
-        assert hook.timeout == 10
-        assert hook.on_failure is HookFailure.BLOCK
-        public = effective.public()["hooks"]["PreToolUse"][0]["hooks"][0]
-        assert public["onFailure"] == "block"
-
-    def test_defaults_match_the_documented_form(self, tmp_path: Path) -> None:
-        write(
-            tmp_path / "home" / ".boba" / "settings.json",
-            {"hooks": {"PreToolUse": [{"hooks": [{"type": "http", "url": HOOK_URL}]}]}},
-        )
-
-        effective = settings(tmp_path).effective()
-
-        group = effective.hooks[HookEvent.PRE_TOOL_USE][0]
-        assert group.matcher == ""
-        assert group.hooks[0].timeout == 600
-        assert group.hooks[0].on_failure is HookFailure.CONTINUE
-        assert group.hooks[0].headers == {}
-
-    def test_groups_of_layers_are_joined(self, tmp_path: Path) -> None:
-        write(tmp_path / "home" / ".boba" / "settings.json", hooks_document())
-        write(
-            tmp_path / "project" / ".boba" / "settings.json",
-            {
-                "hooks": {
-                    "PreToolUse": [
-                        {
-                            "matcher": "mcp__other__.*",
-                            "hooks": [{"type": "http", "url": "http://127.0.0.1:1/h"}],
-                        }
-                    ],
-                    "SessionEnd": [{"hooks": [{"type": "http", "url": HOOK_URL}]}],
-                }
-            },
-        )
-
-        effective = settings(tmp_path).effective()
-
-        matchers = [g.matcher for g in effective.hooks[HookEvent.PRE_TOOL_USE]]
-        assert matchers == ["mcp__boba_base__.*", "mcp__other__.*"]
-        assert HookEvent.SESSION_END in effective.hooks
-
-    @pytest.mark.parametrize(
-        ("handler", "complaint"),
-        [
-            ({"type": "command", "command": "true"}, "type"),
-            ({"type": "http"}, "url"),
-            ({"type": "http", "url": "/relative"}, "absolute http"),
-            ({"type": "http", "url": HOOK_URL, "onFailure": "retry"}, "onFailure"),
-            ({"type": "http", "url": HOOK_URL, "timeout": 0}, "timeout"),
-            ({"type": "http", "url": HOOK_URL, "colour": "red"}, "colour"),
-        ],
-    )
-    def test_malformed_handler_is_refused(
-        self, tmp_path: Path, handler: dict[str, object], complaint: str
-    ) -> None:
-        write(
-            tmp_path / "home" / ".boba" / "settings.json",
-            {"hooks": {"PreToolUse": [{"hooks": [handler]}]}},
-        )
-
-        with pytest.raises(SettingsError, match=complaint):
-            settings(tmp_path).effective()
-
-    def test_unknown_event_and_empty_group_are_refused(self, tmp_path: Path) -> None:
-        write(
-            tmp_path / "home" / ".boba" / "settings.json",
-            {"hooks": {"OnCoffee": [{"hooks": [{"type": "http", "url": HOOK_URL}]}]}},
-        )
-        with pytest.raises(SettingsError, match="OnCoffee"):
-            settings(tmp_path).effective()
-
-        write(
-            tmp_path / "home" / ".boba" / "settings.json",
-            {"hooks": {"PreToolUse": [{"matcher": "x", "hooks": []}]}},
-        )
-        with pytest.raises(SettingsError, match="hooks"):
-            settings(tmp_path).effective()
-
-    def test_broken_matcher_is_refused(self, tmp_path: Path) -> None:
-        write(
-            tmp_path / "home" / ".boba" / "settings.json",
-            {
-                "hooks": {
-                    "PreToolUse": [
-                        {
-                            "matcher": "mcp__(",
-                            "hooks": [{"type": "http", "url": HOOK_URL}],
-                        }
-                    ]
-                }
-            },
-        )
-
-        with pytest.raises(SettingsError, match="regular expression"):
-            settings(tmp_path).effective()
 
 
 @pytest.fixture
