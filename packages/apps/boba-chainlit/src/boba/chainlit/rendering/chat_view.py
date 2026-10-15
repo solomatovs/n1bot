@@ -19,7 +19,7 @@ from boba.cancellation import StopReason
 from boba.canvas.canvas import CanvasAction, CanvasElement
 from boba.chainlit.rendering.tool import ChatElements
 from boba.toolkit.calls import CallViews, ToolCallBase, ToolCallModels, ToolIntent
-from boba.toolkit.mcp_names import McpToolNames
+from boba.toolkit.mcp import McpToolNames
 from boba.toolkit.result import ToolArtifact, VisualElement
 from chainlit.config import config as chainlit_config
 from chainlit.context import context

@@ -122,7 +122,6 @@ async def tools(
         lambda: store, lambda: credentials, call_stand.contexts
     )
     opened = ServiceTools(tool_service, connections, call_stand.contexts, DirectCalls())
-    await opened.start()
     try:
         yield opened
     finally:

@@ -12,7 +12,7 @@ argv в kwargs (ToolArgv), каналы вызова из аргументов (
 Ошибки:
 ArgumentTooLargeError — значение аргумента не помещается в argv (MAX_ARG_STRLEN).
 ToolEntryError — нарушен контракт запуска: имени нет в TOOLS, флаги или конфиг
-    не прошли валидацию, файл --injected не читается; kind из EntryErrorKind.
+    не прошли валидацию, файл --injected не читается; kind из InvokeErrorKind.
 PayloadFailureError — исполненное тело подняло исключение; оно уже упаковано
     в результат-ошибку (FailurePacker).
 """
@@ -44,7 +44,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 from boba.toolkit.calls import FieldMarks
 from boba.toolkit.closing import ProcessClosers
 from boba.toolkit.facade import PayloadTool, ToolFacadeError
-from boba.toolkit.failure import FailurePacker, ValidationText
+from boba.toolkit.failure import FailurePacker, InvokeErrorKind, ValidationText
 from boba.toolkit.frames import ToolIo
 from boba.toolkit.launcher import PayloadFailureError
 from boba.toolkit.ports import (
@@ -70,7 +70,6 @@ from boba.toolkit.types import SecretReveal
 __all__ = [
     "ArgumentTooLargeError",
     "CallWiring",
-    "EntryErrorKind",
     "EntryFlag",
     "InputWire",
     "OutputWire",
@@ -97,18 +96,10 @@ class ArgumentTooLargeError(Exception):
         self.param = param
 
 
-class EntryErrorKind(StrEnum):
-    """Отказы контракта запуска; с доменными kind'ами не пересекаются."""
-
-    UNKNOWN_TOOL = "unknown_tool"
-    INVALID_REQUEST = "invalid_request"
-    INTERNAL_ERROR = "internal_error"
-
-
 class ToolEntryError(Exception):
     """Нарушение контракта запуска с классификацией для конверта."""
 
-    def __init__(self, kind: EntryErrorKind, message: str) -> None:
+    def __init__(self, kind: InvokeErrorKind, message: str) -> None:
         super().__init__(message)
         self.kind = kind
 
@@ -159,7 +150,7 @@ class PortWire(BaseModel):
         port, separator, fd = raw.rpartition(cls.SEPARATOR)
         if not separator:
             msg = f"{cls.FLAG} expects <port>{cls.SEPARATOR}<fd>, got {raw!r}"
-            raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg)
+            raise ToolEntryError(InvokeErrorKind.INVALID_REQUEST, msg)
 
         try:
             return cls(port=port, fd=int(fd))
@@ -168,7 +159,7 @@ class PortWire(BaseModel):
                 f"{cls.FLAG} expects <port>{cls.SEPARATOR}<fd> with a "
                 f"descriptor number, got {raw!r}: {exc}"
             )
-            raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg) from exc
+            raise ToolEntryError(InvokeErrorKind.INVALID_REQUEST, msg) from exc
 
 
 class InputWire(PortWire):
@@ -230,7 +221,7 @@ class CallWiring(BaseModel):
                 values[field] = int(raw)
             except ValueError as exc:
                 msg = f"{flag} expects a descriptor number, got {raw!r}: {exc}"
-                raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg) from exc
+                raise ToolEntryError(InvokeErrorKind.INVALID_REQUEST, msg) from exc
 
         inputs: list[InputWire] = []
         while raw_input := cls._pop_value(arguments, EntryFlag.FD_IN.value):
@@ -250,7 +241,7 @@ class CallWiring(BaseModel):
         index = arguments.index(flag)
         if index + 1 >= len(arguments):
             msg = f"{flag} expects a descriptor number after it, got the end of argv"
-            raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg)
+            raise ToolEntryError(InvokeErrorKind.INVALID_REQUEST, msg)
 
         arguments.pop(index)
         return arguments.pop(index)
@@ -277,7 +268,7 @@ class ToolAddress(BaseModel):
                 f"tool {tool.name!r} has neither coroutine nor func: "
                 "its module path for the command line cannot be resolved"
             )
-            raise ToolEntryError(EntryErrorKind.INTERNAL_ERROR, msg)
+            raise ToolEntryError(InvokeErrorKind.INTERNAL_ERROR, msg)
 
         return cls(module=body.__module__, name=tool.name)
 
@@ -433,14 +424,14 @@ class ToolArgv:
                     f"unknown flag {flag!r} for tool {tool.name!r}; "
                     f"known flags: {known}"
                 )
-                raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg)
+                raise ToolEntryError(InvokeErrorKind.INVALID_REQUEST, msg)
 
             if not pending:
                 msg = (
                     f"flag {flag!r} of tool {tool.name!r} expects a value, "
                     "got the end of argv"
                 )
-                raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg)
+                raise ToolEntryError(InvokeErrorKind.INVALID_REQUEST, msg)
 
             raw = pending.pop(0)
             field = schema.model_fields[name]
@@ -457,7 +448,7 @@ class ToolArgv:
                 f"tool {tool.name!r} args_schema must be a pydantic model class, "
                 f"got {schema!r}"
             )
-            raise ToolEntryError(EntryErrorKind.INTERNAL_ERROR, msg)
+            raise ToolEntryError(InvokeErrorKind.INTERNAL_ERROR, msg)
 
         return schema
 
@@ -560,10 +551,10 @@ class ToolArgv:
                 f"argument {name!r} does not match its declared type "
                 f"{annotation!r}: {detail}"
             )
-            raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg) from None
+            raise ToolEntryError(InvokeErrorKind.INVALID_REQUEST, msg) from None
         except ValueError as exc:
             msg = f"argument {name!r} could not be decoded as {annotation!r}: {exc}"
-            raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg) from exc
+            raise ToolEntryError(InvokeErrorKind.INVALID_REQUEST, msg) from exc
 
     @staticmethod
     def _texty(annotation: Any) -> bool:
@@ -585,21 +576,21 @@ class ToolArgv:
                 f"injected parameter {name!r}: model {annotation!r} must define "
                 f"SECTION as the toml section name, got {section!r}"
             )
-            raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg)
+            raise ToolEntryError(InvokeErrorKind.INVALID_REQUEST, msg)
 
         if not isinstance(annotation, type):
             msg = (
                 f"injected parameter {name!r} must be annotated with a pydantic "
                 f"model class, got {annotation!r}"
             )
-            raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg)
+            raise ToolEntryError(InvokeErrorKind.INVALID_REQUEST, msg)
 
         if not issubclass(annotation, BaseModel):
             msg = (
                 f"injected parameter {name!r} must subclass pydantic BaseModel, "
                 f"got {annotation.__name__}"
             )
-            raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg)
+            raise ToolEntryError(InvokeErrorKind.INVALID_REQUEST, msg)
 
         return section
 
@@ -633,14 +624,14 @@ class ToolArgv:
                 payload = json.loads(config.decode("utf-8"))
             except ValueError as exc:
                 msg = f"call config ({len(config)} bytes) is not valid JSON: {exc}"
-                raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg) from exc
+                raise ToolEntryError(InvokeErrorKind.INVALID_REQUEST, msg) from exc
 
         if not isinstance(payload, dict):
             msg = (
                 "call config must be a JSON object keyed by parameter names, "
                 f"got {type(payload).__name__}"
             )
-            raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg)
+            raise ToolEntryError(InvokeErrorKind.INVALID_REQUEST, msg)
 
         kwargs: dict[str, Any] = {}
         for name, annotation in expected.items():
@@ -650,7 +641,7 @@ class ToolArgv:
                     f"parameter {name!r} is missing from the call config; "
                     f"config keys: [{present}]"
                 )
-                raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg)
+                raise ToolEntryError(InvokeErrorKind.INVALID_REQUEST, msg)
 
             try:
                 kwargs[name] = TypeAdapter(annotation).validate_python(payload[name])
@@ -659,7 +650,7 @@ class ToolArgv:
                     f"call config for parameter {name!r} does not match "
                     f"{annotation!r}: {exc}"
                 )
-                raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg) from exc
+                raise ToolEntryError(InvokeErrorKind.INVALID_REQUEST, msg) from exc
 
         return kwargs
 
@@ -692,7 +683,7 @@ class ToolMain:
                     f"{tool!r} is not a tool object: expected a PayloadTool "
                     f"built by the @tool facade, got {type(tool).__name__}"
                 )
-                raise ToolEntryError(EntryErrorKind.INTERNAL_ERROR, msg)
+                raise ToolEntryError(InvokeErrorKind.INTERNAL_ERROR, msg)
 
         return tuple(tools)
 
@@ -794,7 +785,7 @@ class ToolMain:
 
         known = ", ".join(sorted(tool.name for tool in tools))
         msg = f"unknown tool {name!r}; known tools: {known}"
-        raise ToolEntryError(EntryErrorKind.UNKNOWN_TOOL, msg)
+        raise ToolEntryError(InvokeErrorKind.UNKNOWN_TOOL, msg)
 
     @staticmethod
     def _pop_path(arguments: list[str], flag: EntryFlag) -> str | None:
@@ -804,7 +795,7 @@ class ToolMain:
         index = arguments.index(flag)
         if index + 1 >= len(arguments):
             msg = f"{flag} expects a file path after it, got the end of argv"
-            raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg)
+            raise ToolEntryError(InvokeErrorKind.INVALID_REQUEST, msg)
 
         arguments.pop(index)
         return arguments.pop(index)
@@ -833,7 +824,7 @@ class ToolMain:
                 f"tool {tool.name!r} declares broken ports on parameters "
                 f"[{listed}]: {exc}"
             )
-            raise ToolEntryError(EntryErrorKind.INTERNAL_ERROR, msg) from exc
+            raise ToolEntryError(InvokeErrorKind.INTERNAL_ERROR, msg) from exc
 
         wires = cls._wires_by_port(tool, spec.inbound(), wiring.inputs)
         wires.update(cls._wires_by_port(tool, spec.outbound(), wiring.outputs))
@@ -869,14 +860,14 @@ class ToolMain:
                 f"tool {tool.name!r} declares no inbound ports, got "
                 f"{len(wiring.inputs)} {EntryFlag.FD_IN} inputs"
             )
-            raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg)
+            raise ToolEntryError(InvokeErrorKind.INVALID_REQUEST, msg)
 
         if wiring.outputs:
             msg = (
                 f"tool {tool.name!r} declares no outbound ports, got "
                 f"{len(wiring.outputs)} {EntryFlag.FD_OUT} outputs"
             )
-            raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg)
+            raise ToolEntryError(InvokeErrorKind.INVALID_REQUEST, msg)
 
     @classmethod
     def _port_value(
@@ -897,7 +888,7 @@ class ToolMain:
                 f"tool {tool.name!r}: port {decl.name!r} expects at most "
                 f"one channel, got {len(own)}"
             )
-            raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg)
+            raise ToolEntryError(InvokeErrorKind.INVALID_REQUEST, msg)
 
         # без канала порт отвязан: так выглядит и запуск человеком
         for wire in own:
@@ -937,7 +928,7 @@ class ToolMain:
                     f"tool {tool.name!r}: {wire.FLAG} names port "
                     f"{wire.port!r}, the declared ports are {known}"
                 )
-                raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg)
+                raise ToolEntryError(InvokeErrorKind.INVALID_REQUEST, msg)
 
             own.append(wire)
 
@@ -968,7 +959,7 @@ class ToolMain:
             f"the launcher passes {EntryFlag.INJECTED_FD} <fd>, a human passes "
             f"{EntryFlag.INJECTED} <path>"
         )
-        raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg)
+        raise ToolEntryError(InvokeErrorKind.INVALID_REQUEST, msg)
 
     READ_BYTES: ClassVar[int] = 65536
 
@@ -986,7 +977,7 @@ class ToolMain:
                 chunks.append(chunk)
         except OSError as exc:
             msg = f"reading injected config from fd {fd} failed: {exc}"
-            raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg) from exc
+            raise ToolEntryError(InvokeErrorKind.INVALID_REQUEST, msg) from exc
         finally:
             with suppress(OSError):
                 os.close(fd)
@@ -1000,7 +991,7 @@ class ToolMain:
             return Path(path).read_bytes()
         except OSError as exc:
             msg = f"reading injected config file {path!r} failed: {exc}"
-            raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg) from exc
+            raise ToolEntryError(InvokeErrorKind.INVALID_REQUEST, msg) from exc
 
     @classmethod
     def _call(cls, tool: PayloadTool, kwargs: dict[str, Any]) -> ReplyOk:
@@ -1008,7 +999,7 @@ class ToolMain:
         try:
             result = asyncio.run(cls._acall(tool, kwargs))
         except ToolFacadeError as exc:
-            raise ToolEntryError(EntryErrorKind.INTERNAL_ERROR, str(exc)) from exc
+            raise ToolEntryError(InvokeErrorKind.INTERNAL_ERROR, str(exc)) from exc
         except Exception as exc:
             failure = cls._FAILURES.pack(exc)
             logger.error(

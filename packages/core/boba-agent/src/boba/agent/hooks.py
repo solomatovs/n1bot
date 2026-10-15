@@ -46,7 +46,7 @@ from pydantic.alias_generators import to_camel
 
 from boba.agent.records import PermissionMode
 from boba.cancellation import RunCancellation, ToolStopped
-from boba.toolkit.mcp_names import McpToolNames
+from boba.toolkit.mcp import McpToolNames
 
 logger = logging.getLogger(__name__)
 

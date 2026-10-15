@@ -77,7 +77,7 @@ from boba.agent.writer import RecordKeeper
 from boba.cancellation import RunCancellation, StopReason, ToolStopped
 from boba.toolkit.chain import StreamPlanError
 from boba.toolkit.dag import CallDag, DagNode, NodeOutcome, ToolHints, ToolServer
-from boba.toolkit.mcp_names import McpToolName, McpToolNames
+from boba.toolkit.mcp import McpToolName, McpToolNames
 
 logger = logging.getLogger(__name__)
 

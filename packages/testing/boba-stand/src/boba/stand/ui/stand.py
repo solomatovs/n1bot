@@ -27,7 +27,7 @@ from typing_extensions import TypeVar
 
 from boba.runtime.config import ConfigFiles
 from boba.stand.ui.toml_text import TomlText
-from boba.toolkit.mcp_names import McpToolNames
+from boba.toolkit.mcp import McpToolNames
 
 __all__ = [
     "StandAgentAuth",

@@ -15,14 +15,17 @@ DagSpec — сериализуемая модель графа: узлы — в�
 (чат, сервис MCP, клиент MCP) и его исполнитель говорят друг с другом:
 карточка инструмента ToolCard, итог вызова NodeOutcome с фабрикой
 NodeOutcomes и адресом журнала JournalAddress, путь вызова узла к телу
-NodeCalls, сам порт ToolServer; CallDag строит описание DAG по вызовам
-клиента порта и называет инструмент-связку. Реализации порта живут в
-boba.toolrun и клиенте MCP.
+NodeCalls, сам порт ToolServer и ToolServers — несколько серверов за
+одним портом с маршрутом по имени инструмента; CallDag строит описание DAG
+по вызовам клиента порта и называет инструмент-связку. Остальные
+реализации порта живут в boba.toolrun и клиенте MCP.
 
 Ошибки:
 StreamPlanError — поле порта узла не имя канала, pipe_bytes не число либо
     граф нарушен (правила StreamPlan); вызов workflow не проходит форму
     описания DAG; настройки возможности связки не проходят её модель.
+ToolServersError — два сервера за одним портом отдают инструмент с одним
+    именем.
 """
 
 from __future__ import annotations
@@ -51,10 +54,11 @@ from boba.toolkit.chain import (
     StreamPlan,
     StreamPlanError,
 )
-from boba.toolkit.failure import ValidationText
+from boba.toolkit.failure import InvokeErrorKind, ValidationText
 from boba.toolkit.ports import PortDecl, StreamSpec
 from boba.toolkit.result import (
     ChatView,
+    ErrorResult,
     Fact,
     FactsBlock,
     FailureResult,
@@ -76,6 +80,8 @@ __all__ = [
     "ToolCard",
     "ToolHints",
     "ToolServer",
+    "ToolServers",
+    "ToolServersError",
     "ToolUseResult",
     "ToolUseResultKey",
     "ToolUseResults",
@@ -775,3 +781,98 @@ class ToolServer(Protocol):
             names.append(card.name)
 
         return frozenset(names)
+
+
+class ToolServersError(RuntimeError):
+    """Серверы за одним портом нельзя собрать: имена инструментов совпали."""
+
+
+class UnknownTool:
+    """Отказ вызову с именем, которого у сервера нет: называет, какие есть."""
+
+    def __init__(self, known: frozenset[str]) -> None:
+        self._known = known
+
+    def refusal(self, name: str) -> ErrorResult:
+        msg = (
+            f"tool {name!r} does not exist; the available tools are "
+            f"{sorted(self._known)}"
+        )
+
+        return ErrorResult(message=msg, error_kind=InvokeErrorKind.UNKNOWN_TOOL)
+
+
+class ToolServers(ToolServer):
+    """Несколько серверов инструментов за одним портом.
+
+    Клиент видит один порт: инструменты и возможности всех серверов вместе,
+    вызов уходит тому серверу, чей это инструмент. Маршрут — имя
+    инструмента; вызовы пакета к одному серверу идут ему одним пакетом.
+    Выдуманное имя получает отказ со списком всех инструментов. Собирает
+    его реестр инструментов (ToolRegistry.server).
+    """
+
+    def __init__(self, servers: Sequence[ToolServer]) -> None:
+        self._servers = tuple(servers)
+        self._owner: dict[str, int] = {}
+        for index, server in enumerate(self._servers):
+            for card in server.tools():
+                self._claim(card.name, index)
+
+        self._unknown = UnknownTool(frozenset(self._owner))
+        self._outcomes = NodeOutcomes()
+
+    def tools(self) -> Sequence[ToolCard]:
+        offered: list[ToolCard] = []
+        for server in self._servers:
+            offered.extend(server.tools())
+
+        return offered
+
+    def features(self) -> Mapping[str, Mapping[str, object]]:
+        declared: dict[str, Mapping[str, object]] = {}
+        for server in self._servers:
+            declared.update(server.features())
+
+        return declared
+
+    async def submit(
+        self, calls: Sequence[DagNode]
+    ) -> Sequence[asyncio.Future[NodeOutcome]]:
+        routed: dict[int, list[int]] = {}
+        pending: dict[int, asyncio.Future[NodeOutcome]] = {}
+        for position, call in enumerate(calls):
+            owner = self._owner.get(call.tool)
+            if owner is None:
+                refusal = self._unknown.refusal(call.tool)
+                refused = self._outcomes.refused(call, refusal)
+                pending[position] = self._outcomes.settled(refused)
+                continue
+
+            routed.setdefault(owner, []).append(position)
+
+        for owner, positions in routed.items():
+            batch: list[DagNode] = []
+            for position in positions:
+                batch.append(calls[position])
+
+            accepted = await self._servers[owner].submit(batch)
+            for position, future in zip(positions, accepted, strict=True):
+                pending[position] = future
+
+        ordered: list[asyncio.Future[NodeOutcome]] = []
+        for position in range(len(calls)):
+            ordered.append(pending[position])
+
+        return ordered
+
+    def _claim(self, name: str, index: int) -> None:
+        if name in self._owner:
+            msg = (
+                f"tool servers: tool {name!r} is offered by two servers "
+                f"(#{self._owner[name]} and #{index}); a tool name routes to "
+                "exactly one server"
+            )
+            raise ToolServersError(msg)
+
+        self._owner[name] = index

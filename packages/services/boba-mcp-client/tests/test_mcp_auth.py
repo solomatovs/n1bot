@@ -27,7 +27,6 @@ from boba.mcp_client.client import (
     McpClientError,
     McpServerConfig,
     McpToolServer,
-    NamedBlocks,
     NoAuth,
     ProxyAuth,
 )
@@ -73,7 +72,6 @@ class AuthStand(FakeServiceProcess):
         return McpToolServer(
             "boba",
             config,
-            NamedBlocks(),
             DroppedSignals(),
             CallContexts(),
             DirectCalls(),
