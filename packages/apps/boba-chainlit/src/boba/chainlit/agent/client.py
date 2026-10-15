@@ -297,6 +297,8 @@ class AgentProcess:
 
         self._process = process
         self._connection = ClientConnection(self._client, self._answer, stdin, stdout)
+        # соединение закрывается раньше процесса: выход из стека — в обратном порядке
+        self._stack.push_async_callback(self._connection.close)
         try:
             response = await asyncio.wait_for(
                 self._initialize(), self._command.start_timeout_sec
