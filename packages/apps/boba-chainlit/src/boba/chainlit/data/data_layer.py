@@ -76,7 +76,7 @@ from chainlit.user import User as ChainlitUser
 
 __all__ = [
     "AttachmentDataLayer",
-    "FeedbackRows",
+    "FeedRows",
     "HeldContent",
     "PostgresDataLayer",
     "ThreadDeletionListener",
@@ -107,9 +107,14 @@ class HeldContent:
         yield content
 
 
-class FeedbackRows(Protocol):
-    """Оценки шагов треда по id шага: их ставит шагам лента после
-    воспроизведения истории. Реализует PostgresDataLayer."""
+class FeedRows(Protocol):
+    """Что лента вкладки читает из слоя данных: тред для очистки вкладки
+    перед повторным воспроизведением и оценки шагов по id шага, которые
+    она ставит после воспроизведения. Реализует PostgresDataLayer."""
+
+    @abstractmethod
+    def get_thread(self, thread_id: str) -> Coroutine[Any, Any, ThreadDict | None]:
+        """Тред без шагов; None — треда нет."""
 
     @abstractmethod
     def feedbacks_of(
@@ -337,7 +342,7 @@ class FeedbackDicts:
         return value
 
 
-class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership, FeedbackRows):
+class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership, FeedRows):
     """Хранилище chainlit над портами сервиса: словари, тела вложений, оповещения."""
 
     def __init__(  # noqa: PLR0913 — зависимости слоя вносятся сборкой

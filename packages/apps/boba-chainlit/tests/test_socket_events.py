@@ -19,6 +19,7 @@ from chainlit.server import sio
 from chainlit.session import WebsocketSession
 from chainlit_stand import FakeTurn
 
+from boba.chainlit.agent.chat import Question
 from boba.chainlit.infra.session import SessionContainers
 from boba.chainlit.infra.socket_events import SocketEvent, SocketEvents
 from boba.stand.refs import StandRefs
@@ -184,6 +185,32 @@ class TestStopHandler:
 
         if order != ["on_stop", "cancelled"]:
             raise AssertionError(f"порядок остановки: {order}")
+
+
+class TestEditHandler:
+    """Правка вопроса: chainlit ленту не режет и on_message не зовёт, правка
+    уходит обработчику правки вопросом с признаком edited."""
+
+    async def test_edit_reaches_the_editor_and_not_chainlit(
+        self, session: EmittedEvents, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        edit = await _handler(SocketEvent.EDIT_MESSAGE)
+        edited: list[Question] = []
+
+        async def editor(question: Question) -> None:
+            edited.append(question)
+
+        async def on_message(message: object) -> None:
+            raise AssertionError(f"chainlit on_message called with {message!r}")
+
+        monkeypatch.setattr(SocketEvents, "_EDITOR", editor)
+        monkeypatch.setattr(chainlit_config.code, "on_message", on_message)
+
+        await edit(SOCKET_ID, {"message": {"id": "question-1", "output": "new text"}})
+
+        assert edited == [Question(key="question-1", text="new text", edited=True)]
+        assert "delete_message" not in session.names, session.names
+        assert session.names == ["task_start", "task_end"], session.names
 
 
 class TestConnectionJournal:

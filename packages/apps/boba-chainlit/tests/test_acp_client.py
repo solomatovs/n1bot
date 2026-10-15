@@ -144,8 +144,7 @@ class TestHistory:
         observer = await agents.start(replay, "observer")
         await observer.resume_session(session_id, True)
 
-        asked = agents.questions[observer].ids
-        assert asked == [question]
+        assert _asked(replay) == [question]
         assert "plain streamed answer" in "".join(replay.texts())
 
         thinking = prompt_text(ScenarioName.THINKING)
@@ -164,7 +163,7 @@ class TestHistory:
         response = await successor.resume_session(opened.session_id, False)
 
         assert response.config_options, response
-        assert not agents.questions[successor].ids
+        assert not _asked(updates)
         assert not updates.texts()
 
         thinking = prompt_text(ScenarioName.THINKING)
@@ -220,9 +219,19 @@ class TestHistory:
         reader = await agents.start(replay, "reader")
         await reader.resume_session(branch.session_id, True)
 
-        assert agents.questions[reader].ids == [first]
+        assert _asked(replay) == [first]
         assert "answer the question" not in "".join(replay.texts())
 
 
 def _text(text: str) -> schema.TextContentBlock:
     return schema.TextContentBlock(text=text)
+
+
+def _asked(updates: RecordingUpdates) -> list[str]:
+    """messageId вопросов, которые агент воспроизвёл приёмнику."""
+    found: list[str] = []
+    for _, update in updates.updates:
+        if isinstance(update, schema.UserMessageUpdate):
+            found.append(update.message_id)
+
+    return found

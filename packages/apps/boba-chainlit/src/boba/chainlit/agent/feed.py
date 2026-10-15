@@ -14,8 +14,8 @@
 LockBusyError — тред уже ведёт другой держатель: ход не начат.
 MessageBusError — шина не приняла сообщение держателя.
 McpClientError — серверы MCP профиля не открылись для вида аргументов.
-DataUnavailableError — оценки или элементы треда не прочитаны слоем данных.
-InternalServiceError — шага вопроса нет в контексте вкладки.
+DataUnavailableError — тред, оценки или элементы не прочитаны слоем данных.
+InternalServiceError — треда нет в слое данных.
 AcpClientError — агент не принял вопрос.
 """
 
@@ -26,7 +26,7 @@ import logging
 from abc import abstractmethod
 from collections.abc import Coroutine, Iterator, Sequence
 from contextlib import AsyncExitStack, contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Any, ClassVar, Protocol
 
 from acp.experimental.v2 import schema
@@ -47,8 +47,8 @@ from boba.chainlit.agent.chat import (
 from boba.chainlit.agent.client import SessionUpdate
 from boba.chainlit.canvas.panel import CanvasPanel
 from boba.chainlit.canvas.remote import RemoteJournals
-from boba.chainlit.chat.feed import TurnFeed
-from boba.chainlit.data.data_layer import AttachmentDataLayer, FeedbackRows
+from boba.chainlit.chat.feed import ShownElement, TurnFeed
+from boba.chainlit.data.data_layer import AttachmentDataLayer, FeedRows
 from boba.chainlit.domain.fields import StepField
 from boba.chainlit.rendering.acp_view import ToolMedia, UpdateView
 from boba.chainlit.rendering.chat_view import ChatView, LiveSink, StepRole, StepText
@@ -61,7 +61,8 @@ from boba.mcp_client.client import McpCaller, McpServers
 from boba.messaging import MessageBus, NoticeLevel, PayloadStore, TurnOutcome
 from boba.toolkit.result import FileElement, PanelOpen, ToolResultBase
 from boba.transport.acp.protocol import IdleErrorUpdate, StopReason, ToolStatus
-from chainlit.context import ChainlitContext, context_var
+from chainlit.context import ChainlitContext, context, context_var
+from chainlit.element import Element as ChainlitElement
 from chainlit.emitter import ChainlitEmitter
 from chainlit.session import WebsocketSession
 from chainlit.step import StepDict
@@ -350,7 +351,7 @@ class AgentFeed(TurnRenderer):
         tab: TabSurface,
         surface: RenderSurface,
         parts: BusParts,
-        feedbacks: FeedbackRows,
+        rows: FeedRows,
     ) -> None:
         self._identity = identity
         self._options = options
@@ -358,7 +359,7 @@ class AgentFeed(TurnRenderer):
         self._tab = tab
         self._surface = surface
         self._parts = parts
-        self._feedbacks = feedbacks
+        self._rows = rows
         self._mounts = ResultMounts(
             identity.thread_id, str(identity.user_id), surface, replay
         )
@@ -386,7 +387,6 @@ class AgentFeed(TurnRenderer):
         LockBusyError — тред уже ведёт другой держатель.
         AcpClientError — агент не принял вопрос.
         MessageBusError — шина не приняла TurnStarted.
-        InternalServiceError — шага вопроса нет в контексте вкладки.
         """
         parts = self._parts
         try:
@@ -423,42 +423,44 @@ class AgentFeed(TurnRenderer):
         return turn
 
     async def _rebind(self, question: Question, key: str) -> Question:
-        """Шаг вопроса вкладки получает id, который вопросу дал агент: шаг
-        с прежним id убирается, сообщение в контексте chainlit меняет id и
-        отправляется заново без вложений, вложения вопроса держатель пишет
-        сам под новым id. Итог — вопрос с ключом key.
+        """Вопрос получает id, который ему дал агент: шаг с прежним id
+        (оптимистичный шаг нового вопроса или правленый шаг) снимается во
+        вкладках треда, вложения вопроса держатель пишет под новым id. Итог —
+        вопрос с ключом key; сам вопрос всем вкладкам рисует рендерер треда
+        по TurnStarted.
 
         Ошибки:
-        InternalServiceError — сообщения вопроса нет в контексте вкладки.
         DataUnavailableError — вложение не записано.
         """
-        found: cl.Message | None = None
-        for message in cl.chat_context.get():
-            if message.id == question.key:
-                found = message
-
-        if found is None:
-            msg = (
-                f"thread {self.thread_id}: the question step {question.key} is not "
-                f"in the chat context of the tab, so it cannot take the id {key}"
-            )
-            raise InternalServiceError(internal_detail=msg, user_detail=None)
-
-        await found.remove()
-        found.id = key
+        await context.emitter.delete_step(StepDict(id=question.key))
         layer = AttachmentDataLayer.require()
-        rebound = Question.of_message(found, self.thread_id, layer.links)
-        attached = found.elements
-        found.elements = []
-        await found.send()
-        found.elements = attached
-        for element in attached:
-            copied = replace(
-                element, for_id=key, thread_id=self.thread_id, chainlit_key=None
+        moved: list[ShownElement] = []
+        for element in question.elements:
+            shown = element.model_copy(
+                update={
+                    "for_id": key,
+                    "thread_id": self.thread_id,
+                    "chainlit_key": None,
+                }
             )
-            await layer.create_element(copied)
+            await layer.create_element(ChainlitElement.from_dict(shown.to_element()))
+            moved.append(shown)
 
-        return rebound
+        return question.model_copy(update={"key": key, "elements": tuple(moved)})
+
+    async def cleared(self) -> None:
+        """Тред без шагов уходит только этой вкладке: фронт заменяет ленту
+        пустой, и следующее воспроизведение рисует её заново."""
+        async with self._ordered:
+            thread = await self._rows.get_thread(self.thread_id)
+            if thread is None:
+                msg = (
+                    f"clearing the feed of thread {self.thread_id}: the data layer "
+                    "has no such thread"
+                )
+                raise InternalServiceError(internal_detail=msg, user_detail=None)
+
+            await self._tab.emitter.resume_thread(thread)
 
     async def update(self, session_id: str, update: SessionUpdate) -> None:
         async with self._ordered:
@@ -582,7 +584,7 @@ class AgentFeed(TurnRenderer):
             self._replay.view.rebuilt()
 
     async def _restore_feedback(self) -> None:
-        rows = await self._feedbacks.feedbacks_of(self.thread_id)
+        rows = await self._rows.feedbacks_of(self.thread_id)
         emitter = self._tab.emitter
         for step_id, feedback in rows.items():
             step = emitter.sent(step_id)
@@ -626,14 +628,14 @@ class AgentFeeds(TurnRenderers):
         journals: RemoteJournals,
         media: ToolMedia,
         servers: McpServers,
-        feedbacks: FeedbackRows,
+        rows: FeedRows,
         surfaces: TabSurfaces,
     ) -> None:
         self._parts = parts
         self._journals = journals
         self._media = media
         self._servers = servers
-        self._feedbacks = feedbacks
+        self._rows = rows
         self._surfaces = surfaces
 
     async def create(
@@ -663,5 +665,5 @@ class AgentFeeds(TurnRenderers):
             TabSurface(anchor),
             self._surfaces.thread(anchor, identity.thread_id),
             self._parts,
-            self._feedbacks,
+            self._rows,
         )

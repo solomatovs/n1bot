@@ -15,6 +15,12 @@ engine.io и восстановление сессии пишутся в жур�
 «Task manually stopped.», а об остановке отчитывается сам ход — вторая
 надпись в ленте лишняя.
 
+Хендлер edit_message тоже заменяется целиком: оригинал срезает ленту по
+своему chat_context и удаляет шаги до решения агента, а после перезагрузки
+треда зовёт on_message без сообщения. Правку вопроса решает агент треда —
+событие разбирается в Question и уходит обработчику правки, который ставит
+обвязка чата (on_edit).
+
 Ошибки:
 InternalServiceError — chainlit не зарегистрировал свои хендлеры сокета.
 """
@@ -27,6 +33,9 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, ClassVar, cast
 
+from pydantic import ValidationError
+
+from boba.chainlit.agent.chat import Question
 from boba.chainlit.infra.session import (
     ChainlitSession,
     SessionContainers,
@@ -38,11 +47,15 @@ from boba.identity.errors import InternalServiceError
 from boba.runtime import providers as runtime
 from chainlit.config import config as chainlit_config
 from chainlit.context import init_ws_context
+from chainlit.message import ErrorMessage
 from chainlit.session import WebsocketSession
 
 __all__ = ["SocketEvents"]
 
 logger = logging.getLogger(__name__)
+
+QuestionEditor = Callable[[Question], Awaitable[None]]
+"""Ведёт ход по правленому вопросу вкладки."""
 
 
 class SocketEvent(StrEnum):
@@ -53,6 +66,7 @@ class SocketEvent(StrEnum):
     CONNECTED = "connection_successful"
     TASK_START = "task_start"
     STOP = "stop"
+    EDIT_MESSAGE = "edit_message"
 
 
 @dataclass(frozen=True)
@@ -115,6 +129,13 @@ class SocketEvents:
     _installed: ClassVar[bool] = False
     """Обёртки поверх обёрток вызвали бы оригиналы дважды."""
 
+    _EDITOR: ClassVar[QuestionEditor | None] = None
+
+    @classmethod
+    def on_edit(cls, editor: QuestionEditor) -> None:
+        """Кто ведёт ход по правке вопроса: ставит обвязка чата."""
+        cls._EDITOR = editor
+
     @classmethod
     def install(cls) -> None:
         """Ставит обёртки; вызывать после импорта chainlit.socket."""
@@ -135,6 +156,7 @@ class SocketEvents:
         origin_disconnect = cls._origin(handlers, SocketEvent.DISCONNECT)
         origin_connected = cls._origin(handlers, SocketEvent.CONNECTED)
         cls._origin(handlers, SocketEvent.STOP)
+        cls._origin(handlers, SocketEvent.EDIT_MESSAGE)
 
         async def connect(
             sid: str, environ: dict[str, Any], auth: dict[str, Any]
@@ -167,16 +189,18 @@ class SocketEvents:
         sio.on(SocketEvent.DISCONNECT.value, disconnect, namespace=cls.NAMESPACE)
         sio.on(SocketEvent.CONNECTED.value, connected, namespace=cls.NAMESPACE)
         sio.on(SocketEvent.STOP.value, cls._stop, namespace=cls.NAMESPACE)
+        sio.on(SocketEvent.EDIT_MESSAGE.value, cls._edit, namespace=cls.NAMESPACE)
         cls._wrap_delete()
 
         cls._installed = True
 
         logger.info(
-            "socket handlers wrapped: %s, %s, %s, %s",
+            "socket handlers wrapped: %s, %s, %s, %s, %s",
             SocketEvent.CONNECT.value,
             SocketEvent.DISCONNECT.value,
             SocketEvent.CONNECTED.value,
             SocketEvent.STOP.value,
+            SocketEvent.EDIT_MESSAGE.value,
         )
 
     @classmethod
@@ -203,6 +227,50 @@ class SocketEvents:
 
         if socket.current_task:
             socket.current_task.cancel()
+
+    @classmethod
+    async def _edit(cls, sid: str, payload: dict[str, Any]) -> None:
+        """Правка вопроса: событие разбирается в вопрос-правку и уходит
+        обработчику правки; chainlit шагов не удаляет и ленту не режет —
+        хвост на фронте обрезал сам интерфейс. Индикатор хода горит, пока
+        идёт ход правки, как у оригинала.
+
+        Ошибки:
+        InternalServiceError — обвязка чата не поставила обработчик правки.
+        """
+        session = session_source_ref().of_socket(sid)
+        socket = session.websocket
+        if socket is None:
+            logger.info("socket edit without session: sid=%s", sid)
+            return
+
+        context = init_ws_context(socket)
+
+        facts = SocketFacts.of_session(session)
+        logger.info("socket edit: %s", facts.line())
+
+        editor = cls._EDITOR
+        if editor is None:
+            raise InternalServiceError(
+                f"edit of a question on {facts.line()}: no question editor is "
+                "installed, the chat callbacks are not loaded",
+                None,
+            )
+
+        try:
+            parsed = Question.model_validate(payload)
+        except ValidationError as exc:
+            await ErrorMessage(
+                content=f"The edited question is not understood: {exc}"
+            ).send()
+            return
+
+        question = parsed.model_copy(update={"edited": True})
+        await context.emitter.task_start()
+        try:
+            await editor(question)
+        finally:
+            await context.emitter.task_end()
 
     @classmethod
     def _wrap_delete(cls) -> None:

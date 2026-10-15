@@ -255,6 +255,9 @@ class RecordingUpdates(TurnRenderer):
 
         return turn
 
+    async def cleared(self) -> None:
+        return
+
     async def loaded(self, session_id: str) -> None:
         return
 

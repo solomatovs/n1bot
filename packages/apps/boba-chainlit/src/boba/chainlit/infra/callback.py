@@ -36,9 +36,10 @@ from boba.chainlit.agent.settings import (
 from boba.chainlit.canvas.panel import StreamActions
 from boba.chainlit.canvas.remote import RemoteStreams
 from boba.chainlit.canvas.tools import CanvasActions, CanvasScope
+from boba.chainlit.chat.feed import ShownElement
 from boba.chainlit.chat.panel_text import PanelText
 from boba.chainlit.data.data_layer import AttachmentDataLayer
-from boba.chainlit.domain.fields import ThreadField, ThreadMetaField
+from boba.chainlit.domain.fields import ElementField, ThreadField, ThreadMetaField
 from boba.chainlit.infra import providers
 from boba.chainlit.infra.config import AppConfig
 from boba.chainlit.infra.providers import (
@@ -57,6 +58,7 @@ from boba.chainlit.infra.session import (
     SessionContainers,
     current_session,
 )
+from boba.chainlit.infra.socket_events import SocketEvents
 from boba.chainlit.infra.thread_room import (
     ChatRoomSurface,
     ThreadLive,
@@ -124,21 +126,60 @@ AGENT_FAILURES = (
 
 @chainlit_error_ctx_handler
 @di_inject
-async def on_message(  # noqa: PLR0913 — зависимости обработчика
+async def on_message(
     msg: cl.Message,
-    agents: Annotated[ThreadAgents, Depends(thread_agents, scope="session")],
     selected: Annotated[SelectedProfile, Depends(session_profile, scope="session")],
+):
+    """Ход по новому вопросу вкладки."""
+    identity = ThreadIdentity.of(current_session(), selected)
+    question = Question.of_message(
+        msg, identity.thread_id, AttachmentDataLayer.require().links
+    )
+    await _run_turn(identity, question)
+
+
+chainlit_config.code.on_message = wrap_user_function(on_message)
+
+
+@chainlit_error_ctx_handler
+@di_inject
+async def on_edit(
+    question: Question,
+    selected: Annotated[SelectedProfile, Depends(session_profile, scope="session")],
+):
+    """Ход по правленому вопросу вкладки: тот же путь, что у нового вопроса,
+    вложения правленого вопроса — его строки elements."""
+    identity = ThreadIdentity.of(current_session(), selected)
+    thread = await AttachmentDataLayer.require().get_thread(identity.thread_id)
+    attached: list[ShownElement] = []
+    if thread is not None:
+        for element in thread[ThreadField.ELEMENTS] or []:
+            if element.get(ElementField.FOR_ID) != question.key:
+                continue
+
+            attached.append(ShownElement.model_validate(element))
+
+    await _run_turn(identity, question.model_copy(update={"elements": tuple(attached)}))
+
+
+SocketEvents.on_edit(on_edit)
+
+
+@di_inject
+async def _run_turn(  # noqa: PLR0913 — зависимости обработчика
+    identity: ThreadIdentity,
+    question: Question,
+    agents: Annotated[ThreadAgents, Depends(thread_agents, scope="session")],
     app_config: Annotated[AppConfig, Depends(get_app_config)],
     registry: Annotated[ChatProfiles, Depends(chat_profiles_registry)],
     table: Annotated[AgentSettingsTable, Depends(agent_settings_table)],
 ):
     """Ход по вопросу: агент вкладки получает `session/prompt`, лента рисуется
     из его уведомлений через шину; отказ агента или занятый тред уходят в
-    ленту сообщением об ошибке. Первая сессия треда открывает настройки
-    сессии, а конец хода исполняет отложенный перезапуск агента — в обоих
-    случаях панель присылается заново."""
-    session = current_session()
-    identity = ThreadIdentity.of(session, selected)
+    ленту сообщением об ошибке, а при отказе правки вкладка сначала заново
+    рисует беседу из истории — фронт уже обрезал её ленту. Первая сессия
+    треда открывает настройки сессии, а конец хода исполняет отложенный
+    перезапуск агента — в обоих случаях панель присылается заново."""
     thread_id = identity.thread_id
 
     ThreadRoom.activate(thread_id)
@@ -146,14 +187,29 @@ async def on_message(  # noqa: PLR0913 — зависимости обработ
     # рендерер треда подписан на область до первого сообщения хода
     ChatRoomSurface.renderer_of(ThreadRoom.websocket(), thread_id)
 
-    question = Question.of_message(msg, thread_id, AttachmentDataLayer.require().links)
     try:
         agent = await agents.of(identity)
-        had_options = bool(agent.options.options)
-        restarts = agent.restarts
+    except AGENT_FAILURES as exc:
+        logger.error(
+            "thread %s: agent of turn %s failed: %s", thread_id, question.key, exc
+        )
+        await cl.ErrorMessage(content=str(exc), author=AgentAuthor.NAME).send()
+        return
+
+    had_options = bool(agent.options.options)
+    restarts = agent.restarts
+    try:
         await agent.ask(question)
     except AGENT_FAILURES as exc:
-        logger.error("thread %s: turn %s failed: %s", thread_id, msg.id, exc)
+        logger.error("thread %s: turn %s failed: %s", thread_id, question.key, exc)
+        # фронт уже обрезал ленту правящей вкладки; свой идущий ход не трогаем
+        reload = question.edited
+        if agent.turn_active():
+            reload = False
+
+        if reload:
+            await agent.reload()
+
         await cl.ErrorMessage(content=str(exc), author=AgentAuthor.NAME).send()
         return
 
@@ -167,9 +223,6 @@ async def on_message(  # noqa: PLR0913 — зависимости обработ
 
     if agent.restarts != restarts:
         await _send_settings(app_config, registry, table, agent)
-
-
-chainlit_config.code.on_message = wrap_user_function(on_message)
 
 
 def _root_bus() -> MessageBus:

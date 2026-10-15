@@ -590,7 +590,9 @@ class TestForkCut:
             assert updates.asked, updates.updates
 
             with pytest.raises(AcpClientError) as refused:
-                await agent.ask(Question(key=updates.asked[0], text="edited"))
+                await agent.ask(
+                    Question(key=updates.asked[0], text="edited", edited=True)
+                )
         finally:
             await agent.close()
             await servers.stop()
