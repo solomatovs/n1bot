@@ -16,14 +16,17 @@ DagSpec — сериализуемая модель графа: узлы — в�
 карточка инструмента ToolCard, итог вызова NodeOutcome с фабрикой
 NodeOutcomes и адресом журнала JournalAddress, путь вызова узла к телу
 NodeCalls, сам порт ToolServer и ToolServers — несколько серверов за
-одним портом с маршрутом по имени инструмента; CallDag строит описание DAG
-по вызовам клиента порта и называет инструмент-связку. Остальные
+одним портом с маршрутом по имени инструмента; ServerFeature — базовый
+класс настроек расширений, которые сервер объявляет клиенту. CallDag строит
+описание DAG по вызовам клиента порта, называет инструмент-связку и
+объявляет его форму расширением «вложенные вызовы» (NestedCallsFeature): по
+нему клиент разбирает узлы связки, не зная инструмента. Остальные
 реализации порта живут в boba.toolrun и клиенте MCP.
 
 Ошибки:
 StreamPlanError — поле порта узла не имя канала, pipe_bytes не число либо
     граф нарушен (правила StreamPlan); вызов workflow не проходит форму
-    описания DAG; настройки возможности связки не проходят её модель.
+    описания DAG; аргументы связки не по объявленной форме расширения.
 ToolServersError — два сервера за одним портом отдают инструмент с одним
     именем.
 """
@@ -72,11 +75,13 @@ __all__ = [
     "DagPlanner",
     "DagSpec",
     "JournalAddress",
+    "NestedCallsFeature",
     "NodeBody",
     "NodeCalls",
     "NodeOutcome",
     "NodeOutcomes",
     "NodeReports",
+    "ServerFeature",
     "ToolCard",
     "ToolHints",
     "ToolServer",
@@ -85,6 +90,7 @@ __all__ = [
     "ToolUseResult",
     "ToolUseResultKey",
     "ToolUseResults",
+    "WorkflowField",
     "WorkflowNodeResult",
     "WorkflowResult",
 ]
@@ -627,6 +633,16 @@ class NodeCalls(Protocol):
         """Итог вызова узла node инструмента card, исполненного телом body."""
 
 
+class WorkflowField(StrEnum):
+    """Имена полей аргумента вызова workflow, как их несёт сервер: список
+    узлов и поля узла — те же, что у DagNode."""
+
+    NODES = "nodes"
+    KEY = "key"
+    TOOL = "tool"
+    ARGS = "args"
+
+
 class CallDag:
     """Описание DAG по вызовам клиента порта.
 
@@ -636,14 +652,13 @@ class CallDag:
     шаг ленты узла): заданный клиентом call_id, иначе идентификатор вызова
     workflow с номером узла. Имя, данное узлу моделью, едет в title — им
     узел называется в текстах отказов. Создаётся исполнителем порта
-    (LocalDagService) и клиентами, которым нужны узлы связки до отправки:
-    запечатывание меняет аргументы узлов.
+    (LocalDagService): он же объявляет клиентам форму вызова workflow
+    расширением feature(), по которому клиент меняет аргументы узлов до
+    отправки, не зная инструмента.
     """
 
     WORKFLOW: ClassVar[str] = "workflow"
     """Имя инструмента-связки: узлы его вызова — вызовы других инструментов."""
-
-    NODES: ClassVar[str] = "nodes"
 
     def of(self, call: DagNode) -> DagSpec:
         """DAG одного вызова.
@@ -663,8 +678,8 @@ class CallDag:
         StreamPlanError — вызов workflow не проходит форму описания DAG.
         """
         raw: dict[str, object] = {"name": call.key, "version": 1}
-        if self.NODES in call.args:
-            raw[self.NODES] = call.args[self.NODES]
+        if WorkflowField.NODES in call.args:
+            raw[WorkflowField.NODES] = call.args[WorkflowField.NODES]
 
         try:
             return DagSpec.model_validate(raw).nodes
@@ -674,6 +689,16 @@ class CallDag:
                 f"{ValidationText.of(exc)}"
             )
             raise StreamPlanError(msg) from exc
+
+    def feature(self) -> NestedCallsFeature:
+        """Объявление формы вызова workflow, которую разбирает described()."""
+        return NestedCallsFeature(
+            tool=self.WORKFLOW,
+            nodes=WorkflowField.NODES,
+            node_key=WorkflowField.KEY,
+            node_tool=WorkflowField.TOOL,
+            node_args=WorkflowField.ARGS,
+        )
 
     def nodes_of(self, call: DagNode) -> list[DagNode]:
         """Узлы вызова workflow вызовами своих инструментов: ключ узла —
@@ -715,6 +740,121 @@ class CallDag:
                 key = f"{call_id}{self._suffix(index)}"
 
             yield node.model_copy(update={"key": key, "title": node.key})
+
+
+class ServerFeature(BaseModel):
+    """Базовый класс настроек расширения, которое сервер инструментов
+    объявляет клиенту при подключении (ToolServer.features).
+
+    Наследники — JournalFeature, FilesFeature (boba.toolkit.wire) и
+    NestedCallsFeature: ID называет расширение, поля — его настройки. Сервер
+    кладёт в объявление settings(), клиент разбирает его моделью наследника
+    один раз при подключении.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    ID: ClassVar[str]
+
+    def settings(self) -> dict[str, object]:
+        """Настройки расширения, как они едут клиенту."""
+        return self.model_dump(mode="json")
+
+
+class NestedCallsFeature(ServerFeature):
+    """Настройки расширения сервера «вложенные вызовы».
+
+    Инструмент tool несёт в аргументе nodes список вызовов других
+    инструментов сервера; у каждого элемента списка поля node_key, node_tool
+    и node_args — ключ узла, имя инструмента и его аргументы. Сервер
+    объявляет форму своего инструмента-связки (CallDag.feature), клиент по
+    ней разбирает узлы вызова (calls) и собирает вызов обратно с другими
+    аргументами узлов (replaced) — например, с запечатанными соединениями.
+    """
+
+    ID: ClassVar[str] = "com.boba/nested-calls"
+
+    tool: str = Field(min_length=1)
+    nodes: str = Field(min_length=1)
+    node_key: str = Field(min_length=1)
+    node_tool: str = Field(min_length=1)
+    node_args: str = Field(min_length=1)
+
+    def calls(self, arguments: Mapping[str, JsonValue]) -> Sequence[DagNode]:
+        """Узлы вызова tool с аргументами arguments.
+
+        Ошибки:
+        StreamPlanError — аргумент nodes не список объектов либо узел не
+            проходит форму узла.
+        """
+        listed = arguments.get(self.nodes)
+        if not isinstance(listed, list):
+            msg = (
+                f"{self.tool} call: argument {self.nodes!r} expects a list of "
+                f"node objects, got {listed!r}"
+            )
+            raise StreamPlanError(msg)
+
+        calls: list[DagNode] = []
+        for index, node in enumerate(listed):
+            if not isinstance(node, dict):
+                msg = (
+                    f"{self.tool} call: node #{index} of {self.nodes!r} expects "
+                    f"an object, got {node!r}"
+                )
+                raise StreamPlanError(msg)
+
+            raw = {
+                WorkflowField.KEY: node.get(self.node_key),
+                WorkflowField.TOOL: node.get(self.node_tool),
+                WorkflowField.ARGS: node.get(self.node_args),
+            }
+            try:
+                calls.append(DagNode.model_validate(raw))
+            except ValidationError as exc:
+                msg = (
+                    f"{self.tool} call: node #{index} of {self.nodes!r} expects "
+                    f"{self.node_key!r}, {self.node_tool!r} and an object "
+                    f"{self.node_args!r}: {ValidationText.of(exc)}"
+                )
+                raise StreamPlanError(msg) from exc
+
+        return calls
+
+    def replaced(
+        self, arguments: Mapping[str, JsonValue], calls: Sequence[DagNode]
+    ) -> dict[str, JsonValue]:
+        """Те же аргументы вызова tool, у каждого узла аргументы — args
+        соответствующего узла calls; прочие поля как есть.
+
+        Ошибки:
+        StreamPlanError — аргумент nodes не список объектов.
+        """
+        listed = arguments.get(self.nodes)
+        if not isinstance(listed, list):
+            msg = (
+                f"{self.tool} call: argument {self.nodes!r} expects a list of "
+                f"node objects, got {listed!r}"
+            )
+            raise StreamPlanError(msg)
+
+        nodes: list[JsonValue] = []
+        for index, (node, call) in enumerate(zip(listed, calls, strict=True)):
+            if not isinstance(node, dict):
+                msg = (
+                    f"{self.tool} call: node #{index} of {self.nodes!r} expects "
+                    f"an object, got {node!r}"
+                )
+                raise StreamPlanError(msg)
+
+            updated = dict(node)
+            updated[self.node_args] = dict(call.args)
+            nodes.append(updated)
+
+        replaced = dict(arguments)
+        replaced[self.nodes] = nodes
+
+        return replaced
 
 
 class ToolServer(Protocol):

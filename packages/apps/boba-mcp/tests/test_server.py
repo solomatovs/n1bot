@@ -57,6 +57,7 @@ from boba.mcp_server.server import (
 )
 from boba.toolkit.calls import CallViews
 from boba.toolkit.channels import ToolChannel
+from boba.toolkit.dag import CallDag, NestedCallsFeature
 from boba.toolkit.wire import (
     CallStatus,
     CallWire,
@@ -303,13 +304,50 @@ class TestCall:
         if declared is None:
             raise AssertionError(f"the server declares extensions: {capabilities}")
 
-        for feature in (SealFeature.ID, FilesFeature.ID, JournalFeature.ID):
+        for feature in (
+            SealFeature.ID,
+            FilesFeature.ID,
+            JournalFeature.ID,
+            NestedCallsFeature.ID,
+        ):
             if feature not in declared:
                 raise AssertionError(f"{feature} is declared: {sorted(declared)}")
 
         files = FilesFeature.model_validate(declared[FilesFeature.ID])
         if files.scope != RequestFields.SCOPE:
             raise AssertionError(f"the files extension names the scope key: {files}")
+
+        nested = NestedCallsFeature.model_validate(declared[NestedCallsFeature.ID])
+        if nested != CallDag().feature():
+            raise AssertionError(f"nested calls declare the workflow: {nested}")
+
+    async def test_nested_calls_extension_is_the_workflow_schema(
+        self, stand: ServiceStand, url: str, dev_token: str
+    ) -> None:
+        """Форма узла, объявленная расширением вложенных вызовов, — те же
+        поля, что в схеме инструмента-связки для модели: модель и клиент
+        разбирают одну форму."""
+        async with _client(url, dev_token) as client:
+            capabilities = client.session.server_capabilities
+            listed = await client.list_tools()
+
+        if capabilities is None:
+            raise AssertionError("the protocol is negotiated on connect")
+
+        declared = capabilities.extensions
+        if declared is None:
+            raise AssertionError(f"the server declares extensions: {capabilities}")
+
+        nested = NestedCallsFeature.model_validate(declared[NestedCallsFeature.ID])
+        tool = next(tool for tool in listed if tool.name == nested.tool)
+        schema = tool.input_schema
+        node_ref = schema["properties"][nested.nodes]["items"]["$ref"]
+        node_schema = schema["$defs"][node_ref.rsplit("/", 1)[-1]]
+
+        fields = sorted(node_schema["properties"])
+        expected = sorted([nested.node_key, nested.node_tool, nested.node_args])
+        if fields != expected:
+            raise AssertionError(f"the node fields are the declared ones: {fields}")
 
     async def test_linked_nodes_run_as_one_workflow_call(
         self, stand: ServiceStand, url: str, tmp_path: Path, dev_token: str
