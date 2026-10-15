@@ -74,6 +74,7 @@ __all__ = [
     "Question",
     "SessionOptions",
     "SettingsOutcome",
+    "StartedTurn",
     "ThreadAgent",
     "ThreadAgents",
     "ThreadAgentsIndex",
@@ -289,11 +290,11 @@ class TurnRenderer(SessionUpdates, Protocol):
 
     @abstractmethod
     async def turn_started(
-        self, session_id: str, question: Question, prompt: Coroutine[Any, Any, str]
-    ) -> str:
-        """Ход по вопросу начинается: prompt — ещё не начатый `session/prompt`,
-        его ждёт приёмник; итог — messageId, который агент дал вопросу, он же
-        ключ хода.
+        self, question: Question, start: Coroutine[Any, Any, StartedTurn]
+    ) -> StartedTurn:
+        """Ход по вопросу начинается: start — ещё не начатое начало хода
+        (сессия, `session/prompt`), его ждёт приёмник уже под замком области
+        треда; итог — начатый ход с ключом, который агент дал вопросу.
 
         Ошибки:
         LockBusyError — тред уже ведёт другой держатель.
@@ -530,10 +531,13 @@ class AgentLauncher:
 
 @dataclass(frozen=True)
 class StartedTurn:
-    """Начатый ход вкладки: сессия агента и ожидание её idle."""
+    """Начатый ход вкладки: сессия агента, ожидание её idle и ключ хода —
+    messageId, который агент дал вопросу. Его собирает ThreadAgent._started,
+    а приёмник TurnRenderer возвращает после захвата замка области."""
 
     session_id: str
     ending: asyncio.Future[schema.IdleSessionStateUpdate]
+    key: str
 
 
 class SettingsOutcome(StrEnum):
@@ -730,7 +734,18 @@ class ThreadAgent:
         LockBusyError — тред уже ведёт другой держатель.
         """
         async with self._gate:
-            turn = await self._begin(question)
+            if self._restart_pending:
+                await self._restart_idle()
+
+            turn = await self._renderer.turn_started(question, self._started(question))
+            self._asked.append(turn.key)
+            self._active = turn.session_id
+            logger.info(
+                "thread %s: turn %s starts in session %s",
+                self.thread_id,
+                turn.key,
+                turn.session_id,
+            )
 
         session_id = turn.session_id
         try:
@@ -750,23 +765,15 @@ class ThreadAgent:
 
         await self._finish(session_id, idle)
 
-    async def _begin(self, question: Question) -> StartedTurn:
-        """Начало хода под замком вкладки: сессия, ожидание её idle, вопрос
-        агенту; ключ хода — messageId, который агент дал вопросу."""
-        if self._restart_pending:
-            await self._restart_idle()
-
+    async def _started(self, question: Question) -> StartedTurn:
+        """Начало хода, которое приёмник исполняет под замком области треда:
+        сессия хода (новая, открытая или ветка при правке), ожидание её idle
+        и вопрос агенту; ключ хода — messageId, который агент дал вопросу."""
         session_id = await self._session_for(question)
         ending = self._questions.ending(session_id)
-        prompt = self.process.prompt(session_id, self._blocks(question))
-        key = await self._renderer.turn_started(session_id, question, prompt)
-        self._asked.append(key)
-        self._active = session_id
-        logger.info(
-            "thread %s: turn %s starts in session %s", self.thread_id, key, session_id
-        )
+        key = await self.process.prompt(session_id, self._blocks(question))
 
-        return StartedTurn(session_id=session_id, ending=ending)
+        return StartedTurn(session_id=session_id, ending=ending, key=key)
 
     async def _idle(self, turn: StartedTurn) -> schema.IdleSessionStateUpdate:
         """idle хода либо выход процесса, который idle уже не пришлёт.

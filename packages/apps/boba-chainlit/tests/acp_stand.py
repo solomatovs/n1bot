@@ -18,7 +18,12 @@ from chainlit_stand import NoConnectionStore, RelayStand
 from pydantic import SecretStr
 
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
-from boba.chainlit.agent.chat import AskedQuestions, Question, TurnRenderer
+from boba.chainlit.agent.chat import (
+    AskedQuestions,
+    Question,
+    StartedTurn,
+    TurnRenderer,
+)
 from boba.chainlit.agent.client import (
     AgentClient,
     AgentCommand,
@@ -243,12 +248,12 @@ class RecordingUpdates(TurnRenderer):
         return
 
     async def turn_started(
-        self, session_id: str, question: Question, prompt: Coroutine[Any, Any, str]
-    ) -> str:
-        key = await prompt
-        self.asked.append(key)
+        self, question: Question, start: Coroutine[Any, Any, StartedTurn]
+    ) -> StartedTurn:
+        turn = await start
+        self.asked.append(turn.key)
 
-        return key
+        return turn
 
     async def loaded(self, session_id: str) -> None:
         return
