@@ -98,11 +98,10 @@ from boba.mcp_client.client import (
     CallSignals,
     McpClientError,
     McpToolServer,
-    NamedBlocks,
     ProgressListener,
 )
 from boba.toolkit.dag import DagNode, NodeOutcome, ToolCard, ToolHints, ToolServer
-from boba.toolkit.mcp_names import McpToolNames
+from boba.toolkit.mcp import McpToolNames
 from boba.toolrun.hosted import DirectCalls
 
 logger = logging.getLogger(__name__)
@@ -766,7 +765,6 @@ class AgentAssembly(SessionAssembly):
             tool_server = McpToolServer(
                 name,
                 config,
-                NamedBlocks(),
                 ProgressSignals(sink),
                 self._scope,
                 DirectCalls(),

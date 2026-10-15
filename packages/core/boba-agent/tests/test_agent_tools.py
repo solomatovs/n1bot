@@ -54,7 +54,6 @@ from boba.mcp_client.client import (
     DroppedSignals,
     McpServerConfig,
     McpToolServer,
-    NamedBlocks,
     StdioCommand,
 )
 from boba.stand.agent import (
@@ -968,7 +967,6 @@ class TestMcp:
         return McpToolServer(
             name,
             config,
-            NamedBlocks(),
             DroppedSignals(),
             CallContexts(),
             DirectCalls(),

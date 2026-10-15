@@ -30,19 +30,16 @@ from boba.db.postgres.connection import PostgresConfig
 from boba.identity.context import CallContexts
 from boba.mcp_client.client import (
     BearerAuth,
-    BlockFiles,
     CallSignals,
     DroppedSignals,
     HttpEndpoint,
     HttpLocation,
     McpCaller,
     McpClientError,
-    McpFailure,
     McpServerConfig,
     McpServers,
     McpServersConfig,
     McpToolServer,
-    NamedBlocks,
     ProgressListener,
     ProxyAuth,
     StdioCommand,
@@ -62,6 +59,7 @@ from boba.toolkit.dag import (
     ToolServer,
     WorkflowResult,
 )
+from boba.toolkit.mcp import McpFailure
 from boba.toolkit.result import (
     ErrorResult,
     FailureResult,
@@ -99,7 +97,6 @@ async def stdio() -> AsyncIterator[McpToolServer]:
     server = McpToolServer(
         "standard",
         _config(endpoint),
-        NamedBlocks(),
         DroppedSignals(),
         CallContexts(),
         DirectCalls(),
@@ -135,7 +132,6 @@ async def http(http_port: int) -> AsyncIterator[McpToolServer]:
     server = McpToolServer(
         "standard",
         _config(endpoint),
-        NamedBlocks(),
         DroppedSignals(),
         CallContexts(),
         DirectCalls(),
@@ -226,45 +222,31 @@ class TestStandardServerOverStdio:
     ) -> None:
         message = await stdio.call(_call("mcp__standard__picture"))
 
-        if "[image/png, 24 bytes]" not in str(message.content):
+        if message.content != "[image image/png]":
             raise AssertionError(f"an image block is named, not dropped: {message}")
 
-    async def test_file_block_goes_to_the_host_of_the_client(self) -> None:
-        """Картинку клиент отдаёт хозяину байтами; в тексте — его строка."""
-        received: list[tuple[str, int, str, bytes]] = []
+    async def test_model_gets_its_blocks_text_and_marks(
+        self, stdio: McpToolServer
+    ) -> None:
+        message = await stdio.call(_call("mcp__standard__blocks", empty=False))
 
-        class Recording(BlockFiles):
-            async def attached(
-                self, call: DagNode, index: int, mime: str, data: bytes
-            ) -> str:
-                received.append((call.key, index, mime, data))
-                return "saved as picture.png"
-
-        endpoint = StdioCommand(command=sys.executable, args=(str(SERVER), "stdio"))
-        server = McpToolServer(
-            "standard",
-            _config(endpoint),
-            Recording(),
-            DroppedSignals(),
-            CallContexts(),
-            DirectCalls(),
+        expected = (
+            "for the model\n"
+            "[resource_link report.csv text/csv]\n"
+            "[resource file:///notes.txt text/plain]"
         )
-        await server.open()
-        try:
-            message = await server.call(_call("mcp__standard__picture"))
-        finally:
-            await server.close()
+        if message.content != expected:
+            raise AssertionError(
+                f"the model gets its text blocks and marks of the others: {message}"
+            )
 
-        if len(received) != 1:
-            raise AssertionError(f"the host gets the block once: {received}")
+    async def test_structured_content_without_blocks_is_json(
+        self, stdio: McpToolServer
+    ) -> None:
+        message = await stdio.call(_call("mcp__standard__blocks", empty=True))
 
-        call_id, index, mime, data = received[0]
-        if (call_id, index, mime) != ("call-mcp__standard__picture", 0, "image/png"):
-            raise AssertionError(f"the block is described to the host: {received[0]}")
-        if not data.startswith(b"\x89PNG"):
-            raise AssertionError(f"the host gets the decoded bytes: {data[:8]!r}")
-        if message.content != "saved as picture.png":
-            raise AssertionError(f"the host's line is the text: {message}")
+        if message.content != '{\n  "rows": 2\n}':
+            raise AssertionError(f"structured content becomes JSON text: {message}")
 
     async def test_calls_of_one_answer_run_together(self, stdio: McpToolServer) -> None:
         pending = await stdio.submit(
@@ -293,7 +275,6 @@ class TestUnreachableServer:
         server = McpToolServer(
             "ghost",
             _config(endpoint),
-            NamedBlocks(),
             DroppedSignals(),
             CallContexts(),
             DirectCalls(),
@@ -307,7 +288,6 @@ class TestUnreachableServer:
         server = McpToolServer(
             "standard",
             _config(endpoint),
-            NamedBlocks(),
             DroppedSignals(),
             CallContexts(),
             DirectCalls(),
@@ -347,7 +327,6 @@ class TestPublicServers:
         server = McpToolServer(
             "deepwiki",
             _config(self.DEEPWIKI),
-            NamedBlocks(),
             DroppedSignals(),
             CallContexts(),
             DirectCalls(),
@@ -375,7 +354,6 @@ class TestPublicServers:
         server = McpToolServer(
             "context7",
             _config(self.CONTEXT7),
-            NamedBlocks(),
             DroppedSignals(),
             CallContexts(),
             DirectCalls(),
@@ -433,30 +411,32 @@ class TestServersOfASession:
     """Какие серверы достаются сессии: те, что назвал её профиль."""
 
     @staticmethod
-    def _servers() -> McpServers:
+    def _servers(**extra: McpServerConfig) -> McpServers:
         endpoint = StdioCommand(command=sys.executable, args=(str(SERVER), "stdio"))
-        ghost = _config(StdioCommand(command="/nonexistent/mcp-server"))
-        config = McpServersConfig(
-            servers={"standard": _config(endpoint), "ghost": ghost}
-        )
+        config = McpServersConfig(servers={"standard": _config(endpoint), **extra})
 
-        return McpServers(
-            config, NamedBlocks(), DroppedSignals(), CallContexts(), DirectCalls()
-        )
+        return McpServers(config, DroppedSignals(), CallContexts(), DirectCalls())
 
-    async def test_named_servers_give_ports_and_a_dead_server_is_skipped(
-        self,
-    ) -> None:
+    async def test_named_servers_give_ports(self) -> None:
         servers = self._servers()
         await servers.start()
         try:
-            ports = await servers.for_session(CALLER, ["standard", "ghost"])
+            ports = await servers.for_session(CALLER, ["standard"])
             names = sorted(tool.name for port in ports for tool in port.tools())
         finally:
             await servers.stop()
 
         if names != TestFailureStand.STANDARD_TOOLS:
-            raise AssertionError(f"only the live server gives tools: {names}")
+            raise AssertionError(f"the named server gives its tools: {names}")
+
+    async def test_dead_server_fails_the_start_with_its_name(self) -> None:
+        ghost = _config(StdioCommand(command="/nonexistent/mcp-server"))
+        servers = self._servers(ghost=ghost)
+        try:
+            with pytest.raises(McpClientError, match="'ghost'"):
+                await servers.start()
+        finally:
+            await servers.stop()
 
     async def test_session_without_named_servers_gets_nothing(self) -> None:
         servers = self._servers()
@@ -530,7 +510,6 @@ async def dag(boba_mcp_stand: BobaMcpStand) -> AsyncIterator[McpToolServer]:
     server = McpToolServer(
         "boba",
         _config(boba_mcp_stand.endpoint()),
-        NamedBlocks(),
         DroppedSignals(),
         CallContexts(),
         DirectCalls(),
@@ -563,7 +542,6 @@ class TestScopeOfTheCall:
         server = McpToolServer(
             "boba",
             _config(boba_mcp_stand.endpoint()),
-            NamedBlocks(),
             DroppedSignals(),
             stand.contexts,
             DirectCalls(),
@@ -688,7 +666,6 @@ class TestLinkedCalls:
         dag = McpToolServer(
             "boba",
             _config(boba_mcp_stand.endpoint()),
-            NamedBlocks(),
             DroppedSignals(),
             CallContexts(),
             conduct,
@@ -859,7 +836,6 @@ class TestBobaMcpJournal:
         server = McpToolServer(
             "boba",
             _config(process.endpoint()),
-            NamedBlocks(),
             heard,
             CallContexts(),
             DirectCalls(),
@@ -1072,7 +1048,6 @@ class TestBobaMcpJournal:
         server = McpToolServer(
             "standard",
             _config(endpoint),
-            NamedBlocks(),
             heard,
             CallContexts(),
             DirectCalls(),
@@ -1118,9 +1093,7 @@ class TestSignInAsTheUser:
             servers={"boba": _config(wide), "narrow": _config(narrow)}
         )
 
-        return McpServers(
-            config, NamedBlocks(), DroppedSignals(), CallContexts(), DirectCalls()
-        )
+        return McpServers(config, DroppedSignals(), CallContexts(), DirectCalls())
 
     async def _ports(
         self, servers: McpServers, caller: McpCaller, names: Sequence[str]
@@ -1369,7 +1342,6 @@ class TestBobaMcpServer:
         server = McpToolServer(
             "boba",
             _config(endpoint),
-            NamedBlocks(),
             DroppedSignals(),
             CallContexts(),
             DirectCalls(),
@@ -1492,7 +1464,6 @@ class TestBobaMcpService:
         server = McpToolServer(
             "boba",
             _config(process.endpoint()).on_behalf_of(caller),
-            NamedBlocks(),
             DroppedSignals(),
             call_stand.contexts,
             DirectCalls(),
@@ -1560,6 +1531,7 @@ class TestFailureStand:
 
     STANDARD_TOOLS: ClassVar[list[str]] = [
         "mcp__standard__add",
+        "mcp__standard__blocks",
         "mcp__standard__broken",
         "mcp__standard__die",
         "mcp__standard__large",
@@ -1580,7 +1552,6 @@ class TestFailureStand:
         server = McpToolServer(
             "standard",
             config,
-            NamedBlocks(),
             DroppedSignals(),
             CallContexts(),
             DirectCalls(),

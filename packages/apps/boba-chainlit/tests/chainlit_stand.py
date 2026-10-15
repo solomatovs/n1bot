@@ -63,7 +63,6 @@ from boba.mcp_client.client import (
     McpCaller,
     McpServers,
     McpServersConfig,
-    NamedBlocks,
 )
 from boba.messaging import MemoryMessageBus, MemoryPayloadStore
 from boba.runtime.config import AppLayers, ConfigLocator
@@ -97,7 +96,7 @@ from boba.toolkit.dag import (
     NodeOutcome,
     ToolServer,
 )
-from boba.toolkit.mcp_names import McpToolNames
+from boba.toolkit.mcp import McpToolNames
 from boba.toolkit.result import ToolResultBase
 from boba.toolrun.hosted import DirectCalls
 from boba.workspace.binaries import TrustedBinaries
@@ -300,7 +299,6 @@ class ServiceTools:
         self._names = McpToolNames()
         self._servers = McpServers(
             service.servers(),
-            NamedBlocks(),
             DroppedSignals(),
             contexts,
             calls,
@@ -453,7 +451,6 @@ class PerCallStreams(RemoteStreams):
     def _client(self) -> McpServers:
         return McpServers(
             self._config,
-            NamedBlocks(),
             DroppedSignals(),
             self._contexts,
             DirectCalls(),

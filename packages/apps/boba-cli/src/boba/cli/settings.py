@@ -72,7 +72,7 @@ from boba.mcp_client.client import (
     NoAuth,
     StdioCommand,
 )
-from boba.toolkit.mcp_names import McpToolNameError, McpToolNames
+from boba.toolkit.mcp import McpToolNameError, McpToolNames
 
 __all__ = [
     "Arguments",

@@ -61,7 +61,7 @@ from boba.mcp_client.client import McpCaller, McpServersConfig
 from boba.stand.names import StandNames
 from boba.stand.signin import SignInStand
 from boba.stand.site import Stand
-from boba.toolkit.mcp_names import McpToolNameError
+from boba.toolkit.mcp import McpToolNameError
 
 pytestmark = pytest.mark.anyio
 
