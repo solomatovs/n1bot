@@ -49,7 +49,7 @@ from boba.stand.service_signin import ServiceSignIn
 from boba.stand.ui.stand import StandApp
 from boba.toolkit.calls import CallViews
 from boba.toolkit.channels import ToolChannel
-from boba.toolkit.dag import DagNode, ToolHints
+from boba.toolkit.dag import CallDag, DagNode, ToolHints
 from boba.toolkit.mcp import McpFailure, McpResults, McpToolStubs
 from boba.toolkit.result import (
     ErrorResult,
@@ -176,6 +176,9 @@ class TestStandardServerOverStdio:
             raise AssertionError(
                 f"a foreign server has no features: {stdio.features()}"
             )
+
+        if stdio.nested_calls() is not None:
+            raise AssertionError("a foreign server declares no nested calls")
 
     async def test_text_result_becomes_a_tool_message(
         self, stdio: McpToolServer
@@ -790,6 +793,23 @@ class TestBobaMcpServer:
         artifact = outcome.artifact
         if not isinstance(artifact, MarkdownResult) or artifact.text != "hi hi|t0ken":
             raise AssertionError(f"the server's model is revived: {artifact}")
+
+    async def test_nested_calls_name_the_workflow_offered_to_the_model(
+        self, dag: McpToolServer
+    ) -> None:
+        nested = dag.nested_calls()
+        if nested is None:
+            raise AssertionError(f"the server declares nested calls: {dag.features()}")
+
+        if nested != CallDag().feature():
+            raise AssertionError(f"the declared shape is the workflow's: {nested}")
+
+        names: list[str] = []
+        for tool in dag.tools():
+            names.append(tool.name)
+
+        if nested.tool not in names:
+            raise AssertionError(f"the nested calls tool is offered: {names}")
 
     async def test_card_view_comes_from_the_schema_alone(
         self, dag: McpToolServer

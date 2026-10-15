@@ -80,6 +80,7 @@ from boba.canvas.storage import (
     StorageFullError,
     StorageNotFoundError,
 )
+from boba.toolkit.dag import NestedCallsFeature, ServerFeature
 from boba.toolkit.mcp import McpToolNames
 from boba.toolkit.wire import FilesFeature, JournalFeature, JournalRead
 from boba.workspace.launcher import ReadWindow
@@ -105,7 +106,7 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
-FeatureModel = TypeVar("FeatureModel", bound=BaseModel)
+FeatureModel = TypeVar("FeatureModel", bound=ServerFeature)
 """Модель настроек расширения сервера."""
 
 Streams = tuple[ReadStream[SessionMessage | Exception], WriteStream[SessionMessage]]
@@ -1059,6 +1060,8 @@ class McpToolServer:
         """Расширение журнала вызовов, объявленное сервером; None — его нет."""
         self._files_feature: FilesFeature | None = None
         """Расширение файлов workspace, объявленное сервером; None — его нет."""
+        self._nested: NestedCallsFeature | None = None
+        """Расширение вложенных вызовов, объявленное сервером; None — его нет."""
         self._files: McpFiles | None = None
         self._journal_files: McpFiles | None = None
 
@@ -1074,8 +1077,9 @@ class McpToolServer:
             raise McpClientError(msg) from exc
 
         self._features = self._declared(session)
-        self._journal = self._feature(JournalFeature.ID, JournalFeature)
-        self._files_feature = self._feature(FilesFeature.ID, FilesFeature)
+        self._journal = self._feature(JournalFeature)
+        self._files_feature = self._feature(FilesFeature)
+        self._nested = self._feature(NestedCallsFeature)
 
         try:
             listed = await self._list(session)
@@ -1104,16 +1108,14 @@ class McpToolServer:
             sorted(self._features),
         )
 
-    def _feature(
-        self, identifier: str, model: type[FeatureModel]
-    ) -> FeatureModel | None:
-        """Настройки расширения identifier моделью; None — сервер его не
+    def _feature(self, model: type[FeatureModel]) -> FeatureModel | None:
+        """Настройки расширения model.ID моделью; None — сервер его не
         объявил.
 
         Ошибки:
         McpClientError — настройки расширения не проходят его модель.
         """
-        settings = self._features.get(identifier)
+        settings = self._features.get(model.ID)
         if settings is None:
             return None
 
@@ -1122,7 +1124,7 @@ class McpToolServer:
         except ValidationError as exc:
             msg = (
                 f"mcp server {self._name!r} ({self._config.endpoint.label()}): "
-                f"extension {identifier} expects the settings of "
+                f"extension {model.ID} expects the settings of "
                 f"{model.__name__}, got {dict(settings)!r}: {exc}"
             )
             raise McpClientError(msg) from exc
@@ -1135,6 +1137,11 @@ class McpToolServer:
         """Журналы вызовов сервера целыми файлами: канал журнала лежит по
         пути `{run}/{node}/{channel}`; None — сервер такого не объявил."""
         return self._journal_files
+
+    def nested_calls(self) -> NestedCallsFeature | None:
+        """Инструмент сервера со вложенными вызовами и форма его узлов;
+        None — сервер такого не объявил."""
+        return self._nested
 
     async def _open_journal_files(self) -> None:
         if self._journal_files is not None:
