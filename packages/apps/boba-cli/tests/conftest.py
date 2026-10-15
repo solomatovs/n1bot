@@ -1,5 +1,5 @@
 """Фикстуры стенда `boba acp`, общие для тестов команды, бинарника и
-истории в Postgres: фейковая модель и сервер MCP по streamable HTTP; опция
+истории в Postgres: фейковая модель и регистрация MCP-over-ACP клиента; опция
 `--acp-tck` — путь к исполняемому файлу acp-tck для test_cli_tck.py."""
 
 from __future__ import annotations
@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 
 import pytest
-from test_cli_acp import FakeModel, McpStand
+from test_cli_acp import FakeModel, StandRegistration
 
 from boba.stand.ui.fake_llm import ScenarioName
 
@@ -61,10 +61,5 @@ async def answering_model() -> AsyncIterator[FakeModel]:
 
 
 @pytest.fixture
-async def mcp() -> AsyncIterator[McpStand]:
-    stand = McpStand()
-    await stand.start()
-    try:
-        yield stand
-    finally:
-        await stand.stop()
+def registration() -> StandRegistration:
+    return StandRegistration([StandRegistration.STAND])
