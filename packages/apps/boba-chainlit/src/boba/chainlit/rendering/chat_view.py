@@ -7,7 +7,7 @@ import json
 import logging
 from abc import ABC, abstractmethod
 from collections import deque
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, ClassVar, Protocol, cast
@@ -638,27 +638,19 @@ class ChatView:
         )
         step.output = text
         if self._sink.emits_elements:
-            attached: list[Element] = []
-            for number, link in enumerate(links):
-                address = urlsplit(str(link.uri))
-                element = File(
-                    name=link.name,
-                    url=urlunsplit(("", "", address.path, address.query, "")),
-                    mime=link.mime_type,
-                    display="inline",
-                )
-                element_id = self.derive_id(
-                    self._thread_id, f"{step_id}/{number}", StepRole.ELEMENT
-                )
-                if element_id is not None:
-                    element.id = element_id
-
-                attached.append(element)
-
-            step.elements = attached
+            step.elements = list(self._attached(links, step_id))
 
         await self._sink.put(step)
         return step
+
+    def _attached(
+        self, links: Sequence[schema.ResourceContentBlock], step_id: str | None
+    ) -> Iterator[Element]:
+        """Файлы вопроса по его ссылкам: путь и запрос ссылки без хоста."""
+        for number, link in enumerate(links):
+            address = urlsplit(str(link.uri))
+            url = urlunsplit(("", "", address.path, address.query, ""))
+            yield self._file(link.name, url, link.mime_type, step_id, number)
 
     async def answer(self, text: str, key: str | None = None) -> Step:
         step = self._step(
@@ -1012,12 +1004,8 @@ class ChatView:
 
         element: Element
         if isinstance(item, FileElement):
-            element = File(
-                name=item.name,
-                url=CanvasFileUrl.path(key),
-                mime=item.mime,
-                display="inline",
-            )
+            url = CanvasFileUrl.path(key)
+            element = self._file(item.name, url, item.mime, tool_call_id, number)
         else:
             viewer = CanvasRegistry.viewer_for(key.name)
             if viewer is None:
@@ -1030,16 +1018,35 @@ class ChatView:
                 return f"{key.in_workspace()} is not shown: {exc}"
 
             element = ChatElements.of_result(link)
-
-        element_id = self.derive_id(
-            self._thread_id, f"{tool_call_id}/{number}", StepRole.ELEMENT
-        )
-        if element_id is not None:
-            element.id = element_id
+            self._numbered(element, tool_call_id, number)
 
         await element.send(for_id=answer_id)
 
         return ""
+
+    def _file(
+        self, name: str, url: str, mime: str | None, key: str | None, number: int
+    ) -> File:
+        """Файл в ленте — вложение вопроса или файл итога вызова."""
+        attached = File(name=name, url=url, mime=mime, display="inline")
+        self._numbered(attached, key, number)
+
+        return attached
+
+    def _numbered(self, element: Element, key: str | None, number: int) -> None:
+        """Id элемента из ключа вопроса или вызова и номера элемента у него —
+        одинаковый вживую и при воспроизведении; без ключа элемент
+        остаётся со своим id, чтобы не совпасть с элементом другого хода."""
+        if not key:
+            return
+
+        element_id = self.derive_id(
+            self._thread_id, f"{key}/{number}", StepRole.ELEMENT
+        )
+        if element_id is None:
+            return
+
+        element.id = element_id
 
     async def tool_stopped(self, step: Step, note: str) -> None:
         """Инструмент не доработал: ход остановлен."""
