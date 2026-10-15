@@ -12,7 +12,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, ClassVar
 
-from acp.schema import ToolCallProgress, ToolCallStart
+from acp.experimental.v2 import schema
 from pydantic import BaseModel, ConfigDict, Field
 
 from boba.chainlit.agent.client import SessionUpdate
@@ -148,7 +148,7 @@ class TurnFeed(StreamFeed):
         ссылке (ключи аргументов обязаны сохранить порядок, jsonb шины его
         не хранит), куски текста — в самом сообщении."""
         body = self._codec.encode(update)
-        if isinstance(update, ToolCallStart | ToolCallProgress):
+        if isinstance(update, schema.SessionToolCallUpdate):
             ref = await self._payloads.put(self._scope, body)
             await self._publish(AgentUpdate(turn_id=self._turn_id, stored=ref))
             return
