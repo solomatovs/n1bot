@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import importlib.metadata
 import json
+import socket
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,6 +29,7 @@ from boba.transport.acp.protocol import (
     AcpErrorCode,
     AcpVersion,
     AgentSide,
+    BatchTransport,
     ClientConnection,
     IdleErrorNotification,
     IdleErrorUpdate,
@@ -122,7 +124,7 @@ async def acp_pair(acp_schema: Draft202012Validator) -> AsyncIterator[AcpPair]:
     stand_client = StandClient()
     frames: list[StreamEvent] = []
 
-    agent = AgentSide(StandAgent, info, agent_end, None)
+    agent = AgentSide(StandAgent, info, agent_end)
     serving = asyncio.create_task(agent.serve())
 
     client = ClientConnection(
@@ -177,6 +179,119 @@ async def acp_pair(acp_schema: Draft202012Validator) -> AsyncIterator[AcpPair]:
         acp_schema.evolve(schema=frame_schema).validate(payload)
 
 
+@pytest.fixture
+async def batch_wire() -> AsyncIterator[
+    tuple[asyncio.StreamReader, asyncio.StreamWriter]
+]:
+    """Сторона клиента сокета, на другом конце которого AgentSide на BatchTransport."""
+    agent_socket, client_socket = socket.socketpair()
+    agent_reader, agent_writer = await asyncio.open_connection(sock=agent_socket)
+    client_reader, client_writer = await asyncio.open_connection(sock=client_socket)
+    info = schema.Implementation(name="stand-agent", version="0")
+    agent = AgentSide(StandAgent, info, BatchTransport(agent_reader, agent_writer))
+    serving = asyncio.create_task(agent.serve())
+
+    yield client_reader, client_writer
+
+    client_writer.close()
+    await client_writer.wait_closed()
+    async with asyncio.timeout(5):
+        await serving
+
+    agent_writer.close()
+    await agent_writer.wait_closed()
+
+
+class TestBatches:
+    INITIALIZE: ClassVar[dict[str, Any]] = {
+        "jsonrpc": "2.0",
+        "method": AGENT_METHODS["initialize"],
+        "params": {
+            "protocolVersion": AcpVersion.V2,
+            "info": {"name": "batch-client", "version": "0"},
+        },
+    }
+
+    async def test_two_requests_get_one_array(
+        self, batch_wire: tuple[asyncio.StreamReader, asyncio.StreamWriter]
+    ) -> None:
+        reader, writer = batch_wire
+        batch = [
+            {**self.INITIALIZE, "id": 1},
+            {"jsonrpc": "2.0", "id": 2, "method": AGENT_METHODS["session_list"]},
+        ]
+
+        writer.write(json.dumps(batch).encode() + b"\n")
+        async with asyncio.timeout(5):
+            answer = json.loads(await reader.readline())
+
+        assert isinstance(answer, list)
+        ids = sorted(reply["id"] for reply in answer)
+        assert ids == [1, 2]
+        (initialized,) = [reply for reply in answer if reply["id"] == 1]
+        assert initialized["result"]["protocolVersion"] == AcpVersion.V2
+
+    async def test_empty_batch_is_one_invalid_request(
+        self, batch_wire: tuple[asyncio.StreamReader, asyncio.StreamWriter]
+    ) -> None:
+        reader, writer = batch_wire
+
+        writer.write(b"[]\n")
+        async with asyncio.timeout(5):
+            answer = json.loads(await reader.readline())
+
+        assert answer["id"] is None
+        assert answer["error"]["code"] == -32600
+
+    async def test_notifications_only_get_nothing(
+        self, batch_wire: tuple[asyncio.StreamReader, asyncio.StreamWriter]
+    ) -> None:
+        reader, writer = batch_wire
+        batch = [
+            {
+                "jsonrpc": "2.0",
+                "method": "$/cancel_request",
+                "params": {"requestId": 7},
+            },
+            {"jsonrpc": "2.0", "method": "_boba/unknown", "params": {}},
+        ]
+
+        writer.write(json.dumps(batch).encode() + b"\n")
+        writer.write(json.dumps({**self.INITIALIZE, "id": 3}).encode() + b"\n")
+        async with asyncio.timeout(5):
+            answer = json.loads(await reader.readline())
+
+        assert answer["id"] == 3
+        assert answer["result"]["protocolVersion"] == AcpVersion.V2
+
+    async def test_scalar_entries_get_invalid_request_each(
+        self, batch_wire: tuple[asyncio.StreamReader, asyncio.StreamWriter]
+    ) -> None:
+        reader, writer = batch_wire
+
+        writer.write(b"[17,true,null]\n")
+        async with asyncio.timeout(5):
+            answer = json.loads(await reader.readline())
+
+        assert isinstance(answer, list)
+        assert len(answer) == 3
+        for reply in answer:
+            assert reply["id"] is None
+            assert reply["error"]["code"] == -32600
+
+    async def test_broken_json_is_parse_error(
+        self, batch_wire: tuple[asyncio.StreamReader, asyncio.StreamWriter]
+    ) -> None:
+        reader, writer = batch_wire
+
+        writer.write(b'{"jsonrpc": "2.0", "method"\n')
+        async with asyncio.timeout(5):
+            answer = json.loads(await reader.readline())
+
+        assert answer["id"] is None
+        assert answer["error"]["code"] == -32700
+
+
 class TestVersionNegotiation:
     async def _reply_version_3(
         self, method: str, params: JsonValue | None, is_notification: bool
@@ -200,7 +315,7 @@ class TestVersionNegotiation:
     async def test_agent_answers_its_own_version(self, params: dict[str, Any]) -> None:
         agent_end, client_end = memory_transport_pair()
         info = schema.Implementation(name="stand-agent", version="0")
-        agent = AgentSide(StandAgent, info, agent_end, None)
+        agent = AgentSide(StandAgent, info, agent_end)
         serving = asyncio.create_task(agent.serve())
 
         async with Connection(self._reply_version_3, client_end) as raw:

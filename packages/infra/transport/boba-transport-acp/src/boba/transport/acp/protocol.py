@@ -3,18 +3,22 @@
 Ошибки:
 RequestError (acp.exceptions) — собеседник ответил ошибкой ACP (коды AcpErrorCode)
     или агент выбрал версию, которой клиент не знает.
-AcpTransportError — соединение закрыто или ответ на mcp/message пришёл не по конверту.
+AcpTransportError — соединение закрыто, ответ на mcp/message пришёл не по конверту
+    или строка ввода длиннее лимита потока.
 """
 
 from __future__ import annotations
 
 import asyncio
 import functools
+import json
 import logging
+from collections import deque
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from enum import IntEnum, StrEnum
 from types import ModuleType
-from typing import Annotated, Any, TypeAlias, assert_never
+from typing import Annotated, Any, ClassVar, TypeAlias, assert_never
 
 import mcp_types
 from mcp_types.jsonrpc import ErrorData
@@ -23,6 +27,7 @@ from pydantic import Field, TypeAdapter, ValidationError
 from acp import schema as v1_schema
 from acp._transport import Transport
 from acp.connection import Connection, JsonValue
+from acp.exceptions import RequestError
 from acp.experimental import v2
 from acp.experimental.v2 import (
     AgentSideConnection,
@@ -43,6 +48,7 @@ __all__ = [
     "AcpTransportError",
     "AcpVersion",
     "AgentSide",
+    "BatchTransport",
     "ClientConnection",
     "ErrorDataKey",
     "IdleErrorNotification",
@@ -180,6 +186,158 @@ class IdleErrorNotification(schema.UpdateSessionNotification):
     update: IdleErrorUpdate
 
 
+@dataclass(slots=True)
+class _Batch:
+    """Пакет JSON-RPC, ждущий ответов: id неотвеченных запросов и собранные ответы."""
+
+    awaited: list[JsonValue]
+    replies: list[JsonValue]
+
+
+class BatchTransport(Transport):
+    """Реализация Transport SDK стороны агента над строками JSON stdio: строка —
+    объект JSON-RPC или пакет (массив, JSON-RPC 2.0 §6). Записи пакета Connection
+    получает по одной, ответы на его запросы уходят одним массивом, когда отвечены
+    все; битый JSON и не-объекты получают ошибку с id null. AgentSide читает и
+    пишет через него.
+    Временная замена NdjsonTransport, пока SDK не разбирает пакеты."""
+
+    ENCODING: ClassVar[str] = "utf-8"
+    SEPARATORS: ClassVar[tuple[str, str]] = (",", ":")
+
+    def __init__(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
+        self._reader = reader
+        self._writer = writer
+        self._inbox: deque[dict[str, Any]] = deque()
+        self._batches: list[_Batch] = []
+
+    async def receive(self) -> dict[str, Any] | None:
+        while not self._inbox:
+            try:
+                line = await self._reader.readline()
+            except ValueError as exc:
+                raise AcpTransportError(
+                    f"Could not read a JSON-RPC line from the client because it is "
+                    f"longer than the input stream line limit: {exc}."
+                ) from exc
+
+            if not line:
+                return None
+
+            if not line.strip():
+                continue
+
+            try:
+                value = json.loads(line)
+            except UnicodeDecodeError as exc:
+                details = f"The input line is not {self.ENCODING} text: {exc}."
+                refusal = RequestError.parse_error({ErrorDataKey.DETAILS: details})
+                await self._write(
+                    {"jsonrpc": "2.0", "id": None, "error": refusal.to_error_obj()}
+                )
+                continue
+            except json.JSONDecodeError as exc:
+                shown = line[:200].decode(self.ENCODING, errors="replace")
+                details = f"The input line {shown!r} is not JSON: {exc}."
+                refusal = RequestError.parse_error({ErrorDataKey.DETAILS: details})
+                await self._write(
+                    {"jsonrpc": "2.0", "id": None, "error": refusal.to_error_obj()}
+                )
+                continue
+
+            await self._accept(value)
+
+        return self._inbox.popleft()
+
+    async def send(self, message: dict[str, Any]) -> None:
+        if "method" in message:
+            await self._write(message)
+            return
+
+        if "id" not in message:
+            await self._write(message)
+            return
+
+        for batch in self._batches:
+            if message["id"] not in batch.awaited:
+                continue
+
+            batch.awaited.remove(message["id"])
+            batch.replies.append(message)
+            if batch.awaited:
+                return
+
+            self._batches.remove(batch)
+            await self._write(batch.replies)
+            return
+
+        await self._write(message)
+
+    async def close(self) -> None:
+        """Очереди записи нет, writer stdio не закрывается; ждущие пакеты не
+        дописываются — Connection.close уже отменил их обработчики."""
+
+    async def _accept(self, value: JsonValue) -> None:
+        """Раскладывает разобранную строку: объект — в очередь, записи пакета — в
+        очередь с ожиданием ответов на его запросы; на не-объект пишет ошибку."""
+        if isinstance(value, dict):
+            self._inbox.append(value)
+            return
+
+        if not isinstance(value, list):
+            details = f"Expected a JSON-RPC object or batch, got {repr(value)[:200]}."
+            refusal = RequestError.invalid_request({ErrorDataKey.DETAILS: details})
+            await self._write(
+                {"jsonrpc": "2.0", "id": None, "error": refusal.to_error_obj()}
+            )
+            return
+
+        if not value:
+            details = "Expected a batch with at least one entry, got []."
+            refusal = RequestError.invalid_request({ErrorDataKey.DETAILS: details})
+            await self._write(
+                {"jsonrpc": "2.0", "id": None, "error": refusal.to_error_obj()}
+            )
+            return
+
+        batch = _Batch(awaited=[], replies=[])
+        for index, entry in enumerate(value):
+            if not isinstance(entry, dict):
+                details = (
+                    f"Batch entry {index} must be a JSON-RPC object, "
+                    f"got {repr(entry)[:200]}."
+                )
+                refusal = RequestError.invalid_request({ErrorDataKey.DETAILS: details})
+                batch.replies.append(
+                    {"jsonrpc": "2.0", "id": None, "error": refusal.to_error_obj()}
+                )
+                continue
+
+            self._inbox.append(entry)
+            if "method" not in entry:
+                continue
+
+            if "id" not in entry:
+                continue
+
+            batch.awaited.append(entry["id"])
+
+        if batch.awaited:
+            self._batches.append(batch)
+            return
+
+        if batch.replies:
+            await self._write(batch.replies)
+
+    async def _write(self, value: JsonValue) -> None:
+        """Одна строка JSON в вывод с ожиданием противодавления."""
+        text = json.dumps(value, separators=self.SEPARATORS) + "\n"
+        self._writer.write(text.encode(self.ENCODING))
+        await self._writer.drain()
+
+
 class AgentSide:
     """Сторона агента ACP v2 на AgentSideConnection.attach SDK. На чужую версию и
     рукопожатие v1 отвечает своей, уведомление mcp/message отдаёт получателю его
@@ -190,13 +348,12 @@ class AgentSide:
         self,
         agent_factory: Callable[[AgentSide, AgentSideConnection], object],
         info: schema.Implementation,
-        writer: asyncio.StreamWriter | Transport,
-        reader: asyncio.StreamReader | None,
+        transport: Transport,
     ) -> None:
         self._info = info
         self._receivers: dict[str, Callable[[McpMessage], Awaitable[None]]] = {}
         self._outcomes: TypeAdapter[McpOutcome] = TypeAdapter(McpOutcome)
-        self._connection = Connection(self, writer, reader, listening=False)
+        self._connection = Connection(self, transport, listening=False)
         _, self._router = AgentSideConnection.attach(
             functools.partial(agent_factory, self), self._connection
         )
