@@ -11,7 +11,8 @@ proxy получают и обновляют штатные провайдеры
 Ошибки:
 McpClientError — сервер недоступен, не прошёл инициализацию либо не
     отвечает на server/discover, не отдал список инструментов, отказал во
-    входе, не ответил на вызов либо порт позвали до open().
+    входе, не ответил на вызов, ответил не по схеме инструмента либо порт
+    позвали до open().
 MCPError (mcp.shared.exceptions) — сервер ответил на tools/call ошибкой MCP.
 """
 
@@ -1226,8 +1227,8 @@ class McpToolServer:
 
         Ошибки:
         McpClientError — сервер недоступен либо ответа нет: сессия оборвалась
-            или вышел срок вызова; соединение закрывается, следующий вызов
-            подключается заново.
+            или вышел срок вызова, соединение закрывается, следующий вызов
+            подключается заново; либо ответ не по схеме инструмента.
         MCPError — сервер ответил на запрос ошибкой MCP.
         """
         try:
@@ -1236,7 +1237,7 @@ class McpToolServer:
             msg = f"mcp server {self._name!r}: {exc}"
             raise McpClientError(msg) from exc
 
-        failure: Exception
+        label = f"mcp server {self._name!r} ({self._config.endpoint.label()})"
         try:
             return await session.call_tool(
                 params.name,
@@ -1255,17 +1256,19 @@ class McpToolServer:
             if not unanswered:
                 raise
 
-            failure = exc
-        except Exception as exc:
-            failure = exc
-
-        await self._connection.close()
-        msg = (
-            f"mcp server {self._name!r} ({self._config.endpoint.label()}): "
-            f"tools/call of {params.name!r} got no answer: "
-            f"{self._causes.text(failure)}"
-        )
-        raise McpClientError(msg) from failure
+            await self._connection.close()
+            msg = (
+                f"{label}: tools/call of {params.name!r} got no answer: "
+                f"{self._causes.text(exc)}"
+            )
+            raise McpClientError(msg) from exc
+        except RuntimeError as exc:
+            msg = (
+                f"{label}: tools/call of {params.name!r} was answered off the "
+                f"tool: the result does not match its output schema or is an "
+                f"extension result the client did not ask for: {exc}"
+            )
+            raise McpClientError(msg) from exc
 
     async def journal(self, request: JournalRead) -> StreamSlice | None:
         """Окно журнала вызова с сервера; None — сервер журнал не объявлял

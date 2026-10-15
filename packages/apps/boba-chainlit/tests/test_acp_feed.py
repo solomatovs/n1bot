@@ -9,15 +9,19 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from typing import Any, cast
 
+import chainlit.data as chainlit_data
 import mcp_types as mt
 import pytest
 from acp.experimental.v2 import schema
-from chainlit.context import ChainlitContext, context_var
+from chainlit.context import ChainlitContext, context_var, init_http_context
 from chainlit.step import StepDict
+from chainlit_stand import Seed
 from pydantic import SecretStr
 
+from boba.canvas.canvas import CanvasRegistry
 from boba.chainlit.agent.chat import SessionOptions
 from boba.chainlit.agent.client import SessionUpdate
+from boba.chainlit.agent.feed import ResultMounts
 from boba.chainlit.agent.panel import AgentPanel
 from boba.chainlit.agent.settings import (
     AgentModel,
@@ -28,6 +32,7 @@ from boba.chainlit.agent.settings import (
     ProviderKindName,
     UserAgentSettings,
 )
+from boba.chainlit.canvas.panel import ImageViewer
 from boba.chainlit.canvas.remote import RemoteJournals
 from boba.chainlit.chat.feed import QuestionBody, TurnFeed
 from boba.chainlit.chat.panel_text import PanelText
@@ -50,7 +55,12 @@ from boba.identity.context import Scope
 from boba.messaging import LockToken, MemoryMessageBus, MemoryPayloadStore, TurnOutcome
 from boba.stand.refs import StandRefs
 from boba.toolkit.dag import DagNode, JournalAddress, NodeOutcomes
-from boba.toolkit.result import MarkdownResult
+from boba.toolkit.result import (
+    CanvasResult,
+    FileResult,
+    MarkdownResult,
+    ToolResultBase,
+)
 from boba.toolkit.wire import ResultWire
 from boba.transport.acp.protocol import IdleErrorUpdate
 
@@ -59,6 +69,7 @@ QUESTION = "22222222-2222-2222-2222-222222222222"
 MESSAGE = "msg_a"
 SECOND_MESSAGE = "msg_b"
 CALL = "call_1"
+SECOND_CALL = "call_2"
 
 
 @pytest.fixture(autouse=True)
@@ -202,11 +213,11 @@ def _done(call_id: str, text: str, raw_output: Any) -> SessionUpdate:
     )
 
 
-def _result(text: str, run: str = "") -> dict[str, Any]:
+def _result(artifact: ToolResultBase, run: str = "") -> dict[str, Any]:
     """Ответ tools/call сервера boba-mcp: текст для модели и модель результата
     в structuredContent; run — запуск, под которым сервер ведёт журнал."""
     call = DagNode(key="srv-call", tool="pg_query")
-    outcome = NodeOutcomes().of(call, MarkdownResult(text=text, elapsed_ms=12), False)
+    outcome = NodeOutcomes().of(call, artifact, False)
     wire = ResultWire().packed(outcome)
     structured = wire.structured
     if run and structured is not None:
@@ -235,7 +246,7 @@ def _turn_updates() -> list[SessionUpdate]:
         _chunk("First ", MESSAGE),
         _call(CALL, "mcp__boba__pg_query", {"sql": "select 1"}),
         schema.SessionToolCallUpdate(tool_call_id=CALL, status="in_progress"),
-        _done(CALL, "1", _result("one row")),
+        _done(CALL, "1", _result(MarkdownResult(text="one row", elapsed_ms=12))),
         _chunk("and then ", SECOND_MESSAGE),
         _chunk("done.", SECOND_MESSAGE),
     ]
@@ -258,7 +269,7 @@ def _replayed_updates() -> list[SessionUpdate]:
         thought,
         first,
         _call(CALL, "mcp__boba__pg_query", {"sql": "select 1"}),
-        _done(CALL, "1", _result("one row")),
+        _done(CALL, "1", _result(MarkdownResult(text="one row", elapsed_ms=12))),
         second,
     ]
 
@@ -316,7 +327,11 @@ class TestUpdateViewIds:
 
         address = JournalAddress(server="boba", run="run-7", call="srv-call")
         await updates.apply(_call(CALL, "mcp__boba__bash", {"cmd": "ls"}))
-        await updates.apply(_done(CALL, "ok", _result("ok", "run-7")))
+        await updates.apply(
+            _done(
+                CALL, "ok", _result(MarkdownResult(text="ok", elapsed_ms=12), "run-7")
+            )
+        )
 
         assert await journals.address(THREAD, CALL) == address
 
@@ -436,6 +451,68 @@ class TestLiveEqualsReplay:
         assert live == replay_context.emitter.outline(pulse)
         assert len(live) >= 6
         assert live_context.emitter.tokens == replay_context.emitter.tokens
+
+
+class HolderSurface(NoSurface):
+    """Поверхность держателя хода в тесте: контекст chainlit HTTP-сессии
+    пользователя треда, в котором открывается панель и пишутся элементы."""
+
+    def __init__(self, context: ChainlitContext) -> None:
+        self._context = context
+
+    def context(self) -> ChainlitContext | None:
+        return self._context
+
+
+class TestResultMounts:
+    """Побочные действия итогов вызовов живого хода у держателя: агент
+    называет инструмент только в первом уведомлении вызова, итог приходит
+    без имени и заголовка, а переводчик воспроизведения живых уведомлений не
+    видит."""
+
+    @pytest.mark.anyio
+    async def test_live_results_open_the_panel_and_attach_the_file(
+        self, runtime_stand: StandRefs, seeded: Seed, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(chainlit_data, "_data_layer", seeded.layer)
+        monkeypatch.setattr(chainlit_data, "_data_layer_initialized", True)
+        thread_id = seeded.thread_id
+        chart = f"/workspace/{thread_id}/upload/chart.png"
+        report = f"/workspace/{thread_id}/upload/report.csv"
+        shown = CanvasResult(path=chart, label="chart.png")
+        attached = FileResult(path=report, name="report.csv", mime="text/csv")
+        updates = [
+            _call(CALL, "mcp__boba__canvas_open", {"path": chart}),
+            _call(SECOND_CALL, "mcp__boba__file_attach", {"path": report}),
+            schema.SessionToolCallUpdate(tool_call_id=CALL, status="in_progress"),
+            _done(CALL, "shown", _result(shown)),
+            _done(SECOND_CALL, "attached", _result(attached)),
+        ]
+        view = ChatView(thread_id, LiveSink(), runtime_stand.journals, user_name="u")
+        replay = UpdateView(view, thread_id, RemoteJournals(), ToolMedia())
+        bus = MemoryMessageBus("test-chainlit")
+        scope = Scope.chat(thread_id)
+        feed = TurnFeed(bus, MemoryPayloadStore(), scope, QUESTION, LockToken.local())
+        CanvasRegistry.register(ImageViewer())
+        context = init_http_context(user=seeded.user, thread_id=thread_id)
+        mounts = ResultMounts(thread_id, seeded.user.id, HolderSurface(context), replay)
+        try:
+            for update in updates:
+                await mounts.mounted(update, QUESTION, feed)
+        finally:
+            init_http_context()
+            CanvasRegistry.reset()
+
+        panel_id = ChatView.derive_id(thread_id, CALL, StepRole.ELEMENT)
+        file_id = ChatView.derive_id(thread_id, SECOND_CALL, StepRole.ELEMENT)
+        assert panel_id is not None
+        assert file_id is not None
+        panel = await seeded.layer.get_element(thread_id, panel_id)
+        file = await seeded.layer.get_element(thread_id, file_id)
+        assert panel is not None, "the canvas link of the live call is not stored"
+        assert panel.get("props") == {"path": chart, "label": "chart.png"}, panel
+        assert file is not None, "the attachment of the live call is not stored"
+        assert file.get("name") == "report.csv", file
 
 
 class TestCodecAndResults:

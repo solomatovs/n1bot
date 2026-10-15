@@ -278,8 +278,18 @@ class AgentProcess:
         AgentProcessError — запуск или initialize не состоялись.
         """
         executable = self._command.executable
+        stderr_path = self._workdir.stderr_path
         try:
-            with self._workdir.stderr_path.open("ab") as stderr:
+            stderr = stderr_path.open("ab")
+        except OSError as exc:
+            msg = (
+                f"agent process {executable!r}: opening its stderr log "
+                f"{stderr_path} failed: {exc}"
+            )
+            raise AgentProcessError(msg) from exc
+
+        with stderr:
+            try:
                 stdout, stdin, process = await self._stack.enter_async_context(
                     spawn_stdio_transport(
                         executable,
@@ -291,9 +301,9 @@ class AgentProcess:
                         shutdown_timeout=self._command.stop_timeout_sec,
                     )
                 )
-        except OSError as exc:
-            msg = f"agent process {executable!r} did not start: {exc}"
-            raise AgentProcessError(msg) from exc
+            except OSError as exc:
+                msg = f"agent process {executable!r} did not start: {exc}"
+                raise AgentProcessError(msg) from exc
 
         self._process = process
         self._connection = ClientConnection(self._client, self._answer, stdin, stdout)
@@ -314,11 +324,33 @@ class AgentProcess:
         except AcpClientError as exc:
             msg = (
                 f"agent process {executable!r} failed the ACP handshake, this "
-                f"chat speaks ACP version {AcpVersion.V2.value} with MCP servers "
-                f"of type 'acp': {exc}: {self.log_tail()}"
+                f"chat speaks ACP version {AcpVersion.V2.value}: {exc}: "
+                f"{self.log_tail()}"
             )
             await self.close()
             raise AgentProcessError(msg) from exc
+
+        session = None
+        if response.capabilities is not None:
+            session = response.capabilities.session
+
+        mcp = None
+        if session is not None:
+            mcp = session.mcp
+
+        acp = None
+        if mcp is not None:
+            acp = mcp.acp
+
+        if acp is None:
+            msg = (
+                f"agent process {executable!r} (pid {process.pid}): agent "
+                f"{response.info.name!r} does not declare "
+                "capabilities.session.mcp.acp in initialize, expected it to take "
+                "the MCP servers of the chat as servers of type 'acp'"
+            )
+            await self.close()
+            raise AgentProcessError(msg)
 
         logger.info(
             "agent process started: pid=%s agent=%s/%s",
@@ -453,16 +485,16 @@ class AgentProcess:
         return await self._relay.answer(message, self._require_connection().notify)
 
     async def _initialize(self) -> schema.InitializeResponse:
-        """Рукопожатие v2: версию ответа проверяет SDK, серверы type "acp"
-        агент обязан объявить в capabilities.session.mcp.acp.
+        """Рукопожатие v2: версию ответа проверяет SDK.
 
         Ошибки:
         AgentRequestError — агент отказал либо ответил чужой версией.
-        AgentProcessError — агент не принимает серверы type "acp".
+        AgentProcessError — соединение закрыто или ответ не по схеме.
         """
         connection = self._require_connection()
         info = schema.Implementation(name=ClientName.NAME.value, version=self._version)
-        response = await self._request(
+
+        return await self._request(
             "initialize",
             connection.initialize(
                 protocol_version=AcpVersion.V2.value,
@@ -470,27 +502,6 @@ class AgentProcess:
                 capabilities=schema.ClientCapabilities(),
             ),
         )
-        session = None
-        if response.capabilities is not None:
-            session = response.capabilities.session
-
-        mcp = None
-        if session is not None:
-            mcp = session.mcp
-
-        acp = None
-        if mcp is not None:
-            acp = mcp.acp
-
-        if acp is None:
-            msg = (
-                f"initialize: agent {response.info.name!r} does not declare "
-                "capabilities.session.mcp.acp, expected it to take the MCP "
-                "servers of the chat as servers of type 'acp'"
-            )
-            raise AgentProcessError(msg)
-
-        return response
 
     async def _request(self, method: str, call: Awaitable[ModelT]) -> ModelT:
         """Ответ агента на метод method.

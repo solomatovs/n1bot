@@ -59,6 +59,7 @@ from boba.agent.hooks import (
     HookEventName,
     HookReplyBody,
     HookSpecificOutput,
+    McpServerInfo,
     PreToolUseEvent,
 )
 from boba.cancellation import RunCancellation, StopReason
@@ -416,13 +417,16 @@ class ChatMcpServer:
 
 
 class HookSealing:
-    """Решение обработчика хука по событию PreToolUse: запечатать соединения
-    в аргументах либо отказать.
+    """Запечатывание соединений в аргументах вызова инструмента сервера MCP:
+    имя соединения пользователя заменяется профилем, запечатанным ключом
+    сервера, либо вызов получает отказ.
 
-    Создаётся обработчиком. Какие аргументы — соединения и какого вида,
-    читает из схемы инструмента события (SealedParamSchema); ключ сервера —
-    из его возможностей в событии (SealFeature); соединение пользователя по
-    виду и имени берёт ArmedConnections в контексте вызывающего.
+    Создаётся провайдером hook_sealing; зовут ретранслятор mcp/message
+    (seal) и обработчик хука PreToolUse (reply — та же логика в форме
+    ответа хука). Какие аргументы — соединения и какого вида, читает из
+    схемы инструмента (SealedParamSchema); ключ сервера — из объявленных им
+    возможностей (SealFeature); соединение пользователя по виду и имени
+    берёт ArmedConnections в контексте вызывающего.
     """
 
     def __init__(
@@ -443,12 +447,14 @@ class HookSealing:
         ConnectionStoreError — таблица соединений недоступна.
         KerberosError — билет к соединению не выпущен.
         """
-        kinds = self._declared.kinds_of(event.tool_schema)
-        if not kinds:
-            return self._decided(HookDecision.ALLOW, "", None)
-
         try:
-            updated = await self._sealed(event, caller, kinds)
+            updated = await self.seal(
+                event.tool_name,
+                event.tool_input,
+                event.tool_schema,
+                event.mcp_server,
+                caller,
+            )
         except (RefusalError, ToolConfigError) as exc:
             logger.warning(
                 "hook: sealing connections of %s for %s refused: %s",
@@ -460,13 +466,31 @@ class HookSealing:
 
         return self._decided(HookDecision.ALLOW, "", updated)
 
-    async def _sealed(
-        self, event: PreToolUseEvent, caller: ChatCaller, kinds: Mapping[str, str]
+    async def seal(
+        self,
+        tool: str,
+        arguments: Mapping[str, Any],
+        tool_schema: Mapping[str, Any],
+        server: McpServerInfo | None,
+        caller: ChatCaller,
     ) -> dict[str, Any]:
-        """Аргументы события с запечатанными соединениями на месте имён.
-        Значение не строка — уходит как есть, его отвергнет сервер."""
-        seal = ConnectionSeal(self._key(event))
-        updated: dict[str, Any] = dict(event.tool_input)
+        """Аргументы вызова tool с запечатанными соединениями на месте имён;
+        у инструмента без параметров-соединений — как есть. Значение не
+        строка уходит как есть, его отвергнет сервер.
+
+        Ошибки:
+        RefusalError — соединение неизвестно или не выдано пользователю либо
+            сервер инструмента не принимает соединений.
+        ToolConfigError — соединение не годится инструменту.
+        ConnectionStoreError — таблица соединений недоступна.
+        KerberosError — билет к соединению не выпущен.
+        """
+        updated: dict[str, Any] = dict(arguments)
+        kinds = self._declared.kinds_of(tool_schema)
+        if not kinds:
+            return updated
+
+        seal = ConnectionSeal(self._key(tool, server))
         with self._contexts.applied(self._callers.context(caller)):
             for param, kind in kinds.items():
                 name = updated.get(param)
@@ -481,22 +505,21 @@ class HookSealing:
                     name,
                     kind,
                     param,
-                    event.tool_name,
+                    tool,
                     caller.subject.login,
                 )
 
         return updated
 
-    def _key(self, event: PreToolUseEvent) -> SealKey:
-        """Ключ сервера инструмента из возможностей, которые он объявил агенту.
+    def _key(self, tool: str, server: McpServerInfo | None) -> SealKey:
+        """Ключ сервера инструмента из возможностей, которые он объявил.
 
         Ошибки:
         RefusalError — сервера у инструмента нет либо он не принимает соединений.
         """
-        server = event.mcp_server
         if server is None:
             msg = (
-                f"{event.tool_name} is not a tool of an MCP server, so a connection "
+                f"{tool} is not a tool of an MCP server, so a connection "
                 "cannot be sent to it sealed"
             )
             raise RefusalError(ConnectionRefusal.SEAL_KEY_UNKNOWN, msg)

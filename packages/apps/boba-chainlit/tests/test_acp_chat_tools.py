@@ -18,7 +18,6 @@ from __future__ import annotations
 import asyncio
 import json
 import multiprocessing
-import sys
 import time
 from collections.abc import AsyncIterator, Iterator, Mapping
 from http import HTTPStatus
@@ -31,12 +30,11 @@ import httpx2
 import jwt
 import pytest
 from acp.experimental.v2 import schema
-from acp_stand import AgentHistoryStand, FakeModel, RecordingUpdates
+from acp_stand import AgentHistoryStand, Agents, FakeModel, RecordingUpdates
 from chainlit_stand import ServiceProcess, TabSession
 from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 from test_acp_chat import BOOT_TIMEOUT_SEC, AgentProcesses, ChatSocket
-from test_acp_client import Agents
 
 import boba.chainlit.agent
 from boba.agent.hooks import (
@@ -49,7 +47,7 @@ from boba.chainlit.rendering.chat_view import StepStatus
 from boba.connections.sealed import SealedParamSchema, SealFeature, SealKeys
 from boba.db.postgres.connection import PostgresConfig
 from boba.identity.token import ClaimKey
-from boba.mcp_client.client import McpServerConfig, McpServersConfig, StdioCommand
+from boba.mcp_client.client import McpServerConfig, McpServersConfig
 from boba.runtime.config import RuntimeConfig
 from boba.runtime.http import RequestTokens
 from boba.stand.names import StandNames
@@ -750,23 +748,7 @@ class TestRelayAcceptance:
     MCP только через mcp/message чата. Что агент предложил модели, видно по
     запросам фейковой модели."""
 
-    STANDARD: ClassVar[Path] = (
-        Path(__file__).resolve().parents[3]
-        / "services"
-        / "boba-mcp-client"
-        / "tests"
-        / "standard_server.py"
-    )
     SERVERS: ClassVar[tuple[str, ...]] = ("boba", "standard")
-
-    @pytest.fixture
-    async def model(self) -> AsyncIterator[FakeModel]:
-        fake = FakeModel()
-        await fake.start()
-        try:
-            yield fake
-        finally:
-            await fake.stop()
 
     @pytest.fixture
     async def agents(
@@ -775,13 +757,8 @@ class TestRelayAcceptance:
         model: FakeModel,
         stand: Stand,
         service_process: ServiceProcess,
+        standard: McpServerConfig,
     ) -> AsyncIterator[Agents]:
-        endpoint = StdioCommand(
-            command=sys.executable, args=(str(self.STANDARD), "stdio")
-        )
-        standard = McpServerConfig(
-            endpoint=endpoint, connect_timeout_sec=20.0, call_timeout_sec=60.0
-        )
         servers = dict(service_process.servers().servers)
         servers["standard"] = standard
         made = Agents(

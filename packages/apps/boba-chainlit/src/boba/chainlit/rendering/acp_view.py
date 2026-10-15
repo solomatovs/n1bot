@@ -192,19 +192,15 @@ class UpdateView:
         await self._view.finish_turn()
         self._turn_key = None
 
-    def outcome(self, update: schema.SessionToolCallUpdate) -> NodeOutcome | None:
-        """Итог закончившегося вызова из `rawOutput` — ответа сервера MCP:
-        модель результата и адрес журнала у сервера boba-mcp. None — вызов
-        не кончился, инструмент не сервера MCP, ответ не CallToolResult либо
-        сервер модели результата не прислал."""
-        name = self._tool_name(update)
-        if update.status is None:
-            return None
-
-        if not ToolStatus(update.status).terminal:
-            return None
-
-        self._called.pop(update.tool_call_id, None)
+    def outcome(
+        self, update: schema.SessionToolCallUpdate, name: str
+    ) -> NodeOutcome | None:
+        """Итог вызова инструмента name из `rawOutput` конечного уведомления
+        update — ответа сервера MCP: модель результата и адрес журнала у
+        сервера boba-mcp. Имя вызова держит вызывающий: агент называет
+        инструмент только в первом уведомлении вызова. None — инструмент не
+        сервера MCP, ответ не CallToolResult либо сервер модели результата
+        не прислал."""
         owner = self._names.parse(name)
         if owner is None:
             return None
@@ -246,8 +242,12 @@ class UpdateView:
         if self._turn_key is not None:
             await self.finish_turn()
 
+        text = self._text(update)
+        if text is None:
+            text = ""
+
         self.begin_turn(update.message_id)
-        await self.question(self._message_text(update), update.message_id)
+        await self.question(text, update.message_id)
 
     async def _thought_chunk(
         self, update: schema.AgentThoughtChunk | schema.AgentThoughtUpdate
@@ -329,7 +329,9 @@ class UpdateView:
     ) -> None:
         """Итог вызова шагу step."""
         call_id = update.tool_call_id
-        outcome = self.outcome(update)
+        name = self._tool_name(update)
+        self._called.pop(call_id, None)
+        outcome = self.outcome(update, name)
         journal = None
         if outcome is not None:
             journal = outcome.journal
@@ -380,19 +382,6 @@ class UpdateView:
 
         return "\n".join(parts)
 
-    @staticmethod
-    def _message_text(update: schema.UserMessageUpdate) -> str:
-        """Текст вопроса из его блоков; картинки и ресурсы лента не показывает."""
-        if update.content is None:
-            return ""
-
-        parts: list[str] = []
-        for block in update.content:
-            if isinstance(block, schema.TextContentBlock):
-                parts.append(block.text)
-
-        return "".join(parts)
-
     def _tool_name(self, update: schema.SessionToolCallUpdate) -> str:
         """Имя инструмента вызова из его первого уведомления; без имени шаг
         называется заголовком вызова."""
@@ -421,10 +410,11 @@ class UpdateView:
         update: schema.AgentThoughtChunk
         | schema.AgentMessageChunk
         | schema.AgentThoughtUpdate
-        | schema.AgentMessageUpdate,
+        | schema.AgentMessageUpdate
+        | schema.UserMessageUpdate,
     ) -> str | None:
-        """Текст куска либо целого сообщения; картинки и ресурсы лента не
-        показывает. None — текста нет."""
+        """Текст куска либо целого сообщения агента или вопроса; картинки и
+        ресурсы лента не показывает. None — текста нет."""
         content = update.content
         if isinstance(content, schema.TextContentBlock):
             return content.text

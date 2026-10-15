@@ -47,8 +47,9 @@ from boba.chainlit.rendering.acp_view import ToolMedia
 from boba.chainlit.rendering.chat_view import ChatView, StepRole
 from boba.config import bind
 from boba.connection_broker.store import ConnectionStore
+from boba.connection_broker.tickets import CredentialsRef
 from boba.connection_broker.tools import ConnectionTools
-from boba.connection_broker.user_connections import ArmedConnections
+from boba.connection_broker.user_connections import ArmedConnections, StoreRef
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.api import StoredUser, UserRows
 from boba.identity.context import (
@@ -296,6 +297,41 @@ class ToolService:
         return self._process.tail()
 
 
+class RelayStand:
+    """Ретранслятор mcp/message стенда (McpRelay) в сборке, как у провайдера
+    процесса: ключи процессов, вызывающие по ключу и запечатывание соединений
+    пользователя из хранилища store с кредами credentials.
+
+    Им собирают ретранслятор тесты ретранслятора, вызовы сервиса
+    (ServiceTools) и процессы агента стенда (Agents); серверы профиля каждый
+    тест открывает сам. Сервер инструментов чата стенду не объявляется.
+    """
+
+    CHAT: ClassVar[ChatMcpConfig] = ChatMcpConfig(
+        enable=False,
+        name="chat",
+        path="/chat/mcp",
+        connect_timeout_sec=10.0,
+        call_timeout_sec=60.0,
+    )
+    PUBLIC_URL: ClassVar[str] = "http://127.0.0.1"
+    """Адрес чата для ретранслятора: без сервера чата по нему никто не ходит."""
+    SEAL_TTL: ClassVar[timedelta] = timedelta(minutes=2)
+
+    def __init__(
+        self, store: StoreRef, credentials: CredentialsRef, contexts: CallContexts
+    ) -> None:
+        self.keys = ProcessKeys()
+        self.callers = ChatCallers(self.keys)
+        connections = ArmedConnections(store, credentials, contexts)
+        self.sealing = HookSealing(self.callers, connections, contexts, self.SEAL_TTL)
+
+    def relay(self, servers: McpServers) -> McpRelay:
+        return McpRelay(
+            self.keys, self.callers, servers, self.sealing, self.CHAT, self.PUBLIC_URL
+        )
+
+
 class ServiceTool:
     """Инструмент сервиса глазами теста: вызов уходит ретранслятором чата от
     имени пользователя текущей сессии, ответ — результат семейства.
@@ -319,39 +355,25 @@ class ServiceTools:
     (HookSealing) и зовёт MCP-порт сервиса от имени пользователя текущей
     сессии chainlit.
 
-    Создаётся фикстурой теста из сервиса (ToolService), соединений
-    пользователя и контекстов вызова. Регистрация сервера выдаётся на вызов
-    и снимается после него; ответ сервера оживает моделью результата
+    Создаётся фикстурой теста из сервиса (ToolService), хранилища соединений
+    пользователя, его кредов и контекстов вызова; ретранслятор собирает
+    RelayStand. Регистрация сервера выдаётся на вызов и снимается после
+    него; ответ сервера оживает моделью результата
     (ResultWire), как в ленте чата, иначе — текстом для модели (McpResults).
     """
-
-    SEAL_TTL: ClassVar[timedelta] = timedelta(seconds=120)
-    CHAT: ClassVar[ChatMcpConfig] = ChatMcpConfig(
-        enable=False,
-        name="chat",
-        path="/chat/mcp",
-        connect_timeout_sec=10.0,
-        call_timeout_sec=60.0,
-    )
-    """Сервер чата стенду не объявляется: вызовы идут только сервису."""
-    PUBLIC_URL: ClassVar[str] = "http://127.0.0.1"
-    """Адрес чата для ретранслятора: без сервера чата по нему никто не ходит."""
 
     def __init__(
         self,
         service: ToolService,
-        connections: ArmedConnections,
+        store: StoreRef,
+        credentials: CredentialsRef,
         contexts: CallContexts,
     ) -> None:
         self._service = service
         self._names = McpToolNames()
         self._servers = McpServers(service.servers())
-        self._keys = ProcessKeys()
-        callers = ChatCallers(self._keys)
-        sealing = HookSealing(callers, connections, contexts, self.SEAL_TTL)
-        self._relay = McpRelay(
-            self._keys, callers, self._servers, sealing, self.CHAT, self.PUBLIC_URL
-        )
+        self._stand = RelayStand(store, credentials, contexts)
+        self._relay = self._stand.relay(self._servers)
         self._wire = ResultWire()
         self._results = McpResults()
         self._heard: asyncio.Queue[McpMessage] = asyncio.Queue()
@@ -393,7 +415,8 @@ class ServiceTools:
             session=session,
             server=server,
         )
-        registered = self._keys.register(holder, [server])[0]
+        keys = self._stand.keys
+        registered = keys.register(holder, [server])[0]
         envelope = {
             mt.PROTOCOL_VERSION_META_KEY: McpVersion.V2026_07_28.value,
             mt.CLIENT_CAPABILITIES_META_KEY: {},
@@ -407,7 +430,7 @@ class ServiceTools:
         try:
             outcome = await self._relay.answer(message, self._heard.put)
         finally:
-            self._keys.revoke(registered.server_id)
+            keys.revoke(registered.server_id)
 
         if isinstance(outcome, McpErrorOutcome):
             msg = f"tool {tool!r} of {server!r} answered an MCP error: {outcome.error}"

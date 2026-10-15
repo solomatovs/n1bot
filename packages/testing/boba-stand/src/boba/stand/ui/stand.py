@@ -623,8 +623,8 @@ class StandConfig(StandService):
     """Объявлять ли агенту сервер инструментов чата /chat/mcp."""
 
     agent_hook: bool = True
-    """Класть ли хук PreToolUse в файл настроек агента: без него соединения
-    уходят серверу инструментов именами, а не запечатанными."""
+    """Поднимать ли в чате HTTP-вход хука PreToolUse; соединения в вызовах
+    агента запечатывает ретранслятор чата и без него."""
 
     generation: str = ""
     """Поколение сессий: пустое — случайное на каждый старт процесса; общее у
@@ -763,7 +763,6 @@ class StandConfig(StandService):
             "hook": {
                 "enable": self.agent_hook,
                 "path": "/chat/hooks/pre-tool-use",
-                "timeout_sec": 10,
             },
             "limits": {"context_window": 200000, "max_output_tokens": 4096},
         }

@@ -7,13 +7,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import stat
 from pathlib import Path
+from typing import Any, ClassVar
 from uuid import uuid4
 
+import mcp_types as mt
 import pytest
+from acp.exceptions import RequestError
 from acp_stand import (
     API_KEY,
     AgentHistoryStand,
@@ -22,15 +26,23 @@ from acp_stand import (
     ProcFiles,
     RecordingUpdates,
 )
+from chainlit_stand import NoConnectionStore, RelayStand, TabSession
 from psycopg import sql
 from psycopg.types.json import Jsonb
 from pydantic import SecretStr, ValidationError
 
+from boba.auth.credentials import KerberosCredentialSource, NoRefresh
+from boba.chainlit.agent.chat import (
+    AgentLauncher,
+    AgentSessionMeta,
+    SessionOptions,
+    ThreadAgent,
+    ThreadIdentity,
+)
 from boba.chainlit.agent.client import AgentClient, AgentProcess
 from boba.chainlit.agent.config import (
     PostgresAgentHistory,
 )
-from boba.chainlit.agent.server import ProcessKeys
 from boba.chainlit.agent.settings import (
     AgentSettingsChange,
     AgentSettingsError,
@@ -43,18 +55,21 @@ from boba.chainlit.agent.settings import (
     SettingsFileBuilder,
     UserAgentSettings,
 )
-from boba.chat.profiles import ChatProfileConfig
+from boba.chat.profiles import ChatProfileConfig, SelectedProfile
 from boba.connections.secrets import SecretCipher
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
 from boba.db.postgres.connection.auth import CertificateAuth
+from boba.identity.context import CallContexts
 from boba.kerberos import KeytabAuth
 from boba.krb.credentials import KerberosEnv
 from boba.llm.onnx import OnnxProvider
 from boba.mcp_client.client import McpServers, McpServersConfig
+from boba.runtime.threads import ThreadsTable
 from boba.stand.names import StandNames
 from boba.stand.signin import SignInStand
 from boba.stand.site import Stand
+from boba.transport.acp.protocol import AcpErrorCode, McpMessage, McpVersion
 
 pytestmark = pytest.mark.anyio
 
@@ -374,10 +389,8 @@ class TestAgentHandshake:
     """Настоящий `boba acp` v2 принимает файл и держит секреты только в нём."""
 
     async def test_agent_initializes_and_leaks_nothing(
-        self, tmp_path: Path, stand: Stand
+        self, tmp_path: Path, stand: Stand, model: FakeModel
     ) -> None:
-        model = FakeModel()
-        await model.start()
         history = AgentHistoryStand(stand).history()
         agent_stand = AgentStand(tmp_path / "agents", history)
         chat = model.chat_settings()
@@ -386,9 +399,10 @@ class TestAgentHandshake:
         workdir.write(document, chat.system_prompt)
 
         client = AgentClient(RecordingUpdates())
-        relay = agent_stand.relay(
-            ProcessKeys(), McpServers(McpServersConfig(servers={}))
-        )
+        credentials = KerberosCredentialSource(None, NoRefresh())
+        relays = RelayStand(NoConnectionStore(), lambda: credentials, CallContexts())
+        servers = McpServers(McpServersConfig(servers={}))
+        relay = relays.relay(servers)
         process = AgentProcess(agent_stand.command(), workdir, client, relay, (), "0.0")
         try:
             response = await process.start()
@@ -413,14 +427,100 @@ class TestAgentHandshake:
             assert set(environ) <= {"HOME", "LOGNAME", "PATH", "SHELL", "TERM", "USER"}
             assert "BOBA_CONFIG_PATH" not in environ
         finally:
-            await model.stop()
             await process.close()
+            await servers.stop()
 
         assert not workdir.exists()
         assert not process.alive()
         assert not os.path.exists(f"/proc/{process.pid}/cmdline") or _is_zombie(
             process.pid
         )
+
+
+class TestRetiredServers:
+    """Перезапуск агента вкладки и закрытие вкладки снимают serverId прежнего
+    процесса: ретранслятор отвечает на них UNKNOWN_SERVER."""
+
+    ENVELOPE: ClassVar[dict[str, Any]] = {
+        mt.PROTOCOL_VERSION_META_KEY: McpVersion.V2026_07_28.value,
+        mt.CLIENT_CAPABILITIES_META_KEY: {},
+    }
+
+    async def test_restart_and_close_revoke_the_server_ids(  # noqa: PLR0913 — фикстуры теста
+        self,
+        tmp_path: Path,
+        stand: Stand,
+        table: AgentSettingsTable,
+        specs: ProfileModelSpecs,
+        test_postgres: PostgresConfig,
+        auth_token: str,
+    ) -> None:
+        credentials = KerberosCredentialSource(None, NoRefresh())
+        relays = RelayStand(NoConnectionStore(), lambda: credentials, CallContexts())
+        servers = McpServers(McpServersConfig(servers={}))
+        relay = relays.relay(servers)
+        agent_stand = AgentStand(
+            tmp_path / "agents", AgentHistoryStand(stand).history()
+        )
+        layers = AgentSettingsLayers(table, specs)
+        launcher = AgentLauncher(
+            agent_stand.config(), layers, relays.keys, relay, "0.0"
+        )
+        tab = TabSession()
+        tab.password_sign_in(frozenset({"dev"}))
+        config = SignInStand.profile().model_copy(update={"mcp": ("standard",)})
+        identity = ThreadIdentity(
+            thread_id=str(uuid4()),
+            user_id=uuid4(),
+            login=TabSession.LOGIN,
+            roles=frozenset({"dev"}),
+            session=tab.live,
+            profile=SelectedProfile(name=SignInStand.PROFILE, config=config),
+        )
+        meta = AgentSessionMeta(ThreadsTable(test_postgres, SCHEMA))
+        agent = ThreadAgent(
+            identity,
+            launcher,
+            meta,
+            RecordingUpdates(),
+            SessionOptions(),
+            agent_stand.config().public_url,
+        )
+        try:
+            await agent.start()
+            first = agent.process._servers[0].server_id
+            assert relays.keys.holder(first) is not None
+
+            assert await agent.restart()
+            second = agent.process._servers[0].server_id
+            assert second != first
+            assert relays.keys.holder(second) is not None
+            assert relays.keys.holder(first) is None
+            after_restart = McpMessage(
+                server_id=first,
+                request_id="mcp:after-restart",
+                method="tools/list",
+                params={"_meta": self.ENVELOPE},
+            )
+            with pytest.raises(RequestError) as restarted:
+                await relay.answer(after_restart, asyncio.Queue[McpMessage]().put)
+
+            await agent.close()
+            assert relays.keys.holder(second) is None
+            after_close = McpMessage(
+                server_id=second,
+                request_id="mcp:after-close",
+                method="tools/list",
+                params={"_meta": self.ENVELOPE},
+            )
+            with pytest.raises(RequestError) as closed:
+                await relay.answer(after_close, asyncio.Queue[McpMessage]().put)
+        finally:
+            await agent.close()
+            await servers.stop()
+
+        assert restarted.value.code == AcpErrorCode.UNKNOWN_SERVER
+        assert closed.value.code == AcpErrorCode.UNKNOWN_SERVER
 
 
 def _is_zombie(pid: int) -> bool:

@@ -8,19 +8,16 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator
 from pathlib import Path
 from uuid import UUID
 
 import pytest
 from acp.experimental.v2 import schema
-from acp_stand import AgentHistoryStand, AgentStand, FakeModel, RecordingUpdates
+from acp_stand import Agents, FakeModel, RecordingUpdates
 
-from boba.chainlit.agent.chat import AskedQuestions
-from boba.chainlit.agent.client import AgentClient, AgentProcess, AgentRequestError
-from boba.chainlit.agent.server import ProcessKeys
-from boba.chainlit.agent.settings import AgentWorkdirs, SettingsFileBuilder
-from boba.mcp_client.client import McpServers, McpServersConfig
+from boba.chainlit.agent.client import AgentRequestError
+from boba.mcp_client.client import McpServersConfig
 from boba.stand.site import Stand
 from boba.stand.ui.fake_llm import ScenarioName
 from boba.transport.acp.protocol import AcpErrorCode
@@ -31,79 +28,6 @@ pytestmark = pytest.mark.anyio
 @pytest.fixture(autouse=True)
 def chainlit_context() -> None:
     """Контекст chainlit этим тестам не нужен: они живут ниже обработчиков."""
-
-
-@pytest.fixture
-async def model() -> AsyncIterator[FakeModel]:
-    fake = FakeModel()
-    await fake.start()
-    try:
-        yield fake
-    finally:
-        await fake.stop()
-
-
-class Agents:
-    """Процессы агента теста: один файл настроек, несколько запусков; поток
-    сессий идёт приёмнику теста через обёртку агента треда (AskedQuestions),
-    которая решает конец хода по idle. Запросы mcp/message процессов отвечает
-    ретранслятор над серверами servers; регистрации выдаёт keys."""
-
-    TURN_TIMEOUT_SEC: float = 60.0
-
-    def __init__(
-        self, root: Path, model: FakeModel, stand: Stand, servers: McpServersConfig
-    ) -> None:
-        self._root = root
-        self._model = model
-        self._stand = AgentStand(root, AgentHistoryStand(stand).history())
-        self._builder = SettingsFileBuilder(self._stand.config())
-        self._servers = McpServers(servers)
-        self.keys = ProcessKeys()
-        self._relay = self._stand.relay(self.keys, self._servers)
-        self.started: list[AgentProcess] = []
-        self.questions: dict[AgentProcess, AskedQuestions] = {}
-
-    async def start(
-        self,
-        updates: RecordingUpdates,
-        thread: str = "t",
-        servers: Sequence[schema.AcpMcpServer] = (),
-    ) -> AgentProcess:
-        """Процесс агента с объявлениями servers в каждой сессии."""
-        chat = self._model.chat_settings()
-        workdir = AgentWorkdirs(self._root).create(thread)
-        workdir.write(self._builder.build(chat), chat.system_prompt)
-        questions = AskedQuestions(updates)
-        process = AgentProcess(
-            self._stand.command(),
-            workdir,
-            AgentClient(questions),
-            self._relay,
-            servers,
-            "0.0",
-        )
-        await process.start()
-        self.started.append(process)
-        self.questions[process] = questions
-
-        return process
-
-    async def turn(
-        self, process: AgentProcess, session_id: str, text: str
-    ) -> tuple[str, schema.IdleSessionStateUpdate]:
-        """Вопрос в сессию до idle: messageId вопроса и idle хода."""
-        ending = self.questions[process].ending(session_id)
-        message_id = await process.prompt(session_id, [_text(text)])
-        idle = await asyncio.wait_for(ending, self.TURN_TIMEOUT_SEC)
-
-        return message_id, idle
-
-    async def close_all(self) -> None:
-        for process in self.started:
-            await process.close()
-
-        await self._servers.stop()
 
 
 @pytest.fixture
