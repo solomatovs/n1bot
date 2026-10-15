@@ -9,7 +9,8 @@
 
 Ошибки: HTTPException 400 — тело без файловой части или файл не прошёл проверку
 chainlit; 401 — сессия чужая; 404 — сессия, родительское сообщение или файл
-неизвестны; 416 — диапазон за концом файла; 507 — в образе не осталось места.
+неизвестны; 416 — диапазон за концом файла; 502 — сервер MCP журналов
+недоступен; 507 — в образе не осталось места.
 """
 
 from __future__ import annotations
@@ -50,7 +51,12 @@ from boba.chainlit.domain.keys import AppPrefix
 from boba.chainlit.infra.session import ChainlitSession, session_source_ref
 from boba.identity.errors import AuthenticationError
 from boba.identity.session import Login
-from boba.mcp_client.client import McpCaller, McpServers, RelayedFile
+from boba.mcp_client.client import (
+    McpCaller,
+    McpClientError,
+    McpServers,
+    RelayedFile,
+)
 from boba.runtime.served import StreamedFile
 from boba.runtime.storage import StorageClient
 from boba.toolkit.channels import JournalChannels, ToolChannel
@@ -665,11 +671,20 @@ class StreamServing:
             login=Login(current_user.identifier),
             roles=ChainlitSession.roles_of(current_user),
         )
-        files = await self._servers_ref().journal_files(address.server, caller)
+        try:
+            files = await self._servers_ref().journal_files(address.server, caller)
+        except McpClientError as e:
+            msg = (
+                f"stream {call_id}/{log_channel} of thread {thread_id}: mcp "
+                f"server {address.server!r} is unavailable for "
+                f"{caller.login!r}: {e}"
+            )
+            raise HTTPException(status_code=self.BAD_GATEWAY, detail=msg) from e
+
         if files is None:
             msg = (
                 f"stream {call_id}/{log_channel} of thread {thread_id}: mcp "
-                f"server {address.server!r} is unavailable or serves no journals"
+                f"server {address.server!r} serves no journals"
             )
             raise HTTPException(status_code=404, detail=msg)
 

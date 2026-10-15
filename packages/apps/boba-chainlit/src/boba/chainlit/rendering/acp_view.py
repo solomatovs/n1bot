@@ -49,7 +49,7 @@ from boba.toolkit.dag import (
     WorkflowNodeResult,
     WorkflowResult,
 )
-from boba.toolkit.mcp_names import McpToolNames
+from boba.toolkit.mcp import McpToolNames
 from boba.toolkit.result import ToolArtifact
 from chainlit.step import Step
 

@@ -36,6 +36,7 @@ from pydantic import BaseModel, PrivateAttr
 from boba.toolkit.calls import CallIdPrefix, CallViews
 from boba.toolkit.dag import DagNode, NodeOutcome, NodeOutcomes, ToolCard, ToolServer
 from boba.toolkit.failure import FailurePacker
+from boba.toolkit.mcp import McpToolStubs
 from boba.toolkit.result import FailureResult
 from boba.toolkit.wire import ResultWire
 
@@ -121,14 +122,12 @@ class McpTool(Tool):
     _failures: FailurePacker = PrivateAttr()
 
     def __init__(self, card: ToolCard, server: ToolServer) -> None:
+        annotations = McpToolStubs().annotations_of(card.hints)
         super().__init__(
             name=card.name,
             description=card.description,
             parameters=CallViews().typed(card.parameters, card.views),
-            annotations=mt.ToolAnnotations(
-                read_only_hint=card.hints.read_only,
-                destructive_hint=card.hints.destructive,
-            ),
+            annotations=annotations,
         )
         self._server = server
         self._replies = McpReplies()
