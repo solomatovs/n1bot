@@ -452,6 +452,34 @@ class TestLiveEqualsReplay:
         assert len(live) >= 6
         assert live_context.emitter.tokens == replay_context.emitter.tokens
 
+    @pytest.mark.anyio
+    async def test_large_call_result_reaches_the_tabs_by_reference(
+        self, runtime_stand: StandRefs, recorded: FakeEmitter
+    ) -> None:
+        """Итог вызова больше предела сообщения шины уходит телом в
+        PayloadStore: вкладки получают его целиком."""
+        rows = "row " * 5000
+        bus = MemoryMessageBus("test-chainlit")
+        payloads = MemoryPayloadStore()
+        scope = Scope.chat(THREAD)
+        renderer = ChatRenderer(
+            THREAD, _view(runtime_stand, RemoteJournals()), payloads, NoSurface()
+        )
+        leave = bus.subscribe(scope, renderer.apply)
+        feed = TurnFeed(bus, payloads, scope, QUESTION, LockToken.local())
+        result = _result(MarkdownResult(text=rows, elapsed_ms=12))
+        try:
+            await feed.started(QUESTION, QuestionBody(text="hello", author="alice"))
+            await feed.agent_update(_call(CALL, "mcp__boba__pg_query", {"sql": "1"}))
+            await feed.agent_update(_done(CALL, rows, result))
+            await feed.finished(TurnOutcome.OK, "")
+        finally:
+            leave()
+
+        step = recorded.last()[_id(CALL, StepRole.TOOL)]
+        assert str(step.get(StepField.NAME)).startswith("✔ pg_query"), step
+        assert rows.strip() in str(step.get(StepField.OUTPUT))
+
 
 class HolderSurface(NoSurface):
     """Поверхность держателя хода в тесте: контекст chainlit HTTP-сессии
