@@ -1367,9 +1367,9 @@ class McpToolServer:
         """Служебные поля запроса: токен прогресса token и область вызова под
         ключом, который назвал сервер в расширении файлов; серверу без
         расширения и вызову без области она не уходит."""
-        meta: mt.RequestParamsMeta = {}
+        meta = mt.RequestParamsMeta()
         if token is not None:
-            meta["progress_token"] = token
+            meta = mt.RequestParamsMeta(progress_token=token)
 
         if scope is None:
             return meta

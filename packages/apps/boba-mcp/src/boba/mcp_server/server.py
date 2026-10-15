@@ -162,28 +162,23 @@ class ProgressShape(Protocol):
 
     @abstractmethod
     def shaped(
-        self, call_id: str, report: ProgressReport
+        self, call_id: str, report: ProgressReport, token: mt.ProgressToken
     ) -> mt.ProgressNotificationParams | None:
-        """Уведомление по отчёту вызова call_id; None — отчёт не уходит."""
+        """Уведомление по отчёту вызова call_id под токеном прогресса
+        запроса token; None — отчёт не уходит."""
 
 
 class OwnProgress(ProgressShape):
     """Реализация ProgressShape вызовом одного инструмента: числа и текст
     тела идут как есть. Значение прогресса запроса обязано расти, поэтому
-    отчёт, в котором оно не выросло, не уходит. token — токен прогресса из
-    _meta запроса; None — клиент прогресса не просил, и отчёты не уходят."""
+    отчёт, в котором оно не выросло, не уходит."""
 
-    def __init__(self, token: mt.ProgressToken | None) -> None:
-        self._token = token
+    def __init__(self) -> None:
         self._sent = -1.0
 
     def shaped(
-        self, call_id: str, report: ProgressReport
+        self, call_id: str, report: ProgressReport, token: mt.ProgressToken
     ) -> mt.ProgressNotificationParams | None:
-        token = self._token
-        if token is None:
-            return None
-
         if report.done <= self._sent:
             return None
 
@@ -203,24 +198,18 @@ class NodeProgress(ProgressShape):
     прогресса запроса служит номер отчёта связки, а итог неизвестен; числа
     узла, если тот назвал итог, стоят в тексте. Чей это отчёт, говорит
     _meta уведомления: ключ узла от автора связки лежит под ключом,
-    объявленным расширением вложенных вызовов. Создаётся с вызовом связки
-    и токеном прогресса запроса, как OwnProgress: по вызову CallDag находит
-    ключ узла по идентификатору его журнала."""
+    объявленным расширением вложенных вызовов. Создаётся с вызовом связки:
+    по нему CallDag находит ключ узла по идентификатору его журнала."""
 
-    def __init__(self, call: DagNode, token: mt.ProgressToken | None) -> None:
+    def __init__(self, call: DagNode) -> None:
         self._call = call
-        self._token = token
         self._dags = CallDag()
         self._feature = self._dags.feature()
         self._count = 0
 
     def shaped(
-        self, call_id: str, report: ProgressReport
+        self, call_id: str, report: ProgressReport, token: mt.ProgressToken
     ) -> mt.ProgressNotificationParams | None:
-        token = self._token
-        if token is None:
-            return None
-
         title = self._dags.title_of(self._call, call_id)
         if title is None:
             logger.warning(
@@ -251,8 +240,9 @@ class CallProgress:
     журналами запуска (CallJournals.following зовёт opened). Тело пишет
     отчёты о ходе работы в канал ToolChannel.PROGRESS; отсюда они уходят
     клиенту стандартным прогрессом запроса: числа done и total и текст
-    отчёта. Тело ничего не сообщило — уведомлений нет; клиент без токена
-    прогресса их не получает. Отчёты ждут в очереди, а отправляет их задача,
+    отчёта. Тело ничего не сообщило — уведомлений нет. token — токен
+    прогресса из _meta запроса; None — клиент о ходе вызова не просил, и
+    за каналами отчётов никто не следит. Отчёты ждут в очереди, а отправляет их задача,
     заведённая start() внутри запроса: уведомление привязано к запросу, и
     из чужой задачи оно не уходит. Каким отчёт уходит клиенту, решает
     shape: у вызова одного инструмента — как есть, у связки — с ключом
@@ -265,29 +255,40 @@ class CallProgress:
 
     CLOSE_SEC: ClassVar[float] = 2.0
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 — ход вызова привязан к запросу, журналам, запуску и токену
         self,
         context: Context,
         journals: CallJournals,
         user: str,
         run: str,
         shape: ProgressShape,
+        token: mt.ProgressToken | None,
     ) -> None:
         self._context = context
         self._journals = journals
         self._user = user
         self._run = run
         self._shape = shape
+        self._token = token
         self._queue: asyncio.Queue[tuple[str, ProgressReport] | None] = asyncio.Queue()
         self._sender: asyncio.Task[None] | None = None
         self._followers: set[asyncio.Task[None]] = set()
 
     def start(self) -> None:
-        self._sender = asyncio.create_task(self._send(), name=f"progress:{self._run}")
+        token = self._token
+        if token is None:
+            return
+
+        self._sender = asyncio.create_task(
+            self._send(token), name=f"progress:{self._run}"
+        )
 
     def opened(self, call_id: str, stream: ToolStream) -> None:
         """Наблюдатель CallJournals: журнал вызова открыт — за его каналом
-        отчётов следит своя задача."""
+        отчётов следит своя задача, если клиент просил о ходе вызова."""
+        if self._token is None:
+            return
+
         task = asyncio.create_task(
             self._follow(call_id, stream), name=f"progress-follow:{call_id}"
         )
@@ -382,14 +383,14 @@ class CallProgress:
 
         waker.clear()
 
-    async def _send(self) -> None:
+    async def _send(self, token: mt.ProgressToken) -> None:
         while True:
             taken = await self._queue.get()
             if taken is None:
                 return
 
             call_id, report = taken
-            shaped = self._shape.shaped(call_id, report)
+            shaped = self._shape.shaped(call_id, report, token)
             if shaped is None:
                 continue
 
@@ -532,6 +533,7 @@ class FileUploadTool(Tool):
     _routes: FileRoutes = PrivateAttr()
     _subjects: TokenSubjects = PrivateAttr()
     _scopes: CallScopes = PrivateAttr()
+    _meta: SentMeta = PrivateAttr()
     _replies: McpReplies = PrivateAttr()
 
     def __init__(self, routes: FileRoutes, subjects: TokenSubjects) -> None:
@@ -543,13 +545,15 @@ class FileUploadTool(Tool):
         self._routes = routes
         self._subjects = subjects
         self._scopes = CallScopes()
+        self._meta = SentMeta()
         self._replies = McpReplies()
 
     async def run(self, arguments: dict[str, object]) -> ToolResult:
         try:
             request = FileUploadRequest.model_validate(arguments)
             subject = self._subjects.current()
-            scope = self._scopes.of(subject)
+            sent = self._meta.sent()
+            scope = self._scopes.of(subject, sent.scope)
             key = ObjectKey(
                 user_id=subject.user_key, thread_id=scope.id, name=request.name
             )
@@ -618,8 +622,16 @@ class CallContextMiddleware(Middleware):
 
         subject = self._subjects.current()
         try:
-            scope = self._scopes.of(subject)
-            token = self._meta.sent().progress_token
+            fields = self._meta.sent()
+        except CallScopeError as exc:
+            failure = ErrorResult(
+                message=str(exc), error_kind=ServerRefusal.INVALID_REQUEST
+            )
+
+            return self._replies.refused(context.message.name, failure)
+
+        try:
+            scope = self._scopes.of(subject, fields.scope)
         except CallScopeError as exc:
             failure = ErrorResult(
                 message=str(exc), error_kind=ServerRefusal.INVALID_REQUEST
@@ -638,18 +650,23 @@ class CallContextMiddleware(Middleware):
             cancellation=cancellation,
         )
 
-        shape: ProgressShape = OwnProgress(token)
+        shape: ProgressShape = OwnProgress()
         if context.message.name == CallDag.WORKFLOW:
             described: dict[str, Any] = {}
             if sent := context.message.arguments:
                 described = dict(sent)
 
             shape = NodeProgress(
-                DagNode(key=run_id, tool=context.message.name, args=described), token
+                DagNode(key=run_id, tool=context.message.name, args=described)
             )
 
         progress = CallProgress(
-            get_context(), self._journals, subject.user_key, run_id, shape
+            get_context(),
+            self._journals,
+            subject.user_key,
+            run_id,
+            shape,
+            fields.progress_token,
         )
         progress.start()
         try:
