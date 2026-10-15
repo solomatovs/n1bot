@@ -333,38 +333,6 @@ class StandTools(ToolServer):
         raise TypeError(msg)
 
 
-class RoutedServers(ToolServer):
-    """Несколько портов за одним: вызов уходит тому, чей инструмент."""
-
-    def __init__(self, servers: Sequence[ToolServer]) -> None:
-        self._servers = list(servers)
-        self._owner: dict[str, ToolServer] = {}
-        for server in self._servers:
-            for card in server.tools():
-                self._owner[card.name] = server
-
-    def tools(self) -> Sequence[ToolCard]:
-        cards: list[ToolCard] = []
-        for server in self._servers:
-            cards.extend(server.tools())
-
-        return cards
-
-    def features(self) -> Mapping[str, Mapping[str, object]]:
-        return {}
-
-    async def submit(
-        self, calls: Sequence[DagNode]
-    ) -> Sequence[asyncio.Future[NodeOutcome]]:
-        pending: list[asyncio.Future[NodeOutcome]] = []
-        for call in calls:
-            owner = self._owner[call.tool]
-            submitted = await owner.submit([call])
-            pending.append(submitted[0])
-
-        return pending
-
-
 class FakeServer:
     """FakeLlmApp под uvicorn в текущем цикле событий."""
 

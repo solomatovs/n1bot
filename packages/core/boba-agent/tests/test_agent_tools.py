@@ -61,13 +61,13 @@ from boba.stand.agent import (
     Collected,
     FakeServer,
     Protocol,
-    RoutedServers,
     Served,
     StandAgents,
     StandToolName,
     StandTools,
 )
 from boba.stand.ui.fake_llm import FailureName, ScenarioName
+from boba.toolkit.dag import ToolServers
 from boba.toolrun.hosted import DirectCalls
 
 pytestmark = pytest.mark.anyio
@@ -981,7 +981,7 @@ class TestMcp:
         second = self._server("b")
         await first.open()
         await second.open()
-        routed = RoutedServers([first, second])
+        routed = ToolServers([first, second])
         sink = Collected()
         served = Served(
             agents.agent(
