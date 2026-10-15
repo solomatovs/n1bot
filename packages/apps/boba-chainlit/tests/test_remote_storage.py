@@ -17,13 +17,10 @@ from boba.canvas.storage import StorageError, StorageNotFoundError
 from boba.chainlit.data.remote_storage import FileOwners, RemoteStorageClient
 from boba.chat.profiles import ChatProfileConfig, ChatProfiles
 from boba.identity.api import StoredUser
-from boba.identity.context import CallContexts
 from boba.identity.session import Login, UserMetadataField
 from boba.mcp_client.client import (
-    DroppedSignals,
     McpServers,
 )
-from boba.toolrun.hosted import DirectCalls
 from boba.workspace.launcher import ReadWindow
 
 pytestmark = [pytest.mark.anyio, pytest.mark.integration]
@@ -45,12 +42,7 @@ def service(tmp_path_factory: pytest.TempPathFactory) -> Iterator[ServiceProcess
 
 @pytest.fixture
 async def servers(service: ServiceProcess) -> AsyncIterator[McpServers]:
-    opened = McpServers(
-        service.servers(),
-        DroppedSignals(),
-        CallContexts(),
-        DirectCalls(),
-    )
+    opened = McpServers(service.servers())
     try:
         yield opened
     finally:

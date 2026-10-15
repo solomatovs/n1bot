@@ -4,7 +4,9 @@
 либо `python standard_server.py streamable-http <port>`. Кроме четырёх
 обычных инструментов держит отказы стенда: задержку, большой результат,
 обрыв посреди вызова, смену списка инструментов с уведомлением и отчёты о
-ходе вызова, — и ответ из блоков разных видов и адресатов.
+ходе вызова, — ответ из блоков разных видов и адресатов, просьбу о вводе
+(input_required), отказ ошибкой MCP и инструмент только для интерфейса
+(visibility ["app"]).
 """
 
 import asyncio
@@ -14,10 +16,13 @@ from typing import ClassVar
 
 from mcp.server.mcpserver import Context, Image, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
+from mcp.shared.exceptions import MCPError
 from mcp.types import (
+    INVALID_PARAMS,
     Annotations,
     CallToolResult,
     EmbeddedResource,
+    InputRequiredResult,
     ResourceLink,
     TextContent,
     TextResourceContents,
@@ -31,6 +36,8 @@ class StandardServer:
     PNG: bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
     EXTRA: ClassVar[str] = "extra"
     LARGE_LINE: ClassVar[str] = "0123456789"
+    ASKED: ClassVar[str] = "asked once"
+    REFUSAL: ClassVar[dict[str, str]] = {"reason": "the stand refuses"}
 
     def __init__(self, port: int) -> None:
         self._mcp = MCPServer("standard")
@@ -48,6 +55,8 @@ class StandardServer:
         self._mcp.tool()(self.die)
         self._mcp.tool()(self.toggle_extra)
         self._mcp.tool(annotations=ToolAnnotations(read_only_hint=True))(self.progress)
+        self._mcp.tool()(self.ask)
+        self._mcp.tool(meta={"ui": {"visibility": ["app"]}})(self.panel_refresh)
 
     def add(self, a: int, b: int) -> int:
         """Adds two numbers."""
@@ -129,6 +138,19 @@ class StandardServer:
             await asyncio.sleep(0.01)
 
         return f"did {steps} steps"
+
+    def ask(self, refuse: bool) -> InputRequiredResult:
+        """Asks the client for more input instead of answering, or refuses
+        the request with an MCP error."""
+        if refuse:
+            msg = "ask refuses the request"
+            raise MCPError(code=INVALID_PARAMS, message=msg, data=self.REFUSAL)
+
+        return InputRequiredResult(request_state=self.ASKED)
+
+    def panel_refresh(self) -> str:
+        """Refreshes the panel of the app; the model does not call it."""
+        return "panel refreshed"
 
     def run(self, transport: str) -> None:
         if transport == "stdio":

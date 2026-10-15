@@ -24,6 +24,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from enum import StrEnum
 from typing import Any, ClassVar, Protocol
 
+import mcp_types as mt
 from acp.schema import (
     AgentMessageChunk,
     AgentThoughtChunk,
@@ -43,7 +44,6 @@ from boba.toolkit.dag import (
     CallDag,
     DagNode,
     JournalAddress,
-    ToolCard,
     ToolUseResult,
     ToolUseResults,
     WorkflowNodeResult,
@@ -143,11 +143,15 @@ class ToolMedia:
 
     def __init__(self) -> None:
         self._views = CallViews()
+        self._names = McpToolNames()
         self._media: dict[str, Mapping[str, str]] = {}
 
-    def shown(self, cards: Iterable[ToolCard]) -> None:
-        for card in cards:
-            self._media[card.name] = self._views.media_of(card.parameters)
+    def shown(self, server: str, tools: Iterable[mt.Tool]) -> None:
+        """Типы аргументов инструментов tools сервера server под полными
+        именами."""
+        for tool in tools:
+            name = self._names.full(server, tool.name)
+            self._media[name] = self._views.media_of(tool.input_schema)
 
     def of(self, name: str) -> Mapping[str, str] | None:
         """Типы аргументов инструмента; None — инструмент серверам неизвестен."""

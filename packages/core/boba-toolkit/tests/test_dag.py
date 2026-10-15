@@ -299,21 +299,13 @@ class TestDagGroups:
 
 
 class TestNodeReports:
-    """Подпись отчёта о ходе работы ключом узла связки и её разбор."""
+    """Подпись отчёта о ходе работы ключом узла связки."""
 
-    def test_report_is_signed_and_read_back(self) -> None:
-        reports = NodeReports()
-
-        signed = reports.labeled("src", "copy t to stdout: 2.0 MiB")
+    def test_report_is_signed_with_the_node_key(self) -> None:
+        signed = NodeReports().labeled("src", "copy t to stdout: 2.0 MiB")
 
         if signed != "src: copy t to stdout: 2.0 MiB":
             raise AssertionError(f"ключ узла стоит в начале текста: {signed}")
-        if reports.split(signed) != ("src", "copy t to stdout: 2.0 MiB"):
-            raise AssertionError("разбор отдаёт ключ и текст узла как были")
-
-    def test_text_without_a_key_is_not_a_node_report(self) -> None:
-        if NodeReports().split("connecting") is not None:
-            raise AssertionError("текст без подписи не приписывается узлу")
 
 
 class TestNodeTitle:
