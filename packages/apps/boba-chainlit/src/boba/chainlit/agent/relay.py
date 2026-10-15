@@ -56,7 +56,9 @@ from boba.mcp_client.client import (
     McpServers,
     McpToolServer,
 )
-from boba.toolkit.failure import ValidationText
+from boba.toolkit.chain import StreamPlanError
+from boba.toolkit.dag import DagNode, NestedCallsFeature
+from boba.toolkit.failure import InvokeErrorKind, ValidationText
 from boba.toolkit.mcp import McpToolNames
 from boba.toolrun.injected import ToolConfigError
 from boba.transport.acp.protocol import (
@@ -168,7 +170,9 @@ class McpRelay:
     Сервер профиля зовётся портом McpServers от имени пользователя вкладки,
     сервер инструментов чата до переноса в процесс — по его HTTP-адресу
     ключом регистрации. Соединения в аргументах запечатывает HookSealing,
-    ход вызова уходит агенту уведомлением notifications/progress, ответ
+    у инструмента со вложенными вызовами (расширение NestedCallsFeature
+    сервера) — и в аргументах каждого узла по схеме его инструмента. Ход
+    вызова уходит агенту уведомлением notifications/progress, ответ
     сервера — как есть. Инструменты только для интерфейса (_meta.ui.visibility
     без "model") агенту не видны и не вызываются.
     """
@@ -288,8 +292,9 @@ class McpRelay:
     async def _call_tool(
         self, ctx: ServerRequestContext[str], params: mt.CallToolRequestParams
     ) -> mt.CallToolResult | mt.InputRequiredResult:
-        """Вызов инструмента для модели: соединения запечатаны, тред —
-        областью вызова, отказ запечатывания — isError с причиной.
+        """Вызов инструмента для модели: соединения запечатаны, у вызова со
+        вложенными вызовами — и в узлах, тред — областью вызова, отказ
+        запечатывания — isError с причиной.
 
         Ошибки:
         MCPError — инструмента у сервера нет либо он не для модели.
@@ -320,6 +325,11 @@ class McpRelay:
                 arguments = await self._sealing.seal(
                     full, asked, tool.input_schema, server, caller
                 )
+                if nested := port.nested_calls():
+                    if nested.tool == tool.name:
+                        arguments = await self._sealed_nodes(
+                            nested, arguments, offered, server, caller
+                        )
             except (RefusalError, ToolConfigError) as exc:
                 reason = f"{full}: {exc}"
                 logger.warning("mcp relay: sealing refused: %s", reason)
@@ -336,6 +346,59 @@ class McpRelay:
             sent = params.model_copy(update={"arguments": arguments})
 
             return await port.call(sent, holder.thread_id, ctx.session.report_progress)
+
+    async def _sealed_nodes(
+        self,
+        nested: NestedCallsFeature,
+        arguments: Mapping[str, Any],
+        offered: Mapping[str, mt.Tool],
+        server: McpServerInfo,
+        caller: ChatCaller,
+    ) -> dict[str, Any]:
+        """Аргументы вызова инструмента со вложенными вызовами: соединения
+        каждого узла запечатаны по схеме инструмента узла. Узлы разбираются
+        по форме, которую объявил сервер; вызов не по форме уходит как есть,
+        его отвергнет сервер.
+
+        Ошибки:
+        RefusalError — инструмент узла не предложен модели, соединение узла
+            неизвестно или не выдано пользователю.
+        ToolConfigError — соединение не годится инструменту узла.
+        ConnectionStoreError — таблица соединений недоступна.
+        KerberosError — билет к соединению не выпущен.
+        """
+        try:
+            calls = nested.calls(arguments)
+        except StreamPlanError as exc:
+            logger.info("mcp relay: nodes are sent unsealed: %s", exc)
+            return dict(arguments)
+
+        sealed: list[DagNode] = []
+        for call in calls:
+            full = self._names.full(server.name, call.tool)
+            tool = offered.get(call.tool)
+            if tool is None:
+                msg = (
+                    f"node {call.key!r} ({full}): mcp server {server.name!r} "
+                    f"offers the model no tool {call.tool!r}; expected one of "
+                    f"{sorted(offered)}"
+                )
+                raise RefusalError(InvokeErrorKind.UNKNOWN_TOOL, msg)
+
+            try:
+                args = await self._sealing.seal(
+                    full, call.args, tool.input_schema, server, caller
+                )
+            except RefusalError as exc:
+                msg = f"node {call.key!r} ({full}): {exc}"
+                raise RefusalError(exc.kind, msg) from exc
+            except ToolConfigError as exc:
+                msg = f"node {call.key!r} ({full}): {exc}"
+                raise ToolConfigError(msg) from exc
+
+            sealed.append(call.model_copy(update={"args": args}))
+
+        return nested.replaced(arguments, sealed)
 
     @asynccontextmanager
     async def _port(

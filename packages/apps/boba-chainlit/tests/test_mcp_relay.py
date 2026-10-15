@@ -284,7 +284,10 @@ class TestMcpRelay:
 @pytest.mark.integration
 class TestRelaySealing:
     """Ретранслятор запечатывает соединения пользователя через HookSealing:
-    невыданное имя — отказ isError, выданное доходит до тела сервера."""
+    невыданное имя — отказ isError, выданное доходит до тела сервера. У
+    инструмента со вложенными вызовами, объявленного сервером, соединения
+    запечатываются в каждом узле; отказ узла — isError всего вызова с
+    ключом узла, вызов не по объявленной форме уходит серверу как есть."""
 
     SCHEMA: ClassVar[str] = "relay_connections"
     ENVELOPE: ClassVar[dict[str, Any]] = TestMcpRelay.ENVELOPE
@@ -300,12 +303,81 @@ class TestRelaySealing:
 
         return built
 
-    async def test_sealing_is_applied_to_the_call(
+    @pytest.mark.parametrize(
+        ("name", "arguments", "errored", "expected"),
+        [
+            (
+                "fake_connection_host",
+                {"connection": "missing"},
+                True,
+                ["is not among the connections"],
+            ),
+            (
+                "fake_connection_host",
+                {"connection": "orders"},
+                False,
+                ["db.local|orders"],
+            ),
+            (
+                "workflow",
+                {
+                    "nodes": [
+                        {
+                            "key": "n0",
+                            "tool": "fake_connection_host",
+                            "args": {"connection": "orders"},
+                        }
+                    ]
+                },
+                False,
+                ["db.local|orders"],
+            ),
+            (
+                "workflow",
+                {
+                    "nodes": [
+                        {
+                            "key": "n0",
+                            "tool": "fake_connection_host",
+                            "args": {"connection": "missing"},
+                        }
+                    ]
+                },
+                True,
+                ["node 'n0'", "fake_connection_host", "is not among the connections"],
+            ),
+            (
+                "workflow",
+                {"nodes": [{"key": "n0", "tool": "no_such_tool", "args": {}}]},
+                True,
+                ["node 'n0'", "offers the model no tool 'no_such_tool'"],
+            ),
+            (
+                "workflow",
+                {"nodes": "n0"},
+                True,
+                ["does not match its schema", "nodes"],
+            ),
+        ],
+        ids=[
+            "refused",
+            "sealed",
+            "node-sealed",
+            "node-refused",
+            "node-unknown-tool",
+            "off-shape-as-is",
+        ],
+    )
+    async def test_sealing_is_applied_to_the_call(  # noqa: PLR0913 — стенд и случай
         self,
         service_process: ServiceProcess,
         store: ConnectionStore,
         call_stand: CallStand,
         tab: TabSession,
+        name: str,
+        arguments: dict[str, Any],
+        errored: bool,
+        expected: list[str],
     ) -> None:
         credentials = KerberosCredentialSource(None, NoRefresh())
         stand = RelayStand(lambda: store, lambda: credentials, call_stand.contexts)
@@ -342,27 +414,14 @@ class TestRelaySealing:
             assert isinstance(listed, McpResultOutcome), (
                 f"the service stand did not list its tools within 30s: {listed}"
             )
-            refused = await relay.answer(
+            called = await relay.answer(
                 McpMessage(
                     server_id=server_id,
-                    request_id="mcp:refused",
+                    request_id="mcp:call",
                     method="tools/call",
                     params={
-                        "name": "fake_connection_host",
-                        "arguments": {"connection": "missing"},
-                        "_meta": self.ENVELOPE,
-                    },
-                ),
-                heard.put,
-            )
-            sealed = await relay.answer(
-                McpMessage(
-                    server_id=server_id,
-                    request_id="mcp:sealed",
-                    method="tools/call",
-                    params={
-                        "name": "fake_connection_host",
-                        "arguments": {"connection": "orders"},
+                        "name": name,
+                        "arguments": arguments,
                         "_meta": self.ENVELOPE,
                     },
                 ),
@@ -371,11 +430,8 @@ class TestRelaySealing:
         finally:
             await servers.stop()
 
-        assert isinstance(refused, McpResultOutcome), refused
-        denial = mt.CallToolResult.model_validate(refused.result)
-        assert denial.is_error, denial
-        assert "is not among the connections" in str(denial.content), denial
-        assert isinstance(sealed, McpResultOutcome), sealed
-        answer = mt.CallToolResult.model_validate(sealed.result)
-        assert not answer.is_error, answer
-        assert "db.local|orders" in str(answer.content), answer
+        assert isinstance(called, McpResultOutcome), called
+        answer = mt.CallToolResult.model_validate(called.result)
+        assert answer.is_error is errored, answer
+        for part in expected:
+            assert part in str(answer.content), answer
