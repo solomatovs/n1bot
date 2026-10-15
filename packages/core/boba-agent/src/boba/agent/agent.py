@@ -46,7 +46,6 @@ from boba.agent.history import (
     SessionLease,
     SessionNotFoundError,
 )
-from boba.agent.hooks import PreToolUseHooks
 from boba.agent.ids import Clock, IdMint, SystemClock
 from boba.agent.loader import HistoryLoader, LoadReport
 from boba.agent.permissions import (
@@ -114,7 +113,6 @@ class AgentParts:
         allowed_tools: Sequence[str] = (),
         denied_tools: Sequence[str] = (),
         record_requests: bool = False,
-        hooks: PreToolUseHooks | None = None,
         question_tool: bool = True,
     ) -> None:
         self.profile = profile
@@ -140,7 +138,6 @@ class AgentParts:
             allowed=frozenset(allowed_tools), denied=frozenset(denied_tools)
         )
         self.record_requests = record_requests
-        self.hooks = hooks
         self.question_tool = question_tool
         """Предлагать ли модели собственный инструмент «вопрос пользователю»:
         запускающая программа без формы для вопросов его не показывает."""
@@ -271,7 +268,6 @@ class Agent:
             wiring.clock,
             parts.agent_name,
             parts.static_rules,
-            parts.hooks,
         )
         recorder = RequestRecorder(
             keeper, wiring.ids, wiring.clock, parts.record_requests

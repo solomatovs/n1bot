@@ -1,1 +1,0 @@
-The PreToolUse hook at {url} did not answer for the call of {tool} and is configured to block it, so the tool was not run: {error}

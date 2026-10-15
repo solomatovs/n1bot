@@ -4,11 +4,8 @@
 инструменты агента (вопрос пользователю) живут рядом с инструментами
 сервера и зовутся по имени (план, раздел 5.12). ToolRunner ведёт пачку
 вызовов по разделу 5.13, шаг 8: каждый вызов проходит разрешения (раздел
-5.6), вопросы наружу идут по очереди, затем хук `PreToolUse` (boba.agent.hooks)
-может заменить аргументы, снять вызов или потребовать вопрос наружу; у вызова
-workflow хук проходит и каждый узел — вызов своего инструмента;
-разрешённые вызовы уходят серверу одним `submit` с аргументами после хука,
-а запись `tool_use` хранит аргументы модели; результаты собираются в
+5.6), вопросы наружу идут по очереди; разрешённые вызовы уходят серверу
+одним `submit`; результаты собираются в
 порядке вызовов; отмена посреди пачки даёт результаты-отказы по таблице
 раздела 5.14. Результат длиннее предела обрезается, пустой заменяется
 заглушкой.
@@ -42,15 +39,6 @@ from boba.agent.events import (
     ControlRequestEvent,
     ToolStartedEvent,
 )
-from boba.agent.hooks import (
-    HookAllowed,
-    HookAsked,
-    HookBlocked,
-    HookDenied,
-    HookedCall,
-    HookVerdict,
-    PreToolUseHooks,
-)
 from boba.agent.ids import Clock
 from boba.agent.permissions import (
     Allowed,
@@ -75,9 +63,7 @@ from boba.agent.tags import AgentTag
 from boba.agent.template import AgentTemplate, AgentTemplateFile
 from boba.agent.writer import RecordKeeper
 from boba.cancellation import RunCancellation, StopReason, ToolStopped
-from boba.toolkit.chain import StreamPlanError
-from boba.toolkit.dag import CallDag, DagNode, NodeOutcome, ToolHints, ToolServer
-from boba.toolkit.mcp import McpToolName, McpToolNames
+from boba.toolkit.dag import DagNode, NodeOutcome, ToolHints, ToolServer
 
 logger = logging.getLogger(__name__)
 
@@ -134,7 +120,7 @@ class BatchOutcome:
 
 @dataclass(frozen=True)
 class Approved:
-    """Вызов прошёл разрешения и хук: эти аргументы уходят серверу."""
+    """Вызов прошёл разрешения: эти аргументы уходят серверу."""
 
     arguments: Mapping[str, Any]
 
@@ -387,18 +373,6 @@ class AgentTools:
 
         return self._server_hints.get(name)
 
-    def schema_of(self, name: str) -> Mapping[str, Any]:
-        """Входная JSON-схема инструмента; у неизвестного — пустая."""
-        own = self._own.get(name)
-        if own is not None:
-            return own.card().schema_
-
-        card = self._server_cards.get(name)
-        if card is None:
-            return {}
-
-        return card.schema_
-
     def own(self, name: str) -> OwnTool | None:
         return self._own.get(name)
 
@@ -452,27 +426,6 @@ class ToolTexts:
             denial=ToolDenialKind.USER_REJECTED,
         )
 
-    def hook_denied(self, call: PlannedCall, reason: str) -> CallResult:
-        """Обработчик хука снял вызов: с причиной или без неё."""
-        if reason.strip():
-            text = self._templates.read(AgentTemplateFile.HOOK_DENIED).format(
-                tool=call.name, reason=reason
-            )
-        else:
-            text = self._templates.read(AgentTemplateFile.HOOK_DENIED_SILENT).format(
-                tool=call.name
-            )
-
-        return CallResult(call=call, text=text, is_error=True, artifact=text)
-
-    def hook_blocked(self, call: PlannedCall, url: str, error: str) -> CallResult:
-        """Обработчик хука не ответил, а его отказ блокирует вызов."""
-        text = self._templates.read(AgentTemplateFile.HOOK_BLOCKED).format(
-            tool=call.name, url=url, error=error
-        )
-
-        return CallResult(call=call, text=text, is_error=True, artifact=text)
-
     def interrupted(self, call: PlannedCall) -> CallResult:
         """Ход закончен ради элемента `now`: вызов не доработал."""
         text = self._templates.read(AgentTemplateFile.TURN_ABORTED)
@@ -522,12 +475,8 @@ class ToolRunner:
         clock: Clock,
         agent_name: str,
         static: StaticRules,
-        hooks: PreToolUseHooks | None,
     ) -> None:
         self._static = static
-        self._hooks = hooks
-        self._dags = CallDag()
-        self._names = McpToolNames()
         self._tools = tools
         self._texts = texts
         self._templates = templates
@@ -571,7 +520,7 @@ class ToolRunner:
     ) -> None:
         for index, call in enumerate(calls):
             cancellation.raise_if_cancelled()
-            decided = await self._decide(call, questioner, cancellation)
+            decided = await self._decide(call, questioner)
             if isinstance(decided, CallResult):
                 running.results[index] = decided
                 continue
@@ -579,13 +528,10 @@ class ToolRunner:
             running.submitted.append((index, call, decided.arguments))
 
     async def _decide(
-        self,
-        call: PlannedCall,
-        questioner: Questioner,
-        cancellation: RunCancellation,
+        self, call: PlannedCall, questioner: Questioner
     ) -> CallResult | Approved:
-        """Разрешения, вопрос наружу, хук, собственный инструмент: результат
-        сразу либо аргументы для сервера."""
+        """Разрешения, вопрос наружу, собственный инструмент: результат сразу
+        либо аргументы для сервера."""
         hints = self._tools.hints_of(call.name)
         if hints is None:
             return self._texts.unknown(call)
@@ -605,126 +551,12 @@ class ToolRunner:
 
             arguments = await self._granted(answer, arguments)
 
-        hooked = await self._hooked(call, arguments, cancellation)
-        settled = await self._after_hook(call, hooked, questioner)
-        if isinstance(settled, CallResult):
-            return settled
-
         own = self._tools.own(call.name)
         if own is not None:
             await self._started(call)
-            return await own.run(call, settled.arguments, questioner)
+            return await own.run(call, arguments, questioner)
 
-        return settled
-
-    async def _hooked(
-        self,
-        call: PlannedCall,
-        arguments: Mapping[str, Any],
-        cancellation: RunCancellation,
-    ) -> HookVerdict:
-        hooks = self._hooks
-        if hooks is None:
-            return HookAllowed(arguments=arguments)
-
-        verdict = await hooks.before_call(
-            self._hooked_call(call.name, call.block.id, arguments), cancellation
-        )
-        if isinstance(verdict, HookDenied):
-            return verdict
-
-        if isinstance(verdict, HookBlocked):
-            return verdict
-
-        owner = self._names.parse(call.name)
-        if owner is None:
-            return verdict
-
-        if owner.tool != self._dags.WORKFLOW:
-            return verdict
-
-        return await self._nodes_hooked(hooks, call, owner, verdict, cancellation)
-
-    async def _nodes_hooked(
-        self,
-        hooks: PreToolUseHooks,
-        call: PlannedCall,
-        owner: McpToolName,
-        verdict: HookAllowed | HookAsked,
-        cancellation: RunCancellation,
-    ) -> HookVerdict:
-        """Хук над узлами вызова workflow сервера owner. Узел — вызов
-        инструмента того же сервера: обработчик видит его под полным именем,
-        схемой и идентификатором вызова этого инструмента, а замены
-        аргументов узлов возвращаются в вызов workflow. Отказ по любому узлу
-        снимает вызов целиком. Вызов, который не проходит форму описания,
-        уходит серверу как есть — он и ответит, что с ним не так."""
-        whole = DagNode(key=call.block.id, tool=call.name, args=dict(verdict.arguments))
-        try:
-            described = self._dags.described(whole)
-        except StreamPlanError:
-            return verdict
-
-        asked: HookAsked | None = None
-        if isinstance(verdict, HookAsked):
-            asked = verdict
-
-        nodes: list[DagNode] = []
-        for node, called in zip(described, self._dags.nodes_of(whole), strict=True):
-            node_tool = self._names.in_server(owner.server, node.tool)
-            hooked = await hooks.before_call(
-                self._hooked_call(node_tool, called.key, node.args), cancellation
-            )
-            if isinstance(hooked, HookDenied):
-                return hooked
-
-            if isinstance(hooked, HookBlocked):
-                return hooked
-
-            if isinstance(hooked, HookAsked) and asked is None:
-                asked = hooked
-
-            nodes.append(node.model_copy(update={"args": dict(hooked.arguments)}))
-
-        arguments = self._dags.with_nodes(whole, nodes).args
-        if asked is not None:
-            return HookAsked(arguments=arguments, reason=asked.reason)
-
-        return HookAllowed(arguments=arguments)
-
-    def _hooked_call(
-        self, name: str, tool_use_id: str, arguments: Mapping[str, Any]
-    ) -> HookedCall:
-        """Вызов инструмента name глазами хука в текущей сессии."""
-        session = self._keeper.session
-
-        return HookedCall(
-            session_id=session.id.value,
-            permission_mode=PermissionState(session.service()).mode,
-            tool_name=name,
-            tool_use_id=tool_use_id,
-            arguments=arguments,
-            schema=self._tools.schema_of(name),
-        )
-
-    async def _after_hook(
-        self, call: PlannedCall, hooked: HookVerdict, questioner: Questioner
-    ) -> CallResult | Approved:
-        """Вердикт хука → отказ сразу, вопрос наружу или аргументы вызова."""
-        if isinstance(hooked, HookDenied):
-            return self._texts.hook_denied(call, hooked.reason)
-
-        if isinstance(hooked, HookBlocked):
-            return self._texts.hook_blocked(call, hooked.url, hooked.error)
-
-        if isinstance(hooked, HookAsked):
-            answer = await questioner.ask(self._request(call, hooked.arguments))
-            if isinstance(answer, DenyAnswer):
-                return self._texts.rejected(call, answer.message)
-
-            return Approved(await self._granted(answer, hooked.arguments))
-
-        return Approved(hooked.arguments)
+        return Approved(arguments)
 
     async def _classified(
         self, call: PlannedCall, hints: ToolHints

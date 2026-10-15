@@ -3,8 +3,7 @@
 Разбирает аргументы, собирает действующие настройки (Settings), на старте
 проверяет профили моделей (ModelCatalog), хранилище истории и скиллы и отдаёт
 ACP-серверу (boba.cli.acp_server) сборку сессий: на каждую `session/new|load|resume`
-— агент ядра с серверами MCP из запроса и из `.mcp.json` проекта и с хуком
-`PreToolUse` из секции `hooks` настроек (boba.cli.hooks); на занятую другим
+— агент ядра с серверами MCP из запроса и из `.mcp.json` проекта; на занятую другим
 процессом сессию — наблюдатель над теми же серверами; список, удаление и
 копия сессий (ветвление) идут в хранилище истории; смена профиля модели в
 сессии берёт модель из каталога. Стандартный вывод с
@@ -35,8 +34,6 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import BinaryIO, ClassVar
 
-import httpx
-
 from boba.agent.agent import Agent, AgentParts
 from boba.agent.attachments import EnvironmentSnapshot
 from boba.agent.events import EventSink, ToolProgressEvent
@@ -48,7 +45,6 @@ from boba.agent.history import (
     SessionId,
     SessionNotFoundError,
 )
-from boba.agent.hooks import McpServerInfo
 from boba.agent.ids import IdMint, SystemClock
 from boba.agent.loader import HistoryLoader, SessionDigests
 from boba.agent.permissions import PermissionModeError
@@ -71,7 +67,6 @@ from boba.cli.acp_server import (
     SessionRefusedError,
     SessionSummary,
 )
-from boba.cli.hooks import HookWiring, HttpHookTransport
 from boba.cli.settings import (
     Arguments,
     EffectiveSettings,
@@ -276,14 +271,6 @@ class ManyServers(ToolServer):
 
     def features(self) -> Mapping[str, Mapping[str, object]]:
         return {}
-
-    def described(self) -> Mapping[str, McpServerInfo]:
-        """Серверы сессии для события хука: имя и объявленные возможности."""
-        found: dict[str, McpServerInfo] = {}
-        for name, server in self._servers.items():
-            found[name] = McpServerInfo(name=name, features=server.features())
-
-        return found
 
     async def submit(
         self, calls: Sequence[DagNode]
@@ -541,8 +528,7 @@ class AgentAssembly(SessionAssembly):
     всех сессий; сессия открывается на профиле `model` настроек и может
     переключиться на любой другой из каталога. На сессию собираются серверы
     MCP (из `.mcp.json` проекта и из запроса, запрос побеждает по имени),
-    снимок окружения с `cwd` сессии, хук `PreToolUse` над происхождением
-    инструментов этих серверов и агент ядра. Собственный инструмент «вопрос
+    снимок окружения с `cwd` сессии и агент ядра. Собственный инструмент «вопрос
     пользователю» в ACP не предлагается: формы вопроса у клиента нет. С
     хранилищем `memory` загрузка сессии даёт пустую историю: возобновлять
     нечего, сессия открывается заново под тем же идентификатором, а ветвить
@@ -560,7 +546,6 @@ class AgentAssembly(SessionAssembly):
         store: HistoryStore,
         skills: Sequence[Skill],
         environment: Environment,
-        hooks: HookWiring,
         cwd: Path,
         version: str,
     ) -> None:
@@ -569,7 +554,6 @@ class AgentAssembly(SessionAssembly):
         self._store = store
         self._skills = list(skills)
         self._environment = environment
-        self._hooks = hooks
         self._cwd = cwd
         self._version = version
         self._builder = McpServerBuilder(settings.mcp, settings.env)
@@ -718,9 +702,6 @@ class AgentAssembly(SessionAssembly):
         self, cwd: Path, tools: ManyServers | None, sink: EventSink
     ) -> AgentParts:
         settings = self._settings
-        servers: Mapping[str, McpServerInfo] = {}
-        if tools is not None:
-            servers = tools.described()
 
         return AgentParts(
             profile=self._catalog.profile(settings.model),
@@ -741,7 +722,6 @@ class AgentAssembly(SessionAssembly):
             denied_tools=settings.permissions.deny,
             record_requests=settings.record_requests,
             question_tool=False,
-            hooks=self._hooks.hooks(settings, servers, cwd),
         )
 
     async def _tool_servers(
@@ -834,7 +814,6 @@ class AgentProcess:
         # состав провайдеров объявлен явно (план, раздел 5.20): в одном файле
         # метаданных дистрибутивов и их entry points нет
         self._providers = LlmProviders(LlmProviderTypes.declare([OPENAI, OLLAMA, ONNX]))
-        self._hook_transport = HttpHookTransport(httpx.AsyncClient(trust_env=False))
 
     async def run(self) -> None:
         """Всё проверяется до чтения ввода: настройки, профиль, хранилище,
@@ -856,7 +835,6 @@ class AgentProcess:
         try:
             await server.serve()
         finally:
-            await self._hook_transport.aclose()
             await self._providers.aclose()
 
     @staticmethod
@@ -892,7 +870,6 @@ class AgentProcess:
             self._store(settings),
             skills,
             self._environment,
-            HookWiring(self._hook_transport),
             self._cwd,
             self._version,
         )
