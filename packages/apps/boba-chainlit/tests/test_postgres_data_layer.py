@@ -9,16 +9,19 @@ from chainlit.types import Feedback as FeedbackPayload
 from chainlit.types import Pagination, ThreadFilter
 from chainlit.user import PersistedUser
 from chainlit.user import User as ChainlitUser
-from chainlit_stand import Seed
+from chainlit_stand import NoTabs, Seed
 
 from boba.canvas.keys import ObjectKey, ThreadDir
 from boba.chainlit.data.data_layer import PostgresDataLayer
+from boba.chainlit.data.remote_storage import FileOwners, RemoteStorageClient
 from boba.chainlit.domain.fields import ThreadMetaField
 from boba.chainlit.infra.config import AppConfig
+from boba.chat.profiles import ChatProfileConfig, ChatProfiles
 from boba.chat.threads import DataRejectedError, ThreadUpsert
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.context import Scope
 from boba.identity.session import UserMetadataField
+from boba.mcp_client.client import McpServers, McpServersConfig
 from boba.messaging import (
     Envelope,
     FeedbackChanged,
@@ -325,6 +328,48 @@ async def test_delete_thread_removes_its_files(seeded: Seed, files_dir: Path):
     assert await layer.get_thread(seeded.thread_id) is None
     for path in stored:
         assert not path.exists(), path
+
+
+async def test_delete_thread_of_a_user_without_file_storage(
+    app_config: AppConfig,
+    pool: AsyncPostgresPool,
+    layer: PostgresDataLayer,
+    data_bus: MemoryMessageBus,
+):
+    """Профиль пользователя не называет MCP-серверов — хранилища файлов у него
+    нет: удаление треда не падает, удалять из хранилища нечего."""
+    tables = ChatTables.of(
+        app_config.data_layer.postgres, app_config.data_layer.db_schema, pool
+    )
+    profiles = ChatProfiles(
+        {"bare": ChatProfileConfig.model_construct(mcp=[], roles=["*"], default=True)}
+    )
+    sessions = NoTabs()
+    servers = McpServers(McpServersConfig(servers={}))
+    owners = FileOwners(lambda: sessions, lambda: tables.users, profiles)
+    bare = PostgresDataLayer(
+        users=tables.users,
+        threads=tables.threads,
+        feedbacks=tables.feedbacks,
+        storage=RemoteStorageClient("/workspace", owners, lambda: servers),
+        bus=data_bus,
+    )
+    user = await bare.create_user(
+        ChainlitUser(
+            identifier="bare-user",
+            metadata={
+                UserMetadataField.ROLES: ["dev"],
+                UserMetadataField.PROFILES: ["bare"],
+            },
+        )
+    )
+    assert user is not None
+    thread_id = str(uuid4())
+    await bare.update_thread(thread_id, name="bare", user_id=user.id)
+
+    await bare.delete_thread(thread_id)
+
+    assert await layer.get_thread(thread_id) is None
 
 
 async def test_build_debug_url(layer: PostgresDataLayer):

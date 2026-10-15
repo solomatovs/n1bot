@@ -6,8 +6,10 @@
 котором пользователь работает.
 
 Ошибки:
-StorageError — владельца или сервер файлов не определить, сервер недоступен
+StorageError — владельца или профиль не определить, сервер недоступен
     либо отказал.
+StorageAbsentError — профиль пользователя не называет MCP-сервер или сервер
+    не объявляет файлов: хранилища у пользователя нет.
 StorageNotFoundError — файла нет в workspace.
 StorageFullError — в workspace не осталось места.
 """
@@ -21,7 +23,12 @@ from typing import Any, ClassVar
 from uuid import UUID
 
 from boba.canvas.keys import ObjectKey
-from boba.canvas.storage import FileStat, OpenedStream, StorageError
+from boba.canvas.storage import (
+    FileStat,
+    OpenedStream,
+    StorageAbsentError,
+    StorageError,
+)
 from boba.chainlit.infra.session import ChainlitSession, OwnerSessions
 from boba.chat.profiles import ChatProfiles
 from boba.identity.api import UserRows
@@ -75,8 +82,8 @@ class FileOwners:
             stored = await self._users().stored_by_id(UUID(user_id))
         except ValueError as exc:
             msg = (
-                f"files of thread {thread_id}: the key names user {user_id!r}, "
-                f"expected a users id: {exc}"
+                f"files of thread {thread_id}: the owner {user_id!r} is not a "
+                f"users id: {exc}"
             )
             raise StorageError(msg) from exc
 
@@ -121,7 +128,7 @@ class FileOwners:
                 f"files of thread {thread_id} of user {user_id}: profile "
                 f"{profile!r} names no mcp server, so it has no file storage"
             )
-            raise StorageError(msg)
+            raise StorageAbsentError(msg)
 
         return servers[0]
 
@@ -136,7 +143,7 @@ class FileOwners:
             f"files of thread {thread_id}: none of the profiles "
             f"{sorted(sign_in.profiles)} granted to the user names an mcp server"
         )
-        raise StorageError(msg)
+        raise StorageAbsentError(msg)
 
 
 class RemoteStorageClient(StorageClient):
@@ -198,7 +205,19 @@ class RemoteStorageClient(StorageClient):
         raise StorageError(msg)
 
     async def _delete_thread(self, user_id: str, thread_id: str) -> None:
-        files = await self._files(user_id, thread_id)
+        """Область треда одной операцией сервиса; у пользователя без
+        хранилища файлов нет — удалять нечего."""
+        try:
+            files = await self._files(user_id, thread_id)
+        except StorageAbsentError as exc:
+            logger.info(
+                "thread %s of user %s: no file storage, nothing to delete: %s",
+                thread_id,
+                user_id,
+                exc,
+            )
+            return
+
         await files.delete_scope(thread_id)
 
     async def _files(self, user_id: str, thread_id: str) -> McpFiles:
@@ -218,6 +237,6 @@ class RemoteStorageClient(StorageClient):
                 f"files of thread {thread_id} of user {user_id}: mcp server "
                 f"{target.server!r} declares no file storage"
             )
-            raise StorageError(msg)
+            raise StorageAbsentError(msg)
 
         return files

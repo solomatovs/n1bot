@@ -5,6 +5,7 @@
 StorageError — операция хранилища не выполнена.
 StorageFullError — превышена квота.
 StorageNotFoundError — объекта нет.
+StorageAbsentError — у пользователя нет файлового хранилища.
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ __all__ = [
     "LauncherRead",
     "OpProgress",
     "OpenedStream",
+    "StorageAbsentError",
     "StorageError",
     "StorageFullError",
     "StorageGuard",
@@ -46,6 +48,12 @@ class StorageFullError(StorageError):
 
 class StorageNotFoundError(StorageError):
     """Объекта с таким ключом в хранилище нет."""
+
+
+class StorageAbsentError(StorageError):
+    """Файлового хранилища у пользователя нет: его профиль не называет
+    MCP-сервер или сервер не объявляет файлов. Не сбой, а факт: операции над
+    всеми файлами треда пользователя такого хранилища нечего делать."""
 
 
 class FileStat(BaseModel):
