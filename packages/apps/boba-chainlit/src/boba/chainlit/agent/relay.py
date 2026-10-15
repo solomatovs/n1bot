@@ -341,14 +341,11 @@ class McpRelay:
 
             sent = params.model_copy(update={"arguments": arguments})
 
-            token: mt.ProgressToken | None = None
-            if meta := ctx.meta:
-                token = meta.get("progress_token")
-
-            if token is None:
-                return await port.call(sent, holder.thread_id, None)
-
-            forwarded = partial(self._forwarded, ctx, token)
+            forwarded: Callable[[mt.ProgressNotificationParams], Awaitable[None]] | None
+            forwarded = None
+            token = progress_token_from_params(ctx.params)
+            if token is not None:
+                forwarded = partial(self._forwarded, ctx, token)
 
             return await port.call(sent, holder.thread_id, forwarded)
 
