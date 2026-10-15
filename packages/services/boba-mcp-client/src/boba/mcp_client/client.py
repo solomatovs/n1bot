@@ -764,7 +764,7 @@ class McpServersConfig(BaseModel):
 class ErrorCauses:
     """Причины сбоя одной строкой: группа исключений anyio раскрывается до
     своих листьев, иначе в тексте остаётся «unhandled errors in a TaskGroup».
-    Создаётся соединением и переводчиком результатов."""
+    Создаётся соединением и портом McpToolServer."""
 
     def text(self, error: BaseException) -> str:
         return "; ".join(self._leaves(error))

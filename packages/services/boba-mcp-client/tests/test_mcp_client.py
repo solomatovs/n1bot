@@ -322,7 +322,10 @@ class TestPublicServers:
         except httpx.HTTPError as exc:
             pytest.fail(f"{endpoint.url()} is unreachable: {exc}")
 
-    async def test_deepwiki_lists_tools_and_answers_a_call(self) -> None:
+    async def test_server_without_discover_is_refused_with_the_versions(
+        self,
+    ) -> None:
+        """deepwiki отвечает только на initialize: клиент его не берёт."""
         await self._reachable(self.DEEPWIKI)
         server = McpToolServer(
             "deepwiki",
@@ -331,23 +334,17 @@ class TestPublicServers:
             CallContexts(),
             DirectCalls(),
         )
-        await server.open()
         try:
-            names = [tool.name for tool in server.tools()]
-            if "mcp__deepwiki__read_wiki_structure" not in names:
-                raise AssertionError(f"deepwiki offers its tools: {names}")
-
-            message = await server.call(
-                _call(
-                    "mcp__deepwiki__read_wiki_structure",
-                    repoName="modelcontextprotocol/python-sdk",
-                )
-            )
+            with pytest.raises(McpClientError) as refused:
+                await server.open()
         finally:
             await server.close()
 
-        if message.errored or not str(message.content).strip():
-            raise AssertionError(f"deepwiki answers with text: {message}")
+        text = str(refused.value)
+        if "'deepwiki'" not in text or "initialize" not in text:
+            raise AssertionError(f"the refusal names the server and why: {text}")
+        if "2026-07-28" not in text:
+            raise AssertionError(f"the refusal lists the expected versions: {text}")
 
     async def test_context7_lists_tools_and_answers_a_call(self) -> None:
         await self._reachable(self.CONTEXT7)
@@ -1099,13 +1096,12 @@ class TestSignInAsTheUser:
         self, servers: McpServers, caller: McpCaller, names: Sequence[str]
     ) -> Sequence[ToolServer]:
         for _ in range(150):
-            ports = await servers.for_session(caller, names)
-            if ports:
-                return ports
+            try:
+                return await servers.for_session(caller, names)
+            except McpClientError:
+                await asyncio.sleep(0.2)
 
-            await asyncio.sleep(0.2)
-
-        return []
+        return await servers.for_session(caller, names)
 
     async def test_body_runs_as_the_user_of_the_client(
         self, boba_mcp_stand: BobaMcpStand
@@ -1139,21 +1135,19 @@ class TestSignInAsTheUser:
         if names != ["mcp__narrow__fake_echo"]:
             raise AssertionError(f"the endpoint decides the tools: {names}")
 
-    async def test_endpoint_outside_the_roles_gives_no_port(
+    async def test_endpoint_outside_the_roles_refuses_the_port(
         self, boba_mcp_stand: BobaMcpStand
     ) -> None:
         servers = self._servers(boba_mcp_stand, self.SECRET)
         weak = McpCaller(login="petrov", roles=frozenset({"weak"}))
         try:
             await self._ports(servers, weak, ["boba"])
-            ports = await servers.for_session(weak, ["narrow"])
+            with pytest.raises(McpClientError, match=r"'narrow'.*HTTP 403"):
+                await servers.for_session(weak, ["narrow"])
         finally:
             await servers.stop()
 
-        if ports:
-            raise AssertionError(f"role weak has no endpoint narrow: {ports}")
-
-    async def test_forged_signature_opens_no_port(
+    async def test_forged_signature_is_refused(
         self, boba_mcp_stand: BobaMcpStand
     ) -> None:
         honest = self._servers(boba_mcp_stand, self.SECRET)
@@ -1161,13 +1155,11 @@ class TestSignInAsTheUser:
         caller = McpCaller(login="ivanov", roles=frozenset({"dev"}))
         try:
             await self._ports(honest, caller, ["boba"])
-            ports = await forged.for_session(caller, ["boba"])
+            with pytest.raises(McpClientError, match=r"'boba'.*invalid_grant"):
+                await forged.for_session(caller, ["boba"])
         finally:
             await honest.stop()
             await forged.stop()
-
-        if ports:
-            raise AssertionError(f"a forged signature opens no port: {ports}")
 
 
 @pytest.mark.integration
