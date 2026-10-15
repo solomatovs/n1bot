@@ -789,6 +789,48 @@ class TestHistory:
         finally:
             await again.end_session()
 
+    async def test_an_edit_of_a_busy_thread_changes_nothing(
+        self, app: StandProcess, cookie: str, rows: ChatRows
+    ) -> None:
+        """Тред ведёт идущий ход: правка вопроса отказана замком области до
+        ветки — сессия агента и threads.meta прежние."""
+        tab = ChatSocket(app, cookie, str(uuid4()))
+        await tab.open()
+        try:
+            await tab.send(f"first {ScenarioName.ANSWER.value}")
+            await tab.wait_task_end()
+            assert not tab.errors(), tab.errors()
+            question = str(tab.messages("user_message")[-1].get("id"))
+            before = await rows.thread_meta(tab.thread_id)
+            assert before is not None
+            original = before[ThreadMetaField.AGENT_SESSION]
+            recorded = await rows.history_rows(original)
+
+            mark = len(tab.events)
+            await tab.send(f"long {ScenarioName.LONG.value}")
+            await tab.wait_event_index("stream_token", since=mark)
+            await tab.edit(question, f"edited {ScenarioName.ANSWER.value}")
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline and not tab.errors():
+                await asyncio.sleep(0.2)
+
+            assert tab.errors(), tab.trace()
+            assert "is busy" in tab.errors()[-1], tab.errors()
+            # конец обработчика правки, а не хода
+            await tab.wait_task_end()
+            during = await rows.thread_meta(tab.thread_id)
+            assert during is not None
+            assert during[ThreadMetaField.AGENT_SESSION] == original
+
+            await tab.stop()
+            await tab.wait_task_end()
+            after = await rows.thread_meta(tab.thread_id)
+            assert after is not None
+            assert after[ThreadMetaField.AGENT_SESSION] == original
+            assert await rows.history_rows(original) > recorded
+        finally:
+            await tab.end_session()
+
     async def test_a_tab_leaving_after_an_edit_keeps_the_thread_on_the_branch(
         self, app: StandProcess, cookie: str, rows: ChatRows
     ) -> None:

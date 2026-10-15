@@ -39,6 +39,7 @@ from boba.chainlit.agent.chat import (
     PermissionKind,
     Question,
     SessionOptions,
+    StartedTurn,
     ThreadIdentity,
     TurnRenderer,
     TurnRenderers,
@@ -374,10 +375,11 @@ class AgentFeed(TurnRenderer):
         self._stopping.add(session_id)
 
     async def turn_started(
-        self, session_id: str, question: Question, prompt: Coroutine[Any, Any, str]
-    ) -> str:
-        """Замок области треда, затем вопрос агенту; уведомления хода, пришедшие
-        до ответа, ждут в очереди. Ответ — messageId вопроса: шаг вопроса
+        self, question: Question, start: Coroutine[Any, Any, StartedTurn]
+    ) -> StartedTurn:
+        """Замок области треда, затем начало хода: сессия (ветка при правке
+        идёт уже под замком) и вопрос агенту; уведомления хода, пришедшие до
+        ответа, ждут в очереди. Ключ хода — messageId вопроса: шаг вопроса
         перепривязывается к нему, ход уходит в шину под этим ключом.
 
         Ошибки:
@@ -395,14 +397,15 @@ class AgentFeed(TurnRenderer):
                 self._identity.user_id,
             )
         except Exception:
-            prompt.close()
+            start.close()
             raise
 
         cancellation = RunCancellation()
         keeper = LockKeeper(parts.locks, lock, cancellation, parts.heartbeat_sec)
         async with self._ordered, AsyncExitStack() as stack:
             await stack.enter_async_context(keeper)
-            key = await prompt
+            turn = await start
+            key = turn.key
             rebound = await self._rebind(question, key)
             feed = TurnFeed(parts.bus, parts.payloads, self._scope, key, lock.token)
             await feed.started(key, rebound.body(self._identity.login))
@@ -414,10 +417,10 @@ class AgentFeed(TurnRenderer):
             "thread %s: turn %s of session %s is published to the bus",
             self.thread_id,
             key,
-            session_id,
+            turn.session_id,
         )
 
-        return key
+        return turn
 
     async def _rebind(self, question: Question, key: str) -> Question:
         """Шаг вопроса вкладки получает id, который вопросу дал агент: шаг
