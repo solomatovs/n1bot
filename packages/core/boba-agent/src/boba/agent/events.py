@@ -10,11 +10,11 @@
 from __future__ import annotations
 
 from abc import abstractmethod
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from enum import StrEnum
 from typing import Protocol, TypeAlias
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, JsonValue
 
 from boba.agent.control import CanUseToolRequest
 from boba.agent.records import PermissionMode, Record, Usage
@@ -90,13 +90,15 @@ class ToolStartedEvent(EventModel):
 class ToolProgressEvent(EventModel):
     """Отчёт сервера о ходе вызова: сделано `progress` из `total` (None —
     итог неизвестен), `message` — что происходит, `elapsed_sec` — время с
-    начала вызова."""
+    начала вызова, `meta` — `_meta` уведомления сервера как есть (пусто —
+    сервер его не прислал)."""
 
     tool_use_id: str
     message: str = ""
     progress: float
     total: float | None = None
     elapsed_sec: float
+    meta: Mapping[str, JsonValue]
 
 
 class RecordEvent(EventModel):

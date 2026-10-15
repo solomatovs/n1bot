@@ -25,6 +25,7 @@ import mcp_types as mt
 import pytest
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
+from mcp.client.session import IncomingMessage
 from mcp.server.auth.provider import TokenError
 from mcp.shared.auth import JWT_BEARER_GRANT_TYPE, OAuthClientInformationFull
 from pydantic import AnyUrl
@@ -455,15 +456,22 @@ class TestCall:
 
 
 class Heard:
-    """Уведомления прогресса одного вызова, какими их получил клиент."""
+    """Уведомления прогресса одного вызова, какими их получил клиент: числа
+    и текст — через обработчик прогресса, уведомление целиком с _meta —
+    через обработчик сообщений сессии (notified)."""
 
     def __init__(self) -> None:
         self.reports: list[tuple[float, float | None, str | None]] = []
+        self.notes: list[mt.ProgressNotificationParams] = []
 
     async def __call__(
         self, progress: float, total: float | None, message: str | None
     ) -> None:
         self.reports.append((progress, total, message))
+
+    async def notified(self, message: IncomingMessage) -> None:
+        if isinstance(message, mt.ProgressNotification):
+            self.notes.append(message.params)
 
 
 class TestProgress:
@@ -514,8 +522,9 @@ class TestProgress:
     async def test_reports_of_workflow_nodes_are_signed_by_their_node(
         self, stand: ServiceStand, url: str, dev_token: str
     ) -> None:
-        """Связка идёт одним запросом: отчёт каждого узла подписан его
-        ключом, отчёты узлов не теряются друг из-за друга, а значение
+        """Связка идёт одним запросом: ключ узла каждого отчёта лежит в _meta
+        уведомления под ключом, объявленным расширением, текст — без
+        подписи; отчёты узлов не теряются друг из-за друга, а значение
         прогресса запроса только растёт."""
         nodes = [
             {
@@ -530,7 +539,11 @@ class TestProgress:
             },
         ]
         heard = Heard()
-        async with _client(url, dev_token) as client:
+        client = Client(
+            StreamableHttpTransport(url, auth=dev_token),
+            message_handler=heard.notified,
+        )
+        async with client:
             result = await client.call_tool_mcp(
                 WorkflowTool.NAME, {"nodes": nodes}, progress_handler=heard
             )
@@ -538,23 +551,25 @@ class TestProgress:
         if result.is_error:
             raise AssertionError(f"the workflow succeeds: {result}")
 
-        texts = [str(report[2]) for report in heard.reports]
-        left = [text for text in texts if text.startswith("left: ")]
-        right = [text for text in texts if text.startswith("right: ")]
-        if len(left) + len(right) != len(texts):
-            raise AssertionError(f"every report names its node: {texts}")
+        key = CallDag().feature().progress_key
+        by_node: dict[str, list[str]] = {}
+        for note in heard.notes:
+            meta = note.meta
+            if meta is None:
+                raise AssertionError(f"every report names its node in _meta: {note}")
 
-        expected_left = [
-            "left: step 1 of 3 (1 of 3)",
-            "left: step 2 of 3 (2 of 3)",
-            "left: step 3 of 3 (3 of 3)",
-        ]
-        if left != expected_left:
-            raise AssertionError(f"the reports of the left node: {left}")
+            by_node.setdefault(meta[key], []).append(str(note.message))
 
-        expected_right = ["right: step 1 of 2 (1 of 2)", "right: step 2 of 2 (2 of 2)"]
-        if right != expected_right:
-            raise AssertionError(f"the reports of the right node: {right}")
+        expected = {
+            "left": [
+                "step 1 of 3 (1 of 3)",
+                "step 2 of 3 (2 of 3)",
+                "step 3 of 3 (3 of 3)",
+            ],
+            "right": ["step 1 of 2 (1 of 2)", "step 2 of 2 (2 of 2)"],
+        }
+        if by_node != expected:
+            raise AssertionError(f"the reports of the nodes: {by_node}")
 
         values = [report[0] for report in heard.reports]
         if values != sorted(set(values)):

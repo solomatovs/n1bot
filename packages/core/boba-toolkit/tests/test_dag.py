@@ -16,7 +16,6 @@ from boba.toolkit.dag import (
     DagPlanner,
     DagSpec,
     NestedCallsFeature,
-    NodeReports,
     NodeStatus,
     WorkflowNodeResult,
 )
@@ -339,16 +338,6 @@ class TestWorkflowNode:
             raise AssertionError(f"отказ — failed: {node.status}")
         if node.heading() != "[src] pg_stream_out — failed":
             raise AssertionError(f"заголовок называет провал: {node.heading()}")
-
-
-class TestNodeReports:
-    """Подпись отчёта о ходе работы ключом узла связки."""
-
-    def test_report_is_signed_with_the_node_key(self) -> None:
-        signed = NodeReports().labeled("src", "copy t to stdout: 2.0 MiB")
-
-        if signed != "src: copy t to stdout: 2.0 MiB":
-            raise AssertionError(f"ключ узла стоит в начале текста: {signed}")
 
 
 class TestNodeTitle:

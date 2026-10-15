@@ -30,10 +30,11 @@ from collections.abc import (
     Mapping,
     Sequence,
 )
-from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from contextlib import AbstractAsyncContextManager, asynccontextmanager, nullcontext
 from dataclasses import dataclass
 from typing import Annotated, Any, ClassVar, Literal, Protocol, Self, TypeVar
 from urllib.parse import quote
+from uuid import uuid4
 
 import httpx2
 import mcp.types as mt
@@ -43,6 +44,7 @@ from mcp.client.auth.extensions.identity_assertion import (
     IdentityAssertionOAuthProvider,
 )
 from mcp.client.extension import ClientExtension, advertise
+from mcp.client.session import IncomingMessage
 from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamable_http_client
@@ -54,7 +56,6 @@ from mcp.shared.auth import (
     OAuthClientMetadata,
     OAuthToken,
 )
-from mcp.shared.dispatcher import ProgressFnT
 from mcp.shared.exceptions import MCPError
 from mcp.shared.message import SessionMessage
 from mcp.types.version import MODERN_PROTOCOL_VERSIONS
@@ -709,6 +710,8 @@ class McpConnection:
     Создаётся портом McpToolServer. Транспорт и сессия библиотеки mcp
     открываются и закрываются в одной собственной задаче — их области отмены
     привязаны к задаче, которая их открыла; запросы идут из задач вызовов.
+    Уведомления прогресса сессия отдаёт целиком, с _meta: каждое уходит
+    обработчику вызова, который слушает его токен (listening).
     """
 
     CLIENT: ClassVar[mt.Implementation] = mt.Implementation(
@@ -730,6 +733,24 @@ class McpConnection:
         self._task: asyncio.Task[None] | None = None
         self._stop = asyncio.Event()
         self._ready: asyncio.Future[ClientSession] | None = None
+        self._listeners: dict[
+            mt.ProgressToken,
+            Callable[[mt.ProgressNotificationParams], Awaitable[None]],
+        ] = {}
+
+    @asynccontextmanager
+    async def listening(
+        self,
+        token: mt.ProgressToken,
+        heard: Callable[[mt.ProgressNotificationParams], Awaitable[None]],
+    ) -> AsyncGenerator[None, None]:
+        """Уведомления прогресса под токеном token уходят heard, пока
+        открыт контекст."""
+        self._listeners[token] = heard
+        try:
+            yield
+        finally:
+            self._listeners.pop(token, None)
 
     async def open(self) -> ClientSession:
         """Сессия с согласованным протоколом; повторный вызов отдаёт уже
@@ -786,6 +807,7 @@ class McpConnection:
                 client_info=self.CLIENT,
                 extensions=self.EXTENSIONS,
                 cache=None,
+                message_handler=self._heard,
             )
             async with client:
                 if client.session.discover_result is None:
@@ -811,6 +833,18 @@ class McpConnection:
                 return
 
             raise
+
+    async def _heard(self, message: IncomingMessage) -> None:
+        """Обработчик сообщений сессии: уведомление прогресса — обработчику
+        вызова с его токеном; прочее и прогресс без слушателя не нужны."""
+        if not isinstance(message, mt.ProgressNotification):
+            return
+
+        heard = self._listeners.get(message.params.progress_token)
+        if heard is None:
+            return
+
+        await heard(message.params)
 
 
 @dataclass(frozen=True)
@@ -1223,14 +1257,15 @@ class McpToolServer:
         self,
         params: mt.CallToolRequestParams,
         scope: str | None,
-        progress: ProgressFnT | None,
+        progress: Callable[[mt.ProgressNotificationParams], Awaitable[None]] | None,
     ) -> mt.CallToolResult | mt.InputRequiredResult:
         """tools/call с готовыми аргументами; ответ сервера — как есть.
 
         params — запрос на имя инструмента на сервере, с ответами на прежний
         input_required, если они есть. scope — область вызова: серверу с
         расширением файлов она уходит в _meta, None — вызов идёт в области
-        пользователя. progress получает отчёты сервера о ходе вызова.
+        пользователя. progress получает уведомления сервера о ходе вызова
+        целиком, с _meta: вызов просит их своим токеном прогресса.
 
         Ошибки:
         McpClientError — сервер недоступен либо ответа нет: сессия оборвалась
@@ -1245,17 +1280,23 @@ class McpToolServer:
             raise McpClientError(msg) from exc
 
         label = f"mcp server {self._name!r} ({self._config.endpoint.label()})"
+        token: str | None = None
+        listened: AbstractAsyncContextManager[None] = nullcontext()
+        if progress is not None:
+            token = uuid4().hex
+            listened = self._connection.listening(token, progress)
+
         try:
-            return await session.call_tool(
-                params.name,
-                params.arguments,
-                read_timeout_seconds=self._config.call_timeout_sec,
-                progress_callback=progress,
-                input_responses=params.input_responses,
-                request_state=params.request_state,
-                meta=self._meta(scope),
-                allow_input_required=True,
-            )
+            async with listened:
+                return await session.call_tool(
+                    params.name,
+                    params.arguments,
+                    read_timeout_seconds=self._config.call_timeout_sec,
+                    input_responses=params.input_responses,
+                    request_state=params.request_state,
+                    meta=self._meta(scope, token),
+                    allow_input_required=True,
+                )
         except MCPError as exc:
             closed = exc.error.code == mt.CONNECTION_CLOSED
             expired = exc.error.code == mt.REQUEST_TIMEOUT
@@ -1321,18 +1362,21 @@ class McpToolServer:
             )
             raise McpClientError(msg) from exc
 
-    def _meta(self, scope: str | None) -> mt.RequestParamsMeta | None:
-        """Служебные поля запроса: область вызова под ключом, который назвал
-        сервер в расширении файлов; None — серверу без него или вызову без
-        области они не уходят."""
-        files = self._files_feature
-        if files is None:
-            return None
+    def _meta(self, scope: str | None, token: str | None) -> mt.RequestParamsMeta:
+        """Служебные поля запроса: токен прогресса token и область вызова под
+        ключом, который назвал сервер в расширении файлов; серверу без
+        расширения и вызову без области она не уходит."""
+        meta: mt.RequestParamsMeta = {}
+        if token is not None:
+            meta["progress_token"] = token
 
         if scope is None:
-            return None
+            return meta
 
-        meta: mt.RequestParamsMeta = {}
+        files = self._files_feature
+        if files is None:
+            return meta
+
         meta[files.scope] = scope
 
         return meta

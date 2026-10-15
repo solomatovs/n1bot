@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping
 from contextlib import asynccontextmanager, nullcontext
+from functools import partial
 from typing import Any, ClassVar
 from urllib.parse import urlsplit
 
@@ -340,7 +341,30 @@ class McpRelay:
 
             sent = params.model_copy(update={"arguments": arguments})
 
-            return await port.call(sent, holder.thread_id, ctx.session.report_progress)
+            token: mt.ProgressToken | None = None
+            if meta := ctx.meta:
+                token = meta.get("progress_token")
+
+            if token is None:
+                return await port.call(sent, holder.thread_id, None)
+
+            forwarded = partial(self._forwarded, ctx, token)
+
+            return await port.call(sent, holder.thread_id, forwarded)
+
+    async def _forwarded(
+        self,
+        ctx: ServerRequestContext[str],
+        token: mt.ProgressToken,
+        params: mt.ProgressNotificationParams,
+    ) -> None:
+        """Уведомление сервера о ходе вызова — агенту как есть, с _meta,
+        под токеном прогресса его запроса token."""
+        own = params.model_copy(update={"progress_token": token})
+        notification = mt.ProgressNotification(params=own)
+        await ctx.session.send_notification(
+            notification, related_request_id=ctx.request_id
+        )
 
     async def _sealed(  # noqa: PLR0913 — вызов запечатывается по порту, инструменту и вызывающему
         self,

@@ -65,8 +65,9 @@ class RequestFields(BaseModel):
 
     Сервер разбирает ею _meta запроса (SentMeta). scope — область вызова:
     её шлёт клиент, читающий расширение файлов (FilesFeature.scope называет
-    ключ). Пустое поле — клиент его не прислал; остальные ключи _meta (токен
-    прогресса) модель пропускает.
+    ключ); пустое поле — клиент его не прислал. progress_token — стандартный
+    токен прогресса запроса; None — клиент о ходе вызова не просил.
+    Остальные ключи _meta модель пропускает.
     """
 
     model_config = ConfigDict(frozen=True, extra="ignore", populate_by_name=True)
@@ -75,6 +76,9 @@ class RequestFields(BaseModel):
     """Ключ области вызова в _meta запроса."""
 
     scope: str = Field(default="", validation_alias=SCOPE)
+    progress_token: mt.ProgressToken | None = Field(
+        default=None, validation_alias="progressToken"
+    )
 
 
 class JournalFeature(ServerFeature):

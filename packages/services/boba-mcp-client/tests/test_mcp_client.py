@@ -21,7 +21,6 @@ from typing import ClassVar
 import httpx
 import mcp.types as mt
 import pytest
-from mcp.shared.dispatcher import ProgressFnT
 from mcp.shared.exceptions import MCPError
 from pydantic import BaseModel, ConfigDict, SecretStr, ValidationError
 
@@ -135,17 +134,17 @@ async def http(http_port: int) -> AsyncIterator[McpToolServer]:
         await server.close()
 
 
-class HeardCall(ProgressFnT):
-    """Реализация ProgressFnT теста: копит отчёты сервера о ходе одного
-    вызова в порядке прихода."""
+class HeardCall:
+    """Обработчик прогресса вызова в тесте: копит уведомления сервера о
+    ходе одного вызова в порядке прихода — числа, текст и _meta."""
 
     def __init__(self) -> None:
         self.reports: list[tuple[float, float | None, str | None]] = []
+        self.metas: list[dict[str, object] | None] = []
 
-    async def __call__(
-        self, progress: float, total: float | None, message: str | None
-    ) -> None:
-        self.reports.append((progress, total, message))
+    async def __call__(self, params: mt.ProgressNotificationParams) -> None:
+        self.reports.append((params.progress, params.total, params.message))
+        self.metas.append(params.meta)
 
 
 class TestStandardServerOverStdio:
@@ -599,6 +598,29 @@ class TestBobaMcpJournal:
             raise AssertionError(f"the call succeeds: {reply}")
         if heard.reports != [(1.0, 2.0, "step 1 of 2"), (2.0, 2.0, "step 2 of 2")]:
             raise AssertionError(f"the reports arrive as they were made: {heard}")
+
+    async def test_reports_of_workflow_nodes_name_their_node_in_meta(
+        self, dag: McpToolServer
+    ) -> None:
+        """Уведомление доходит до вызова целиком: ключ узла связки лежит в
+        _meta под ключом, объявленным расширением вложенных вызовов."""
+        nested = dag.nested_calls()
+        if nested is None:
+            raise AssertionError(f"the server declares nested calls: {dag.features()}")
+
+        nodes = [
+            {"key": "left", "tool": "fake_progress", "args": {"steps": 2, "pause": 0.6}}
+        ]
+        heard = HeardCall()
+
+        reply = await dag.call(_call("workflow", nodes=nodes), None, heard)
+
+        if not isinstance(reply, mt.CallToolResult) or reply.is_error:
+            raise AssertionError(f"the workflow succeeds: {reply}")
+
+        expected = [{nested.progress_key: "left"}, {nested.progress_key: "left"}]
+        if heard.metas != expected:
+            raise AssertionError(f"every report names its node: {heard.metas}")
 
     async def test_journal_is_read_by_the_address_of_the_result(
         self, dag: McpToolServer
