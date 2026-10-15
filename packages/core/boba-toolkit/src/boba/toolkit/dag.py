@@ -9,7 +9,8 @@ DagSpec — сериализуемая модель графа: узлы — в�
 каналами, собираются в одну группу и исполняются по правилу «все или никто»,
 узел без каналов — группа из него одного. Все проверки графа каналов
 остаются в StreamPlan. WorkflowResult — итог вызова связки для клиента:
-результаты узлов одним конвертом.
+результаты узлов одним конвертом; клиенту MCP он уходит блоками узлов с
+заголовками и списком узлов (NestedCallsOutput) в structuredContent.
 
 Здесь же контракт порта сервера инструментов — типы, которыми клиент порта
 (чат, сервис MCP, клиент MCP) и его исполнитель говорят друг с другом:
@@ -38,8 +39,9 @@ from abc import abstractmethod
 from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any, ClassVar, Literal, Protocol, TypeAlias
+from typing import Any, ClassVar, Literal, Protocol, Self, TypeAlias
 
+import mcp_types as mt
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -75,12 +77,15 @@ __all__ = [
     "DagPlanner",
     "DagSpec",
     "JournalAddress",
+    "NestedCallReply",
     "NestedCallsFeature",
+    "NestedCallsOutput",
     "NodeBody",
     "NodeCalls",
     "NodeOutcome",
     "NodeOutcomes",
     "NodeReports",
+    "NodeStatus",
     "ServerFeature",
     "ToolCard",
     "ToolHints",
@@ -359,6 +364,13 @@ class DagPlanner:
         )
 
 
+class NodeStatus(StrEnum):
+    """Статус узла связки в заголовке его блоков и в списке узлов итога."""
+
+    OK = "ok"
+    FAILED = "failed"
+
+
 class WorkflowNodeResult(BaseModel):
     """Итог узла workflow: какой инструмент вызван и чем он кончился.
 
@@ -378,14 +390,56 @@ class WorkflowNodeResult(BaseModel):
     content: str
     result: ToolResult
 
+    @property
+    def status(self) -> NodeStatus:
+        if not self.result.ok:
+            return NodeStatus.FAILED
+
+        return NodeStatus.OK
+
+    def heading(self) -> str:
+        """Заголовок узла перед его блоками: ключ, инструмент и статус."""
+        return f"[{self.key}] {self.tool} — {self.status.value}"
+
+
+class NestedCallReply(BaseModel):
+    """Узел в итоге инструмента со вложенными вызовами, как он едет клиенту.
+
+    key, call_id, tool — те же, что у итога узла (WorkflowNodeResult):
+    имя узла от автора связки, идентификатор вызова узла (под ним сервер
+    ведёт журнал узла) и инструмент на сервере. blocks — номера блоков узла
+    в content ответа, без его заголовка; result — модель результата узла с
+    kind, по ней клиент показывает узел подробнее текста.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    key: str
+    call_id: str
+    tool: str
+    status: NodeStatus
+    blocks: Sequence[int]
+    result: Mapping[str, JsonValue]
+
+
+class NestedCallsOutput(BaseModel):
+    """Собственные данные итога связки для structuredContent: узлы в
+    порядке описания. Строит её WorkflowResult.structured; сведения о
+    вызове к ней добавляет NestedCallsReply (boba.toolkit.wire)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    nodes: Sequence[NestedCallReply]
+
 
 class WorkflowResult(ToolResultBase):
     """Итог вызова workflow: результаты его узлов в порядке описания.
 
     Модель описывает связку инструментов одним вызовом workflow; исполнитель
     DAG отдаёт итог каждого узла, а этот результат несёт их модели и
-    истории одним конвертом. Клиент оживляет его по kind и раскрывает в
-    шаги узлов.
+    истории одним конвертом. Клиенту MCP он уходит блоками: перед блоками
+    каждого узла — его заголовок; список узлов с номерами их блоков —
+    в structuredContent.
     """
 
     kind: Literal["workflow"] = "workflow"
@@ -394,21 +448,53 @@ class WorkflowResult(ToolResultBase):
     def llm_view(self) -> str:
         parts: list[str] = []
         for node in self.nodes:
-            parts.append(f"[{node.key}] {node.tool}:\n{node.content}")
+            parts.append(f"{node.heading()}\n{node.content}")
 
-        return "\n\n".join(parts)
+        return "\n".join(parts)
 
     def chat_view(self) -> ChatView:
         return ChatView(markdown=FactsBlock(facts=self._facts()).markdown())
 
+    def disclosed(self) -> Self:
+        nodes: list[WorkflowNodeResult] = []
+        for node in self.nodes:
+            nodes.append(node.model_copy(update={"result": node.result.disclosed()}))
+
+        return self.model_copy(update={"nodes": nodes})
+
+    def blocks(self) -> list[mt.ContentBlock]:
+        blocks: list[mt.ContentBlock] = []
+        for node in self.nodes:
+            blocks.append(mt.TextContent(text=node.heading()))
+            blocks.extend(node.result.blocks())
+
+        return blocks
+
+    def structured(self) -> dict[str, JsonValue] | None:
+        replies: list[NestedCallReply] = []
+        position = 0
+        for node in self.nodes:
+            position += 1
+            count = len(node.result.blocks())
+            replies.append(
+                NestedCallReply(
+                    key=node.key,
+                    call_id=node.call_id,
+                    tool=node.tool,
+                    status=node.status,
+                    blocks=list(range(position, position + count)),
+                    result=node.result.model_dump(mode="json"),
+                )
+            )
+            position += count
+
+        return NestedCallsOutput(nodes=replies).model_dump(mode="json")
+
     def _facts(self) -> list[Fact]:
         facts: list[Fact] = []
         for node in self.nodes:
-            status = "ok"
-            if not node.result.ok:
-                status = "failed"
-
-            facts.append(Fact(key=f"{node.key} ({node.tool})", value=status))
+            fact = Fact(key=f"{node.key} ({node.tool})", value=node.status.value)
+            facts.append(fact)
 
         return facts
 
@@ -431,14 +517,16 @@ class ToolHints:
 class ToolCard:
     """Карточка инструмента для клиента порта: имя, описание, JSON-схема
     вызова — та, что видит модель после всех обвязок, — вид аргументов
-    вызова для ленты клиента и пометки; views None — вида у инструмента
-    нет (чужой сервер, встроенный узел), и лента покажет аргументы
-    json-текстом."""
+    вызова для ленты клиента, схема итога (outputSchema) и пометки; views
+    None — вида у инструмента нет (чужой сервер, встроенный узел), и лента
+    покажет аргументы json-текстом; output None — схемы итога у
+    инструмента нет."""
 
     name: str
     description: str
     parameters: Mapping[str, Any]
     views: Mapping[str, FieldView] | None
+    output: Mapping[str, Any] | None
     hints: ToolHints = field(default_factory=ToolHints)
 
 
@@ -490,10 +578,9 @@ class NodeOutcome(BaseModel):
     errored: bool = False
     journal: JournalAddress | None = None
     media: Mapping[str, Mapping[str, str]] | None = None
-    """Типы содержимого аргументов по идентификаторам вызовов: самого
-    вызова, а у связки — каждого её узла. Их называет порт сервера, чьи
-    инструменты описаны схемой; None — вызов исполнен в своём процессе, и
-    его аргументы показывает модель вызова инструмента."""
+    """Типы содержимого аргументов по идентификаторам вызовов. Их называет
+    порт сервера, чьи инструменты описаны схемой; None — вызов исполнен в
+    своём процессе, и его аргументы показывает модель вызова инструмента."""
     reply: Mapping[str, JsonValue] | None = None
     """Ответ сервера MCP на вызов как пришёл; None — порт его не хранит."""
 
@@ -649,9 +736,9 @@ class CallDag:
 
     Вызов приходит узлом DagNode: ключ — идентификатор вызова. Обычный вызов
     — DAG из одного этого узла. Узлы вызова workflow — уже узлы описания DAG (DagSpec);
-    ключ узла заменяется на идентификатор вызова узла (под ним идут журнал и
-    шаг ленты узла): заданный клиентом call_id, иначе идентификатор вызова
-    workflow с номером узла. Имя, данное узлу моделью, едет в title — им
+    ключ узла заменяется на идентификатор вызова узла (под ним идёт журнал
+    узла): заданный клиентом call_id, иначе идентификатор вызова workflow с
+    номером узла. Имя, данное узлу моделью, едет в title — им
     узел называется в текстах отказов. Создаётся исполнителем порта
     (LocalDagService): он же объявляет клиентам форму вызова workflow
     расширением feature(), по которому клиент меняет аргументы узлов до

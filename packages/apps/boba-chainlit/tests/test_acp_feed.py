@@ -224,7 +224,7 @@ def _result(artifact: ToolResultBase, run: str = "") -> dict[str, Any]:
         structured = ResultWire().stamped(structured, run)
 
     reply = mt.CallToolResult(
-        content=[mt.TextContent(text=wire.content)],
+        content=list(wire.content),
         structured_content=structured,
         is_error=wire.is_error,
     )

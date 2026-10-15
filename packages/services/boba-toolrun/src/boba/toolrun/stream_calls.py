@@ -25,6 +25,7 @@ StreamGroupsConfigError — секции [stream_groups] нет в конфиг�
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 from abc import abstractmethod
 from collections.abc import Mapping, Sequence
@@ -64,6 +65,7 @@ from boba.toolkit.result import (
     ErrorResult,
     FailureResult,
 )
+from boba.toolkit.wire import NestedCallsReply
 from boba.toolrun.call_id import CallFields
 from boba.toolrun.dag_run import DagOutcome, DagRunError, DagRunner
 from boba.toolrun.hosted import HostedTool, ToolSchema
@@ -300,13 +302,16 @@ class WorkflowTool:
         self._schemas = ToolSchema()
 
     def card(self) -> ToolCard:
-        """Карточка для модели: узлы называют инструменты сервера по имени."""
-        return self._schemas.card(
+        """Карточка для модели: узлы называют инструменты сервера по имени;
+        итог — узлы связки по схеме NestedCallsReply."""
+        card = self._schemas.card(
             self.NAME,
             self.DESCRIPTION.strip(),
             self._fields.extended(WorkflowCall),
             None,
         )
+
+        return dataclasses.replace(card, output=NestedCallsReply.model_json_schema())
 
 
 class NodeArgs(Protocol):

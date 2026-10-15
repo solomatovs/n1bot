@@ -57,12 +57,13 @@ from boba.mcp_server.server import (
 )
 from boba.toolkit.calls import CallViews
 from boba.toolkit.channels import ToolChannel
-from boba.toolkit.dag import CallDag, NestedCallsFeature
+from boba.toolkit.dag import CallDag, NestedCallsFeature, NodeStatus
 from boba.toolkit.wire import (
     CallStatus,
     CallWire,
     FilesFeature,
     JournalFeature,
+    NestedCallsReply,
     RequestFields,
     WirePart,
 )
@@ -382,11 +383,75 @@ class TestCall:
         if result.is_error:
             raise AssertionError(f"the group succeeds: {result}")
 
-        structured = _shown(result)
-        if structured is None or structured.get("kind") != "workflow":
-            raise AssertionError(f"the outcome is the workflow model: {structured}")
-        if len(structured.get("nodes", [])) != len(nodes):
-            raise AssertionError(f"every node reports its outcome: {structured}")
+        reply = NestedCallsReply.model_validate(result.structured_content)
+        if not reply.call.run:
+            raise AssertionError(f"the call names its run: {reply.call}")
+
+        keys: list[str] = []
+        for node in reply.nodes:
+            keys.append(node.key)
+            heading = result.content[node.blocks[0] - 1]
+            expected = mt.TextContent(text=f"[{node.key}] {node.tool} — ok")
+            if heading != expected:
+                raise AssertionError(f"the blocks of {node.key} follow its heading")
+
+        if keys != ["src", "dst"]:
+            raise AssertionError(f"every node reports its outcome in order: {keys}")
+
+        texts: list[str] = []
+        for block in result.content:
+            if isinstance(block, mt.TextContent):
+                texts.append(block.text)
+
+        if texts[0] != "[src] fake_emit — ok":
+            raise AssertionError(f"the content opens with the first heading: {texts}")
+
+    async def test_failed_node_fails_the_call_and_only_its_status(
+        self, stand: ServiceStand, url: str, dev_token: str
+    ) -> None:
+        """Узлы без общих каналов — разные группы: упал один, у другого
+        статус ok, а вызов — сбой по MCP."""
+        nodes = [
+            {"key": "good", "tool": "fake_echo", "args": {"text": "hi", "repeat": 1}},
+            {"key": "bad", "tool": "fake_echo", "args": {"text": "boom", "repeat": 1}},
+        ]
+        async with _client(url, dev_token) as client:
+            result = await client.call_tool_mcp(WorkflowTool.NAME, {"nodes": nodes})
+
+        if not result.is_error:
+            raise AssertionError(f"a failed node fails the call: {result}")
+
+        reply = NestedCallsReply.model_validate(result.structured_content)
+        statuses: dict[str, NodeStatus] = {}
+        for node in reply.nodes:
+            statuses[node.key] = node.status
+
+        if statuses != {"good": NodeStatus.OK, "bad": NodeStatus.FAILED}:
+            raise AssertionError(f"only the failed node is failed: {statuses}")
+
+    async def test_workflow_alone_declares_an_output_schema(
+        self, stand: ServiceStand, url: str, dev_token: str
+    ) -> None:
+        async with _client(url, dev_token) as client:
+            listed = await client.list_tools()
+
+        declared: dict[str, dict[str, Any] | None] = {}
+        for tool in listed:
+            declared[tool.name] = tool.output_schema
+
+        if declared[WorkflowTool.NAME] != NestedCallsReply.model_json_schema():
+            raise AssertionError(f"workflow returns NestedCallsReply: {declared}")
+
+        others: list[str] = []
+        for name, schema in declared.items():
+            if name == WorkflowTool.NAME:
+                continue
+
+            if schema is not None:
+                others.append(name)
+
+        if others:
+            raise AssertionError(f"other tools declare no output schema: {others}")
 
 
 class Heard:

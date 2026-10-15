@@ -8,20 +8,37 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import ClassVar
 
+import mcp_types as mt
 import pytest
 
 from boba.stand_core.history import HistorySnapshots
 from boba.toolkit.chain import GroupFailureResult
-from boba.toolkit.dag import DagNode, JournalAddress, NodeOutcomes, WorkflowResult
+from boba.toolkit.dag import (
+    DagNode,
+    JournalAddress,
+    NodeOutcomes,
+    NodeStatus,
+    WorkflowNodeResult,
+    WorkflowResult,
+)
 from boba.toolkit.result import (
     ErrorResult,
     ExceptionResult,
     FailureResult,
+    MarkdownResult,
     TableResult,
     ToolArtifact,
 )
-from boba.toolkit.wire import CallStatus, CallWire, ResultWire, WirePart, WireResult
+from boba.toolkit.wire import (
+    CallStatus,
+    CallWire,
+    NestedCallsReply,
+    ResultWire,
+    WirePart,
+    WireResult,
+)
 
 SNAPSHOTS = HistorySnapshots(Path(__file__).parent / "history", "boba.toolkit")
 
@@ -54,6 +71,10 @@ class TestRoundTrip:
     @pytest.mark.parametrize("path", SNAPSHOTS.paths(), ids=lambda path: path.stem)
     def test_every_kind_survives_the_wire(self, path: Path) -> None:
         artifact = _snapshot(path)
+        if artifact.structured() is not None:
+            # вид со своей outputSchema едет её данными: TestNestedCallsWire
+            return
+
         outcome = OUTCOMES.of(CALL, artifact, False)
 
         wire = WIRE.packed(outcome)
@@ -144,6 +165,136 @@ class TestRoundTrip:
             raise AssertionError(f"без запуска адреса журнала нет: {revived.journal}")
 
 
+class TestPlainBlocks:
+    def test_result_without_own_data_is_one_text_block_and_its_model(self) -> None:
+        table = TableResult(rows=[{"a": 1}])
+
+        wire = WIRE.packed(OUTCOMES.of(CALL, table, False))
+
+        if list(wire.content) != [mt.TextContent(text=table.llm_view())]:
+            raise AssertionError(f"один текстовый блок для модели: {wire.content}")
+
+        structured = wire.structured
+        if structured is None:
+            raise AssertionError("итог несёт structuredContent")
+        if sorted(structured) != sorted(WirePart):
+            raise AssertionError(f"части итога — call и result: {sorted(structured)}")
+
+
+class TestNestedCallsWire:
+    """Итог связки по 7.5: блоки узлов с заголовками по порядку и список
+    узлов с номерами их блоков по outputSchema связки."""
+
+    SECRET: ClassVar[str] = "/srv/boba/tools/ch.py"
+
+    def _workflow(self) -> WorkflowResult:
+        done = MarkdownResult(text="sent 3 rows into orders")
+        crashed = ExceptionResult(
+            error_kind="ClickHouseQueryError",
+            message="table sink.orders does not exist",
+            traceback=f'Traceback (most recent call last):\n  File "{self.SECRET}"',
+        )
+        nodes = [
+            WorkflowNodeResult(
+                key="src",
+                call_id="call_1_0",
+                tool="pg_stream_out",
+                errored=False,
+                content=done.llm_view(),
+                result=done,
+            ),
+            WorkflowNodeResult(
+                key="sink",
+                call_id="call_1_1",
+                tool="ch_stream_in",
+                errored=False,
+                content=crashed.llm_view(),
+                result=crashed,
+            ),
+        ]
+
+        return WorkflowResult(nodes=nodes, ok=False)
+
+    def test_blocks_of_the_nodes_follow_their_headings(self) -> None:
+        workflow = self._workflow()
+
+        wire = WIRE.packed(OUTCOMES.of(CALL, workflow, True))
+
+        texts: list[str] = []
+        for block in wire.content:
+            if not isinstance(block, mt.TextContent):
+                raise AssertionError(f"блоки узлов — текст: {block!r}")
+
+            texts.append(block.text)
+
+        expected = [
+            "[src] pg_stream_out — ok",
+            "sent 3 rows into orders",
+            "[sink] ch_stream_in — failed",
+            workflow.nodes[1].content,
+        ]
+        if texts != expected:
+            raise AssertionError(f"заголовок узла стоит перед его блоками: {texts}")
+
+        if "\n".join(texts) != workflow.llm_view():
+            raise AssertionError("модель в своём процессе видит тот же текст")
+
+    def test_nodes_point_at_their_blocks(self) -> None:
+        workflow = self._workflow()
+
+        wire = WIRE.packed(OUTCOMES.of(CALL, workflow, True))
+
+        reply = NestedCallsReply.model_validate(wire.structured)
+        if reply.call != CallWire(id=CALL.key, status=CallStatus.ERROR):
+            raise AssertionError(f"сведения о вызове доехали: {reply.call!r}")
+
+        statuses: list[NodeStatus] = []
+        for node, sent in zip(workflow.nodes, reply.nodes, strict=True):
+            statuses.append(sent.status)
+            if sent.call_id != node.call_id:
+                raise AssertionError(f"узел назван вызовом узла: {sent!r}")
+
+            pointed: list[mt.ContentBlock] = []
+            for index in sent.blocks:
+                pointed.append(wire.content[index])
+
+            if pointed != node.result.disclosed().blocks():
+                raise AssertionError(f"номера ведут на блоки узла {node.key}: {sent}")
+
+            if sent.result != node.result.disclosed().model_dump(mode="json"):
+                raise AssertionError(f"модель узла доехала: {sent.result}")
+
+        if statuses != [NodeStatus.OK, NodeStatus.FAILED]:
+            raise AssertionError(f"статус по результату узла: {statuses}")
+
+    def test_trace_of_a_node_stays_on_the_server(self) -> None:
+        wire = WIRE.packed(OUTCOMES.of(CALL, self._workflow(), True))
+
+        if self.SECRET in json.dumps(wire.structured):
+            raise AssertionError("трасса узла не уходит в structuredContent")
+
+        for block in wire.content:
+            if self.SECRET in block.model_dump_json():
+                raise AssertionError(f"трасса узла не уходит в блоки: {block!r}")
+
+    def test_run_is_stamped_into_the_call(self) -> None:
+        wire = WIRE.packed(OUTCOMES.of(CALL, self._workflow(), True))
+        structured = wire.structured
+        if structured is None:
+            raise AssertionError("итог несёт structuredContent")
+
+        reply = NestedCallsReply.model_validate(WIRE.stamped(structured, "run-7"))
+        if reply.call.run != "run-7":
+            raise AssertionError(f"запуск проставлен в сведения о вызове: {reply}")
+
+    def test_client_without_the_model_gets_no_outcome(self) -> None:
+        """Частей call/result у связки нет: клиент показывает её блоки."""
+        wire = WIRE.packed(OUTCOMES.of(CALL, self._workflow(), True))
+
+        if WIRE.revived(wire, CALL, SERVER) is not None:
+            raise AssertionError("итог связки не оживает моделью вида")
+
+
 class TestErrorFlag:
     def test_failure_result_is_an_error_even_with_success_status(self) -> None:
         """Тело вернуло отказ упакованным результатом: статус вызова success,
@@ -190,7 +341,7 @@ class TestForeignServer:
     def test_unknown_kind_falls_back_to_the_text(self) -> None:
         call = CallWire(id="api-1", status=CallStatus.SUCCESS)
         wire = WireResult(
-            content="plain text",
+            content=[mt.TextContent(text="plain text")],
             structured={
                 WirePart.CALL.value: call.model_dump(mode="json"),
                 WirePart.RESULT.value: {"kind": "kind_of_a_newer_server", "x": 1},
@@ -202,7 +353,9 @@ class TestForeignServer:
             raise AssertionError("неизвестный вид не оживает итогом")
 
     def test_result_without_structured_content_is_not_revived(self) -> None:
-        wire = WireResult(content="boom", structured=None, is_error=True)
+        wire = WireResult(
+            content=[mt.TextContent(text="boom")], structured=None, is_error=True
+        )
 
         if WIRE.revived(wire, CALL, SERVER) is not None:
             raise AssertionError("без structuredContent итога семейства нет")
@@ -211,7 +364,7 @@ class TestForeignServer:
         """Чужой сервер прислал свои данные: частей итога в них нет."""
         table = TableResult(rows=[{"a": 1}])
         wire = WireResult(
-            content=table.llm_view(),
+            content=table.blocks(),
             structured=table.model_dump(mode="json"),
             is_error=False,
         )

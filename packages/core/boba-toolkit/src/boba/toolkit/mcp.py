@@ -178,8 +178,9 @@ class McpToolStubs:
     """Карточки инструментов модели по списку инструментов MCP-сервера.
 
     Карточка несёт полное имя инструмента (McpToolNames: сервер и имя на
-    нём), описание, схему аргументов сервера как есть, вид аргументов,
-    выведенный из схемы (CallViews), и пометки по annotations сервера.
+    нём), описание, схему аргументов и схему итога сервера как есть, вид
+    аргументов, выведенный из схемы (CallViews), и пометки по annotations
+    сервера.
     Пометки переводятся в обе стороны: клиент MCP читает их из Tool сервера
     (hints_of), сервер boba (McpTool адаптера fastmcp) отдаёт их клиенту
     annotations (annotations_of).
@@ -205,6 +206,7 @@ class McpToolStubs:
             description=description,
             parameters=dict(tool.input_schema),
             views=self._views.seen(tool.input_schema),
+            output=tool.output_schema,
             hints=self.hints_of(tool),
         )
 

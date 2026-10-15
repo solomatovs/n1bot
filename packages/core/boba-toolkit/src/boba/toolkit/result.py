@@ -35,12 +35,14 @@ from typing import (
     get_origin,
 )
 
+import mcp_types as mt
 from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
     GetCoreSchemaHandler,
     GetJsonSchemaHandler,
+    JsonValue,
     SerializeAsAny,
     TypeAdapter,
     ValidatorFunctionWrapHandler,
@@ -677,6 +679,17 @@ class ToolResultBase(BaseModel, ABC):
     def packed(self) -> tuple[str, Self]:
         """Пара (content, artifact): текст для модели и сам результат."""
         return self.llm_view(), self
+
+    def blocks(self) -> list[mt.ContentBlock]:
+        """Блоки content ответа MCP с этим результатом: у базы — один
+        текстовый блок с текстом для модели."""
+        return [mt.TextContent(text=self.llm_view())]
+
+    def structured(self) -> dict[str, JsonValue] | None:
+        """Собственные данные результата для structuredContent по
+        outputSchema инструмента; None — outputSchema у результата нет, и
+        ответ несёт сам результат моделью вида."""
+        return None
 
 
 ToolResult: TypeAlias = SerializeAsAny[ToolResultBase]

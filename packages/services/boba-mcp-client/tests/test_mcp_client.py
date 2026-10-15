@@ -49,7 +49,7 @@ from boba.stand.service_signin import ServiceSignIn
 from boba.stand.ui.stand import StandApp
 from boba.toolkit.calls import CallViews
 from boba.toolkit.channels import ToolChannel
-from boba.toolkit.dag import CallDag, DagNode, ToolHints
+from boba.toolkit.dag import CallDag, DagNode, ToolCard, ToolHints
 from boba.toolkit.mcp import McpFailure, McpResults, McpToolStubs
 from boba.toolkit.result import (
     ErrorResult,
@@ -58,7 +58,13 @@ from boba.toolkit.result import (
     ShellResult,
 )
 from boba.toolkit.types import SecretReveal
-from boba.toolkit.wire import JournalFeature, JournalRead, ResultWire, WireResult
+from boba.toolkit.wire import (
+    JournalFeature,
+    JournalRead,
+    NestedCallsReply,
+    ResultWire,
+    WireResult,
+)
 from boba.workspace.launcher import ReadWindow
 
 pytestmark = pytest.mark.anyio
@@ -604,7 +610,9 @@ class TestBobaMcpJournal:
             raise AssertionError(f"the call is answered: {reply}")
 
         wire = WireResult(
-            content="", structured=reply.structured_content, is_error=reply.is_error
+            content=reply.content,
+            structured=reply.structured_content,
+            is_error=reply.is_error,
         )
         outcome = ResultWire().revived(wire, call, "boba")
         if outcome is None or outcome.journal is None:
@@ -632,7 +640,9 @@ class TestBobaMcpJournal:
             raise AssertionError(f"the call is answered: {reply}")
 
         wire = WireResult(
-            content="", structured=reply.structured_content, is_error=reply.is_error
+            content=reply.content,
+            structured=reply.structured_content,
+            is_error=reply.is_error,
         )
         outcome = ResultWire().revived(wire, call, "boba")
         files = dag.journal_files()
@@ -784,7 +794,9 @@ class TestBobaMcpServer:
             raise AssertionError(f"the call succeeds: {reply}")
 
         wire = WireResult(
-            content="", structured=reply.structured_content, is_error=reply.is_error
+            content=reply.content,
+            structured=reply.structured_content,
+            is_error=reply.is_error,
         )
         outcome = ResultWire().revived(wire, call, "boba")
         if outcome is None:
@@ -811,6 +823,54 @@ class TestBobaMcpServer:
         if nested.tool not in names:
             raise AssertionError(f"the nested calls tool is offered: {names}")
 
+    async def test_workflow_answers_by_its_output_schema(
+        self, dag: McpToolServer, tmp_path: Path
+    ) -> None:
+        """Итог связки проходит проверку outputSchema клиентом SDK и
+        разбирается моделью NestedCallsReply; карточка несёт схему сервера."""
+        nodes = [
+            {
+                "key": "src",
+                "tool": "fake_emit",
+                "args": {
+                    "prefix": "a",
+                    "count": 2,
+                    "size": 0,
+                    "fail_midway": False,
+                    "out": "c1",
+                },
+            },
+            {
+                "key": "dst",
+                "tool": "fake_collect",
+                "args": {
+                    "marker": str(tmp_path / "done"),
+                    "fail": False,
+                    "gated": False,
+                    "feed": "c1",
+                },
+            },
+        ]
+
+        reply = await dag.call(_call("workflow", nodes=nodes), None, None)
+
+        if not isinstance(reply, mt.CallToolResult) or reply.is_error:
+            raise AssertionError(f"the workflow succeeds: {reply}")
+
+        answered = NestedCallsReply.model_validate(reply.structured_content)
+        for node in answered.nodes:
+            heading = reply.content[node.blocks[0] - 1]
+            if heading != mt.TextContent(text=f"[{node.key}] {node.tool} — ok"):
+                raise AssertionError(f"the heading of {node.key} leads its blocks")
+
+        stubs = McpToolStubs()
+        cards: dict[str, ToolCard] = {}
+        for tool in dag.tools():
+            cards[tool.name] = stubs.card("boba", tool)
+
+        if cards["workflow"].output != NestedCallsReply.model_json_schema():
+            raise AssertionError(f"the card carries the output schema: {cards}")
+
     async def test_card_view_comes_from_the_schema_alone(
         self, dag: McpToolServer
     ) -> None:
@@ -834,7 +894,9 @@ class TestBobaMcpServer:
             raise AssertionError(f"the server reports isError: {reply}")
 
         wire = WireResult(
-            content="", structured=reply.structured_content, is_error=reply.is_error
+            content=reply.content,
+            structured=reply.structured_content,
+            is_error=reply.is_error,
         )
         outcome = ResultWire().revived(wire, call, "boba")
         if outcome is None:
@@ -1034,7 +1096,9 @@ class TestBobaMcpService:
             raise AssertionError(f"the call is answered: {reply}")
 
         wire = WireResult(
-            content="", structured=reply.structured_content, is_error=reply.is_error
+            content=reply.content,
+            structured=reply.structured_content,
+            is_error=reply.is_error,
         )
         outcome = ResultWire().revived(wire, call, "boba")
         if outcome is None:

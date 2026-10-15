@@ -254,6 +254,7 @@ class StandTools(ToolServer):
             description=f"stand tool {name.value}",
             parameters=dict(parameters),
             views=None,
+            output=None,
             hints=hints,
         )
 
