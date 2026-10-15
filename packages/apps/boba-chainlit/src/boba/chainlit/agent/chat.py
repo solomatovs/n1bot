@@ -23,7 +23,7 @@ from urllib.parse import urljoin
 from uuid import UUID
 
 from acp.experimental.v2 import schema
-from pydantic import AnyUrl, BaseModel, ConfigDict, Field
+from pydantic import AliasPath, AnyUrl, BaseModel, ConfigDict, Field
 
 import chainlit as cl
 from boba.canvas.keys import ElementProps
@@ -94,15 +94,19 @@ ConfigOption: TypeAlias = (
 
 
 class Question(BaseModel):
-    """Вопрос пользователя, с которого начинается ход: id его шага, текст и
-    вложения к сообщению.
+    """Вопрос пользователя, с которого начинается ход: id его шага, текст,
+    вложения к сообщению и признак правки. Строится из сообщения chainlit
+    (of_message) или разбором события правки edit_message вкладки — по
+    алиасам полей; edited — правка шага key: ход ведёт ветка `session/fork`
+    до этого вопроса.
     """
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="ignore", validate_by_name=True)
 
-    key: str = Field(min_length=1)
-    text: str
+    key: str = Field(min_length=1, validation_alias=AliasPath("message", "id"))
+    text: str = Field(validation_alias=AliasPath("message", "output"))
     elements: tuple[ShownElement, ...] = ()
+    edited: bool = False
 
     @classmethod
     def of_message(
@@ -281,7 +285,8 @@ class ConfigCategory(StrEnum):
 
 class TurnRenderer(SessionUpdates, Protocol):
     """Приёмник потока сессии, который знает и о ходе вкладки: его начало,
-    остановку и конец воспроизведения истории. Реализует AgentFeed (feed.py).
+    остановку, очистку ленты и конец воспроизведения истории. Реализует
+    AgentFeed (feed.py).
     """
 
     @abstractmethod
@@ -299,6 +304,15 @@ class TurnRenderer(SessionUpdates, Protocol):
         Ошибки:
         LockBusyError — тред уже ведёт другой держатель.
         AcpClientError — агент не принял вопрос.
+        """
+
+    @abstractmethod
+    async def cleared(self) -> None:
+        """Лента вкладки очищается перед повторным воспроизведением истории.
+
+        Ошибки:
+        InternalServiceError — треда нет в слое данных.
+        DataUnavailableError — тред не прочитан.
         """
 
     @abstractmethod
@@ -343,14 +357,11 @@ class MuteUpdates(SessionUpdates):
 
 
 class AskedQuestions(SessionUpdates):
-    """Приёмник-обёртка агента треда: запоминает id вопросов, которые агент
-    воспроизвёл (`user_message.messageId`), решает ожидание конца хода по
-    idle и передаёт поток дальше рендереру. По id вопросов агент треда
-    узнаёт правку вопроса после возврата к треду."""
+    """Приёмник-обёртка агента треда: решает ожидание конца хода по idle и
+    передаёт поток дальше рендереру."""
 
     def __init__(self, inner: SessionUpdates) -> None:
         self._inner = inner
-        self.ids: list[str] = []
         self._ending: dict[str, asyncio.Future[schema.IdleSessionStateUpdate]] = {}
         """Ожидание конца хода по сессии; ждут одну сессию, idle снимает его."""
 
@@ -366,10 +377,6 @@ class AskedQuestions(SessionUpdates):
         return ending
 
     async def update(self, session_id: str, update: SessionUpdate) -> None:
-        if isinstance(update, schema.UserMessageUpdate):
-            if update.message_id not in self.ids:
-                self.ids.append(update.message_id)
-
         if isinstance(update, schema.IdleSessionStateUpdate):
             ended = self._ending.pop(session_id, None)
             if ended is not None:
@@ -578,7 +585,6 @@ class ThreadAgent:
         self._questions = AskedQuestions(renderer)
         self._launched: LaunchedAgent | None = None
         self._session_id: str | None = None
-        self._asked: list[str] = []
         self._active: str | None = None
         self._gate = asyncio.Lock()
         self._restart_pending = False
@@ -710,16 +716,27 @@ class ThreadAgent:
         if not replay:
             return True
 
-        self._asked = list(self._questions.ids)
         await self._renderer.loaded(known)
-        logger.info(
-            "thread %s: agent session %s resumed, %d question(s) replayed",
-            self.thread_id,
-            known,
-            len(self._asked),
-        )
+        logger.info("thread %s: agent session %s resumed", self.thread_id, known)
 
         return True
+
+    async def reload(self) -> None:
+        """Вкладка заново рисует беседу треда из истории агента: прежняя
+        сессия процесса закрывается, лента вкладки очищается, сессия треда из
+        threads.meta воспроизводится. Так вкладка показывает отказ правки и
+        ветку, которую сделала другая вкладка.
+
+        Ошибки:
+        AgentRequestError — агент отказал в `session/close` или
+            `session/resume`.
+        InternalServiceError, DataUnavailableError — тред не прочитан.
+        """
+        async with self._gate:
+            await self._close_session(self.process)
+            self._session_id = None
+            await self._renderer.cleared()
+            await self._resume(replay=True)
 
     async def ask(self, question: Question) -> None:
         """Ход по вопросу: новая сессия на первом, ветвь на правке; ход
@@ -738,7 +755,6 @@ class ThreadAgent:
                 await self._restart_idle()
 
             turn = await self._renderer.turn_started(question, self._started(question))
-            self._asked.append(turn.key)
             self._active = turn.session_id
             logger.info(
                 "thread %s: turn %s starts in session %s",
@@ -876,9 +892,19 @@ class ThreadAgent:
 
             return created
 
-        if question.key not in self._asked:
+        if not question.edited:
             return current
 
+        return await self._branch(question, current)
+
+    async def _branch(self, question: Question, current: str) -> str:
+        """Ветка беседы до правленого вопроса: `session/fork` с срезом по его
+        messageId; агент без объявленного среза правку отказывает.
+
+        Ошибки:
+        AcpClientError — агент не объявил срез ветки.
+        AgentRequestError — агент отказал в `session/fork`.
+        """
         if not self.process.forks_by_message():
             msg = (
                 f"The question {question.key} of thread {self.thread_id} was "

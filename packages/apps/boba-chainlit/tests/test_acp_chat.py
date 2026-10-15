@@ -870,6 +870,137 @@ class TestHistory:
         finally:
             await again.end_session()
 
+    async def test_editing_after_a_reload_forks_the_session(
+        self, app: StandProcess, cookie: str, rows: ChatRows
+    ) -> None:
+        """Вопрос, воспроизведённый после перезагрузки треда, правится так же,
+        как в живой вкладке: шаг вопроса есть в ленте, сообщения в chat_context
+        chainlit у него нет."""
+        tab = ChatSocket(app, cookie, str(uuid4()))
+        await tab.open()
+        await tab.send(f"first {ScenarioName.ANSWER.value}")
+        await tab.wait_task_end()
+        assert not tab.errors(), tab.errors()
+        before = await rows.thread_meta(tab.thread_id)
+        assert before is not None
+        original = before[ThreadMetaField.AGENT_SESSION]
+        await tab.end_session()
+
+        again = ChatSocket(app, cookie, tab.thread_id)
+        await again.open(resumed=True)
+        try:
+            question = str(again.messages("user_message")[-1].get("id"))
+            await again.edit(question, f"edited {ScenarioName.THINKING_ANSWER.value}")
+            await again.wait_task_end()
+            assert not again.errors(), (again.errors(), app.tail(60))
+            after = await rows.thread_meta(tab.thread_id)
+            assert after is not None
+            assert after[ThreadMetaField.AGENT_SESSION] != original
+        finally:
+            await again.end_session()
+
+        third = ChatSocket(app, cookie, tab.thread_id)
+        await third.open(resumed=True)
+        try:
+            assert [m.get("output") for m in third.messages("user_message")] == [
+                f"edited {ScenarioName.THINKING_ANSWER.value}"
+            ]
+        finally:
+            await third.end_session()
+
+    async def test_editing_a_question_asked_in_another_tab(
+        self, app: StandProcess, cookie: str, rows: ChatRows
+    ) -> None:
+        """Вопрос, который вкладка видела живым ходом другой вкладки, правится
+        ею после того, как та закрылась."""
+        asking = ChatSocket(app, cookie, str(uuid4()))
+        await asking.open()
+        await asking.send(f"zero {ScenarioName.ANSWER.value}")
+        await asking.wait_task_end()
+        assert not asking.errors(), asking.errors()
+
+        editing = ChatSocket(app, cookie, asking.thread_id)
+        await editing.open(resumed=True)
+        try:
+            mark = len(editing.events)
+            await asking.send(f"one {ScenarioName.ANSWER.value}")
+            await asking.wait_task_end()
+            await editing.wait_task_end()
+            live = [
+                p
+                for e, p in editing.events[mark:]
+                if e in ("new_message", "update_message")
+                and isinstance(p, dict)
+                and p.get("type") == "user_message"
+            ]
+            assert live, editing.trace()
+            await asking.end_session()
+
+            await editing.edit(
+                str(live[-1].get("id")), f"edited {ScenarioName.ANSWER.value}"
+            )
+            await editing.wait_task_end()
+            assert not editing.errors(), (editing.errors(), app.tail(60))
+        finally:
+            await editing.end_session()
+
+        again = ChatSocket(app, cookie, asking.thread_id)
+        await again.open(resumed=True)
+        try:
+            assert [m.get("output") for m in again.messages("user_message")] == [
+                f"zero {ScenarioName.ANSWER.value}",
+                f"edited {ScenarioName.ANSWER.value}",
+            ]
+        finally:
+            await again.end_session()
+
+    async def test_a_refused_edit_redraws_the_editing_tab(
+        self, app: StandProcess, cookie: str, rows: ChatRows
+    ) -> None:
+        """Правка из вкладки, пока ход ведёт другая: отказ замком области,
+        вкладка заново рисует беседу из истории, затем ошибка; ветки нет."""
+        holder = ChatSocket(app, cookie, str(uuid4()))
+        await holder.open()
+        await holder.send(f"first {ScenarioName.ANSWER.value}")
+        await holder.wait_task_end()
+        assert not holder.errors(), holder.errors()
+        before = await rows.thread_meta(holder.thread_id)
+        assert before is not None
+
+        editing = ChatSocket(app, cookie, holder.thread_id)
+        await editing.open(resumed=True)
+        try:
+            question = str(editing.messages("user_message")[-1].get("id"))
+            started = len(holder.events)
+            await holder.send(f"long {ScenarioName.LONG.value}")
+            await holder.wait_event_index("stream_token", since=started)
+
+            mark = len(editing.events)
+            await editing.edit(question, f"edited {ScenarioName.ANSWER.value}")
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline and not editing.errors():
+                await asyncio.sleep(0.2)
+
+            assert editing.errors(), editing.trace()
+            assert "is busy" in editing.errors()[-1], editing.errors()
+            redrawn = await editing.wait_event_index("resume_thread", since=mark)
+            replayed = [
+                p
+                for e, p in editing.events[redrawn:]
+                if e == "new_message"
+                and isinstance(p, dict)
+                and p.get("type") == "user_message"
+            ]
+            assert replayed, editing.trace()[mark:]
+            after = await rows.thread_meta(holder.thread_id)
+            assert after == before
+
+            await holder.stop()
+            await holder.wait_task_end()
+        finally:
+            await editing.end_session()
+            await holder.end_session()
+
     async def test_deleting_the_thread_deletes_the_agent_session(
         self, app: StandProcess, cookie: str, rows: ChatRows
     ) -> None:
