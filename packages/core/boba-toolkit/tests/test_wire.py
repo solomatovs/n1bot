@@ -254,11 +254,15 @@ class TestNestedCallsWire:
             if sent.call_id != node.call_id:
                 raise AssertionError(f"узел назван вызовом узла: {sent!r}")
 
-            pointed: list[mt.ContentBlock] = []
+            pointed: list[str] = []
             for index in sent.blocks:
-                pointed.append(wire.content[index])
+                block = wire.content[index]
+                if not isinstance(block, mt.TextContent):
+                    raise AssertionError(f"блок узла {node.key} текстовый: {block!r}")
 
-            if pointed != node.result.disclosed().blocks():
+                pointed.append(block.text)
+
+            if pointed != list(node.result.disclosed().texts()):
                 raise AssertionError(f"номера ведут на блоки узла {node.key}: {sent}")
 
             if sent.result != node.result.disclosed().model_dump(mode="json"):
@@ -364,7 +368,7 @@ class TestForeignServer:
         """Чужой сервер прислал свои данные: частей итога в них нет."""
         table = TableResult(rows=[{"a": 1}])
         wire = WireResult(
-            content=table.blocks(),
+            content=[mt.TextContent(text=table.llm_view())],
             structured=table.model_dump(mode="json"),
             is_error=False,
         )
