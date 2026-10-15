@@ -186,9 +186,16 @@ class UpdateView:
         self._groups.clear()
         self._view.begin_turn(key)
 
-    async def question(self, text: str, key: str, author: str | None = None) -> None:
-        """Вопрос пользователя: шаг с id, который вопросу дал агент."""
-        await self._view.question(text, key, name=author)
+    async def question(
+        self,
+        text: str,
+        key: str,
+        author: str | None = None,
+        links: Sequence[schema.ResourceContentBlock] = (),
+    ) -> None:
+        """Вопрос пользователя: шаг с id, который вопросу дал агент, и его
+        вложения."""
+        await self._view.question(text, key, name=author, links=links)
 
     async def apply(self, update: SessionUpdate) -> None:
         """Уведомление сессии в ленту; служебные не рисуются."""
@@ -291,8 +298,17 @@ class UpdateView:
         if text is None:
             text = ""
 
+        content = update.content
+        if content is None:
+            content = []
+
+        links: list[schema.ResourceContentBlock] = []
+        for block in content:
+            if isinstance(block, schema.ResourceContentBlock):
+                links.append(block)
+
         self.begin_turn(update.message_id)
-        await self.question(text, update.message_id)
+        await self.question(text, update.message_id, links=links)
 
     async def _thought_chunk(
         self, update: schema.AgentThoughtChunk | schema.AgentThoughtUpdate

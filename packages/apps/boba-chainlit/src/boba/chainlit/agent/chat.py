@@ -26,7 +26,7 @@ from acp.experimental.v2 import schema
 from pydantic import AliasPath, AnyUrl, BaseModel, ConfigDict, Field
 
 import chainlit as cl
-from boba.canvas.keys import ElementProps
+from boba.canvas.keys import ObjectKey
 from boba.chainlit.agent.client import (
     AcpClientError,
     AgentClient,
@@ -50,10 +50,10 @@ from boba.chainlit.agent.settings import (
     HistoryEnvironment,
     SettingsFileBuilder,
 )
-from boba.chainlit.chat.feed import QuestionBody, ShownElement
+from boba.chainlit.chat.feed import QuestionBody
 from boba.chainlit.data.data_layer import ThreadDeletionListener
 from boba.chainlit.domain.fields import ThreadMetaField
-from boba.chainlit.domain.keys import AttachmentLinks
+from boba.chainlit.domain.keys import CanvasFileUrl
 from boba.chainlit.infra.session import ChainlitSession, LiveSignIn
 from boba.chainlit.rendering.renderer import ThreadRewinds
 from boba.chat.profiles import SelectedProfile
@@ -106,35 +106,38 @@ class Question(BaseModel):
 
     key: str = Field(min_length=1, validation_alias=AliasPath("message", "id"))
     text: str = Field(validation_alias=AliasPath("message", "output"))
-    elements: tuple[ShownElement, ...] = ()
+    links: tuple[schema.ResourceContentBlock, ...] = ()
     edited: bool = False
 
     @classmethod
     def of_message(
-        cls, msg: cl.Message, thread_id: str, links: AttachmentLinks
+        cls, msg: cl.Message, identity: ThreadIdentity, public_url: str
     ) -> Question:
-        """Вопрос из сообщения chainlit: вложения получают ссылку треда вместо
-        сессионной, чтобы открываться из любой вкладки и с любого инстанса.
+        """Вопрос из сообщения chainlit: вложения — блоки resource_link с
+        адресом файла по его месту в хранилище (маршрут canvas) глазами
+        агента; public_url — адрес чата для агента.
         """
         attached = msg.elements
         if not attached:
             attached = []
 
-        elements: list[ShownElement] = []
+        links: list[schema.ResourceContentBlock] = []
         for element in attached:
-            data = dict(element.to_dict())
-            props = ElementProps.of(data.get("props"))
-            data["threadId"] = thread_id
-            data["forId"] = msg.id
-            data["chainlitKey"] = None
-            data["url"] = links.url(thread_id, element.id, props.dir)
-            elements.append(ShownElement.model_validate(data))
+            key = ObjectKey.build(
+                identity.user_id, identity.thread_id, element.name, element.id
+            )
+            uri = AnyUrl(urljoin(public_url, CanvasFileUrl.path(key)))
+            links.append(
+                schema.ResourceContentBlock(
+                    name=element.name, uri=uri, mime_type=element.mime
+                )
+            )
 
-        return cls(key=msg.id, text=msg.content, elements=tuple(elements))
+        return cls(key=msg.id, text=msg.content, links=tuple(links))
 
     def body(self, author: str = "") -> QuestionBody:
         """Тело вопроса для шины; author — имя шага вопроса во всех вкладках."""
-        return QuestionBody(text=self.text, elements=self.elements, author=author)
+        return QuestionBody(text=self.text, links=self.links, author=author)
 
 
 class PermissionKind(StrEnum):
@@ -358,11 +361,15 @@ class MuteUpdates(SessionUpdates):
 
 
 class AskedQuestions(SessionUpdates):
-    """Приёмник-обёртка агента треда: решает ожидание конца хода по idle и
-    передаёт поток дальше рендереру."""
+    """Приёмник-обёртка агента треда: запоминает вложения вопросов, которые
+    агент показал вкладке (`user_message` воспроизведения и живое эхо), решает
+    ожидание конца хода по idle и передаёт поток дальше рендереру. По ним
+    правка вопроса сохраняет его вложения для модели."""
 
     def __init__(self, inner: SessionUpdates) -> None:
         self._inner = inner
+        self.links: dict[str, tuple[schema.ResourceContentBlock, ...]] = {}
+        """messageId вопроса → его блоки resource_link."""
         self._ending: dict[str, asyncio.Future[schema.IdleSessionStateUpdate]] = {}
         """Ожидание конца хода по сессии; ждут одну сессию, idle снимает его."""
 
@@ -378,6 +385,18 @@ class AskedQuestions(SessionUpdates):
         return ending
 
     async def update(self, session_id: str, update: SessionUpdate) -> None:
+        if isinstance(update, schema.UserMessageUpdate):
+            content = update.content
+            if content is None:
+                content = []
+
+            links: list[schema.ResourceContentBlock] = []
+            for block in content:
+                if isinstance(block, schema.ResourceContentBlock):
+                    links.append(block)
+
+            self.links[update.message_id] = tuple(links)
+
         if isinstance(update, schema.IdleSessionStateUpdate):
             ended = self._ending.pop(session_id, None)
             if ended is not None:
@@ -568,21 +587,19 @@ class ThreadAgent:
     пришедший во время хода, ждёт его конца флагом.
     """
 
-    def __init__(  # noqa: PLR0913 — агент вкладки собирается всеми входами
+    def __init__(
         self,
         identity: ThreadIdentity,
         launcher: AgentLauncher,
         meta: AgentSessionMeta,
         renderer: TurnRenderer,
         options: SessionOptions,
-        public_url: str,
     ) -> None:
         self._identity = identity
         self._launcher = launcher
         self._meta = meta
         self._renderer = renderer
         self._options = options
-        self._public_url = public_url
         self._questions = AskedQuestions(renderer)
         self._launched: LaunchedAgent | None = None
         self._session_id: str | None = None
@@ -738,6 +755,24 @@ class ThreadAgent:
             self._session_id = None
             await self._renderer.cleared()
             await self._resume(replay=True)
+
+    def edited(self, question: Question) -> Question:
+        """Вопрос-правка с вложениями правленого вопроса из беседы, которую
+        вкладка видела у агента.
+
+        Ошибки:
+        AcpClientError — вопроса вкладка не видела: его задали в другой
+            вкладке после её открытия.
+        """
+        links = self._questions.links.get(question.key)
+        if links is None:
+            msg = (
+                f"The question {question.key} of thread {self.thread_id} is not in "
+                "the conversation this tab has loaded; reload the thread to edit it."
+            )
+            raise AcpClientError(msg)
+
+        return question.model_copy(update={"links": links, "edited": True})
 
     async def ask(self, question: Question) -> None:
         """Ход по вопросу: новая сессия на первом, ветвь на правке; ход
@@ -959,21 +994,8 @@ class ThreadAgent:
         return forked
 
     def _blocks(self, question: Question) -> list[PromptBlock]:
-        """Текст вопроса и ссылки на вложения по адресу chainlit глазами
-        агента; вложение без адреса агенту не передаётся."""
-        blocks: list[PromptBlock] = [schema.TextContentBlock(text=question.text)]
-        for element in question.elements:
-            if element.url is None:
-                continue
-
-            uri = AnyUrl(urljoin(self._public_url, element.url))
-            blocks.append(
-                schema.ResourceContentBlock(
-                    name=element.name, uri=uri, mime_type=element.mime
-                )
-            )
-
-        return blocks
+        """Текст вопроса и ссылки на его вложения."""
+        return [schema.TextContentBlock(text=question.text), *question.links]
 
 
 class ThreadAgentsIndex(ThreadRewinds):
@@ -1064,13 +1086,11 @@ class ThreadAgents:
         meta: AgentSessionMeta,
         index: ThreadAgentsIndex,
         renderers: TurnRenderers,
-        public_url: str,
     ) -> None:
         self._launcher = launcher
         self._meta = meta
         self._index = index
         self._renderers = renderers
-        self._public_url = public_url
         self._agents: dict[str, ThreadAgent] = {}
         self._starting = asyncio.Lock()
 
@@ -1094,7 +1114,6 @@ class ThreadAgents:
                 self._meta,
                 renderer,
                 options,
-                self._public_url,
             )
             await agent.start()
             self._agents[identity.thread_id] = agent

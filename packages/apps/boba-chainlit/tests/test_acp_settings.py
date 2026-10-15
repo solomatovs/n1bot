@@ -486,7 +486,6 @@ class TestRetiredServers:
             meta,
             RecordingUpdates(),
             SessionOptions(),
-            agent_stand.config().public_url,
         )
         try:
             await agent.start()
@@ -580,7 +579,6 @@ class TestForkCut:
             AgentSessionMeta(threads),
             updates,
             SessionOptions(),
-            config.public_url,
         )
         try:
             await agent.start()

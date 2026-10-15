@@ -259,14 +259,13 @@ class ChatRenderer:
             "thread %s: turn %s is rendered here", self._thread_id, message.turn_id
         )
         self.begin_turn(message.key)
-        # вопрос и его вложения рисуются всем вкладкам треда: chainlit показал их
-        # только отправившей
+        # вопрос и его вложения рисуются всем вкладкам треда, и отправившей тоже
         question = QuestionBody.model_validate(
             await self._payloads.get(message.question)
         )
-        await self._updates.question(question.text, message.key, question.author)
-        for element in question.elements:
-            await self._surface.send_element(element.to_element())
+        await self._updates.question(
+            question.text, message.key, question.author, question.links
+        )
 
         await self._surface.task_start()
         await self._view.await_model()

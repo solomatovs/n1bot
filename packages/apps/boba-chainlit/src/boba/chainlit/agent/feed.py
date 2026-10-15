@@ -47,7 +47,7 @@ from boba.chainlit.agent.chat import (
 from boba.chainlit.agent.client import SessionUpdate
 from boba.chainlit.canvas.panel import CanvasPanel
 from boba.chainlit.canvas.remote import RemoteJournals
-from boba.chainlit.chat.feed import ShownElement, TurnFeed
+from boba.chainlit.chat.feed import TurnFeed
 from boba.chainlit.data.data_layer import AttachmentDataLayer, FeedRows
 from boba.chainlit.domain.fields import StepField
 from boba.chainlit.rendering.acp_view import ToolMedia, UpdateView
@@ -62,7 +62,6 @@ from boba.messaging import MessageBus, NoticeLevel, PayloadStore, TurnOutcome
 from boba.toolkit.result import FileElement, PanelOpen, ToolResultBase
 from boba.transport.acp.protocol import IdleErrorUpdate, StopReason, ToolStatus
 from chainlit.context import ChainlitContext, context, context_var
-from chainlit.element import Element as ChainlitElement
 from chainlit.emitter import ChainlitEmitter
 from chainlit.session import WebsocketSession
 from chainlit.step import StepDict
@@ -429,28 +428,11 @@ class AgentFeed(TurnRenderer):
     async def _rebind(self, question: Question, key: str) -> Question:
         """Вопрос получает id, который ему дал агент: шаг с прежним id
         (оптимистичный шаг нового вопроса или правленый шаг) снимается во
-        вкладках треда, вложения вопроса держатель пишет под новым id. Итог —
-        вопрос с ключом key; сам вопрос всем вкладкам рисует рендерер треда
-        по TurnStarted.
-
-        Ошибки:
-        DataUnavailableError — вложение не записано.
-        """
+        вкладках треда. Итог — вопрос с ключом key; сам вопрос с вложениями
+        всем вкладкам рисует рендерер треда по TurnStarted."""
         await context.emitter.delete_step(StepDict(id=question.key))
-        layer = AttachmentDataLayer.require()
-        moved: list[ShownElement] = []
-        for element in question.elements:
-            shown = element.model_copy(
-                update={
-                    "for_id": key,
-                    "thread_id": self.thread_id,
-                    "chainlit_key": None,
-                }
-            )
-            await layer.create_element(ChainlitElement.from_dict(shown.to_element()))
-            moved.append(shown)
 
-        return question.model_copy(update={"key": key, "elements": tuple(moved)})
+        return question.model_copy(update={"key": key})
 
     async def cleared(self) -> None:
         """Тред без шагов уходит только этой вкладке: фронт заменяет ленту

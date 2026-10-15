@@ -7,12 +7,14 @@ import json
 import logging
 from abc import ABC, abstractmethod
 from collections import deque
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, ClassVar, Protocol, cast
 from uuid import UUID, uuid5
 
+import httpx
+from acp.experimental.v2 import schema
 from literalai.observability.step import TrueStepType
 
 from boba.cancellation import StopReason
@@ -23,7 +25,7 @@ from boba.toolkit.mcp import McpToolNames
 from boba.toolkit.result import ToolArtifact, VisualElement
 from chainlit.config import config as chainlit_config
 from chainlit.context import context
-from chainlit.element import CustomElement
+from chainlit.element import CustomElement, Element, File
 from chainlit.message import Message
 from chainlit.step import Step, StepDict
 from chainlit.utils import utc_now
@@ -605,9 +607,15 @@ class ChatView:
         return TurnPulse(self._sink, step)
 
     async def question(
-        self, text: str, step_id: str | None = None, name: str | None = None
+        self,
+        text: str,
+        step_id: str | None = None,
+        name: str | None = None,
+        links: Sequence[schema.ResourceContentBlock] = (),
     ) -> Step:
-        """Шаг вопроса; name — автор, если он известен точнее имени ленты."""
+        """Шаг вопроса; name — автор, если он известен точнее имени ленты;
+        вложения — файлы шага по адресу маршрута canvas: путь из ссылки
+        агента, а не её хост, который браузеру может быть не виден."""
         author = name
         if not author:
             author = self._user_name
@@ -619,6 +627,26 @@ class ChatView:
             step_id=step_id,
         )
         step.output = text
+        if self._sink.emits_elements:
+            attached: list[Element] = []
+            for number, link in enumerate(links):
+                address = httpx.URL(str(link.uri))
+                element = File(
+                    name=link.name,
+                    url=address.raw_path.decode("ascii"),
+                    mime=link.mime_type,
+                    display="inline",
+                )
+                element_id = self.derive_id(
+                    self._thread_id, f"{step_id}/{number}", StepRole.ELEMENT
+                )
+                if element_id is not None:
+                    element.id = element_id
+
+                attached.append(element)
+
+            step.elements = attached
+
         await self._sink.put(step)
         return step
 

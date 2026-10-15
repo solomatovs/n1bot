@@ -237,12 +237,33 @@ class ChatSocket:
         await self.wait_step_done(self.CHAT_START_STEP)
         await self.wait_task_end()
 
-    async def send(self, text: str) -> str:
-        """Вопрос пользователя; итог — id его сообщения."""
+    async def send(self, text: str, files: tuple[str, ...] = ()) -> str:
+        """Вопрос пользователя с загруженными файлами files; итог — id его
+        сообщения."""
         message = self._message(str(uuid4()), text)
-        await self._sio.emit("client_message", {"message": message})
+        references: list[dict[str, str]] = []
+        for file_id in files:
+            references.append({"id": file_id})
+
+        await self._sio.emit(
+            "client_message", {"message": message, "fileReferences": references}
+        )
 
         return str(message["id"])
+
+    def upload(self, name: str, body: bytes, mime: str) -> str:
+        """Файл вложением сессии вкладки, как его грузит интерфейс; итог — id
+        файла для вопроса."""
+        response = httpx.post(
+            f"{self._app.config.base_url}/project/file",
+            params={"session_id": self.session_id},
+            files={"file": (name, body, mime)},
+            headers={"Cookie": self._cookie},
+            timeout=60.0,
+        )
+        assert response.status_code == 200, response.text[:300]
+
+        return str(response.json()["id"])
 
     async def edit(self, message_id: str, text: str) -> None:
         """Правка вопроса: тот же id, новый текст — как делает интерфейс."""
@@ -914,8 +935,10 @@ class TestHistory:
     async def test_editing_a_question_asked_in_another_tab(
         self, app: StandProcess, cookie: str, rows: ChatRows
     ) -> None:
-        """Вопрос, который вкладка видела живым ходом другой вкладки, правится
-        ею после того, как та закрылась."""
+        """Вопрос, который вкладка видела только живым ходом другой вкладки:
+        её агент беседы с ним не загружал, правка отказана с советом
+        перезагрузить тред, и вкладка перерисована из истории; после этого
+        та же правка проходит."""
         asking = ChatSocket(app, cookie, str(uuid4()))
         await asking.open()
         await asking.send(f"zero {ScenarioName.ANSWER.value}")
@@ -939,11 +962,18 @@ class TestHistory:
             assert live, editing.trace()
             await asking.end_session()
 
-            await editing.edit(
-                str(live[-1].get("id")), f"edited {ScenarioName.ANSWER.value}"
-            )
+            question = str(live[-1].get("id"))
+            reloaded = len(editing.events)
+            await editing.edit(question, f"edited {ScenarioName.ANSWER.value}")
             await editing.wait_task_end()
-            assert not editing.errors(), (editing.errors(), app.tail(60))
+            refusals = editing.errors()
+            assert refusals, editing.trace()
+            assert "reload the thread to edit it" in refusals[-1], refusals
+            await editing.wait_event_index("resume_thread", since=reloaded)
+
+            await editing.edit(question, f"edited {ScenarioName.ANSWER.value}")
+            await editing.wait_task_end()
+            assert editing.errors() == refusals, (editing.errors(), app.tail(60))
         finally:
             await editing.end_session()
 
@@ -1142,6 +1172,51 @@ class TestHistory:
             await remote.end_session()
             await other.end_session()
             await editing.end_session()
+
+    async def test_question_attachment_lives_in_the_agent_history(
+        self, app: StandProcess, cookie: str, llm_port: int
+    ) -> None:
+        """Вложение вопроса после перезагрузки: текст вопроса без ссылки,
+        файл — элемент шага вопроса с адресом маршрута canvas, он скачивается;
+        правка вопроса после перезагрузки сохраняет вложение для модели."""
+        text = f"attach {ScenarioName.ANSWER.value}"
+        tab = ChatSocket(app, cookie, str(uuid4()))
+        await tab.open()
+        file_id = tab.upload("note.txt", b"attached text", "text/plain")
+        await tab.send(text, (file_id,))
+        await tab.wait_task_end()
+        assert not tab.errors(), (tab.errors(), app.tail(60))
+        await tab.end_session()
+
+        again = ChatSocket(app, cookie, tab.thread_id)
+        await again.open(resumed=True)
+        try:
+            asked = again.messages("user_message")
+            assert [m.get("output") for m in asked] == [text]
+            question = str(asked[-1].get("id"))
+            attached = [e for e in again.elements() if e.get("forId") == question]
+            assert attached, again.trace()
+            url = str(attached[-1].get("url"))
+            assert attached[-1].get("name") == "note.txt"
+            assert url.startswith(
+                f"{app.config.url_prefix}/canvas/{tab.thread_id}/upload/"
+            ), url
+            served = httpx.get(
+                StandUrl.of(app.config.app_port, url),
+                headers={"Cookie": cookie},
+                timeout=30.0,
+            )
+            assert served.status_code == 200, served.text[:200]
+            assert served.content == b"attached text"
+
+            edited = f"edited-{uuid4().hex} {ScenarioName.ANSWER.value}"
+            await again.edit(question, edited)
+            await again.wait_task_end()
+            assert not again.errors(), (again.errors(), app.tail(60))
+            request = LlmRequests(llm_port).with_text(edited)
+            assert "[@note.txt](" in json.dumps(request["messages"])
+        finally:
+            await again.end_session()
 
     async def test_deleting_the_thread_deletes_the_agent_session(
         self, app: StandProcess, cookie: str, rows: ChatRows
