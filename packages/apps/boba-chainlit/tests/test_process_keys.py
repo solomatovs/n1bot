@@ -1,64 +1,20 @@
-"""Ключи процессов агента и вызывающий по ключу: реестр ключей, профиль
-треда в субъекте и актуальность входа пользователя — роли и делегированный
-билет kerberos читаются из живой сессии в момент вызова."""
+"""Ключи процессов агента и вызывающий по ключу: реестр ключей и serverId
+серверов процесса, профиль треда в субъекте и актуальность входа
+пользователя — роли и делегированный билет kerberos читаются из живой
+сессии в момент вызова."""
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-from typing import ClassVar
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import pytest
-from chainlit_stand import StandTokens
+from chainlit_stand import TabSession
 
-from boba.chainlit.agent.server import ChatCallers, KeyHolder, ProcessKeys
-from boba.chainlit.infra.session import ChainlitSession
+from boba.chainlit.agent.server import ChatCallers, ProcessKeys
 from boba.identity.context import DelegatedTicket, NoUserCredential
 from boba.identity.errors import AuthenticationError
-from boba.identity.session import SignInProvider
-from boba.identity.signin import SignInMetadata
 
 pytestmark = pytest.mark.anyio
-
-
-class TabSession:
-    """Сессия вкладки в объёме, который читает держатель ключа: объект с
-    токеном входа, который обновление сессии заменяет на месте."""
-
-    LOGIN: ClassVar[str] = "ivanov"
-    PRINCIPAL: ClassVar[str] = "ivanov@STAND.LOCAL"
-
-    def __init__(self) -> None:
-        self.raw = SimpleNamespace(token="")
-        self.live = ChainlitSession(self.raw, StandTokens())
-
-    def sign_in(self, roles: frozenset[str], sealed_ticket: str) -> None:
-        """Кладёт в сессию токен входа kerberos с ролями и билетом — так же
-        токен заменяет обновление сессии."""
-        from chainlit.auth.jwt import create_jwt
-
-        metadata = SignInMetadata(
-            provider=SignInProvider.KERBEROS.value,
-            roles=roles,
-            principal=self.PRINCIPAL,
-            sealed_ticket=sealed_ticket,
-        )
-        self.raw.token = create_jwt(StandTokens.user(self.LOGIN, metadata.render()))
-
-    def password_sign_in(self, roles: frozenset[str]) -> None:
-        from chainlit.auth.jwt import create_jwt
-
-        metadata = SignInMetadata(provider=SignInProvider.LOCAL.value, roles=roles)
-        self.raw.token = create_jwt(StandTokens.user(self.LOGIN, metadata.render()))
-
-    def holder(self, user_id: UUID, profile: str) -> KeyHolder:
-        return KeyHolder(
-            user_id=user_id,
-            login=self.LOGIN,
-            thread_id=str(uuid4()),
-            profile=profile,
-            session=self.live,
-        )
 
 
 class TestProcessKeys:
@@ -83,6 +39,26 @@ class TestProcessKeys:
         assert first != second
         keys.revoke(first)
         assert keys.holder(second) is holder
+
+    async def test_each_registered_server_gets_its_own_server_id(self) -> None:
+        keys = ProcessKeys()
+        holder = TabSession().holder(uuid4(), "general")
+
+        servers = keys.register(holder, ["boba_general", "chat"])
+        ids = [server.server_id for server in servers]
+
+        assert [server.name for server in servers] == ["boba_general", "chat"]
+        assert [server.type for server in servers] == ["acp", "acp"]
+        assert len(set(ids)) == 2
+        for server in servers:
+            registered = keys.holder(server.server_id)
+            assert registered is not None
+            assert registered.server == server.name
+            assert registered.thread_id == holder.thread_id
+
+        keys.revoke(ids[0])
+        assert keys.holder(ids[0]) is None
+        assert keys.holder(ids[1]) is not None
 
 
 class TestCallerOfTheKey:

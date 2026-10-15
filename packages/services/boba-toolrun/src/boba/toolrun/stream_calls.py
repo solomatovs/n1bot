@@ -25,6 +25,7 @@ StreamGroupsConfigError — секции [stream_groups] нет в конфиг�
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 from abc import abstractmethod
 from collections.abc import Mapping, Sequence
@@ -64,6 +65,7 @@ from boba.toolkit.result import (
     ErrorResult,
     FailureResult,
 )
+from boba.toolkit.wire import NestedCallsReply
 from boba.toolrun.call_id import CallFields
 from boba.toolrun.dag_run import DagOutcome, DagRunError, DagRunner
 from boba.toolrun.hosted import HostedTool, ToolSchema
@@ -300,13 +302,16 @@ class WorkflowTool:
         self._schemas = ToolSchema()
 
     def card(self) -> ToolCard:
-        """Карточка для модели: узлы называют инструменты сервера по имени."""
-        return self._schemas.card(
+        """Карточка для модели: узлы называют инструменты сервера по имени;
+        итог — узлы связки по схеме NestedCallsReply."""
+        card = self._schemas.card(
             self.NAME,
             self.DESCRIPTION.strip(),
             self._fields.extended(WorkflowCall),
             None,
         )
+
+        return dataclasses.replace(card, output=NestedCallsReply.model_json_schema())
 
 
 class NodeArgs(Protocol):
@@ -314,8 +319,7 @@ class NodeArgs(Protocol):
 
     Обвязки тела узнают о негодном аргументе, когда узел уже запущен, а
     соседние группы вызова идут. Правило проверяет аргументы каждого узла до
-    старта DAG, решает, какими аргументы узла вернутся клиенту в итоге
-    вызова, и объявляет клиенту возможность сервера, без которой такой
+    старта DAG и объявляет клиенту возможность сервера, без которой такой
     аргумент не собрать. Реализует его владелец вида аргумента (запечатанные
     соединения — SealedConnectionParams); исполнитель про вид не знает.
     """
@@ -323,12 +327,6 @@ class NodeArgs(Protocol):
     @abstractmethod
     async def check(self, tool: str, args: Mapping[str, object]) -> None:
         """Отказ ToolRefusalError, если аргументы узла инструмента tool негодны."""
-        ...
-
-    @abstractmethod
-    def shown(self, tool: str, args: Mapping[str, object]) -> Mapping[str, object]:
-        """Аргументы узла для итога вызова: без значений, которые клиенту
-        возвращать незачем."""
         ...
 
     @abstractmethod
@@ -342,9 +340,10 @@ class LocalDagService(ToolServer):
 
     Клиент получает отсюда карточки инструментов для модели и шлёт вызовы.
     Модели отдаются все инструменты как есть; если среди них есть потоковые,
-    к ним добавляется workflow. Каждый вызов исполняет свой DAG: вызовы
-    одного пакета между собой не связаны, потоковые инструменты связывает
-    только вызов workflow. Отказ плана и отказ правила аргументов
+    к ним добавляется workflow, а форма его узлов объявляется клиенту
+    расширением вложенных вызовов (CallDag.feature). Каждый вызов исполняет
+    свой DAG: вызовы одного пакета между собой не связаны, потоковые
+    инструменты связывает только вызов workflow. Отказ плана и отказ правила аргументов
     (NodeArgs) — итог-ошибка вызова до старта узлов; отказ плана отдельному
     вызову называет workflow как способ связать инструменты. Выдуманное имя
     получает отказ со списком инструментов. Создаётся из обёрнутых
@@ -396,9 +395,17 @@ class LocalDagService(ToolServer):
         return self._offered
 
     def features(self) -> Mapping[str, Mapping[str, object]]:
+        """Возможности правил аргументов и, если модели предложен workflow,
+        расширение вложенных вызовов с формой его узлов."""
         declared: dict[str, Mapping[str, object]] = {}
         for rule in self._rules:
             declared.update(rule.features())
+
+        if self._workflow is None:
+            return declared
+
+        nested = self._dags.feature()
+        declared[nested.ID] = nested.settings()
 
         return declared
 
@@ -490,19 +497,11 @@ class LocalDagService(ToolServer):
             msg = f"node {node.title!r}: {exc}"
             raise ToolRefusalError(exc.kind, msg) from exc
 
-    def _shown_args(self, node: DagNode) -> Mapping[str, object]:
-        shown: Mapping[str, object] = dict(node.args)
-        for rule in self._rules:
-            shown = rule.shown(node.tool, shown)
-
-        return shown
-
     def _node_result(self, node: DagNode, outcome: NodeOutcome) -> WorkflowNodeResult:
         return WorkflowNodeResult(
             key=node.title,
             call_id=node.key,
             tool=node.tool,
-            args=self._shown_args(node),
             errored=outcome.errored,
             content=outcome.content,
             result=outcome.artifact,

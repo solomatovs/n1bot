@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 import mcp_types as mt
+from mcp_types.jsonrpc import ErrorData
 
 from boba.toolkit.calls import CallViews
 from boba.toolkit.dag import ToolCard, ToolHints
@@ -177,8 +178,9 @@ class McpToolStubs:
     """Карточки инструментов модели по списку инструментов MCP-сервера.
 
     Карточка несёт полное имя инструмента (McpToolNames: сервер и имя на
-    нём), описание, схему аргументов сервера как есть, вид аргументов,
-    выведенный из схемы (CallViews), и пометки по annotations сервера.
+    нём), описание, схему аргументов и схему итога сервера как есть, вид
+    аргументов, выведенный из схемы (CallViews), и пометки по annotations
+    сервера.
     Пометки переводятся в обе стороны: клиент MCP читает их из Tool сервера
     (hints_of), сервер boba (McpTool адаптера fastmcp) отдаёт их клиенту
     annotations (annotations_of).
@@ -204,6 +206,7 @@ class McpToolStubs:
             description=description,
             parameters=dict(tool.input_schema),
             views=self._views.seen(tool.input_schema),
+            output=tool.output_schema,
             hints=self.hints_of(tool),
         )
 
@@ -237,8 +240,9 @@ class McpResults:
     Модель получает блоки, адресованные ей (без audience либо с assistant в
     ней): текстовый блок — своим текстом, любой другой — пометкой
     `[<вид> <имя или uri> <тип>]`; ответ без такого текста, но со
-    structuredContent — его JSON. isError и просьба сервера о вводе
-    (input_required) дают модели ошибку. Зовут его клиенты MCP, которые
+    structuredContent — его JSON. isError, просьба сервера о вводе
+    (input_required) и ошибка самого MCP (error вместо result) дают модели
+    ошибку. Зовут его клиенты MCP, которые
     кладут итог вызова в историю модели; итог вызова они собирают сами.
     """
 
@@ -270,6 +274,18 @@ class McpResults:
             )
 
         return ErrorResult(message=text, error_kind=McpFailure.TOOL_ERROR)
+
+    def error(self, tool: str, call_id: str, error: ErrorData) -> ErrorResult:
+        """Результат вызова call_id инструмента tool, на который сервер
+        ответил ошибкой MCP: код, текст и data, если она есть."""
+        message = (
+            f"The MCP server answered the call {call_id!r} of tool {tool!r} with "
+            f"error {error.code}: {error.message}"
+        )
+        if error.data is not None:
+            message = f"{message}\n{JsonBlock.pretty(error.data)}"
+
+        return ErrorResult(message=message, error_kind=McpFailure.TOOL_ERROR)
 
     def _text(self, reply: mt.CallToolResult) -> str:
         addressed = filter(self._for_model, reply.content)

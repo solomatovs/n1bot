@@ -1,17 +1,17 @@
-"""Чат как сервер инструментов своего агента: стенд chainlit с включёнными
+"""Чат исполняет инструменты своего агента: стенд chainlit с включёнными
 `/chat/mcp` и обработчиком хука PreToolUse, сервис boba-mcp стенда с плагином
-pg процессами хоста, настоящий `boba acp` с фейковой моделью.
+pg процессами хоста, настоящий `boba acp` v2 с фейковой моделью.
 
-Проверяется ход «connection_list на /chat/mcp → pg_query на boba-mcp с именем
-соединения»: обработчик хука подменяет имя запечатанным профилем, сервис
-открывает его и исполняет запрос, в ленте остаётся имя; сам сервер `/chat/mcp`
-отдаёт инструменты соединений клиенту MCP с ключом процесса агента и отвечает
-401 всему остальному, включая JWT входа пользователя; обработчик хука отвечает
-`allow` с `updatedInput`, `deny` на неизвестное соединение и 401 без годного
-ключа. Ключ живёт с процессом: перезапуск агента и закрытие вкладки его
-снимают. Серверы профиля агент получает файлом настроек со способом входа
-из конфига чата: proxy — от имени пользователя вкладки, local — учёткой
-агента."""
+Агент получает серверы профиля и сервер чата объявлениями type "acp" и зовёт
+их через mcp/message; ретранслятор чата запечатывает соединения и исполняет
+вызовы от имени пользователя вкладки. Проверяется ход «connection_list на
+сервере чата → pg_query на boba-mcp с именем соединения»: имя подменяется
+запечатанным профилем, сервис открывает его и исполняет запрос, в ленте
+остаётся имя; входы чата для агента отвечают 401 всему, что не serverId
+процесса; файл настроек агента не несёт ни серверов, ни хуков, ни токенов.
+Приёмка ретранслятора — настоящий агент и стенд boba-mcp со входом proxy:
+инструмента чужой роли нет у агента, остановка отменяет вызов на сервере,
+инструмент только для интерфейса агенту не виден и не вызывается."""
 
 from __future__ import annotations
 
@@ -29,29 +29,31 @@ import httpx
 import httpx2
 import jwt
 import pytest
-from acp_stand import AgentHistoryStand
+from acp.experimental.v2 import schema
+from acp_stand import AgentHistoryStand, Agents, FakeModel, RecordingUpdates
+from chainlit_stand import ServiceProcess, TabSession
 from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 from test_acp_chat import BOOT_TIMEOUT_SEC, AgentProcesses, ChatSocket
 
 import boba.chainlit.agent
 from boba.agent.hooks import (
-    HookDecision,
-    HookReplyBody,
     McpServerInfo,
     PreToolUseEvent,
 )
 from boba.agent.records import PermissionMode
+from boba.chainlit.agent.client import AgentProcess
 from boba.chainlit.rendering.chat_view import StepStatus
 from boba.connections.sealed import SealedParamSchema, SealFeature, SealKeys
 from boba.db.postgres.connection import PostgresConfig
 from boba.identity.token import ClaimKey
+from boba.mcp_client.client import McpServerConfig, McpServersConfig
 from boba.runtime.config import RuntimeConfig
 from boba.runtime.http import RequestTokens
 from boba.stand.names import StandNames
 from boba.stand.site import Stand
 from boba.stand.ui.database import StandDatabase
-from boba.stand.ui.fake_llm import ScenarioName, serve
+from boba.stand.ui.fake_llm import OfferedTools, ScenarioName, serve
 from boba.stand.ui.stand import (
     ServiceStand,
     StandAgentAuth,
@@ -61,6 +63,7 @@ from boba.stand.ui.stand import (
     StandUrl,
     free_port,
 )
+from boba.toolkit.mcp import McpToolNames
 
 pytestmark = pytest.mark.anyio
 
@@ -238,35 +241,11 @@ class AgentFiles:
     def __init__(self, app: StandProcess) -> None:
         self._agents = AgentProcesses(app)
 
-    async def pid(self, thread_id: str, other_than: int = 0) -> int:
-        return await self._agents.await_thread(thread_id, other_than)
-
-    def pids(self) -> list[int]:
-        return self._agents.pids()
-
-    async def text(self, thread_id: str, other_than: int = 0) -> str:
-        pid = await self.pid(thread_id, other_than)
+    async def text(self, thread_id: str) -> str:
+        pid = await self._agents.await_thread(thread_id, 0)
         path = self._agents.of_thread(thread_id)[pid]
 
         return path.read_text(encoding="utf-8")
-
-    async def document(self, thread_id: str, other_than: int = 0) -> dict[str, Any]:
-        return json.loads(await self.text(thread_id, other_than))
-
-    async def key(self, thread_id: str, other_than: int = 0) -> str:
-        """Ключ процесса агента треда из записи сервера чата его файла."""
-        document = await self.document(thread_id, other_than)
-        key = document["mcpServers"]["chat"]["auth"]["token"]
-        assert isinstance(key, str)
-        assert key
-
-        return key
-
-
-@pytest.fixture
-async def process_key(app: StandProcess, tab: ChatSocket) -> str:
-    """Ключ процесса агента открытой вкладки."""
-    return await AgentFiles(app).key(tab.thread_id)
 
 
 class Bearer:
@@ -468,9 +447,10 @@ class TestAgentTurn:
         assert not queried.get("isError"), (queried, companion.tail(80))
         assert "one" in str(queried.get("output")), queried
 
+        # запечатывает ретранслятор чата тем же HookSealing, что и вход хука
         app_log = _lines_since(app, since)
         assert any(
-            f"hook: connection {CONNECTION} of kind postgres sealed in connection "
+            f"sealing: connection {CONNECTION} of kind postgres sealed in connection "
             "of mcp__boba_general__pg_query" in line
             for line in app_log
         ), "\n".join(app_log[-40:])
@@ -483,6 +463,58 @@ class TestAgentTurn:
         assert not app.complaints(since), app.complaints(since)
 
 
+class TestNestedCallsFeed:
+    """Связка workflow сервера boba-mcp рисуется подшагами узлов; ход каждого
+    узла приходит его подшагу по ключу узла в `_meta` уведомления сквозь
+    сервер, ретранслятор чата и агента."""
+
+    async def test_each_node_step_gets_its_own_progress(
+        self, app: StandProcess, tab: ChatSocket, probe: PostgresConfig
+    ) -> None:
+        nodes = [
+            {
+                "key": "src",
+                "tool": "pg_stream_out",
+                "args": {
+                    "intent": "rows out",
+                    "connection": CONNECTION,
+                    "sql": "select 1 as one",
+                    "wire": "tsv",
+                    "out": "rows",
+                },
+            },
+            {
+                "key": "drain",
+                "tool": "dev_null",
+                "args": {"intent": "drain rows", "feeds": ["rows"]},
+            },
+        ]
+        calls = [{"name": "mcp__boba_general__workflow", "arguments": {"nodes": nodes}}]
+        await tab.send(f"{ScenarioName.CALL.value} {json.dumps(calls)}")
+        await tab.wait_task_end()
+
+        assert not tab.errors(), (tab.errors(), app.tail(80))
+        steps = ToolSteps(tab)
+        assert not steps.named("workflow"), tab.trace()
+
+        source = steps.named("pg_stream_out")
+        assert source, (tab.trace(), app.tail(60))
+        assert " pg_stream_out · rows out" in str(source[-1].get("name")), source[-1]
+        assert not source[-1].get("isError"), source[-1]
+
+        outputs: list[str] = []
+        for payload in source:
+            outputs.append(str(payload.get("output")))
+
+        assert any("connecting to" in output for output in outputs), outputs
+
+        drained = steps.named("dev_null")
+        assert drained, tab.trace()
+        assert " dev_null · drain rows" in str(drained[-1].get("name")), drained[-1]
+        for payload in drained:
+            assert "connecting to" not in str(payload.get("output")), payload
+
+
 def _lines_since(process: StandProcess[Any], since: int) -> list[str]:
     text = process.log_path.read_text(encoding="utf-8", errors="replace")
 
@@ -490,22 +522,7 @@ def _lines_since(process: StandProcess[Any], since: int) -> list[str]:
 
 
 class TestChatMcp:
-    """Сервер инструментов чата глазами клиента MCP."""
-
-    async def test_lists_and_calls_connection_tools_with_the_process_key(
-        self, addresses: Addresses, process_key: str, probe: PostgresConfig
-    ) -> None:
-        client = McpTab(addresses.mcp(), process_key)
-
-        names = await client.tool_names()
-        assert names == ["connection_list", "connection_search"]
-
-        text = await client.call_text("connection_list", {})
-        assert CONNECTION in text
-        assert probe.dbname in text
-
-        found = await client.call_text("connection_search", {"kind": "postgres"})
-        assert CONNECTION in found
+    """Сервер инструментов чата принимает только serverId процесса агента."""
 
     @pytest.mark.parametrize(
         "token", ["foreign", "expired", "none", "sign_in", "random"]
@@ -515,7 +532,6 @@ class TestChatMcp:
         addresses: Addresses,
         runtime_config: RuntimeConfig,
         session_jwt: str,
-        process_key: str,
         token: str,
     ) -> None:
         forged = ForgedTokens(runtime_config.session.auth_secret)
@@ -562,22 +578,11 @@ class HookEvents:
             server,
         )
 
-    def plain(self) -> dict[str, Any]:
-        schema = {"type": "object", "properties": {"text": {"type": "string"}}}
-
-        return self._event(
-            "mcp__chat__connection_search", {"text": "hi"}, schema, self.server()
-        )
-
     def server(self) -> McpServerInfo:
         return McpServerInfo(
             name=MCP_SERVER,
             features={SealFeature.ID: self._keys.feature().model_dump()},
         )
-
-    @staticmethod
-    def featureless() -> McpServerInfo:
-        return McpServerInfo(name=MCP_SERVER, features={})
 
     @staticmethod
     def _event(
@@ -601,87 +606,8 @@ class HookEvents:
 
 
 class TestHookHandler:
-    """Обработчик хука PreToolUse по прямому запросу с ключом процесса."""
-
-    async def test_seals_a_granted_connection(
-        self, addresses: Addresses, process_key: str, probe: PostgresConfig
-    ) -> None:
-        keys = SealKeys()
-        events = HookEvents(keys)
-        response = httpx.post(
-            addresses.hook(),
-            json=events.pg_query(CONNECTION, events.server()),
-            headers=Bearer.headers(process_key),
-            timeout=30.0,
-        )
-        assert response.status_code == HTTPStatus.OK, response.text[:300]
-
-        reply = HookReplyBody.model_validate(response.json())
-        output = reply.hook_specific_output
-        assert output is not None
-        assert output.permission_decision is HookDecision.ALLOW
-        assert output.updated_input is not None
-        assert output.updated_input["sql"] == "select 1"
-
-        sealed = output.updated_input["connection"]
-        assert sealed != CONNECTION
-        opened = keys.open(sealed)
-        assert opened.name == CONNECTION
-        assert opened.profile["dbname"] == probe.dbname
-
-    async def test_denies_an_unknown_connection(
-        self, addresses: Addresses, process_key: str, probe: PostgresConfig
-    ) -> None:
-        events = HookEvents(SealKeys())
-        response = httpx.post(
-            addresses.hook(),
-            json=events.pg_query("nobody-granted-this", events.server()),
-            headers=Bearer.headers(process_key),
-            timeout=30.0,
-        )
-        assert response.status_code == HTTPStatus.OK, response.text[:300]
-
-        output = HookReplyBody.model_validate(response.json()).hook_specific_output
-        assert output is not None
-        assert output.permission_decision is HookDecision.DENY
-        assert "pg_query" in output.permission_decision_reason
-        assert CONNECTION in output.permission_decision_reason
-        assert output.updated_input is None
-
-    async def test_denies_when_the_server_declares_no_seal_key(
-        self, addresses: Addresses, process_key: str, probe: PostgresConfig
-    ) -> None:
-        events = HookEvents(SealKeys())
-        response = httpx.post(
-            addresses.hook(),
-            json=events.pg_query(CONNECTION, events.featureless()),
-            headers=Bearer.headers(process_key),
-            timeout=30.0,
-        )
-        assert response.status_code == HTTPStatus.OK, response.text[:300]
-
-        output = HookReplyBody.model_validate(response.json()).hook_specific_output
-        assert output is not None
-        assert output.permission_decision is HookDecision.DENY
-        assert SealFeature.ID in output.permission_decision_reason
-
-    async def test_allows_tools_without_connections_unchanged(
-        self, addresses: Addresses, process_key: str
-    ) -> None:
-        events = HookEvents(SealKeys())
-        response = httpx.post(
-            addresses.hook(),
-            json=events.plain(),
-            headers=Bearer.headers(process_key),
-            timeout=30.0,
-        )
-        assert response.status_code == HTTPStatus.OK, response.text[:300]
-
-        body = response.json()
-        output = HookReplyBody.model_validate(body).hook_specific_output
-        assert output is not None
-        assert output.permission_decision is HookDecision.ALLOW
-        assert "updatedInput" not in body["hookSpecificOutput"]
+    """Обработчик хука PreToolUse принимает только serverId процесса агента;
+    запечатывание по событию проверяет ретранслятор (test_mcp_relay)."""
 
     @pytest.mark.parametrize(
         "token", ["foreign", "expired", "none", "sign_in", "random"]
@@ -691,7 +617,6 @@ class TestHookHandler:
         addresses: Addresses,
         runtime_config: RuntimeConfig,
         session_jwt: str,
-        process_key: str,
         token: str,
     ) -> None:
         forged = ForgedTokens(runtime_config.session.auth_secret)
@@ -708,141 +633,8 @@ class TestHookHandler:
         assert response.headers.get("WWW-Authenticate") == "Bearer"
 
 
-class ProcessKeyProbe:
-    """Запросы к входам чата для агента с названным ключом: по статусу видно,
-    принят ли ключ."""
-
-    def __init__(self, addresses: Addresses) -> None:
-        self._addresses = addresses
-        self._events = HookEvents(SealKeys())
-
-    def hook(self, key: str) -> int:
-        response = httpx.post(
-            self._addresses.hook(),
-            json=self._events.plain(),
-            headers=Bearer.headers(key),
-            timeout=30.0,
-        )
-
-        return response.status_code
-
-    def mcp(self, key: str) -> int:
-        response = httpx.post(
-            self._addresses.mcp(),
-            json={"jsonrpc": JSON_RPC, "id": 1, "method": "tools/list", "params": {}},
-            headers={
-                **Bearer.headers(key),
-                "Accept": "application/json, text/event-stream",
-                "Content-Type": "application/json",
-            },
-            timeout=30.0,
-        )
-
-        return response.status_code
-
-
-class TestProcessKey:
-    """Ключ процесса агента: выдан запуском, живёт с процессом."""
-
-    FORM: ClassVar[dict[str, Any]] = {
-        "agent_base_url": "",
-        "agent_api_key": "",
-        "agent_model": "fake-model-rekeyed",
-        "session_mode": "bypassPermissions",
-        "session_model": "general",
-    }
-    """Форма панели настроек: её правка перезапускает агента вкладки."""
-
-    async def test_settings_file_carries_the_key_and_no_sign_in_token(
-        self, app: StandProcess, tab: ChatSocket, session_jwt: str, process_key: str
-    ) -> None:
-        files = AgentFiles(app)
-
-        text = await files.text(tab.thread_id)
-        document = json.loads(text)
-
-        assert session_jwt not in text
-        hook = document["hooks"]["PreToolUse"][0]["hooks"][0]
-        assert hook["headers"] == Bearer.headers(process_key)
-        assert document["mcpServers"]["chat"]["auth"] == {
-            "auth": "bearer",
-            "token": process_key,
-        }
-
-    async def test_proxy_server_of_the_file_names_the_user_of_the_tab(
-        self, app: StandProcess, tab: ChatSocket
-    ) -> None:
-        document = await AgentFiles(app).document(tab.thread_id)
-
-        auth = document["mcpServers"][MCP_SERVER]["auth"]
-        assert auth["auth"] == "proxy"
-        assert auth["login"] == ADMIN
-        assert auth["roles"] == ["ADM"]
-        assert auth["clientId"] == ServiceStand.CLIENT_ID
-        assert "headers" not in document["mcpServers"][MCP_SERVER]
-
-    async def test_each_tab_gets_its_own_key(
-        self, app: StandProcess, cookie: str, addresses: Addresses, tab: ChatSocket
-    ) -> None:
-        files = AgentFiles(app)
-        other = ChatSocket(app, cookie, str(uuid4()))
-        await other.open()
-        try:
-            first = await files.key(tab.thread_id)
-            second = await files.key(other.thread_id)
-        finally:
-            await other.end_session()
-
-        probe = ProcessKeyProbe(addresses)
-        assert first != second
-        assert probe.hook(first) == HTTPStatus.OK
-
-    async def test_key_of_a_restarted_agent_is_refused(
-        self, app: StandProcess, tab: ChatSocket, addresses: Addresses
-    ) -> None:
-        files = AgentFiles(app)
-        probe = ProcessKeyProbe(addresses)
-        old_pid = await files.pid(tab.thread_id)
-        old_key = await files.key(tab.thread_id)
-        assert probe.hook(old_key) == HTTPStatus.OK
-        assert probe.mcp(old_key) == HTTPStatus.OK
-
-        await tab.settings(dict(self.FORM))
-        new_key = await files.key(tab.thread_id, other_than=old_pid)
-
-        assert new_key != old_key
-        assert probe.hook(old_key) == HTTPStatus.UNAUTHORIZED
-        assert probe.mcp(old_key) == HTTPStatus.UNAUTHORIZED
-        assert probe.hook(new_key) == HTTPStatus.OK
-        assert probe.mcp(new_key) == HTTPStatus.OK
-
-    async def test_key_of_a_closed_tab_is_refused(
-        self,
-        app: StandProcess,
-        cookie: str,
-        addresses: Addresses,
-        probe: PostgresConfig,
-    ) -> None:
-        files = AgentFiles(app)
-        keys = ProcessKeyProbe(addresses)
-        closing = ChatSocket(app, cookie, str(uuid4()))
-        await closing.open()
-        pid = await files.pid(closing.thread_id)
-        key = await files.key(closing.thread_id)
-        assert keys.hook(key) == HTTPStatus.OK
-
-        await closing.end_session()
-        deadline = time.monotonic() + 60.0
-        while pid in files.pids() and time.monotonic() < deadline:
-            time.sleep(0.3)
-
-        assert pid not in files.pids(), app.tail(40)
-        assert keys.hook(key) == HTTPStatus.UNAUTHORIZED
-        assert keys.mcp(key) == HTTPStatus.UNAUTHORIZED
-
-
 class TestNoTokenExchangeInTheChat:
-    """Чат формирует файл и не получает токенов сервиса для агента."""
+    """Чат не получает токенов сервиса для агента и не кладёт их в файл."""
 
     async def test_agent_package_has_no_token_exchange(self) -> None:
         root = Path(boba.chainlit.agent.__path__[0])
@@ -856,13 +648,22 @@ class TestNoTokenExchangeInTheChat:
         for gone in ("McpAccessToken", "McpTokenError", "jwt-bearer", "token_endpoint"):
             assert gone not in "\n".join(sources), gone
 
-    async def test_sessions_are_opened_without_servers_and_tokens(
-        self, app: StandProcess, tab: ChatSocket, probe: PostgresConfig
+    async def test_agent_gets_no_servers_hooks_or_tokens_by_file(
+        self, app: StandProcess, tab: ChatSocket, session_jwt: str
     ) -> None:
+        """Серверы агент получает объявлениями сессии, токенов ему не выдают:
+        в файле настроек их нет, ход идёт без выдачи токенов."""
         since = app.log_lines()
         await tab.send(f"answer-{uuid4().hex} {ScenarioName.ANSWER.value}")
         await tab.wait_task_end()
         assert not tab.errors(), (tab.errors(), app.tail(60))
+
+        text = await AgentFiles(app).text(tab.thread_id)
+        document = json.loads(text)
+        assert session_jwt not in text
+        assert "mcpServers" not in document, document
+        assert "hooks" not in document, document
+        assert "mcp" not in document, document
 
         log = "\n".join(_lines_since(app, since))
         assert "mcp token issued" not in log, log[-2000:]
@@ -947,7 +748,7 @@ class SealedQueryTurn:
 
 
 class TestSignInOfTheAgent:
-    """Каким входом агент пришёл на сервис, решает конфиг чата."""
+    """Каким входом чат приходит на сервис за агента, решает конфиг чата."""
 
     async def test_proxy_signs_in_the_user_of_the_tab(
         self, app: StandProcess, tab: ChatSocket, probe: PostgresConfig
@@ -968,22 +769,16 @@ class TestSignInOfTheAgent:
     ) -> None:
         companion = local_app.companion
         assert companion is not None
-        document = await AgentFiles(local_app).document(local_tab.thread_id)
 
         step = await SealedQueryTurn(local_tab).run()
 
-        assert document["mcpServers"][MCP_SERVER]["auth"] == {
-            "auth": "local",
-            "login": ServiceStand.AGENT_LOGIN,
-            "password": ServiceStand.AGENT_PASSWORD,
-        }
         assert not step.get("isError"), (step, companion.tail(60))
         assert "one" in str(step.get("output")), step
         log = companion.log_path.read_text(encoding="utf-8", errors="replace")
         assert f"sign-in [user={ServiceStand.AGENT_LOGIN}] [provider=" in log
         assert "proxy sign-in" not in log, log[-2000:]
 
-    async def test_agent_renews_the_expired_token_of_the_service_itself(
+    async def test_chat_renews_the_expired_token_of_the_service(
         self, local_app: StandProcess, local_tab: ChatSocket
     ) -> None:
         companion = local_app.companion
@@ -997,3 +792,121 @@ class TestSignInOfTheAgent:
         assert not first.get("isError"), (first, companion.tail(60))
         assert not second.get("isError"), (second, companion.tail(60))
         assert "one" in str(second.get("output")), second
+
+
+class TestRelayAcceptance:
+    """Приёмка ретранслятора: настоящий `boba acp` v2 зовёт инструменты стенда
+    boba-mcp (вход proxy от имени пользователя вкладки) и обычного сервера
+    MCP только через mcp/message чата. Что агент предложил модели, видно по
+    запросам фейковой модели."""
+
+    SERVERS: ClassVar[tuple[str, ...]] = ("boba", "standard")
+
+    @pytest.fixture
+    async def agents(
+        self,
+        tmp_path: Path,
+        model: FakeModel,
+        stand: Stand,
+        service_process: ServiceProcess,
+        standard: McpServerConfig,
+    ) -> AsyncIterator[Agents]:
+        servers = dict(service_process.servers().servers)
+        servers["standard"] = standard
+        made = Agents(
+            tmp_path / "agents", model, stand, McpServersConfig(servers=servers)
+        )
+        try:
+            yield made
+        finally:
+            await made.close_all()
+
+    async def _session(
+        self, agents: Agents, roles: frozenset[str], thread: str
+    ) -> tuple[AgentProcess, RecordingUpdates, str]:
+        """Процесс агента вкладки пользователя с ролями roles и его сессия."""
+        tab = TabSession()
+        tab.password_sign_in(roles)
+        servers = agents.keys.register(tab.holder(uuid4(), "general"), self.SERVERS)
+        updates = RecordingUpdates()
+        process = await agents.start(updates, thread, servers)
+        opened = await process.open_session()
+
+        return process, updates, opened.session_id
+
+    @staticmethod
+    def _call(name: str, arguments: Mapping[str, Any]) -> str:
+        spec = {"name": name, "arguments": dict(arguments)}
+
+        return f"{ScenarioName.CALL.value} {json.dumps(spec)}"
+
+    async def test_tool_of_a_foreign_role_is_not_offered(
+        self, agents: Agents, model: FakeModel, auth_token: str
+    ) -> None:
+        names = McpToolNames()
+        answer = f"please {ScenarioName.ANSWER.value}"
+
+        wide, _, wide_session = await self._session(agents, frozenset({"dev"}), "dev")
+        await agents.turn(wide, wide_session, answer)
+        offered_wide = OfferedTools(model.app.requests[-1], names)
+
+        narrow, _, narrow_session = await self._session(
+            agents, frozenset({"weak"}), "weak"
+        )
+        await agents.turn(narrow, narrow_session, answer)
+        offered_narrow = OfferedTools(model.app.requests[-1], names)
+
+        assert offered_wide.named("fake_whoami") == "mcp__boba__fake_whoami"
+        assert offered_narrow.named("fake_echo") == "mcp__boba__fake_echo"
+        assert offered_narrow.named("fake_whoami") == "fake_whoami"
+
+    async def test_stop_cancels_the_call_on_the_server(
+        self, agents: Agents, tmp_path: Path, auth_token: str
+    ) -> None:
+        process, updates, session_id = await self._session(
+            agents, frozenset({"dev"}), "stop"
+        )
+        marker = tmp_path / "sleep.pid"
+        text = self._call(
+            "mcp__boba__fake_sleep", {"seconds": 120, "marker": str(marker)}
+        )
+
+        ending = agents.questions[process].ending(session_id)
+        await process.prompt(session_id, [schema.TextContentBlock(text=text)])
+        deadline = time.monotonic() + 60.0
+        while not marker.exists() and time.monotonic() < deadline:
+            await asyncio.sleep(0.2)
+
+        assert marker.exists(), updates.updates
+        body = Path("/proc") / marker.read_text(encoding="utf-8")
+        await process.cancel(session_id)
+        idle = await asyncio.wait_for(ending, 30.0)
+
+        deadline = time.monotonic() + 30.0
+        while body.exists() and time.monotonic() < deadline:
+            await asyncio.sleep(0.2)
+
+        assert idle.stop_reason == "cancelled"
+        assert not body.exists(), f"the body {body} of the call still runs"
+
+    async def test_app_only_tool_is_neither_offered_nor_called(
+        self, agents: Agents, model: FakeModel, auth_token: str
+    ) -> None:
+        process, updates, session_id = await self._session(
+            agents, frozenset({"dev"}), "app-only"
+        )
+        text = self._call("mcp__standard__panel_refresh", {})
+
+        _, idle = await agents.turn(process, session_id, text)
+
+        offered = OfferedTools(model.app.requests[-1], McpToolNames())
+        calls: list[schema.SessionToolCallUpdate] = []
+        for _, update in updates.updates:
+            if isinstance(update, schema.SessionToolCallUpdate):
+                calls.append(update)
+
+        assert idle.stop_reason == "end_turn"
+        assert offered.named("add") == "mcp__standard__add"
+        assert offered.named("panel_refresh") == "panel_refresh"
+        assert any(call.status == "failed" for call in calls), calls
+        assert not any(call.status == "completed" for call in calls), calls

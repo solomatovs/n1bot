@@ -22,7 +22,6 @@ from boba.agent.agent import Agent, AgentParts
 from boba.agent.attachments import EnvironmentSnapshot
 from boba.agent.events import AgentEvent, ControlRequestEvent, EventSink
 from boba.agent.history import HistoryStore, SessionId
-from boba.agent.hooks import McpServerInfo, PreToolUseHooks
 from boba.agent.ids import Clock, SystemClock
 from boba.agent.profile import (
     CompactionSettings,
@@ -255,6 +254,7 @@ class StandTools(ToolServer):
             description=f"stand tool {name.value}",
             parameters=dict(parameters),
             views=None,
+            output=None,
             hints=hints,
         )
 
@@ -263,12 +263,6 @@ class StandTools(ToolServer):
 
     def features(self) -> Mapping[str, Mapping[str, object]]:
         return self._features
-
-    def described(self) -> Mapping[str, McpServerInfo]:
-        """Стенд для события хука: сервер MCP с именем SERVER."""
-        info = McpServerInfo(name=self.SERVER, features=self._features)
-
-        return {self.SERVER: info}
 
     async def submit(
         self, calls: Sequence[DagNode]
@@ -441,7 +435,6 @@ class StandAgents:
         clock: Clock | None = None,
         compaction: CompactionSettings | None = None,
         store: HistoryStore | None = None,
-        hooks: PreToolUseHooks | None = None,
     ) -> Agent:
         if limits is None:
             limits = TurnLimits(retry_delays_sec=(0.0, 0.0, 0.0))
@@ -469,7 +462,6 @@ class StandAgents:
             skills=skills,
             environment=environment,
             clock=clock,
-            hooks=hooks,
         )
 
         return Agent(parts)

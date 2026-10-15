@@ -1,10 +1,11 @@
-"""ACP-клиент chainlit: процесс агента, соединение JSON-RPC по stdio, вызовы
-методов сессии; уведомления и вопросы агента уходят приёмнику с явным
-интерфейсом SessionUpdates, который заменяет рендерер ленты.
+"""ACP-клиент chainlit на v2: процесс агента, соединение ClientConnection по
+его stdio, методы сессии; уведомления и вопросы агента уходят приёмнику с
+явным интерфейсом SessionUpdates, который заменяет рендерер ленты, а запросы
+mcp/message — ретранслятору (McpRelay).
 
 Ошибки:
-AgentProcessError — процесс не запустился, не ответил на рукопожатие, умер
-    или соединение с ним закрыто.
+AgentProcessError — процесс не запустился, не прошёл рукопожатие (чужая
+    версия ACP, нет серверов type "acp"), умер или соединение с ним закрыто.
 AgentRequestError — агент ответил ошибкой JSON-RPC: метод, код, текст, data.
 """
 
@@ -14,72 +15,30 @@ import asyncio
 import logging
 from abc import abstractmethod
 from asyncio.subprocess import Process
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Mapping, Sequence
+from contextlib import AsyncExitStack
 from dataclasses import dataclass
-from enum import IntEnum, StrEnum
+from enum import StrEnum
 from pathlib import Path
 from typing import Any, ClassVar, Protocol, TypeAlias, TypeVar
+from uuid import UUID
 
-from acp import Client
-from acp.client.router import build_client_router
-from acp.connection import Connection
 from acp.exceptions import RequestError
-from acp.meta import AGENT_METHODS, PROTOCOL_VERSION
-from acp.schema import (
-    AgentMessageChunk,
-    AgentPlanContentUpdate,
-    AgentPlanRemovedUpdate,
-    AgentPlanUpdate,
-    AgentThoughtChunk,
-    AvailableCommandsUpdate,
-    CancelNotification,
-    ClientCapabilities,
-    CloseSessionRequest,
-    CloseSessionResponse,
-    ConfigOptionUpdate,
-    CreateElicitationResponse,
-    CreateTerminalResponse,
-    CurrentModeUpdate,
-    DeleteSessionRequest,
-    DeleteSessionResponse,
-    ElicitationMode,
-    EnvVariable,
-    FileSystemCapabilities,
-    ForkSessionRequest,
-    ForkSessionResponse,
-    Implementation,
-    InitializeRequest,
-    InitializeResponse,
-    KillTerminalResponse,
-    LoadSessionRequest,
-    LoadSessionResponse,
-    NewSessionRequest,
-    NewSessionResponse,
-    PermissionOption,
-    PromptRequest,
-    PromptResponse,
-    ReadTextFileResponse,
-    ReleaseTerminalResponse,
-    RequestPermissionResponse,
-    ResourceContentBlock,
-    ResumeSessionRequest,
-    ResumeSessionResponse,
-    SessionInfoUpdate,
-    TerminalOutputResponse,
-    TextContentBlock,
-    ToolCallProgress,
-    ToolCallStart,
-    ToolCallUpdate,
-    UsageUpdate,
-    UserMessageChunk,
-    WaitForTerminalExitResponse,
-    WriteTextFileResponse,
-)
-from acp.transports import default_environment
-from acp.utils import notify_model, request_model, request_model_from_dict
+from acp.experimental.v2 import Client, schema
+from acp.transports import spawn_stdio_transport
 from pydantic import BaseModel, ValidationError
 
+from boba.chainlit.agent.relay import McpRelay
 from boba.chainlit.agent.settings import AgentWorkdir, WorkdirFile
+from boba.transport.acp.protocol import (
+    AcpVersion,
+    ClientConnection,
+    ErrorDataKey,
+    IdleErrorUpdate,
+    McpMessage,
+    McpOutcome,
+    MetaKey,
+)
 
 __all__ = [
     "AcpClientError",
@@ -88,8 +47,6 @@ __all__ = [
     "AgentProcess",
     "AgentProcessError",
     "AgentRequestError",
-    "JsonRpcCode",
-    "MetaKey",
     "PromptBlock",
     "SessionUpdate",
     "SessionUpdates",
@@ -100,22 +57,36 @@ logger = logging.getLogger(__name__)
 ModelT = TypeVar("ModelT", bound=BaseModel)
 
 SessionUpdate: TypeAlias = (
-    UserMessageChunk
-    | AgentMessageChunk
-    | AgentThoughtChunk
-    | ToolCallStart
-    | ToolCallProgress
-    | AgentPlanUpdate
-    | AgentPlanContentUpdate
-    | AgentPlanRemovedUpdate
-    | AvailableCommandsUpdate
-    | CurrentModeUpdate
-    | ConfigOptionUpdate
-    | SessionInfoUpdate
-    | UsageUpdate
+    schema.UserMessageChunk
+    | schema.UserMessageUpdate
+    | schema.AgentMessageChunk
+    | schema.AgentMessageUpdate
+    | schema.AgentThoughtChunk
+    | schema.AgentThoughtUpdate
+    | schema.ToolCallContentChunkUpdate
+    | schema.SessionToolCallUpdate
+    | schema.SessionTerminalUpdate
+    | schema.SessionTerminalOutputChunk
+    | schema.SessionPlanUpdate
+    | schema.SessionPlanRemovedUpdate
+    | schema.AvailableCommandsUpdate
+    | schema.ConfigOptionUpdate
+    | schema.SessionInfoUpdate
+    | schema.UsageUpdate
+    | schema.SessionNotice
+    | schema.SessionCompactionUpdate
+    | schema.SessionCompactionSummaryChunk
+    | schema.OtherSessionUpdate
+    | schema.RunningSessionStateUpdate
+    | IdleErrorUpdate
+    | schema.IdleSessionStateUpdate
+    | schema.RequiresActionSessionStateUpdate
+    | schema.OtherSessionStateUpdate
 )
+"""Уведомление `session/update` v2; idle с ошибкой — до обычного idle, чтобы
+разбор не терял его поле error."""
 
-PromptBlock: TypeAlias = TextContentBlock | ResourceContentBlock
+PromptBlock: TypeAlias = schema.TextContentBlock | schema.ResourceContentBlock
 
 
 class AcpClientError(Exception):
@@ -124,12 +95,6 @@ class AcpClientError(Exception):
 
 class AgentProcessError(AcpClientError):
     """Процесс агента не запустился, не ответил или умер."""
-
-
-class ErrorDataKey(StrEnum):
-    """Ключи `data` ошибки JSON-RPC агента, которые клиент показывает."""
-
-    DETAILS = "details"
 
 
 class AgentRequestError(AcpClientError):
@@ -154,27 +119,6 @@ class AgentRequestError(AcpClientError):
 
         return f"{text}: {details}"
 
-    @property
-    def method_missing(self) -> bool:
-        return self.code == JsonRpcCode.METHOD_NOT_FOUND
-
-
-class JsonRpcCode(IntEnum):
-    """Коды ошибок JSON-RPC, которые клиент различает."""
-
-    INVALID_PARAMS = -32602
-    INTERNAL_ERROR = -32603
-    METHOD_NOT_FOUND = -32601
-    RESOURCE_NOT_FOUND = -32002
-
-
-class MetaKey(StrEnum):
-    """Расширения агента в `_meta` запросов: точка среза ветки у
-    `session/fork` и uuid записи вопроса у `session/prompt`."""
-
-    UP_TO_UUID = "boba/upToUuid"
-    MESSAGE_ID = "boba/messageId"
-
 
 class ClientName(StrEnum):
     """Как клиент представляется агенту в initialize."""
@@ -184,7 +128,8 @@ class ClientName(StrEnum):
 
 class SessionUpdates(Protocol):
     """Приёмник потока сессии: уведомления, вопросы разрешений и итог хода.
-    Реализуют приёмник ленты (AgentFeed) и приёмник без ленты (MuteUpdates)."""
+    Реализуют приёмник ленты (AgentFeed), приёмник без ленты (MuteUpdates)
+    и обёртка агента треда (AskedQuestions)."""
 
     @abstractmethod
     async def update(self, session_id: str, update: SessionUpdate) -> None:
@@ -192,25 +137,25 @@ class SessionUpdates(Protocol):
 
     @abstractmethod
     async def permission(
-        self,
-        session_id: str,
-        tool_call: ToolCallUpdate,
-        options: Sequence[PermissionOption],
-    ) -> RequestPermissionResponse:
+        self, session_id: str, title: str, options: Sequence[schema.PermissionOption]
+    ) -> schema.RequestPermissionResponse:
         """Вопрос `session/request_permission`: ответ выбирает приёмник."""
 
     @abstractmethod
-    async def turn_finished(self, session_id: str, stop_reason: str) -> None:
-        """Ответ на `session/prompt` получен: ход закончен."""
+    async def turn_finished(
+        self, session_id: str, idle: schema.IdleSessionStateUpdate
+    ) -> None:
+        """Агент сообщил idle: ход закончен с причиной stopReason."""
 
     @abstractmethod
     async def abandon(self, session_id: str) -> None:
-        """Ход сорвался без ответа: открытые узлы ленты закрываются."""
+        """Ход сорвался без idle: открытые узлы ленты закрываются."""
 
 
 class AgentClient(Client):
-    """Реализация Client SDK для chainlit: уведомления и вопросы — приёмнику,
-    файловая система, терминал и формы не обслуживаются."""
+    """Реализация Client SDK v2 для chainlit: уведомления и вопросы
+    разрешений — приёмнику; остальные методы протокола клиент не обслуживает,
+    и SDK сам отвечает на них method_not_found."""
 
     def __init__(self, updates: SessionUpdates) -> None:
         self._updates = updates
@@ -218,86 +163,35 @@ class AgentClient(Client):
     async def request_permission(
         self,
         session_id: str,
-        tool_call: ToolCallUpdate,
-        options: list[PermissionOption],
+        title: str,
+        options: list[schema.PermissionOption],
+        description: str | None = None,
+        subject: schema.ToolCallPermissionSubjectVariant
+        | schema.CommandPermissionSubjectVariant
+        | schema.OtherPermissionSubject
+        | None = None,
         **kwargs: Any,
-    ) -> RequestPermissionResponse:
-        return await self._updates.permission(session_id, tool_call, options)
+    ) -> schema.RequestPermissionResponse:
+        return await self._updates.permission(session_id, title, options)
 
     async def session_update(
         self, session_id: str, update: SessionUpdate, **kwargs: Any
     ) -> None:
         await self._updates.update(session_id, update)
 
-    async def write_text_file(
-        self, session_id: str, path: str, content: str, **kwargs: Any
-    ) -> WriteTextFileResponse | None:
-        raise RequestError.method_not_found("fs/write_text_file")
-
-    async def read_text_file(
-        self,
-        session_id: str,
-        path: str,
-        line: int | None = None,
-        limit: int | None = None,
-        **kwargs: Any,
-    ) -> ReadTextFileResponse:
-        raise RequestError.method_not_found("fs/read_text_file")
-
-    async def create_terminal(  # noqa: PLR0913 — сигнатура протокола SDK
-        self,
-        session_id: str,
-        command: str,
-        args: list[str] | None = None,
-        env: list[EnvVariable] | None = None,
-        cwd: str | None = None,
-        output_byte_limit: int | None = None,
-        **kwargs: Any,
-    ) -> CreateTerminalResponse:
-        raise RequestError.method_not_found("terminal/create")
-
-    async def terminal_output(
-        self, session_id: str, terminal_id: str, **kwargs: Any
-    ) -> TerminalOutputResponse:
-        raise RequestError.method_not_found("terminal/output")
-
-    async def release_terminal(
-        self, session_id: str, terminal_id: str, **kwargs: Any
-    ) -> ReleaseTerminalResponse | None:
-        raise RequestError.method_not_found("terminal/release")
-
-    async def wait_for_terminal_exit(
-        self, session_id: str, terminal_id: str, **kwargs: Any
-    ) -> WaitForTerminalExitResponse:
-        raise RequestError.method_not_found("terminal/wait_for_exit")
-
-    async def kill_terminal(
-        self, session_id: str, terminal_id: str, **kwargs: Any
-    ) -> KillTerminalResponse | None:
-        raise RequestError.method_not_found("terminal/kill")
-
-    async def create_elicitation(
-        self, message: str, mode: ElicitationMode, **kwargs: Any
-    ) -> CreateElicitationResponse:
-        raise RequestError.method_not_found("elicitation/create")
-
-    async def complete_elicitation(self, elicitation_id: str, **kwargs: Any) -> None:
-        return
-
-    async def ext_method(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
-        raise RequestError.method_not_found(f"_{method}")
-
-    async def ext_notification(self, method: str, params: dict[str, Any]) -> None:
-        return
-
-    def on_connect(self, conn: Any) -> None:
-        return
+    # SDK считает метод протокола, оставленный как есть, неподдержанным
+    connect_mcp = Client.connect_mcp
+    mcp_message = Client.mcp_message
+    notify_mcp = Client.notify_mcp
+    disconnect_mcp = Client.disconnect_mcp
+    create_elicitation = Client.create_elicitation
+    complete_elicitation = Client.complete_elicitation
 
 
 @dataclass(frozen=True)
 class AgentCommand:
     """Команда запуска агента: исполняемый файл, аргументы до `--settings`,
-    нечувствительные переменные окружения поверх минимального набора."""
+    нечувствительные переменные окружения поверх минимального набора SDK."""
 
     executable: str
     args: Sequence[str]
@@ -308,13 +202,7 @@ class AgentCommand:
     SETTINGS_FLAG: ClassVar[str] = "--settings"
 
     def argv(self, settings_path: Path) -> list[str]:
-        return [self.executable, *self.args, self.SETTINGS_FLAG, str(settings_path)]
-
-    def environment(self) -> dict[str, str]:
-        merged = default_environment()
-        merged.update(self.env)
-
-        return merged
+        return [*self.args, self.SETTINGS_FLAG, str(settings_path)]
 
     def with_env(self, extra: Mapping[str, str]) -> AgentCommand:
         """Команда с добавленными переменными запуска (пути libkrb5 истории)."""
@@ -331,26 +219,40 @@ class AgentCommand:
 
 
 class AgentProcess:
-    """Процесс агента ACP одной сессии: запуск из приватного каталога, кадры
-    JSON-RPC по его stdio, вызовы методов, остановка и удаление каталога.
+    """Процесс агента ACP v2 одной вкладки: запуск из приватного каталога,
+    соединение ClientConnection по его stdio, методы сессии, остановка и
+    удаление каталога.
 
-    Создаётся объектом треда (ThreadAgent) и удалителем треда; stderr агента
-    пишется в журнал приватного каталога и читается при отказе.
+    Создаётся запуском агента (AgentLauncher) с объявлениями серверов
+    процесса: их получает каждая сессия процесса. Процессом управляет
+    spawn_stdio_transport SDK; stderr агента пишется в журнал приватного
+    каталога и читается при отказе. Запросы mcp/message агента отдаются
+    ретранслятору вместе с отправкой уведомлений этого соединения.
     """
 
     LINE_LIMIT: ClassVar[int] = 16 * 1024 * 1024
     LOG_TAIL_LINES: ClassVar[int] = 20
 
-    def __init__(
-        self, command: AgentCommand, workdir: AgentWorkdir, client: Client, version: str
+    def __init__(  # noqa: PLR0913 — процесс собирается всеми своими входами
+        self,
+        command: AgentCommand,
+        workdir: AgentWorkdir,
+        client: Client,
+        relay: McpRelay,
+        servers: Sequence[schema.AcpMcpServer],
+        version: str,
     ) -> None:
         self._command = command
         self._workdir = workdir
         self._client = client
+        self._relay = relay
+        self._servers = list(servers)
         self._version = version
+        self._stack = AsyncExitStack()
         self._process: Process | None = None
-        self._connection: Connection | None = None
-        self._capabilities: InitializeResponse | None = None
+        self._connection: ClientConnection | None = None
+        self._forks_by_message = False
+        """Агент объявил срез ветки session/fork по messageId вопроса."""
 
     @property
     def workdir(self) -> AgentWorkdir:
@@ -360,196 +262,241 @@ class AgentProcess:
     def pid(self) -> int:
         return self._require_process().pid
 
-    @property
-    def capabilities(self) -> InitializeResponse:
-        """Ответ initialize; до рукопожатия — отказ."""
-        if self._capabilities is None:
-            msg = "agent process: initialize has not completed yet"
-            raise AgentProcessError(msg)
-
-        return self._capabilities
-
     def alive(self) -> bool:
         if self._process is None:
             return False
 
         return self._process.returncode is None
 
-    async def start(self) -> InitializeResponse:
-        """Запуск и рукопожатие; процесс, не ответивший в срок, гасится.
+    async def exited(self) -> int:
+        """Код выхода процесса, когда он завершится."""
+        return await self._require_process().wait()
+
+    async def start(self) -> schema.InitializeResponse:
+        """Запуск и рукопожатие v2; процесс, не ответивший в срок, говорящий
+        на чужой версии или без серверов type "acp", гасится.
 
         Ошибки:
         AgentProcessError — запуск или initialize не состоялись.
         """
-        argv = self._command.argv(self._workdir.settings_path)
-        stderr = self._workdir.stderr_path.open("ab")
+        executable = self._command.executable
+        stderr_path = self._workdir.stderr_path
         try:
-            self._process = await asyncio.create_subprocess_exec(
-                *argv,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=stderr,
-                env=self._command.environment(),
-                cwd=str(self._workdir.path),
-                limit=self.LINE_LIMIT,
-            )
+            stderr = stderr_path.open("ab")
         except OSError as exc:
-            msg = f"agent process {argv[0]!r} did not start: {exc}"
+            msg = (
+                f"agent process {executable!r}: opening its stderr log "
+                f"{stderr_path} failed: {exc}"
+            )
             raise AgentProcessError(msg) from exc
-        finally:
-            stderr.close()
 
-        stdin = self._process.stdin
-        stdout = self._process.stdout
-        if stdin is None or stdout is None:
-            msg = "agent process: asyncio gave no stdio pipes for the child"
-            raise AgentProcessError(msg)
+        with stderr:
+            try:
+                stdout, stdin, process = await self._stack.enter_async_context(
+                    spawn_stdio_transport(
+                        executable,
+                        *self._command.argv(self._workdir.settings_path),
+                        env=self._command.env,
+                        cwd=self._workdir.path,
+                        stderr=stderr.fileno(),
+                        limit=self.LINE_LIMIT,
+                        shutdown_timeout=self._command.stop_timeout_sec,
+                    )
+                )
+            except OSError as exc:
+                msg = f"agent process {executable!r} did not start: {exc}"
+                raise AgentProcessError(msg) from exc
 
-        self._connection = Connection(
-            build_client_router(self._client, use_unstable_protocol=True),
-            stdin,
-            stdout,
-        )
+        self._process = process
+        self._connection = ClientConnection(self._client, self._answer, stdin, stdout)
+        # соединение закрывается раньше процесса: выход из стека — в обратном порядке
+        self._stack.push_async_callback(self._connection.close)
         try:
-            self._capabilities = await asyncio.wait_for(
+            response = await asyncio.wait_for(
                 self._initialize(), self._command.start_timeout_sec
             )
         except TimeoutError as exc:
-            await self.close()
             msg = (
-                f"agent process {argv[0]!r} (pid {self._process.pid}) did not "
-                f"answer initialize within {self._command.start_timeout_sec}s: "
+                f"agent process {executable!r} (pid {process.pid}) did not answer "
+                f"initialize within {self._command.start_timeout_sec}s: "
                 f"{self.log_tail()}"
             )
+            await self.close()
             raise AgentProcessError(msg) from exc
         except AcpClientError as exc:
-            await self.close()
             msg = (
-                f"agent process {argv[0]!r} failed the handshake: {exc}: "
+                f"agent process {executable!r} failed the ACP handshake, this "
+                f"chat speaks ACP version {AcpVersion.V2.value}: {exc}: "
                 f"{self.log_tail()}"
             )
+            await self.close()
             raise AgentProcessError(msg) from exc
+
+        session = None
+        if response.capabilities is not None:
+            session = response.capabilities.session
+
+        mcp = None
+        if session is not None:
+            mcp = session.mcp
+
+        self._forks_by_message = self._cuts_forks(session)
+
+        acp = None
+        if mcp is not None:
+            acp = mcp.acp
+
+        if acp is None:
+            msg = (
+                f"agent process {executable!r} (pid {process.pid}): agent "
+                f"{response.info.name!r} does not declare "
+                "capabilities.session.mcp.acp in initialize, expected it to take "
+                "the MCP servers of the chat as servers of type 'acp'"
+            )
+            await self.close()
+            raise AgentProcessError(msg)
 
         logger.info(
             "agent process started: pid=%s agent=%s/%s",
-            self._process.pid,
-            self._agent_name(self._capabilities),
-            self._agent_version(self._capabilities),
+            process.pid,
+            response.info.name,
+            response.info.version,
         )
 
-        return self._capabilities
+        return response
 
-    async def new_session(self) -> str:
-        """Новая сессия в приватном каталоге; id выдаёт агент."""
-        opened = await self.open_session()
-
-        return opened.session_id
-
-    async def open_session(self) -> NewSessionResponse:
-        """Новая сессия с её режимами и настройками (`modes`, `configOptions`).
-        Серверы MCP сессии агент берёт из своего файла настроек: по
-        протоколу их список пуст."""
-        request = NewSessionRequest(cwd=str(self._workdir.path), mcp_servers=[])
+    async def open_session(self) -> schema.NewSessionResponse:
+        """Новая сессия в приватном каталоге с серверами процесса; id и
+        настройки (`configOptions`) выдаёт агент."""
+        connection = self._require_connection()
 
         return await self._request(
-            AGENT_METHODS["session_new"], request, NewSessionResponse
+            "session/new",
+            connection.new_session(
+                cwd=str(self._workdir.path), mcp_servers=list(self._servers)
+            ),
         )
 
-    async def load_session(self, session_id: str) -> LoadSessionResponse:
-        """Загрузка сессии с воспроизведением беседы приёмнику до ответа."""
-        request = LoadSessionRequest(
-            cwd=str(self._workdir.path),
-            session_id=session_id,
-            mcp_servers=[],
-        )
-
-        return await self._request(
-            AGENT_METHODS["session_load"], request, LoadSessionResponse, lenient=True
-        )
-
-    async def resume_session(self, session_id: str) -> ResumeSessionResponse:
-        """Открытие сохранённой сессии без воспроизведения беседы: приёмник
-        уведомлений о прошлых ходах не получает."""
-        request = ResumeSessionRequest(
-            cwd=str(self._workdir.path),
-            session_id=session_id,
-            mcp_servers=[],
-        )
+    async def resume_session(
+        self, session_id: str, replay: bool
+    ) -> schema.ResumeSessionResponse:
+        """Открытие сохранённой сессии; replay — беседа воспроизводится
+        приёмнику с начала до ответа, иначе прошлых ходов он не получает."""
+        connection = self._require_connection()
+        replay_from: schema.ReplayFromStartVariant | None = None
+        if replay:
+            replay_from = schema.ReplayFromStartVariant()
 
         return await self._request(
-            AGENT_METHODS["session_resume"], request, ResumeSessionResponse
+            "session/resume",
+            connection.resume_session(
+                session_id=session_id,
+                cwd=str(self._workdir.path),
+                mcp_servers=list(self._servers),
+                replay_from=replay_from,
+            ),
         )
 
-    async def prompt(
-        self, session_id: str, blocks: Sequence[PromptBlock], message_id: str
-    ) -> PromptResponse:
-        """Ход по вопросу; message_id — id сообщения chainlit, он становится
-        uuid записи вопроса у агента (`boba/messageId`)."""
-        request = PromptRequest(
-            session_id=session_id,
-            prompt=list(blocks),
-            field_meta={MetaKey.MESSAGE_ID.value: message_id},
-        )
+    async def prompt(self, session_id: str, blocks: Sequence[PromptBlock]) -> str:
+        """Вопрос в сессию; ответ — messageId, который агент дал вопросу. Он
+        же uuid записи вопроса у агента и id шага вопроса в чате.
 
-        return await self._request(
-            AGENT_METHODS["session_prompt"], request, PromptResponse
+        Ошибки:
+        AgentProcessError — агент дал вопросу id, который не uuid.
+        """
+        connection = self._require_connection()
+        response = await self._request(
+            "session/prompt",
+            connection.prompt(session_id=session_id, prompt=list(blocks)),
         )
+        try:
+            UUID(response.message_id)
+        except ValueError as exc:
+            msg = (
+                f"session/prompt of session {session_id}: the agent named the "
+                f"question {response.message_id!r}, expected a uuid that becomes "
+                "the id of the question step"
+            )
+            raise AgentProcessError(msg) from exc
+
+        return response.message_id
 
     async def cancel(self, session_id: str) -> None:
         connection = self._require_connection()
         try:
-            await notify_model(
-                connection,
-                AGENT_METHODS["session_cancel"],
-                CancelNotification(session_id=session_id),
-            )
+            await connection.cancel_session(session_id=session_id)
         except ConnectionError as exc:
             msg = f"session/cancel: the agent connection is closed: {exc}"
             raise AgentProcessError(msg) from exc
 
     async def close_session(self, session_id: str) -> None:
+        connection = self._require_connection()
         await self._request(
-            AGENT_METHODS["session_close"],
-            CloseSessionRequest(session_id=session_id),
-            CloseSessionResponse,
-            lenient=True,
+            "session/close", connection.close_session(session_id=session_id)
         )
 
     async def delete_session(self, session_id: str) -> None:
+        connection = self._require_connection()
         await self._request(
-            AGENT_METHODS["session_delete"],
-            DeleteSessionRequest(session_id=session_id),
-            DeleteSessionResponse,
-            lenient=True,
+            "session/delete", connection.delete_session(session_id=session_id)
         )
 
-    async def fork_session(self, session_id: str, up_to_uuid: str) -> str:
-        """Ветвь сессии до записи up_to_uuid (сама запись и всё после неё в
-        ветку не идут); id новой сессии выдаёт агент."""
-        branch = await self.fork(session_id, up_to_uuid)
+    @staticmethod
+    def _cuts_forks(session: schema.SessionCapabilities | None) -> bool:
+        """Объявил ли агент в `capabilities.session.fork._meta` срез ветки
+        session/fork по messageId вопроса."""
+        fork = None
+        if session is not None:
+            fork = session.fork
 
-        return branch.session_id
+        cut = None
+        if fork is not None:
+            cut = fork.field_meta
 
-    async def fork(self, session_id: str, up_to_uuid: str) -> ForkSessionResponse:
-        """Ветвь сессии с её режимами и настройками в ответе."""
-        request = ForkSessionRequest(
-            session_id=session_id,
-            cwd=str(self._workdir.path),
-            mcp_servers=[],
-            field_meta={MetaKey.UP_TO_UUID.value: up_to_uuid},
-        )
+        declared = None
+        if cut is not None:
+            declared = cut.get(MetaKey.UP_TO_MESSAGE_ID.value)
+
+        return declared is True
+
+    def forks_by_message(self) -> bool:
+        """Агент объявил в `capabilities.session.fork._meta`, что режет ветку
+        session/fork по messageId вопроса: правку вопроса можно вести веткой."""
+        return self._forks_by_message
+
+    async def fork(
+        self, session_id: str, up_to_message_id: str
+    ) -> schema.ForkSessionResponse:
+        """Ветвь сессии до вопроса up_to_message_id (сам вопрос и всё после
+        него в ветку не идут); id ветки и её настройки выдаёт агент."""
+        connection = self._require_connection()
+        # SDK кладёт лишние именованные аргументы метода в _meta запроса
+        meta: dict[str, Any] = {MetaKey.UP_TO_MESSAGE_ID.value: up_to_message_id}
 
         return await self._request(
-            AGENT_METHODS["session_fork"], request, ForkSessionResponse
+            "session/fork",
+            connection.fork_session(
+                session_id=session_id,
+                cwd=str(self._workdir.path),
+                mcp_servers=list(self._servers),
+                **meta,
+            ),
         )
 
     async def close(self) -> None:
-        """Конец ввода, ожидание выхода, при нужде terminate и kill; каталог
-        с файлом настроек удаляется в любом исходе."""
+        """Соединение закрывается, процесс гасит SDK (конец ввода, ожидание,
+        terminate и kill); каталог с файлом настроек удаляется в любом исходе."""
         try:
-            await self._shutdown()
+            await self._stack.aclose()
         finally:
             self._workdir.remove()
+
+        if self._process is not None:
+            logger.info(
+                "agent process exited: pid=%s code=%s",
+                self._process.pid,
+                self._process.returncode,
+            )
 
     def log_tail(self) -> str:
         """Хвост stderr агента: причина отказа без него не видна."""
@@ -561,95 +508,45 @@ class AgentProcess:
 
         return "\n".join(text.splitlines()[-self.LOG_TAIL_LINES :])
 
-    async def _initialize(self) -> InitializeResponse:
-        request = InitializeRequest(
-            protocol_version=PROTOCOL_VERSION,
-            client_capabilities=ClientCapabilities(
-                fs=FileSystemCapabilities(read_text_file=False, write_text_file=False),
-                terminal=False,
-            ),
-            client_info=Implementation(
-                name=ClientName.NAME.value, version=self._version
-            ),
-        )
+    async def _answer(self, message: McpMessage) -> McpOutcome:
+        return await self._relay.answer(message, self._require_connection().notify)
+
+    async def _initialize(self) -> schema.InitializeResponse:
+        """Рукопожатие v2: версию ответа проверяет SDK.
+
+        Ошибки:
+        AgentRequestError — агент отказал либо ответил чужой версией.
+        AgentProcessError — соединение закрыто или ответ не по схеме.
+        """
+        connection = self._require_connection()
+        info = schema.Implementation(name=ClientName.NAME.value, version=self._version)
 
         return await self._request(
-            AGENT_METHODS["initialize"], request, InitializeResponse
+            "initialize",
+            connection.initialize(
+                protocol_version=AcpVersion.V2.value,
+                info=info,
+                capabilities=schema.ClientCapabilities(),
+            ),
         )
 
-    async def _request(
-        self,
-        method: str,
-        params: BaseModel,
-        response: type[ModelT],
-        lenient: bool = False,
-    ) -> ModelT:
-        """Запрос агенту; lenient — ответ агент вправе отдать пустым (null).
+    async def _request(self, method: str, call: Awaitable[ModelT]) -> ModelT:
+        """Ответ агента на метод method.
 
         Ошибки:
         AgentRequestError — ответ-ошибка JSON-RPC.
         AgentProcessError — соединение закрыто или ответ не по схеме.
         """
-        connection = self._require_connection()
-        sender = request_model
-        if lenient:
-            sender = request_model_from_dict
-
         try:
-            return await sender(connection, method, params, response)
+            return await call
         except RequestError as exc:
             raise AgentRequestError(method, exc.code, str(exc), exc.data) from exc
         except ConnectionError as exc:
             msg = f"{method}: the agent connection is closed: {exc}: {self.log_tail()}"
             raise AgentProcessError(msg) from exc
         except ValidationError as exc:
-            msg = (
-                f"{method}: the agent answered off the schema "
-                f"{response.__name__}: {exc}"
-            )
+            msg = f"{method}: the agent answered off the ACP v2 schema: {exc}"
             raise AgentProcessError(msg) from exc
-
-    async def _shutdown(self) -> None:
-        process = self._process
-        if process is None:
-            return
-
-        if self._connection is not None:
-            await self._connection.close()
-
-        if process.returncode is None:
-            await self._close_stdin(process)
-
-        try:
-            await asyncio.wait_for(process.wait(), self._command.stop_timeout_sec)
-        except TimeoutError:
-            logger.warning(
-                "agent process pid=%s did not exit on EOF within %ss, terminating",
-                process.pid,
-                self._command.stop_timeout_sec,
-            )
-            process.terminate()
-            try:
-                await asyncio.wait_for(process.wait(), self._command.stop_timeout_sec)
-            except TimeoutError:
-                process.kill()
-                await process.wait()
-
-        logger.info(
-            "agent process exited: pid=%s code=%s", process.pid, process.returncode
-        )
-
-    @staticmethod
-    async def _close_stdin(process: Process) -> None:
-        stdin = process.stdin
-        if stdin is None:
-            return
-
-        stdin.close()
-        try:
-            await stdin.wait_closed()
-        except (BrokenPipeError, ConnectionResetError):
-            return
 
     def _require_process(self) -> Process:
         if self._process is None:
@@ -658,23 +555,9 @@ class AgentProcess:
 
         return self._process
 
-    def _require_connection(self) -> Connection:
+    def _require_connection(self) -> ClientConnection:
         if self._connection is None:
             msg = "agent process has not been started"
             raise AgentProcessError(msg)
 
         return self._connection
-
-    @staticmethod
-    def _agent_name(capabilities: InitializeResponse) -> str:
-        if capabilities.agent_info is None:
-            return "?"
-
-        return capabilities.agent_info.name
-
-    @staticmethod
-    def _agent_version(capabilities: InitializeResponse) -> str:
-        if capabilities.agent_info is None:
-            return "?"
-
-        return capabilities.agent_info.version

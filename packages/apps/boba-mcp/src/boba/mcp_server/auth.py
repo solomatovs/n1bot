@@ -215,8 +215,9 @@ class SentMeta:
     """Служебные поля текущего запроса tools/call — единственный читатель
     _meta запроса.
 
-    Создаётся областью вызова (CallScopes). Читает _meta запроса из
-    контекста fastmcp и разбирает его моделью RequestFields.
+    Создаётся теми, кто читает поля запроса: CallContextMiddleware и
+    FileUploadTool. Читает _meta запроса из контекста fastmcp и разбирает
+    его моделью RequestFields.
     """
 
     def sent(self) -> RequestFields:
@@ -238,15 +239,16 @@ class SentMeta:
         except ValidationError as exc:
             msg = (
                 f"reading _meta of the call: expected {RequestFields.SCOPE!r} "
-                f"as a string, got {dict(meta)!r}: {exc}"
+                f"as a string and progressToken as a string or an integer, "
+                f"got {dict(meta)!r}: {exc}"
             )
             raise CallScopeError(msg) from exc
 
 
 class CallScopes:
-    """Область вызова по _meta запроса.
+    """Область вызова по полю области из _meta запроса (SentMeta).
 
-    Создаётся сборкой сервера, зовёт её CallContextMiddleware. Область —
+    Создаётся CallContextMiddleware и FileUploadTool. Область —
     место файлов и описаний вызова в workspace пользователя; клиент с
     собственными разговорами (чат) присылает в ней id разговора, чтобы
     вызовы одного разговора видели файлы друг друга. Клиент без области
@@ -254,12 +256,9 @@ class CallScopes:
     у каждого пользователя.
     """
 
-    def __init__(self) -> None:
-        self._meta = SentMeta()
-
-    def of(self, subject: Subject) -> Scope:
-        """Область текущего запроса; негодный id области — CallScopeError."""
-        sent = self._meta.sent().scope
+    def of(self, subject: Subject, sent: str) -> Scope:
+        """Область запроса субъекта subject по присланному полю области sent;
+        пустое поле — область по умолчанию, негодный id — CallScopeError."""
         if not sent:
             return Scope.chat(str(subject.user_id))
 

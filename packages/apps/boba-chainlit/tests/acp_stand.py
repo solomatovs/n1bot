@@ -1,30 +1,33 @@
-"""Стенд клиента ACP: фейковая модель в цикле теста, процесс `boba acp` по
-файлу настроек, запоминающий приёмник потока и подключение истории агента
-ролью с паролем из [site] стенда."""
+"""Стенд клиента ACP: фейковая модель в цикле теста, процессы `boba acp` по
+файлу настроек с ретранслятором стенда, запоминающий приёмник потока,
+обычный сервер MCP по stdio и подключение истории агента ролью с паролем из
+[site] стенда."""
 
 from __future__ import annotations
 
 import asyncio
 import sys
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Coroutine, Sequence
 from pathlib import Path
 from typing import Any, ClassVar
 
+import pytest
 import uvicorn
-from acp.schema import (
-    AllowedOutcome,
-    PermissionOption,
-    RequestPermissionResponse,
-    ToolCallUpdate,
-)
-from acp.schema import ContentChunk as AcpContentChunk
+from acp.experimental.v2 import schema
+from chainlit_stand import NoConnectionStore, RelayStand
 from pydantic import SecretStr
 
-from boba.chainlit.agent.client import AgentCommand, SessionUpdate, SessionUpdates
+from boba.auth.credentials import KerberosCredentialSource, NoRefresh
+from boba.chainlit.agent.chat import AskedQuestions, Question, TurnRenderer
+from boba.chainlit.agent.client import (
+    AgentClient,
+    AgentCommand,
+    AgentProcess,
+    SessionUpdate,
+)
 from boba.chainlit.agent.config import (
     AgentCommandConfig,
     AgentConfig,
-    ChatMcpConfig,
     HookConfig,
     ModelLimitsConfig,
     PostgresAgentHistory,
@@ -32,15 +35,24 @@ from boba.chainlit.agent.config import (
 from boba.chainlit.agent.settings import (
     AgentModel,
     AgentProvider,
+    AgentWorkdirs,
     ChatAgentSettings,
     ProviderKindName,
+    SettingsFileBuilder,
 )
 from boba.db.postgres.connection import PostgresConfig
 from boba.db.postgres.connection.auth import PasswordAuth
+from boba.identity.context import CallContexts
+from boba.mcp_client.client import (
+    McpServerConfig,
+    McpServers,
+    McpServersConfig,
+    StdioCommand,
+)
 from boba.stand.names import StandNames
 from boba.stand.site import Stand
 from boba.stand.ui.fake_llm import FakeLlmApp
-from boba.stand.ui.stand import free_port
+from boba.stand.ui.stand import REPO_ROOT, free_port
 
 API_KEY = "sk-chainlit-acp-test-secret"
 MODEL_NAME = "stand-model"
@@ -188,22 +200,23 @@ class AgentStand:
             ),
             history=self._history,
             public_url=public_url,
-            chat_mcp=ChatMcpConfig(enable=False, name="chat", path="/chat/mcp"),
-            hook=HookConfig(
-                enable=True, path="/chat/hooks/pre-tool-use", timeout_sec=5
-            ),
+            chat_mcp=RelayStand.CHAT,
+            hook=HookConfig(enable=True, path="/chat/hooks/pre-tool-use"),
             limits=ModelLimitsConfig(context_window=32000, max_output_tokens=4096),
         )
 
 
-class RecordingUpdates(SessionUpdates):
-    """Приёмник потока для тестов транспорта: копит уведомления и итоги."""
+class RecordingUpdates(TurnRenderer):
+    """Реализация TurnRenderer для тестов транспорта и агента треда: копит
+    уведомления, итоги и messageId вопросов; ход начинает ответом агента на
+    вопрос."""
 
     def __init__(self) -> None:
+        self.asked: list[str] = []
         self.updates: list[tuple[str, SessionUpdate]] = []
-        self.finished: list[tuple[str, str]] = []
+        self.finished: list[tuple[str, schema.IdleSessionStateUpdate]] = []
         self.abandoned: list[str] = []
-        self.permissions: list[ToolCallUpdate] = []
+        self.permissions: list[str] = []
         self.first_update = asyncio.Event()
 
     async def update(self, session_id: str, update: SessionUpdate) -> None:
@@ -211,35 +224,140 @@ class RecordingUpdates(SessionUpdates):
         self.first_update.set()
 
     async def permission(
-        self,
-        session_id: str,
-        tool_call: ToolCallUpdate,
-        options: Sequence[PermissionOption],
-    ) -> RequestPermissionResponse:
-        self.permissions.append(tool_call)
+        self, session_id: str, title: str, options: Sequence[schema.PermissionOption]
+    ) -> schema.RequestPermissionResponse:
+        self.permissions.append(title)
+        chosen = schema.SelectedPermissionOutcomeVariant(option_id=options[0].option_id)
 
-        return RequestPermissionResponse(
-            outcome=AllowedOutcome(outcome="selected", option_id=options[0].option_id)
-        )
+        return schema.RequestPermissionResponse(outcome=chosen)
 
-    async def turn_finished(self, session_id: str, stop_reason: str) -> None:
-        self.finished.append((session_id, stop_reason))
+    async def turn_finished(
+        self, session_id: str, idle: schema.IdleSessionStateUpdate
+    ) -> None:
+        self.finished.append((session_id, idle))
 
     async def abandon(self, session_id: str) -> None:
         self.abandoned.append(session_id)
 
+    def stopping(self, session_id: str) -> None:
+        return
+
+    async def turn_started(
+        self, session_id: str, question: Question, prompt: Coroutine[Any, Any, str]
+    ) -> str:
+        key = await prompt
+        self.asked.append(key)
+
+        return key
+
+    async def loaded(self, session_id: str) -> None:
+        return
+
     def texts(self) -> list[str]:
+        """Тексты агента: куски живого хода и целые сообщения воспроизведения."""
         found: list[str] = []
         for _, update in self.updates:
-            if not isinstance(update, AcpContentChunk):
-                continue
+            blocks: Sequence[object] = ()
+            match update:
+                case schema.ContentChunk():
+                    blocks = (update.content,)
+                case schema.AgentMessage() | schema.AgentThought():
+                    blocks = update.content or ()
 
-            content = update.content
-            text = getattr(content, "text", None)
-            if isinstance(text, str):
-                found.append(text)
+            for block in blocks:
+                if isinstance(block, schema.TextContentBlock):
+                    found.append(block.text)
 
         return found
+
+
+class Agents:
+    """Процессы агента теста: один файл настроек, несколько запусков; поток
+    сессий идёт приёмнику теста через обёртку агента треда (AskedQuestions),
+    которая решает конец хода по idle. Запросы mcp/message процессов отвечает
+    ретранслятор стенда (RelayStand) над серверами servers; регистрации
+    выдаёт keys."""
+
+    TURN_TIMEOUT_SEC: float = 60.0
+
+    def __init__(
+        self, root: Path, model: FakeModel, stand: Stand, servers: McpServersConfig
+    ) -> None:
+        self._root = root
+        self._model = model
+        self._stand = AgentStand(root, AgentHistoryStand(stand).history())
+        self._builder = SettingsFileBuilder(self._stand.config())
+        self._servers = McpServers(servers)
+        credentials = KerberosCredentialSource(None, NoRefresh())
+        relay = RelayStand(NoConnectionStore(), lambda: credentials, CallContexts())
+        self.keys = relay.keys
+        self._relay = relay.relay(self._servers)
+        self.started: list[AgentProcess] = []
+        self.questions: dict[AgentProcess, AskedQuestions] = {}
+
+    async def start(
+        self,
+        updates: RecordingUpdates,
+        thread: str = "t",
+        servers: Sequence[schema.AcpMcpServer] = (),
+    ) -> AgentProcess:
+        """Процесс агента с объявлениями servers в каждой сессии."""
+        chat = self._model.chat_settings()
+        workdir = AgentWorkdirs(self._root).create(thread)
+        workdir.write(self._builder.build(chat), chat.system_prompt)
+        questions = AskedQuestions(updates)
+        process = AgentProcess(
+            self._stand.command(),
+            workdir,
+            AgentClient(questions),
+            self._relay,
+            servers,
+            "0.0",
+        )
+        await process.start()
+        self.started.append(process)
+        self.questions[process] = questions
+
+        return process
+
+    async def turn(
+        self, process: AgentProcess, session_id: str, text: str
+    ) -> tuple[str, schema.IdleSessionStateUpdate]:
+        """Вопрос в сессию до idle: messageId вопроса и idle хода."""
+        ending = self.questions[process].ending(session_id)
+        block = schema.TextContentBlock(text=text)
+        message_id = await process.prompt(session_id, [block])
+        idle = await asyncio.wait_for(ending, self.TURN_TIMEOUT_SEC)
+
+        return message_id, idle
+
+    async def close_all(self) -> None:
+        for process in self.started:
+            await process.close()
+
+        await self._servers.stop()
+
+
+@pytest.fixture
+async def model() -> AsyncIterator[FakeModel]:
+    """Фейковая модель теста под uvicorn в его цикле."""
+    fake = FakeModel()
+    await fake.start()
+    try:
+        yield fake
+    finally:
+        await fake.stop()
+
+
+@pytest.fixture(scope="session")
+def standard() -> McpServerConfig:
+    """Обычный сервер MCP стенда клиента MCP (standard_server.py) по stdio."""
+    script = REPO_ROOT / "packages/services/boba-mcp-client/tests/standard_server.py"
+    endpoint = StdioCommand(command=sys.executable, args=(str(script), "stdio"))
+
+    return McpServerConfig(
+        endpoint=endpoint, connect_timeout_sec=20.0, call_timeout_sec=60.0
+    )
 
 
 class ProcFiles:

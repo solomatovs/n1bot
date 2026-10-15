@@ -1,9 +1,10 @@
-"""Порт инструментов над MCP-сервером: обычный сервер по stdio и HTTP,
+"""Порт MCP-сервера: обычный сервер по stdio и HTTP, свой сервер boba-mcp,
 публичные серверы в сети.
 
 Обычный сервер написан на официальном SDK и о boba не знает: клиент обязан
 работать с ним одним стандартом. Публичные серверы проверяют то же на чужих
-реализациях.
+реализациях. Ответ tools/call порт отдаёт как есть; текст для модели по
+правилам MCP собирает McpResults поверх него.
 """
 
 from __future__ import annotations
@@ -12,13 +13,15 @@ import asyncio
 import socket
 import subprocess
 import sys
-from collections.abc import AsyncIterator, Iterator, Sequence
+from collections.abc import AsyncIterator, Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import ClassVar
 
 import httpx
+import mcp.types as mt
 import pytest
+from mcp.shared.exceptions import MCPError
 from pydantic import BaseModel, ConfigDict, SecretStr, ValidationError
 
 from boba.auth.config import ProxyAuthConfig
@@ -27,11 +30,8 @@ from boba.canvas.storage import StorageNotFoundError
 from boba.config import bind
 from boba.connections.sealed import ConnectionSeal, SealedConnection, SealFeature
 from boba.db.postgres.connection import PostgresConfig
-from boba.identity.context import CallContexts
 from boba.mcp_client.client import (
     BearerAuth,
-    CallSignals,
-    DroppedSignals,
     HttpEndpoint,
     HttpLocation,
     McpCaller,
@@ -40,26 +40,16 @@ from boba.mcp_client.client import (
     McpServers,
     McpServersConfig,
     McpToolServer,
-    ProgressListener,
     ProxyAuth,
     StdioCommand,
 )
 from boba.runtime.config import AppLayers, ConfigLayoutError, EnvOverride
 from boba.stand.service_signin import ServiceSignIn
 from boba.stand.ui.stand import StandApp
-from boba.stand_core.context import CallStand
+from boba.toolkit.calls import CallViews
 from boba.toolkit.channels import ToolChannel
-from boba.toolkit.dag import (
-    DagNode,
-    NodeBody,
-    NodeCalls,
-    NodeOutcome,
-    ToolCard,
-    ToolHints,
-    ToolServer,
-    WorkflowResult,
-)
-from boba.toolkit.mcp import McpFailure
+from boba.toolkit.dag import CallDag, DagNode, ToolCard, ToolHints
+from boba.toolkit.mcp import McpFailure, McpResults, McpToolStubs
 from boba.toolkit.result import (
     ErrorResult,
     FailureResult,
@@ -67,8 +57,13 @@ from boba.toolkit.result import (
     ShellResult,
 )
 from boba.toolkit.types import SecretReveal
-from boba.toolkit.wire import JournalFeature, JournalRead
-from boba.toolrun.hosted import DirectCalls
+from boba.toolkit.wire import (
+    JournalFeature,
+    JournalRead,
+    NestedCallsReply,
+    ResultWire,
+    WireResult,
+)
 from boba.workspace.launcher import ReadWindow
 
 pytestmark = pytest.mark.anyio
@@ -87,20 +82,14 @@ def _config(endpoint: HttpEndpoint | StdioCommand) -> McpServerConfig:
 CALLER = McpCaller(login="alice", roles=frozenset({"dev"}))
 
 
-def _call(name: str, **args: object) -> DagNode:
-    return DagNode.model_validate({"key": f"call-{name}", "tool": name, "args": args})
+def _call(name: str, **args: object) -> mt.CallToolRequestParams:
+    return mt.CallToolRequestParams(name=name, arguments=args)
 
 
 @pytest.fixture
 async def stdio() -> AsyncIterator[McpToolServer]:
     endpoint = StdioCommand(command=sys.executable, args=(str(SERVER), "stdio"))
-    server = McpToolServer(
-        "standard",
-        _config(endpoint),
-        DroppedSignals(),
-        CallContexts(),
-        DirectCalls(),
-    )
+    server = McpToolServer("standard", _config(endpoint))
     await server.open()
     try:
         yield server
@@ -129,13 +118,7 @@ async def http(http_port: int) -> AsyncIterator[McpToolServer]:
     endpoint = HttpEndpoint(
         scheme="http", host="127.0.0.1", port=http_port, path="/mcp"
     )
-    server = McpToolServer(
-        "standard",
-        _config(endpoint),
-        DroppedSignals(),
-        CallContexts(),
-        DirectCalls(),
-    )
+    server = McpToolServer("standard", _config(endpoint))
     for _ in range(100):
         try:
             await server.open()
@@ -151,33 +134,45 @@ async def http(http_port: int) -> AsyncIterator[McpToolServer]:
         await server.close()
 
 
+class HeardCall:
+    """Обработчик прогресса вызова в тесте: копит уведомления сервера о
+    ходе одного вызова в порядке прихода — числа, текст и _meta."""
+
+    def __init__(self) -> None:
+        self.reports: list[tuple[float, float | None, str | None]] = []
+        self.metas: list[dict[str, object] | None] = []
+
+    async def __call__(self, params: mt.ProgressNotificationParams) -> None:
+        self.reports.append((params.progress, params.total, params.message))
+        self.metas.append(params.meta)
+
+
 class TestStandardServerOverStdio:
-    async def test_tools_are_offered_under_full_names_with_the_server_schema(
+    """Ответ tools/call — как есть; текст для модели — правила MCP поверх
+    него (McpResults)."""
+
+    async def test_tools_are_listed_with_the_server_schema(
         self, stdio: McpToolServer
     ) -> None:
         names = sorted(tool.name for tool in stdio.tools())
         if names != TestFailureStand.STANDARD_TOOLS:
-            raise AssertionError(f"the server's tools under full names: {names}")
+            raise AssertionError(f"the server's tools as listed: {names}")
 
-        add = next(tool for tool in stdio.tools() if tool.name == "mcp__standard__add")
-        schema = add.parameters
-        if not isinstance(schema, dict):
-            raise AssertionError(f"the stub carries the server's JSON schema: {schema}")
-        if sorted(schema["properties"]) != ["a", "b"]:
-            raise AssertionError(f"the model sees the server's arguments: {schema}")
-        if add.views:
-            raise AssertionError(f"plain arguments have no special view: {add}")
+        add = next(tool for tool in stdio.tools() if tool.name == "add")
+        if sorted(add.input_schema["properties"]) != ["a", "b"]:
+            raise AssertionError(f"the server's schema is kept: {add.input_schema}")
 
     async def test_annotations_become_hints(self, stdio: McpToolServer) -> None:
+        stubs = McpToolStubs()
         by_name = {tool.name: tool for tool in stdio.tools()}
 
-        assert by_name["mcp__standard__add"].hints == ToolHints(
+        assert stubs.hints_of(by_name["add"]) == ToolHints(
             read_only=True, destructive=True
         )
-        assert by_name["mcp__standard__shout"].hints == ToolHints(
+        assert stubs.hints_of(by_name["shout"]) == ToolHints(
             read_only=False, destructive=False
         )
-        assert by_name["mcp__standard__broken"].hints == ToolHints()
+        assert stubs.hints_of(by_name["broken"]) == ToolHints()
 
     async def test_standard_server_declares_no_boba_features(
         self, stdio: McpToolServer
@@ -187,111 +182,142 @@ class TestStandardServerOverStdio:
                 f"a foreign server has no features: {stdio.features()}"
             )
 
+        if stdio.nested_calls() is not None:
+            raise AssertionError("a foreign server declares no nested calls")
+
+    async def test_extension_settings_off_the_model_do_not_fail_the_open(
+        self,
+    ) -> None:
+        """Лишнее поле в настройках расширения не мешает его разобрать, а
+        настройки без обязательного поля оставляют сервер без расширения:
+        open() не падает."""
+        endpoint = StdioCommand(
+            command=sys.executable, args=(str(SERVER), "stdio-extended")
+        )
+        server = McpToolServer("standard", _config(endpoint))
+        await server.open()
+        try:
+            names: list[str] = []
+            for tool in server.tools():
+                names.append(tool.name)
+        finally:
+            await server.close()
+
+        # журнал разобран: его операцию чтения (add) клиент исполняет сам
+        if "add" in names:
+            raise AssertionError(f"the journal extension is parsed: {names}")
+
+        if server.nested_calls() is not None:
+            raise AssertionError("broken nested calls settings declare nothing")
+
     async def test_text_result_becomes_a_tool_message(
         self, stdio: McpToolServer
     ) -> None:
-        message = await stdio.call(_call("mcp__standard__add", a=2, b=3))
+        reply = await stdio.call(_call("add", a=2, b=3), None, None)
+        result = McpResults().result("add", "c1", reply)
 
-        if message.errored or message.content != "5":
-            raise AssertionError(f"the text of the result is the content: {message}")
-        if not isinstance(message.artifact, MarkdownResult):
-            raise AssertionError(
-                f"a plain result is a text artifact: {message.artifact}"
-            )
-        if message.key != "call-mcp__standard__add":
-            raise AssertionError(f"the message answers its call: {message}")
+        if not isinstance(result, MarkdownResult) or result.text != "5":
+            raise AssertionError(f"the text of the result is the content: {result}")
 
     async def test_tool_error_is_an_error_message_with_the_server_text(
         self, stdio: McpToolServer
     ) -> None:
-        message = await stdio.call(_call("mcp__standard__broken"))
+        reply = await stdio.call(_call("broken"), None, None)
+        result = McpResults().result("broken", "c1", reply)
 
-        if not message.errored:
-            raise AssertionError(f"isError becomes the error status: {message}")
-
-        failure = message.artifact
-        if not isinstance(failure, ErrorResult):
-            raise AssertionError(f"the failure is an error artifact: {failure}")
-        if failure.error_kind != McpFailure.TOOL_ERROR:
-            raise AssertionError(f"the kind names the mcp tool error: {failure}")
-        if "no such table: orders" not in failure.message:
-            raise AssertionError(f"the server's text is kept: {failure.message}")
+        if not isinstance(reply, mt.CallToolResult) or not reply.is_error:
+            raise AssertionError(f"the server reports isError: {reply}")
+        if not isinstance(result, ErrorResult):
+            raise AssertionError(f"the failure is an error artifact: {result}")
+        if result.error_kind != McpFailure.TOOL_ERROR:
+            raise AssertionError(f"the kind names the mcp tool error: {result}")
+        if "no such table: orders" not in result.message:
+            raise AssertionError(f"the server's text is kept: {result.message}")
 
     async def test_non_text_block_is_named_in_the_text(
         self, stdio: McpToolServer
     ) -> None:
-        message = await stdio.call(_call("mcp__standard__picture"))
+        reply = await stdio.call(_call("picture"), None, None)
+        text = McpResults().result("picture", "c1", reply).llm_view()
 
-        if message.content != "[image image/png]":
-            raise AssertionError(f"an image block is named, not dropped: {message}")
+        if text != "[image image/png]":
+            raise AssertionError(f"an image block is named, not dropped: {text}")
 
     async def test_model_gets_its_blocks_text_and_marks(
         self, stdio: McpToolServer
     ) -> None:
-        message = await stdio.call(_call("mcp__standard__blocks", empty=False))
+        reply = await stdio.call(_call("blocks", empty=False), None, None)
+        text = McpResults().result("blocks", "c1", reply).llm_view()
 
         expected = (
             "for the model\n"
             "[resource_link report.csv text/csv]\n"
             "[resource file:///notes.txt text/plain]"
         )
-        if message.content != expected:
+        if text != expected:
             raise AssertionError(
-                f"the model gets its text blocks and marks of the others: {message}"
+                f"the model gets its text blocks and marks of the others: {text}"
             )
 
     async def test_structured_content_without_blocks_is_json(
         self, stdio: McpToolServer
     ) -> None:
-        message = await stdio.call(_call("mcp__standard__blocks", empty=True))
+        reply = await stdio.call(_call("blocks", empty=True), None, None)
+        text = McpResults().result("blocks", "c1", reply).llm_view()
 
-        if message.content != '{\n  "rows": 2\n}':
-            raise AssertionError(f"structured content becomes JSON text: {message}")
+        if text != '{\n  "rows": 2\n}':
+            raise AssertionError(f"structured content becomes JSON text: {text}")
 
-    async def test_calls_of_one_answer_run_together(self, stdio: McpToolServer) -> None:
-        pending = await stdio.submit(
-            [
-                _call("mcp__standard__add", a=1, b=1),
-                _call("mcp__standard__shout", text="hi"),
-            ]
-        )
-        first, second = await asyncio.gather(*pending)
+    async def test_input_required_comes_back_as_is(self, stdio: McpToolServer) -> None:
+        reply = await stdio.call(_call("ask", refuse=False), None, None)
 
-        if (first.content, second.content) != ("2", "HI"):
-            raise AssertionError(f"each call gets its own result: {first}, {second}")
+        if not isinstance(reply, mt.InputRequiredResult):
+            raise AssertionError(f"the request for input is returned: {reply}")
+        if not reply.request_state:
+            raise AssertionError(f"the state of the server is kept: {reply}")
+
+    async def test_server_error_goes_up_as_is(self, stdio: McpToolServer) -> None:
+        with pytest.raises(MCPError) as refused:
+            await stdio.call(_call("ask", refuse=True), None, None)
+
+        error = refused.value.error
+        if error.code != mt.INVALID_PARAMS or "refuses" not in error.message:
+            raise AssertionError(f"the server's error is kept: {error}")
+        if error.data != {"reason": "the stand refuses"}:
+            raise AssertionError(f"the data of the error is kept: {error}")
+
+    async def test_progress_of_the_call_reaches_the_callback(
+        self, stdio: McpToolServer
+    ) -> None:
+        heard = HeardCall()
+
+        await stdio.call(_call("progress", steps=2), None, heard)
+
+        expected = [(1.0, 2.0, "step 1 of 2"), (2.0, 2.0, "step 2 of 2")]
+        if heard.reports != expected:
+            raise AssertionError(f"the reports arrive as they were made: {heard}")
 
 
 class TestStandardServerOverHttp:
     async def test_call_goes_over_streamable_http(self, http: McpToolServer) -> None:
-        message = await http.call(_call("mcp__standard__shout", text="over http"))
+        reply = await http.call(_call("shout", text="over http"), None, None)
+        text = McpResults().result("shout", "c1", reply).llm_view()
 
-        if message.content != "OVER HTTP":
-            raise AssertionError(f"the call reaches the http server: {message}")
+        if text != "OVER HTTP":
+            raise AssertionError(f"the call reaches the http server: {text}")
 
 
 class TestUnreachableServer:
     async def test_missing_command_is_a_client_error(self) -> None:
         endpoint = StdioCommand(command="/nonexistent/mcp-server")
-        server = McpToolServer(
-            "ghost",
-            _config(endpoint),
-            DroppedSignals(),
-            CallContexts(),
-            DirectCalls(),
-        )
+        server = McpToolServer("ghost", _config(endpoint))
 
         with pytest.raises(McpClientError, match=r"ghost|nonexistent"):
             await server.open()
 
     async def test_tools_before_open_is_a_client_error(self) -> None:
         endpoint = StdioCommand(command=sys.executable, args=(str(SERVER), "stdio"))
-        server = McpToolServer(
-            "standard",
-            _config(endpoint),
-            DroppedSignals(),
-            CallContexts(),
-            DirectCalls(),
-        )
+        server = McpToolServer("standard", _config(endpoint))
 
         with pytest.raises(McpClientError, match="before open"):
             server.tools()
@@ -301,10 +327,11 @@ class TestUnreachableServer:
     ) -> None:
         await http.close()
 
-        message = await http.call(_call("mcp__standard__add", a=4, b=4))
+        reply = await http.call(_call("add", a=4, b=4), None, None)
+        text = McpResults().result("add", "c1", reply).llm_view()
 
-        if message.content != "8":
-            raise AssertionError(f"the closed session is opened again: {message}")
+        if text != "8":
+            raise AssertionError(f"the closed session is opened again: {text}")
 
 
 @pytest.mark.integration
@@ -327,13 +354,7 @@ class TestPublicServers:
     ) -> None:
         """deepwiki отвечает только на initialize: клиент его не берёт."""
         await self._reachable(self.DEEPWIKI)
-        server = McpToolServer(
-            "deepwiki",
-            _config(self.DEEPWIKI),
-            DroppedSignals(),
-            CallContexts(),
-            DirectCalls(),
-        )
+        server = McpToolServer("deepwiki", _config(self.DEEPWIKI))
         try:
             with pytest.raises(McpClientError) as refused:
                 await server.open()
@@ -350,40 +371,25 @@ class TestPublicServers:
 
     async def test_context7_lists_tools_and_answers_a_call(self) -> None:
         await self._reachable(self.CONTEXT7)
-        server = McpToolServer(
-            "context7",
-            _config(self.CONTEXT7),
-            DroppedSignals(),
-            CallContexts(),
-            DirectCalls(),
-        )
+        server = McpToolServer("context7", _config(self.CONTEXT7))
         await server.open()
         try:
             names = [tool.name for tool in server.tools()]
-            if "mcp__context7__resolve-library-id" not in names:
+            if "resolve-library-id" not in names:
                 raise AssertionError(f"context7 offers its tools: {names}")
 
-            tool = next(
-                t
-                for t in server.tools()
-                if t.name == "mcp__context7__resolve-library-id"
-            )
-            schema = tool.parameters
-            if not isinstance(schema, dict):
-                raise AssertionError(f"the stub carries a JSON schema: {schema}")
-
+            tool = next(t for t in server.tools() if t.name == "resolve-library-id")
             args: dict[str, object] = {}
-            for name in schema.get("required", []):
+            for name in tool.input_schema.get("required", []):
                 args[name] = "fastapi"
 
-            message = await server.call(
-                _call("mcp__context7__resolve-library-id", **args)
-            )
+            reply = await server.call(_call(tool.name, **args), None, None)
         finally:
             await server.close()
 
-        if not str(message.content).strip():
-            raise AssertionError(f"context7 answers with text: {message}")
+        text = McpResults().result(tool.name, "c1", reply).llm_view()
+        if not text.strip():
+            raise AssertionError(f"context7 answers with text: {reply}")
 
 
 class TestServerNames:
@@ -407,20 +413,20 @@ class TestServerNames:
 
 
 class TestServersOfASession:
-    """Какие серверы достаются сессии: те, что назвал её профиль."""
+    """Порт сервера по имени: открытый, а неназванный или мёртвый — отказ."""
 
     @staticmethod
     def _servers(**extra: McpServerConfig) -> McpServers:
         endpoint = StdioCommand(command=sys.executable, args=(str(SERVER), "stdio"))
         config = McpServersConfig(servers={"standard": _config(endpoint), **extra})
 
-        return McpServers(config, DroppedSignals(), CallContexts(), DirectCalls())
+        return McpServers(config)
 
-    async def test_named_servers_give_ports(self) -> None:
+    async def test_named_server_gives_an_opened_port(self) -> None:
         servers = self._servers()
         try:
-            ports = await servers.for_session(CALLER, ["standard"])
-            names = sorted(tool.name for port in ports for tool in port.tools())
+            port = await servers.port("standard", CALLER)
+            names = sorted(tool.name for tool in port.tools())
         finally:
             await servers.stop()
 
@@ -433,36 +439,26 @@ class TestServersOfASession:
         command = tmp_path / "late-server"
         servers = self._servers(late=_config(StdioCommand(command=str(command))))
         try:
-            others = await servers.for_session(CALLER, ["standard"])
+            other = await servers.port("standard", CALLER)
             with pytest.raises(McpClientError, match="'late'"):
-                await servers.for_session(CALLER, ["late"])
+                await servers.port("late", CALLER)
 
             command.write_text(f"#!/bin/sh\nexec {sys.executable} {SERVER} stdio\n")
             command.chmod(0o755)
-            ports = await servers.for_session(CALLER, ["late"])
+            late = await servers.port("late", CALLER)
         finally:
             await servers.stop()
 
-        if not others[0].tools():
+        if not other.tools():
             raise AssertionError("a dead server does not hold back other servers")
-        if not ports[0].tools():
+        if not late.tools():
             raise AssertionError("the next session connects the server that came up")
-
-    async def test_session_without_named_servers_gets_nothing(self) -> None:
-        servers = self._servers()
-        try:
-            ports = await servers.for_session(CALLER, [])
-        finally:
-            await servers.stop()
-
-        if ports:
-            raise AssertionError(f"a profile without servers gets no ports: {ports}")
 
     async def test_undeclared_server_name_is_an_error(self) -> None:
         servers = self._servers()
         try:
             with pytest.raises(McpClientError, match="not declared"):
-                await servers.for_session(CALLER, ["typo"])
+                await servers.port("typo", CALLER)
         finally:
             await servers.stop()
 
@@ -516,13 +512,7 @@ def boba_mcp_stand(tmp_path: Path) -> Iterator[BobaMcpStand]:
 
 @pytest.fixture
 async def dag(boba_mcp_stand: BobaMcpStand) -> AsyncIterator[McpToolServer]:
-    server = McpToolServer(
-        "boba",
-        _config(boba_mcp_stand.endpoint()),
-        DroppedSignals(),
-        CallContexts(),
-        DirectCalls(),
-    )
+    server = McpToolServer("boba", _config(boba_mcp_stand.endpoint()))
     for _ in range(150):
         try:
             await server.open()
@@ -540,199 +530,18 @@ async def dag(boba_mcp_stand: BobaMcpStand) -> AsyncIterator[McpToolServer]:
 
 @pytest.mark.integration
 class TestScopeOfTheCall:
-    """Область вызова клиента доезжает до тела инструмента сервера."""
+    """Область вызова доезжает до тела инструмента сервера."""
 
     THREAD: ClassVar[str] = "5d0c0a52-7f0e-4c56-9d55-0b7a5f0f3c21"
 
-    async def test_scope_of_the_current_call_travels_to_the_server(
-        self, boba_mcp_stand: BobaMcpStand
-    ) -> None:
-        stand = CallStand()
-        server = McpToolServer(
-            "boba",
-            _config(boba_mcp_stand.endpoint()),
-            DroppedSignals(),
-            stand.contexts,
-            DirectCalls(),
-        )
-        for _ in range(150):
-            try:
-                await server.open()
-            except McpClientError:
-                await asyncio.sleep(0.2)
-                continue
-
-            break
-
-        try:
-            with stand.contexts.applied(stand.context(self.THREAD)):
-                message = await server.call(_call("mcp__boba__fake_scope"))
-        finally:
-            await server.close()
-
-        if self.THREAD not in str(message.content):
-            raise AssertionError(f"the body runs in the caller's scope: {message}")
-
-
-class StartedTools(NodeCalls):
-    """Реализация NodeCalls, запоминающая вызовы узлов, которые клиент провёл
-    к телу: по ним хозяин клиента с лентой рисует шаги."""
-
-    def __init__(self) -> None:
-        self.started: list[tuple[str, str]] = []
-
-    async def conducted(
-        self, card: ToolCard, node: DagNode, body: NodeBody
-    ) -> NodeOutcome:
-        self.started.append((card.name, node.key))
-
-        return await body(node)
-
-
-@pytest.mark.integration
-class TestLinkedCalls:
-    """Потоковые инструменты связывает только вызов инструмента-связки:
-    отдельные вызовы одного ответа идут порознь и получают отказ плана."""
-
-    async def test_stream_calls_of_one_response_stay_separate(
-        self, dag: McpToolServer, tmp_path: Path
-    ) -> None:
-        marker = tmp_path / "collected"
-        emit = DagNode.model_validate(
-            {
-                "key": "call-emit",
-                "tool": "mcp__boba__fake_emit",
-                "args": {
-                    "prefix": "a",
-                    "count": 3,
-                    "size": 0,
-                    "fail_midway": False,
-                    "out": "c1",
-                },
-            }
-        )
-        collect = DagNode.model_validate(
-            {
-                "key": "call-collect",
-                "tool": "mcp__boba__fake_collect",
-                "args": {
-                    "marker": str(marker),
-                    "fail": False,
-                    "gated": False,
-                    "feed": "c1",
-                },
-            }
-        )
-
-        pending = await dag.submit([emit, collect])
-        emitted, collected = await asyncio.gather(*pending)
-
-        if not emitted.errored:
-            raise AssertionError(f"a writer without a reader is refused: {emitted}")
-        if not collected.errored:
-            raise AssertionError(f"a reader without a writer is refused: {collected}")
-        if "'workflow'" not in emitted.content:
-            raise AssertionError(f"the refusal names the workflow tool: {emitted}")
-        if "'workflow'" not in collected.content:
-            raise AssertionError(f"the refusal names the workflow tool: {collected}")
-        if marker.exists():
-            raise AssertionError("no body runs without its partner")
-
-    async def test_workflow_call_runs_as_the_calls_of_its_nodes(
-        self, boba_mcp_stand: BobaMcpStand, tmp_path: Path
-    ) -> None:
-        """Вызов связки — несколько вызовов инструментов, запущенных вместе:
-        у каждого узла свой вызов под идентификатором связки с номером узла,
-        и те же идентификаторы несёт итог связки для истории."""
-        conduct = StartedTools()
-        nodes = [
-            {
-                "key": "src",
-                "tool": "fake_emit",
-                "args": {
-                    "prefix": "a",
-                    "count": 2,
-                    "size": 0,
-                    "fail_midway": False,
-                    "out": "c1",
-                },
-            },
-            {
-                "key": "dst",
-                "tool": "fake_collect",
-                "args": {
-                    "marker": str(tmp_path / "done"),
-                    "fail": False,
-                    "gated": False,
-                    "feed": "c1",
-                },
-            },
-        ]
-        whole = DagNode.model_validate(
-            {"key": "call-wf", "tool": "mcp__boba__workflow", "args": {"nodes": nodes}}
-        )
-
-        dag = McpToolServer(
-            "boba",
-            _config(boba_mcp_stand.endpoint()),
-            DroppedSignals(),
-            CallContexts(),
-            conduct,
-        )
-        for _ in range(150):
-            try:
-                await dag.open()
-            except McpClientError:
-                await asyncio.sleep(0.2)
-                continue
-
-            break
-
-        try:
-            message = await dag.call(whole)
-        finally:
-            await dag.close()
-
-        artifact = message.artifact
-        if not isinstance(artifact, WorkflowResult):
-            raise AssertionError(f"the outcome is the workflow result: {message}")
-
-        ids = [node.call_id for node in artifact.nodes]
-        if ids != ["call-wf_0", "call-wf_1"]:
-            raise AssertionError(f"nodes are numbered calls of the workflow: {ids}")
-        if [node.key for node in artifact.nodes] != ["src", "dst"]:
-            raise AssertionError(f"nodes keep the names of the model: {artifact}")
-        started = sorted(conduct.started)
-        expected = [
-            ("mcp__boba__fake_collect", "call-wf_1"),
-            ("mcp__boba__fake_emit", "call-wf_0"),
-        ]
-        if started != expected:
-            raise AssertionError(f"each node is a tool call of its own: {started}")
-
-    async def test_lonely_stream_call_goes_as_an_ordinary_call(
+    async def test_scope_of_the_call_travels_to_the_server(
         self, dag: McpToolServer
     ) -> None:
-        emit = DagNode.model_validate(
-            {
-                "key": "call-lonely",
-                "tool": "mcp__boba__fake_emit",
-                "args": {
-                    "prefix": "a",
-                    "count": 1,
-                    "size": 0,
-                    "fail_midway": False,
-                    "out": "c1",
-                },
-            }
-        )
+        reply = await dag.call(_call("fake_scope"), self.THREAD, None)
+        text = McpResults().result("fake_scope", "c1", reply).llm_view()
 
-        message = await dag.call(emit)
-
-        if not message.errored:
-            raise AssertionError(f"a stream without a reader is refused: {message}")
-        if "has no readers" not in message.content:
-            raise AssertionError(f"the refusal names the unread channel: {message}")
+        if self.THREAD not in text:
+            raise AssertionError(f"the body runs in the caller's scope: {text}")
 
 
 @pytest.mark.integration
@@ -794,46 +603,8 @@ class TestWorkspaceFiles:
         self, dag: McpToolServer
     ) -> None:
         names = [tool.name for tool in dag.tools()]
-        if "mcp__boba__file_upload" in names:
+        if "file_upload" in names:
             raise AssertionError(f"the client uploads files itself: {names}")
-
-
-class HeardSignals(CallSignals, ProgressListener):
-    """Приёмник отчётов о ходе работы теста: копит отчёты и вызовы, чьи они."""
-
-    def __init__(self) -> None:
-        self.calls: list[tuple[str, str]] = []
-        self.reports: list[tuple[float, float | None, str]] = []
-
-    def listener(self, server: str, call: DagNode) -> ProgressListener:
-        self.calls.append((server, call.key))
-        return self
-
-    async def progressed(self, done: float, total: float | None, text: str) -> None:
-        self.reports.append((done, total, text))
-
-
-class HeardCall(ProgressListener):
-    """Приёмник отчётов одного вызова: копит только свои тексты."""
-
-    def __init__(self) -> None:
-        self.texts: list[str] = []
-
-    async def progressed(self, done: float, total: float | None, text: str) -> None:
-        self.texts.append(text)
-
-
-class HeardPerCall(CallSignals):
-    """Приёмники отчётов по инструментам вызовов: у каждого вызова свой."""
-
-    def __init__(self) -> None:
-        self.by_steps: dict[object, HeardCall] = {}
-
-    def listener(self, server: str, call: DagNode) -> ProgressListener:
-        heard = HeardCall()
-        self.by_steps[call.args.get("steps")] = heard
-
-        return heard
 
 
 @pytest.mark.integration
@@ -841,192 +612,100 @@ class TestBobaMcpJournal:
     """Вызов своего сервера: отчёты о ходе работы и журнал по адресу из
     итога."""
 
-    async def _opened(self, process: BobaMcpStand, heard: CallSignals) -> McpToolServer:
-        server = McpToolServer(
-            "boba",
-            _config(process.endpoint()),
-            heard,
-            CallContexts(),
-            DirectCalls(),
-        )
-        for _ in range(150):
-            try:
-                await server.open()
-            except McpClientError:
-                await asyncio.sleep(0.2)
-                continue
-
-            return server
-
-        raise AssertionError("the boba-mcp stand did not start")
-
-    async def test_reports_of_the_server_reach_the_listener_of_the_call(
-        self, boba_mcp_stand: BobaMcpStand
+    async def test_reports_of_the_server_reach_the_callback_of_the_call(
+        self, dag: McpToolServer
     ) -> None:
-        heard = HeardSignals()
-        server = await self._opened(boba_mcp_stand, heard)
-        try:
-            call = _call("mcp__boba__fake_progress", steps=2, pause=0.6)
-            message = await server.call(call)
-        finally:
-            await server.close()
+        heard = HeardCall()
 
-        if message.errored:
-            raise AssertionError(f"the call succeeds: {message}")
+        reply = await dag.call(_call("fake_progress", steps=2, pause=0.6), None, heard)
 
-        if heard.calls != [("boba", call.key)]:
-            raise AssertionError(f"the listener is asked per call: {heard.calls}")
-
+        if not isinstance(reply, mt.CallToolResult) or reply.is_error:
+            raise AssertionError(f"the call succeeds: {reply}")
         if heard.reports != [(1.0, 2.0, "step 1 of 2"), (2.0, 2.0, "step 2 of 2")]:
             raise AssertionError(f"the reports arrive as they were made: {heard}")
 
-    async def test_report_of_a_workflow_node_reaches_only_its_own_call(
-        self, boba_mcp_stand: BobaMcpStand
+    async def test_reports_of_workflow_nodes_name_their_node_in_meta(
+        self, dag: McpToolServer
     ) -> None:
-        """Связка из двух вызовов идёт серверу одним запросом: отчёт узла
-        получает шаг своего вызова, а шаг соседа его не видит."""
-        heard = HeardPerCall()
-        server = await self._opened(boba_mcp_stand, heard)
+        """Уведомление доходит до вызова целиком: ключ узла связки лежит в
+        _meta под ключом, объявленным расширением вложенных вызовов."""
+        nested = dag.nested_calls()
+        if nested is None:
+            raise AssertionError(f"the server declares nested calls: {dag.features()}")
+
         nodes = [
-            {
-                "key": "left",
-                "tool": "fake_progress",
-                "args": {"steps": 3, "pause": 0.6},
-            },
-            {
-                "key": "right",
-                "tool": "fake_progress",
-                "args": {"steps": 2, "pause": 0.6},
-            },
+            {"key": "left", "tool": "fake_progress", "args": {"steps": 2, "pause": 0.6}}
         ]
-        try:
-            message = await server.call(_call("mcp__boba__workflow", nodes=nodes))
-        finally:
-            await server.close()
+        heard = HeardCall()
 
-        if message.errored:
-            raise AssertionError(f"the workflow succeeds: {message}")
+        reply = await dag.call(_call("workflow", nodes=nodes), None, heard)
 
-        left = heard.by_steps[3].texts
-        if left != [
-            "step 1 of 3 (1 of 3)",
-            "step 2 of 3 (2 of 3)",
-            "step 3 of 3 (3 of 3)",
-        ]:
-            raise AssertionError(f"the left call hears only its own reports: {left}")
+        if not isinstance(reply, mt.CallToolResult) or reply.is_error:
+            raise AssertionError(f"the workflow succeeds: {reply}")
 
-        right = heard.by_steps[2].texts
-        if right != ["step 1 of 2 (1 of 2)", "step 2 of 2 (2 of 2)"]:
-            raise AssertionError(f"the right call hears only its own reports: {right}")
-
-    async def test_outcome_carries_the_content_types_of_the_arguments(
-        self, boba_mcp_stand: BobaMcpStand
-    ) -> None:
-        """Итог вызова несёт типы содержимого аргументов из схемы сервера по
-        идентификатору вызова: хозяин клиента хранит их с итогом и рисует
-        по ним вход шага после конца хода."""
-        server = await self._opened(boba_mcp_stand, HeardSignals())
-        try:
-            typed = _call("mcp__boba__fake_query", sql="select 1", limit=5)
-            plain = _call("mcp__boba__fake_echo", text="hi", repeat=1)
-            asked = await server.call(typed)
-            echoed = await server.call(plain)
-        finally:
-            await server.close()
-
-        if asked.errored or echoed.errored:
-            raise AssertionError(f"both calls succeed: {asked} {echoed}")
-
-        if asked.media != {typed.key: {"sql": "application/sql"}}:
-            raise AssertionError(f"the query argument is typed: {asked.media}")
-        if echoed.media != {plain.key: {}}:
-            raise AssertionError(f"plain arguments carry no types: {echoed.media}")
-
-    async def test_workflow_outcome_carries_the_types_of_every_node(
-        self, boba_mcp_stand: BobaMcpStand
-    ) -> None:
-        server = await self._opened(boba_mcp_stand, HeardSignals())
-        nodes = [
-            {"key": "q", "tool": "fake_query", "args": {"sql": "select 2", "limit": 1}},
-            {"key": "e", "tool": "fake_echo", "args": {"text": "hi", "repeat": 1}},
-        ]
-        try:
-            call = _call("mcp__boba__workflow", nodes=nodes)
-            outcome = await server.call(call)
-        finally:
-            await server.close()
-
-        result = outcome.artifact
-        if not isinstance(result, WorkflowResult):
-            raise AssertionError(f"the workflow model is revived: {outcome}")
-
-        media = outcome.media
-        if media is None:
-            raise AssertionError(f"the outcome carries the types: {outcome}")
-
-        typed: dict[str, object] = {}
-        for node in result.nodes:
-            typed[node.key] = media.get(node.call_id)
-
-        if typed != {"q": {"sql": "application/sql"}, "e": {}}:
-            raise AssertionError(f"every node has its own types: {typed}")
+        expected = [{nested.progress_key: "left"}, {nested.progress_key: "left"}]
+        if heard.metas != expected:
+            raise AssertionError(f"every report names its node: {heard.metas}")
 
     async def test_journal_is_read_by_the_address_of_the_result(
-        self, boba_mcp_stand: BobaMcpStand
+        self, dag: McpToolServer
     ) -> None:
-        heard = HeardSignals()
-        server = await self._opened(boba_mcp_stand, heard)
-        try:
-            call = _call("mcp__boba__fake_echo", text="hi", repeat=2)
-            message = await server.call(call)
-            if message.errored:
-                raise AssertionError(f"the call succeeds: {message}")
+        heard = HeardCall()
+        call = DagNode(key="call-echo", tool="mcp__boba__fake_echo")
+        reply = await dag.call(_call("fake_echo", text="hi", repeat=2), None, heard)
+        if not isinstance(reply, mt.CallToolResult):
+            raise AssertionError(f"the call is answered: {reply}")
 
-            address = message.journal
-            if address is None or address.server != "boba":
-                raise AssertionError(f"the result names its journal: {message}")
+        wire = WireResult(
+            content=reply.content,
+            structured=reply.structured_content,
+            is_error=reply.is_error,
+        )
+        outcome = ResultWire().revived(wire, call, "boba")
+        if outcome is None or outcome.journal is None:
+            raise AssertionError(f"the result names its journal: {reply}")
 
-            if address.call == call.key:
-                raise AssertionError(f"the server names the call itself: {address}")
-
-            request = JournalRead(
-                run=address.run, node=address.call, channel=ToolChannel.STDOUT
-            )
-            window = await server.journal(request)
-        finally:
-            await server.close()
+        address = outcome.journal
+        request = JournalRead(
+            run=address.run, node=address.call, channel=ToolChannel.STDOUT
+        )
+        window = await dag.journal(request)
 
         if heard.reports:
             raise AssertionError(f"a silent tool sends no progress: {heard.reports}")
-
         if window is None or "echo progress: hi" not in window.text:
             raise AssertionError(f"the journal is read from the server: {window}")
         if not window.closed:
             raise AssertionError(f"the journal of a finished call is closed: {window}")
 
     async def test_journal_channel_is_downloaded_whole_and_by_range(
-        self, boba_mcp_stand: BobaMcpStand
+        self, dag: McpToolServer
     ) -> None:
-        server = await self._opened(boba_mcp_stand, DroppedSignals())
-        try:
-            call = _call("mcp__boba__fake_echo", text="hi", repeat=2)
-            message = await server.call(call)
-            address = message.journal
-            files = server.journal_files()
-            if address is None or files is None:
-                raise AssertionError(f"the journal is addressable: {message}")
+        call = DagNode(key="call-echo", tool="mcp__boba__fake_echo")
+        reply = await dag.call(_call("fake_echo", text="hi", repeat=2), None, None)
+        if not isinstance(reply, mt.CallToolResult):
+            raise AssertionError(f"the call is answered: {reply}")
 
-            rel = f"{address.run}/{address.call}/{ToolChannel.STDOUT.value}"
-            whole = await files.relay(rel, "")
-            body = b"".join([chunk async for chunk in whole.chunks])
-            await whole.release()
-            part = await files.relay(rel, "bytes=0-3")
-            head = b"".join([chunk async for chunk in part.chunks])
-            await part.release()
-            with pytest.raises(StorageNotFoundError):
-                await files.relay(f"{address.run}/ghost/stdout", "")
-        finally:
-            await server.close()
+        wire = WireResult(
+            content=reply.content,
+            structured=reply.structured_content,
+            is_error=reply.is_error,
+        )
+        outcome = ResultWire().revived(wire, call, "boba")
+        files = dag.journal_files()
+        if outcome is None or outcome.journal is None or files is None:
+            raise AssertionError(f"the journal is addressable: {reply}")
+
+        address = outcome.journal
+        rel = f"{address.run}/{address.call}/{ToolChannel.STDOUT.value}"
+        whole = await files.relay(rel, "")
+        body = b"".join([chunk async for chunk in whole.chunks])
+        await whole.release()
+        part = await files.relay(rel, "bytes=0-3")
+        head = b"".join([chunk async for chunk in part.chunks])
+        await part.release()
+        with pytest.raises(StorageNotFoundError):
+            await files.relay(f"{address.run}/ghost/stdout", "")
 
         if whole.status != 200 or b"echo progress: hi" not in body:
             raise AssertionError(f"the channel is downloaded whole: {body[:200]!r}")
@@ -1035,45 +714,23 @@ class TestBobaMcpJournal:
         if part.status != 206 or head != body[:4]:
             raise AssertionError(f"a range is relayed as 206: {part.status} {head!r}")
 
-    async def test_missing_journal_is_no_window(
-        self, boba_mcp_stand: BobaMcpStand
-    ) -> None:
-        server = await self._opened(boba_mcp_stand, DroppedSignals())
-        try:
-            if JournalFeature.ID not in server.features():
-                raise AssertionError(f"the journal is declared: {server.features()}")
+    async def test_missing_journal_is_no_window(self, dag: McpToolServer) -> None:
+        if JournalFeature.ID not in dag.features():
+            raise AssertionError(f"the journal is declared: {dag.features()}")
 
-            request = JournalRead(run="nope", node="nope", channel=ToolChannel.STDOUT)
-            window = await server.journal(request)
-        finally:
-            await server.close()
+        request = JournalRead(run="nope", node="nope", channel=ToolChannel.STDOUT)
+        window = await dag.journal(request)
 
         if window is not None:
             raise AssertionError(f"an unknown call has no journal: {window}")
 
-    async def test_standard_server_has_no_journal(self) -> None:
-        endpoint = StdioCommand(command=sys.executable, args=(str(SERVER), "stdio"))
-        heard = HeardSignals()
-        server = McpToolServer(
-            "standard",
-            _config(endpoint),
-            heard,
-            CallContexts(),
-            DirectCalls(),
-        )
-        await server.open()
-        try:
-            await server.call(_call("mcp__standard__add", a=2, b=3))
-            request = JournalRead(run="r", node="n", channel=ToolChannel.STDOUT)
-            window = await server.journal(request)
-        finally:
-            await server.close()
+    async def test_standard_server_has_no_journal(self, stdio: McpToolServer) -> None:
+        request = JournalRead(run="r", node="n", channel=ToolChannel.STDOUT)
+
+        window = await stdio.journal(request)
 
         if window is not None:
             raise AssertionError(f"a standard server keeps no journal: {window}")
-
-        if heard.calls != [("standard", "call-mcp__standard__add")]:
-            raise AssertionError(f"progress is asked of any server: {heard.calls}")
 
 
 @pytest.mark.integration
@@ -1102,18 +759,18 @@ class TestSignInAsTheUser:
             servers={"boba": _config(wide), "narrow": _config(narrow)}
         )
 
-        return McpServers(config, DroppedSignals(), CallContexts(), DirectCalls())
+        return McpServers(config)
 
-    async def _ports(
-        self, servers: McpServers, caller: McpCaller, names: Sequence[str]
-    ) -> Sequence[ToolServer]:
+    async def _port(
+        self, servers: McpServers, caller: McpCaller, name: str
+    ) -> McpToolServer:
         for _ in range(150):
             try:
-                return await servers.for_session(caller, names)
+                return await servers.port(name, caller)
             except McpClientError:
                 await asyncio.sleep(0.2)
 
-        return await servers.for_session(caller, names)
+        return await servers.port(name, caller)
 
     async def test_body_runs_as_the_user_of_the_client(
         self, boba_mcp_stand: BobaMcpStand
@@ -1121,16 +778,14 @@ class TestSignInAsTheUser:
         servers = self._servers(boba_mcp_stand, self.SECRET)
         caller = McpCaller(login="ivanov", roles=frozenset({"dev"}))
         try:
-            ports = await self._ports(servers, caller, ["boba"])
-            if len(ports) != 1:
-                raise AssertionError(f"the user gets the port of the service: {ports}")
-
-            message = await ports[0].call(_call("mcp__boba__fake_whoami"))
+            port = await self._port(servers, caller, "boba")
+            reply = await port.call(_call("fake_whoami"), None, None)
         finally:
             await servers.stop()
 
-        if not str(message.content).startswith("ivanov|dev|"):
-            raise AssertionError(f"the body sees the user and the roles: {message}")
+        text = McpResults().result("fake_whoami", "c1", reply).llm_view()
+        if not text.startswith("ivanov|dev|"):
+            raise AssertionError(f"the body sees the user and the roles: {text}")
 
     async def test_endpoint_gives_the_tools_of_its_profile(
         self, boba_mcp_stand: BobaMcpStand
@@ -1138,13 +793,13 @@ class TestSignInAsTheUser:
         servers = self._servers(boba_mcp_stand, self.SECRET)
         caller = McpCaller(login="ivanov", roles=frozenset({"dev"}))
         try:
-            await self._ports(servers, caller, ["boba"])
-            ports = await servers.for_session(caller, ["narrow"])
-            names = sorted(tool.name for port in ports for tool in port.tools())
+            await self._port(servers, caller, "boba")
+            port = await servers.port("narrow", caller)
+            names = sorted(tool.name for tool in port.tools())
         finally:
             await servers.stop()
 
-        if names != ["mcp__narrow__fake_echo"]:
+        if names != ["fake_echo"]:
             raise AssertionError(f"the endpoint decides the tools: {names}")
 
     async def test_endpoint_outside_the_roles_refuses_the_port(
@@ -1153,9 +808,9 @@ class TestSignInAsTheUser:
         servers = self._servers(boba_mcp_stand, self.SECRET)
         weak = McpCaller(login="petrov", roles=frozenset({"weak"}))
         try:
-            await self._ports(servers, weak, ["boba"])
+            await self._port(servers, weak, "boba")
             with pytest.raises(McpClientError, match=r"'narrow'.*HTTP 403"):
-                await servers.for_session(weak, ["narrow"])
+                await servers.port("narrow", weak)
         finally:
             await servers.stop()
 
@@ -1166,9 +821,9 @@ class TestSignInAsTheUser:
         forged = self._servers(boba_mcp_stand, SecretStr("forged"))
         caller = McpCaller(login="ivanov", roles=frozenset({"dev"}))
         try:
-            await self._ports(honest, caller, ["boba"])
+            await self._port(honest, caller, "boba")
             with pytest.raises(McpClientError, match=r"'boba'.*invalid_grant"):
-                await forged.for_session(caller, ["boba"])
+                await forged.port("boba", caller)
         finally:
             await honest.stop()
             await forged.stop()
@@ -1176,57 +831,57 @@ class TestSignInAsTheUser:
 
 @pytest.mark.integration
 class TestBobaMcpServer:
-    """Свой сервер: тот же стандартный путь плюс модель результата."""
+    """Свой сервер: тот же стандартный путь плюс модель результата в
+    structuredContent."""
 
-    async def test_result_revives_as_its_model(self, dag: McpToolServer) -> None:
-        message = await dag.call(_call("mcp__boba__fake_echo", text="hi", repeat=2))
+    async def test_result_carries_its_model(self, dag: McpToolServer) -> None:
+        call = DagNode(key="call-echo", tool="mcp__boba__fake_echo")
+        reply = await dag.call(_call("fake_echo", text="hi", repeat=2), None, None)
+        if not isinstance(reply, mt.CallToolResult) or reply.is_error:
+            raise AssertionError(f"the call succeeds: {reply}")
 
-        if message.errored:
-            raise AssertionError(f"the call succeeds: {message}")
+        wire = WireResult(
+            content=reply.content,
+            structured=reply.structured_content,
+            is_error=reply.is_error,
+        )
+        outcome = ResultWire().revived(wire, call, "boba")
+        if outcome is None:
+            raise AssertionError(f"the server sends its model: {reply}")
 
-        artifact = message.artifact
+        artifact = outcome.artifact
         if not isinstance(artifact, MarkdownResult) or artifact.text != "hi hi|t0ken":
             raise AssertionError(f"the server's model is revived: {artifact}")
 
-    async def test_card_view_comes_from_the_schema_alone(
+    async def test_nested_calls_name_the_workflow_offered_to_the_model(
         self, dag: McpToolServer
     ) -> None:
-        """Вид аргументов клиент выводит из схемы: у аргументов без типа
-        содержимого особого вида нет, служебные параметры сервер не шлёт."""
-        echo = next(tool for tool in dag.tools() if tool.name == "mcp__boba__fake_echo")
-        if echo.views:
-            raise AssertionError(f"plain arguments have no special view: {echo}")
+        nested = dag.nested_calls()
+        if nested is None:
+            raise AssertionError(f"the server declares nested calls: {dag.features()}")
 
-        workflow = next(
-            tool for tool in dag.tools() if tool.name == "mcp__boba__workflow"
-        )
-        if workflow.views:
-            raise AssertionError(f"a built-in node has no special view: {workflow}")
+        if nested != CallDag().feature():
+            raise AssertionError(f"the declared shape is the workflow's: {nested}")
 
-    async def test_failure_keeps_the_server_failure_model(
-        self, dag: McpToolServer
-    ) -> None:
-        message = await dag.call(_call("mcp__boba__fake_echo", text="boom", repeat=1))
+        names: list[str] = []
+        for tool in dag.tools():
+            names.append(tool.name)
 
-        failure = message.artifact
-        if not isinstance(failure, FailureResult):
-            raise AssertionError(f"the failure model of the server: {failure}")
-        if isinstance(failure, ErrorResult):
-            if failure.error_kind == McpFailure.TOOL_ERROR:
-                raise AssertionError(f"not the generic client failure: {failure}")
-        if "fake backend is down" not in failure.llm_view():
-            raise AssertionError(f"the cause travels with the model: {failure}")
+        if nested.tool not in names:
+            raise AssertionError(f"the nested calls tool is offered: {names}")
 
-    async def test_workflow_outcome_is_revived_with_its_nodes(
+    async def test_workflow_answers_by_its_output_schema(
         self, dag: McpToolServer, tmp_path: Path
     ) -> None:
+        """Итог связки проходит проверку outputSchema клиентом SDK и
+        разбирается моделью NestedCallsReply; карточка несёт схему сервера."""
         nodes = [
             {
                 "key": "src",
                 "tool": "fake_emit",
                 "args": {
                     "prefix": "a",
-                    "count": 3,
+                    "count": 2,
                     "size": 0,
                     "fail_midway": False,
                     "out": "c1",
@@ -1244,13 +899,61 @@ class TestBobaMcpServer:
             },
         ]
 
-        message = await dag.call(_call("mcp__boba__workflow", nodes=nodes))
+        reply = await dag.call(_call("workflow", nodes=nodes), None, None)
 
-        outcome = message.artifact
-        if not isinstance(outcome, WorkflowResult):
-            raise AssertionError(f"the workflow model is revived: {message}")
-        if len(outcome.nodes) != len(nodes):
-            raise AssertionError(f"every node reports its outcome: {outcome}")
+        if not isinstance(reply, mt.CallToolResult) or reply.is_error:
+            raise AssertionError(f"the workflow succeeds: {reply}")
+
+        answered = NestedCallsReply.model_validate(reply.structured_content)
+        for node in answered.nodes:
+            heading = reply.content[node.blocks[0] - 1]
+            if heading != mt.TextContent(text=f"[{node.key}] {node.tool} — ok"):
+                raise AssertionError(f"the heading of {node.key} leads its blocks")
+
+        stubs = McpToolStubs()
+        cards: dict[str, ToolCard] = {}
+        for tool in dag.tools():
+            cards[tool.name] = stubs.card("boba", tool)
+
+        if cards["workflow"].output != NestedCallsReply.model_json_schema():
+            raise AssertionError(f"the card carries the output schema: {cards}")
+
+    async def test_card_view_comes_from_the_schema_alone(
+        self, dag: McpToolServer
+    ) -> None:
+        """Вид аргументов клиент выводит из схемы: у аргументов без типа
+        содержимого особого вида нет, служебные параметры сервер не шлёт."""
+        views = CallViews()
+        echo = next(tool for tool in dag.tools() if tool.name == "fake_echo")
+        if views.seen(echo.input_schema):
+            raise AssertionError(f"plain arguments have no special view: {echo}")
+
+        workflow = next(tool for tool in dag.tools() if tool.name == "workflow")
+        if views.seen(workflow.input_schema):
+            raise AssertionError(f"a built-in node has no special view: {workflow}")
+
+    async def test_failure_keeps_the_server_failure_model(
+        self, dag: McpToolServer
+    ) -> None:
+        call = DagNode(key="call-echo", tool="mcp__boba__fake_echo")
+        reply = await dag.call(_call("fake_echo", text="boom", repeat=1), None, None)
+        if not isinstance(reply, mt.CallToolResult) or not reply.is_error:
+            raise AssertionError(f"the server reports isError: {reply}")
+
+        wire = WireResult(
+            content=reply.content,
+            structured=reply.structured_content,
+            is_error=reply.is_error,
+        )
+        outcome = ResultWire().revived(wire, call, "boba")
+        if outcome is None:
+            raise AssertionError(f"the server sends its failure model: {reply}")
+
+        failure = outcome.artifact
+        if not isinstance(failure, FailureResult):
+            raise AssertionError(f"the failure model of the server: {failure}")
+        if "fake backend is down" not in failure.llm_view():
+            raise AssertionError(f"the cause travels with the model: {failure}")
 
     async def test_connection_sealed_with_the_declared_key_reaches_the_body(
         self, dag: McpToolServer
@@ -1275,67 +978,23 @@ class TestBobaMcpServer:
         )
         value = ConnectionSeal(SealFeature.model_validate(declared).key).seal(sealed)
 
-        message = await dag.call(
-            _call("mcp__boba__fake_connection_host", connection=value)
+        reply = await dag.call(
+            _call("fake_connection_host", connection=value), None, None
         )
+        result = McpResults().result("fake_connection_host", "c1", reply)
 
-        if message.errored or message.content != "db.local|orders":
-            raise AssertionError(f"the body got the sealed profile: {message}")
-
-    async def test_workflow_result_shows_the_reference_of_the_connection(
-        self, dag: McpToolServer
-    ) -> None:
-        """В итоге workflow сервис перечисляет аргументы узлов: на месте
-        запечатанного соединения стоит ссылка, которой его назвал клиент,
-        а не само значение и не безымянная пометка."""
-        declared = dag.features().get(SealFeature.ID)
-        if declared is None:
-            raise AssertionError(f"the server declares the seal key: {dag.features()}")
-
-        profile = PostgresConfig.model_validate(
-            {
-                "host": "db.local",
-                "dbname": "orders",
-                "auth": {"method": "trust", "user": "u"},
-            }
-        )
-        sealed = SealedConnection(
-            name="orders",
-            expires_at=datetime.now(UTC) + timedelta(minutes=5),
-            profile=SecretReveal.dumped(profile),
-        )
-        value = ConnectionSeal(SealFeature.model_validate(declared).key).seal(sealed)
-        nodes = [
-            {
-                "key": "host",
-                "tool": "fake_connection_host",
-                "args": {"connection": value},
-            }
-        ]
-
-        message = await dag.call(_call("mcp__boba__workflow", nodes=nodes))
-
-        outcome = message.artifact
-        if not isinstance(outcome, WorkflowResult):
-            raise AssertionError(f"the workflow model is revived: {message}")
-
-        node = outcome.nodes[0]
-        if node.errored or node.content != "db.local|orders":
-            raise AssertionError(f"the node got the sealed profile: {node}")
-        if node.args.get("connection") != "orders":
-            raise AssertionError(f"the name of the client is shown: {node.args}")
-        if value in outcome.llm_view() or value in message.content:
-            raise AssertionError("the sealed value is not echoed to the caller")
+        if not result.ok or result.llm_view() != "db.local|orders":
+            raise AssertionError(f"the body got the sealed profile: {result}")
 
     async def test_plain_name_is_refused_by_the_server(
         self, dag: McpToolServer
     ) -> None:
-        message = await dag.call(
-            _call("mcp__boba__fake_connection_host", connection="main")
+        reply = await dag.call(
+            _call("fake_connection_host", connection="main"), None, None
         )
 
-        if not message.errored:
-            raise AssertionError(f"an unsealed name is refused: {message}")
+        if not isinstance(reply, mt.CallToolResult) or not reply.is_error:
+            raise AssertionError(f"an unsealed name is refused: {reply}")
 
     async def test_wrong_token_is_a_client_error(
         self, boba_mcp_stand: BobaMcpStand
@@ -1343,13 +1002,7 @@ class TestBobaMcpServer:
         endpoint = boba_mcp_stand.endpoint().model_copy(
             update={"auth": BearerAuth(token=SecretStr("stranger"))}
         )
-        server = McpToolServer(
-            "boba",
-            _config(endpoint),
-            DroppedSignals(),
-            CallContexts(),
-            DirectCalls(),
-        )
+        server = McpToolServer("boba", _config(endpoint))
 
         for _ in range(150):
             try:
@@ -1451,13 +1104,7 @@ class TestBobaMcpService:
     клиент чата входит через proxy и ходит к нему по сети."""
 
     @pytest.fixture
-    def call_stand(self) -> CallStand:
-        return CallStand()
-
-    @pytest.fixture
-    async def service(
-        self, tmp_path: Path, call_stand: CallStand
-    ) -> AsyncIterator[McpToolServer]:
+    async def service(self, tmp_path: Path) -> AsyncIterator[McpToolServer]:
         try:
             StandApp.MCP.files()
         except ConfigLayoutError as exc:
@@ -1465,13 +1112,7 @@ class TestBobaMcpService:
 
         process = BobaMcpService(tmp_path / "mcp.log")
         caller = McpCaller(login="tester", roles=frozenset({"wrt"}))
-        server = McpToolServer(
-            "boba",
-            _config(process.endpoint()).on_behalf_of(caller),
-            DroppedSignals(),
-            call_stand.contexts,
-            DirectCalls(),
-        )
+        server = McpToolServer("boba", _config(process.endpoint()).on_behalf_of(caller))
         try:
             for _ in range(600):
                 try:
@@ -1491,59 +1132,70 @@ class TestBobaMcpService:
         self, service: McpToolServer
     ) -> None:
         names = [tool.name for tool in service.tools()]
-        if "mcp__boba__bash" not in names or "mcp__boba__workflow" not in names:
+        if "bash" not in names or "workflow" not in names:
             raise AssertionError(f"the service offers its plugin tools: {names}")
 
-        message = await service.call(
-            _call("mcp__boba__bash", command="echo from the service")
+        call = DagNode(key="call-bash", tool="mcp__boba__bash")
+        reply = await service.call(
+            _call("bash", command="echo from the service"), None, None
         )
+        if not isinstance(reply, mt.CallToolResult):
+            raise AssertionError(f"the call is answered: {reply}")
 
-        artifact = message.artifact
+        wire = WireResult(
+            content=reply.content,
+            structured=reply.structured_content,
+            is_error=reply.is_error,
+        )
+        outcome = ResultWire().revived(wire, call, "boba")
+        if outcome is None:
+            raise AssertionError(f"the service sends its model: {reply}")
+
+        artifact = outcome.artifact
         if not isinstance(artifact, ShellResult):
-            raise AssertionError(f"the shell model is revived: {message}")
+            raise AssertionError(f"the shell model is revived: {artifact}")
         if artifact.stdout.strip() != "from the service":
             raise AssertionError(f"the body ran in the service: {artifact}")
 
     async def test_calls_of_one_scope_share_the_files_of_the_scope(
-        self, service: McpToolServer, call_stand: CallStand
+        self, service: McpToolServer
     ) -> None:
         """Файл, записанный вызовом области, виден следующему вызову той же
         области и не виден вызову другой."""
         first = "8a1d7f2c-3b54-4e0a-9c1e-2f4b6d8a0c11"
         other = "8a1d7f2c-3b54-4e0a-9c1e-2f4b6d8a0c12"
+        results = McpResults()
 
-        with call_stand.contexts.applied(call_stand.context(first)):
-            await service.call(_call("mcp__boba__bash", command="echo kept > note.txt"))
-            again = await service.call(_call("mcp__boba__bash", command="cat note.txt"))
+        await service.call(_call("bash", command="echo kept > note.txt"), first, None)
+        again = await service.call(_call("bash", command="cat note.txt"), first, None)
+        apart = await service.call(_call("bash", command="cat note.txt"), other, None)
 
-        with call_stand.contexts.applied(call_stand.context(other)):
-            apart = await service.call(_call("mcp__boba__bash", command="cat note.txt"))
+        seen = results.result("bash", "c1", again).llm_view()
+        if "kept" not in seen:
+            raise AssertionError(f"the next call of the scope sees the file: {seen}")
 
-        seen = again.artifact
-        if not isinstance(seen, ShellResult) or seen.stdout.strip() != "kept":
-            raise AssertionError(f"the next call of the scope sees the file: {again}")
-
-        missed = apart.artifact
-        if not isinstance(missed, ShellResult) or missed.stdout.strip() == "kept":
-            raise AssertionError(f"another scope does not see the file: {apart}")
+        missed = results.result("bash", "c2", apart).llm_view()
+        if "kept" in missed:
+            raise AssertionError(f"another scope does not see the file: {missed}")
 
 
 class TestFailureStand:
-    """Стенд воспроизводит отказы сервера, нужные тестам агента: задержка
-    дольше таймаута вызова, большой результат, обрыв посреди вызова, смена
-    списка инструментов."""
+    """Стенд воспроизводит отказы сервера: задержка дольше срока вызова,
+    большой результат, обрыв посреди вызова, смена списка инструментов."""
 
     STANDARD_TOOLS: ClassVar[list[str]] = [
-        "mcp__standard__add",
-        "mcp__standard__blocks",
-        "mcp__standard__broken",
-        "mcp__standard__die",
-        "mcp__standard__large",
-        "mcp__standard__picture",
-        "mcp__standard__progress",
-        "mcp__standard__shout",
-        "mcp__standard__sleep_for",
-        "mcp__standard__toggle_extra",
+        "add",
+        "ask",
+        "blocks",
+        "broken",
+        "die",
+        "large",
+        "panel_refresh",
+        "picture",
+        "progress",
+        "shout",
+        "sleep_for",
+        "toggle_extra",
     ]
 
     async def _open(self, call_timeout_sec: float) -> McpToolServer:
@@ -1553,60 +1205,45 @@ class TestFailureStand:
             connect_timeout_sec=20.0,
             call_timeout_sec=call_timeout_sec,
         )
-        server = McpToolServer(
-            "standard",
-            config,
-            DroppedSignals(),
-            CallContexts(),
-            DirectCalls(),
-        )
+        server = McpToolServer("standard", config)
         await server.open()
 
         return server
 
     async def test_large_result_arrives_whole(self, stdio: McpToolServer) -> None:
-        message = await stdio.call(_call("mcp__standard__large", size=200_000))
+        reply = await stdio.call(_call("large", size=200_000), None, None)
+        text = McpResults().result("large", "c1", reply).llm_view()
 
-        assert not message.errored, message
-        assert len(str(message.content)) == 200_000
+        assert len(text) == 200_000
 
-    async def test_delay_beyond_the_call_timeout_is_a_transport_failure(
-        self,
-    ) -> None:
+    async def test_delay_beyond_the_call_timeout_is_a_client_error(self) -> None:
         server = await self._open(call_timeout_sec=1.0)
         try:
-            message = await server.call(_call("mcp__standard__sleep_for", seconds=5.0))
+            with pytest.raises(McpClientError, match="'sleep_for' got no answer"):
+                await server.call(_call("sleep_for", seconds=5.0), None, None)
         finally:
             await server.close()
 
-        assert message.errored, message
-        failure = message.artifact
-        assert isinstance(failure, ErrorResult), failure
-        assert failure.error_kind == McpFailure.TRANSPORT, failure
-
-    async def test_server_dying_mid_call_is_a_transport_failure(self) -> None:
+    async def test_server_dying_mid_call_is_a_client_error(self) -> None:
         server = await self._open(call_timeout_sec=10.0)
         try:
-            message = await server.call(_call("mcp__standard__die"))
+            with pytest.raises(McpClientError, match="'die' got no answer"):
+                await server.call(_call("die"), None, None)
         finally:
             await server.close()
 
-        assert message.errored, message
-        failure = message.artifact
-        assert isinstance(failure, ErrorResult), failure
-        assert failure.error_kind == McpFailure.TRANSPORT, failure
-
-    async def test_tool_list_changes_on_the_server(self, stdio: McpToolServer) -> None:
+    async def test_tool_list_is_read_at_open(self, stdio: McpToolServer) -> None:
         """Список читается при открытии: сервер меняет его, уведомление
-        клиент пока не слушает — это работа этапа 3 плана агента."""
+        клиент не слушает, а вызов уходит серверу как есть."""
         before = sorted(tool.name for tool in stdio.tools())
-        toggled = await stdio.call(_call("mcp__standard__toggle_extra"))
+        toggled = await stdio.call(_call("toggle_extra"), None, None)
+        answered = await stdio.call(_call("extra"), None, None)
 
         assert before == self.STANDARD_TOOLS
-        assert not toggled.errored, toggled
-        assert toggled.content == "extra on: True"
+        assert McpResults().result("toggle_extra", "c1", toggled).llm_view() == (
+            "extra on: True"
+        )
         assert sorted(tool.name for tool in stdio.tools()) == before
-
-        answered = await stdio.call(_call("mcp__standard__extra"))
-
-        assert answered.errored, answered
+        assert McpResults().result("extra", "c2", answered).llm_view() == (
+            "extra answered"
+        )

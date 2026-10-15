@@ -17,7 +17,7 @@ from collections.abc import Mapping, Sequence
 from enum import StrEnum
 from typing import Any, ClassVar
 
-from acp.schema import SessionConfigOptionSelect
+from acp.experimental.v2 import schema
 from pydantic import SecretStr
 
 from boba.chainlit.agent.chat import ConfigCategory, SessionOptions
@@ -172,7 +172,7 @@ class AgentPanel:
         return widgets
 
     def _select(
-        self, category: ConfigCategory, option: SessionConfigOptionSelect
+        self, category: ConfigCategory, option: schema.SelectSessionConfigOption
     ) -> Select:
         # items у Select chainlit — подпись варианта → его значение
         items: dict[str, str] = {}
@@ -195,7 +195,9 @@ class AgentPanel:
             initial_value=current,
         )
 
-    def _option(self, category: ConfigCategory) -> SessionConfigOptionSelect | None:
+    def _option(
+        self, category: ConfigCategory
+    ) -> schema.SelectSessionConfigOption | None:
         """Список агента этой категории; None — агент его не прислал."""
         for option in self._options.selects():
             if option.category == category.value:
@@ -204,7 +206,7 @@ class AgentPanel:
         return None
 
     def _current(
-        self, category: ConfigCategory, option: SessionConfigOptionSelect
+        self, category: ConfigCategory, option: schema.SelectSessionConfigOption
     ) -> str:
         """Значение списка из слоя чата: оно применится после перезапуска,
         даже если процесс ещё работает с прежним; без слоя — значение агента."""

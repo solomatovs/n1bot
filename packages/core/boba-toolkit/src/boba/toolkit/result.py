@@ -41,6 +41,7 @@ from pydantic import (
     Field,
     GetCoreSchemaHandler,
     GetJsonSchemaHandler,
+    JsonValue,
     SerializeAsAny,
     TypeAdapter,
     ValidatorFunctionWrapHandler,
@@ -677,6 +678,17 @@ class ToolResultBase(BaseModel, ABC):
     def packed(self) -> tuple[str, Self]:
         """Пара (content, artifact): текст для модели и сам результат."""
         return self.llm_view(), self
+
+    def texts(self) -> Sequence[str]:
+        """Тексты ответа по порядку, каждый — отдельный текстовый блок
+        content ответа MCP: у базы — один текст для модели."""
+        return (self.llm_view(),)
+
+    def structured(self) -> dict[str, JsonValue] | None:
+        """Собственные данные результата для structuredContent по
+        outputSchema инструмента; None — outputSchema у результата нет, и
+        ответ несёт сам результат моделью вида."""
+        return None
 
 
 ToolResult: TypeAlias = SerializeAsAny[ToolResultBase]

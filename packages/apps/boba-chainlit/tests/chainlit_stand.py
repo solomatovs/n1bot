@@ -1,5 +1,6 @@
 """Общие фикстуры тестов chainlit: слой данных, сессии, стенды сервиса инструментов."""
 
+import asyncio
 import os
 import shutil
 import socket
@@ -15,9 +16,11 @@ from collections.abc import (
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, ClassVar
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
+import mcp_types as mt
 import pytest
 from chainlit.user import PersistedUser
 from chainlit.user import User as ChainlitUser
@@ -25,13 +28,14 @@ from omegaconf import DictConfig, OmegaConf
 from psycopg import sql
 
 from boba.auth import JwtTokens
-from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.canvas.journal import StreamSlice
 from boba.canvas.keys import WorkspaceMount
+from boba.chainlit.agent.config import ChatMcpConfig
+from boba.chainlit.agent.relay import McpRelay
+from boba.chainlit.agent.server import ChatCallers, HookSealing, KeyHolder, ProcessKeys
 from boba.chainlit.canvas.remote import RemoteJournals, RemoteStreams
 from boba.chainlit.data.data_layer import PostgresDataLayer
-from boba.chainlit.data.remote_storage import FileOwners, RemoteStorageClient
-from boba.chainlit.domain.keys import AppPrefix, AttachmentLinks, AttachmentUrl
+from boba.chainlit.domain.keys import AppPrefix, AttachmentLinks
 from boba.chainlit.infra.config import AppConfig
 from boba.chainlit.infra.session import (
     ChainlitSession,
@@ -41,11 +45,11 @@ from boba.chainlit.infra.session import (
 )
 from boba.chainlit.rendering.acp_view import ToolMedia
 from boba.chainlit.rendering.chat_view import ChatView, StepRole
-from boba.chat.profiles import ChatProfileConfig, ChatProfiles
 from boba.config import bind
 from boba.connection_broker.store import ConnectionStore
+from boba.connection_broker.tickets import CredentialsRef
 from boba.connection_broker.tools import ConnectionTools
-from boba.connection_broker.user_connections import ArmedConnections
+from boba.connection_broker.user_connections import ArmedConnections, StoreRef
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.api import StoredUser, UserRows
 from boba.identity.context import (
@@ -53,13 +57,12 @@ from boba.identity.context import (
     CallContexts,
 )
 from boba.identity.locks import MemoryLiveLocks
-from boba.identity.session import Login, UserMetadataField
+from boba.identity.session import Login, SignInProvider, UserMetadataField
 from boba.identity.signin import SignedIn, SignInMetadata
 from boba.identity.token import SessionClaims, TokenReader
 from boba.kerberos import DelegationMode, SignInTicket
 from boba.krb.seal import SsoTickets, TicketSealer
 from boba.mcp_client.client import (
-    DroppedSignals,
     McpCaller,
     McpServers,
     McpServersConfig,
@@ -73,7 +76,6 @@ from boba.runtime.storage import (
     StorageClient,
 )
 from boba.stand.refs import StandRefs
-from boba.stand.sealing import SealingStand
 from boba.stand.service_signin import ServiceSignIn
 from boba.stand.storage import StorageSeed
 from boba.stand.ui.stand import (
@@ -92,17 +94,57 @@ from boba.toolkit.channels import JournalChannel
 from boba.toolkit.dag import (
     DagNode,
     JournalAddress,
-    NodeCalls,
-    NodeOutcome,
-    ToolServer,
 )
-from boba.toolkit.mcp import McpToolNames
+from boba.toolkit.mcp import McpResults, McpToolNames
 from boba.toolkit.result import ToolResultBase
-from boba.toolrun.hosted import DirectCalls
+from boba.toolkit.wire import ResultWire, WireResult
+from boba.transport.acp.protocol import McpErrorOutcome, McpMessage, McpVersion
 from boba.workspace.binaries import TrustedBinaries
 from boba.workspace.launcher import MountingConfig, ReadWindow
 
 AUTH_USER = "test-user"
+
+
+class TabSession:
+    """Сессия вкладки в объёме, который читает держатель ключа: объект с
+    токеном входа, который обновление сессии заменяет на месте."""
+
+    LOGIN: ClassVar[str] = "ivanov"
+    PRINCIPAL: ClassVar[str] = "ivanov@STAND.LOCAL"
+    SERVER: ClassVar[str] = "boba_general"
+
+    def __init__(self) -> None:
+        self.raw = SimpleNamespace(token="")
+        self.live = ChainlitSession(self.raw, StandTokens())
+
+    def sign_in(self, roles: frozenset[str], sealed_ticket: str) -> None:
+        """Кладёт в сессию токен входа kerberos с ролями и билетом — так же
+        токен заменяет обновление сессии."""
+        from chainlit.auth.jwt import create_jwt
+
+        metadata = SignInMetadata(
+            provider=SignInProvider.KERBEROS.value,
+            roles=roles,
+            principal=self.PRINCIPAL,
+            sealed_ticket=sealed_ticket,
+        )
+        self.raw.token = create_jwt(StandTokens.user(self.LOGIN, metadata.render()))
+
+    def password_sign_in(self, roles: frozenset[str]) -> None:
+        from chainlit.auth.jwt import create_jwt
+
+        metadata = SignInMetadata(provider=SignInProvider.LOCAL.value, roles=roles)
+        self.raw.token = create_jwt(StandTokens.user(self.LOGIN, metadata.render()))
+
+    def holder(self, user_id: UUID, profile: str) -> KeyHolder:
+        return KeyHolder(
+            user_id=user_id,
+            login=self.LOGIN,
+            thread_id=str(uuid4()),
+            profile=profile,
+            session=self.live,
+            server=self.SERVER,
+        )
 
 
 class ServiceProcess:
@@ -255,12 +297,48 @@ class ToolService:
         return self._process.tail()
 
 
-class ServiceTool:
-    """Инструмент сервиса глазами теста: вызов уходит портом чата от имени
-    пользователя текущей сессии, ответ — итог вызова порта.
+class RelayStand:
+    """Ретранслятор mcp/message стенда (McpRelay) в сборке, как у провайдера
+    процесса: ключи процессов, вызывающие по ключу и запечатывание соединений
+    пользователя из хранилища store с кредами credentials.
 
-    Создаётся ServiceTools под полным именем инструмента; интерфейс run тот же,
-    что у инструмента хоста, поэтому вызов разбирает boba.stand.toolsetup.Call.
+    Им собирают ретранслятор тесты ретранслятора, вызовы сервиса
+    (ServiceTools) и процессы агента стенда (Agents); серверы профиля каждый
+    тест открывает сам. Сервер инструментов чата стенду не объявляется.
+    """
+
+    CHAT: ClassVar[ChatMcpConfig] = ChatMcpConfig(
+        enable=False,
+        name="chat",
+        path="/chat/mcp",
+        connect_timeout_sec=10.0,
+        call_timeout_sec=60.0,
+    )
+    PUBLIC_URL: ClassVar[str] = "http://127.0.0.1"
+    """Адрес чата для ретранслятора: без сервера чата по нему никто не ходит."""
+    SEAL_TTL: ClassVar[timedelta] = timedelta(minutes=2)
+
+    def __init__(
+        self, store: StoreRef, credentials: CredentialsRef, contexts: CallContexts
+    ) -> None:
+        self.keys = ProcessKeys()
+        self.callers = ChatCallers(self.keys)
+        connections = ArmedConnections(store, credentials, contexts)
+        self.sealing = HookSealing(self.callers, connections, contexts, self.SEAL_TTL)
+
+    def relay(self, servers: McpServers) -> McpRelay:
+        return McpRelay(
+            self.keys, self.callers, servers, self.sealing, self.CHAT, self.PUBLIC_URL
+        )
+
+
+class ServiceTool:
+    """Инструмент сервиса глазами теста: вызов уходит ретранслятором чата от
+    имени пользователя текущей сессии, ответ — результат семейства.
+
+    Создаётся ServiceTools под именем инструмента на сервере; интерфейс run
+    тот же, что у инструмента хоста, поэтому вызов разбирает
+    boba.stand.toolsetup.Call.
     """
 
     def __init__(self, name: str, tools: "ServiceTools") -> None:
@@ -268,90 +346,108 @@ class ServiceTool:
         self._tools = tools
 
     async def run(self, call_id: str, args: Mapping[str, Any]) -> ToolResultBase:
-        node = DagNode.model_validate({"key": call_id, "tool": self.name, "args": args})
-        outcome = await self._tools.submit(node)
-
-        return outcome.artifact
+        return await self._tools.call(self.name, call_id, args)
 
 
 class ServiceTools:
-    """Порт чата к сервису инструментов стенда: запечатывание соединений
-    (SealingStand, в бою — хук PreToolUse) над MCP-портом сессии.
+    """Чат к сервису инструментов стенда тем же путём, что вызов агента:
+    ретранслятор mcp/message (McpRelay) запечатывает соединения
+    (HookSealing) и зовёт MCP-порт сервиса от имени пользователя текущей
+    сессии chainlit.
 
     Создаётся фикстурой теста из сервиса (ToolService), хранилища соединений
-    и источника кредов теста. Вызывающий — пользователь текущей сессии
-    chainlit: его логин и роли уходят сервису входом proxy, его соединения
-    запечатываются ключом сервиса.
+    пользователя, его кредов и контекстов вызова; ретранслятор собирает
+    RelayStand. Регистрация сервера выдаётся на вызов и снимается после
+    него; ответ сервера оживает моделью результата
+    (ResultWire), как в ленте чата, иначе — текстом для модели (McpResults).
     """
-
-    SEAL_TTL: ClassVar[timedelta] = timedelta(seconds=120)
 
     def __init__(
         self,
         service: ToolService,
-        connections: ArmedConnections,
+        store: StoreRef,
+        credentials: CredentialsRef,
         contexts: CallContexts,
-        calls: NodeCalls,
     ) -> None:
-        """calls — путь вызова узла к телу у клиента MCP (DirectCalls)."""
         self._service = service
-        self._connections = connections
         self._names = McpToolNames()
-        self._servers = McpServers(
-            service.servers(),
-            DroppedSignals(),
-            contexts,
-            calls,
-        )
+        self._servers = McpServers(service.servers())
+        self._stand = RelayStand(store, credentials, contexts)
+        self._relay = self._stand.relay(self._servers)
+        self._wire = ResultWire()
+        self._results = McpResults()
+        self._heard: asyncio.Queue[McpMessage] = asyncio.Queue()
 
     async def stop(self) -> None:
         await self._servers.stop()
 
     def __getitem__(self, name: str) -> ServiceTool:
-        """Инструмент сервиса по имени на сервере; вызов идёт под полным."""
-        full = self._names.full(self._service.server_name, name)
+        """Инструмент сервиса по имени на сервере."""
+        return ServiceTool(name, self)
 
-        return ServiceTool(full, self)
-
-    async def port(self) -> ToolServer:
-        """MCP-порт сервиса для пользователя текущей сессии chainlit."""
+    async def call(
+        self, tool: str, call_id: str, args: Mapping[str, Any]
+    ) -> ToolResultBase:
+        """Вызов tools/call ретранслятором от имени пользователя текущей
+        сессии chainlit: тред сессии — область вызова."""
         session = current_session()
-        caller = McpCaller(login=session.identifier, roles=session.roles)
-
-        return await self.port_of(caller)
-
-    async def port_of(self, caller: McpCaller) -> ToolServer:
-        """MCP-порт сервиса для названного пользователя и его ролей."""
-        ports = await self._servers.for_session(caller, [self._service.server_name])
-        if not ports:
-            msg = (
-                f"tool service {self._service.server_name!r} did not open for "
-                f"{caller.login!r}; service log:\n{self._service.tail()}"
-            )
+        user_id = session.user_id
+        if user_id is None:
+            msg = f"tool {tool!r}: the chainlit session of the test has no user"
             raise AssertionError(msg)
 
-        return ports[0]
+        thread_id = session.thread_id
+        if thread_id is None:
+            msg = f"tool {tool!r}: the chainlit session of the test has no thread"
+            raise AssertionError(msg)
 
-    async def submit(self, call: DagNode) -> NodeOutcome:
-        port = SealingStand(await self.port(), self._connections, self.SEAL_TTL)
+        profile = session.chat_profile
+        if profile is None:
+            msg = f"tool {tool!r}: the chainlit session of the test has no profile"
+            raise AssertionError(msg)
 
-        return await port.call(call)
-
-    def storage(self, owner: StoredUser, profile: str) -> RemoteStorageClient:
-        """Хранилище чата поверх файлов сервиса: владельца ключа оно находит
-        по строке users owner, сервер файлов — по профилю profile."""
-        profiles = ChatProfiles(
-            {
-                profile: ChatProfileConfig.model_construct(
-                    mcp=[self._service.server_name], roles=["*"], default=True
-                )
-            }
+        server = self._service.server_name
+        holder = KeyHolder(
+            user_id=UUID(user_id),
+            login=session.identifier,
+            thread_id=thread_id,
+            profile=profile,
+            session=session,
+            server=server,
         )
-        sessions = NoTabs()
-        users = OwnerRows(owner)
-        owners = FileOwners(lambda: sessions, lambda: users, profiles)
+        keys = self._stand.keys
+        registered = keys.register(holder, [server])[0]
+        envelope = {
+            mt.PROTOCOL_VERSION_META_KEY: McpVersion.V2026_07_28.value,
+            mt.CLIENT_CAPABILITIES_META_KEY: {},
+        }
+        message = McpMessage(
+            server_id=registered.server_id,
+            request_id=call_id,
+            method="tools/call",
+            params={"name": tool, "arguments": dict(args), "_meta": envelope},
+        )
+        try:
+            outcome = await self._relay.answer(message, self._heard.put)
+        finally:
+            keys.revoke(registered.server_id)
 
-        return RemoteStorageClient(AttachmentUrl.MOUNT, owners, lambda: self._servers)
+        if isinstance(outcome, McpErrorOutcome):
+            msg = f"tool {tool!r} of {server!r} answered an MCP error: {outcome.error}"
+            raise AssertionError(msg)
+
+        reply = mt.CallToolResult.model_validate(outcome.result)
+        full = self._names.full(server, tool)
+        wire = WireResult(
+            content=reply.content,
+            structured=reply.structured_content,
+            is_error=reply.is_error,
+        )
+        revived = self._wire.revived(wire, DagNode(key=call_id, tool=full), server)
+        if revived is not None:
+            return revived.artifact
+
+        return self._results.result(full, call_id, reply)
 
 
 class NoConnectionStore:
@@ -361,6 +457,19 @@ class NoConnectionStore:
     def __call__(self) -> ConnectionStore:
         msg = "the stand of this test holds no user connections"
         raise AssertionError(msg)
+
+
+@pytest.fixture(scope="module")
+def service_process(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Iterator[ServiceProcess]:
+    """Стенд boba-mcp модуля отдельным процессом: вход proxy, инструменты-заглушки."""
+    process = ServiceProcess(tmp_path_factory.mktemp("boba-mcp"))
+    try:
+        process.await_listening()
+        yield process
+    finally:
+        process.stop()
 
 
 @pytest.fixture(scope="module")
@@ -374,22 +483,6 @@ def tool_service(
         yield process
     finally:
         process.stop()
-
-
-@pytest.fixture
-async def service_tools(
-    tool_service: ToolService, call_stand: CallStand
-) -> AsyncIterator[ServiceTools]:
-    """Порт чата к сервису инструментов для тестов без соединений пользователя."""
-    credentials = KerberosCredentialSource(None, NoRefresh())
-    connections = ArmedConnections(
-        NoConnectionStore(), lambda: credentials, call_stand.contexts
-    )
-    opened = ServiceTools(tool_service, connections, call_stand.contexts, DirectCalls())
-    try:
-        yield opened
-    finally:
-        await opened.stop()
 
 
 class NoTabs(OwnerSessions):
@@ -433,10 +526,7 @@ class PerCallStreams(RemoteStreams):
     одновременно, и общий клиент один из них закрыл бы под чтением другого.
     """
 
-    def __init__(
-        self, journals: RemoteJournals, contexts: CallContexts, caller: McpCaller
-    ) -> None:
-        self._contexts = contexts
+    def __init__(self, journals: RemoteJournals, caller: McpCaller) -> None:
         self._config = McpServersConfig(servers={})
         super().__init__(journals, self._client(), caller)
 
@@ -445,12 +535,7 @@ class PerCallStreams(RemoteStreams):
         self._config = config
 
     def _client(self) -> McpServers:
-        return McpServers(
-            self._config,
-            DroppedSignals(),
-            self._contexts,
-            DirectCalls(),
-        )
+        return McpServers(self._config)
 
     async def slice_at(
         self, thread_id: str, call_id: str, channel: JournalChannel, offset: int
@@ -484,10 +569,9 @@ class RemoteStand:
     SERVER: ClassVar[str] = "boba"
 
     def __init__(self) -> None:
-        contexts = CallContexts()
         self.journals = RemoteJournals()
         caller = McpCaller(login=StandIdentity.LOGIN, roles=frozenset())
-        self.streams = PerCallStreams(self.journals, contexts, caller)
+        self.streams = PerCallStreams(self.journals, caller)
 
     def serve(self, service: ServiceProcess) -> None:
         self.streams.serve(service.token_servers(self.SERVER))
@@ -505,9 +589,7 @@ class RemoteStand:
         """Сброс между тестами: запомненных адресов нет."""
         self.journals = RemoteJournals()
         self.streams = PerCallStreams(
-            self.journals,
-            CallContexts(),
-            McpCaller(login=StandIdentity.LOGIN, roles=frozenset()),
+            self.journals, McpCaller(login=StandIdentity.LOGIN, roles=frozenset())
         )
 
 

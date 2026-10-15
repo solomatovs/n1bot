@@ -3,8 +3,9 @@ boba-mcp отдельными процессами, фейковая модел�
 socket.io тем же протоколом, что и браузер. Проверяется ход с потоком токенов
 в ленту, остановка кнопкой Stop, sessionId агента в threads.meta, процесс
 агента без секретов в argv и окружении и его уход вместе с вкладкой; возврат к
-треду воспроизводит историю через `session/load`, второй инстанс видит её как
-наблюдатель и получает отказ держателя в ленту, правка вопроса ветвит сессию,
+треду воспроизводит историю через `session/resume`, второй инстанс видит её
+как наблюдатель и получает отказ держателя в ленту, шаг вопроса получает
+messageId агента, правка вопроса по нему ветвит сессию,
 удаление треда удаляет сессию агента; второй инстанс получает токены чужого хода
 по шине Postgres, оценки возвращаются к шагам; правка панели настроек пишет слои
 и перезапускает процесс агента с той же сессией без повторной ленты, а во время
@@ -756,9 +757,12 @@ class TestHistory:
     ) -> None:
         tab = ChatSocket(app, cookie, str(uuid4()))
         await tab.open()
-        question = await tab.send(f"first {ScenarioName.ANSWER.value}")
+        sent = await tab.send(f"first {ScenarioName.ANSWER.value}")
         await tab.wait_task_end()
         assert not tab.errors(), tab.errors()
+        # шаг вопроса перепривязан к messageId, который вопросу дал агент
+        question = str(tab.messages("user_message")[-1].get("id"))
+        assert question != sent, tab.trace()
         before = await rows.thread_meta(tab.thread_id)
         assert before is not None
         original = before[ThreadMetaField.AGENT_SESSION]

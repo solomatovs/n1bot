@@ -541,3 +541,22 @@ class TestIsolated:
 
             if int(seen["cap_eff"], 16) != 0:
                 raise AssertionError(f"capabilities не сброшены: {seen}")
+
+
+class TestGuestImports:
+    """Гость песочницы не тянет mcp_types: в образах корней плагинов его нет,
+    перевод итога в формат MCP живёт на стороне хоста (boba.toolkit.wire)."""
+
+    def test_guest_and_zygote_do_not_import_mcp_types(self) -> None:
+        code = (
+            "import sys\n"
+            "import boba.sandbox.guest, boba.sandbox.zygote\n"
+            "if 'mcp_types' in sys.modules:\n"
+            "    raise SystemExit('the sandbox guest pulls mcp_types')\n"
+        )
+        subprocess.run(
+            [sys.executable, "-I", "-c", code],
+            check=True,
+            capture_output=True,
+            text=True,
+        )

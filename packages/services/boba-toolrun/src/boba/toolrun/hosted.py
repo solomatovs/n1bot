@@ -216,6 +216,7 @@ class ToolSchema:
             description=description,
             parameters=self._call_schema(name, description, schema),
             views=views,
+            output=None,
             hints=hints,
         )
 

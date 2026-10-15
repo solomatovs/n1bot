@@ -1,6 +1,5 @@
 """Настройки агента: модели файла настроек, слои пользователь → чат в Postgres,
-сборка файла из слоя чата, серверы MCP профиля записями файла и приватный
-каталог процесса.
+сборка файла из слоя чата и приватный каталог процесса.
 
 Файл настроек — способ передачи: главная копия слоя чата лежит в таблице
 `agent_chat_settings` схемы чата, слой пользователя — в `agent_user_settings`;
@@ -9,15 +8,12 @@
 его AgentSettingsChanges (chat.py). Секреты в таблицах шифруются SecretCipher,
 в файле лежат открыто под правами 0600.
 
-Серверы MCP агент получает только файлом: запись сервера несёт способ входа
-из конфига чата ([mcp.servers.<имя>.endpoint].auth), токен агент получает и
-обновляет сам. Сервер инструментов чата и хук агент зовёт с ключом своего
-процесса (ProcessKeys, server.py).
+Серверов MCP, хуков и области вызовов в файле нет: серверы процесс получает
+объявлениями type "acp" в методах сессии, вызовы исполняет ретранслятор
+чата (relay.py).
 
 Ошибки:
 AgentSettingsError — профиль чата нельзя превратить в профиль модели агента.
-SessionServersError — сервер профиля не объявлен, не того транспорта либо
-    его имя не годится для полных имён инструментов.
 DataUnavailableError — таблицы настроек недоступны (PgTable).
 """
 
@@ -25,14 +21,13 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import shutil
 import tempfile
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import IntEnum, StrEnum
 from pathlib import Path
-from typing import Any, ClassVar, Literal
+from typing import Any, ClassVar
 from uuid import UUID
 
 from psycopg.types.json import Jsonb
@@ -51,7 +46,6 @@ from boba.chainlit.agent.config import (
     AgentConfig,
     AgentHistoryConfig,
     AgentHistoryKind,
-    ChatMcpConfig,
     MemoryAgentHistory,
     PostgresAgentHistory,
 )
@@ -61,17 +55,7 @@ from boba.db.postgres import PostgresPool
 from boba.db.postgres.connection import PostgresConfig
 from boba.krb import KerberosWorkspace
 from boba.krb.credentials import ClientCredentials, KerberosEnv
-from boba.mcp_client.client import BearerAuth as McpBearerAuth
-from boba.mcp_client.client import (
-    HttpEndpoint,
-    McpAuth,
-    McpCaller,
-    McpServerConfig,
-    McpServersConfig,
-    StdioCommand,
-)
 from boba.runtime.table import PgTable
-from boba.toolkit.mcp import McpToolNames
 from boba.transport.http.connection import BearerAuth, HttpConnection
 
 __all__ = [
@@ -84,16 +68,11 @@ __all__ = [
     "AgentSettingsTable",
     "AgentWorkdir",
     "AgentWorkdirs",
-    "AuthHeader",
     "ChatAgentSettings",
     "HistoryEnvironment",
-    "HookMatchers",
-    "McpServerFile",
     "PermissionModeName",
     "ProfileModelSpecs",
     "ProviderKindName",
-    "SessionServers",
-    "SessionServersError",
     "SettingsFileBuilder",
     "UserAgentSettings",
     "WorkdirFile",
@@ -102,17 +81,6 @@ __all__ = [
 
 class AgentSettingsError(Exception):
     """Профиль чата не складывается в профиль модели агента."""
-
-
-class SessionServersError(Exception):
-    """Сервер профиля нельзя отдать агенту."""
-
-
-class McpTransportName(StrEnum):
-    """Виды серверов MCP в файле агента."""
-
-    STDIO = "stdio"
-    HTTP = "http"
 
 
 class ProviderKindName(StrEnum):
@@ -131,36 +99,6 @@ class PermissionModeName(StrEnum):
     DONT_ASK = "dontAsk"
     BYPASS = "bypassPermissions"
     AUTO = "auto"
-
-
-class HookEventName(StrEnum):
-    """События хуков агента, которые чат подключает."""
-
-    PRE_TOOL_USE = "PreToolUse"
-
-
-class HookTypeName(StrEnum):
-    """Виды обработчиков хука."""
-
-    HTTP = "http"
-
-
-class HookFailureName(StrEnum):
-    """Что делает агент, когда обработчик хука не ответил."""
-
-    BLOCK = "block"
-    CONTINUE = "continue"
-
-
-class AuthHeader(StrEnum):
-    """Заголовок Authorization с токеном носителя."""
-
-    NAME = "Authorization"
-    TEMPLATE = "Bearer {token}"
-
-    @classmethod
-    def render(cls, token: str) -> str:
-        return cls.TEMPLATE.value.format(token=token)
 
 
 class WorkdirFile(StrEnum):
@@ -239,54 +177,6 @@ class HistoryFile(SettingsFileModel):
         return value.get_secret_value()
 
 
-class HttpHookFile(SettingsFileModel):
-    """Обработчик хука типа http."""
-
-    type: Literal[HookTypeName.HTTP]
-    url: str = Field(min_length=1)
-    headers: Mapping[str, str]
-    timeout: float = Field(gt=0)
-    on_failure: HookFailureName
-
-
-class HookGroupFile(SettingsFileModel):
-    """Группа обработчиков под одним матчером."""
-
-    matcher: str
-    hooks: Sequence[HttpHookFile] = Field(min_length=1)
-
-
-class McpClientFile(SettingsFileModel):
-    """Секция mcp файла: область вызовов инструментов. Агент называет её
-    серверу с расширением файлов, и вызовы треда видят его workspace —
-    файлы, загруженные пользователем, и то, что открывает панель канваса."""
-
-    scope: str = Field(min_length=1)
-
-
-class McpServerFile(SettingsFileModel):
-    """Запись сервера MCP в ключе `mcpServers` файла агента: субпроцесс
-    (command, args, env) либо http-сервер (url) со способом входа auth. По
-    секции auth агент сам входит на сервер и сам обновляет токен."""
-
-    type: McpTransportName
-    command: str | None = None
-    args: Sequence[str] = ()
-    env: Mapping[str, str] = Field(default_factory=dict)
-    url: str | None = None
-    auth: McpAuth | None = None
-
-    @field_serializer("auth", when_used="json")
-    def _reveal_auth(
-        self, value: McpAuth | None, info: SerializationInfo
-    ) -> Mapping[str, Any] | None:
-        """Файл настроек — единственное место, где секреты входа лежат открыто."""
-        if value is None:
-            return None
-
-        return value.revealed()
-
-
 class AgentSettingsFile(SettingsFileModel):
     """Файл настроек агента целиком: то, что уходит в `--settings`."""
 
@@ -294,10 +184,7 @@ class AgentSettingsFile(SettingsFileModel):
     models: Mapping[str, AgentModel]
     permissions: AgentPermissions
     history: HistoryFile
-    hooks: Mapping[HookEventName, Sequence[HookGroupFile]]
     system_prompt_file: str = Field(min_length=1)
-    mcp: McpClientFile
-    mcp_servers: Mapping[str, McpServerFile]
 
     def render(self) -> str:
         """JSON файла с раскрытыми секретами."""
@@ -673,157 +560,21 @@ class AgentSettingsLayers:
         return chat
 
 
-class MatcherPart(StrEnum):
-    """Части регулярного выражения матчера хука."""
-
-    ANCHOR = "^"
-    ALTERNATIVE = "|"
-
-
-class HookMatchers:
-    """Матчер хука по именам серверов MCP: регулярное выражение формы хуков,
-    которое подходит ко всем инструментам названных серверов. Начало полных
-    имён инструментов сервера даёт McpToolNames; создаёт SettingsFileBuilder.
-    """
-
-    def __init__(self) -> None:
-        self._names = McpToolNames()
-
-    def of(self, servers: Sequence[str]) -> str:
-        """Ошибки:
-        McpToolNameError — имя сервера не годится для полных имён инструментов.
-        """
-        parts: list[str] = []
-        for name in servers:
-            prefix = re.escape(self._names.server_prefix(name))
-            parts.append(f"{MatcherPart.ANCHOR.value}{prefix}")
-
-        return MatcherPart.ALTERNATIVE.value.join(parts)
-
-
-class SessionServers:
-    """Серверы MCP агента треда записями его файла настроек: серверы профиля
-    из [mcp.servers] со способом входа из конфига чата и сервер инструментов
-    чата с ключом процесса.
-
-    Создаётся провайдером процесса; зовёт запуск агента (AgentLauncher).
-    Сетевых запросов не делает: способ входа сам становится записью от имени
-    пользователя вкладки (McpServerConfig.on_behalf_of) — вход proxy получает
-    его логин и роли, остальные уходят как объявлены.
-    """
-
-    def __init__(
-        self, config: McpServersConfig, chat: ChatMcpConfig, public_url: str
-    ) -> None:
-        self._config = config
-        self._chat = chat
-        self._public_url = public_url
-
-    def hooked(self, names: Sequence[str]) -> list[str]:
-        """Имена серверов, чьи вызовы идут через хук запечатывания: серверы
-        со входом сервиса boba.
-
-        Ошибки:
-        SessionServersError — имя не объявлено в [mcp.servers].
-        """
-        found: list[str] = []
-        for name in names:
-            endpoint = self._declared(name).endpoint
-            if not isinstance(endpoint, HttpEndpoint):
-                continue
-
-            if endpoint.auth.BOBA_SERVICE:
-                found.append(name)
-
-        return found
-
-    def of(
-        self, names: Sequence[str], caller: McpCaller, key: str
-    ) -> dict[str, McpServerFile]:
-        """Записи серверов names от имени пользователя caller; key — ключ
-        процесса агента для сервера инструментов чата.
-
-        Ошибки:
-        SessionServersError — сервер профиля не годится агенту.
-        """
-        servers: dict[str, McpServerFile] = {}
-        for name in names:
-            servers[name] = self._of(name, self._declared(name).on_behalf_of(caller))
-
-        if self._chat.enable:
-            servers[self._chat.name] = self._chat_server(key)
-
-        return servers
-
-    def _declared(self, name: str) -> McpServerConfig:
-        """Ошибки:
-        SessionServersError — имя не объявлено в [mcp.servers].
-        """
-        known = self._config.servers.get(name)
-        if known is None:
-            declared = sorted(self._config.servers)
-            msg = f"mcp server {name!r} is not declared in [mcp.servers]: {declared}"
-            raise SessionServersError(msg)
-
-        return known
-
-    def _of(self, name: str, server: McpServerConfig) -> McpServerFile:
-        endpoint = server.endpoint
-        if isinstance(endpoint, StdioCommand):
-            return McpServerFile(
-                type=McpTransportName.STDIO,
-                command=endpoint.command,
-                args=list(endpoint.args),
-                env=dict(endpoint.env),
-            )
-
-        if not isinstance(endpoint, HttpEndpoint):
-            msg = (
-                f"mcp server {name!r} uses transport {endpoint.transport!r}; the "
-                "agent takes streamable http and stdio servers only"
-            )
-            raise SessionServersError(msg)
-
-        return McpServerFile(
-            type=McpTransportName.HTTP, url=endpoint.url(), auth=endpoint.auth
-        )
-
-    def _chat_server(self, key: str) -> McpServerFile:
-        return McpServerFile(
-            type=McpTransportName.HTTP,
-            url=self._public_url.rstrip("/") + self._chat.path,
-            auth=McpBearerAuth(token=SecretStr(key)),
-        )
-
-
 class SettingsFileBuilder:
-    """Файл настроек агента из слоя чата и конфига [agent]: история, режим
-    разрешений, серверы MCP, хук и область вызовов (id треда) добавляются к
-    профилю модели чата."""
+    """Файл настроек агента из слоя чата и конфига [agent]: история и режим
+    разрешений добавляются к профилю модели чата."""
 
     def __init__(self, config: AgentConfig) -> None:
         self._config = config
-        self._matchers = HookMatchers()
 
-    def build(
-        self,
-        thread_id: str,
-        chat: ChatAgentSettings,
-        servers: Mapping[str, McpServerFile],
-        key: str,
-        hooked_servers: Sequence[str],
-    ) -> AgentSettingsFile:
-        """Файл процесса агента треда; key — ключ процесса, с которым агент
-        зовёт хук чата."""
+    def build(self, chat: ChatAgentSettings) -> AgentSettingsFile:
+        """Файл процесса агента по слою чата."""
         return AgentSettingsFile(
             model=chat.model_name,
             models={chat.model_name: chat.model},
             permissions=AgentPermissions(default_mode=chat.mode, allow_bypass=True),
             history=self._history(),
-            hooks=self._hooks(key, hooked_servers),
             system_prompt_file=WorkdirFile.SYSTEM_PROMPT.value,
-            mcp=McpClientFile(scope=thread_id),
-            mcp_servers=dict(servers),
         )
 
     def _history(self) -> HistoryFile:
@@ -842,29 +593,6 @@ class SettingsFileBuilder:
 
         msg = f"[agent.history] of kind {history.kind!r} has no file form"
         raise AgentSettingsError(msg)
-
-    def _hooks(
-        self, key: str, hooked_servers: Sequence[str]
-    ) -> dict[HookEventName, Sequence[HookGroupFile]]:
-        hook = self._config.hook
-        if not hook.enable:
-            return {}
-
-        if not hooked_servers:
-            return {}
-
-        handler = HttpHookFile(
-            type=HookTypeName.HTTP,
-            url=self._config.public_url.rstrip("/") + hook.path,
-            headers={AuthHeader.NAME.value: AuthHeader.render(key)},
-            timeout=hook.timeout_sec,
-            on_failure=HookFailureName.BLOCK,
-        )
-        group = HookGroupFile(
-            matcher=self._matchers.of(hooked_servers), hooks=[handler]
-        )
-
-        return {HookEventName.PRE_TOOL_USE: [group]}
 
 
 class HistoryEnvironment:
