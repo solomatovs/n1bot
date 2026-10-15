@@ -1,1 +1,0 @@
-The PreToolUse hook denied the call of {tool}: {reason}

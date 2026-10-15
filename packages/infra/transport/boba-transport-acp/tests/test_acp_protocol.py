@@ -108,7 +108,6 @@ class AcpPair:
     agent: AgentSide
     client: ClientConnection
     stand_client: StandClient
-    notifications: asyncio.Queue[McpMessage]
 
 
 @pytest.fixture(scope="module")
@@ -121,11 +120,10 @@ def acp_schema() -> Draft202012Validator:
 async def acp_pair(acp_schema: Draft202012Validator) -> AsyncIterator[AcpPair]:
     agent_end, client_end = memory_transport_pair()
     info = schema.Implementation(name="boba-transport-acp-tests", version="0")
-    notifications: asyncio.Queue[McpMessage] = asyncio.Queue()
     stand_client = StandClient()
     frames: list[StreamEvent] = []
 
-    agent = AgentSide(StandAgent, notifications.put, info, agent_end, None)
+    agent = AgentSide(StandAgent, info, agent_end, None)
     serving = asyncio.create_task(agent.serve())
 
     client = ClientConnection(
@@ -133,7 +131,7 @@ async def acp_pair(acp_schema: Draft202012Validator) -> AsyncIterator[AcpPair]:
     )
     await client.initialize(protocol_version=AcpVersion.V2, info=info)
 
-    yield AcpPair(agent, client, stand_client, notifications)
+    yield AcpPair(agent, client, stand_client)
 
     await client.close()
     await serving
@@ -202,9 +200,8 @@ class TestVersionNegotiation:
     )
     async def test_agent_answers_its_own_version(self, params: dict[str, Any]) -> None:
         agent_end, client_end = memory_transport_pair()
-        notifications: asyncio.Queue[McpMessage] = asyncio.Queue()
         info = schema.Implementation(name="stand-agent", version="0")
-        agent = AgentSide(StandAgent, notifications.put, info, agent_end, None)
+        agent = AgentSide(StandAgent, info, agent_end, None)
         serving = asyncio.create_task(agent.serve())
 
         async with Connection(self._reply_version_3, client_end) as raw:
@@ -254,7 +251,7 @@ class TestMcpMessage:
     ) -> None:
         await acp_pair.stand_client.replies.put(outcome)
 
-        received = await acp_pair.agent.request(self.CALL)
+        received = await acp_pair.agent.request(self.CALL, None)
 
         assert received == outcome
         assert await acp_pair.stand_client.questions.get() == self.CALL
@@ -266,27 +263,41 @@ class TestMcpMessage:
         await acp_pair.stand_client.replies.put(refusal)
 
         with pytest.raises(RequestError) as caught:
-            await acp_pair.agent.request(self.CALL)
+            await acp_pair.agent.request(self.CALL, None)
 
         assert caught.value.code == AcpErrorCode.UNKNOWN_SERVER
 
     async def test_notification_reaches_agent(self, acp_pair: AcpPair) -> None:
+        received: asyncio.Queue[McpMessage] = asyncio.Queue()
         progress = McpMessage(
             server_id="boba_general",
-            request_id="mcp-1",
+            request_id=self.CALL.request_id,
             method="notifications/progress",
             params={"progressToken": "mcp-1", "progress": 1, "total": 2},
         )
+        late = progress.model_copy(update={"request_id": "mcp-finished"})
+        pending = asyncio.create_task(acp_pair.agent.request(self.CALL, received.put))
 
+        async with asyncio.timeout(5):
+            await acp_pair.stand_client.questions.get()
+
+        await acp_pair.client.notify(late)
         await acp_pair.client.notify(progress)
 
         async with asyncio.timeout(5):
-            assert await acp_pair.notifications.get() == progress
+            assert await received.get() == progress
+
+        await acp_pair.stand_client.replies.put(McpResultOutcome(result=None))
+
+        async with asyncio.timeout(5):
+            assert await pending == McpResultOutcome(result=None)
+
+        assert received.empty()
 
     async def test_cancelled_request_cancels_client_answer(
         self, acp_pair: AcpPair
     ) -> None:
-        pending = asyncio.create_task(acp_pair.agent.request(self.CALL))
+        pending = asyncio.create_task(acp_pair.agent.request(self.CALL, None))
 
         async with asyncio.timeout(5):
             await acp_pair.stand_client.questions.get()

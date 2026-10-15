@@ -1,38 +1,30 @@
-"""Настройки процесса агента: слои `settings.json`, `.mcp.json`, аргументы, окружение.
+"""Настройки процесса агента: слои `settings.json`, аргументы, окружение.
 
 Устройство — план, раздел 5.21. Источники сливаются по приоритету снизу
 вверх: значения по умолчанию, файл пользователя, файл проекта, локальный
 файл проекта, файлы и строки `--settings`, аргументы запуска,
 административный слой `--policy`. Поле побеждает полем, таблицы (`models`,
-`env`, `hooks`, серверы MCP) сливаются по именам, списки правил
+`env`) сливаются по именам, списки правил
 объединяются. Итог — одна модель EffectiveSettings, из которой строятся
-профиль модели, пределы, режим, хуки и серверы MCP для ядра. Серверы MCP
-из ключа `mcpServers` слоёв настроек и из `.mcp.json` проекта подключаются
-к каждой сессии; серверы сессии по протоколу (`session/new`) приходят той
-же моделью McpServerJson и побеждают по имени. Способ входа на сервер —
-секция `auth` его записи (McpAuth клиента MCP): токен агент получает и
-обновляет сам.
-Секреты — ключ провайдера `apiKey`, строка подключения `dsn` и секреты
-секции `auth` сервера MCP (`token`, `password`, `clientSecret`, `secret`) —
-лежат значениями в файле настроек; такой файл принимается только с правами
+профиль модели, пределы, режим и сроки ожидания серверов MCP для ядра.
+Серверы MCP приходят только по протоколу (`session/new`).
+Секреты — ключ провайдера `apiKey` и строка подключения `dsn` — лежат
+значениями в файле настроек; такой файл принимается только с правами
 не шире 0600, а в строке аргумента секреты запрещены. Чтение секрета по имени
 переменной (`apiKeyEnv`, `dsnEnv`) остаётся для ручного запуска; окружение
 процесса читается только здесь, минимальный профиль без файлов —
-из `BOBA_LLM_*`. Режим разрешений, право на обход и серверы сессии в
-аргументах не передаются: режим — ключ `permissions` файла, серверы —
-ключ `mcpServers` файла либо протокол.
+из `BOBA_LLM_*`. Режим разрешений и право на обход в аргументах не
+передаются: это ключ `permissions` файла.
 
 Ошибки:
 SettingsError — файл не прочитан или не разобран, слой не проходит модель,
     файл с секретами доступен не только владельцу, действующих настроек не
-    хватает для запуска: нет профиля модели, нет переменной с ключом, сервер
-    MCP неподдерживаемого вида.
+    хватает для запуска: нет профиля модели, нет переменной с ключом.
 """
 
 from __future__ import annotations
 
 import json
-import re
 import stat
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
@@ -49,12 +41,10 @@ from pydantic import (
     Field,
     SecretStr,
     ValidationError,
-    field_validator,
     model_validator,
 )
 from pydantic.alias_generators import to_camel
 
-from boba.agent.hooks import HookFailure
 from boba.agent.profile import (
     CompactionSettings,
     ModelProfile,
@@ -64,28 +54,13 @@ from boba.agent.profile import (
 from boba.agent.records import PermissionMode
 from boba.db.postgres.connection import PostgresConfig
 from boba.llm.providers import ChatModelConfig, LlmProvidersError
-from boba.mcp_client.client import (
-    BearerAuth,
-    HttpEndpoint,
-    McpAuth,
-    McpServerConfig,
-    NoAuth,
-    StdioCommand,
-)
-from boba.toolkit.mcp import McpToolNameError, McpToolNames
 
 __all__ = [
     "Arguments",
     "EffectiveSettings",
     "EnvName",
     "HistoryKind",
-    "HookEvent",
-    "HookFailure",
-    "HookMatcherGroup",
-    "HookType",
-    "HttpHook",
     "JsonlHistorySettings",
-    "McpServerJson",
     "MemoryHistorySettings",
     "ModelSettings",
     "PermissionSettings",
@@ -111,7 +86,6 @@ class SettingsFile(StrEnum):
     USER = ".boba/settings.json"
     PROJECT = ".boba/settings.json"
     LOCAL = ".boba/settings.local.json"
-    MCP = ".mcp.json"
     ENCODING = "utf-8"
 
 
@@ -160,36 +134,6 @@ class SecretKey(StrEnum):
     PROVIDER = "provider"
     API_KEY = "apiKey"
     DSN = "dsn"
-    MCP_SERVERS = "mcpServers"
-    AUTH = "auth"
-
-
-class HookEvent(StrEnum):
-    """События, на которые в настройках навешиваются хуки."""
-
-    PRE_TOOL_USE = "PreToolUse"
-    POST_TOOL_USE = "PostToolUse"
-    POST_TOOL_USE_FAILURE = "PostToolUseFailure"
-    USER_PROMPT_SUBMIT = "UserPromptSubmit"
-    SESSION_START = "SessionStart"
-    SESSION_END = "SessionEnd"
-    STOP = "Stop"
-    PRE_COMPACT = "PreCompact"
-    POST_COMPACT = "PostCompact"
-
-
-class HookType(StrEnum):
-    """Виды обработчиков хука, которые умеет исполнять агент."""
-
-    HTTP = "http"
-
-
-class McpTransportJson(StrEnum):
-    """Виды серверов в `.mcp.json` формата Claude Code."""
-
-    STDIO = "stdio"
-    HTTP = "http"
-    SSE = "sse"
 
 
 WebScheme = Literal["http", "https"]
@@ -339,48 +283,6 @@ HistorySettings = Annotated[
 ]
 
 
-class HttpHook(SettingsModel):
-    """Обработчик хука: `POST` JSON события на `url` с заголовками; срок в
-    секундах; `onFailure` решает, блокирует ли молчание обработчика действие."""
-
-    DEFAULT_TIMEOUT_SEC: ClassVar[float] = 600.0
-
-    type: Literal[HookType.HTTP]
-    url: str = Field(min_length=1)
-    headers: Mapping[str, str] = Field(default_factory=dict)
-    timeout: float = Field(default=DEFAULT_TIMEOUT_SEC, gt=0)
-    on_failure: HookFailure = HookFailure.CONTINUE
-
-    @field_validator("url")
-    @classmethod
-    def _absolute_http(cls, value: str) -> str:
-        HttpUrls().absolute(value, "hook url")
-
-        return value
-
-
-class HookMatcherGroup(SettingsModel):
-    """Группа обработчиков под одним матчером имени инструмента: пустой
-    матчер или `*` подходит ко всему, иначе это регулярное выражение."""
-
-    matcher: str = ""
-    hooks: Sequence[HttpHook] = Field(min_length=1)
-
-    @field_validator("matcher")
-    @classmethod
-    def _compiles(cls, value: str) -> str:
-        try:
-            re.compile(value)
-        except re.error as exc:
-            msg = f"hook matcher '{value}' is not a valid regular expression: {exc}"
-            raise ValueError(msg) from exc
-
-        return value
-
-
-HooksSettings = Mapping[HookEvent, Sequence[HookMatcherGroup]]
-
-
 class CompactionJson(SettingsModel):
     compact_at: float | None = Field(default=None, gt=0, lt=1)
     block_at: float | None = Field(default=None, gt=0, le=1)
@@ -404,47 +306,11 @@ class LimitsJson(SettingsModel):
 
 
 class McpClientJson(SettingsModel):
-    """Ключ `mcp`: сроки клиента, выбор серверов из `.mcp.json` и область
-    вызовов. scope — id разговора, который клиент называет серверу с
-    расширением файлов в каждом вызове: вызовы одной области видят файлы
-    друг друга; None — область выбирает сервер."""
+    """Ключ `mcp`: сроки ожидания серверов MCP-over-ACP — одной страницы
+    `tools/list` и одного вызова `tools/call`."""
 
-    connect_timeout_sec: float = Field(default=30.0, gt=0)
+    list_timeout_sec: float = Field(default=30.0, gt=0)
     call_timeout_sec: float = Field(default=600.0, gt=0)
-    enabled_servers: Sequence[str] | None = None
-    disabled_servers: Sequence[str] = ()
-    scope: str | None = Field(default=None, min_length=1)
-
-
-class McpServerJson(SettingsModel):
-    """Запись сервера MCP: в `.mcp.json` проекта, в ключе `mcpServers` слоя
-    настроек и в `session/new` протокола. Ключи `type`, `command`, `args`,
-    `env`, `url`, `headers` — формата `.mcp.json`; `auth` — способ входа на
-    http-сервер (McpAuth клиента MCP), None — вход решают заголовки."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    type: McpTransportJson = McpTransportJson.STDIO
-    command: str | None = None
-    args: Sequence[str] = ()
-    env: Mapping[str, str] = Field(default_factory=dict)
-    url: str | None = None
-    headers: Mapping[str, str] = Field(default_factory=dict)
-    auth: McpAuth | None = None
-
-    def secrets(self) -> Iterator[str]:
-        """Ключи записи, под которыми лежат секреты способа входа."""
-        if self.auth is None:
-            return
-
-        for key in self.auth.secret_keys():
-            yield f"{SecretKey.AUTH.value}.{key}"
-
-
-class McpJson(SettingsModel):
-    """Файл `.mcp.json`: таблица серверов по именам."""
-
-    mcp_servers: Mapping[str, McpServerJson] = Field(default_factory=dict)
 
 
 class SettingsLayer(SettingsModel):
@@ -459,8 +325,6 @@ class SettingsLayer(SettingsModel):
     compaction: CompactionJson | None = None
     limits: LimitsJson | None = None
     mcp: McpClientJson | None = None
-    mcp_servers: Mapping[str, McpServerJson] = Field(default_factory=dict)
-    hooks: HooksSettings = Field(default_factory=dict)
     env: Mapping[str, str] = Field(default_factory=dict)
     system_prompt_file: str | None = None
     skills_dir: str | None = None
@@ -483,10 +347,6 @@ class SettingsLayer(SettingsModel):
                 continue
 
             yield f"models.{name}.{SecretKey.PROVIDER.value}.{SecretKey.API_KEY.value}"
-
-        for name, server in self.mcp_servers.items():
-            for key in server.secrets():
-                yield f"{SecretKey.MCP_SERVERS.value}.{name}.{key}"
 
 
 class SecretsGuard:
@@ -577,11 +437,10 @@ class Arguments:
 
 class LayerMerge:
     """Слияние слоёв: поле побеждает полем, таблицы — по ключам, списки
-    объединяются без повторов. Секция с дискриминатором — `kind` истории,
-    `auth` способа входа сервера MCP — при смене вида заменяется целиком:
-    поля разных видов не смешиваются."""
+    объединяются без повторов. Секция с дискриминатором `kind` (история)
+    при смене вида заменяется целиком: поля разных видов не смешиваются."""
 
-    DISCRIMINATORS: ClassVar[tuple[str, ...]] = ("kind", "auth")
+    DISCRIMINATORS: ClassVar[tuple[str, ...]] = ("kind",)
 
     def merged(self, lower: SettingsLayer, upper: SettingsLayer) -> SettingsLayer:
         # режим python: секреты остаются SecretStr, а не маской из режима json
@@ -619,18 +478,10 @@ class LayerMerge:
 
     @staticmethod
     def _differs(kind_below: Any, kind_above: Any) -> bool:
-        """Вид секции сменился; ключ `auth` записи сервера — сама секция
-        входа, а не её вид, и сравнивается глубже."""
         if kind_below is None:
             return False
 
         if kind_above is None:
-            return False
-
-        if isinstance(kind_below, Mapping):
-            return False
-
-        if isinstance(kind_above, Mapping):
             return False
 
         return kind_below != kind_above
@@ -696,8 +547,6 @@ class EffectiveSettings(BaseModel):
     compaction: CompactionSettings
     limits: TurnLimits
     mcp: McpClientJson
-    mcp_servers: Mapping[str, McpServerJson]
-    hooks: HooksSettings
     env: Mapping[str, str]
     system_prompt: Sequence[str]
     skills_dir: str | None
@@ -730,7 +579,7 @@ class EffectiveSettings(BaseModel):
         return found
 
     def public(self) -> dict[str, Any]:
-        """Настройки для события `init`: без значений окружения серверов;
+        """Настройки для события `init`: без значений окружения;
         секреты выходят маской SecretStr."""
         document = self.model_dump(mode="json", by_alias=True)
         document["env"] = sorted(self.env)
@@ -922,111 +771,6 @@ class PostgresBuilder:
         return dsn
 
 
-class McpServerBuilder:
-    """McpServerConfig клиента из записи сервера и сроков из настроек. Вход
-    на http-сервер — секция `auth` записи; без неё — заголовок
-    `Authorization: Bearer` (так серверы приходят по протоколу)."""
-
-    BEARER_PREFIX: ClassVar[str] = "bearer "
-    AUTHORIZATION: ClassVar[str] = "authorization"
-
-    def __init__(self, client: McpClientJson, env: Mapping[str, str]) -> None:
-        self._client = client
-        self._env = env
-        self._urls = HttpUrls()
-
-    def config(self, name: str, server: McpServerJson) -> McpServerConfig:
-        return McpServerConfig(
-            endpoint=self._endpoint(name, server),
-            connect_timeout_sec=self._client.connect_timeout_sec,
-            call_timeout_sec=self._client.call_timeout_sec,
-        )
-
-    def _endpoint(
-        self, name: str, server: McpServerJson
-    ) -> StdioCommand | HttpEndpoint:
-        if server.type is McpTransportJson.SSE:
-            msg = (
-                f"MCP server '{name}' uses transport 'sse', which this agent does "
-                "not support. Use a stdio or streamable http server."
-            )
-            raise SettingsError(msg)
-
-        if server.type is McpTransportJson.STDIO:
-            return self._stdio(name, server)
-
-        return self._http(name, server)
-
-    def _stdio(self, name: str, server: McpServerJson) -> StdioCommand:
-        if not server.command:
-            msg = f"MCP server '{name}' is a stdio server but has no 'command'."
-            raise SettingsError(msg)
-
-        return StdioCommand(
-            command=server.command,
-            args=tuple(server.args),
-            env={**self._env, **server.env},
-        )
-
-    def _http(self, name: str, server: McpServerJson) -> HttpEndpoint:
-        if not server.url:
-            msg = f"MCP server '{name}' is an http server but has no 'url'."
-            raise SettingsError(msg)
-
-        try:
-            url = self._urls.absolute(server.url, f"MCP server '{name}' url")
-        except ValueError as exc:
-            raise SettingsError(str(exc)) from exc
-
-        path = url.path
-        if not path:
-            path = "/"
-
-        return HttpEndpoint(
-            scheme=url.scheme,
-            host=url.host,
-            port=url.port,
-            path=path,
-            auth=self._auth(name, server),
-        )
-
-    def _auth(self, name: str, server: McpServerJson) -> McpAuth:
-        declared = server.auth
-        if declared is None:
-            return self._header_auth(name, server.headers)
-
-        if server.headers:
-            msg = (
-                f"MCP server '{name}' sets both 'auth' and 'headers' "
-                f"({sorted(server.headers)}). Keep one: 'auth' describes how the "
-                "agent signs in, a header carries a ready token."
-            )
-            raise SettingsError(msg)
-
-        return declared
-
-    def _header_auth(self, name: str, headers: Mapping[str, str]) -> McpAuth:
-        auth: McpAuth = NoAuth()
-        for header, value in headers.items():
-            if header.lower() != self.AUTHORIZATION:
-                msg = (
-                    f"MCP server '{name}' sets header '{header}'. Only an "
-                    "'Authorization: Bearer <token>' header is supported."
-                )
-                raise SettingsError(msg)
-
-            if not value.lower().startswith(self.BEARER_PREFIX):
-                msg = (
-                    f"MCP server '{name}' has an Authorization header that is not "
-                    "'Bearer <token>'."
-                )
-                raise SettingsError(msg)
-
-            auth = BearerAuth(token=SecretStr(value[len(self.BEARER_PREFIX) :]))
-
-        return auth
-
-
 class Settings:
     """Чтение слоёв и слияние в действующие настройки одного запуска."""
 
@@ -1043,7 +787,6 @@ class Settings:
         self._home = home
         self._cwd = cwd
         self._json = JsonText()
-        self._names = McpToolNames()
         self._merge = LayerMerge()
         self._guard = SecretsGuard()
 
@@ -1206,8 +949,6 @@ class Settings:
             compaction=compaction,
             limits=limits,
             mcp=mcp,
-            mcp_servers=self._servers(mcp, layer.mcp_servers),
-            hooks=layer.hooks,
             env=layer.env,
             system_prompt=list(self._system_prompt(layer)),
             skills_dir=layer.skills_dir,
@@ -1247,55 +988,3 @@ class Settings:
                 self._cwd / arguments.append_system_prompt_file,
                 "the appended system prompt",
             ).strip()
-
-    def _servers(
-        self, client: McpClientJson, declared: Mapping[str, McpServerJson]
-    ) -> dict[str, McpServerJson]:
-        """Серверы сессий процесса: `.mcp.json` проекта, прошедшие выбор `mcp`
-        настроек, и серверы ключа `mcpServers` слоёв — они побеждают по имени.
-
-        Ошибки:
-        SettingsError — файл не разобран либо имя сервера не годится для
-            полных имён его инструментов.
-        """
-        servers: dict[str, McpServerJson] = {}
-        project = self._cwd / SettingsFile.MCP.value
-        if project.is_file():
-            text = self._json.read_file(project, ".mcp.json")
-            servers.update(self._mcp_json(text, str(project)).mcp_servers)
-
-        enabled = client.enabled_servers
-        chosen: dict[str, McpServerJson] = {}
-        for name, server in servers.items():
-            if name in client.disabled_servers:
-                continue
-
-            if enabled is not None and name not in enabled:
-                continue
-
-            self._named(name, f".mcp.json at {project}")
-            chosen[name] = server
-
-        for name, server in declared.items():
-            self._named(name, "'mcpServers' of the settings")
-            chosen[name] = server
-
-        return chosen
-
-    def _named(self, name: str, source: str) -> None:
-        """Ошибки:
-        SettingsError — имя сервера не годится для полных имён инструментов.
-        """
-        try:
-            self._names.checked_server(name)
-        except McpToolNameError as exc:
-            msg = f"{source} names a server that is refused: {exc}"
-            raise SettingsError(msg) from exc
-
-    def _mcp_json(self, text: str, source: str) -> McpJson:
-        document = self._json.parse(text, ".mcp.json", source)
-        try:
-            return McpJson.model_validate(document)
-        except ValidationError as exc:
-            msg = f".mcp.json at {source} does not match the Claude Code format: {exc}"
-            raise SettingsError(msg) from exc

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import logging
 from collections.abc import Awaitable, Callable
 from enum import IntEnum, StrEnum
 from types import ModuleType
@@ -34,6 +35,8 @@ from acp.experimental.v2._initialization import InitializationState
 from acp.experimental.v2._schema_base import BaseModel
 from acp.experimental.v2.client import _ClientRouter
 from acp.experimental.v2.meta import AGENT_METHODS, CLIENT_METHODS
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "AcpErrorCode",
@@ -184,19 +187,19 @@ class IdleErrorNotification(schema.UpdateSessionNotification):
 
 class AgentSide:
     """Сторона агента ACP v2 на AgentSideConnection.attach SDK. На чужую версию и
-    рукопожатие v1 отвечает своей, уведомление mcp/message отдаёт accept,
-    остальное — роутеру SDK; шлёт запрос mcp/message и idle с ошибкой."""
+    рукопожатие v1 отвечает своей, уведомление mcp/message отдаёт получателю его
+    активного запроса, остальное — роутеру SDK; шлёт запрос mcp/message и idle
+    с ошибкой."""
 
     def __init__(
         self,
         agent_factory: Callable[[AgentSide, AgentSideConnection], object],
-        accept: Callable[[McpMessage], Awaitable[None]],
         info: schema.Implementation,
         writer: asyncio.StreamWriter | Transport,
         reader: asyncio.StreamReader | None,
     ) -> None:
-        self._accept = accept
         self._info = info
+        self._receivers: dict[str, Callable[[McpMessage], Awaitable[None]]] = {}
         self._outcomes: TypeAdapter[McpOutcome] = TypeAdapter(McpOutcome)
         self._connection = Connection(self, writer, reader, listening=False)
         _, self._router = AgentSideConnection.attach(
@@ -208,7 +211,17 @@ class AgentSide:
     ) -> JsonValue | None:
         mcp_notification = is_notification and method == AGENT_METHODS["mcp_message"]
         if mcp_notification:
-            await self._accept(McpMessage.model_validate(params))
+            message = McpMessage.model_validate(params)
+            receiver = self._receivers.get(message.request_id)
+            if receiver is None:
+                logger.info(
+                    "mcp/message %s for request %s that is not running; dropped",
+                    message.method,
+                    message.request_id,
+                )
+                return None
+
+            await receiver(message)
             return None
 
         initialize = not is_notification and method == AGENT_METHODS["initialize"]
@@ -224,9 +237,16 @@ class AgentSide:
             protocol_version=max(AcpVersion), info=self._info
         )
 
-    async def request(self, message: McpMessage) -> McpOutcome:
-        """Запрос mcp/message клиенту; отмена задачи шлёт $/cancel_request."""
+    async def request(
+        self,
+        message: McpMessage,
+        receiver: Callable[[McpMessage], Awaitable[None]] | None,
+    ) -> McpOutcome:
+        """Запрос mcp/message клиенту; уведомления по его requestId, пока он
+        идёт, получает receiver. Отмена задачи шлёт $/cancel_request."""
         params = message.model_dump(mode="json", by_alias=True, exclude_unset=True)
+        if receiver is not None:
+            self._receivers[message.request_id] = receiver
 
         try:
             raw = await self._connection.send_request(
@@ -238,6 +258,8 @@ class AgentSide:
                 f"'{message.server_id}' (request '{message.request_id}') because "
                 f"the ACP connection to the client is gone: {exc}."
             ) from exc
+        finally:
+            self._receivers.pop(message.request_id, None)
 
         try:
             return self._outcomes.validate_python(raw)
