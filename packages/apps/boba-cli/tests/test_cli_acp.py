@@ -39,13 +39,13 @@ import mcp_types as mt
 import pytest
 import uvicorn
 from acp.connection import StreamDirection
-from acp.connection import StreamEvent as FrameEvent
 from acp.exceptions import RequestError
 from acp.experimental.v2 import Client, schema
 from mcp_types.jsonrpc import ErrorData
 from mcp_types.methods import parse_client_request
 
 from boba.cli.acp_server import ConfigOptionId, PermissionChoice, ToolKindName
+from boba.stand.acp_frames import Frames
 from boba.stand.ui.fake_llm import FailureName, FakeLlmApp, ScenarioName
 from boba.stand.ui.stand import free_port
 from boba.transport.acp.protocol import (
@@ -590,62 +590,6 @@ def result_text(update: schema.SessionToolCallUpdate) -> str:
     return block.text
 
 
-class Frames:
-    """Наблюдатель кадров соединения: порядок входящих и исходящих."""
-
-    def __init__(self) -> None:
-        self.events: list[FrameEvent] = []
-
-    def __call__(self, event: FrameEvent) -> None:
-        self.events.append(event)
-
-    def request_id(self, method: str, index: int = 0) -> int:
-        found: list[int] = []
-        for event in self.events:
-            if event.direction is not StreamDirection.OUTGOING:
-                continue
-
-            message = event.message
-            if message.get("method") == method and "id" in message:
-                found.append(int(message["id"]))
-
-        return found[index]
-
-    def position_of_response(self, request_id: int) -> int:
-        for position, event in enumerate(self.events):
-            if event.direction is not StreamDirection.INCOMING:
-                continue
-
-            message = event.message
-            if "method" in message:
-                continue
-
-            if message.get("id") == request_id:
-                return position
-
-        msg = f"no response to request {request_id} seen"
-        raise AssertionError(msg)
-
-    def incoming_notifications(self, before: int) -> list[dict[str, Any]]:
-        found: list[dict[str, Any]] = []
-        for event in self.events[:before]:
-            if event.direction is not StreamDirection.INCOMING:
-                continue
-
-            if "method" in event.message and "id" not in event.message:
-                found.append(event.message)
-
-        return found
-
-    def incoming_after(self, position: int) -> list[dict[str, Any]]:
-        found: list[dict[str, Any]] = []
-        for event in self.events[position + 1 :]:
-            if event.direction is StreamDirection.INCOMING:
-                found.append(event.message)
-
-        return found
-
-
 class AcpProcess:
     """Запущенный `boba acp`: соединение клиента ACP v2 поверх его stdio,
     сырые строки stdout и stderr в списках. Команда по умолчанию — модуль из
@@ -812,18 +756,25 @@ class AcpProcess:
         await stdin.wait_closed()
 
     async def wait(self) -> int:
+        """Ждёт конца процесса и сверяет все его кадры со схемой ACP."""
         code = await asyncio.wait_for(self.process.wait(), READ_TIMEOUT_SEC)
         for task in self._tasks:
             await task
 
+        self.frames.check_schema()
+
         return code
 
     async def kill(self) -> None:
-        if self._process is None or self._process.returncode is not None:
+        """Добивает живой процесс и сверяет все его кадры со схемой ACP."""
+        if self._process is None:
             return
 
-        self._process.kill()
-        await asyncio.wait_for(self._process.wait(), READ_TIMEOUT_SEC)
+        if self._process.returncode is None:
+            self._process.kill()
+            await asyncio.wait_for(self._process.wait(), READ_TIMEOUT_SEC)
+
+        self.frames.check_schema()
 
     def assert_stdout_is_frames_only(self) -> None:
         assert self.raw_stdout, self.stderr[-10:]
