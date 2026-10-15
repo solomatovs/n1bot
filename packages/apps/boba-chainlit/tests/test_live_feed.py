@@ -15,7 +15,7 @@ from acp.experimental.v2 import schema
 from chainlit.element import ElementDict
 
 from boba.chainlit.canvas.remote import RemoteJournals
-from boba.chainlit.chat.feed import QuestionBody, ShownElement, TurnFeed
+from boba.chainlit.chat.feed import QuestionBody, TurnFeed
 from boba.chainlit.domain.fields import StepField
 from boba.chainlit.infra.config import AppConfig
 from boba.chainlit.rendering.acp_view import ToolMedia, UpdateView
@@ -455,8 +455,8 @@ async def test_elements_reach_the_viewer_instance(
     runtime_stand: StandRefs,
     nodes: tuple[Node, Node],
 ) -> None:
-    """Карточка вызова и вложение вопроса показываются у зрителя на другом
-    инстансе — и по живой доставке, и по догону replay.
+    """Карточка вызова показывается у зрителя на другом инстансе — и по живой
+    доставке, и по догону replay.
     """
     holder, viewer = nodes
     thread_id = str(uuid4())
@@ -483,20 +483,12 @@ async def test_elements_reach_the_viewer_instance(
     )
     feed = TurnFeed(holder.bus, holder.payloads, scope, TURN, lock.token)
     element = {**ELEMENT, "threadId": thread_id}
-    attachment = ShownElement.model_validate(
-        {**element, "id": "upload-1", "name": "note.txt", "forId": TURN}
-    )
     try:
-        await feed.started(TURN, QuestionBody(text="question", elements=(attachment,)))
+        await feed.started(TURN, QuestionBody(text="question"))
         await feed.element_shown(CALL, element)
-        await _until(
-            lambda: len(surface.elements) == 2, "viewer received both elements"
-        )
+        await _until(lambda: len(surface.elements) == 1, "viewer received the card")
 
-        # вложение вопроса приходит вместе с вопросом, карточка вызова — по ElementShown
-        assert surface.elements[0].get("id") == "upload-1"
-        assert surface.elements[0].get("forId") == TURN
-        shown = surface.elements[1]
+        shown = surface.elements[0]
         assert shown.get("id") == "el-1"
         assert shown.get("forId") == "answer-1"
         assert shown.get("props") == {"dir": "upload"}
@@ -514,10 +506,7 @@ async def test_elements_reach_the_viewer_instance(
             RecordingRewinds(),
         )
         assert (await late.catch_up(viewer.bus)).alive is True
-        assert [item.get("id") for item in late_surface.elements] == [
-            "upload-1",
-            "el-1",
-        ]
+        assert [item.get("id") for item in late_surface.elements] == ["el-1"]
 
         await feed.finished(TurnOutcome.OK, "")
     finally:

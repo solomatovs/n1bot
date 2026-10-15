@@ -104,14 +104,15 @@ class ShownElement(BaseModel):
 
 
 class QuestionBody(BaseModel):
-    """Тело вопроса хода в шине: текст, вложения, которые пользователь приложил к
-    сообщению, и автор — имя шага вопроса во всех вкладках.
+    """Тело вопроса хода в шине: текст, вложения блоками resource_link — те же,
+    что приходят в воспроизведении, — и автор — имя шага вопроса во всех
+    вкладках.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     text: str
-    elements: tuple[ShownElement, ...] = ()
+    links: tuple[schema.ResourceContentBlock, ...] = ()
     author: str = ""
 
 

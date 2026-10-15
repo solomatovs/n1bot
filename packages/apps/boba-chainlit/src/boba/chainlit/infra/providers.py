@@ -351,11 +351,10 @@ async def thread_agents(
     meta: Annotated[AgentSessionMeta, Depends(agent_session_meta)],
     index: Annotated[ThreadAgentsIndex, Depends(thread_agents_index)],
     feeds: Annotated[AgentFeeds, Depends(agent_feeds)],
-    config: Annotated[AgentConfig, Depends(agent_config)],
 ) -> AsyncIterator[ThreadAgents]:
     """Агенты вкладки: процессы живут с DI-контейнером сессии chainlit и
     закрываются вместе с ним."""
-    agents = ThreadAgents(launcher, meta, index, feeds, config.public_url)
+    agents = ThreadAgents(launcher, meta, index, feeds)
     try:
         yield agents
     finally:

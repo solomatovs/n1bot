@@ -16,7 +16,7 @@ from acp.experimental.v2 import schema
 from chainlit.context import ChainlitContext, context_var, init_http_context
 from chainlit.step import StepDict
 from chainlit_stand import Seed
-from pydantic import SecretStr
+from pydantic import AnyUrl, SecretStr
 
 from boba.canvas.canvas import CanvasRegistry
 from boba.chainlit.agent.chat import SessionOptions, ThreadAgentsIndex
@@ -100,6 +100,7 @@ class FakeEmitter:
     def __init__(self) -> None:
         self.frames: list[tuple[str, StepDict]] = []
         self.tokens: dict[str, str] = {}
+        self.elements: list[dict[str, Any]] = []
 
     async def send_step(self, step_dict: StepDict) -> None:
         self.frames.append(("new_message", step_dict))
@@ -126,7 +127,7 @@ class FakeEmitter:
         self.tokens[id] = self.tokens.get(id, "") + token
 
     async def send_element(self, element_dict: Any) -> None:
-        return
+        self.elements.append(dict(element_dict))
 
     async def task_start(self) -> None:
         return
@@ -623,6 +624,77 @@ class TestLiveEqualsReplay:
         assert live == replay_context.emitter.outline(pulse)
         assert len(live) >= 6
         assert live_context.emitter.tokens == replay_context.emitter.tokens
+
+    @pytest.mark.anyio
+    async def test_question_attachments_are_the_same_live_and_in_the_replay(
+        self, runtime_stand: StandRefs
+    ) -> None:
+        """Вложение вопроса — блок resource_link: живой ход (TurnStarted) и
+        воспроизведение (`user_message`) дают шагу вопроса один и тот же файл
+        с относительной ссылкой на маршрут canvas."""
+        path = f"/boba-test/canvas/{THREAD}/upload/note.txt"
+        link = schema.ResourceContentBlock(
+            name="note.txt",
+            uri=AnyUrl(f"http://agent-side:1{path}"),
+            mime_type="text/plain",
+        )
+
+        live_context = FakeContext(THREAD)
+        token = context_var.set(cast("ChainlitContext", live_context))
+        try:
+            bus = MemoryMessageBus("test-chainlit")
+            payloads = MemoryPayloadStore()
+            scope = Scope.chat(THREAD)
+            renderer = ChatRenderer(
+                THREAD,
+                _view(runtime_stand, RemoteJournals()),
+                payloads,
+                NoSurface(),
+                ThreadAgentsIndex(),
+            )
+            leave = bus.subscribe(scope, renderer.apply)
+            feed = TurnFeed(bus, payloads, scope, QUESTION, LockToken.local())
+            try:
+                body = QuestionBody(text="hello", author="alice", links=(link,))
+                await feed.started(QUESTION, body)
+                await feed.finished(TurnOutcome.OK, "")
+            finally:
+                leave()
+        finally:
+            context_var.reset(token)
+
+        replay_context = FakeContext(THREAD)
+        token = context_var.set(cast("ChainlitContext", replay_context))
+        try:
+            replay = _view(runtime_stand, RemoteJournals())
+            asked = schema.UserMessageUpdate(
+                message_id=QUESTION,
+                content=[schema.TextContentBlock(text="hello"), link],
+            )
+            await replay.apply(asked)
+            await replay.finish_turn()
+        finally:
+            context_var.reset(token)
+
+        def shown(context: FakeContext) -> set[tuple[str, str, str, str]]:
+            found: set[tuple[str, str, str, str]] = set()
+            for element in context.emitter.elements:
+                found.add(
+                    (
+                        str(element["id"]),
+                        str(element["name"]),
+                        str(element["url"]),
+                        str(element["forId"]),
+                    )
+                )
+
+            return found
+
+        expected = {
+            (_id(f"{QUESTION}/0", StepRole.ELEMENT), "note.txt", path, QUESTION)
+        }
+        assert shown(live_context) == expected
+        assert shown(replay_context) == expected
 
     @pytest.mark.anyio
     async def test_large_call_result_reaches_the_tabs_by_reference(

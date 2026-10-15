@@ -27,6 +27,7 @@ from boba.chainlit.agent.chat import (
     ThreadIdentity,
 )
 from boba.chainlit.agent.client import AcpClientError
+from boba.chainlit.agent.config import AgentConfig
 from boba.chainlit.agent.panel import AgentPanel
 from boba.chainlit.agent.settings import (
     AgentSettingsError,
@@ -36,13 +37,12 @@ from boba.chainlit.agent.settings import (
 from boba.chainlit.canvas.panel import StreamActions
 from boba.chainlit.canvas.remote import RemoteStreams
 from boba.chainlit.canvas.tools import CanvasActions, CanvasScope
-from boba.chainlit.chat.feed import ShownElement
 from boba.chainlit.chat.panel_text import PanelText
-from boba.chainlit.data.data_layer import AttachmentDataLayer
-from boba.chainlit.domain.fields import ElementField, ThreadField, ThreadMetaField
+from boba.chainlit.domain.fields import ThreadField, ThreadMetaField
 from boba.chainlit.infra import providers
 from boba.chainlit.infra.config import AppConfig
 from boba.chainlit.infra.providers import (
+    agent_config,
     agent_settings_changes,
     agent_settings_table,
     chainlit_data_layer,
@@ -129,12 +129,11 @@ AGENT_FAILURES = (
 async def on_message(
     msg: cl.Message,
     selected: Annotated[SelectedProfile, Depends(session_profile, scope="session")],
+    config: Annotated[AgentConfig, Depends(agent_config)],
 ):
     """Ход по новому вопросу вкладки."""
     identity = ThreadIdentity.of(current_session(), selected)
-    question = Question.of_message(
-        msg, identity.thread_id, AttachmentDataLayer.require().links
-    )
+    question = Question.of_message(msg, identity, config.public_url)
     await _run_turn(identity, question)
 
 
@@ -147,19 +146,10 @@ async def on_edit(
     question: Question,
     selected: Annotated[SelectedProfile, Depends(session_profile, scope="session")],
 ):
-    """Ход по правленому вопросу вкладки: тот же путь, что у нового вопроса,
-    вложения правленого вопроса — его строки elements."""
+    """Ход по правленому вопросу вкладки: тот же путь, что у нового вопроса;
+    вложения правленого вопроса агент вкладки берёт из своей беседы."""
     identity = ThreadIdentity.of(current_session(), selected)
-    thread = await AttachmentDataLayer.require().get_thread(identity.thread_id)
-    attached: list[ShownElement] = []
-    if thread is not None:
-        for element in thread[ThreadField.ELEMENTS] or []:
-            if element.get(ElementField.FOR_ID) != question.key:
-                continue
-
-            attached.append(ShownElement.model_validate(element))
-
-    await _run_turn(identity, question.model_copy(update={"elements": tuple(attached)}))
+    await _run_turn(identity, question)
 
 
 SocketEvents.on_edit(on_edit)
@@ -199,7 +189,11 @@ async def _run_turn(  # noqa: PLR0913 — зависимости обработ�
     had_options = bool(agent.options.options)
     restarts = agent.restarts
     try:
-        await agent.ask(question)
+        asked = question
+        if question.edited:
+            asked = agent.edited(question)
+
+        await agent.ask(asked)
     except AGENT_FAILURES as exc:
         logger.error("thread %s: turn %s failed: %s", thread_id, question.key, exc)
         # фронт уже обрезал ленту правящей вкладки; свой идущий ход не трогаем
