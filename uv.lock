@@ -744,7 +744,6 @@ dependencies = [
     { name = "chainlit", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "fastapi", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "fastmcp-slim", extra = ["server"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-    { name = "httpx", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "literalai", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "mcp", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "mcp-types", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -769,6 +768,7 @@ dev = [
     { name = "boba-stand-core", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-text", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "gssapi", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "httpx", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "httpx2", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "krb5", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "playwright", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -816,7 +816,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.116,<1" },
     { name = "fastmcp-slim", extras = ["server"], specifier = ">=4.0,<5" },
     { name = "gssapi", marker = "extra == 'dev'", specifier = ">=1.9,<2" },
-    { name = "httpx", specifier = ">=0.28,<1" },
+    { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.28,<1" },
     { name = "httpx2", marker = "extra == 'dev'", specifier = ">=2.10,<3" },
     { name = "krb5", marker = "extra == 'dev'", specifier = ">=0.7,<1" },
     { name = "literalai", specifier = ">=0.1.201,<0.2" },
@@ -3060,6 +3060,7 @@ version = "0.0.26.dev4"
 source = { editable = "packages/core/boba-toolkit" }
 dependencies = [
     { name = "boba-cancellation", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "mcp-types", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "pydantic", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "pydantic-core", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
 ]
@@ -3080,6 +3081,7 @@ requires-dist = [
     { name = "boba-cancellation", editable = "packages/core/boba-cancellation" },
     { name = "boba-stand", marker = "extra == 'dev'", editable = "packages/testing/boba-stand" },
     { name = "boba-stand-core", marker = "extra == 'dev'", editable = "packages/core/boba-stand-core" },
+    { name = "mcp-types", specifier = ">=2.3,<3" },
     { name = "pyarrow", marker = "extra == 'arrow'", specifier = ">=25,<26" },
     { name = "pyarrow", marker = "extra == 'dev'", specifier = ">=25,<26" },
     { name = "pydantic", specifier = ">=2.12,<3" },

@@ -14,15 +14,12 @@
   списка сервера и его аргументы; схем инструментов в себе не несёт.
 - LocalDagService — реализация порта сервера инструментов ToolServer
   (boba.toolkit.dag) исполнителем в своём процессе: описание DAG по вызовам
-  клиента строит CallDag. ToolServers — несколько серверов за одним портом
-  с маршрутом по имени инструмента.
+  клиента строит CallDag.
 - NodeArgs — правило аргументов узла, которое исполнитель применяет до
   старта DAG.
 
 Ошибки:
 StreamGroupsConfigError — секции [stream_groups] нет в конфиге.
-ToolServersError — два сервера за одним портом отдают инструмент с одним
-    именем.
 """
 
 from __future__ import annotations
@@ -60,7 +57,7 @@ from boba.toolkit.dag import (
     WorkflowNodeResult,
     WorkflowResult,
 )
-from boba.toolkit.entry import EntryErrorKind, ToolArgv
+from boba.toolkit.entry import ToolArgv
 from boba.toolkit.failure import ToolRefusalError
 from boba.toolkit.ports import PortDecl, PortDirection, StreamSpecs
 from boba.toolkit.result import (
@@ -77,8 +74,6 @@ __all__ = [
     "StreamChannelFields",
     "StreamGroupsConfig",
     "StreamGroupsConfigError",
-    "ToolServers",
-    "ToolServersError",
     "WorkflowTool",
 ]
 
@@ -87,10 +82,6 @@ logger = logging.getLogger(__name__)
 
 class StreamGroupsConfigError(RuntimeError):
     """Секции сроков групп потоковых вызовов нет в конфиге."""
-
-
-class ToolServersError(RuntimeError):
-    """Серверы за одним портом нельзя собрать: имена инструментов совпали."""
 
 
 class StreamGroupsConfig(BaseModel):
@@ -519,94 +510,3 @@ class LocalDagService(ToolServer):
 
     def _refused(self, call: DagNode, failure: FailureResult) -> NodeOutcome:
         return self._outcomes.refused(call, failure)
-
-
-class UnknownTool:
-    """Отказ вызову с именем, которого у сервера нет: называет, какие есть."""
-
-    def __init__(self, known: frozenset[str]) -> None:
-        self._known = known
-
-    def refusal(self, name: str) -> ErrorResult:
-        msg = (
-            f"tool {name!r} does not exist; the available tools are "
-            f"{sorted(self._known)}"
-        )
-
-        return ErrorResult(message=msg, error_kind=EntryErrorKind.UNKNOWN_TOOL)
-
-
-class ToolServers(ToolServer):
-    """Несколько серверов инструментов за одним портом.
-
-    Клиент видит один порт: инструменты и возможности всех серверов вместе,
-    вызов уходит тому серверу, чей это инструмент. Маршрут — имя
-    инструмента; вызовы пакета к одному серверу идут ему одним пакетом.
-    Выдуманное имя получает отказ со списком всех инструментов. Собирает
-    его реестр инструментов (ToolRegistry.server).
-    """
-
-    def __init__(self, servers: Sequence[ToolServer]) -> None:
-        self._servers = tuple(servers)
-        self._owner: dict[str, int] = {}
-        for index, server in enumerate(self._servers):
-            for card in server.tools():
-                self._claim(card.name, index)
-
-        self._unknown = UnknownTool(frozenset(self._owner))
-        self._outcomes = NodeOutcomes()
-
-    def tools(self) -> Sequence[ToolCard]:
-        offered: list[ToolCard] = []
-        for server in self._servers:
-            offered.extend(server.tools())
-
-        return offered
-
-    def features(self) -> Mapping[str, Mapping[str, object]]:
-        declared: dict[str, Mapping[str, object]] = {}
-        for server in self._servers:
-            declared.update(server.features())
-
-        return declared
-
-    async def submit(
-        self, calls: Sequence[DagNode]
-    ) -> Sequence[asyncio.Future[NodeOutcome]]:
-        routed: dict[int, list[int]] = {}
-        pending: dict[int, asyncio.Future[NodeOutcome]] = {}
-        for position, call in enumerate(calls):
-            owner = self._owner.get(call.tool)
-            if owner is None:
-                refusal = self._unknown.refusal(call.tool)
-                refused = self._outcomes.refused(call, refusal)
-                pending[position] = self._outcomes.settled(refused)
-                continue
-
-            routed.setdefault(owner, []).append(position)
-
-        for owner, positions in routed.items():
-            batch: list[DagNode] = []
-            for position in positions:
-                batch.append(calls[position])
-
-            accepted = await self._servers[owner].submit(batch)
-            for position, future in zip(positions, accepted, strict=True):
-                pending[position] = future
-
-        ordered: list[asyncio.Future[NodeOutcome]] = []
-        for position in range(len(calls)):
-            ordered.append(pending[position])
-
-        return ordered
-
-    def _claim(self, name: str, index: int) -> None:
-        if name in self._owner:
-            msg = (
-                f"tool servers: tool {name!r} is offered by two servers "
-                f"(#{self._owner[name]} and #{index}); a tool name routes to "
-                "exactly one server"
-            )
-            raise ToolServersError(msg)
-
-        self._owner[name] = index

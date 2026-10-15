@@ -23,7 +23,7 @@ from pydantic import (
 from boba.db.postgres.connection import PostgresConfig
 from boba.db.postgres.connection.auth import PasswordAuth, PostgresKerberos, TrustAuth
 from boba.kerberos import KerberosPasswordAuth, KeytabAuth
-from boba.toolkit.mcp_names import McpToolNames
+from boba.toolkit.mcp import McpToolNames
 
 __all__ = [
     "AgentCommandConfig",

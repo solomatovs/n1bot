@@ -63,7 +63,6 @@ from boba.mcp_client.client import (
     McpCaller,
     McpServers,
     McpServersConfig,
-    NamedBlocks,
 )
 from boba.messaging import MemoryMessageBus, MemoryPayloadStore
 from boba.runtime.config import AppLayers, ConfigLocator
@@ -97,7 +96,7 @@ from boba.toolkit.dag import (
     NodeOutcome,
     ToolServer,
 )
-from boba.toolkit.mcp_names import McpToolNames
+from boba.toolkit.mcp import McpToolNames
 from boba.toolkit.result import ToolResultBase
 from boba.toolrun.hosted import DirectCalls
 from boba.workspace.binaries import TrustedBinaries
@@ -300,14 +299,10 @@ class ServiceTools:
         self._names = McpToolNames()
         self._servers = McpServers(
             service.servers(),
-            NamedBlocks(),
             DroppedSignals(),
             contexts,
             calls,
         )
-
-    async def start(self) -> None:
-        await self._servers.start()
 
     async def stop(self) -> None:
         await self._servers.stop()
@@ -391,7 +386,6 @@ async def service_tools(
         NoConnectionStore(), lambda: credentials, call_stand.contexts
     )
     opened = ServiceTools(tool_service, connections, call_stand.contexts, DirectCalls())
-    await opened.start()
     try:
         yield opened
     finally:
@@ -453,7 +447,6 @@ class PerCallStreams(RemoteStreams):
     def _client(self) -> McpServers:
         return McpServers(
             self._config,
-            NamedBlocks(),
             DroppedSignals(),
             self._contexts,
             DirectCalls(),
@@ -463,7 +456,6 @@ class PerCallStreams(RemoteStreams):
         self, thread_id: str, call_id: str, channel: JournalChannel, offset: int
     ) -> StreamSlice | None:
         servers = self._client()
-        await servers.start()
         try:
             reading = RemoteStreams(self._journals, servers, self._caller)
             return await reading.slice_at(thread_id, call_id, channel, offset)
@@ -474,7 +466,6 @@ class PerCallStreams(RemoteStreams):
         self, thread_id: str, call_id: str, channel: JournalChannel, end: int
     ) -> StreamSlice | None:
         servers = self._client()
-        await servers.start()
         try:
             reading = RemoteStreams(self._journals, servers, self._caller)
             return await reading.slice_before(thread_id, call_id, channel, end)

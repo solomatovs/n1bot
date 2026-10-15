@@ -22,7 +22,6 @@ from boba.identity.session import Login, UserMetadataField
 from boba.mcp_client.client import (
     DroppedSignals,
     McpServers,
-    NamedBlocks,
 )
 from boba.toolrun.hosted import DirectCalls
 from boba.workspace.launcher import ReadWindow
@@ -48,12 +47,10 @@ def service(tmp_path_factory: pytest.TempPathFactory) -> Iterator[ServiceProcess
 async def servers(service: ServiceProcess) -> AsyncIterator[McpServers]:
     opened = McpServers(
         service.servers(),
-        NamedBlocks(),
         DroppedSignals(),
         CallContexts(),
         DirectCalls(),
     )
-    await opened.start()
     try:
         yield opened
     finally:
