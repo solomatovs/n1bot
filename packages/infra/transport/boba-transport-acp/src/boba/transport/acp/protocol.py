@@ -1,14 +1,8 @@
-"""Провод ACP v2 для агента и клиента поверх SDK acp.experimental.v2.
-
-Здесь то, чего нет в SDK 1.0.0rc3 и что нужно обеим сторонам: конверт
-mcp/message по alpha.8 (MCP-over-ACP), idle со stopReason "error",
-ответ агента своей версией на чужую и на рукопожатие v1, общие значения
-протокола и стороны соединения, которые перехватывают mcp/message до
-роутера SDK.
+"""Провод ACP v2 (alpha.8) агента и клиента поверх SDK acp.experimental.v2.
 
 Ошибки:
 RequestError (acp.exceptions) — собеседник ответил ошибкой ACP (коды AcpErrorCode)
-    или агент выбрал версию, которой клиент не знает (клиент закрыл соединение).
+    или агент выбрал версию, которой клиент не знает.
 AcpTransportError — соединение закрыто или ответ на mcp/message пришёл не по конверту.
 """
 
@@ -23,7 +17,6 @@ from typing import Annotated, Any, TypeAlias, assert_never
 
 import mcp_types
 from mcp_types.jsonrpc import ErrorData
-from mcp_types.version import LATEST_MODERN_VERSION
 from pydantic import Field, TypeAdapter, ValidationError
 
 from acp import schema as v1_schema
@@ -63,17 +56,11 @@ __all__ = [
 
 
 class AcpTransportError(Exception):
-    """Ошибка провода: соединение ACP закрыто или собеседник ответил на
-    mcp/message не по конверту alpha.8. Ошибки собеседника по существу
-    приходят как RequestError SDK."""
+    """Соединение ACP закрыто или ответ на mcp/message пришёл не по конверту."""
 
 
 class AcpVersion(IntEnum):
-    """Версии ACP, на которых говорит провод; значение берётся из SDK.
-
-    Реестр «версия → проводной модуль SDK»: агент сверяет с ним версию из
-    initialize, остальной код получает модели версии через wire().
-    """
+    """Версии ACP провода — реестр «версия → проводной модуль SDK» (wire())."""
 
     V2 = v2.PROTOCOL_VERSION
 
@@ -87,13 +74,9 @@ class AcpVersion(IntEnum):
 
 
 class McpVersion(StrEnum):
-    """Версии MCP, которые несёт конверт mcp/message; значение — из mcp_types.
+    """Версии MCP в конверте mcp/message — реестр «версия → модуль mcp_types»."""
 
-    Реестр «версия → модуль моделей»: модели и разбор методов версии даёт
-    wire(), своих моделей MCP пакет не держит.
-    """
-
-    V2026_07_28 = LATEST_MODERN_VERSION
+    V2026_07_28 = "2026-07-28"
 
     def wire(self) -> ModuleType:
         """Модуль mcp_types с моделями этой версии."""
@@ -105,8 +88,7 @@ class McpVersion(StrEnum):
 
 
 class AcpErrorCode(IntEnum):
-    """Коды внешних ошибок ACP, которые стороны различают: стандартные
-    JSON-RPC и коды привязки MCP-over-ACP. Бросаются как RequestError SDK."""
+    """Коды ошибок ACP (JSON-RPC и MCP-over-ACP), которые различают стороны."""
 
     INVALID_PARAMS = -32602
     METHOD_NOT_FOUND = -32601
@@ -119,8 +101,7 @@ class AcpErrorCode(IntEnum):
 
 
 class StopReason(StrEnum):
-    """Причины конца хода (`stopReason` в idle); ERROR — ход сорвался,
-    подробности в поле error у IdleErrorUpdate."""
+    """Причины конца хода (`stopReason` в idle); у ERROR причина в IdleErrorUpdate."""
 
     END_TURN = "end_turn"
     MAX_TOKENS = "max_tokens"
@@ -139,11 +120,6 @@ class ToolStatus(StrEnum):
     FAILED = "failed"
     CANCELLED = "cancelled"
 
-    @property
-    def terminal(self) -> bool:
-        """Вызов закончен, новых состояний у него не будет."""
-        return self in (ToolStatus.COMPLETED, ToolStatus.FAILED, ToolStatus.CANCELLED)
-
 
 class ErrorDataKey(StrEnum):
     """Ключи `data` ошибки JSON-RPC, которые пишет агент и читает клиент."""
@@ -156,18 +132,13 @@ class ErrorDataKey(StrEnum):
 
 
 class MetaKey(StrEnum):
-    """Расширения boba в `_meta` запросов ACP: точка среза ветки у
-    `session/fork` — messageId сообщения, до которого копируется история."""
+    """Ключи boba в `_meta` запросов ACP: срез ветки `session/fork` по messageId."""
 
     UP_TO_MESSAGE_ID = "boba/upToMessageId"
 
 
 class McpMessage(BaseModel):
-    """Параметры mcp/message по alpha.8: запрос агента к серверу MCP клиента
-    и уведомление клиента агенту по активному запросу (формы совпадают).
-
-    params — внутренние параметры MCP как есть; null равен отсутствию.
-    """
+    """Параметры mcp/message: запрос агента и уведомление клиента (форма одна)."""
 
     server_id: Annotated[str, Field(alias="serverId", min_length=1)]
     request_id: Annotated[str, Field(alias="requestId", min_length=1)]
@@ -177,8 +148,7 @@ class McpMessage(BaseModel):
 
 
 class McpResultOutcome(BaseModel):
-    """Исход mcp/message с результатом MCP; result обязателен и может быть
-    null, поэтому модель пишется с exclude_unset, а не exclude_none."""
+    """Исход mcp/message с результатом MCP (result может быть null)."""
 
     result: Any
     field_meta: Annotated[dict[str, Any] | None, Field(alias="_meta")] = None
@@ -195,37 +165,22 @@ McpOutcome: TypeAlias = McpResultOutcome | McpErrorOutcome
 
 
 class IdleErrorUpdate(schema.IdleSessionStateUpdate):
-    """idle со stopReason "error" (alpha.8): ход сорвался, error — причина.
-
-    В SDK rc3 у idle нет поля error, и модель SDK молча его отбрасывает;
-    этот наследник его несёт. stop_reason отправитель ставит сам
-    (StopReason.ERROR).
-    """
+    """idle со stopReason "error" и полем error (alpha.8)."""
 
     error: schema.Error | None = None
 
 
 class IdleErrorNotification(schema.UpdateSessionNotification):
-    """Параметры session/update, где update — IdleErrorUpdate.
-
-    Поле update конкретного типа, поэтому error переживает и запись, и
-    разбор; через объединение update у модели SDK оно теряется. Агент шлёт
-    его AgentSide.send_update, клиент разбирает в ClientConnection.
-    """
+    """session/update с IdleErrorUpdate: шлёт AgentSide.send_update, разбирает
+    ClientConnection."""
 
     update: IdleErrorUpdate
 
 
 class AgentSide:
-    """Сторона агента ACP v2: соединение SDK с перехватом до его роутера.
-
-    Собирает Connection SDK и роутер агента через публичный
-    AgentSideConnection.attach и сама служит обработчиком соединения:
-    на initialize с чужой версией или рукопожатие v1 отвечает своей версией,
-    не пуская запрос в SDK; уведомление mcp/message разбирает в McpMessage и
-    отдаёт accept; остальное — роутеру SDK. Запрос mcp/message клиенту и idle
-    с ошибкой шлёт сама: в SDK rc3 для них старые формы.
-    """
+    """Сторона агента ACP v2 на AgentSideConnection.attach SDK. На чужую версию и
+    рукопожатие v1 отвечает своей, уведомление mcp/message отдаёт accept,
+    остальное — роутеру SDK; шлёт запрос mcp/message и idle с ошибкой."""
 
     def __init__(
         self,
@@ -310,15 +265,9 @@ class AgentSide:
 
 
 class ClientConnection(ClientSideConnection):
-    """Сторона клиента ACP v2: ClientSideConnection SDK с перехватом до его роутера.
-
-    У ClientSideConnection в rc3 нет attach, поэтому __init__ повторяет его
-    тело на закрытых именах SDK (_ClientRouter, InitializationState,
-    open_connection) — это держится точным пином 1.0.0rc3 и тестом-стражем.
-    Запрос mcp/message от агента разбирается в McpMessage и уходит answer,
-    idle с ошибкой — клиенту как IdleErrorUpdate; остальное — роутеру SDK.
-    Уведомление mcp/message агенту шлёт notify.
-    """
+    """Наследник ClientSideConnection SDK на его закрытых именах. Запрос
+    mcp/message отдаёт answer, idle с ошибкой — client.session_update как
+    IdleErrorUpdate, остальное — роутеру SDK; notify шлёт уведомление mcp/message."""
 
     def __init__(
         self,
@@ -339,6 +288,8 @@ class ClientConnection(ClientSideConnection):
     async def _receive(
         self, method: str, params: JsonValue | None, is_notification: bool
     ) -> JsonValue | None:
+        await self._state.require(method)
+
         mcp_request = not is_notification and method == CLIENT_METHODS["mcp_message"]
         if mcp_request:
             outcome = await self._answer(McpMessage.model_validate(params))
