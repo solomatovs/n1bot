@@ -10,6 +10,7 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any, ClassVar, cast
 
+import chainlit.data as chainlit_data
 import mcp_types as mt
 import pytest
 from acp.experimental.v2 import schema
@@ -19,6 +20,7 @@ from chainlit_stand import Seed
 from pydantic import AnyUrl, SecretStr
 
 from boba.canvas.canvas import CanvasRegistry
+from boba.canvas.keys import ObjectKey, ThreadDir
 from boba.chainlit.agent.chat import SessionOptions, ThreadAgentsIndex
 from boba.chainlit.agent.client import SessionUpdate
 from boba.chainlit.agent.feed import ResultMounts
@@ -32,6 +34,7 @@ from boba.chainlit.agent.settings import (
     ProviderKindName,
     UserAgentSettings,
 )
+from boba.chainlit.canvas.diagram import DiagramFiles, MermaidViewer
 from boba.chainlit.canvas.panel import ImageViewer
 from boba.chainlit.canvas.remote import RemoteJournals
 from boba.chainlit.chat.feed import QuestionBody, TurnFeed
@@ -61,6 +64,7 @@ from boba.messaging import (
     TurnOutcome,
 )
 from boba.stand.refs import StandRefs
+from boba.stand.storage import StorageSeed
 from boba.toolkit.dag import (
     CallDag,
     DagNode,
@@ -71,6 +75,7 @@ from boba.toolkit.dag import (
 )
 from boba.toolkit.result import (
     CanvasResult,
+    ChatElement,
     ErrorResult,
     FileResult,
     MarkdownResult,
@@ -823,23 +828,26 @@ class TestResultMounts:
 class TestResultsFromRawOutput:
     """Файлы итогов и ссылки панели рисует лента из `rawOutput`: живой ход
     (шина) и воспроизведение дают один и тот же элемент у ответа хода, и
-    так же рисуются итоги старых тредов (снапшоты истории boba-toolkit)."""
+    так же рисуются итоги старых тредов (снапшоты истории boba-toolkit) —
+    канвас снапшота показывает спеку mermaid, её ссылку карточка строит по
+    тексту из хранилища."""
 
     SNAPSHOTS: ClassVar[Path] = (
         Path(__file__).resolve().parents[3] / "core/boba-toolkit/tests/history"
     )
+    SPEC: ClassVar[str] = "graph TD; A-->B"
 
-    def _snapshot(self, name: str) -> str:
+    def _snapshot(self, name: str, thread_id: str) -> str:
         raw = (self.SNAPSHOTS / name).read_text(encoding="utf-8")
 
-        return raw.replace("/workspace/t/", f"/workspace/{THREAD}/")
+        return raw.replace("/workspace/t/", f"/workspace/{thread_id}/")
 
-    def _updates(self) -> list[SessionUpdate]:
-        attached = FileResult.model_validate_json(self._snapshot("file.json"))
-        # снапшот канваса — спека mermaid; ссылку на неё карточка строит по
-        # тексту из хранилища, поэтому здесь тот же итог для картинки
+    def _updates(self, thread_id: str) -> list[SessionUpdate]:
+        attached = FileResult.model_validate_json(
+            self._snapshot("file.json", thread_id)
+        )
         shown = CanvasResult.model_validate_json(
-            self._snapshot("canvas.json").replace("mermaid/a.mmd", "upload/a.png")
+            self._snapshot("canvas.json", thread_id)
         )
 
         return [
@@ -851,75 +859,171 @@ class TestResultsFromRawOutput:
         ]
 
     @staticmethod
-    def _shown(context: FakeContext) -> list[tuple[str, str, str, str]]:
-        found: list[tuple[str, str, str, str]] = []
+    def _shown(context: FakeContext) -> list[tuple[str, str, str, str, str]]:
+        found: list[tuple[str, str, str, str, str]] = []
         for element in context.emitter.elements:
             found.append(
                 (
                     str(element["id"]),
                     str(element["name"]),
-                    str(element.get("url") or element.get("props")),
+                    str(element.get("url")),
+                    str(element.get("props")),
                     str(element["forId"]),
                 )
             )
 
         return sorted(found)
 
+    async def _drawn(
+        self, runtime_stand: StandRefs, seeded: Seed
+    ) -> tuple[FakeContext, FakeContext]:
+        """Ход со снапшотами итогов вживую через шину и при воспроизведении."""
+        thread_id = seeded.thread_id
+        live_context = FakeContext(thread_id)
+        token = context_var.set(cast("ChainlitContext", live_context))
+        try:
+            bus = MemoryMessageBus("test-chainlit")
+            payloads = MemoryPayloadStore()
+            scope = Scope.chat(thread_id)
+            view = ChatView(
+                thread_id, LiveSink(), runtime_stand.journals, seeded.user.id
+            )
+            renderer = ChatRenderer(
+                thread_id,
+                UpdateView(view, thread_id, RemoteJournals(), ToolMedia()),
+                payloads,
+                NoSurface(),
+                ThreadAgentsIndex(),
+            )
+            leave = bus.subscribe(scope, renderer.apply)
+            feed = TurnFeed(bus, payloads, scope, QUESTION, LockToken.local())
+            try:
+                await feed.started(QUESTION, QuestionBody(text="hello"))
+                for update in self._updates(thread_id):
+                    await feed.agent_update(update)
+
+                await feed.finished(TurnOutcome.OK, "")
+            finally:
+                leave()
+        finally:
+            context_var.reset(token)
+
+        replay_context = FakeContext(thread_id)
+        token = context_var.set(cast("ChainlitContext", replay_context))
+        try:
+            view = ChatView(
+                thread_id, LiveSink(), runtime_stand.journals, seeded.user.id
+            )
+            replay = UpdateView(view, thread_id, RemoteJournals(), ToolMedia())
+            await replay.apply(_question())
+            for update in self._updates(thread_id):
+                await replay.apply(update)
+
+            await replay.finish_turn()
+        finally:
+            context_var.reset(token)
+
+        return live_context, replay_context
+
     @pytest.mark.anyio
     async def test_live_and_replay_draw_the_same_elements(
-        self, runtime_stand: StandRefs
+        self, runtime_stand: StandRefs, seeded: Seed, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        CanvasRegistry.register(ImageViewer())
+        monkeypatch.setattr(chainlit_data, "_data_layer", seeded.layer)
+        monkeypatch.setattr(chainlit_data, "_data_layer_initialized", True)
+        spec = ObjectKey(
+            user_id=seeded.user.id,
+            thread_id=seeded.thread_id,
+            dir=ThreadDir.MERMAID,
+            name="a.mmd",
+        )
+        await StorageSeed().put(seeded.layer.storage, spec.render(), self.SPEC)
+        CanvasRegistry.register(MermaidViewer(DiagramFiles()))
         try:
-            live_context = FakeContext(THREAD)
-            token = context_var.set(cast("ChainlitContext", live_context))
-            try:
-                bus = MemoryMessageBus("test-chainlit")
-                payloads = MemoryPayloadStore()
-                scope = Scope.chat(THREAD)
-                renderer = ChatRenderer(
-                    THREAD,
-                    _view(runtime_stand, RemoteJournals()),
-                    payloads,
-                    NoSurface(),
-                    ThreadAgentsIndex(),
-                )
-                leave = bus.subscribe(scope, renderer.apply)
-                feed = TurnFeed(bus, payloads, scope, QUESTION, LockToken.local())
-                try:
-                    await feed.started(QUESTION, QuestionBody(text="hello"))
-                    for update in self._updates():
-                        await feed.agent_update(update)
-
-                    await feed.finished(TurnOutcome.OK, "")
-                finally:
-                    leave()
-            finally:
-                context_var.reset(token)
-
-            replay_context = FakeContext(THREAD)
-            token = context_var.set(cast("ChainlitContext", replay_context))
-            try:
-                replay = _view(runtime_stand, RemoteJournals())
-                await replay.apply(_question())
-                for update in self._updates():
-                    await replay.apply(update)
-
-                await replay.finish_turn()
-            finally:
-                context_var.reset(token)
+            live_context, replay_context = await self._drawn(runtime_stand, seeded)
         finally:
             CanvasRegistry.reset()
 
-        answer = _id(QUESTION, StepRole.ANSWER)
+        thread_id = seeded.thread_id
         live = self._shown(live_context)
         assert live == self._shown(replay_context)
-        assert [(item[0], item[1], item[3]) for item in live] == sorted(
-            [
-                (_id(f"{CALL}/0", StepRole.ELEMENT), "a.pdf", answer),
-                (_id(f"{SECOND_CALL}/0", StepRole.ELEMENT), "CanvasLink", answer),
-            ]
+        drawn: dict[str, tuple[str, str, str]] = {}
+        for element_id, name, url, props, for_id in live:
+            drawn[name] = (element_id, for_id, f"{url} {props}")
+
+        answer = ChatView.derive_id(thread_id, QUESTION, StepRole.ANSWER)
+        attached = ChatView.derive_id(thread_id, f"{CALL}/0", StepRole.ELEMENT)
+        card = ChatView.derive_id(thread_id, f"{SECOND_CALL}/0", StepRole.ELEMENT)
+        assert sorted(drawn) == sorted(["a.pdf", ChatElement.CANVAS_VIEW.value])
+        assert drawn["a.pdf"][:2] == (attached, answer), live
+        assert f"/canvas/{thread_id}/upload/a.pdf" in drawn["a.pdf"][2], live
+        assert drawn[ChatElement.CANVAS_VIEW.value][:2] == (card, answer), live
+        assert spec.in_workspace() in drawn[ChatElement.CANVAS_VIEW.value][2], live
+
+    @pytest.mark.anyio
+    async def test_missing_spec_is_noted_the_same_live_and_in_the_replay(
+        self, runtime_stand: StandRefs, seeded: Seed, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Спеки диаграммы в хранилище нет: ссылки панели нет, в выходе шага
+        вызова одно и то же пояснение вживую и при воспроизведении."""
+        monkeypatch.setattr(chainlit_data, "_data_layer", seeded.layer)
+        monkeypatch.setattr(chainlit_data, "_data_layer_initialized", True)
+        CanvasRegistry.register(MermaidViewer(DiagramFiles()))
+        try:
+            live_context, replay_context = await self._drawn(runtime_stand, seeded)
+        finally:
+            CanvasRegistry.reset()
+
+        step_id = ChatView.derive_id(seeded.thread_id, SECOND_CALL, StepRole.TOOL)
+        assert step_id is not None
+        live = live_context.emitter.last()[step_id].get(StepField.OUTPUT)
+        replayed = replay_context.emitter.last()[step_id].get(StepField.OUTPUT)
+        assert live == replayed
+        assert "a.mmd is not shown: file not found" in str(live), live
+        names: list[str] = []
+        for element in live_context.emitter.elements:
+            names.append(str(element["name"]))
+
+        assert names == ["a.pdf"], names
+
+
+class TestElementIdsWithoutKey:
+    """Id элемента выводится из ключа вопроса или вызова; без ключа элемент
+    остаётся со своим id — элементы разных вопросов и вызовов не совпадают
+    и фронт не заменяет один другим."""
+
+    @pytest.mark.anyio
+    async def test_questions_and_calls_without_a_key_get_distinct_elements(
+        self, runtime_stand: StandRefs, recorded: FakeEmitter
+    ) -> None:
+        view = ChatView(THREAD, LiveSink(), runtime_stand.journals, "u-1")
+        link = schema.ResourceContentBlock(
+            name="note.txt",
+            uri=AnyUrl(f"http://agent-side:1/boba-test/canvas/{THREAD}/upload/n.txt"),
+            mime_type="text/plain",
         )
+        attached = FileResult(
+            path=f"/workspace/{THREAD}/upload/a.pdf",
+            name="a.pdf",
+            mime="application/pdf",
+        )
+        await view.question("one", links=(link,))
+        await view.question("two", links=(link,))
+        view.begin_turn(QUESTION)
+        for _ in range(2):
+            step = await view.tool_started(
+                "mcp__boba__send_file", {"path": attached.path}, None, None
+            )
+            await view.tool_finished(step, attached)
+
+        await view.finish_turn()
+
+        ids: list[str] = []
+        for element in recorded.elements:
+            ids.append(str(element["id"]))
+
+        assert len(ids) == 4, recorded.elements
+        assert len(set(ids)) == 4, ids
 
 
 class TestOldThreads:
