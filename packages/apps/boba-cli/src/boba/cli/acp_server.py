@@ -1,52 +1,45 @@
-"""Вход ACP: агент `boba acp` над ядром boba-agent на SDK agent-client-protocol.
+"""Вход ACP v2: агент `boba acp` над ядром boba-agent на SDK acp.experimental.v2.
 
-Сервер JSON-RPC по stdio: `initialize`, `session/new`, `session/prompt` с
-потоком `session/update`, `session/cancel`, `$/cancel_request`, запрос
-`session/request_permission` к клиенту; история — `session/load` с
-воспроизведением всей беседы уведомлениями до ответа, `session/resume` без
-воспроизведения, `session/list` страницами с курсором, `session/close`,
-`session/delete`. Сессию открывает сборка (SessionAssembly): агент ядра с
-серверами MCP из запроса; события ядра приёмник SessionRelay переводит в
-уведомления по таблице AcpMapping, а ответ на `session/prompt` уходит после
-них, когда ядро отдало итог хода. Беседа при загрузке воспроизводится той
-же таблицей из записей сессии. Второй `prompt` в идущем ходе встаёт в
-очередь ввода ядра и получает ответ по завершении своего хода;
-`session/cancel` прерывает ход и очищает очередь.
+Сервер JSON-RPC по stdio на стороне агента AgentSide (boba-transport-acp):
+`initialize` с `capabilities.session.mcp.acp`, `session/new`,
+`session/prompt`, `session/cancel`, запрос `session/request_permission` к
+клиенту; история — `session/resume` (с `replayFrom: start` беседа
+воспроизводится уведомлениями до ответа), `session/list` страницами с
+курсором, `session/close`, `session/delete`, `session/fork`. Сессию открывает
+сборка (SessionAssembly): агент ядра над инструментами серверов, которые
+клиент объявил записями `type: "acp"`; инструменты агент читает и зовёт
+запросами MCP внутри `mcp/message` (AcpToolServer). События ядра приёмник
+SessionRelay переводит в уведомления по таблице AcpMapping.
 
-Сессию, которую держит другой процесс, `load`/`resume` открывают
-наблюдателем (ObserverSession): историю он отдаёт, а `prompt` отвечает
--32603 «held by another process», пока замок занят; когда держатель вышел,
-следующий `prompt` открывает сессию по-настоящему и проходит. Роли
-наблюдателя в ACP нет — это расширение агента, видимое клиенту только
-текстом ошибки.
+Ход по v2: ответ на `session/prompt` — `messageId` вставленного вопроса (он же
+uuid записи `user`), ход описывают `state_update`: `running` на первом
+событии хода и `idle` со `stopReason` в конце. Сбой после вставки вопроса
+кончает ход `idle` с `stopReason: "error"`, а не ошибкой ответа. Второй
+`prompt` в идущем ходе встаёт в очередь ядра; `session/cancel` прерывает ход
+и очищает очередь.
 
-Настройки сессии (SessionOptions): ответы `session/new|load|resume` несут
-`modes` по режимам разрешений ядра под потолком запуска и `configOptions`
-`mode` (те же режимы) и `model` (профили `models.<имя>` файла настроек);
-`session/set_mode` и `session/set_config_option` меняют режим записью ядра
-или переключают профиль модели для следующих ходов (при идущем ходе —
--32603), после смены уходят `current_mode_update` и `config_option_update`.
-После каждого хода и после сжатия уходит `usage_update` с заполненностью
-контекста; после первого хода и при `load` — `session_info_update` с
-заголовком из первого вопроса. Уведомлений `compaction_update`,
-`compaction_summary_chunk` и `notice` в SDK 0.12.1 нет: ошибки вне хода
-остаются в логе. `session/fork` (черновик RFD) копирует записи сессии из
-хранилища под новый идентификатор и открывает новую сессию как обычную, с
-теми же `modes` и `configOptions` в ответе; точка среза — расширение
-`_meta["boba/upToUuid"]`. Клиент вправе дать вопросу uuid записи `user`
-расширением `_meta["boba/messageId"]` запроса `session/prompt`: по нему
-воспроизведение и ветвление называют вопрос так же, как клиент. `authenticate`
-объявлен и отвечает «метод не найден» — точка расширения. Всё своё в протоколе
-лежит в `_meta` под ключами с префиксом `boba/`.
+Сессию, которую держит другой процесс, `resume` открывает наблюдателем
+(ObserverSession): историю он отдаёт, а `prompt` отвечает -32603 «held by
+another process», пока замок занят; когда держатель вышел, следующий
+`prompt` открывает сессию по-настоящему.
+
+Настройки сессии — `configOptions` `mode` (режимы разрешений ядра) и `model`
+(профили `models.<имя>` настроек) в ответах `session/new|resume|fork`;
+`session/set_config_option` меняет их, после смены уходит
+`config_option_update`. После хода и сжатия уходит `usage_update`, при сжатии
+— `compaction_update`, после первого хода и при воспроизведении —
+`session_info_update` с заголовком; ошибка вне хода уходит `notice`. Точка
+среза `session/fork` — расширение `_meta["boba/upToMessageId"]`.
 
 Ошибки:
 RequestError — ошибка JSON-RPC клиенту: параметры запроса (-32602),
-    неизвестная сессия (-32002), нереализованный метод (-32601), отказ
-    модели, сборки или хранилища сессии, сессия у другого процесса (-32603).
+    неизвестная сессия (-32002), сборка, хранилище, серверы MCP или сессия у
+    другого процесса (-32603).
 SessionRefusedError — сборка сессии отвергла параметры запроса; поднимает
     реализация SessionAssembly, вход переводит в -32602.
-SessionOpenError — сессию открыть не удалось: хранилище, сервер MCP,
-    профиль; поднимает реализация SessionAssembly, вход переводит в -32603.
+SessionOpenError — сессию открыть не удалось: хранилище, серверы MCP,
+    профиль; поднимает реализация SessionAssembly и AcpToolServer, вход
+    переводит в -32603.
 SessionBusyError — модель меняют при идущем ходе; поднимает реализация
     OpenedSession, вход переводит в -32603.
 """
@@ -56,95 +49,21 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from abc import abstractmethod
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, ClassVar, Protocol, TypeAlias
-from uuid import UUID
 
-from acp import Agent as AcpAgentProtocol
-from acp import Client as AcpClientProtocol
-from acp.agent.router import build_agent_router
-from acp.connection import Connection, StreamDirection
-from acp.connection import StreamEvent as FrameEvent
+import mcp_types as mt
 from acp.exceptions import RequestError
-from acp.helpers import (
-    start_tool_call,
-    text_block,
-    tool_content,
-    update_agent_message,
-    update_agent_thought,
-    update_current_mode,
-    update_tool_call,
-    update_user_message,
-)
-from acp.meta import PROTOCOL_VERSION
-from acp.router import Route
-from acp.schema import (
-    AcpMcpServer,
-    AgentCapabilities,
-    AgentMessageChunk,
-    AgentThoughtChunk,
-    AudioContentBlock,
-    AuthenticateResponse,
-    CancelRequestNotification,
-    ClientCapabilities,
-    CloseSessionResponse,
-    ConfigOptionUpdate,
-    CurrentModeUpdate,
-    DeleteSessionRequest,
-    DeleteSessionResponse,
-    EmbeddedResourceContentBlock,
-    ForkSessionResponse,
-    HttpMcpServer,
-    ImageContentBlock,
-    Implementation,
-    InitializeResponse,
-    ListSessionsResponse,
-    LoadSessionResponse,
-    McpCapabilities,
-    McpServerHttp,
-    McpServerStdio,
-    NewSessionResponse,
-    PermissionOption,
-    PermissionOptionKind,
-    PromptCapabilities,
-    PromptResponse,
-    RequestPermissionRequest,
-    RequestPermissionResponse,
-    ResourceContentBlock,
-    ResumeSessionResponse,
-    SelectedPermissionOutcome,
-    SessionCapabilities,
-    SessionCloseCapabilities,
-    SessionConfigOptionBoolean,
-    SessionConfigOptionSelect,
-    SessionDeleteCapabilities,
-    SessionForkCapabilities,
-    SessionInfo,
-    SessionInfoUpdate,
-    SessionListCapabilities,
-    SessionMode,
-    SessionModeState,
-    SessionNotification,
-    SessionResumeCapabilities,
-    SetSessionConfigOptionResponse,
-    SetSessionModeResponse,
-    SseMcpServer,
-    StopReason,
-    TextContentBlock,
-    ToolCallProgress,
-    ToolCallStart,
-    ToolCallStatus,
-    ToolCallUpdate,
-    ToolKind,
-    UsageUpdate,
-    UserMessageChunk,
-)
-from acp.utils import notify_model, request_model
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
+from acp.experimental.v2 import Agent as AcpAgentProtocol
+from acp.experimental.v2 import AgentSideConnection, schema
+from mcp_types.methods import parse_server_notification, parse_server_result
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from boba.agent.agent import Agent
 from boba.agent.control import (
@@ -192,26 +111,56 @@ from boba.agent.records import (
 from boba.agent.session import SessionState
 from boba.agent.turn import ContextUsage
 from boba.cancellation import StopReason as CoreStopReason
-from boba.cli.settings import McpServerJson, McpTransportJson
-from boba.toolkit.dag import ToolHints
-from boba.toolkit.mcp import McpToolNameError, McpToolNames
+from boba.cli.settings import McpClientJson
+from boba.toolkit.dag import (
+    DagNode,
+    NodeOutcome,
+    NodeOutcomes,
+    ToolCard,
+    ToolHints,
+    ToolServer,
+    ToolServers,
+    ToolServersError,
+    ToolUseResults,
+)
+from boba.toolkit.mcp import (
+    McpFailure,
+    McpResults,
+    McpToolNameError,
+    McpToolNames,
+    McpToolStubs,
+)
+from boba.toolkit.result import ErrorResult, FailureResult
+from boba.transport.acp.protocol import (
+    AcpErrorCode,
+    AcpTransportError,
+    AcpVersion,
+    AgentSide,
+    ErrorDataKey,
+    IdleErrorNotification,
+    IdleErrorUpdate,
+    McpErrorOutcome,
+    McpMessage,
+    McpVersion,
+    MetaKey,
+    StopReason,
+    ToolStatus,
+)
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
     "AcpAgent",
     "AcpMapping",
-    "AcpMethod",
-    "AcpServer",
+    "AcpToolServer",
+    "CallProgressRelay",
     "ClientLink",
     "ConfigOptionId",
     "ForkMeta",
     "McpServerSpecs",
-    "MetaKey",
     "ObservedSession",
     "OpenedSession",
     "PermissionChoice",
-    "PromptMeta",
     "PromptText",
     "SessionAssembly",
     "SessionBusyError",
@@ -223,31 +172,41 @@ __all__ = [
     "SessionSettings",
     "SessionSummary",
     "SessionTitles",
-    "StopReasonName",
     "ToolHintSource",
     "ToolKindName",
-    "ToolStatusName",
 ]
 
 PromptBlock: TypeAlias = (
-    TextContentBlock
-    | ImageContentBlock
-    | AudioContentBlock
-    | ResourceContentBlock
-    | EmbeddedResourceContentBlock
+    schema.TextContentBlock
+    | schema.ImageContentBlock
+    | schema.AudioContentBlock
+    | schema.ResourceContentBlock
+    | schema.EmbeddedResourceContentBlock
+    | schema.OtherContentBlock
 )
-McpServerBlock: TypeAlias = HttpMcpServer | SseMcpServer | AcpMcpServer | McpServerStdio
-ConfigOption: TypeAlias = SessionConfigOptionSelect | SessionConfigOptionBoolean
+McpServerBlock: TypeAlias = (
+    schema.HttpMcpServer
+    | schema.AcpMcpServer
+    | schema.StdioMcpServer
+    | schema.OtherMcpServer
+)
+ConfigOption: TypeAlias = (
+    schema.SelectSessionConfigOption
+    | schema.BooleanSessionConfigOption
+    | schema.OtherSessionConfigOption
+)
 Update: TypeAlias = (
-    UserMessageChunk
-    | AgentMessageChunk
-    | AgentThoughtChunk
-    | ToolCallStart
-    | ToolCallProgress
-    | UsageUpdate
-    | CurrentModeUpdate
-    | ConfigOptionUpdate
-    | SessionInfoUpdate
+    schema.UserMessageChunk
+    | schema.AgentMessageChunk
+    | schema.AgentThoughtChunk
+    | schema.SessionToolCallUpdate
+    | schema.UsageUpdate
+    | schema.ConfigOptionUpdate
+    | schema.SessionInfoUpdate
+    | schema.SessionCompactionUpdate
+    | schema.SessionNotice
+    | schema.RunningSessionStateUpdate
+    | schema.IdleSessionStateUpdate
 )
 
 
@@ -263,58 +222,12 @@ class SessionBusyError(Exception):
     """Ход идёт: модель сессии менять поздно."""
 
 
-class AcpMethod(StrEnum):
-    """Методы JSON-RPC, которые вход называет сам: кроме маршрутов SDK."""
-
-    SESSION_PROMPT = "session/prompt"
-    SESSION_UPDATE = "session/update"
-    REQUEST_PERMISSION = "session/request_permission"
-    CANCEL_REQUEST = "$/cancel_request"
-    SESSION_LOAD = "session/load"
-    SESSION_RESUME = "session/resume"
-    SESSION_LIST = "session/list"
-    SESSION_CLOSE = "session/close"
-    SESSION_DELETE = "session/delete"
-    SESSION_FORK = "session/fork"
-    SESSION_SET_MODE = "session/set_mode"
-    SESSION_SET_CONFIG_OPTION = "session/set_config_option"
-    AUTHENTICATE = "authenticate"
-
-
-class MetaKey(StrEnum):
-    """Ключи `_meta` расширений этого агента; префикс `boba/` — по правилу
-    расширяемости ACP."""
-
-    PROGRESS = "boba/progress"
-    UP_TO_UUID = "boba/upToUuid"
-    MESSAGE_ID = "boba/messageId"
-    TOOL_NAME = "boba/toolName"
-
-
-class SessionUpdateName(StrEnum):
-    """Виды `session/update`, которые вход строит без помощников SDK."""
-
-    USAGE = "usage_update"
-    CONFIG_OPTION = "config_option_update"
-    SESSION_INFO = "session_info_update"
-
-
 class ConfigOptionId(StrEnum):
     """Настройки сессии (`configOptions`): идентификатор совпадает с
     категорией ACP того же имени."""
 
     MODE = "mode"
     MODEL = "model"
-
-
-class StopReasonName(StrEnum):
-    """Причины конца хода ACP (`stopReason`)."""
-
-    END_TURN = "end_turn"
-    MAX_TOKENS = "max_tokens"
-    MAX_TURN_REQUESTS = "max_turn_requests"
-    REFUSAL = "refusal"
-    CANCELLED = "cancelled"
 
 
 class ToolKindName(StrEnum):
@@ -324,15 +237,6 @@ class ToolKindName(StrEnum):
     EDIT = "edit"
     EXECUTE = "execute"
     OTHER = "other"
-
-
-class ToolStatusName(StrEnum):
-    """Состояния вызова ACP (`status`)."""
-
-    PENDING = "pending"
-    IN_PROGRESS = "in_progress"
-    COMPLETED = "completed"
-    FAILED = "failed"
 
 
 class PermissionChoice(StrEnum):
@@ -354,75 +258,17 @@ class PermissionChoice(StrEnum):
         return "Reject"
 
 
-class ErrorDataKey(StrEnum):
-    """Ключи `data` ошибки JSON-RPC, которые пишет агент."""
-
-    KIND = "kind"
-    MESSAGE = "message"
-    DETAILS = "details"
-    SESSION_ID = "sessionId"
-    UP_TO_UUID = "upToUuid"
-
-
-class PromptMeta(BaseModel):
-    """Расширение `boba/messageId` в `_meta` запроса `session/prompt`: UUID,
-    который клиент даёт вопросу; он становится uuid записи `user` этого
-    вопроса, поэтому `session/load` воспроизводит вопрос с тем же `messageId`,
-    а `session/fork` принимает его точкой среза. Без ключа uuid чеканит
-    агент. Чужие ключи `_meta` не разбираются."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    message_id: UUID | None = Field(default=None, alias=MetaKey.MESSAGE_ID.value)
-
-    def record_uuid(self) -> str | None:
-        if self.message_id is None:
-            return None
-
-        return str(self.message_id)
-
-
 class ForkMeta(BaseModel):
-    """Расширение `boba/upToUuid` в `_meta` запроса `session/fork`: uuid
-    записи цепочки, на которой ветка кончается — в ветку идут записи до
-    неё, сама она и всё после неё — нет. Без ключа ветка — копия всей
-    сессии. Чужие ключи `_meta` не разбираются."""
+    """Расширение `boba/upToMessageId` в `_meta` запроса `session/fork`:
+    `messageId` вопроса (uuid его записи `user`), на котором ветка кончается —
+    в ветку идут записи до него. Без ключа ветка — копия всей сессии. Чужие
+    ключи `_meta` не разбираются."""
 
     model_config = ConfigDict(extra="ignore")
 
-    up_to_uuid: str | None = Field(
-        default=None, alias=MetaKey.UP_TO_UUID.value, min_length=1
+    up_to_message_id: str | None = Field(
+        default=None, alias=MetaKey.UP_TO_MESSAGE_ID.value, min_length=1
     )
-
-
-class ProgressMeta(BaseModel):
-    """Расширение `boba/progress` в `_meta` уведомления `tool_call_update`:
-    отчёт сервера MCP о ходе вызова, которому в ACP поля нет."""
-
-    model_config = ConfigDict(frozen=True)
-
-    message: str
-    progress: float
-    total: float | None = None
-    elapsed_sec: float
-
-
-class Frame(BaseModel):
-    """Кадр JSON-RPC глазами наблюдателя соединения: только поля адресации."""
-
-    model_config = ConfigDict(frozen=True, extra="ignore")
-
-    id: int | str | None = None
-    method: str | None = None
-    params: Mapping[str, Any] | None = None
-
-
-class SessionParams(BaseModel):
-    """Параметры запроса, у которого есть сессия."""
-
-    model_config = ConfigDict(frozen=True, extra="ignore", populate_by_name=True)
-
-    session_id: str = Field(alias="sessionId")
 
 
 @dataclass(frozen=True)
@@ -500,14 +346,11 @@ class ModeCard:
 
 
 class SessionOptions:
-    """Режимы и настройки сессии в форме ACP: `modes` для клиентов старого
-    API и `configOptions` (`mode`, `model`) для клиентов настроек, оба из
-    одного состояния SessionSettings, чтобы они не расходились; те же
-    состояния — уведомлениями `current_mode_update` и
-    `config_option_update`. Создаёт вход; ответы `session/new|load|resume|fork`
+    """Настройки сессии в форме ACP: `configOptions` `mode` и `model` из одного
+    состояния SessionSettings; то же состояние — уведомлением
+    `config_option_update`. Создаёт вход; ответы `session/new|resume|fork`
     собирают через него."""
 
-    SELECT: ClassVar[str] = "select"
     CARDS: ClassVar[Mapping[PermissionMode, ModeCard]] = {
         PermissionMode.DEFAULT: ModeCard(
             "Default", "Asks before risky actions; read-only tools run freely"
@@ -527,31 +370,11 @@ class SessionOptions:
         ),
     }
 
-    def modes(self, settings: SessionSettings) -> SessionModeState:
-        available: list[SessionMode] = []
-        for mode in settings.modes:
-            card = self.CARDS[mode]
-            available.append(
-                SessionMode(id=mode.value, name=card.name, description=card.description)
-            )
-
-        return SessionModeState(
-            current_mode_id=settings.mode.value, available_modes=available
-        )
-
     def config_options(self, settings: SessionSettings) -> list[ConfigOption]:
         return [self._mode_option(settings), self._model_option(settings)]
 
-    def mode_update(self, settings: SessionSettings) -> CurrentModeUpdate:
-        return update_current_mode(settings.mode.value)
-
-    def options_update(self, settings: SessionSettings) -> ConfigOptionUpdate:
-        return ConfigOptionUpdate.model_validate(
-            {
-                "sessionUpdate": SessionUpdateName.CONFIG_OPTION.value,
-                "configOptions": self._dumped(self.config_options(settings)),
-            }
-        )
+    def options_update(self, settings: SessionSettings) -> schema.ConfigOptionUpdate:
+        return schema.ConfigOptionUpdate(config_options=self.config_options(settings))
 
     def parse_mode(self, value: str, settings: SessionSettings) -> PermissionMode:
         """Ошибки:
@@ -577,68 +400,42 @@ class SessionOptions:
 
         return value
 
-    def _mode_option(self, settings: SessionSettings) -> SessionConfigOptionSelect:
-        options: list[dict[str, str]] = []
+    def _mode_option(
+        self, settings: SessionSettings
+    ) -> schema.SelectSessionConfigOption:
+        options: list[schema.SessionConfigSelectOption] = []
         for mode in settings.modes:
             card = self.CARDS[mode]
             options.append(
-                {
-                    "value": mode.value,
-                    "name": card.name,
-                    "description": card.description,
-                }
+                schema.SessionConfigSelectOption(
+                    value=mode.value, name=card.name, description=card.description
+                )
             )
 
-        return self._select(
-            ConfigOptionId.MODE,
-            "Permission mode",
-            "How the agent treats tool calls that change something",
-            settings.mode.value,
-            options,
+        return schema.SelectSessionConfigOption(
+            config_id=ConfigOptionId.MODE,
+            name="Permission mode",
+            description="How the agent treats tool calls that change something",
+            category=ConfigOptionId.MODE,
+            current_value=settings.mode.value,
+            options=options,
         )
 
-    def _model_option(self, settings: SessionSettings) -> SessionConfigOptionSelect:
-        options: list[dict[str, str]] = []
+    def _model_option(
+        self, settings: SessionSettings
+    ) -> schema.SelectSessionConfigOption:
+        options: list[schema.SessionConfigSelectOption] = []
         for name in settings.models:
-            options.append({"value": name, "name": name})
+            options.append(schema.SessionConfigSelectOption(value=name, name=name))
 
-        return self._select(
-            ConfigOptionId.MODEL,
-            "Model",
-            "Model profile from the agent settings used for the next turns",
-            settings.model,
-            options,
+        return schema.SelectSessionConfigOption(
+            config_id=ConfigOptionId.MODEL,
+            name="Model",
+            description="Model profile from the agent settings used for the next turns",
+            category=ConfigOptionId.MODEL,
+            current_value=settings.model,
+            options=options,
         )
-
-    def _select(
-        self,
-        option_id: ConfigOptionId,
-        name: str,
-        description: str,
-        current: str,
-        options: Sequence[Mapping[str, str]],
-    ) -> SessionConfigOptionSelect:
-        return SessionConfigOptionSelect.model_validate(
-            {
-                "id": option_id.value,
-                "name": name,
-                "description": description,
-                "category": option_id.value,
-                "type": self.SELECT,
-                "currentValue": current,
-                "options": list(options),
-            }
-        )
-
-    @staticmethod
-    def _dumped(options: Sequence[ConfigOption]) -> list[dict[str, Any]]:
-        dumped: list[dict[str, Any]] = []
-        for option in options:
-            dumped.append(
-                option.model_dump(mode="json", by_alias=True, exclude_none=True)
-            )
-
-        return dumped
 
     @staticmethod
     def _refused(
@@ -664,29 +461,6 @@ class ToolHintSource(Protocol):
     def tool_hints(self, name: str) -> ToolHints | None: ...
 
 
-class WireLiterals:
-    """Строгие литералы SDK из перечислений входа: значение проходит адаптер
-    pydantic на границе, а не приводится типом."""
-
-    def __init__(self) -> None:
-        self._stop_reasons = TypeAdapter(StopReason)
-        self._kinds = TypeAdapter(ToolKind)
-        self._statuses = TypeAdapter(ToolCallStatus)
-        self._option_kinds = TypeAdapter(PermissionOptionKind)
-
-    def stop_reason(self, name: StopReasonName) -> StopReason:
-        return self._stop_reasons.validate_python(name.value)
-
-    def kind(self, name: ToolKindName) -> ToolKind:
-        return self._kinds.validate_python(name.value)
-
-    def status(self, name: ToolStatusName) -> ToolCallStatus:
-        return self._statuses.validate_python(name.value)
-
-    def option_kind(self, choice: PermissionChoice) -> PermissionOptionKind:
-        return self._option_kinds.validate_python(choice.value)
-
-
 class ToolTitles:
     """Заголовок вызова для клиента: имя инструмента и краткие аргументы."""
 
@@ -705,59 +479,60 @@ class ToolTitles:
 
 
 class PermissionAsk(BaseModel):
-    """Запрос разрешения клиенту: вызов и варианты ответа."""
+    """Запрос разрешения клиенту: заголовок, варианты ответа и вызов."""
 
     model_config = ConfigDict(frozen=True)
 
-    tool_call: ToolCallUpdate
-    options: Sequence[PermissionOption]
+    title: str
+    options: Sequence[schema.PermissionOption]
+    subject: schema.ToolCallPermissionSubjectVariant
 
 
 class AcpMapping:
-    """Соответствие ядра протоколу: исходы хода → `stopReason`, события →
-    уведомления `session/update`, пометки инструмента → `kind`, вопрос
-    `can_use_tool` → запрос разрешения и ответ на него.
+    """Соответствие ядра протоколу: исходы хода → `idle` со `stopReason`,
+    события → уведомления `session/update`, пометки инструмента → `kind`,
+    вопрос `can_use_tool` → запрос разрешения и ответ на него.
 
     Единственное место, где ядро встречается со схемой ACP; создаёт вход и
     отдаёт приёмникам событий сессий.
     """
 
-    STOP_REASONS: ClassVar[Mapping[TurnOutcome, StopReasonName]] = {
-        TurnOutcome.COMPLETED: StopReasonName.END_TURN,
-        TurnOutcome.MAX_TURNS: StopReasonName.MAX_TURN_REQUESTS,
-        TurnOutcome.OUTPUT_LIMIT: StopReasonName.MAX_TOKENS,
-        TurnOutcome.ABORTED_STREAMING: StopReasonName.CANCELLED,
-        TurnOutcome.ABORTED_TOOLS: StopReasonName.CANCELLED,
-        TurnOutcome.SHUTDOWN: StopReasonName.CANCELLED,
-        TurnOutcome.BLOCKING_LIMIT: StopReasonName.REFUSAL,
-        TurnOutcome.COMPACT_FAILURE_BREAKER: StopReasonName.REFUSAL,
-        TurnOutcome.RAPID_REFILL_BREAKER: StopReasonName.REFUSAL,
+    STOP_REASONS: ClassVar[Mapping[TurnOutcome, StopReason]] = {
+        TurnOutcome.COMPLETED: StopReason.END_TURN,
+        TurnOutcome.MAX_TURNS: StopReason.MAX_TURN_REQUESTS,
+        TurnOutcome.OUTPUT_LIMIT: StopReason.MAX_TOKENS,
+        TurnOutcome.ABORTED_STREAMING: StopReason.CANCELLED,
+        TurnOutcome.ABORTED_TOOLS: StopReason.CANCELLED,
+        TurnOutcome.SHUTDOWN: StopReason.CANCELLED,
+        TurnOutcome.BLOCKING_LIMIT: StopReason.REFUSAL,
+        TurnOutcome.COMPACT_FAILURE_BREAKER: StopReason.REFUSAL,
+        TurnOutcome.RAPID_REFILL_BREAKER: StopReason.REFUSAL,
     }
+    COMPACTED: ClassVar[str] = "completed"
 
     def __init__(self) -> None:
-        self._wire = WireLiterals()
         self._titles = ToolTitles()
+        self._uses = ToolUseResults()
 
-    def prompt_response(self, result: ResultEvent) -> PromptResponse:
-        """Ответ на `session/prompt` по итогу хода.
-
-        Ошибки:
-        RequestError — модель отказала: ход кончился без ответа (-32603).
-        """
+    def idle(
+        self, result: ResultEvent
+    ) -> schema.IdleSessionStateUpdate | IdleErrorUpdate:
+        """Конец хода по его итогу; отказ модели — idle с ошибкой."""
         found = self.STOP_REASONS.get(result.outcome)
         if found is None:
-            data = {
-                ErrorDataKey.KIND.value: result.outcome.value,
-                ErrorDataKey.MESSAGE.value: result.error,
-            }
-            raise RequestError.internal_error(data)
+            return self.idle_error(result.outcome.value, result.error)
 
-        return PromptResponse(stop_reason=self._wire.stop_reason(found))
+        return schema.IdleSessionStateUpdate(stop_reason=found)
 
-    def cancelled_response(self) -> PromptResponse:
-        return PromptResponse(
-            stop_reason=self._wire.stop_reason(StopReasonName.CANCELLED)
+    def idle_error(self, kind: str, message: str) -> IdleErrorUpdate:
+        """Конец хода сбоем: вид сбоя в `data`, текст — сообщение ошибки."""
+        error = schema.Error(
+            code=AcpErrorCode.INTERNAL_ERROR,
+            message=message,
+            data={ErrorDataKey.KIND.value: kind},
         )
+
+        return IdleErrorUpdate(stop_reason=StopReason.ERROR, error=error)
 
     def tool_kind(self, hints: ToolHints | None) -> ToolKindName:
         """`kind` по пометкам MCP: читающий — read, разрушающий — execute,
@@ -776,52 +551,65 @@ class AcpMapping:
     def chunks(self, event: StreamEvent) -> Sequence[Update]:
         updates: list[Update] = []
         if event.reasoning:
-            thought = update_agent_thought(text_block(event.reasoning))
-            thought.message_id = event.message_id
-            updates.append(thought)
+            updates.append(
+                schema.AgentThoughtChunk(
+                    message_id=event.message_id,
+                    content=schema.TextContentBlock(text=event.reasoning),
+                )
+            )
 
         if event.content:
-            message = update_agent_message(text_block(event.content))
-            message.message_id = event.message_id
-            updates.append(message)
+            updates.append(
+                schema.AgentMessageChunk(
+                    message_id=event.message_id,
+                    content=schema.TextContentBlock(text=event.content),
+                )
+            )
 
         return updates
 
-    def tool_call(self, block: ToolUseBlock, hints: ToolHints | None) -> ToolCallStart:
-        """Имя инструмента отдельно от заголовка: в схеме SDK поля `name`
-        нет, клиент берёт его из `_meta` (расширение)."""
-        start = start_tool_call(
-            block.id,
-            self._titles.title(block.name, block.input),
-            kind=self._wire.kind(self.tool_kind(hints)),
-            status=self._wire.status(ToolStatusName.PENDING),
+    def tool_call(
+        self, block: ToolUseBlock, hints: ToolHints | None
+    ) -> schema.SessionToolCallUpdate:
+        return schema.SessionToolCallUpdate(
+            tool_call_id=block.id,
+            name=block.name,
+            title=self._titles.title(block.name, block.input),
+            kind=self.tool_kind(hints),
+            status=ToolStatus.PENDING,
             raw_input=dict(block.input),
         )
-        start.field_meta = {MetaKey.TOOL_NAME.value: block.name}
 
-        return start
-
-    def tool_results(self, record: UserRecord) -> Sequence[ToolCallProgress]:
-        updates: list[ToolCallProgress] = []
+    def tool_results(
+        self, record: UserRecord
+    ) -> Sequence[schema.SessionToolCallUpdate]:
+        updates: list[schema.SessionToolCallUpdate] = []
         for block in record.message.tool_results():
             updates.append(self._tool_result(block, record.tool_use_result))
 
         return updates
 
-    def user_chunk(self, text: str, message_id: str) -> UserMessageChunk:
-        chunk = update_user_message(text_block(text))
-        chunk.message_id = message_id
+    def user_updates(self, record: UserRecord) -> Iterator[Update]:
+        """Запись `user`: итоги вызовов либо вопрос человека с uuid записи
+        как `messageId`; служебные записи в ленту не идут."""
+        results = self.tool_results(record)
+        if results:
+            yield from results
+            return
 
-        return chunk
+        text = record.human_text()
+        if text is None:
+            return
+
+        yield schema.UserMessageChunk(
+            message_id=record.uuid, content=schema.TextContentBlock(text=text)
+        )
 
     def replay(
         self, conversation: Sequence[ChainRecord], hints: ToolHintSource
     ) -> Sequence[Update]:
         """Беседа из записей → те же уведомления, что шлёт живой ход, по
-        порядку записей: вопрос человека — `user_message_chunk` с uuid записи
-        как `messageId`; ответ модели — по блоку: рассуждение, текст, вызов
-        инструмента с `messageId` сообщения; результат инструмента —
-        `tool_call_update`. Синтетические записи агента (заметки об ошибках,
+        порядку записей. Синтетические записи агента (заметки об ошибках,
         заглушки) не воспроизводятся, оборванный ответ — воспроизводится;
         служебные сообщения, вложения и границы сжатия в ленту не идут."""
         updates: list[Update] = []
@@ -832,23 +620,11 @@ class AcpMapping:
 
     def _replayed(self, record: ChainRecord, hints: ToolHintSource) -> Iterator[Update]:
         if isinstance(record, UserRecord):
-            yield from self._replayed_user(record)
+            yield from self.user_updates(record)
             return
 
         if isinstance(record, AssistantRecord):
             yield from self._replayed_assistant(record, hints)
-
-    def _replayed_user(self, record: UserRecord) -> Iterator[Update]:
-        results = self.tool_results(record)
-        if results:
-            yield from results
-            return
-
-        text = record.human_text()
-        if text is None:
-            return
-
-        yield self.user_chunk(text, record.uuid)
 
     def _replayed_assistant(
         self, record: AssistantRecord, hints: ToolHintSource
@@ -859,98 +635,112 @@ class AcpMapping:
         message_id = record.message.id
         for block in record.message.content:
             if isinstance(block, ThinkingBlock):
-                thought = update_agent_thought(text_block(block.thinking))
-                thought.message_id = message_id
-                yield thought
+                yield schema.AgentThoughtChunk(
+                    message_id=message_id,
+                    content=schema.TextContentBlock(text=block.thinking),
+                )
                 continue
 
             if isinstance(block, TextBlock):
-                message = update_agent_message(text_block(block.text))
-                message.message_id = message_id
-                yield message
+                yield schema.AgentMessageChunk(
+                    message_id=message_id,
+                    content=schema.TextContentBlock(text=block.text),
+                )
                 continue
 
             yield self.tool_call(block, hints.tool_hints(block.name))
 
-    def _tool_result(self, block: ToolResultBlock, artifact: Any) -> ToolCallProgress:
-        status = ToolStatusName.COMPLETED
+    def _tool_result(
+        self, block: ToolResultBlock, stored: Any
+    ) -> schema.SessionToolCallUpdate:
+        """Итог вызова: текст модели содержимым, ответ сервера как пришёл —
+        `rawOutput`."""
+        status = ToolStatus.COMPLETED
         if block.is_error:
-            status = ToolStatusName.FAILED
+            status = ToolStatus.FAILED
 
-        return update_tool_call(
-            block.tool_use_id,
-            status=self._wire.status(status),
-            content=[tool_content(text_block(block.text()))],
-            raw_output=artifact,
+        text = schema.TextContentBlock(text=block.text())
+
+        return schema.SessionToolCallUpdate(
+            tool_call_id=block.tool_use_id,
+            status=status,
+            content=[schema.ContentToolCallContent(content=text)],
+            raw_output=self._uses.of(stored).artifact,
         )
 
-    def tool_started(self, event: ToolStartedEvent) -> ToolCallProgress:
-        return update_tool_call(
-            event.tool_use_id, status=self._wire.status(ToolStatusName.IN_PROGRESS)
+    def tool_started(self, event: ToolStartedEvent) -> schema.SessionToolCallUpdate:
+        return schema.SessionToolCallUpdate(
+            tool_call_id=event.tool_use_id, status=ToolStatus.IN_PROGRESS
         )
 
-    def usage_update(self, usage: ContextUsage) -> UsageUpdate:
+    def tool_progress(self, event: ToolProgressEvent) -> schema.SessionToolCallUpdate:
+        """Ход вызова — одна строка содержимого, которая заменяет прежнюю."""
+        done = f"{event.progress:g}"
+        if event.total is not None:
+            done = f"{done} of {event.total:g}"
+
+        line = done
+        if event.message:
+            line = f"{event.message} — {done}"
+
+        text = schema.TextContentBlock(text=line)
+
+        return schema.SessionToolCallUpdate(
+            tool_call_id=event.tool_use_id,
+            status=ToolStatus.IN_PROGRESS,
+            content=[schema.ContentToolCallContent(content=text)],
+        )
+
+    def usage_update(self, usage: ContextUsage) -> schema.UsageUpdate:
         """Заполненность контекста: `used` — оценка разговора, `size` —
         действующее окно профиля."""
-        return UsageUpdate.model_validate(
-            {
-                "sessionUpdate": SessionUpdateName.USAGE.value,
-                "used": usage.used,
-                "size": usage.size,
-            }
+        return schema.UsageUpdate(used=usage.used, size=usage.size)
+
+    def title_update(self, title: str) -> schema.SessionInfoUpdate:
+        return schema.SessionInfoUpdate(title=title)
+
+    def compaction(
+        self, record: CompactBoundaryRecord
+    ) -> schema.SessionCompactionUpdate:
+        return schema.SessionCompactionUpdate(
+            compaction_id=record.uuid, status=self.COMPACTED
         )
 
-    def title_update(self, title: str) -> SessionInfoUpdate:
-        return SessionInfoUpdate.model_validate(
-            {"sessionUpdate": SessionUpdateName.SESSION_INFO.value, "title": title}
-        )
-
-    def tool_progress(self, event: ToolProgressEvent) -> ToolCallProgress:
-        """Отчёт о ходе вызова: статус стандартный, поля отчёта — в `_meta`
-        под ключом `boba/progress` (расширение)."""
-        meta = ProgressMeta(
-            message=event.message,
-            progress=event.progress,
-            total=event.total,
-            elapsed_sec=event.elapsed_sec,
-        )
-        update = update_tool_call(
-            event.tool_use_id, status=self._wire.status(ToolStatusName.IN_PROGRESS)
-        )
-        update.field_meta = {
-            MetaKey.PROGRESS.value: meta.model_dump(mode="json", exclude_none=True)
-        }
-
-        return update
+    def notice(self, event: ErrorEvent) -> schema.SessionNotice:
+        return schema.SessionNotice(severity="error", title=event.message)
 
     def permission_request(
         self, request: CanUseToolRequest, hints: ToolHints | None
     ) -> PermissionAsk:
-        tool_call = ToolCallUpdate(
+        title = self._titles.title(request.tool_name, request.input)
+        tool_call = schema.ToolCallUpdate(
             tool_call_id=request.tool_use_id,
-            title=self._titles.title(request.tool_name, request.input),
-            kind=self._wire.kind(self.tool_kind(hints)),
-            status=self._wire.status(ToolStatusName.PENDING),
+            name=request.tool_name,
+            title=title,
+            kind=self.tool_kind(hints),
+            status=ToolStatus.PENDING,
             raw_input=dict(request.input),
         )
-        options: list[PermissionOption] = []
+        options: list[schema.PermissionOption] = []
         for choice in PermissionChoice:
             options.append(
-                PermissionOption(
-                    option_id=choice.value,
-                    name=choice.label,
-                    kind=self._wire.option_kind(choice),
+                schema.PermissionOption(
+                    option_id=choice.value, name=choice.label, kind=choice
                 )
             )
 
-        return PermissionAsk(tool_call=tool_call, options=options)
+        return PermissionAsk(
+            title=title,
+            options=options,
+            subject=schema.ToolCallPermissionSubjectVariant(tool_call=tool_call),
+        )
 
     def permission_answer(
-        self, response: RequestPermissionResponse, request: CanUseToolRequest
+        self, response: schema.RequestPermissionResponse, request: CanUseToolRequest
     ) -> PermissionAnswer:
         """Ответ клиента → ответ ядру; отмена и неизвестный вариант — отказ."""
         outcome = response.outcome
-        if not isinstance(outcome, SelectedPermissionOutcome):
+        if not isinstance(outcome, schema.SelectedPermissionOutcomeVariant):
             return DenyAnswer()
 
         try:
@@ -995,10 +785,10 @@ class PromptText:
         return text
 
     def _part(self, block: PromptBlock) -> str:
-        if isinstance(block, TextContentBlock):
+        if isinstance(block, schema.TextContentBlock):
             return block.text
 
-        if isinstance(block, ResourceContentBlock):
+        if isinstance(block, schema.ResourceContentBlock):
             return self.LINK.format(name=block.name, uri=block.uri)
 
         details = (
@@ -1010,20 +800,31 @@ class PromptText:
 
 
 class McpServerSpecs:
-    """Серверы MCP из `session/new` → записи формата `.mcp.json` настроек,
-    из которых сборка делает конфиги клиента. Имя сервера входит в полные
-    имена его инструментов и проверяется их формой (McpToolNames)."""
+    """Серверы MCP из `session/new|resume|fork`: принимаются только записи
+    `type: "acp"` (MCP-over-ACP). Имя сервера входит в полные имена его
+    инструментов и проверяется их формой (McpToolNames)."""
 
     def __init__(self) -> None:
         self._names = McpToolNames()
 
-    def specs(self, servers: Sequence[McpServerBlock]) -> dict[str, McpServerJson]:
+    def servers(
+        self, blocks: Sequence[McpServerBlock]
+    ) -> Sequence[schema.AcpMcpServer]:
         """Ошибки:
-        RequestError — сервер неподдержанного вида, повтор имени либо имя,
-            которое не годится для полных имён инструментов (-32602).
+        RequestError — запись не `acp`, повтор имени либо имя, которое не
+            годится для полных имён инструментов (-32602).
         """
-        specs: dict[str, McpServerJson] = {}
-        for server in servers:
+        accepted: list[schema.AcpMcpServer] = []
+        named: set[str] = set()
+        for server in blocks:
+            if not isinstance(server, schema.AcpMcpServer):
+                details = (
+                    f"mcpServers entry of type '{server.type}' is refused: this "
+                    "agent declared mcp.acp only and reaches tools through "
+                    "mcp/message; declare the server with type 'acp'"
+                )
+                raise RequestError.invalid_params({ErrorDataKey.DETAILS.value: details})
+
             try:
                 self._names.checked_server(server.name)
             except McpToolNameError as exc:
@@ -1032,118 +833,266 @@ class McpServerSpecs:
                     {ErrorDataKey.DETAILS.value: details}
                 ) from exc
 
-            if server.name in specs:
+            if server.name in named:
                 details = (
                     f"mcpServers names '{server.name}' twice; names must be unique"
                 )
                 raise RequestError.invalid_params({ErrorDataKey.DETAILS.value: details})
 
-            specs[server.name] = self._spec(server)
+            named.add(server.name)
+            accepted.append(server)
 
-        return specs
-
-    def _spec(self, server: McpServerBlock) -> McpServerJson:
-        if isinstance(server, McpServerStdio):
-            env: dict[str, str] = {}
-            for variable in server.env:
-                env[variable.name] = variable.value
-
-            return McpServerJson(
-                type=McpTransportJson.STDIO,
-                command=server.command,
-                args=list(server.args),
-                env=env,
-            )
-
-        if isinstance(server, McpServerHttp):
-            headers: dict[str, str] = {}
-            for header in server.headers:
-                headers[header.name] = header.value
-
-            return McpServerJson(
-                type=McpTransportJson.HTTP, url=server.url, headers=headers
-            )
-
-        details = (
-            f"mcpServers entry '{server.name}' has type '{server.type}', which this "
-            "agent does not support: it declared mcpCapabilities http only (stdio "
-            "is always accepted)"
-        )
-        raise RequestError.invalid_params({ErrorDataKey.DETAILS.value: details})
+        return accepted
 
 
+@dataclass(frozen=True)
 class ClientLink:
-    """Вызовы к клиенту по соединению SDK: уведомление `session/update` и
-    запрос `session/request_permission`. Создаёт сервер и отдаёт агенту."""
+    """Связь агента с клиентом: сторона агента (mcp/message, idle с ошибкой)
+    и соединение SDK (уведомления и запрос разрешения). Создаёт
+    AcpAgent.attach, держат SessionRelay и AcpToolServer."""
 
-    def __init__(self, connection: Connection) -> None:
-        self._connection = connection
+    side: AgentSide
+    connection: AgentSideConnection
 
-    async def session_update(self, session_id: str, update: Update) -> None:
-        await notify_model(
-            self._connection,
-            AcpMethod.SESSION_UPDATE.value,
-            SessionNotification(session_id=session_id, update=update),
+
+class CallProgressRelay:
+    """Ход одного вызова: уведомление `notifications/progress` его запроса
+    mcp/message → событие ToolProgressEvent ядра в приёмник сессии."""
+
+    def __init__(self, sink: EventSink, tool_use_id: str) -> None:
+        self._sink = sink
+        self._tool_use_id = tool_use_id
+        self._started = time.monotonic()
+
+    async def accept(self, message: McpMessage) -> None:
+        """Ошибки:
+        ValidationError — уведомление хода не проходит модель MCP.
+        """
+        params: Mapping[str, Any] = {}
+        if message.params is not None:
+            params = message.params
+
+        try:
+            notification = parse_server_notification(
+                message.method, McpVersion.V2026_07_28, params
+            )
+        except KeyError:
+            logger.info(
+                "call %s: mcp/message notification %s is not progress; dropped",
+                self._tool_use_id,
+                message.method,
+            )
+            return
+
+        if not isinstance(notification, mt.ProgressNotification):
+            logger.info(
+                "call %s: mcp/message notification %s is not progress; dropped",
+                self._tool_use_id,
+                message.method,
+            )
+            return
+
+        progress = notification.params
+        message_text = progress.message
+        if message_text is None:
+            message_text = ""
+
+        await self._sink.emit(
+            ToolProgressEvent(
+                tool_use_id=self._tool_use_id,
+                message=message_text,
+                progress=progress.progress,
+                total=progress.total,
+                elapsed_sec=time.monotonic() - self._started,
+            )
         )
 
-    async def request_permission(
-        self, session_id: str, ask: PermissionAsk
-    ) -> RequestPermissionResponse:
-        return await request_model(
-            self._connection,
-            AcpMethod.REQUEST_PERMISSION.value,
-            RequestPermissionRequest(
-                session_id=session_id,
-                tool_call=ask.tool_call,
-                options=list(ask.options),
-            ),
-            RequestPermissionResponse,
+
+class AcpToolServer(ToolServer):
+    """Реализация ToolServer над одной регистрацией MCP-over-ACP: запись
+    `type: "acp"` сессии. Инструменты — все страницы `tools/list`, вызов —
+    `tools/call` запросом mcp/message через AgentSide; текст для модели
+    собирает McpResults, ответ сервера как пришёл ложится в NodeOutcome.reply,
+    ход вызова идёт в приёмник сессии через CallProgressRelay. Создаёт AcpAgent
+    на каждую запись сессии и собирает их ToolServers."""
+
+    def __init__(
+        self,
+        side: AgentSide,
+        server: schema.AcpMcpServer,
+        sink: EventSink,
+        limits: McpClientJson,
+    ) -> None:
+        self._side = side
+        self._server = server
+        self._sink = sink
+        self._limits = limits
+        self._ids = IdMint()
+        self._stubs = McpToolStubs()
+        self._results = McpResults()
+        self._names = McpToolNames()
+        self._outcomes = NodeOutcomes()
+        self._cards: list[ToolCard] = []
+        self._meta: mt.RequestParamsMeta = {
+            mt.PROTOCOL_VERSION_META_KEY: McpVersion.V2026_07_28.value,
+            mt.CLIENT_CAPABILITIES_META_KEY: {},
+        }
+
+    async def open(self) -> None:
+        """Карточки по всем страницам `tools/list`.
+
+        Ошибки:
+        SessionOpenError — клиент ответил ошибкой ACP, ошибкой MCP, не уложился
+            в срок или ответил не списком инструментов.
+        """
+        cursor: str | None = None
+        while True:
+            page = await self._page(cursor)
+            for tool in page.tools:
+                try:
+                    card = self._stubs.card(self._server.name, tool)
+                except McpToolNameError as exc:
+                    msg = (
+                        f"MCP server '{self._server.name}' (serverId "
+                        f"'{self._server.server_id}') lists a tool that is "
+                        f"refused: {exc}"
+                    )
+                    raise SessionOpenError(msg) from exc
+
+                self._cards.append(card)
+
+            cursor = page.next_cursor
+            if cursor is None:
+                break
+
+        logger.info(
+            "mcp: server %s (%s) offers %d tool(s)",
+            self._server.name,
+            self._server.server_id,
+            len(self._cards),
         )
 
-
-class PromptWaiters:
-    """Ожидания ответов на `session/prompt` по идентификаторам элементов
-    очереди: итог хода закрывает ожидания всех элементов, которые он
-    обслужил; очистка очереди отвечает им отменой; падение обслуживания —
-    ошибкой."""
-
-    def __init__(self, mapping: AcpMapping) -> None:
-        self._mapping = mapping
-        self._pending: dict[str, asyncio.Future[PromptResponse]] = {}
-
-    def register(self, item_id: str) -> asyncio.Future[PromptResponse]:
-        future: asyncio.Future[PromptResponse] = (
-            asyncio.get_running_loop().create_future()
+    async def _page(self, cursor: str | None) -> mt.ListToolsResult:
+        """Ошибки:
+        SessionOpenError — страница не получена или не разобрана.
+        """
+        params = mt.PaginatedRequestParams(cursor=cursor, _meta=self._meta)
+        request = mt.ListToolsRequest(params=params)
+        message = McpMessage(
+            server_id=self._server.server_id,
+            request_id=self._ids.request_id(),
+            method=request.method,
+            params=params.model_dump(mode="json", by_alias=True, exclude_none=True),
         )
-        self._pending[item_id] = future
+        what = (
+            f"listing the tools of MCP server '{self._server.name}' "
+            f"(serverId '{self._server.server_id}', cursor {cursor!r})"
+        )
+        try:
+            async with asyncio.timeout(self._limits.list_timeout_sec):
+                outcome = await self._side.request(message, None)
+        except TimeoutError as exc:
+            msg = (
+                f"{what} expected an answer within "
+                f"{self._limits.list_timeout_sec} s, got none"
+            )
+            raise SessionOpenError(msg) from exc
+        except (RequestError, AcpTransportError) as exc:
+            msg = f"{what} expected a tools/list result, got an ACP error: {exc}"
+            raise SessionOpenError(msg) from exc
 
-        return future
+        if isinstance(outcome, McpErrorOutcome):
+            msg = (
+                f"{what} expected a tools/list result, got MCP error "
+                f"{outcome.error.code}: {outcome.error.message}"
+            )
+            raise SessionOpenError(msg)
 
-    def settle(self, result: ResultEvent) -> None:
-        for item_id in result.prompt_ids:
-            future = self._pending.pop(item_id, None)
-            if future is None or future.done():
-                continue
+        try:
+            parsed = parse_server_result(
+                request.method, McpVersion.V2026_07_28, outcome.result
+            )
+        except (ValidationError, KeyError, ValueError, TypeError) as exc:
+            shown = repr(outcome.result)[:200]
+            msg = f"{what} expected a tools/list result, got {shown}: {exc}"
+            raise SessionOpenError(msg) from exc
 
-            try:
-                future.set_result(self._mapping.prompt_response(result))
-            except RequestError as exc:
-                future.set_exception(exc)
+        if not isinstance(parsed, mt.ListToolsResult):
+            msg = f"{what} expected a tools/list result, got {type(parsed).__name__}"
+            raise SessionOpenError(msg)
 
-    def cancel(self, item_ids: Sequence[str]) -> None:
-        for item_id in item_ids:
-            future = self._pending.pop(item_id, None)
-            if future is None or future.done():
-                continue
+        return parsed
 
-            future.set_result(self._mapping.cancelled_response())
+    def tools(self) -> Sequence[ToolCard]:
+        return self._cards
 
-    def fail(self, error: RequestError) -> None:
-        for future in self._pending.values():
-            if not future.done():
-                future.set_exception(error)
+    def features(self) -> Mapping[str, Mapping[str, object]]:
+        return {}
 
-        self._pending.clear()
+    async def submit(
+        self, calls: Sequence[DagNode]
+    ) -> Sequence[asyncio.Future[NodeOutcome]]:
+        pending: list[asyncio.Future[NodeOutcome]] = []
+        for call in calls:
+            pending.append(asyncio.ensure_future(self._call(call)))
+
+        return pending
+
+    async def _call(self, node: DagNode) -> NodeOutcome:
+        """Один вызов `tools/call`; наружу идёт только отмена (контракт NodeBody)."""
+        meta = mt.RequestParamsMeta(progress_token=node.key)
+        meta.update(self._meta)
+        params = mt.CallToolRequestParams(
+            name=self._names.tool_of(node.tool), arguments=dict(node.args), _meta=meta
+        )
+        request = mt.CallToolRequest(params=params)
+        message = McpMessage(
+            server_id=self._server.server_id,
+            request_id=self._ids.request_id(),
+            method=request.method,
+            params=params.model_dump(mode="json", by_alias=True, exclude_none=True),
+        )
+        relay = CallProgressRelay(self._sink, node.key)
+        limit = self._limits.call_timeout_sec
+        try:
+            async with asyncio.timeout(limit):
+                outcome = await self._side.request(message, relay.accept)
+
+            if isinstance(outcome, McpErrorOutcome):
+                error = self._results.error(node.tool, node.key, outcome.error)
+                return self._outcomes.refused(node, error)
+
+            parsed = parse_server_result(
+                request.method, McpVersion.V2026_07_28, outcome.result
+            )
+            if not isinstance(parsed, mt.CallToolResult | mt.InputRequiredResult):
+                msg = f"the answer is {type(parsed).__name__}, not a tools/call result"
+                raise TypeError(msg)
+        except (
+            TimeoutError,
+            RequestError,
+            AcpTransportError,
+            ValidationError,
+            KeyError,
+            ValueError,
+            TypeError,
+        ) as exc:
+            failure = ErrorResult(
+                message=(
+                    f"tool {node.tool!r} got no result from its mcp server within "
+                    f"{limit} s: {type(exc).__name__}: {exc}"
+                ),
+                error_kind=McpFailure.TRANSPORT,
+            )
+            return self._outcomes.refused(node, failure)
+
+        family = self._results.result(node.tool, node.key, parsed)
+        if isinstance(family, FailureResult):
+            built = self._outcomes.refused(node, family)
+        else:
+            built = self._outcomes.of(node, family, False)
+
+        return built.model_copy(update={"reply": outcome.result})
 
 
 class SessionRelay(EventSink):
@@ -1152,31 +1101,23 @@ class SessionRelay(EventSink):
     Создаёт вход на каждую сессию до сборки агента и отдаёт ядру
     приёмником; агент привязывается после открытия (`attach`), потому что
     пометки инструментов, заполненность контекста и ответы на вопросы живут
-    у него. Уведомления ждут отправки в порядке событий, так что итог хода
-    приходит после них; по итогу хода уходят `usage_update` и, после первого
-    вопроса человека, `session_info_update` с заголовком, затем закрываются
-    ожидания `prompt`; граница сжатия тоже даёт `usage_update`. Вопрос
-    `can_use_tool` уходит клиенту отдельной задачей, которую снимает отмена
-    хода. После ухода клиента уведомления некому слать: приёмник
-    отвязывается и дальше молчит.
+    у него. Первое событие хода шлёт `state_update` `running`, итог хода —
+    `usage_update`, после первого вопроса — `session_info_update` и затем
+    `idle`. Вопрос `can_use_tool` уходит клиенту отдельной задачей, которую
+    снимает отмена хода. После ухода клиента приёмник отвязывается и дальше
+    молчит.
     """
 
-    def __init__(
-        self,
-        session_id: str,
-        link: ClientLink,
-        mapping: AcpMapping,
-        waiters: PromptWaiters,
-    ) -> None:
+    def __init__(self, session_id: str, link: ClientLink, mapping: AcpMapping) -> None:
         self._session_id = session_id
         self._link = link
         self._mapping = mapping
-        self._waiters = waiters
         self._titles = SessionTitles()
         self._agent: Agent | None = None
         self._asks: dict[str, asyncio.Task[None]] = {}
         self._detached = False
         self._titled = False
+        self._running = False
 
     def attach(self, agent: Agent) -> None:
         self._agent = agent
@@ -1191,22 +1132,45 @@ class SessionRelay(EventSink):
         await self._send(update)
 
     async def announce_loaded(self) -> None:
-        """После воспроизведения загруженной сессии: заголовок и
-        заполненность контекста, как после хода."""
+        """После воспроизведения сессии: заголовок и заполненность
+        контекста, как после хода."""
         await self._send_all(self._turn_summary())
 
-    async def emit(self, event: AgentEvent) -> None:
-        updates = self._updates(event)
-        if updates is not None:
-            await self._send_all(updates)
-            return
+    async def failed(self, update: IdleErrorUpdate) -> None:
+        """Ход кончился сбоем: `idle` с ошибкой."""
+        self._running = False
+        await self._send(update)
 
+    async def emit(self, event: AgentEvent) -> None:
         if isinstance(event, ResultEvent):
             await self._send_all(self._turn_summary())
-            self._waiters.settle(event)
+            idle = self._mapping.idle(event)
+            if isinstance(idle, IdleErrorUpdate):
+                await self.failed(idle)
+                return
+
+            self._running = False
+            await self._send(idle)
             return
 
-        self._control(event)
+        if isinstance(event, ErrorEvent):
+            logger.warning("session %s: %s", self._session_id, event.message)
+            await self._send(self._mapping.notice(event))
+            return
+
+        updates = self._updates(event)
+        if updates is None:
+            self._control(event)
+            return
+
+        if not updates:
+            return
+
+        if not self._running:
+            self._running = True
+            await self._send(schema.RunningSessionStateUpdate())
+
+        await self._send_all(updates)
 
     def _turn_summary(self) -> Sequence[Update]:
         """Уведомления по итогу хода: заполненность и, однажды, заголовок."""
@@ -1221,13 +1185,13 @@ class SessionRelay(EventSink):
 
         return updates
 
-    def _usage(self) -> UsageUpdate | None:
+    def _usage(self) -> schema.UsageUpdate | None:
         if self._agent is None:
             return None
 
         return self._mapping.usage_update(self._agent.context_usage())
 
-    def _title(self) -> SessionInfoUpdate | None:
+    def _title(self) -> schema.SessionInfoUpdate | None:
         """Заголовок из первого вопроса человека; уходит один раз."""
         if self._titled or self._agent is None:
             return None
@@ -1254,7 +1218,7 @@ class SessionRelay(EventSink):
         return None
 
     def _updates(self, event: AgentEvent) -> Sequence[Update] | None:
-        """Уведомления по событию; None — событие не про ленту."""
+        """Уведомления хода по событию; None — событие не про ленту."""
         if isinstance(event, StreamEvent):
             return self._mapping.chunks(event)
 
@@ -1278,10 +1242,6 @@ class SessionRelay(EventSink):
             self.withdraw(event.request_id)
             return
 
-        if isinstance(event, ErrorEvent):
-            logger.warning("session %s: %s", self._session_id, event.message)
-            return
-
         if isinstance(event, InitEvent):
             logger.info(
                 "session %s: opened with model %s and %d tool(s)",
@@ -1299,14 +1259,15 @@ class SessionRelay(EventSink):
             return updates
 
         if isinstance(record, UserRecord):
-            return self._mapping.tool_results(record)
+            return list(self._mapping.user_updates(record))
 
         if isinstance(record, CompactBoundaryRecord):
+            compaction: list[Update] = [self._mapping.compaction(record)]
             usage = self._usage()
-            if usage is None:
-                return ()
+            if usage is not None:
+                compaction.append(usage)
 
-            return [usage]
+            return compaction
 
         return ()
 
@@ -1320,13 +1281,20 @@ class SessionRelay(EventSink):
         for update in updates:
             await self._send(update)
 
-    async def _send(self, update: Update) -> None:
+    async def _send(self, update: Update | IdleErrorUpdate) -> None:
         if self._detached:
             return
 
         try:
-            await self._link.session_update(self._session_id, update)
-        except ConnectionError as exc:
+            if isinstance(update, IdleErrorUpdate):
+                notification = IdleErrorNotification(
+                    session_id=self._session_id, update=update
+                )
+                await self._link.side.send_update(notification)
+                return
+
+            await self._link.connection.session_update(self._session_id, update)
+        except (ConnectionError, AcpTransportError) as exc:
             self._detached = True
             logger.warning(
                 "session %s: the client connection is closed (%s); further "
@@ -1350,7 +1318,12 @@ class SessionRelay(EventSink):
         request = event.request
         ask = self._mapping.permission_request(request, self._hints(request.tool_name))
         try:
-            response = await self._link.request_permission(self._session_id, ask)
+            response = await self._link.connection.request_permission(
+                session_id=self._session_id,
+                title=ask.title,
+                options=list(ask.options),
+                subject=ask.subject,
+            )
             answer = self._mapping.permission_answer(response, request)
         except ConnectionError as exc:
             logger.warning(
@@ -1417,13 +1390,13 @@ class OpenedSession(Protocol):
 
     @abstractmethod
     async def close(self) -> None:
-        """Гасит ход, сбрасывает журнал, закрывает серверы MCP сессии."""
+        """Гасит ход и сбрасывает журнал."""
 
 
 class ObservedSession(ToolHintSource, Protocol):
     """Сессия, открытая без замка: её держит другой процесс. Беседа
-    прочитана из хранилища, серверы MCP подключены; `claim` открывает
-    сессию по-настоящему, когда замок свободен."""
+    прочитана из хранилища, инструменты подключены; `claim` открывает сессию
+    по-настоящему, когда замок свободен."""
 
     @abstractmethod
     def conversation(self) -> Sequence[ChainRecord]: ...
@@ -1436,17 +1409,13 @@ class ObservedSession(ToolHintSource, Protocol):
         SessionOpenError — сессию открыть не удалось.
         """
 
-    @abstractmethod
-    async def close(self) -> None:
-        """Закрывает серверы MCP наблюдателя."""
-
 
 class SessionAssembly(Protocol):
-    """Сборка сессии из настроек процесса и параметров `session/new|load|resume`,
-    список и удаление сессий хранилища.
+    """Сборка сессии из настроек процесса и инструментов
+    `session/new|resume|fork`, список и удаление сессий хранилища.
 
-    Реализует вход процесса: он знает профиль модели, хранилище истории и
-    клиент MCP; протокольный слой знает только события и ответы.
+    Реализует вход процесса: он знает профиль модели и хранилище истории;
+    протокольный слой знает только события, ответы и инструменты.
     """
 
     @abstractmethod
@@ -1454,13 +1423,11 @@ class SessionAssembly(Protocol):
         self,
         session_id: SessionId,
         cwd: Path,
-        servers: Mapping[str, McpServerJson],
+        tools: ToolServer | None,
         sink: EventSink,
         resume: bool,
     ) -> OpenedSession:
         """Ошибки:
-        SessionRefusedError — параметры сессии не годятся (сервер MCP с
-            неподдержанными заголовками).
         SessionOpenError — сессию открыть не удалось.
         SessionHeldError — при возобновлении: сессию держит другой процесс.
         SessionNotFoundError — при возобновлении: записей сессии нет.
@@ -1471,12 +1438,10 @@ class SessionAssembly(Protocol):
         self,
         session_id: SessionId,
         cwd: Path,
-        servers: Mapping[str, McpServerJson],
+        tools: ToolServer | None,
         sink: EventSink,
     ) -> ObservedSession:
         """Ошибки:
-        SessionRefusedError — параметры сессии не годятся.
-        SessionOpenError — серверы MCP не поднялись.
         SessionNotFoundError — записей сессии нет.
         HistoryError — хранилище отказало при чтении.
         """
@@ -1513,20 +1478,20 @@ class SessionAssembly(Protocol):
 
 
 class AcpSession:
-    """Одна сессия ACP: открытый агент, его обслуживание очереди, приёмник и
-    ожидания ответов на `prompt`."""
+    """Одна сессия ACP: открытый агент, его обслуживание очереди и приёмник."""
 
     def __init__(
         self,
         session_id: str,
         opened: OpenedSession,
         relay: SessionRelay,
-        waiters: PromptWaiters,
+        mapping: AcpMapping,
     ) -> None:
         self._session_id = session_id
         self._opened = opened
         self._relay = relay
-        self._waiters = waiters
+        self._mapping = mapping
+        self._reports: list[asyncio.Task[None]] = []
         self._serving = asyncio.create_task(
             opened.agent.serve(), name=f"acp-serve-{session_id}"
         )
@@ -1593,6 +1558,8 @@ class AcpSession:
         return len(self.agent.queue) > 0
 
     def _served(self, task: asyncio.Task[None]) -> None:
+        """Обслуживание остановилось сбоем: идущий ход кончается `idle` с
+        ошибкой."""
         if task.cancelled():
             return
 
@@ -1603,20 +1570,16 @@ class AcpSession:
         logger.error(
             "session %s: the agent stopped serving: %s", self._session_id, failure
         )
-        data = {
-            ErrorDataKey.KIND.value: type(failure).__name__,
-            ErrorDataKey.MESSAGE.value: str(failure),
-        }
-        self._waiters.fail(RequestError.internal_error(data))
+        update = self._mapping.idle_error(type(failure).__name__, str(failure))
+        self._reports.append(asyncio.create_task(self._relay.failed(update)))
 
-    async def prompt(self, text: str, message_id: str | None = None) -> PromptResponse:
-        """Ставит вопрос в очередь ядра и ждёт итога хода, который его обслужит;
-        message_id — uuid записи `user` вопроса от клиента (`boba/messageId`).
+    async def prompt(self, text: str) -> schema.PromptResponse:
+        """Ставит вопрос в очередь ядра; `messageId` ответа — uuid записи
+        `user`, которую напишет его ход.
 
         Ошибки:
-        RequestError — очередь не приняла элемент или uuid вопроса уже есть в
-            сессии (-32602), обслуживание сессии остановилось (-32603),
-            модель отказала (-32603).
+        RequestError — очередь не приняла элемент (-32602), обслуживание
+            сессии остановилось (-32603).
         """
         if self._serving.done():
             details = (
@@ -1633,16 +1596,7 @@ class AcpSession:
         if len(agent.queue) > 0:
             priority = QueuePriority.LATER
 
-        if message_id is not None and agent.session.find(message_id) is not None:
-            details = (
-                f"{MetaKey.MESSAGE_ID.value} {message_id} already names a record of "
-                f"session {self._session_id}; every question needs its own UUID"
-            )
-            raise RequestError.invalid_params({ErrorDataKey.DETAILS.value: details})
-
-        entry = QueueEntry(
-            kind=QueueKind.PROMPT, text=text, priority=priority, id=message_id
-        )
+        entry = QueueEntry(kind=QueueKind.PROMPT, text=text, priority=priority)
         try:
             item = agent.queue.enqueue(entry)
         except QueueRefusedError as exc:
@@ -1650,7 +1604,7 @@ class AcpSession:
                 {ErrorDataKey.DETAILS.value: str(exc)}
             ) from exc
 
-        return await self._waiters.register(item.id)
+        return schema.PromptResponse(message_id=item.id)
 
     async def flush(self) -> None:
         """Сбрасывает несброшенные записи сессии в хранилище.
@@ -1661,13 +1615,8 @@ class AcpSession:
         await self._opened.agent.writer.flush(strict=True)
 
     def cancel(self, reason: CoreStopReason) -> None:
-        """Прерывает ход и очищает очередь; ожидающие получают `cancelled`."""
-        queued: list[str] = []
-        for item in self.agent.queue.items():
-            queued.append(item.id)
-
+        """Прерывает ход и очищает очередь."""
         self.agent.interrupt(reason, cancel_queued=True)
-        self._waiters.cancel(queued)
 
     async def close(self) -> None:
         self._relay.withdraw_all()
@@ -1679,14 +1628,15 @@ class AcpSession:
                 "session %s: serving ended with an error: %s", self._session_id, exc
             )
 
+        await asyncio.gather(*self._reports)
+
 
 class ObserverSession:
     """Сессия-наблюдатель: открыта без замка, беседу отдала, хода не ведёт.
 
-    Создаёт вход на `session/load|resume`, когда сессию держит другой
-    процесс; первый `prompt` зовёт `claim`, и при свободном замке
-    наблюдатель уступает место обычной AcpSession с тем же приёмником и
-    ожиданиями.
+    Создаёт вход на `session/resume`, когда сессию держит другой процесс;
+    первый `prompt` зовёт `claim`, и при свободном замке наблюдатель уступает
+    место обычной AcpSession с тем же приёмником.
     """
 
     def __init__(
@@ -1694,12 +1644,12 @@ class ObserverSession:
         session_id: str,
         observed: ObservedSession,
         relay: SessionRelay,
-        waiters: PromptWaiters,
+        mapping: AcpMapping,
     ) -> None:
         self._session_id = session_id
         self._observed = observed
         self._relay = relay
-        self._waiters = waiters
+        self._mapping = mapping
 
     @property
     def relay(self) -> SessionRelay:
@@ -1721,71 +1671,53 @@ class ObserverSession:
         opened = await self._observed.claim()
         self._relay.attach(opened.agent)
 
-        return AcpSession(self._session_id, opened, self._relay, self._waiters)
+        return AcpSession(self._session_id, opened, self._relay, self._mapping)
 
     async def close(self) -> None:
-        await self._observed.close()
+        """Наблюдатель ничего не держит: закрывать нечего."""
 
 
 HeldSession: TypeAlias = AcpSession | ObserverSession
 
 
-class PromptRequests:
-    """Наблюдатель кадров соединения: под каким `id` идёт какой запрос
-    `session/prompt`, чтобы `$/cancel_request` нашёл сессию. Регистрируется
-    у соединения SDK; ответ агента снимает запись."""
-
-    def __init__(self) -> None:
-        self._sessions: dict[str, str] = {}
-
-    def __call__(self, event: FrameEvent) -> None:
-        try:
-            frame = Frame.model_validate(event.message)
-        except ValidationError as exc:
-            logger.debug("frame observer: unreadable frame skipped: %s", exc)
-            return
-
-        if frame.id is None:
-            return
-
-        key = str(frame.id)
-        if event.direction is StreamDirection.OUTGOING:
-            if frame.method is None:
-                self._sessions.pop(key, None)
-
-            return
-
-        if frame.method != AcpMethod.SESSION_PROMPT.value:
-            return
-
-        if frame.params is None:
-            return
-
-        try:
-            params = SessionParams.model_validate(frame.params)
-        except ValidationError:
-            return
-
-        self._sessions[key] = params.session_id
-
-    def session_of(self, request_id: int | str) -> str | None:
-        return self._sessions.get(str(request_id))
-
-
 class AcpAgent(AcpAgentProtocol):
-    """Реализация Agent SDK над сессиями ядра.
+    """Реализация Agent SDK v2 над сессиями ядра.
 
-    Создаёт вход процесса со сборкой сессий; сервер (AcpServer) привязывает
-    канал к клиенту. Один объект обслуживает все сессии соединения: каждая
-    — свой агент ядра с серверами MCP из `session/new|load|resume`, либо
-    наблюдатель, пока сессию держит другой процесс.
+    Создаёт вход процесса со сборкой сессий; AgentSide зовёт `attach` и
+    получает агента для роутера SDK. Один объект обслуживает все сессии
+    соединения: каждая — свой агент ядра над инструментами серверов `acp` из
+    `session/new|resume|fork`, либо наблюдатель, пока сессию держит другой
+    процесс.
     """
 
-    NAME: ClassVar[str] = "boba"
+    # SDK считает метод протокола неподдержанным
+    login = AcpAgentProtocol.login
+    logout = AcpAgentProtocol.logout
+    list_providers = AcpAgentProtocol.list_providers
+    set_provider = AcpAgentProtocol.set_provider
+    disable_provider = AcpAgentProtocol.disable_provider
+    mcp_message = AcpAgentProtocol.mcp_message
+    notify_mcp = AcpAgentProtocol.notify_mcp
+    start_nes = AcpAgentProtocol.start_nes
+    suggest_nes = AcpAgentProtocol.suggest_nes
+    accept_nes = AcpAgentProtocol.accept_nes
+    reject_nes = AcpAgentProtocol.reject_nes
+    close_nes = AcpAgentProtocol.close_nes
+    did_open = AcpAgentProtocol.did_open
+    did_change = AcpAgentProtocol.did_change
+    did_close = AcpAgentProtocol.did_close
+    did_save = AcpAgentProtocol.did_save
+    did_focus = AcpAgentProtocol.did_focus
 
-    def __init__(self, assembly: SessionAssembly, version: str) -> None:
+    def __init__(
+        self,
+        assembly: SessionAssembly,
+        info: schema.Implementation,
+        limits: McpClientJson,
+    ) -> None:
         self._assembly = assembly
-        self._version = version
+        self._info = info
+        self._limits = limits
         self._link: ClientLink | None = None
         self._sessions: dict[str, HeldSession] = {}
         self._mapping = AcpMapping()
@@ -1794,20 +1726,12 @@ class AcpAgent(AcpAgentProtocol):
         self._specs = McpServerSpecs()
         self._titles = SessionTitles()
         self._ids = IdMint()
-        self._requests = PromptRequests()
-        self._client: ClientCapabilities | None = None
 
-    @property
-    def requests(self) -> PromptRequests:
-        return self._requests
+    def attach(self, side: AgentSide, connection: AgentSideConnection) -> AcpAgent:
+        """Фабрика агента для AgentSide: связь с клиентом и сам агент."""
+        self._link = ClientLink(side=side, connection=connection)
 
-    @property
-    def client_capabilities(self) -> ClientCapabilities | None:
-        """Возможности клиента из `initialize`; None — рукопожатия не было."""
-        return self._client
-
-    def attach(self, link: ClientLink) -> None:
-        self._link = link
+        return self
 
     def _linked(self) -> ClientLink:
         if self._link is None:
@@ -1819,35 +1743,27 @@ class AcpAgent(AcpAgentProtocol):
     async def initialize(
         self,
         protocol_version: int,
-        client_capabilities: ClientCapabilities | None = None,
-        client_info: Implementation | None = None,
+        info: schema.Implementation,
+        capabilities: schema.ClientCapabilities | None = None,
         **kwargs: Any,
-    ) -> InitializeResponse:
-        self._client = client_capabilities
-        name = "unknown client"
-        if client_info is not None:
-            name = f"{client_info.name} {client_info.version}"
+    ) -> schema.InitializeResponse:
+        logger.info(
+            "initialize: %s %s speaks protocol version %d",
+            info.name,
+            info.version,
+            protocol_version,
+        )
+        session = schema.SessionCapabilities(
+            prompt=schema.PromptCapabilities(),
+            mcp=schema.McpCapabilities(acp=schema.McpAcpCapabilities()),
+            delete=schema.SessionDeleteCapabilities(),
+            fork=schema.SessionForkCapabilities(),
+        )
 
-        logger.info("initialize: %s speaks protocol version %d", name, protocol_version)
-
-        return InitializeResponse(
-            protocol_version=PROTOCOL_VERSION,
-            agent_capabilities=AgentCapabilities(
-                load_session=True,
-                prompt_capabilities=PromptCapabilities(
-                    image=False, audio=False, embedded_context=False
-                ),
-                mcp_capabilities=McpCapabilities(http=True, sse=False),
-                session_capabilities=SessionCapabilities(
-                    list=SessionListCapabilities(),
-                    resume=SessionResumeCapabilities(),
-                    close=SessionCloseCapabilities(),
-                    delete=SessionDeleteCapabilities(),
-                    fork=SessionForkCapabilities(),
-                ),
-            ),
-            agent_info=Implementation(name=self.NAME, version=self._version),
-            auth_methods=[],
+        return schema.InitializeResponse(
+            protocol_version=AcpVersion.V2,
+            info=self._info,
+            capabilities=schema.AgentCapabilities(session=session),
         )
 
     async def new_session(
@@ -1856,19 +1772,19 @@ class AcpAgent(AcpAgentProtocol):
         additional_directories: list[str] | None = None,
         mcp_servers: list[McpServerBlock] | None = None,
         **kwargs: Any,
-    ) -> NewSessionResponse:
+    ) -> schema.NewSessionResponse:
         """Ошибки:
         RequestError — `cwd` не абсолютный или серверы MCP не годятся
-            (-32602); сессию открыть не удалось (-32603).
+            (-32602); инструменты или сессию открыть не удалось (-32603).
         """
         directory = self._directory(cwd)
-        specs = self._specs.specs(self._blocks(mcp_servers))
+        servers = self._specs.servers(self._blocks(mcp_servers))
         session_id = self._ids.uuid()
-        waiters = PromptWaiters(self._mapping)
-        relay = SessionRelay(session_id, self._linked(), self._mapping, waiters)
+        relay = SessionRelay(session_id, self._linked(), self._mapping)
+        tools = await self._tool_servers(servers, relay)
         try:
             opened = await self._assembly.open(
-                SessionId(value=session_id), directory, specs, relay, resume=False
+                SessionId(value=session_id), directory, tools, relay, resume=False
             )
         except SessionRefusedError as exc:
             raise RequestError.invalid_params(
@@ -1880,18 +1796,48 @@ class AcpAgent(AcpAgentProtocol):
             ) from exc
 
         relay.attach(opened.agent)
-        session = AcpSession(session_id, opened, relay, waiters)
+        session = AcpSession(session_id, opened, relay, self._mapping)
         self._sessions[session_id] = session
         logger.info(
-            "session %s: new, cwd %s, %d MCP server(s)", session_id, cwd, len(specs)
+            "session %s: new, cwd %s, %d MCP server(s)", session_id, cwd, len(servers)
         )
-        settings = self._settings(session)
 
-        return NewSessionResponse(
+        return schema.NewSessionResponse(
             session_id=session_id,
-            modes=self._options.modes(settings),
-            config_options=self._options.config_options(settings),
+            config_options=self._options.config_options(self._settings(session)),
         )
+
+    async def _tool_servers(
+        self, servers: Sequence[schema.AcpMcpServer], relay: SessionRelay
+    ) -> ToolServers | None:
+        """Инструменты серверов сессии: каждый отдаёт список до ответа на
+        запрос; без серверов — None.
+
+        Ошибки:
+        RequestError — сервер не отдал список инструментов (-32603).
+        """
+        if not servers:
+            return None
+
+        side = self._linked().side
+        opened: list[ToolServer] = []
+        for server in servers:
+            tool_server = AcpToolServer(side, server, relay, self._limits)
+            try:
+                await tool_server.open()
+            except SessionOpenError as exc:
+                raise RequestError.internal_error(
+                    {ErrorDataKey.DETAILS.value: str(exc)}
+                ) from exc
+
+            opened.append(tool_server)
+
+        try:
+            return ToolServers(opened)
+        except ToolServersError as exc:
+            raise RequestError.internal_error(
+                {ErrorDataKey.DETAILS.value: str(exc)}
+            ) from exc
 
     def _settings(self, session: AcpSession) -> SessionSettings:
         agent = session.agent
@@ -1903,43 +1849,24 @@ class AcpAgent(AcpAgentProtocol):
             models=self._assembly.models(),
         )
 
-    async def _announce_settings(self, session: AcpSession, mode_changed: bool) -> None:
-        """Полное состояние настроек клиенту: `current_mode_update` при смене
-        режима, `config_option_update` всегда."""
+    async def _announce_settings(self, session: AcpSession) -> None:
+        """Полное состояние настроек клиенту: `config_option_update`."""
         settings = self._settings(session)
-        if mode_changed:
-            await session.relay.notify(self._options.mode_update(settings))
-
         await session.relay.notify(self._options.options_update(settings))
 
     async def prompt(
         self, session_id: str, prompt: list[PromptBlock], **kwargs: Any
-    ) -> PromptResponse:
+    ) -> schema.PromptResponse:
         """Ошибки:
-        RequestError — сессия неизвестна (-32002), блоки или `boba/messageId`
-            не годятся (-32602), сессию держит другой процесс или модель
-            отказала (-32603).
+        RequestError — сессия неизвестна (-32002), блоки не годятся (-32602),
+            сессию держит другой процесс (-32603).
         """
         held = self._session(session_id)
         text = self._prompts.render(prompt)
-        meta = self._prompt_meta(kwargs)
         if isinstance(held, ObserverSession):
             held = await self._claim(session_id, held)
 
-        return await held.prompt(text, meta.record_uuid())
-
-    @staticmethod
-    def _prompt_meta(meta: Mapping[str, Any]) -> PromptMeta:
-        """Ошибки:
-        RequestError — `boba/messageId` не UUID (-32602).
-        """
-        try:
-            return PromptMeta.model_validate(meta)
-        except ValidationError as exc:
-            details = f"_meta of session/prompt is not valid: {exc}"
-            raise RequestError.invalid_params(
-                {ErrorDataKey.DETAILS.value: details}
-            ) from exc
+        return await held.prompt(text)
 
     async def _claim(self, session_id: str, observer: ObserverSession) -> AcpSession:
         """Наблюдатель берёт замок: сессия открывается по-настоящему и
@@ -1964,11 +1891,11 @@ class AcpAgent(AcpAgentProtocol):
 
         self._sessions[session_id] = session
         logger.info("session %s: the observer took the lock", session_id)
-        await self._announce_settings(session, mode_changed=True)
+        await self._announce_settings(session)
 
         return session
 
-    async def cancel(self, session_id: str, **kwargs: Any) -> None:
+    async def cancel_session(self, session_id: str, **kwargs: Any) -> None:
         session = self._sessions.get(session_id)
         if session is None:
             logger.info("cancel: session %s is unknown; nothing to cancel", session_id)
@@ -1979,29 +1906,6 @@ class AcpAgent(AcpAgentProtocol):
             return
 
         session.cancel(CoreStopReason.USER_STOP)
-
-    async def cancel_request(self, params: Any) -> None:
-        """Маршрут `$/cancel_request`: отмена запроса `session/prompt` по его
-        `requestId` — как `session/cancel` его сессии; прочие запросы
-        исполняются сразу, их отменять нечего."""
-        try:
-            notification = CancelRequestNotification.model_validate(params)
-        except ValidationError as exc:
-            logger.warning("$/cancel_request with unreadable params ignored: %s", exc)
-            return
-
-        if notification.request_id is None:
-            return
-
-        session_id = self._requests.session_of(notification.request_id)
-        if session_id is None:
-            logger.info(
-                "$/cancel_request %s matches no running session/prompt; ignored",
-                notification.request_id,
-            )
-            return
-
-        await self.cancel(session_id)
 
     def _session(self, session_id: str) -> HeldSession:
         """Ошибки:
@@ -2016,7 +1920,7 @@ class AcpAgent(AcpAgentProtocol):
     @staticmethod
     def _unknown(session_id: str) -> RequestError:
         return RequestError(
-            RequestError.resource_not_found().code,
+            AcpErrorCode.RESOURCE_NOT_FOUND,
             f"session {session_id} is unknown to this agent process",
             {ErrorDataKey.SESSION_ID.value: session_id},
         )
@@ -2024,7 +1928,7 @@ class AcpAgent(AcpAgentProtocol):
     @staticmethod
     def _held_by_other(session_id: str, details: str) -> RequestError:
         return RequestError(
-            RequestError.internal_error().code,
+            AcpErrorCode.INTERNAL_ERROR,
             f"session {session_id} is held by another process",
             {
                 ErrorDataKey.SESSION_ID.value: session_id,
@@ -2072,69 +1976,56 @@ class AcpAgent(AcpAgentProtocol):
             await session.close()
             self._sessions.pop(session_id, None)
 
-    async def load_session(
-        self,
-        cwd: str,
-        session_id: str,
-        mcp_servers: list[McpServerBlock] | None = None,
-        additional_directories: list[str] | None = None,
-        **kwargs: Any,
-    ) -> LoadSessionResponse | None:
-        """Открывает сессию из хранилища и до ответа воспроизводит всю беседу
-        уведомлениями `session/update`, за ней — заголовок и заполненность;
-        ответ несёт режимы и настройки сессии. У наблюдателя агента нет:
-        его ответ без них, состояние придёт уведомлениями при захвате.
-
-        Ошибки:
-        RequestError — сессия неизвестна (-32002), `cwd` или серверы не
-            годятся (-32602), сессию открыть не удалось (-32603).
-        """
-        held = await self._open_stored(session_id, cwd, mcp_servers)
-        conversation = held.conversation()
-        if isinstance(held, ObserverSession):
-            hints: ToolHintSource = held.hints
-        else:
-            hints = held.agent
-
-        await held.relay.replay(self._mapping.replay(conversation, hints))
-        logger.info(
-            "session %s: loaded, %d record(s) replayed", session_id, len(conversation)
-        )
-        if isinstance(held, ObserverSession):
-            return LoadSessionResponse()
-
-        await held.relay.announce_loaded()
-        settings = self._settings(held)
-
-        return LoadSessionResponse(
-            modes=self._options.modes(settings),
-            config_options=self._options.config_options(settings),
-        )
-
     async def resume_session(
         self,
         session_id: str,
         cwd: str,
         additional_directories: list[str] | None = None,
         mcp_servers: list[McpServerBlock] | None = None,
+        replay_from: schema.ReplayFromStartVariant
+        | schema.OtherReplayFrom
+        | None = None,
         **kwargs: Any,
-    ) -> ResumeSessionResponse:
-        """Открывает сессию из хранилища без воспроизведения беседы; ответ
-        несёт режимы и настройки сессии (у наблюдателя — без них).
+    ) -> schema.ResumeSessionResponse:
+        """Открывает сессию из хранилища; с `replayFrom: start` до ответа
+        воспроизводит всю беседу уведомлениями, за ней — заголовок и
+        заполненность. Ответ несёт настройки сессии; у наблюдателя агента нет,
+        его ответ без них.
 
         Ошибки:
-        RequestError — как у `session/load`.
+        RequestError — сессия неизвестна (-32002), `cwd`, серверы или
+            `replayFrom` не годятся (-32602), сессию открыть не удалось
+            (-32603).
         """
+        if isinstance(replay_from, schema.OtherReplayFrom):
+            details = (
+                f"replayFrom of type '{replay_from.type}' is not supported; "
+                "expected type 'start' or no replayFrom"
+            )
+            raise RequestError.invalid_params({ErrorDataKey.DETAILS.value: details})
+
         held = await self._open_stored(session_id, cwd, mcp_servers)
+        if isinstance(replay_from, schema.ReplayFromStartVariant):
+            conversation = held.conversation()
+            if isinstance(held, ObserverSession):
+                hints: ToolHintSource = held.hints
+            else:
+                hints = held.agent
+
+            await held.relay.replay(self._mapping.replay(conversation, hints))
+            logger.info(
+                "session %s: %d record(s) replayed", session_id, len(conversation)
+            )
+
         logger.info("session %s: resumed", session_id)
         if isinstance(held, ObserverSession):
-            return ResumeSessionResponse()
+            return schema.ResumeSessionResponse()
 
-        settings = self._settings(held)
+        if isinstance(replay_from, schema.ReplayFromStartVariant):
+            await held.relay.announce_loaded()
 
-        return ResumeSessionResponse(
-            modes=self._options.modes(settings),
-            config_options=self._options.config_options(settings),
+        return schema.ResumeSessionResponse(
+            config_options=self._options.config_options(self._settings(held))
         )
 
     async def _open_stored(
@@ -2148,19 +2039,19 @@ class AcpAgent(AcpAgentProtocol):
 
         Ошибки:
         RequestError — сессия неизвестна (-32002), параметры не годятся
-            (-32602), сессию открыть не удалось (-32603).
+            (-32602), инструменты или сессию открыть не удалось (-32603).
         """
         directory = self._directory(cwd)
-        specs = self._specs.specs(self._blocks(mcp_servers))
+        servers = self._specs.servers(self._blocks(mcp_servers))
         known = self._sessions.get(session_id)
         if known is not None:
             return known
 
         stored = self._stored_id(session_id)
-        waiters = PromptWaiters(self._mapping)
-        relay = SessionRelay(session_id, self._linked(), self._mapping, waiters)
+        relay = SessionRelay(session_id, self._linked(), self._mapping)
+        tools = await self._tool_servers(servers, relay)
         try:
-            held = await self._held(stored, directory, specs, relay, waiters)
+            held = await self._held(stored, directory, tools, relay)
         except SessionNotFoundError as exc:
             raise self._unknown(session_id) from exc
         except SessionRefusedError as exc:
@@ -2180,9 +2071,8 @@ class AcpAgent(AcpAgentProtocol):
         self,
         stored: SessionId,
         directory: Path,
-        specs: Mapping[str, McpServerJson],
+        tools: ToolServer | None,
         relay: SessionRelay,
-        waiters: PromptWaiters,
     ) -> HeldSession:
         """Ошибки:
         SessionNotFoundError, SessionRefusedError, SessionOpenError,
@@ -2190,7 +2080,7 @@ class AcpAgent(AcpAgentProtocol):
         """
         try:
             opened = await self._assembly.open(
-                stored, directory, specs, relay, resume=True
+                stored, directory, tools, relay, resume=True
             )
         except SessionHeldError as exc:
             logger.info(
@@ -2198,17 +2088,17 @@ class AcpAgent(AcpAgentProtocol):
                 stored.value,
                 exc,
             )
-            observed = await self._assembly.observe(stored, directory, specs, relay)
+            observed = await self._assembly.observe(stored, directory, tools, relay)
 
-            return ObserverSession(stored.value, observed, relay, waiters)
+            return ObserverSession(stored.value, observed, relay, self._mapping)
 
         relay.attach(opened.agent)
 
-        return AcpSession(stored.value, opened, relay, waiters)
+        return AcpSession(stored.value, opened, relay, self._mapping)
 
     async def list_sessions(
         self, cwd: str | None = None, cursor: str | None = None, **kwargs: Any
-    ) -> ListSessionsResponse:
+    ) -> schema.ListSessionsResponse:
         """Сессии хранилища страницей: курсор — идентификатор последней
         сессии предыдущей страницы; `cwd` оставляет сессии этого каталога.
 
@@ -2227,18 +2117,21 @@ class AcpAgent(AcpAgentProtocol):
                 {ErrorDataKey.DETAILS.value: str(exc)}
             ) from exc
 
-        sessions: list[SessionInfo] = []
+        sessions: list[schema.SessionInfo] = []
         for summary in page.sessions:
+            updated_at = datetime.fromisoformat(summary.updated_at)
             sessions.append(
-                SessionInfo(
+                schema.SessionInfo(
                     session_id=summary.session_id,
                     cwd=summary.cwd,
                     title=self._titles.title(summary.first_prompt),
-                    updated_at=summary.updated_at,
+                    updated_at=updated_at,
                 )
             )
 
-        return ListSessionsResponse(sessions=sessions, next_cursor=page.next_cursor)
+        return schema.ListSessionsResponse(
+            sessions=sessions, next_cursor=page.next_cursor
+        )
 
     async def _listed(self, wanted: Path | None, cursor: str | None) -> SessionPage:
         """Страница сессий: без каталога — страница хранилища как есть; с
@@ -2270,18 +2163,18 @@ class AcpAgent(AcpAgentProtocol):
 
             page = await self._assembly.sessions(page.next_cursor)
 
-    async def delete_session(self, params: Any) -> DeleteSessionResponse:
-        """Маршрут `session/delete`: сессия, которую ведёт этот процесс,
-        закрывается до удаления (она держит замок); наблюдатель закрывается
-        после, когда хранилище удаление приняло. Повторное удаление и
-        сессия, которой не было, — успех.
+    async def delete_session(
+        self, session_id: str, **kwargs: Any
+    ) -> schema.DeleteSessionResponse:
+        """Сессия, которую ведёт этот процесс, закрывается до удаления (она
+        держит замок); наблюдатель закрывается после, когда хранилище
+        удаление приняло. Повторное удаление и сессия, которой не было, —
+        успех.
 
         Ошибки:
         RequestError — сессию держит другой процесс или хранилище отказало
             (-32603).
         """
-        request = DeleteSessionRequest.model_validate(params)
-        session_id = request.session_id
         held = self._sessions.get(session_id)
         if isinstance(held, AcpSession):
             self._sessions.pop(session_id, None)
@@ -2291,7 +2184,7 @@ class AcpAgent(AcpAgentProtocol):
             stored = SessionId(value=session_id)
         except ValidationError:
             logger.info("session %s: cannot exist, nothing to delete", session_id)
-            return DeleteSessionResponse()
+            return schema.DeleteSessionResponse()
 
         await self._delete_stored(session_id, stored)
         if isinstance(held, ObserverSession):
@@ -2300,7 +2193,7 @@ class AcpAgent(AcpAgentProtocol):
 
         logger.info("session %s: deleted", session_id)
 
-        return DeleteSessionResponse()
+        return schema.DeleteSessionResponse()
 
     async def _delete_stored(self, session_id: str, stored: SessionId) -> None:
         """Ошибки:
@@ -2316,27 +2209,18 @@ class AcpAgent(AcpAgentProtocol):
                 {ErrorDataKey.DETAILS.value: str(exc)}
             ) from exc
 
-    async def set_session_mode(
-        self, session_id: str, mode_id: str, **kwargs: Any
-    ) -> SetSessionModeResponse | None:
-        """Режим разрешений — то же действие, что `set_config_option` с
-        `configId: mode`; после смены уходят `current_mode_update` и
-        `config_option_update`.
-
-        Ошибки:
-        RequestError — сессия неизвестна (-32002), режима нет или он
-            недоступен (-32602), сессию держит другой процесс (-32603).
-        """
-        session = self._settable(session_id)
-        await self._set_mode(session, mode_id)
-
-        return SetSessionModeResponse()
-
     async def set_config_option(
-        self, config_id: str, session_id: str, value: str | bool, **kwargs: Any
-    ) -> SetSessionConfigOptionResponse | None:
+        self,
+        config_id: str,
+        session_id: str,
+        value: Any,
+        *,
+        type: str | None = None,  # noqa: A002 — имя поля протокола
+        **kwargs: Any,
+    ) -> schema.SetSessionConfigOptionResponse:
         """`mode` — режим разрешений ядра, `model` — профиль модели для
-        следующих ходов; ответ — полное состояние настроек.
+        следующих ходов; ответ — полное состояние настроек, оно же уходит
+        `config_option_update`.
 
         Ошибки:
         RequestError — сессия неизвестна (-32002), настройки или значения
@@ -2358,9 +2242,10 @@ class AcpAgent(AcpAgentProtocol):
             name = self._options.parse_model(value, self._settings(session))
             await session.set_model(name)
             logger.info("session %s: model profile switched to %s", session_id, name)
-            await self._announce_settings(session, mode_changed=False)
 
-        return SetSessionConfigOptionResponse(
+        await self._announce_settings(session)
+
+        return schema.SetSessionConfigOptionResponse(
             config_options=self._options.config_options(self._settings(session))
         )
 
@@ -2375,7 +2260,6 @@ class AcpAgent(AcpAgentProtocol):
             session.agent.session.id.value,
             mode.value,
         )
-        await self._announce_settings(session, mode_changed=True)
 
     def _settable(self, session_id: str) -> AcpSession:
         """Сессия, настройки которой можно менять: у наблюдателя агента нет.
@@ -2405,11 +2289,6 @@ class AcpAgent(AcpAgentProtocol):
                 {ErrorDataKey.DETAILS.value: details}
             ) from exc
 
-    async def authenticate(
-        self, method_id: str, **kwargs: Any
-    ) -> AuthenticateResponse | None:
-        raise RequestError.method_not_found(AcpMethod.AUTHENTICATE.value)
-
     async def fork_session(
         self,
         session_id: str,
@@ -2417,52 +2296,52 @@ class AcpAgent(AcpAgentProtocol):
         additional_directories: list[str] | None = None,
         mcp_servers: list[McpServerBlock] | None = None,
         **kwargs: Any,
-    ) -> ForkSessionResponse:
+    ) -> schema.ForkSessionResponse:
         """Ветвит сессию хранилища: её записи копируются под новый
         идентификатор (его чеканит агент), и новая сессия открывается как
-        обычная — с замком, серверами MCP запроса и починкой оборванного
-        хода загрузчиком. Исходная сессия не меняется, её замок не нужен;
-        сессию, которую ведёт этот процесс, перед копией сбрасывает в
-        хранилище. Точка среза — расширение `_meta["boba/upToUuid"]`
-        (ForkMeta): ветка от uuid вопроса — беседа до этого вопроса, и
-        правка вопроса — новый `prompt` в новой сессии; срез на первой
-        записи даёт пустую сессию. Ответ — `sessionId` новой сессии с её
-        режимами и настройками, как у `session/new`.
+        обычная — с замком, инструментами серверов запроса и починкой
+        оборванного хода загрузчиком. Исходная сессия не меняется, её замок
+        не нужен; сессию, которую ведёт этот процесс, перед копией сбрасывает
+        в хранилище. Точка среза — расширение `_meta["boba/upToMessageId"]`
+        (ForkMeta): ветка от `messageId` вопроса — беседа до этого вопроса;
+        срез на первом вопросе даёт пустую сессию. Ответ — `sessionId` новой
+        сессии с её настройками, как у `session/new`.
 
         Ошибки:
         RequestError — сессия неизвестна (-32002); `cwd`, серверы или
-            `_meta` не годятся, записи `upToUuid` в сессии нет (-32602);
-            хранилище или сборка отказали (-32603).
+            `_meta` не годятся, записи среза в сессии нет (-32602);
+            хранилище, инструменты или сборка отказали (-32603).
         """
         directory = self._directory(cwd)
-        specs = self._specs.specs(self._blocks(mcp_servers))
+        servers = self._specs.servers(self._blocks(mcp_servers))
         meta = self._fork_meta(kwargs)
         source = self._stored_id(session_id)
+        target = SessionId(value=self._ids.uuid())
+        relay = SessionRelay(target.value, self._linked(), self._mapping)
+        tools = await self._tool_servers(servers, relay)
 
         await self._flushed(session_id)
-        target = SessionId(value=self._ids.uuid())
-        copied = await self._copied(session_id, source, target, meta.up_to_uuid)
-        session = await self._opened_fork(target, directory, specs, copied > 0)
+        up_to = meta.up_to_message_id
+        copied = await self._copied(session_id, source, target, up_to)
+        session = await self._opened_fork(target, directory, tools, relay, copied > 0)
         self._sessions[target.value] = session
         logger.info(
             "session %s: forked from %s, %d record(s) copied, cut at %s",
             target.value,
             session_id,
             copied,
-            meta.up_to_uuid,
+            up_to,
         )
-        settings = self._settings(session)
 
-        return ForkSessionResponse(
+        return schema.ForkSessionResponse(
             session_id=target.value,
-            modes=self._options.modes(settings),
-            config_options=self._options.config_options(settings),
+            config_options=self._options.config_options(self._settings(session)),
         )
 
     @staticmethod
     def _fork_meta(meta: Mapping[str, Any]) -> ForkMeta:
         """Ошибки:
-        RequestError — `boba/upToUuid` не непустая строка (-32602).
+        RequestError — `boba/upToMessageId` не непустая строка (-32602).
         """
         try:
             return ForkMeta.model_validate(meta)
@@ -2505,7 +2384,7 @@ class AcpAgent(AcpAgentProtocol):
             raise RequestError.invalid_params(
                 {
                     ErrorDataKey.SESSION_ID.value: session_id,
-                    ErrorDataKey.UP_TO_UUID.value: up_to,
+                    ErrorDataKey.UP_TO_MESSAGE_ID.value: up_to,
                     ErrorDataKey.DETAILS.value: str(exc),
                 }
             ) from exc
@@ -2518,7 +2397,8 @@ class AcpAgent(AcpAgentProtocol):
         self,
         target: SessionId,
         directory: Path,
-        specs: Mapping[str, McpServerJson],
+        tools: ToolServer | None,
+        relay: SessionRelay,
         resume: bool,
     ) -> AcpSession:
         """Новая сессия над скопированными записями; если открыть её не
@@ -2526,14 +2406,12 @@ class AcpAgent(AcpAgentProtocol):
         сиротой.
 
         Ошибки:
-        RequestError — серверы не годятся (-32602), сессию открыть не
+        RequestError — параметры не годятся (-32602), сессию открыть не
             удалось (-32603).
         """
-        waiters = PromptWaiters(self._mapping)
-        relay = SessionRelay(target.value, self._linked(), self._mapping, waiters)
         try:
             opened = await self._assembly.open(
-                target, directory, specs, relay, resume=resume
+                target, directory, tools, relay, resume=resume
             )
         except SessionRefusedError as exc:
             await self._dropped_fork(target, exc)
@@ -2548,7 +2426,7 @@ class AcpAgent(AcpAgentProtocol):
 
         relay.attach(opened.agent)
 
-        return AcpSession(target.value, opened, relay, waiters)
+        return AcpSession(target.value, opened, relay, self._mapping)
 
     async def _dropped_fork(self, target: SessionId, cause: Exception) -> None:
         """Ошибки:
@@ -2567,8 +2445,8 @@ class AcpAgent(AcpAgentProtocol):
 
     async def close_session(
         self, session_id: str, **kwargs: Any
-    ) -> CloseSessionResponse | None:
-        """Гасит ход сессии, отпускает замок, закрывает серверы MCP.
+    ) -> schema.CloseSessionResponse:
+        """Гасит ход сессии и отпускает замок.
 
         Ошибки:
         RequestError — сессия неизвестна (-32002).
@@ -2578,69 +2456,4 @@ class AcpAgent(AcpAgentProtocol):
         await held.close()
         logger.info("session %s: closed", session_id)
 
-        return CloseSessionResponse()
-
-    async def ext_method(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
-        raise RequestError.method_not_found(f"_{method}")
-
-    def on_connect(self, conn: AcpClientProtocol) -> None:
-        """Соединение SDK здесь не используется: канал к клиенту даёт
-        AcpServer через `attach`."""
-
-    async def ext_notification(self, method: str, params: dict[str, Any]) -> None:
-        logger.info("extension notification _%s is not supported; ignored", method)
-
-
-class AcpServer:
-    """Соединение ACP по потокам: маршрутизатор SDK с включёнными
-    нестабильными методами плюс маршруты `$/cancel_request` и
-    `session/delete`, которых у маршрутизатора нет. Создаёт вход процесса;
-    `serve` живёт до конца ввода или до `stop`, затем закрывает сессии."""
-
-    def __init__(
-        self,
-        agent: AcpAgent,
-        reader: asyncio.StreamReader,
-        writer: asyncio.StreamWriter,
-    ) -> None:
-        self._agent = agent
-        router = build_agent_router(agent, use_unstable_protocol=True)
-        router.add_route(
-            Route(
-                method=AcpMethod.CANCEL_REQUEST.value,
-                func=agent.cancel_request,
-                kind="notification",
-            )
-        )
-        router.add_route(
-            Route(
-                method=AcpMethod.SESSION_DELETE.value,
-                func=agent.delete_session,
-                kind="request",
-            )
-        )
-        self._connection = Connection(
-            router, writer, reader, observers=[agent.requests], listening=False
-        )
-        agent.attach(ClientLink(self._connection))
-        self._stopped = asyncio.Event()
-
-    def stop(self) -> None:
-        """Остановка снаружи (сигнал): обслуживание кончается, сессии закрываются."""
-        self._stopped.set()
-
-    async def serve(self) -> None:
-        receiving = asyncio.create_task(
-            self._connection.main_loop(), name="acp-receive"
-        )
-        stopping = asyncio.create_task(self._stopped.wait(), name="acp-stop")
-        try:
-            await asyncio.wait(
-                {receiving, stopping}, return_when=asyncio.FIRST_COMPLETED
-            )
-        finally:
-            stopping.cancel()
-            receiving.cancel()
-            await asyncio.gather(receiving, stopping, return_exceptions=True)
-            await self._agent.close_all()
-            await self._connection.close()
+        return schema.CloseSessionResponse()

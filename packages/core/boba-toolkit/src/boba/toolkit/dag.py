@@ -496,6 +496,8 @@ class NodeOutcome(BaseModel):
     вызова, а у связки — каждого её узла. Их называет порт сервера, чьи
     инструменты описаны схемой; None — вызов исполнен в своём процессе, и
     его аргументы показывает модель вызова инструмента."""
+    reply: Mapping[str, JsonValue] | None = None
+    """Ответ сервера MCP на вызов как пришёл; None — порт его не хранит."""
 
     def failed(self) -> bool:
         return isinstance(self.artifact, FailureResult)
@@ -518,13 +520,14 @@ class NodeOutcome(BaseModel):
         return ""
 
     def use_result(self) -> ToolUseResult:
-        """Итог в форме записи истории: результат семейства, адрес журнала
-        и типы содержимого аргументов."""
-        return ToolUseResult(
-            artifact=self.artifact.model_dump(mode="json", exclude_none=True),
-            journal=self.journal,
-            media=self.media,
-        )
+        """Итог в форме записи истории: ответ сервера MCP как пришёл, а без
+        него — результат семейства; адрес журнала и типы содержимого
+        аргументов."""
+        artifact: Any = self.artifact.model_dump(mode="json", exclude_none=True)
+        if self.reply is not None:
+            artifact = self.reply
+
+        return ToolUseResult(artifact=artifact, journal=self.journal, media=self.media)
 
 
 class ToolUseResultKey(StrEnum):
