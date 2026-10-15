@@ -3,8 +3,9 @@
 Запускается субпроцессом из тестов агента вкладки:
 `python foreign_agent.py --settings <путь>` (файл настроек чата не читает).
 Принимает серверы чата записями type "acp", открывает сессии и отвечает на
-вопрос сразу пустым ходом; ветку session/fork держит, но среза по messageId
-вопроса в `capabilities.session.fork._meta` не объявляет.
+вопрос сразу пустым ходом — эхо вопроса `user_message` и idle; ветку
+session/fork держит, но среза по messageId вопроса в
+`capabilities.session.fork._meta` не объявляет.
 """
 
 from __future__ import annotations
@@ -87,18 +88,21 @@ class ForeignAgent(Agent):
     async def prompt(
         self, session_id: str, prompt: list[Any], **kwargs: Any
     ) -> schema.PromptResponse:
-        turn = asyncio.create_task(self._idle(session_id))
+        message_id = str(uuid4())
+        turn = asyncio.create_task(self._idle(session_id, message_id, prompt))
         self._turns.add(turn)
         turn.add_done_callback(self._turns.discard)
 
-        return schema.PromptResponse(message_id=str(uuid4()))
+        return schema.PromptResponse(message_id=message_id)
 
-    async def _idle(self, session_id: str) -> None:
+    async def _idle(self, session_id: str, message_id: str, prompt: list[Any]) -> None:
         connection = self._connection
         if connection is None:
             return
 
         await asyncio.sleep(0.05)
+        echo = schema.UserMessageUpdate(message_id=message_id, content=prompt)
+        await connection.session_update(session_id=session_id, update=echo)
         idle = schema.IdleSessionStateUpdate(stop_reason="end_turn")
         await connection.session_update(session_id=session_id, update=idle)
 

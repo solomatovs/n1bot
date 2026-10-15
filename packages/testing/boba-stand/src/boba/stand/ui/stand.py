@@ -619,6 +619,15 @@ class StandConfig(StandService):
     """Секция [agent.history] чата: по умолчанию Postgres стенда тем же
     подключением, что у чата (kerberos), схема agent_history в базе стенда."""
 
+    agent_process: dict[str, Any] = field(
+        default_factory=lambda: {
+            "command": sys.executable,
+            "args": ["-m", StandConfig.AGENT_MODULE, "acp", "--setting-sources", ""],
+        }
+    )
+    """Команда и аргументы секции [agent.process] чата: по умолчанию агент
+    boba.cli.app интерпретатором прогона; тест чужого агента ставит свою."""
+
     agent_chat_mcp: bool = True
     """Объявлять ли агенту сервер инструментов чата /chat/mcp."""
 
@@ -642,9 +651,9 @@ class StandConfig(StandService):
     процесса); postgres — шина в базе стенда, общая у двух инстансов."""
 
     CHAT_TOOLS: ClassVar[tuple[str, ...]] = StandToolNames.CHAT_TOOLS
+    """Инструменты, которые чат исполняет сам; остальные — у сервиса boba-mcp."""
     AGENT_MODULE: ClassVar[str] = "boba.cli.app"
     """Модуль агента ACP: стенд запускает его интерпретатором прогона."""
-    """Инструменты, которые чат исполняет сам; остальные — у сервиса boba-mcp."""
 
     def companion(self) -> StandService | None:
         """Сервис boba-mcp чата стенда: инструменты и файлы живут у него."""
@@ -735,8 +744,8 @@ class StandConfig(StandService):
         StandPlugins(self.app, self.sandbox).copy_to(self.files.plugins)
 
     def _use_agent(self, doc: MutableMapping[str, Any]) -> None:
-        """Агент ACP стенда чата: модуль boba.cli.app интерпретатором прогона,
-        приватные каталоги в рабочем каталоге стенда, история по полю стенда."""
+        """Агент ACP стенда чата: процесс и история по полям стенда,
+        приватные каталоги в рабочем каталоге стенда."""
         if "agent" not in doc:
             return
 
@@ -745,8 +754,8 @@ class StandConfig(StandService):
         doc["agent"] = {
             "public_url": self.base_url,
             "process": {
-                "command": sys.executable,
-                "args": ["-m", self.AGENT_MODULE, "acp", "--setting-sources", ""],
+                "command": self.agent_process["command"],
+                "args": self.agent_process["args"],
                 "env": {},
                 "private_dir": str(private_dir),
                 "start_timeout_sec": 60,
