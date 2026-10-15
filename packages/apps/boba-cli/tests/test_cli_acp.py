@@ -453,23 +453,23 @@ class AcpClient(Client):
 
 class FeedView:
     """Лента по уведомлениям сессии — один рендерер для живого хода и для
-    воспроизведения: куски одного сообщения склеиваются, у вызова остаются
-    имя, заголовок, вид, аргументы, конечный статус, текст и `rawOutput`;
-    состояние хода и служебные уведомления в ленту не идут."""
+    воспроизведения: куски одного сообщения и целые сообщения склеиваются, у
+    вызова остаются имя, заголовок, вид, аргументы, конечный статус, текст и
+    `rawOutput`; состояние хода и служебные уведомления в ленту не идут."""
 
     def render(self, updates: Sequence[Any]) -> list[tuple[Any, ...]]:
         items: list[tuple[Any, ...]] = []
         calls: dict[str, dict[str, Any]] = {}
         for update in updates:
-            if isinstance(update, schema.UserMessageChunk):
+            if isinstance(update, schema.UserMessageUpdate):
                 items.append(("user", update.message_id, self._text_of(update)))
                 continue
 
-            if isinstance(update, schema.AgentThoughtChunk):
+            if isinstance(update, schema.AgentThoughtChunk | schema.AgentThoughtUpdate):
                 self._glue(items, "thought", update)
                 continue
 
-            if isinstance(update, schema.AgentMessageChunk):
+            if isinstance(update, schema.AgentMessageChunk | schema.AgentMessageUpdate):
                 self._glue(items, "agent", update)
                 continue
 
@@ -511,20 +511,32 @@ class FeedView:
 
     @staticmethod
     def _text_of(
-        update: schema.UserMessageChunk
+        update: schema.UserMessageUpdate
+        | schema.AgentMessageUpdate
+        | schema.AgentThoughtUpdate
         | schema.AgentMessageChunk
         | schema.AgentThoughtChunk,
     ) -> str:
-        block = update.content
-        assert isinstance(block, schema.TextContentBlock)
+        """Текст куска или целого сообщения: у целого блоки склеиваются."""
+        blocks: list[Any] = [update.content]
+        if isinstance(update.content, list):
+            blocks = list(update.content)
 
-        return block.text
+        parts: list[str] = []
+        for block in blocks:
+            assert isinstance(block, schema.TextContentBlock)
+            parts.append(block.text)
+
+        return "".join(parts)
 
     def _glue(
         self,
         items: list[tuple[Any, ...]],
         kind: str,
-        update: schema.AgentMessageChunk | schema.AgentThoughtChunk,
+        update: schema.AgentMessageChunk
+        | schema.AgentThoughtChunk
+        | schema.AgentMessageUpdate
+        | schema.AgentThoughtUpdate,
     ) -> None:
         chunk = self._text_of(update)
         if items and items[-1][0] == kind and items[-1][1] == update.message_id:
@@ -851,7 +863,7 @@ class Steps:
         updates = client.updates_of(session_id)
         assert isinstance(updates[0], schema.RunningSessionStateUpdate)
         echo = updates[1]
-        assert isinstance(echo, schema.UserMessageChunk)
+        assert isinstance(echo, schema.UserMessageUpdate)
         assert echo.message_id == response.message_id
         assert updates[-1] is idle
 
@@ -988,7 +1000,7 @@ class TestTurnState:
             updates = client.updates_of(session_id)
             assert isinstance(updates[0], schema.RunningSessionStateUpdate)
             echo = updates[1]
-            assert isinstance(echo, schema.UserMessageChunk)
+            assert isinstance(echo, schema.UserMessageUpdate)
             assert echo.message_id == response.message_id
             assert FeedView().user_texts(FeedView().render(updates)) == [
                 ScenarioName.ANSWER.value
@@ -1499,7 +1511,7 @@ class TestQueueAndCancel:
             echoes = [
                 u
                 for u in client.updates_of(session_id)
-                if isinstance(u, schema.UserMessageChunk)
+                if isinstance(u, schema.UserMessageUpdate)
             ]
             assert [e.message_id for e in echoes] == [
                 first.message_id,
@@ -2549,7 +2561,7 @@ class TestServiceUpdates:
             assert len(loader.of(schema.UsageUpdate)) == 1
             kinds = update_kinds(second.frames, "session/resume")
             assert kinds[-2:] == ["usage_update", "session_info_update"]
-            assert kinds[0] == "user_message_chunk"
+            assert kinds[0] == "user_message"
         finally:
             await conn.close()
             await second.close_stdin()

@@ -1,5 +1,5 @@
 """Бинарник `release/<версия>/bin/boba` (pytest -m integration): сценарий ACP
-через него — рукопожатие, сессия с сервером MCP по http, ход с инструментом,
+через него — рукопожатие, сессия с регистрацией MCP-over-ACP, ход с инструментом,
 разрешение; время старта и размер, отсутствие исходного текста внутри,
 локальная модель onnx внутри файла. Без собранного бинарника тесты
 пропускаются: `make -C build boba-bin`."""
@@ -12,18 +12,18 @@ from importlib.metadata import version
 from pathlib import Path
 
 import pytest
-from acp import text_block
+from acp.experimental.v2 import schema
 from omegaconf import DictConfig
 from test_cli_acp import (
+    AcpClient,
     AcpProcess,
     FakeModel,
-    McpStand,
-    RecordingClient,
+    StandRegistration,
     Steps,
     handshake,
 )
 
-from boba.cli.acp_server import StopReasonName
+from boba.transport.acp.protocol import StopReason
 
 pytestmark = [pytest.mark.anyio, pytest.mark.integration]
 
@@ -63,19 +63,17 @@ class TestBinary:
             assert snippet not in data
 
     async def test_acp_scenario_runs_through_the_binary(
-        self, model: FakeModel, mcp: McpStand, tmp_path: Path
+        self, model: FakeModel, registration: StandRegistration, tmp_path: Path
     ) -> None:
         boba = AcpProcess(tmp_path, model, [str(binary())])
-        client = RecordingClient()
-        conn = await boba.start(client, None, "--record-requests")
+        client = AcpClient()
+        conn = await boba.start(client, registration, None, "--record-requests")
         try:
             await handshake(conn)
             session = await conn.new_session(
-                cwd=str(tmp_path), mcp_servers=[mcp.server()]
+                cwd=str(tmp_path), mcp_servers=[StandRegistration.STAND]
             )
-            await Steps.tool_turn_streams_updates(
-                conn, client, session.session_id, boba.frames
-            )
+            await Steps.tool_turn_streams_updates(conn, client, session.session_id)
             await Steps.permission_is_asked_and_remembered(
                 conn, client, session.session_id
             )
@@ -92,7 +90,7 @@ class TestBinary:
         assert "permission-rule" in types
 
     async def test_local_model_answers_inside_the_binary(
-        self, raw_config: DictConfig, tmp_path: Path
+        self, raw_config: DictConfig, registration: StandRegistration, tmp_path: Path
     ) -> None:
         """Рантайм onnxruntime-genai внутри файла: ход на локальной модели стенда
         проходит, веса лежат снаружи и называются профилем."""
@@ -110,18 +108,23 @@ class TestBinary:
                 "maxOutputTokens": 256,
             }
         }
-        client = RecordingClient()
+        client = AcpClient()
         conn = await boba.start(
-            client, document, "--system-prompt", "Answer in one short sentence."
+            client,
+            registration,
+            document,
+            "--system-prompt",
+            "Answer in one short sentence.",
         )
         try:
             await handshake(conn)
             session = await conn.new_session(cwd=str(tmp_path), mcp_servers=[])
-            response = await conn.prompt(
+            await conn.prompt(
                 session_id=session.session_id,
-                prompt=[text_block("Say hello in one word.")],
+                prompt=[schema.TextContentBlock(text="Say hello in one word.")],
             )
-            assert response.stop_reason == StopReasonName.END_TURN.value
+            idle = await client.idle(session.session_id)
+            assert idle.stop_reason == StopReason.END_TURN
         finally:
             await conn.close()
             await boba.close_stdin()

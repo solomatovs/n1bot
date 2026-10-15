@@ -176,7 +176,7 @@ __all__ = [
     "ToolKindName",
 ]
 
-PromptBlock: TypeAlias = (
+ContentBlock: TypeAlias = (
     schema.TextContentBlock
     | schema.ImageContentBlock
     | schema.AudioContentBlock
@@ -196,7 +196,9 @@ ConfigOption: TypeAlias = (
     | schema.OtherSessionConfigOption
 )
 Update: TypeAlias = (
-    schema.UserMessageChunk
+    schema.UserMessageUpdate
+    | schema.AgentMessageUpdate
+    | schema.AgentThoughtUpdate
     | schema.AgentMessageChunk
     | schema.AgentThoughtChunk
     | schema.SessionToolCallUpdate
@@ -590,8 +592,9 @@ class AcpMapping:
         return updates
 
     def user_updates(self, record: UserRecord) -> Iterator[Update]:
-        """Запись `user`: итоги вызовов либо вопрос человека с uuid записи
-        как `messageId`; служебные записи в ленту не идут."""
+        """Запись `user`: итоги вызовов либо вопрос человека целым
+        сообщением `user_message` с uuid записи как `messageId`; служебные
+        записи в ленту не идут."""
         results = self.tool_results(record)
         if results:
             yield from results
@@ -601,17 +604,19 @@ class AcpMapping:
         if text is None:
             return
 
-        yield schema.UserMessageChunk(
-            message_id=record.uuid, content=schema.TextContentBlock(text=text)
+        yield schema.UserMessageUpdate(
+            message_id=record.uuid, content=[schema.TextContentBlock(text=text)]
         )
 
     def replay(
         self, conversation: Sequence[ChainRecord], hints: ToolHintSource
     ) -> Sequence[Update]:
-        """Беседа из записей → те же уведомления, что шлёт живой ход, по
-        порядку записей. Синтетические записи агента (заметки об ошибках,
-        заглушки) не воспроизводятся, оборванный ответ — воспроизводится;
-        служебные сообщения, вложения и границы сжатия в ленту не идут."""
+        """Беседа из записей → уведомления по порядку записей: сообщения
+        целиком (`user_message`, `agent_thought`, `agent_message`), вызовы и
+        их итоги — как в живом ходе. Синтетические записи агента (заметки об
+        ошибках, заглушки) не воспроизводятся, оборванный ответ —
+        воспроизводится; служебные сообщения, вложения и границы сжатия в
+        ленту не идут."""
         updates: list[Update] = []
         for record in conversation:
             updates.extend(self._replayed(record, hints))
@@ -633,21 +638,27 @@ class AcpMapping:
             return
 
         message_id = record.message.id
+        thoughts: list[ContentBlock] = []
+        texts: list[ContentBlock] = []
+        calls: list[ToolUseBlock] = []
         for block in record.message.content:
             if isinstance(block, ThinkingBlock):
-                yield schema.AgentThoughtChunk(
-                    message_id=message_id,
-                    content=schema.TextContentBlock(text=block.thinking),
-                )
+                thoughts.append(schema.TextContentBlock(text=block.thinking))
                 continue
 
             if isinstance(block, TextBlock):
-                yield schema.AgentMessageChunk(
-                    message_id=message_id,
-                    content=schema.TextContentBlock(text=block.text),
-                )
+                texts.append(schema.TextContentBlock(text=block.text))
                 continue
 
+            calls.append(block)
+
+        if thoughts:
+            yield schema.AgentThoughtUpdate(message_id=message_id, content=thoughts)
+
+        if texts:
+            yield schema.AgentMessageUpdate(message_id=message_id, content=texts)
+
+        for block in calls:
             yield self.tool_call(block, hints.tool_hints(block.name))
 
     def _tool_result(
@@ -769,7 +780,7 @@ class PromptText:
 
     LINK: ClassVar[str] = "[@{name}]({uri})"
 
-    def render(self, blocks: Sequence[PromptBlock]) -> str:
+    def render(self, blocks: Sequence[ContentBlock]) -> str:
         """Ошибки:
         RequestError — блок неподдержанного вида или пустой вопрос (-32602).
         """
@@ -784,7 +795,7 @@ class PromptText:
 
         return text
 
-    def _part(self, block: PromptBlock) -> str:
+    def _part(self, block: ContentBlock) -> str:
         if isinstance(block, schema.TextContentBlock):
             return block.text
 
@@ -1855,7 +1866,7 @@ class AcpAgent(AcpAgentProtocol):
         await session.relay.notify(self._options.options_update(settings))
 
     async def prompt(
-        self, session_id: str, prompt: list[PromptBlock], **kwargs: Any
+        self, session_id: str, prompt: list[ContentBlock], **kwargs: Any
     ) -> schema.PromptResponse:
         """Ошибки:
         RequestError — сессия неизвестна (-32002), блоки не годятся (-32602),
