@@ -191,7 +191,8 @@ class ThreadIdentity:
 
 class AgentSessionMeta:
     """Соответствие тред → sessionId агента в threads.meta: его читают
-    открытие треда и удаление, пишет первый ход."""
+    открытие треда и удаление, пишут только открытие новой сессии и ветка
+    при правке вопроса; слой данных этот ключ от chainlit не принимает."""
 
     def __init__(self, threads: ThreadsTable) -> None:
         self._threads = threads
@@ -706,7 +707,6 @@ class ThreadAgent:
             return True
 
         self._asked = list(self._questions.ids)
-        await self._meta.remember(self.thread_id, known)
         await self._renderer.loaded(known)
         logger.info(
             "thread %s: agent session %s resumed, %d question(s) replayed",

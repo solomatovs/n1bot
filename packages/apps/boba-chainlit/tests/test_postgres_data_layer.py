@@ -14,8 +14,9 @@ from chainlit_stand import ChatSessionStand, Seed
 
 from boba.canvas.keys import ObjectKey
 from boba.chainlit.data.data_layer import PostgresDataLayer
+from boba.chainlit.domain.fields import ThreadMetaField
 from boba.chainlit.infra.config import AppConfig
-from boba.chat.threads import DataRejectedError
+from boba.chat.threads import DataRejectedError, ThreadUpsert
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.context import Scope
 from boba.identity.session import UserMetadataField
@@ -27,6 +28,7 @@ from boba.messaging import (
     ThreadChanged,
 )
 from boba.runtime.elements import ChatTables
+from boba.runtime.threads import ThreadsTable
 
 pytestmark = pytest.mark.anyio
 
@@ -163,6 +165,39 @@ async def test_update_thread_and_author(seeded: Seed):
         raise AssertionError('thread["name"] == "renamed"')
     if thread["userId"] != seeded.user.id:
         raise AssertionError('thread["userId"] == seeded.user.id')
+
+
+async def test_update_thread_leaves_the_agent_session_to_the_agent(
+    app_config: AppConfig, pool: AsyncPostgresPool, seeded: Seed
+):
+    """Сессию агента в threads.meta пишет только агент треда: persist сессии
+    chainlit на отключении вкладки не возвращает тред на прежнюю сессию и не
+    стирает указатель."""
+    layer = seeded.layer
+    threads = ThreadsTable(
+        app_config.data_layer.postgres, app_config.data_layer.db_schema, pool
+    )
+    await threads.upsert(
+        ThreadUpsert(
+            id=UUID(seeded.thread_id),
+            meta_set={ThreadMetaField.AGENT_SESSION: "branch"},
+        )
+    )
+
+    await layer.update_thread(
+        seeded.thread_id,
+        metadata={ThreadMetaField.AGENT_SESSION: "original", "topic": "y"},
+    )
+    await layer.update_thread(
+        seeded.thread_id, metadata={ThreadMetaField.AGENT_SESSION: None}
+    )
+
+    thread = await layer.get_thread(seeded.thread_id)
+    assert thread is not None
+    meta = thread["metadata"]
+    assert meta is not None
+    assert meta[ThreadMetaField.AGENT_SESSION] == "branch"
+    assert meta["topic"] == "y"
 
 
 async def test_steps_are_not_persisted(seeded: Seed):
