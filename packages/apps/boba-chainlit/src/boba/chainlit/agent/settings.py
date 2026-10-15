@@ -71,7 +71,7 @@ from boba.mcp_client.client import (
     StdioCommand,
 )
 from boba.runtime.table import PgTable
-from boba.toolkit.mcp_names import McpToolNames
+from boba.toolkit.mcp import McpToolNames
 from boba.transport.http.connection import BearerAuth, HttpConnection
 
 __all__ = [

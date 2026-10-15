@@ -349,7 +349,6 @@ async def _store(thread_id: str, files: Mapping[str, bytes]) -> None:
         DroppedSignals,
         McpCaller,
         McpServers,
-        NamedBlocks,
     )
     from boba.toolrun.hosted import DirectCalls
 
@@ -357,9 +356,7 @@ async def _store(thread_id: str, files: Mapping[str, bytes]) -> None:
     owner, meta = await _user_row(config, LOGIN[0])
     caller = McpCaller(login=LOGIN[0], roles=SignInMetadata.parse(meta).roles)
     server = config.profiles[FILES_PROFILE].mcp[0]
-    servers = McpServers(
-        config.mcp, NamedBlocks(), DroppedSignals(), CallContexts(), DirectCalls()
-    )
+    servers = McpServers(config.mcp, DroppedSignals(), CallContexts(), DirectCalls())
     try:
         remote = await servers.files(server, caller)
         if remote is None:

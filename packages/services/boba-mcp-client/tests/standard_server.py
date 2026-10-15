@@ -4,7 +4,7 @@
 либо `python standard_server.py streamable-http <port>`. Кроме четырёх
 обычных инструментов держит отказы стенда: задержку, большой результат,
 обрыв посреди вызова, смену списка инструментов с уведомлением и отчёты о
-ходе вызова.
+ходе вызова, — и ответ из блоков разных видов и адресатов.
 """
 
 import asyncio
@@ -14,7 +14,15 @@ from typing import ClassVar
 
 from mcp.server.mcpserver import Context, Image, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
-from mcp.types import ToolAnnotations
+from mcp.types import (
+    Annotations,
+    CallToolResult,
+    EmbeddedResource,
+    ResourceLink,
+    TextContent,
+    TextResourceContents,
+    ToolAnnotations,
+)
 
 
 class StandardServer:
@@ -34,6 +42,7 @@ class StandardServer:
         )(self.shout)
         self._mcp.tool()(self.broken)
         self._mcp.tool()(self.picture)
+        self._mcp.tool()(self.blocks)
         self._mcp.tool()(self.sleep_for)
         self._mcp.tool()(self.large)
         self._mcp.tool()(self.die)
@@ -56,6 +65,32 @@ class StandardServer:
     def picture(self) -> Image:
         """Returns a tiny image."""
         return Image(data=self.PNG, format="png")
+
+    def blocks(self, empty: bool) -> CallToolResult:
+        """Answers with blocks for the user and the model, or only with
+        structured content."""
+        if empty:
+            return CallToolResult(content=[], structured_content={"rows": 2})
+
+        return CallToolResult(
+            content=[
+                TextContent(
+                    text="for the user", annotations=Annotations(audience=["user"])
+                ),
+                TextContent(
+                    text="for the model",
+                    annotations=Annotations(audience=["user", "assistant"]),
+                ),
+                ResourceLink(
+                    name="report.csv", uri="file:///report.csv", mime_type="text/csv"
+                ),
+                EmbeddedResource(
+                    resource=TextResourceContents(
+                        uri="file:///notes.txt", mime_type="text/plain", text="notes"
+                    )
+                ),
+            ]
+        )
 
     async def sleep_for(self, seconds: float) -> str:
         """Answers after the given delay."""

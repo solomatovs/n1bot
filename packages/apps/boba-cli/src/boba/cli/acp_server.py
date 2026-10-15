@@ -194,7 +194,7 @@ from boba.agent.turn import ContextUsage
 from boba.cancellation import StopReason as CoreStopReason
 from boba.cli.settings import McpServerJson, McpTransportJson
 from boba.toolkit.dag import ToolHints
-from boba.toolkit.mcp_names import McpToolNameError, McpToolNames
+from boba.toolkit.mcp import McpToolNameError, McpToolNames
 
 logger = logging.getLogger(__name__)
 

@@ -12,16 +12,15 @@ OAuth библиотеки mcp; своё здесь — только прохо�
 (UnattendedLogin).
 
 Ошибки:
-McpClientError — сервер недоступен, не прошёл инициализацию, не отдал список
-    инструментов, отказал во входе либо порт позвали до open().
+McpClientError — сервер недоступен, не прошёл инициализацию либо не
+    отвечает на server/discover, не отдал список инструментов, отказал во
+    входе либо порт позвали до open().
 Сбой самого вызова наружу не выходит: он возвращается итогом-ошибкой вызова.
 """
 
 from __future__ import annotations
 
 import asyncio
-import base64
-import json
 import logging
 from abc import abstractmethod
 from collections import OrderedDict
@@ -36,7 +35,6 @@ from collections.abc import (
 )
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
-from enum import StrEnum
 from functools import partial
 from typing import Annotated, Any, ClassVar, Literal, Protocol, Self, TypeVar
 from urllib.parse import quote
@@ -62,6 +60,7 @@ from mcp.shared.auth import (
     OAuthToken,
 )
 from mcp.shared.message import SessionMessage
+from mcp.types.version import MODERN_PROTOCOL_VERSIONS
 from pydantic import (
     AnyUrl,
     BaseModel,
@@ -96,16 +95,18 @@ from boba.toolkit.dag import (
     NodeOutcomes,
     NodeReports,
     ToolCard,
-    ToolHints,
     ToolServer,
     WorkflowNodeResult,
     WorkflowResult,
 )
-from boba.toolkit.mcp_names import McpToolNameError, McpToolNames
-from boba.toolkit.result import (
-    ErrorResult,
-    MarkdownResult,
+from boba.toolkit.mcp import (
+    McpFailure,
+    McpResults,
+    McpToolNameError,
+    McpToolNames,
+    McpToolStubs,
 )
+from boba.toolkit.result import ErrorResult, FailureResult, ToolResultBase
 from boba.toolkit.wire import (
     FilesFeature,
     JournalFeature,
@@ -117,7 +118,6 @@ from boba.workspace.launcher import ReadWindow
 
 __all__ = [
     "BearerAuth",
-    "BlockFiles",
     "CallSignals",
     "DroppedSignals",
     "HttpEndpoint",
@@ -131,7 +131,6 @@ __all__ = [
     "McpServers",
     "McpServersConfig",
     "McpToolServer",
-    "NamedBlocks",
     "NoAuth",
     "ProgressListener",
     "ProxyAuth",
@@ -151,13 +150,6 @@ Streams = tuple[ReadStream[SessionMessage | Exception], WriteStream[SessionMessa
 class McpClientError(Exception):
     """С MCP-сервером не удалось договориться: соединение, инициализация,
     список инструментов."""
-
-
-class McpFailure(StrEnum):
-    """Виды отказа вызова, которые собирает сам клиент."""
-
-    TOOL_ERROR = "mcp_tool_error"
-    TRANSPORT = "mcp_transport_error"
 
 
 @dataclass(frozen=True)
@@ -772,7 +764,7 @@ class McpServersConfig(BaseModel):
 class ErrorCauses:
     """Причины сбоя одной строкой: группа исключений anyio раскрывается до
     своих листьев, иначе в тексте остаётся «unhandled errors in a TaskGroup».
-    Создаётся соединением и переводчиком результатов."""
+    Создаётся соединением и портом McpToolServer."""
 
     def text(self, error: BaseException) -> str:
         return "; ".join(self._leaves(error))
@@ -863,7 +855,7 @@ class McpConnection:
     async def _serve(self, ready: asyncio.Future[ClientSession]) -> None:
         """Сессия живёт в этой задаче. Протокол согласует библиотека: сервер
         новой спецификации отвечает на server/discover, прежний — на
-        initialize."""
+        initialize, и такой сервер клиент отвергает."""
         stop = self._stop
         try:
             client = Client(
@@ -873,6 +865,17 @@ class McpConnection:
                 cache=None,
             )
             async with client:
+                if client.session.discover_result is None:
+                    msg = (
+                        f"mcp {self._transport.label()}: the server negotiated "
+                        f"protocol version {client.protocol_version} through "
+                        "initialize, but the client expects server/discover with "
+                        f"one of {list(MODERN_PROTOCOL_VERSIONS)}; update the "
+                        "server to a release of MCP that answers server/discover."
+                    )
+                    ready.set_exception(McpClientError(msg))
+                    return
+
                 ready.set_result(client.session)
                 await stop.wait()
         except Exception as exc:
@@ -1106,76 +1109,6 @@ class FileStored(BaseModel):
 
     path: str
     size: int = Field(ge=0)
-
-
-class McpToolStubs:
-    """Инструменты модели по списку инструментов MCP-сервера.
-
-    Создаётся портом McpToolServer. Карточка несёт полное имя инструмента
-    (McpToolNames: сервер и имя на нём), описание, схему аргументов сервера
-    как есть и вид аргументов, который клиент сам выводит из схемы
-    (CallViews): аргумент с типом содержимого — блок кода, прочие —
-    строкой; вызов исполняет порт запросом к серверу.
-    """
-
-    def __init__(self, server: str, names: McpToolNames) -> None:
-        self._server = server
-        self._names = names
-        self._views = CallViews()
-
-    def card(self, tool: mt.Tool) -> ToolCard:
-        """Ошибки:
-        McpToolNameError — имя сервера или инструмента не годится для
-            полного имени.
-        """
-        description = tool.description
-        if not description:
-            description = tool.name
-
-        return ToolCard(
-            name=self._names.full(self._server, tool.name),
-            description=description,
-            parameters=dict(tool.input_schema),
-            views=self._views.seen(tool.input_schema),
-            hints=self.hints_of(tool),
-        )
-
-    def hints_of(self, tool: mt.Tool) -> ToolHints:
-        """Пометки по annotations сервера; без них — меняющий и разрушающий."""
-        annotations = tool.annotations
-        if annotations is None:
-            return ToolHints()
-
-        read_only = False
-        if annotations.read_only_hint is not None:
-            read_only = annotations.read_only_hint
-
-        destructive = True
-        if annotations.destructive_hint is not None:
-            destructive = annotations.destructive_hint
-
-        return ToolHints(read_only=read_only, destructive=destructive)
-
-
-class BlockFiles(Protocol):
-    """Куда клиент кладёт нетекстовые блоки результата: картинки, звук,
-    вложенные файлы.
-
-    Реализует хозяин клиента: чат сохраняет блок файлом в workspace треда и
-    показывает вложением. Итог — строка для модели о том, где теперь файл.
-    """
-
-    @abstractmethod
-    async def attached(self, call: DagNode, index: int, mime: str, data: bytes) -> str:
-        """Принять блок номер index результата вызова call."""
-
-
-class NamedBlocks(BlockFiles):
-    """Реализация BlockFiles без хранилища: блок только называется в тексте
-    результата. Ей пользуется клиент, которому некуда класть файлы."""
-
-    async def attached(self, call: DagNode, index: int, mime: str, data: bytes) -> str:
-        return f"[{mime}, {len(data)} bytes]"
 
 
 class LiveCall:
@@ -1429,132 +1362,6 @@ class CallProgress:
         await self._listener.progressed(progress, total, text)
 
 
-class McpResults:
-    """Итог вызова MCP итогом порта NodeOutcome.
-
-    Создаётся портом McpToolServer с именем, под которым клиент знает
-    сервер. Результат со сведениями о вызове и результатом известного вида
-    в structuredContent — итог сервера boba-mcp: он оживает тем же итогом,
-    каким его отдал порт сервера (ResultWire.revived), с адресом журнала
-    вызова. Результат любого другого сервера — текст его
-    content: текстовые блоки подряд, блоки-файлы (картинки, звук, вложенные
-    ресурсы) уходят хозяину клиента (BlockFiles) и остаются в тексте его
-    строкой, structuredContent без текста — JSON.
-    """
-
-    def __init__(self, files: BlockFiles, server: str) -> None:
-        self._files = files
-        self._server = server
-        self._wire = ResultWire()
-        self._outcomes = NodeOutcomes()
-        self._causes = ErrorCauses()
-
-    async def outcome(self, call: DagNode, result: mt.CallToolResult) -> NodeOutcome:
-        """Итог вызова call по ответу сервера result."""
-        text = await self._text(call, result)
-        failed = bool(result.is_error)
-        own = self._own(call, result, text, failed)
-        if own is not None:
-            return own
-
-        if not failed:
-            return self._outcomes.of(call, MarkdownResult(text=text), False)
-
-        message = text
-        if not message:
-            message = "the mcp server reported an error without a text"
-
-        failure = ErrorResult(message=message, error_kind=McpFailure.TOOL_ERROR)
-
-        return self._outcomes.refused(call, failure)
-
-    def failed(self, call: DagNode, error: Exception) -> NodeOutcome:
-        """Итог вызова, который до сервера не дошёл или остался без ответа."""
-        failure = ErrorResult(
-            message=(
-                f"tool {call.tool!r} got no result from its mcp server: "
-                f"{self._causes.text(error)}"
-            ),
-            error_kind=McpFailure.TRANSPORT,
-        )
-
-        return self._outcomes.refused(call, failure)
-
-    def _own(
-        self, call: DagNode, result: mt.CallToolResult, text: str, failed: bool
-    ) -> NodeOutcome | None:
-        """Итог сервера boba-mcp; None — сервер его не прислал либо прислал
-        вид результата, которого клиент не знает."""
-        wire = WireResult(
-            content=text, structured=result.structured_content, is_error=failed
-        )
-        try:
-            return self._wire.revived(wire, call, self._server)
-        except ValidationError as exc:
-            logger.warning(
-                "mcp result of a known kind does not match its model, shown as "
-                "text: %s",
-                exc,
-            )
-            return None
-
-    async def _text(self, call: DagNode, result: mt.CallToolResult) -> str:
-        parts: list[str] = []
-        files = 0
-        for block in result.content:
-            payload = self._payload(block)
-            if payload is None:
-                parts.append(self._block_text(block))
-                continue
-
-            mime, data = payload
-            parts.append(await self._files.attached(call, files, mime, data))
-            files += 1
-
-        text = "\n".join(part for part in parts if part)
-        if text:
-            return text
-
-        if result.structured_content is not None:
-            return json.dumps(result.structured_content, ensure_ascii=False, indent=2)
-
-        return ""
-
-    @staticmethod
-    def _payload(block: mt.ContentBlock) -> tuple[str, bytes] | None:
-        """Тип и байты блока-файла; None — блок текстовый или ссылка."""
-        if isinstance(block, mt.ImageContent | mt.AudioContent):
-            return block.mime_type, base64.b64decode(block.data)
-
-        if not isinstance(block, mt.EmbeddedResource):
-            return None
-
-        resource = block.resource
-        if not isinstance(resource, mt.BlobResourceContents):
-            return None
-
-        mime = resource.mime_type
-        if not mime:
-            mime = "application/octet-stream"
-
-        return mime, base64.b64decode(resource.blob)
-
-    @staticmethod
-    def _block_text(block: mt.ContentBlock) -> str:
-        if isinstance(block, mt.TextContent):
-            return block.text
-
-        if isinstance(block, mt.EmbeddedResource):
-            resource = block.resource
-            if isinstance(resource, mt.TextResourceContents):
-                return resource.text
-
-        if isinstance(block, mt.ResourceLink):
-            return f"[resource link {block.uri}]"
-
-        return f"[{type(block).__name__}]"
-
-
 class McpToolServer(ToolServer):
     """Реализация порта ToolServer над одним MCP-сервером.
 
@@ -1573,11 +1380,10 @@ class McpToolServer(ToolServer):
 
     FEATURE_PREFIX: ClassVar[str] = "com.boba/"
 
-    def __init__(  # noqa: PLR0913 — порт собирается всеми своими зависимостями
+    def __init__(
         self,
         name: str,
         config: McpServerConfig,
-        files: BlockFiles,
         signals: CallSignals,
         scopes: CallScopeSource,
         conduct: NodeCalls,
@@ -1589,14 +1395,16 @@ class McpToolServer(ToolServer):
         self._config = config
         self._connection = McpConnection(config.endpoint, config.connect_timeout_sec)
         self._names = McpToolNames()
-        self._stubs = McpToolStubs(name, self._names)
+        self._stubs = McpToolStubs()
         self._views = CallViews()
         self._outcomes = NodeOutcomes()
         self._by_name: dict[str, ToolCard] = {}
         """Полное имя инструмента -> его карточка."""
         self._by_remote: dict[str, ToolCard] = {}
         """Имя инструмента на сервере -> его карточка."""
-        self._results = McpResults(files, name)
+        self._results = McpResults()
+        self._wire = ResultWire()
+        self._causes = ErrorCauses()
         self._tools: list[ToolCard] | None = None
         self._features: dict[str, Mapping[str, object]] = {}
         self._dags = CallDag()
@@ -1614,7 +1422,12 @@ class McpToolServer(ToolServer):
             инструмента не проходят модель, имя сервера или инструмента не
             годится для полного имени.
         """
-        session = await self._connection.open()
+        try:
+            session = await self._connection.open()
+        except McpClientError as exc:
+            msg = f"mcp server {self._name!r}: {exc}"
+            raise McpClientError(msg) from exc
+
         self._features = self._declared(session)
         self._journal = self._feature(JournalFeature.ID, JournalFeature)
         self._files_feature = self._feature(FilesFeature.ID, FilesFeature)
@@ -1637,7 +1450,7 @@ class McpToolServer(ToolServer):
                 continue
 
             try:
-                stub = self._stubs.card(tool)
+                stub = self._stubs.card(self._name, tool)
             except McpToolNameError as exc:
                 msg = (
                     f"mcp server {self._name!r} ({self._config.endpoint.label()}): "
@@ -1929,9 +1742,9 @@ class McpToolServer(ToolServer):
             )
             await self._connection.close()
 
-            return LinkedOutcome(self._results.failed(whole, exc), {})
+            return LinkedOutcome(self._failed(whole, exc), {})
 
-        shared = await self._results.outcome(whole, result)
+        shared = self._outcome(whole, result)
         results: dict[str, WorkflowNodeResult] = {}
         artifact = shared.artifact
         if isinstance(artifact, WorkflowResult):
@@ -2012,9 +1825,60 @@ class McpToolServer(ToolServer):
             )
             await self._connection.close()
 
-            return self._results.failed(call, exc)
+            return self._failed(call, exc)
 
-        return await self._results.outcome(call, result)
+        return self._outcome(call, result)
+
+    def _outcome(self, call: DagNode, result: mt.CallToolResult) -> NodeOutcome:
+        """Итог вызова call по ответу сервера result: итог сервера boba-mcp
+        оживает как есть, ответ любого другого сервера — текстом для модели
+        (McpResults)."""
+        family = self._results.result(call.tool, call.key, result)
+        own = self._own(call, result, family)
+        if own is not None:
+            return own
+
+        if isinstance(family, FailureResult):
+            return self._outcomes.refused(call, family)
+
+        return self._outcomes.of(call, family, False)
+
+    def _failed(self, call: DagNode, error: Exception) -> NodeOutcome:
+        """Итог вызова, который до сервера не дошёл или остался без ответа."""
+        failure = ErrorResult(
+            message=(
+                f"tool {call.tool!r} got no result from its mcp server: "
+                f"{self._causes.text(error)}"
+            ),
+            error_kind=McpFailure.TRANSPORT,
+        )
+
+        return self._outcomes.refused(call, failure)
+
+    def _own(
+        self, call: DagNode, result: mt.CallToolResult, family: ToolResultBase
+    ) -> NodeOutcome | None:
+        """Итог сервера boba-mcp: сведения о вызове и результат известного
+        вида в structuredContent (ResultWire.revived) с адресом журнала
+        вызова; None — сервер его не прислал либо прислал вид результата,
+        которого клиент не знает."""
+        wire = WireResult(
+            content=family.llm_view(),
+            structured=result.structured_content,
+            is_error=result.is_error,
+        )
+        try:
+            return self._wire.revived(wire, call, self._name)
+        except ValidationError as exc:
+            logger.warning(
+                "mcp server %s: the result of call %r of tool %r names a known "
+                "kind but does not match its model, shown as text: %s",
+                self._name,
+                call.key,
+                call.tool,
+                exc,
+            )
+            return None
 
     async def journal(self, request: JournalRead) -> StreamSlice | None:
         """Окно журнала вызова с сервера; None — сервер журнал не объявлял
@@ -2130,14 +1994,14 @@ class McpToolServer(ToolServer):
 
 
 class McpServers:
-    """MCP-серверы клиента: подключение на старте и порты для сессии.
+    """MCP-серверы клиента: порты для сессии.
 
     Создаётся сборкой приложения из секции [mcp]. Сервер с общей
-    авторизацией подключён один раз на процесс; сервер с личной (proxy)
-    — отдельно от имени каждого пользователя, по его первой сессии. start()
-    подключает общие серверы; сервер, который не ответил, приложение не
-    роняет — он подключается при первой сессии, которой он положен.
-    for_session() отдаёт порты серверов, названных профилем сессии.
+    авторизацией подключается один раз на процесс, сервер с личной (proxy)
+    — от имени каждого пользователя; оба при первом обращении к ним.
+    for_session() отдаёт порты серверов, названных профилем сессии; сервер,
+    который не ответил, отказывает ошибкой McpClientError тому, кто его
+    позвал, и следующее обращение подключает его заново.
     """
 
     KEEP: ClassVar[int] = 256
@@ -2146,13 +2010,11 @@ class McpServers:
     def __init__(
         self,
         config: McpServersConfig,
-        files: BlockFiles,
         signals: CallSignals,
         contexts: CallContexts,
         conduct: NodeCalls,
     ) -> None:
         self._configs = dict(config.servers)
-        self._files = files
         self._signals = signals
         self._contexts = contexts
         self._conduct = conduct
@@ -2163,13 +2025,7 @@ class McpServers:
             if server.endpoint.personal():
                 continue
 
-            self._shared[name] = McpToolServer(
-                name, server, files, signals, contexts, conduct
-            )
-
-    async def start(self) -> None:
-        for name, server in self._shared.items():
-            await self._open(name, server)
+            self._shared[name] = McpToolServer(name, server, signals, contexts, conduct)
 
     async def stop(self) -> None:
         for server in self._shared.values():
@@ -2188,7 +2044,8 @@ class McpServers:
         """Порты серверов names для сессии пользователя caller.
 
         Ошибки:
-        McpClientError — имя не названо в [mcp.servers].
+        McpClientError — имя не названо в [mcp.servers] либо сервер
+            недоступен или не прошёл подключение.
         """
         ports: list[ToolServer] = []
         for name in names:
@@ -2201,11 +2058,7 @@ class McpServers:
                 raise McpClientError(msg)
 
             server = await self._port(name, caller)
-            if not server.opened:
-                await self._open(name, server)
-
-            if server.opened:
-                ports.append(server)
+            ports.append(server)
 
         return ports
 
@@ -2227,25 +2080,21 @@ class McpServers:
 
     async def files(self, server: str, caller: McpCaller) -> McpFiles | None:
         """Файлы workspace на сервере server от имени caller; None — сервер
-        не назван в [mcp.servers], недоступен или файлов не объявил."""
+        не назван в [mcp.servers] или файлов не объявил."""
         if server not in self._configs:
             return None
 
         port = await self._port(server, caller)
-        if not port.opened:
-            await self._open(server, port)
 
         return port.files()
 
     async def journal_files(self, server: str, caller: McpCaller) -> McpFiles | None:
         """Журналы вызовов сервера server целыми файлами от имени caller;
-        None — сервер не назван, недоступен или такого не объявил."""
+        None — сервер не назван или такого не объявил."""
         if server not in self._configs:
             return None
 
         port = await self._port(server, caller)
-        if not port.opened:
-            await self._open(server, port)
 
         return port.journal_files()
 
@@ -2266,35 +2115,30 @@ class McpServers:
         return frozenset(names)
 
     async def _port(self, name: str, caller: McpCaller) -> McpToolServer:
-        """Порт сервера для пользователя: общий либо его личный."""
-        shared = self._shared.get(name)
-        if shared is not None:
-            return shared
-
+        """Открытый порт сервера для пользователя: общий либо его личный."""
         key = (name, caller)
-        server = self._personal.get(key)
+        server = self._shared.get(name)
+        if server is None:
+            server = self._personal.get(key)
+
         if server is None:
             server = McpToolServer(
                 name,
                 self._configs[name].on_behalf_of(caller),
-                self._files,
                 self._signals,
                 self._contexts,
                 self._conduct,
             )
             self._personal[key] = server
 
-        self._personal.move_to_end(key)
+        if key in self._personal:
+            self._personal.move_to_end(key)
+
         while len(self._personal) > self.KEEP:
             _stale, evicted = self._personal.popitem(last=False)
             await evicted.close()
 
-        return server
-
-    async def _open(self, name: str, server: McpToolServer) -> None:
-        """Подключение сервера; сбой журналируется и сервер остаётся без порта
-        до следующей попытки."""
-        try:
+        if not server.opened:
             await server.open()
-        except McpClientError as exc:
-            logger.error("mcp server %s is unavailable: %s", name, exc)
+
+        return server
