@@ -18,11 +18,19 @@ from acp.experimental.v2 import schema
 from literalai.observability.step import TrueStepType
 
 from boba.cancellation import StopReason
-from boba.canvas.canvas import CanvasAction, CanvasElement
+from boba.canvas.canvas import (
+    CanvasAction,
+    CanvasElement,
+    CanvasError,
+    CanvasErrorKind,
+    CanvasRegistry,
+)
+from boba.canvas.keys import ObjectKey
+from boba.chainlit.domain.keys import CanvasFileUrl
 from boba.chainlit.rendering.tool import ChatElements
 from boba.toolkit.calls import CallViews, ToolCallBase, ToolCallModels, ToolIntent
 from boba.toolkit.mcp import McpToolNames
-from boba.toolkit.result import ToolArtifact, VisualElement
+from boba.toolkit.result import FileElement, PanelOpen, ToolArtifact, VisualElement
 from chainlit.config import config as chainlit_config
 from chainlit.context import context
 from chainlit.element import CustomElement, Element, File
@@ -536,10 +544,12 @@ class ChatView:
         thread_id: str,
         sink: ChatSink,
         journals: StreamableTools,
+        user_key: str,
         *,
         user_name: str | None = None,
     ) -> None:
         self._thread_id = thread_id
+        self._user_key = user_key
         self._journals = journals
         self._batch = StreamBatch()
         self._sink = BatchedSink(sink, self._batch)
@@ -953,18 +963,83 @@ class ChatView:
         step.output = view.markdown
 
         widgets: list[VisualElement] = []
+        number = 0
         for item in view.items:
             if isinstance(item, VisualElement):
                 widgets.append(item)
+                continue
+
+            if note := await self._mounted(item, tool_call_id, number):
+                step.output = f"{step.output}\n\n{note}"
+
+            number += 1
 
         if not widgets:
             step.is_error = failed
-            await self._sink.put(step)
-            return
 
         await self._sink.put(step)
         for widget in widgets:
             await self._element(widget, tool_call_id)
+
+    def key_of(self, path: str) -> ObjectKey:
+        """Ключ файла итога в области треда пользователя ленты.
+
+        Ошибки:
+        CanvasError — путь вне каталогов треда (BAD_PATH).
+        """
+        try:
+            return ObjectKey.from_workspace(self._user_key, self._thread_id, path)
+        except ValueError as exc:
+            raise CanvasError(CanvasErrorKind.BAD_PATH, str(exc)) from exc
+
+    async def _mounted(
+        self, item: FileElement | PanelOpen, tool_call_id: str | None, number: int
+    ) -> str:
+        """Файл итога или ссылка панели — элемент у ответа хода, одинаково
+        вживую и при воспроизведении; итог — пояснение для выхода шага
+        вызова, когда элемента нет (путь вне треда, формата без вьювера)."""
+        answer_id = self.derive_id(self._thread_id, self._turn.key, StepRole.ANSWER)
+        if answer_id is None:
+            return ""
+
+        if not self._sink.emits_elements:
+            return ""
+
+        try:
+            key = self.key_of(item.path)
+        except CanvasError as exc:
+            return f"{item.path} is not shown: {exc}"
+
+        element: Element
+        if isinstance(item, FileElement):
+            element = File(
+                name=item.name,
+                url=CanvasFileUrl.path(key),
+                mime=item.mime,
+                display="inline",
+            )
+        else:
+            viewer = CanvasRegistry.viewer_for(key.name)
+            if viewer is None:
+                hint = CanvasRegistry.suffixes_hint()
+                return f"{key.in_workspace()} has no canvas viewer; supported: {hint}"
+
+            try:
+                link = await viewer.link(key)
+            except CanvasError as exc:
+                return f"{key.in_workspace()} is not shown: {exc}"
+
+            element = ChatElements.of_result(link)
+
+        element_id = self.derive_id(
+            self._thread_id, f"{tool_call_id}/{number}", StepRole.ELEMENT
+        )
+        if element_id is not None:
+            element.id = element_id
+
+        await element.send(for_id=answer_id)
+
+        return ""
 
     async def tool_stopped(self, step: Step, note: str) -> None:
         """Инструмент не доработал: ход остановлен."""

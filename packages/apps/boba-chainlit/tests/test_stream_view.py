@@ -1083,7 +1083,7 @@ class TestStreamButton:
         sink: ChatSink,
         name: str,
     ) -> tuple[ChatView, Step]:
-        view = ChatView(THREAD, sink, journals, user_name="tester")
+        view = ChatView(THREAD, sink, journals, "u-1", user_name="tester")
         view.begin_turn("turn-1")
         step = await view.tool_started(name, {"command": "ls"}, CALL_ID, None)
 

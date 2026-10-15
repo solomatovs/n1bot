@@ -55,7 +55,11 @@ class TestAnswerOrder:
     ) -> None:
         """Текст после инструмента — новое сообщение, иначе элемент тула уедет вниз."""
         view = ChatView(
-            THREAD, RecordingSink(), runtime_stand.journals, user_name="Пользователь"
+            THREAD,
+            RecordingSink(),
+            runtime_stand.journals,
+            "u-1",
+            user_name="Пользователь",
         )
         view.begin_turn(TURN)
 
@@ -82,7 +86,11 @@ class TestAnswerOrder:
         self, runtime_stand: StandRefs, http_context: None
     ) -> None:
         view = ChatView(
-            THREAD, RecordingSink(), runtime_stand.journals, user_name="Пользователь"
+            THREAD,
+            RecordingSink(),
+            runtime_stand.journals,
+            "u-1",
+            user_name="Пользователь",
         )
         view.begin_turn(TURN)
 
@@ -128,7 +136,9 @@ class TestTurnPulse:
     ) -> None:
         """До первого токена ход виден кружком, а не пустой лентой."""
         sink = RecordingSink()
-        view = ChatView(THREAD, sink, runtime_stand.journals, user_name="Пользователь")
+        view = ChatView(
+            THREAD, sink, runtime_stand.journals, "u-1", user_name="Пользователь"
+        )
         view.begin_turn(TURN)
 
         await view.await_model()
@@ -147,7 +157,9 @@ class TestTurnPulse:
     ) -> None:
         """Стримящийся ответ рисует курсор сам: второго кружка быть не должно."""
         sink = RecordingSink()
-        view = ChatView(THREAD, sink, runtime_stand.journals, user_name="Пользователь")
+        view = ChatView(
+            THREAD, sink, runtime_stand.journals, "u-1", user_name="Пользователь"
+        )
         view.begin_turn(TURN)
 
         await view.await_model()
@@ -162,7 +174,9 @@ class TestTurnPulse:
     ) -> None:
         """Вызов инструмента закрывает ответ — кружок возвращается под него."""
         sink = RecordingSink()
-        view = ChatView(THREAD, sink, runtime_stand.journals, user_name="Пользователь")
+        view = ChatView(
+            THREAD, sink, runtime_stand.journals, "u-1", user_name="Пользователь"
+        )
         view.begin_turn(TURN)
 
         await view.await_model()
@@ -180,7 +194,9 @@ class TestTurnPulse:
     ) -> None:
         """Ход закончился — мигать больше нечему."""
         sink = RecordingSink()
-        view = ChatView(THREAD, sink, runtime_stand.journals, user_name="Пользователь")
+        view = ChatView(
+            THREAD, sink, runtime_stand.journals, "u-1", user_name="Пользователь"
+        )
         view.begin_turn(TURN)
 
         await view.await_model()
@@ -283,7 +299,11 @@ class TestLivePulseFrames:
         token = context_var.set(cast("ChainlitContext", recorded))
         try:
             view = ChatView(
-                THREAD, LiveSink(), runtime_stand.journals, user_name="Пользователь"
+                THREAD,
+                LiveSink(),
+                runtime_stand.journals,
+                "u-1",
+                user_name="Пользователь",
             )
             view.begin_turn(TURN)
             asyncio.run(scenario(view))
@@ -390,7 +410,11 @@ class TestToolStepDuration:
         self, runtime_stand: StandRefs, http_context: None
     ) -> None:
         view = ChatView(
-            THREAD, RecordingSink(), runtime_stand.journals, user_name="Пользователь"
+            THREAD,
+            RecordingSink(),
+            runtime_stand.journals,
+            "u-1",
+            user_name="Пользователь",
         )
         view.begin_turn(TURN)
 
@@ -407,7 +431,11 @@ class TestToolStepDuration:
         self, runtime_stand: StandRefs, http_context: None
     ) -> None:
         view = ChatView(
-            THREAD, RecordingSink(), runtime_stand.journals, user_name="Пользователь"
+            THREAD,
+            RecordingSink(),
+            runtime_stand.journals,
+            "u-1",
+            user_name="Пользователь",
         )
         view.begin_turn(TURN)
 
@@ -426,7 +454,11 @@ class TestToolIntent:
         self, runtime_stand: StandRefs, http_context: None
     ) -> None:
         view = ChatView(
-            THREAD, RecordingSink(), runtime_stand.journals, user_name="Пользователь"
+            THREAD,
+            RecordingSink(),
+            runtime_stand.journals,
+            "u-1",
+            user_name="Пользователь",
         )
         view.begin_turn(TURN)
 
@@ -444,7 +476,11 @@ class TestToolIntent:
         self, runtime_stand: StandRefs, http_context: None
     ) -> None:
         view = ChatView(
-            THREAD, RecordingSink(), runtime_stand.journals, user_name="Пользователь"
+            THREAD,
+            RecordingSink(),
+            runtime_stand.journals,
+            "u-1",
+            user_name="Пользователь",
         )
         view.begin_turn(TURN)
 
@@ -463,7 +499,11 @@ class TestToolIntent:
     ) -> None:
         """Подпись живёт в названии шага и во вход вызова не попадает."""
         view = ChatView(
-            THREAD, RecordingSink(), runtime_stand.journals, user_name="Пользователь"
+            THREAD,
+            RecordingSink(),
+            runtime_stand.journals,
+            "u-1",
+            user_name="Пользователь",
         )
         view.begin_turn(TURN)
 
@@ -480,7 +520,11 @@ class TestToolIntent:
         self, runtime_stand: StandRefs, http_context: None
     ) -> None:
         view = ChatView(
-            THREAD, RecordingSink(), runtime_stand.journals, user_name="Пользователь"
+            THREAD,
+            RecordingSink(),
+            runtime_stand.journals,
+            "u-1",
+            user_name="Пользователь",
         )
         view.begin_turn(TURN)
 
@@ -512,7 +556,9 @@ class TestContainerAvatar:
         self, runtime_stand: StandRefs, http_context: None
     ) -> None:
         sink = RecordingSink()
-        view = ChatView(THREAD, sink, runtime_stand.journals, user_name="Пользователь")
+        view = ChatView(
+            THREAD, sink, runtime_stand.journals, "u-1", user_name="Пользователь"
+        )
         view.begin_turn(TURN)
 
         await view.container()
@@ -543,7 +589,7 @@ class TestCallViewOfACard:
     async def test_step_input_follows_the_content_types_of_the_arguments(
         self, runtime_stand: StandRefs, http_context: None
     ) -> None:
-        view = ChatView(THREAD, RecordingSink(), runtime_stand.journals)
+        view = ChatView(THREAD, RecordingSink(), runtime_stand.journals, "u-1")
         view.begin_turn(TURN)
 
         step = await view.tool_started(
@@ -564,7 +610,7 @@ class TestCallViewOfACard:
     async def test_call_without_types_and_model_shows_the_arguments_as_json(
         self, runtime_stand: StandRefs, http_context: None
     ) -> None:
-        view = ChatView(THREAD, RecordingSink(), runtime_stand.journals)
+        view = ChatView(THREAD, RecordingSink(), runtime_stand.journals, "u-1")
         view.begin_turn(TURN)
 
         step = await view.tool_started("plain_probe", self.ARGS, "call-card-2", None)

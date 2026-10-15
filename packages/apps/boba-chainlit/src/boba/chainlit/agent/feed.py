@@ -31,10 +31,8 @@ from typing import Any, ClassVar, Protocol
 
 from acp.experimental.v2 import schema
 
-import chainlit as cl
 from boba.cancellation import RunCancellation
-from boba.canvas.canvas import CanvasError, CanvasErrorKind
-from boba.canvas.keys import ElementProps, ObjectKey
+from boba.canvas.canvas import CanvasError
 from boba.chainlit.agent.chat import (
     PermissionKind,
     Question,
@@ -48,18 +46,17 @@ from boba.chainlit.agent.client import SessionUpdate
 from boba.chainlit.canvas.panel import CanvasPanel
 from boba.chainlit.canvas.remote import RemoteJournals
 from boba.chainlit.chat.feed import TurnFeed
-from boba.chainlit.data.data_layer import AttachmentDataLayer, FeedRows
+from boba.chainlit.data.data_layer import FeedRows
 from boba.chainlit.domain.fields import StepField
 from boba.chainlit.rendering.acp_view import ToolMedia, UpdateView
-from boba.chainlit.rendering.chat_view import ChatView, LiveSink, StepRole, StepText
+from boba.chainlit.rendering.chat_view import ChatView, LiveSink, StepText
 from boba.chainlit.rendering.renderer import RenderSurface
-from boba.chainlit.rendering.tool import ChatElements, WorkspaceFile
 from boba.identity.context import Scope
 from boba.identity.errors import InternalServiceError
 from boba.identity.locks import LiveLocks, LockKeeper, LockMode, LockPurpose
 from boba.mcp_client.client import McpCaller, McpServers
 from boba.messaging import MessageBus, NoticeLevel, PayloadStore, TurnOutcome
-from boba.toolkit.result import FileElement, PanelOpen, ToolResultBase
+from boba.toolkit.result import PanelOpen, ToolResultBase
 from boba.transport.acp.protocol import IdleErrorUpdate, StopReason, ToolStatus
 from chainlit.context import ChainlitContext, context, context_var
 from chainlit.emitter import ChainlitEmitter
@@ -164,30 +161,27 @@ class TabSurface:
 
 
 class ResultMounts:
-    """Побочные действия итога вызова на поверхности чата: открыть файл в
-    панели канваса и оставить ссылку в переписке (PanelOpen), прикрепить файл
-    workspace вложением (FileElement). Исполняет держатель хода по итогу из
-    `rawOutput`: элемент пишется в слой данных и уходит вкладкам через шину.
-    Создаётся приёмником потока на тред и видит все уведомления живого хода:
-    имя инструмента агент называет только в первом уведомлении вызова, и
-    его запоминает здесь же, а итог из `rawOutput` оживляет переводчик
-    приёмника (UpdateView.outcome).
+    """Побочное действие итога вызова у держателя хода: открыть файл в
+    панели канваса (PanelOpen); отказ панели — пометка в ленте, итог у агента
+    уже записан. Ссылку на файл и файлы итога рисует переводчик ленты из
+    `rawOutput` — и вживую, и при воспроизведении. Создаётся приёмником
+    потока на тред и видит все уведомления живого хода: имя инструмента
+    агент называет только в первом уведомлении вызова, и его запоминает
+    здесь же, а итог из `rawOutput` оживляет переводчик приёмника
+    (UpdateView.outcome).
     """
 
     def __init__(
-        self, thread_id: str, user_key: str, surface: RenderSurface, view: UpdateView
+        self, thread_id: str, surface: RenderSurface, view: UpdateView
     ) -> None:
         self._thread_id = thread_id
-        self._user_key = user_key
         self._surface = surface
         self._view = view
         self._called: dict[str, str] = {}
         """Идущий вызов живого хода → имя его инструмента."""
 
-    async def mounted(
-        self, update: SessionUpdate, turn_key: str, feed: TurnFeed
-    ) -> None:
-        """Действия по итогу вызова; уведомление не итог — ничего."""
+    async def mounted(self, update: SessionUpdate, feed: TurnFeed) -> None:
+        """Панель по итогу вызова; уведомление не итог — ничего."""
         if not isinstance(update, schema.SessionToolCallUpdate):
             return
 
@@ -217,89 +211,26 @@ class ResultMounts:
 
         token = context_var.set(context)
         try:
-            await self._mount(artifact, update.tool_call_id, turn_key, feed)
+            await self._mount(artifact, call_id, feed)
         finally:
             context_var.reset(token)
 
     async def _mount(
-        self, artifact: ToolResultBase, call_id: str, turn_key: str, feed: TurnFeed
+        self, artifact: ToolResultBase, call_id: str, feed: TurnFeed
     ) -> None:
         for item in artifact.chat_view().items:
             if isinstance(item, PanelOpen):
-                await self._panel(item, call_id, turn_key, feed)
+                await self._panel(item, call_id, feed)
 
-            if isinstance(item, FileElement):
-                await self._file(item, call_id, turn_key, feed)
-
-    async def _panel(
-        self, item: PanelOpen, call_id: str, turn_key: str, feed: TurnFeed
-    ) -> None:
-        """Панель с файлом плюс ссылка на него в переписке; отказ панели —
-        пометка в ленте: итог у агента уже записан."""
+    async def _panel(self, item: PanelOpen, call_id: str, feed: TurnFeed) -> None:
+        """Панель с файлом; отказ панели — пометка в ленте."""
         try:
-            key = self._key(item.path)
-            opened = await CanvasPanel.open(key)
+            key = self._view.view.key_of(item.path)
+            await CanvasPanel.open(key)
         except CanvasError as exc:
             note = f"canvas refused {item.path!r} of call {call_id}: {exc}"
             logger.info("thread %s: %s", self._thread_id, note)
             await feed.notice(NoticeLevel.ERROR, note)
-            return
-
-        element = ChatElements.of_result(opened.link)
-        await self._publish(element, call_id, turn_key, feed)
-
-    async def _file(
-        self, item: FileElement, call_id: str, turn_key: str, feed: TurnFeed
-    ) -> None:
-        try:
-            key = self._key(item.path)
-        except CanvasError as exc:
-            note = f"attachment {item.path!r} of call {call_id} is refused: {exc}"
-            logger.info("thread %s: %s", self._thread_id, note)
-            await feed.notice(NoticeLevel.ERROR, note)
-            return
-
-        element_id = self._element_id(call_id)
-        links = AttachmentDataLayer.require().links
-        element = WorkspaceFile(
-            id=element_id,
-            name=item.name,
-            thread_id=self._thread_id,
-            url=links.url(self._thread_id, element_id, key.dir),
-            mime=item.mime,
-            display="inline",
-            props=ElementProps(dir=key.dir).model_dump(mode="json"),
-        )
-        await self._publish(element, call_id, turn_key, feed)
-
-    async def _publish(
-        self, element: cl.Element, call_id: str, turn_key: str, feed: TurnFeed
-    ) -> None:
-        """Строка в elements и показ через шину хода: элемент рисуют вкладки
-        треда на всех инстансах и он переживает перезагрузку треда."""
-        element.id = self._element_id(call_id)
-        element.thread_id = self._thread_id
-        element.for_id = ChatView.derive_id(self._thread_id, turn_key, StepRole.ANSWER)
-        await AttachmentDataLayer.require().create_element(element)
-        await feed.element_shown(call_id, element.to_dict())
-
-    def _element_id(self, call_id: str) -> str:
-        element_id = ChatView.derive_id(self._thread_id, call_id, StepRole.ELEMENT)
-        if element_id is None:
-            msg = (
-                f"element of call {call_id!r} of thread {self._thread_id}: "
-                "the call id is empty"
-            )
-            raise ValueError(msg)
-
-        return element_id
-
-    def _key(self, path: str) -> ObjectKey:
-        """Ключ файла в области треда; путь вне каталогов треда — отказ."""
-        try:
-            return ObjectKey.from_workspace(self._user_key, self._thread_id, path)
-        except ValueError as exc:
-            raise CanvasError(CanvasErrorKind.BAD_PATH, str(exc)) from exc
 
 
 @dataclass
@@ -359,9 +290,7 @@ class AgentFeed(TurnRenderer):
         self._surface = surface
         self._parts = parts
         self._rows = rows
-        self._mounts = ResultMounts(
-            identity.thread_id, str(identity.user_id), surface, replay
-        )
+        self._mounts = ResultMounts(identity.thread_id, surface, replay)
         self._scope = Scope.chat(identity.thread_id)
         self._turn: LiveTurn | None = None
         self._stopping: set[str] = set()
@@ -477,7 +406,7 @@ class AgentFeed(TurnRenderer):
             return
 
         await turn.feed.agent_update(update)
-        await self._mounts.mounted(update, turn.key, turn.feed)
+        await self._mounts.mounted(update, turn.feed)
 
     async def permission(
         self, session_id: str, title: str, options: Sequence[schema.PermissionOption]
@@ -640,7 +569,11 @@ class AgentFeeds(TurnRenderers):
 
         anchor = self._surfaces.anchor()
         view = ChatView(
-            identity.thread_id, LiveSink(), self._journals, user_name=identity.login
+            identity.thread_id,
+            LiveSink(),
+            self._journals,
+            str(identity.user_id),
+            user_name=identity.login,
         )
         replay = UpdateView(view, identity.thread_id, self._journals, self._media)
 

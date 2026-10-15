@@ -76,18 +76,22 @@ class FakeViewer(CanvasViewer):
             text="erDiagram",
         )
 
-    async def open(self, key: ObjectKey, push: CanvasPush) -> OpenedCanvas:
-        self.opened.append(key)
-        await push(await self.content(key))
-
-        link = VisualResult(
+    async def link(self, key: ObjectKey) -> VisualResult:
+        return VisualResult(
             element="CanvasLink",
             props={"path": key.in_workspace(), "label": key.name},
             title=key.name,
         )
 
+    async def open(self, key: ObjectKey, push: CanvasPush) -> OpenedCanvas:
+        self.opened.append(key)
+        await push(await self.content(key))
+
         return OpenedCanvas(
-            label=key.name, path=key.in_workspace(), nonce="n-1", link=link
+            label=key.name,
+            path=key.in_workspace(),
+            nonce="n-1",
+            link=await self.link(key),
         )
 
     def watch_source(self, key: ObjectKey) -> None:

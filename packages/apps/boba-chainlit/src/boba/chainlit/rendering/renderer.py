@@ -21,7 +21,7 @@ from typing import Any, ClassVar, Protocol
 from pydantic import BaseModel, ConfigDict
 
 from boba.canvas.canvas import CanvasSignal
-from boba.chainlit.chat.feed import QuestionBody, ShownElement
+from boba.chainlit.chat.feed import QuestionBody
 from boba.chainlit.domain.fields import StepField, ThreadField
 from boba.chainlit.rendering.acp_view import SessionUpdateCodec, UpdateView
 from boba.chainlit.rendering.chat_view import ChatView
@@ -33,7 +33,6 @@ from boba.messaging import (
     AnswerInterrupted,
     CanvasChanged,
     ElementRemoved,
-    ElementShown,
     Envelope,
     FeedbackChanged,
     MessageBus,
@@ -47,7 +46,6 @@ from boba.messaging import (
     Unsubscribe,
 )
 from chainlit.context import ChainlitContext, context_var
-from chainlit.element import ElementDict
 from chainlit.step import StepDict
 from chainlit.types import ThreadDict
 
@@ -83,10 +81,6 @@ class RenderSurface(Protocol):
     @abstractmethod
     async def resume_thread(self) -> None:
         """Перечитывает тред из истории и отдаёт ленту всем живым вкладкам треда."""
-
-    @abstractmethod
-    async def send_element(self, element: ElementDict) -> None:
-        """Шлёт элемент ленты во все живые вкладки треда."""
 
     @abstractmethod
     async def remove_element(self, element_id: str) -> None:
@@ -127,9 +121,6 @@ class NoSurface(RenderSurface):
         return None
 
     async def resume_thread(self) -> None:
-        return None
-
-    async def send_element(self, element: ElementDict) -> None:
         return None
 
     async def remove_element(self, element_id: str) -> None:
@@ -244,7 +235,6 @@ class ChatRenderer:
             MessageKind.NOTICE: self._on_notice,
             MessageKind.CANVAS_CHANGED: self._on_canvas_changed,
             MessageKind.THREAD_REWOUND: self._on_thread_rewound,
-            MessageKind.ELEMENT_SHOWN: self._on_element_shown,
             MessageKind.ELEMENT_REMOVED: self._on_element_removed,
             MessageKind.FEEDBACK_CHANGED: self._on_feedback_changed,
         }
@@ -299,11 +289,6 @@ class ChatRenderer:
 
     async def _on_thread_rewound(self, message: ThreadRewound) -> None:
         await self._rewinds.rewound(self._thread_id, message.session_id)
-
-    async def _on_element_shown(self, message: ElementShown) -> None:
-        raw = await self._payloads.get(message.element)
-        element = ShownElement.model_validate(raw)
-        await self._surface.send_element(element.to_element())
 
     async def _on_element_removed(self, message: ElementRemoved) -> None:
         await self._surface.remove_element(message.element_id)

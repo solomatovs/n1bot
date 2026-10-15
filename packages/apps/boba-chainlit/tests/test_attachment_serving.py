@@ -12,12 +12,11 @@ from chainlit_stand import ChatSessionStand, FakeUrl, Seed, put_bytes
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from boba.canvas.keys import ElementProps, ObjectKey, ThreadDir
+from boba.canvas.keys import ObjectKey, ThreadDir
 from boba.canvas.transfer import UploadPolicy
 from boba.chainlit.data.upload import AttachmentServing
 from boba.chainlit.domain.keys import AttachmentUrl
 from boba.chainlit.rendering.chat_view import ChatView, StepRole
-from boba.chainlit.rendering.tool import WorkspaceFile
 from boba.runtime.storage import LocalStorageClient
 
 pytestmark = pytest.mark.anyio
@@ -249,69 +248,3 @@ async def test_foreign_user_gets_no_file(
 
     if response.status_code != 404:
         raise AssertionError("response.status_code == 404")
-
-
-async def test_diagram_from_mermaid_dir_is_served(
-    chat_session: ChatSessionStand,
-    seeded: Seed,
-    storage: LocalStorageClient,
-) -> None:
-    """Файл из mermaid/ отдаётся по своей ссылке: раньше отдача звала upload/."""
-    layer = seeded.layer
-    chat_session.use(user_id=seeded.user.id)
-    key = ObjectKey.build(
-        seeded.user.id,
-        seeded.thread_id,
-        "ndfl.mmd",
-        "el",
-        dir_thread=ThreadDir.MERMAID,
-    )
-    await put_bytes(storage, object_key=key.render(), data="flowchart LR\n  A --> B\n")
-
-    element_id = ChatView.derive_id(seeded.thread_id, "call_diagram", StepRole.ELEMENT)
-    if element_id is None:
-        raise AssertionError("element_id is not None")
-    element = WorkspaceFile(
-        id=element_id,
-        name=key.name,
-        thread_id=seeded.thread_id,
-        for_id=seeded.answer_step_id,
-        url=layer.links.url(seeded.thread_id, element_id, key.dir),
-        mime="text/plain",
-        display="inline",
-        props=ElementProps(dir=key.dir).model_dump(mode="json"),
-    )
-    await layer.create_element(element)
-
-    thread = await layer.get_thread(seeded.thread_id)
-    if thread is None:
-        raise AssertionError("thread is not None")
-    elements = thread["elements"]
-    if elements is None:
-        raise AssertionError("elements is not None")
-    shown = next(e for e in elements if e.get("id") == element_id)
-    stored_url = shown.get("url")
-    if stored_url is None:
-        raise AssertionError("stored_url is not None")
-    if not (
-        stored_url.endswith(f"/attachment/{seeded.thread_id}/mermaid/{element_id}")
-    ):
-        raise AssertionError('stored_url.endswith(f"/attachment/{seeded.thread_id}/me…')
-
-    app = build_serving_app(
-        AttachmentServing(storage, lambda: layer, UploadPolicy()), seeded.user
-    )
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url=FakeUrl.BASE) as client:
-        response = await client.get(
-            AttachmentUrl(
-                thread_id=seeded.thread_id,
-                dir=ThreadDir.MERMAID,
-                element_id=element_id,
-            ).path()
-        )
-
-    if response.status_code != 200:
-        raise AssertionError("response.status_code == 200")
-    if not (response.content.decode().startswith("flowchart LR")):
-        raise AssertionError('response.content.decode().startswith("flowchart LR")')

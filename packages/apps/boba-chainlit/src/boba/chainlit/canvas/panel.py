@@ -276,20 +276,22 @@ class FileViewer(CanvasViewer):
     async def content(self, key: ObjectKey) -> CanvasContent:
         return self.describe(key)
 
-    async def open(self, key: ObjectKey, push: CanvasPush) -> OpenedCanvas:
-        described = await self.content(key)
-        await push(described)
-
-        link = VisualResult(
+    async def link(self, key: ObjectKey) -> VisualResult:
+        return VisualResult(
             element=self.LINK_ELEMENT,
             props={"path": key.in_workspace(), "label": key.name},
             title=key.name,
         )
+
+    async def open(self, key: ObjectKey, push: CanvasPush) -> OpenedCanvas:
+        described = await self.content(key)
+        await push(described)
+
         return OpenedCanvas(
             label=key.name,
             path=key.in_workspace(),
             nonce=described.nonce,
-            link=link,
+            link=await self.link(key),
         )
 
     def watch_source(self, key: ObjectKey) -> WatchSource | None:

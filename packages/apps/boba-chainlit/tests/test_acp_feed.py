@@ -7,9 +7,9 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any, ClassVar, cast
 
-import chainlit.data as chainlit_data
 import mcp_types as mt
 import pytest
 from acp.experimental.v2 import schema
@@ -52,7 +52,14 @@ from boba.chainlit.rendering.chat_view import (
 from boba.chainlit.rendering.renderer import ChatRenderer, NoSurface
 from boba.chat.profiles import ChatProfileConfig, UserSetting
 from boba.identity.context import Scope
-from boba.messaging import LockToken, MemoryMessageBus, MemoryPayloadStore, TurnOutcome
+from boba.messaging import (
+    Envelope,
+    LockToken,
+    MemoryMessageBus,
+    MemoryPayloadStore,
+    Notice,
+    TurnOutcome,
+)
 from boba.stand.refs import StandRefs
 from boba.toolkit.dag import (
     CallDag,
@@ -91,6 +98,18 @@ class FakeSession:
     def __init__(self, thread_id: str) -> None:
         self.id = "session-1"
         self.thread_id = thread_id
+
+    async def persist_file(
+        self,
+        name: str,
+        mime: str,
+        path: str | None = None,
+        content: bytes | str | None = None,
+    ) -> dict[str, str]:
+        """Файл сессии кастом-элемента: в тесте хранить его негде и незачем."""
+        del mime, path, content
+
+        return {"id": f"session-file-{name}"}
 
 
 class FakeEmitter:
@@ -284,7 +303,9 @@ def _replayed_updates() -> list[SessionUpdate]:
 
 
 def _view(runtime_stand: StandRefs, journals: RemoteJournals) -> UpdateView:
-    view = ChatView(THREAD, LiveSink(), runtime_stand.journals, user_name="alice")
+    view = ChatView(
+        THREAD, LiveSink(), runtime_stand.journals, "u-1", user_name="alice"
+    )
 
     return UpdateView(view, THREAD, journals, ToolMedia())
 
@@ -380,7 +401,9 @@ class TestUpdateViewIds:
         }
         media = ToolMedia()
         media.shown("boba", [mt.Tool(name="pg_query", input_schema=arguments)], None)
-        view = ChatView(THREAD, LiveSink(), runtime_stand.journals, user_name="alice")
+        view = ChatView(
+            THREAD, LiveSink(), runtime_stand.journals, "u-1", user_name="alice"
+        )
         updates = UpdateView(view, THREAD, RemoteJournals(), media)
         updates.begin_turn(QUESTION)
 
@@ -439,7 +462,9 @@ class TestNestedCallSteps:
             declared = CallDag().feature()
 
         media.shown("boba", [], declared)
-        view = ChatView(THREAD, LiveSink(), runtime_stand.journals, user_name="alice")
+        view = ChatView(
+            THREAD, LiveSink(), runtime_stand.journals, "u-1", user_name="alice"
+        )
 
         return UpdateView(view, THREAD, journals, media)
 
@@ -741,54 +766,160 @@ class HolderSurface(NoSurface):
 
 
 class TestResultMounts:
-    """Побочные действия итогов вызовов живого хода у держателя: агент
+    """Побочное действие итогов живого хода у держателя: панель канваса
+    открывается по итогу вызова, путь вне треда — пометка в ленте. Агент
     называет инструмент только в первом уведомлении вызова, итог приходит
-    без имени и заголовка, а переводчик воспроизведения живых уведомлений не
-    видит."""
+    без имени и заголовка."""
 
     @pytest.mark.anyio
-    async def test_live_results_open_the_panel_and_attach_the_file(
-        self, runtime_stand: StandRefs, seeded: Seed, monkeypatch: pytest.MonkeyPatch
+    async def test_live_result_opens_the_panel_and_a_bad_path_is_noted(
+        self, runtime_stand: StandRefs, seeded: Seed
     ) -> None:
-        monkeypatch.setattr(chainlit_data, "_data_layer", seeded.layer)
-        monkeypatch.setattr(chainlit_data, "_data_layer_initialized", True)
         thread_id = seeded.thread_id
         chart = f"/workspace/{thread_id}/upload/chart.png"
-        report = f"/workspace/{thread_id}/upload/report.csv"
-        shown = CanvasResult(path=chart, label="chart.png")
-        attached = FileResult(path=report, name="report.csv", mime="text/csv")
+        outside = "/etc/chart.png"
         updates = [
             _call(CALL, "mcp__boba__canvas_open", {"path": chart}),
-            _call(SECOND_CALL, "mcp__boba__file_attach", {"path": report}),
+            _call(SECOND_CALL, "mcp__boba__canvas_open", {"path": outside}),
             schema.SessionToolCallUpdate(tool_call_id=CALL, status="in_progress"),
-            _done(CALL, "shown", _result(shown)),
-            _done(SECOND_CALL, "attached", _result(attached)),
+            _done(CALL, "shown", _result(CanvasResult(path=chart, label="chart.png"))),
+            _done(
+                SECOND_CALL,
+                "shown",
+                _result(CanvasResult(path=outside, label="chart.png")),
+            ),
         ]
-        view = ChatView(thread_id, LiveSink(), runtime_stand.journals, user_name="u")
+        view = ChatView(
+            thread_id, LiveSink(), runtime_stand.journals, seeded.user.id, user_name="u"
+        )
         replay = UpdateView(view, thread_id, RemoteJournals(), ToolMedia())
         bus = MemoryMessageBus("test-chainlit")
         scope = Scope.chat(thread_id)
+        notes: list[str] = []
+
+        async def collect(envelope: Envelope) -> None:
+            message = envelope.message
+            if isinstance(message, Notice):
+                notes.append(message.text)
+
+        leave = bus.subscribe(scope, collect)
         feed = TurnFeed(bus, MemoryPayloadStore(), scope, QUESTION, LockToken.local())
         CanvasRegistry.register(ImageViewer())
         context = init_http_context(user=seeded.user, thread_id=thread_id)
-        mounts = ResultMounts(thread_id, seeded.user.id, HolderSurface(context), replay)
+        mounts = ResultMounts(thread_id, HolderSurface(context), replay)
         try:
             for update in updates:
-                await mounts.mounted(update, QUESTION, feed)
+                await mounts.mounted(update, feed)
         finally:
+            leave()
             init_http_context()
             CanvasRegistry.reset()
 
-        panel_id = ChatView.derive_id(thread_id, CALL, StepRole.ELEMENT)
-        file_id = ChatView.derive_id(thread_id, SECOND_CALL, StepRole.ELEMENT)
-        assert panel_id is not None
-        assert file_id is not None
-        panel = await seeded.layer.get_element(thread_id, panel_id)
-        file = await seeded.layer.get_element(thread_id, file_id)
-        assert panel is not None, "the canvas link of the live call is not stored"
-        assert panel.get("props") == {"path": chart, "label": "chart.png"}, panel
-        assert file is not None, "the attachment of the live call is not stored"
-        assert file.get("name") == "report.csv", file
+        assert len(notes) == 1, notes
+        assert outside in notes[0]
+        assert SECOND_CALL in notes[0]
+
+
+class TestResultsFromRawOutput:
+    """Файлы итогов и ссылки панели рисует лента из `rawOutput`: живой ход
+    (шина) и воспроизведение дают один и тот же элемент у ответа хода, и
+    так же рисуются итоги старых тредов (снапшоты истории boba-toolkit)."""
+
+    SNAPSHOTS: ClassVar[Path] = (
+        Path(__file__).resolve().parents[3] / "core/boba-toolkit/tests/history"
+    )
+
+    def _snapshot(self, name: str) -> str:
+        raw = (self.SNAPSHOTS / name).read_text(encoding="utf-8")
+
+        return raw.replace("/workspace/t/", f"/workspace/{THREAD}/")
+
+    def _updates(self) -> list[SessionUpdate]:
+        attached = FileResult.model_validate_json(self._snapshot("file.json"))
+        # снапшот канваса — спека mermaid; ссылку на неё карточка строит по
+        # тексту из хранилища, поэтому здесь тот же итог для картинки
+        shown = CanvasResult.model_validate_json(
+            self._snapshot("canvas.json").replace("mermaid/a.mmd", "upload/a.png")
+        )
+
+        return [
+            _chunk("Here.", MESSAGE),
+            _call(CALL, "mcp__boba__file_attach", {"path": attached.path}),
+            _done(CALL, "attached", _result(attached)),
+            _call(SECOND_CALL, "mcp__boba__canvas_open", {"path": shown.path}),
+            _done(SECOND_CALL, "shown", _result(shown)),
+        ]
+
+    @staticmethod
+    def _shown(context: FakeContext) -> list[tuple[str, str, str, str]]:
+        found: list[tuple[str, str, str, str]] = []
+        for element in context.emitter.elements:
+            found.append(
+                (
+                    str(element["id"]),
+                    str(element["name"]),
+                    str(element.get("url") or element.get("props")),
+                    str(element["forId"]),
+                )
+            )
+
+        return sorted(found)
+
+    @pytest.mark.anyio
+    async def test_live_and_replay_draw_the_same_elements(
+        self, runtime_stand: StandRefs
+    ) -> None:
+        CanvasRegistry.register(ImageViewer())
+        try:
+            live_context = FakeContext(THREAD)
+            token = context_var.set(cast("ChainlitContext", live_context))
+            try:
+                bus = MemoryMessageBus("test-chainlit")
+                payloads = MemoryPayloadStore()
+                scope = Scope.chat(THREAD)
+                renderer = ChatRenderer(
+                    THREAD,
+                    _view(runtime_stand, RemoteJournals()),
+                    payloads,
+                    NoSurface(),
+                    ThreadAgentsIndex(),
+                )
+                leave = bus.subscribe(scope, renderer.apply)
+                feed = TurnFeed(bus, payloads, scope, QUESTION, LockToken.local())
+                try:
+                    await feed.started(QUESTION, QuestionBody(text="hello"))
+                    for update in self._updates():
+                        await feed.agent_update(update)
+
+                    await feed.finished(TurnOutcome.OK, "")
+                finally:
+                    leave()
+            finally:
+                context_var.reset(token)
+
+            replay_context = FakeContext(THREAD)
+            token = context_var.set(cast("ChainlitContext", replay_context))
+            try:
+                replay = _view(runtime_stand, RemoteJournals())
+                await replay.apply(_question())
+                for update in self._updates():
+                    await replay.apply(update)
+
+                await replay.finish_turn()
+            finally:
+                context_var.reset(token)
+        finally:
+            CanvasRegistry.reset()
+
+        answer = _id(QUESTION, StepRole.ANSWER)
+        live = self._shown(live_context)
+        assert live == self._shown(replay_context)
+        assert [(item[0], item[1], item[3]) for item in live] == sorted(
+            [
+                (_id(f"{CALL}/0", StepRole.ELEMENT), "a.pdf", answer),
+                (_id(f"{SECOND_CALL}/0", StepRole.ELEMENT), "CanvasLink", answer),
+            ]
+        )
 
 
 class TestCodecAndResults:

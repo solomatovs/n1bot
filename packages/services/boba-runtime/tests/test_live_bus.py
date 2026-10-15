@@ -449,3 +449,31 @@ async def test_neighbour_setup_does_not_deadlock_with_purge(
         await second.stop()
     finally:
         await first.stop()
+
+
+async def test_setup_drops_events_of_retired_kinds(
+    buses: tuple[PgMessageBus, PgMessageBus],
+    bus_config: RuntimeConfig,
+    pool: AsyncPostgresPool,
+) -> None:
+    """Строка вида, которого шина больше не знает (element_shown выкатом
+    убран), удаляется при старте узла: догон области её не встречает."""
+    first, _ = buses
+    scope = Scope.chat(str(uuid4()))
+    token = LockToken.local()
+    kept = await first.publish(scope, _token("kept"), token)
+    schema = bus_config.pg_messaging().db_schema
+    async with pool.connection() as conn:
+        await conn.execute(
+            sql.SQL(
+                "insert into {}.live_events (scope_kind, scope_id, seq, kind, "
+                "origin, body) values ('chat', %s, %s, 'element_shown', 'old', "
+                "'{{}}'::jsonb)"
+            ).format(sql.Identifier(schema)),
+            (scope.uuid(), kept + 1),
+        )
+
+    await first.setup()
+
+    replayed = await first.replay(scope, after_seq=0)
+    assert [envelope.seq for envelope in replayed] == [kept]

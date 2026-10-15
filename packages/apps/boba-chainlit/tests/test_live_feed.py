@@ -12,7 +12,6 @@ from uuid import UUID, uuid4
 
 import pytest
 from acp.experimental.v2 import schema
-from chainlit.element import ElementDict
 
 from boba.chainlit.canvas.remote import RemoteJournals
 from boba.chainlit.chat.feed import QuestionBody, TurnFeed
@@ -119,7 +118,7 @@ def _renderer(
     runtime_stand: StandRefs, thread_id: str, node: Node
 ) -> tuple[ChatRenderer, RecordingSink]:
     sink = RecordingSink()
-    view = ChatView(thread_id, sink, runtime_stand.journals, user_name="tester")
+    view = ChatView(thread_id, sink, runtime_stand.journals, "u-1", user_name="tester")
     updates = UpdateView(view, thread_id, RemoteJournals(), ToolMedia())
     renderer = ChatRenderer(
         thread_id, updates, node.payloads, NoSurface(), RecordingRewinds()
@@ -408,21 +407,17 @@ class RecordingRewinds(ThreadRewinds):
 
 
 class RecordingSurface(NoSurface):
-    """Поверхность в тестах: считает перечитывания ленты, копит элементы, удаления
-    и обновлённые шаги.
+    """Поверхность в тестах: считает перечитывания ленты, копит удаления
+    элементов и обновлённые шаги.
     """
 
     def __init__(self) -> None:
         self.resumed = 0
-        self.elements: list[ElementDict] = []
         self.removed: list[str] = []
         self.refreshed: list[str] = []
 
     async def resume_thread(self) -> None:
         self.resumed += 1
-
-    async def send_element(self, element: ElementDict) -> None:
-        self.elements.append(element)
 
     async def remove_element(self, element_id: str) -> None:
         self.removed.append(element_id)
@@ -431,87 +426,35 @@ class RecordingSurface(NoSurface):
         self.refreshed.append(step_id)
 
 
-ELEMENT = {
-    "id": "el-1",
-    "threadId": "",
-    "type": "file",
-    "url": "/files/a.txt",
-    "chainlitKey": None,
-    "name": "a.txt",
-    "display": "inline",
-    "objectKey": None,
-    "size": None,
-    "props": {"dir": "upload"},
-    "page": None,
-    "autoPlay": None,
-    "playerConfig": None,
-    "language": None,
-    "forId": "answer-1",
-    "mime": "text/plain",
-}
-
-
-async def test_elements_reach_the_viewer_instance(
+async def test_removal_and_feedback_reach_the_viewer_instance(
     runtime_stand: StandRefs,
     nodes: tuple[Node, Node],
 ) -> None:
-    """Карточка вызова показывается у зрителя на другом инстансе — и по живой
-    доставке, и по догону replay.
-    """
+    """Удаление элемента и оценка шага доходят до рендерера на другом инстансе."""
     holder, viewer = nodes
     thread_id = str(uuid4())
     scope = Scope.chat(thread_id)
     surface = RecordingSurface()
     view = ChatView(
-        thread_id, RecordingSink(), runtime_stand.journals, user_name="tester"
+        thread_id, RecordingSink(), runtime_stand.journals, "u-1", user_name="tester"
     )
     updates = UpdateView(view, thread_id, RemoteJournals(), ToolMedia())
     renderer = ChatRenderer(
         thread_id, updates, viewer.payloads, surface, RecordingRewinds()
     )
     leave = viewer.bus.subscribe(scope, renderer.apply)
-
-    removed = ElementRemoved(element_id="el-old")
-    await holder.bus.publish(scope, removed, LockToken.local())
-    feedback = FeedbackChanged(step_id="answer-0", value=1, comment="ok")
-    await holder.bus.publish(scope, feedback, LockToken.local())
-    await _until(lambda: surface.refreshed == ["answer-0"], "viewer refreshed the step")
-    assert surface.removed == ["el-old"]
-
-    lock = await holder.locks.acquire(
-        scope, LockMode.EXCLUSIVE, LockPurpose.TURN, UUID(int=1)
-    )
-    feed = TurnFeed(holder.bus, holder.payloads, scope, TURN, lock.token)
-    element = {**ELEMENT, "threadId": thread_id}
     try:
-        await feed.started(TURN, QuestionBody(text="question"))
-        await feed.element_shown(CALL, element)
-        await _until(lambda: len(surface.elements) == 1, "viewer received the card")
-
-        shown = surface.elements[0]
-        assert shown.get("id") == "el-1"
-        assert shown.get("forId") == "answer-1"
-        assert shown.get("props") == {"dir": "upload"}
-        assert shown.get("threadId") == thread_id
-
-        late_surface = RecordingSurface()
-        late_view = ChatView(
-            thread_id, RecordingSink(), runtime_stand.journals, user_name="tester"
+        removed = ElementRemoved(element_id="el-old")
+        await holder.bus.publish(scope, removed, LockToken.local())
+        feedback = FeedbackChanged(step_id="answer-0", value=1, comment="ok")
+        await holder.bus.publish(scope, feedback, LockToken.local())
+        await _until(
+            lambda: surface.refreshed == ["answer-0"], "viewer refreshed the step"
         )
-        late = ChatRenderer(
-            thread_id,
-            UpdateView(late_view, thread_id, RemoteJournals(), ToolMedia()),
-            viewer.payloads,
-            late_surface,
-            RecordingRewinds(),
-        )
-        assert (await late.catch_up(viewer.bus)).alive is True
-        assert [item.get("id") for item in late_surface.elements] == ["el-1"]
-
-        await feed.finished(TurnOutcome.OK, "")
     finally:
         leave()
-        await holder.locks.release(lock.token)
+
+    assert surface.removed == ["el-old"]
 
 
 async def test_rewound_history_reaches_the_tabs_of_the_viewer_instance(
@@ -524,7 +467,7 @@ async def test_rewound_history_reaches_the_tabs_of_the_viewer_instance(
     thread_id = str(uuid4())
     scope = Scope.chat(thread_id)
     view = ChatView(
-        thread_id, RecordingSink(), runtime_stand.journals, user_name="tester"
+        thread_id, RecordingSink(), runtime_stand.journals, "u-1", user_name="tester"
     )
     updates = UpdateView(view, thread_id, RemoteJournals(), ToolMedia())
     rewinds = RecordingRewinds()

@@ -36,7 +36,6 @@ from boba.runtime import providers as runtime
 from boba.runtime.di import Container
 from chainlit.context import ChainlitContext, context_var
 from chainlit.data import get_data_layer
-from chainlit.element import ElementDict
 from chainlit.emitter import ChainlitEmitter
 from chainlit.server import sio
 from chainlit.session import WebsocketSession
@@ -209,9 +208,6 @@ class ChatRoomSurface(RenderSurface):
         thread = await self._thread()
         await ThreadEmitter(self._anchor, self._thread_id).resume_thread(thread)
 
-    async def send_element(self, element: ElementDict) -> None:
-        await ThreadEmitter(self._anchor, self._thread_id).send_element(element)
-
     async def remove_element(self, element_id: str) -> None:
         emitter = ThreadEmitter(self._anchor, self._thread_id)
         await emitter.emit(self.REMOVE_ELEMENT, {"id": element_id})
@@ -273,8 +269,19 @@ class ChatRoomSurface(RenderSurface):
                 user_detail=None,
             )
 
+        # файлы итогов лежат у владельца треда: его вкладки и есть вкладки треда
+        owner = session_source_ref().of(anchor).user_id
+        if owner is None:
+            raise InternalServiceError(
+                internal_detail=(
+                    f"renderer of thread {thread_id}: chainlit session {anchor.id!r} "
+                    "has no users row, so the owner of the thread files is unknown"
+                ),
+                user_detail=None,
+            )
+
         journals = root.resolved(providers.remote_journals)
-        view = ChatView(thread_id, LiveSink(), journals)
+        view = ChatView(thread_id, LiveSink(), journals, str(owner))
 
         return ChatRenderers.ensure(
             thread_id,
