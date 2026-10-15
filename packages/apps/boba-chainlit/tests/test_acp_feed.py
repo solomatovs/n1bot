@@ -922,6 +922,27 @@ class TestResultsFromRawOutput:
         )
 
 
+class TestOldThreads:
+    """Треды прежних выпусков: вопрос со ссылкой, склеенной в текст, рисуется
+    текстом как есть и без элементов — вложений у него в истории нет."""
+
+    @pytest.mark.anyio
+    async def test_old_question_with_a_glued_link_is_drawn_as_text(
+        self, runtime_stand: StandRefs, recorded: FakeEmitter
+    ) -> None:
+        text = f"look[@note.txt](/boba-test/workspace/attachment/{THREAD}/upload/e)"
+        replay = _view(runtime_stand, RemoteJournals())
+        await replay.apply(
+            schema.UserMessageUpdate(
+                message_id=QUESTION, content=[schema.TextContentBlock(text=text)]
+            )
+        )
+        await replay.finish_turn()
+
+        assert recorded.last()[QUESTION].get(StepField.OUTPUT) == text
+        assert recorded.elements == []
+
+
 class TestCodecAndResults:
     def test_codec_round_trip_keeps_the_name_and_order(self) -> None:
         codec = SessionUpdateCodec()

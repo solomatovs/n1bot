@@ -11,9 +11,9 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, ClassVar, Protocol, cast
+from urllib.parse import urlsplit, urlunsplit
 from uuid import UUID, uuid5
 
-import httpx
 from acp.experimental.v2 import schema
 from literalai.observability.step import TrueStepType
 
@@ -640,10 +640,10 @@ class ChatView:
         if self._sink.emits_elements:
             attached: list[Element] = []
             for number, link in enumerate(links):
-                address = httpx.URL(str(link.uri))
+                address = urlsplit(str(link.uri))
                 element = File(
                     name=link.name,
-                    url=address.raw_path.decode("ascii"),
+                    url=urlunsplit(("", "", address.path, address.query, "")),
                     mime=link.mime_type,
                     display="inline",
                 )

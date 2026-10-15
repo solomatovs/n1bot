@@ -4,15 +4,14 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
-from chainlit.element import CustomElement, Text
 from chainlit.step import StepDict
 from chainlit.types import Feedback as FeedbackPayload
 from chainlit.types import Pagination, ThreadFilter
 from chainlit.user import PersistedUser
 from chainlit.user import User as ChainlitUser
-from chainlit_stand import ChatSessionStand, Seed
+from chainlit_stand import Seed
 
-from boba.canvas.keys import ObjectKey
+from boba.canvas.keys import ObjectKey, ThreadDir
 from boba.chainlit.data.data_layer import PostgresDataLayer
 from boba.chainlit.domain.fields import ThreadMetaField
 from boba.chainlit.infra.config import AppConfig
@@ -21,7 +20,6 @@ from boba.db.postgres import AsyncPostgresPool
 from boba.identity.context import Scope
 from boba.identity.session import UserMetadataField
 from boba.messaging import (
-    ElementRemoved,
     Envelope,
     FeedbackChanged,
     MemoryMessageBus,
@@ -221,28 +219,17 @@ async def test_steps_are_not_persisted(seeded: Seed):
         raise AssertionError("await layer.get_favorite_steps(seeded.user.id) == []")
 
 
-async def test_deleting_a_step_keeps_its_feedback_and_elements(
-    chat_session: ChatSessionStand, seeded: Seed
-):
+async def test_deleting_a_step_keeps_its_feedback(seeded: Seed):
     """Снятие шага в интерфейсе (правка вопроса, Message.remove) данных беседы
-    не трогает: оценки и элементы ходов удаляются только вместе с тредом."""
+    не трогает: оценки ходов удаляются только вместе с тредом."""
     layer = seeded.layer
-    chat_session.use(user_id=seeded.user.id)
     await layer.upsert_feedback(
         FeedbackPayload(forId=seeded.answer_step_id, value=1, threadId=seeded.thread_id)
     )
-    element = Text(
-        thread_id=seeded.thread_id,
-        for_id=seeded.answer_step_id,
-        name="kept.txt",
-        content="kept",
-    )
-    await layer.create_element(element)
 
     await layer.delete_step(seeded.answer_step_id)
 
     assert seeded.answer_step_id in await layer.feedbacks_of(seeded.thread_id)
-    assert await layer.get_element(seeded.thread_id, element.id) is not None
 
 
 async def test_upsert_and_delete_feedback(seeded: Seed):
@@ -270,148 +257,6 @@ async def test_upsert_and_delete_feedback(seeded: Seed):
 
     if await layer.feedbacks_of(seeded.thread_id) != {}:
         raise AssertionError("the deleted feedback is gone")
-
-
-async def test_create_get_delete_element(
-    chat_session: ChatSessionStand,
-    seeded: Seed,
-    files_dir: Path,
-):
-    layer = seeded.layer
-    chat_session.use(user_id=seeded.user.id)
-
-    element = Text(
-        thread_id=seeded.thread_id,
-        for_id=seeded.answer_step_id,
-        name="note.txt",
-        content="payload",
-    )
-    await layer.create_element(element)
-
-    fetched = await layer.get_element(seeded.thread_id, element.id)
-    if fetched is None:
-        raise AssertionError("fetched is not None")
-    if fetched.get("id") != element.id:
-        raise AssertionError('fetched.get("id") == element.id')
-    if not (fetched.get("url")):
-        raise AssertionError('fetched.get("url")')
-
-    # путь не хранится, а вычисляется по шаблону от пользователя сессии
-    object_key = ObjectKey.build(
-        seeded.user.id, seeded.thread_id, element.name, element.id
-    ).render()
-    if not (object_key.endswith("/upload/note.txt")):
-        raise AssertionError('object_key.endswith("/upload/note.txt")')
-    if (files_dir / object_key).read_bytes() != b"payload":
-        raise AssertionError('(files_dir / object_key).read_bytes() == b"payload"')
-
-    await layer.delete_element(element.id)
-    if await layer.get_element(seeded.thread_id, element.id) is not None:
-        raise AssertionError("await layer.get_element(seeded.thread_id, element.id) i…")
-    if (files_dir / object_key).exists():
-        raise AssertionError("not (files_dir / object_key).exists()")
-
-
-async def test_element_uploaded_by_route_keeps_its_stored_content(
-    chat_session: ChatSessionStand,
-    seeded: Seed,
-    files_dir: Path,
-):
-    """Вложение пользователя уже в хранилище: слой пишет строку и не трогает файл."""
-    layer = seeded.layer
-    chat_session.use(user_id=seeded.user.id)
-
-    # так выглядит element после загрузки: путь из реестра сессии, копии на диске нет
-    element = Text(
-        thread_id=seeded.thread_id,
-        for_id=seeded.answer_step_id,
-        name="report.txt",
-        path=str(files_dir / "session-files" / "missing.txt"),
-    )
-    object_key = ObjectKey.build(
-        seeded.user.id, seeded.thread_id, element.name, element.id
-    ).render()
-
-    stored = files_dir / object_key
-    stored.parent.mkdir(parents=True, exist_ok=True)
-    stored.write_bytes(b"streamed by the upload route")
-
-    await layer.create_element(element)
-
-    fetched = await layer.get_element(seeded.thread_id, element.id)
-    if fetched is None:
-        raise AssertionError("fetched is not None")
-    if stored.read_bytes() != b"streamed by the upload route":
-        raise AssertionError('stored.read_bytes() == b"streamed by the upload route"')
-
-
-async def test_custom_element_keeps_props_out_of_storage(
-    chat_session: ChatSessionStand,
-    seeded: Seed,
-    files_dir: Path,
-):
-    """Кастом-элемент несёт только props: тела в хранилище у него нет.
-
-    Копию читать некому — лента берёт props из колонки, — а каждая запись
-    стоит монтирования образа пользователя.
-    """
-    layer = seeded.layer
-    chat_session.use(user_id=seeded.user.id)
-
-    element = CustomElement(
-        thread_id=seeded.thread_id,
-        for_id=seeded.answer_step_id,
-        name="CanvasStream",
-        props={"call_id": "call-1", "label": "bash"},
-    )
-    await layer.create_element(element)
-
-    fetched = await layer.get_element(seeded.thread_id, element.id)
-    if fetched is None:
-        raise AssertionError("fetched is not None")
-    if fetched.get("props") != {"call_id": "call-1", "label": "bash"}:
-        raise AssertionError('fetched.get("props") == {"call_id": "call-1", "label": …')
-
-    object_key = ObjectKey.build(
-        seeded.user.id, seeded.thread_id, element.name, element.id
-    ).render()
-    if (files_dir / object_key).exists():
-        raise AssertionError("not (files_dir / object_key).exists()")
-
-
-async def test_journal_buttons_are_not_served_with_the_thread(
-    chat_session: ChatSessionStand, seeded: Seed
-):
-    """Кнопки журнала сохранены у шагов, но с тредом не отдаются: лента ставит
-    их заново по итогам вызовов при воспроизведении истории, сохранённая
-    была бы второй."""
-    layer = seeded.layer
-    chat_session.use(user_id=seeded.user.id)
-    for call_id in ("call-read", "call-gone"):
-        await layer.create_element(
-            CustomElement(
-                thread_id=seeded.thread_id,
-                for_id=seeded.answer_step_id,
-                name="CanvasStream",
-                props={"call_id": call_id, "label": "bash"},
-            )
-        )
-
-    thread = await layer.get_thread(seeded.thread_id)
-    if thread is None:
-        raise AssertionError("the thread is read")
-
-    shown: list[object] = []
-    for element in thread["elements"] or []:
-        if element.get("name") != "CanvasStream":
-            continue
-
-        shown.append((element.get("props") or {}).get("call_id"))
-
-    if shown != []:
-        raise AssertionError(
-            f"journal buttons are drawn by the feed, not served: {shown}"
-        )
 
 
 async def test_get_thread_serves_no_steps(seeded: Seed):
@@ -461,31 +306,25 @@ async def test_list_threads(seeded: Seed):
         await layer.list_threads(Pagination(first=10), ThreadFilter())
 
 
-async def test_delete_thread_removes_its_files(
-    chat_session: ChatSessionStand, seeded: Seed, files_dir: Path
-):
-    """Удаление треда стирает его файлы в хранилище владельца."""
+async def test_delete_thread_removes_its_files(seeded: Seed, files_dir: Path):
+    """Удаление треда стирает его файлы в хранилище владельца во всех каталогах
+    треда."""
     layer = seeded.layer
-    chat_session.use(user_id=seeded.user.id)
-    element = Text(
-        thread_id=seeded.thread_id,
-        for_id=seeded.answer_step_id,
-        name="gone.txt",
-        content="gone",
-    )
-    await layer.create_element(element)
-    stored = (
-        files_dir
-        / ObjectKey.build(
-            seeded.user.id, seeded.thread_id, element.name, element.id
-        ).render()
-    )
-    assert stored.read_bytes() == b"gone"
+    stored: list[Path] = []
+    for dir_thread in ThreadDir:
+        key = ObjectKey.build(
+            seeded.user.id, seeded.thread_id, "gone.txt", "el", dir_thread=dir_thread
+        )
+        path = files_dir / key.render()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"gone")
+        stored.append(path)
 
     await layer.delete_thread(seeded.thread_id)
 
     assert await layer.get_thread(seeded.thread_id) is None
-    assert not stored.exists()
+    for path in stored:
+        assert not path.exists(), path
 
 
 async def test_build_debug_url(layer: PostgresDataLayer):
@@ -531,14 +370,11 @@ async def test_thread_changes_are_published_to_the_user_scope(
     ]
 
 
-async def test_feedback_and_element_removal_reach_the_thread_scope(
-    chat_session: ChatSessionStand,
-    layer: PostgresDataLayer,
-    seeded: Seed,
-    data_bus: MemoryMessageBus,
+async def test_feedback_changes_reach_the_thread_scope(
+    layer: PostgresDataLayer, seeded: Seed, data_bus: MemoryMessageBus
 ) -> None:
-    """Оценка ответа и удаление вложения уходят в область треда: вкладки на всех
-    инстансах обновляют шаг и убирают элемент.
+    """Оценка ответа и её снятие уходят в область треда: вкладки на всех
+    инстансах обновляют шаг.
     """
     seen: list[Envelope] = []
 
@@ -557,19 +393,11 @@ async def test_feedback_and_element_removal_reach_the_thread_scope(
         )
         assert await layer.delete_feedback(feedback_id) is True
         assert await layer.delete_feedback(feedback_id) is False
-
-        chat_session.use(user_id=seeded.user.id, thread_id=seeded.thread_id)
-        element = Text(name="note.txt", content="x", display="inline")
-        element.id = str(uuid4())
-        element.thread_id = seeded.thread_id
-        element.for_id = seeded.answer_step_id
-        await layer.create_element(element)
-        await layer.delete_element(element.id, seeded.thread_id)
     finally:
         leave()
 
     kinds = [envelope.message.kind.value for envelope in seen]
-    assert kinds == ["feedback_changed", "feedback_changed", "element_removed"]
+    assert kinds == ["feedback_changed", "feedback_changed"]
     first = seen[0].message
     assert isinstance(first, FeedbackChanged)
     assert (first.step_id, first.value, first.comment) == (
@@ -580,6 +408,3 @@ async def test_feedback_and_element_removal_reach_the_thread_scope(
     second = seen[1].message
     assert isinstance(second, FeedbackChanged)
     assert second.value is None
-    third = seen[2].message
-    assert isinstance(third, ElementRemoved)
-    assert third.element_id == element.id

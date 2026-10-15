@@ -37,7 +37,7 @@ class TestThreadDict:
             id=UUID(int=1), created_at=datetime.now(UTC), user_id=UUID(int=7)
         )
 
-        thread = ThreadDicts.thread(stored, "boba", [], [])
+        thread = ThreadDicts.thread(stored, "boba")
 
         assert thread["userId"] == str(UUID(int=7))
         assert thread["userIdentifier"] == "boba"
@@ -45,7 +45,7 @@ class TestThreadDict:
     def test_thread_without_owner(self) -> None:
         stored = StoredThread(id=UUID(int=1), created_at=datetime.now(UTC))
 
-        thread = ThreadDicts.thread(stored, None, [], [])
+        thread = ThreadDicts.thread(stored, None)
 
         assert thread["userId"] is None
         assert thread["name"] is None

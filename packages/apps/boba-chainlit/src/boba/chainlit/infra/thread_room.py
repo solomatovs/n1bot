@@ -175,7 +175,6 @@ class ChatRoomSurface(RenderSurface):
     """
 
     EVENT: ClassVar[str] = "window_message"
-    REMOVE_ELEMENT: ClassVar[str] = "remove_element"
 
     def __init__(self, anchor: WebsocketSession, thread_id: str) -> None:
         self._anchor = anchor
@@ -207,10 +206,6 @@ class ChatRoomSurface(RenderSurface):
     async def resume_thread(self) -> None:
         thread = await self._thread()
         await ThreadEmitter(self._anchor, self._thread_id).resume_thread(thread)
-
-    async def remove_element(self, element_id: str) -> None:
-        emitter = ThreadEmitter(self._anchor, self._thread_id)
-        await emitter.emit(self.REMOVE_ELEMENT, {"id": element_id})
 
     async def refresh_step(self, step_id: str) -> None:
         thread = await self._thread()

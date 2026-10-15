@@ -15,7 +15,7 @@ __all__ = ["PgTable"]
 
 
 class PgTable(PostgresTable):
-    """Таблица схемы чата: базовый класс UsersTable, ThreadsTable, ElementsTable
+    """Таблица схемы чата: базовый класс UsersTable, ThreadsTable
     и FeedbacksTable; отказ базы уходит DataUnavailableError с именем операции."""
 
     LABEL: ClassVar[str] = "chat"

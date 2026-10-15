@@ -342,9 +342,9 @@ async def _store(thread_id: str, files: Mapping[str, bytes]) -> None:
     """Кладёт файлы в workspace пользователя стенда на сервисе boba-mcp тем
     же путём, каким их кладёт чат: клиентом MCP от имени пользователя."""
     from boba.canvas.keys import ObjectKey
-    from boba.chainlit.data.data_layer import HeldContent
     from boba.identity.signin import SignInMetadata
     from boba.mcp_client.client import McpCaller, McpServers
+    from boba.stand.storage import StorageSeed
 
     config = _app_config()
     owner, meta = await _user_row(config, LOGIN[0])
@@ -358,7 +358,7 @@ async def _store(thread_id: str, files: Mapping[str, bytes]) -> None:
 
         for name, blob in files.items():
             key = ObjectKey(user_id=owner, thread_id=thread_id, name=name)
-            await asyncio.wait_for(remote.upload(key, HeldContent(blob).chunks()), 120)
+            await asyncio.wait_for(remote.upload(key, StorageSeed().chunks(blob)), 120)
     finally:
         await servers.stop()
 

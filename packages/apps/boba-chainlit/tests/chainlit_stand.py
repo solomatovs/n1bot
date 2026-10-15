@@ -35,7 +35,7 @@ from boba.chainlit.agent.relay import McpRelay
 from boba.chainlit.agent.server import ChatCallers, HookSealing, KeyHolder, ProcessKeys
 from boba.chainlit.canvas.remote import RemoteJournals, RemoteStreams
 from boba.chainlit.data.data_layer import PostgresDataLayer
-from boba.chainlit.domain.keys import AppPrefix, AttachmentLinks
+from boba.chainlit.domain.keys import AppPrefix
 from boba.chainlit.infra.config import AppConfig
 from boba.chainlit.infra.session import (
     ChainlitSession,
@@ -671,11 +671,8 @@ async def layer(
     data_layer = PostgresDataLayer(
         users=tables.users,
         threads=tables.threads,
-        elements=tables.elements,
         feedbacks=tables.feedbacks,
         storage=storage,
-        links=AttachmentLinks(app_config.chainlit.url_prefix),
-        sessions=ChainlitSessions(StandTokens()),
         bus=data_bus,
     )
     return data_layer

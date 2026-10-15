@@ -32,7 +32,6 @@ from boba.messaging import (
     AgentUpdate,
     AnswerInterrupted,
     CanvasChanged,
-    ElementRemoved,
     Envelope,
     FeedbackChanged,
     MessageBus,
@@ -83,10 +82,6 @@ class RenderSurface(Protocol):
         """Перечитывает тред из истории и отдаёт ленту всем живым вкладкам треда."""
 
     @abstractmethod
-    async def remove_element(self, element_id: str) -> None:
-        """Убирает элемент из ленты во всех живых вкладках треда."""
-
-    @abstractmethod
     async def refresh_step(self, step_id: str) -> None:
         """Перечитывает шаг из истории и обновляет его во всех вкладках треда."""
 
@@ -121,9 +116,6 @@ class NoSurface(RenderSurface):
         return None
 
     async def resume_thread(self) -> None:
-        return None
-
-    async def remove_element(self, element_id: str) -> None:
         return None
 
     async def refresh_step(self, step_id: str) -> None:
@@ -235,7 +227,6 @@ class ChatRenderer:
             MessageKind.NOTICE: self._on_notice,
             MessageKind.CANVAS_CHANGED: self._on_canvas_changed,
             MessageKind.THREAD_REWOUND: self._on_thread_rewound,
-            MessageKind.ELEMENT_REMOVED: self._on_element_removed,
             MessageKind.FEEDBACK_CHANGED: self._on_feedback_changed,
         }
 
@@ -289,9 +280,6 @@ class ChatRenderer:
 
     async def _on_thread_rewound(self, message: ThreadRewound) -> None:
         await self._rewinds.rewound(self._thread_id, message.session_id)
-
-    async def _on_element_removed(self, message: ElementRemoved) -> None:
-        await self._surface.remove_element(message.element_id)
 
     async def _on_feedback_changed(self, message: FeedbackChanged) -> None:
         await self._surface.refresh_step(message.step_id)

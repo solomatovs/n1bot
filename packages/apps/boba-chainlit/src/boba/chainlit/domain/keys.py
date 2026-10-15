@@ -1,4 +1,5 @@
-"""Адресация вложений: storage-ключ, путь в песочнице, ссылка и её маршрут.
+"""Адресация файлов треда: ссылка на файл по его месту и её маршрут, ссылка на
+канал журнала.
 
 Ошибки: ValueError — сегмент ключа пуст, ведёт наружу каталога или называет
 неизвестный каталог треда.
@@ -6,20 +7,16 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import ClassVar
 from urllib.parse import quote
 
 from boba.canvas.keys import (
     ObjectKey,
-    ThreadDir,
 )
 from boba.toolkit.channels import JournalChannel
 
 __all__ = [
     "AppPrefix",
-    "AttachmentLinks",
-    "AttachmentUrl",
     "CanvasFileUrl",
     "StreamUrl",
 ]
@@ -48,48 +45,6 @@ class AppPrefix:
             raise RuntimeError(msg)
 
         return cls._prefix
-
-
-@dataclass(frozen=True, slots=True)
-class AttachmentUrl:
-    """Адресация вложения по треду, каталогу и id элемента — не по пути в хранилище.
-
-    Каталог в ссылке обязателен: без него отдача искала бы файл только в
-    upload/, и вложение из mermaid/ отвечало бы 404.
-    """
-
-    thread_id: str
-    dir: ThreadDir
-    element_id: str
-
-    MOUNT: ClassVar[str] = "/workspace"
-    """Путь отдачи вложений под префиксом приложения."""
-
-    ROUTE: ClassVar[str] = "/attachment/{thread_id}/{dir}/{element_id}"
-    """Общий шаблон route и ссылки под MOUNT."""
-
-    def path(self) -> str:
-        return self.ROUTE.format(
-            thread_id=self.thread_id,
-            dir=self.dir.value,
-            element_id=self.element_id,
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class AttachmentLinks:
-    """Выдаёт публичные ссылки на вложения; url-префикс знает только он.
-    prefix — префикс приложения ([chainlit].url_prefix)."""
-
-    prefix: str
-
-    def url(self, thread_id: object, element_id: object, dir_thread: ThreadDir) -> str:
-        path = AttachmentUrl(str(thread_id), dir_thread, str(element_id)).path()
-        return self.public_prefix() + path
-
-    def public_prefix(self) -> str:
-        """Адрес, под которым приложение отдаёт вложения."""
-        return self.prefix.rstrip("/") + AttachmentUrl.MOUNT
 
 
 class CanvasFileUrl:

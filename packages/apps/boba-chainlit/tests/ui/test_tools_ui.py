@@ -1277,12 +1277,9 @@ class TestBash:
         )
         feed.call(call, expect)
 
-    def test_stream_button_reaches_the_data_layer(
-        self, feed: ToolFeed, stand_db: StandDatabase
-    ) -> None:
-        """Элемент кнопки потока bash-шага записан в базу: колбэки трасера
-        идут в loop приложения, а не в чужой — иначе запись молча терялась."""
-        before = stand_db.elements_named(STREAM_ELEMENT)
+    def test_stream_button_reaches_the_tab(self, feed: ToolFeed) -> None:
+        """Кнопка потока bash-шага приходит вкладке элементом: её рисует лента
+        по итогу вызова, в базу чата она не пишется."""
 
         call = ToolCall(
             tool="bash",
@@ -1292,10 +1289,10 @@ class TestBash:
         )
         feed.call(call, ToolExpect(dom=[ProbeText.BASH_ECHO.value]))
 
-        after = stand_db.elements_named(STREAM_ELEMENT)
-        if after <= before:
+        # журнал вкладки хранит только этот ход: ask его очищает
+        if not feed.chat.log.elements_named(STREAM_ELEMENT):
             raise AssertionError(
-                f"element {STREAM_ELEMENT} is not stored: was {before}, now {after}\n"
+                f"element {STREAM_ELEMENT} is not shown by the turn\n"
                 + feed.stand.tail(60)
             )
 
@@ -2325,9 +2322,7 @@ class TestCanvasTools:
         self,
         canvas_feed: ToolFeed,
         saved_diagram: DiagramProbe,
-        stand_db: StandDatabase,
     ) -> None:
-        before = stand_db.elements_named(CANVAS_ELEMENT)
 
         call = ToolCall(tool="canvas_open", arguments={"path": saved_diagram.path})
         result = CanvasResult(
@@ -2338,11 +2333,9 @@ class TestCanvasTools:
         opened = f"opened in the canvas: {ProbeDiagram.NAME.value}"
         canvas_feed.call(call, ToolExpect.of(result, dom=[opened]))
 
-        after = stand_db.elements_named(CANVAS_ELEMENT)
-        if after <= before:
-            raise AssertionError(
-                f"element {CANVAS_ELEMENT} is not stored: was {before}, now {after}"
-            )
+        # журнал вкладки хранит только этот ход: ask его очищает
+        if not canvas_feed.chat.log.elements_named(CANVAS_ELEMENT):
+            raise AssertionError(f"element {CANVAS_ELEMENT} is not shown by the turn")
 
     def test_canvas_open_outside_thread_is_refused(
         self, canvas_feed: ToolFeed, saved_diagram: DiagramProbe

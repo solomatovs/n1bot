@@ -11,7 +11,7 @@ __all__ = ["StorageSeed"]
 
 
 class StorageSeed:
-    """Кладёт в хранилище готовые байты теста.
+    """Кладёт в хранилище (или отдаёт потоком) готовые байты теста.
 
     Хранилище пишет только потоком: метода, принимающего содержимое целиком,
     у него нет. Тесту удобно задать файл литералом, и этот класс подаёт его
@@ -23,9 +23,10 @@ class StorageSeed:
     async def put(
         self, storage: StorageClient, object_key: str, data: bytes | str
     ) -> None:
-        await storage.upload_stream(object_key, self._chunks(data))
+        await storage.upload_stream(object_key, self.chunks(data))
 
-    async def _chunks(self, data: bytes | str) -> AsyncGenerator[bytes, None]:
+    async def chunks(self, data: bytes | str) -> AsyncGenerator[bytes, None]:
+        """Байты теста одним чанком: для любого приёмника потока."""
         if isinstance(data, str):
             data = data.encode(self.ENCODING)
 
