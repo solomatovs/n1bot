@@ -784,39 +784,28 @@ class CallDag:
         Ошибки:
         StreamPlanError — вызов workflow не проходит форму описания DAG.
         """
-        return list(self._called(call.key, self.described(call)))
+        return list(self.feature().keyed(call.key, self.described(call)))
 
     def title_of(self, call: DagNode, node_id: str) -> str | None:
         """Имя, которое автор связки дал узлу с идентификатором вызова
-        node_id; None — такого узла в вызове workflow нет.
+        node_id; None — такого узла в вызове workflow нет. Идентификатор
+        вызова workflow здесь неизвестен: узел без заданного call_id
+        узнаётся по хвосту своего идентификатора.
 
         Ошибки:
         StreamPlanError — вызов workflow не проходит форму описания DAG.
         """
-        for index, node in enumerate(self.described(call)):
+        for node in self.feature().keyed("", self.described(call)):
             if node.call_id == node_id:
-                return node.key
+                return node.title
 
             if node.call_id:
                 continue
 
-            if node_id.endswith(self._suffix(index)):
-                return node.key
+            if node_id.endswith(node.key):
+                return node.title
 
         return None
-
-    @staticmethod
-    def _suffix(index: int) -> str:
-        """Хвост идентификатора вызова узла, которому автор его не назвал."""
-        return f"_{index}"
-
-    def _called(self, call_id: str, described: Sequence[DagNode]) -> Iterator[DagNode]:
-        for index, node in enumerate(described):
-            key = node.call_id
-            if not key:
-                key = f"{call_id}{self._suffix(index)}"
-
-            yield node.model_copy(update={"key": key, "title": node.key})
 
 
 class ServerFeature(BaseModel):
@@ -930,6 +919,21 @@ class NestedCallsFeature(ServerFeature):
         replaced[self.nodes] = nodes
 
         return replaced
+
+    def keyed(self, call_id: str, calls: Sequence[DagNode]) -> Sequence[DagNode]:
+        """Узлы calls вызова call_id под идентификаторами их вызовов: заданный
+        клиентом call_id узла, иначе call_id вызова с номером узла; ключ от
+        автора связки — в title. Под этим идентификатором сервер ведёт
+        журнал узла, а клиент — его шаг."""
+        keyed: list[DagNode] = []
+        for index, node in enumerate(calls):
+            key = node.call_id
+            if not key:
+                key = f"{call_id}_{index}"
+
+            keyed.append(node.model_copy(update={"key": key, "title": node.key}))
+
+        return keyed
 
 
 class ToolServer(Protocol):

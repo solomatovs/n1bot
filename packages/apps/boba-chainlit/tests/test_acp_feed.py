@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from typing import Any, cast
+from typing import Any, ClassVar, cast
 
 import chainlit.data as chainlit_data
 import mcp_types as mt
@@ -54,9 +54,17 @@ from boba.chat.profiles import ChatProfileConfig, UserSetting
 from boba.identity.context import Scope
 from boba.messaging import LockToken, MemoryMessageBus, MemoryPayloadStore, TurnOutcome
 from boba.stand.refs import StandRefs
-from boba.toolkit.dag import DagNode, JournalAddress, NodeOutcomes
+from boba.toolkit.dag import (
+    CallDag,
+    DagNode,
+    JournalAddress,
+    NodeOutcomes,
+    WorkflowNodeResult,
+    WorkflowResult,
+)
 from boba.toolkit.result import (
     CanvasResult,
+    ErrorResult,
     FileResult,
     MarkdownResult,
     ToolResultBase,
@@ -370,7 +378,7 @@ class TestUpdateViewIds:
             },
         }
         media = ToolMedia()
-        media.shown("boba", [mt.Tool(name="pg_query", input_schema=arguments)])
+        media.shown("boba", [mt.Tool(name="pg_query", input_schema=arguments)], None)
         view = ChatView(THREAD, LiveSink(), runtime_stand.journals, user_name="alice")
         updates = UpdateView(view, THREAD, RemoteJournals(), media)
         updates.begin_turn(QUESTION)
@@ -401,6 +409,166 @@ class TestUpdateViewIds:
 
         step = recorded.last()[_id(CALL, StepRole.TOOL)]
         assert "rows copied — 50 of 200" in str(step.get(StepField.OUTPUT))
+
+
+class TestNestedCallSteps:
+    """Вызов инструмента, который сервер объявил несущим вложенные вызовы,
+    рисуется подшагами узлов: имя — инструмент и подпись узла, ход — по
+    ключу узла в `_meta`, итог — по записи узла в structuredContent."""
+
+    NODES: ClassVar[list[dict[str, Any]]] = [
+        {
+            "key": "src",
+            "tool": "pg_stream_out",
+            "args": {"intent": "copy orders out", "sql": "select 1", "out": "c"},
+        },
+        {
+            "key": "sink",
+            "tool": "ch_stream_in",
+            "args": {"intent": "load orders", "feed": "c"},
+        },
+    ]
+
+    def _updates(
+        self, runtime_stand: StandRefs, journals: RemoteJournals, nested: bool
+    ) -> UpdateView:
+        media = ToolMedia()
+        declared = None
+        if nested:
+            declared = CallDag().feature()
+
+        media.shown("boba", [], declared)
+        view = ChatView(THREAD, LiveSink(), runtime_stand.journals, user_name="alice")
+
+        return UpdateView(view, THREAD, journals, media)
+
+    @staticmethod
+    def _workflow() -> WorkflowResult:
+        sent = MarkdownResult(text="sent 1 row into c", elapsed_ms=5)
+        refused = ErrorResult(message="table orders does not exist", error_kind="x")
+        nodes = [
+            WorkflowNodeResult(
+                key="src",
+                call_id="srv-call_0",
+                tool="pg_stream_out",
+                errored=False,
+                content=sent.llm_view(),
+                result=sent,
+            ),
+            WorkflowNodeResult(
+                key="sink",
+                call_id="srv-call_1",
+                tool="ch_stream_in",
+                errored=False,
+                content=refused.llm_view(),
+                result=refused,
+            ),
+        ]
+
+        return WorkflowResult(nodes=nodes, ok=False)
+
+    @staticmethod
+    def _failed(call_id: str, raw_output: Any) -> SessionUpdate:
+        return schema.SessionToolCallUpdate(
+            tool_call_id=call_id, status="failed", raw_output=raw_output
+        )
+
+    @pytest.mark.anyio
+    async def test_nodes_are_steps_named_by_their_tool_and_intent(
+        self, runtime_stand: StandRefs, recorded: FakeEmitter
+    ) -> None:
+        updates = self._updates(runtime_stand, RemoteJournals(), True)
+        updates.begin_turn(QUESTION)
+
+        await updates.apply(_call(CALL, "mcp__boba__workflow", {"nodes": self.NODES}))
+
+        steps = recorded.last()
+        assert _id(CALL, StepRole.TOOL) not in steps
+        source = steps[_id(f"{CALL}_0", StepRole.TOOL)]
+        sink = steps[_id(f"{CALL}_1", StepRole.TOOL)]
+        assert " pg_stream_out · copy orders out" in str(source.get(StepField.NAME))
+        assert " ch_stream_in · load orders" in str(sink.get(StepField.NAME))
+        assert "select 1" in str(source.get("input"))
+
+    @pytest.mark.anyio
+    async def test_progress_goes_to_the_node_named_in_meta(
+        self, runtime_stand: StandRefs, recorded: FakeEmitter
+    ) -> None:
+        updates = self._updates(runtime_stand, RemoteJournals(), True)
+        updates.begin_turn(QUESTION)
+        await updates.apply(_call(CALL, "mcp__boba__workflow", {"nodes": self.NODES}))
+
+        text = schema.TextContentBlock(text="connecting to clickhouse")
+        progress = schema.SessionToolCallUpdate(
+            tool_call_id=CALL,
+            status="in_progress",
+            content=[schema.ContentToolCallContent(content=text)],
+            field_meta={CallDag.PROGRESS_NODE: "sink"},
+        )
+        await updates.apply(progress)
+
+        steps = recorded.last()
+        source = steps[_id(f"{CALL}_0", StepRole.TOOL)]
+        sink = steps[_id(f"{CALL}_1", StepRole.TOOL)]
+        assert "connecting to clickhouse" in str(sink.get(StepField.OUTPUT))
+        assert "connecting to clickhouse" not in str(source.get(StepField.OUTPUT))
+
+    @pytest.mark.anyio
+    async def test_each_node_ends_with_its_own_result_and_journal(
+        self, runtime_stand: StandRefs, recorded: FakeEmitter
+    ) -> None:
+        journals = RemoteJournals()
+        updates = self._updates(runtime_stand, journals, True)
+        updates.begin_turn(QUESTION)
+        await updates.apply(_call(CALL, "mcp__boba__workflow", {"nodes": self.NODES}))
+
+        await updates.apply(self._failed(CALL, _result(self._workflow(), "run-7")))
+
+        steps = recorded.last()
+        source = steps[_id(f"{CALL}_0", StepRole.TOOL)]
+        sink = steps[_id(f"{CALL}_1", StepRole.TOOL)]
+        assert str(source.get(StepField.NAME)).startswith("✔")
+        assert "sent 1 row into c" in str(source.get(StepField.OUTPUT))
+        assert str(sink.get(StepField.NAME)).startswith("✖")
+        assert "table orders does not exist" in str(sink.get(StepField.OUTPUT))
+
+        address = await journals.address(THREAD, f"{CALL}_1")
+        assert address == JournalAddress(server="boba", run="run-7", call="srv-call_1")
+
+    @pytest.mark.anyio
+    async def test_refusal_before_the_start_ends_every_node(
+        self, runtime_stand: StandRefs, recorded: FakeEmitter
+    ) -> None:
+        updates = self._updates(runtime_stand, RemoteJournals(), True)
+        updates.begin_turn(QUESTION)
+        await updates.apply(_call(CALL, "mcp__boba__workflow", {"nodes": self.NODES}))
+
+        refusal = ErrorResult(
+            message="stream plan: channel c has no readers", error_kind="x"
+        )
+        await updates.apply(self._failed(CALL, _result(refusal)))
+
+        steps = recorded.last()
+        for index in (0, 1):
+            node = steps[_id(f"{CALL}_{index}", StepRole.TOOL)]
+            assert str(node.get(StepField.NAME)).startswith("✖")
+            assert "has no readers" in str(node.get(StepField.OUTPUT))
+
+    @pytest.mark.anyio
+    async def test_without_the_extension_the_call_is_one_step_of_its_blocks(
+        self, runtime_stand: StandRefs, recorded: FakeEmitter
+    ) -> None:
+        updates = self._updates(runtime_stand, RemoteJournals(), False)
+        updates.begin_turn(QUESTION)
+        await updates.apply(_call(CALL, "mcp__boba__workflow", {"nodes": self.NODES}))
+
+        workflow = self._workflow()
+        await updates.apply(_done(CALL, workflow.llm_view(), _result(workflow)))
+
+        steps = recorded.last()
+        assert _id(f"{CALL}_0", StepRole.TOOL) not in steps
+        step = steps[_id(CALL, StepRole.TOOL)]
+        assert "[sink] ch_stream_in — failed" in str(step.get(StepField.OUTPUT))
 
 
 class TestLiveEqualsReplay:

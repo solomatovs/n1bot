@@ -8,7 +8,10 @@
 вопрос и его ответы — id вопроса (`"{id}#{n}"` у n-го ответа хода),
 рассуждения — id сообщения ассистента, вызов, график и элемент — id вызова.
 Итог вызова — ответ сервера MCP в `rawOutput`: у сервера boba-mcp он
-оживает моделью результата с адресом журнала.
+оживает моделью результата с адресом журнала. Вызов инструмента, который
+сервер объявил несущим вложенные вызовы (NestedCallsFeature), рисуется
+шагами его узлов: ход узла приходит с ключом узла в `_meta`, итог узла —
+записью списка узлов в structuredContent (NestedCallsReply).
 
 Ошибки:
 ValidationError — тело уведомления из шины не по схеме ACP v2.
@@ -28,10 +31,17 @@ from pydantic import TypeAdapter, ValidationError
 from boba.chainlit.agent.client import SessionUpdate
 from boba.chainlit.rendering.chat_view import ChatView, StepText
 from boba.toolkit.calls import CallViews
-from boba.toolkit.dag import DagNode, JournalAddress, NodeOutcome
+from boba.toolkit.chain import StreamPlanError
+from boba.toolkit.dag import (
+    DagNode,
+    JournalAddress,
+    NestedCallReply,
+    NestedCallsFeature,
+    NodeOutcome,
+)
 from boba.toolkit.mcp import McpToolNames
 from boba.toolkit.result import MarkdownResult
-from boba.toolkit.wire import ResultWire, WireResult
+from boba.toolkit.wire import NestedCallsReply, ResultWire, WireResult
 from boba.transport.acp.protocol import ToolStatus
 from chainlit.step import Step
 
@@ -64,25 +74,45 @@ class SessionUpdateCodec:
 
 
 class ToolMedia:
-    """Типы содержимого аргументов инструментов серверов MCP по полным
-    именам: по ним лента рисует вход шага (sql, bash, json). Один объект на
-    процесс; инструменты называет сборка приёмника по портам серверов профиля."""
+    """Что лента знает об инструментах серверов профиля по полным именам:
+    типы содержимого аргументов (по ним рисуется вход шага: sql, bash, json)
+    и вложенные вызовы, которые объявил сервер (по ним вызов рисуется шагами
+    узлов). Один объект на процесс; инструменты называет сборка приёмника по
+    портам серверов профиля."""
 
     def __init__(self) -> None:
         self._views = CallViews()
         self._names = McpToolNames()
         self._media: dict[str, Mapping[str, str]] = {}
+        self._nested: dict[str, NestedCallsFeature] = {}
 
-    def shown(self, server: str, tools: Iterable[mt.Tool]) -> None:
+    def shown(
+        self,
+        server: str,
+        tools: Iterable[mt.Tool],
+        nested: NestedCallsFeature | None,
+    ) -> None:
         """Типы аргументов инструментов tools сервера server под полными
-        именами."""
+        именами и вложенные вызовы, объявленные сервером; None — сервер их
+        не объявил."""
         for tool in tools:
             name = self._names.full(server, tool.name)
             self._media[name] = self._views.media_of(tool.input_schema)
 
+        if nested is None:
+            return
+
+        self._nested[self._names.full(server, nested.tool)] = nested
+
     def of(self, name: str) -> Mapping[str, str] | None:
         """Типы аргументов инструмента; None — инструмент серверам неизвестен."""
         return self._media.get(name)
+
+    def nested(self, name: str) -> NestedCallsFeature | None:
+        """Объявление вложенных вызовов для вызова инструмента name; None —
+        сервер его не объявил либо name не его инструмент со вложенными
+        вызовами."""
+        return self._nested.get(name)
 
 
 class JournalRegistry(Protocol):
@@ -128,6 +158,9 @@ class UpdateView:
         self._called: dict[str, str] = {}
         """Идущий вызов → имя его инструмента: агент называет инструмент
         только в первом уведомлении вызова."""
+        self._groups: dict[str, Sequence[DagNode]] = {}
+        """Идущий вызов со вложенными вызовами → узлы его подшагов: ключ
+        узла — ключ подшага, title — ключ узла от автора связки."""
 
     @property
     def view(self) -> ChatView:
@@ -149,6 +182,7 @@ class UpdateView:
         self._answer_id = None
         self._steps.clear()
         self._called.clear()
+        self._groups.clear()
         self._view.begin_turn(key)
 
     async def question(self, text: str, key: str, author: str | None = None) -> None:
@@ -189,6 +223,7 @@ class UpdateView:
             await self._view.tool_stopped(step, StepText.FINISHED.value)
 
         self._steps.clear()
+        self._groups.clear()
         await self._view.finish_turn()
         self._turn_key = None
 
@@ -205,15 +240,8 @@ class UpdateView:
         if owner is None:
             return None
 
-        try:
-            reply = mt.CallToolResult.model_validate(update.raw_output)
-        except ValidationError as exc:
-            logger.debug(
-                "thread %s: rawOutput of call %s is not a tools/call result: %s",
-                self._thread_id,
-                update.tool_call_id,
-                exc,
-            )
+        reply = self._reply(update)
+        if reply is None:
             return None
 
         wire = WireResult(
@@ -231,6 +259,20 @@ class UpdateView:
                 self._thread_id,
                 update.tool_call_id,
                 name,
+                exc,
+            )
+            return None
+
+    def _reply(self, update: schema.SessionToolCallUpdate) -> mt.CallToolResult | None:
+        """Ответ сервера MCP в `rawOutput` конечного уведомления; None —
+        там не результат tools/call."""
+        try:
+            return mt.CallToolResult.model_validate(update.raw_output)
+        except ValidationError as exc:
+            logger.debug(
+                "thread %s: rawOutput of call %s is not a tools/call result: %s",
+                self._thread_id,
+                update.tool_call_id,
                 exc,
             )
             return None
@@ -288,11 +330,25 @@ class UpdateView:
         await self._view.stream_answer(text, self._turn_key)
 
     async def _tool_update(self, update: schema.SessionToolCallUpdate) -> None:
-        """Вызов: первое уведомление создаёт шаг, ход работы — текст
-        `content`, конечный статус — итог."""
-        step = self._steps.get(update.tool_call_id)
+        """Вызов: первое уведомление создаёт шаг (у вызова со вложенными
+        вызовами — подшаги узлов), ход работы — текст `content`, конечный
+        статус — итог."""
+        call_id = update.tool_call_id
+        if call_id in self._groups:
+            await self._group_update(update)
+            return
+
+        step = self._steps.get(call_id)
         if step is None:
-            step = await self._step_of(update)
+            name = self._tool_name(update)
+            args = self._args(update.raw_input)
+            nodes = self._nodes_of(name, call_id, args)
+            if nodes:
+                await self._nodes_started(call_id, nodes)
+                await self._group_update(update)
+                return
+
+            step = await self._step_of(name, args, call_id)
 
         status = ToolStatus.PENDING
         if update.status is not None:
@@ -305,54 +361,206 @@ class UpdateView:
 
             return
 
-        self._steps.pop(update.tool_call_id, None)
-        await self._tool_result(step, update, status)
+        self._steps.pop(call_id, None)
+        name = self._tool_name(update)
+        self._called.pop(call_id, None)
+        await self._tool_result(step, update, status, name)
 
-    async def _step_of(self, update: schema.SessionToolCallUpdate) -> Step:
-        """Шаг нового вызова по полям его первого уведомления."""
+    async def _step_of(self, name: str, args: Mapping[str, Any], key: str) -> Step:
+        """Шаг нового вызова инструмента name с аргументами args под ключом key."""
         await self._close_thinking()
         self._answer_id = None
-        name = self._tool_name(update)
-        step = await self._view.tool_started(
-            name,
-            self._args(update.raw_input),
-            update.tool_call_id,
-            self._media.of(name),
-        )
-        self._steps[update.tool_call_id] = step
+        step = await self._view.tool_started(name, args, key, self._media.of(name))
+        self._steps[key] = step
 
         return step
+
+    def _nodes_of(
+        self, name: str, call_id: str, args: Mapping[str, Any]
+    ) -> Sequence[DagNode]:
+        """Узлы вызова call_id инструмента name по объявлению сервера под
+        ключами подшагов, с полными именами инструментов, как их называет
+        ретранслятор; пусто — сервер вложенных вызовов для name не объявил
+        либо вызов не по объявленной форме, и он рисуется одним шагом."""
+        nested = self._media.nested(name)
+        if nested is None:
+            return ()
+
+        owner = self._names.parse(name)
+        if owner is None:
+            return ()
+
+        try:
+            calls = nested.calls(args)
+        except StreamPlanError as exc:
+            logger.debug(
+                "thread %s: call %s of %s is drawn as one step: %s",
+                self._thread_id,
+                call_id,
+                name,
+                exc,
+            )
+            return ()
+
+        nodes: list[DagNode] = []
+        for node in nested.keyed(call_id, calls):
+            full = self._names.full(owner.server, node.tool)
+            nodes.append(node.model_copy(update={"tool": full}))
+
+        return nodes
+
+    async def _nodes_started(self, call_id: str, nodes: Sequence[DagNode]) -> None:
+        """Подшаг на каждый узел вызова call_id; шага самого вызова нет."""
+        for node in nodes:
+            await self._step_of(node.tool, node.args, node.key)
+
+        self._groups[call_id] = nodes
+
+    async def _group_update(self, update: schema.SessionToolCallUpdate) -> None:
+        """Уведомление вызова со вложенными вызовами: ход работы — подшагу
+        узла (_node_progress), конечный статус — итоги подшагов
+        (_nodes_result)."""
+        call_id = update.tool_call_id
+        nodes = self._groups[call_id]
+        name = self._tool_name(update)
+        status = ToolStatus.PENDING
+        if update.status is not None:
+            status = ToolStatus(update.status)
+
+        if not status.terminal:
+            await self._node_progress(update, name, nodes)
+            return
+
+        self._groups.pop(call_id)
+        await self._nodes_result(update, name, nodes, status)
+
+    async def _node_progress(
+        self,
+        update: schema.SessionToolCallUpdate,
+        name: str,
+        nodes: Sequence[DagNode],
+    ) -> None:
+        """Ход работы — подшагу узла, чей ключ сервер положил в `_meta` под
+        ключом, объявленным расширением; строка без ключа узла этого вызова
+        уходит в лог."""
+        progress = self._content_text(update)
+        if not progress:
+            return
+
+        nested = self._media.nested(name)
+        if nested is None:
+            return
+
+        title = None
+        if meta := update.field_meta:
+            title = meta.get(nested.progress_key)
+
+        for node in nodes:
+            if node.title != title:
+                continue
+
+            if step := self._steps.get(node.key):
+                await self._view.tool_progressed(step, progress)
+
+            return
+
+        logger.debug(
+            "thread %s: progress of call %s names no node of it (%r): %r",
+            self._thread_id,
+            update.tool_call_id,
+            title,
+            progress,
+        )
+
+    async def _nodes_result(
+        self,
+        update: schema.SessionToolCallUpdate,
+        name: str,
+        nodes: Sequence[DagNode],
+        status: ToolStatus,
+    ) -> None:
+        """Итог каждому подшагу по его записи в списке узлов ответа
+        (NestedCallsReply): запуск у узлов общий, журнал у каждого свой.
+        Подшаг без записи и все подшаги ответа не по этой модели (отказ до
+        старта, чужой ответ) получают общий итог вызова."""
+        reply = self._reply(update)
+        structured: Any = None
+        if reply is not None:
+            structured = reply.structured_content
+
+        entries: dict[str, NestedCallReply] = {}
+        run = ""
+        try:
+            replied = NestedCallsReply.model_validate(structured)
+        except ValidationError as exc:
+            logger.info(
+                "thread %s: the result of call %s of %s lists no nodes, every "
+                "node step gets the result of the call: %s",
+                self._thread_id,
+                update.tool_call_id,
+                name,
+                exc,
+            )
+        else:
+            run = replied.call.run
+            for entry in replied.nodes:
+                entries[entry.key] = entry
+
+        server = ""
+        if owner := self._names.parse(name):
+            server = owner.server
+
+        for node in nodes:
+            step = self._steps.pop(node.key, None)
+            if step is None:
+                continue
+
+            entry = entries.get(node.title)
+            if entry is None:
+                await self._tool_result(step, update, status, name)
+                continue
+
+            journal = None
+            if run:
+                journal = JournalAddress(server=server, run=run, call=entry.call_id)
+
+            await self._finished(step, node.key, journal, entry.result)
+
+        self._called.pop(update.tool_call_id, None)
 
     async def _tool_result(
         self,
         step: Step,
         update: schema.SessionToolCallUpdate,
         status: ToolStatus,
+        name: str,
     ) -> None:
-        """Итог вызова шагу step."""
+        """Итог вызова инструмента name шагу step."""
         call_id = update.tool_call_id
-        name = self._tool_name(update)
-        self._called.pop(call_id, None)
         outcome = self.outcome(update, name)
-        journal = None
         if outcome is not None:
-            journal = outcome.journal
-
-        if journal is None:
-            self._view.drop_journal(step)
-        else:
-            self._journals.remember(self._thread_id, call_id, journal)
-
-        if outcome is not None:
-            await self._view.tool_finished(step, outcome.artifact, call_id)
+            await self._finished(step, call_id, outcome.journal, outcome.artifact)
             return
 
         if status is not ToolStatus.COMPLETED:
+            self._view.drop_journal(step)
             await self._view.tool_failed(step, self._failure_text(update))
             return
 
         text = MarkdownResult(text=self._content_text(update))
-        await self._view.tool_finished(step, text, call_id)
+        await self._finished(step, call_id, None, text)
+
+    async def _finished(
+        self, step: Step, key: str, journal: JournalAddress | None, artifact: Any
+    ) -> None:
+        """Итог шагу step с ключом key: кнопка журнала по адресу journal
+        (None — журнала нет) и показ результата artifact."""
+        if journal is None:
+            self._view.drop_journal(step)
+        else:
+            self._journals.remember(self._thread_id, key, journal)
+
+        await self._view.tool_finished(step, artifact, key)
 
     async def _close_thinking(self) -> None:
         if self._thought_id is None:
