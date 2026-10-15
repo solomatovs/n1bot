@@ -45,7 +45,7 @@ from boba.chainlit.rendering.chat_view import (
 )
 from boba.identity.context import CallContext, CallContexts
 from boba.identity.run import Runs
-from boba.mcp_client.client import DroppedSignals, McpServers, NamedBlocks
+from boba.mcp_client.client import DroppedSignals, McpServers
 from boba.runtime import providers as runtime
 from boba.runtime.di import Container
 from boba.runtime.journal import DirVault, StreamJournal
@@ -1236,7 +1236,6 @@ class TestStreamDownload:
         async def scenario() -> Any:
             servers = McpServers(
                 journal_service.token_servers(REMOTE.SERVER),
-                NamedBlocks(),
                 DroppedSignals(),
                 CallContexts(),
                 DirectCalls(),

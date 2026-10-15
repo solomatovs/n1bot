@@ -209,8 +209,8 @@ class RemoteStorageClient(StorageClient):
 
         if files is None:
             msg = (
-                f"files of {key.render()}: mcp server {target.server!r} is "
-                "unavailable or declares no file storage"
+                f"files of {key.render()}: mcp server {target.server!r} "
+                "declares no file storage"
             )
             raise StorageError(msg)
 

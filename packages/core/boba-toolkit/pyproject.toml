@@ -9,6 +9,7 @@ description = "Основание инструментов: песочница b
 requires-python = ">=3.11,<4"
 dependencies = [
     "boba-cancellation==0.0.26.dev4",
+    "mcp-types>=2.3,<3",
     "pydantic-core>=2.41,<3",
     "pydantic>=2.12,<3",
 ]

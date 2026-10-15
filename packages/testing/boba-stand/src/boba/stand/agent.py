@@ -54,7 +54,7 @@ from boba.toolkit.dag import (
     ToolHints,
     ToolServer,
 )
-from boba.toolkit.mcp_names import McpToolNames
+from boba.toolkit.mcp import McpToolNames
 from boba.toolkit.result import ErrorResult, MarkdownResult
 from boba.transport.http import HttpTransportConfig
 from boba.transport.http.connection import (
