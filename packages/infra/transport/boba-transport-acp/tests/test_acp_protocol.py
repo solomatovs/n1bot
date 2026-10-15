@@ -1,12 +1,6 @@
-"""Провод ACP v2 на настоящем соединении SDK: договорённость о версии,
-mcp/message в обе стороны с отменой, idle с ошибкой и страж формы SDK.
+"""Провод ACP v2 на соединении SDK; кадры пары сверяются со схемой ACP.
 
-Пара агент–клиент связана memory_transport_pair SDK; каждый кадр, который
-прошёл через клиента в тестах пары, сверяется с корневой JSON-схемой ACP и с
-определением своего метода (x-method), параметры и результат — отдельно.
-
-Данные: `acp_schema/schema.unstable.json` и `meta.unstable.json` — схема
-ACP v2 из репозитория спецификации, тег schema-v2.0.0-alpha.8.
+Данные: `acp_schema/` — схема ACP v2, тег schema-v2.0.0-alpha.8.
 """
 
 from __future__ import annotations
@@ -17,17 +11,18 @@ import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 from acp._transport import memory_transport_pair
 from acp.connection import Connection, JsonValue, StreamDirection, StreamEvent
 from acp.exceptions import RequestError
 from acp.experimental.v2 import Agent, AgentSideConnection, Client, schema
-from acp.experimental.v2.interfaces import CreateElicitationResponse
+from acp.experimental.v2._router import MethodRouter
 from acp.experimental.v2.meta import AGENT_METHODS, CLIENT_METHODS
 from jsonschema import Draft202012Validator
 from mcp_types.jsonrpc import ErrorData
+from mcp_types.version import MODERN_PROTOCOL_VERSIONS
 
 from boba.transport.acp.protocol import (
     AcpErrorCode,
@@ -40,6 +35,7 @@ from boba.transport.acp.protocol import (
     McpMessage,
     McpOutcome,
     McpResultOutcome,
+    McpVersion,
     StopReason,
 )
 
@@ -47,12 +43,10 @@ pytestmark = pytest.mark.anyio
 
 
 class StandAgent(Agent):
-    """Минимальный агент v2 стенда: умеет только initialize; его создаёт
-    AgentSide фабрикой, остальное в тестах делает сама AgentSide."""
+    """Агент стенда с одним initialize; создаёт его фабрика AgentSide."""
 
     def __init__(self, side: AgentSide, connection: AgentSideConnection) -> None:
-        self.side = side
-        self.connection = connection
+        return
 
     async def initialize(
         self,
@@ -68,12 +62,8 @@ class StandAgent(Agent):
 
 
 class StandClient(Client):
-    """Минимальный клиент v2 стенда: копит обновления сессии и отвечает на
-    mcp/message агента исходом из очереди replies (или ошибкой ACP из неё).
-
-    Пока ответа в очереди нет, answer ждёт; отмену запроса отмечает в
-    cancelled, чтобы тест видел, что $/cancel_request дошёл.
-    """
+    """Клиент стенда: копит обновления, отвечает на mcp/message из replies и
+    отмечает отмену ответа в cancelled."""
 
     def __init__(self) -> None:
         self.updates: asyncio.Queue[object] = asyncio.Queue()
@@ -86,54 +76,14 @@ class StandClient(Client):
     ) -> None:
         await self.updates.put(update)
 
-    async def request_permission(
-        self,
-        session_id: str,
-        title: str,
-        options: list[schema.PermissionOption],
-        description: str | None = None,
-        subject: object = None,
-        **kwargs: Any,
-    ) -> schema.RequestPermissionResponse:
-        raise RequestError.method_not_found(
-            CLIENT_METHODS["session_request_permission"]
-        )
-
-    async def connect_mcp(
-        self, server_id: str, **kwargs: Any
-    ) -> schema.ConnectMcpResponse:
-        raise RequestError.method_not_found(CLIENT_METHODS["mcp_connect"])
-
-    async def mcp_message(
-        self,
-        connection_id: str,
-        method: str,
-        params: dict[str, Any] | None = None,
-        **kwargs: Any,
-    ) -> Any:
-        raise RequestError.method_not_found(CLIENT_METHODS["mcp_message"])
-
-    async def notify_mcp(
-        self,
-        connection_id: str,
-        method: str,
-        params: dict[str, Any] | None = None,
-        **kwargs: Any,
-    ) -> None:
-        return
-
-    async def disconnect_mcp(
-        self, connection_id: str, **kwargs: Any
-    ) -> schema.DisconnectMcpResponse:
-        raise RequestError.method_not_found(CLIENT_METHODS["mcp_disconnect"])
-
-    async def create_elicitation(
-        self, message: str, mode: str, **kwargs: Any
-    ) -> CreateElicitationResponse:
-        raise RequestError.method_not_found(CLIENT_METHODS["elicitation_create"])
-
-    async def complete_elicitation(self, elicitation_id: str, **kwargs: Any) -> None:
-        return
+    # SDK считает метод протокола неподдержанным
+    request_permission = Client.request_permission
+    connect_mcp = Client.connect_mcp
+    mcp_message = Client.mcp_message
+    notify_mcp = Client.notify_mcp
+    disconnect_mcp = Client.disconnect_mcp
+    create_elicitation = Client.create_elicitation
+    complete_elicitation = Client.complete_elicitation
 
     async def answer(self, message: McpMessage) -> McpOutcome:
         await self.questions.put(message)
@@ -158,7 +108,6 @@ class AcpPair:
     client: ClientConnection
     stand_client: StandClient
     notifications: asyncio.Queue[McpMessage]
-    frames: list[StreamEvent]
 
 
 @pytest.fixture(scope="module")
@@ -183,7 +132,7 @@ async def acp_pair(acp_schema: Draft202012Validator) -> AsyncIterator[AcpPair]:
     )
     await client.initialize(protocol_version=AcpVersion.V2, info=info)
 
-    yield AcpPair(agent, client, stand_client, notifications, frames)
+    yield AcpPair(agent, client, stand_client, notifications)
 
     await client.close()
     await serving
@@ -283,6 +232,13 @@ class TestVersionNegotiation:
 
 
 class TestMcpMessage:
+    CALL: ClassVar[McpMessage] = McpMessage(
+        server_id="boba_general",
+        request_id="mcp-1",
+        method="tools/call",
+        params={"name": "pg_query", "arguments": {"sql": "select 1"}},
+    )
+
     @pytest.mark.parametrize(
         "outcome",
         [
@@ -295,33 +251,21 @@ class TestMcpMessage:
     async def test_request_reaches_client_and_outcome_returns(
         self, acp_pair: AcpPair, outcome: McpOutcome
     ) -> None:
-        call = McpMessage(
-            server_id="boba_general",
-            request_id="mcp-1",
-            method="tools/call",
-            params={"name": "pg_query", "arguments": {"sql": "select 1"}},
-        )
         await acp_pair.stand_client.replies.put(outcome)
 
-        received = await acp_pair.agent.request(call)
+        received = await acp_pair.agent.request(self.CALL)
 
         assert received == outcome
-        assert await acp_pair.stand_client.questions.get() == call
+        assert await acp_pair.stand_client.questions.get() == self.CALL
 
     async def test_outer_error_keeps_its_code(self, acp_pair: AcpPair) -> None:
         refusal = RequestError(
             AcpErrorCode.SERVER_UNAVAILABLE, "No MCP server 'boba_general' is declared"
         )
-        call = McpMessage(
-            server_id="boba_general",
-            request_id="mcp-1",
-            method="tools/call",
-            params={"name": "pg_query", "arguments": {"sql": "select 1"}},
-        )
         await acp_pair.stand_client.replies.put(refusal)
 
         with pytest.raises(RequestError) as caught:
-            await acp_pair.agent.request(call)
+            await acp_pair.agent.request(self.CALL)
 
         assert caught.value.code == AcpErrorCode.SERVER_UNAVAILABLE
 
@@ -341,13 +285,7 @@ class TestMcpMessage:
     async def test_cancelled_request_cancels_client_answer(
         self, acp_pair: AcpPair
     ) -> None:
-        call = McpMessage(
-            server_id="boba_general",
-            request_id="mcp-1",
-            method="tools/call",
-            params={"name": "pg_query", "arguments": {"sql": "select 1"}},
-        )
-        pending = asyncio.create_task(acp_pair.agent.request(call))
+        pending = asyncio.create_task(acp_pair.agent.request(self.CALL))
 
         async with asyncio.timeout(5):
             await acp_pair.stand_client.questions.get()
@@ -381,8 +319,15 @@ class TestIdleError:
 
 
 class TestSdkGuard:
-    def test_sdk_still_has_the_old_mcp_message_shape(self) -> None:
+    async def test_sdk_still_has_the_old_mcp_message_shape(self) -> None:
         version = importlib.metadata.version("agent-client-protocol")
 
         assert version == "1.0.0rc3"
         assert "connection_id" in schema.MessageMcpRequest.model_fields
+        assert McpVersion.V2026_07_28 in MODERN_PROTOCOL_VERSIONS
+
+        router = MethodRouter(StandClient(), Client)
+        with pytest.raises(RequestError) as caught:
+            await router(CLIENT_METHODS["session_request_permission"], {}, False)
+
+        assert caught.value.code == AcpErrorCode.METHOD_NOT_FOUND
