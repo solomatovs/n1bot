@@ -9,34 +9,26 @@ from __future__ import annotations
 import asyncio
 import base64
 import secrets
-import sys
 from collections.abc import AsyncIterator
-from datetime import timedelta
-from pathlib import Path
 from typing import Any, ClassVar
 from uuid import uuid4
 
 import mcp_types as mt
 import pytest
 from acp.exceptions import RequestError
-from chainlit_stand import NoConnectionStore, ServiceProcess, TabSession
+from chainlit_stand import NoConnectionStore, RelayStand, ServiceProcess, TabSession
 from pydantic import SecretStr
 
+from boba.agent.hooks import McpServerInfo
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
-from boba.chainlit.agent.config import ChatMcpConfig
 from boba.chainlit.agent.relay import McpRelay
-from boba.chainlit.agent.server import ChatCallers, HookSealing, ProcessKeys
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
-from boba.connection_broker.user_connections import ArmedConnections
 from boba.connections.manifest import ConnectionTypes
+from boba.connections.sealed import SealedParamSchema, SealFeature
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
-from boba.mcp_client.client import (
-    McpServerConfig,
-    McpServers,
-    McpServersConfig,
-    StdioCommand,
-)
+from boba.identity.errors import RefusalError
+from boba.mcp_client.client import McpServerConfig, McpServers, McpServersConfig
 from boba.stand_core.context import CallStand
 from boba.transport.acp.protocol import (
     AcpErrorCode,
@@ -49,14 +41,6 @@ from boba.transport.acp.protocol import (
 
 pytestmark = pytest.mark.anyio
 
-STANDARD = (
-    Path(__file__).resolve().parents[3]
-    / "services"
-    / "boba-mcp-client"
-    / "tests"
-    / "standard_server.py"
-)
-
 
 @pytest.fixture
 def tab(auth_token: str) -> TabSession:
@@ -68,53 +52,30 @@ def tab(auth_token: str) -> TabSession:
 
 
 @pytest.fixture
-def standard() -> McpServersConfig:
-    """Обычный сервер стенда клиента MCP по stdio под именем standard."""
-    endpoint = StdioCommand(command=sys.executable, args=(str(STANDARD), "stdio"))
-    server = McpServerConfig(
-        endpoint=endpoint, connect_timeout_sec=20.0, call_timeout_sec=5.0
-    )
+def relay_stand(call_stand: CallStand) -> RelayStand:
+    """Ретранслятор стенда без соединений пользователя."""
+    credentials = KerberosCredentialSource(None, NoRefresh())
 
-    return McpServersConfig(servers={"standard": server})
+    return RelayStand(NoConnectionStore(), lambda: credentials, call_stand.contexts)
 
 
 class TestMcpRelay:
     """Ретранслятор над обычным сервером: таблица ошибок, встроенные
-    методы SDK, видимость инструментов и ход вызова."""
+    методы SDK, видимость инструментов, ход вызова и отказ запечатывания
+    серверу, который не принимает соединений."""
 
-    CHAT: ClassVar[ChatMcpConfig] = ChatMcpConfig(
-        enable=False,
-        name="chat",
-        path="/chat/mcp",
-        connect_timeout_sec=5.0,
-        call_timeout_sec=5.0,
-    )
     ENVELOPE: ClassVar[dict[str, Any]] = {
         mt.PROTOCOL_VERSION_META_KEY: McpVersion.V2026_07_28.value,
         mt.CLIENT_CAPABILITIES_META_KEY: {},
     }
 
     @pytest.fixture
-    def keys(self) -> ProcessKeys:
-        return ProcessKeys()
-
-    @pytest.fixture
     async def relay(
-        self, keys: ProcessKeys, standard: McpServersConfig, call_stand: CallStand
+        self, relay_stand: RelayStand, standard: McpServerConfig
     ) -> AsyncIterator[McpRelay]:
-        servers = McpServers(standard)
-        callers = ChatCallers(keys)
-        credentials = KerberosCredentialSource(None, NoRefresh())
-        connections = ArmedConnections(
-            NoConnectionStore(), lambda: credentials, call_stand.contexts
-        )
-        sealing = HookSealing(
-            callers, connections, call_stand.contexts, timedelta(minutes=2)
-        )
+        servers = McpServers(McpServersConfig(servers={"standard": standard}))
         try:
-            yield McpRelay(
-                keys, callers, servers, sealing, self.CHAT, "http://127.0.0.1"
-            )
+            yield relay_stand.relay(servers)
         finally:
             await servers.stop()
 
@@ -142,10 +103,10 @@ class TestMcpRelay:
 
         return outcome, notes
 
-    def _server_id(self, keys: ProcessKeys, tab: TabSession) -> str:
+    def _server_id(self, stand: RelayStand, tab: TabSession) -> str:
         holder = tab.holder(uuid4(), "general")
 
-        return keys.register(holder, ["standard"])[0].server_id
+        return stand.keys.register(holder, ["standard"])[0].server_id
 
     async def test_unknown_server_id_is_an_external_error(
         self, relay: McpRelay
@@ -159,9 +120,9 @@ class TestMcpRelay:
         assert "'ghost'" in str(refused.value)
 
     async def test_request_id_in_work_is_an_external_error(
-        self, relay: McpRelay, keys: ProcessKeys, tab: TabSession
+        self, relay: McpRelay, relay_stand: RelayStand, tab: TabSession
     ) -> None:
-        server_id = self._server_id(keys, tab)
+        server_id = self._server_id(relay_stand, tab)
         slow = self._message(
             server_id,
             "tools/call",
@@ -179,9 +140,9 @@ class TestMcpRelay:
         assert isinstance(outcome, McpResultOutcome), outcome
 
     async def test_envelope_and_version_are_inner_errors(
-        self, relay: McpRelay, keys: ProcessKeys, tab: TabSession
+        self, relay: McpRelay, relay_stand: RelayStand, tab: TabSession
     ) -> None:
-        server_id = self._server_id(keys, tab)
+        server_id = self._server_id(relay_stand, tab)
         bare = McpMessage(
             server_id=server_id, request_id="mcp:bare", method="tools/list", params={}
         )
@@ -200,9 +161,9 @@ class TestMcpRelay:
         assert outdated.error.code == mt.UNSUPPORTED_PROTOCOL_VERSION
 
     async def test_sdk_answers_discover_ping_and_unknown_methods(
-        self, relay: McpRelay, keys: ProcessKeys, tab: TabSession
+        self, relay: McpRelay, relay_stand: RelayStand, tab: TabSession
     ) -> None:
-        server_id = self._server_id(keys, tab)
+        server_id = self._server_id(relay_stand, tab)
 
         discovered, _ = await self._answer(
             relay, self._message(server_id, "server/discover", {})
@@ -222,9 +183,9 @@ class TestMcpRelay:
         assert unknown.error.code == mt.METHOD_NOT_FOUND
 
     async def test_app_only_tool_is_neither_listed_nor_called(
-        self, relay: McpRelay, keys: ProcessKeys, tab: TabSession
+        self, relay: McpRelay, relay_stand: RelayStand, tab: TabSession
     ) -> None:
-        server_id = self._server_id(keys, tab)
+        server_id = self._server_id(relay_stand, tab)
         call = {"name": "panel_refresh", "arguments": {}}
 
         listed, _ = await self._answer(
@@ -245,9 +206,9 @@ class TestMcpRelay:
         assert "'panel_refresh'" in called.error.message
 
     async def test_progress_reaches_the_agent_under_its_token(
-        self, relay: McpRelay, keys: ProcessKeys, tab: TabSession
+        self, relay: McpRelay, relay_stand: RelayStand, tab: TabSession
     ) -> None:
-        server_id = self._server_id(keys, tab)
+        server_id = self._server_id(relay_stand, tab)
         call = {
             "name": "progress",
             "arguments": {"steps": 2},
@@ -268,9 +229,9 @@ class TestMcpRelay:
             assert progress.progress_token == "call_001"
 
     async def test_input_required_and_server_errors_come_back_as_they_are(
-        self, relay: McpRelay, keys: ProcessKeys, tab: TabSession
+        self, relay: McpRelay, relay_stand: RelayStand, tab: TabSession
     ) -> None:
-        server_id = self._server_id(keys, tab)
+        server_id = self._server_id(relay_stand, tab)
         asking = {"name": "ask", "arguments": {"refuse": False}}
         refusing = {"name": "ask", "arguments": {"refuse": True}}
 
@@ -288,9 +249,9 @@ class TestMcpRelay:
         assert refused.error.data == {"reason": "the stand refuses"}
 
     async def test_dead_server_is_an_external_error(
-        self, relay: McpRelay, keys: ProcessKeys, tab: TabSession
+        self, relay: McpRelay, relay_stand: RelayStand, tab: TabSession
     ) -> None:
-        server_id = self._server_id(keys, tab)
+        server_id = self._server_id(relay_stand, tab)
         message = self._message(server_id, "tools/call", {"name": "die"})
 
         with pytest.raises(RequestError) as refused:
@@ -298,6 +259,26 @@ class TestMcpRelay:
 
         assert refused.value.code == AcpErrorCode.BACKEND_FAILED
         assert "'die'" in str(refused.value)
+
+    async def test_sealing_is_refused_to_a_server_without_the_seal_feature(
+        self, relay_stand: RelayStand, tab: TabSession
+    ) -> None:
+        server_id = self._server_id(relay_stand, tab)
+        caller = relay_stand.callers.of_key(server_id)
+        declared = SealedParamSchema().declared("postgres")
+        schema = {
+            "type": "object",
+            "properties": {"connection": {"type": "string", **declared}},
+        }
+        server = McpServerInfo(name="standard", features={})
+
+        with pytest.raises(RefusalError) as refused:
+            await relay_stand.sealing.seal(
+                "mcp__standard__query", {"connection": "orders"}, schema, server, caller
+            )
+
+        assert SealFeature.ID in str(refused.value)
+        assert "'standard'" in str(refused.value)
 
 
 @pytest.mark.integration
@@ -326,21 +307,12 @@ class TestRelaySealing:
         call_stand: CallStand,
         tab: TabSession,
     ) -> None:
-        servers = McpServers(service_process.servers())
-        keys = ProcessKeys()
-        callers = ChatCallers(keys)
         credentials = KerberosCredentialSource(None, NoRefresh())
-        connections = ArmedConnections(
-            lambda: store, lambda: credentials, call_stand.contexts
-        )
-        sealing = HookSealing(
-            callers, connections, call_stand.contexts, timedelta(minutes=2)
-        )
-        relay = McpRelay(
-            keys, callers, servers, sealing, TestMcpRelay.CHAT, "http://127.0.0.1"
-        )
+        stand = RelayStand(lambda: store, lambda: credentials, call_stand.contexts)
+        servers = McpServers(service_process.servers())
+        relay = stand.relay(servers)
         holder = tab.holder(uuid4(), "general")
-        server_id = keys.register(holder, ["boba"])[0].server_id
+        server_id = stand.keys.register(holder, ["boba"])[0].server_id
         profile = PostgresConfig.model_validate(
             {
                 "host": "db.local",
@@ -357,15 +329,19 @@ class TestRelaySealing:
             params={"_meta": self.ENVELOPE},
         )
         try:
+            listed: McpOutcome | None = None
             for _ in range(150):
                 try:
-                    await relay.answer(listing, heard.put)
+                    listed = await relay.answer(listing, heard.put)
                 except RequestError:
                     await asyncio.sleep(0.2)
                     continue
 
                 break
 
+            assert isinstance(listed, McpResultOutcome), (
+                f"the service stand did not list its tools within 30s: {listed}"
+            )
             refused = await relay.answer(
                 McpMessage(
                     server_id=server_id,

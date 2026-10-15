@@ -25,7 +25,7 @@ import asyncio
 import logging
 from abc import abstractmethod
 from collections.abc import Coroutine, Iterator, Sequence
-from contextlib import contextmanager
+from contextlib import AsyncExitStack, contextmanager
 from dataclasses import dataclass, replace
 from typing import Any, ClassVar, Protocol
 
@@ -59,7 +59,7 @@ from boba.identity.locks import LiveLocks, LockKeeper, LockMode, LockPurpose
 from boba.mcp_client.client import McpCaller, McpServers
 from boba.messaging import MessageBus, NoticeLevel, PayloadStore, TurnOutcome
 from boba.toolkit.result import FileElement, PanelOpen, ToolResultBase
-from boba.transport.acp.protocol import IdleErrorUpdate, StopReason
+from boba.transport.acp.protocol import IdleErrorUpdate, StopReason, ToolStatus
 from chainlit.context import ChainlitContext, context_var
 from chainlit.emitter import ChainlitEmitter
 from chainlit.session import WebsocketSession
@@ -167,8 +167,10 @@ class ResultMounts:
     панели канваса и оставить ссылку в переписке (PanelOpen), прикрепить файл
     workspace вложением (FileElement). Исполняет держатель хода по итогу из
     `rawOutput`: элемент пишется в слой данных и уходит вкладкам через шину.
-    Создаётся приёмником потока на тред; итог вызова из `rawOutput` оживляет
-    переводчик приёмника (UpdateView.outcome).
+    Создаётся приёмником потока на тред и видит все уведомления живого хода:
+    имя инструмента агент называет только в первом уведомлении вызова, и
+    его запоминает здесь же, а итог из `rawOutput` оживляет переводчик
+    приёмника (UpdateView.outcome).
     """
 
     def __init__(
@@ -178,6 +180,8 @@ class ResultMounts:
         self._user_key = user_key
         self._surface = surface
         self._view = view
+        self._called: dict[str, str] = {}
+        """Идущий вызов живого хода → имя его инструмента."""
 
     async def mounted(
         self, update: SessionUpdate, turn_key: str, feed: TurnFeed
@@ -186,7 +190,21 @@ class ResultMounts:
         if not isinstance(update, schema.SessionToolCallUpdate):
             return
 
-        outcome = self._view.outcome(update)
+        call_id = update.tool_call_id
+        if update.name:
+            self._called[call_id] = update.name
+
+        if update.status is None:
+            return
+
+        if not ToolStatus(update.status).terminal:
+            return
+
+        name = self._called.pop(call_id, None)
+        if name is None:
+            return
+
+        outcome = self._view.outcome(update, name)
         if outcome is None:
             return
 
@@ -285,11 +303,12 @@ class ResultMounts:
 
 @dataclass
 class LiveTurn:
-    """Идущий ход держателя: его производитель, ключ вопроса и замок области."""
+    """Идущий ход держателя: его производитель, ключ вопроса и замок области
+    (held: выход из стека отпускает замок)."""
 
     key: str
     feed: TurnFeed
-    keeper: LockKeeper
+    held: AsyncExitStack
     cancellation: RunCancellation
 
 
@@ -381,20 +400,15 @@ class AgentFeed(TurnRenderer):
 
         cancellation = RunCancellation()
         keeper = LockKeeper(parts.locks, lock, cancellation, parts.heartbeat_sec)
-        await keeper.__aenter__()
-        async with self._ordered:
-            try:
-                key = await prompt
-                rebound = await self._rebind(question, key)
-                feed = TurnFeed(parts.bus, parts.payloads, self._scope, key, lock.token)
-                self._turn = LiveTurn(
-                    key=key, feed=feed, keeper=keeper, cancellation=cancellation
-                )
-                await feed.started(key, rebound.body(self._identity.login))
-            except Exception:
-                self._turn = None
-                await keeper.__aexit__(None, None, None)
-                raise
+        async with self._ordered, AsyncExitStack() as stack:
+            await stack.enter_async_context(keeper)
+            key = await prompt
+            rebound = await self._rebind(question, key)
+            feed = TurnFeed(parts.bus, parts.payloads, self._scope, key, lock.token)
+            await feed.started(key, rebound.body(self._identity.login))
+            self._turn = LiveTurn(
+                key=key, feed=feed, held=stack.pop_all(), cancellation=cancellation
+            )
 
         logger.info(
             "thread %s: turn %s of session %s is published to the bus",
@@ -578,7 +592,7 @@ class AgentFeed(TurnRenderer):
 
     async def _release(self, turn: LiveTurn) -> None:
         self._turn = None
-        await turn.keeper.__aexit__(None, None, None)
+        await turn.held.aclose()
 
     @staticmethod
     def _allowing(

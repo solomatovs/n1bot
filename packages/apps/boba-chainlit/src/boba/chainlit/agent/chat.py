@@ -348,16 +348,17 @@ class AskedQuestions(SessionUpdates):
     def __init__(self, inner: SessionUpdates) -> None:
         self._inner = inner
         self.ids: list[str] = []
-        self._waiting: str | None = None
-        self._ending: asyncio.Future[schema.IdleSessionStateUpdate] | None = None
+        self._ending: dict[str, asyncio.Future[schema.IdleSessionStateUpdate]] = {}
+        """Ожидание конца хода по сессии; ждут одну сессию, idle снимает его."""
 
     def ending(self, session_id: str) -> asyncio.Future[schema.IdleSessionStateUpdate]:
         """Ожидание конца хода сессии session_id: его решает idle агента.
-        Ставится до `session/prompt`, чтобы idle не прошёл мимо."""
+        Ставится до `session/prompt`, чтобы idle не прошёл мимо; заменяет
+        прежнее ожидание."""
         ending: asyncio.Future[schema.IdleSessionStateUpdate]
         ending = asyncio.get_running_loop().create_future()
-        self._waiting = session_id
-        self._ending = ending
+        self._ending.clear()
+        self._ending[session_id] = ending
 
         return ending
 
@@ -367,9 +368,8 @@ class AskedQuestions(SessionUpdates):
                 self.ids.append(update.message_id)
 
         if isinstance(update, schema.IdleSessionStateUpdate):
-            ended = self._ending
-            waited = self._waiting == session_id
-            if ended is not None and waited and not ended.done():
+            ended = self._ending.pop(session_id, None)
+            if ended is not None:
                 ended.set_result(update)
 
         await self._inner.update(session_id, update)

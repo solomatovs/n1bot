@@ -34,7 +34,6 @@ from boba.chainlit.auth.kerberos import KerberosAuth
 from boba.chainlit.data.data_layer import PostgresDataLayer
 from boba.config import bind
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
-from boba.connection_broker.user_connections import ArmedConnections
 from boba.connections.manifest import ConnectionTypes
 from boba.connections.stored import ConnectionBase, GrantTarget
 from boba.db.clickhouse.connection import ClickHouseConfig
@@ -192,10 +191,9 @@ async def tools(
         tickets,
         BusRefreshSignal(lambda: MemoryMessageBus("test"), call_stand.contexts),
     )
-    connections = ArmedConnections(
-        lambda: store, lambda: credentials, call_stand.contexts
+    opened = ServiceTools(
+        tool_service, lambda: store, lambda: credentials, call_stand.contexts
     )
-    opened = ServiceTools(tool_service, connections, call_stand.contexts)
     try:
         yield opened
     finally:
