@@ -11,6 +11,7 @@ import asyncio
 import json
 import os
 import stat
+import sys
 from pathlib import Path
 from typing import Any, ClassVar
 from uuid import uuid4
@@ -35,11 +36,12 @@ from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.chainlit.agent.chat import (
     AgentLauncher,
     AgentSessionMeta,
+    Question,
     SessionOptions,
     ThreadAgent,
     ThreadIdentity,
 )
-from boba.chainlit.agent.client import AgentClient, AgentProcess
+from boba.chainlit.agent.client import AcpClientError, AgentClient, AgentProcess
 from boba.chainlit.agent.config import (
     PostgresAgentHistory,
 )
@@ -521,6 +523,80 @@ class TestRetiredServers:
 
         assert restarted.value.code == AcpErrorCode.UNKNOWN_SERVER
         assert closed.value.code == AcpErrorCode.UNKNOWN_SERVER
+
+
+class TestForkCut:
+    """Правка вопроса ведётся веткой session/fork, только если агент объявил
+    срез ветки по messageId вопроса; чужому агенту без объявления правка
+    отказывает понятным сообщением, а не ведёт ветку наугад."""
+
+    FOREIGN: ClassVar[Path] = Path(__file__).with_name("foreign_agent.py")
+
+    async def test_edit_is_refused_by_an_agent_without_the_cut(  # noqa: PLR0913 — фикстуры теста
+        self,
+        tmp_path: Path,
+        stand: Stand,
+        table: AgentSettingsTable,
+        specs: ProfileModelSpecs,
+        test_postgres: PostgresConfig,
+        auth_token: str,
+    ) -> None:
+        credentials = KerberosCredentialSource(None, NoRefresh())
+        relays = RelayStand(NoConnectionStore(), lambda: credentials, CallContexts())
+        servers = McpServers(McpServersConfig(servers={}))
+        relay = relays.relay(servers)
+        agent_stand = AgentStand(
+            tmp_path / "agents", AgentHistoryStand(stand).history()
+        )
+        config = agent_stand.config()
+        foreign = config.process.model_copy(
+            update={"command": sys.executable, "args": [str(self.FOREIGN)]}
+        )
+        launcher = AgentLauncher(
+            config.model_copy(update={"process": foreign}),
+            AgentSettingsLayers(table, specs),
+            relays.keys,
+            relay,
+            "0.0",
+        )
+        tab = TabSession()
+        tab.password_sign_in(frozenset({"dev"}))
+        identity = ThreadIdentity(
+            thread_id=str(uuid4()),
+            user_id=uuid4(),
+            login=TabSession.LOGIN,
+            roles=frozenset({"dev"}),
+            session=tab.live,
+            profile=SelectedProfile(
+                name=SignInStand.PROFILE, config=SignInStand.profile()
+            ),
+        )
+        threads = ThreadsTable(test_postgres, SCHEMA)
+        await threads.setup()
+        updates = RecordingUpdates()
+        agent = ThreadAgent(
+            identity,
+            launcher,
+            AgentSessionMeta(threads),
+            updates,
+            SessionOptions(),
+            config.public_url,
+        )
+        try:
+            await agent.start()
+            assert not agent.process.forks_by_message()
+
+            await agent.ask(Question(key="draft", text="first"))
+            assert updates.asked, updates.updates
+
+            with pytest.raises(AcpClientError) as refused:
+                await agent.ask(Question(key=updates.asked[0], text="edited"))
+        finally:
+            await agent.close()
+            await servers.stop()
+
+        assert "cannot branch the conversation" in str(refused.value)
+        assert "boba/upToMessageId" in str(refused.value)
 
 
 def _is_zombie(pid: int) -> bool:

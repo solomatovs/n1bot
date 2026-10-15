@@ -1101,8 +1101,7 @@ class McpToolServer:
 
     async def open(self) -> None:
         """Ошибки:
-        McpClientError — сервер недоступен, не отдал список инструментов либо
-            настройки объявленного им расширения не проходят модель.
+        McpClientError — сервер недоступен либо не отдал список инструментов.
         """
         try:
             session = await self._connection.open()
@@ -1144,11 +1143,8 @@ class McpToolServer:
 
     def _feature(self, model: type[FeatureModel]) -> FeatureModel | None:
         """Настройки расширения model.ID моделью; None — сервер его не
-        объявил.
-
-        Ошибки:
-        McpClientError — настройки расширения не проходят его модель.
-        """
+        объявил либо объявил с настройками не по модели: такой сервер
+        работает как сервер без расширения, причина — в логе."""
         settings = self._features.get(model.ID)
         if settings is None:
             return None
@@ -1156,12 +1152,17 @@ class McpToolServer:
         try:
             return model.model_validate(settings)
         except ValidationError as exc:
-            msg = (
-                f"mcp server {self._name!r} ({self._config.endpoint.label()}): "
-                f"extension {model.ID} expects the settings of "
-                f"{model.__name__}, got {dict(settings)!r}: {exc}"
+            logger.warning(
+                "mcp server %s (%s): extension %s expects the settings of %s, "
+                "got %r: %s; the extension is not declared for this server",
+                self._name,
+                self._config.endpoint.label(),
+                model.ID,
+                model.__name__,
+                dict(settings),
+                exc,
             )
-            raise McpClientError(msg) from exc
+            return None
 
     def files(self) -> McpFiles | None:
         """Файлы workspace на сервере; None — сервер их не объявил."""

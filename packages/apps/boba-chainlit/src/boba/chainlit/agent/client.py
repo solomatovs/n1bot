@@ -251,6 +251,8 @@ class AgentProcess:
         self._stack = AsyncExitStack()
         self._process: Process | None = None
         self._connection: ClientConnection | None = None
+        self._forks_by_message = False
+        """Агент объявил срез ветки session/fork по messageId вопроса."""
 
     @property
     def workdir(self) -> AgentWorkdir:
@@ -337,6 +339,8 @@ class AgentProcess:
         mcp = None
         if session is not None:
             mcp = session.mcp
+
+        self._forks_by_message = self._cuts_forks(session)
 
         acp = None
         if mcp is not None:
@@ -436,6 +440,29 @@ class AgentProcess:
         await self._request(
             "session/delete", connection.delete_session(session_id=session_id)
         )
+
+    @staticmethod
+    def _cuts_forks(session: schema.SessionCapabilities | None) -> bool:
+        """Объявил ли агент в `capabilities.session.fork._meta` срез ветки
+        session/fork по messageId вопроса."""
+        fork = None
+        if session is not None:
+            fork = session.fork
+
+        cut = None
+        if fork is not None:
+            cut = fork.field_meta
+
+        declared = None
+        if cut is not None:
+            declared = cut.get(MetaKey.UP_TO_MESSAGE_ID.value)
+
+        return declared is True
+
+    def forks_by_message(self) -> bool:
+        """Агент объявил в `capabilities.session.fork._meta`, что режет ветку
+        session/fork по messageId вопроса: правку вопроса можно вести веткой."""
+        return self._forks_by_message
 
     async def fork(
         self, session_id: str, up_to_message_id: str

@@ -1,7 +1,9 @@
 """Обычный MCP-сервер на официальном SDK: про boba он ничего не знает.
 
 Запускается субпроцессом из тестов клиента: `python standard_server.py stdio`
-либо `python standard_server.py streamable-http <port>`. Кроме четырёх
+либо `python standard_server.py streamable-http <port>`; транспорт
+`stdio-extended` — тот же сервер, объявляющий расширения с настройками не
+по моделям клиента (DeclaredExtension). Кроме четырёх
 обычных инструментов держит отказы стенда: задержку, большой результат,
 обрыв посреди вызова, смену списка инструментов с уведомлением и отчёты о
 ходе вызова, — ответ из блоков разных видов и адресатов, просьбу о вводе
@@ -12,8 +14,9 @@
 import asyncio
 import os
 import sys
-from typing import ClassVar
+from typing import Any, ClassVar
 
+from mcp.server.extension import Extension
 from mcp.server.mcpserver import Context, Image, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.shared.exceptions import MCPError
@@ -30,6 +33,17 @@ from mcp.types import (
 )
 
 
+class DeclaredExtension(Extension):
+    """Расширение, которое сервер объявляет с заданными настройками."""
+
+    def __init__(self, identifier: str, settings: dict[str, Any]) -> None:
+        self.identifier = identifier
+        self._settings = settings
+
+    def settings(self) -> dict[str, Any]:
+        return dict(self._settings)
+
+
 class StandardServer:
     """Сервер с инструментами: число, текст, сбой, картинка и отказы стенда."""
 
@@ -38,9 +52,19 @@ class StandardServer:
     LARGE_LINE: ClassVar[str] = "0123456789"
     ASKED: ClassVar[str] = "asked once"
     REFUSAL: ClassVar[dict[str, str]] = {"reason": "the stand refuses"}
+    EXTENSIONS: ClassVar[tuple[DeclaredExtension, ...]] = (
+        DeclaredExtension(
+            "com.boba/journal", {"read": "add", "path": "/journal", "since": 2}
+        ),
+        DeclaredExtension("com.boba/nested-calls", {"tool": "workflow"}),
+    )
 
-    def __init__(self, port: int) -> None:
-        self._mcp = MCPServer("standard")
+    def __init__(self, port: int, extended: bool) -> None:
+        extensions: tuple[DeclaredExtension, ...] = ()
+        if extended:
+            extensions = self.EXTENSIONS
+
+        self._mcp = MCPServer("standard", extensions=extensions)
         self._port = port
         self._extra_on = False
         self._mcp.tool(annotations=ToolAnnotations(read_only_hint=True))(self.add)
@@ -153,7 +177,7 @@ class StandardServer:
         return "panel refreshed"
 
     def run(self, transport: str) -> None:
-        if transport == "stdio":
+        if transport.startswith("stdio"):
             self._mcp.run("stdio")
             return
 
@@ -165,4 +189,4 @@ if __name__ == "__main__":
     if len(sys.argv) > 2:
         port = int(sys.argv[2])
 
-    StandardServer(port).run(sys.argv[1])
+    StandardServer(port, sys.argv[1] == "stdio-extended").run(sys.argv[1])

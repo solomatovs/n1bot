@@ -815,10 +815,11 @@ class ServerFeature(BaseModel):
     Наследники — JournalFeature, FilesFeature (boba.toolkit.wire) и
     NestedCallsFeature: ID называет расширение, поля — его настройки. Сервер
     кладёт в объявление settings(), клиент разбирает его моделью наследника
-    один раз при подключении.
+    один раз при подключении; поля, которых модель не знает (настройки
+    более новой редакции сервера), пропускаются.
     """
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="ignore")
 
     ID: ClassVar[str]
 
