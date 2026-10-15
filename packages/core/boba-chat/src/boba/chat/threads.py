@@ -264,9 +264,6 @@ class ElementStore(Protocol):
     @abstractmethod
     async def delete_of_thread(self, thread_id: UUID) -> None: ...
 
-    @abstractmethod
-    async def delete_of_step(self, step_id: UUID) -> None: ...
-
 
 class FeedbackStore(Protocol):
     """Строки feedbacks: upsert, удаление, выборка и очистка треда."""
@@ -283,9 +280,6 @@ class FeedbackStore(Protocol):
 
     @abstractmethod
     async def delete_of_thread(self, thread_id: UUID) -> None: ...
-
-    @abstractmethod
-    async def delete_of_step(self, step_id: UUID) -> None: ...
 
 
 def data_boundary(

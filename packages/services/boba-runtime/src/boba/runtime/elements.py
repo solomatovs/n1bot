@@ -233,18 +233,6 @@ class ElementsTable(PgTable, ElementStore):
 
         await self._execute(query, "delete_thread")
 
-    async def delete_of_step(self, step_id: UUID) -> None:
-        query = (
-            self._query()
-            .add(
-                "delete from {schema}.elements where for_id = %(for_id)s",
-                for_id=step_id,
-            )
-            .build()
-        )
-
-        await self._execute(query, "delete_step")
-
 
 class FeedbacksTable(PgTable, FeedbackStore):
     """feedbacks: оценка шага пользователем."""
@@ -373,18 +361,6 @@ class FeedbacksTable(PgTable, FeedbackStore):
         )
 
         await self._execute(query, "delete_thread")
-
-    async def delete_of_step(self, step_id: UUID) -> None:
-        query = (
-            self._query()
-            .add(
-                "delete from {schema}.feedbacks where for_id = %(for_id)s",
-                for_id=step_id,
-            )
-            .build()
-        )
-
-        await self._execute(query, "delete_step")
 
 
 class ChatTables:

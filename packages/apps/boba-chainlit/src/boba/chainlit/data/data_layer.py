@@ -557,12 +557,9 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership, FeedbackRows):
     async def update_step(self, step_dict: StepDict) -> None:
         pass
 
-    @queue_until_user_message()
     @data_boundary
     async def delete_step(self, step_id: str) -> None:
-        step = UUID(step_id)
-        await self._feedbacks.delete_of_step(step)
-        await self._elements.delete_of_step(step)
+        pass
 
     @data_boundary
     async def get_favorite_steps(self, user_id: str) -> list[StepDict]:
