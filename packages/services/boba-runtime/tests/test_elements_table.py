@@ -1,4 +1,4 @@
-"""Таблицы elements и feedbacks сервиса: DDL, upsert, выборка треда, очистка шага."""
+"""Таблицы elements и feedbacks сервиса: DDL, upsert, выборка и очистка треда."""
 
 from __future__ import annotations
 
@@ -60,7 +60,8 @@ async def test_elements_round_trip(tables: ChatTables) -> None:
     listed = await tables.elements.list_of_thread(thread_id)
     assert [e.id for e in listed] == [element.id]
 
-    await tables.elements.delete_of_step(step_id)
+    deleted = await tables.elements.delete(element.id)
+    assert deleted == found
     assert await tables.elements.find(element.id) is None
     assert await tables.elements.delete(element.id) is None
 

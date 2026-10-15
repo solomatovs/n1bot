@@ -186,6 +186,30 @@ async def test_steps_are_not_persisted(seeded: Seed):
         raise AssertionError("await layer.get_favorite_steps(seeded.user.id) == []")
 
 
+async def test_deleting_a_step_keeps_its_feedback_and_elements(
+    chat_session: ChatSessionStand, seeded: Seed
+):
+    """Снятие шага в интерфейсе (правка вопроса, Message.remove) данных беседы
+    не трогает: оценки и элементы ходов удаляются только вместе с тредом."""
+    layer = seeded.layer
+    chat_session.use(user_id=seeded.user.id)
+    await layer.upsert_feedback(
+        FeedbackPayload(forId=seeded.answer_step_id, value=1, threadId=seeded.thread_id)
+    )
+    element = Text(
+        thread_id=seeded.thread_id,
+        for_id=seeded.answer_step_id,
+        name="kept.txt",
+        content="kept",
+    )
+    await layer.create_element(element)
+
+    await layer.delete_step(seeded.answer_step_id)
+
+    assert seeded.answer_step_id in await layer.feedbacks_of(seeded.thread_id)
+    assert await layer.get_element(seeded.thread_id, element.id) is not None
+
+
 async def test_upsert_and_delete_feedback(seeded: Seed):
     layer = seeded.layer
     feedback = FeedbackPayload(
