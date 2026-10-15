@@ -11,17 +11,15 @@ from collections.abc import AsyncIterator, Iterator, Sequence
 from pathlib import Path
 from typing import ClassVar
 
+import mcp.types as mt
 import pytest
-from pydantic import SecretStr, TypeAdapter
+from pydantic import SecretStr
 
-from boba.identity.context import CallContexts
 from boba.mcp_client.client import (
     BearerAuth,
-    DroppedSignals,
     HttpEndpoint,
     HttpLocation,
     LocalAuth,
-    McpAuth,
     McpAuthEntry,
     McpCaller,
     McpClientError,
@@ -31,8 +29,7 @@ from boba.mcp_client.client import (
     ProxyAuth,
 )
 from boba.stand.service_signin import FakeServiceProcess
-from boba.toolkit.dag import DagNode
-from boba.toolrun.hosted import DirectCalls
+from boba.toolkit.mcp import McpResults
 
 pytestmark = pytest.mark.anyio
 
@@ -69,13 +66,14 @@ class AuthStand(FakeServiceProcess):
             endpoint=endpoint, connect_timeout_sec=20.0, call_timeout_sec=60.0
         )
 
-        return McpToolServer(
-            "boba",
-            config,
-            DroppedSignals(),
-            CallContexts(),
-            DirectCalls(),
-        )
+        return McpToolServer("boba", config)
+
+    async def whoami(self, server: McpToolServer) -> str:
+        """Текст для модели из ответа fake_whoami: логин, роли и токен."""
+        params = mt.CallToolRequestParams(name="fake_whoami", arguments={})
+        reply = await server.call(params, None, None)
+
+        return McpResults().result(params.name, "call-whoami", reply).llm_view()
 
 
 class RequestLog(logging.Handler):
@@ -146,12 +144,6 @@ def brief(tmp_path: Path) -> Iterator[AuthStand]:
         started.stop()
 
 
-def _whoami() -> DagNode:
-    return DagNode.model_validate(
-        {"key": "call-whoami", "tool": "mcp__boba__fake_whoami", "args": {}}
-    )
-
-
 @pytest.fixture
 async def opened() -> AsyncIterator[list[McpToolServer]]:
     """Порты, открытые тестом: закрываются после него."""
@@ -171,9 +163,9 @@ class TestLocalAuth:
         opened.append(server)
 
         await server.open()
-        message = await server.call(_whoami())
+        text = await stand.whoami(server)
 
-        assert str(message.content).startswith("carol|dev|"), message
+        assert text.startswith("carol|dev|"), text
         assert requests.count("GET", "/authorize") == 1, requests.lines
         assert requests.count("POST", "/login") == 1, requests.lines
         assert requests.count("POST", "/register") == 1, requests.lines
@@ -215,14 +207,14 @@ class TestLocalAuth:
         server = brief.server(brief.local(AuthStand.LOGIN, AuthStand.PASSWORD))
         opened.append(server)
         await server.open()
-        first = await server.call(_whoami())
+        first = await brief.whoami(server)
         issued = requests.count("POST", "/token")
 
         await asyncio.sleep(brief.token_ttl_sec + 1.5)
-        second = await server.call(_whoami())
+        second = await brief.whoami(server)
 
-        assert str(first.content).startswith("carol|dev|"), first
-        assert str(second.content).startswith("carol|dev|"), second
+        assert first.startswith("carol|dev|"), first
+        assert second.startswith("carol|dev|"), second
         assert requests.count("POST", "/token") > issued, requests.lines
         assert requests.count("POST", "/login") == 1, requests.lines
 
@@ -235,9 +227,9 @@ class TestProxyAuth:
         opened.append(server)
 
         await server.open()
-        message = await server.call(_whoami())
+        text = await stand.whoami(server)
 
-        assert str(message.content).startswith("ivanov|dev|"), message
+        assert text.startswith("ivanov|dev|"), text
 
     async def test_entry_takes_the_user_of_the_host(
         self, stand: AuthStand, opened: list[McpToolServer]
@@ -248,9 +240,9 @@ class TestProxyAuth:
         opened.append(server)
 
         await server.open()
-        message = await server.call(_whoami())
+        text = await stand.whoami(server)
 
-        assert str(message.content).startswith("petrov|ADM,dev|"), message
+        assert text.startswith("petrov|ADM,dev|"), text
 
     async def test_entry_without_a_login_is_a_client_error(
         self, stand: AuthStand, opened: list[McpToolServer]
@@ -269,23 +261,20 @@ class TestProxyAuth:
         server = brief.server(brief.proxy("ivanov", ["dev"]))
         opened.append(server)
         await server.open()
-        first = await server.call(_whoami())
+        first = await brief.whoami(server)
         issued = requests.count("POST", "/token")
 
         await asyncio.sleep(brief.token_ttl_sec + 1.5)
-        second = await server.call(_whoami())
+        second = await brief.whoami(server)
 
-        assert str(first.content).startswith("ivanov|dev|"), first
-        assert str(second.content).startswith("ivanov|dev|"), second
+        assert first.startswith("ivanov|dev|"), first
+        assert second.startswith("ivanov|dev|"), second
         assert requests.count("POST", "/token") > issued, requests.lines
         assert requests.count("POST", "/login") == 0, requests.lines
 
 
 class TestAuthEntries:
-    """Запись способа входа для файла настроек: ключи файла, открытые
-    секреты и обратный разбор в тот же тип."""
-
-    ENTRIES: ClassVar[TypeAdapter[McpAuth]] = TypeAdapter(McpAuth)
+    """Способ входа для пользователя клиента и секреты в обычной выгрузке."""
 
     def _entries(self) -> list[McpAuthEntry]:
         issuer = HttpLocation(scheme="http", host="127.0.0.1", port=8080, path="/")
@@ -304,24 +293,6 @@ class TestAuthEntries:
             ),
         ]
 
-    async def test_revealed_entry_reads_back_as_the_same_entry(self) -> None:
-        for entry in self._entries():
-            document = entry.revealed()
-
-            assert self.ENTRIES.validate_python(document) == entry, document
-
-    async def test_proxy_entry_is_written_with_the_keys_of_the_settings_file(
-        self,
-    ) -> None:
-        proxy = self._entries()[3]
-
-        document = proxy.revealed()
-
-        assert document["clientId"] == "chat", document
-        assert document["clientSecret"] == "cs", document
-        assert document["secret"] == "ps", document
-        assert sorted(proxy.secret_keys()) == ["clientSecret", "secret"]
-
     async def test_shared_entries_stay_themselves_for_any_user(self) -> None:
         caller = McpCaller(login="ivanov", roles=frozenset({"dev"}))
         for entry in self._entries()[:3]:
@@ -331,4 +302,3 @@ class TestAuthEntries:
         local = self._entries()[2]
 
         assert "pw" not in str(local.model_dump(mode="json")), local
-        assert local.secret_keys() == ["password"]

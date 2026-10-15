@@ -433,10 +433,7 @@ class PerCallStreams(RemoteStreams):
     одновременно, и общий клиент один из них закрыл бы под чтением другого.
     """
 
-    def __init__(
-        self, journals: RemoteJournals, contexts: CallContexts, caller: McpCaller
-    ) -> None:
-        self._contexts = contexts
+    def __init__(self, journals: RemoteJournals, caller: McpCaller) -> None:
         self._config = McpServersConfig(servers={})
         super().__init__(journals, self._client(), caller)
 
@@ -445,12 +442,7 @@ class PerCallStreams(RemoteStreams):
         self._config = config
 
     def _client(self) -> McpServers:
-        return McpServers(
-            self._config,
-            DroppedSignals(),
-            self._contexts,
-            DirectCalls(),
-        )
+        return McpServers(self._config)
 
     async def slice_at(
         self, thread_id: str, call_id: str, channel: JournalChannel, offset: int
@@ -484,10 +476,9 @@ class RemoteStand:
     SERVER: ClassVar[str] = "boba"
 
     def __init__(self) -> None:
-        contexts = CallContexts()
         self.journals = RemoteJournals()
         caller = McpCaller(login=StandIdentity.LOGIN, roles=frozenset())
-        self.streams = PerCallStreams(self.journals, contexts, caller)
+        self.streams = PerCallStreams(self.journals, caller)
 
     def serve(self, service: ServiceProcess) -> None:
         self.streams.serve(service.token_servers(self.SERVER))
@@ -505,9 +496,7 @@ class RemoteStand:
         """Сброс между тестами: запомненных адресов нет."""
         self.journals = RemoteJournals()
         self.streams = PerCallStreams(
-            self.journals,
-            CallContexts(),
-            McpCaller(login=StandIdentity.LOGIN, roles=frozenset()),
+            self.journals, McpCaller(login=StandIdentity.LOGIN, roles=frozenset())
         )
 
 

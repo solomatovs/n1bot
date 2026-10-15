@@ -451,12 +451,11 @@ class JournalAddress(BaseModel):
 
 
 class NodeReports:
-    """Подпись отчёта о ходе работы узлом связки и её разбор.
+    """Подпись отчёта о ходе работы узлом связки.
 
     Связка идёт одним запросом, а уведомление прогресса несёт только число
     и текст: чей это отчёт, говорит начало текста — ключ узла, который ему
-    дал автор связки. Сервер зовёт labeled(), клиент — split(): по ключу он
-    отдаёт отчёт шагу своего вызова. Обе стороны держат формат здесь.
+    дал автор связки. Сервер подписывает им отчёты узлов (labeled).
     """
 
     SEPARATOR: ClassVar[str] = ": "
@@ -464,14 +463,6 @@ class NodeReports:
     def labeled(self, key: str, text: str) -> str:
         """Текст отчёта узла key."""
         return f"{key}{self.SEPARATOR}{text}"
-
-    def split(self, text: str) -> tuple[str, str] | None:
-        """Ключ узла и его текст; None — отчёт узлом не подписан."""
-        key, separator, rest = text.partition(self.SEPARATOR)
-        if not separator:
-            return None
-
-        return key, rest
 
 
 class NodeOutcome(BaseModel):
@@ -643,8 +634,7 @@ class CallDag:
     workflow с номером узла. Имя, данное узлу моделью, едет в title — им
     узел называется в текстах отказов. Создаётся исполнителем порта
     (LocalDagService) и клиентами, которым нужны узлы связки до отправки:
-    клиент MCP раскладывает связку на вызовы узлов, запечатывание меняет
-    аргументы узлов.
+    запечатывание меняет аргументы узлов.
     """
 
     WORKFLOW: ClassVar[str] = "workflow"
@@ -690,17 +680,6 @@ class CallDag:
         StreamPlanError — вызов workflow не проходит форму описания DAG.
         """
         return list(self._called(call.key, self.described(call)))
-
-    def with_nodes(self, call: DagNode, nodes: Sequence[DagNode]) -> DagNode:
-        """Тот же вызов workflow с узлами nodes на месте описанных."""
-        described: list[JsonValue] = []
-        for node in nodes:
-            described.append(node.model_dump(mode="json", exclude_defaults=True))
-
-        args = dict(call.args)
-        args[self.NODES] = described
-
-        return call.model_copy(update={"args": args})
 
     def title_of(self, call: DagNode, node_id: str) -> str | None:
         """Имя, которое автор связки дал узлу с идентификатором вызова

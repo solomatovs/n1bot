@@ -575,9 +575,9 @@ class AgentFeeds(TurnRenderers):
         InternalServiceError — у текущей сессии chainlit нет сокета.
         """
         caller = McpCaller(login=identity.login, roles=identity.roles)
-        ports = await self._servers.for_session(caller, identity.profile.config.mcp)
-        for port in ports:
-            self._media.shown(port.tools())
+        for name in identity.profile.config.mcp:
+            port = await self._servers.port(name, caller)
+            self._media.shown(name, port.tools())
 
         self._journals.mark_streamable(self._servers.journaled())
 

@@ -43,9 +43,9 @@ from boba.chainlit.rendering.chat_view import (
     RecordingSink,
     StepRole,
 )
-from boba.identity.context import CallContext, CallContexts
+from boba.identity.context import CallContext
 from boba.identity.run import Runs
-from boba.mcp_client.client import DroppedSignals, McpServers
+from boba.mcp_client.client import McpServers
 from boba.runtime import providers as runtime
 from boba.runtime.di import Container
 from boba.runtime.journal import DirVault, StreamJournal
@@ -57,7 +57,7 @@ from boba.toolkit.dag import DagNode
 from boba.toolkit.facade import PayloadTool, tool
 from boba.toolkit.result import MarkdownResult
 from boba.toolrun.call_id import CallFields
-from boba.toolrun.hosted import DirectCalls, HostedTool, ToolHosting
+from boba.toolrun.hosted import HostedTool, ToolHosting
 from boba.toolrun.run_log import ToolRunLogger
 from boba.toolrun.streams import CallJournals, JournalWatchSource, ToolStream
 
@@ -1234,12 +1234,7 @@ class TestStreamDownload:
         from httpx import ASGITransport, AsyncClient
 
         async def scenario() -> Any:
-            servers = McpServers(
-                journal_service.token_servers(REMOTE.SERVER),
-                DroppedSignals(),
-                CallContexts(),
-                DirectCalls(),
-            )
+            servers = McpServers(journal_service.token_servers(REMOTE.SERVER))
             transport = ASGITransport(app=self._app(servers))
             try:
                 async with AsyncClient(

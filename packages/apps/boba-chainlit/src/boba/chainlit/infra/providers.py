@@ -64,7 +64,7 @@ from boba.identity.context import CallContexts
 from boba.identity.locks import LiveLocks
 from boba.identity.run import Runs
 from boba.identity.session import SessionSource
-from boba.mcp_client.client import DroppedSignals, McpServers
+from boba.mcp_client.client import McpServers
 from boba.messaging import MessageBus, PayloadStore
 from boba.runtime import providers as runtime
 from boba.runtime.config import RuntimeConfig
@@ -74,7 +74,6 @@ from boba.runtime.http import RequestTokens
 from boba.runtime.storage import StorageClient
 from boba.runtime.threads import ThreadsTable
 from boba.runtime.users import UsersTable
-from boba.toolrun.hosted import DirectCalls
 from boba.toolrun.registry import ToolRegistry
 
 
@@ -207,13 +206,11 @@ async def chainlit_data_layer(  # noqa: PLR0913 — слой данных соб
 
 async def mcp_servers(
     c: Annotated[AppConfig, Depends(get_app_config)],
-    contexts: Annotated[CallContexts, Depends(runtime.call_contexts)],
 ) -> AsyncIterator[McpServers]:
     """MCP-серверы процесса: подключаются при первом обращении, закрываются
-    на остановке. Инструменты через них зовёт агент, а не чат: чату нужны
-    файлы серверов, журналы вызовов и карточки инструментов, поэтому отчёты
-    о ходе вызовов приёмника не имеют, вызовы идут напрямую."""
-    servers = McpServers(c.mcp, DroppedSignals(), contexts, DirectCalls())
+    на остановке. Через них идут вызовы агента (ретранслятор), файлы
+    серверов, журналы вызовов и инструменты для ленты."""
+    servers = McpServers(c.mcp)
     try:
         yield servers
     finally:
