@@ -248,26 +248,6 @@ class TestRefusals:
             raise AssertionError(f"отказ называет доступные: {refusal.message}")
 
 
-class TestExecutorRule:
-    def test_sealed_values_are_not_shown_back(self) -> None:
-        stand = _stand()
-
-        shown = stand.params.shown(
-            "probe_query", {"connection": "eyJ.a.b.c.d", "sql": "x"}
-        )
-
-        if "eyJ" in str(shown["connection"]):
-            raise AssertionError(f"запечатанное значение скрыто: {shown}")
-        if shown["sql"] != "x":
-            raise AssertionError(f"остальные аргументы как есть: {shown}")
-
-    def test_tool_without_connections_is_left_alone(self) -> None:
-        args = {"connection": "x"}
-
-        if _stand().params.shown("workflow", args) is not args:
-            raise AssertionError("инструмент без соединений не трогается")
-
-
 class TestDeclarationIsChecked:
     def test_parameter_must_be_a_connection_model(self, call_stand: CallStand) -> None:
         tool = ProbeTools().tool(

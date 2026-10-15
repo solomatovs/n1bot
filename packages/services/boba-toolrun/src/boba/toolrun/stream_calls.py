@@ -314,8 +314,7 @@ class NodeArgs(Protocol):
 
     Обвязки тела узнают о негодном аргументе, когда узел уже запущен, а
     соседние группы вызова идут. Правило проверяет аргументы каждого узла до
-    старта DAG, решает, какими аргументы узла вернутся клиенту в итоге
-    вызова, и объявляет клиенту возможность сервера, без которой такой
+    старта DAG и объявляет клиенту возможность сервера, без которой такой
     аргумент не собрать. Реализует его владелец вида аргумента (запечатанные
     соединения — SealedConnectionParams); исполнитель про вид не знает.
     """
@@ -323,12 +322,6 @@ class NodeArgs(Protocol):
     @abstractmethod
     async def check(self, tool: str, args: Mapping[str, object]) -> None:
         """Отказ ToolRefusalError, если аргументы узла инструмента tool негодны."""
-        ...
-
-    @abstractmethod
-    def shown(self, tool: str, args: Mapping[str, object]) -> Mapping[str, object]:
-        """Аргументы узла для итога вызова: без значений, которые клиенту
-        возвращать незачем."""
         ...
 
     @abstractmethod
@@ -499,19 +492,11 @@ class LocalDagService(ToolServer):
             msg = f"node {node.title!r}: {exc}"
             raise ToolRefusalError(exc.kind, msg) from exc
 
-    def _shown_args(self, node: DagNode) -> Mapping[str, object]:
-        shown: Mapping[str, object] = dict(node.args)
-        for rule in self._rules:
-            shown = rule.shown(node.tool, shown)
-
-        return shown
-
     def _node_result(self, node: DagNode, outcome: NodeOutcome) -> WorkflowNodeResult:
         return WorkflowNodeResult(
             key=node.title,
             call_id=node.key,
             tool=node.tool,
-            args=self._shown_args(node),
             errored=outcome.errored,
             content=outcome.content,
             result=outcome.artifact,
