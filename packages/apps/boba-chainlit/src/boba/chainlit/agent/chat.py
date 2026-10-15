@@ -899,10 +899,14 @@ class ThreadAgent:
 
     async def _branch(self, question: Question, current: str) -> str:
         """Ветка беседы до правленого вопроса: `session/fork` с срезом по его
-        messageId; агент без объявленного среза правку отказывает.
+        messageId, затем `session/delete` прежней сессии — у треда всегда одна
+        сессия. Прежнюю не удалить (её держит процесс другой вкладки или
+        отказало хранилище) — ветка снимается, threads.meta не меняется,
+        правка отказана; агент без объявленного среза правку отказывает.
 
         Ошибки:
-        AcpClientError — агент не объявил срез ветки.
+        AcpClientError — агент не объявил срез ветки или прежняя сессия не
+            удалена.
         AgentRequestError — агент отказал в `session/fork`.
         """
         if not self.process.forks_by_message():
@@ -918,11 +922,33 @@ class ThreadAgent:
 
         branch = await self.process.fork(current, question.key)
         forked = branch.session_id
+        try:
+            await self.process.delete_session(current)
+        except AgentRequestError as refused:
+            try:
+                await self.process.delete_session(forked)
+            except AgentRequestError as dropped:
+                msg = (
+                    f"The question {question.key} of thread {self.thread_id} was "
+                    f"not edited: the session {current} could not be deleted "
+                    f"({refused}), and its branch {forked} could not be removed "
+                    f"either ({dropped})."
+                )
+                raise AcpClientError(msg) from dropped
+
+            msg = (
+                f"The question {question.key} of thread {self.thread_id} was not "
+                f"edited: the session {current} could not be deleted ({refused}), "
+                "so the conversation stays as it was; close the other tabs of "
+                "this chat and edit the question again."
+            )
+            raise AcpClientError(msg) from refused
+
         self._options.replace(branch.config_options)
         await self._meta.remember(self.thread_id, forked)
         self._session_id = forked
         logger.info(
-            "thread %s: question %s edited, session %s forked into %s",
+            "thread %s: question %s edited, session %s forked into %s and deleted",
             self.thread_id,
             question.key,
             current,

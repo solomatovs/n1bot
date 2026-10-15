@@ -4,10 +4,11 @@
 запроса читается чанками и сразу пишется в хранилище workspace, чтение
 отдаёт окно чанков. Файл не оседает ни в памяти, ни на диске вне workspace.
 Адрес файла — область (scope), каталог области и имя; владелец — вошедший
-по токену, чужой workspace по адресу недостижим.
+по токену, чужой workspace по адресу недостижим. DELETE по адресу самой
+области удаляет все файлы её каталогов: так чат удаляет файлы треда.
 
 Ошибки:
-HTTPException 400 — адрес не называет файл каталога области.
+HTTPException 400 — адрес не называет файл каталога области или область.
 HTTPException 401 — запрос без токена входа либо токен негоден.
 HTTPException 404 — файла нет в workspace.
 HTTPException 416 — диапазон начинается за концом файла.
@@ -261,6 +262,8 @@ class FileRoutes:
         server.custom_route(path, methods=["GET"])(self.get)
         server.custom_route(path, methods=["PUT"])(self.put)
         server.custom_route(path, methods=["DELETE"])(self.delete)
+        area = "/".join((self._base, f"{{{FilePart.SCOPE.value}}}"))
+        server.custom_route(area, methods=["DELETE"])(self.delete_scope)
 
     async def put(self, request: Request) -> Response:
         """Запись файла потоком: чанки тела запроса идут прямо в хранилище."""
@@ -314,6 +317,23 @@ class FileRoutes:
         if not await self._storage.delete_file(key.render()):
             msg = f"DELETE {request.url.path}: no such file in the workspace"
             raise HTTPException(status_code=404, detail=msg)
+
+        return Response(status_code=204)
+
+    async def delete_scope(self, request: Request) -> Response:
+        """Все файлы каталогов области вошедшего; область без файлов — успех."""
+        subject = await self._callers.of(request)
+        try:
+            scope = Scope.chat(str(request.path_params[FilePart.SCOPE.value]))
+        except ValidationError as exc:
+            msg = (
+                f"DELETE {request.url.path}: the address does not name a scope: "
+                f"{ValidationText.of(exc)}"
+            )
+            raise HTTPException(status_code=400, detail=msg) from exc
+
+        await self._storage.delete_thread(subject.user_key, scope.id)
+        logger.info("files: scope %s of %s deleted", scope.id, subject.user_key)
 
         return Response(status_code=204)
 

@@ -23,6 +23,7 @@ import aiofiles.os
 
 from boba.canvas.canvas import CanvasElement
 from boba.canvas.keys import ElementProps, ObjectKey
+from boba.canvas.storage import StorageError
 from boba.chainlit.domain.fields import ElementField, ThreadField, ThreadMetaField
 from boba.chainlit.domain.keys import AttachmentLinks
 from boba.chat.threads import (
@@ -679,12 +680,15 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership, FeedRows):
 
     @data_boundary
     async def delete_thread(self, thread_id: str) -> None:
-        """Слушатели (сессия агента) идут первыми: их отказ оставляет тред."""
+        """Слушатели (сессия агента) идут первыми, затем файлы треда в
+        хранилище: отказ любого из них оставляет тред."""
         tid = UUID(thread_id)
         stored = await self._threads.get(tid)
         if stored is not None:
             for listener in self._deletion_listeners:
                 await listener.thread_deleted(thread_id, stored.meta)
+
+            await self._delete_files(stored)
 
         await self._feedbacks.delete_of_thread(tid)
         await self._elements.delete_of_thread(tid)
@@ -692,6 +696,22 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership, FeedRows):
 
         if owner is not None:
             await self._thread_changed(owner, thread_id, "", ChangeAction.DELETED)
+
+    async def _delete_files(self, stored: StoredThread) -> None:
+        """Файлы треда в хранилище его владельца; у треда без владельца
+        файлов нет."""
+        owner = stored.user_id
+        if owner is None:
+            return
+
+        try:
+            await self._storage.delete_thread(str(owner), str(stored.id))
+        except StorageError as exc:
+            msg = (
+                f"deleting the files of thread {stored.id} of user {owner} "
+                f"failed: {exc}"
+            )
+            raise DataUnavailableError("delete_thread", msg) from exc
 
     async def _chat_changed(self, thread_id: UUID | None, message: AnyMessage) -> None:
         """Сообщает вкладкам треда на всех инстансах об изменении в его ленте;

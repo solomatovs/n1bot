@@ -987,6 +987,13 @@ class McpFiles:
 
         return True
 
+    async def delete_scope(self, scope_id: str) -> None:
+        """Все файлы каталогов области scope_id: сервер удаляет их одной
+        операцией, область без файлов — успех."""
+        url = "/".join((self._root.url(), quote(scope_id, safe="")))
+        reply = await self._http.delete(url)
+        self._check("DELETE", url, reply)
+
     def _url(self, key: ObjectKey) -> str:
         return "/".join((self._root.url(), quote(key.in_thread())))
 

@@ -63,41 +63,42 @@ class FileOwners:
         self._users = users
         self._profiles = profiles
 
-    async def of_key(self, key: ObjectKey) -> FilesTarget:
-        session = self._session_of(key)
+    async def of_thread(self, user_id: str, thread_id: str) -> FilesTarget:
+        session = self._session_of(user_id, thread_id)
         if session is not None:
             caller = McpCaller(login=session.identifier, roles=session.roles)
+            server = self._server_of(session.chat_profile, user_id, thread_id)
 
-            return FilesTarget(self._server_of(session.chat_profile, key), caller)
+            return FilesTarget(server, caller)
 
         try:
-            stored = await self._users().stored_by_id(UUID(key.user_id))
+            stored = await self._users().stored_by_id(UUID(user_id))
         except ValueError as exc:
             msg = (
-                f"files of {key.render()}: the key names user {key.user_id!r}, "
+                f"files of thread {thread_id}: the key names user {user_id!r}, "
                 f"expected a users id: {exc}"
             )
             raise StorageError(msg) from exc
 
         if stored is None:
-            msg = f"files of {key.render()}: no users row with id {key.user_id!r}"
+            msg = f"files of thread {thread_id}: no users row with id {user_id!r}"
             raise StorageError(msg)
 
         sign_in = SignInMetadata.parse(stored.meta)
         caller = McpCaller(login=stored.identifier, roles=sign_in.roles)
 
-        return FilesTarget(self._granted_server(sign_in, key), caller)
+        return FilesTarget(self._granted_server(sign_in, thread_id), caller)
 
-    def _session_of(self, key: ObjectKey) -> ChainlitSession | None:
-        """Живая сессия владельца: открывшая тред ключа, иначе любая его."""
+    def _session_of(self, user_id: str, thread_id: str) -> ChainlitSession | None:
+        """Живая сессия владельца: открывшая этот тред, иначе любая его."""
         try:
-            user_id = UUID(key.user_id)
+            owner = UUID(user_id)
         except ValueError:
             return None
 
-        found = self._sessions().of_user(user_id)
+        found = self._sessions().of_user(owner)
         for session in found:
-            if session.thread_id == key.thread_id:
+            if session.thread_id == thread_id:
                 return session
 
         if found:
@@ -105,26 +106,26 @@ class FileOwners:
 
         return None
 
-    def _server_of(self, profile: str | None, key: ObjectKey) -> str:
+    def _server_of(self, profile: str | None, user_id: str, thread_id: str) -> str:
         declared = self._profiles.all
         if not profile or profile not in declared:
             msg = (
-                f"files of {key.render()}: the session works in profile "
-                f"{profile!r}, expected one of {sorted(declared)}"
+                f"files of thread {thread_id} of user {user_id}: the session works "
+                f"in profile {profile!r}, expected one of {sorted(declared)}"
             )
             raise StorageError(msg)
 
         servers = declared[profile].mcp
         if not servers:
             msg = (
-                f"files of {key.render()}: profile {profile!r} names no mcp "
-                "server, so it has no file storage"
+                f"files of thread {thread_id} of user {user_id}: profile "
+                f"{profile!r} names no mcp server, so it has no file storage"
             )
             raise StorageError(msg)
 
         return servers[0]
 
-    def _granted_server(self, sign_in: SignInMetadata, key: ObjectKey) -> str:
+    def _granted_server(self, sign_in: SignInMetadata, thread_id: str) -> str:
         """Сервер файлов пользователя без живой сессии: первый сервер первого
         профиля, выданного его последнему входу."""
         for config in self._profiles.visible_for(sign_in.profiles).values():
@@ -132,7 +133,7 @@ class FileOwners:
                 return config.mcp[0]
 
         msg = (
-            f"files of {key.render()}: none of the profiles "
+            f"files of thread {thread_id}: none of the profiles "
             f"{sorted(sign_in.profiles)} granted to the user names an mcp server"
         )
         raise StorageError(msg)
@@ -166,26 +167,26 @@ class RemoteStorageClient(StorageClient):
         mime: str,
     ) -> dict[str, Any]:
         key = ObjectKey.parse(object_key)
-        files = await self._files(key)
+        files = await self._files(key.user_id, key.thread_id)
         await files.upload(key, source)
 
         return self._uploaded(object_key)
 
     async def _stat(self, object_key: str) -> FileStat:
         key = ObjectKey.parse(object_key)
-        files = await self._files(key)
+        files = await self._files(key.user_id, key.thread_id)
 
         return await files.stat(key)
 
     async def _open_stream(self, object_key: str, window: ReadWindow) -> OpenedStream:
         key = ObjectKey.parse(object_key)
-        files = await self._files(key)
+        files = await self._files(key.user_id, key.thread_id)
 
         return await files.open(key, window)
 
     async def _delete_file(self, object_key: str) -> bool:
         key = ObjectKey.parse(object_key)
-        files = await self._files(key)
+        files = await self._files(key.user_id, key.thread_id)
 
         return await files.delete(key)
 
@@ -196,21 +197,26 @@ class RemoteStorageClient(StorageClient):
         )
         raise StorageError(msg)
 
-    async def _files(self, key: ObjectKey) -> McpFiles:
-        target = await self._owners.of_key(key)
+    async def _delete_thread(self, user_id: str, thread_id: str) -> None:
+        files = await self._files(user_id, thread_id)
+        await files.delete_scope(thread_id)
+
+    async def _files(self, user_id: str, thread_id: str) -> McpFiles:
+        target = await self._owners.of_thread(user_id, thread_id)
         try:
             files = await self._servers().files(target.server, target.caller)
         except McpClientError as exc:
             msg = (
-                f"files of {key.render()}: mcp server {target.server!r} is "
-                f"unavailable for {target.caller.login!r}: {exc}"
+                f"files of thread {thread_id} of user {user_id}: mcp server "
+                f"{target.server!r} is unavailable for {target.caller.login!r}: "
+                f"{exc}"
             )
             raise StorageError(msg) from exc
 
         if files is None:
             msg = (
-                f"files of {key.render()}: mcp server {target.server!r} "
-                "declares no file storage"
+                f"files of thread {thread_id} of user {user_id}: mcp server "
+                f"{target.server!r} declares no file storage"
             )
             raise StorageError(msg)
 
