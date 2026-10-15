@@ -774,6 +774,9 @@ class TestHistory:
         assert after is not None
         branch = after[ThreadMetaField.AGENT_SESSION]
         assert branch != original
+        # у треда одна сессия: прежняя удалена вместе с правкой
+        assert await rows.history_rows(original) == 0
+        assert await rows.history_rows(branch) > 0
         await tab.end_session()
 
         again = ChatSocket(app, cookie, tab.thread_id)
@@ -1000,6 +1003,89 @@ class TestHistory:
         finally:
             await editing.end_session()
             await holder.end_session()
+
+    async def test_an_observer_edits_only_after_the_holder_left(
+        self, app: StandProcess, cookie: str, rows: ChatRows
+    ) -> None:
+        """Прежнюю сессию держит процесс другой вкладки: правка отказана и
+        ничего не меняет; после ухода держателя та же правка проходит и
+        удаляет прежнюю сессию."""
+        holder = ChatSocket(app, cookie, str(uuid4()))
+        await holder.open()
+        await holder.send(f"first {ScenarioName.ANSWER.value}")
+        await holder.wait_task_end()
+        assert not holder.errors(), holder.errors()
+        before = await rows.thread_meta(holder.thread_id)
+        assert before is not None
+        original = before[ThreadMetaField.AGENT_SESSION]
+        recorded = await rows.history_rows(original)
+
+        observer = ChatSocket(app, cookie, holder.thread_id)
+        await observer.open(resumed=True)
+        try:
+            question = str(observer.messages("user_message")[-1].get("id"))
+            await observer.edit(question, f"edited {ScenarioName.ANSWER.value}")
+            await observer.wait_task_end()
+            refusals = observer.errors()
+            assert refusals, observer.trace()
+            assert "could not be deleted" in refusals[-1], refusals
+            assert HELD_TEXT in refusals[-1], refusals
+            assert await rows.thread_meta(holder.thread_id) == before
+            assert await rows.history_rows(original) == recorded
+
+            await holder.end_session()
+            mark = len(observer.events)
+            replayed = [
+                p
+                for e, p in observer.events
+                if e == "new_message"
+                and isinstance(p, dict)
+                and p.get("type") == "user_message"
+            ]
+            await observer.edit(
+                str(replayed[-1].get("id")), f"edited {ScenarioName.ANSWER.value}"
+            )
+            await observer.wait_task_end()
+            assert not observer.errors()[len(refusals) :], observer.trace()[mark:]
+            after = await rows.thread_meta(holder.thread_id)
+            assert after is not None
+            assert after[ThreadMetaField.AGENT_SESSION] != original
+            assert await rows.history_rows(original) == 0
+        finally:
+            await observer.end_session()
+
+    async def test_deleting_an_edited_thread_deletes_all_its_sessions(
+        self, app: StandProcess, cookie: str, rows: ChatRows
+    ) -> None:
+        tab = ChatSocket(app, cookie, str(uuid4()))
+        await tab.open()
+        await tab.send(f"first {ScenarioName.ANSWER.value}")
+        await tab.wait_task_end()
+        question = str(tab.messages("user_message")[-1].get("id"))
+        before = await rows.thread_meta(tab.thread_id)
+        assert before is not None
+        await tab.edit(question, f"edited {ScenarioName.ANSWER.value}")
+        await tab.wait_task_end()
+        assert not tab.errors(), (tab.errors(), app.tail(60))
+        after = await rows.thread_meta(tab.thread_id)
+        assert after is not None
+        sessions = {
+            before[ThreadMetaField.AGENT_SESSION],
+            after[ThreadMetaField.AGENT_SESSION],
+        }
+
+        response = httpx.request(
+            "DELETE",
+            f"{app.config.base_url}/project/thread",
+            json={"threadId": tab.thread_id},
+            headers={"Cookie": cookie},
+            timeout=120.0,
+        )
+        assert response.status_code == 200, (response.text[:300], app.tail(60))
+        for session_id in sessions:
+            assert await rows.history_rows(session_id) == 0, session_id
+
+        await tab.close()
 
     async def test_deleting_the_thread_deletes_the_agent_session(
         self, app: StandProcess, cookie: str, rows: ChatRows

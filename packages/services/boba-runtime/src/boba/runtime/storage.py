@@ -32,7 +32,7 @@ import aiofiles
 import aiofiles.os
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from boba.canvas.keys import DirKey, ObjectKey
+from boba.canvas.keys import DirKey, ObjectKey, ThreadDir
 from boba.canvas.storage import (
     FileStat,
     LauncherRead,
@@ -156,7 +156,8 @@ class StorageClient(ABC):
       StorageError на отказе чтения;
     * delete_file — False, когда объекта нет; StorageError на отказе;
     * list_dir — пустая последовательность, когда каталога нет;
-      StorageError на отказе.
+      StorageError на отказе;
+    * delete_thread — тред без файлов не ошибка; StorageError на отказе.
 
     Реализации пишут операции в защищённых методах и публичные не
     переопределяют — иначе ошибка уйдёт мимо границы.
@@ -226,6 +227,11 @@ class StorageClient(ABC):
         with StorageGuard(StorageOp.LIST, prefix):
             return await self._list_dir(prefix)
 
+    async def delete_thread(self, user_id: str, thread_id: str) -> None:
+        """Все файлы треда пользователя во всех каталогах треда."""
+        with StorageGuard(StorageOp.DELETE, f"thread {thread_id} of user {user_id}"):
+            await self._delete_thread(user_id, thread_id)
+
     async def _guarded_chunks(
         self, object_key: str, chunks: AsyncGenerator[bytes, None]
     ) -> AsyncGenerator[bytes, None]:
@@ -255,6 +261,14 @@ class StorageClient(ABC):
 
     @abstractmethod
     async def _list_dir(self, prefix: str) -> Sequence[str]: ...
+
+    async def _delete_thread(self, user_id: str, thread_id: str) -> None:
+        """Каталог за каталогом: листинг и удаление каждого файла; хранилище,
+        которое удаляет область треда одной операцией, переопределяет."""
+        for dir_thread in ThreadDir:
+            dir_key = DirKey.of(user_id, thread_id, dir_thread)
+            for name in await self._list_dir(dir_key.render()):
+                await self._delete_file(dir_key.file(name).render())
 
 
 class StorageFactory:

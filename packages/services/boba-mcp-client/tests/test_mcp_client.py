@@ -17,6 +17,7 @@ from collections.abc import AsyncIterator, Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import ClassVar
+from uuid import uuid4
 
 import httpx
 import mcp.types as mt
@@ -25,7 +26,7 @@ from mcp.shared.exceptions import MCPError
 from pydantic import BaseModel, ConfigDict, SecretStr, ValidationError
 
 from boba.auth.config import ProxyAuthConfig
-from boba.canvas.keys import ObjectKey
+from boba.canvas.keys import ObjectKey, ThreadDir
 from boba.canvas.storage import StorageNotFoundError
 from boba.config import bind
 from boba.connections.sealed import ConnectionSeal, SealedConnection, SealFeature
@@ -598,6 +599,30 @@ class TestWorkspaceFiles:
             await files.open(key, ReadWindow.entire())
         if await files.delete(key):
             raise AssertionError("a missing file is not deleted")
+
+    async def test_deleting_the_scope_removes_its_files(
+        self, dag: McpToolServer
+    ) -> None:
+        """Удаление области одной операцией: файлы всех её каталогов уходят,
+        повторное удаление пустой области — успех."""
+        files = dag.files()
+        if files is None:
+            raise AssertionError(f"the server declares its files: {dag.features()}")
+
+        scope = str(uuid4())
+        upload = ObjectKey(user_id="-", thread_id=scope, name="a.txt")
+        diagram = ObjectKey(
+            user_id="-", thread_id=scope, name="d.mmd", dir=ThreadDir.MERMAID
+        )
+        await files.upload(upload, self._source(b"attached", 4))
+        await files.upload(diagram, self._source(b"graph TD", 4))
+
+        await files.delete_scope(scope)
+        await files.delete_scope(scope)
+
+        for key in (upload, diagram):
+            with pytest.raises(StorageNotFoundError, match="404"):
+                await files.stat(key)
 
     async def test_upload_tool_is_not_offered_to_the_model(
         self, dag: McpToolServer

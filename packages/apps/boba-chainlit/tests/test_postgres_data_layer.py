@@ -461,11 +461,28 @@ async def test_list_threads(seeded: Seed):
         await layer.list_threads(Pagination(first=10), ThreadFilter())
 
 
-async def test_delete_thread(seeded: Seed):
+async def test_delete_thread_removes_its_files(
+    chat_session: ChatSessionStand, seeded: Seed, files_dir: Path
+):
+    """Удаление треда стирает его файлы в хранилище владельца."""
     layer = seeded.layer
+    chat_session.use(user_id=seeded.user.id)
+    element = Text(
+        thread_id=seeded.thread_id,
+        for_id=seeded.answer_step_id,
+        name="gone.txt",
+        content="gone",
+    )
+    await layer.create_element(element)
+    stored = files_dir / ObjectKey.build(
+        seeded.user.id, seeded.thread_id, element.name, element.id
+    ).render()
+    assert stored.read_bytes() == b"gone"
+
     await layer.delete_thread(seeded.thread_id)
-    if await layer.get_thread(seeded.thread_id) is not None:
-        raise AssertionError("await layer.get_thread(seeded.thread_id) is None")
+
+    assert await layer.get_thread(seeded.thread_id) is None
+    assert not stored.exists()
 
 
 async def test_build_debug_url(layer: PostgresDataLayer):
