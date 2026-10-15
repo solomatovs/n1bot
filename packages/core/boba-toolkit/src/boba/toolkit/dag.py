@@ -360,19 +360,20 @@ class DagPlanner:
 
 
 class WorkflowNodeResult(BaseModel):
-    """Итог узла workflow: какой инструмент с чем вызван и чем он кончился.
+    """Итог узла workflow: какой инструмент вызван и чем он кончился.
 
     key — имя узла, данное моделью; call_id — идентификатор вызова узла, под
-    которым идут его журнал и шаг ленты. errored — вызов кончился ошибкой
-    самого вызова (аргументы, права), а не результатом инструмента.
+    которым идёт его журнал. errored — вызов кончился ошибкой самого вызова
+    (аргументы, права), а не результатом инструмента. Поля, которых модель
+    больше не знает (аргументы узла в истории прежних версий), при
+    разборе пропускаются: старые треды открываются.
     """
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="ignore")
 
     key: str
     call_id: str
     tool: str
-    args: Mapping[str, Any]
     errored: bool
     content: str
     result: ToolResult

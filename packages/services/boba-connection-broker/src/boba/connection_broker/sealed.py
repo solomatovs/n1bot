@@ -6,8 +6,8 @@
 подключении. SealedConnectionParams ставит на параметры-соединения обвязку
 SealedConnectionParam: она открывает значение, проверяет срок и вид и отдаёт
 телу готовый профиль. Он же — правило аргументов узла (NodeArgs): исполнитель
-проверяет печати всех узлов до старта DAG и не возвращает запечатанные
-значения в итоге вызова; и он же объявляет возможность сервера с ключом.
+проверяет печати всех узлов до старта DAG; и он же объявляет возможность
+сервера с ключом.
 
 Ошибки:
 RefusalError — значение не запечатано, запечатано другим ключом, повреждено,
@@ -97,19 +97,6 @@ class SealedConnectionParam(AsyncInjected):
 
         return labelled
 
-    def shown(self, value: object) -> str:
-        """Чем параметр показывается в итоге вызова вместо запечатанного
-        значения value: именем, которым соединение назвал вызывающий.
-        Значение, которое не открывается (не запечатано, повреждено),
-        имени не несёт и показывается пометкой вида соединения."""
-        if not isinstance(value, str):
-            return f"<sealed {self._kind} connection>"
-
-        try:
-            return self._keys.open(value).name
-        except RefusalError:
-            return f"<sealed {self._kind} connection>"
-
     def verified(self, name: str, value: object) -> ConnectionBase:
         """Профиль из запечатанного значения: срок не вышел, вид тот."""
         sealed = self._opened(name, value)
@@ -164,8 +151,7 @@ class SealedConnectionParams(NodeArgs, ParamSource):
     Создаёт её сборка исполнителя из его ключевой пары и реестра типов
     соединений; сама постановка и правка схемы для LLM — у
     ConnectionParamHooks. Помнит обвязки по инструментам и этим реализует
-    NodeArgs: исполнитель до старта DAG проверяет печати каждого узла, а в
-    итоге вызова показывает параметры-соединения без значений.
+    NodeArgs: исполнитель до старта DAG проверяет печати каждого узла.
     """
 
     def __init__(
@@ -191,18 +177,6 @@ class SealedConnectionParams(NodeArgs, ParamSource):
     async def check(self, tool: str, args: Mapping[str, object]) -> None:
         for param, hook in self._params.get(tool, {}).items():
             hook.verified(tool, args.get(param))
-
-    def shown(self, tool: str, args: Mapping[str, object]) -> Mapping[str, object]:
-        hooks = self._params.get(tool)
-        if not hooks:
-            return args
-
-        shown = dict(args)
-        for param, hook in hooks.items():
-            if param in shown:
-                shown[param] = hook.shown(shown[param])
-
-        return shown
 
     def _hook(self, tool: str, param: str, kind: str) -> AsyncInjected:
         hook = SealedConnectionParam(
