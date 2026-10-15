@@ -23,7 +23,7 @@ import aiofiles.os
 
 from boba.canvas.canvas import CanvasElement
 from boba.canvas.keys import ElementProps, ObjectKey
-from boba.chainlit.domain.fields import ElementField, ThreadField
+from boba.chainlit.domain.fields import ElementField, ThreadField, ThreadMetaField
 from boba.chainlit.domain.keys import AttachmentLinks
 from boba.chat.threads import (
     ChatThreads,
@@ -629,9 +629,23 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership, FeedbackRows):
         metadata: dict | None = None,
         tags: list[str] | None = None,
     ) -> None:
-        incoming = metadata or {}
-        meta_set = {k: v for k, v in incoming.items() if v is not None}
-        meta_del = [k for k, v in incoming.items() if v is None]
+        incoming: Mapping[str, Any] = {}
+        if metadata is not None:
+            incoming = metadata
+
+        meta_set: dict[str, Any] = {}
+        meta_del: list[str] = []
+        for key, value in incoming.items():
+            # тред → сессию агента пишет только агент треда, не persist сессии chainlit
+            if key == ThreadMetaField.AGENT_SESSION:
+                continue
+
+            if value is None:
+                meta_del.append(key)
+                continue
+
+            meta_set[key] = value
+
         name_value = meta_set.get("name")
         if name is not None:
             name_value = name

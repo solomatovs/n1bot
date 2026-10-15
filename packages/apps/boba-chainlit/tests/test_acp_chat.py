@@ -789,6 +789,45 @@ class TestHistory:
         finally:
             await again.end_session()
 
+    async def test_a_tab_leaving_after_an_edit_keeps_the_thread_on_the_branch(
+        self, app: StandProcess, cookie: str, rows: ChatRows
+    ) -> None:
+        """Вкладка, открывшая тред до правки, на отключении не возвращает
+        тред на прежнюю сессию: повторное открытие показывает ветку."""
+        tab = ChatSocket(app, cookie, str(uuid4()))
+        await tab.open()
+        await tab.send(f"first {ScenarioName.ANSWER.value}")
+        await tab.wait_task_end()
+        assert not tab.errors(), tab.errors()
+        question = str(tab.messages("user_message")[-1].get("id"))
+
+        reader = ChatSocket(app, cookie, tab.thread_id)
+        await reader.open(resumed=True)
+        try:
+            await tab.edit(question, f"edited {ScenarioName.THINKING_ANSWER.value}")
+            await tab.wait_task_end()
+            assert not tab.errors(), (tab.errors(), app.tail(60))
+            edited = await rows.thread_meta(tab.thread_id)
+            assert edited is not None
+            branch = edited[ThreadMetaField.AGENT_SESSION]
+        finally:
+            await reader.end_session()
+
+        await tab.end_session()
+        left = await rows.thread_meta(tab.thread_id)
+        assert left is not None
+        assert left[ThreadMetaField.AGENT_SESSION] == branch
+
+        again = ChatSocket(app, cookie, tab.thread_id)
+        await again.open(resumed=True)
+        try:
+            assert not again.errors(), again.errors()
+            assert [m.get("output") for m in again.messages("user_message")] == [
+                f"edited {ScenarioName.THINKING_ANSWER.value}"
+            ]
+        finally:
+            await again.end_session()
+
     async def test_deleting_the_thread_deletes_the_agent_session(
         self, app: StandProcess, cookie: str, rows: ChatRows
     ) -> None:
