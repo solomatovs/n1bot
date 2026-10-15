@@ -67,6 +67,7 @@ from boba.chainlit.infra.thread_room import (
 )
 from boba.chainlit.rendering.errors import chainlit_error_ctx_handler
 from boba.chat.profiles import ChatProfileConfig, ChatProfiles, SelectedProfile
+from boba.chat.threads import DataLayerError
 from boba.identity.context import Scope
 from boba.identity.errors import InternalServiceError, RefusalError
 from boba.identity.locks import LockBusyError
@@ -156,7 +157,7 @@ SocketEvents.on_edit(on_edit)
 
 
 @di_inject
-async def _run_turn(  # noqa: PLR0913 — зависимости обработчика
+async def _run_turn(  # noqa: PLR0913, C901 — зависимости и ветки обработчика
     identity: ThreadIdentity,
     question: Question,
     agents: Annotated[ThreadAgents, Depends(thread_agents, scope="session")],
@@ -167,7 +168,8 @@ async def _run_turn(  # noqa: PLR0913 — зависимости обработ�
     """Ход по вопросу: агент вкладки получает `session/prompt`, лента рисуется
     из его уведомлений через шину; отказ агента или занятый тред уходят в
     ленту сообщением об ошибке, а при отказе правки вкладка сначала заново
-    рисует беседу из истории — фронт уже обрезал её ленту. Первая сессия
+    рисует беседу из истории — фронт уже обрезал её ленту; не вышло и это —
+    в сообщении обе причины. Первая сессия
     треда открывает настройки сессии, а конец хода исполняет отложенный
     перезапуск агента — в обоих случаях панель присылается заново."""
     thread_id = identity.thread_id
@@ -196,15 +198,50 @@ async def _run_turn(  # noqa: PLR0913 — зависимости обработ�
         await agent.ask(asked)
     except AGENT_FAILURES as exc:
         logger.error("thread %s: turn %s failed: %s", thread_id, question.key, exc)
+        content = str(exc)
         # фронт уже обрезал ленту правящей вкладки; свой идущий ход не трогаем
         reload = question.edited
         if agent.turn_active():
             reload = False
 
         if reload:
-            await agent.reload()
+            try:
+                await agent.reload()
+            except AGENT_FAILURES as redraw:
+                logger.error(
+                    "thread %s: redrawing the tab after turn %s failed: %s",
+                    thread_id,
+                    question.key,
+                    redraw,
+                )
+                content = (
+                    f"{exc}\n\nThe conversation was not redrawn after this: the "
+                    f"agent did not replay it: {redraw}"
+                )
+            except DataLayerError as redraw:
+                logger.error(
+                    "thread %s: redrawing the tab after turn %s failed: %s",
+                    thread_id,
+                    question.key,
+                    redraw,
+                )
+                content = (
+                    f"{exc}\n\nThe conversation was not redrawn after this: the "
+                    f"thread was not read: {redraw.view_message().content}"
+                )
+            except InternalServiceError as redraw:
+                logger.error(
+                    "thread %s: redrawing the tab after turn %s failed: %s",
+                    thread_id,
+                    question.key,
+                    redraw.internal_detail,
+                )
+                content = (
+                    f"{exc}\n\nThe conversation was not redrawn after this "
+                    "because of an internal error; reload the thread."
+                )
 
-        await cl.ErrorMessage(content=str(exc), author=AgentAuthor.NAME).send()
+        await cl.ErrorMessage(content=content, author=AgentAuthor.NAME).send()
         return
 
     opened = False
