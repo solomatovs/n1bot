@@ -126,7 +126,9 @@ class Question(BaseModel):
             key = ObjectKey.build(
                 identity.user_id, identity.thread_id, element.name, element.id
             )
-            uri = AnyUrl(urljoin(public_url, CanvasFileUrl.path(key)))
+            path = CanvasFileUrl.path(key)
+            address = urljoin(public_url, path)
+            uri = AnyUrl(address)
             links.append(
                 schema.ResourceContentBlock(
                     name=element.name, uri=uri, mime_type=element.mime

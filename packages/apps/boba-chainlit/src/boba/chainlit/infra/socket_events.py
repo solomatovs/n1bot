@@ -15,11 +15,8 @@ engine.io и восстановление сессии пишутся в жур�
 «Task manually stopped.», а об остановке отчитывается сам ход — вторая
 надпись в ленте лишняя.
 
-Хендлер edit_message тоже заменяется целиком: оригинал срезает ленту по
-своему chat_context и удаляет шаги до решения агента, а после перезагрузки
-треда зовёт on_message без сообщения. Правку вопроса решает агент треда —
-событие разбирается в Question и уходит обработчику правки, который ставит
-обвязка чата (on_edit).
+Хендлер edit_message тоже заменяется целиком: событие разбирается в
+Question и уходит обработчику правки, который ставит обвязка чата (on_edit).
 
 Ошибки:
 InternalServiceError — chainlit не зарегистрировал свои хендлеры сокета.
@@ -45,6 +42,7 @@ from boba.chainlit.infra.thread_room import ChatRoomSurface, ThreadLive, ThreadR
 from boba.chainlit.rendering.renderer import ChatRenderers
 from boba.identity.errors import InternalServiceError
 from boba.runtime import providers as runtime
+from boba.toolkit.failure import ValidationText
 from chainlit.config import config as chainlit_config
 from chainlit.context import init_ws_context
 from chainlit.message import ErrorMessage
@@ -261,7 +259,10 @@ class SocketEvents:
             parsed = Question.model_validate(payload)
         except ValidationError as exc:
             await ErrorMessage(
-                content=f"The edited question is not understood: {exc}"
+                content=(
+                    f"Edit of a question in thread {session.thread_id}: the event "
+                    f"is not understood: {ValidationText.of(exc)}"
+                )
             ).send()
             return
 
