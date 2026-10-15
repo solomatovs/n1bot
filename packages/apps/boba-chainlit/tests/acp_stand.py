@@ -7,19 +7,16 @@ from __future__ import annotations
 import asyncio
 import sys
 from collections.abc import Sequence
+from datetime import timedelta
 from pathlib import Path
 from typing import Any, ClassVar
 
 import uvicorn
-from acp.schema import (
-    AllowedOutcome,
-    PermissionOption,
-    RequestPermissionResponse,
-    ToolCallUpdate,
-)
-from acp.schema import ContentChunk as AcpContentChunk
+from acp.experimental.v2 import schema
+from chainlit_stand import NoConnectionStore
 from pydantic import SecretStr
 
+from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.chainlit.agent.client import AgentCommand, SessionUpdate, SessionUpdates
 from boba.chainlit.agent.config import (
     AgentCommandConfig,
@@ -29,14 +26,19 @@ from boba.chainlit.agent.config import (
     ModelLimitsConfig,
     PostgresAgentHistory,
 )
+from boba.chainlit.agent.relay import McpRelay
+from boba.chainlit.agent.server import ChatCallers, HookSealing, ProcessKeys
 from boba.chainlit.agent.settings import (
     AgentModel,
     AgentProvider,
     ChatAgentSettings,
     ProviderKindName,
 )
+from boba.connection_broker.user_connections import ArmedConnections
 from boba.db.postgres.connection import PostgresConfig
 from boba.db.postgres.connection.auth import PasswordAuth
+from boba.identity.context import CallContexts
+from boba.mcp_client.client import McpServers
 from boba.stand.names import StandNames
 from boba.stand.site import Stand
 from boba.stand.ui.fake_llm import FakeLlmApp
@@ -176,6 +178,22 @@ class AgentStand:
             stop_timeout_sec=10.0,
         )
 
+    def relay(self, keys: ProcessKeys, servers: McpServers) -> McpRelay:
+        """Ретранслятор mcp/message процессов теста над серверами servers;
+        соединений пользователя у стенда нет."""
+        contexts = CallContexts()
+        credentials = KerberosCredentialSource(None, NoRefresh())
+        connections = ArmedConnections(
+            NoConnectionStore(), lambda: credentials, contexts
+        )
+        callers = ChatCallers(keys)
+        sealing = HookSealing(callers, connections, contexts, timedelta(minutes=2))
+        config = self.config()
+
+        return McpRelay(
+            keys, callers, servers, sealing, config.chat_mcp, config.public_url
+        )
+
     def config(self, public_url: str = "http://127.0.0.1:1/chat") -> AgentConfig:
         return AgentConfig(
             process=AgentCommandConfig(
@@ -188,7 +206,13 @@ class AgentStand:
             ),
             history=self._history,
             public_url=public_url,
-            chat_mcp=ChatMcpConfig(enable=False, name="chat", path="/chat/mcp"),
+            chat_mcp=ChatMcpConfig(
+                enable=False,
+                name="chat",
+                path="/chat/mcp",
+                connect_timeout_sec=10.0,
+                call_timeout_sec=60.0,
+            ),
             hook=HookConfig(
                 enable=True, path="/chat/hooks/pre-tool-use", timeout_sec=5
             ),
@@ -201,9 +225,9 @@ class RecordingUpdates(SessionUpdates):
 
     def __init__(self) -> None:
         self.updates: list[tuple[str, SessionUpdate]] = []
-        self.finished: list[tuple[str, str]] = []
+        self.finished: list[tuple[str, schema.IdleSessionStateUpdate]] = []
         self.abandoned: list[str] = []
-        self.permissions: list[ToolCallUpdate] = []
+        self.permissions: list[str] = []
         self.first_update = asyncio.Event()
 
     async def update(self, session_id: str, update: SessionUpdate) -> None:
@@ -211,19 +235,17 @@ class RecordingUpdates(SessionUpdates):
         self.first_update.set()
 
     async def permission(
-        self,
-        session_id: str,
-        tool_call: ToolCallUpdate,
-        options: Sequence[PermissionOption],
-    ) -> RequestPermissionResponse:
-        self.permissions.append(tool_call)
+        self, session_id: str, title: str, options: Sequence[schema.PermissionOption]
+    ) -> schema.RequestPermissionResponse:
+        self.permissions.append(title)
+        chosen = schema.SelectedPermissionOutcomeVariant(option_id=options[0].option_id)
 
-        return RequestPermissionResponse(
-            outcome=AllowedOutcome(outcome="selected", option_id=options[0].option_id)
-        )
+        return schema.RequestPermissionResponse(outcome=chosen)
 
-    async def turn_finished(self, session_id: str, stop_reason: str) -> None:
-        self.finished.append((session_id, stop_reason))
+    async def turn_finished(
+        self, session_id: str, idle: schema.IdleSessionStateUpdate
+    ) -> None:
+        self.finished.append((session_id, idle))
 
     async def abandon(self, session_id: str) -> None:
         self.abandoned.append(session_id)
@@ -231,13 +253,12 @@ class RecordingUpdates(SessionUpdates):
     def texts(self) -> list[str]:
         found: list[str] = []
         for _, update in self.updates:
-            if not isinstance(update, AcpContentChunk):
+            if not isinstance(update, schema.ContentChunk):
                 continue
 
             content = update.content
-            text = getattr(content, "text", None)
-            if isinstance(text, str):
-                found.append(text)
+            if isinstance(content, schema.TextContentBlock):
+                found.append(content.text)
 
         return found
 

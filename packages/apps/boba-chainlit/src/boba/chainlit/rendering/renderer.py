@@ -39,7 +39,6 @@ from boba.messaging import (
     Notice,
     NoticeLevel,
     PayloadStore,
-    ThreadRewound,
     TurnFinished,
     TurnStarted,
     Unsubscribe,
@@ -146,7 +145,7 @@ class CatchUp(BaseModel):
 class ChatRenderer:
     """Получает сообщения одного треда из шины и превращает их в шаги ленты
     chainlit; уведомления агента переводит в шаги UpdateView — тот же
-    переводчик, что рисует историю при `session/load`.
+    переводчик, что рисует историю при `session/resume`.
     """
 
     def __init__(
@@ -222,7 +221,6 @@ class ChatRenderer:
             MessageKind.TURN_FINISHED: self._on_turn_finished,
             MessageKind.NOTICE: self._on_notice,
             MessageKind.CANVAS_CHANGED: self._on_canvas_changed,
-            MessageKind.THREAD_REWOUND: self._on_thread_rewound,
             MessageKind.ELEMENT_SHOWN: self._on_element_shown,
             MessageKind.ELEMENT_REMOVED: self._on_element_removed,
             MessageKind.FEEDBACK_CHANGED: self._on_feedback_changed,
@@ -276,12 +274,6 @@ class ChatRenderer:
             note=message.note,
         )
         await self._surface.window_message(signal.payload())
-
-    async def _on_thread_rewound(self, message: ThreadRewound) -> None:
-        """Правка вопроса: правившая вкладка сама убрала хвост ленты, а шаги
-        нового хода — контейнер, ответ — получают те же id, что у прежнего.
-        Лента обязана забыть, что уже отправляла их."""
-        self._view.rebuilt()
 
     async def _on_element_shown(self, message: ElementShown) -> None:
         raw = await self._payloads.get(message.element)

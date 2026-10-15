@@ -3,7 +3,7 @@
 Строки users/threads/elements/feedbacks — у сервиса (порты UserRows, ChatThreads,
 ElementStore, FeedbackStore); здесь только перевод в словари chainlit, тела вложений
 в хранилище файлов и оповещение шины. Шагов ленты слой не хранит и не строит:
-историю диалога держит агент, лента воспроизводится из его `session/load`, а
+историю диалога держит агент, лента воспроизводится из его `session/resume`, а
 оценки шагов отдаются ленте по id шага (feedbacks_of).
 
 Ошибки:
@@ -469,6 +469,11 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership, FeedbackRows):
     @queue_until_user_message()
     @data_boundary
     async def create_element(self, element: ChainlitElement) -> None:
+        if element.chainlit_key:
+            # фоновая запись chainlit пользовательской загрузки: вложение
+            # вопроса пишет держатель хода под id, который вопросу дал агент
+            return
+
         if not element.for_id:
             # панель канваса шлёт непривязанные side-элементы: они живут
             # только в websocket, их непersистентность — норма, не потеря
