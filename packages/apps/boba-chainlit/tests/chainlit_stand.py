@@ -916,9 +916,11 @@ def di_root(app_config: AppConfig, runtime_stand: StandRefs) -> Iterator[None]:
     Без него ref-функции падают: отсутствие контейнера — ошибка сборки, а
     не режим работы.
     """
+    from boba.chainlit.agent.chat import ThreadAgentsIndex
     from boba.chainlit.infra.providers import (
         remote_journals,
         session_source,
+        thread_agents_index,
         tool_media,
     )
     from boba.runtime import providers as runtime
@@ -938,6 +940,7 @@ def di_root(app_config: AppConfig, runtime_stand: StandRefs) -> Iterator[None]:
     root.provide(runtime.call_journals, runtime_stand.journals)
     root.provide(remote_journals, RemoteJournals())
     root.provide(tool_media, ToolMedia())
+    root.provide(thread_agents_index, ThreadAgentsIndex())
     Container.set_root(root)
     try:
         yield

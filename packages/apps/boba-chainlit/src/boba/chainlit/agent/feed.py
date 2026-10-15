@@ -408,6 +408,10 @@ class AgentFeed(TurnRenderer):
             key = turn.key
             rebound = await self._rebind(question, key)
             feed = TurnFeed(parts.bus, parts.payloads, self._scope, key, lock.token)
+            # другие вкладки перечитывают ветку раньше, чем увидят новый ход
+            if question.edited:
+                await feed.rewound(turn.session_id)
+
             await feed.started(key, rebound.body(self._identity.login))
             self._turn = LiveTurn(
                 key=key, feed=feed, held=stack.pop_all(), cancellation=cancellation

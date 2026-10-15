@@ -20,7 +20,7 @@ from boba.chainlit.domain.fields import StepField
 from boba.chainlit.infra.config import AppConfig
 from boba.chainlit.rendering.acp_view import ToolMedia, UpdateView
 from boba.chainlit.rendering.chat_view import ChatView, RecordingSink, StepRole
-from boba.chainlit.rendering.renderer import ChatRenderer, NoSurface
+from boba.chainlit.rendering.renderer import ChatRenderer, NoSurface, ThreadRewinds
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.context import Scope
 from boba.identity.locks import LockMode, LockPurpose
@@ -121,7 +121,11 @@ def _renderer(
     sink = RecordingSink()
     view = ChatView(thread_id, sink, runtime_stand.journals, user_name="tester")
     updates = UpdateView(view, thread_id, RemoteJournals(), ToolMedia())
-    return ChatRenderer(thread_id, updates, node.payloads, NoSurface()), sink
+    renderer = ChatRenderer(
+        thread_id, updates, node.payloads, NoSurface(), RecordingRewinds()
+    )
+
+    return renderer, sink
 
 
 async def _until(condition, what: str) -> None:
@@ -393,6 +397,16 @@ async def test_stream_growth_is_published_through_the_pump(
         await holder.locks.release(lock.token)
 
 
+class RecordingRewinds(ThreadRewinds):
+    """Реализация ThreadRewinds в тестах: копит срезы истории тредов."""
+
+    def __init__(self) -> None:
+        self.rewound_to: list[tuple[str, str]] = []
+
+    async def rewound(self, thread_id: str, session_id: str) -> None:
+        self.rewound_to.append((thread_id, session_id))
+
+
 class RecordingSurface(NoSurface):
     """Поверхность в тестах: считает перечитывания ленты, копит элементы, удаления
     и обновлённые шаги.
@@ -452,7 +466,9 @@ async def test_elements_reach_the_viewer_instance(
         thread_id, RecordingSink(), runtime_stand.journals, user_name="tester"
     )
     updates = UpdateView(view, thread_id, RemoteJournals(), ToolMedia())
-    renderer = ChatRenderer(thread_id, updates, viewer.payloads, surface)
+    renderer = ChatRenderer(
+        thread_id, updates, viewer.payloads, surface, RecordingRewinds()
+    )
     leave = viewer.bus.subscribe(scope, renderer.apply)
 
     removed = ElementRemoved(element_id="el-old")
@@ -495,6 +511,7 @@ async def test_elements_reach_the_viewer_instance(
             UpdateView(late_view, thread_id, RemoteJournals(), ToolMedia()),
             viewer.payloads,
             late_surface,
+            RecordingRewinds(),
         )
         assert (await late.catch_up(viewer.bus)).alive is True
         assert [item.get("id") for item in late_surface.elements] == [
@@ -506,3 +523,33 @@ async def test_elements_reach_the_viewer_instance(
     finally:
         leave()
         await holder.locks.release(lock.token)
+
+
+async def test_rewound_history_reaches_the_tabs_of_the_viewer_instance(
+    runtime_stand: StandRefs,
+    nodes: tuple[Node, Node],
+) -> None:
+    """Срез истории правкой держателя доходит до рендерера треда на другом
+    инстансе: его вкладки перечитывают ветку."""
+    holder, viewer = nodes
+    thread_id = str(uuid4())
+    scope = Scope.chat(thread_id)
+    view = ChatView(
+        thread_id, RecordingSink(), runtime_stand.journals, user_name="tester"
+    )
+    updates = UpdateView(view, thread_id, RemoteJournals(), ToolMedia())
+    rewinds = RecordingRewinds()
+    renderer = ChatRenderer(thread_id, updates, viewer.payloads, NoSurface(), rewinds)
+    leave = viewer.bus.subscribe(scope, renderer.apply)
+    lock = await holder.locks.acquire(
+        scope, LockMode.EXCLUSIVE, LockPurpose.TURN, UUID(int=1)
+    )
+    feed = TurnFeed(holder.bus, holder.payloads, scope, TURN, lock.token)
+    try:
+        await feed.rewound("branch-1")
+        await _until(lambda: bool(rewinds.rewound_to), "viewer got the rewind")
+    finally:
+        leave()
+        await holder.locks.release(lock.token)
+
+    assert rewinds.rewound_to == [(thread_id, "branch-1")]

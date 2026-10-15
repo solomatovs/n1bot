@@ -19,7 +19,7 @@ from chainlit_stand import Seed
 from pydantic import SecretStr
 
 from boba.canvas.canvas import CanvasRegistry
-from boba.chainlit.agent.chat import SessionOptions
+from boba.chainlit.agent.chat import SessionOptions, ThreadAgentsIndex
 from boba.chainlit.agent.client import SessionUpdate
 from boba.chainlit.agent.feed import ResultMounts
 from boba.chainlit.agent.panel import AgentPanel
@@ -588,7 +588,11 @@ class TestLiveEqualsReplay:
             payloads = MemoryPayloadStore()
             scope = Scope.chat(THREAD)
             renderer = ChatRenderer(
-                THREAD, _view(runtime_stand, RemoteJournals()), payloads, NoSurface()
+                THREAD,
+                _view(runtime_stand, RemoteJournals()),
+                payloads,
+                NoSurface(),
+                ThreadAgentsIndex(),
             )
             leave = bus.subscribe(scope, renderer.apply)
             feed = TurnFeed(bus, payloads, scope, QUESTION, LockToken.local())
@@ -631,7 +635,11 @@ class TestLiveEqualsReplay:
         payloads = MemoryPayloadStore()
         scope = Scope.chat(THREAD)
         renderer = ChatRenderer(
-            THREAD, _view(runtime_stand, RemoteJournals()), payloads, NoSurface()
+            THREAD,
+            _view(runtime_stand, RemoteJournals()),
+            payloads,
+            NoSurface(),
+            ThreadAgentsIndex(),
         )
         leave = bus.subscribe(scope, renderer.apply)
         feed = TurnFeed(bus, payloads, scope, QUESTION, LockToken.local())

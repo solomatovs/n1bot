@@ -30,6 +30,7 @@ from boba.messaging import (
     PayloadStore,
     StreamAppended,
     StreamFeed,
+    ThreadRewound,
     TurnFinished,
     TurnOutcome,
     TurnStarted,
@@ -160,6 +161,10 @@ class TurnFeed(StreamFeed):
             self._scope, question.model_dump(mode="json", by_alias=True)
         )
         await self._publish(TurnStarted(turn_id=self._turn_id, key=key, question=ref))
+
+    async def rewound(self, session_id: str) -> None:
+        """История треда заменена веткой session_id до правленого вопроса."""
+        await self._publish(ThreadRewound(turn_id=self._turn_id, session_id=session_id))
 
     async def answer_interrupted(self, key: str, note: str) -> None:
         await self._publish(

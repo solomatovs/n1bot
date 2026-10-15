@@ -41,6 +41,7 @@ __all__ = [
     "StreamAppended",
     "StudioProfileChanged",
     "ThreadChanged",
+    "ThreadRewound",
     "TurnFinished",
     "TurnOutcome",
     "TurnStarted",
@@ -71,6 +72,7 @@ class MessageKind(StrEnum):
     RUN_LIST_CHANGED = "run_list_changed"
     WORKFLOW_CHANGED = "workflow_changed"
     CONNECTIONS_CHANGED = "connections_changed"
+    THREAD_REWOUND = "thread_rewound"
     ELEMENT_SHOWN = "element_shown"
     THREAD_CHANGED = "thread_changed"
     WORKFLOW_DRAFT_CHANGED = "workflow_draft_changed"
@@ -90,6 +92,7 @@ _HOLDER_ONLY: frozenset[MessageKind] = frozenset(
         MessageKind.RUN_STATE_CHANGED,
         MessageKind.RUN_FINISHED,
         MessageKind.STREAM_APPENDED,
+        MessageKind.THREAD_REWOUND,
         MessageKind.ELEMENT_SHOWN,
     }
 )
@@ -301,6 +304,17 @@ class ConnectionsChanged(Message):
     action: ChangeAction
 
 
+class ThreadRewound(Message):
+    """История треда заменена веткой session_id, обрезанной до правленого
+    вопроса; turn_id — ключ хода по правленому вопросу. Вкладки треда, чья
+    сессия не ветка, перечитывают ленту из истории до TurnStarted этого хода.
+    """
+
+    kind: Literal[MessageKind.THREAD_REWOUND] = MessageKind.THREAD_REWOUND
+    turn_id: str = Field(min_length=1)
+    session_id: str = Field(min_length=1)
+
+
 class ElementShown(Message):
     """Вызов call_id хода turn_id показал элемент ленты (файл, карточку); тело
     элемента лежит по ссылке element.
@@ -451,6 +465,7 @@ AnyMessage = Annotated[
     | Notice
     | LockLost
     | RunListChanged
+    | ThreadRewound
     | ElementShown
     | ThreadChanged
     | WorkflowDraftChanged

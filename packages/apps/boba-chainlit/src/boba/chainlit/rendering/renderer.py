@@ -2,7 +2,9 @@
 треда, владеет переводчиком уведомлений агента (UpdateView над ChatView) и
 превращает каждое сообщение в шаг ленты: вопрос и итог хода — по TurnStarted и
 TurnFinished держателя, сами шаги — по уведомлениям `session/update`, которые
-держатель пересылает как есть (AgentUpdate).
+держатель пересылает как есть (AgentUpdate). Срез истории правкой вопроса
+(ThreadRewound) рендерер передаёт порту ThreadRewinds: вкладки треда
+перечитывают ленту из истории своих агентов.
 
 Ошибки:
 Сбой отрисовки одного сообщения показывается в чат и журналируется; когда показать
@@ -39,6 +41,7 @@ from boba.messaging import (
     Notice,
     NoticeLevel,
     PayloadStore,
+    ThreadRewound,
     TurnFinished,
     TurnStarted,
     Unsubscribe,
@@ -48,7 +51,14 @@ from chainlit.element import ElementDict
 from chainlit.step import StepDict
 from chainlit.types import ThreadDict
 
-__all__ = ["CatchUp", "ChatRenderer", "ChatRenderers", "NoSurface", "RenderSurface"]
+__all__ = [
+    "CatchUp",
+    "ChatRenderer",
+    "ChatRenderers",
+    "NoSurface",
+    "RenderSurface",
+    "ThreadRewinds",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +103,16 @@ class RenderSurface(Protocol):
     @abstractmethod
     async def task_end(self) -> None:
         """Гасит индикатор хода во всех вкладках треда."""
+
+
+class ThreadRewinds(Protocol):
+    """Кому рендерер треда сообщает, что история треда заменена веткой после
+    правки вопроса. Реализует ThreadAgentsIndex: рендерер агентов не знает,
+    агент на шину не подписан."""
+
+    @abstractmethod
+    async def rewound(self, thread_id: str, session_id: str) -> None:
+        """Вкладки треда, чья сессия не ветка session_id, перечитывают ленту."""
 
 
 class NoSurface(RenderSurface):
@@ -154,12 +174,14 @@ class ChatRenderer:
         updates: UpdateView,
         payloads: PayloadStore,
         surface: RenderSurface,
+        rewinds: ThreadRewinds,
     ) -> None:
         self._thread_id = thread_id
         self._updates = updates
         self._view = updates.view
         self._payloads = payloads
         self._surface = surface
+        self._rewinds = rewinds
         self._scope = Scope.chat(thread_id)
         self._codec = SessionUpdateCodec()
         self._turn_key: str | None = None
@@ -221,6 +243,7 @@ class ChatRenderer:
             MessageKind.TURN_FINISHED: self._on_turn_finished,
             MessageKind.NOTICE: self._on_notice,
             MessageKind.CANVAS_CHANGED: self._on_canvas_changed,
+            MessageKind.THREAD_REWOUND: self._on_thread_rewound,
             MessageKind.ELEMENT_SHOWN: self._on_element_shown,
             MessageKind.ELEMENT_REMOVED: self._on_element_removed,
             MessageKind.FEEDBACK_CHANGED: self._on_feedback_changed,
@@ -274,6 +297,9 @@ class ChatRenderer:
             note=message.note,
         )
         await self._surface.window_message(signal.payload())
+
+    async def _on_thread_rewound(self, message: ThreadRewound) -> None:
+        await self._rewinds.rewound(self._thread_id, message.session_id)
 
     async def _on_element_shown(self, message: ElementShown) -> None:
         raw = await self._payloads.get(message.element)
@@ -408,13 +434,14 @@ class ChatRenderers:
     _LEAVES: ClassVar[dict[str, Unsubscribe]] = {}
 
     @classmethod
-    def ensure(
+    def ensure(  # noqa: PLR0913 — рендерер треда собирается всеми входами
         cls,
         thread_id: str,
         bus: MessageBus,
         updates: UpdateView,
         payloads: PayloadStore,
         surface: RenderSurface,
+        rewinds: ThreadRewinds,
     ) -> ChatRenderer:
         """Возвращает рендерер треда, создавая и подписывая его на область при первом
         обращении.
@@ -423,7 +450,7 @@ class ChatRenderers:
         if renderer is not None:
             return renderer
 
-        renderer = ChatRenderer(thread_id, updates, payloads, surface)
+        renderer = ChatRenderer(thread_id, updates, payloads, surface, rewinds)
         cls._RENDERERS[thread_id] = renderer
         cls._LEAVES[thread_id] = bus.subscribe(Scope.chat(thread_id), renderer.apply)
         return renderer
