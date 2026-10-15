@@ -158,9 +158,10 @@ class UpdateView:
         self._called: dict[str, str] = {}
         """Идущий вызов → имя его инструмента: агент называет инструмент
         только в первом уведомлении вызова."""
-        self._groups: dict[str, Sequence[DagNode]] = {}
-        """Идущий вызов со вложенными вызовами → узлы его подшагов: ключ
-        узла — ключ подшага, title — ключ узла от автора связки."""
+        self._groups: dict[str, tuple[NestedCallsFeature, str, Sequence[DagNode]]] = {}
+        """Идущий вызов со вложенными вызовами → объявление сервера, имя
+        сервера и узлы подшагов: ключ узла — ключ подшага, title — ключ узла
+        от автора связки."""
 
     @property
     def view(self) -> ChatView:
@@ -334,37 +335,42 @@ class UpdateView:
         вызовами — подшаги узлов), ход работы — текст `content`, конечный
         статус — итог."""
         call_id = update.tool_call_id
-        if call_id in self._groups:
-            await self._group_update(update)
-            return
-
-        step = self._steps.get(call_id)
-        if step is None:
-            name = self._tool_name(update)
-            args = self._args(update.raw_input)
-            nodes = self._nodes_of(name, call_id, args)
-            if nodes:
-                await self._nodes_started(call_id, nodes)
-                await self._group_update(update)
-                return
-
-            step = await self._step_of(name, args, call_id)
-
+        name = self._tool_name(update)
         status = ToolStatus.PENDING
         if update.status is not None:
             status = ToolStatus(update.status)
 
+        group = self._groups.get(call_id)
+        if group is None and call_id not in self._steps:
+            args = self._args(update.raw_input)
+            group = self._nodes_of(name, call_id, args)
+            if group is None:
+                await self._step_of(name, args, call_id)
+            else:
+                for node in group[2]:
+                    await self._step_of(node.tool, node.args, node.key)
+
+                self._groups[call_id] = group
+
         if not status.terminal:
             progress = self._content_text(update)
-            if progress:
-                await self._view.tool_progressed(step, progress)
+            if not progress:
+                return
 
+            if group is None:
+                await self._view.tool_progressed(self._steps[call_id], progress)
+                return
+
+            await self._node_progress(update, group, progress)
             return
 
-        self._steps.pop(call_id, None)
-        name = self._tool_name(update)
         self._called.pop(call_id, None)
-        await self._tool_result(step, update, status, name)
+        if group is None:
+            await self._tool_result(self._steps.pop(call_id), update, status, name)
+            return
+
+        self._groups.pop(call_id)
+        await self._nodes_result(update, name, group, status)
 
     async def _step_of(self, name: str, args: Mapping[str, Any], key: str) -> Step:
         """Шаг нового вызова инструмента name с аргументами args под ключом key."""
@@ -377,18 +383,19 @@ class UpdateView:
 
     def _nodes_of(
         self, name: str, call_id: str, args: Mapping[str, Any]
-    ) -> Sequence[DagNode]:
-        """Узлы вызова call_id инструмента name по объявлению сервера под
-        ключами подшагов, с полными именами инструментов, как их называет
-        ретранслятор; пусто — сервер вложенных вызовов для name не объявил
-        либо вызов не по объявленной форме, и он рисуется одним шагом."""
+    ) -> tuple[NestedCallsFeature, str, Sequence[DagNode]] | None:
+        """Объявление сервера, имя сервера и узлы вызова call_id инструмента
+        name под ключами подшагов, с полными именами инструментов, как их
+        называет ретранслятор; None — сервер вложенных вызовов для name не
+        объявил либо вызов не по объявленной форме, и он рисуется одним
+        шагом."""
         nested = self._media.nested(name)
         if nested is None:
-            return ()
+            return None
 
         owner = self._names.parse(name)
         if owner is None:
-            return ()
+            return None
 
         try:
             calls = nested.calls(args)
@@ -400,57 +407,25 @@ class UpdateView:
                 name,
                 exc,
             )
-            return ()
+            return None
 
         nodes: list[DagNode] = []
         for node in nested.keyed(call_id, calls):
             full = self._names.full(owner.server, node.tool)
             nodes.append(node.model_copy(update={"tool": full}))
 
-        return nodes
-
-    async def _nodes_started(self, call_id: str, nodes: Sequence[DagNode]) -> None:
-        """Подшаг на каждый узел вызова call_id; шага самого вызова нет."""
-        for node in nodes:
-            await self._step_of(node.tool, node.args, node.key)
-
-        self._groups[call_id] = nodes
-
-    async def _group_update(self, update: schema.SessionToolCallUpdate) -> None:
-        """Уведомление вызова со вложенными вызовами: ход работы — подшагу
-        узла (_node_progress), конечный статус — итоги подшагов
-        (_nodes_result)."""
-        call_id = update.tool_call_id
-        nodes = self._groups[call_id]
-        name = self._tool_name(update)
-        status = ToolStatus.PENDING
-        if update.status is not None:
-            status = ToolStatus(update.status)
-
-        if not status.terminal:
-            await self._node_progress(update, name, nodes)
-            return
-
-        self._groups.pop(call_id)
-        await self._nodes_result(update, name, nodes, status)
+        return nested, owner.server, nodes
 
     async def _node_progress(
         self,
         update: schema.SessionToolCallUpdate,
-        name: str,
-        nodes: Sequence[DagNode],
+        group: tuple[NestedCallsFeature, str, Sequence[DagNode]],
+        progress: str,
     ) -> None:
-        """Ход работы — подшагу узла, чей ключ сервер положил в `_meta` под
-        ключом, объявленным расширением; строка без ключа узла этого вызова
-        уходит в лог."""
-        progress = self._content_text(update)
-        if not progress:
-            return
-
-        nested = self._media.nested(name)
-        if nested is None:
-            return
-
+        """Ход работы progress — подшагу узла, чей ключ сервер положил в
+        `_meta` под ключом, объявленным расширением; строка без ключа узла
+        этого вызова уходит в лог."""
+        nested, _, nodes = group
         title = None
         if meta := update.field_meta:
             title = meta.get(nested.progress_key)
@@ -476,45 +451,37 @@ class UpdateView:
         self,
         update: schema.SessionToolCallUpdate,
         name: str,
-        nodes: Sequence[DagNode],
+        group: tuple[NestedCallsFeature, str, Sequence[DagNode]],
         status: ToolStatus,
     ) -> None:
         """Итог каждому подшагу по его записи в списке узлов ответа
         (NestedCallsReply): запуск у узлов общий, журнал у каждого свой.
-        Подшаг без записи и все подшаги ответа не по этой модели (отказ до
-        старта, чужой ответ) получают общий итог вызова."""
-        reply = self._reply(update)
-        structured: Any = None
-        if reply is not None:
-            structured = reply.structured_content
-
+        Подшаг без записи и все подшаги ответа без списка узлов (отказ до
+        старта, не результат tools/call, чужой ответ) получают общий итог
+        вызова."""
+        _, server, nodes = group
         entries: dict[str, NestedCallReply] = {}
         run = ""
-        try:
-            replied = NestedCallsReply.model_validate(structured)
-        except ValidationError as exc:
-            logger.info(
-                "thread %s: the result of call %s of %s lists no nodes, every "
-                "node step gets the result of the call: %s",
-                self._thread_id,
-                update.tool_call_id,
-                name,
-                exc,
-            )
-        else:
-            run = replied.call.run
-            for entry in replied.nodes:
-                entries[entry.key] = entry
-
-        server = ""
-        if owner := self._names.parse(name):
-            server = owner.server
+        reply = self._reply(update)
+        if reply is not None:
+            try:
+                replied = NestedCallsReply.model_validate(reply.structured_content)
+            except ValidationError as exc:
+                logger.info(
+                    "thread %s: the result of call %s of %s lists no nodes, "
+                    "every node step gets the result of the call: %s",
+                    self._thread_id,
+                    update.tool_call_id,
+                    name,
+                    exc,
+                )
+            else:
+                run = replied.call.run
+                for entry in replied.nodes:
+                    entries[entry.key] = entry
 
         for node in nodes:
-            step = self._steps.pop(node.key, None)
-            if step is None:
-                continue
-
+            step = self._steps.pop(node.key)
             entry = entries.get(node.title)
             if entry is None:
                 await self._tool_result(step, update, status, name)
@@ -525,8 +492,6 @@ class UpdateView:
                 journal = JournalAddress(server=server, run=run, call=entry.call_id)
 
             await self._finished(step, node.key, journal, entry.result)
-
-        self._called.pop(update.tool_call_id, None)
 
     async def _tool_result(
         self,
