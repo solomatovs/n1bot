@@ -23,6 +23,7 @@ from boba.chainlit.agent.chat import (
 )
 from boba.chainlit.agent.config import AgentConfig
 from boba.chainlit.agent.feed import AgentFeeds, BusParts, TabSurfaces
+from boba.chainlit.agent.relay import McpRelay
 from boba.chainlit.agent.server import (
     ChatCallers,
     ChatCallMiddleware,
@@ -353,23 +354,42 @@ def chat_mcp_server(
     )
 
 
-def pre_tool_use_hook(
-    app_config: Annotated[AppConfig, Depends(get_app_config)],
+def hook_sealing(
     raw: Annotated[DictConfig, Depends(runtime.get_raw_config)],
     callers: Annotated[ChatCallers, Depends(chat_callers)],
     contexts: Annotated[CallContexts, Depends(runtime.call_contexts)],
-) -> PreToolUseHandler:
-    """Обработчик хука PreToolUse агента под [agent.hook].path: запечатывает
-    соединения пользователя ключом сервера MCP из события."""
+) -> HookSealing:
+    """Запечатывание соединений пользователя ключом сервера MCP: для
+    ретранслятора mcp/message и обработчика хука."""
     connections = ArmedConnections(
         runtime.connection_store_ref, runtime.credential_source_ref, contexts
     )
     ttl = timedelta(seconds=bind(raw, "connections", ConnectionsConfig).seal_ttl_sec)
-    sealing = HookSealing(callers, connections, contexts, ttl)
 
+    return HookSealing(callers, connections, contexts, ttl)
+
+
+def pre_tool_use_hook(
+    app_config: Annotated[AppConfig, Depends(get_app_config)],
+    callers: Annotated[ChatCallers, Depends(chat_callers)],
+    sealing: Annotated[HookSealing, Depends(hook_sealing)],
+) -> PreToolUseHandler:
+    """Обработчик хука PreToolUse агента под [agent.hook].path: запечатывает
+    соединения пользователя ключом сервера MCP из события."""
     return PreToolUseHandler(
         app_config.agent.hook,
         RequestTokens(app_config.session.cookie),
         callers,
         sealing,
     )
+
+
+def mcp_relay(
+    keys: Annotated[ProcessKeys, Depends(process_keys)],
+    callers: Annotated[ChatCallers, Depends(chat_callers)],
+    servers: Annotated[McpServers, Depends(mcp_servers)],
+    sealing: Annotated[HookSealing, Depends(hook_sealing)],
+    config: Annotated[AgentConfig, Depends(agent_config)],
+) -> McpRelay:
+    """Ретранслятор mcp/message процессов агента: один на инстанс."""
+    return McpRelay(keys, callers, servers, sealing, config.chat_mcp, config.public_url)

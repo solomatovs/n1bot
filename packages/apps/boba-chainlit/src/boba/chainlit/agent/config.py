@@ -188,18 +188,21 @@ AgentHistoryConfig = Annotated[
 
 
 class ChatMcpConfig(BaseModel):
-    """Сервер инструментов чата `/chat/mcp` в `mcpServers` сессии: имя сервера
-    задаёт полные имена его инструментов у агента (McpToolNames)."""
+    """Сервер инструментов чата `/chat/mcp`, объявленный агенту записью
+    type "acp": имя сервера задаёт полные имена его инструментов у агента
+    (McpToolNames), сроки — подключение ретранслятора к нему и один вызов."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    enable: bool = Field(
-        description="Записывать ли сервер чата в mcpServers; сам сервер — W10."
-    )
-    name: str = Field(min_length=1, description="Имя сервера в mcpServers.")
+    enable: bool = Field(description="Объявлять ли сервер чата агенту.")
+    name: str = Field(min_length=1, description="Имя сервера в объявлении агенту.")
     path: str = Field(
         min_length=1, description="Путь сервера под адресом chainlit: /chat/mcp."
     )
+    connect_timeout_sec: float = Field(
+        gt=0, description="Срок подключения ретранслятора к серверу чата."
+    )
+    call_timeout_sec: float = Field(gt=0, description="Срок одного вызова.")
 
     @field_validator("name")
     @classmethod
