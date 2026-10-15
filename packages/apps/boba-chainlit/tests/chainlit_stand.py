@@ -435,6 +435,19 @@ class NoConnectionStore:
 
 
 @pytest.fixture(scope="module")
+def service_process(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Iterator[ServiceProcess]:
+    """Стенд boba-mcp модуля отдельным процессом: вход proxy, инструменты-заглушки."""
+    process = ServiceProcess(tmp_path_factory.mktemp("boba-mcp"))
+    try:
+        process.await_listening()
+        yield process
+    finally:
+        process.stop()
+
+
+@pytest.fixture(scope="module")
 def tool_service(
     tmp_path_factory: pytest.TempPathFactory, service_raw_config: DictConfig
 ) -> Iterator[ToolService]:

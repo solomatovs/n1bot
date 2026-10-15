@@ -161,11 +161,11 @@ class UpdateView:
             await self._user_message(update)
             return
 
-        if isinstance(update, schema.AgentThoughtChunk):
+        if isinstance(update, schema.AgentThoughtChunk | schema.AgentThoughtUpdate):
             await self._thought_chunk(update)
             return
 
-        if isinstance(update, schema.AgentMessageChunk):
+        if isinstance(update, schema.AgentMessageChunk | schema.AgentMessageUpdate):
             await self._message_chunk(update)
             return
 
@@ -249,7 +249,11 @@ class UpdateView:
         self.begin_turn(update.message_id)
         await self.question(self._message_text(update), update.message_id)
 
-    async def _thought_chunk(self, update: schema.AgentThoughtChunk) -> None:
+    async def _thought_chunk(
+        self, update: schema.AgentThoughtChunk | schema.AgentThoughtUpdate
+    ) -> None:
+        """Рассуждение: живой ход шлёт его кусками, воспроизведение — целым
+        сообщением; лента пишет и то и другое в шаг сообщения."""
         text = self._text(update)
         if text is None:
             return
@@ -265,7 +269,10 @@ class UpdateView:
         self._thought_id = update.message_id
         await self._view.stream_thinking(text, update.message_id)
 
-    async def _message_chunk(self, update: schema.AgentMessageChunk) -> None:
+    async def _message_chunk(
+        self, update: schema.AgentMessageChunk | schema.AgentMessageUpdate
+    ) -> None:
+        """Ответ: кусками в живом ходе, целым сообщением в воспроизведении."""
         text = self._text(update)
         if text is None:
             return
@@ -292,7 +299,7 @@ class UpdateView:
         if not status.terminal:
             progress = self._content_text(update)
             if progress:
-                await self._view.tool_progressed(step, 0.0, None, progress)
+                await self._view.tool_progressed(step, progress)
 
             return
 
@@ -411,11 +418,26 @@ class UpdateView:
 
     @staticmethod
     def _text(
-        update: schema.AgentThoughtChunk | schema.AgentMessageChunk,
+        update: schema.AgentThoughtChunk
+        | schema.AgentMessageChunk
+        | schema.AgentThoughtUpdate
+        | schema.AgentMessageUpdate,
     ) -> str | None:
-        """Текст блока куска; картинки и ресурсы лента не показывает."""
+        """Текст куска либо целого сообщения; картинки и ресурсы лента не
+        показывает. None — текста нет."""
         content = update.content
         if isinstance(content, schema.TextContentBlock):
             return content.text
 
-        return None
+        if not isinstance(content, list):
+            return None
+
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, schema.TextContentBlock):
+                parts.append(block.text)
+
+        if not parts:
+            return None
+
+        return "".join(parts)

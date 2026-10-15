@@ -392,7 +392,12 @@ class TestAgentHandshake:
         process = AgentProcess(agent_stand.command(), workdir, client, relay, (), "0.0")
         try:
             response = await process.start()
+            assert response.protocol_version == 2
             assert response.info.name == "boba"
+            assert response.capabilities is not None
+            assert response.capabilities.session is not None
+            assert response.capabilities.session.mcp is not None
+            assert response.capabilities.session.mcp.acp is not None
 
             files = ProcFiles(process.pid)
             cmdline = files.cmdline()

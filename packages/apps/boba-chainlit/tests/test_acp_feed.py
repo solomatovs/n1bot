@@ -239,6 +239,28 @@ def _turn_updates() -> list[SessionUpdate]:
     ]
 
 
+def _replayed_updates() -> list[SessionUpdate]:
+    """Тот же ход, каким его воспроизводит агент: сообщения целиком."""
+    thought = schema.AgentThoughtUpdate(
+        message_id=MESSAGE, content=[schema.TextContentBlock(text="let me think")]
+    )
+    first = schema.AgentMessageUpdate(
+        message_id=MESSAGE, content=[schema.TextContentBlock(text="First ")]
+    )
+    second = schema.AgentMessageUpdate(
+        message_id=SECOND_MESSAGE,
+        content=[schema.TextContentBlock(text="and then done.")],
+    )
+
+    return [
+        thought,
+        first,
+        _call(CALL, "mcp__boba__pg_query", {"sql": "select 1"}),
+        _done(CALL, "1", _result("one row")),
+        second,
+    ]
+
+
 def _view(runtime_stand: StandRefs, journals: RemoteJournals) -> UpdateView:
     view = ChatView(THREAD, LiveSink(), runtime_stand.journals, user_name="alice")
 
@@ -365,7 +387,8 @@ class TestUpdateViewIds:
 
 
 class TestLiveEqualsReplay:
-    """Живой ход через шину и воспроизведение дают одну и ту же ленту."""
+    """Живой ход через шину (куски) и воспроизведение (сообщения целиком)
+    дают одну и ту же ленту."""
 
     @pytest.mark.anyio
     async def test_bus_rendering_matches_the_replay(
@@ -400,7 +423,7 @@ class TestLiveEqualsReplay:
         try:
             replay = _view(runtime_stand, RemoteJournals())
             await replay.apply(_question())
-            for update in _turn_updates():
+            for update in _replayed_updates():
                 await replay.apply(update)
 
             await replay.finish_turn()
