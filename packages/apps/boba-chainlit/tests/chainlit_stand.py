@@ -304,9 +304,6 @@ class ServiceTools:
             calls,
         )
 
-    async def start(self) -> None:
-        await self._servers.start()
-
     async def stop(self) -> None:
         await self._servers.stop()
 
@@ -389,7 +386,6 @@ async def service_tools(
         NoConnectionStore(), lambda: credentials, call_stand.contexts
     )
     opened = ServiceTools(tool_service, connections, call_stand.contexts, DirectCalls())
-    await opened.start()
     try:
         yield opened
     finally:
@@ -460,7 +456,6 @@ class PerCallStreams(RemoteStreams):
         self, thread_id: str, call_id: str, channel: JournalChannel, offset: int
     ) -> StreamSlice | None:
         servers = self._client()
-        await servers.start()
         try:
             reading = RemoteStreams(self._journals, servers, self._caller)
             return await reading.slice_at(thread_id, call_id, channel, offset)
@@ -471,7 +466,6 @@ class PerCallStreams(RemoteStreams):
         self, thread_id: str, call_id: str, channel: JournalChannel, end: int
     ) -> StreamSlice | None:
         servers = self._client()
-        await servers.start()
         try:
             reading = RemoteStreams(self._journals, servers, self._caller)
             return await reading.slice_before(thread_id, call_id, channel, end)

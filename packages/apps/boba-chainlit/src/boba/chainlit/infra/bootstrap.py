@@ -397,7 +397,6 @@ def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
     container.eager(runtime.tool_registry)
     # входы чата для агента — после реестра: сервер отдаёт его инструменты
     _eager_agent_tools(container, c)
-    # MCP-серверы подключаются на старте: первая сессия не ждёт инициализации
     container.eager(providers.remote_journals)
     container.eager(providers.mcp_servers)
     container.eager(providers.agent_feeds)

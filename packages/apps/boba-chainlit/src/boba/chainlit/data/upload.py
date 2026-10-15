@@ -51,12 +51,7 @@ from boba.chainlit.domain.keys import AppPrefix
 from boba.chainlit.infra.session import ChainlitSession, session_source_ref
 from boba.identity.errors import AuthenticationError
 from boba.identity.session import Login
-from boba.mcp_client.client import (
-    McpCaller,
-    McpClientError,
-    McpServers,
-    RelayedFile,
-)
+from boba.mcp_client.client import McpCaller, McpClientError, McpServers, RelayedFile
 from boba.runtime.served import StreamedFile
 from boba.runtime.storage import StorageClient
 from boba.toolkit.channels import JournalChannels, ToolChannel
@@ -674,11 +669,7 @@ class StreamServing:
         try:
             files = await self._servers_ref().journal_files(address.server, caller)
         except McpClientError as e:
-            msg = (
-                f"stream {call_id}/{log_channel} of thread {thread_id}: mcp "
-                f"server {address.server!r} is unavailable for "
-                f"{caller.login!r}: {e}"
-            )
+            msg = f"stream {call_id}/{log_channel} of thread {thread_id}: {e}"
             raise HTTPException(status_code=self.BAD_GATEWAY, detail=msg) from e
 
         if files is None:

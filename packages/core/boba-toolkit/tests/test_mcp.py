@@ -147,5 +147,7 @@ def test_input_required_is_an_error_for_the_model() -> None:
         raise AssertionError(f"просьба о вводе — ошибка, дано {result!r}")
     if result.error_kind != McpFailure.TOOL_ERROR:
         raise AssertionError(f"вид отказа — ошибка инструмента, дано {result!r}")
-    if "input_required" not in result.message or "'call-1'" not in result.message:
-        raise AssertionError(f"причина и вызов в тексте, дано {result.message!r}")
+    if "input_required" not in result.message:
+        raise AssertionError(f"причина в тексте, дано {result.message!r}")
+    if "'call-1'" not in result.message:
+        raise AssertionError(f"вызов в тексте, дано {result.message!r}")

@@ -57,7 +57,7 @@
     default                 = true
     roles                   = ["*"]
     tools                   = ["connection_list", "connection_search"]
-    mcp                     = ["boba_general", "deepwiki"]
+    mcp                     = ["boba_general"]
     provider                = "${llm.main}"
     model                   = "${site.models.general}"
     settings                = ["*"]
@@ -170,15 +170,6 @@
     db_schema  = "catalog"
 
 # хранилище вложений (upload файлов)
-[mcp.servers.deepwiki]
-    connect_timeout_sec  = 20.0
-    call_timeout_sec     = 120.0
-    [mcp.servers.deepwiki.endpoint]
-        transport = "streamable-http"
-        scheme    = "${site.deepwiki.scheme}"
-        host      = "${site.deepwiki.host}"
-        path      = "${site.deepwiki.path}"
-
 [mcp.servers.boba_base]
     connect_timeout_sec  = 20.0
     call_timeout_sec     = 86400.0

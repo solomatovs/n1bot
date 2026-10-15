@@ -21,12 +21,7 @@ import mcp_types as mt
 
 from boba.toolkit.calls import CallViews
 from boba.toolkit.dag import ToolCard, ToolHints
-from boba.toolkit.result import (
-    ErrorResult,
-    JsonBlock,
-    MarkdownResult,
-    ToolResultBase,
-)
+from boba.toolkit.result import ErrorResult, JsonBlock, MarkdownResult, ToolResultBase
 
 __all__ = [
     "McpFailure",
