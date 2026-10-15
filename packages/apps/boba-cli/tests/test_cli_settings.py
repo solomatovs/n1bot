@@ -1,5 +1,5 @@
 """Слои настроек: порядок приоритета, слияние таблиц и списков, профиль из
-переменных окружения, `.mcp.json` формата Claude Code, секреты значениями в
+переменных окружения, секреты значениями в
 файле с правами 0600, история `memory`, понятные отказы."""
 
 from __future__ import annotations
@@ -19,7 +19,6 @@ from boba.cli.settings import (
     EnvName,
     HistoryKind,
     JsonlHistorySettings,
-    McpServerBuilder,
     MemoryHistorySettings,
     PostgresBuilder,
     PostgresHistorySettings,
@@ -28,7 +27,6 @@ from boba.cli.settings import (
     SettingsError,
     SettingsSource,
 )
-from boba.mcp_client.client import BearerAuth, HttpEndpoint, StdioCommand
 from boba.stand.agent import Collected, FakeServer, Protocol, Served, StandAgents
 from boba.stand.ui.fake_llm import ScenarioName
 
@@ -217,92 +215,6 @@ class TestProfile:
 
         with pytest.raises(SettingsError, match="modelDir"):
             ProfileBuilder(ENV).profile("local", effective.selected_model())
-
-
-class TestMcpJson:
-    def test_project_file_becomes_server_configs(self, tmp_path: Path) -> None:
-        write(
-            tmp_path / "project" / ".mcp.json",
-            {
-                "mcpServers": {
-                    "std": {
-                        "command": "python",
-                        "args": ["server.py"],
-                        "env": {"A": "1"},
-                    },
-                    "web": {
-                        "type": "http",
-                        "url": "https://mcp.example.org:8443/mcp",
-                        "headers": {"Authorization": "Bearer t0k"},
-                    },
-                    "off": {"command": "python"},
-                }
-            },
-        )
-        arguments = Arguments(
-            settings=(
-                json.dumps({"mcp": {"disabledServers": ["off"]}, "env": {"B": "2"}}),
-            ),
-        )
-        effective = settings(tmp_path, arguments).effective()
-        builder = McpServerBuilder(effective.mcp, effective.env)
-
-        assert sorted(effective.mcp_servers) == ["std", "web"]
-        std = builder.config("std", effective.mcp_servers["std"]).endpoint
-        assert isinstance(std, StdioCommand)
-        assert std.command == "python"
-        assert std.env == {"B": "2", "A": "1"}
-        web = builder.config("web", effective.mcp_servers["web"]).endpoint
-        assert isinstance(web, HttpEndpoint)
-        assert web.url() == "https://mcp.example.org:8443/mcp"
-        assert isinstance(web.auth, BearerAuth)
-        assert web.auth.token.get_secret_value() == "t0k"
-
-    def test_server_name_that_breaks_tool_names_is_refused(
-        self, tmp_path: Path
-    ) -> None:
-        write(
-            tmp_path / "project" / ".mcp.json",
-            {"mcpServers": {"my__srv": {"command": "x"}}},
-        )
-
-        with pytest.raises(
-            SettingsError, match=r"\.mcp\.json.*'my__srv'.*contains '__'"
-        ):
-            settings(tmp_path, Arguments()).effective()
-
-    def test_only_enabled_servers_are_kept(self, tmp_path: Path) -> None:
-        write(
-            tmp_path / "project" / ".mcp.json",
-            {"mcpServers": {"std": {"command": "x"}, "other": {"command": "y"}}},
-        )
-        arguments = Arguments(
-            settings=(json.dumps({"mcp": {"enabledServers": ["other"]}}),)
-        )
-
-        effective = settings(tmp_path, arguments).effective()
-
-        assert sorted(effective.mcp_servers) == ["other"]
-
-    def test_scope_of_tool_calls_is_read_and_absent_by_default(
-        self, tmp_path: Path
-    ) -> None:
-        arguments = Arguments(settings=(json.dumps({"mcp": {"scope": "thread-7"}}),))
-
-        assert settings(tmp_path, arguments).effective().mcp.scope == "thread-7"
-        assert settings(tmp_path).effective().mcp.scope is None
-
-    def test_sse_server_is_refused(self, tmp_path: Path) -> None:
-        write(
-            tmp_path / "project" / ".mcp.json",
-            {"mcpServers": {"old": {"type": "sse", "url": "http://x/sse"}}},
-        )
-        effective = settings(tmp_path).effective()
-
-        with pytest.raises(SettingsError, match="sse"):
-            McpServerBuilder(effective.mcp, effective.env).config(
-                "old", effective.mcp_servers["old"]
-            )
 
 
 class TestPostgresHistory:
