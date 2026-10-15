@@ -72,11 +72,13 @@ Document = dict[str, Any]
 U = TypeVar("U")
 
 
-def call(*specs: dict[str, object]) -> str:
+def call(*specs: dict[str, object]) -> list[schema.TextContentBlock]:
+    """Вопрос сценария CALL: модель вызывает перечисленные инструменты."""
+    text = f"{ScenarioName.CALL.value} {json.dumps(list(specs))}"
     if len(specs) == 1:
-        return f"{ScenarioName.CALL.value} {json.dumps(specs[0])}"
+        text = f"{ScenarioName.CALL.value} {json.dumps(specs[0])}"
 
-    return f"{ScenarioName.CALL.value} {json.dumps(list(specs))}"
+    return [schema.TextContentBlock(text=text)]
 
 
 class FakeModel:
@@ -231,7 +233,7 @@ class StandRegistration:
         self.received: list[McpMessage] = []
         self.cancelled: list[str] = []
 
-    async def answer(self, message: McpMessage) -> McpOutcome:  # noqa: PLR0912, PLR0915 — исход на инструмент
+    async def answer(self, message: McpMessage) -> McpOutcome:
         self.received.append(message)
         if message.server_id not in self._served:
             msg = f"No MCP server is registered under serverId {message.server_id!r}"
@@ -258,6 +260,12 @@ class StandRegistration:
             missing = f"Method not found: {request.method}"
             return McpErrorOutcome(error=ErrorData(code=-32601, message=missing))
 
+        return await self._call(message, request)
+
+    async def _call(
+        self, message: McpMessage, request: mt.CallToolRequest
+    ) -> McpOutcome:
+        """Исход `tools/call` по RegisteredTool."""
         name = request.params.name
         arguments: Mapping[str, Any] = {}
         if request.params.arguments is not None:
@@ -272,39 +280,7 @@ class StandRegistration:
                 shout = str(arguments["text"]).upper()
                 reply = mt.CallToolResult(content=[mt.TextContent(text=shout)])
             case RegisteredTool.SLOW:
-                steps = int(arguments["steps"])
-                pause = float(arguments["seconds"]) / steps
-                meta = request.params.meta
-                assert meta is not None
-                token = meta.get("progress_token")
-                assert token is not None
-                connection = self.connection
-                assert connection is not None
-                try:
-                    for step in range(1, steps + 1):
-                        progress = mt.ProgressNotification(
-                            params=mt.ProgressNotificationParams(
-                                progress_token=token,
-                                progress=step,
-                                total=steps,
-                                message=f"step {step} of {steps}",
-                            )
-                        )
-                        await connection.notify(
-                            McpMessage(
-                                server_id=message.server_id,
-                                request_id=message.request_id,
-                                method=progress.method,
-                                params=progress.params.model_dump(**self.WIRE),
-                            )
-                        )
-                        await asyncio.sleep(pause)
-                except asyncio.CancelledError:
-                    self.cancelled.append(message.request_id)
-                    raise
-
-                done = f"did {steps} steps"
-                reply = mt.CallToolResult(content=[mt.TextContent(text=done)])
+                reply = await self._progress(message, request, arguments)
             case RegisteredTool.FAILING:
                 failure = mt.TextContent(text=self.FAILURE)
                 reply = mt.CallToolResult(content=[failure], is_error=True)
@@ -342,6 +318,47 @@ class StandRegistration:
                 return McpErrorOutcome(error=unknown)
 
         return McpResultOutcome(result=reply.model_dump(**self.WIRE))
+
+    async def _progress(
+        self,
+        message: McpMessage,
+        request: mt.CallToolRequest,
+        arguments: Mapping[str, Any],
+    ) -> mt.CallToolResult:
+        """SLOW: ход `notifications/progress` по шагу и пауза; отмену запоминает."""
+        steps = int(arguments["steps"])
+        pause = float(arguments["seconds"]) / steps
+        meta = request.params.meta
+        assert meta is not None
+        token = meta.get("progress_token")
+        assert token is not None
+        connection = self.connection
+        assert connection is not None
+        try:
+            for step in range(1, steps + 1):
+                progress = mt.ProgressNotification(
+                    params=mt.ProgressNotificationParams(
+                        progress_token=token,
+                        progress=step,
+                        total=steps,
+                        message=f"step {step} of {steps}",
+                    )
+                )
+                await connection.notify(
+                    McpMessage(
+                        server_id=message.server_id,
+                        request_id=message.request_id,
+                        **progress.model_dump(**self.WIRE),
+                    )
+                )
+                await asyncio.sleep(pause)
+        except asyncio.CancelledError:
+            self.cancelled.append(message.request_id)
+            raise
+
+        done = f"did {steps} steps"
+
+        return mt.CallToolResult(content=[mt.TextContent(text=done)])
 
 
 class AcpClient(Client):
@@ -423,12 +440,9 @@ class AcpClient(Client):
             self._changed.clear()
             await asyncio.wait_for(self._changed.wait(), READ_TIMEOUT_SEC)
 
-    def tool_calls(self) -> list[schema.SessionToolCallUpdate]:
-        return self.of(schema.SessionToolCallUpdate)
-
     def calls_of(self, tool_call_id: str) -> list[schema.SessionToolCallUpdate]:
         found: list[schema.SessionToolCallUpdate] = []
-        for update in self.tool_calls():
+        for update in self.of(schema.SessionToolCallUpdate):
             if update.tool_call_id == tool_call_id:
                 found.append(update)
 
@@ -663,6 +677,7 @@ class AcpProcess:
         self.frames = Frames()
         self._tasks: list[asyncio.Task[None]] = []
         self._reader = asyncio.StreamReader(limit=self.LINE_LIMIT)
+        self._connection: ClientConnection | None = None
 
     @property
     def process(self) -> asyncio.subprocess.Process:
@@ -772,8 +787,23 @@ class AcpProcess:
             client, registration.answer, stdin, self._reader, observers=[self.frames]
         )
         registration.connection = connection
+        self._connection = connection
 
         return connection
+
+    async def turn(
+        self,
+        client: AcpClient,
+        session_id: str,
+        prompt: Sequence[schema.TextContentBlock | schema.ResourceContentBlock],
+    ) -> tuple[schema.PromptResponse, schema.IdleSessionStateUpdate | IdleErrorUpdate]:
+        """Ход целиком: `session/prompt` и ожидание его `idle`."""
+        assert self._connection is not None
+        response = await self._connection.prompt(
+            session_id=session_id, prompt=list(prompt)
+        )
+
+        return response, await client.idle(session_id)
 
     async def close_stdin(self) -> None:
         stdin = self.process.stdin
@@ -845,19 +875,13 @@ class Steps:
 
     @staticmethod
     async def tool_turn_streams_updates(
-        conn: ClientConnection, client: AcpClient, session_id: str
+        boba: AcpProcess, client: AcpClient, session_id: str
     ) -> None:
-        response = await conn.prompt(
-            session_id=session_id,
-            prompt=[
-                schema.TextContentBlock(
-                    text=call(
-                        {"name": "mcp__stand__add", "arguments": {"a": 1, "b": 2}}
-                    )
-                )
-            ],
+        response, idle = await boba.turn(
+            client,
+            session_id,
+            call({"name": "mcp__stand__add", "arguments": {"a": 1, "b": 2}}),
         )
-        idle = await client.idle(session_id)
         assert idle.stop_reason == StopReason.END_TURN
 
         updates = client.updates_of(session_id)
@@ -867,7 +891,7 @@ class Steps:
         assert echo.message_id == response.message_id
         assert updates[-1] is idle
 
-        start = client.tool_calls()[0]
+        start = client.of(schema.SessionToolCallUpdate)[0]
         assert start.name == "mcp__stand__add"
         assert start.title is not None
         assert start.title.startswith("mcp__stand__add ")
@@ -898,20 +922,14 @@ class Steps:
 
     @staticmethod
     async def permission_is_asked_and_remembered(
-        conn: ClientConnection, client: AcpClient, session_id: str
+        boba: AcpProcess, client: AcpClient, session_id: str
     ) -> None:
         client.choice = PermissionChoice.ALLOW_ALWAYS
-        await conn.prompt(
-            session_id=session_id,
-            prompt=[
-                schema.TextContentBlock(
-                    text=call(
-                        {"name": "mcp__stand__shout", "arguments": {"text": "hi"}}
-                    )
-                )
-            ],
+        _, idle = await boba.turn(
+            client,
+            session_id,
+            call({"name": "mcp__stand__shout", "arguments": {"text": "hi"}}),
         )
-        idle = await client.idle(session_id)
         assert idle.stop_reason == StopReason.END_TURN
         assert len(client.permissions) == 1
         asked = client.permissions[0]
@@ -929,17 +947,11 @@ class Steps:
         assert done.status == ToolStatus.COMPLETED
         assert result_text(done) == "HI"
 
-        await conn.prompt(
-            session_id=session_id,
-            prompt=[
-                schema.TextContentBlock(
-                    text=call(
-                        {"name": "mcp__stand__shout", "arguments": {"text": "again"}}
-                    )
-                )
-            ],
+        _, again = await boba.turn(
+            client,
+            session_id,
+            call({"name": "mcp__stand__shout", "arguments": {"text": "again"}}),
         )
-        again = await client.idle(session_id)
         assert again.stop_reason == StopReason.END_TURN
         assert len(client.permissions) == 1
 
@@ -990,11 +1002,11 @@ class TestTurnState:
             await handshake(conn)
             session = await conn.new_session(cwd=str(tmp_path), mcp_servers=[])
             session_id = session.session_id
-            response = await conn.prompt(
-                session_id=session_id,
-                prompt=[schema.TextContentBlock(text=ScenarioName.ANSWER.value)],
+            response, idle = await boba.turn(
+                client,
+                session_id,
+                [schema.TextContentBlock(text=ScenarioName.ANSWER.value)],
             )
-            idle = await client.idle(session_id)
 
             assert idle.stop_reason == StopReason.END_TURN
             updates = client.updates_of(session_id)
@@ -1030,11 +1042,9 @@ class TestTurnState:
             await handshake(conn)
             session = await conn.new_session(cwd=str(tmp_path), mcp_servers=[])
             broken = f"{ScenarioName.ANSWER.value} {FailureName.STATUS_500.value}"
-            response = await conn.prompt(
-                session_id=session.session_id,
-                prompt=[schema.TextContentBlock(text=broken)],
+            response, idle = await boba.turn(
+                client, session.session_id, [schema.TextContentBlock(text=broken)]
             )
-            idle = await client.idle(session.session_id)
 
             assert response.message_id
             assert isinstance(idle, IdleErrorUpdate)
@@ -1065,8 +1075,8 @@ class TestConversation:
             session_id = session.session_id
             assert session_id
 
-            await Steps.tool_turn_streams_updates(conn, client, session_id)
-            await Steps.permission_is_asked_and_remembered(conn, client, session_id)
+            await Steps.tool_turn_streams_updates(boba, client, session_id)
+            await Steps.permission_is_asked_and_remembered(boba, client, session_id)
         finally:
             await conn.close()
             await boba.close_stdin()
@@ -1116,17 +1126,11 @@ class TestConversation:
             session = await conn.new_session(
                 cwd=str(tmp_path), mcp_servers=[StandRegistration.STAND]
             )
-            await conn.prompt(
-                session_id=session.session_id,
-                prompt=[
-                    schema.TextContentBlock(
-                        text=call(
-                            {"name": "mcp__stand__shout", "arguments": {"text": "no"}}
-                        )
-                    )
-                ],
+            _, idle = await boba.turn(
+                client,
+                session.session_id,
+                call({"name": "mcp__stand__shout", "arguments": {"text": "no"}}),
             )
-            idle = await client.idle(session.session_id)
 
             assert idle.stop_reason == StopReason.END_TURN
             assert len(client.permissions) == 1
@@ -1153,14 +1157,10 @@ class TestConversation:
                 "name": "mcp__stand__progress",
                 "arguments": {"steps": 3, "seconds": 0.1},
             }
-            await conn.prompt(
-                session_id=session.session_id,
-                prompt=[schema.TextContentBlock(text=call(slow))],
-            )
-            idle = await client.idle(session.session_id)
+            _, idle = await boba.turn(client, session.session_id, call(slow))
 
             assert idle.stop_reason == StopReason.END_TURN
-            start = client.tool_calls()[0]
+            start = client.of(schema.SessionToolCallUpdate)[0]
             reports: list[str] = []
             for update in client.calls_of(start.tool_call_id):
                 if update.status != ToolStatus.IN_PROGRESS:
@@ -1203,9 +1203,10 @@ class TestConversation:
         try:
             await handshake(conn)
             session = await conn.new_session(cwd=str(tmp_path), mcp_servers=[])
-            await conn.prompt(
-                session_id=session.session_id,
-                prompt=[
+            _, idle = await boba.turn(
+                client,
+                session.session_id,
+                [
                     schema.TextContentBlock(
                         text=f"{ScenarioName.ANSWER.value} look at "
                     ),
@@ -1214,7 +1215,6 @@ class TestConversation:
                     ),
                 ],
             )
-            idle = await client.idle(session.session_id)
 
             assert idle.stop_reason == StopReason.END_TURN
             sent = model.app.requests[0]["messages"][-1]["content"]
@@ -1243,11 +1243,11 @@ class TestMcpOverAcp:
             session = await conn.new_session(
                 cwd=str(tmp_path), mcp_servers=[StandRegistration.STAND]
             )
-            await conn.prompt(
-                session_id=session.session_id,
-                prompt=[schema.TextContentBlock(text=ScenarioName.ANSWER.value)],
+            await boba.turn(
+                client,
+                session.session_id,
+                [schema.TextContentBlock(text=ScenarioName.ANSWER.value)],
             )
-            await client.idle(session.session_id)
         finally:
             await conn.close()
             await boba.close_stdin()
@@ -1305,14 +1305,10 @@ class TestMcpOverAcp:
                 {"name": "mcp__stand__retired"},
                 {"name": "mcp__stand__broken"},
             )
-            await conn.prompt(
-                session_id=session.session_id,
-                prompt=[schema.TextContentBlock(text=both)],
-            )
-            await client.idle(session.session_id)
+            await boba.turn(client, session.session_id, both)
 
             outcomes: list[schema.SessionToolCallUpdate] = []
-            for start in client.tool_calls():
+            for start in client.of(schema.SessionToolCallUpdate):
                 if start.status != ToolStatus.PENDING:
                     continue
 
@@ -1320,7 +1316,7 @@ class TestMcpOverAcp:
 
             gone, retired, broken = outcomes
             assert gone.status == ToolStatus.FAILED
-            assert "got no result from its mcp server" in result_text(gone)
+            assert "got ACP error -33002" in result_text(gone)
             assert isinstance(gone.raw_output, dict)
             assert gone.raw_output["error_kind"] == "mcp_transport_error"
 
@@ -1352,13 +1348,9 @@ class TestMcpOverAcp:
                 cwd=str(tmp_path), mcp_servers=[StandRegistration.STAND]
             )
             asking = call({"name": "mcp__stand__asking"})
-            await conn.prompt(
-                session_id=session.session_id,
-                prompt=[schema.TextContentBlock(text=asking)],
-            )
-            await client.idle(session.session_id)
+            await boba.turn(client, session.session_id, asking)
 
-            done = client.tool_calls()[-1]
+            done = client.of(schema.SessionToolCallUpdate)[-1]
             assert done.status == ToolStatus.FAILED
             assert "input_required" in result_text(done)
             assert done.raw_output == {
@@ -1386,13 +1378,9 @@ class TestMcpOverAcp:
                 cwd=str(tmp_path), mcp_servers=[StandRegistration.STAND]
             )
             mixed = call({"name": "mcp__stand__blocks"})
-            await conn.prompt(
-                session_id=session.session_id,
-                prompt=[schema.TextContentBlock(text=mixed)],
-            )
-            await client.idle(session.session_id)
+            await boba.turn(client, session.session_id, mixed)
 
-            done = client.tool_calls()[-1]
+            done = client.of(schema.SessionToolCallUpdate)[-1]
             assert done.status == ToolStatus.COMPLETED
             assert isinstance(done.raw_output, dict)
             assert len(done.raw_output["content"]) == 3
@@ -1421,35 +1409,17 @@ class TestMcpOverAcp:
                 cwd=str(tmp_path), mcp_servers=[StandRegistration.STAND]
             )
             await asyncio.gather(
-                conn.prompt(
-                    session_id=first.session_id,
-                    prompt=[
-                        schema.TextContentBlock(
-                            text=call(
-                                {
-                                    "name": "mcp__stand__add",
-                                    "arguments": {"a": 1, "b": 2},
-                                }
-                            )
-                        )
-                    ],
+                boba.turn(
+                    client,
+                    first.session_id,
+                    call({"name": "mcp__stand__add", "arguments": {"a": 1, "b": 2}}),
                 ),
-                conn.prompt(
-                    session_id=second.session_id,
-                    prompt=[
-                        schema.TextContentBlock(
-                            text=call(
-                                {
-                                    "name": "mcp__stand__add",
-                                    "arguments": {"a": 10, "b": 20},
-                                }
-                            )
-                        )
-                    ],
+                boba.turn(
+                    client,
+                    second.session_id,
+                    call({"name": "mcp__stand__add", "arguments": {"a": 10, "b": 20}}),
                 ),
             )
-            await client.idle(first.session_id)
-            await client.idle(second.session_id)
 
             answers: list[str] = []
             for session_id in (first.session_id, second.session_id):
@@ -1495,7 +1465,7 @@ class TestQueueAndCancel:
             first, second = await asyncio.gather(
                 conn.prompt(
                     session_id=session_id,
-                    prompt=[schema.TextContentBlock(text=call(slow))],
+                    prompt=[*call(slow)],
                 ),
                 conn.prompt(
                     session_id=session_id,
@@ -1548,7 +1518,7 @@ class TestQueueAndCancel:
             }
             await conn.prompt(
                 session_id=session.session_id,
-                prompt=[schema.TextContentBlock(text=call(slow))],
+                prompt=[*call(slow)],
             )
             while not client.of(schema.SessionToolCallUpdate):
                 await asyncio.sleep(0.05)
@@ -1560,7 +1530,7 @@ class TestQueueAndCancel:
             idle = await client.idle(session.session_id)
 
             assert idle.stop_reason == StopReason.CANCELLED
-            start = client.tool_calls()[0]
+            start = client.of(schema.SessionToolCallUpdate)[0]
             assert client.calls_of(start.tool_call_id)[-1].status == ToolStatus.FAILED
             async with asyncio.timeout(READ_TIMEOUT_SEC):
                 while not registration.cancelled:
@@ -1587,11 +1557,7 @@ class TestQueueAndCancel:
             await conn.prompt(
                 session_id=session.session_id,
                 prompt=[
-                    schema.TextContentBlock(
-                        text=call(
-                            {"name": "mcp__stand__shout", "arguments": {"text": "x"}}
-                        )
-                    )
+                    *call({"name": "mcp__stand__shout", "arguments": {"text": "x"}})
                 ],
             )
             asked = await client.next_permission(0)
@@ -1603,11 +1569,11 @@ class TestQueueAndCancel:
 
             client.hold.set()
             await asyncio.sleep(0.2)
-            await conn.prompt(
-                session_id=session.session_id,
-                prompt=[schema.TextContentBlock(text=ScenarioName.ANSWER.value)],
+            _, again = await boba.turn(
+                client,
+                session.session_id,
+                [schema.TextContentBlock(text=ScenarioName.ANSWER.value)],
             )
-            again = await client.idle(session.session_id)
             assert again.stop_reason == StopReason.END_TURN
         finally:
             await conn.close()
@@ -1704,14 +1670,10 @@ class TestRefusals:
                 {"name": "mcp__first__add", "arguments": {"a": 1, "b": 2}},
                 {"name": "mcp__second__add", "arguments": {"a": 10, "b": 20}},
             )
-            await conn.prompt(
-                session_id=session.session_id,
-                prompt=[schema.TextContentBlock(text=both)],
-            )
-            await client.idle(session.session_id)
+            await boba.turn(client, session.session_id, both)
 
             starts: list[schema.SessionToolCallUpdate] = []
-            for update in client.tool_calls():
+            for update in client.of(schema.SessionToolCallUpdate):
                 if update.status == ToolStatus.PENDING:
                     starts.append(update)
 
@@ -1765,11 +1727,11 @@ class TestLifecycle:
         conn = await boba.start(client, registration)
         await handshake(conn)
         session = await conn.new_session(cwd=str(tmp_path), mcp_servers=[])
-        await conn.prompt(
-            session_id=session.session_id,
-            prompt=[schema.TextContentBlock(text=ScenarioName.ANSWER.value)],
+        _, idle = await boba.turn(
+            client,
+            session.session_id,
+            [schema.TextContentBlock(text=ScenarioName.ANSWER.value)],
         )
-        idle = await client.idle(session.session_id)
         assert idle.stop_reason == StopReason.END_TURN
 
         boba.process.send_signal(signal.SIGTERM)
@@ -1810,7 +1772,7 @@ class TestHistory:
     """Сессии и история: второй процесс над тем же журналом."""
 
     PROMPTS: ClassVar[tuple[str, ...]] = (
-        call({"name": "mcp__stand__add", "arguments": {"a": 2, "b": 3}}),
+        call({"name": "mcp__stand__add", "arguments": {"a": 2, "b": 3}})[0].text,
         ScenarioName.THINKING_ANSWER.value,
     )
 
@@ -1828,11 +1790,9 @@ class TestHistory:
                 cwd=str(cwd), mcp_servers=[StandRegistration.STAND]
             )
             for prompt in self.PROMPTS:
-                await conn.prompt(
-                    session_id=session.session_id,
-                    prompt=[schema.TextContentBlock(text=prompt)],
+                _, idle = await boba.turn(
+                    client, session.session_id, [schema.TextContentBlock(text=prompt)]
                 )
-                idle = await client.idle(session.session_id)
                 assert idle.stop_reason == StopReason.END_TURN
         finally:
             await conn.close()
@@ -1880,11 +1840,11 @@ class TestHistory:
                 for m in second.frames.incoming_after(answered_at)
             )
 
-            await conn.prompt(
-                session_id=session_id,
-                prompt=[schema.TextContentBlock(text=ScenarioName.ANSWER.value)],
+            _, idle = await second.turn(
+                client,
+                session_id,
+                [schema.TextContentBlock(text=ScenarioName.ANSWER.value)],
             )
-            idle = await client.idle(session_id)
             assert idle.stop_reason == StopReason.END_TURN
         finally:
             await conn.close()
@@ -1919,11 +1879,11 @@ class TestHistory:
             )
             assert client.updates == []
 
-            await conn.prompt(
-                session_id=session_id,
-                prompt=[schema.TextContentBlock(text=ScenarioName.ANSWER.value)],
+            _, idle = await second.turn(
+                client,
+                session_id,
+                [schema.TextContentBlock(text=ScenarioName.ANSWER.value)],
             )
-            idle = await client.idle(session_id)
             assert idle.stop_reason == StopReason.END_TURN
             assert client.of(schema.AgentMessageChunk)
         finally:
@@ -1989,11 +1949,11 @@ class TestHistory:
             await handshake(conn)
             session = await conn.new_session(cwd=str(tmp_path), mcp_servers=[])
             session_id = session.session_id
-            await conn.prompt(
-                session_id=session_id,
-                prompt=[schema.TextContentBlock(text=ScenarioName.ANSWER.value)],
+            _, idle = await boba.turn(
+                client,
+                session_id,
+                [schema.TextContentBlock(text=ScenarioName.ANSWER.value)],
             )
-            idle = await client.idle(session_id)
             assert idle.stop_reason == StopReason.END_TURN
 
             await conn.close_session(session_id=session_id)
@@ -2019,11 +1979,11 @@ class TestHistory:
             assert [item[0] for item in view] == ["user", "agent"]
             assert view[0][2] == ScenarioName.ANSWER.value
 
-            await conn.prompt(
-                session_id=session_id,
-                prompt=[schema.TextContentBlock(text=ScenarioName.ANSWER.value)],
+            _, again = await boba.turn(
+                client,
+                session_id,
+                [schema.TextContentBlock(text=ScenarioName.ANSWER.value)],
             )
-            again = await client.idle(session_id)
             assert again.stop_reason == StopReason.END_TURN
         finally:
             await conn.close()
@@ -2064,11 +2024,9 @@ class TestListAndDelete:
 
             spoken = await conn.new_session(cwd=str(spoken_cwd), mcp_servers=[])
             question = f"{ScenarioName.ANSWER.value} what is the plan\nsecond line"
-            await conn.prompt(
-                session_id=spoken.session_id,
-                prompt=[schema.TextContentBlock(text=question)],
+            await boba.turn(
+                client, spoken.session_id, [schema.TextContentBlock(text=question)]
             )
-            await client.idle(spoken.session_id)
             for session_id in [*created, spoken.session_id]:
                 await conn.close_session(session_id=session_id)
 
@@ -2118,11 +2076,11 @@ class TestListAndDelete:
             await handshake(conn)
             session = await conn.new_session(cwd=str(tmp_path), mcp_servers=[])
             session_id = session.session_id
-            await conn.prompt(
-                session_id=session_id,
-                prompt=[schema.TextContentBlock(text=ScenarioName.ANSWER.value)],
+            await boba.turn(
+                client,
+                session_id,
+                [schema.TextContentBlock(text=ScenarioName.ANSWER.value)],
             )
-            await client.idle(session_id)
             journal = tmp_path / "history" / f"{session_id}.jsonl"
             assert journal.exists()
 
@@ -2211,11 +2169,11 @@ class TestSessionSettings:
                 assert item.name
                 assert item.description
 
-            await conn.prompt(
-                session_id=session_id,
-                prompt=[schema.TextContentBlock(text=ScenarioName.ANSWER.value)],
+            await boba.turn(
+                client,
+                session_id,
+                [schema.TextContentBlock(text=ScenarioName.ANSWER.value)],
             )
-            await client.idle(session_id)
             await conn.close_session(session_id=session_id)
             replayed = await conn.resume_session(
                 cwd=str(tmp_path),
@@ -2274,19 +2232,15 @@ class TestSessionSettings:
             assert len(announced) == 1
             assert option_of(announced[0], ConfigOptionId.MODE).current_value == "plan"
 
-            await conn.prompt(
-                session_id=session_id,
-                prompt=[
-                    schema.TextContentBlock(
-                        text=call(
-                            {"name": "mcp__stand__shout", "arguments": {"text": "x"}}
-                        )
-                    )
-                ],
+            await boba.turn(
+                client,
+                session_id,
+                call({"name": "mcp__stand__shout", "arguments": {"text": "x"}}),
             )
-            await client.idle(session_id)
             assert client.permissions == []
-            calls = client.calls_of(client.tool_calls()[0].tool_call_id)
+            calls = client.calls_of(
+                client.of(schema.SessionToolCallUpdate)[0].tool_call_id
+            )
             assert [c.status for c in calls] == [ToolStatus.PENDING, ToolStatus.FAILED]
             assert "plan" in result_text(calls[-1]).lower()
 
@@ -2309,17 +2263,11 @@ class TestSessionSettings:
             assert option_of(changed, ConfigOptionId.MODEL).current_value == "fake"
             assert len(client.of(schema.ConfigOptionUpdate)) == 2
 
-            await conn.prompt(
-                session_id=session_id,
-                prompt=[
-                    schema.TextContentBlock(
-                        text=call(
-                            {"name": "mcp__stand__shout", "arguments": {"text": "y"}}
-                        )
-                    )
-                ],
+            await boba.turn(
+                client,
+                session_id,
+                call({"name": "mcp__stand__shout", "arguments": {"text": "y"}}),
             )
-            await client.idle(session_id)
             assert len(client.permissions) == 1
         finally:
             await conn.close()
@@ -2355,11 +2303,11 @@ class TestSessionSettings:
                 "fake",
                 "second",
             ]
-            await conn.prompt(
-                session_id=session_id,
-                prompt=[schema.TextContentBlock(text=ScenarioName.ANSWER.value)],
+            await boba.turn(
+                client,
+                session_id,
+                [schema.TextContentBlock(text=ScenarioName.ANSWER.value)],
             )
-            await client.idle(session_id)
 
             changed = await conn.set_config_option(
                 session_id=session_id,
@@ -2373,11 +2321,11 @@ class TestSessionSettings:
                 "second"
             )
 
-            await conn.prompt(
-                session_id=session_id,
-                prompt=[schema.TextContentBlock(text=ScenarioName.ANSWER.value)],
+            _, idle = await boba.turn(
+                client,
+                session_id,
+                [schema.TextContentBlock(text=ScenarioName.ANSWER.value)],
             )
-            idle = await client.idle(session_id)
             assert idle.stop_reason == StopReason.END_TURN
             assert [r["model"] for r in model.app.requests] == [
                 "fake-model",
@@ -2431,10 +2379,8 @@ class TestSessionSettings:
                 "name": "mcp__stand__progress",
                 "arguments": {"steps": 1, "seconds": 2.0},
             }
-            await conn.prompt(
-                session_id=session_id, prompt=[schema.TextContentBlock(text=call(slow))]
-            )
-            while not client.tool_calls():
+            await conn.prompt(session_id=session_id, prompt=[*call(slow)])
+            while not client.of(schema.SessionToolCallUpdate):
                 await asyncio.sleep(0.05)
 
             with pytest.raises(RequestError) as busy:
@@ -2507,11 +2453,11 @@ class TestServiceUpdates:
             await handshake(conn)
             session = await conn.new_session(cwd=str(tmp_path), mcp_servers=[])
             session_id = session.session_id
-            await conn.prompt(
-                session_id=session_id,
-                prompt=[schema.TextContentBlock(text=f"{self.TITLE}\nsecond line")],
+            await boba.turn(
+                client,
+                session_id,
+                [schema.TextContentBlock(text=f"{self.TITLE}\nsecond line")],
             )
-            await client.idle(session_id)
             usage = client.of(schema.UsageUpdate)
             assert len(usage) == 1
             assert usage[0].size == self.SIZE
@@ -2526,11 +2472,11 @@ class TestServiceUpdates:
                 schema.IdleSessionStateUpdate,
             ]
 
-            await conn.prompt(
-                session_id=session_id,
-                prompt=[schema.TextContentBlock(text=ScenarioName.ANSWER.value)],
+            await boba.turn(
+                client,
+                session_id,
+                [schema.TextContentBlock(text=ScenarioName.ANSWER.value)],
             )
-            await client.idle(session_id)
             assert len(client.of(schema.UsageUpdate)) == 2
             assert len(client.of(schema.SessionInfoUpdate)) == 1
             ending = client.updates_of(session_id)[-2:]
@@ -2587,19 +2533,15 @@ class TestServiceUpdates:
                 )
                 session_id = session.session_id
                 large = {"name": "mcp__stand__large", "arguments": {"size": 24000}}
-                await conn.prompt(
-                    session_id=session_id,
-                    prompt=[schema.TextContentBlock(text=call(large))],
-                )
-                first = await client.idle(session_id)
+                _, first = await boba.turn(client, session_id, call(large))
                 assert first.stop_reason == StopReason.END_TURN
                 assert len(client.of(schema.UsageUpdate)) == 1
 
-                await conn.prompt(
-                    session_id=session_id,
-                    prompt=[schema.TextContentBlock(text=ScenarioName.ANSWER.value)],
+                _, second = await boba.turn(
+                    client,
+                    session_id,
+                    [schema.TextContentBlock(text=ScenarioName.ANSWER.value)],
                 )
-                second = await client.idle(session_id)
                 assert second.stop_reason == StopReason.END_TURN
                 usage = client.of(schema.UsageUpdate)
                 assert len(usage) == 3
@@ -2708,18 +2650,18 @@ class TestFork:
             assert view.user_texts(branch) == [self.PROMPTS[0]]
             assert len(view.without_user(branch)) >= 3
 
-            await conn.prompt(
-                session_id=branch_id,
-                prompt=[schema.TextContentBlock(text=ScenarioName.ANSWER.value)],
+            _, branch_idle = await second.turn(
+                client,
+                branch_id,
+                [schema.TextContentBlock(text=ScenarioName.ANSWER.value)],
             )
-            branch_idle = await client.idle(branch_id)
             assert branch_idle.stop_reason == StopReason.END_TURN
 
-            await conn.prompt(
-                session_id=session_id,
-                prompt=[schema.TextContentBlock(text=ScenarioName.ANSWER.value)],
+            _, again = await second.turn(
+                client,
+                session_id,
+                [schema.TextContentBlock(text=ScenarioName.ANSWER.value)],
             )
-            again = await client.idle(session_id)
             assert again.stop_reason == StopReason.END_TURN
         finally:
             await conn.close()
@@ -2761,11 +2703,11 @@ class TestFork:
                 session_id=session_id,
                 mcp_servers=[StandRegistration.STAND],
             )
-            await conn.prompt(
-                session_id=session_id,
-                prompt=[schema.TextContentBlock(text=ScenarioName.ANSWER.value)],
+            _, idle = await second.turn(
+                client,
+                session_id,
+                [schema.TextContentBlock(text=ScenarioName.ANSWER.value)],
             )
-            idle = await client.idle(session_id)
             assert idle.stop_reason == StopReason.END_TURN
 
             forked = await conn.fork_session(
@@ -2840,11 +2782,11 @@ class TestFork:
                 schema.UsageUpdate
             ]
 
-            await conn.prompt(
-                session_id=branch_id,
-                prompt=[schema.TextContentBlock(text=ScenarioName.ANSWER.value)],
+            _, idle = await second.turn(
+                client,
+                branch_id,
+                [schema.TextContentBlock(text=ScenarioName.ANSWER.value)],
             )
-            idle = await client.idle(branch_id)
             assert idle.stop_reason == StopReason.END_TURN
         finally:
             await conn.close()
