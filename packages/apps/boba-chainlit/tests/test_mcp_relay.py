@@ -10,7 +10,7 @@ import asyncio
 import base64
 import secrets
 import sys
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator
 from datetime import timedelta
 from pathlib import Path
 from typing import Any, ClassVar
@@ -76,17 +76,6 @@ def standard() -> McpServersConfig:
     )
 
     return McpServersConfig(servers={"standard": server})
-
-
-@pytest.fixture(scope="module")
-def boba_service(tmp_path_factory: pytest.TempPathFactory) -> Iterator[ServiceProcess]:
-    """Стенд boba-mcp отдельным процессом: вход proxy, инструменты-заглушки."""
-    process = ServiceProcess(tmp_path_factory.mktemp("boba-mcp"))
-    try:
-        process.await_listening()
-        yield process
-    finally:
-        process.stop()
 
 
 class TestMcpRelay:
@@ -332,12 +321,12 @@ class TestRelaySealing:
 
     async def test_sealing_is_applied_to_the_call(
         self,
-        boba_service: ServiceProcess,
+        service_process: ServiceProcess,
         store: ConnectionStore,
         call_stand: CallStand,
         tab: TabSession,
     ) -> None:
-        servers = McpServers(boba_service.servers())
+        servers = McpServers(service_process.servers())
         keys = ProcessKeys()
         callers = ChatCallers(keys)
         credentials = KerberosCredentialSource(None, NoRefresh())

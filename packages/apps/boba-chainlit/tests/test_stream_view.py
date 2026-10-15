@@ -1119,7 +1119,7 @@ class TestStreamButton:
         async def flowed() -> tuple[str, str]:
             view, step = await self._running_step(journals, ElementSink(), TOOL_NAME)
             for number in range(1, 26):
-                await view.tool_progressed(step, number, None, f"message {number}")
+                await view.tool_progressed(step, f"message {number}")
 
             running = str(step.output)
             await view.tool_finished(step, "done", CALL_ID)

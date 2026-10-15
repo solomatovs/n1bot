@@ -40,7 +40,6 @@ class TestProcessKeys:
         keys.revoke(first)
         assert keys.holder(second) is holder
 
-
     async def test_each_registered_server_gets_its_own_server_id(self) -> None:
         keys = ProcessKeys()
         holder = TabSession().holder(uuid4(), "general")
