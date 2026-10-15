@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import AsyncIterator
 from typing import Any, cast
 
 import mcp_types as mt
@@ -150,8 +150,10 @@ class FakeContext:
 
 
 @pytest.fixture
-def recorded() -> Iterator[FakeEmitter]:
-    """Контекст chainlit теста с эмиттером-рекордером."""
+async def recorded() -> AsyncIterator[FakeEmitter]:
+    """Контекст chainlit теста с эмиттером-рекордером. Фикстура асинхронная:
+    раннер anyio, переживший тест с сессионной асинхронной фикстурой, ведёт
+    тесты в своей задаче, и переменную контекста видно только оттуда."""
     context = FakeContext(THREAD)
     token = context_var.set(cast("ChainlitContext", context))
     try:
