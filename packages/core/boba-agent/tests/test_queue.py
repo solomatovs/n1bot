@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import mcp_types as mt
 import pytest
 
 from boba.agent.history import SessionId
@@ -14,7 +15,12 @@ from boba.agent.queue import (
     QueueRefusedError,
     QueueSource,
 )
-from boba.agent.records import QueueOperation, QueueOperationRecord, QueueRemoveReason
+from boba.agent.records import (
+    QueueOperation,
+    QueueOperationRecord,
+    QueueRemoveReason,
+    TextBlock,
+)
 from boba.agent.session import Session
 
 SESSION = SessionId(value="q-1")
@@ -60,13 +66,13 @@ class TestOrder:
         queue.enqueue(prompt("now one", QueuePriority.NOW))
         queue.enqueue(prompt("next two"))
 
-        order: list[str] = []
+        order: list[object] = []
         while True:
             taken = queue.take()
             if taken is None:
                 break
 
-            order.append(taken.text)
+            order.append(taken.content)
 
         assert order == ["now one", "next one\nnext two", "later one", "task done"]
 
@@ -80,7 +86,7 @@ class TestOrder:
         first = queue.take()
 
         assert first is not None
-        assert first.text == "a\nb"
+        assert first.content == "a\nb"
         assert [item.text for item in first.items] == ["a", "b"]
         assert len(queue) == 2
 
@@ -99,8 +105,20 @@ class TestOrder:
         first = queue.take()
 
         assert first is not None
-        assert first.text == "a"
+        assert first.content == "a"
         assert len(queue) == 1
+
+    def test_links_follow_the_text_block_and_plain_prompts_stay_a_string(
+        self,
+    ) -> None:
+        _, queue = fresh()
+        link = mt.ResourceLink(name="a.txt", uri="http://chat/a.txt")
+        queue.enqueue(QueueEntry(kind=QueueKind.PROMPT, text="look", links=(link,)))
+
+        taken = queue.take()
+
+        assert taken is not None
+        assert taken.content == [TextBlock(text="look"), link]
 
     def test_empty_queue_takes_nothing(self) -> None:
         _, queue = fresh()

@@ -15,6 +15,8 @@ from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from typing import ClassVar
 
+import mcp_types as mt
+
 from boba.agent.attachments import AttachmentKind, PromptSnapshot
 from boba.agent.profile import ModelProfile, ReasoningReturn
 from boba.agent.records import (
@@ -22,6 +24,7 @@ from boba.agent.records import (
     AttachmentRecord,
     AttachmentRole,
     ChainRecord,
+    LinkText,
     TextBlock,
     ThinkingBlock,
     ToolResultBlock,
@@ -248,6 +251,10 @@ class RequestBuilder:
         for block in content:
             if isinstance(block, ToolResultBlock):
                 turn.results.append(block)
+                continue
+
+            if isinstance(block, mt.ResourceLink):
+                turn.texts.append(LinkText.TEMPLATE.render(block))
                 continue
 
             turn.texts.append(self._shield.shield(block.text))

@@ -593,8 +593,9 @@ class AcpMapping:
 
     def user_updates(self, record: UserRecord) -> Iterator[Update]:
         """Запись `user`: итоги вызовов либо вопрос человека целым
-        сообщением `user_message` с uuid записи как `messageId`; служебные
-        записи в ленту не идут."""
+        сообщением `user_message` с uuid записи как `messageId` — текст, за
+        ним ссылки на вложения блоками resource_link; служебные записи в
+        ленту не идут."""
         results = self.tool_results(record)
         if results:
             yield from results
@@ -604,9 +605,12 @@ class AcpMapping:
         if text is None:
             return
 
-        yield schema.UserMessageUpdate(
-            message_id=record.uuid, content=[schema.TextContentBlock(text=text)]
-        )
+        content: list[ContentBlock] = [schema.TextContentBlock(text=text)]
+        for link in record.message.links():
+            dumped = link.model_dump(mode="json", by_alias=True, exclude_none=True)
+            content.append(schema.ResourceContentBlock.model_validate(dumped))
+
+        yield schema.UserMessageUpdate(message_id=record.uuid, content=content)
 
     def replay(
         self, conversation: Sequence[ChainRecord], hints: ToolHintSource
@@ -785,32 +789,35 @@ class AcpMapping:
 
 
 class PromptText:
-    """Текст вопроса из блоков `session/prompt`: текст как есть, ссылка на
-    ресурс — ссылкой markdown; прочие блоки агент не объявлял."""
+    """Вопрос из блоков `session/prompt` элементом очереди: текст как есть,
+    ссылки на ресурсы — блоками resource_link записи `user`; прочие блоки
+    агент не объявлял."""
 
-    LINK: ClassVar[str] = "[@{name}]({uri})"
-
-    def render(self, blocks: Sequence[ContentBlock]) -> str:
+    def render(self, blocks: Sequence[ContentBlock]) -> QueueEntry:
         """Ошибки:
         RequestError — блок неподдержанного вида или пустой вопрос (-32602).
         """
         parts: list[str] = []
+        links: list[mt.ResourceLink] = []
         for block in blocks:
+            if isinstance(block, schema.ResourceContentBlock):
+                dumped = block.model_dump(mode="json", by_alias=True, exclude_none=True)
+                links.append(mt.ResourceLink.model_validate(dumped))
+                continue
+
             parts.append(self._part(block))
 
         text = "".join(parts)
-        if not text.strip():
+        empty = not text.strip()
+        if empty and not links:
             data = {ErrorDataKey.DETAILS.value: "the prompt has no text to send"}
             raise RequestError.invalid_params(data)
 
-        return text
+        return QueueEntry(kind=QueueKind.PROMPT, text=text, links=links)
 
     def _part(self, block: ContentBlock) -> str:
         if isinstance(block, schema.TextContentBlock):
             return block.text
-
-        if isinstance(block, schema.ResourceContentBlock):
-            return self.LINK.format(name=block.name, uri=block.uri)
 
         details = (
             f"prompt blocks of type '{block.type}' are not supported: this agent "
@@ -1633,7 +1640,7 @@ class AcpSession:
         update = self._mapping.idle_error(type(failure).__name__, str(failure))
         self._reports.append(asyncio.create_task(self._relay.failed(update)))
 
-    async def prompt(self, text: str) -> schema.PromptResponse:
+    async def prompt(self, asked: QueueEntry) -> schema.PromptResponse:
         """Ставит вопрос в очередь ядра; `messageId` ответа — uuid записи
         `user`, которую напишет его ход.
 
@@ -1656,7 +1663,7 @@ class AcpSession:
         if len(agent.queue) > 0:
             priority = QueuePriority.LATER
 
-        entry = QueueEntry(kind=QueueKind.PROMPT, text=text, priority=priority)
+        entry = asked.model_copy(update={"priority": priority})
         try:
             item = agent.queue.enqueue(entry)
         except QueueRefusedError as exc:
@@ -1924,11 +1931,11 @@ class AcpAgent(AcpAgentProtocol):
             сессию держит другой процесс (-32603).
         """
         held = self._session(session_id)
-        text = self._prompts.render(prompt)
+        asked = self._prompts.render(prompt)
         if isinstance(held, ObserverSession):
             held = await self._claim(session_id, held)
 
-        return await held.prompt(text)
+        return await held.prompt(asked)
 
     async def _claim(self, session_id: str, observer: ObserverSession) -> AcpSession:
         """Наблюдатель берёт замок: сессия открывается по-настоящему и
