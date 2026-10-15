@@ -1,7 +1,7 @@
-"""Лента из уведомлений ACP: один переводчик для живого хода (через шину) и
-воспроизведения (`session/load`); идентификаторы шагов из `messageId` и
-`toolCallId` по правилам ChatView.derive_id; итог вызова из `rawOutput`
-(артефакт, адрес журнала); панель про агента.
+"""Лента из уведомлений ACP v2: один переводчик для живого хода (через шину)
+и воспроизведения (`session/resume`); идентификаторы шагов из `messageId` и
+`toolCallId` по правилам ChatView.derive_id; итог вызова из `rawOutput` —
+ответа сервера MCP (артефакт, адрес журнала); панель про агента.
 """
 
 from __future__ import annotations
@@ -9,17 +9,9 @@ from __future__ import annotations
 from collections.abc import Iterator
 from typing import Any, cast
 
+import mcp_types as mt
 import pytest
-from acp import (
-    start_tool_call,
-    text_block,
-    tool_content,
-    update_agent_message,
-    update_agent_thought,
-    update_tool_call,
-    update_user_message,
-)
-from acp.schema import SessionConfigOptionSelect, SessionConfigSelectOption
+from acp.experimental.v2 import schema
 from chainlit.context import ChainlitContext, context_var
 from chainlit.step import StepDict
 from pydantic import SecretStr
@@ -41,7 +33,6 @@ from boba.chainlit.chat.feed import QuestionBody, TurnFeed
 from boba.chainlit.chat.panel_text import PanelText
 from boba.chainlit.domain.fields import StepField
 from boba.chainlit.rendering.acp_view import (
-    MetaKey,
     SessionUpdateCodec,
     ToolMedia,
     UpdateView,
@@ -58,16 +49,10 @@ from boba.chat.profiles import ChatProfileConfig, UserSetting
 from boba.identity.context import Scope
 from boba.messaging import LockToken, MemoryMessageBus, MemoryPayloadStore, TurnOutcome
 from boba.stand.refs import StandRefs
-from boba.toolkit.dag import (
-    JournalAddress,
-    ToolCard,
-    ToolHints,
-    ToolUseResult,
-    ToolUseResults,
-    WorkflowNodeResult,
-    WorkflowResult,
-)
-from boba.toolkit.result import ErrorResult, MarkdownResult
+from boba.toolkit.dag import DagNode, JournalAddress, NodeOutcomes
+from boba.toolkit.result import MarkdownResult
+from boba.toolkit.wire import ResultWire
+from boba.transport.acp.protocol import IdleErrorUpdate
 
 THREAD = "11111111-1111-1111-1111-111111111111"
 QUESTION = "22222222-2222-2222-2222-222222222222"
@@ -183,51 +168,61 @@ def _id(key: str, role: StepRole) -> str:
 
 
 def _chunk(text: str, message_id: str) -> SessionUpdate:
-    chunk = update_agent_message(text_block(text))
-    chunk.message_id = message_id
+    content = schema.TextContentBlock(text=text)
 
-    return chunk
+    return schema.AgentMessageChunk(message_id=message_id, content=content)
 
 
 def _thought(text: str, message_id: str) -> SessionUpdate:
-    chunk = update_agent_thought(text_block(text))
-    chunk.message_id = message_id
+    content = schema.TextContentBlock(text=text)
 
-    return chunk
+    return schema.AgentThoughtChunk(message_id=message_id, content=content)
 
 
 def _call(call_id: str, name: str, args: dict[str, Any]) -> SessionUpdate:
-    start = start_tool_call(
-        call_id, f"{name} {args}", status="pending", raw_input=dict(args)
+    return schema.SessionToolCallUpdate(
+        tool_call_id=call_id,
+        name=name,
+        title=f"{name} {args}",
+        status="pending",
+        raw_input=dict(args),
     )
-    start.field_meta = {MetaKey.TOOL_NAME.value: name}
-
-    return start
 
 
 def _done(call_id: str, text: str, raw_output: Any) -> SessionUpdate:
-    return update_tool_call(
-        call_id,
+    content = schema.ContentToolCallContent(content=schema.TextContentBlock(text=text))
+
+    return schema.SessionToolCallUpdate(
+        tool_call_id=call_id,
         status="completed",
-        content=[tool_content(text_block(text))],
+        content=[content],
         raw_output=raw_output,
     )
 
 
-def _result(text: str, journal: JournalAddress | None = None) -> dict[str, Any]:
-    return ToolUseResult(
-        artifact=MarkdownResult(text=text, elapsed_ms=12).model_dump(
-            mode="json", exclude_none=True
-        ),
-        journal=journal,
-    ).model_dump(mode="json", exclude_none=True)
+def _result(text: str, run: str = "") -> dict[str, Any]:
+    """Ответ tools/call сервера boba-mcp: текст для модели и модель результата
+    в structuredContent; run — запуск, под которым сервер ведёт журнал."""
+    call = DagNode(key="srv-call", tool="pg_query")
+    outcome = NodeOutcomes().of(call, MarkdownResult(text=text, elapsed_ms=12), False)
+    wire = ResultWire().packed(outcome)
+    structured = wire.structured
+    if run and structured is not None:
+        structured = ResultWire().stamped(structured, run)
+
+    reply = mt.CallToolResult(
+        content=[mt.TextContent(text=wire.content)],
+        structured_content=structured,
+        is_error=wire.is_error,
+    )
+
+    return reply.model_dump(mode="json", by_alias=True, exclude_none=True)
 
 
 def _question() -> SessionUpdate:
-    question = update_user_message(text_block("hello"))
-    question.message_id = QUESTION
-
-    return question
+    return schema.UserMessageUpdate(
+        message_id=QUESTION, content=[schema.TextContentBlock(text="hello")]
+    )
 
 
 def _turn_updates() -> list[SessionUpdate]:
@@ -237,7 +232,7 @@ def _turn_updates() -> list[SessionUpdate]:
         _thought("think", MESSAGE),
         _chunk("First ", MESSAGE),
         _call(CALL, "mcp__boba__pg_query", {"sql": "select 1"}),
-        update_tool_call(CALL, status="in_progress"),
+        schema.SessionToolCallUpdate(tool_call_id=CALL, status="in_progress"),
         _done(CALL, "1", _result("one row")),
         _chunk("and then ", SECOND_MESSAGE),
         _chunk("done.", SECOND_MESSAGE),
@@ -296,8 +291,8 @@ class TestUpdateViewIds:
         updates.begin_turn(QUESTION)
 
         address = JournalAddress(server="boba", run="run-7", call="srv-call")
-        await updates.apply(_call(CALL, "bash", {"cmd": "ls"}))
-        await updates.apply(_done(CALL, "ok", _result("ok", address)))
+        await updates.apply(_call(CALL, "mcp__boba__bash", {"cmd": "ls"}))
+        await updates.apply(_done(CALL, "ok", _result("ok", "run-7")))
 
         assert await journals.address(THREAD, CALL) == address
 
@@ -309,10 +304,11 @@ class TestUpdateViewIds:
         updates.begin_turn(QUESTION)
 
         await updates.apply(_call(CALL, "nope", {}))
-        failed = update_tool_call(
-            CALL,
+        content = schema.TextContentBlock(text="unknown tool")
+        failed = schema.SessionToolCallUpdate(
+            tool_call_id=CALL,
             status="failed",
-            content=[tool_content(text_block("unknown tool"))],
+            content=[schema.ContentToolCallContent(content=content)],
             raw_output="unknown tool",
         )
         await updates.apply(failed)
@@ -323,121 +319,19 @@ class TestUpdateViewIds:
         assert str(step.get(StepField.NAME)).startswith("✖ nope")
 
     @pytest.mark.anyio
-    async def test_workflow_call_is_drawn_as_steps_of_its_nodes(
-        self, runtime_stand: StandRefs, recorded: FakeEmitter
-    ) -> None:
-        """Вызов workflow — шаги его узлов под идентификаторами вызовов узлов:
-        каждый кончается своим результатом и получает свой адрес журнала."""
-        journals = RemoteJournals()
-        updates = _view(runtime_stand, journals)
-        updates.begin_turn(QUESTION)
-
-        nodes = [
-            {"key": "src", "tool": "pg_stream_out", "args": {"out": "rows"}},
-            {"key": "dst", "tool": "ch_stream_in", "args": {"feed": "rows"}},
-        ]
-        await updates.apply(_call(CALL, "mcp__boba__workflow", {"nodes": nodes}))
-
-        source = _id(f"{CALL}_0", StepRole.TOOL)
-        sink = _id(f"{CALL}_1", StepRole.TOOL)
-        started = recorded.last()
-        assert str(started[source].get(StepField.NAME)).endswith("pg_stream_out")
-        assert str(started[sink].get(StepField.NAME)).endswith("ch_stream_in")
-        assert _id(CALL, StepRole.TOOL) not in started
-
-        progress = update_tool_call(f"{CALL}_0", status="in_progress")
-        progress.field_meta = {
-            MetaKey.PROGRESS.value: {"message": "rows sent", "progress": 3}
-        }
-        await updates.apply(progress)
-        assert "rows sent" in str(recorded.last()[source].get(StepField.OUTPUT))
-
-        result = WorkflowResult(
-            nodes=[
-                WorkflowNodeResult(
-                    key="src",
-                    call_id=f"{CALL}_0",
-                    tool="pg_stream_out",
-                    args={"out": "rows"},
-                    errored=False,
-                    content="3 rows",
-                    result=MarkdownResult(text="3 rows sent"),
-                ),
-                WorkflowNodeResult(
-                    key="dst",
-                    call_id=f"{CALL}_1",
-                    tool="ch_stream_in",
-                    args={"feed": "rows"},
-                    errored=True,
-                    content="no such table",
-                    result=ErrorResult(message="no such table", error_kind="tool"),
-                ),
-            ]
-        )
-        address = JournalAddress(server="boba", run="run-7", call="linked")
-        raw = ToolUseResult(
-            artifact=result.model_dump(mode="json", exclude_none=True),
-            journal=address,
-        ).model_dump(mode="json", exclude_none=True)
-        await updates.apply(_done(CALL, "done", raw))
-
-        steps = recorded.last()
-        assert str(steps[source].get(StepField.NAME)).startswith("✔ pg_stream_out")
-        assert "3 rows sent" in str(steps[source].get(StepField.OUTPUT))
-        assert str(steps[sink].get(StepField.NAME)).startswith("✖ ch_stream_in")
-        assert steps[sink].get(StepField.IS_ERROR) is True
-        assert "no such table" in str(steps[sink].get(StepField.OUTPUT))
-        assert updates.open_steps() == []
-
-        first = await journals.address(THREAD, f"{CALL}_0")
-        assert first == address.model_copy(update={"call": f"{CALL}_0"})
-
-    @pytest.mark.anyio
-    async def test_refused_workflow_call_fails_every_node_step(
-        self, runtime_stand: StandRefs, recorded: FakeEmitter
-    ) -> None:
-        """Отказ вызова workflow целиком — итог каждого его узла."""
-        updates = _view(runtime_stand, RemoteJournals())
-        updates.begin_turn(QUESTION)
-
-        nodes = [{"key": "src", "tool": "pg_stream_out", "args": {"out": "rows"}}]
-        await updates.apply(_call(CALL, "mcp__boba__workflow", {"nodes": nodes}))
-        refused = update_tool_call(
-            CALL,
-            status="failed",
-            content=[tool_content(text_block("the hook denied the call"))],
-            raw_output="the hook denied the call",
-        )
-        await updates.apply(refused)
-
-        step = recorded.last()[_id(f"{CALL}_0", StepRole.TOOL)]
-        assert step.get(StepField.IS_ERROR) is True
-        assert step.get(StepField.OUTPUT) == "the hook denied the call"
-
-    @pytest.mark.anyio
     async def test_step_is_named_without_the_server_and_drawn_by_the_card(
         self, runtime_stand: StandRefs, recorded: FakeEmitter
     ) -> None:
         """Агент называет инструмент полным именем: шаг подписан именем без
-        сервера, а вид аргументов найден по карточке полного имени."""
-        schema = {
+        сервера, а вид аргументов найден по схеме инструмента сервера."""
+        arguments = {
             "type": "object",
             "properties": {
                 "sql": {"type": "string", "contentMediaType": "application/sql"}
             },
         }
         media = ToolMedia()
-        media.shown(
-            [
-                ToolCard(
-                    name="mcp__boba__pg_query",
-                    description="query",
-                    parameters=schema,
-                    views=None,
-                    hints=ToolHints(),
-                )
-            ]
-        )
+        media.shown("boba", [mt.Tool(name="pg_query", input_schema=arguments)])
         view = ChatView(THREAD, LiveSink(), runtime_stand.journals, user_name="alice")
         updates = UpdateView(view, THREAD, RemoteJournals(), media)
         updates.begin_turn(QUESTION)
@@ -450,27 +344,24 @@ class TestUpdateViewIds:
         assert str(step.get("input")).startswith("```sql\nselect 1\n```")
 
     @pytest.mark.anyio
-    async def test_progress_meta_is_shown_in_the_running_step(
+    async def test_progress_text_is_shown_in_the_running_step(
         self, runtime_stand: StandRefs, recorded: FakeEmitter
     ) -> None:
+        """Ход вызова агент шлёт текстом `content` идущего вызова."""
         updates = _view(runtime_stand, RemoteJournals())
         updates.begin_turn(QUESTION)
 
         await updates.apply(_call(CALL, "pg_copy", {}))
-        progress = update_tool_call(CALL, status="in_progress")
-        progress.field_meta = {
-            MetaKey.PROGRESS.value: {
-                "message": "rows copied",
-                "progress": 50,
-                "total": 200,
-                "elapsed_sec": 1.5,
-            }
-        }
+        text = schema.TextContentBlock(text="rows copied — 50 of 200")
+        progress = schema.SessionToolCallUpdate(
+            tool_call_id=CALL,
+            status="in_progress",
+            content=[schema.ContentToolCallContent(content=text)],
+        )
         await updates.apply(progress)
 
         step = recorded.last()[_id(CALL, StepRole.TOOL)]
-        assert "rows copied" in str(step.get(StepField.OUTPUT))
-        assert "25%" in str(step.get(StepField.OUTPUT))
+        assert "rows copied — 50 of 200" in str(step.get(StepField.OUTPUT))
 
 
 class TestLiveEqualsReplay:
@@ -523,30 +414,21 @@ class TestLiveEqualsReplay:
 
 
 class TestCodecAndResults:
-    def test_codec_round_trip_keeps_meta_and_order(self) -> None:
+    def test_codec_round_trip_keeps_the_name_and_order(self) -> None:
         codec = SessionUpdateCodec()
         start = _call(CALL, "mcp__boba__pg_query", {"b": 1, "a": 2})
 
         body = codec.encode(start)
-        assert body["_meta"] == {MetaKey.TOOL_NAME.value: "mcp__boba__pg_query"}
+        assert body["name"] == "mcp__boba__pg_query"
         assert list(body["rawInput"]) == ["b", "a"]
+        assert codec.decode(body) == start
 
-        decoded = codec.decode(body)
-        assert decoded == start
-
-    def test_tool_use_results_accept_wrapped_bare_and_text(self) -> None:
-        results = ToolUseResults()
-        address = JournalAddress(server="s", run="r", call="c")
-        wrapped = results.of({"artifact": {"kind": "markdown"}, "journal": address})
-        assert wrapped.journal == address
-        assert wrapped.artifact == {"kind": "markdown"}
-
-        bare = results.of({"kind": "markdown", "text": "x"})
-        assert bare.journal is None
-        assert bare.artifact == {"kind": "markdown", "text": "x"}
-
-        text = results.of("denied")
-        assert text.artifact == "denied"
+        failed = IdleErrorUpdate(
+            stop_reason="error", error=schema.Error(code=-32603, message="model down")
+        )
+        decoded = codec.decode(codec.encode(failed))
+        assert isinstance(decoded, IdleErrorUpdate), decoded
+        assert decoded.error == failed.error
 
 
 def _profile(settings: list[str]) -> ChatProfileConfig:
@@ -574,24 +456,26 @@ def _options() -> SessionOptions:
     options = SessionOptions()
     options.replace(
         [
-            SessionConfigOptionSelect(
-                id="mode",
+            schema.SelectSessionConfigOption(
+                config_id="mode",
                 name="Mode",
                 category="mode",
-                type="select",
                 current_value="bypassPermissions",
                 options=[
-                    SessionConfigSelectOption(value="default", name="Default"),
-                    SessionConfigSelectOption(value="bypassPermissions", name="Bypass"),
+                    schema.SessionConfigSelectOption(value="default", name="Default"),
+                    schema.SessionConfigSelectOption(
+                        value="bypassPermissions", name="Bypass"
+                    ),
                 ],
             ),
-            SessionConfigOptionSelect(
-                id="model",
+            schema.SelectSessionConfigOption(
+                config_id="model",
                 name="Model",
                 category="model",
-                type="select",
                 current_value="general",
-                options=[SessionConfigSelectOption(value="general", name="general")],
+                options=[
+                    schema.SessionConfigSelectOption(value="general", name="general")
+                ],
             ),
         ]
     )

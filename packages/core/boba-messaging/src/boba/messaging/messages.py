@@ -41,7 +41,6 @@ __all__ = [
     "StreamAppended",
     "StudioProfileChanged",
     "ThreadChanged",
-    "ThreadRewound",
     "TurnFinished",
     "TurnOutcome",
     "TurnStarted",
@@ -72,7 +71,6 @@ class MessageKind(StrEnum):
     RUN_LIST_CHANGED = "run_list_changed"
     WORKFLOW_CHANGED = "workflow_changed"
     CONNECTIONS_CHANGED = "connections_changed"
-    THREAD_REWOUND = "thread_rewound"
     ELEMENT_SHOWN = "element_shown"
     THREAD_CHANGED = "thread_changed"
     WORKFLOW_DRAFT_CHANGED = "workflow_draft_changed"
@@ -303,15 +301,6 @@ class ConnectionsChanged(Message):
     action: ChangeAction
 
 
-class ThreadRewound(Message):
-    """История треда обрезана до вопроса turn_id с новым текстом: ленту надо
-    перечитать из истории.
-    """
-
-    kind: Literal[MessageKind.THREAD_REWOUND] = MessageKind.THREAD_REWOUND
-    turn_id: str = Field(min_length=1)
-
-
 class ElementShown(Message):
     """Вызов call_id хода turn_id показал элемент ленты (файл, карточку); тело
     элемента лежит по ссылке element.
@@ -462,7 +451,6 @@ AnyMessage = Annotated[
     | Notice
     | LockLost
     | RunListChanged
-    | ThreadRewound
     | ElementShown
     | ThreadChanged
     | WorkflowDraftChanged

@@ -174,7 +174,7 @@ class PostgresAgentHistory(BaseModel):
 
 
 class MemoryAgentHistory(BaseModel):
-    """История только в памяти процесса агента: без хранилища `session/load`
+    """История только в памяти процесса агента: без хранилища `session/resume`
     отдаёт пустую беседу."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)

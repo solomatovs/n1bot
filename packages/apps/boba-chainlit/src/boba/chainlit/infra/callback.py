@@ -1,7 +1,7 @@
 """Callback'и chainlit: мост между интерфейсом чата и агентом треда по ACP.
 
 Ход — `session/prompt` агента вкладки, лента рисуется из его уведомлений через
-шину; возврат к треду — `session/load` после того, как chainlit отдал вкладке
+шину; возврат к треду — `session/resume` после того, как chainlit отдал вкладке
 сам тред; панель настроек — слой пользователя и слой чата агента, её правка
 идёт единым путём AgentSettingsChanges с перезапуском процесса агента.
 """
@@ -32,7 +32,6 @@ from boba.chainlit.agent.settings import (
     AgentSettingsError,
     AgentSettingsTable,
     ChatAgentSettings,
-    SessionServersError,
 )
 from boba.chainlit.canvas.panel import StreamActions
 from boba.chainlit.canvas.remote import RemoteStreams
@@ -118,7 +117,6 @@ AGENT_FAILURES = (
     AcpClientError,
     AgentSettingsError,
     McpClientError,
-    SessionServersError,
     LockBusyError,
 )
 """Отказы пути агента, которые уходят в ленту сообщением об ошибке."""
@@ -752,7 +750,7 @@ async def _resume_feed(
     table: Annotated[AgentSettingsTable, Depends(agent_settings_table)],
 ):
     """Вкладка вернулась к треду: комнаты, агент вкладки и воспроизведение
-    истории `session/load` после того, как chainlit отдал вкладке тред (шагов в
+    истории `session/resume` после того, как chainlit отдал вкладке тред (шагов в
     нём нет: их рисует воспроизведение), затем панель настроек с настройками
     сессии."""
     thread_id = thread_dict[ThreadField.ID]

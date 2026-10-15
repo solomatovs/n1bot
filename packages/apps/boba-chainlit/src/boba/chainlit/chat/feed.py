@@ -30,7 +30,6 @@ from boba.messaging import (
     PayloadStore,
     StreamAppended,
     StreamFeed,
-    ThreadRewound,
     TurnFinished,
     TurnOutcome,
     TurnStarted,
@@ -143,10 +142,6 @@ class TurnFeed(StreamFeed):
 
     async def _publish(self, message: AnyMessage) -> None:
         await self._bus.publish(self._scope, message, self._token)
-
-    async def rewound(self) -> None:
-        """Правка вопроса: вкладки забывают отправленные шаги хода с этим ключом."""
-        await self._publish(ThreadRewound(turn_id=self._turn_id))
 
     async def agent_update(self, update: SessionUpdate) -> None:
         """Уведомление агента как есть: вызовы с аргументами и итогом — по

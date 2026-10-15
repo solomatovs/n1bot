@@ -226,7 +226,9 @@ class TestMcpRelay:
         assert isinstance(discovered, McpResultOutcome), discovered
         result = mt.DiscoverResult.model_validate(discovered.result)
         assert McpVersion.V2026_07_28.value in result.supported_versions
-        assert isinstance(pinged, McpResultOutcome), pinged
+        # ping в редакции 2026-07-28 не определён: SDK отвечает -32601
+        assert isinstance(pinged, McpErrorOutcome), pinged
+        assert pinged.error.code == mt.METHOD_NOT_FOUND
         assert isinstance(unknown, McpErrorOutcome), unknown
         assert unknown.error.code == mt.METHOD_NOT_FOUND
 
