@@ -1,39 +1,42 @@
--- Разовый перенос истории чата из чекпойнтов langgraph в историю агента.
+-- Третий шаг перехода чата на процесс-агента: приведение копии старой базы,
+-- накатанной restore.sh, к тому виду, который ждёт новое приложение. Скрипт
+-- выполняется в НОВОЙ базе и меняет её на месте; старая база не участвует.
 --
--- Раньше беседу треда хранил чекпойнтер langgraph: сообщения langchain лежат
--- в его таблицах значением канала messages, сериализованным в msgpack. Теперь
--- беседу хранит агент: по записи на строку в таблице history_records, сессия
--- на тред. Скрипт переводит каждый тред, найденный в чекпойнтах, в сессию
--- агента с тем же id и записывает в threads.meta чата ключ agent_session,
--- по которому чат находит сессию треда. Источник только читается.
---
--- Все три схемы — чекпойнтов, истории агента и чата — должны лежать в одной
--- базе: скрипт читает и пишет их одним соединением, без dblink и fdw.
+-- Что делает:
+--   * переводит беседы тредов из чекпойнтов langgraph в историю агента
+--     (таблица history_records, сессия на тред с тем же id) и пишет каждому
+--     треду чата ключ threads.meta.agent_session, по которому чат находит
+--     сессию треда;
+--   * переводит оценки ответов (feedbacks.for_id) на id шагов, которые новый
+--     чат рисует при воспроизведении беседы агентом;
+--   * приводит таблицы чата к раскладке, которую создаёт новое приложение;
+--   * удаляет таблицы, которые новому приложению не нужны: чекпойнты
+--     langgraph и вложения elements.
+-- Остальные таблицы копии (база знаний, ix, соединения, гранты, studio)
+-- переносятся как есть: их раскладку приложение и индексаторы ведут сами при
+-- старте.
 --
 -- Переменные psql (передаются через -v):
 --   checkpoints_schema — схема чекпойнтов langgraph, например checkpoints;
 --   history_schema     — схема истории агента, как [agent.history].schema
 --                        в конфиге чата, например agent_history;
---   chainlit_schema    — схема данных чата с таблицами threads и elements,
+--   chainlit_schema    — схема данных чата, как [data_layer].schema,
 --                        например chainlit;
 --   chat_url           — адрес чата глазами агента, как [agent].public_url,
 --                        например https://chat.example.com/boba; из него
---                        строятся ссылки на вложения вопросов;
---   version            — метка в поле version перенесённых записей, по ней
---                        откат находит перенесённое; по умолчанию
---                        history-migrate-2026-10.
+--                        строятся ссылки на вложения вопросов.
 --
 -- Запуск:
---   psql -d <база> -v checkpoints_schema=checkpoints -v history_schema=agent_history \
---        -v chainlit_schema=chainlit -v chat_url=https://chat.example.com/boba \
---        -f migrate.sql
+--   PGDATABASE=<новая база> psql -v checkpoints_schema=checkpoints \
+--        -v history_schema=agent_history -v chainlit_schema=chainlit \
+--        -v chat_url=https://chat.example.com/boba -f migrate.sql
 --
--- Весь перенос идёт одной транзакцией: проверка, рабочие функции, извлечение,
--- перевод, загрузка, привязка тредов, сверка и удаление рабочей схемы
--- history_migrate. Любая ошибка или несошедшаяся сверка откатывает всё, и
--- база остаётся такой, какой была до запуска. Повторный запуск безопасен:
--- сессию, которая уже есть в истории агента, перенос пропускает, и тред,
--- уже привязанный к своей сессии, не меняет. Откат — rollback.sql рядом.
+-- Весь перевод идёт одной транзакцией: проверка, рабочие функции, извлечение,
+-- перевод, загрузка, привязка тредов, перевод оценок, сверка, приведение
+-- таблиц, удаление ненужных таблиц и рабочей схемы history_migrate. Любая
+-- ошибка или несошедшаяся сверка откатывает всё. Повторный запуск на уже
+-- приведённой базе ничего не меняет: чекпойнтов в ней нет, и скрипт сразу
+-- завершается. Отката нет: старая база не тронута, новая удаляется целиком.
 
 \set ON_ERROR_STOP on
 \set QUIET on
@@ -60,12 +63,18 @@
     \echo 'Pass the chat address the agent uses, [agent].public_url, for example -v chat_url=https://chat.example.com/boba.'
     \set missing true
 \endif
-\if :{?version}
-\else
-    \set version 'history-migrate-2026-10'
-\endif
 \if :missing
     do $$ begin raise exception 'The migration needs the psql variables named above, so nothing was changed.'; end $$;
+\endif
+
+-- Метка в поле version перенесённых записей: агент пишет туда свою версию,
+-- перенос — эту.
+\set version 'history-migrate-2026-10'
+
+select to_regclass(format('%I.checkpoints', :'checkpoints_schema')) is null as migrated \gset
+\if :migrated
+    \echo 'There is no table' :checkpoints_schema'.checkpoints in this database: it is migrated already or the checkpoints schema has another name, so nothing was changed.'
+    \quit
 \endif
 
 begin;
@@ -493,6 +502,156 @@ as $$
         )
         else ''
     end
+$$;
+
+-- Адрес журнала вызова в toolUseResult: новое приложение принимает его
+-- только целым — сервер, запуск и идентификатор вызова строками. Адрес без
+-- идентификатора вызова (его писали промежуточные выпуски) по журналу
+-- сервера не находится, поэтому не переносится: шаг вызова остаётся без
+-- кнопки журнала, а заметка перевода называет такой итог.
+create function history_migrate.journal(address jsonb)
+returns jsonb
+language sql
+immutable
+as $$
+    select case
+        when jsonb_typeof(address) = 'object'
+            and (select array_agg(key order by key) from jsonb_object_keys(address) as keys(key)) = array['call', 'run', 'server']
+            and jsonb_typeof(address -> 'server') = 'string' and address ->> 'server' <> ''
+            and jsonb_typeof(address -> 'run') = 'string' and address ->> 'run' <> ''
+            and jsonb_typeof(address -> 'call') = 'string' and address ->> 'call' <> ''
+        then address
+    end
+$$;
+
+-- SHA-1 значения байтов: uuid версии 5 строится на нём, а встроенного
+-- sha1 у Postgres нет (есть только в расширении pgcrypto). Реализация
+-- прямая по FIPS 180-4: дополнение до кратного 64 байтам, 80 раундов на
+-- блок, 32-битная арифметика в bigint с маской.
+create function history_migrate.sha1(data bytea)
+returns bytea
+language plpgsql
+immutable
+strict
+as $$
+declare
+    mask   constant bigint := 4294967295;
+    padded bytea := data || '\x80'::bytea;
+    h0     bigint := 1732584193;
+    h1     bigint := 4023233417;
+    h2     bigint := 2562383102;
+    h3     bigint := 271733878;
+    h4     bigint := 3285377520;
+    w      bigint[];
+    a      bigint;
+    b      bigint;
+    c      bigint;
+    d      bigint;
+    e      bigint;
+    f      bigint;
+    k      bigint;
+    t      bigint;
+    base   integer;
+    i      integer;
+begin
+    while length(padded) % 64 <> 56 loop
+        padded := padded || '\x00'::bytea;
+    end loop;
+    padded := padded || decode(lpad(to_hex(length(data)::bigint * 8), 16, '0'), 'hex');
+
+    for block in 0 .. length(padded) / 64 - 1 loop
+        base := block * 64;
+        w := array_fill(0::bigint, array[80]);
+        for i in 0 .. 15 loop
+            w[i + 1] := (get_byte(padded, base + i * 4)::bigint << 24)
+                | (get_byte(padded, base + i * 4 + 1)::bigint << 16)
+                | (get_byte(padded, base + i * 4 + 2)::bigint << 8)
+                | get_byte(padded, base + i * 4 + 3)::bigint;
+        end loop;
+        for i in 16 .. 79 loop
+            t := w[i - 2] # w[i - 7] # w[i - 13] # w[i - 15];
+            w[i + 1] := ((t << 1) | (t >> 31)) & mask;
+        end loop;
+
+        a := h0;
+        b := h1;
+        c := h2;
+        d := h3;
+        e := h4;
+        for i in 0 .. 79 loop
+            if i < 20 then
+                f := (b & c) | ((~b & mask) & d);
+                k := 1518500249;
+            elsif i < 40 then
+                f := b # c # d;
+                k := 1859775393;
+            elsif i < 60 then
+                f := (b & c) | (b & d) | (c & d);
+                k := 2400959708;
+            else
+                f := b # c # d;
+                k := 3395469782;
+            end if;
+            t := ((((a << 5) | (a >> 27)) & mask) + f + e + k + w[i + 1]) & mask;
+            e := d;
+            d := c;
+            c := ((b << 30) | (b >> 2)) & mask;
+            b := a;
+            a := t;
+        end loop;
+
+        h0 := (h0 + a) & mask;
+        h1 := (h1 + b) & mask;
+        h2 := (h2 + c) & mask;
+        h3 := (h3 + d) & mask;
+        h4 := (h4 + e) & mask;
+    end loop;
+
+    return decode(
+        lpad(to_hex(h0), 8, '0') || lpad(to_hex(h1), 8, '0') || lpad(to_hex(h2), 8, '0')
+            || lpad(to_hex(h3), 8, '0') || lpad(to_hex(h4), 8, '0'),
+        'hex'
+    );
+end
+$$;
+
+-- uuid версии 5 (RFC 4122): SHA-1 от байтов пространства и имени в UTF-8,
+-- первые 16 байт с битами версии 5 и варианта; то же, что uuid.uuid5 Python.
+create function history_migrate.uuid5(namespace uuid, name text)
+returns uuid
+language sql
+immutable
+strict
+as $$
+    select encode(
+        set_byte(
+            set_byte(substring(h from 1 for 16), 6, (get_byte(h, 6) & 15) | 80),
+            8,
+            (get_byte(h, 8) & 63) | 128
+        ),
+        'hex'
+    )::uuid
+    from (
+        select history_migrate.sha1(decode(replace(namespace::text, '-', ''), 'hex') || convert_to(name, 'UTF8')) as h
+    ) as digest
+$$;
+
+-- Id шага ответа ленты: ChatView.derive_id(тред, ключ хода[#номер], answer)
+-- нового чата, то же выводила и лента старого. Ключ хода — id вопроса, номер
+-- — порядок ответа в ходе с нуля, нулевой пишется без «#0»; пространство —
+-- ChatView.NAMESPACE.
+create function history_migrate.answer_id(thread_id text, turn_key text, number bigint)
+returns uuid
+language sql
+immutable
+strict
+as $$
+    select history_migrate.uuid5(
+        '6f9b1f4e-2f1a-4c1a-9a2f-1d3b5c7e9a11',
+        thread_id || '/' || turn_key
+            || case when number > 0 then '#' || number else '' end
+            || '/answer'
+    )
 $$;
 
 -- 3. Извлечение.
@@ -977,7 +1136,7 @@ tool_unit as (
                 from (
                     values
                         ('artifact', t.m -> 'artifact'),
-                        ('journal', t.m -> 'response_metadata' -> 'boba_journal'),
+                        ('journal', history_migrate.journal(t.m -> 'response_metadata' -> 'boba_journal')),
                         ('media', t.m -> 'response_metadata' -> 'boba_call_media')
                 ) as parts(key, value)
                 where
@@ -1137,6 +1296,18 @@ where
     )
 union all
 select
+    s.thread_id,
+    s.n,
+    format('The journal address %s of tool result %s lacks the server, the run or the call, so the result keeps no journal link.', s.message -> 'response_metadata' -> 'boba_journal', s.message ->> 'tool_call_id')
+from
+    history_migrate.source_messages as s
+where
+    s.class = 'ToolMessage'
+    and s.message -> 'response_metadata' -> 'boba_journal' is not null
+    and s.message -> 'response_metadata' -> 'boba_journal' <> 'null'::jsonb
+    and history_migrate.journal(s.message -> 'response_metadata' -> 'boba_journal') is null
+union all
+select
     r.session_id,
     r.seq,
     format('Tool result for call %s has no record of its call before it.', r.record -> 'message' -> 'content' -> 0 ->> 'tool_use_id')
@@ -1148,31 +1319,19 @@ where
 
 -- 5. Загрузка.
 --
--- Схема и таблица истории создаются так же, как их создаёт хранилище агента
--- (PostgresHistoryStore): те же колонки, ключ и комментарии, поэтому агент
--- примет раскладку как свою. Переносится только сессия, у которой в истории
--- ещё нет ни одной записи: так повторный запуск ничего не дублирует, а
--- сессию, которую агент уже ведёт, перенос не трогает.
+-- Таблицу истории создаёт хранилище агента (PostgresHistoryStore) при первом
+-- обращении, а перенос пишет в неё раньше, поэтому создаёт её сам тем же
+-- определением из history_records.sql рядом; совпадение определения с кодом
+-- хранилища проверяет тест boba-history-postgres. Комментарии к таблице агент
+-- допишет сам при первом обращении. Переносится только сессия, у которой в
+-- истории ещё нет ни одной записи: сессию, которую агент уже вёл в старой
+-- базе, перенос не трогает.
 
 create schema if not exists :"history_schema";
 
-create table if not exists :"history_schema".history_records (
-    session_id text        not null,
-    seq        integer     not null,
-    type       text        not null,
-    record     jsonb       not null,
-    created_at timestamptz not null default now(),
-    primary key (session_id, seq)
-);
-
-comment on table :"history_schema".history_records is
-    'Журнал сессий агента: по записи на строку, в порядке seq внутри сессии; документ записи такой же, как строка журнала JSONL';
-
-comment on column :"history_schema".history_records.seq is
-    'Порядковый номер записи в сессии с 1; выдаёт сессия агента';
-
-comment on column :"history_schema".history_records.type is
-    'Вид записи: user, assistant, attachment, system, queue-operation, permission-mode, permission-rule, api-request';
+set local search_path to :"history_schema";
+\ir history_records.sql
+reset search_path;
 
 create table history_migrate.loaded (
     session_id text    primary key,
@@ -1239,7 +1398,136 @@ with changed as (
 insert into history_migrate.bound (thread_id)
 select id from changed;
 
--- 7. Сверка.
+-- 7. Оценки.
+--
+-- Оценка (feedbacks.for_id) привязана к id шага ответа. Новый чат выводит
+-- этот id так же, как лента старого: из ключа хода и номера ответа в ходе
+-- (answer_id). Ключ хода у обоих — id вопроса: перенос оставляет записи
+-- вопроса id его сообщения. Номер считается по-разному: старая лента давала
+-- номер каждому сообщению модели с текстом и каждому сообщению с ошибкой
+-- модели, а новый чат — только тем сообщениям с текстом, которые агент
+-- воспроизводит, то есть без синтетических записей (ошибка модели,
+-- подготовка хода). Поэтому после ответа с ошибкой или подготовки номера
+-- расходятся, и оценка такого ответа переводится на новый id. Оценка, которой
+-- в новом чате нечего показать (её ответа нет в беседе треда), остаётся как
+-- была и выводится заметкой.
+
+create table history_migrate.answers (
+    thread_id text    not null,
+    n         integer not null,
+    old_id    uuid,
+    new_id    uuid,
+    primary key (thread_id, n)
+);
+
+insert into history_migrate.answers
+with turn as (
+    select
+        s.thread_id,
+        s.n,
+        s.class,
+        s.message,
+        max(s.n) filter (where s.class = 'HumanMessage') over (partition by s.thread_id order by s.n) as question_n
+    from
+        history_migrate.source_messages as s
+),
+question as (
+    select
+        u.thread_id,
+        u.n,
+        u.uuid as new_key,
+        nullif(s.message ->> 'id', '') as old_key
+    from
+        history_migrate.units as u
+        join history_migrate.source_messages as s
+            on s.thread_id = u.thread_id
+            and s.n = u.n
+    where
+        s.class = 'HumanMessage'
+        and u.sub = 0
+),
+reply as (
+    select
+        t.thread_id,
+        t.n,
+        t.question_n,
+        history_migrate.message_text(t.message -> 'content') <> '' as has_text,
+        history_migrate.truthy(t.message -> 'additional_kwargs' -> 'error') as is_error,
+        exists (
+            select
+                1
+            from
+                history_migrate.units as u
+            where
+                u.thread_id = t.thread_id
+                and u.n = t.n
+                and u.type = 'assistant'
+                and u.body -> 'message' -> 'content' -> 0 ->> 'type' = 'text'
+                and (
+                    u.body -> 'message' ->> 'model' <> '<synthetic>'
+                    or (u.body ->> 'isAbortedMidStream')::boolean
+                )
+        ) as replayed
+    from
+        turn as t
+    where
+        t.class = 'AIMessage'
+        and t.question_n is not null
+),
+numbered as (
+    select
+        r.*,
+        count(*) filter (where r.has_text or r.is_error) over w - 1 as old_number,
+        count(*) filter (where r.replayed) over w - 1 as new_number
+    from
+        reply as r
+    window w as (partition by r.thread_id, r.question_n order by r.n)
+)
+select
+    m.thread_id,
+    m.n,
+    case
+        when m.has_text and not m.is_error then history_migrate.answer_id(m.thread_id, q.old_key, m.old_number)
+    end,
+    case
+        when m.replayed then history_migrate.answer_id(m.thread_id, q.new_key, m.new_number)
+    end
+from
+    numbered as m
+    join question as q
+        on q.thread_id = m.thread_id
+        and q.n = m.question_n;
+
+create table history_migrate.feedback_moves (
+    feedback_id uuid primary key,
+    old_for_id  uuid not null,
+    new_for_id  uuid not null
+);
+
+insert into history_migrate.feedback_moves (feedback_id, old_for_id, new_for_id)
+select
+    f.id,
+    f.for_id,
+    a.new_id
+from
+    :"chainlit_schema".feedbacks as f
+    join history_migrate.answers as a
+        on a.thread_id = f.thread_id::text
+        and a.old_id = f.for_id
+where
+    a.new_id is not null
+    and a.new_id <> f.for_id;
+
+update
+    :"chainlit_schema".feedbacks as f
+set
+    for_id = m.new_for_id
+from
+    history_migrate.feedback_moves as m
+where
+    f.id = m.feedback_id;
+
+-- 8. Сверка.
 --
 -- Каждая проверка ниже ищет нарушение, которого при верном переносе быть
 -- не может: вопрос или итог инструмента без своей записи, документ в истории,
@@ -1339,6 +1627,29 @@ where
 \echo 'Notes of the translation (they do not stop the migration):'
 select thread_id, n, note from history_migrate.notes order by thread_id, n;
 
+\echo 'Feedbacks moved to the answer steps the new chat draws:'
+select feedback_id, old_for_id, new_for_id from history_migrate.feedback_moves order by feedback_id;
+
+\echo 'Feedbacks left on steps the new chat does not draw (they stay in the table, the feed does not show them):'
+select
+    f.id as feedback_id,
+    f.thread_id,
+    f.for_id
+from
+    :"chainlit_schema".feedbacks as f
+where
+    not exists (
+        select
+            1
+        from
+            history_migrate.answers as a
+        where
+            a.thread_id = f.thread_id::text
+            and a.new_id = f.for_id
+    )
+order by
+    f.id;
+
 \echo 'Migrated threads without a row in threads (the chat does not list them):'
 select
     count(*) as threads_without_chat_row
@@ -1356,7 +1667,7 @@ select
         - (select count(*) from history_migrate.loaded) as sessions_already_in_history,
     (select count(*) from kept_by_chat) as threads_kept_by_chat,
     (select count(*) from history_migrate.bound) as threads_bound,
-    :'version' as version;
+    (select count(*) from history_migrate.feedback_moves) as feedbacks_moved;
 
 select count(*) > 0 as failed from history_migrate.problems \gset
 \if :failed
@@ -1365,7 +1676,47 @@ select count(*) > 0 as failed from history_migrate.problems \gset
     do $$ begin raise exception 'The check of the migration found problems (listed above), so nothing was changed.'; end $$;
 \endif
 
--- 8. Удаление рабочей схемы и фиксация.
+-- 9. Приведение таблиц.
+--
+-- Таблицы чата users, threads и feedbacks новое приложение создаёт тем же
+-- определением, что и dev, и при старте оставляет существующие как есть.
+-- Таблица users, заведённая выпуском раньше dev, могла остаться без
+-- умолчания у created_at: умолчание ставится, как в определении приложения.
+-- Ключ llm в users.meta хранил выбор семплинга пользователя по профилям
+-- (temperature, reasoning_effort); новое приложение его не читает, слой
+-- пользователя агента живёт в agent_user_settings и семплинга не несёт,
+-- поэтому ключ удаляется. Таблицы шины (live_*), настроек агента
+-- (agent_user_settings, agent_chat_settings) приложение создаёт само при
+-- старте.
+--
+-- Удаляются таблицы, которых в новом приложении нет: elements (вложения
+-- вопросов теперь ссылки resource_link в истории агента, файлы итогов
+-- инструментов — в их rawOutput) и чекпойнты langgraph вместе с их схемой.
+
+alter table :"chainlit_schema".users alter column created_at set default now();
+
+update
+    :"chainlit_schema".users
+set
+    meta = meta - 'llm'
+where
+    meta ? 'llm';
+
+drop table :"chainlit_schema".elements;
+
+drop table
+    :"checkpoints_schema".checkpoint_writes,
+    :"checkpoints_schema".checkpoint_blobs,
+    :"checkpoints_schema".checkpoints;
+
+select to_regclass(format('%I.checkpoint_migrations', :'checkpoints_schema')) is not null as has_checkpoint_migrations \gset
+\if :has_checkpoint_migrations
+drop table :"checkpoints_schema".checkpoint_migrations;
+\endif
+
+drop schema :"checkpoints_schema";
+
+-- 10. Удаление рабочей схемы и фиксация.
 
 set local client_min_messages = warning;
 
