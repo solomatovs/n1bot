@@ -1,7 +1,4 @@
-"""Провод ACP v2 на соединении SDK; кадры пары сверяются со схемой ACP.
-
-Данные: `acp_schema/` — схема ACP v2, тег schema-v2.0.0-alpha.8.
-"""
+"""Провод ACP v2 на соединении SDK; кадры пары сверяются со схемой ACP."""
 
 from __future__ import annotations
 
@@ -11,20 +8,19 @@ import json
 import socket
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, ClassVar
 
 import pytest
 from acp._transport import memory_transport_pair
-from acp.connection import Connection, JsonValue, StreamDirection, StreamEvent
+from acp.connection import Connection, JsonValue
 from acp.exceptions import RequestError
 from acp.experimental.v2 import Agent, AgentSideConnection, Client, schema
 from acp.experimental.v2._router import MethodRouter
 from acp.experimental.v2.meta import AGENT_METHODS, CLIENT_METHODS
-from jsonschema import Draft202012Validator
 from mcp_types.jsonrpc import ErrorData
 from mcp_types.version import MODERN_PROTOCOL_VERSIONS
 
+from boba.stand.acp_frames import Frames
 from boba.transport.acp.protocol import (
     AcpErrorCode,
     AcpVersion,
@@ -111,24 +107,18 @@ class AcpPair:
     stand_client: StandClient
 
 
-@pytest.fixture(scope="module")
-def acp_schema() -> Draft202012Validator:
-    path = Path(__file__).parent / "acp_schema" / "schema.unstable.json"
-    return Draft202012Validator(json.loads(path.read_text(encoding="utf-8")))
-
-
 @pytest.fixture
-async def acp_pair(acp_schema: Draft202012Validator) -> AsyncIterator[AcpPair]:
+async def acp_pair() -> AsyncIterator[AcpPair]:
     agent_end, client_end = memory_transport_pair()
     info = schema.Implementation(name="boba-transport-acp-tests", version="0")
     stand_client = StandClient()
-    frames: list[StreamEvent] = []
+    frames = Frames()
 
     agent = AgentSide(StandAgent, info, agent_end)
     serving = asyncio.create_task(agent.serve())
 
     client = ClientConnection(
-        stand_client, stand_client.answer, client_end, None, observers=[frames.append]
+        stand_client, stand_client.answer, client_end, None, observers=[frames]
     )
     await client.initialize(protocol_version=AcpVersion.V2, info=info)
 
@@ -137,46 +127,7 @@ async def acp_pair(acp_schema: Draft202012Validator) -> AsyncIterator[AcpPair]:
     await client.close()
     await serving
 
-    root = acp_schema.schema
-    assert isinstance(root, dict)
-    defs = root["$defs"]
-    answered = {
-        StreamDirection.INCOMING: StreamDirection.OUTGOING,
-        StreamDirection.OUTGOING: StreamDirection.INCOMING,
-    }
-    asked: dict[tuple[StreamDirection, object], str] = {}
-
-    for frame in frames:
-        message = frame.message
-        acp_schema.validate(message)
-
-        if "method" not in message:
-            method = asked.pop((answered[frame.direction], message["id"]))
-            part = "Response"
-            payload = message.get("result")
-        elif "id" in message:
-            method = message["method"]
-            asked[(frame.direction, message["id"])] = method
-            part = "Request"
-            payload = message["params"]
-        else:
-            method = message["method"]
-            part = "Notification"
-            payload = message["params"]
-
-        if payload is None:
-            continue
-
-        # корневая схема пускает любые params через Ext*, поэтому сверяем ещё и
-        # с определением метода по x-method
-        names = [
-            name
-            for name, body in defs.items()
-            if body.get("x-method") == method and name.endswith(part)
-        ]
-        (name,) = names
-        frame_schema = {"$ref": f"#/$defs/{name}", "$defs": defs}
-        acp_schema.evolve(schema=frame_schema).validate(payload)
+    frames.check_schema()
 
 
 @pytest.fixture

@@ -17,7 +17,6 @@ dependencies = [
 dev = [
     "boba-stand==0.0.26.dev4",
     "pytest>=9.1,<10",
-    "jsonschema>=4.23,<5",
 ]
 
 [tool.setuptools.packages.find]
