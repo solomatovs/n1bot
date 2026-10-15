@@ -75,7 +75,6 @@ pythonpath = [
     "packages/infra/history/boba-history-jsonl/src",
     "packages/infra/history/boba-history-postgres/src",
     "packages/apps/boba-cli/src",
-    "packages/apps/boba-history-migrate/src",
     "packages/testing/boba-prompt-assembly/src",
 ]
 addopts = ["--strict-markers", "-m", "not integration and not ui and not load and not run"]
@@ -171,7 +170,6 @@ extraPaths = [
     "packages/infra/history/boba-history-jsonl/src",
     "packages/infra/history/boba-history-postgres/src",
     "packages/apps/boba-cli/src",
-    "packages/apps/boba-history-migrate/src",
     "packages/testing/boba-prompt-assembly/src",
 ]
 venvPath = "."
@@ -249,7 +247,6 @@ members = [
     "packages/apps/boba-studio",
     "packages/apps/boba-mcp",
     "packages/apps/boba-cli",
-    "packages/apps/boba-history-migrate",
     "packages/apps/ix/*",
     "packages/tools/*",
     "packages/infra/*/*",
@@ -328,7 +325,6 @@ boba-agent          = { workspace = true }
 boba-history-jsonl  = { workspace = true }
 boba-history-postgres = { workspace = true }
 boba-cli            = { workspace = true }
-boba-history-migrate = { workspace = true }
 boba-prompt-assembly = { workspace = true }
 
 [dependency-groups]
