@@ -1,10 +1,12 @@
 """Результат инструмента в формате MCP и обратно.
 
 Сервер инструментов отдаёт итог вызова стандартными полями результата MCP:
-текст для модели (content), признак сбоя (isError) и structuredContent со
-сведениями о вызове и результатом семейства ToolResultBase. Клиент собирает
-из них тот же итог NodeOutcome: класс результата выбирается по kind через
-реестр видов, статус и адрес журнала — из сведений о вызове. Обе стороны
+блоки для модели (content), признак сбоя (isError) и structuredContent со
+сведениями о вызове и собственными данными результата по outputSchema
+инструмента, а у результата без неё — результатом семейства ToolResultBase.
+Клиент собирает из них тот же итог NodeOutcome: класс результата
+выбирается по kind через реестр видов, статус и адрес журнала — из
+сведений о вызове. Обе стороны
 пользуются одним ResultWire, поэтому формат описан в одном месте.
 
 Здесь же модели границы клиент—сервер: служебные поля запроса
@@ -18,17 +20,19 @@ ValidationError — kind результата клиенту известен, �
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, ClassVar
 
+import mcp_types as mt
 from pydantic import BaseModel, ConfigDict, Field
 
 from boba.toolkit.channels import JournalChannel
 from boba.toolkit.dag import (
     DagNode,
     JournalAddress,
+    NestedCallsOutput,
     NodeOutcome,
     NodeOutcomes,
     ServerFeature,
@@ -41,6 +45,7 @@ __all__ = [
     "FilesFeature",
     "JournalFeature",
     "JournalRead",
+    "NestedCallsReply",
     "RequestFields",
     "ResultWire",
     "WirePart",
@@ -161,16 +166,24 @@ class CallWire(BaseModel):
     run: str = ""
 
 
+class NestedCallsReply(NestedCallsOutput):
+    """structuredContent итога инструмента со вложенными вызовами: сведения о
+    вызове (CallWire) и узлы. Из неё outputSchema связки; клиент разбирает
+    ею ответ связки."""
+
+    call: CallWire
+
+
 @dataclass(frozen=True)
 class WireResult:
     """Итог вызова, как он едет по MCP.
 
-    content — текст для модели; structured — structuredContent итога: части
+    content — блоки для модели; structured — structuredContent итога: части
     WirePart у ответа сервера инструментов, None — сервер его не прислал;
     is_error — вызов кончился сбоем.
     """
 
-    content: str
+    content: Sequence[mt.ContentBlock]
     structured: Mapping[str, Any] | None
     is_error: bool
 
@@ -180,10 +193,12 @@ class ResultWire:
 
     Создаётся компонентом ответов сервера (McpReplies) и разбором ответов в
     клиенте (McpToolServer). Итог едет стандартными полями результата MCP:
-    текст для модели — в content, признак сбоя — в isError, остальное — в
-    structuredContent двумя частями (WirePart): сведения о вызове (CallWire)
-    и результат семейства ToolResultBase. По ним клиент восстанавливает
-    итог таким, каким его отдал порт сервера, и узнаёт адрес журнала вызова.
+    блоки результата — в content, признак сбоя — в isError, остальное — в
+    structuredContent: сведения о вызове (CallWire) и собственные данные
+    результата (ToolResultBase.structured), а у результата без них —
+    результат семейства частью WirePart.RESULT. По ним клиент
+    восстанавливает итог таким, каким его отдал порт сервера, и узнаёт
+    адрес журнала вызова.
     """
 
     def __init__(self) -> None:
@@ -200,13 +215,17 @@ class ResultWire:
             failed = True
 
         call = CallWire(id=outcome.key, status=status)
-        structured = {
-            WirePart.CALL.value: call.model_dump(mode="json"),
-            WirePart.RESULT.value: outcome.artifact.disclosed().model_dump(mode="json"),
-        }
+        disclosed = outcome.artifact.disclosed()
+        structured: dict[str, Any] = {WirePart.CALL.value: call.model_dump(mode="json")}
+
+        own = disclosed.structured()
+        if own is None:
+            structured[WirePart.RESULT.value] = disclosed.model_dump(mode="json")
+        else:
+            structured.update(own)
 
         return WireResult(
-            content=outcome.content, structured=structured, is_error=failed
+            content=disclosed.blocks(), structured=structured, is_error=failed
         )
 
     def stamped(self, structured: Mapping[str, Any], run: str) -> dict[str, Any]:

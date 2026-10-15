@@ -17,8 +17,11 @@ from boba.toolkit.dag import (
     DagSpec,
     NestedCallsFeature,
     NodeReports,
+    NodeStatus,
+    WorkflowNodeResult,
 )
 from boba.toolkit.ports import Inbound, Outbound, StreamSpec
+from boba.toolkit.result import ErrorResult, MarkdownResult, ToolResultBase
 
 
 class ChunkHead(BaseModel):
@@ -303,6 +306,39 @@ class TestDagGroups:
                     _node("a", "source", out="x"),
                 )
             )
+
+
+class TestWorkflowNode:
+    """Заголовок и статус узла в итоге связки."""
+
+    @staticmethod
+    def _node(result: ToolResultBase) -> WorkflowNodeResult:
+        return WorkflowNodeResult(
+            key="src",
+            call_id="call_1_0",
+            tool="pg_stream_out",
+            errored=False,
+            content=result.llm_view(),
+            result=result,
+        )
+
+    def test_node_with_a_good_result_is_ok(self) -> None:
+        node = self._node(MarkdownResult(text="sent 3 rows"))
+
+        if node.status is not NodeStatus.OK:
+            raise AssertionError(f"удачный результат — ok: {node.status}")
+        if node.heading() != "[src] pg_stream_out — ok":
+            raise AssertionError(
+                f"заголовок называет ключ, инструмент и статус: {node.heading()}"
+            )
+
+    def test_node_with_a_failed_result_failed(self) -> None:
+        node = self._node(ErrorResult(message="no table", error_kind="probe"))
+
+        if node.status is not NodeStatus.FAILED:
+            raise AssertionError(f"отказ — failed: {node.status}")
+        if node.heading() != "[src] pg_stream_out — failed":
+            raise AssertionError(f"заголовок называет провал: {node.heading()}")
 
 
 class TestNodeReports:

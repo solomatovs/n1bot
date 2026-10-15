@@ -439,7 +439,9 @@ class ServiceTools:
         reply = mt.CallToolResult.model_validate(outcome.result)
         full = self._names.full(server, tool)
         wire = WireResult(
-            content="", structured=reply.structured_content, is_error=reply.is_error
+            content=reply.content,
+            structured=reply.structured_content,
+            is_error=reply.is_error,
         )
         revived = self._wire.revived(wire, DagNode(key=call_id, tool=full), server)
         if revived is not None:

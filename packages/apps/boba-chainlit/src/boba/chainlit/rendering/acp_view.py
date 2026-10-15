@@ -217,7 +217,9 @@ class UpdateView:
             return None
 
         wire = WireResult(
-            content="", structured=reply.structured_content, is_error=reply.is_error
+            content=reply.content,
+            structured=reply.structured_content,
+            is_error=reply.is_error,
         )
         call = DagNode(key=update.tool_call_id, tool=name)
         try:
