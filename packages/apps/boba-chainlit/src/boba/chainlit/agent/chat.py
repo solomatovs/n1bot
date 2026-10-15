@@ -208,19 +208,14 @@ class AgentSessionMeta:
     def __init__(self, threads: ThreadsTable) -> None:
         self._threads = threads
 
-    async def session_of(self, thread_id: str) -> str:
-        """Id сессии агента для загрузки: из metadata треда, а без записи —
-        id самого треда: так названы сессии мигрированных тредов, и так
-        их находит `session/resume`; неизвестную сессию агент отвергнет сам."""
+    async def session_of(self, thread_id: str) -> str | None:
+        """Id сессии агента для загрузки из metadata треда; None — треда нет
+        или сессия ему ещё не открыта, и первый вопрос откроет новую."""
         stored = await self._threads.get(UUID(thread_id))
         if stored is None:
-            return thread_id
+            return None
 
-        known = self.in_meta(stored.meta)
-        if known is None:
-            return thread_id
-
-        return known
+        return self.in_meta(stored.meta)
 
     @staticmethod
     def in_meta(meta: Any) -> str | None:
@@ -1219,19 +1214,16 @@ class ThreadDeleter(ThreadDeletionListener):
                 "thread %s: %d tab agent(s) closed before deletion", thread_id, closed
             )
 
-        session_id = AgentSessionMeta.in_meta(meta)
-        if session_id is None:
-            session_id = thread_id
-
-        chat = await self._table.chat_layer(UUID(thread_id))
-        if chat is not None:
-            await self._delete_session(thread_id, chat, session_id)
+        if session_id := AgentSessionMeta.in_meta(meta):
+            await self._delete_session(thread_id, session_id)
 
         await self._table.delete_chat_layer(UUID(thread_id))
 
-    async def _delete_session(
-        self, thread_id: str, chat: ChatAgentSettings, session_id: str
-    ) -> None:
+    async def _delete_session(self, thread_id: str, session_id: str) -> None:
+        chat = await self._table.chat_layer(UUID(thread_id))
+        if chat is None:
+            return
+
         process = await self._launcher.launch_settings(
             thread_id, chat, (), AgentClient(MuteUpdates())
         )

@@ -13,10 +13,12 @@ import time
 import uuid
 from collections.abc import AsyncIterator, Sequence
 from pathlib import Path
+from typing import Any, ClassVar, LiteralString
 
 import pytest
 from omegaconf import DictConfig
-from psycopg import sql
+from psycopg import AsyncConnection, sql
+from psycopg.rows import tuple_row
 
 from boba.agent.control import AllowAnswer
 from boba.agent.history import (
@@ -66,6 +68,7 @@ from boba.stand.agent import (
 )
 from boba.stand.database import TestDatabase
 from boba.stand.ui.fake_llm import ScenarioName
+from boba.stand.ui.stand import REPO_ROOT
 
 pytestmark = pytest.mark.anyio
 
@@ -676,3 +679,66 @@ class TestStagesOnPostgres:
             assert prefix[: len(after)] == after
         finally:
             await agents.aclose()
+
+
+class TestCutoverTable:
+    """Перенос чата на агента (build/scripts/migrations/2026-10-16-chat-agent-cutover)
+    создаёт таблицу истории своим SQL до первого обращения агента: определение
+    в history_records.sql обязано совпадать с тем, что создаёт хранилище."""
+
+    SCRIPT: ClassVar[Path] = (
+        REPO_ROOT
+        / "build/scripts/migrations/2026-10-16-chat-agent-cutover/history_records.sql"
+    )
+    COLUMNS: ClassVar[LiteralString] = (
+        "select column_name, data_type, is_nullable, column_default "
+        "from information_schema.columns "
+        "where table_schema = %s and table_name = 'history_records' "
+        "order by column_name"
+    )
+    KEY: ClassVar[LiteralString] = (
+        "select a.attname "
+        "from pg_index i "
+        "join pg_attribute a on a.attrelid = i.indrelid and a.attnum = any(i.indkey) "
+        "where i.indrelid = format('%%I.history_records', %s::text)::regclass "
+        "and i.indisprimary "
+        "order by a.attname"
+    )
+
+    async def test_script_table_matches_the_store(
+        self, store: PostgresHistoryStore, schema: str, pool: AsyncPostgresPool
+    ) -> None:
+        cutover = f"{schema}_cutover"
+        await store.list(None, 1)
+        async with pool.connection() as conn:
+            await conn.execute(
+                sql.SQL("create schema {}").format(sql.Identifier(cutover))
+            )
+            try:
+                async with conn.transaction():
+                    await conn.execute(
+                        sql.SQL("set local search_path to {}").format(
+                            sql.Identifier(cutover)
+                        )
+                    )
+                    await conn.execute(self.SCRIPT.read_bytes())
+
+                expected = await self._layout(conn, schema)
+                built = await self._layout(conn, cutover)
+            finally:
+                await conn.execute(
+                    sql.SQL("drop schema {} cascade").format(sql.Identifier(cutover))
+                )
+
+        assert built == expected
+
+    async def _layout(
+        self, conn: AsyncConnection[Any], schema: str
+    ) -> tuple[list[tuple[Any, ...]], list[tuple[Any, ...]]]:
+        async with conn.cursor(row_factory=tuple_row) as cur:
+            await cur.execute(self.COLUMNS, (schema,))
+            columns = await cur.fetchall()
+            await cur.execute(self.KEY, (schema,))
+            key = await cur.fetchall()
+
+        return columns, key
