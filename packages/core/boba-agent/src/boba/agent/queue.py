@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import ClassVar
 
+import mcp_types as mt
 from pydantic import BaseModel, ConfigDict
 
 from boba.agent.ids import Clock, IdMint
@@ -26,6 +27,8 @@ from boba.agent.records import (
     QueueOperation,
     QueueOperationRecord,
     QueueRemoveReason,
+    TextBlock,
+    UserBlock,
 )
 from boba.agent.session import Session
 
@@ -92,12 +95,14 @@ class QueueSource(StrEnum):
 
 
 class QueueEntry(BaseModel):
-    """Что ставят в очередь: вид, текст, приоритет и источник."""
+    """Что ставят в очередь: вид, текст, ссылки на вложения вопроса,
+    приоритет и источник."""
 
     model_config = ConfigDict(frozen=True)
 
     kind: QueueKind
     text: str
+    links: Sequence[mt.ResourceLink] = ()
     priority: QueuePriority | None = None
     source: QueueSource = QueueSource.HUMAN
     is_meta: bool = False
@@ -116,6 +121,7 @@ class QueueItem(BaseModel):
     id: str
     kind: QueueKind
     text: str
+    links: Sequence[mt.ResourceLink] = ()
     priority: QueuePriority
     enqueued_at: str
     source: QueueSource
@@ -139,7 +145,9 @@ class QueueItem(BaseModel):
 
 @dataclass(frozen=True)
 class Taken:
-    """Что взято из очереди на ход: элементы и их склеенный текст."""
+    """Что взято из очереди на ход: элементы и содержимое записи `user` по
+    ним — склеенный текст, а со ссылками на вложения — текст блоком и
+    ссылки за ним."""
 
     items: Sequence[QueueItem]
 
@@ -148,12 +156,24 @@ class Taken:
         return self.items[0]
 
     @property
-    def text(self) -> str:
+    def content(self) -> str | Sequence[UserBlock]:
         parts: list[str] = []
+        links: list[mt.ResourceLink] = []
         for item in self.items:
             parts.append(item.text)
+            links.extend(item.links)
 
-        return "\n".join(parts)
+        text = "\n".join(parts)
+        if not links:
+            return text
+
+        blocks: list[UserBlock] = []
+        if text:
+            blocks.append(TextBlock(text=text))
+
+        blocks.extend(links)
+
+        return blocks
 
 
 class InputQueue:
@@ -202,6 +222,7 @@ class InputQueue:
             id=item_id,
             kind=kind,
             text=self._bounded(kind, entry.text),
+            links=entry.links,
             priority=priority,
             enqueued_at=self._clock.now(),
             source=entry.source,

@@ -1142,7 +1142,7 @@ class TestConversation:
 
         assert await boba.wait() == 0
 
-    async def test_resource_link_reaches_the_model_as_a_markdown_link(
+    async def test_resource_link_reaches_the_model_and_comes_back_in_the_replay(
         self,
         boba: AcpProcess,
         registration: StandRegistration,
@@ -1170,6 +1170,30 @@ class TestConversation:
             assert idle.stop_reason == StopReason.END_TURN
             sent = model.app.requests[0]["messages"][-1]["content"]
             assert "[@main.py](file:///work/main.py)" in sent
+
+            # ветка копирует записи как есть: вложение остаётся блоком
+            forked = await conn.fork_session(
+                session_id=session.session_id, cwd=str(tmp_path), mcp_servers=[]
+            )
+            await conn.resume_session(
+                cwd=str(tmp_path),
+                session_id=forked.session_id,
+                mcp_servers=[],
+                replay_from=schema.ReplayFromStartVariant(),
+            )
+            asked = [
+                update
+                for update in client.updates_of(forked.session_id)
+                if isinstance(update, schema.UserMessageUpdate)
+            ]
+            assert len(asked) == 1, asked
+            content = asked[0].content
+            assert content is not None
+            text, link = content
+            assert isinstance(text, schema.TextContentBlock)
+            assert text.text == f"{ScenarioName.ANSWER.value} look at "
+            assert isinstance(link, schema.ResourceContentBlock)
+            assert (link.name, str(link.uri)) == ("main.py", "file:///work/main.py")
         finally:
             await conn.close()
             await boba.close_stdin()

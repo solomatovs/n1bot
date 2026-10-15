@@ -24,6 +24,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import ClassVar
 
+import mcp_types as mt
+
 from boba.agent.asking import (
     Aborted,
     Errored,
@@ -48,6 +50,7 @@ from boba.agent.records import (
     CompactBoundaryRecord,
     CompactMetadata,
     CompactTrigger,
+    LinkText,
     PreservedMessages,
     Record,
     TextBlock,
@@ -150,6 +153,10 @@ class TokenEstimator:
         for block in content:
             if isinstance(block, ToolResultBlock):
                 yield block.text()
+                continue
+
+            if isinstance(block, mt.ResourceLink):
+                yield LinkText.TEMPLATE.render(block)
                 continue
 
             yield block.text

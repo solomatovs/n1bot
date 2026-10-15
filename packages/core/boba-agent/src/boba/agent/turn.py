@@ -693,7 +693,7 @@ class TurnLoop:
             timestamp=self._clock.now(),
             session_id=self._session.id.value,
             version=self._version,
-            message=UserMessage(content=taken.text),
+            message=UserMessage(content=taken.content),
             is_meta=is_meta,
             origin=origin,
         )

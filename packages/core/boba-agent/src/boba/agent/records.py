@@ -33,6 +33,7 @@ from collections.abc import Mapping, Sequence
 from enum import StrEnum
 from typing import Any, ClassVar, Literal, TypeAlias
 
+import mcp_types as mt
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError
 from pydantic.alias_generators import to_camel
 
@@ -51,6 +52,7 @@ __all__ = [
     "CompactMetadata",
     "CompactTrigger",
     "KeptNull",
+    "LinkText",
     "MessageOrigin",
     "OriginKind",
     "PermissionBehavior",
@@ -272,7 +274,18 @@ class ToolResultBlock(MessageModel):
 
 
 AssistantBlock: TypeAlias = ThinkingBlock | TextBlock | ToolUseBlock
-UserBlock: TypeAlias = TextBlock | ToolResultBlock
+UserBlock: TypeAlias = TextBlock | ToolResultBlock | mt.ResourceLink
+"""Блоки записи `user`; ссылка на вложение вопроса — стандартный блок MCP
+resource_link и пишется в журнал его формой."""
+
+
+class LinkText(StrEnum):
+    """Текст ссылки на вложение вопроса, каким её видит модель."""
+
+    TEMPLATE = "[@{name}]({uri})"
+
+    def render(self, link: mt.ResourceLink) -> str:
+        return self.format(name=link.name, uri=link.uri)
 
 
 class Usage(MessageModel):
@@ -302,6 +315,18 @@ class UserMessage(MessageModel):
                 results.append(block)
 
         return results
+
+    def links(self) -> Sequence[mt.ResourceLink]:
+        """Ссылки на вложения вопроса по порядку."""
+        if isinstance(self.content, str):
+            return ()
+
+        found: list[mt.ResourceLink] = []
+        for block in self.content:
+            if isinstance(block, mt.ResourceLink):
+                found.append(block)
+
+        return found
 
 
 class AssistantMessage(MessageModel):

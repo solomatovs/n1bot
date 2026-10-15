@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 from typing import TypedDict
 
+import mcp_types as mt
 import pytest
 
 from boba.agent.records import (
@@ -36,6 +37,7 @@ from boba.agent.records import (
     RecordError,
     RenderedMessage,
     ReplyStopReason,
+    TextBlock,
     ThinkingBlock,
     ToolDenialKind,
     ToolResultBlock,
@@ -76,6 +78,25 @@ SAMPLES: dict[str, Record] = {
     "user-text": UserRecord(
         **chained(),
         message=UserMessage(content="hello"),
+        origin=MessageOrigin(kind=OriginKind.HUMAN),
+    ),
+    "user-text-blocks": UserRecord(
+        **chained(),
+        message=UserMessage(content=[TextBlock(text="hello")]),
+        origin=MessageOrigin(kind=OriginKind.HUMAN),
+    ),
+    "user-link": UserRecord(
+        **chained(),
+        message=UserMessage(
+            content=[
+                TextBlock(text="look at this"),
+                mt.ResourceLink(
+                    name="note.txt",
+                    uri="http://chat/canvas/t-1/upload/note.txt",
+                    mime_type="text/plain",
+                ),
+            ]
+        ),
         origin=MessageOrigin(kind=OriginKind.HUMAN),
     ),
     "user-tool-result": UserRecord(
@@ -203,6 +224,22 @@ class TestRecordCodec:
         assert document["toolUseResult"] == "5"
         assert "isMeta" not in document
         assert "is_error" not in document["message"]["content"][0]
+
+    def test_link_is_written_in_the_standard_resource_link_form(self) -> None:
+        """Вложение вопроса — блок resource_link формой MCP/ACP; текст вопроса
+        для заголовка и ленты — без ссылки."""
+        record = SAMPLES["user-link"]
+        document = json.loads(RecordCodec().line(record))
+
+        assert document["message"]["content"][1] == {
+            "type": "resource_link",
+            "name": "note.txt",
+            "uri": "http://chat/canvas/t-1/upload/note.txt",
+            "mimeType": "text/plain",
+        }
+        assert isinstance(record, UserRecord)
+        assert record.human_text() == "look at this"
+        assert [link.name for link in record.message.links()] == ["note.txt"]
 
     def test_assistant_wire_keeps_anthropic_snake_case(self) -> None:
         document = json.loads(RecordCodec().line(SAMPLES["assistant-tool-use"]))

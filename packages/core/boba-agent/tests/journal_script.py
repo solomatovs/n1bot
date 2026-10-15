@@ -38,6 +38,7 @@ from boba.agent.records import (
     ToolResultBlock,
     ToolUseBlock,
     Usage,
+    UserBlock,
     UserMessage,
     UserRecord,
 )
@@ -91,7 +92,7 @@ class JournalScript:
 
         return await self._put(record)
 
-    async def prompt(self, text: str) -> UserRecord:
+    async def prompt(self, text: str | Sequence[UserBlock]) -> UserRecord:
         record = UserRecord(
             uuid=self._ids.uuid(),
             parent_uuid=self._session.last_chain_uuid(),

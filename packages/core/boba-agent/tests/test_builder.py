@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import mcp_types as mt
 import pytest
 from journal_script import JournalScript
 
@@ -13,7 +14,7 @@ from boba.agent.attachments import PromptSnapshot
 from boba.agent.builder import RequestBuilder
 from boba.agent.history import SessionId
 from boba.agent.profile import ModelProfile, ReasoningReturn
-from boba.agent.records import AttachmentRecord, ReplyStopReason
+from boba.agent.records import AttachmentRecord, ReplyStopReason, TextBlock
 from boba.agent.session import Session
 from boba.agent.template import AgentTemplate
 from boba.history.jsonl import JsonlHistoryStore
@@ -205,6 +206,21 @@ class TestAttachmentsAndMerging:
 
         assert len(request.messages) == 2
         assert request.messages[1].content == "first\nsecond"
+
+    async def test_question_links_reach_the_model_as_link_text(
+        self, tmp_path: Path
+    ) -> None:
+        scripted = Scripted(tmp_path)
+        link = mt.ResourceLink(name="a.txt", uri="http://chat/canvas/t/upload/a.txt")
+        async with scripted as script:
+            await script.prompt([TextBlock(text="look"), link])
+
+        builder = RequestBuilder(profile(False, ReasoningReturn.NEVER), AgentTemplate())
+        request = builder.build(scripted.session.conversation(), SNAPSHOT)
+
+        content = str(request.messages[1].content)
+        assert content.startswith("look")
+        assert content.endswith("[@a.txt](http://chat/canvas/t/upload/a.txt)")
 
     async def test_reminders_after_tool_results_join_the_last_tool_message(
         self, tmp_path: Path
