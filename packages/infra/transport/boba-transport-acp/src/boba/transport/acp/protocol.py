@@ -96,7 +96,7 @@ class AcpErrorCode(IntEnum):
     RESOURCE_NOT_FOUND = -32002
     REQUEST_CANCELLED = -32800
     BINDING_LIMIT = -33000
-    SERVER_UNAVAILABLE = -33001
+    UNKNOWN_SERVER = -33001
     BACKEND_FAILED = -33002
 
 
@@ -119,6 +119,11 @@ class ToolStatus(StrEnum):
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
+
+    @property
+    def terminal(self) -> bool:
+        """Вызов кончился: удачей, сбоем или отменой."""
+        return self in (ToolStatus.COMPLETED, ToolStatus.FAILED, ToolStatus.CANCELLED)
 
 
 class ErrorDataKey(StrEnum):

@@ -620,7 +620,7 @@ class StandConfig(StandService):
     подключением, что у чата (kerberos), схема agent_history в базе стенда."""
 
     agent_chat_mcp: bool = True
-    """Записывать ли сервер инструментов чата /chat/mcp в mcpServers агента."""
+    """Объявлять ли агенту сервер инструментов чата /chat/mcp."""
 
     agent_hook: bool = True
     """Класть ли хук PreToolUse в файл настроек агента: без него соединения
@@ -757,6 +757,8 @@ class StandConfig(StandService):
                 "enable": self.agent_chat_mcp,
                 "name": StandServerName.CHAT.value,
                 "path": "/chat/mcp",
+                "connect_timeout_sec": 10,
+                "call_timeout_sec": 120,
             },
             "hook": {
                 "enable": self.agent_hook,

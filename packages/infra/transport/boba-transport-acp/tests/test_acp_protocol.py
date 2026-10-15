@@ -37,6 +37,7 @@ from boba.transport.acp.protocol import (
     McpResultOutcome,
     McpVersion,
     StopReason,
+    ToolStatus,
 )
 
 pytestmark = pytest.mark.anyio
@@ -260,14 +261,14 @@ class TestMcpMessage:
 
     async def test_outer_error_keeps_its_code(self, acp_pair: AcpPair) -> None:
         refusal = RequestError(
-            AcpErrorCode.SERVER_UNAVAILABLE, "No MCP server 'boba_general' is declared"
+            AcpErrorCode.UNKNOWN_SERVER, "No MCP server 'boba_general' is declared"
         )
         await acp_pair.stand_client.replies.put(refusal)
 
         with pytest.raises(RequestError) as caught:
             await acp_pair.agent.request(self.CALL)
 
-        assert caught.value.code == AcpErrorCode.SERVER_UNAVAILABLE
+        assert caught.value.code == AcpErrorCode.UNKNOWN_SERVER
 
     async def test_notification_reaches_agent(self, acp_pair: AcpPair) -> None:
         progress = McpMessage(
@@ -325,6 +326,11 @@ class TestSdkGuard:
         assert version == "1.0.0rc3"
         assert "connection_id" in schema.MessageMcpRequest.model_fields
         assert McpVersion.V2026_07_28 in MODERN_PROTOCOL_VERSIONS
+        assert [s for s in ToolStatus if s.terminal] == [
+            ToolStatus.COMPLETED,
+            ToolStatus.FAILED,
+            ToolStatus.CANCELLED,
+        ]
 
         router = MethodRouter(StandClient(), Client)
         with pytest.raises(RequestError) as caught:

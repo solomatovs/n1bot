@@ -145,9 +145,11 @@
         postgres = "${postgres}"
         schema   = "agent_history"
     [agent.chat_mcp]
-        enable = true
-        name   = "chat"
-        path   = "/chat/mcp"
+        enable              = true
+        name                = "chat"
+        path                = "/chat/mcp"
+        connect_timeout_sec = 10
+        call_timeout_sec    = 120
     [agent.hook]
         enable      = true
         path        = "/chat/hooks/pre-tool-use"

@@ -1,22 +1,23 @@
 """Чат как сервер инструментов своего агента: MCP-сервер инструментов
 соединений под `[agent.chat_mcp].path`, обработчик хука PreToolUse под
-`[agent.hook].path` и ключи процессов агента, по которым оба входа узнают
-вызывающего.
+`[agent.hook].path` и ключи процессов агента, по которым входы и
+ретранслятор mcp/message узнают вызывающего.
 
-Оба входа живут в FastAPI chainlit и принимают на каждом запросе Bearer ключ
-процесса агента — случайную строку, которую запуск агента (AgentLauncher)
-выдаёт процессу и пишет в его файл настроек: в запись сервера чата и в
-заголовок хука. Токен входа пользователя агенту не передаётся. По ключу чат
-находит запись его держателя (ProcessKeys): пользователя, тред и профиль
-треда; роли и секреты входа читаются из живой сессии пользователя в момент
-вызова. Сессий MCP нет: сервер stateless streamable HTTP, собран из общего
-адаптера boba.mcp_adapter; инструменты — собственные инструменты чата из
-реестра (connection_list, connection_search) по ролям пользователя и профилю
-треда. Обработчик хука читает событие PreToolUse, находит по схеме
-инструмента параметры-соединения (SealedParamSchema), заменяет имя
-соединения профилем, запечатанным ключом сервера MCP из
-`mcp_server.features` (SealFeature), и отвечает `updatedInput`; неизвестное
-или невыданное соединение — `deny` с причиной.
+Ключ процесса — serverId, который запуск агента (AgentLauncher) выдаёт на
+каждый сервер процесса и объявляет агенту записью type "acp"; токен входа
+пользователя агенту не передаётся. Оба HTTP-входа живут в FastAPI chainlit
+и принимают такой ключ Bearer-токеном: сервер инструментов чата зовёт
+ретранслятор ключом регистрации сервера чата. По ключу чат находит запись
+его держателя (ProcessKeys): пользователя, тред, профиль треда и сервер;
+роли и секреты входа читаются из живой сессии пользователя в момент вызова.
+Сессий MCP нет: сервер stateless streamable HTTP, собран из общего адаптера
+boba.mcp_adapter; инструменты — собственные инструменты чата из реестра
+(connection_list, connection_search) по ролям пользователя и профилю треда.
+Запечатывание (HookSealing) находит по схеме инструмента
+параметры-соединения (SealedParamSchema), заменяет имя соединения профилем,
+запечатанным ключом сервера MCP из `mcp_server.features` (SealFeature), и
+отвечает `updatedInput`; неизвестное или невыданное соединение — `deny` с
+причиной.
 
 Ошибки:
 AuthenticationError — ключа нет, он неизвестен или снят либо сессия его
@@ -31,9 +32,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import secrets
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from contextlib import AbstractAsyncContextManager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import timedelta
 from enum import StrEnum
 from http import HTTPStatus
@@ -41,6 +42,7 @@ from typing import Any, ClassVar
 from uuid import UUID, uuid4
 
 import mcp_types as mt
+from acp.experimental.v2 import schema
 from fastmcp import FastMCP
 from fastmcp.server.auth import TokenVerifier
 from fastmcp.server.dependencies import get_access_token
@@ -133,11 +135,14 @@ class DetailKey(StrEnum):
 
 @dataclass(frozen=True)
 class KeyHolder:
-    """Держатель ключа процесса агента: чей это агент и какого треда.
+    """Держатель ключа процесса агента: чей это агент, какого треда и для
+    какого сервера выдан ключ.
 
-    Создаётся запуском агента (AgentLauncher) вместе с ключом. profile —
-    профиль треда: по нему сервер инструментов чата выбирает набор
-    инструментов. session — живой вход пользователя вкладки.
+    Создаётся запуском агента (AgentLauncher): на каждый сервер, который
+    процесс получает объявлением type "acp", — свой ключ, он же serverId.
+    profile — профиль треда: по нему сервер инструментов чата выбирает набор
+    инструментов. session — живой вход пользователя вкладки. server — имя
+    сервера профиля либо сервера инструментов чата ([agent.chat_mcp].name).
     """
 
     user_id: UUID
@@ -145,16 +150,19 @@ class KeyHolder:
     thread_id: str
     profile: str
     session: LiveSignIn
+    server: str
 
 
 class ProcessKeys:
     """Ключи процессов агента этого инстанса чата: ключ → его держатель.
 
-    Создаётся провайдером процесса, один на инстанс. Запуск агента выдаёт
-    ключ процессу (issue) и снимает его при остановке и перезапуске
-    (revoke); сервер инструментов чата и обработчик хука находят по ключу
-    держателя (holder). Реестр живёт в памяти: процесс агента — потомок
-    этого же инстанса и с его рестартом не остаётся.
+    Создаётся провайдером процесса, один на инстанс. Запуск агента
+    регистрирует серверы процесса (register): ключ каждого — serverId его
+    объявления агенту; при остановке и перезапуске ключи снимаются
+    (revoke). Ретранслятор mcp/message, сервер инструментов чата и
+    обработчик хука находят по ключу держателя (holder). Реестр живёт в
+    памяти: процесс агента — потомок этого же инстанса и с его рестартом не
+    остаётся.
     """
 
     KEY_BYTES: ClassVar[int] = 32
@@ -168,6 +176,18 @@ class ProcessKeys:
         self._holders[key] = holder
 
         return key
+
+    def register(
+        self, holder: KeyHolder, names: Sequence[str]
+    ) -> list[schema.AcpMcpServer]:
+        """Объявления серверов names для агента: на каждое имя новый ключ
+        держателя с этим сервером, он же serverId."""
+        servers: list[schema.AcpMcpServer] = []
+        for name in names:
+            key = self.issue(replace(holder, server=name))
+            servers.append(schema.AcpMcpServer(name=name, server_id=key))
+
+        return servers
 
     def revoke(self, key: str) -> None:
         """Снимает ключ; неизвестный ключ — ничего."""
@@ -191,7 +211,8 @@ class ChatCallers:
     """Вызывающий по Bearer ключу процесса агента.
 
     Создаётся провайдером процесса; им пользуются сервер инструментов (порт
-    по ролям и профилю) и обработчик хука (субъект и креды для соединений).
+    по ролям и профилю), обработчик хука и ретранслятор mcp/message (субъект
+    и креды для соединений).
     Держателя ключа отдаёт реестр ProcessKeys; роли и секреты входа читаются
     из живой сессии держателя.
     """
@@ -208,8 +229,8 @@ class ChatCallers:
         if holder is None:
             msg = (
                 "the bearer token is not a key of a running agent process of "
-                "this chat instance: expected the key from the settings file "
-                "of the agent, got an unknown or revoked one"
+                "this chat instance: expected the serverId the chat registered "
+                "for the agent, got an unknown or revoked one"
             )
             raise AuthenticationError(msg)
 
