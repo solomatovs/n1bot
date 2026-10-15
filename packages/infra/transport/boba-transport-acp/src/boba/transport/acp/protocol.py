@@ -21,13 +21,18 @@ from types import ModuleType
 from typing import Annotated, Any, ClassVar, TypeAlias, assert_never
 
 import mcp_types
-from mcp_types.jsonrpc import ErrorData
+from mcp_types.jsonrpc import (
+    INVALID_REQUEST,
+    JSONRPC_VERSION,
+    PARSE_ERROR,
+    ErrorData,
+    JSONRPCError,
+)
 from pydantic import Field, TypeAdapter, ValidationError
 
 from acp import schema as v1_schema
 from acp._transport import Transport
 from acp.connection import Connection, JsonValue
-from acp.exceptions import RequestError
 from acp.experimental import v2
 from acp.experimental.v2 import (
     AgentSideConnection,
@@ -195,15 +200,12 @@ class _Batch:
 
 
 class BatchTransport(Transport):
-    """Реализация Transport SDK стороны агента над строками JSON stdio: строка —
-    объект JSON-RPC или пакет (массив, JSON-RPC 2.0 §6). Записи пакета Connection
-    получает по одной, ответы на его запросы уходят одним массивом, когда отвечены
-    все; битый JSON и не-объекты получают ошибку с id null. AgentSide читает и
-    пишет через него.
-    Временная замена NdjsonTransport, пока SDK не разбирает пакеты."""
+    """Реализация Transport SDK стороны агента над строками stdio с пакетами
+    JSON-RPC 2.0: записи пакета Connection получает по одной, ответы на его запросы
+    уходят одним массивом. Временная замена NdjsonTransport, пока SDK не разбирает
+    пакеты."""
 
     ENCODING: ClassVar[str] = "utf-8"
-    SEPARATORS: ClassVar[tuple[str, str]] = (",", ":")
 
     def __init__(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -231,20 +233,14 @@ class BatchTransport(Transport):
 
             try:
                 value = json.loads(line)
-            except UnicodeDecodeError as exc:
-                details = f"The input line is not {self.ENCODING} text: {exc}."
-                refusal = RequestError.parse_error({ErrorDataKey.DETAILS: details})
-                await self._write(
-                    {"jsonrpc": "2.0", "id": None, "error": refusal.to_error_obj()}
-                )
-                continue
-            except json.JSONDecodeError as exc:
+            except ValueError as exc:
                 shown = line[:200].decode(self.ENCODING, errors="replace")
-                details = f"The input line {shown!r} is not JSON: {exc}."
-                refusal = RequestError.parse_error({ErrorDataKey.DETAILS: details})
-                await self._write(
-                    {"jsonrpc": "2.0", "id": None, "error": refusal.to_error_obj()}
+                details = (
+                    f"The input line {shown!r} is not {self.ENCODING} JSON: {exc}."
                 )
+                error = ErrorData(code=PARSE_ERROR, message=details)
+                refusal = JSONRPCError(jsonrpc=JSONRPC_VERSION, id=None, error=error)
+                await self._write(refusal.model_dump(mode="json"))
                 continue
 
             await self._accept(value)
@@ -253,10 +249,6 @@ class BatchTransport(Transport):
 
     async def send(self, message: dict[str, Any]) -> None:
         if "method" in message:
-            await self._write(message)
-            return
-
-        if "id" not in message:
             await self._write(message)
             return
 
@@ -282,37 +274,32 @@ class BatchTransport(Transport):
     async def _accept(self, value: JsonValue) -> None:
         """Раскладывает разобранную строку: объект — в очередь, записи пакета — в
         очередь с ожиданием ответов на его запросы; на не-объект пишет ошибку."""
-        if isinstance(value, dict):
-            self._inbox.append(value)
-            return
-
-        if not isinstance(value, list):
-            details = f"Expected a JSON-RPC object or batch, got {repr(value)[:200]}."
-            refusal = RequestError.invalid_request({ErrorDataKey.DETAILS: details})
-            await self._write(
-                {"jsonrpc": "2.0", "id": None, "error": refusal.to_error_obj()}
-            )
-            return
-
-        if not value:
-            details = "Expected a batch with at least one entry, got []."
-            refusal = RequestError.invalid_request({ErrorDataKey.DETAILS: details})
-            await self._write(
-                {"jsonrpc": "2.0", "id": None, "error": refusal.to_error_obj()}
-            )
-            return
+        match value:
+            case dict():
+                self._inbox.append(value)
+                return
+            case [_, *_]:
+                entries = value
+            case _:
+                details = (
+                    "Expected a JSON-RPC object or a non-empty batch, "
+                    f"got {repr(value)[:200]}."
+                )
+                error = ErrorData(code=INVALID_REQUEST, message=details)
+                refusal = JSONRPCError(jsonrpc=JSONRPC_VERSION, id=None, error=error)
+                await self._write(refusal.model_dump(mode="json"))
+                return
 
         batch = _Batch(awaited=[], replies=[])
-        for index, entry in enumerate(value):
+        for index, entry in enumerate(entries):
             if not isinstance(entry, dict):
                 details = (
                     f"Batch entry {index} must be a JSON-RPC object, "
                     f"got {repr(entry)[:200]}."
                 )
-                refusal = RequestError.invalid_request({ErrorDataKey.DETAILS: details})
-                batch.replies.append(
-                    {"jsonrpc": "2.0", "id": None, "error": refusal.to_error_obj()}
-                )
+                error = ErrorData(code=INVALID_REQUEST, message=details)
+                refusal = JSONRPCError(jsonrpc=JSONRPC_VERSION, id=None, error=error)
+                batch.replies.append(refusal.model_dump(mode="json"))
                 continue
 
             self._inbox.append(entry)
@@ -333,7 +320,7 @@ class BatchTransport(Transport):
 
     async def _write(self, value: JsonValue) -> None:
         """Одна строка JSON в вывод с ожиданием противодавления."""
-        text = json.dumps(value, separators=self.SEPARATORS) + "\n"
+        text = json.dumps(value) + "\n"
         self._writer.write(text.encode(self.ENCODING))
         await self._writer.drain()
 
@@ -361,6 +348,10 @@ class AgentSide:
     async def __call__(
         self, method: str, params: JsonValue | None, is_notification: bool
     ) -> JsonValue | None:
+        # роутер rc3 проверяет отсутствующие params моделью, схема v2 их не требует
+        if params is None:
+            params = {}
+
         mcp_notification = is_notification and method == AGENT_METHODS["mcp_message"]
         if mcp_notification:
             message = McpMessage.model_validate(params)
