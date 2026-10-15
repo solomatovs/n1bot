@@ -13,14 +13,39 @@ import asyncio
 from typing import Any
 from uuid import uuid4
 
-from acp.experimental.v2 import schema
+from acp.experimental.v2 import Agent, schema
 from acp.experimental.v2.agent import AgentSideConnection, run_agent
 
 
-class ForeignAgent:
-    """Агент без расширений boba: сессия — id, ход — сразу idle."""
+class ForeignAgent(Agent):
+    """Реализация Agent ACP v2 без расширений boba: сессия — id, ход —
+    сразу idle."""
 
     PROTOCOL_VERSION: int = 2
+
+    # SDK считает метод протокола неподдержанным
+    login = Agent.login
+    logout = Agent.logout
+    list_providers = Agent.list_providers
+    set_provider = Agent.set_provider
+    disable_provider = Agent.disable_provider
+    list_sessions = Agent.list_sessions
+    delete_session = Agent.delete_session
+    fork_session = Agent.fork_session
+    resume_session = Agent.resume_session
+    set_config_option = Agent.set_config_option
+    mcp_message = Agent.mcp_message
+    notify_mcp = Agent.notify_mcp
+    start_nes = Agent.start_nes
+    suggest_nes = Agent.suggest_nes
+    accept_nes = Agent.accept_nes
+    reject_nes = Agent.reject_nes
+    close_nes = Agent.close_nes
+    did_open = Agent.did_open
+    did_change = Agent.did_change
+    did_close = Agent.did_close
+    did_save = Agent.did_save
+    did_focus = Agent.did_focus
 
     def __init__(self) -> None:
         self._connection: AgentSideConnection | None = None
