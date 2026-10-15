@@ -237,7 +237,7 @@ class StandRegistration:
         self.received.append(message)
         if message.server_id not in self._served:
             msg = f"No MCP server is registered under serverId {message.server_id!r}"
-            raise RequestError(AcpErrorCode.SERVER_UNAVAILABLE, msg)
+            raise RequestError(AcpErrorCode.UNKNOWN_SERVER, msg)
 
         request = parse_client_request(
             message.method, McpVersion.V2026_07_28, message.params
