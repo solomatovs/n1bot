@@ -5,8 +5,10 @@ socket.io тем же протоколом, что и браузер. Прове
 агента без секретов в argv и окружении и его уход вместе с вкладкой; возврат к
 треду воспроизводит историю через `session/resume`, второй инстанс видит её
 как наблюдатель и получает отказ держателя в ленту, шаг вопроса получает
-messageId агента, правка вопроса по нему ветвит сессию,
-удаление треда удаляет сессию агента; второй инстанс получает токены чужого хода
+messageId агента, правка вопроса по нему ветвит сессию, а у чужого агента
+без среза ветки отказана и ничего не меняет; удаление треда удаляет сессию
+агента и файлы треда; элементы хода (вложение, файл итога, ссылка панели)
+после перезагрузки те же, что вживую; второй инстанс получает токены чужого хода
 по шине Postgres, оценки возвращаются к шагам; правка панели настроек пишет слои
 и перезапускает процесс агента с той же сессией без повторной ленты, а во время
 хода — после его конца. История агента — Postgres стенда билетом Kerberos, как у
@@ -18,10 +20,12 @@ import asyncio
 import json
 import multiprocessing
 import stat
+import sys
 import time
 from collections.abc import AsyncIterator, Iterator
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar
+from urllib.parse import unquote, urlsplit
 from uuid import uuid4
 
 import httpx
@@ -43,6 +47,7 @@ from boba.stand.ui.stand import (
     StandApp,
     StandConfig,
     StandProcess,
+    StandToolNames,
     StandUrl,
     free_port,
 )
@@ -60,6 +65,8 @@ GENERATION = "acp-chat-stand"
 MESSAGING = "postgres"
 """Шина в базе стенда: второй инстанс видит ход первого."""
 PULSE = "\u200b"
+FOREIGN_AGENT = Path(__file__).with_name("foreign_agent.py")
+"""Чужой агент ACP v2 без среза ветки по messageId вопроса."""
 STEP_TYPES = ("user_message", "run", "llm", "tool", "assistant_message")
 
 
@@ -153,6 +160,62 @@ def second(
         messaging=MESSAGING,
     )
     process = StandProcess(config=config, log_path=workdir / "second.log")
+    process.start(boot_timeout_sec=BOOT_TIMEOUT_SEC)
+    try:
+        yield process
+    finally:
+        process.stop()
+
+
+@pytest.fixture(scope="module")
+def foreign_app(
+    tmp_path_factory: pytest.TempPathFactory,
+    llm_port: int,
+    fake_llm: None,
+    stand_database: str,
+    app: StandProcess,
+) -> Iterator[StandProcess]:
+    """Инстанс chainlit над той же базой, у которого агент вкладки — чужой
+    агент ACP без объявленного среза ветки."""
+    workdir = tmp_path_factory.mktemp("acp-chat-foreign")
+    config = StandConfig(
+        workdir=workdir,
+        app=StandApp.CHAINLIT,
+        app_port=free_port(),
+        llm_port=llm_port,
+        db_name=stand_database,
+        generation=GENERATION,
+        agent_process={"command": sys.executable, "args": [str(FOREIGN_AGENT)]},
+    )
+    process = StandProcess(config=config, log_path=workdir / "foreign.log")
+    process.start(boot_timeout_sec=BOOT_TIMEOUT_SEC)
+    try:
+        yield process
+    finally:
+        process.stop()
+
+
+@pytest.fixture(scope="module")
+def sandboxed(
+    tmp_path_factory: pytest.TempPathFactory,
+    llm_port: int,
+    fake_llm: None,
+    stand_database: str,
+    app: StandProcess,
+) -> Iterator[StandProcess]:
+    """Инстанс chainlit над той же базой с песочницей, как в бою: файлы
+    вложений и инструментов — один workspace пользователя."""
+    workdir = tmp_path_factory.mktemp("acp-chat-sandbox")
+    config = StandConfig(
+        workdir=workdir,
+        app=StandApp.CHAINLIT,
+        app_port=free_port(),
+        llm_port=llm_port,
+        db_name=stand_database,
+        generation=GENERATION,
+        sandbox=True,
+    )
+    process = StandProcess(config=config, log_path=workdir / "sandbox.log")
     process.start(boot_timeout_sec=BOOT_TIMEOUT_SEC)
     try:
         yield process
@@ -380,9 +443,12 @@ class ChatSocket:
 
         return "".join(found)
 
-    def messages(self, kind: str = "assistant_message") -> list[dict[str, Any]]:
+    def messages(
+        self, kind: str = "assistant_message", since: int = 0
+    ) -> list[dict[str, Any]]:
+        """Кадры шагов вида kind, начиная с события номер since."""
         found: list[dict[str, Any]] = []
-        for event, payload in self.events:
+        for event, payload in self.events[since:]:
             if event not in ("new_message", "update_message", "stream_start"):
                 continue
 
@@ -952,13 +1018,7 @@ class TestHistory:
             await asking.send(f"one {ScenarioName.ANSWER.value}")
             await asking.wait_task_end()
             await editing.wait_task_end()
-            live = [
-                p
-                for e, p in editing.events[mark:]
-                if e in ("new_message", "update_message")
-                and isinstance(p, dict)
-                and p.get("type") == "user_message"
-            ]
+            live = editing.messages("user_message", mark)
             assert live, editing.trace()
             await asking.end_session()
 
@@ -1017,13 +1077,7 @@ class TestHistory:
             assert editing.errors(), editing.trace()
             assert "is busy" in editing.errors()[-1], editing.errors()
             redrawn = await editing.wait_event_index("resume_thread", since=mark)
-            replayed = [
-                p
-                for e, p in editing.events[redrawn:]
-                if e == "new_message"
-                and isinstance(p, dict)
-                and p.get("type") == "user_message"
-            ]
+            replayed = editing.messages("user_message", redrawn)
             assert replayed, editing.trace()[mark:]
             after = await rows.thread_meta(holder.thread_id)
             assert after == before
@@ -1065,13 +1119,7 @@ class TestHistory:
 
             await holder.end_session()
             mark = len(observer.events)
-            replayed = [
-                p
-                for e, p in observer.events
-                if e == "new_message"
-                and isinstance(p, dict)
-                and p.get("type") == "user_message"
-            ]
+            replayed = observer.messages("user_message")
             await observer.edit(
                 str(replayed[-1].get("id")), f"edited {ScenarioName.ANSWER.value}"
             )
@@ -1152,13 +1200,7 @@ class TestHistory:
                 await tab.wait_task_end()
                 cleared = await tab.wait_event_index("resume_thread", since=mark)
                 assert tab.events[cleared][1].get("steps") == [], tab.trace()[mark:]
-                shown = [
-                    p.get("output")
-                    for e, p in tab.events[cleared:]
-                    if e in ("new_message", "update_message")
-                    and isinstance(p, dict)
-                    and p.get("type") == "user_message"
-                ]
+                shown = [m.get("output") for m in tab.messages("user_message", cleared)]
                 assert tail not in shown, tab.trace()[mark:]
                 assert first not in shown, tab.trace()[mark:]
                 assert edited in shown, tab.trace()[mark:]
@@ -1172,6 +1214,72 @@ class TestHistory:
             await remote.end_session()
             await other.end_session()
             await editing.end_session()
+
+    async def test_an_edit_without_the_cut_is_refused_and_changes_nothing(
+        self, foreign_app: StandProcess, cookie: str, rows: ChatRows
+    ) -> None:
+        """Агент вкладки не объявил срез ветки по messageId вопроса: правка
+        отказана сообщением во вкладке, вкладка перерисована из истории,
+        threads.meta прежний."""
+        tab = ChatSocket(foreign_app, cookie, str(uuid4()))
+        await tab.open()
+        try:
+            await tab.send("first question")
+            await tab.wait_task_end()
+            assert not tab.errors(), (tab.errors(), foreign_app.tail(60))
+            question = str(tab.messages("user_message")[-1].get("id"))
+            before = await rows.thread_meta(tab.thread_id)
+            assert before is not None
+            assert before.get(ThreadMetaField.AGENT_SESSION), before
+
+            mark = len(tab.events)
+            await tab.edit(question, "edited question")
+            await tab.wait_task_end()
+            refusals = tab.errors()
+            assert refusals, tab.trace()[mark:]
+            assert "cannot branch the conversation" in refusals[-1], refusals
+            assert "boba/upToMessageId" in refusals[-1], refusals
+            await tab.wait_event_index("resume_thread", since=mark)
+            assert await rows.thread_meta(tab.thread_id) == before
+        finally:
+            await tab.end_session()
+
+    @pytest.mark.parametrize("keep_open", [False, True], ids=["closed", "open"])
+    async def test_deleting_the_thread_deletes_its_files(
+        self, app: StandProcess, cookie: str, keep_open: bool
+    ) -> None:
+        """Файл вложения треда после удаления треда не отдаётся: область треда
+        удалена у сервиса файлов от имени владельца — по строке users, когда
+        вкладка закрыта, и по живой сессии, когда открыта."""
+        tab = ChatSocket(app, cookie, str(uuid4()))
+        await tab.open()
+        file_id = tab.upload("gone.txt", b"gone with the thread", "text/plain")
+        await tab.send(f"files {ScenarioName.ANSWER.value}", (file_id,))
+        await tab.wait_task_end()
+        assert not tab.errors(), (tab.errors(), app.tail(60))
+        question = str(tab.messages("user_message")[-1].get("id"))
+        attached = [e for e in tab.elements() if e.get("forId") == question]
+        assert attached, tab.trace()
+        address = StandUrl.of(app.config.app_port, str(attached[-1].get("url")))
+        served = httpx.get(address, headers={"Cookie": cookie}, timeout=30.0)
+        assert served.status_code == 200, served.text[:200]
+        if not keep_open:
+            await tab.end_session()
+
+        try:
+            response = httpx.request(
+                "DELETE",
+                f"{app.config.base_url}/project/thread",
+                json={"threadId": tab.thread_id},
+                headers={"Cookie": cookie},
+                timeout=120.0,
+            )
+            assert response.status_code == 200, (response.text[:300], app.tail(60))
+            gone = httpx.get(address, headers={"Cookie": cookie}, timeout=30.0)
+            assert gone.status_code == 404, (gone.status_code, gone.text[:200])
+        finally:
+            if keep_open:
+                await tab.end_session()
 
     async def test_question_attachment_lives_in_the_agent_history(
         self, app: StandProcess, cookie: str, llm_port: int
@@ -1263,6 +1371,79 @@ class TestFeed:
         assert answers, tab.trace()
 
         return answers[0]
+
+    @staticmethod
+    def _shown(tab: ChatSocket) -> dict[str, tuple[str, ...]]:
+        """Последний кадр element каждого элемента шага ленты по id: имя,
+        адрес, шаг, props, вид и показ. Элемент оптимистичного шага вопроса,
+        который фронт рисует сам до ответа агента, в ленту треда не входит."""
+        steps = tab.steps()
+        found: dict[str, tuple[str, ...]] = {}
+        for element in tab.elements():
+            if str(element.get("forId")) not in steps:
+                continue
+
+            found[str(element.get("id"))] = (
+                str(element.get("name")),
+                str(element.get("url")),
+                str(element.get("forId")),
+                json.dumps(element.get("props"), sort_keys=True),
+                str(element.get("type")),
+                str(element.get("display")),
+            )
+
+        return found
+
+    async def test_elements_of_a_turn_are_the_same_after_a_reload(
+        self, sandboxed: StandProcess, cookie: str
+    ) -> None:
+        """Вложение вопроса, файл итога send_file и ссылка панели canvas_open
+        после перезагрузки треда приходят теми же кадрами element, что вживую."""
+        app = sandboxed
+        tab = ChatSocket(app, cookie, str(uuid4()))
+        await tab.open()
+        file_id = tab.upload("note.txt", b"shown text", "text/plain")
+        await tab.send(f"attach {ScenarioName.ANSWER.value}", (file_id,))
+        await tab.wait_task_end()
+        assert not tab.errors(), (tab.errors(), app.tail(60))
+        question = str(tab.messages("user_message")[-1].get("id"))
+        attached = [e for e in tab.elements() if e.get("forId") == question]
+        assert attached, tab.trace()
+        address = urlsplit(str(attached[-1].get("url")))
+        stored = PurePosixPath(unquote(address.path))
+        path = f"/workspace/{tab.thread_id}/upload/{stored.name}"
+        tools = StandToolNames()
+        calls = [
+            {"name": tools.full("send_file"), "arguments": {"path": path}},
+            {"name": tools.full("canvas_open"), "arguments": {"path": path}},
+        ]
+        await tab.send(f"{ScenarioName.CALL.value} {json.dumps(calls)}")
+        await tab.wait_task_end()
+        assert not tab.errors(), (tab.errors(), app.tail(60))
+        live = self._shown(tab)
+        await tab.end_session()
+
+        again = ChatSocket(app, cookie, tab.thread_id)
+        await again.open(resumed=True)
+        try:
+            assert not again.errors(), (again.errors(), app.tail(60))
+            replayed = self._shown(again)
+        finally:
+            await again.end_session()
+
+        shown: list[str] = []
+        for name, *_ in live.values():
+            shown.append(name)
+
+        # вложение вопроса, файл итога, ссылка панели и кнопки журналов вызовов
+        assert sorted(shown) == [
+            "CanvasLink",
+            "CanvasStream",
+            "CanvasStream",
+            "note.txt",
+            "note.txt",
+        ], live
+        assert live == replayed, (live, replayed)
 
     async def test_resumed_tab_draws_the_same_steps_as_the_live_turn(
         self, app: StandProcess, cookie: str
