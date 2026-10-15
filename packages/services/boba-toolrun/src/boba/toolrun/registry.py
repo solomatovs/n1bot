@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from boba.access import ToolAccess
 from boba.identity.context import CallContexts
 from boba.toolkit.chain import CallAmbient
-from boba.toolkit.dag import NodeCalls, ToolServer
+from boba.toolkit.dag import NodeCalls, ToolServer, ToolServers
 from boba.toolkit.entry import ToolArgv
 from boba.toolkit.facade import PayloadTool
 from boba.toolkit.launcher import ToolLauncher
@@ -31,7 +31,6 @@ from boba.toolrun.stream_calls import (
     NodeArgs,
     StreamChannelFields,
     StreamGroupsConfig,
-    ToolServers,
 )
 from boba.toolrun.streams import CallJournals
 from boba.toolrun.wrap import ToolProcessWrap
@@ -155,6 +154,10 @@ class ToolRegistry:
         вызов уходит по имени инструмента. Клиент про деление не знает.
         calls — путь вызова узла к телу: сервис зовёт тело напрямую, чат
         проводит вызов через свой компонент.
+
+        Ошибки:
+        ToolServersError — имя инструмента есть и среди собственных, и среди
+            остальных.
         """
         own: list[HostedTool] = []
         hosted: list[HostedTool] = []
