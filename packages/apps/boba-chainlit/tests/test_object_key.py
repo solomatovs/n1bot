@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import pytest
-from chainlit_stand import FakeUrl
 
 from boba.canvas.keys import ObjectKey, ThreadDir, WorkspaceMount
-from boba.chainlit.domain.keys import AttachmentLinks, AttachmentUrl
 
 USER = "7"
 THREAD = "11111111-1111-1111-1111-111111111111"
@@ -152,20 +150,3 @@ class TestMermaidDir:
             ObjectKey.from_workspace(
                 USER, THREAD, f"{MOUNT}/{THREAD}/other/{self.SPEC}"
             )
-
-
-class TestLinks:
-    def test_url_points_to_attachment_route(self) -> None:
-        links = AttachmentLinks(FakeUrl.WORKSPACE)
-        url = links.url(THREAD, "el-1", ThreadDir.UPLOAD)
-        if not (url.endswith(AttachmentUrl(THREAD, ThreadDir.UPLOAD, "el-1").path())):
-            raise AssertionError("url.endswith(AttachmentUrl(THREAD, ThreadDir.UPLOAD…")
-
-    def test_url_keeps_the_directory(self) -> None:
-        """Без каталога отдача искала бы файл только в upload/ — это был 404."""
-        links = AttachmentLinks(FakeUrl.WORKSPACE)
-
-        url = links.url(THREAD, "el-1", ThreadDir.MERMAID)
-
-        if not (url.endswith(f"/attachment/{THREAD}/mermaid/el-1")):
-            raise AssertionError('url.endswith(f"/attachment/{THREAD}/mermaid/el-1")')

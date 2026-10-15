@@ -42,7 +42,6 @@ from boba.chainlit.agent.settings import (
 from boba.chainlit.canvas.remote import RemoteJournals
 from boba.chainlit.data import PostgresDataLayer
 from boba.chainlit.data.remote_storage import FileOwners, RemoteStorageClient
-from boba.chainlit.domain.keys import AttachmentLinks
 from boba.chainlit.infra.config import (
     AppConfig,
     DataLayerConfig,
@@ -92,13 +91,6 @@ def get_data_layer_config(
     return app_config.data_layer
 
 
-def attachment_links(
-    app_config: Annotated[AppConfig, Depends(get_app_config)],
-) -> AttachmentLinks:
-    """Ссылки на вложения под префиксом приложения."""
-    return AttachmentLinks(app_config.chainlit.url_prefix)
-
-
 def chat_profiles_registry(
     app_config: Annotated[AppConfig, Depends(get_app_config)],
 ) -> ChatProfiles:
@@ -129,12 +121,12 @@ def file_owners(
 
 
 def storage_provider(
-    links: Annotated[AttachmentLinks, Depends(attachment_links)],
+    app_config: Annotated[AppConfig, Depends(get_app_config)],
     owners: Annotated[FileOwners, Depends(file_owners)],
 ) -> StorageClient:
     """Хранилище вложений чата: файлы лежат в workspace пользователя на
     MCP-сервере его профиля."""
-    return RemoteStorageClient(links.public_prefix(), owners, mcp_servers_ref)
+    return RemoteStorageClient(app_config.chainlit.url_prefix, owners, mcp_servers_ref)
 
 
 def session_profile(
@@ -179,13 +171,11 @@ def tool_media() -> ToolMedia:
     return ToolMedia()
 
 
-async def chainlit_data_layer(  # noqa: PLR0913 — слой данных собирается всеми зависимостями сразу
+async def chainlit_data_layer(
     cfg: Annotated[DataLayerConfig, Depends(get_data_layer_config)],
-    links: Annotated[AttachmentLinks, Depends(attachment_links)],
     storage: Annotated[StorageClient, Depends(storage_provider)],
     bus: Annotated[MessageBus, Depends(runtime.message_bus)],
     users: Annotated[UsersTable, Depends(runtime.users_table)],
-    sessions: Annotated[SessionSource, Depends(session_source)],
 ) -> PostgresDataLayer:
     """Слой данных чата на общем пуле процесса: схему таблицы ставят в запрос."""
     pool = await AsyncPostgresPool.get(cfg.postgres)
@@ -195,11 +185,8 @@ async def chainlit_data_layer(  # noqa: PLR0913 — слой данных соб
     return PostgresDataLayer(
         users=tables.users,
         threads=tables.threads,
-        elements=tables.elements,
         feedbacks=tables.feedbacks,
         storage=storage,
-        links=links,
-        sessions=sessions,
         bus=bus,
     )
 

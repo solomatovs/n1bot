@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Mapping
 from enum import StrEnum
 from typing import ClassVar, Self
 
@@ -16,7 +15,6 @@ from boba.toolkit.failure import ValidationText
 
 __all__ = [
     "DirKey",
-    "ElementProps",
     "KeyField",
     "KeySegment",
     "ObjectKey",
@@ -309,22 +307,3 @@ class DirKey(KeySegment):
             name=name,
             dir=self.dir,
         )
-
-
-class ElementProps(BaseModel):
-    """Наши поля в props элемента: где в workspace лежит его содержимое.
-
-    Вложения пользователя приходят без props — их всегда пишет UploadRoute в
-    upload/, поэтому разбор пустых props даёт именно этот каталог.
-    """
-
-    model_config = ConfigDict(extra="ignore")
-
-    dir: ThreadDir = ThreadDir.UPLOAD
-
-    @classmethod
-    def of(cls, raw: object) -> ElementProps:
-        if not isinstance(raw, Mapping):
-            return cls()
-
-        return cls.model_validate(raw)

@@ -289,22 +289,6 @@ class StandDatabase:
         )
         run_blocking(self._execute(layers))
 
-    def elements_named(self, name: str) -> int:
-        """Сколько элементов с таким именем записал data layer стенда."""
-        query = (
-            PgQueryBuilder(schema=sql.Identifier(self._schema))
-            .add(
-                "select count(*) from {schema}.elements where name = %(name)s",
-                name=name,
-            )
-            .build()
-        )
-        row = run_blocking(self._execute(query))
-        if row is None:
-            return 0
-
-        return int(row[0])
-
     def catalog_portions(self, draft_id: str) -> int:
         """Сколько порций операций записано в черновик каталога."""
         catalog = bind(self._built, path="catalog", model=CatalogConfig)

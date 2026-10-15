@@ -119,6 +119,18 @@ class SocketLog:
 
         return found
 
+    def elements_named(self, name: str) -> int:
+        """Сколько элементов с таким именем пришло вкладке."""
+        count = 0
+        for frame in self.of_event(ChatEvent.ELEMENT):
+            if not isinstance(frame.payload, dict):
+                continue
+
+            if frame.payload.get(StepField.NAME.value) == name:
+                count += 1
+
+        return count
+
     def tokens_of(self, step_id: str) -> list[str]:
         """Токены, пришедшие в конкретный шаг, в порядке прихода."""
         tokens: list[str] = []

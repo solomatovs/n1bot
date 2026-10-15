@@ -1,10 +1,11 @@
 """PostgresDataLayer chainlit: адаптер BaseDataLayer над портами хранилища чата.
 
-Строки users/threads/elements/feedbacks — у сервиса (порты UserRows, ChatThreads,
-ElementStore, FeedbackStore); здесь только перевод в словари chainlit, тела вложений
-в хранилище файлов и оповещение шины. Шагов ленты слой не хранит и не строит:
-историю диалога держит агент, лента воспроизводится из его `session/resume`, а
-оценки шагов отдаются ленте по id шага (feedbacks_of).
+Строки users/threads/feedbacks — у сервиса (порты UserRows, ChatThreads,
+FeedbackStore); здесь только перевод в словари chainlit, удаление файлов треда в
+хранилище и оповещение шины. Шагов и элементов ленты слой не хранит: историю
+диалога вместе с вложениями и итогами вызовов держит агент, лента
+воспроизводится из его `session/resume`, а оценки шагов отдаются ленте по id
+шага (feedbacks_of).
 
 Ошибки:
 DataLayerError — контракт слоя данных: чужое пакуется data_boundary.
@@ -13,27 +14,19 @@ DataLayerError — контракт слоя данных: чужое пакуе
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import AsyncGenerator, Coroutine, Mapping
+from collections.abc import Coroutine, Mapping
 from datetime import UTC, datetime
-from typing import Any, ClassVar, Protocol, TypeVar
+from typing import Any, Protocol, TypeVar
 from uuid import UUID, uuid4
 
-import aiofiles
-import aiofiles.os
-
-from boba.canvas.canvas import CanvasElement
-from boba.canvas.keys import ElementProps, ObjectKey
 from boba.canvas.storage import StorageError
-from boba.chainlit.domain.fields import ElementField, ThreadField, ThreadMetaField
-from boba.chainlit.domain.keys import AttachmentLinks
+from boba.chainlit.domain.fields import ThreadField, ThreadMetaField
 from boba.chat.threads import (
     ChatThreads,
     DataBrokenError,
     DataRejectedError,
     DataUnavailableError,
-    ElementStore,
     FeedbackStore,
-    StoredElement,
     StoredFeedback,
     StoredThread,
     ThreadOwnership,
@@ -42,12 +35,11 @@ from boba.chat.threads import (
 )
 from boba.identity.api import StoredUser, UserRows
 from boba.identity.context import Scope
-from boba.identity.session import Login, SessionSource
+from boba.identity.session import Login
 from boba.identity.signin import SignInMetadata
 from boba.messaging import (
     AnyMessage,
     ChangeAction,
-    ElementRemoved,
     FeedbackChanged,
     LockToken,
     MessageBus,
@@ -56,10 +48,8 @@ from boba.messaging import (
 from boba.runtime.storage import StorageClient
 from chainlit.data import get_data_layer
 from chainlit.data.base import BaseDataLayer
-from chainlit.data.utils import queue_until_user_message
-from chainlit.element import CustomElement, ElementDict
 from chainlit.element import Element as ChainlitElement
-from chainlit.logger import logger
+from chainlit.element import ElementDict
 from chainlit.step import StepDict
 from chainlit.types import (
     Feedback as FeedbackPayload,
@@ -78,34 +68,11 @@ from chainlit.user import User as ChainlitUser
 __all__ = [
     "AttachmentDataLayer",
     "FeedRows",
-    "HeldContent",
     "PostgresDataLayer",
     "ThreadDeletionListener",
 ]
 
 _T = TypeVar("_T")
-
-
-class HeldContent:
-    """Содержимое, которое чату отдали уже целиком в памяти, как источник
-    чанков для хранилища.
-
-    Создаётся там, где чужой контракт вручает готовые байты: тело элемента
-    chainlit, блок результата MCP-сервера. Хранилище пишет только потоком,
-    поэтому такие байты идут в него одним чанком.
-    """
-
-    ENCODING: ClassVar[str] = "utf-8"
-
-    def __init__(self, content: bytes | str) -> None:
-        self._content = content
-
-    async def chunks(self) -> AsyncGenerator[bytes, None]:
-        content = self._content
-        if isinstance(content, str):
-            content = content.encode(self.ENCODING)
-
-        yield content
 
 
 class FeedRows(Protocol):
@@ -135,11 +102,8 @@ class ThreadDeletionListener(Protocol):
 
 
 class AttachmentDataLayer(BaseDataLayer, ABC):
-    """Data layer, умеющий адресовать вложения публичными ссылками."""
-
-    @property
-    @abstractmethod
-    def links(self) -> AttachmentLinks: ...
+    """Data layer с хранилищем файлов пользователя: через него маршрут
+    загрузки пишет вложения вопроса."""
 
     @property
     @abstractmethod
@@ -220,12 +184,8 @@ class ThreadDicts:
     """Строки сервиса -> словари chainlit: тред и пользователь."""
 
     @staticmethod
-    def thread(
-        stored: StoredThread,
-        user_identifier: str | None,
-        steps: list[StepDict],
-        elements: list[ElementDict],
-    ) -> ThreadDict:
+    def thread(stored: StoredThread, user_identifier: str | None) -> ThreadDict:
+        """Тред без шагов и элементов: их воспроизводит агент."""
         tags = None
         if stored.tags:
             tags = list(stored.tags)
@@ -238,8 +198,8 @@ class ThreadDicts:
             userIdentifier=user_identifier,
             tags=tags,
             metadata=dict(stored.meta),
-            steps=steps,
-            elements=elements,
+            steps=[],
+            elements=[],
         )
 
     @staticmethod
@@ -257,55 +217,6 @@ class ThreadDicts:
             return ChangeAction.CREATED
 
         return ChangeAction.UPDATED
-
-
-class ElementDicts:
-    """Словарь элемента chainlit <-> строка elements сервиса."""
-
-    @staticmethod
-    def stored(data: ElementDict) -> StoredElement:
-        props = data.get(ElementField.PROPS)
-        if props is None:
-            props = {}
-
-        return StoredElement(
-            id=Codec.uuid(data.get(ElementField.ID), ElementField.ID),
-            thread_id=Codec.uuid_opt(data.get(ElementField.THREAD_ID)),
-            for_id=Codec.uuid_opt(data.get(ElementField.FOR_ID)),
-            type=Codec.require(data.get(ElementField.TYPE), ElementField.TYPE),
-            chainlit_key=Codec.text(data.get(ElementField.CHAINLIT_KEY)),
-            name=Codec.require(data.get(ElementField.NAME), ElementField.NAME),
-            display=Codec.require(data.get(ElementField.DISPLAY), ElementField.DISPLAY),
-            size=Codec.text(data.get(ElementField.SIZE)),
-            language=Codec.text(data.get(ElementField.LANGUAGE)),
-            page=data.get(ElementField.PAGE),
-            props=props,
-            mime=Codec.text(data.get(ElementField.MIME)),
-        )
-
-    @staticmethod
-    def dict_of(stored: StoredElement) -> ElementDict:
-        props = None
-        if stored.props:
-            props = dict(stored.props)
-
-        data: dict[str, Any] = {
-            ElementField.ID: Codec.uuid_str(stored.id),
-            ElementField.THREAD_ID: Codec.uuid_str_opt(stored.thread_id),
-            ElementField.TYPE: stored.type,
-            ElementField.CHAINLIT_KEY: Codec.text_opt(stored.chainlit_key),
-            ElementField.NAME: stored.name,
-            ElementField.DISPLAY: stored.display,
-            ElementField.SIZE: Codec.text_opt(stored.size),
-            ElementField.LANGUAGE: Codec.text_opt(stored.language),
-            ElementField.PAGE: stored.page,
-            ElementField.PROPS: props,
-            ElementField.FOR_ID: Codec.uuid_str_opt(stored.for_id),
-            ElementField.MIME: Codec.text_opt(stored.mime),
-        }
-        element: ElementDict = data  # type: ignore[assignment]
-
-        return element
 
 
 class FeedbackDicts:
@@ -346,34 +257,24 @@ class FeedbackDicts:
 class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership, FeedRows):
     """Хранилище chainlit над портами сервиса: словари, тела вложений, оповещения."""
 
-    def __init__(  # noqa: PLR0913 — зависимости слоя вносятся сборкой
+    def __init__(
         self,
         users: UserRows,
         threads: ChatThreads,
-        elements: ElementStore,
         feedbacks: FeedbackStore,
         storage: StorageClient,
-        links: AttachmentLinks,
-        sessions: SessionSource,
         bus: MessageBus,
     ) -> None:
         self._users = users
         self._threads = threads
-        self._elements = elements
         self._feedbacks = feedbacks
         self._storage = storage
-        self._links = links
-        self._sessions = sessions
         self._bus = bus
         self._deletion_listeners: list[ThreadDeletionListener] = []
 
     def on_thread_deleted(self, listener: ThreadDeletionListener) -> None:
         """Подписывает слушателя на удаление тредов."""
         self._deletion_listeners.append(listener)
-
-    @property
-    def links(self) -> AttachmentLinks:
-        return self._links
 
     @property
     def storage(self) -> StorageClient:
@@ -425,135 +326,19 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership, FeedRows):
         )
         return True
 
-    async def _store_element_body(
-        self, element: ChainlitElement, object_key: str, mime: str
-    ) -> None:
-        """content уходит как есть, файл с диска — потоком; нет ни того ни
-        другого — содержимое уже залил в хранилище стриминговый роут."""
-        if self._props_only(element):
-            return
-
-        if element.content is not None:
-            held = HeldContent(element.content)
-            uploaded = await self._storage.upload_stream(
-                object_key, held.chunks(), mime
-            )
-            self._require_uploaded(uploaded, object_key)
-            return
-
-        on_disk = False
-        if element.path:
-            on_disk = await aiofiles.os.path.exists(element.path)
-
-        if on_disk and element.path:
-            source = self._storage.disk_source(element.path)
-            uploaded = await self._storage.upload_stream(object_key, source, mime)
-            self._require_uploaded(uploaded, object_key)
-            return
-
-        logger.info("element %s is already in storage as %s", element.id, object_key)
-
-    @staticmethod
-    def _props_only(element: ChainlitElement) -> bool:
-        """Кастом-элемент несёт только props: тело в хранилище ему не нужно.
-
-        chainlit кладёт в content те же props json-строкой, а лента берёт их
-        из колонки props — копия в образе никем не читается, зато каждая
-        стоит монтирования fuse-образа пользователя.
-        """
-        if not isinstance(element, CustomElement):
-            return False
-
-        return not element.path
-
-    @staticmethod
-    def _require_uploaded(uploaded: Mapping[str, object], object_key: str) -> None:
-        if not uploaded:
-            msg = f"storage returned no upload record for {object_key}"
-            raise DataUnavailableError("create_element", msg)
-
-    @queue_until_user_message()
     @data_boundary
     async def create_element(self, element: ChainlitElement) -> None:
-        if element.chainlit_key:
-            # фоновая запись chainlit пользовательской загрузки: вложение
-            # вопроса пишет держатель хода под id, который вопросу дал агент
-            return
-
-        if not element.for_id:
-            # панель канваса шлёт непривязанные side-элементы: они живут
-            # только в websocket, их непersистентность — норма, не потеря
-            if element.display == "side":
-                return
-
-            logger.warning(
-                "element %s without for_id is not persisted: "
-                "it is not attached to anything",
-                element.id,
-            )
-            return
-        try:
-            await self._create_element(element)
-        except Exception as e:
-            # chainlit зовёт create_element фоновой таской и молча гасит исключение
-            msg = f"element {element.id} ({element.name!r}) was not stored: {e}"
-            raise DataUnavailableError("create_element", msg) from e
-
-    async def _create_element(self, element: ChainlitElement) -> None:
-        """Строка описания, затем тело; тело не залилось — строка снимается."""
-        user_id = self._session_user_id()
-
-        mime = element.mime or "application/octet-stream"
-
-        data = element.to_dict()
-        data[ElementField.MIME] = mime
-
-        stored = ElementDicts.stored(data)
-        object_key = ObjectKey.build(
-            user_id, element.thread_id, element.name, element.id
-        ).render()
-
-        await self._elements.upsert(stored)
-        try:
-            await self._store_element_body(element, object_key, mime)
-        except Exception:
-            await self._elements.delete(stored.id)
-            raise
+        pass
 
     @data_boundary
     async def get_element(self, thread_id: str, element_id: str) -> ElementDict | None:
-        stored = await self._elements.get(UUID(thread_id), UUID(element_id))
-        if stored is None:
-            return None
+        return None
 
-        element = ElementDicts.dict_of(stored)
-        self._sign_element_url(element)
-        return element
-
-    @queue_until_user_message()
     @data_boundary
     async def delete_element(
         self, element_id: str, thread_id: str | None = None
     ) -> None:
-        """Сначала тело в хранилище, потом строка: строка без тела не остаётся."""
-        found = await self._elements.find(UUID(element_id))
-        if found is None:
-            return
-
-        if found.thread_id is not None:
-            user_id = self._session_user_id()
-            key = ObjectKey.build(user_id, str(found.thread_id), found.name, element_id)
-            try:
-                await self._storage.delete_file(object_key=key.render())
-            except Exception as e:
-                msg = f"deleting {key.render()} from the storage failed: {e}"
-                raise DataUnavailableError("delete_element", msg) from e
-
-        await self._elements.delete(found.id)
-
-        if found.thread_id is not None:
-            removed = ElementRemoved(element_id=element_id)
-            await self._chat_changed(found.thread_id, removed)
+        pass
 
     @data_boundary
     async def create_step(self, step_dict: StepDict) -> None:
@@ -583,22 +368,8 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership, FeedRows):
             return None
 
         user_identifier = await self._identifier_of(stored.user_id)
-        element_rows = await self._elements.list_of_thread(tid)
 
-        # шагов у треда здесь нет: их воспроизводит агент при открытии треда;
-        # кнопки журнала лента ставит заново по итогам вызовов
-        elements: list[ElementDict] = []
-        for row in element_rows:
-            element = ElementDicts.dict_of(row)
-            if self._journal_button(element):
-                continue
-
-            elements.append(element)
-
-        thread = ThreadDicts.thread(stored, user_identifier, [], elements)
-        self._sign_element_urls(thread)
-
-        return thread
+        return ThreadDicts.thread(stored, user_identifier)
 
     @data_boundary
     async def feedbacks_of(self, thread_id: str) -> Mapping[str, FeedbackDict]:
@@ -608,12 +379,6 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership, FeedRows):
             found[Codec.uuid_str(row.for_id)] = FeedbackDicts.dict_of(row)
 
         return found
-
-    @staticmethod
-    def _journal_button(element: ElementDict) -> bool:
-        """Сохранённая кнопка журнала вызова: лента ставит её заново по итогу
-        вызова, сохранённая была бы второй."""
-        return element.get(ElementField.NAME) == CanvasElement.STREAM.value
 
     async def _identifier_of(self, user_id: UUID | None) -> str | None:
         """Логин владельца треда; None — тред без владельца или строки уже нет."""
@@ -691,7 +456,6 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership, FeedRows):
             await self._delete_files(stored)
 
         await self._feedbacks.delete_of_thread(tid)
-        await self._elements.delete_of_thread(tid)
         owner = await self._threads.delete(tid)
 
         if owner is not None:
@@ -751,8 +515,7 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership, FeedRows):
 
         has_next = len(rows) > pagination.first
         page = [
-            ThreadDicts.thread(t, user_identifier, [], [])
-            for t in rows[: pagination.first]
+            ThreadDicts.thread(t, user_identifier) for t in rows[: pagination.first]
         ]
 
         start_cursor = None
@@ -778,29 +541,3 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership, FeedRows):
     @data_boundary
     async def close(self) -> None:
         await self._storage.close()
-
-    def _session_user_id(self) -> str:
-        """Владелец файлов вложений — пользователь текущей сессии chainlit."""
-        session = self._sessions.current()
-        user_id = session.user_id
-        if user_id is None:
-            msg = (
-                f"chainlit session of {session.label!r} has no persisted user, "
-                "the attachments owner is unknown"
-            )
-            raise DataBrokenError("_session_user_id", msg)
-
-        return str(user_id)
-
-    def _sign_element_urls(self, thread: ThreadDict) -> None:
-        for element in thread.get(ThreadField.ELEMENTS) or []:
-            self._sign_element_url(element)
-
-    def _sign_element_url(self, element: ElementDict) -> None:
-        """Собирает ссылку на вложение: она вычисляется, а не хранится."""
-        props = ElementProps.of(element.get(ElementField.PROPS))
-        element[ElementField.URL] = self._links.url(
-            element.get(ElementField.THREAD_ID),
-            element.get(ElementField.ID),
-            props.dir,
-        )

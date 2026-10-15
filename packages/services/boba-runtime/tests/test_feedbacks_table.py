@@ -1,4 +1,4 @@
-"""Таблицы elements и feedbacks сервиса: DDL, upsert, выборка и очистка треда."""
+"""Таблица feedbacks сервиса: DDL, upsert, выборка и очистка треда."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from uuid import uuid4
 import pytest
 from psycopg import sql
 
-from boba.chat.threads import StoredElement, StoredFeedback
+from boba.chat.threads import StoredFeedback
 from boba.db.postgres import AsyncPostgresPool
 from boba.runtime.config import RuntimeConfig
 from boba.runtime.elements import ChatTables
@@ -32,38 +32,6 @@ async def tables(
     await built.setup()
 
     return built
-
-
-async def test_elements_round_trip(tables: ChatTables) -> None:
-    thread_id = uuid4()
-    step_id = uuid4()
-    element = StoredElement(
-        id=uuid4(),
-        name="report.pdf",
-        type="file",
-        display="inline",
-        thread_id=thread_id,
-        for_id=step_id,
-        props={"dir": "docs"},
-        mime="application/pdf",
-    )
-
-    await tables.elements.upsert(element)
-    await tables.elements.upsert(element.model_copy(update={"language": "ru"}))
-
-    found = await tables.elements.get(thread_id, element.id)
-    assert found is not None
-    assert found.language == "ru"
-    assert found.chainlit_key == ""
-    assert dict(found.props) == {"dir": "docs"}
-    assert (await tables.elements.find(element.id)) == found
-    listed = await tables.elements.list_of_thread(thread_id)
-    assert [e.id for e in listed] == [element.id]
-
-    deleted = await tables.elements.delete(element.id)
-    assert deleted == found
-    assert await tables.elements.find(element.id) is None
-    assert await tables.elements.delete(element.id) is None
 
 
 async def test_feedbacks_round_trip(tables: ChatTables) -> None:

@@ -25,7 +25,6 @@ __all__ = [
     "Command",
     "CommandKind",
     "ConnectionsChanged",
-    "ElementRemoved",
     "FeedbackChanged",
     "LockLost",
     "Message",
@@ -75,7 +74,6 @@ class MessageKind(StrEnum):
     THREAD_CHANGED = "thread_changed"
     WORKFLOW_DRAFT_CHANGED = "workflow_draft_changed"
     FEEDBACK_CHANGED = "feedback_changed"
-    ELEMENT_REMOVED = "element_removed"
     CHAT_SETTINGS_CHANGED = "chat_settings_changed"
     STUDIO_PROFILE_CHANGED = "studio_profile_changed"
     CATALOG_CHANGED = "catalog_changed"
@@ -346,13 +344,6 @@ class FeedbackChanged(Message):
     comment: str = ""
 
 
-class ElementRemoved(Message):
-    """Элемент ленты element_id удалён пользователем."""
-
-    kind: Literal[MessageKind.ELEMENT_REMOVED] = MessageKind.ELEMENT_REMOVED
-    element_id: str = Field(min_length=1)
-
-
 class ChatSettingsChanged(Message):
     """Пользователь сохранил настройки чата для профиля profile из сессии
     by_session; остальные его вкладки на этом профиле пересобирают агента.
@@ -455,7 +446,6 @@ AnyMessage = Annotated[
     | ThreadChanged
     | WorkflowDraftChanged
     | FeedbackChanged
-    | ElementRemoved
     | ChatSettingsChanged
     | StudioProfileChanged
     | WorkflowChanged

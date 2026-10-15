@@ -62,8 +62,7 @@ def run_app(files: ConfigFiles):
     _use_chainlit_middleware(app, c.chainlit)
 
     storage = providers.storage_provider(
-        providers.attachment_links(c),
-        providers.file_owners(providers.chat_profiles_registry(c)),
+        c, providers.file_owners(providers.chat_profiles_registry(c))
     )
     _use_file_serving(c, storage)
 
@@ -234,40 +233,15 @@ def _use_chainlit_middleware(app: FastAPI, config: ChainlitExtendConfig):
 
 
 def _use_file_serving(c: AppConfig, storage: StorageClient) -> None:
-    from boba.chainlit.data.data_layer import PostgresDataLayer  # noqa: PLC0415
     from boba.chainlit.data.upload import (  # noqa: PLC0415
-        AttachmentServing,
         CanvasServing,
         UploadPolicy,
         UploadRoute,
     )
-    from boba.chainlit.domain.keys import (  # noqa: PLC0415
-        AttachmentUrl,
-        CanvasFileUrl,
-    )
-    from boba.identity.errors import InternalServiceError  # noqa: PLC0415
-    from chainlit.data import get_data_layer  # noqa: PLC0415
+    from boba.chainlit.domain.keys import CanvasFileUrl  # noqa: PLC0415
     from chainlit.server import app as chainlit_app  # noqa: PLC0415
 
     UploadRoute(storage, UploadPolicy()).install(chainlit_app)
-
-    def data_layer() -> PostgresDataLayer:
-        layer = get_data_layer()
-        if not isinstance(layer, PostgresDataLayer):
-            raise InternalServiceError(
-                internal_detail=(
-                    "attachment serving expects a PostgresDataLayer data layer, "
-                    f"got {type(layer).__name__}"
-                ),
-                user_detail="Attachment storage is not available",
-            )
-        return layer
-
-    serving = AttachmentServing(storage, data_layer, UploadPolicy())
-    chainlit_app.add_api_route(
-        f"{AttachmentUrl.MOUNT}{AttachmentUrl.ROUTE}", serving.serve, methods=["GET"]
-    )
-    chainlit_app.router.routes.insert(0, chainlit_app.router.routes.pop())
 
     canvas = CanvasServing(storage, UploadPolicy())
     chainlit_app.add_api_route(

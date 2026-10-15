@@ -46,7 +46,6 @@ dependencies = [
     "uvicorn[standard]>=0.35,<1",
     "pydantic>=2.12,<3",
     "starlette>=1.0,<2",
-    "aiofiles>=24.1,<26",
     "python-engineio>=4.13,<5",
     "literalai>=0.1.201,<0.2",
 ]

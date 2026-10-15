@@ -34,11 +34,8 @@ __all__ = [
     "DataLayerError",
     "DataRejectedError",
     "DataUnavailableError",
-    "ElementStore",
-    "ElementsColumn",
     "FeedbackStore",
     "FeedbacksColumn",
-    "StoredElement",
     "StoredFeedback",
     "StoredThread",
     "ThreadOwnership",
@@ -96,11 +93,11 @@ class DataBrokenError(DataLayerError):
 
 
 class ChatTable(StrEnum):
-    """Таблицы схемы чата; users описана в boba.identity.api, остальные — здесь."""
+    """Таблицы схемы чата; users описана в boba.identity.api, остальные — здесь.
+    Таблица elements прежних выпусков в базе остаётся, код её не читает."""
 
     USERS = "users"
     THREADS = "threads"
-    ELEMENTS = "elements"
     FEEDBACKS = "feedbacks"
 
 
@@ -113,23 +110,6 @@ class ThreadsColumn(StrEnum):
     USER_ID = "user_id"
     TAGS = "tags"
     META = "meta"
-
-
-class ElementsColumn(StrEnum):
-    """Колонки elements."""
-
-    ID = "id"
-    NAME = "name"
-    TYPE = "type"
-    DISPLAY = "display"
-    THREAD_ID = "thread_id"
-    FOR_ID = "for_id"
-    CHAINLIT_KEY = "chainlit_key"
-    SIZE = "size"
-    LANGUAGE = "language"
-    PAGE = "page"
-    PROPS = "props"
-    MIME = "mime"
 
 
 class FeedbacksColumn(StrEnum):
@@ -209,25 +189,6 @@ class ChatThreads(ThreadStore, ThreadOwnership, Protocol):
     """Всё о тредах, что нужно слою данных чата."""
 
 
-class StoredElement(BaseModel):
-    """Строка elements: вложение или артефакт треда, тело живёт в хранилище файлов."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    id: UUID
-    name: str
-    type: str
-    display: str
-    thread_id: UUID | None = None
-    for_id: UUID | None = None
-    chainlit_key: str = ""
-    size: str = ""
-    language: str = ""
-    page: int | None = None
-    props: Mapping[str, Any] = {}
-    mime: str = ""
-
-
 class StoredFeedback(BaseModel):
     """Строка feedbacks: оценка шага пользователем."""
 
@@ -238,31 +199,6 @@ class StoredFeedback(BaseModel):
     value: int
     thread_id: UUID | None = None
     comment: str = ""
-
-
-class ElementStore(Protocol):
-    """Строки elements: upsert, чтение, удаление, выборка и очистка треда."""
-
-    @abstractmethod
-    async def upsert(self, element: StoredElement) -> None: ...
-
-    @abstractmethod
-    async def find(self, element_id: UUID) -> StoredElement | None:
-        """None — элемента нет."""
-
-    @abstractmethod
-    async def get(self, thread_id: UUID, element_id: UUID) -> StoredElement | None:
-        """None — элемента в этом треде нет."""
-
-    @abstractmethod
-    async def delete(self, element_id: UUID) -> StoredElement | None:
-        """Удалённая строка; None — элемента не было."""
-
-    @abstractmethod
-    async def list_of_thread(self, thread_id: UUID) -> Sequence[StoredElement]: ...
-
-    @abstractmethod
-    async def delete_of_thread(self, thread_id: UUID) -> None: ...
 
 
 class FeedbackStore(Protocol):

@@ -24,7 +24,6 @@ import unicodedata
 import uuid
 from collections.abc import AsyncIterator, Callable
 from typing import Annotated, Any, ClassVar, Literal
-from uuid import UUID
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.datastructures import UploadFile
@@ -46,7 +45,7 @@ from boba.canvas.transfer import (
     UploadPolicy,
 )
 from boba.chainlit.canvas.remote import RemoteJournals
-from boba.chainlit.domain.fields import ElementField, FileField
+from boba.chainlit.domain.fields import FileField
 from boba.chainlit.domain.keys import AppPrefix
 from boba.chainlit.infra.session import ChainlitSession, session_source_ref
 from boba.identity.errors import AuthenticationError
@@ -57,11 +56,9 @@ from boba.runtime.storage import StorageClient
 from boba.toolkit.channels import JournalChannels, ToolChannel
 from boba.toolkit.failure import ValidationText
 from chainlit.auth import get_current_user
-from chainlit.data.base import BaseDataLayer
 from chainlit.user import PersistedUser, User
 
 __all__ = [
-    "AttachmentServing",
     "CanvasServing",
     "MultipartFile",
     "SessionFiles",
@@ -500,60 +497,6 @@ class UploadRoute:
             raise HTTPException(status_code=401, detail=msg)
 
         return str(user_id)
-
-
-class AttachmentServing:
-    """GET-обработчик вложений: mime едет из elements, иначе фронт не рисует."""
-
-    FALLBACK_MIME: ClassVar[str] = "application/octet-stream"
-
-    def __init__(
-        self,
-        storage: StorageClient,
-        layer: Callable[[], BaseDataLayer],
-        policy: UploadPolicy,
-    ) -> None:
-        self._storage = storage
-        self._layer = layer
-        self._files = StreamedFile(storage, policy)
-
-    async def serve(
-        self,
-        request: Request,
-        thread_id: UUID,
-        dir: ThreadDir,  # noqa: A002
-        element_id: UUID,
-        current_user: Annotated[User | PersistedUser | None, Depends(get_current_user)],
-    ) -> Response:
-        if not isinstance(current_user, PersistedUser):
-            got = type(current_user).__name__
-            msg = f"sign-in required: expected a persisted user, got {got}"
-            raise HTTPException(status_code=401, detail=msg)
-
-        element = await self._layer().get_element(str(thread_id), str(element_id))
-        if element is None:
-            msg = f"element {element_id} is not found in thread {thread_id}"
-            raise HTTPException(status_code=404, detail=msg)
-
-        # путь от текущего пользователя: чужие образы недостижимы
-        key = ObjectKey.build(
-            current_user.id,
-            element.get(ElementField.THREAD_ID),
-            element.get(ElementField.NAME),
-            element.get(ElementField.ID),
-            dir_thread=dir,
-        )
-
-        mime = element.get(ElementField.MIME)
-        if mime is None:
-            mime = self.FALLBACK_MIME
-
-        return await self._files.respond(
-            key.render(),
-            mime=mime,
-            range_header=request.headers.get(FileHeader.RANGE, ""),
-            content_disposition="",
-        )
 
 
 class CanvasServing:

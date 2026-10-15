@@ -24,7 +24,6 @@ from boba.db.postgres import AsyncPostgresPool
 from boba.identity.context import Scope
 from boba.identity.locks import LockMode, LockPurpose
 from boba.messaging import (
-    ElementRemoved,
     Envelope,
     FeedbackChanged,
     LockToken,
@@ -407,30 +406,26 @@ class RecordingRewinds(ThreadRewinds):
 
 
 class RecordingSurface(NoSurface):
-    """Поверхность в тестах: считает перечитывания ленты, копит удаления
-    элементов и обновлённые шаги.
+    """Поверхность в тестах: считает перечитывания ленты и копит обновлённые
+    шаги.
     """
 
     def __init__(self) -> None:
         self.resumed = 0
-        self.removed: list[str] = []
         self.refreshed: list[str] = []
 
     async def resume_thread(self) -> None:
         self.resumed += 1
 
-    async def remove_element(self, element_id: str) -> None:
-        self.removed.append(element_id)
-
     async def refresh_step(self, step_id: str) -> None:
         self.refreshed.append(step_id)
 
 
-async def test_removal_and_feedback_reach_the_viewer_instance(
+async def test_feedback_reaches_the_viewer_instance(
     runtime_stand: StandRefs,
     nodes: tuple[Node, Node],
 ) -> None:
-    """Удаление элемента и оценка шага доходят до рендерера на другом инстансе."""
+    """Оценка шага доходит до рендерера на другом инстансе."""
     holder, viewer = nodes
     thread_id = str(uuid4())
     scope = Scope.chat(thread_id)
@@ -444,8 +439,6 @@ async def test_removal_and_feedback_reach_the_viewer_instance(
     )
     leave = viewer.bus.subscribe(scope, renderer.apply)
     try:
-        removed = ElementRemoved(element_id="el-old")
-        await holder.bus.publish(scope, removed, LockToken.local())
         feedback = FeedbackChanged(step_id="answer-0", value=1, comment="ok")
         await holder.bus.publish(scope, feedback, LockToken.local())
         await _until(
@@ -453,8 +446,6 @@ async def test_removal_and_feedback_reach_the_viewer_instance(
         )
     finally:
         leave()
-
-    assert surface.removed == ["el-old"]
 
 
 async def test_rewound_history_reaches_the_tabs_of_the_viewer_instance(

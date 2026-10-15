@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Final
 
-__all__ = ["ElementField", "FileField", "StepField", "ThreadField", "ThreadMetaField"]
+__all__ = ["FileField", "StepField", "ThreadField", "ThreadMetaField"]
 
 
 class ThreadField:
@@ -17,7 +17,6 @@ class ThreadField:
     ID: Final = "id"
     METADATA: Final = "metadata"
     STEPS: Final = "steps"
-    ELEMENTS: Final = "elements"
 
 
 class ThreadMetaField:
@@ -38,24 +37,6 @@ class StepField:
     IS_ERROR: Final = "isError"
     FEEDBACK: Final = "feedback"
     METADATA: Final = "metadata"
-
-
-class ElementField:
-    """Ключи ElementDict."""
-
-    ID: Final = "id"
-    THREAD_ID: Final = "threadId"
-    FOR_ID: Final = "forId"
-    TYPE: Final = "type"
-    CHAINLIT_KEY: Final = "chainlitKey"
-    NAME: Final = "name"
-    DISPLAY: Final = "display"
-    SIZE: Final = "size"
-    LANGUAGE: Final = "language"
-    PAGE: Final = "page"
-    PROPS: Final = "props"
-    MIME: Final = "mime"
-    URL: Final = "url"
 
 
 class FileField:
