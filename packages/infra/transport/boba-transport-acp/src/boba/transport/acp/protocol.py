@@ -151,7 +151,10 @@ class ErrorDataKey(StrEnum):
 
 
 class MetaKey(StrEnum):
-    """Ключи boba в `_meta` запросов ACP: срез ветки `session/fork` по messageId."""
+    """Ключи boba в `_meta` ACP: срез ветки `session/fork` по messageId — и в
+    `_meta` запроса `session/fork` (id вопроса), и в
+    `capabilities.session.fork._meta` ответа initialize (true — агент режет
+    ветку по нему)."""
 
     UP_TO_MESSAGE_ID = "boba/upToMessageId"
 

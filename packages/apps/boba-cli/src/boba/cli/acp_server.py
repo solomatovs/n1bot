@@ -1817,7 +1817,9 @@ class AcpAgent(AcpAgentProtocol):
             prompt=schema.PromptCapabilities(),
             mcp=schema.McpCapabilities(acp=schema.McpAcpCapabilities()),
             delete=schema.SessionDeleteCapabilities(),
-            fork=schema.SessionForkCapabilities(),
+            fork=schema.SessionForkCapabilities(
+                field_meta={MetaKey.UP_TO_MESSAGE_ID.value: True}
+            ),
         )
 
         return schema.InitializeResponse(

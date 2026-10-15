@@ -185,6 +185,31 @@ class TestStandardServerOverStdio:
         if stdio.nested_calls() is not None:
             raise AssertionError("a foreign server declares no nested calls")
 
+    async def test_extension_settings_off_the_model_do_not_fail_the_open(
+        self,
+    ) -> None:
+        """Лишнее поле в настройках расширения не мешает его разобрать, а
+        настройки без обязательного поля оставляют сервер без расширения:
+        open() не падает."""
+        endpoint = StdioCommand(
+            command=sys.executable, args=(str(SERVER), "stdio-extended")
+        )
+        server = McpToolServer("standard", _config(endpoint))
+        await server.open()
+        try:
+            names: list[str] = []
+            for tool in server.tools():
+                names.append(tool.name)
+        finally:
+            await server.close()
+
+        # журнал разобран: его операцию чтения (add) клиент исполняет сам
+        if "add" in names:
+            raise AssertionError(f"the journal extension is parsed: {names}")
+
+        if server.nested_calls() is not None:
+            raise AssertionError("broken nested calls settings declare nothing")
+
     async def test_text_result_becomes_a_tool_message(
         self, stdio: McpToolServer
     ) -> None:

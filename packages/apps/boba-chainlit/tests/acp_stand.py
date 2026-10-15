@@ -208,9 +208,11 @@ class AgentStand:
 
 class RecordingUpdates(TurnRenderer):
     """Реализация TurnRenderer для тестов транспорта и агента треда: копит
-    уведомления и итоги; ход начинает ответом агента на вопрос."""
+    уведомления, итоги и messageId вопросов; ход начинает ответом агента на
+    вопрос."""
 
     def __init__(self) -> None:
+        self.asked: list[str] = []
         self.updates: list[tuple[str, SessionUpdate]] = []
         self.finished: list[tuple[str, schema.IdleSessionStateUpdate]] = []
         self.abandoned: list[str] = []
@@ -243,7 +245,10 @@ class RecordingUpdates(TurnRenderer):
     async def turn_started(
         self, session_id: str, question: Question, prompt: Coroutine[Any, Any, str]
     ) -> str:
-        return await prompt
+        key = await prompt
+        self.asked.append(key)
+
+        return key
 
     async def loaded(self, session_id: str) -> None:
         return

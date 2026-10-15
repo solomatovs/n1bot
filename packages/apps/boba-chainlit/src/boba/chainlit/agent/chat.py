@@ -28,6 +28,7 @@ from pydantic import AnyUrl, BaseModel, ConfigDict, Field
 import chainlit as cl
 from boba.canvas.keys import ElementProps
 from boba.chainlit.agent.client import (
+    AcpClientError,
     AgentClient,
     AgentCommand,
     AgentProcess,
@@ -58,7 +59,7 @@ from boba.chat.profiles import SelectedProfile
 from boba.chat.threads import ThreadUpsert
 from boba.identity.errors import InternalServiceError
 from boba.runtime.threads import ThreadsTable
-from boba.transport.acp.protocol import AcpErrorCode
+from boba.transport.acp.protocol import AcpErrorCode, MetaKey
 
 __all__ = [
     "AgentLaunch",
@@ -870,6 +871,17 @@ class ThreadAgent:
 
         if question.key not in self._asked:
             return current
+
+        if not self.process.forks_by_message():
+            msg = (
+                f"The question {question.key} of thread {self.thread_id} was "
+                "edited, but the agent of this chat does not declare "
+                f"{MetaKey.UP_TO_MESSAGE_ID.value!r} in "
+                "capabilities.session.fork._meta, so it cannot branch the "
+                "conversation before the edited question; ask the question "
+                "anew as a new message instead of editing it."
+            )
+            raise AcpClientError(msg)
 
         branch = await self.process.fork(current, question.key)
         forked = branch.session_id
