@@ -35,7 +35,6 @@ from typing import (
     get_origin,
 )
 
-import mcp_types as mt
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -680,10 +679,10 @@ class ToolResultBase(BaseModel, ABC):
         """Пара (content, artifact): текст для модели и сам результат."""
         return self.llm_view(), self
 
-    def blocks(self) -> list[mt.ContentBlock]:
-        """Блоки content ответа MCP с этим результатом: у базы — один
-        текстовый блок с текстом для модели."""
-        return [mt.TextContent(text=self.llm_view())]
+    def texts(self) -> Sequence[str]:
+        """Тексты ответа по порядку, каждый — отдельный текстовый блок
+        content ответа MCP: у базы — один текст для модели."""
+        return (self.llm_view(),)
 
     def structured(self) -> dict[str, JsonValue] | None:
         """Собственные данные результата для structuredContent по

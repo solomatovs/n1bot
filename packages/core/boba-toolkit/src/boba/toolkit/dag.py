@@ -41,7 +41,6 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, ClassVar, Literal, Protocol, Self, TypeAlias
 
-import mcp_types as mt
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -461,33 +460,40 @@ class WorkflowResult(ToolResultBase):
 
         return self.model_copy(update={"nodes": nodes})
 
-    def blocks(self) -> list[mt.ContentBlock]:
-        blocks: list[mt.ContentBlock] = []
-        for node in self.nodes:
-            blocks.append(mt.TextContent(text=node.heading()))
-            blocks.extend(node.result.blocks())
+    def texts(self) -> Sequence[str]:
+        texts: list[str] = []
+        for node, node_texts, _ in self._numbered():
+            texts.append(node.heading())
+            texts.extend(node_texts)
 
-        return blocks
+        return texts
 
     def structured(self) -> dict[str, JsonValue] | None:
         replies: list[NestedCallReply] = []
-        position = 0
-        for node in self.nodes:
-            position += 1
-            count = len(node.result.blocks())
-            replies.append(
-                NestedCallReply(
-                    key=node.key,
-                    call_id=node.call_id,
-                    tool=node.tool,
-                    status=node.status,
-                    blocks=list(range(position, position + count)),
-                    result=node.result.model_dump(mode="json"),
-                )
+        for node, _, numbers in self._numbered():
+            reply = NestedCallReply(
+                key=node.key,
+                call_id=node.call_id,
+                tool=node.tool,
+                status=node.status,
+                blocks=numbers,
+                result=node.result.model_dump(mode="json"),
             )
-            position += count
+            replies.append(reply)
 
         return NestedCallsOutput(nodes=replies).model_dump(mode="json")
+
+    def _numbered(
+        self,
+    ) -> Iterator[tuple[WorkflowNodeResult, Sequence[str], Sequence[int]]]:
+        """Узлы с их текстами и номерами их блоков в content одним проходом:
+        перед блоками узла стоит его заголовок, номера с нуля."""
+        position = 0
+        for node in self.nodes:
+            texts = node.result.texts()
+            start = position + 1
+            position = start + len(texts)
+            yield node, texts, range(start, position)
 
     def _facts(self) -> list[Fact]:
         facts: list[Fact] = []

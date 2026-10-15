@@ -228,9 +228,11 @@ class ResultWire:
         else:
             structured.update(own)
 
-        return WireResult(
-            content=disclosed.blocks(), structured=structured, is_error=failed
-        )
+        content: list[mt.ContentBlock] = []
+        for text in disclosed.texts():
+            content.append(mt.TextContent(text=text))
+
+        return WireResult(content=content, structured=structured, is_error=failed)
 
     def stamped(self, structured: Mapping[str, Any], run: str) -> dict[str, Any]:
         """Тот же structuredContent с запуском run в сведениях о вызове;
