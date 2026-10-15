@@ -289,12 +289,6 @@ class AsyncPostgresPool(PostgresPool):
         settings["autocommit"] = True
         return await connection_class.connect(**settings)
 
-    @property
-    def raw(self) -> Any:
-        """Внутренний psycopg_pool.AsyncConnectionPool: его берёт сейвер
-        чекпойнтов миграции истории (boba-history-migrate)."""
-        return self._pool
-
     @asynccontextmanager
     async def connection(self) -> AsyncGenerator[psycopg.AsyncConnection[Any], None]:
         """Взять AsyncConnection из пула."""
