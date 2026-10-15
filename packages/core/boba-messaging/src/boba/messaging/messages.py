@@ -26,7 +26,6 @@ __all__ = [
     "CommandKind",
     "ConnectionsChanged",
     "ElementRemoved",
-    "ElementShown",
     "FeedbackChanged",
     "LockLost",
     "Message",
@@ -73,7 +72,6 @@ class MessageKind(StrEnum):
     WORKFLOW_CHANGED = "workflow_changed"
     CONNECTIONS_CHANGED = "connections_changed"
     THREAD_REWOUND = "thread_rewound"
-    ELEMENT_SHOWN = "element_shown"
     THREAD_CHANGED = "thread_changed"
     WORKFLOW_DRAFT_CHANGED = "workflow_draft_changed"
     FEEDBACK_CHANGED = "feedback_changed"
@@ -93,7 +91,6 @@ _HOLDER_ONLY: frozenset[MessageKind] = frozenset(
         MessageKind.RUN_FINISHED,
         MessageKind.STREAM_APPENDED,
         MessageKind.THREAD_REWOUND,
-        MessageKind.ELEMENT_SHOWN,
     }
 )
 
@@ -315,17 +312,6 @@ class ThreadRewound(Message):
     session_id: str = Field(min_length=1)
 
 
-class ElementShown(Message):
-    """Вызов call_id хода turn_id показал элемент ленты (файл, карточку); тело
-    элемента лежит по ссылке element.
-    """
-
-    kind: Literal[MessageKind.ELEMENT_SHOWN] = MessageKind.ELEMENT_SHOWN
-    turn_id: str = Field(min_length=1)
-    call_id: str = Field(min_length=1)
-    element: PayloadRef
-
-
 class ThreadChanged(Message):
     """Тред thread_id пользователя создан, переименован или удалён."""
 
@@ -466,7 +452,6 @@ AnyMessage = Annotated[
     | LockLost
     | RunListChanged
     | ThreadRewound
-    | ElementShown
     | ThreadChanged
     | WorkflowDraftChanged
     | FeedbackChanged

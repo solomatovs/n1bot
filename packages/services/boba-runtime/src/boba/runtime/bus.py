@@ -52,6 +52,7 @@ from boba.messaging import (
     LockToken,
     MessageBus,
     MessageBusError,
+    MessageKind,
     MessageTooLargeError,
     Unsubscribe,
 )
@@ -428,7 +429,14 @@ class PgMessageBus(PostgresTable, MessageBus):
         Тот же порядок держат purge и purge_idle работающих узлов: alter берёт
         AccessExclusive, и обратный порядок даёт дедлок между стартующим узлом
         и чисткой соседа (advisory-lock сериализует только setup'ы).
+
+        Строки видов, которых шина больше не знает, удаляются: догон области
+        разбирает каждую строку, и выкат без этого шага падал бы на них.
         """
+        known: list[str] = []
+        for kind in MessageKind:
+            known.append(kind.value)
+
         return (
             self._query()
             .add(
@@ -461,6 +469,12 @@ class PgMessageBus(PostgresTable, MessageBus):
             )
             .build(),
             self._scope_kind_check.of(LiveTable.EVENTS),
+            self._query()
+            .add(
+                "delete from {schema}.live_events where kind <> all(%(known)s)",
+                known=known,
+            )
+            .build(),
             self._query()
             .add("create sequence if not exists {schema}.live_events_seq as bigint")
             .build(),

@@ -296,6 +296,12 @@ class CanvasViewer(Protocol):
         ...
 
     @abstractmethod
+    async def link(self, key: ObjectKey) -> VisualResult:
+        """Ссылка на файл в ленте, без показа в панели: её рисует итог вызова
+        и вживую, и при воспроизведении истории."""
+        ...
+
+    @abstractmethod
     async def content(self, key: ObjectKey) -> CanvasContent:
         """Описание файла для панели; панель его только доставляет."""
         ...

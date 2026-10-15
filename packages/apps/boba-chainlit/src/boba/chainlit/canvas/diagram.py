@@ -126,9 +126,17 @@ class MermaidViewer(FileViewer):
             )
 
         entry = DiagramEntry.of(key, text)
-        link = DiagramCard.link(entry)
 
-        return OpenedCanvas(label=entry.label, path=entry.path, nonce=nonce, link=link)
+        return OpenedCanvas(
+            label=entry.label, path=entry.path, nonce=nonce, link=self._link(key, text)
+        )
+
+    async def link(self, key: ObjectKey) -> VisualResult:
+        """Карточка диаграммы читает спеку: подпись берётся из её заголовка."""
+        return self._link(key, await self._read(key))
+
+    def _link(self, key: ObjectKey, text: str) -> VisualResult:
+        return DiagramCard.link(DiagramEntry.of(key, text))
 
     def watch_source(self, key: ObjectKey) -> WatchSource | None:
         """Слежение по содержимому: спека мала, а размер может не меняться."""

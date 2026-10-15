@@ -17,6 +17,7 @@ import pytest
 from chainlit.config import config as chainlit_config
 from chainlit.server import sio
 from chainlit.session import WebsocketSession
+from chainlit.user import PersistedUser
 from chainlit_stand import FakeTurn
 
 from boba.chainlit.agent.chat import Question
@@ -30,6 +31,7 @@ pytestmark = pytest.mark.anyio
 THREAD = "thread-socket-1"
 SESSION_ID = "session-socket-1"
 SOCKET_ID = "socket-socket-1"
+USER_ID = "33333333-3333-3333-3333-333333333333"
 
 
 class EmittedEvents:
@@ -79,6 +81,7 @@ async def session() -> AsyncIterator[EmittedEvents]:
         user_env={},
         client_type="webapp",
         thread_id=THREAD,
+        user=PersistedUser(id=USER_ID, identifier="tester", createdAt="", metadata={}),
     )
     # ветки chainlit вокруг on_chat_start в тесте не нужны: проверяется реконнект
     session.restored = True
