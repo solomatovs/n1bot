@@ -251,14 +251,19 @@ class RecordingUpdates(SessionUpdates):
         self.abandoned.append(session_id)
 
     def texts(self) -> list[str]:
+        """Тексты агента: куски живого хода и целые сообщения воспроизведения."""
         found: list[str] = []
         for _, update in self.updates:
-            if not isinstance(update, schema.ContentChunk):
-                continue
+            blocks: Sequence[object] = ()
+            match update:
+                case schema.ContentChunk():
+                    blocks = (update.content,)
+                case schema.AgentMessage() | schema.AgentThought():
+                    blocks = update.content or ()
 
-            content = update.content
-            if isinstance(content, schema.TextContentBlock):
-                found.append(content.text)
+            for block in blocks:
+                if isinstance(block, schema.TextContentBlock):
+                    found.append(block.text)
 
         return found
 
