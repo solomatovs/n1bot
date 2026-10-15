@@ -1,28 +1,47 @@
 """Обычный MCP-сервер на официальном SDK: про boba он ничего не знает.
 
 Запускается субпроцессом из тестов клиента: `python standard_server.py stdio`
-либо `python standard_server.py streamable-http <port>`. Кроме четырёх
+либо `python standard_server.py streamable-http <port>`; транспорт
+`stdio-extended` — тот же сервер, объявляющий расширения с настройками не
+по моделям клиента (DeclaredExtension). Кроме четырёх
 обычных инструментов держит отказы стенда: задержку, большой результат,
 обрыв посреди вызова, смену списка инструментов с уведомлением и отчёты о
-ходе вызова, — и ответ из блоков разных видов и адресатов.
+ходе вызова, — ответ из блоков разных видов и адресатов, просьбу о вводе
+(input_required), отказ ошибкой MCP и инструмент только для интерфейса
+(visibility ["app"]).
 """
 
 import asyncio
 import os
 import sys
-from typing import ClassVar
+from typing import Any, ClassVar
 
+from mcp.server.extension import Extension
 from mcp.server.mcpserver import Context, Image, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
+from mcp.shared.exceptions import MCPError
 from mcp.types import (
+    INVALID_PARAMS,
     Annotations,
     CallToolResult,
     EmbeddedResource,
+    InputRequiredResult,
     ResourceLink,
     TextContent,
     TextResourceContents,
     ToolAnnotations,
 )
+
+
+class DeclaredExtension(Extension):
+    """Расширение, которое сервер объявляет с заданными настройками."""
+
+    def __init__(self, identifier: str, settings: dict[str, Any]) -> None:
+        self.identifier = identifier
+        self._settings = settings
+
+    def settings(self) -> dict[str, Any]:
+        return dict(self._settings)
 
 
 class StandardServer:
@@ -31,9 +50,21 @@ class StandardServer:
     PNG: bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
     EXTRA: ClassVar[str] = "extra"
     LARGE_LINE: ClassVar[str] = "0123456789"
+    ASKED: ClassVar[str] = "asked once"
+    REFUSAL: ClassVar[dict[str, str]] = {"reason": "the stand refuses"}
+    EXTENSIONS: ClassVar[tuple[DeclaredExtension, ...]] = (
+        DeclaredExtension(
+            "com.boba/journal", {"read": "add", "path": "/journal", "since": 2}
+        ),
+        DeclaredExtension("com.boba/nested-calls", {"tool": "workflow"}),
+    )
 
-    def __init__(self, port: int) -> None:
-        self._mcp = MCPServer("standard")
+    def __init__(self, port: int, extended: bool) -> None:
+        extensions: tuple[DeclaredExtension, ...] = ()
+        if extended:
+            extensions = self.EXTENSIONS
+
+        self._mcp = MCPServer("standard", extensions=extensions)
         self._port = port
         self._extra_on = False
         self._mcp.tool(annotations=ToolAnnotations(read_only_hint=True))(self.add)
@@ -48,6 +79,8 @@ class StandardServer:
         self._mcp.tool()(self.die)
         self._mcp.tool()(self.toggle_extra)
         self._mcp.tool(annotations=ToolAnnotations(read_only_hint=True))(self.progress)
+        self._mcp.tool()(self.ask)
+        self._mcp.tool(meta={"ui": {"visibility": ["app"]}})(self.panel_refresh)
 
     def add(self, a: int, b: int) -> int:
         """Adds two numbers."""
@@ -130,8 +163,21 @@ class StandardServer:
 
         return f"did {steps} steps"
 
+    def ask(self, refuse: bool) -> InputRequiredResult:
+        """Asks the client for more input instead of answering, or refuses
+        the request with an MCP error."""
+        if refuse:
+            msg = "ask refuses the request"
+            raise MCPError(code=INVALID_PARAMS, message=msg, data=self.REFUSAL)
+
+        return InputRequiredResult(request_state=self.ASKED)
+
+    def panel_refresh(self) -> str:
+        """Refreshes the panel of the app; the model does not call it."""
+        return "panel refreshed"
+
     def run(self, transport: str) -> None:
-        if transport == "stdio":
+        if transport.startswith("stdio"):
             self._mcp.run("stdio")
             return
 
@@ -143,4 +189,4 @@ if __name__ == "__main__":
     if len(sys.argv) > 2:
         port = int(sys.argv[2])
 
-    StandardServer(port).run(sys.argv[1])
+    StandardServer(port, sys.argv[1] == "stdio-extended").run(sys.argv[1])

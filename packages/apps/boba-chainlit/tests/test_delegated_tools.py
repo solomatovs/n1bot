@@ -34,9 +34,7 @@ from boba.chainlit.auth.kerberos import KerberosAuth
 from boba.chainlit.data.data_layer import PostgresDataLayer
 from boba.config import bind
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
-from boba.connection_broker.user_connections import ArmedConnections
 from boba.connections.manifest import ConnectionTypes
-from boba.connections.marks import ConnectionRefusal
 from boba.connections.stored import ConnectionBase, GrantTarget
 from boba.db.clickhouse.connection import ClickHouseConfig
 from boba.db.postgres import AsyncPostgresPool
@@ -54,7 +52,6 @@ from boba.runtime.refresh import BusRefreshSignal
 from boba.stand.site import Stand
 from boba.stand.toolsetup import Call
 from boba.stand_core.context import CallStand
-from boba.toolrun.hosted import DirectCalls
 from boba.transport.http.connection import HttpConnection, NegotiateAuth, UrlScheme
 
 STAND = Stand.required()
@@ -194,10 +191,9 @@ async def tools(
         tickets,
         BusRefreshSignal(lambda: MemoryMessageBus("test"), call_stand.contexts),
     )
-    connections = ArmedConnections(
-        lambda: store, lambda: credentials, call_stand.contexts
+    opened = ServiceTools(
+        tool_service, lambda: store, lambda: credentials, call_stand.contexts
     )
-    opened = ServiceTools(tool_service, connections, call_stand.contexts, DirectCalls())
     try:
         yield opened
     finally:
@@ -380,5 +376,5 @@ async def test_revoked_connection_stops_working_at_once(
         limit=50,
     )
 
-    if refused.error_kind != ConnectionRefusal.NOT_VISIBLE:
+    if "is not among the connections" not in refused.llm_view():
         raise AssertionError(f"unexpected refusal: {refused}")

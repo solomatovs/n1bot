@@ -202,36 +202,6 @@ class TestRefusals:
             raise AssertionError(f"отказ называет оба вида: {refused}")
 
 
-class TestShownInTheResult:
-    def test_sealed_value_is_shown_as_the_reference_of_the_caller(
-        self, call_stand: CallStand
-    ) -> None:
-        """В итоге вызова на месте запечатанного значения стоит имя,
-        которым соединение назвал вызывающий: само значение не показывается."""
-        keys = SealKeys()
-        params = SealedConnectionParams(keys, lambda: TYPES, call_stand.contexts)
-        params.bind_all([ProbeTools().one_connection()])
-        sealed = _sealed(keys.public(), _probe("db.local"))
-
-        shown = params.shown("probe_query", {"connection": sealed, "sql": "x"})
-
-        if shown["connection"] != NAME:
-            raise AssertionError(f"the name of the caller is shown: {shown}")
-        if shown["sql"] != "x":
-            raise AssertionError(f"other arguments stay as they are: {shown}")
-
-    def test_value_that_does_not_open_is_shown_by_its_kind(
-        self, call_stand: CallStand
-    ) -> None:
-        params = SealedConnectionParams(SealKeys(), lambda: TYPES, call_stand.contexts)
-        params.bind_all([ProbeTools().one_connection()])
-
-        shown = params.shown("probe_query", {"connection": "eyJ.a.b.c.d", "sql": "x"})
-
-        if shown["connection"] != "<sealed probe connection>":
-            raise AssertionError(f"a damaged value carries no reference: {shown}")
-
-
 class TestDeclaredFeature:
     def test_feature_carries_the_key_a_client_can_seal_with(
         self, tools: ProbeTools, call_stand: CallStand

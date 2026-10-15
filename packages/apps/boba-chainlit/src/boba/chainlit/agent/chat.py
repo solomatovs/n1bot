@@ -6,7 +6,6 @@ TurnRenderers (feed.py).
 Ошибки:
 AcpClientError и наследники — процесс или ответ агента (client.py).
 AgentSettingsError — профиль чата не годится агенту (settings.py).
-SessionServersError — сервер MCP профиля не годится агенту (settings.py).
 DataUnavailableError — таблицы чата недоступны.
 """
 
@@ -15,39 +14,32 @@ from __future__ import annotations
 import asyncio
 import logging
 from abc import abstractmethod
-from collections.abc import Mapping, Sequence
+from collections.abc import Coroutine, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Protocol, TypeAlias
+from urllib.parse import urljoin
 from uuid import UUID
 
-from acp import resource_link_block, text_block
-from acp.schema import (
-    DeniedOutcome,
-    PermissionOption,
-    PromptResponse,
-    RequestPermissionResponse,
-    SessionConfigOptionBoolean,
-    SessionConfigOptionSelect,
-    ToolCallUpdate,
-    UserMessageChunk,
-)
-from pydantic import BaseModel, ConfigDict, Field
+from acp.experimental.v2 import schema
+from pydantic import AnyUrl, BaseModel, ConfigDict, Field
 
 import chainlit as cl
 from boba.canvas.keys import ElementProps
 from boba.chainlit.agent.client import (
+    AcpClientError,
     AgentClient,
     AgentCommand,
     AgentProcess,
+    AgentProcessError,
     AgentRequestError,
-    JsonRpcCode,
     PromptBlock,
     SessionUpdate,
     SessionUpdates,
 )
 from boba.chainlit.agent.config import AgentConfig
+from boba.chainlit.agent.relay import McpRelay
 from boba.chainlit.agent.server import KeyHolder, ProcessKeys
 from boba.chainlit.agent.settings import (
     AgentSettingsChange,
@@ -56,8 +48,6 @@ from boba.chainlit.agent.settings import (
     AgentWorkdirs,
     ChatAgentSettings,
     HistoryEnvironment,
-    McpServerFile,
-    SessionServers,
     SettingsFileBuilder,
 )
 from boba.chainlit.chat.feed import QuestionBody, ShownElement
@@ -68,8 +58,8 @@ from boba.chainlit.infra.session import ChainlitSession, LiveSignIn
 from boba.chat.profiles import SelectedProfile
 from boba.chat.threads import ThreadUpsert
 from boba.identity.errors import InternalServiceError
-from boba.mcp_client.client import McpCaller
 from boba.runtime.threads import ThreadsTable
+from boba.transport.acp.protocol import AcpErrorCode, MetaKey
 
 __all__ = [
     "AgentLaunch",
@@ -81,7 +71,6 @@ __all__ = [
     "LaunchedAgent",
     "MuteUpdates",
     "PermissionKind",
-    "PermissionOutcome",
     "Question",
     "SessionOptions",
     "SettingsOutcome",
@@ -96,7 +85,11 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
-ConfigOption: TypeAlias = SessionConfigOptionSelect | SessionConfigOptionBoolean
+ConfigOption: TypeAlias = (
+    schema.SelectSessionConfigOption
+    | schema.BooleanSessionConfigOption
+    | schema.OtherSessionConfigOption
+)
 
 
 class Question(BaseModel):
@@ -145,13 +138,6 @@ class PermissionKind(StrEnum):
     ALLOW_ALWAYS = "allow_always"
     REJECT_ONCE = "reject_once"
     REJECT_ALWAYS = "reject_always"
-
-
-class PermissionOutcome(StrEnum):
-    """Исходы ответа на вопрос разрешения."""
-
-    SELECTED = "selected"
-    CANCELLED = "cancelled"
 
 
 @dataclass(frozen=True)
@@ -213,7 +199,7 @@ class AgentSessionMeta:
     async def session_of(self, thread_id: str) -> str:
         """Id сессии агента для загрузки: из metadata треда, а без записи —
         id самого треда: так названы сессии мигрированных тредов, и так
-        их находит `session/load`; неизвестную сессию агент отвергнет сам."""
+        их находит `session/resume`; неизвестную сессию агент отвергнет сам."""
         stored = await self._threads.get(UUID(thread_id))
         if stored is None:
             return thread_id
@@ -248,7 +234,7 @@ class AgentSessionMeta:
 
 class SessionOptions:
     """Текущие настройки сессии агента (`configOptions`): их отдают ответы
-    `session/new|load|resume|fork`, присылает уведомление
+    `session/new|resume|fork`, присылает уведомление
     `config_option_update`; читает панель настроек чата. Один объект на
     агента треда, общий у него и у приёмника потока."""
 
@@ -266,11 +252,11 @@ class SessionOptions:
 
         self._options = list(options)
 
-    def selects(self) -> Sequence[SessionConfigOptionSelect]:
+    def selects(self) -> Sequence[schema.SelectSessionConfigOption]:
         """Настройки-списки: режим и модель."""
-        found: list[SessionConfigOptionSelect] = []
+        found: list[schema.SelectSessionConfigOption] = []
         for option in self._options:
-            if isinstance(option, SessionConfigOptionSelect):
+            if isinstance(option, schema.SelectSessionConfigOption):
                 found.append(option)
 
         return found
@@ -278,28 +264,10 @@ class SessionOptions:
     def current(self, config_id: str) -> str | None:
         """Текущее значение настройки-списка; None — такой настройки нет."""
         for option in self.selects():
-            if option.id == config_id:
+            if option.config_id == config_id:
                 return option.current_value
 
         return None
-
-    def mode_changed(self, mode_id: str) -> None:
-        """Уведомление `current_mode_update`: режим сменился без полного состояния."""
-        replaced: list[ConfigOption] = []
-        for option in self._options:
-            replaced.append(self._with_mode(option, mode_id))
-
-        self._options = replaced
-
-    @staticmethod
-    def _with_mode(option: ConfigOption, mode_id: str) -> ConfigOption:
-        if not isinstance(option, SessionConfigOptionSelect):
-            return option
-
-        if option.category != ConfigCategory.MODE:
-            return option
-
-        return option.model_copy(update={"current_value": mode_id})
 
 
 class ConfigCategory(StrEnum):
@@ -320,17 +288,20 @@ class TurnRenderer(SessionUpdates, Protocol):
 
     @abstractmethod
     async def turn_started(
-        self, session_id: str, question: Question, edited: bool
-    ) -> None:
-        """Ход по вопросу начинается; edited — вопрос правленый, сессия ветвь.
+        self, session_id: str, question: Question, prompt: Coroutine[Any, Any, str]
+    ) -> str:
+        """Ход по вопросу начинается: prompt — ещё не начатый `session/prompt`,
+        его ждёт приёмник; итог — messageId, который агент дал вопросу, он же
+        ключ хода.
 
         Ошибки:
         LockBusyError — тред уже ведёт другой держатель.
+        AcpClientError — агент не принял вопрос.
         """
 
     @abstractmethod
     async def loaded(self, session_id: str) -> None:
-        """`session/load` ответил: воспроизведение истории закончено."""
+        """`session/resume` с воспроизведением ответил: история нарисована."""
 
 
 class TurnRenderers(Protocol):
@@ -354,16 +325,15 @@ class MuteUpdates(SessionUpdates):
         return
 
     async def permission(
-        self,
-        session_id: str,
-        tool_call: ToolCallUpdate,
-        options: Sequence[PermissionOption],
-    ) -> RequestPermissionResponse:
-        return RequestPermissionResponse(
-            outcome=DeniedOutcome(outcome=PermissionOutcome.CANCELLED.value)
+        self, session_id: str, title: str, options: Sequence[schema.PermissionOption]
+    ) -> schema.RequestPermissionResponse:
+        return schema.RequestPermissionResponse(
+            outcome=schema.CancelledPermissionOutcome()
         )
 
-    async def turn_finished(self, session_id: str, stop_reason: str) -> None:
+    async def turn_finished(
+        self, session_id: str, idle: schema.IdleSessionStateUpdate
+    ) -> None:
         return
 
     async def abandon(self, session_id: str) -> None:
@@ -371,31 +341,49 @@ class MuteUpdates(SessionUpdates):
 
 
 class AskedQuestions(SessionUpdates):
-    """Приёмник-обёртка: запоминает id вопросов, воспроизведённых агентом
-    (`user_message_chunk.messageId`), и передаёт поток дальше рендереру. По
-    этим id агент треда узнаёт правку вопроса после возврата к треду."""
+    """Приёмник-обёртка агента треда: запоминает id вопросов, которые агент
+    воспроизвёл (`user_message.messageId`), решает ожидание конца хода по
+    idle и передаёт поток дальше рендереру. По id вопросов агент треда
+    узнаёт правку вопроса после возврата к треду."""
 
     def __init__(self, inner: SessionUpdates) -> None:
         self._inner = inner
         self.ids: list[str] = []
+        self._ending: dict[str, asyncio.Future[schema.IdleSessionStateUpdate]] = {}
+        """Ожидание конца хода по сессии; ждут одну сессию, idle снимает его."""
+
+    def ending(self, session_id: str) -> asyncio.Future[schema.IdleSessionStateUpdate]:
+        """Ожидание конца хода сессии session_id: его решает idle агента.
+        Ставится до `session/prompt`, чтобы idle не прошёл мимо; заменяет
+        прежнее ожидание."""
+        ending: asyncio.Future[schema.IdleSessionStateUpdate]
+        ending = asyncio.get_running_loop().create_future()
+        self._ending.clear()
+        self._ending[session_id] = ending
+
+        return ending
 
     async def update(self, session_id: str, update: SessionUpdate) -> None:
-        if isinstance(update, UserMessageChunk) and update.message_id is not None:
+        if isinstance(update, schema.UserMessageUpdate):
             if update.message_id not in self.ids:
                 self.ids.append(update.message_id)
+
+        if isinstance(update, schema.IdleSessionStateUpdate):
+            ended = self._ending.pop(session_id, None)
+            if ended is not None:
+                ended.set_result(update)
 
         await self._inner.update(session_id, update)
 
     async def permission(
-        self,
-        session_id: str,
-        tool_call: ToolCallUpdate,
-        options: Sequence[PermissionOption],
-    ) -> RequestPermissionResponse:
-        return await self._inner.permission(session_id, tool_call, options)
+        self, session_id: str, title: str, options: Sequence[schema.PermissionOption]
+    ) -> schema.RequestPermissionResponse:
+        return await self._inner.permission(session_id, title, options)
 
-    async def turn_finished(self, session_id: str, stop_reason: str) -> None:
-        await self._inner.turn_finished(session_id, stop_reason)
+    async def turn_finished(
+        self, session_id: str, idle: schema.IdleSessionStateUpdate
+    ) -> None:
+        await self._inner.turn_finished(session_id, idle)
 
     async def abandon(self, session_id: str) -> None:
         await self._inner.abandon(session_id)
@@ -411,37 +399,38 @@ class AgentLaunch:
 
 @dataclass(frozen=True)
 class LaunchedAgent:
-    """Запущенный процесс агента и ключ, с которым он зовёт сервер
-    инструментов чата и хук; пустой ключ — процессу входы чата не даны.
-    Отдаёт AgentLauncher, держит ThreadAgent и возвращает запуску на снятие
-    ключа (AgentLauncher.retire)."""
+    """Запущенный процесс агента и серверы, объявленные ему записями type
+    "acp": serverId каждого — ключ процесса в ProcessKeys. Отдаёт
+    AgentLauncher, держит ThreadAgent и возвращает запуску на снятие ключей
+    (AgentLauncher.retire)."""
 
     process: AgentProcess
-    key: str
+    servers: Sequence[schema.AcpMcpServer]
 
 
 class AgentLauncher:
-    """Запуск процесса агента под тред: слой чата из Postgres → ключ процесса
-    → файл настроек с серверами MCP профиля в приватном каталоге → процесс →
-    рукопожатие.
+    """Запуск процесса агента под тред: слой чата из Postgres → регистрации
+    серверов профиля и сервера чата → файл настроек в приватном каталоге →
+    процесс → рукопожатие.
 
-    Создаётся провайдером процесса; зовут ThreadAgent и ThreadDeleter. Ключ
-    процесса выдаёт и снимает реестр ProcessKeys: каждый запуск получает
-    новый ключ, остановка процесса и несостоявшийся запуск его снимают.
+    Создаётся провайдером процесса; зовут ThreadAgent и ThreadDeleter.
+    Регистрации выдаёт и снимает реестр ProcessKeys: каждый запуск получает
+    новые serverId, остановка процесса и несостоявшийся запуск их снимают.
+    Запросы mcp/message процесса отвечает общий ретранслятор (McpRelay).
     """
 
     def __init__(
         self,
         config: AgentConfig,
         layers: AgentSettingsLayers,
-        servers: SessionServers,
         keys: ProcessKeys,
+        relay: McpRelay,
         version: str,
     ) -> None:
         self._config = config
         self._layers = layers
-        self._servers = servers
         self._keys = keys
+        self._relay = relay
         self._files = SettingsFileBuilder(config)
         self._workdirs = AgentWorkdirs(Path(config.process.private_dir))
         self._environment = HistoryEnvironment(config.history)
@@ -461,7 +450,6 @@ class AgentLauncher:
         Ошибки:
         AgentSettingsError — профиль не годится агенту.
         DataUnavailableError — слой настроек недоступен.
-        SessionServersError — сервер профиля не объявлен в [mcp.servers].
         """
         chat = await self._layers.chat_layer(
             UUID(identity.thread_id),
@@ -469,76 +457,71 @@ class AgentLauncher:
             identity.profile.name,
             identity.profile.config,
         )
-        self._servers.hooked(identity.profile.config.mcp)
 
         return AgentLaunch(chat=chat)
 
     async def launch(
         self, identity: ThreadIdentity, chat: ChatAgentSettings, client: AgentClient
     ) -> LaunchedAgent:
-        """Процесс под вкладку треда по слою чата: серверы профиля от имени
-        пользователя вкладки, сервер чата и хук запечатывания — с новым
-        ключом процесса.
+        """Процесс под вкладку треда по слою чата: серверы профиля и сервер
+        чата регистрируются от имени пользователя вкладки новыми serverId.
 
         Ошибки:
-        SessionServersError — сервер профиля не объявлен или не того транспорта.
         AgentProcessError — процесс не запустился.
         """
-        names = identity.profile.config.mcp
-        key = self._keys.issue(
-            KeyHolder(
-                user_id=identity.user_id,
-                login=identity.login,
-                thread_id=identity.thread_id,
-                profile=identity.profile.name,
-                session=identity.session,
-            )
+        names = list(identity.profile.config.mcp)
+        if self._config.chat_mcp.enable:
+            names.append(self._config.chat_mcp.name)
+
+        holder = KeyHolder(
+            user_id=identity.user_id,
+            login=identity.login,
+            thread_id=identity.thread_id,
+            profile=identity.profile.name,
+            session=identity.session,
+            server=self._config.chat_mcp.name,
         )
+        servers = self._keys.register(holder, names)
         try:
-            servers = self._servers.of(
-                names, McpCaller(login=identity.login, roles=identity.roles), key
-            )
             process = await self.launch_settings(
-                identity.thread_id,
-                chat,
-                servers,
-                key,
-                self._servers.hooked(names),
-                client,
+                identity.thread_id, chat, servers, client
             )
         except Exception:
-            self._keys.revoke(key)
+            for server in servers:
+                self._keys.revoke(server.server_id)
+
             raise
 
-        return LaunchedAgent(process=process, key=key)
+        return LaunchedAgent(process=process, servers=servers)
 
     def retire(self, launched: LaunchedAgent) -> None:
-        """Снимает ключ остановленного процесса: сервер чата и хук его
-        больше не принимают."""
-        self._keys.revoke(launched.key)
+        """Снимает регистрации остановленного процесса: ретранслятор, сервер
+        чата и хук их больше не принимают."""
+        for server in launched.servers:
+            self._keys.revoke(server.server_id)
 
-    async def launch_settings(  # noqa: PLR0913 — файл собирается всеми частями
+    async def launch_settings(
         self,
         thread_id: str,
         chat: ChatAgentSettings,
-        servers: Mapping[str, McpServerFile],
-        key: str,
-        hooked: Sequence[str],
+        servers: Sequence[schema.AcpMcpServer],
         client: AgentClient,
     ) -> AgentProcess:
-        """Процесс по готовому слою чата и записям серверов; без hooked секция
-        hooks пуста; kerberos-роль истории получает окружение libkrb5.
+        """Процесс по готовому слою чата с объявлениями серверов servers;
+        kerberos-роль истории получает окружение libkrb5.
 
         Ошибки:
         AgentProcessError — процесс не запустился.
         KerberosError — билет истории по keytab не получен.
         """
-        document = self._files.build(thread_id, chat, servers, key, hooked)
+        document = self._files.build(chat)
         workdir = self._workdirs.create(thread_id)
         workdir.write(document, chat.system_prompt)
         command = self._command.with_env(await self._environment.prepare())
 
-        process = AgentProcess(command, workdir, client, self._version)
+        process = AgentProcess(
+            command, workdir, client, self._relay, servers, self._version
+        )
         await process.start()
 
         return process
@@ -546,10 +529,10 @@ class AgentLauncher:
 
 @dataclass(frozen=True)
 class StartedTurn:
-    """Начатый ход вкладки: сессия агента и задача запроса `session/prompt`."""
+    """Начатый ход вкладки: сессия агента и ожидание её idle."""
 
     session_id: str
-    response: asyncio.Task[PromptResponse]
+    ending: asyncio.Future[schema.IdleSessionStateUpdate]
 
 
 class SettingsOutcome(StrEnum):
@@ -564,26 +547,29 @@ class ThreadAgent:
     """Агент одной вкладки треда: процесс, сессия агента и текущий ход.
 
     Создаётся реестром ThreadAgents; живёт пока открыта вкладка. Сессия
-    открывается `session/new` на первом вопросе или `session/load` при
-    возврате к треду; правка вопроса ветвит сессию `session/fork`. Процесс
-    заменяется новым только через restart(): запуск, смена процесса и начало
-    хода идут под одним замком вкладки, а перезапуск, пришедший во время хода,
-    ждёт его конца флагом.
+    открывается `session/new` на первом вопросе или `session/resume` с
+    воспроизведением при возврате к треду; правка вопроса ветвит сессию
+    `session/fork`. Ход кончается idle агента (AskedQuestions.ending) либо
+    выходом процесса. Процесс заменяется новым только через restart(): запуск,
+    смена процесса и начало хода идут под одним замком вкладки, а перезапуск,
+    пришедший во время хода, ждёт его конца флагом.
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 — агент вкладки собирается всеми входами
         self,
         identity: ThreadIdentity,
         launcher: AgentLauncher,
         meta: AgentSessionMeta,
         renderer: TurnRenderer,
         options: SessionOptions,
+        public_url: str,
     ) -> None:
         self._identity = identity
         self._launcher = launcher
         self._meta = meta
         self._renderer = renderer
         self._options = options
+        self._public_url = public_url
         self._questions = AskedQuestions(renderer)
         self._launched: LaunchedAgent | None = None
         self._session_id: str | None = None
@@ -639,7 +625,6 @@ class ThreadAgent:
 
         Ошибки:
         AgentSettingsError, DataUnavailableError — слой чата не собран.
-        SessionServersError — сервер MCP профиля не годится агенту.
         AgentProcessError, AgentRequestError — процесс не запустился или
             отказал в сессии; перезапуск повторится перед следующим ходом.
         """
@@ -659,7 +644,7 @@ class ThreadAgent:
         launch = await self._launcher.prepare(self._identity)
         await self._close_process()
         await self._launch(launch)
-        await self._reopen()
+        await self._resume(replay=False)
         self._restart_pending = False
         self._restarts += 1
         logger.info(
@@ -673,53 +658,58 @@ class ThreadAgent:
 
     async def _launch(self, launch: AgentLaunch) -> None:
         """Новый процесс по заготовке: файл настроек из слоя чата в свежем
-        приватном каталоге, новый ключ процесса, рукопожатие."""
+        приватном каталоге, новые регистрации серверов, рукопожатие."""
         self._launched = await self._launcher.launch(
             self._identity, launch.chat, AgentClient(self._questions)
         )
 
-    async def _reopen(self) -> None:
-        """Сессия треда в новом процессе без воспроизведения беседы; ответ
-        наблюдателя настроек не несёт — прежние остаются."""
-        session_id = self._session_id
-        if session_id is None:
-            return
-
-        response = await self.process.resume_session(session_id)
-        self._options.replace(response.config_options)
-
     async def resume(self) -> bool:
-        """Загрузка сохранённой сессии треда с воспроизведением беседы;
-        False — у агента нет такой сессии, первый вопрос откроет новую.
+        """Сохранённая сессия треда с воспроизведением беседы; False — у
+        агента нет такой сессии, первый вопрос откроет новую.
 
         Ошибки:
-        AgentRequestError — агент отказал в `session/load` не по причине
+        AgentRequestError — агент отказал в `session/resume` не по причине
             неизвестной сессии.
         """
         async with self._gate:
-            return await self._load()
+            return await self._resume(replay=True)
 
-    async def _load(self) -> bool:
-        known = await self._meta.session_of(self.thread_id)
+    async def _resume(self, replay: bool) -> bool:
+        """Сессия треда в процессе вкладки: с воспроизведением беседы — при
+        возврате к треду (id из threads.meta), без него — открытая сессия в
+        новом процессе после перезапуска; ответ без настроек их не меняет.
+        False — сессии нет: открытой нет или агент её не знает, и первый
+        вопрос откроет новую."""
+        known = self._session_id
+        if replay:
+            known = await self._meta.session_of(self.thread_id)
+
+        if known is None:
+            return False
+
         try:
-            response = await self.process.load_session(known)
+            response = await self.process.resume_session(known, replay)
         except AgentRequestError as exc:
-            if exc.code != JsonRpcCode.RESOURCE_NOT_FOUND:
+            if exc.code != AcpErrorCode.RESOURCE_NOT_FOUND:
                 raise
 
             logger.info(
                 "thread %s: no agent session %s yet: %s", self.thread_id, known, exc
             )
+            self._session_id = None
 
             return False
 
         self._session_id = known
-        self._asked = list(self._questions.ids)
         self._options.replace(response.config_options)
+        if not replay:
+            return True
+
+        self._asked = list(self._questions.ids)
         await self._meta.remember(self.thread_id, known)
         await self._renderer.loaded(known)
         logger.info(
-            "thread %s: agent session %s loaded, %d question(s) replayed",
+            "thread %s: agent session %s resumed, %d question(s) replayed",
             self.thread_id,
             known,
             len(self._asked),
@@ -727,10 +717,10 @@ class ThreadAgent:
 
         return True
 
-    async def ask(self, question: Question) -> str:
-        """Ход по вопросу: новая сессия на первом, ветвь на правке; итог —
-        stopReason ответа. Кнопка Stop снимает задачу обработчика chainlit:
-        ход всё равно дожидается ответа агента на отмену и отмечает его в ленте.
+    async def ask(self, question: Question) -> None:
+        """Ход по вопросу: новая сессия на первом, ветвь на правке; ход
+        кончается idle агента. Кнопка Stop снимает задачу обработчика chainlit: ход
+        всё равно дожидается idle агента после отмены и отмечает его в ленте.
         Отложенный перезапуск исполняется сразу после конца хода, а не
         состоявшийся из-за отказа — перед началом следующего.
 
@@ -744,62 +734,73 @@ class ThreadAgent:
 
         session_id = turn.session_id
         try:
-            response = await asyncio.shield(turn.response)
+            idle = await self._idle(turn)
         except asyncio.CancelledError:
-            response = await self._cancelled_turn(session_id, turn.response)
-            await self._finish(session_id, question, response)
+            if not turn.ending.done():
+                self._renderer.stopping(session_id)
+                await self.process.cancel(session_id)
+
+            idle = await self._idle(turn)
+            await self._finish(session_id, idle)
             raise
         except Exception:
             self._active = None
             await self._renderer.abandon(session_id)
             raise
 
-        await self._finish(session_id, question, response)
-
-        return response.stop_reason
+        await self._finish(session_id, idle)
 
     async def _begin(self, question: Question) -> StartedTurn:
-        """Начало хода под замком вкладки: сессия, лента и запрос агенту."""
+        """Начало хода под замком вкладки: сессия, ожидание её idle, вопрос
+        агенту; ключ хода — messageId, который агент дал вопросу."""
         if self._restart_pending:
             await self._restart_idle()
 
-        edited = question.key in self._asked
         session_id = await self._session_for(question)
-        await self._renderer.turn_started(session_id, question, edited)
-        self._asked.append(question.key)
+        ending = self._questions.ending(session_id)
+        prompt = self.process.prompt(session_id, self._blocks(question))
+        key = await self._renderer.turn_started(session_id, question, prompt)
+        self._asked.append(key)
         self._active = session_id
         logger.info(
-            "thread %s: turn %s starts in session %s",
-            self.thread_id,
-            question.key,
-            session_id,
-        )
-        response = asyncio.create_task(
-            self.process.prompt(session_id, self._blocks(question), question.key)
+            "thread %s: turn %s starts in session %s", self.thread_id, key, session_id
         )
 
-        return StartedTurn(session_id=session_id, response=response)
+        return StartedTurn(session_id=session_id, ending=ending)
 
-    async def _cancelled_turn(
-        self, session_id: str, turn: asyncio.Task[PromptResponse]
-    ) -> PromptResponse:
-        """Задача обработчика снята: агент получает отмену, ход ждёт его ответа."""
-        if not turn.done():
-            self._renderer.stopping(session_id)
-            await self.process.cancel(session_id)
+    async def _idle(self, turn: StartedTurn) -> schema.IdleSessionStateUpdate:
+        """idle хода либо выход процесса, который idle уже не пришлёт.
 
-        return await turn
+        Ошибки:
+        AgentProcessError — процесс вышел посреди хода.
+        """
+        exited = asyncio.ensure_future(self.process.exited())
+        try:
+            await asyncio.wait(
+                (turn.ending, exited), return_when=asyncio.FIRST_COMPLETED
+            )
+        finally:
+            exited.cancel()
+
+        if turn.ending.done():
+            return turn.ending.result()
+
+        msg = (
+            f"thread {self.thread_id}: the agent process exited during the turn "
+            f"of session {turn.session_id}: {self.process.log_tail()}"
+        )
+        raise AgentProcessError(msg)
 
     async def _finish(
-        self, session_id: str, question: Question, response: PromptResponse
+        self, session_id: str, idle: schema.IdleSessionStateUpdate
     ) -> None:
         self._active = None
-        await self._renderer.turn_finished(session_id, response.stop_reason)
+        await self._renderer.turn_finished(session_id, idle)
         logger.info(
-            "thread %s: turn %s finished with %s",
+            "thread %s: turn of session %s finished with %s",
             self.thread_id,
-            question.key,
-            response.stop_reason,
+            session_id,
+            idle.stop_reason,
         )
         await self._restart_deferred()
 
@@ -830,7 +831,7 @@ class ThreadAgent:
 
     async def _close_process(self) -> None:
         """Прежний процесс: сессия закрыта у агента, процесс остановлен, его
-        каталог с файлом настроек удалён, ключ процесса снят."""
+        каталог с файлом настроек удалён, регистрации серверов сняты."""
         launched = self._launched
         if launched is None:
             return
@@ -856,7 +857,7 @@ class ThreadAgent:
         logger.info("thread %s: agent session %s closed", self.thread_id, session_id)
 
     async def _session_for(self, question: Question) -> str:
-        """Сессия хода: открытая, ветвь при правке вопроса, иначе новая."""
+        """Сессия хода: открытая, ветвь до вопроса при его правке, иначе новая."""
         current = self._session_id
         if current is None:
             opened = await self.process.open_session()
@@ -870,6 +871,17 @@ class ThreadAgent:
 
         if question.key not in self._asked:
             return current
+
+        if not self.process.forks_by_message():
+            msg = (
+                f"The question {question.key} of thread {self.thread_id} was "
+                "edited, but the agent of this chat does not declare "
+                f"{MetaKey.UP_TO_MESSAGE_ID.value!r} in "
+                "capabilities.session.fork._meta, so it cannot branch the "
+                "conversation before the edited question; ask the question "
+                "anew as a new message instead of editing it."
+            )
+            raise AcpClientError(msg)
 
         branch = await self.process.fork(current, question.key)
         forked = branch.session_id
@@ -886,17 +898,19 @@ class ThreadAgent:
 
         return forked
 
-    @staticmethod
-    def _blocks(question: Question) -> list[PromptBlock]:
-        """Текст вопроса и ссылки на вложения; вложение без адреса агенту не
-        передаётся."""
-        blocks: list[PromptBlock] = [text_block(question.text)]
+    def _blocks(self, question: Question) -> list[PromptBlock]:
+        """Текст вопроса и ссылки на вложения по адресу chainlit глазами
+        агента; вложение без адреса агенту не передаётся."""
+        blocks: list[PromptBlock] = [schema.TextContentBlock(text=question.text)]
         for element in question.elements:
             if element.url is None:
                 continue
 
+            uri = AnyUrl(urljoin(self._public_url, element.url))
             blocks.append(
-                resource_link_block(element.name, element.url, mime_type=element.mime)
+                schema.ResourceContentBlock(
+                    name=element.name, uri=uri, mime_type=element.mime
+                )
             )
 
         return blocks
@@ -954,11 +968,13 @@ class ThreadAgents:
         meta: AgentSessionMeta,
         index: ThreadAgentsIndex,
         renderers: TurnRenderers,
+        public_url: str,
     ) -> None:
         self._launcher = launcher
         self._meta = meta
         self._index = index
         self._renderers = renderers
+        self._public_url = public_url
         self._agents: dict[str, ThreadAgent] = {}
         self._starting = asyncio.Lock()
 
@@ -976,7 +992,14 @@ class ThreadAgents:
 
             options = SessionOptions()
             renderer = await self._renderers.create(identity, options)
-            agent = ThreadAgent(identity, self._launcher, self._meta, renderer, options)
+            agent = ThreadAgent(
+                identity,
+                self._launcher,
+                self._meta,
+                renderer,
+                options,
+                self._public_url,
+            )
             await agent.start()
             self._agents[identity.thread_id] = agent
             self._index.register(agent)
@@ -1028,8 +1051,8 @@ class AgentSettingsChanges:
 
         Ошибки:
         AgentSettingsError, DataUnavailableError — слои не записаны.
-        AgentProcessError, AgentRequestError, SessionServersError —
-            настройки записаны, перезапуск не состоялся.
+        AgentProcessError, AgentRequestError — настройки записаны,
+            перезапуск не состоялся.
         """
         await self._layers.change(
             UUID(identity.thread_id),
@@ -1093,7 +1116,7 @@ class ThreadDeleter(ThreadDeletionListener):
         self, thread_id: str, chat: ChatAgentSettings, session_id: str
     ) -> None:
         process = await self._launcher.launch_settings(
-            thread_id, chat, {}, "", (), AgentClient(MuteUpdates())
+            thread_id, chat, (), AgentClient(MuteUpdates())
         )
         try:
             await process.delete_session(session_id)

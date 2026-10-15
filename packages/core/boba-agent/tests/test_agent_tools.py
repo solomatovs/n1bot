@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import sys
 from collections.abc import AsyncIterator, Sequence
 from pathlib import Path
 from typing import ClassVar
@@ -41,7 +40,6 @@ from boba.agent.session import Session
 from boba.agent.template import AgentTemplate
 from boba.agent.tools import AskUserQuestionTool
 from boba.history.jsonl import JsonlHistoryStore
-from boba.identity.context import CallContexts
 from boba.llm.chat import (
     ChatEvent,
     ChatModel,
@@ -49,12 +47,6 @@ from boba.llm.chat import (
     ChatRequest,
     LlmError,
     ToolCall,
-)
-from boba.mcp_client.client import (
-    DroppedSignals,
-    McpServerConfig,
-    McpToolServer,
-    StdioCommand,
 )
 from boba.stand.agent import (
     Collected,
@@ -66,20 +58,11 @@ from boba.stand.agent import (
     StandTools,
 )
 from boba.stand.ui.fake_llm import FailureName, ScenarioName
-from boba.toolkit.dag import ToolServers
-from boba.toolrun.hosted import DirectCalls
 
 pytestmark = pytest.mark.anyio
 
 SESSION = SessionId(value="agent-tools-1")
 VERSION = "0.0.26.dev4"
-MCP_SERVER = (
-    Path(__file__).resolve().parents[3]
-    / "services"
-    / "boba-mcp-client"
-    / "tests"
-    / "standard_server.py"
-)
 
 
 def prompt(text: str, priority: QueuePriority | None = None) -> QueueEntry:
@@ -953,63 +936,3 @@ class TestResume:
         )
         assert resumed.agent.outcomes == [TurnOutcome.COMPLETED]
         assert_linked(session.chain())
-
-
-class TestMcp:
-    def _server(self, name: str) -> McpToolServer:
-        endpoint = StdioCommand(command=sys.executable, args=(str(MCP_SERVER), "stdio"))
-        config = McpServerConfig(
-            endpoint=endpoint,
-            connect_timeout_sec=20.0,
-            call_timeout_sec=20.0,
-        )
-
-        return McpToolServer(
-            name,
-            config,
-            DroppedSignals(),
-            CallContexts(),
-            DirectCalls(),
-        )
-
-    async def test_crash_of_one_server_fails_only_its_call(
-        self, agents: StandAgents
-    ) -> None:
-        first = self._server("a")
-        second = self._server("b")
-        await first.open()
-        await second.open()
-        routed = ToolServers([first, second])
-        sink = Collected()
-        served = Served(
-            agents.agent(
-                agents.profile(Protocol.OPENAI),
-                sink,
-                tools=routed,
-                initial_mode=PermissionMode.BYPASS_PERMISSIONS,
-                allow_bypass=True,
-            )
-        )
-        session = await served.open(SESSION, resume=False)
-        try:
-            served.agent.queue.enqueue(
-                prompt(
-                    call(
-                        {"name": "mcp__a__add", "arguments": {"a": 1, "b": 2}},
-                        {"name": "mcp__b__die"},
-                    )
-                )
-            )
-            await served.agent.settled()
-        finally:
-            await served.close()
-            await first.close()
-            await second.close()
-
-        found = results(session.records())
-        assert found[0].text() == "3"
-        assert found[0].is_error is None
-        assert found[1].is_error is True
-        assert "mcp__b__die" in found[1].text() or "die" in found[1].text()
-        assert served.agent.outcomes == [TurnOutcome.COMPLETED]
-        assert sink.questions() == []

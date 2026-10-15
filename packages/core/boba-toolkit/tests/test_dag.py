@@ -7,11 +7,20 @@ from collections.abc import Sequence
 from typing import Annotated, Literal
 
 import pytest
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, JsonValue, ValidationError
 
 from boba.toolkit.chain import StreamInput, StreamOutput, StreamPlan, StreamPlanError
-from boba.toolkit.dag import CallDag, DagNode, DagPlanner, DagSpec, NodeReports
+from boba.toolkit.dag import (
+    CallDag,
+    DagNode,
+    DagPlanner,
+    DagSpec,
+    NestedCallsFeature,
+    NodeStatus,
+    WorkflowNodeResult,
+)
 from boba.toolkit.ports import Inbound, Outbound, StreamSpec
+from boba.toolkit.result import ErrorResult, MarkdownResult, ToolResultBase
 
 
 class ChunkHead(BaseModel):
@@ -298,22 +307,37 @@ class TestDagGroups:
             )
 
 
-class TestNodeReports:
-    """Подпись отчёта о ходе работы ключом узла связки и её разбор."""
+class TestWorkflowNode:
+    """Заголовок и статус узла в итоге связки."""
 
-    def test_report_is_signed_and_read_back(self) -> None:
-        reports = NodeReports()
+    @staticmethod
+    def _node(result: ToolResultBase) -> WorkflowNodeResult:
+        return WorkflowNodeResult(
+            key="src",
+            call_id="call_1_0",
+            tool="pg_stream_out",
+            errored=False,
+            content=result.llm_view(),
+            result=result,
+        )
 
-        signed = reports.labeled("src", "copy t to stdout: 2.0 MiB")
+    def test_node_with_a_good_result_is_ok(self) -> None:
+        node = self._node(MarkdownResult(text="sent 3 rows"))
 
-        if signed != "src: copy t to stdout: 2.0 MiB":
-            raise AssertionError(f"ключ узла стоит в начале текста: {signed}")
-        if reports.split(signed) != ("src", "copy t to stdout: 2.0 MiB"):
-            raise AssertionError("разбор отдаёт ключ и текст узла как были")
+        if node.status is not NodeStatus.OK:
+            raise AssertionError(f"удачный результат — ok: {node.status}")
+        if node.heading() != "[src] pg_stream_out — ok":
+            raise AssertionError(
+                f"заголовок называет ключ, инструмент и статус: {node.heading()}"
+            )
 
-    def test_text_without_a_key_is_not_a_node_report(self) -> None:
-        if NodeReports().split("connecting") is not None:
-            raise AssertionError("текст без подписи не приписывается узлу")
+    def test_node_with_a_failed_result_failed(self) -> None:
+        node = self._node(ErrorResult(message="no table", error_kind="probe"))
+
+        if node.status is not NodeStatus.FAILED:
+            raise AssertionError(f"отказ — failed: {node.status}")
+        if node.heading() != "[src] pg_stream_out — failed":
+            raise AssertionError(f"заголовок называет провал: {node.heading()}")
 
 
 class TestNodeTitle:
@@ -348,3 +372,91 @@ class TestNodeTitle:
     def test_unknown_call_has_no_title(self) -> None:
         if CallDag().title_of(self._call(), "call-99") is not None:
             raise AssertionError("чужой идентификатор узлом не называется")
+
+
+class TestNestedCalls:
+    """Расширение «вложенные вызовы»: форма, которую объявляет CallDag, и
+    разбор связки по ней на стороне клиента."""
+
+    @staticmethod
+    def _arguments() -> dict[str, JsonValue]:
+        nodes: list[JsonValue] = [
+            {"key": "src", "tool": "a", "args": {"out": "c1", "connection": "db"}},
+            {"key": "dst", "tool": "b", "args": {"feed": "c1"}},
+        ]
+
+        return {"nodes": nodes, "note": "kept"}
+
+    def test_settings_round_trip_keeps_the_shape(self) -> None:
+        declared = CallDag().feature()
+
+        parsed = NestedCallsFeature.model_validate(declared.settings())
+
+        if parsed != declared:
+            raise AssertionError(f"объявление разбирается той же моделью: {parsed}")
+
+    def test_declared_shape_gives_the_nodes_the_server_describes(self) -> None:
+        dags = CallDag()
+        arguments = self._arguments()
+        call = DagNode.model_validate(
+            {"key": "api-1", "tool": CallDag.WORKFLOW, "args": arguments}
+        )
+
+        described: list[tuple[str, str, dict[str, JsonValue]]] = []
+        for node in dags.described(call):
+            described.append((node.key, node.tool, dict(node.args)))
+
+        parsed: list[tuple[str, str, dict[str, JsonValue]]] = []
+        for node in dags.feature().calls(arguments):
+            parsed.append((node.key, node.tool, dict(node.args)))
+
+        if parsed != described:
+            raise AssertionError(
+                f"клиент видит узлы связки так же, как сервер: {parsed} != {described}"
+            )
+
+    def test_replaced_changes_only_the_node_arguments(self) -> None:
+        nested = CallDag().feature()
+        arguments = self._arguments()
+        sealed: list[DagNode] = []
+        for node in nested.calls(arguments):
+            sealed.append(node.model_copy(update={"args": {"sealed": node.key}}))
+
+        replaced = nested.replaced(arguments, sealed)
+
+        expected = {
+            "nodes": [
+                {"key": "src", "tool": "a", "args": {"sealed": "src"}},
+                {"key": "dst", "tool": "b", "args": {"sealed": "dst"}},
+            ],
+            "note": "kept",
+        }
+        if replaced != expected:
+            raise AssertionError(f"меняются только аргументы узлов: {replaced}")
+
+        if arguments != self._arguments():
+            raise AssertionError(f"исходные аргументы не тронуты: {arguments}")
+
+    @pytest.mark.parametrize(
+        ("arguments", "expected"),
+        [
+            ({}, "argument 'nodes' expects a list of node objects, got None"),
+            ({"nodes": ["src"]}, "node #0 of 'nodes' expects an object, got 'src'"),
+            (
+                {"nodes": [{"key": "src", "args": {}}]},
+                "node #0 of 'nodes' expects 'key', 'tool' and an object 'args'",
+            ),
+            (
+                {"nodes": [{"key": "src", "tool": "a", "args": {}, "call_id": "c"}]},
+                "node #0 of 'nodes' carries fields outside the declared shape: call_id",
+            ),
+        ],
+    )
+    def test_nodes_off_the_shape_are_refused(
+        self, arguments: dict[str, JsonValue], expected: str
+    ) -> None:
+        with pytest.raises(StreamPlanError) as caught:
+            CallDag().feature().calls(arguments)
+
+        if expected not in str(caught.value):
+            raise AssertionError(f"отказ называет узел и поле: {caught.value}")

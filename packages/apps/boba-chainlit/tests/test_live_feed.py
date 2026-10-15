@@ -11,13 +11,7 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
-from acp import (
-    start_tool_call,
-    text_block,
-    tool_content,
-    update_agent_message,
-    update_tool_call,
-)
+from acp.experimental.v2 import schema
 from chainlit.element import ElementDict
 
 from boba.chainlit.canvas.remote import RemoteJournals
@@ -38,7 +32,6 @@ from boba.messaging import (
     Notice,
     NoticeLevel,
     StreamAppended,
-    ThreadRewound,
     TurnFinished,
     TurnOutcome,
 )
@@ -51,7 +44,6 @@ from boba.runtime.turns import StaleTurnCloser
 from boba.stand.refs import StandRefs
 from boba.stand_core.context import CallStand
 from boba.toolkit.channels import CallOutcome, ToolChannel
-from boba.toolkit.dag import ToolUseResult
 from boba.toolkit.result import MarkdownResult
 from boba.toolrun.streams import CallJournals, StreamPump, StreamPumps, ToolStream
 
@@ -171,24 +163,25 @@ async def test_turn_on_one_instance_is_rendered_on_another(
     try:
         await feed.started(TURN, QuestionBody(text="question"))
         await feed.agent_update(
-            start_tool_call(CALL, "kb_probe", raw_input={"query": "x"})
-        )
-        hits = ToolUseResult(
-            artifact=MarkdownResult(text="hits", elapsed_ms=10).model_dump(
-                mode="json", exclude_none=True
+            schema.SessionToolCallUpdate(
+                tool_call_id=CALL,
+                name="kb_probe",
+                status="pending",
+                raw_input={"query": "x"},
             )
         )
+        hits = schema.ContentToolCallContent(
+            content=schema.TextContentBlock(text="hits")
+        )
         await feed.agent_update(
-            update_tool_call(
-                CALL,
-                status="completed",
-                content=[tool_content(text_block("hits"))],
-                raw_output=hits.model_dump(mode="json", exclude_none=True),
+            schema.SessionToolCallUpdate(
+                tool_call_id=CALL, status="completed", content=[hits]
             )
         )
         for token in ("hel", "lo"):
-            chunk = update_agent_message(text_block(token))
-            chunk.message_id = "m-1"
+            chunk = schema.AgentMessageChunk(
+                message_id="m-1", content=schema.TextContentBlock(text=token)
+            )
             await feed.agent_update(chunk)
 
         tool_id = ChatView.derive_id(thread_id, CALL, StepRole.TOOL)
@@ -444,12 +437,12 @@ ELEMENT = {
 }
 
 
-async def test_rewind_and_elements_reach_the_viewer_instance(
+async def test_elements_reach_the_viewer_instance(
     runtime_stand: StandRefs,
     nodes: tuple[Node, Node],
 ) -> None:
-    """Правка вопроса перечитывает ленту, а карточка вызова показывается у зрителя
-    на другом инстансе — и по живой доставке, и по догону replay.
+    """Карточка вызова и вложение вопроса показываются у зрителя на другом
+    инстансе — и по живой доставке, и по догону replay.
     """
     holder, viewer = nodes
     thread_id = str(uuid4())
@@ -461,9 +454,6 @@ async def test_rewind_and_elements_reach_the_viewer_instance(
     updates = UpdateView(view, thread_id, RemoteJournals(), ToolMedia())
     renderer = ChatRenderer(thread_id, updates, viewer.payloads, surface)
     leave = viewer.bus.subscribe(scope, renderer.apply)
-
-    # правка вопроса: лента забывает отправленное, тред заново не читается
-    await holder.bus.publish(scope, ThreadRewound(turn_id=TURN), LockToken.local())
 
     removed = ElementRemoved(element_id="el-old")
     await holder.bus.publish(scope, removed, LockToken.local())

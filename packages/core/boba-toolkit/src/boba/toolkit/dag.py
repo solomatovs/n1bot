@@ -9,21 +9,25 @@ DagSpec — сериализуемая модель графа: узлы — в�
 каналами, собираются в одну группу и исполняются по правилу «все или никто»,
 узел без каналов — группа из него одного. Все проверки графа каналов
 остаются в StreamPlan. WorkflowResult — итог вызова связки для клиента:
-результаты узлов одним конвертом.
+результаты узлов одним конвертом; клиенту MCP он уходит блоками узлов с
+заголовками и списком узлов (NestedCallsOutput) в structuredContent.
 
 Здесь же контракт порта сервера инструментов — типы, которыми клиент порта
 (чат, сервис MCP, клиент MCP) и его исполнитель говорят друг с другом:
 карточка инструмента ToolCard, итог вызова NodeOutcome с фабрикой
 NodeOutcomes и адресом журнала JournalAddress, путь вызова узла к телу
 NodeCalls, сам порт ToolServer и ToolServers — несколько серверов за
-одним портом с маршрутом по имени инструмента; CallDag строит описание DAG
-по вызовам клиента порта и называет инструмент-связку. Остальные
+одним портом с маршрутом по имени инструмента; ServerFeature — базовый
+класс настроек расширений, которые сервер объявляет клиенту. CallDag строит
+описание DAG по вызовам клиента порта, называет инструмент-связку и
+объявляет его форму расширением «вложенные вызовы» (NestedCallsFeature): по
+нему клиент разбирает узлы связки, не зная инструмента. Остальные
 реализации порта живут в boba.toolrun и клиенте MCP.
 
 Ошибки:
 StreamPlanError — поле порта узла не имя канала, pipe_bytes не число либо
     граф нарушен (правила StreamPlan); вызов workflow не проходит форму
-    описания DAG; настройки возможности связки не проходят её модель.
+    описания DAG; аргументы связки не по объявленной форме расширения.
 ToolServersError — два сервера за одним портом отдают инструмент с одним
     именем.
 """
@@ -35,7 +39,7 @@ from abc import abstractmethod
 from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any, ClassVar, Literal, Protocol, TypeAlias
+from typing import Any, ClassVar, Literal, Protocol, Self, TypeAlias
 
 from pydantic import (
     BaseModel,
@@ -72,11 +76,15 @@ __all__ = [
     "DagPlanner",
     "DagSpec",
     "JournalAddress",
+    "NestedCallReply",
+    "NestedCallsFeature",
+    "NestedCallsOutput",
     "NodeBody",
     "NodeCalls",
     "NodeOutcome",
     "NodeOutcomes",
-    "NodeReports",
+    "NodeStatus",
+    "ServerFeature",
     "ToolCard",
     "ToolHints",
     "ToolServer",
@@ -85,6 +93,7 @@ __all__ = [
     "ToolUseResult",
     "ToolUseResultKey",
     "ToolUseResults",
+    "WorkflowField",
     "WorkflowNodeResult",
     "WorkflowResult",
 ]
@@ -353,12 +362,52 @@ class DagPlanner:
         )
 
 
+class NodeStatus(StrEnum):
+    """Статус узла связки в заголовке его блоков и в списке узлов итога."""
+
+    OK = "ok"
+    FAILED = "failed"
+
+
 class WorkflowNodeResult(BaseModel):
-    """Итог узла workflow: какой инструмент с чем вызван и чем он кончился.
+    """Итог узла workflow: какой инструмент вызван и чем он кончился.
 
     key — имя узла, данное моделью; call_id — идентификатор вызова узла, под
-    которым идут его журнал и шаг ленты. errored — вызов кончился ошибкой
-    самого вызова (аргументы, права), а не результатом инструмента.
+    которым идёт его журнал. errored — вызов кончился ошибкой самого вызова
+    (аргументы, права), а не результатом инструмента. Поля, которых модель
+    больше не знает (аргументы узла в истории прежних версий), при
+    разборе пропускаются: старые треды открываются.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="ignore")
+
+    key: str
+    call_id: str
+    tool: str
+    errored: bool
+    content: str
+    result: ToolResult
+
+    @property
+    def status(self) -> NodeStatus:
+        if not self.result.ok:
+            return NodeStatus.FAILED
+
+        return NodeStatus.OK
+
+    def heading(self) -> str:
+        """Заголовок узла перед его блоками: ключ, инструмент и статус."""
+        return f"[{self.key}] {self.tool} — {self.status.value}"
+
+
+class NestedCallReply(BaseModel):
+    """Узел в итоге инструмента со вложенными вызовами, как он едет клиенту.
+
+    key, call_id, tool — те же, что у итога узла (WorkflowNodeResult):
+    имя узла от автора связки, идентификатор вызова узла (под ним сервер
+    ведёт журнал узла) и инструмент на сервере. blocks — номера блоков узла
+    в content ответа, без его заголовка; result — модель результата узла с
+    kind, по ней клиент показывает узел подробнее текста.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -366,10 +415,19 @@ class WorkflowNodeResult(BaseModel):
     key: str
     call_id: str
     tool: str
-    args: Mapping[str, Any]
-    errored: bool
-    content: str
-    result: ToolResult
+    status: NodeStatus
+    blocks: Sequence[int]
+    result: Mapping[str, JsonValue]
+
+
+class NestedCallsOutput(BaseModel):
+    """Собственные данные итога связки для structuredContent: узлы в
+    порядке описания. Строит её WorkflowResult.structured; сведения о
+    вызове к ней добавляет NestedCallsReply (boba.toolkit.wire)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    nodes: Sequence[NestedCallReply]
 
 
 class WorkflowResult(ToolResultBase):
@@ -377,8 +435,9 @@ class WorkflowResult(ToolResultBase):
 
     Модель описывает связку инструментов одним вызовом workflow; исполнитель
     DAG отдаёт итог каждого узла, а этот результат несёт их модели и
-    истории одним конвертом. Клиент оживляет его по kind и раскрывает в
-    шаги узлов.
+    истории одним конвертом. Клиенту MCP он уходит блоками: перед блоками
+    каждого узла — его заголовок; список узлов с номерами их блоков —
+    в structuredContent.
     """
 
     kind: Literal["workflow"] = "workflow"
@@ -387,21 +446,60 @@ class WorkflowResult(ToolResultBase):
     def llm_view(self) -> str:
         parts: list[str] = []
         for node in self.nodes:
-            parts.append(f"[{node.key}] {node.tool}:\n{node.content}")
+            parts.append(f"{node.heading()}\n{node.content}")
 
-        return "\n\n".join(parts)
+        return "\n".join(parts)
 
     def chat_view(self) -> ChatView:
         return ChatView(markdown=FactsBlock(facts=self._facts()).markdown())
 
+    def disclosed(self) -> Self:
+        nodes: list[WorkflowNodeResult] = []
+        for node in self.nodes:
+            nodes.append(node.model_copy(update={"result": node.result.disclosed()}))
+
+        return self.model_copy(update={"nodes": nodes})
+
+    def texts(self) -> Sequence[str]:
+        texts: list[str] = []
+        for node, node_texts, _ in self._numbered():
+            texts.append(node.heading())
+            texts.extend(node_texts)
+
+        return texts
+
+    def structured(self) -> dict[str, JsonValue] | None:
+        replies: list[NestedCallReply] = []
+        for node, _, numbers in self._numbered():
+            reply = NestedCallReply(
+                key=node.key,
+                call_id=node.call_id,
+                tool=node.tool,
+                status=node.status,
+                blocks=numbers,
+                result=node.result.model_dump(mode="json"),
+            )
+            replies.append(reply)
+
+        return NestedCallsOutput(nodes=replies).model_dump(mode="json")
+
+    def _numbered(
+        self,
+    ) -> Iterator[tuple[WorkflowNodeResult, Sequence[str], Sequence[int]]]:
+        """Узлы с их текстами и номерами их блоков в content одним проходом:
+        перед блоками узла стоит его заголовок, номера с нуля."""
+        position = 0
+        for node in self.nodes:
+            texts = node.result.texts()
+            start = position + 1
+            position = start + len(texts)
+            yield node, texts, range(start, position)
+
     def _facts(self) -> list[Fact]:
         facts: list[Fact] = []
         for node in self.nodes:
-            status = "ok"
-            if not node.result.ok:
-                status = "failed"
-
-            facts.append(Fact(key=f"{node.key} ({node.tool})", value=status))
+            fact = Fact(key=f"{node.key} ({node.tool})", value=node.status.value)
+            facts.append(fact)
 
         return facts
 
@@ -424,14 +522,16 @@ class ToolHints:
 class ToolCard:
     """Карточка инструмента для клиента порта: имя, описание, JSON-схема
     вызова — та, что видит модель после всех обвязок, — вид аргументов
-    вызова для ленты клиента и пометки; views None — вида у инструмента
-    нет (чужой сервер, встроенный узел), и лента покажет аргументы
-    json-текстом."""
+    вызова для ленты клиента, схема итога (outputSchema) и пометки; views
+    None — вида у инструмента нет (чужой сервер, встроенный узел), и лента
+    покажет аргументы json-текстом; output None — схемы итога у
+    инструмента нет."""
 
     name: str
     description: str
     parameters: Mapping[str, Any]
     views: Mapping[str, FieldView] | None
+    output: Mapping[str, Any] | None
     hints: ToolHints = field(default_factory=ToolHints)
 
 
@@ -448,30 +548,6 @@ class JournalAddress(BaseModel):
     server: str = Field(min_length=1)
     run: str = Field(min_length=1)
     call: str = Field(min_length=1)
-
-
-class NodeReports:
-    """Подпись отчёта о ходе работы узлом связки и её разбор.
-
-    Связка идёт одним запросом, а уведомление прогресса несёт только число
-    и текст: чей это отчёт, говорит начало текста — ключ узла, который ему
-    дал автор связки. Сервер зовёт labeled(), клиент — split(): по ключу он
-    отдаёт отчёт шагу своего вызова. Обе стороны держат формат здесь.
-    """
-
-    SEPARATOR: ClassVar[str] = ": "
-
-    def labeled(self, key: str, text: str) -> str:
-        """Текст отчёта узла key."""
-        return f"{key}{self.SEPARATOR}{text}"
-
-    def split(self, text: str) -> tuple[str, str] | None:
-        """Ключ узла и его текст; None — отчёт узлом не подписан."""
-        key, separator, rest = text.partition(self.SEPARATOR)
-        if not separator:
-            return None
-
-        return key, rest
 
 
 class NodeOutcome(BaseModel):
@@ -492,10 +568,11 @@ class NodeOutcome(BaseModel):
     errored: bool = False
     journal: JournalAddress | None = None
     media: Mapping[str, Mapping[str, str]] | None = None
-    """Типы содержимого аргументов по идентификаторам вызовов: самого
-    вызова, а у связки — каждого её узла. Их называет порт сервера, чьи
-    инструменты описаны схемой; None — вызов исполнен в своём процессе, и
-    его аргументы показывает модель вызова инструмента."""
+    """Типы содержимого аргументов по идентификаторам вызовов. Их называет
+    порт сервера, чьи инструменты описаны схемой; None — вызов исполнен в
+    своём процессе, и его аргументы показывает модель вызова инструмента."""
+    reply: Mapping[str, JsonValue] | None = None
+    """Ответ сервера MCP на вызов как пришёл; None — порт его не хранит."""
 
     def failed(self) -> bool:
         return isinstance(self.artifact, FailureResult)
@@ -518,13 +595,14 @@ class NodeOutcome(BaseModel):
         return ""
 
     def use_result(self) -> ToolUseResult:
-        """Итог в форме записи истории: результат семейства, адрес журнала
-        и типы содержимого аргументов."""
-        return ToolUseResult(
-            artifact=self.artifact.model_dump(mode="json", exclude_none=True),
-            journal=self.journal,
-            media=self.media,
-        )
+        """Итог в форме записи истории: ответ сервера MCP как пришёл, а без
+        него — результат семейства; адрес журнала и типы содержимого
+        аргументов."""
+        artifact: Any = self.artifact.model_dump(mode="json", exclude_none=True)
+        if self.reply is not None:
+            artifact = self.reply
+
+        return ToolUseResult(artifact=artifact, journal=self.journal, media=self.media)
 
 
 class ToolUseResultKey(StrEnum):
@@ -633,24 +711,36 @@ class NodeCalls(Protocol):
         """Итог вызова узла node инструмента card, исполненного телом body."""
 
 
+class WorkflowField(StrEnum):
+    """Имена полей аргумента вызова workflow, как их несёт сервер: список
+    узлов и поля узла — те же, что у DagNode."""
+
+    NODES = "nodes"
+    KEY = "key"
+    TOOL = "tool"
+    ARGS = "args"
+
+
 class CallDag:
     """Описание DAG по вызовам клиента порта.
 
     Вызов приходит узлом DagNode: ключ — идентификатор вызова. Обычный вызов
     — DAG из одного этого узла. Узлы вызова workflow — уже узлы описания DAG (DagSpec);
-    ключ узла заменяется на идентификатор вызова узла (под ним идут журнал и
-    шаг ленты узла): заданный клиентом call_id, иначе идентификатор вызова
-    workflow с номером узла. Имя, данное узлу моделью, едет в title — им
+    ключ узла заменяется на идентификатор вызова узла (под ним идёт журнал
+    узла): заданный клиентом call_id, иначе идентификатор вызова workflow с
+    номером узла. Имя, данное узлу моделью, едет в title — им
     узел называется в текстах отказов. Создаётся исполнителем порта
-    (LocalDagService) и клиентами, которым нужны узлы связки до отправки:
-    клиент MCP раскладывает связку на вызовы узлов, запечатывание меняет
-    аргументы узлов.
+    (LocalDagService): он же объявляет клиентам форму вызова workflow
+    расширением feature(), по которому клиент меняет аргументы узлов до
+    отправки, не зная инструмента.
     """
 
     WORKFLOW: ClassVar[str] = "workflow"
     """Имя инструмента-связки: узлы его вызова — вызовы других инструментов."""
 
-    NODES: ClassVar[str] = "nodes"
+    PROGRESS_NODE: ClassVar[str] = "com.boba/node"
+    """Ключ _meta уведомления notifications/progress, под которым сервер
+    называет узел связки, чей это отчёт."""
 
     def of(self, call: DagNode) -> DagSpec:
         """DAG одного вызова.
@@ -670,8 +760,8 @@ class CallDag:
         StreamPlanError — вызов workflow не проходит форму описания DAG.
         """
         raw: dict[str, object] = {"name": call.key, "version": 1}
-        if self.NODES in call.args:
-            raw[self.NODES] = call.args[self.NODES]
+        if WorkflowField.NODES in call.args:
+            raw[WorkflowField.NODES] = call.args[WorkflowField.NODES]
 
         try:
             return DagSpec.model_validate(raw).nodes
@@ -682,6 +772,17 @@ class CallDag:
             )
             raise StreamPlanError(msg) from exc
 
+    def feature(self) -> NestedCallsFeature:
+        """Объявление формы вызова workflow, которую разбирает described()."""
+        return NestedCallsFeature(
+            tool=self.WORKFLOW,
+            nodes=WorkflowField.NODES,
+            node_key=WorkflowField.KEY,
+            node_tool=WorkflowField.TOOL,
+            node_args=WorkflowField.ARGS,
+            progress_key=self.PROGRESS_NODE,
+        )
+
     def nodes_of(self, call: DagNode) -> list[DagNode]:
         """Узлы вызова workflow вызовами своих инструментов: ключ узла —
         идентификатор его вызова, имя от модели — в title.
@@ -689,50 +790,157 @@ class CallDag:
         Ошибки:
         StreamPlanError — вызов workflow не проходит форму описания DAG.
         """
-        return list(self._called(call.key, self.described(call)))
-
-    def with_nodes(self, call: DagNode, nodes: Sequence[DagNode]) -> DagNode:
-        """Тот же вызов workflow с узлами nodes на месте описанных."""
-        described: list[JsonValue] = []
-        for node in nodes:
-            described.append(node.model_dump(mode="json", exclude_defaults=True))
-
-        args = dict(call.args)
-        args[self.NODES] = described
-
-        return call.model_copy(update={"args": args})
+        return list(self.feature().keyed(call.key, self.described(call)))
 
     def title_of(self, call: DagNode, node_id: str) -> str | None:
         """Имя, которое автор связки дал узлу с идентификатором вызова
-        node_id; None — такого узла в вызове workflow нет.
+        node_id; None — такого узла в вызове workflow нет. Идентификатор
+        вызова workflow здесь неизвестен: узел без заданного call_id
+        узнаётся по хвосту своего идентификатора.
 
         Ошибки:
         StreamPlanError — вызов workflow не проходит форму описания DAG.
         """
-        for index, node in enumerate(self.described(call)):
+        for node in self.feature().keyed("", self.described(call)):
             if node.call_id == node_id:
-                return node.key
+                return node.title
 
             if node.call_id:
                 continue
 
-            if node_id.endswith(self._suffix(index)):
-                return node.key
+            if node_id.endswith(node.key):
+                return node.title
 
         return None
 
-    @staticmethod
-    def _suffix(index: int) -> str:
-        """Хвост идентификатора вызова узла, которому автор его не назвал."""
-        return f"_{index}"
 
-    def _called(self, call_id: str, described: Sequence[DagNode]) -> Iterator[DagNode]:
-        for index, node in enumerate(described):
+class ServerFeature(BaseModel):
+    """Базовый класс настроек расширения, которое сервер инструментов
+    объявляет клиенту при подключении (ToolServer.features).
+
+    Наследники — JournalFeature, FilesFeature (boba.toolkit.wire) и
+    NestedCallsFeature: ID называет расширение, поля — его настройки. Сервер
+    кладёт в объявление settings(), клиент разбирает его моделью наследника
+    один раз при подключении; поля, которых модель не знает (настройки
+    более новой редакции сервера), пропускаются.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="ignore")
+
+    ID: ClassVar[str]
+
+    def settings(self) -> dict[str, object]:
+        """Настройки расширения, как они едут клиенту."""
+        return self.model_dump(mode="json")
+
+
+class NestedCallsFeature(ServerFeature):
+    """Настройки расширения сервера «вложенные вызовы».
+
+    Инструмент tool несёт в аргументе nodes список вызовов других
+    инструментов сервера; у каждого элемента списка поля node_key, node_tool
+    и node_args — ключ узла, имя инструмента и его аргументы. Сервер
+    объявляет форму своего инструмента-связки (CallDag.feature), клиент по
+    ней разбирает узлы вызова (calls) и собирает вызов обратно с другими
+    аргументами узлов (replaced) — например, с запечатанными соединениями.
+    progress_key — ключ _meta уведомления notifications/progress, под
+    которым сервер называет ключ узла, чей это отчёт о ходе работы.
+    """
+
+    ID: ClassVar[str] = "com.boba/nested-calls"
+
+    tool: str = Field(min_length=1)
+    nodes: str = Field(min_length=1)
+    node_key: str = Field(min_length=1)
+    node_tool: str = Field(min_length=1)
+    node_args: str = Field(min_length=1)
+    progress_key: str = Field(min_length=1)
+
+    def calls(self, arguments: Mapping[str, JsonValue]) -> Sequence[DagNode]:
+        """Узлы вызова tool с аргументами arguments.
+
+        Ошибки:
+        StreamPlanError — аргумент nodes не список объектов либо узел не
+            проходит форму узла.
+        """
+        listed = arguments.get(self.nodes)
+        if not isinstance(listed, list):
+            msg = (
+                f"{self.tool} call: argument {self.nodes!r} expects a list of "
+                f"node objects, got {listed!r}"
+            )
+            raise StreamPlanError(msg)
+
+        calls: list[DagNode] = []
+        for index, node in enumerate(listed):
+            if not isinstance(node, dict):
+                msg = (
+                    f"{self.tool} call: node #{index} of {self.nodes!r} expects "
+                    f"an object, got {node!r}"
+                )
+                raise StreamPlanError(msg)
+
+            undeclared = sorted(
+                set(node) - {self.node_key, self.node_tool, self.node_args}
+            )
+            if undeclared:
+                msg = (
+                    f"{self.tool} call: node #{index} of {self.nodes!r} carries "
+                    f"fields outside the declared shape: {', '.join(undeclared)}"
+                )
+                raise StreamPlanError(msg)
+
+            raw = {
+                WorkflowField.KEY: node.get(self.node_key),
+                WorkflowField.TOOL: node.get(self.node_tool),
+                WorkflowField.ARGS: node.get(self.node_args),
+            }
+            try:
+                calls.append(DagNode.model_validate(raw))
+            except ValidationError as exc:
+                msg = (
+                    f"{self.tool} call: node #{index} of {self.nodes!r} expects "
+                    f"{self.node_key!r}, {self.node_tool!r} and an object "
+                    f"{self.node_args!r}: {ValidationText.of(exc)}"
+                )
+                raise StreamPlanError(msg) from exc
+
+        return calls
+
+    def replaced(
+        self, arguments: Mapping[str, JsonValue], calls: Sequence[DagNode]
+    ) -> dict[str, JsonValue]:
+        """Те же аргументы вызова tool, узлы которого пересобраны из calls
+        по объявленной форме; прочие аргументы вызова как есть."""
+        nodes: list[JsonValue] = []
+        for call in calls:
+            nodes.append(
+                {
+                    self.node_key: call.key,
+                    self.node_tool: call.tool,
+                    self.node_args: dict(call.args),
+                }
+            )
+
+        replaced = dict(arguments)
+        replaced[self.nodes] = nodes
+
+        return replaced
+
+    def keyed(self, call_id: str, calls: Sequence[DagNode]) -> Sequence[DagNode]:
+        """Узлы calls вызова call_id под идентификаторами их вызовов: заданный
+        клиентом call_id узла, иначе call_id вызова с номером узла; ключ от
+        автора связки — в title. Под этим идентификатором сервер ведёт
+        журнал узла, а клиент — его шаг."""
+        keyed: list[DagNode] = []
+        for index, node in enumerate(calls):
             key = node.call_id
             if not key:
-                key = f"{call_id}{self._suffix(index)}"
+                key = f"{call_id}_{index}"
 
-            yield node.model_copy(update={"key": key, "title": node.key})
+            keyed.append(node.model_copy(update={"key": key, "title": node.key}))
+
+        return keyed
 
 
 class ToolServer(Protocol):

@@ -480,10 +480,9 @@ class ProgressText:
     """Текст блока прогресса идущего вызова по отчётам инструмента.
 
     Создаётся лентой (ChatView) на шаг вызова с его первым отчётом и живёт
-    до конца вызова. Блок показывает последние LINES сообщений инструмента:
-    новые приходят снизу, старые уходят сверху, поэтому сообщения текут, а
-    не копятся. Итог известен — под сообщениями стоит доля и «сделано из
-    всего»; отчёт без слов при неизвестном итоге показывается числом.
+    до конца вызова. Блок показывает последние LINES отчётов: новые приходят
+    снизу, старые уходят сверху, поэтому сообщения текут, а не копятся. Доля
+    сделанного уже стоит в тексте отчёта, его собирает агент.
     """
 
     LINES: ClassVar[int] = 10
@@ -494,44 +493,11 @@ class ProgressText:
     def __init__(self) -> None:
         self._lines: deque[str] = deque(maxlen=self.LINES)
 
-    def shown(self, done: float, total: float | None, text: str) -> str:
+    def shown(self, text: str) -> str:
         """Блок после очередного отчёта."""
-        if text:
-            self._lines.append(text)
+        self._lines.append(text)
 
-        flow = self.BREAK.join(self._lines)
-        measure = self._measure(done, total)
-        if not measure:
-            return self._plain(done, flow)
-
-        if not flow:
-            return measure
-
-        return f"{flow}\n\n{measure}"
-
-    def _measure(self, done: float, total: float | None) -> str:
-        if total is None:
-            return ""
-
-        if total <= 0:
-            return ""
-
-        percent = min(100, int(done * 100 / total))
-
-        return f"{percent}% ({self._number(done)} of {self._number(total)})"
-
-    def _plain(self, done: float, flow: str) -> str:
-        if flow:
-            return flow
-
-        return self._number(done)
-
-    @staticmethod
-    def _number(value: float) -> str:
-        if value == int(value):
-            return f"{int(value):,}".replace(",", " ")
-
-        return f"{value:,.2f}".replace(",", " ")
+        return self.BREAK.join(self._lines)
 
 
 class StreamableTools(Protocol):
@@ -917,9 +883,7 @@ class ChatView:
 
         return element
 
-    async def tool_progressed(
-        self, step: Step, done: float, total: float | None, text: str
-    ) -> None:
+    async def tool_progressed(self, step: Step, text: str) -> None:
         """Ход работы идущего вызова: блок шага показывает последний отчёт
         инструмента вместо общей подписи «running»."""
         flow = self._progress.get(step.id)
@@ -927,7 +891,7 @@ class ChatView:
             flow = ProgressText()
             self._progress[step.id] = flow
 
-        step.output = flow.shown(done, total, text)
+        step.output = flow.shown(text)
         await self._sink.put(step)
 
     async def tool_finished(

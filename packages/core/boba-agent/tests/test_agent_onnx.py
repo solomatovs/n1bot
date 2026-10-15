@@ -206,7 +206,7 @@ class TestLocalModel:
         await served.agent.settled()
         await served.close()
 
-        assert list(served.agent.outcomes) == [TurnOutcome.API_ERROR]
+        assert list(served.agent.outcomes) == [TurnOutcome.OUTPUT_LIMIT]
         chain = session.chain()
         partials = [
             r

@@ -12,7 +12,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, ClassVar
 
-from acp.schema import ToolCallProgress, ToolCallStart
+from acp.experimental.v2 import schema
 from pydantic import BaseModel, ConfigDict, Field
 
 from boba.chainlit.agent.client import SessionUpdate
@@ -30,7 +30,6 @@ from boba.messaging import (
     PayloadStore,
     StreamAppended,
     StreamFeed,
-    ThreadRewound,
     TurnFinished,
     TurnOutcome,
     TurnStarted,
@@ -144,16 +143,12 @@ class TurnFeed(StreamFeed):
     async def _publish(self, message: AnyMessage) -> None:
         await self._bus.publish(self._scope, message, self._token)
 
-    async def rewound(self) -> None:
-        """Правка вопроса: вкладки забывают отправленные шаги хода с этим ключом."""
-        await self._publish(ThreadRewound(turn_id=self._turn_id))
-
     async def agent_update(self, update: SessionUpdate) -> None:
         """Уведомление агента как есть: вызовы с аргументами и итогом — по
         ссылке (ключи аргументов обязаны сохранить порядок, jsonb шины его
         не хранит), куски текста — в самом сообщении."""
         body = self._codec.encode(update)
-        if isinstance(update, ToolCallStart | ToolCallProgress):
+        if isinstance(update, schema.SessionToolCallUpdate):
             ref = await self._payloads.put(self._scope, body)
             await self._publish(AgentUpdate(turn_id=self._turn_id, stored=ref))
             return

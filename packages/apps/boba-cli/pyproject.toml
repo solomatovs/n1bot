@@ -8,20 +8,19 @@ version = "0.0.26.dev4"
 description = "Boba cli: процесс агента — команда boba acp, разбор параметров запуска, Agent Client Protocol через стандартные потоки."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "agent-client-protocol==0.12.1",
+    "agent-client-protocol==1.0.0rc3",
     "boba-agent==0.0.26.dev4",
     "boba-cancellation==0.0.26.dev4",
     "boba-history-jsonl==0.0.26.dev4",
     "boba-history-postgres==0.0.26.dev4",
     "boba-db-postgres==0.0.26.dev4",
-    "boba-identity==0.0.26.dev4",
     "boba-llm==0.0.26.dev4",
     "boba-llm-http==0.0.26.dev4",
     "boba-llm-onnx==0.0.26.dev4",
-    "boba-mcp-client==0.0.26.dev4",
     "boba-toolkit==0.0.26.dev4",
-    "boba-toolrun==0.0.26.dev4",
+    "boba-transport-acp==0.0.26.dev4",
     "httpx>=0.28,<1",
+    "mcp-types>=2.3,<3",
     "psycopg>=3.3,<4",
     "pydantic>=2.12,<3",
 ]
@@ -34,7 +33,6 @@ dev = [
     "boba-stand==0.0.26.dev4",
     "boba-config==0.0.26.dev4",
     "boba-krb==0.0.26.dev4",
-    "jsonschema>=4.23,<5",
     "uvicorn>=0.35,<1",
     "omegaconf>=2.3,<3",
     "pytest>=9.1,<10",

@@ -26,6 +26,7 @@ from urllib.parse import urljoin
 import pytest
 from chat_ui import BOOT_TIMEOUT_SEC, OpenChat
 
+from boba.mcp_client.client import McpServerConfig
 from boba.stand.ui.chat_page import ChatPage, Selector, StepKind
 from boba.stand.ui.fake_llm import ScenarioName
 from boba.stand.ui.socket_log import ChatEvent, StepField
@@ -38,10 +39,6 @@ from boba.stand.ui.stand import (
 )
 
 pytestmark = [pytest.mark.ui, pytest.mark.xdist_group("mcp-ui")]
-
-SERVER = (
-    REPO_ROOT / "packages" / "services" / "boba-mcp-client" / "tests"
-) / "standard_server.py"
 
 CHAT_LOGIN = "admin"
 CHAT_ROLE = "ADM"
@@ -126,23 +123,16 @@ def boba_mcp_stand(stand_workdir: Path) -> Iterator[BobaMcpStand]:
 
 
 @pytest.fixture(scope="module")
-def mcp_stand(
+def mcp_stand(  # noqa: PLR0913 — стенд собирается из фикстур модуля
     stand_workdir: Path,
     llm_port: int,
     fake_llm: None,
     stand_database: str,
     boba_mcp_stand: BobaMcpStand,
+    standard: McpServerConfig,
 ) -> Iterator[StandProcess]:
     """Стенд чата с двумя MCP-серверами: обычный по stdio и boba-mcp."""
-    server: dict[str, Any] = {
-        "connect_timeout_sec": 30.0,
-        "call_timeout_sec": 60.0,
-        "endpoint": {
-            "transport": "stdio",
-            "command": sys.executable,
-            "args": [str(SERVER), "stdio"],
-        },
-    }
+    server = standard.model_dump(mode="json", exclude_none=True)
     config = StandConfig(
         # не "mcp": это каталог сервиса boba-mcp общего стенда (StandConfig.service)
         workdir=stand_workdir / "chat-mcp",

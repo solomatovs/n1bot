@@ -23,6 +23,7 @@ from boba.chainlit.agent.chat import (
 )
 from boba.chainlit.agent.config import AgentConfig
 from boba.chainlit.agent.feed import AgentFeeds, BusParts, TabSurfaces
+from boba.chainlit.agent.relay import McpRelay
 from boba.chainlit.agent.server import (
     ChatCallers,
     ChatCallMiddleware,
@@ -37,7 +38,6 @@ from boba.chainlit.agent.settings import (
     AgentSettingsLayers,
     AgentSettingsTable,
     ProfileModelSpecs,
-    SessionServers,
 )
 from boba.chainlit.canvas.remote import RemoteJournals
 from boba.chainlit.data import PostgresDataLayer
@@ -64,7 +64,7 @@ from boba.identity.context import CallContexts
 from boba.identity.locks import LiveLocks
 from boba.identity.run import Runs
 from boba.identity.session import SessionSource
-from boba.mcp_client.client import DroppedSignals, McpServers
+from boba.mcp_client.client import McpServers
 from boba.messaging import MessageBus, PayloadStore
 from boba.runtime import providers as runtime
 from boba.runtime.config import RuntimeConfig
@@ -74,7 +74,6 @@ from boba.runtime.http import RequestTokens
 from boba.runtime.storage import StorageClient
 from boba.runtime.threads import ThreadsTable
 from boba.runtime.users import UsersTable
-from boba.toolrun.hosted import DirectCalls
 from boba.toolrun.registry import ToolRegistry
 
 
@@ -207,13 +206,11 @@ async def chainlit_data_layer(  # noqa: PLR0913 — слой данных соб
 
 async def mcp_servers(
     c: Annotated[AppConfig, Depends(get_app_config)],
-    contexts: Annotated[CallContexts, Depends(runtime.call_contexts)],
 ) -> AsyncIterator[McpServers]:
     """MCP-серверы процесса: подключаются при первом обращении, закрываются
-    на остановке. Инструменты через них зовёт агент, а не чат: чату нужны
-    файлы серверов, журналы вызовов и карточки инструментов, поэтому отчёты
-    о ходе вызовов приёмника не имеют, вызовы идут напрямую."""
-    servers = McpServers(c.mcp, DroppedSignals(), contexts, DirectCalls())
+    на остановке. Через них идут вызовы агента (ретранслятор), файлы
+    серверов, журналы вызовов и инструменты для ленты."""
+    servers = McpServers(c.mcp)
     try:
         yield servers
     finally:
@@ -255,17 +252,49 @@ def process_keys() -> ProcessKeys:
     return ProcessKeys()
 
 
+def chat_callers(
+    keys: Annotated[ProcessKeys, Depends(process_keys)],
+) -> ChatCallers:
+    """Вызывающий по ключу процесса агента: для сервера инструментов чата и
+    хука."""
+    return ChatCallers(keys)
+
+
+def hook_sealing(
+    raw: Annotated[DictConfig, Depends(runtime.get_raw_config)],
+    callers: Annotated[ChatCallers, Depends(chat_callers)],
+    contexts: Annotated[CallContexts, Depends(runtime.call_contexts)],
+) -> HookSealing:
+    """Запечатывание соединений пользователя ключом сервера MCP: для
+    ретранслятора mcp/message и обработчика хука."""
+    connections = ArmedConnections(
+        runtime.connection_store_ref, runtime.credential_source_ref, contexts
+    )
+    ttl = timedelta(seconds=bind(raw, "connections", ConnectionsConfig).seal_ttl_sec)
+
+    return HookSealing(callers, connections, contexts, ttl)
+
+
+def mcp_relay(
+    keys: Annotated[ProcessKeys, Depends(process_keys)],
+    callers: Annotated[ChatCallers, Depends(chat_callers)],
+    servers: Annotated[McpServers, Depends(mcp_servers)],
+    sealing: Annotated[HookSealing, Depends(hook_sealing)],
+    config: Annotated[AgentConfig, Depends(agent_config)],
+) -> McpRelay:
+    """Ретранслятор mcp/message процессов агента: один на инстанс."""
+    return McpRelay(keys, callers, servers, sealing, config.chat_mcp, config.public_url)
+
+
 def agent_launcher(
     config: Annotated[AgentConfig, Depends(agent_config)],
-    app_config: Annotated[AppConfig, Depends(get_app_config)],
     layers: Annotated[AgentSettingsLayers, Depends(agent_settings_layers)],
     keys: Annotated[ProcessKeys, Depends(process_keys)],
+    relay: Annotated[McpRelay, Depends(mcp_relay)],
 ) -> AgentLauncher:
-    """Запуск процессов агента: ключ процесса, файл настроек с серверами MCP
-    профиля, рукопожатие."""
-    servers = SessionServers(app_config.mcp, config.chat_mcp, config.public_url)
-
-    return AgentLauncher(config, layers, servers, keys, version("boba-chainlit"))
+    """Запуск процессов агента: регистрации серверов профиля и чата, файл
+    настроек, рукопожатие; mcp/message процессов отвечает ретранслятор."""
+    return AgentLauncher(config, layers, keys, relay, version("boba-chainlit"))
 
 
 def agent_session_meta(
@@ -322,22 +351,15 @@ async def thread_agents(
     meta: Annotated[AgentSessionMeta, Depends(agent_session_meta)],
     index: Annotated[ThreadAgentsIndex, Depends(thread_agents_index)],
     feeds: Annotated[AgentFeeds, Depends(agent_feeds)],
+    config: Annotated[AgentConfig, Depends(agent_config)],
 ) -> AsyncIterator[ThreadAgents]:
     """Агенты вкладки: процессы живут с DI-контейнером сессии chainlit и
     закрываются вместе с ним."""
-    agents = ThreadAgents(launcher, meta, index, feeds)
+    agents = ThreadAgents(launcher, meta, index, feeds, config.public_url)
     try:
         yield agents
     finally:
         await agents.close_all()
-
-
-def chat_callers(
-    keys: Annotated[ProcessKeys, Depends(process_keys)],
-) -> ChatCallers:
-    """Вызывающий по ключу процесса агента: для сервера инструментов чата и
-    хука."""
-    return ChatCallers(keys)
 
 
 def chat_mcp_server(
@@ -358,18 +380,11 @@ def chat_mcp_server(
 
 def pre_tool_use_hook(
     app_config: Annotated[AppConfig, Depends(get_app_config)],
-    raw: Annotated[DictConfig, Depends(runtime.get_raw_config)],
     callers: Annotated[ChatCallers, Depends(chat_callers)],
-    contexts: Annotated[CallContexts, Depends(runtime.call_contexts)],
+    sealing: Annotated[HookSealing, Depends(hook_sealing)],
 ) -> PreToolUseHandler:
     """Обработчик хука PreToolUse агента под [agent.hook].path: запечатывает
     соединения пользователя ключом сервера MCP из события."""
-    connections = ArmedConnections(
-        runtime.connection_store_ref, runtime.credential_source_ref, contexts
-    )
-    ttl = timedelta(seconds=bind(raw, "connections", ConnectionsConfig).seal_ttl_sec)
-    sealing = HookSealing(callers, connections, contexts, ttl)
-
     return PreToolUseHandler(
         app_config.agent.hook,
         RequestTokens(app_config.session.cookie),

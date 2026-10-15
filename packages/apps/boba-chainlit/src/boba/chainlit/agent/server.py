@@ -1,22 +1,23 @@
 """Чат как сервер инструментов своего агента: MCP-сервер инструментов
 соединений под `[agent.chat_mcp].path`, обработчик хука PreToolUse под
-`[agent.hook].path` и ключи процессов агента, по которым оба входа узнают
-вызывающего.
+`[agent.hook].path` и ключи процессов агента, по которым входы и
+ретранслятор mcp/message узнают вызывающего.
 
-Оба входа живут в FastAPI chainlit и принимают на каждом запросе Bearer ключ
-процесса агента — случайную строку, которую запуск агента (AgentLauncher)
-выдаёт процессу и пишет в его файл настроек: в запись сервера чата и в
-заголовок хука. Токен входа пользователя агенту не передаётся. По ключу чат
-находит запись его держателя (ProcessKeys): пользователя, тред и профиль
-треда; роли и секреты входа читаются из живой сессии пользователя в момент
-вызова. Сессий MCP нет: сервер stateless streamable HTTP, собран из общего
-адаптера boba.mcp_adapter; инструменты — собственные инструменты чата из
-реестра (connection_list, connection_search) по ролям пользователя и профилю
-треда. Обработчик хука читает событие PreToolUse, находит по схеме
-инструмента параметры-соединения (SealedParamSchema), заменяет имя
-соединения профилем, запечатанным ключом сервера MCP из
-`mcp_server.features` (SealFeature), и отвечает `updatedInput`; неизвестное
-или невыданное соединение — `deny` с причиной.
+Ключ процесса — serverId, который запуск агента (AgentLauncher) выдаёт на
+каждый сервер процесса и объявляет агенту записью type "acp"; токен входа
+пользователя агенту не передаётся. Оба HTTP-входа живут в FastAPI chainlit
+и принимают такой ключ Bearer-токеном: сервер инструментов чата зовёт
+ретранслятор ключом регистрации сервера чата. По ключу чат находит запись
+его держателя (ProcessKeys): пользователя, тред, профиль треда и сервер;
+роли и секреты входа читаются из живой сессии пользователя в момент вызова.
+Сессий MCP нет: сервер stateless streamable HTTP, собран из общего адаптера
+boba.mcp_adapter; инструменты — собственные инструменты чата из реестра
+(connection_list, connection_search) по ролям пользователя и профилю треда.
+Запечатывание (HookSealing) находит по схеме инструмента
+параметры-соединения (SealedParamSchema), заменяет имя соединения профилем,
+запечатанным ключом сервера MCP из `mcp_server.features` (SealFeature), и
+отвечает `updatedInput`; неизвестное или невыданное соединение — `deny` с
+причиной.
 
 Ошибки:
 AuthenticationError — ключа нет, он неизвестен или снят либо сессия его
@@ -31,9 +32,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import secrets
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from contextlib import AbstractAsyncContextManager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import timedelta
 from enum import StrEnum
 from http import HTTPStatus
@@ -41,6 +42,7 @@ from typing import Any, ClassVar
 from uuid import UUID, uuid4
 
 import mcp_types as mt
+from acp.experimental.v2 import schema
 from fastmcp import FastMCP
 from fastmcp.server.auth import TokenVerifier
 from fastmcp.server.dependencies import get_access_token
@@ -57,6 +59,7 @@ from boba.agent.hooks import (
     HookEventName,
     HookReplyBody,
     HookSpecificOutput,
+    McpServerInfo,
     PreToolUseEvent,
 )
 from boba.cancellation import RunCancellation, StopReason
@@ -133,11 +136,14 @@ class DetailKey(StrEnum):
 
 @dataclass(frozen=True)
 class KeyHolder:
-    """Держатель ключа процесса агента: чей это агент и какого треда.
+    """Держатель ключа процесса агента: чей это агент, какого треда и для
+    какого сервера выдан ключ.
 
-    Создаётся запуском агента (AgentLauncher) вместе с ключом. profile —
-    профиль треда: по нему сервер инструментов чата выбирает набор
-    инструментов. session — живой вход пользователя вкладки.
+    Создаётся запуском агента (AgentLauncher): на каждый сервер, который
+    процесс получает объявлением type "acp", — свой ключ, он же serverId.
+    profile — профиль треда: по нему сервер инструментов чата выбирает набор
+    инструментов. session — живой вход пользователя вкладки. server — имя
+    сервера профиля либо сервера инструментов чата ([agent.chat_mcp].name).
     """
 
     user_id: UUID
@@ -145,16 +151,19 @@ class KeyHolder:
     thread_id: str
     profile: str
     session: LiveSignIn
+    server: str
 
 
 class ProcessKeys:
     """Ключи процессов агента этого инстанса чата: ключ → его держатель.
 
-    Создаётся провайдером процесса, один на инстанс. Запуск агента выдаёт
-    ключ процессу (issue) и снимает его при остановке и перезапуске
-    (revoke); сервер инструментов чата и обработчик хука находят по ключу
-    держателя (holder). Реестр живёт в памяти: процесс агента — потомок
-    этого же инстанса и с его рестартом не остаётся.
+    Создаётся провайдером процесса, один на инстанс. Запуск агента
+    регистрирует серверы процесса (register): ключ каждого — serverId его
+    объявления агенту; при остановке и перезапуске ключи снимаются
+    (revoke). Ретранслятор mcp/message, сервер инструментов чата и
+    обработчик хука находят по ключу держателя (holder). Реестр живёт в
+    памяти: процесс агента — потомок этого же инстанса и с его рестартом не
+    остаётся.
     """
 
     KEY_BYTES: ClassVar[int] = 32
@@ -168,6 +177,18 @@ class ProcessKeys:
         self._holders[key] = holder
 
         return key
+
+    def register(
+        self, holder: KeyHolder, names: Sequence[str]
+    ) -> list[schema.AcpMcpServer]:
+        """Объявления серверов names для агента: на каждое имя новый ключ
+        держателя с этим сервером, он же serverId."""
+        servers: list[schema.AcpMcpServer] = []
+        for name in names:
+            key = self.issue(replace(holder, server=name))
+            servers.append(schema.AcpMcpServer(name=name, server_id=key))
+
+        return servers
 
     def revoke(self, key: str) -> None:
         """Снимает ключ; неизвестный ключ — ничего."""
@@ -191,7 +212,8 @@ class ChatCallers:
     """Вызывающий по Bearer ключу процесса агента.
 
     Создаётся провайдером процесса; им пользуются сервер инструментов (порт
-    по ролям и профилю) и обработчик хука (субъект и креды для соединений).
+    по ролям и профилю), обработчик хука и ретранслятор mcp/message (субъект
+    и креды для соединений).
     Держателя ключа отдаёт реестр ProcessKeys; роли и секреты входа читаются
     из живой сессии держателя.
     """
@@ -208,8 +230,8 @@ class ChatCallers:
         if holder is None:
             msg = (
                 "the bearer token is not a key of a running agent process of "
-                "this chat instance: expected the key from the settings file "
-                "of the agent, got an unknown or revoked one"
+                "this chat instance: expected the serverId the chat registered "
+                "for the agent, got an unknown or revoked one"
             )
             raise AuthenticationError(msg)
 
@@ -395,13 +417,16 @@ class ChatMcpServer:
 
 
 class HookSealing:
-    """Решение обработчика хука по событию PreToolUse: запечатать соединения
-    в аргументах либо отказать.
+    """Запечатывание соединений в аргументах вызова инструмента сервера MCP:
+    имя соединения пользователя заменяется профилем, запечатанным ключом
+    сервера, либо вызов получает отказ.
 
-    Создаётся обработчиком. Какие аргументы — соединения и какого вида,
-    читает из схемы инструмента события (SealedParamSchema); ключ сервера —
-    из его возможностей в событии (SealFeature); соединение пользователя по
-    виду и имени берёт ArmedConnections в контексте вызывающего.
+    Создаётся провайдером hook_sealing; зовут ретранслятор mcp/message
+    (seal) и обработчик хука PreToolUse (reply — та же логика в форме
+    ответа хука). Какие аргументы — соединения и какого вида, читает из
+    схемы инструмента (SealedParamSchema); ключ сервера — из объявленных им
+    возможностей (SealFeature); соединение пользователя по виду и имени
+    берёт ArmedConnections в контексте вызывающего.
     """
 
     def __init__(
@@ -422,12 +447,14 @@ class HookSealing:
         ConnectionStoreError — таблица соединений недоступна.
         KerberosError — билет к соединению не выпущен.
         """
-        kinds = self._declared.kinds_of(event.tool_schema)
-        if not kinds:
-            return self._decided(HookDecision.ALLOW, "", None)
-
         try:
-            updated = await self._sealed(event, caller, kinds)
+            updated = await self.seal(
+                event.tool_name,
+                event.tool_input,
+                event.tool_schema,
+                event.mcp_server,
+                caller,
+            )
         except (RefusalError, ToolConfigError) as exc:
             logger.warning(
                 "hook: sealing connections of %s for %s refused: %s",
@@ -439,13 +466,31 @@ class HookSealing:
 
         return self._decided(HookDecision.ALLOW, "", updated)
 
-    async def _sealed(
-        self, event: PreToolUseEvent, caller: ChatCaller, kinds: Mapping[str, str]
+    async def seal(
+        self,
+        tool: str,
+        arguments: Mapping[str, Any],
+        tool_schema: Mapping[str, Any],
+        server: McpServerInfo | None,
+        caller: ChatCaller,
     ) -> dict[str, Any]:
-        """Аргументы события с запечатанными соединениями на месте имён.
-        Значение не строка — уходит как есть, его отвергнет сервер."""
-        seal = ConnectionSeal(self._key(event))
-        updated: dict[str, Any] = dict(event.tool_input)
+        """Аргументы вызова tool с запечатанными соединениями на месте имён;
+        у инструмента без параметров-соединений — как есть. Значение не
+        строка уходит как есть, его отвергнет сервер.
+
+        Ошибки:
+        RefusalError — соединение неизвестно или не выдано пользователю либо
+            сервер инструмента не принимает соединений.
+        ToolConfigError — соединение не годится инструменту.
+        ConnectionStoreError — таблица соединений недоступна.
+        KerberosError — билет к соединению не выпущен.
+        """
+        updated: dict[str, Any] = dict(arguments)
+        kinds = self._declared.kinds_of(tool_schema)
+        if not kinds:
+            return updated
+
+        seal = ConnectionSeal(self._key(tool, server))
         with self._contexts.applied(self._callers.context(caller)):
             for param, kind in kinds.items():
                 name = updated.get(param)
@@ -456,26 +501,25 @@ class HookSealing:
                 updated[param] = seal.seal(sealed)
 
                 logger.info(
-                    "hook: connection %s of kind %s sealed in %s of %s for %s",
+                    "sealing: connection %s of kind %s sealed in %s of %s for %s",
                     name,
                     kind,
                     param,
-                    event.tool_name,
+                    tool,
                     caller.subject.login,
                 )
 
         return updated
 
-    def _key(self, event: PreToolUseEvent) -> SealKey:
-        """Ключ сервера инструмента из возможностей, которые он объявил агенту.
+    def _key(self, tool: str, server: McpServerInfo | None) -> SealKey:
+        """Ключ сервера инструмента из возможностей, которые он объявил.
 
         Ошибки:
         RefusalError — сервера у инструмента нет либо он не принимает соединений.
         """
-        server = event.mcp_server
         if server is None:
             msg = (
-                f"{event.tool_name} is not a tool of an MCP server, so a connection "
+                f"{tool} is not a tool of an MCP server, so a connection "
                 "cannot be sent to it sealed"
             )
             raise RefusalError(ConnectionRefusal.SEAL_KEY_UNKNOWN, msg)

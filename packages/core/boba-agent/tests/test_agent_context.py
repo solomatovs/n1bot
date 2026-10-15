@@ -93,6 +93,7 @@ class ExtraTools(StandTools):
                 description="stand tool extra",
                 parameters={"type": "object", "properties": {}},
                 views=None,
+                output=None,
                 hints=ToolHints(read_only=True),
             ),
         ]

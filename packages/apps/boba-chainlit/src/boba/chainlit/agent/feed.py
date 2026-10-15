@@ -3,16 +3,20 @@
 Живой ход вкладка-держатель публикует в шину треда: вопрос (TurnStarted),
 уведомления `session/update` как есть (AgentUpdate), пометку остановки и
 итог (TurnFinished) — их рисуют рендереры треда на всех инстансах одним
-переводчиком UpdateView. Воспроизведение `session/load` своего процесса
-рисуется тем же переводчиком прямо в вкладке, без шины: история есть у
-каждого процесса агента. Побочные действия итогов вызовов — панель канваса,
-вложения — исполняет только держатель хода (ResultMounts).
+переводчиком UpdateView. Ключ хода — messageId, который агент дал вопросу:
+получив его, держатель один раз перепривязывает к нему шаг вопроса своей
+вкладки и пишет вложения вопроса. Воспроизведение `session/resume` своего
+процесса рисуется тем же переводчиком прямо в вкладке, без шины: история
+есть у каждого процесса агента. Побочные действия итогов вызовов — панель
+канваса, вложения — исполняет только держатель хода (ResultMounts).
 
 Ошибки:
 LockBusyError — тред уже ведёт другой держатель: ход не начат.
 MessageBusError — шина не приняла сообщение держателя.
-McpClientError — серверы MCP профиля не открылись для карточек инструментов.
+McpClientError — серверы MCP профиля не открылись для вида аргументов.
 DataUnavailableError — оценки или элементы треда не прочитаны слоем данных.
+InternalServiceError — шага вопроса нет в контексте вкладки.
+AcpClientError — агент не принял вопрос.
 """
 
 from __future__ import annotations
@@ -21,26 +25,11 @@ import asyncio
 import logging
 from abc import abstractmethod
 from collections.abc import Coroutine, Iterator, Sequence
-from contextlib import contextmanager
-from dataclasses import dataclass
+from contextlib import AsyncExitStack, contextmanager
+from dataclasses import dataclass, replace
 from typing import Any, ClassVar, Protocol
 
-from acp.schema import (
-    AgentPlanContentUpdate,
-    AgentPlanRemovedUpdate,
-    AgentPlanUpdate,
-    AllowedOutcome,
-    AvailableCommandsUpdate,
-    ConfigOptionUpdate,
-    CurrentModeUpdate,
-    DeniedOutcome,
-    PermissionOption,
-    RequestPermissionResponse,
-    SessionInfoUpdate,
-    ToolCallProgress,
-    ToolCallUpdate,
-    UsageUpdate,
-)
+from acp.experimental.v2 import schema
 
 import chainlit as cl
 from boba.cancellation import RunCancellation
@@ -48,7 +37,6 @@ from boba.canvas.canvas import CanvasError, CanvasErrorKind
 from boba.canvas.keys import ElementProps, ObjectKey
 from boba.chainlit.agent.chat import (
     PermissionKind,
-    PermissionOutcome,
     Question,
     SessionOptions,
     ThreadIdentity,
@@ -61,21 +49,17 @@ from boba.chainlit.canvas.remote import RemoteJournals
 from boba.chainlit.chat.feed import TurnFeed
 from boba.chainlit.data.data_layer import AttachmentDataLayer, FeedbackRows
 from boba.chainlit.domain.fields import StepField
-from boba.chainlit.rendering.acp_view import (
-    StopReasonName,
-    ToolMedia,
-    ToolStatusName,
-    UpdateView,
-)
+from boba.chainlit.rendering.acp_view import ToolMedia, UpdateView
 from boba.chainlit.rendering.chat_view import ChatView, LiveSink, StepRole, StepText
 from boba.chainlit.rendering.renderer import RenderSurface
 from boba.chainlit.rendering.tool import ChatElements, WorkspaceFile
 from boba.identity.context import Scope
+from boba.identity.errors import InternalServiceError
 from boba.identity.locks import LiveLocks, LockKeeper, LockMode, LockPurpose
 from boba.mcp_client.client import McpCaller, McpServers
 from boba.messaging import MessageBus, NoticeLevel, PayloadStore, TurnOutcome
-from boba.toolkit.dag import ToolUseResults
-from boba.toolkit.result import FileElement, PanelOpen, ToolArtifact, ToolResultBase
+from boba.toolkit.result import FileElement, PanelOpen, ToolResultBase
+from boba.transport.acp.protocol import IdleErrorUpdate, StopReason, ToolStatus
 from chainlit.context import ChainlitContext, context_var
 from chainlit.emitter import ChainlitEmitter
 from chainlit.session import WebsocketSession
@@ -183,31 +167,48 @@ class ResultMounts:
     панели канваса и оставить ссылку в переписке (PanelOpen), прикрепить файл
     workspace вложением (FileElement). Исполняет держатель хода по итогу из
     `rawOutput`: элемент пишется в слой данных и уходит вкладкам через шину.
-    Создаётся приёмником потока на тред.
+    Создаётся приёмником потока на тред и видит все уведомления живого хода:
+    имя инструмента агент называет только в первом уведомлении вызова, и
+    его запоминает здесь же, а итог из `rawOutput` оживляет переводчик
+    приёмника (UpdateView.outcome).
     """
 
-    def __init__(self, thread_id: str, user_key: str, surface: RenderSurface) -> None:
+    def __init__(
+        self, thread_id: str, user_key: str, surface: RenderSurface, view: UpdateView
+    ) -> None:
         self._thread_id = thread_id
         self._user_key = user_key
         self._surface = surface
-        self._results = ToolUseResults()
+        self._view = view
+        self._called: dict[str, str] = {}
+        """Идущий вызов живого хода → имя его инструмента."""
 
     async def mounted(
         self, update: SessionUpdate, turn_key: str, feed: TurnFeed
     ) -> None:
         """Действия по итогу вызова; уведомление не итог — ничего."""
-        if not isinstance(update, ToolCallProgress):
+        if not isinstance(update, schema.SessionToolCallUpdate):
             return
+
+        call_id = update.tool_call_id
+        if update.name:
+            self._called[call_id] = update.name
 
         if update.status is None:
             return
 
-        if not ToolStatusName(update.status).terminal:
+        if not ToolStatus(update.status).terminal:
             return
 
-        artifact = ToolArtifact.revive(self._results.of(update.raw_output).artifact)
-        if artifact is None:
+        name = self._called.pop(call_id, None)
+        if name is None:
             return
+
+        outcome = self._view.outcome(update, name)
+        if outcome is None:
+            return
+
+        artifact = outcome.artifact
 
         context = self._surface.context()
         if context is None:
@@ -302,11 +303,12 @@ class ResultMounts:
 
 @dataclass
 class LiveTurn:
-    """Идущий ход держателя: его производитель, ключ вопроса и замок области."""
+    """Идущий ход держателя: его производитель, ключ вопроса и замок области
+    (held: выход из стека отпускает замок)."""
 
     key: str
     feed: TurnFeed
-    keeper: LockKeeper
+    held: AsyncExitStack
     cancellation: RunCancellation
 
 
@@ -315,7 +317,7 @@ class AgentFeed(TurnRenderer):
 
     Живой ход (между turn_started и turn_finished) публикует уведомления в
     шину под замком области треда; остальные уведомления — воспроизведение
-    `session/load` — рисуются переводчиком вкладки. Настройки сессии из
+    `session/resume` — рисуются переводчиком вкладки. Настройки сессии из
     уведомлений ложатся в общее с агентом состояние SessionOptions.
     Клиент SDK обрабатывает каждое уведомление своей задачей, поэтому
     приёмник выстраивает их в порядок прихода очередью (asyncio.Lock
@@ -325,13 +327,19 @@ class AgentFeed(TurnRenderer):
     """
 
     _SERVICE_UPDATES: ClassVar[tuple[type[SessionUpdate], ...]] = (
-        SessionInfoUpdate,
-        AgentPlanUpdate,
-        AgentPlanContentUpdate,
-        AgentPlanRemovedUpdate,
-        AvailableCommandsUpdate,
+        schema.SessionInfoUpdate,
+        schema.SessionPlanUpdate,
+        schema.SessionPlanRemovedUpdate,
+        schema.AvailableCommandsUpdate,
+        schema.SessionCompactionUpdate,
+        schema.SessionCompactionSummaryChunk,
+        schema.SessionNotice,
+        schema.RunningSessionStateUpdate,
+        schema.RequiresActionSessionStateUpdate,
+        schema.IdleSessionStateUpdate,
     )
-    """Уведомления сессии, которых в ленте нет: заголовок, план, команды."""
+    """Уведомления сессии, которых в ленте нет: заголовок, план, команды,
+    сжатие, пометки и состояние хода (его конец приходит turn_finished)."""
 
     def __init__(  # noqa: PLR0913 — приёмник собирается всеми своими входами
         self,
@@ -350,7 +358,9 @@ class AgentFeed(TurnRenderer):
         self._surface = surface
         self._parts = parts
         self._feedbacks = feedbacks
-        self._mounts = ResultMounts(identity.thread_id, str(identity.user_id), surface)
+        self._mounts = ResultMounts(
+            identity.thread_id, str(identity.user_id), surface, replay
+        )
         self._scope = Scope.chat(identity.thread_id)
         self._turn: LiveTurn | None = None
         self._stopping: set[str] = set()
@@ -364,56 +374,99 @@ class AgentFeed(TurnRenderer):
         self._stopping.add(session_id)
 
     async def turn_started(
-        self, session_id: str, question: Question, edited: bool
-    ) -> None:
-        """Ошибки:
+        self, session_id: str, question: Question, prompt: Coroutine[Any, Any, str]
+    ) -> str:
+        """Замок области треда, затем вопрос агенту; уведомления хода, пришедшие
+        до ответа, ждут в очереди. Ответ — messageId вопроса: шаг вопроса
+        перепривязывается к нему, ход уходит в шину под этим ключом.
+
+        Ошибки:
         LockBusyError — тред уже ведёт другой держатель.
+        AcpClientError — агент не принял вопрос.
         MessageBusError — шина не приняла TurnStarted.
+        InternalServiceError — шага вопроса нет в контексте вкладки.
         """
         parts = self._parts
-        lock = await parts.locks.acquire(
-            self._scope, LockMode.EXCLUSIVE, LockPurpose.TURN, self._identity.user_id
-        )
-        feed = TurnFeed(
-            parts.bus, parts.payloads, self._scope, question.key, lock.token
-        )
+        try:
+            lock = await parts.locks.acquire(
+                self._scope,
+                LockMode.EXCLUSIVE,
+                LockPurpose.TURN,
+                self._identity.user_id,
+            )
+        except Exception:
+            prompt.close()
+            raise
+
         cancellation = RunCancellation()
         keeper = LockKeeper(parts.locks, lock, cancellation, parts.heartbeat_sec)
-        await keeper.__aenter__()
-        turn = LiveTurn(
-            key=question.key, feed=feed, keeper=keeper, cancellation=cancellation
-        )
-        self._turn = turn
-        try:
-            if edited:
-                await feed.rewound()
-
-            await feed.started(question.key, question.body(self._identity.login))
-        except Exception:
-            await self._release(turn)
-            raise
+        async with self._ordered, AsyncExitStack() as stack:
+            await stack.enter_async_context(keeper)
+            key = await prompt
+            rebound = await self._rebind(question, key)
+            feed = TurnFeed(parts.bus, parts.payloads, self._scope, key, lock.token)
+            await feed.started(key, rebound.body(self._identity.login))
+            self._turn = LiveTurn(
+                key=key, feed=feed, held=stack.pop_all(), cancellation=cancellation
+            )
 
         logger.info(
             "thread %s: turn %s of session %s is published to the bus",
             self.thread_id,
-            question.key,
+            key,
             session_id,
         )
+
+        return key
+
+    async def _rebind(self, question: Question, key: str) -> Question:
+        """Шаг вопроса вкладки получает id, который вопросу дал агент: шаг
+        с прежним id убирается, сообщение в контексте chainlit меняет id и
+        отправляется заново без вложений, вложения вопроса держатель пишет
+        сам под новым id. Итог — вопрос с ключом key.
+
+        Ошибки:
+        InternalServiceError — сообщения вопроса нет в контексте вкладки.
+        DataUnavailableError — вложение не записано.
+        """
+        found: cl.Message | None = None
+        for message in cl.chat_context.get():
+            if message.id == question.key:
+                found = message
+
+        if found is None:
+            msg = (
+                f"thread {self.thread_id}: the question step {question.key} is not "
+                f"in the chat context of the tab, so it cannot take the id {key}"
+            )
+            raise InternalServiceError(internal_detail=msg, user_detail=None)
+
+        await found.remove()
+        found.id = key
+        layer = AttachmentDataLayer.require()
+        rebound = Question.of_message(found, self.thread_id, layer.links)
+        attached = found.elements
+        found.elements = []
+        await found.send()
+        found.elements = attached
+        for element in attached:
+            copied = replace(
+                element, for_id=key, thread_id=self.thread_id, chainlit_key=None
+            )
+            await layer.create_element(copied)
+
+        return rebound
 
     async def update(self, session_id: str, update: SessionUpdate) -> None:
         async with self._ordered:
             await self._update(update)
 
     async def _update(self, update: SessionUpdate) -> None:
-        if isinstance(update, ConfigOptionUpdate):
+        if isinstance(update, schema.ConfigOptionUpdate):
             self._options.replace(update.config_options)
             return
 
-        if isinstance(update, CurrentModeUpdate):
-            self._options.mode_changed(update.current_mode_id)
-            return
-
-        if isinstance(update, UsageUpdate):
+        if isinstance(update, schema.UsageUpdate):
             logger.debug(
                 "thread %s: context %d of %d tokens",
                 self.thread_id,
@@ -436,53 +489,64 @@ class AgentFeed(TurnRenderer):
         await self._mounts.mounted(update, turn.key, turn.feed)
 
     async def permission(
-        self,
-        session_id: str,
-        tool_call: ToolCallUpdate,
-        options: Sequence[PermissionOption],
-    ) -> RequestPermissionResponse:
+        self, session_id: str, title: str, options: Sequence[schema.PermissionOption]
+    ) -> schema.RequestPermissionResponse:
         """Режим без вопросов: первый вариант «разрешить»; при остановке — отмена."""
         if session_id in self._stopping:
-            return RequestPermissionResponse(
-                outcome=DeniedOutcome(outcome=PermissionOutcome.CANCELLED.value)
+            return schema.RequestPermissionResponse(
+                outcome=schema.CancelledPermissionOutcome()
             )
 
         chosen = self._allowing(options)
         logger.info(
-            "thread %s: permission for %s answered with %s",
+            "thread %s: permission for %r answered with %s",
             self.thread_id,
-            tool_call.tool_call_id,
+            title,
             chosen.option_id,
         )
 
-        return RequestPermissionResponse(
-            outcome=AllowedOutcome(
-                outcome=PermissionOutcome.SELECTED.value, option_id=chosen.option_id
-            )
+        return schema.RequestPermissionResponse(
+            outcome=schema.SelectedPermissionOutcomeVariant(option_id=chosen.option_id)
         )
 
-    async def turn_finished(self, session_id: str, stop_reason: str) -> None:
+    async def turn_finished(
+        self, session_id: str, idle: schema.IdleSessionStateUpdate
+    ) -> None:
         """Итог хода в шину: штатный конец, остановка с пометкой либо ранний
         конец с текстом причины; замок области отпускается."""
         self._stopping.discard(session_id)
         async with self._ordered:
-            await self._finish(stop_reason)
+            await self._finish(idle)
 
-    async def _finish(self, stop_reason: str) -> None:
+    async def _finish(self, idle: schema.IdleSessionStateUpdate) -> None:
         turn = self._turn
         if turn is None:
             return
 
-        note = StopReasonName.note(stop_reason)
+        stop_reason = idle.stop_reason
         try:
-            if stop_reason == StopReasonName.CANCELLED:
+            ended = stop_reason == StopReason.END_TURN
+            unexplained = stop_reason is None
+            if ended or unexplained:
+                await turn.feed.finished(TurnOutcome.OK, "")
+                return
+
+            if stop_reason == StopReason.CANCELLED:
+                note = StepText.STOPPED.value
                 await turn.feed.answer_interrupted(turn.key, note)
                 await turn.feed.finished(TurnOutcome.STOPPED, note)
-            elif note:
-                await turn.feed.notice(NoticeLevel.ERROR, note)
-                await turn.feed.finished(TurnOutcome.FAILED, note)
-            else:
-                await turn.feed.finished(TurnOutcome.OK, "")
+                return
+
+            note = f"the turn ended early: {stop_reason}"
+            failure = None
+            if isinstance(idle, IdleErrorUpdate):
+                failure = idle.error
+
+            if failure is not None:
+                note = f"the turn failed: {failure.message}"
+
+            await turn.feed.notice(NoticeLevel.ERROR, note)
+            await turn.feed.finished(TurnOutcome.FAILED, note)
         finally:
             await self._release(turn)
 
@@ -528,10 +592,12 @@ class AgentFeed(TurnRenderer):
 
     async def _release(self, turn: LiveTurn) -> None:
         self._turn = None
-        await turn.keeper.__aexit__(None, None, None)
+        await turn.held.aclose()
 
     @staticmethod
-    def _allowing(options: Sequence[PermissionOption]) -> PermissionOption:
+    def _allowing(
+        options: Sequence[schema.PermissionOption],
+    ) -> schema.PermissionOption:
         """Первый вариант «разрешить»; без него — первый из предложенных."""
         for option in options:
             if option.kind == PermissionKind.ALLOW_ONCE:
@@ -575,9 +641,9 @@ class AgentFeeds(TurnRenderers):
         InternalServiceError — у текущей сессии chainlit нет сокета.
         """
         caller = McpCaller(login=identity.login, roles=identity.roles)
-        ports = await self._servers.for_session(caller, identity.profile.config.mcp)
-        for port in ports:
-            self._media.shown(port.tools())
+        for name in identity.profile.config.mcp:
+            port = await self._servers.port(name, caller)
+            self._media.shown(name, port.tools(), port.nested_calls())
 
         self._journals.mark_streamable(self._servers.journaled())
 

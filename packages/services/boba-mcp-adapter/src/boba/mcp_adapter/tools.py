@@ -57,8 +57,8 @@ class McpReplies:
 
     Создаётся каждым, кто отвечает на tools/call: инструментом порта
     (McpTool), операциями приложения и его middleware. Итог вызова
-    (NodeOutcome) и отказ сервера едут клиенту полями ResultWire: текст для
-    модели в content, сведения о вызове и результат семейства в
+    (NodeOutcome) и отказ сервера едут клиенту полями ResultWire: блоки
+    результата в content, сведения о вызове и данные результата в
     structuredContent. Ответ операции — её модель в structuredContent.
     """
 
@@ -70,9 +70,13 @@ class McpReplies:
         """Итог вызова инструмента."""
         packed = self._wire.packed(outcome)
 
+        structured: dict[str, Any] = {}
+        if packed.structured is not None:
+            structured = dict(packed.structured)
+
         return ToolResult(
-            content=[mt.TextContent(type="text", text=packed.content)],
-            structured_content=dict(packed.structured or {}),
+            content=list(packed.content),
+            structured_content=structured,
             is_error=packed.is_error,
         )
 
@@ -110,10 +114,11 @@ class McpTool(Tool):
 
     Создаёт его McpToolProvider из карточки инструмента порта: схема для
     клиента — готовая схема вызова после всех обвязок, где аргументы с кодом
-    названы типом содержимого (CallViews), тело — вызов порта ToolServer
-    узлом DagNode под идентификатором, который выдаёт сервер; итог порта
-    (NodeOutcome) уходит клиенту ответом McpReplies. fastmcp аргументы не
-    проверяет: проверка одна, по схеме инструмента внутри исполнителя.
+    названы типом содержимого (CallViews), и схема итога карточки; тело —
+    вызов порта ToolServer узлом DagNode под идентификатором, который
+    выдаёт сервер; итог порта (NodeOutcome) уходит клиенту ответом
+    McpReplies. fastmcp аргументы не проверяет: проверка одна, по схеме
+    инструмента внутри исполнителя.
     """
 
     _server: ToolServer = PrivateAttr()
@@ -123,10 +128,15 @@ class McpTool(Tool):
 
     def __init__(self, card: ToolCard, server: ToolServer) -> None:
         annotations = McpToolStubs().annotations_of(card.hints)
+        output: dict[str, Any] | None = None
+        if card.output is not None:
+            output = dict(card.output)
+
         super().__init__(
             name=card.name,
             description=card.description,
             parameters=CallViews().typed(card.parameters, card.views),
+            output_schema=output,
             annotations=annotations,
         )
         self._server = server

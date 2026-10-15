@@ -343,20 +343,14 @@ async def _store(thread_id: str, files: Mapping[str, bytes]) -> None:
     же путём, каким их кладёт чат: клиентом MCP от имени пользователя."""
     from boba.canvas.keys import ObjectKey
     from boba.chainlit.data.data_layer import HeldContent
-    from boba.identity.context import CallContexts
     from boba.identity.signin import SignInMetadata
-    from boba.mcp_client.client import (
-        DroppedSignals,
-        McpCaller,
-        McpServers,
-    )
-    from boba.toolrun.hosted import DirectCalls
+    from boba.mcp_client.client import McpCaller, McpServers
 
     config = _app_config()
     owner, meta = await _user_row(config, LOGIN[0])
     caller = McpCaller(login=LOGIN[0], roles=SignInMetadata.parse(meta).roles)
     server = config.profiles[FILES_PROFILE].mcp[0]
-    servers = McpServers(config.mcp, DroppedSignals(), CallContexts(), DirectCalls())
+    servers = McpServers(config.mcp)
     try:
         remote = await servers.files(server, caller)
         if remote is None:
