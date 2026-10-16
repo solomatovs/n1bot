@@ -46,34 +46,6 @@ class UsersTable(PgTable, UserRows, UserSettingsStore, UsersUpsert):
             meta=meta,
         )
 
-    async def setup(self) -> None:
-        """Создаёт схему и таблицу users; повтор безвреден."""
-        ddl = (
-            self._query()
-            .add(
-                """
-                create table if not exists {schema}.users (
-                    id         uuid primary key default gen_random_uuid(),
-                    identifier text not null unique,
-                    created_at timestamptz not null default now(),
-                    meta       jsonb not null default '{{}}'::jsonb
-                )
-                """
-            )
-            .build(),
-            # регистр логина не заводит вторую личность: инвариант держит база
-            self._query()
-            .add(
-                """
-                create unique index if not exists idx_users_identifier_lower
-                    on {schema}.users (lower(identifier))
-                """
-            )
-            .build(),
-        )
-
-        await self._apply_ddl(ddl)
-
     async def stored(self, identifier: Login) -> StoredUser | None:
         query = (
             self._query()

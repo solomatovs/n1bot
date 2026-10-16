@@ -1,6 +1,6 @@
 """Общее для хранилищ одной схемы postgres: ленивый пул, сборщик запросов со
-схемой стоящим именем, граница ошибок слоя, транзакция с курсором словарей,
-DDL под advisory-замком и проверка раскладки таблиц.
+схемой стоящим именем, граница ошибок слоя, транзакция с курсором словарей и
+проверка раскладки таблиц.
 
 Ошибки:
 PostgresError — пул, соединение или запрос отказали, строка не сложилась в
@@ -10,7 +10,7 @@ PostgresError — пул, соединение или запрос отказа�
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator, Iterable, Mapping, Sequence
+from collections.abc import AsyncGenerator, Iterable, Mapping
 from contextlib import asynccontextmanager
 from enum import StrEnum
 from typing import Any, ClassVar, TypeVar
@@ -183,22 +183,6 @@ class PostgresTable:
     async def _advisory_lock(self, cur: Cursor, key: str) -> None:
         """Транзакционный advisory-замок по ключу; снимается с концом транзакции."""
         await AdvisoryLock(key).acquire(cur.connection)
-
-    async def _apply_ddl(self, statements: Sequence[PgQuery], *schemas: str) -> None:
-        """Схемы (своя и названные) и DDL одной транзакцией под замком DDL
-        своей схемы: процессы кластера стартуют разом, и без замка
-        create … if not exists падает на уникальности каталога. Повтор
-        безвреден."""
-        async with self._guarded(f"applying {len(statements)} ddl statements"):
-            pool = await self._pool()
-            async with pool.connection() as conn, conn.transaction():
-                await self._schema.ddl_lock().acquire(conn)
-                await self._schema.ensure(conn)
-                for name in schemas:
-                    await PostgresSchema(name).ensure(conn)
-
-                for statement in statements:
-                    await conn.execute(statement.text, statement.params, prepare=False)
 
     async def _check_layouts(
         self, layouts: Mapping[str, Iterable[str]], schema: str | None = None

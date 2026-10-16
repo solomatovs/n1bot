@@ -31,7 +31,6 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 from boba.db.postgres import (
     AsyncPostgresPool,
     Cursor,
-    PgQuery,
     PgQueryBuilder,
     PostgresError,
     PostgresPool,
@@ -63,7 +62,6 @@ from boba.messaging.bus import (
     LiveCommandsColumn,
     LiveEventsColumn,
     LiveSequence,
-    LiveTable,
     StateListener,
 )
 from boba.runtime.config import AppName, ClusterConfig
@@ -111,35 +109,6 @@ class Pointer(BaseModel):
 
 PointerHandler = Callable[[Pointer], Awaitable[None]]
 ReconnectHandler = Callable[[], Awaitable[None]]
-
-
-class ScopeKindCheck:
-    """Check-ограничение на вид области, одно и то же у всех live-таблиц;
-    DDL для своей таблицы собирает её владелец (шина, блокировки, тела)."""
-
-    def __init__(self, schema: str) -> None:
-        self._schema = schema
-
-    def of(self, table: LiveTable) -> PgQuery:
-        kinds: list[sql.Composable] = []
-        for kind in ScopeKind:
-            kinds.append(sql.Literal(kind.value))
-
-        return (
-            PgQueryBuilder(
-                table=sql.Identifier(self._schema, table.value),
-                constraint=sql.Identifier(f"{table.value}_scope_kind_check"),
-                kinds=sql.SQL(", ").join(kinds),
-            )
-            .add(
-                """
-                alter table {table}
-                    drop constraint if exists {constraint},
-                    add constraint {constraint} check (scope_kind in ({kinds}))
-                """
-            )
-            .build()
-        )
 
 
 class LiveListener(BusWatch):
@@ -393,7 +362,6 @@ class PgMessageBus(PostgresTable, MessageBus):
         self._scope_locks: dict[Scope, asyncio.Lock] = {}
         self._envelope = TypeAdapter(AnyMessage)
         self._command_body = TypeAdapter(AnyCommand)
-        self._scope_kind_check = ScopeKindCheck(db_schema)
 
     @property
     def instance(self) -> str:
@@ -410,126 +378,24 @@ class PgMessageBus(PostgresTable, MessageBus):
         """Имя последовательности литералом regclass для nextval/setval."""
         return sql.Literal(sql.Identifier(self.schema, sequence.value).as_string())
 
-    async def setup(self) -> None:
-        """Создаёт схему и таблицы шины (live_instances, live_events, live_commands);
-        live_locks и live_payloads создают их владельцы после шины.
-        """
-        await self._apply_ddl(self._ddl())
-
-        logger.info("message bus ready: instance %s", self._instance)
-
-    def _ddl(self) -> tuple[PgQuery, ...]:
-        """DDL-шаги setup; порядок захвата таблиц — events раньше commands.
-
-        Номер события берётся из общей последовательности: seq области не должен
-        начинаться заново после уборки её строк, иначе подписчики с запомненным
-        последним номером перестают видеть новые события. Последовательность
-        уже созданной таблицы догоняет max(seq) один раз, пока не тронута.
-
-        Тот же порядок держат purge и purge_idle работающих узлов: alter берёт
-        AccessExclusive, и обратный порядок даёт дедлок между стартующим узлом
-        и чисткой соседа (advisory-lock сериализует только setup'ы).
-
-        Строки видов, которых шина больше не знает, удаляются: догон области
-        разбирает каждую строку, и выкат без этого шага падал бы на них.
-        """
+    async def start(self) -> None:
+        """Слушатель на всё время работы. Перед ним удаляются строки видов,
+        которых шина больше не знает: догон области разбирает каждую строку,
+        и выкат без этого шага падал бы на них."""
         known: list[str] = []
         for kind in MessageKind:
             known.append(kind.value)
 
-        return (
-            self._query()
-            .add(
-                """
-                create unlogged table if not exists {schema}.live_instances (
-                    instance_id  text primary key,
-                    app          text not null check (app in ('chainlit', 'studio')),
-                    host         text not null,
-                    started_at   timestamptz not null default now(),
-                    heartbeat_at timestamptz not null default now()
-                )
-                """
-            )
-            .build(),
-            self._query()
-            .add(
-                """
-                create unlogged table if not exists {schema}.live_events (
-                    scope_kind text not null
-                        check (scope_kind in ('chat', 'workflow', 'job', 'user')),
-                    scope_id   uuid not null,
-                    seq        bigint not null,
-                    kind       text not null,
-                    origin     text not null,
-                    body       jsonb not null,
-                    at         timestamptz not null default now(),
-                    primary key (scope_kind, scope_id, seq)
-                )
-                """
-            )
-            .build(),
-            self._scope_kind_check.of(LiveTable.EVENTS),
+        query = (
             self._query()
             .add(
                 "delete from {schema}.live_events where kind <> all(%(known)s)",
                 known=known,
             )
-            .build(),
-            self._query()
-            .add("create sequence if not exists {schema}.live_events_seq as bigint")
-            .build(),
-            self._query()
-            .add(
-                """
-                select setval({events_seq_name}, m.next, false)
-                from (
-                    select coalesce(max(seq), 0) + 1 as next
-                    from {schema}.live_events
-                ) m
-                where not (select is_called from {schema}.live_events_seq)
-                """,
-                events_seq_name=self._sequence_name(LiveSequence.EVENTS),
-            )
-            .build(),
-            self._query()
-            .add(
-                """
-                create unlogged table if not exists {schema}.live_commands (
-                    id          bigint generated always as identity primary key,
-                    scope_kind  text not null
-                        check (scope_kind in ('chat', 'workflow', 'job', 'user')),
-                    scope_id    uuid not null,
-                    action      text not null check (action in ('stop')),
-                    body        jsonb not null,
-                    by_instance text not null,
-                    at          timestamptz not null default now(),
-                    taken_by    text,
-                    taken_at    timestamptz
-                )
-                """
-            )
-            .build(),
-            self._query()
-            .add(
-                """
-                alter table {schema}.live_commands
-                    drop constraint if exists live_commands_by_instance_fkey,
-                    drop constraint if exists live_commands_taken_by_fkey
-                """
-            )
-            .build(),
-            self._query()
-            .add(
-                """
-                create index if not exists idx_live_commands_scope
-                on {schema}.live_commands (scope_kind, scope_id)
-                """
-            )
-            .build(),
-            self._scope_kind_check.of(LiveTable.COMMANDS),
+            .build()
         )
+        await self._execute(query, "removing events of unknown kinds")
 
-    async def start(self) -> None:
         await self._listener.start()
 
     async def stop(self) -> None:

@@ -15,6 +15,7 @@ from collections.abc import (
 )
 from dataclasses import dataclass
 from datetime import timedelta
+from importlib.resources import files
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, ClassVar
@@ -49,7 +50,7 @@ from boba.connection_broker.store import ConnectionStore
 from boba.connection_broker.tickets import CredentialsRef
 from boba.connection_broker.tools import ConnectionTools
 from boba.connection_broker.user_connections import ArmedConnections, StoreRef
-from boba.db.postgres import AsyncPostgresPool
+from boba.db.postgres import AsyncPostgresPool, PostgresSchema
 from boba.identity.api import StoredUser, UserRows
 from boba.identity.context import (
     CallContext,
@@ -68,12 +69,14 @@ from boba.mcp_client.client import (
 )
 from boba.messaging import MemoryMessageBus, MemoryPayloadStore
 from boba.runtime.config import AppLayers, ConfigLocator
-from boba.runtime.elements import ChatTables
+from boba.runtime.elements import FeedbacksTable
 from boba.runtime.storage import (
     LocalStorageClient,
     LocalStorageConfig,
     StorageClient,
 )
+from boba.runtime.threads import ThreadsTable
+from boba.runtime.users import UsersTable
 from boba.stand.refs import StandRefs
 from boba.stand.service_signin import ServiceSignIn
 from boba.stand.storage import StorageSeed
@@ -658,12 +661,14 @@ async def layer(
         await conn.execute(
             sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(sql.Identifier(schema))
         )
-    tables = ChatTables.of(app_config.postgres, schema, pool)
-    await tables.setup()
+    schema_dir = files("boba.runtime") / "schema"
+    async with pool.connection() as conn:
+        await PostgresSchema(schema).apply_files(conn, schema_dir, {})
+
     data_layer = PostgresDataLayer(
-        users=tables.users,
-        threads=tables.threads,
-        feedbacks=tables.feedbacks,
+        users=UsersTable(app_config.postgres, schema, pool),
+        threads=ThreadsTable(app_config.postgres, schema, pool),
+        feedbacks=FeedbacksTable(app_config.postgres, schema, pool),
         storage=storage,
         bus=data_bus,
     )

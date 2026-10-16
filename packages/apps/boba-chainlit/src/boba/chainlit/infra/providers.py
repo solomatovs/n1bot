@@ -7,7 +7,9 @@
 
 from collections.abc import AsyncIterator
 from datetime import timedelta
+from enum import StrEnum
 from importlib.metadata import version
+from importlib.resources import files
 from typing import Annotated
 
 from boba.auth import JwtTokens
@@ -49,7 +51,7 @@ from boba.chainlit.rendering.acp_view import ToolMedia
 from boba.chat.profiles import ChatProfiles, SelectedProfile
 from boba.connection_broker.user_connections import ArmedConnections
 from boba.connections.secrets import SecretCipher
-from boba.db.postgres import AsyncPostgresPool
+from boba.db.postgres import AsyncPostgresPool, PostgresSchema
 from boba.identity.api import UserRows
 from boba.identity.context import CallContexts
 from boba.identity.locks import LiveLocks
@@ -60,7 +62,7 @@ from boba.messaging import MessageBus, PayloadStore
 from boba.runtime import providers as runtime
 from boba.runtime.config import RuntimeConfig
 from boba.runtime.di import Container, Depends
-from boba.runtime.elements import ChatTables
+from boba.runtime.elements import FeedbacksTable
 from boba.runtime.storage import StorageClient
 from boba.runtime.threads import ThreadsTable
 from boba.runtime.users import UsersTable
@@ -156,21 +158,45 @@ def tool_media() -> ToolMedia:
     return ToolMedia()
 
 
-async def chainlit_data_layer(
+class HarnessSchema(StrEnum):
+    """Пакеты, чьи файлы schema/*.sql чат применяет в схеме приложения на
+    старте: таблицы чата и шины, соединения и гранты, настройки агента."""
+
+    RUNTIME = "boba.runtime"
+    CONNECTIONS = "boba.connection_broker"
+    AGENT_SETTINGS = "boba.chainlit.agent"
+
+
+async def harness_storage(
+    app_config: Annotated[AppConfig, Depends(get_app_config)],
+    pool: Annotated[AsyncPostgresPool, Depends(runtime.postgres_pool)],
+) -> None:
+    """Таблицы чата одним механизмом на старте процесса: файлы схемы каждого
+    пакета HarnessSchema в схеме [app].schema. Поднимается первым после
+    пула: таблицы процесса работают на готовой схеме."""
+    schema = PostgresSchema(app_config.db_schema)
+    async with pool.connection() as conn:
+        for member in HarnessSchema:
+            schema_dir = files(member.value) / "schema"
+            await schema.apply_files(conn, schema_dir, {})
+
+
+async def chainlit_data_layer(  # noqa: PLR0913 — слой данных собирается таблицами процесса
     app_config: Annotated[AppConfig, Depends(get_app_config)],
     storage: Annotated[StorageClient, Depends(storage_provider)],
     bus: Annotated[MessageBus, Depends(runtime.message_bus)],
     users: Annotated[UsersTable, Depends(runtime.users_table)],
+    threads: Annotated[ThreadsTable, Depends(runtime.threads_table)],
     pool: Annotated[AsyncPostgresPool, Depends(runtime.postgres_pool)],
+    storage_ready: Annotated[None, Depends(harness_storage)],
 ) -> PostgresDataLayer:
     """Слой данных чата на пуле процесса: схему таблицы ставят в запрос."""
-    tables = ChatTables.around(users, app_config.postgres, app_config.db_schema, pool)
-    await tables.setup()
+    feedbacks = FeedbacksTable(app_config.postgres, app_config.db_schema, pool)
 
     return PostgresDataLayer(
-        users=tables.users,
-        threads=tables.threads,
-        feedbacks=tables.feedbacks,
+        users=users,
+        threads=threads,
+        feedbacks=feedbacks,
         storage=storage,
         bus=bus,
     )
@@ -195,17 +221,15 @@ def agent_config(
     return app_config.agent
 
 
-async def agent_settings_table(
+def agent_settings_table(
     app_config: Annotated[AppConfig, Depends(get_app_config)],
     pool: Annotated[AsyncPostgresPool, Depends(runtime.postgres_pool)],
+    storage_ready: Annotated[None, Depends(harness_storage)],
 ) -> AgentSettingsTable:
     """Слои настроек агента в схеме чата; секреты строк — под ключом
     [keys].encryption."""
     cipher = SecretCipher(app_config.keys.encryption.get_secret_value())
-    table = AgentSettingsTable(app_config.postgres, app_config.db_schema, cipher, pool)
-    await table.setup()
-
-    return table
+    return AgentSettingsTable(app_config.postgres, app_config.db_schema, cipher, pool)
 
 
 def agent_settings_layers(

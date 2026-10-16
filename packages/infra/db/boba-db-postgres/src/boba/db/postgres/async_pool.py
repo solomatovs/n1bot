@@ -132,11 +132,9 @@ class AsyncPostgresPool(PostgresPool):
         self._loop_reported = False
 
         logger.info(
-            "AsyncPostgresPool created db=%s auth=%s search_path=%s "
-            "min_size=%d max_size=%s",
+            "AsyncPostgresPool created db=%s auth=%s min_size=%d max_size=%s",
             cfg.dbname,
             cfg.auth.method,
-            self.search_path,
             cfg.pool.min_size,
             cfg.pool.max_size,
         )
@@ -146,27 +144,18 @@ class AsyncPostgresPool(PostgresPool):
         """Соединение с окружением авторизации профиля на время connect."""
         return AuthConnection.bound_to(cfg.auth_session())
 
-    @property
-    def search_path(self) -> str:
-        """Схема соединений пула; пустая — таблицы квалифицируются в запросах."""
-        if self._cfg.options.search_path is None:
-            return ""
-
-        return self._cfg.options.search_path
-
     @classmethod
     def opened(cls) -> Sequence[AsyncPostgresPool]:
-        """Живые пулы процесса: сколько их и на каких схемах."""
+        """Живые пулы процесса."""
         return tuple(cls._LIVE)
 
     async def open(self) -> None:
         """Открыть пул (установить фоновые соединения)."""
         self._loop_id = id(asyncio.get_running_loop())
         logger.info(
-            "AsyncPostgresPool open db=%s auth=%s search_path=%s loop=%#x",
+            "AsyncPostgresPool open db=%s auth=%s loop=%#x",
             self._cfg.dbname,
             self._cfg.auth.method,
-            self.search_path,
             self._loop_id,
         )
         await self._pool.open()

@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Sequence
+from importlib.resources import files
 from uuid import UUID, uuid4
 
 import pytest
 from psycopg import sql
 
-from boba.db.postgres import AsyncPostgresPool, PgQueryBuilder
+from boba.db.postgres import AsyncPostgresPool, PgQueryBuilder, PostgresSchema
 from boba.identity.context import Scope
 from boba.identity.locks import (
     LockBusyError,
@@ -54,11 +55,13 @@ async def _stand(
     cluster = _cluster(bus_config)
     bus = PgMessageBus(cfg, bus_config.db_schema, name, AppName.STUDIO, cluster)
     bus._pool_ref = pool
-    await bus.setup()
+    schema_dir = files("boba.runtime") / "schema"
+    async with pool.connection() as conn:
+        await PostgresSchema(bus_config.db_schema).apply_files(conn, schema_dir, {})
+
     await bus.start()
     locks = PgLiveLocks(cfg, bus_config.db_schema, name, AppName.STUDIO, cluster)
     locks._pool_ref = pool
-    await locks.setup()
     await locks.register_instance()
     return Stand(bus, locks)
 

@@ -78,6 +78,7 @@ boba-db-clickhouse = "entry points boba.addresses и boba.catalog: адреса 
 boba-db-oracle = "entry points boba.connections и boba.addresses: тип соединения oracle"
 
 [tool.setuptools.package-data]
+"boba.chainlit.agent" = ["schema/*.sql"]
 "boba.chainlit.chat" = ["translations/*.json"]
 
 [tool.setuptools.packages.find]

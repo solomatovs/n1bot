@@ -16,6 +16,7 @@ from __future__ import annotations
 import secrets as std_secrets
 import shutil
 from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
+from importlib.resources import files
 from pathlib import Path
 from typing import Any, ClassVar
 from uuid import UUID
@@ -34,7 +35,7 @@ from boba.db.clickhouse.address import ChAddresses, ChTableColumnAddress
 from boba.db.clickhouse.connection import ClickHouseConfig
 from boba.db.clickhouse.connection import PasswordAuth as ChPasswordAuth
 from boba.db.clickhouse.payload import PayloadClickHouse
-from boba.db.postgres import AsyncPostgresPool
+from boba.db.postgres import AsyncPostgresPool, PostgresSchema
 from boba.db.postgres.address import (
     PgAddresses,
     PgTableAddress,
@@ -285,10 +286,13 @@ async def store(pool: AsyncPostgresPool) -> AsyncIterator[ConnectionStore]:
             )
         )
 
+    schema_dir = files("boba.connection_broker") / "schema"
+    async with pool.connection() as conn:
+        await PostgresSchema(CONNECTIONS_SCHEMA).apply_files(conn, schema_dir, {})
+
     built = ConnectionStore(
         pool, CONNECTIONS_SCHEMA, _cipher(), ConnectionTypes.discover()
     )
-    await built.setup()
     StoreHolder.store = built
     try:
         yield built

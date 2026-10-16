@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
+from importlib.resources import files
 from uuid import UUID, uuid4
 
 import pytest
 from psycopg import sql
 
-from boba.db.postgres import AsyncPostgresPool, PgQueryBuilder
+from boba.db.postgres import AsyncPostgresPool, PgQueryBuilder, PostgresSchema
 from boba.identity.context import Scope
 from boba.messaging import (
     BusLimit,
@@ -88,7 +89,10 @@ async def _bus(
         bus_config.cluster,
     )
     bus._pool_ref = pool
-    await bus.setup()
+    schema_dir = files("boba.runtime") / "schema"
+    async with pool.connection() as conn:
+        await PostgresSchema(bus_config.db_schema).apply_files(conn, schema_dir, {})
+
     await bus.start()
     return bus
 
@@ -451,9 +455,10 @@ async def test_neighbour_setup_does_not_deadlock_with_purge(
         await first.stop()
 
 
-async def test_setup_drops_events_of_retired_kinds(
+async def test_start_drops_events_of_retired_kinds(
     buses: tuple[PgMessageBus, PgMessageBus],
     bus_config: RuntimeConfig,
+    test_database: str,
     pool: AsyncPostgresPool,
 ) -> None:
     """Строка вида, которого шина больше не знает (element_shown выкатом
@@ -473,7 +478,8 @@ async def test_setup_drops_events_of_retired_kinds(
             (scope.uuid(), kept + 1),
         )
 
-    await first.setup()
+    third = await _bus(bus_config, test_database, pool, "node3-studio")
+    await third.stop()
 
     replayed = await first.replay(scope, after_seq=0)
     assert [envelope.seq for envelope in replayed] == [kept]

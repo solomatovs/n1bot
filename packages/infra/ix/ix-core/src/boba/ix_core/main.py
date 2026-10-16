@@ -15,15 +15,15 @@ import argparse
 import asyncio
 import logging
 from collections.abc import Sequence
+from importlib.resources import files
 from pathlib import Path
 
 from boba.config import ConfigError, bind_section
 from boba.ix_core.database import IxDatabase, enter_kerberos
+from boba.ix_core.scrape import PackageDir
 from boba.ix_core.upgrade import SchemaUpgrade, SchemaUpgradeError
 
 logger = logging.getLogger("ix-core")
-
-SCHEMA_DIR = Path(__file__).resolve().parent / "schema"
 
 
 def parse_args(argv: Sequence[str] | None = None) -> IxDatabase:
@@ -59,7 +59,8 @@ async def main() -> None:
 
     try:
         cfg = parse_args()
-        upgrade = SchemaUpgrade(SCHEMA_DIR, requires_core=False)
+        schema_dir = files("boba.ix_core") / PackageDir.SCHEMA
+        upgrade = SchemaUpgrade(schema_dir, requires_core=False)
         report = await upgrade.run(cfg)
         logger.info("core schema applied: %s", ", ".join(report.files))
     except (ConfigError, SchemaUpgradeError) as exc:

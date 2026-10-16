@@ -55,35 +55,6 @@ class ThreadsTable(PgTable, ChatThreads):
             meta=meta,
         )
 
-    async def setup(self) -> None:
-        """Создаёт таблицу threads и индекс по владельцу; повтор безвреден."""
-        ddl = (
-            self._query()
-            .add(
-                """
-                create table if not exists {schema}.threads (
-                    id         uuid primary key,
-                    created_at timestamptz not null,
-                    name       text,
-                    user_id    uuid,
-                    tags       text[],
-                    meta       jsonb
-                )
-                """
-            )
-            .build(),
-            self._query()
-            .add(
-                """
-                create index if not exists idx_threads_user_id
-                    on {schema}.threads (user_id)
-                """
-            )
-            .build(),
-        )
-
-        await self._apply_ddl(ddl)
-
     async def get(self, thread_id: UUID) -> StoredThread | None:
         query = (
             self._query()

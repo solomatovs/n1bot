@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import secrets as std_secrets
+from importlib.resources import files
 from pathlib import Path
 from typing import Annotated, Any
 from uuid import UUID
@@ -29,7 +30,7 @@ from boba.connections.manifest import ConnectionTypes
 from boba.connections.marks import ConnectionRefusal
 from boba.connections.secrets import SecretCipher
 from boba.connections.stored import GrantTarget, StoredRole
-from boba.db.postgres import AsyncPostgresPool
+from boba.db.postgres import AsyncPostgresPool, PostgresSchema
 from boba.db.postgres.connection import PostgresConfig, TrustAuth
 from boba.identity.errors import RefusalError
 from boba.identity.session import UserMetadataField
@@ -91,8 +92,11 @@ async def store(pool: AsyncPostgresPool) -> ConnectionStore:
             sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(SCHEMA))
         )
 
+    schema_dir = files("boba.connection_broker") / "schema"
+    async with pool.connection() as conn:
+        await PostgresSchema(SCHEMA).apply_files(conn, schema_dir, {})
+
     built = ConnectionStore(pool, SCHEMA, _cipher(), ConnectionTypes.discover())
-    await built.setup()
     await built.sync_roles([ROLE])
     return built
 

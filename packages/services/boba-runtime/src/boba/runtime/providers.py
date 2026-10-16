@@ -129,8 +129,9 @@ async def message_bus(
     pool: Annotated[AsyncPostgresPool, Depends(postgres_pool)],
 ) -> AsyncGenerator[MessageBus, None]:
     """Поднимает шину процесса по секции [messaging]: local живёт в памяти одного
-    инстанса, postgres готовит таблицы, запускает слушателя на всё время работы и
-    останавливает его при закрытии контейнера.
+    инстанса, postgres запускает слушателя на всё время работы и останавливает
+    его при закрытии контейнера. Таблицы live_* готовит корень приложения
+    файлами схемы до шины.
     """
     if isinstance(config.messaging, LocalMessagingConfig):
         yield MemoryMessageBus(instance)
@@ -139,7 +140,6 @@ async def message_bus(
     bus = PgMessageBus(
         config.postgres, config.db_schema, instance, app, config.cluster, pool
     )
-    await bus.setup()
     await bus.start()
 
     try:
@@ -154,16 +154,11 @@ async def payload_store(
     pool: Annotated[AsyncPostgresPool, Depends(postgres_pool)],
 ) -> PayloadStore:
     """Хранилище тел сообщений: при local — в памяти рядом с шиной, при postgres —
-    в live_payloads; схему готовит шина, поэтому она поднимается первой, таблицу —
-    само хранилище.
-    """
+    в live_payloads."""
     if isinstance(config.messaging, LocalMessagingConfig):
         return MemoryPayloadStore()
 
-    store = PgPayloadStore(config.postgres, config.db_schema, pool)
-    await store.setup()
-
-    return store
+    return PgPayloadStore(config.postgres, config.db_schema, pool)
 
 
 def plugin_table() -> PluginTable:
@@ -375,8 +370,7 @@ async def live_locks(
     pool: Annotated[AsyncPostgresPool, Depends(postgres_pool)],
 ) -> LiveLocks:
     """Блокировки областей процесса; при local они живут в памяти, при postgres
-    live_instances готовит шина, поэтому она поднимается первой, live_locks создаёт
-    хранилище само, инстанс регистрируется здесь и дальше подтверждается сторожем.
+    инстанс регистрируется здесь и дальше подтверждается сторожем.
     """
     if isinstance(config.messaging, LocalMessagingConfig):
         return MemoryLiveLocks(instance, config.cluster.lock_ttl_sec)
@@ -384,7 +378,6 @@ async def live_locks(
     locks = PgLiveLocks(
         config.postgres, config.db_schema, instance, app, config.cluster, pool
     )
-    await locks.setup()
     await locks.register_instance()
     return locks
 
@@ -417,7 +410,6 @@ async def connection_store(
     """Хранилище соединений; роли из [roles] попадают в таблицу roles на старте."""
     cipher = SecretCipher(config.keys.encryption.get_secret_value())
     store = ConnectionStore(pool, config.db_schema, cipher, types)
-    await store.setup()
 
     roles = bind(raw, "roles", RolesSection).root
     await store.sync_roles(roles)

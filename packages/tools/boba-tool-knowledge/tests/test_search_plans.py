@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Sequence
+from importlib.resources import files
 from typing import Any
 
 import pytest
@@ -20,7 +21,7 @@ from psycopg.rows import dict_row
 from boba.config import bind
 from boba.db.pgvector.migrations import Migrations
 from boba.db.pgvector.store import PostgresStoreSchema
-from boba.db.postgres import AsyncPostgresPool
+from boba.db.postgres import AsyncPostgresPool, PostgresSchema
 from boba.stand.database import TestDatabase
 from boba.tool.kb.kb import PostgresKnowledgeBaseConfig
 from boba.tool.kb.search import KbSearch
@@ -66,7 +67,11 @@ async def bench(
                 conn, sql.SQL("drop schema if exists {} cascade").format(_schema())
             )
             await _execute(conn, sql.SQL("create schema {}").format(_schema()))
-            await Migrations(schema_cfg).apply(conn)
+            schema_dir = files("boba.db.pgvector") / "schema"
+            names = Migrations(schema_cfg).names()
+            await PostgresSchema(schema_cfg.pg_schema).apply_files(
+                conn, schema_dir, names
+            )
             await Migrations(schema_cfg).ensure_vector_index(conn, DIM)
             await _fill(conn, schema_cfg)
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterator
+from importlib.resources import files
 from pathlib import Path
 from typing import Any
 
@@ -31,7 +32,7 @@ from boba.chainlit.auth.kerberos import KerberosAuth
 from boba.chainlit.auth.refresh import PageUrls, SessionRefresh
 from boba.chainlit.infra.session import ChainlitSessions
 from boba.config import bind
-from boba.db.postgres import AsyncPostgresPool
+from boba.db.postgres import AsyncPostgresPool, PostgresSchema
 from boba.identity.admission import RoleExcludeConfig
 from boba.identity.session import Login, SignInProvider, UserMetadataField
 from boba.identity.sso import OwnRequest, SsoChallenge
@@ -76,10 +77,11 @@ def krb5_env() -> Iterator[None]:
 @pytest.fixture
 async def users(runtime_config: RuntimeConfig, pool: AsyncPostgresPool) -> UsersTable:
     """Таблица users в базе набора: тест создаёт её сам, не полагаясь на соседей."""
-    table = UsersTable(runtime_config.postgres, runtime_config.db_schema, pool)
-    await table.setup()
+    schema_dir = files("boba.runtime") / "schema"
+    async with pool.connection() as conn:
+        await PostgresSchema(runtime_config.db_schema).apply_files(conn, schema_dir, {})
 
-    return table
+    return UsersTable(runtime_config.postgres, runtime_config.db_schema, pool)
 
 
 def _kerberos_auth(

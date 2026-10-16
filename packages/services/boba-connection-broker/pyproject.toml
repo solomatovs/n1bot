@@ -31,6 +31,9 @@ dev = [
     "pytest>=9.1,<10",
 ]
 
+[tool.setuptools.package-data]
+"boba.connection_broker" = ["schema/*.sql"]
+
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["boba*"]
