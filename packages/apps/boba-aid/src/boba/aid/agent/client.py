@@ -29,11 +29,11 @@ from pydantic import BaseModel, ValidationError
 
 from boba.aid.agent.relay import ClientName, McpRelay
 from boba.aid.agent.settings import AgentWorkdir, WorkdirFile
+from boba.aid.rendering.acp_view import SessionUpdate
 from boba.transport.acp.protocol import (
     AcpVersion,
     ClientConnection,
     ErrorDataKey,
-    IdleErrorUpdate,
     McpMessage,
     McpOutcome,
     MetaKey,
@@ -47,43 +47,12 @@ __all__ = [
     "AgentProcessError",
     "AgentRequestError",
     "PromptBlock",
-    "SessionUpdate",
     "SessionUpdates",
 ]
 
 logger = logging.getLogger(__name__)
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
-
-SessionUpdate: TypeAlias = (
-    schema.UserMessageChunk
-    | schema.UserMessageUpdate
-    | schema.AgentMessageChunk
-    | schema.AgentMessageUpdate
-    | schema.AgentThoughtChunk
-    | schema.AgentThoughtUpdate
-    | schema.ToolCallContentChunkUpdate
-    | schema.SessionToolCallUpdate
-    | schema.SessionTerminalUpdate
-    | schema.SessionTerminalOutputChunk
-    | schema.SessionPlanUpdate
-    | schema.SessionPlanRemovedUpdate
-    | schema.AvailableCommandsUpdate
-    | schema.ConfigOptionUpdate
-    | schema.SessionInfoUpdate
-    | schema.UsageUpdate
-    | schema.SessionNotice
-    | schema.SessionCompactionUpdate
-    | schema.SessionCompactionSummaryChunk
-    | schema.OtherSessionUpdate
-    | schema.RunningSessionStateUpdate
-    | IdleErrorUpdate
-    | schema.IdleSessionStateUpdate
-    | schema.RequiresActionSessionStateUpdate
-    | schema.OtherSessionStateUpdate
-)
-"""Уведомление `session/update` v2; idle с ошибкой — до обычного idle, чтобы
-разбор не терял его поле error."""
 
 PromptBlock: TypeAlias = schema.TextContentBlock | schema.ResourceContentBlock
 

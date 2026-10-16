@@ -45,8 +45,10 @@ from mcp.shared.transport_context import TransportContext
 from mcp_types.jsonrpc import ErrorData
 from pydantic import ValidationError
 
+from boba.aid.canvas.tools import CanvasOpener
 from boba.aid.infra.session import LiveSignIn
 from boba.cancellation import RunCancellation, StopReason
+from boba.canvas.canvas import CanvasScope
 from boba.connection_broker.sealing import CallSealing, McpServerInfo
 from boba.connections.stored import ConnectionStoreError
 from boba.identity.context import (
@@ -382,7 +384,10 @@ class McpRelay:
     регистрации, у инструмента со вложенными вызовами (расширение
     NestedCallsFeature сервера) — и в аргументах каждого узла по схеме его
     инструмента. Ход вызова уходит агенту уведомлением
-    notifications/progress, ответ сервера — как есть. Параметры треда
+    notifications/progress. Ответ сервера уходит как есть, кроме файлов,
+    которые сервер просит показать сразу: их открывает панель канваса треда
+    (CanvasOpener.reply), и отказ показа — диаграмма не отрисовалась —
+    становится isError того же вызова (8.2). Параметры треда
     (пометка SchemaMark.THREAD) агент в списке не видит: на вызове
     ретранслятор ставит в них тред регистрации. Инструменты только для
     интерфейса (_meta.ui.visibility без "model") агенту не видны и не
@@ -392,19 +397,21 @@ class McpRelay:
     UI_META: ClassVar[str] = "ui"
     """Ключ _meta инструмента с настройками MCP Apps (AppConfig)."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 — ретранслятор собирается всеми входами процесса
         self,
         registrations: McpRegistrations,
         servers: McpServers,
         sealing: CallSealing,
         contexts: CallContexts,
         chat: ChatTools,
+        canvas: CanvasOpener,
     ) -> None:
         self._registrations = registrations
         self._servers = servers
         self._sealing = sealing
         self._contexts = contexts
         self._chat = chat
+        self._canvas = canvas
         self._names = McpToolNames()
         self._active: set[tuple[str, str]] = set()
         # состояние запроса (serverId) ретранслятор отдаёт serve_one сам:
@@ -561,7 +568,15 @@ class McpRelay:
         if token is not None:
             forwarded = partial(self._forwarded, ctx, token)
 
-        return await port.call(sent, forwarded)
+        reply = await port.call(sent, forwarded)
+        if not isinstance(reply, mt.CallToolResult):
+            return reply
+
+        scope = CanvasScope(
+            user_id=str(registration.user_id), thread_id=registration.thread_id
+        )
+
+        return await self._canvas.reply(scope, reply)
 
     async def _forwarded(
         self,

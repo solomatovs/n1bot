@@ -39,6 +39,7 @@ from boba.canvas.canvas import (
     CanvasKind,
     CanvasPush,
     CanvasRegistry,
+    CanvasScope,
     CanvasViewer,
     CanvasWatch,
     OpenedCanvas,
@@ -595,8 +596,8 @@ class StreamActions:
         user_id: str, thread_id: str, request: StreamWindowRequest
     ) -> dict[str, Any]:
         try:
-            key = ObjectKey.from_workspace(user_id, thread_id, request.path)
-        except ValueError as exc:
+            key = CanvasScope(user_id=user_id, thread_id=thread_id).key(request.path)
+        except CanvasError as exc:
             logger.warning("stream window: bad path %s: %s", request.path, exc)
             return {}
 

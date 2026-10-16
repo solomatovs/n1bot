@@ -43,8 +43,8 @@ from boba.canvas.canvas import (
     CanvasAction,
     CanvasElement,
     CanvasError,
-    CanvasErrorKind,
     CanvasRegistry,
+    CanvasScope,
 )
 from boba.canvas.keys import ObjectKey
 from boba.canvas.storage import StorageError, StorageNotFoundError
@@ -591,6 +591,7 @@ class ChatView:
     ) -> None:
         self._thread_id = thread_id
         self._user_key = user_key
+        self._scope = CanvasScope(user_id=user_key, thread_id=thread_id)
         self._storage = storage
         self._batch = StreamBatch()
         self._sink = BatchedSink(sink, self._batch)
@@ -1249,17 +1250,6 @@ class ChatView:
 
         return Fence.around(JsonBlock.pretty(shown), StepLanguage.JSON.value)
 
-    def key_of(self, path: str) -> ObjectKey:
-        """Ключ файла итога в области треда пользователя ленты.
-
-        Ошибки:
-        CanvasError — путь вне каталогов треда (BAD_PATH).
-        """
-        try:
-            return ObjectKey.from_workspace(self._user_key, self._thread_id, path)
-        except ValueError as exc:
-            raise CanvasError(CanvasErrorKind.BAD_PATH, str(exc)) from exc
-
     async def _mounted(
         self, path: str, name: str, mime: str | None, key: str | None, number: int
     ) -> str:
@@ -1275,7 +1265,7 @@ class ChatView:
             return ""
 
         try:
-            file_key = self.key_of(path)
+            file_key = self._scope.key(path)
         except CanvasError as exc:
             return f"{path} is not shown: {exc}"
 

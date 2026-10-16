@@ -25,7 +25,6 @@ from pydantic import AnyUrl, SecretStr
 from boba.agent.records import PermissionMode
 from boba.agent.settings import ModelSettings, ProviderKind, ProviderSettings
 from boba.aid.agent.chat import SessionOptions, ThreadAgentsIndex
-from boba.aid.agent.client import SessionUpdate
 from boba.aid.agent.panel import AgentPanel
 from boba.aid.agent.settings import (
     AgentSettingsError,
@@ -40,6 +39,7 @@ from boba.aid.chat.panel_text import PanelText
 from boba.aid.domain.fields import StepField
 from boba.aid.domain.keys import CanvasFileUrl
 from boba.aid.rendering.acp_view import (
+    SessionUpdate,
     SessionUpdateCodec,
     ToolMedia,
     UpdateView,
@@ -910,17 +910,6 @@ class TestLiveEqualsReplay:
         step = recorded.last()[_id(CALL, StepRole.TOOL)]
         assert str(step.get(StepField.NAME)).startswith("✔ pg_query"), step
         assert rows.strip() in str(step.get(StepField.OUTPUT))
-
-
-class HolderSurface(NoSurface):
-    """Поверхность держателя хода в тесте: контекст chainlit HTTP-сессии
-    пользователя треда, в котором открывается панель и пишутся элементы."""
-
-    def __init__(self, context: ChainlitContext) -> None:
-        self._context = context
-
-    def context(self) -> ChainlitContext | None:
-        return self._context
 
 
 class TestResultsFromRawOutput:

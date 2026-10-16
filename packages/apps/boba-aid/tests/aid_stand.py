@@ -24,6 +24,8 @@ from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 import mcp_types as mt
 import pytest
+from chainlit.context import ChainlitContext
+from chainlit.session import WebsocketSession
 from chainlit.user import PersistedUser
 from chainlit.user import User as ChainlitUser
 from psycopg import sql
@@ -35,6 +37,7 @@ from boba.aid.agent.relay import (
     McpRelay,
 )
 from boba.aid.canvas.remote import RemoteJournals, RemoteStreams
+from boba.aid.canvas.tools import CanvasOpener
 from boba.aid.data.data_layer import PostgresDataLayer
 from boba.aid.domain.keys import AppPrefix
 from boba.aid.infra.config import AppConfig
@@ -44,8 +47,10 @@ from boba.aid.infra.session import (
     OwnerSessions,
     current_session,
 )
+from boba.aid.infra.thread_room import ThreadSurfaces
 from boba.aid.rendering.acp_view import ToolMedia
 from boba.aid.rendering.chat_view import ChatView, StepRole
+from boba.aid.rendering.renderer import NoSurface, RenderSurface, TabSurfaces
 from boba.auth import JwtTokens
 from boba.canvas.journal import StreamSlice
 from boba.canvas.keys import WorkspaceMount
@@ -61,6 +66,7 @@ from boba.identity.context import (
     CallContext,
     CallContexts,
 )
+from boba.identity.errors import InternalServiceError
 from boba.identity.locks import MemoryLiveLocks
 from boba.identity.session import Login, SignInProvider, UserMetadataField
 from boba.identity.signin import SignedIn, SignInMetadata
@@ -323,11 +329,39 @@ class RelayStand:
         tools.adopt(ConnectionTools(store, contexts).build())
         registry = tools.registry(tools.access(self.ROLE, SignInStand.PROFILE), ())
         self.chat = ChatTools(registry, refs.runs)
+        self.canvas = CanvasOpener(ThreadSurfaces())
 
     def relay(self, servers: McpServers) -> McpRelay:
         return McpRelay(
-            self.registrations, servers, self.sealing, self._contexts, self.chat
+            self.registrations,
+            servers,
+            self.sealing,
+            self._contexts,
+            self.chat,
+            self.canvas,
         )
+
+
+class HolderSurface(NoSurface, TabSurfaces):
+    """Поверхность держателя хода в тесте: контекст chainlit HTTP-сессии
+    пользователя треда, в котором открывается панель и пишутся элементы;
+    живая вкладка любого треда — она же."""
+
+    def __init__(self, context: ChainlitContext) -> None:
+        self._context = context
+
+    def context(self) -> ChainlitContext | None:
+        return self._context
+
+    def anchor(self) -> WebsocketSession:
+        msg = "the test holder surface has no websocket session to anchor on"
+        raise InternalServiceError(internal_detail=msg, user_detail=None)
+
+    def thread(self, anchor: WebsocketSession, thread_id: str) -> RenderSurface:
+        return self
+
+    def live(self, thread_id: str) -> RenderSurface:
+        return self
 
 
 class ServiceTool:

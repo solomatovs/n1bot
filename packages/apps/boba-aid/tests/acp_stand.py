@@ -28,7 +28,6 @@ from boba.aid.agent.client import (
     AgentClient,
     AgentCommand,
     AgentProcess,
-    SessionUpdate,
 )
 from boba.aid.agent.config import (
     AgentCommandConfig,
@@ -41,6 +40,7 @@ from boba.aid.agent.settings import (
     ChatAgentSettings,
     SettingsFileBuilder,
 )
+from boba.aid.rendering.acp_view import SessionUpdate
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.db.postgres.connection import PostgresConfig
 from boba.db.postgres.connection.auth import PasswordAuth
