@@ -161,9 +161,10 @@ class McpContent(ContentOut):
     def text(self, markdown: str, audience: BlockAudience) -> None:
         annotations = None
         if audience is not BlockAudience.BOTH:
-            annotations = mt.Annotations.model_validate({"audience": [audience.value]})
+            annotations = self._for(audience)
 
-        self._blocks.append(mt.TextContent(text=markdown, annotations=annotations))
+        block = mt.TextContent(text=markdown, annotations=annotations)
+        self._blocks.append(block)
 
     def resource(self, mime: str, text: str, name: str) -> None:
         segments = (
@@ -172,20 +173,19 @@ class McpContent(ContentOut):
             str(len(self._blocks)),
             quote(name, safe=""),
         )
-        address = (self.RESOURCE_SCHEME, "", "/".join(segments), "", "")
-        contents = mt.TextResourceContents(
-            uri=urlunsplit(address), mime_type=mime, text=text
-        )
-        self._blocks.append(
-            mt.EmbeddedResource(resource=contents, annotations=self._for_user())
-        )
+        path = "/".join(segments)
+        uri = urlunsplit((self.RESOURCE_SCHEME, "", path, "", ""))
+        contents = mt.TextResourceContents(uri=uri, mime_type=mime, text=text)
+        annotations = self._for(BlockAudience.USER)
+        block = mt.EmbeddedResource(resource=contents, annotations=annotations)
+        self._blocks.append(block)
 
     def link(self, uri: str, name: str, mime: str) -> None:
-        self._blocks.append(
-            mt.ResourceLink(
-                uri=uri, name=name, mime_type=mime, annotations=self._for_user()
-            )
+        annotations = self._for(BlockAudience.USER)
+        block = mt.ResourceLink(
+            uri=uri, name=name, mime_type=mime, annotations=annotations
         )
+        self._blocks.append(block)
 
     def __len__(self) -> int:
         return len(self._blocks)
@@ -193,8 +193,8 @@ class McpContent(ContentOut):
     def blocks(self) -> Sequence[mt.ContentBlock]:
         return list(self._blocks)
 
-    def _for_user(self) -> mt.Annotations:
-        return mt.Annotations.model_validate({"audience": [BlockAudience.USER.value]})
+    def _for(self, audience: BlockAudience) -> mt.Annotations:
+        return mt.Annotations.model_validate({"audience": [audience.value]})
 
 
 class ResultWire:
@@ -203,7 +203,7 @@ class ResultWire:
     Создаётся компонентом ответов сервера (McpReplies). Блоки результата
     (ToolResultBase.sent) едут в content, сбой — в isError, длительность
     вызова — в _meta, собственные данные результата по outputSchema
-    (ToolResultBase.structured) — в structuredContent.
+    (итог ToolResultBase.sent) — в structuredContent.
     """
 
     ELAPSED: ClassVar[str] = "com.boba/elapsed"
@@ -213,10 +213,8 @@ class ResultWire:
     def packed(self, outcome: NodeOutcome) -> WireResult:
         """Итог вызова частями MCP."""
         disclosed = outcome.artifact.disclosed()
-        structured = disclosed.structured(McpContent(outcome.key))
-
         content = McpContent(outcome.key)
-        disclosed.sent(content)
+        structured = disclosed.sent(content)
 
         meta: dict[str, Any] = {}
         if disclosed.elapsed_ms > 0:

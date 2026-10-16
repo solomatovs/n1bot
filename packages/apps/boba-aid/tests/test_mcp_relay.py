@@ -37,6 +37,7 @@ from boba.stand.signin import SignInStand
 from boba.stand.toolstand import ProbeTools
 from boba.stand_core.context import CallStand
 from boba.toolkit.ports import StreamSpecs
+from boba.toolkit.wire import ResultWire
 from boba.toolrun.dev_null import DevNullTool
 from boba.toolrun.hosted import ToolHosting
 from boba.toolrun.stream_calls import WorkflowTool
@@ -528,6 +529,8 @@ class TestChatServer:
         answer = mt.CallToolResult.model_validate(called.result)
         assert answer.is_error is False, answer
         assert "orders" in str(answer.content), answer
+        assert answer.meta is not None, "the step name keeps the call duration"
+        assert isinstance(answer.meta.get(ResultWire.ELAPSED), int), answer.meta
 
     async def test_colliding_tool_names_are_an_external_error(
         self, call_stand: CallStand, tab: TabSession
