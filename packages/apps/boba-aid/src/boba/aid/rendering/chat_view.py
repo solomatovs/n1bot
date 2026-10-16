@@ -9,6 +9,7 @@ import csv
 import io
 import json
 import logging
+import mimetypes
 from abc import ABC, abstractmethod
 from collections import deque
 from collections.abc import (
@@ -30,7 +31,7 @@ import mcp_types as mt
 from acp.experimental.v2 import schema
 from chainlit.config import config as chainlit_config
 from chainlit.context import context
-from chainlit.element import Audio, CustomElement, Element, File, Image
+from chainlit.element import CustomElement, Element, File
 from chainlit.message import Message
 from chainlit.step import Step, StepDict
 from chainlit.utils import utc_now
@@ -47,6 +48,8 @@ from boba.canvas.canvas import (
     CanvasRegistry,
 )
 from boba.canvas.keys import ObjectKey
+from boba.canvas.storage import StorageError, StorageNotFoundError
+from boba.runtime.storage import StorageClient
 from boba.toolkit.calls import CallViews, ToolCallBase, ToolCallModels, ToolIntent
 from boba.toolkit.mcp import McpToolNames
 from boba.toolkit.result import (
@@ -54,7 +57,6 @@ from boba.toolkit.result import (
     ContentMime,
     Fence,
     JsonBlock,
-    NoteLine,
     TableText,
 )
 from boba.transport.http.connection import UrlScheme
@@ -547,10 +549,9 @@ BlockDrawing: TypeAlias = Callable[
 """Отрисовщик блока ответа: блок, шаг вызова, ключ вызова и номер блока-не-
 текста; итог — markdown для выхода шага (пусто — блок стал элементом)."""
 
-ResourceDrawing: TypeAlias = Callable[
-    [mt.TextResourceContents, str | None], Awaitable[str]
-]
-"""Отрисовщик текстового встроенного ресурса по его MIME."""
+ResourceDrawing: TypeAlias = Callable[[str, str, str | None], Awaitable[str]]
+"""Отрисовщик текстового встроенного ресурса по его MIME: текст ресурса, его
+имя (последний сегмент uri) и ключ вызова."""
 
 
 class ChatView:
@@ -568,8 +569,9 @@ class ChatView:
     независимо от того, думает модель, зовёт инструмент или молчит.
 
     Итог вызова — ответ сервера MCP: блоки для человека рисуются реестром по
-    виду блока и MIME ресурса (таблица, блок кода, график, картинка, звук,
-    вьювер канваса или вложение); неизвестное — JSON без байтов.
+    виду блока и MIME ресурса (таблица, блок кода, график, вьювер канваса
+    или вложение); картинка и звук ложатся файлом в хранилище треда
+    (storage) и рисуются как файл workspace; неизвестное — JSON без байтов.
     """
 
     NAMESPACE: ClassVar[UUID] = UUID("6f9b1f4e-2f1a-4c1a-9a2f-1d3b5c7e9a11")
@@ -577,24 +579,27 @@ class ChatView:
     """Схема ссылки на файл workspace сервера."""
     TEXT_FAMILY: ClassVar[str] = "text/"
     """Начало MIME текстовых ресурсов: неизвестный текст рисуется блоком кода."""
-    DATA_URL: ClassVar[str] = "data:{mime};base64,{data}"
-    """Адрес картинки и звука блока ответа: байты base64 самого блока."""
+    BASE64_SLICE: ClassVar[int] = 64 * 1024
+    """Срез base64 картинки и звука при записи в хранилище: кратен 4,
+    поэтому каждый срез декодируется сам по себе."""
     BYTES: ClassVar[Mapping[str, Any]] = {"data": True, "resource": {"blob": True}}
     """Поля байтов base64, которых JSON неизвестного блока не раскрывает."""
     AVATAR_NAME_KEY: ClassVar[str] = "avatarName"
     """Ключ metadata шага, по которому фронт chainlit выбирает аватар вместо имени."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 — лента собирается всеми входами вкладки
         self,
         thread_id: str,
         sink: ChatSink,
         journals: StreamableTools,
         user_key: str,
+        storage: StorageClient,
         *,
         user_name: str | None = None,
     ) -> None:
         self._thread_id = thread_id
         self._user_key = user_key
+        self._storage = storage
         self._journals = journals
         self._batch = StreamBatch()
         self._sink = BatchedSink(sink, self._batch)
@@ -625,10 +630,6 @@ class ChatView:
             ContentMime.JSON: self._fenced,
         }
         """Отрисовка встроенного ресурса по MIME; прочий text/* — блоком кода."""
-        self._players: dict[type[mt.ContentBlock], type[Image] | type[Audio]] = {
-            mt.ImageContent: Image,
-            mt.AudioContent: Audio,
-        }
         self._pulse = self._new_pulse(None)
 
     @property
@@ -1021,16 +1022,19 @@ class ChatView:
 
         step.name = status.timed(label, elapsed_ms)
         step.is_error = reply.is_error
-        pieces = [piece async for piece in self._pieces(reply, step, tool_call_id)]
-        step.output = "\n\n".join(filter(None, pieces))
+        shown: list[str] = []
+        async for piece in self._pieces(reply, step, tool_call_id):
+            shown.append(piece)
+
+        step.output = "\n\n".join(shown)
         await self._sink.put(step)
 
     async def _pieces(
         self, reply: mt.CallToolResult, step: Step, key: str | None
     ) -> AsyncIterator[str]:
-        """Markdown блоков ответа для человека по порядку: блок только для
-        модели не показывается; номер — порядковый номер блока-не-текста,
-        из него id элемента."""
+        """Непустой markdown блоков ответа для человека по порядку: блок
+        только для модели не показывается; номер — порядковый номер
+        блока-не-текста, из него id элемента."""
         number = 0
         for block in reply.content:
             annotations = block.annotations
@@ -1039,10 +1043,15 @@ class ChatView:
                     continue
 
             drawing = self._drawings.get(type(block), self._unknown)
-            yield await drawing(block, step, key, number)
+            piece = await drawing(block, step, key, number)
 
             if not isinstance(block, mt.TextContent):
                 number += 1
+
+            if not piece:
+                continue
+
+            yield piece
 
     async def _text(
         self, block: mt.ContentBlock, step: Step, key: str | None, number: int
@@ -1074,26 +1083,26 @@ class ChatView:
         if drawing is None:
             return await self._unknown(block, step, key, number)
 
-        return await drawing(resource, key)
+        segment = PurePosixPath(urlsplit(str(resource.uri)).path).name
+        name = unquote(segment)
 
-    async def _table(self, resource: mt.TextResourceContents, key: str | None) -> str:
+        return await drawing(resource.text, name, key)
+
+    async def _table(self, text: str, name: str, key: str | None) -> str:
         """text/csv — таблица markdown, как у таблиц семейства."""
-        rows = list(csv.DictReader(io.StringIO(resource.text)))
+        rows = list(csv.DictReader(io.StringIO(text)))
 
         return TableText.render(rows)
 
-    async def _fenced(self, resource: mt.TextResourceContents, key: str | None) -> str:
-        """Текст блоком кода; подпись ограды — имя ресурса, последний
-        сегмент его uri."""
-        segment = PurePosixPath(urlsplit(str(resource.uri)).path).name
+    async def _fenced(self, text: str, name: str, key: str | None) -> str:
+        """Текст блоком кода; подпись ограды — имя ресурса."""
+        return Fence.around(text, name)
 
-        return Fence.around(resource.text, unquote(segment))
-
-    async def _chart(self, resource: mt.TextResourceContents, key: str | None) -> str:
+    async def _chart(self, text: str, name: str, key: str | None) -> str:
         """Фигура plotly — график шагом рядом с вызовом; заголовок — имя
         ресурса. Фигура не JSON — текстом."""
         try:
-            figure = json.loads(resource.text)
+            figure = json.loads(text)
         except ValueError as exc:
             logger.info(
                 "thread %s: plotly figure of call %s is not JSON, shown as text: %s",
@@ -1101,25 +1110,26 @@ class ChatView:
                 key,
                 exc,
             )
-            return await self._fenced(resource, key)
+            return await self._fenced(text, name, key)
 
-        segment = PurePosixPath(urlsplit(str(resource.uri)).path).name
-        await self._element(figure, unquote(segment), key)
+        await self._element(figure, name, key)
 
         return ""
 
     async def _media(
         self, block: mt.ContentBlock, step: Step, key: str | None, number: int
     ) -> str:
-        """Картинка — элемент шага <img> (скрипты svg в нём не исполняются),
-        звук — проигрыватель у шага; байты блока едут адресом data: — файла
-        у них нет. В выходе шага — подпись с MIME: без выхода фронт не
-        рисует элементы шага."""
+        """Картинка и звук — файл в хранилище треда под именем от шага вызова
+        и номера блока: вживую, при воспроизведении и во второй вкладке это
+        один файл, записанный один раз. Дальше он рисуется как файл
+        workspace (_mounted). Не base64 — JSON блока без байтов."""
         if not isinstance(block, mt.ImageContent | mt.AudioContent):
             return await self._unknown(block, step, key, number)
 
         try:
-            base64.b64decode(block.data, validate=True)
+            # проверка срезами до записи: битый блок не оставит в хранилище обрывка
+            async for _ in self._decoded(block.data):
+                pass
         except binascii.Error as exc:
             logger.info(
                 "thread %s: %s of call %s is not base64, shown as JSON: %s",
@@ -1130,25 +1140,46 @@ class ChatView:
             )
             return await self._unknown(block, step, key, number)
 
-        caption = NoteLine.render(f"({block.mime_type})")
         if not self._sink.emits_elements:
-            return caption
+            return ""
 
-        element = self._players[type(block)](
-            name=f"{block.type}-{number}",
-            url=self.DATA_URL.format(mime=block.mime_type, data=block.data),
-            mime=block.mime_type,
-            display="inline",
+        suffix = mimetypes.guess_extension(block.mime_type)
+        if suffix is None:
+            suffix = ""
+
+        stem = uuid5(self.NAMESPACE, f"{step.id}:{number}")
+        file_key = ObjectKey(
+            user_id=self._user_key, thread_id=self._thread_id, name=f"{stem}{suffix}"
         )
-        self._numbered(element, key, number)
-        elements: list[Element] = []
-        if step.elements:
-            elements.extend(step.elements)
+        target = file_key.render()
+        stored = True
+        try:
+            await self._storage.stat(target)
+        except StorageNotFoundError:
+            stored = False
+        except StorageError as exc:
+            return f"{file_key.in_workspace()} is not shown: {exc}"
 
-        elements.append(element)
-        step.elements = elements
+        if not stored:
+            chunks = self._decoded(block.data)
+            try:
+                await self._storage.upload_stream(target, chunks, block.mime_type)
+            except StorageError as exc:
+                return f"{file_key.in_workspace()} is not shown: {exc}"
 
-        return caption
+        return await self._mounted(
+            file_key.in_workspace(), file_key.name, block.mime_type, key, number
+        )
+
+    async def _decoded(self, data: str) -> AsyncIterator[bytes]:
+        """Байты base64 срезами BASE64_SLICE: в памяти — один срез.
+
+        Ошибки:
+        binascii.Error — срез не base64.
+        """
+        for start in range(0, len(data), self.BASE64_SLICE):
+            piece = data[start : start + self.BASE64_SLICE]
+            yield base64.b64decode(piece, validate=True)
 
     async def _linked(
         self, block: mt.ContentBlock, step: Step, key: str | None, number: int
@@ -1160,7 +1191,8 @@ class ChatView:
 
         address = urlsplit(str(block.uri))
         if address.scheme == self.FILE_SCHEME:
-            return await self._mounted(unquote(address.path), block, key, number)
+            path = unquote(address.path)
+            return await self._mounted(path, block.name, block.mime_type, key, number)
 
         if address.scheme not in set(UrlScheme):
             return await self._unknown(block, step, key, number)
@@ -1199,7 +1231,7 @@ class ChatView:
             raise CanvasError(CanvasErrorKind.BAD_PATH, str(exc)) from exc
 
     async def _mounted(
-        self, path: str, link: mt.ResourceLink, key: str | None, number: int
+        self, path: str, name: str, mime: str | None, key: str | None, number: int
     ) -> str:
         """Файл workspace по ссылке — элемент у ответа хода, одинаково вживую
         и при воспроизведении: файл с вьювером канваса — его карточкой,
@@ -1221,7 +1253,7 @@ class ChatView:
         viewer = CanvasRegistry.viewer_for(file_key.name)
         if viewer is None:
             url = CanvasFileUrl.path(file_key)
-            element = self._file(link.name, url, link.mime_type, key, number)
+            element = self._file(name, url, mime, key, number)
         else:
             try:
                 card = await viewer.link(file_key)

@@ -39,6 +39,7 @@ from boba.runtime.config import AppName
 from boba.runtime.journal import DirVault, StreamJournal
 from boba.runtime.locks import PgLiveLocks
 from boba.runtime.payloads import PgPayloadStore
+from boba.runtime.storage import LocalStorageClient
 from boba.runtime.turns import StaleTurnCloser
 from boba.stand.refs import StandRefs
 from boba.stand_core.context import CallStand
@@ -116,10 +117,12 @@ async def _stopped(bus: PgMessageBus) -> None:
 
 
 def _renderer(
-    runtime_stand: StandRefs, thread_id: str, node: Node
+    runtime_stand: StandRefs, storage: LocalStorageClient, thread_id: str, node: Node
 ) -> tuple[ChatRenderer, RecordingSink]:
     sink = RecordingSink()
-    view = ChatView(thread_id, sink, runtime_stand.journals, "u-1", user_name="tester")
+    view = ChatView(
+        thread_id, sink, runtime_stand.journals, "u-1", storage, user_name="tester"
+    )
     updates = UpdateView(view, thread_id, RemoteJournals(), ToolMedia())
     renderer = ChatRenderer(
         thread_id, updates, node.payloads, NoSurface(), RecordingRewinds()
@@ -152,12 +155,13 @@ def _stream_messages(seen: Iterator[Envelope]) -> Iterator[StreamAppended]:
 
 async def test_turn_on_one_instance_is_rendered_on_another(
     runtime_stand: StandRefs,
+    storage: LocalStorageClient,
     nodes: tuple[Node, Node],
 ) -> None:
     holder, viewer = nodes
     thread_id = str(uuid4())
     scope = Scope.chat(thread_id)
-    renderer, sink = _renderer(runtime_stand, thread_id, viewer)
+    renderer, sink = _renderer(runtime_stand, storage, thread_id, viewer)
     leave = viewer.bus.subscribe(scope, renderer.apply)
 
     lock = await holder.locks.acquire(
@@ -203,7 +207,7 @@ async def test_turn_on_one_instance_is_rendered_on_another(
         assert "hits" in _outputs(sink)
 
         # вкладка подключилась посреди хода на другом инстансе: догон по replay
-        late, late_sink = _renderer(runtime_stand, thread_id, viewer)
+        late, late_sink = _renderer(runtime_stand, storage, thread_id, viewer)
         assert (await late.catch_up(viewer.bus)).alive is True
         assert "hits" in _outputs(late_sink)
         assert late.turn_alive
@@ -221,7 +225,7 @@ async def test_turn_on_one_instance_is_rendered_on_another(
         await feed.finished(TurnOutcome.OK, "")
         await _until(lambda: not renderer.turn_alive, "viewer saw TurnFinished")
 
-        after, _ = _renderer(runtime_stand, thread_id, viewer)
+        after, _ = _renderer(runtime_stand, storage, thread_id, viewer)
         assert (await after.catch_up(viewer.bus)).alive is False
     finally:
         leave()
@@ -253,6 +257,7 @@ async def test_payload_store_keeps_bodies_and_purges_idle(
 
 async def test_reaper_closes_the_turn_of_a_dead_holder_and_resume_marks_it(
     runtime_stand: StandRefs,
+    storage: LocalStorageClient,
     app_config: AppConfig,
     test_database: str,
     pool: AsyncPostgresPool,
@@ -283,7 +288,7 @@ async def test_reaper_closes_the_turn_of_a_dead_holder_and_resume_marks_it(
         closed = await StaleTurnCloser(viewer.bus, viewer.locks).close(stale)
         assert closed == 1
 
-        late, _ = _renderer(runtime_stand, thread_id, viewer)
+        late, _ = _renderer(runtime_stand, storage, thread_id, viewer)
         caught = await late.catch_up(viewer.bus)
         assert caught.alive is False
         assert caught.interrupted == TurnFinished.HOLDER_GONE
@@ -425,6 +430,7 @@ class RecordingSurface(NoSurface):
 
 async def test_feedback_reaches_the_viewer_instance(
     runtime_stand: StandRefs,
+    storage: LocalStorageClient,
     nodes: tuple[Node, Node],
 ) -> None:
     """Оценка шага доходит до рендерера на другом инстансе."""
@@ -433,7 +439,12 @@ async def test_feedback_reaches_the_viewer_instance(
     scope = Scope.chat(thread_id)
     surface = RecordingSurface()
     view = ChatView(
-        thread_id, RecordingSink(), runtime_stand.journals, "u-1", user_name="tester"
+        thread_id,
+        RecordingSink(),
+        runtime_stand.journals,
+        "u-1",
+        storage,
+        user_name="tester",
     )
     updates = UpdateView(view, thread_id, RemoteJournals(), ToolMedia())
     renderer = ChatRenderer(
@@ -452,6 +463,7 @@ async def test_feedback_reaches_the_viewer_instance(
 
 async def test_rewound_history_reaches_the_tabs_of_the_viewer_instance(
     runtime_stand: StandRefs,
+    storage: LocalStorageClient,
     nodes: tuple[Node, Node],
 ) -> None:
     """Срез истории правкой держателя доходит до рендерера треда на другом
@@ -460,7 +472,12 @@ async def test_rewound_history_reaches_the_tabs_of_the_viewer_instance(
     thread_id = str(uuid4())
     scope = Scope.chat(thread_id)
     view = ChatView(
-        thread_id, RecordingSink(), runtime_stand.journals, "u-1", user_name="tester"
+        thread_id,
+        RecordingSink(),
+        runtime_stand.journals,
+        "u-1",
+        storage,
+        user_name="tester",
     )
     updates = UpdateView(view, thread_id, RemoteJournals(), ToolMedia())
     rewinds = RecordingRewinds()

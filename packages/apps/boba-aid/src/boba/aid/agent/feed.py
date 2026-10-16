@@ -58,6 +58,7 @@ from boba.identity.errors import InternalServiceError
 from boba.identity.locks import LiveLocks, LockKeeper, LockMode, LockPurpose
 from boba.mcp_client.client import McpCaller, McpServers
 from boba.messaging import MessageBus, NoticeLevel, PayloadStore, TurnOutcome
+from boba.runtime.storage import StorageClient
 from boba.transport.acp.protocol import IdleErrorUpdate, StopReason
 
 __all__ = [
@@ -468,6 +469,7 @@ class AgentFeeds(TurnRenderers):
         servers: McpServers,
         rows: FeedRows,
         surfaces: TabSurfaces,
+        storage: StorageClient,
     ) -> None:
         self._parts = parts
         self._journals = journals
@@ -475,6 +477,7 @@ class AgentFeeds(TurnRenderers):
         self._servers = servers
         self._rows = rows
         self._surfaces = surfaces
+        self._storage = storage
 
     async def create(
         self, identity: ThreadIdentity, options: SessionOptions
@@ -498,6 +501,7 @@ class AgentFeeds(TurnRenderers):
             LiveSink(),
             self._journals,
             str(identity.user_id),
+            self._storage,
             user_name=identity.login,
         )
         replay = UpdateView(view, identity.thread_id, self._journals, self._media)

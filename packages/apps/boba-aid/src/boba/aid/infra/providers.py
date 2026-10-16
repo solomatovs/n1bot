@@ -318,6 +318,7 @@ def agent_feeds(  # noqa: PLR0913 — фабрика собирается все
     servers: Annotated[McpServers, Depends(mcp_servers)],
     data_layer: Annotated[PostgresDataLayer, Depends(chainlit_data_layer)],
     surfaces: Annotated[TabSurfaces, Depends(thread_surfaces)],
+    storage: Annotated[StorageClient, Depends(storage_provider)],
 ) -> AgentFeeds:
     """Приёмники потока агентов: ход в шину под замком треда, история — в
     вкладку, оценки шагов — из слоя данных."""
@@ -328,7 +329,7 @@ def agent_feeds(  # noqa: PLR0913 — фабрика собирается все
         heartbeat_sec=float(config.cluster.heartbeat_sec),
     )
 
-    return AgentFeeds(parts, journals, media, servers, data_layer, surfaces)
+    return AgentFeeds(parts, journals, media, servers, data_layer, surfaces, storage)
 
 
 async def thread_agents(

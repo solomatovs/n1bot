@@ -25,6 +25,7 @@ from boba.aid.rendering.chat_view import (
     StepText,
     TurnPulse,
 )
+from boba.runtime.storage import LocalStorageClient
 from boba.stand.refs import StandRefs
 from boba.toolkit.result import FieldLines
 
@@ -52,7 +53,7 @@ class TestAnswerOrder:
 
     @pytest.mark.anyio
     async def test_tool_seals_the_current_answer(
-        self, runtime_stand: StandRefs, http_context: None
+        self, runtime_stand: StandRefs, storage: LocalStorageClient, http_context: None
     ) -> None:
         """Текст после инструмента — новое сообщение, иначе элемент тула уедет вниз."""
         view = ChatView(
@@ -60,6 +61,7 @@ class TestAnswerOrder:
             RecordingSink(),
             runtime_stand.journals,
             "u-1",
+            storage,
             user_name="Пользователь",
         )
         view.begin_turn(TURN)
@@ -84,13 +86,14 @@ class TestAnswerOrder:
 
     @pytest.mark.anyio
     async def test_answers_of_one_turn_have_distinct_ids(
-        self, runtime_stand: StandRefs, http_context: None
+        self, runtime_stand: StandRefs, storage: LocalStorageClient, http_context: None
     ) -> None:
         view = ChatView(
             THREAD,
             RecordingSink(),
             runtime_stand.journals,
             "u-1",
+            storage,
             user_name="Пользователь",
         )
         view.begin_turn(TURN)
@@ -133,12 +136,17 @@ class TestTurnPulse:
 
     @pytest.mark.anyio
     async def test_pulse_opens_the_turn(
-        self, runtime_stand: StandRefs, http_context: None
+        self, runtime_stand: StandRefs, storage: LocalStorageClient, http_context: None
     ) -> None:
         """До первого токена ход виден кружком, а не пустой лентой."""
         sink = RecordingSink()
         view = ChatView(
-            THREAD, sink, runtime_stand.journals, "u-1", user_name="Пользователь"
+            THREAD,
+            sink,
+            runtime_stand.journals,
+            "u-1",
+            storage,
+            user_name="Пользователь",
         )
         view.begin_turn(TURN)
 
@@ -154,12 +162,17 @@ class TestTurnPulse:
 
     @pytest.mark.anyio
     async def test_answer_stream_holds_the_pulse(
-        self, runtime_stand: StandRefs, http_context: None
+        self, runtime_stand: StandRefs, storage: LocalStorageClient, http_context: None
     ) -> None:
         """Стримящийся ответ рисует курсор сам: второго кружка быть не должно."""
         sink = RecordingSink()
         view = ChatView(
-            THREAD, sink, runtime_stand.journals, "u-1", user_name="Пользователь"
+            THREAD,
+            sink,
+            runtime_stand.journals,
+            "u-1",
+            storage,
+            user_name="Пользователь",
         )
         view.begin_turn(TURN)
 
@@ -171,12 +184,17 @@ class TestTurnPulse:
 
     @pytest.mark.anyio
     async def test_tool_call_keeps_the_pulse_last(
-        self, runtime_stand: StandRefs, http_context: None
+        self, runtime_stand: StandRefs, storage: LocalStorageClient, http_context: None
     ) -> None:
         """Вызов инструмента закрывает ответ — кружок возвращается под него."""
         sink = RecordingSink()
         view = ChatView(
-            THREAD, sink, runtime_stand.journals, "u-1", user_name="Пользователь"
+            THREAD,
+            sink,
+            runtime_stand.journals,
+            "u-1",
+            storage,
+            user_name="Пользователь",
         )
         view.begin_turn(TURN)
 
@@ -191,12 +209,17 @@ class TestTurnPulse:
 
     @pytest.mark.anyio
     async def test_finished_turn_has_no_pulse(
-        self, runtime_stand: StandRefs, http_context: None
+        self, runtime_stand: StandRefs, storage: LocalStorageClient, http_context: None
     ) -> None:
         """Ход закончился — мигать больше нечему."""
         sink = RecordingSink()
         view = ChatView(
-            THREAD, sink, runtime_stand.journals, "u-1", user_name="Пользователь"
+            THREAD,
+            sink,
+            runtime_stand.journals,
+            "u-1",
+            storage,
+            user_name="Пользователь",
         )
         view.begin_turn(TURN)
 
@@ -294,6 +317,7 @@ class TestLivePulseFrames:
     @staticmethod
     def _play(
         runtime_stand: StandRefs,
+        storage: LocalStorageClient,
         scenario: Callable[[ChatView], Coroutine[Any, Any, None]],
     ) -> FakeEmitter:
         recorded = FakeContext(THREAD)
@@ -304,6 +328,7 @@ class TestLivePulseFrames:
                 LiveSink(),
                 runtime_stand.journals,
                 "u-1",
+                storage,
                 user_name="Пользователь",
             )
             view.begin_turn(TURN)
@@ -324,7 +349,9 @@ class TestLivePulseFrames:
 
         return events
 
-    def test_turn_opens_and_closes_the_pulse(self, runtime_stand: StandRefs) -> None:
+    def test_turn_opens_and_closes_the_pulse(
+        self, runtime_stand: StandRefs, storage: LocalStorageClient
+    ) -> None:
         async def scenario(view: ChatView) -> None:
             await view.await_model()
             await view.stream_answer("сейчас посмотрю", TURN)
@@ -338,7 +365,7 @@ class TestLivePulseFrames:
             await view.close_answer(TURN)
             await view.finish_turn()
 
-        emitter = self._play(runtime_stand, scenario)
+        emitter = self._play(runtime_stand, storage, scenario)
 
         expected = [
             ChatEvent.NEW,
@@ -351,7 +378,9 @@ class TestLivePulseFrames:
                 f"pulse frames are {self._pulse_events(emitter)}, expected {expected}"
             )
 
-    def test_pulse_is_sent_after_the_answer(self, runtime_stand: StandRefs) -> None:
+    def test_pulse_is_sent_after_the_answer(
+        self, runtime_stand: StandRefs, storage: LocalStorageClient
+    ) -> None:
         """Кружок обязан прийти позже ответа, иначе он висит не в конце ленты."""
 
         async def scenario(view: ChatView) -> None:
@@ -359,7 +388,7 @@ class TestLivePulseFrames:
             await view.stream_answer("сейчас посмотрю", TURN)
             await view.tool_started("bash", {"cmd": "ls"}, "call-1", None)
 
-        emitter = self._play(runtime_stand, scenario)
+        emitter = self._play(runtime_stand, storage, scenario)
 
         answer_at = -1
         pulse_at = -1
@@ -413,13 +442,14 @@ class TestToolStepDuration:
 
     @pytest.mark.anyio
     async def test_duration_lands_in_step_name(
-        self, runtime_stand: StandRefs, http_context: None
+        self, runtime_stand: StandRefs, storage: LocalStorageClient, http_context: None
     ) -> None:
         view = ChatView(
             THREAD,
             RecordingSink(),
             runtime_stand.journals,
             "u-1",
+            storage,
             user_name="Пользователь",
         )
         view.begin_turn(TURN)
@@ -437,13 +467,14 @@ class TestToolStepDuration:
 
     @pytest.mark.anyio
     async def test_unmeasured_call_keeps_plain_name(
-        self, runtime_stand: StandRefs, http_context: None
+        self, runtime_stand: StandRefs, storage: LocalStorageClient, http_context: None
     ) -> None:
         view = ChatView(
             THREAD,
             RecordingSink(),
             runtime_stand.journals,
             "u-1",
+            storage,
             user_name="Пользователь",
         )
         view.begin_turn(TURN)
@@ -462,13 +493,14 @@ class TestToolIntent:
 
     @pytest.mark.anyio
     async def test_intent_titles_the_running_step(
-        self, runtime_stand: StandRefs, http_context: None
+        self, runtime_stand: StandRefs, storage: LocalStorageClient, http_context: None
     ) -> None:
         view = ChatView(
             THREAD,
             RecordingSink(),
             runtime_stand.journals,
             "u-1",
+            storage,
             user_name="Пользователь",
         )
         view.begin_turn(TURN)
@@ -484,13 +516,14 @@ class TestToolIntent:
 
     @pytest.mark.anyio
     async def test_intent_survives_the_result(
-        self, runtime_stand: StandRefs, http_context: None
+        self, runtime_stand: StandRefs, storage: LocalStorageClient, http_context: None
     ) -> None:
         view = ChatView(
             THREAD,
             RecordingSink(),
             runtime_stand.journals,
             "u-1",
+            storage,
             user_name="Пользователь",
         )
         view.begin_turn(TURN)
@@ -509,7 +542,7 @@ class TestToolIntent:
 
     @pytest.mark.anyio
     async def test_intent_is_not_shown_among_arguments(
-        self, runtime_stand: StandRefs, http_context: None
+        self, runtime_stand: StandRefs, storage: LocalStorageClient, http_context: None
     ) -> None:
         """Подпись живёт в названии шага и во вход вызова не попадает."""
         view = ChatView(
@@ -517,6 +550,7 @@ class TestToolIntent:
             RecordingSink(),
             runtime_stand.journals,
             "u-1",
+            storage,
             user_name="Пользователь",
         )
         view.begin_turn(TURN)
@@ -531,13 +565,14 @@ class TestToolIntent:
 
     @pytest.mark.anyio
     async def test_call_without_intent_keeps_the_old_look(
-        self, runtime_stand: StandRefs, http_context: None
+        self, runtime_stand: StandRefs, storage: LocalStorageClient, http_context: None
     ) -> None:
         view = ChatView(
             THREAD,
             RecordingSink(),
             runtime_stand.journals,
             "u-1",
+            storage,
             user_name="Пользователь",
         )
         view.begin_turn(TURN)
@@ -567,11 +602,16 @@ class TestContainerAvatar:
 
     @pytest.mark.anyio
     async def test_container_carries_the_assistant_avatar(
-        self, runtime_stand: StandRefs, http_context: None
+        self, runtime_stand: StandRefs, storage: LocalStorageClient, http_context: None
     ) -> None:
         sink = RecordingSink()
         view = ChatView(
-            THREAD, sink, runtime_stand.journals, "u-1", user_name="Пользователь"
+            THREAD,
+            sink,
+            runtime_stand.journals,
+            "u-1",
+            storage,
+            user_name="Пользователь",
         )
         view.begin_turn(TURN)
 
@@ -601,9 +641,9 @@ class TestCallViewOfACard:
 
     @pytest.mark.anyio
     async def test_step_input_follows_the_content_types_of_the_arguments(
-        self, runtime_stand: StandRefs, http_context: None
+        self, runtime_stand: StandRefs, storage: LocalStorageClient, http_context: None
     ) -> None:
-        view = ChatView(THREAD, RecordingSink(), runtime_stand.journals, "u-1")
+        view = ChatView(THREAD, RecordingSink(), runtime_stand.journals, "u-1", storage)
         view.begin_turn(TURN)
 
         step = await view.tool_started(
@@ -622,9 +662,9 @@ class TestCallViewOfACard:
 
     @pytest.mark.anyio
     async def test_call_without_types_and_model_shows_the_arguments_as_json(
-        self, runtime_stand: StandRefs, http_context: None
+        self, runtime_stand: StandRefs, storage: LocalStorageClient, http_context: None
     ) -> None:
-        view = ChatView(THREAD, RecordingSink(), runtime_stand.journals, "u-1")
+        view = ChatView(THREAD, RecordingSink(), runtime_stand.journals, "u-1", storage)
         view.begin_turn(TURN)
 
         step = await view.tool_started("plain_probe", self.ARGS, "call-card-2", None)
