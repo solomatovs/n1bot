@@ -23,6 +23,7 @@ from pydantic import (
 )
 
 from boba.canvas.keys import ObjectKey
+from boba.canvas.transfer import ContentDisposition
 from boba.identity.errors import RefusalError
 from boba.toolkit.channels import JournalChannel, JournalChannels, ToolChannel
 from boba.toolkit.result import VisualResult
@@ -187,6 +188,17 @@ class CanvasKind(StrEnum):
     NOTICE = "notice"
     """Формат показать некому: панель объясняет это вместо содержимого."""
 
+    @property
+    def disposition(self) -> ContentDisposition:
+        """Как отдавать файл вида ссылкой: открыть в браузере можно только
+        то, что он показывает сам и без скриптов страницы (pdf, видео, звук);
+        прочее — html, svg, текст — скачивается, чтобы не исполниться в
+        origin чата."""
+        match self:
+            case CanvasKind.PDF | CanvasKind.VIDEO | CanvasKind.AUDIO:
+                return ContentDisposition.INLINE
+            case _:
+                return ContentDisposition.ATTACHMENT
 
 
 class StreamPos(BaseModel):
