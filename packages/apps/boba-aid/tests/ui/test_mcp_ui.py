@@ -140,22 +140,29 @@ def mcp_stand(  # noqa: PLR0913 — стенд собирается из фик�
     standard: McpServerConfig,
 ) -> Iterator[StandProcess]:
     """Стенд чата с MCP-серверами: обычный по stdio, boba-mcp и обычный по
-    HTTP со страницей-прокси песочницы — записью apps с секцией apps и
-    записью plain без неё."""
+    HTTP — записью apps с секцией apps (страница-прокси песочницы на своём
+    порту) и записью plain без неё."""
     server = standard.model_dump(mode="json", exclude_none=True)
     apps_port = free_port()
+    sandbox_port = free_port()
     script = REPO_ROOT / "packages/services/boba-mcp-client/tests/standard_server.py"
-    sandbox = REPO_ROOT / "packages/apps/boba-aid/assets/mcp-apps/sandbox.html"
+    pages = REPO_ROOT / "packages/apps/boba-aid/assets/mcp-apps"
     apps_server = subprocess.Popen(
-        [sys.executable, str(script), "streamable-http", str(apps_port), str(sandbox)]
+        [sys.executable, str(script), "streamable-http", str(apps_port)]
     )
-    deadline = time.monotonic() + BobaMcpStand.BOOT_SEC
-    while time.monotonic() < deadline:
-        try:
-            with socket.create_connection(("127.0.0.1", apps_port), timeout=1.0):
-                break
-        except OSError:
-            time.sleep(0.2)
+    # страница-прокси — на своём источнике, как её отдаёт nginx хоста сервера
+    serve = ["-m", "http.server", str(sandbox_port), "--bind", "127.0.0.1"]
+    sandbox_server = subprocess.Popen(
+        [sys.executable, *serve, "--directory", str(pages)]
+    )
+    for port in (apps_port, sandbox_port):
+        deadline = time.monotonic() + BobaMcpStand.BOOT_SEC
+        while time.monotonic() < deadline:
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=1.0):
+                    break
+            except OSError:
+                time.sleep(0.2)
 
     plain = {
         "connect_timeout_sec": 30.0,
@@ -170,7 +177,7 @@ def mcp_stand(  # noqa: PLR0913 — стенд собирается из фик�
     }
     drawn = {
         **plain,
-        "apps": {"sandbox_url": f"http://localhost:{apps_port}/mcp-apps/sandbox.html"},
+        "apps": {"sandbox_url": f"http://localhost:{sandbox_port}/sandbox.html"},
     }
     config = StandConfig(
         # не "mcp": это каталог сервиса boba-mcp общего стенда (StandConfig.service)
@@ -195,6 +202,8 @@ def mcp_stand(  # noqa: PLR0913 — стенд собирается из фик�
         process.stop()
         apps_server.terminate()
         apps_server.wait(timeout=10)
+        sandbox_server.terminate()
+        sandbox_server.wait(timeout=10)
 
 
 def _ask(chat: ChatPage, tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
