@@ -24,7 +24,6 @@ import mcp_types as mt
 import pytest
 from chainlit.user import PersistedUser
 from chainlit.user import User as ChainlitUser
-from omegaconf import DictConfig, OmegaConf
 from psycopg import sql
 
 from boba.auth import JwtTokens
@@ -240,22 +239,15 @@ class ToolService:
     Нужен тестам, которые проверяют путь вызова целиком: чат запечатывает
     соединение пользователя, сервис открывает его и исполняет тело
     инструмента в песочнице. Создаётся модульной фикстурой теста из
-    рабочего каталога и конфига сервиса; порты к нему собирает ServiceTools.
+    рабочего каталога и тестовой базы набора; порты к нему собирает
+    ServiceTools.
     """
 
     ENDPOINT: ClassVar[str] = "general"
     BOOT_TIMEOUT_SEC: ClassVar[float] = 300.0
     ROOTFS: ClassVar[str] = "plugins/boba-tool-shell/rootfs.ext4"
 
-    def __init__(self, workdir: Path, service_raw_config: DictConfig) -> None:
-        db_name = OmegaConf.select(service_raw_config, "postgres.dbname")
-        if not isinstance(db_name, str):
-            msg = (
-                "tool service stand: section [postgres] of the service config "
-                f"expects dbname as a string, got {db_name!r}"
-            )
-            raise TypeError(msg)
-
+    def __init__(self, workdir: Path, db_name: str) -> None:
         self._config = ServiceStand(
             workdir=workdir, app_port=free_port(), db_name=db_name, sandbox=True
         )
@@ -474,10 +466,10 @@ def service_process(
 
 @pytest.fixture(scope="module")
 def tool_service(
-    tmp_path_factory: pytest.TempPathFactory, service_raw_config: DictConfig
+    tmp_path_factory: pytest.TempPathFactory, test_database: str
 ) -> Iterator[ToolService]:
     """Сервис инструментов модуля: настоящий boba-mcp с плагинами в песочнице."""
-    process = ToolService(tmp_path_factory.mktemp("boba-mcp"), service_raw_config)
+    process = ToolService(tmp_path_factory.mktemp("boba-mcp"), test_database)
     try:
         process.start()
         yield process
