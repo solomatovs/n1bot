@@ -120,9 +120,7 @@ def _renderer(
     runtime_stand: StandRefs, storage: LocalStorageClient, thread_id: str, node: Node
 ) -> tuple[ChatRenderer, RecordingSink]:
     sink = RecordingSink()
-    view = ChatView(
-        thread_id, sink, runtime_stand.journals, "u-1", storage, user_name="tester"
-    )
+    view = ChatView(thread_id, sink, "u-1", storage, user_name="tester")
     updates = UpdateView(view, thread_id, RemoteJournals(), ToolMedia())
     renderer = ChatRenderer(
         thread_id, updates, node.payloads, NoSurface(), RecordingRewinds()
@@ -441,7 +439,6 @@ async def test_feedback_reaches_the_viewer_instance(
     view = ChatView(
         thread_id,
         RecordingSink(),
-        runtime_stand.journals,
         "u-1",
         storage,
         user_name="tester",
@@ -474,7 +471,6 @@ async def test_rewound_history_reaches_the_tabs_of_the_viewer_instance(
     view = ChatView(
         thread_id,
         RecordingSink(),
-        runtime_stand.journals,
         "u-1",
         storage,
         user_name="tester",

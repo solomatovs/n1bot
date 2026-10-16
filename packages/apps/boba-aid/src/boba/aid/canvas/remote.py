@@ -1,9 +1,10 @@
 """Журналы вызовов, исполненных MCP-серверами: адреса и окна.
 
 Вызов исполняет сервер, журнал лежит у него. Адрес журнала чат узнаёт по
-ссылке resource_link на канал журнала в итоге вызова (`rawOutput`
-уведомления агента); лента запоминает его здесь и при живом ходе, и при
-воспроизведении истории; текст читает окнами через клиента MCP.
+ссылке на канал журнала: пока вызов идёт — из `_meta` уведомления о ходе
+вызова, у итога — по ссылке resource_link в `rawOutput` уведомления агента;
+лента запоминает его здесь и при живом ходе, и при воспроизведении
+истории; текст читает окнами через клиента MCP.
 
 Ошибки:
 McpClientError — сервер недоступен или ответил не окном журнала.
@@ -17,7 +18,6 @@ from collections import OrderedDict
 from typing import ClassVar
 
 from boba.aid.rendering.acp_view import JournalRegistry
-from boba.aid.rendering.chat_view import StreamableTools
 from boba.canvas.canvas import WatchProbe, WatchSource
 from boba.canvas.journal import StreamSlice
 from boba.mcp_client.client import McpCaller, McpClientError, McpServers
@@ -31,16 +31,15 @@ __all__ = ["RemoteJournals", "RemoteStreams"]
 logger = logging.getLogger(__name__)
 
 
-class RemoteJournals(StreamableTools, JournalRegistry):
+class RemoteJournals(JournalRegistry):
     """Адреса журналов вызовов, исполненных MCP-серверами.
 
     Объект один на процесс: его создаёт сборка чата. Журнал вызова лежит на
     сервере, который вызов исполнил; его адрес — сервер, запуск и
-    идентификатор вызова на сервере — приходит в итоге вызова. Лента
-    (UpdateView) запоминает адрес здесь по итогу вызова: у живого хода — как
-    только вызов закончился, у истории — при её воспроизведении, поэтому
-    адреса треда известны, пока открыта его вкладка. Пока вызов идёт, адреса
-    нет и журнал не читается.
+    идентификатор вызова на сервере — сервер называет, едва журнал открыт,
+    и ещё раз в итоге вызова. Лента (UpdateView) запоминает адрес здесь: у
+    живого хода — пока вызов идёт, у истории — при её воспроизведении,
+    поэтому адреса треда известны, пока открыта его вкладка.
     """
 
     KEEP: ClassVar[int] = 4096
@@ -48,18 +47,9 @@ class RemoteJournals(StreamableTools, JournalRegistry):
 
     def __init__(self) -> None:
         self._known: OrderedDict[tuple[str, str], JournalAddress] = OrderedDict()
-        self._streamable: frozenset[str] = frozenset()
-
-    def mark_streamable(self, tool_names: frozenset[str]) -> None:
-        """Инструменты подключённых серверов с журналом вызовов: набор
-        только растёт — серверы подключаются по мере прихода сессий."""
-        self._streamable = self._streamable | tool_names
-
-    def streamable(self, tool_name: str) -> bool:
-        return tool_name in self._streamable
 
     def remember(self, thread_id: str, call_id: str, address: JournalAddress) -> None:
-        """Адрес журнала закончившегося вызова call_id треда."""
+        """Адрес журнала вызова call_id треда."""
         key = (thread_id, call_id)
         self._known[key] = address
         self._known.move_to_end(key)
@@ -67,8 +57,9 @@ class RemoteJournals(StreamableTools, JournalRegistry):
             self._known.popitem(last=False)
 
     async def address(self, thread_id: str, call_id: str) -> JournalAddress | None:
-        """Адрес журнала вызова; None — вызов ещё идёт, его исполнял не сервер
-        с журналом либо лента треда в этом процессе не рисовалась."""
+        """Адрес журнала вызова; None — его исполнял не сервер с журналом,
+        журнал ещё не открыт либо лента треда в этом процессе не
+        рисовалась."""
         return self._known.get((thread_id, call_id))
 
 

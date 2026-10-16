@@ -493,13 +493,10 @@ class AgentFeeds(TurnRenderers):
                 name, port.tools(), port.nested_calls(), port.journal_feature()
             )
 
-        self._journals.mark_streamable(self._servers.journaled())
-
         anchor = self._surfaces.anchor()
         view = ChatView(
             identity.thread_id,
             LiveSink(),
-            self._journals,
             str(identity.user_id),
             self._storage,
             user_name=identity.login,

@@ -1,4 +1,5 @@
-"""Кнопка живого вывода видна на бегущем шаге инструмента, а не после него.
+"""Кнопка живого вывода видна на бегущем шаге инструмента, а журнал в
+панели растёт, пока вызов идёт.
 
 Фронт chainlit монтирует inline-элементы шага только вместе с секцией output,
 поэтому бегущий шаг обязан приходить с непустым output.
@@ -29,7 +30,9 @@ pytestmark = pytest.mark.ui
 BOOT_TIMEOUT_SEC = 300.0
 TURN_TIMEOUT_SEC = 120.0
 BUTTON = '[aria-label="Show tool output"]'
-POLL_SEC = 4.0
+POLL_SEC = 15.0
+PROBE = "stream-line"
+LINES = 8
 
 
 @pytest.fixture(scope="module")
@@ -75,29 +78,44 @@ def _button_appears(chat: ChatPage, within_sec: float) -> bool:
     return False
 
 
-def test_button_appears_when_the_call_is_over(sandbox_chat: ChatPage) -> None:
-    """Журнал вызова читается по адресу из его итога: пока вызов идёт, шаг
-    показывает ход работы без кнопки журнала, кнопка встаёт с итогом."""
-    sandbox_chat.ask(_bash_call("sleep 8; echo stream-probe"))
+def test_journal_grows_in_the_panel_while_the_call_runs(
+    sandbox_chat: ChatPage,
+) -> None:
+    """Адрес журнала сервер называет, едва журнал открыт: кнопка журнала
+    стоит на бегущем шаге, а текст журнала в панели растёт, пока вызов
+    идёт."""
+    lines = " ".join(str(number) for number in range(1, LINES + 1))
+    command = f"for i in {lines}; do echo {PROBE}-$i; sleep 1; done"
+    sandbox_chat.ask(_bash_call(command))
     sandbox_chat.await_step(StepKind.RUN, timeout_ms=TURN_TIMEOUT_SEC * 1000)
     sandbox_chat.expand_process()
     sandbox_chat.await_step(StepKind.TOOL, timeout_ms=TURN_TIMEOUT_SEC * 1000)
     sandbox_chat.expand_step(StepKind.TOOL)
 
-    seen_running = _button_appears(sandbox_chat, POLL_SEC)
-
-    sandbox_chat.await_idle(timeout_sec=TURN_TIMEOUT_SEC)
-
-    if seen_running:
-        raise AssertionError(
-            "stream button is shown before the call has a journal address\n"
-            + sandbox_chat.log.describe()
-        )
-
-    # конец хода сворачивает контейнер процесса: шаг раскрывается заново
-    sandbox_chat.expand_last_tool()
     if not _button_appears(sandbox_chat, POLL_SEC):
         raise AssertionError(
-            "stream button is absent on the finished tool step\n"
+            "stream button is absent on the running tool step\n"
             + sandbox_chat.log.describe()
         )
+
+    sandbox_chat.page.locator(BUTTON).first.click()
+    panel = sandbox_chat.page.locator("#side-view-content")
+    panel.wait_for(state="visible", timeout=POLL_SEC * 1000)
+    first = panel.inner_text()
+
+    last = f"{PROBE}-{LINES}"
+    deadline = time.monotonic() + TURN_TIMEOUT_SEC
+    while last not in panel.inner_text():
+        if time.monotonic() > deadline:
+            raise AssertionError(
+                f"the journal in the panel stopped at {panel.inner_text()!r}"
+            )
+
+        sandbox_chat.page.wait_for_timeout(200)
+
+    if last in first:
+        raise AssertionError(
+            f"the panel opened after the call was over, nothing grew: {first!r}"
+        )
+
+    sandbox_chat.await_idle(timeout_sec=TURN_TIMEOUT_SEC)

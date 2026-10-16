@@ -66,7 +66,7 @@ from boba.mcp_server.server import (
     StreamReadTool,
 )
 from boba.toolkit.calls import CallViews, SchemaMark
-from boba.toolkit.channels import ToolChannel
+from boba.toolkit.channels import JournalChannels, ToolChannel
 from boba.toolkit.dag import (
     CallDag,
     NestedCallsFeature,
@@ -484,8 +484,9 @@ class TestCall:
 
 class Heard:
     """Уведомления прогресса одного вызова, какими их получил клиент: числа
-    и текст — через обработчик прогресса, уведомление целиком с _meta —
-    через обработчик сообщений сессии (notified)."""
+    и текст отчётов тела — через обработчик прогресса (уведомление о журнале
+    без текста отчётом не считается), уведомление целиком с _meta — через
+    обработчик сообщений сессии (notified)."""
 
     def __init__(self) -> None:
         self.reports: list[tuple[float, float | None, str | None]] = []
@@ -494,6 +495,9 @@ class Heard:
     async def __call__(
         self, progress: float, total: float | None, message: str | None
     ) -> None:
+        if message is None:
+            return
+
         self.reports.append((progress, total, message))
 
     async def notified(self, message: IncomingMessage) -> None:
@@ -580,10 +584,15 @@ class TestProgress:
 
         key = CallDag().feature().progress_key
         by_node: dict[str, list[str]] = {}
+        journals: dict[str, list[str]] = {}
         for note in heard.notes:
             meta = note.meta
             if meta is None:
                 raise AssertionError(f"every report names its node in _meta: {note}")
+
+            if note.message is None:
+                journals[meta[key]] = meta[JournalFeature.ID]
+                continue
 
             by_node.setdefault(meta[key], []).append(str(note.message))
 
@@ -598,9 +607,54 @@ class TestProgress:
         if by_node != expected:
             raise AssertionError(f"the reports of the nodes: {by_node}")
 
+        if sorted(journals) != ["left", "right"]:
+            raise AssertionError(f"every node names its journal: {journals}")
+
         values = [report[0] for report in heard.reports]
         if values != sorted(set(values)):
             raise AssertionError(f"the progress of the request only grows: {values}")
+
+    async def test_opened_journal_is_named_while_the_call_runs(
+        self, stand: ServiceStand, url: str, dev_token: str
+    ) -> None:
+        """Журнал вызова называется клиенту, едва открыт: уведомление без
+        текста и итога, ссылки на видимые каналы журнала — в _meta под
+        ключом расширения журнала; те же адреса, что в итоге вызова."""
+        heard = Heard()
+        client = Client(
+            StreamableHttpTransport(url, auth=dev_token),
+            message_handler=heard.notified,
+        )
+        async with client:
+            result = await client.call_tool_mcp(
+                "fake_echo", {"text": "hi", "repeat": 2}, progress_handler=heard
+            )
+
+        if len(heard.notes) != 1:
+            raise AssertionError(f"one notification about the journal: {heard.notes}")
+
+        note = heard.notes[0]
+        if note.message is not None or note.total is not None:
+            raise AssertionError(f"the notification carries no report: {note}")
+        if note.progress != 0:
+            raise AssertionError(f"the journal takes the first progress value: {note}")
+        if note.meta is None:
+            raise AssertionError(f"the links ride in _meta: {note}")
+
+        uris = JournalUris(JournalRoutes.RESOURCE)
+        named: list[JournalRead] = []
+        for link in note.meta[JournalFeature.ID]:
+            read = uris.address(link)
+            if read is None:
+                raise AssertionError(f"{link} is a link to a journal channel")
+            named.append(read)
+
+        stdout = _journal(result)
+        channels = [read.channel for read in named]
+        if channels != list(JournalChannels.VISIBLE):
+            raise AssertionError(f"every visible channel is named: {channels}")
+        if named[0].model_copy(update={"channel": stdout.channel}) != stdout:
+            raise AssertionError(f"the address of the result: {named[0]} {stdout}")
 
     async def test_silent_tool_sends_no_progress(
         self, stand: ServiceStand, url: str, dev_token: str

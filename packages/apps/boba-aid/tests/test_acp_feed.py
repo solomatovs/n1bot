@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import base64
 import json
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar, cast
 from urllib.parse import urlsplit
@@ -52,7 +52,7 @@ from boba.aid.rendering.chat_view import (
     StepText,
 )
 from boba.aid.rendering.renderer import ChatRenderer, NoSurface
-from boba.canvas.canvas import CanvasElement, CanvasRegistry
+from boba.canvas.canvas import CanvasAction, CanvasElement, CanvasRegistry
 from boba.canvas.keys import ObjectKey, ThreadDir
 from boba.chat.profiles import ChatProfileConfig, UserSetting
 from boba.identity.context import Scope
@@ -283,6 +283,33 @@ def _result(artifact: ToolResultBase, journaled: Sequence[str] = ()) -> dict[str
     return reply.model_dump(mode="json", by_alias=True, exclude_none=True)
 
 
+def _journal_opened(call_id: str, node: str, meta: Mapping[str, Any]) -> SessionUpdate:
+    """Уведомление о ходе вызова call_id без текста: сервер назвал ссылку на
+    stdout журнала своего вызова node, как только журнал открылся."""
+    read = JournalRead(run=RUN, node=node, channel=ToolChannel.STDOUT)
+    link = JournalUris(JOURNAL.resource).uri(read)
+
+    return schema.SessionToolCallUpdate(
+        tool_call_id=call_id,
+        status="in_progress",
+        field_meta={**meta, JournalFeature.ID: [link]},
+    )
+
+
+def _buttons(recorded: FakeEmitter) -> list[tuple[str, str]]:
+    """Вызов и шаг каждой кнопки журнала в ленте: кнопка с тем же id —
+    одна, сколько бы раз шаг её ни переотправил."""
+    found: dict[str, tuple[str, str]] = {}
+    for element in recorded.elements:
+        if element.get("name") != CanvasElement.STREAM:
+            continue
+
+        props = element["props"]
+        found[element["id"]] = (props[CanvasAction.CALL_ID], element["forId"])
+
+    return list(found.values())
+
+
 def _question() -> SessionUpdate:
     return schema.UserMessageUpdate(
         message_id=QUESTION, content=[schema.TextContentBlock(text="hello")]
@@ -328,9 +355,7 @@ def _replayed_updates() -> list[SessionUpdate]:
 def _view(
     runtime_stand: StandRefs, storage: LocalStorageClient, journals: RemoteJournals
 ) -> UpdateView:
-    view = ChatView(
-        THREAD, LiveSink(), runtime_stand.journals, "u-1", storage, user_name="alice"
-    )
+    view = ChatView(THREAD, LiveSink(), "u-1", storage, user_name="alice")
     media = ToolMedia()
     media.shown("boba", [], None, JOURNAL)
 
@@ -403,6 +428,39 @@ class TestUpdateViewIds:
         assert step.get(StepField.OUTPUT) == "ok", "a journal link is not drawn"
 
     @pytest.mark.anyio
+    async def test_journal_notification_gives_the_running_step_its_button(
+        self,
+        runtime_stand: StandRefs,
+        storage: LocalStorageClient,
+        recorded: FakeEmitter,
+    ) -> None:
+        """Сервер называет журнал, едва он открыт: адрес известен и кнопка
+        журнала стоит на шаге, пока вызов идёт."""
+        journals = RemoteJournals()
+        updates = _view(runtime_stand, storage, journals)
+        updates.begin_turn(QUESTION)
+
+        await updates.apply(_call(CALL, "mcp__boba__bash", {"cmd": "ls"}))
+        await updates.apply(_journal_opened(CALL, "srv-call", {}))
+
+        address = JournalAddress(server="boba", run=RUN, call="srv-call")
+        assert await journals.address(THREAD, CALL) == address
+        step = recorded.last()[_id(CALL, StepRole.TOOL)]
+        assert step.get(StepField.OUTPUT) == StepText.RUNNING.value, step
+        buttons = _buttons(recorded)
+        assert buttons == [(CALL, _id(CALL, StepRole.TOOL))], buttons
+
+        await updates.apply(
+            _done(
+                CALL,
+                "ok",
+                _result(MarkdownResult(text="ok", elapsed_ms=12), ["srv-call"]),
+            )
+        )
+
+        assert _buttons(recorded) == buttons, "the result does not add a second one"
+
+    @pytest.mark.anyio
     async def test_failed_call_without_artifact_is_an_error_step(
         self,
         runtime_stand: StandRefs,
@@ -449,7 +507,6 @@ class TestUpdateViewIds:
         view = ChatView(
             THREAD,
             LiveSink(),
-            runtime_stand.journals,
             "u-1",
             storage,
             user_name="alice",
@@ -522,7 +579,6 @@ class TestNestedCallSteps:
         view = ChatView(
             THREAD,
             LiveSink(),
-            runtime_stand.journals,
             "u-1",
             storage,
             user_name="alice",
@@ -606,6 +662,26 @@ class TestNestedCallSteps:
         sink = steps[_id(f"{CALL}_1", StepRole.TOOL)]
         assert "connecting to clickhouse" in str(sink.get(StepField.OUTPUT))
         assert "connecting to clickhouse" not in str(source.get(StepField.OUTPUT))
+
+    @pytest.mark.anyio
+    async def test_journal_of_a_node_gives_its_step_the_button(
+        self,
+        runtime_stand: StandRefs,
+        storage: LocalStorageClient,
+        recorded: FakeEmitter,
+    ) -> None:
+        journals = RemoteJournals()
+        updates = self._updates(runtime_stand, storage, journals, True)
+        updates.begin_turn(QUESTION)
+        await updates.apply(_call(CALL, "mcp__boba__workflow", {"nodes": self.NODES}))
+
+        opened = _journal_opened(CALL, "srv-call_1", {CallDag.PROGRESS_NODE: "sink"})
+        await updates.apply(opened)
+
+        address = JournalAddress(server="boba", run=RUN, call="srv-call_1")
+        assert await journals.address(THREAD, f"{CALL}_1") == address
+        sink = _id(f"{CALL}_1", StepRole.TOOL)
+        assert _buttons(recorded) == [(f"{CALL}_1", sink)]
 
     @pytest.mark.anyio
     async def test_each_node_ends_with_its_own_result_and_journal(
@@ -907,9 +983,7 @@ class TestResultsFromRawOutput:
             bus = MemoryMessageBus("test-aid")
             payloads = MemoryPayloadStore()
             scope = Scope.chat(thread_id)
-            view = ChatView(
-                thread_id, LiveSink(), runtime_stand.journals, seeded.user.id, storage
-            )
+            view = ChatView(thread_id, LiveSink(), seeded.user.id, storage)
             renderer = ChatRenderer(
                 thread_id,
                 UpdateView(view, thread_id, RemoteJournals(), ToolMedia()),
@@ -933,9 +1007,7 @@ class TestResultsFromRawOutput:
         replay_context = FakeContext(thread_id)
         token = context_var.set(cast("ChainlitContext", replay_context))
         try:
-            view = ChatView(
-                thread_id, LiveSink(), runtime_stand.journals, seeded.user.id, storage
-            )
+            view = ChatView(thread_id, LiveSink(), seeded.user.id, storage)
             replay = UpdateView(view, thread_id, RemoteJournals(), ToolMedia())
             await replay.apply(_question())
             for update in self._updates(thread_id):
@@ -1033,7 +1105,7 @@ class TestElementIdsWithoutKey:
         storage: LocalStorageClient,
         recorded: FakeEmitter,
     ) -> None:
-        view = ChatView(THREAD, LiveSink(), runtime_stand.journals, "u-1", storage)
+        view = ChatView(THREAD, LiveSink(), "u-1", storage)
         link = schema.ResourceContentBlock(
             name="note.txt",
             uri=AnyUrl(f"http://agent-side:1/boba-test/canvas/{THREAD}/upload/n.txt"),
@@ -1376,7 +1448,7 @@ class TestBlockDrawings:
         raw: Any,
         name: str = "mcp__boba__probe",
     ) -> None:
-        view = ChatView(THREAD, LiveSink(), runtime_stand.journals, "u-1", storage)
+        view = ChatView(THREAD, LiveSink(), "u-1", storage)
         updates = UpdateView(view, THREAD, RemoteJournals(), ToolMedia())
         await updates.apply(_question())
         await updates.apply(_call(CALL, name, {}))

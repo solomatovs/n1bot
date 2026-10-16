@@ -693,7 +693,24 @@ class AcpMapping:
     def tool_progress(self, event: ToolProgressEvent) -> schema.SessionToolCallUpdate:
         """Ход вызова — одна строка содержимого, которая заменяет прежнюю, и
         `_meta` уведомления сервера как есть. Числа без итога ничего не
-        говорят: у отчёта с текстом без total строка — сам текст."""
+        говорят: у отчёта с текстом без total строка — сам текст, а
+        уведомление без текста и без total (например, о журнале вызова)
+        несёт только `_meta`."""
+        meta: dict[str, Any] | None = None
+        if event.meta:
+            meta = dict(event.meta)
+
+        bare = not event.message
+        if event.total is not None:
+            bare = False
+
+        if bare:
+            return schema.SessionToolCallUpdate(
+                tool_call_id=event.tool_use_id,
+                status=ToolStatus.IN_PROGRESS,
+                field_meta=meta,
+            )
+
         done = f"{event.progress:g}"
         if event.total is not None:
             done = f"{done} of {event.total:g}"
@@ -706,10 +723,6 @@ class AcpMapping:
             line = f"{event.message} — {done}"
 
         text = schema.TextContentBlock(text=line)
-
-        meta: dict[str, Any] | None = None
-        if event.meta:
-            meta = dict(event.meta)
 
         return schema.SessionToolCallUpdate(
             tool_call_id=event.tool_use_id,

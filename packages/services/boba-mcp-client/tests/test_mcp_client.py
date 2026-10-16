@@ -158,13 +158,19 @@ async def http(http_port: int) -> AsyncIterator[McpToolServer]:
 
 class HeardCall:
     """Обработчик прогресса вызова в тесте: копит уведомления сервера о
-    ходе одного вызова в порядке прихода — числа, текст и _meta."""
+    ходе одного вызова в порядке прихода — числа, текст и _meta отчётов;
+    уведомления без текста (журнал вызова открыт) — отдельно, их _meta."""
 
     def __init__(self) -> None:
         self.reports: list[tuple[float, float | None, str | None]] = []
         self.metas: list[dict[str, object] | None] = []
+        self.journals: list[dict[str, object] | None] = []
 
     async def __call__(self, params: mt.ProgressNotificationParams) -> None:
+        if params.message is None:
+            self.journals.append(params.meta)
+            return
+
         self.reports.append((params.progress, params.total, params.message))
         self.metas.append(params.meta)
 
@@ -709,6 +715,8 @@ class TestBobaMcpJournal:
 
         if heard.reports:
             raise AssertionError(f"a silent tool sends no progress: {heard.reports}")
+        if len(heard.journals) != 1:
+            raise AssertionError(f"the journal is named once: {heard.journals}")
         if window is None or "echo progress: hi" not in window.text:
             raise AssertionError(f"the journal is read from the server: {window}")
         if not window.closed:
