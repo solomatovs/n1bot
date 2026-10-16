@@ -3,7 +3,8 @@
 Ход — `session/prompt` агента вкладки, лента рисуется из его уведомлений через
 шину; возврат к треду — `session/resume` после того, как chainlit отдал вкладке
 сам тред; панель настроек — слой пользователя и слой чата агента, её правка
-идёт единым путём AgentSettingsChanges с перезапуском процесса агента.
+идёт единым путём AgentSettingsChanges с перезапуском процесса агента;
+приложения MCP Apps у шагов вызова зовут свой сервер действиями mcp_app_*.
 """
 
 import logging
@@ -12,6 +13,7 @@ from typing import Annotated, Any, ClassVar
 from uuid import UUID
 
 import chainlit as cl
+import mcp_types as mt
 from chainlit.config import (
     ChainlitConfigOverrides,
     FeaturesSettings,
@@ -29,6 +31,7 @@ from fastapi import Request, Response
 
 from boba.aid.agent.chat import (
     AgentSettingsChanges,
+    ModelContextUpdate,
     Question,
     SessionOptions,
     SettingsOutcome,
@@ -40,6 +43,7 @@ from boba.aid.agent.chat import (
 from boba.aid.agent.client import AcpClientError
 from boba.aid.agent.config import AgentConfig
 from boba.aid.agent.panel import AgentPanel
+from boba.aid.agent.relay import AppAction, AppRequest, McpRelay
 from boba.aid.agent.settings import (
     AgentSettingsError,
     AgentSettingsTable,
@@ -59,6 +63,7 @@ from boba.aid.infra.providers import (
     chainlit_data_layer,
     chat_profiles_registry,
     get_app_config,
+    mcp_relay,
     mcp_servers,
     session_profile,
     thread_agents,
@@ -779,6 +784,60 @@ async def on_canvas_leave(action: cl.Action) -> None:
 async def on_canvas_render_status(action: cl.Action) -> None:
     """Отчёт браузера об исходе рендера: его ждёт вьювер по nonce."""
     RenderVerdicts.report(action.payload)
+
+
+@cl.action_callback(AppAction.CALL)
+@chainlit_error_ctx_handler
+@di_inject
+async def on_app_call(
+    action: cl.Action,
+    selected: Annotated[SelectedProfile, Depends(session_profile, scope="session")],
+    relay: Annotated[McpRelay, Depends(mcp_relay)],
+) -> dict[str, Any]:
+    """tools/call приложения MCP Apps у шага: от имени пользователя вкладки в
+    её треде."""
+    request = AppRequest[mt.CallToolRequestParams].model_validate(action.payload)
+    identity = ThreadIdentity.of(current_session(), selected)
+    registration = identity.registration(request.server)
+
+    return await relay.app_answer(relay.app_call(registration, request.params))
+
+
+@cl.action_callback(AppAction.READ)
+@chainlit_error_ctx_handler
+@di_inject
+async def on_app_read(
+    action: cl.Action,
+    selected: Annotated[SelectedProfile, Depends(session_profile, scope="session")],
+    relay: Annotated[McpRelay, Depends(mcp_relay)],
+) -> dict[str, Any]:
+    """resources/read приложения MCP Apps: и HTML самого приложения, и
+    ресурсы, которые оно просит."""
+    request = AppRequest[mt.ReadResourceRequestParams].model_validate(action.payload)
+    identity = ThreadIdentity.of(current_session(), selected)
+    registration = identity.registration(request.server)
+
+    return await relay.app_answer(relay.app_read(registration, request.params))
+
+
+@cl.action_callback(AppAction.CONTEXT)
+@chainlit_error_ctx_handler
+async def on_app_context(action: cl.Action) -> dict[str, Any]:
+    """ui/update-model-context приложения: контекст уйдёт модели со
+    следующим вопросом вкладки."""
+    request = AppRequest[ModelContextUpdate].model_validate(action.payload)
+    agent = _tab_agent(current_session())
+    if agent is None:
+        message = (
+            f"ui/update-model-context of the app of call {request.call_id!r}: the "
+            "tab has no agent to take the context, ask a question first"
+        )
+        error = mt.ErrorData(code=mt.INVALID_REQUEST, message=message)
+        return {"error": error.model_dump(mode="json", exclude_none=True)}
+
+    agent.app_context(request.call_id, list(request.params.blocks()))
+
+    return {}
 
 
 @cl.on_chat_resume

@@ -57,6 +57,7 @@ from boba.canvas.keys import ObjectKey, ThreadDir
 from boba.chat.profiles import ChatProfileConfig, UserSetting
 from boba.identity.context import Scope
 from boba.mcp_adapter import JournalUris
+from boba.mcp_client.client import McpServerApps
 from boba.messaging import (
     LockToken,
     MemoryMessageBus,
@@ -330,7 +331,7 @@ def _view(
         THREAD, LiveSink(), runtime_stand.journals, "u-1", storage, user_name="alice"
     )
     media = ToolMedia()
-    media.shown("boba", [], None, JOURNAL)
+    media.shown("boba", [], None, JOURNAL, None)
 
     return UpdateView(view, THREAD, journals, media)
 
@@ -442,7 +443,7 @@ class TestUpdateViewIds:
         }
         media = ToolMedia()
         media.shown(
-            "boba", [mt.Tool(name="pg_query", input_schema=arguments)], None, None
+            "boba", [mt.Tool(name="pg_query", input_schema=arguments)], None, None, None
         )
         view = ChatView(
             THREAD,
@@ -486,6 +487,85 @@ class TestUpdateViewIds:
         assert "rows copied — 50 of 200" in str(step.get(StepField.OUTPUT))
 
 
+class TestToolApps:
+    """Инструмент с приложением MCP Apps у сервера с секцией apps: шаг
+    вызова получает элемент приложения с аргументами и итогом под
+    детерминированным id, блоки итога показываются рядом; у сервера без
+    секции — только блоки."""
+
+    BOARD: ClassVar[mt.Tool] = mt.Tool.model_validate(
+        {
+            "name": "board",
+            "inputSchema": {"type": "object"},
+            "_meta": {"ui": {"resourceUri": "ui://standard/board.html"}},
+        }
+    )
+    SANDBOX: ClassVar[McpServerApps] = McpServerApps.model_validate(
+        {"sandbox_url": "http://localhost:8123/mcp-apps/sandbox.html"}
+    )
+    REPLY: ClassVar[dict[str, Any]] = {
+        "content": [{"type": "text", "text": "drawn"}],
+        "isError": False,
+        "resultType": "complete",
+    }
+
+    async def _drawn(
+        self,
+        runtime_stand: StandRefs,
+        storage: LocalStorageClient,
+        apps: McpServerApps | None,
+    ) -> None:
+        media = ToolMedia()
+        media.shown("standard", [self.BOARD], None, None, apps)
+        view = ChatView(
+            THREAD, LiveSink(), runtime_stand.journals, "u-1", storage, user_name="a"
+        )
+        updates = UpdateView(view, THREAD, RemoteJournals(), media)
+        updates.begin_turn(QUESTION)
+
+        await updates.apply(_call(CALL, "mcp__standard__board", {"markup": "<b/>"}))
+        await updates.apply(_done(CALL, "drawn", self.REPLY))
+
+    @pytest.mark.anyio
+    async def test_app_is_an_element_of_the_step_with_the_call_and_its_result(
+        self,
+        runtime_stand: StandRefs,
+        storage: LocalStorageClient,
+        recorded: FakeEmitter,
+    ) -> None:
+        await self._drawn(runtime_stand, storage, self.SANDBOX)
+
+        apps = [e for e in recorded.elements if e.get("name") == "ToolApp"]
+        step = recorded.last()[_id(CALL, StepRole.TOOL)]
+
+        assert len(apps) == 1, recorded.elements
+        assert apps[0]["id"] == _id(CALL, StepRole.APP)
+        assert apps[0]["props"] == {
+            "server": "standard",
+            "tool": "board",
+            "resource_uri": "ui://standard/board.html",
+            "sandbox_url": "http://localhost:8123/mcp-apps/sandbox.html",
+            "call_id": CALL,
+            "input": {"markup": "<b/>"},
+            "result": self.REPLY,
+        }
+        assert step.get(StepField.OUTPUT) == "drawn"
+
+    @pytest.mark.anyio
+    async def test_server_without_apps_draws_only_the_blocks(
+        self,
+        runtime_stand: StandRefs,
+        storage: LocalStorageClient,
+        recorded: FakeEmitter,
+    ) -> None:
+        await self._drawn(runtime_stand, storage, None)
+
+        step = recorded.last()[_id(CALL, StepRole.TOOL)]
+
+        assert not [e for e in recorded.elements if e.get("name") == "ToolApp"]
+        assert step.get(StepField.OUTPUT) == "drawn"
+
+
 class TestNestedCallSteps:
     """Вызов инструмента, который сервер объявил несущим вложенные вызовы,
     рисуется подшагами узлов: имя — инструмент и подпись узла, ход — по
@@ -516,7 +596,7 @@ class TestNestedCallSteps:
         if nested:
             declared = CallDag().feature()
 
-        media.shown("boba", [], declared, JOURNAL)
+        media.shown("boba", [], declared, JOURNAL, None)
         view = ChatView(
             THREAD,
             LiveSink(),
@@ -1047,7 +1127,7 @@ class TestElementIdsWithoutKey:
         view.begin_turn(QUESTION)
         for _ in range(2):
             step = await view.tool_started(
-                "mcp__boba__send_file", {"path": attached.path}, None, None
+                "mcp__boba__send_file", {"path": attached.path}, None, None, None
             )
             reply = mt.CallToolResult.model_validate(_result(attached))
             await view.tool_finished(step, reply, None, 0)

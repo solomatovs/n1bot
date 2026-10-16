@@ -1,12 +1,15 @@
 """Инструмент MCP-сервера в живой ленте чата.
 
-Стенд поднимается с двумя MCP-серверами: обычным (официальный SDK, stdio),
-который о boba не знает, и своим boba-mcp отдельным процессом по HTTP.
+Стенд поднимается с MCP-серверами: обычным (официальный SDK, stdio),
+который о boba не знает, своим boba-mcp отдельным процессом по HTTP и тем же
+обычным сервером по HTTP дважды — с секцией apps (его приложения рисуются в
+песочнице на localhost, чат открыт на 127.0.0.1) и без неё.
 Серверы получает агент треда (`session/new.mcpServers`); фейковая модель
 зовёт их инструменты под полными именами (сервер и имя инструмента на
 нём), шаг ленты подписан именем без сервера. Проверяется то, что
 видит пользователь: шаг инструмента в ленте, вложение у шага и сам файл по
-ссылке вложения, итог своего сервера в его собственной модели результата.
+ссылке вложения, итог своего сервера в его собственной модели результата,
+приложение MCP Apps у шага вызова и его изоляция от страницы чата.
 
 Ошибки: своих не выпускает; расхождение — падение теста.
 """
@@ -25,6 +28,7 @@ from typing import Any
 
 import pytest
 from chat_ui import BOOT_TIMEOUT_SEC, OpenChat
+from playwright.sync_api import FrameLocator, Locator
 
 from boba.mcp_client.client import McpServerConfig
 from boba.stand.ui.chat_page import ChatPage, Selector, StepKind
@@ -35,6 +39,7 @@ from boba.stand.ui.stand import (
     StandApp,
     StandConfig,
     StandProcess,
+    StandUrl,
     free_port,
 )
 
@@ -134,8 +139,39 @@ def mcp_stand(  # noqa: PLR0913 — стенд собирается из фик�
     boba_mcp_stand: BobaMcpStand,
     standard: McpServerConfig,
 ) -> Iterator[StandProcess]:
-    """Стенд чата с двумя MCP-серверами: обычный по stdio и boba-mcp."""
+    """Стенд чата с MCP-серверами: обычный по stdio, boba-mcp и обычный по
+    HTTP со страницей-прокси песочницы — записью apps с секцией apps и
+    записью plain без неё."""
     server = standard.model_dump(mode="json", exclude_none=True)
+    apps_port = free_port()
+    script = REPO_ROOT / "packages/services/boba-mcp-client/tests/standard_server.py"
+    sandbox = REPO_ROOT / "packages/apps/boba-aid/assets/mcp-apps/sandbox.html"
+    apps_server = subprocess.Popen(
+        [sys.executable, str(script), "streamable-http", str(apps_port), str(sandbox)]
+    )
+    deadline = time.monotonic() + BobaMcpStand.BOOT_SEC
+    while time.monotonic() < deadline:
+        try:
+            with socket.create_connection(("127.0.0.1", apps_port), timeout=1.0):
+                break
+        except OSError:
+            time.sleep(0.2)
+
+    plain = {
+        "connect_timeout_sec": 30.0,
+        "call_timeout_sec": 60.0,
+        "endpoint": {
+            "transport": "streamable-http",
+            "scheme": "http",
+            "host": "127.0.0.1",
+            "port": apps_port,
+            "path": "/mcp",
+        },
+    }
+    drawn = {
+        **plain,
+        "apps": {"sandbox_url": f"http://localhost:{apps_port}/mcp-apps/sandbox.html"},
+    }
     config = StandConfig(
         # не "mcp": это каталог сервиса boba-mcp общего стенда (StandConfig.service)
         workdir=stand_workdir / "chat-mcp",
@@ -144,14 +180,21 @@ def mcp_stand(  # noqa: PLR0913 — стенд собирается из фик�
         llm_port=llm_port,
         db_name=stand_database,
         url_prefix="/boba-mcp",
-        mcp_servers={"standard": server, "boba": boba_mcp_stand.server()},
+        mcp_servers={
+            "standard": server,
+            "boba": boba_mcp_stand.server(),
+            "apps": drawn,
+            "plain": plain,
+        },
     )
     process = StandProcess(config=config, log_path=stand_workdir / "mcp-app.log")
-    process.start(boot_timeout_sec=BOOT_TIMEOUT_SEC)
     try:
+        process.start(boot_timeout_sec=BOOT_TIMEOUT_SEC)
         yield process
     finally:
         process.stop()
+        apps_server.terminate()
+        apps_server.wait(timeout=10)
 
 
 def _ask(chat: ChatPage, tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -175,6 +218,18 @@ def _ask(chat: ChatPage, tool: str, arguments: dict[str, Any]) -> dict[str, Any]
         return step
 
     raise AssertionError(f"no finished tool step of {tool}\n{chat.log.describe()}")
+
+
+def _app(chat: ChatPage) -> tuple[Locator, FrameLocator]:
+    """Ход с вызовом board сервера apps: шаг вызова и внутренний iframe его
+    приложения, нарисовавшего разметку модели."""
+    _ask(chat, "mcp__apps__board", {"markup": '<b id="cells">three cells</b>'})
+    tool = chat.expand_last_tool()
+    tool.locator("iframe").first.wait_for(timeout=30_000)
+    inner = tool.frame_locator("iframe").first.frame_locator("iframe")
+    inner.locator("#cells").wait_for(timeout=30_000)
+
+    return tool, inner
 
 
 class TestMcpToolInTheFeed:
@@ -361,3 +416,167 @@ class TestOwnServerInTheFeed:
 
         side = chat.page.locator("#side-view-content")
         side.get_by_text("echo progress: journal").first.wait_for(timeout=30_000)
+
+
+class TestToolApps:
+    """Приложение MCP Apps у шага вызова: рисуется в песочнице на хосте
+    сервера, его кнопки зовут инструменты своего сервера только с "app" в
+    visibility, ui/message доходит до агента, контекст приложения уходит
+    модели со следующим вопросом; страница и куки чата скрипту приложения
+    недоступны. Сервер без секции apps показывает итог блоками."""
+
+    @staticmethod
+    def _llm_requests(chat: ChatPage, llm_port: int, marker: str) -> list[str]:
+        """Сообщения запросов фейковой модели с marker, JSON-текстом."""
+        reply = chat.page.request.get(StandUrl.of(llm_port, "/requests"))
+        found: list[str] = []
+        for payload in reply.json()["requests"]:
+            messages = json.dumps(payload.get("messages"))
+            if marker in messages:
+                found.append(messages)
+
+        return found
+
+    def test_app_draws_the_call_and_calls_its_server(
+        self, mcp_stand: StandProcess, open_chat: OpenChat
+    ) -> None:
+        chat = open_chat(mcp_stand, "")
+        _tool, inner = _app(chat)
+        answer = inner.locator("#answer")
+
+        inner.locator("#result").get_by_text("the board is drawn by its app").wait_for()
+        inner.locator("#call-app").click()
+        answer.get_by_text("answer: app_only answered").wait_for(timeout=30_000)
+        inner.locator("#call-model").click()
+        answer.get_by_text("error:").wait_for(timeout=30_000)
+
+        refused = answer.inner_text()
+        if "model_only" not in refused:
+            raise AssertionError(f"the app is refused the tool of the model: {refused}")
+
+    def test_app_sees_neither_the_cookies_nor_the_page_of_the_chat(
+        self, mcp_stand: StandProcess, open_chat: OpenChat
+    ) -> None:
+        chat = open_chat(mcp_stand, "")
+        _tool, inner = _app(chat)
+
+        probe = inner.locator("#probe").inner_text()
+
+        if probe != "cookies: none; chat page: hidden":
+            raise AssertionError(f"the app script is cut off from the chat: {probe}")
+
+    def test_message_and_context_of_the_app_reach_the_agent(
+        self, mcp_stand: StandProcess, open_chat: OpenChat, llm_port: int
+    ) -> None:
+        """ui/message — вопрос агенту от пользователя; ui/update-model-context
+        модель получает со следующим вопросом, а лента вопроса его не
+        показывает."""
+        chat = open_chat(mcp_stand, "")
+        _tool, inner = _app(chat)
+
+        inner.locator("#send-context").click()
+        inner.locator("#answer").get_by_text("answer:").wait_for(timeout=30_000)
+        inner.locator("#send-message").click()
+        chat.page.get_by_text("the board asks to go on").first.wait_for(timeout=60_000)
+        chat.await_idle(timeout_sec=120.0)
+
+        asked = self._llm_requests(chat, llm_port, "the board asks to go on")
+        if not asked:
+            raise AssertionError("ui/message of the app reaches the model")
+
+        if "the board shows three cells" not in asked[-1]:
+            raise AssertionError(f"the context goes with the question: {asked[-1]}")
+
+        if '\\"cells\\": 3' not in asked[-1]:
+            raise AssertionError(f"the structured context goes as json: {asked[-1]}")
+
+        questions = [
+            str(step.get(StepField.OUTPUT.value))
+            for step in chat.log.steps_of_type(StepKind.USER.value)
+        ]
+        if any("the board shows" in question for question in questions):
+            raise AssertionError(
+                f"the context is not a part of the question: {questions}"
+            )
+
+    def test_server_without_apps_shows_the_blocks(
+        self, mcp_stand: StandProcess, open_chat: OpenChat
+    ) -> None:
+        chat = open_chat(mcp_stand, "")
+
+        step = _ask(chat, "mcp__plain__board", {"markup": "plain"})
+        tool = chat.expand_last_tool()
+
+        output = str(step.get(StepField.OUTPUT.value))
+        if "board markup: plain" not in output:
+            raise AssertionError(f"the server answers with blocks: {step}")
+
+        if tool.locator("iframe").count():
+            raise AssertionError("a server without apps draws no app")
+
+
+class TestToolAppLook:
+    """Вид приложения у шага: внешний iframe на источнике песочницы с
+    разрешениями стандарта, внутренний — без allow-same-origin и с CSP;
+    высота по size-changed приложения, узкое окно без горизонтальной
+    прокрутки, тема чата в контексте хоста."""
+
+    def test_app_frames_follow_the_standard(
+        self, mcp_stand: StandProcess, open_chat: OpenChat
+    ) -> None:
+        chat = open_chat(mcp_stand, "")
+        tool, inner = _app(chat)
+        outer = tool.locator("iframe").first
+        proxy = tool.frame_locator("iframe").first.locator("iframe").first
+
+        src = str(outer.get_attribute("src"))
+        if not src.startswith("http://localhost:"):
+            raise AssertionError(f"the sandbox is on the origin of the server: {src}")
+
+        if (
+            outer.get_attribute("sandbox")
+            != "allow-scripts allow-same-origin allow-forms"
+        ):
+            raise AssertionError(f"the sandbox frame: {outer.get_attribute('sandbox')}")
+
+        if proxy.get_attribute("sandbox") != "allow-scripts allow-forms":
+            raise AssertionError(f"the app frame: {proxy.get_attribute('sandbox')}")
+
+        srcdoc = str(proxy.get_attribute("srcdoc"))
+        if "default-src 'none'" not in srcdoc:
+            raise AssertionError(f"the app runs under its CSP: {srcdoc[:300]}")
+
+        if "https://cdn.example.com" not in srcdoc:
+            raise AssertionError(
+                f"the CSP takes the domains of the resource: {srcdoc[:300]}"
+            )
+
+        dark = chat.page.evaluate("document.documentElement.classList.contains('dark')")
+        theme = "light"
+        if dark:
+            theme = "dark"
+
+        inner.locator("#theme").get_by_text(f"theme: {theme}").wait_for()
+        box = outer.bounding_box()
+        if box is None or not 0 < box["height"] < 600:
+            raise AssertionError(f"the frame takes the height of the app: {box}")
+
+    def test_app_follows_the_theme_and_the_narrow_window(
+        self, mcp_stand: StandProcess, open_chat: OpenChat
+    ) -> None:
+        chat = open_chat(mcp_stand, "")
+        chat.page.set_viewport_size({"width": 420, "height": 800})
+        _tool, inner = _app(chat)
+
+        dark = chat.page.evaluate("document.documentElement.classList.toggle('dark')")
+        theme = "light"
+        if dark:
+            theme = "dark"
+
+        inner.locator("#theme").get_by_text(f"theme: {theme}").wait_for(timeout=10_000)
+
+        width = "document.documentElement.scrollWidth"
+        shown = "document.documentElement.clientWidth"
+        scroll = chat.page.evaluate(f"[{width}, {shown}]")
+        if scroll[0] > scroll[1]:
+            raise AssertionError(f"no horizontal scroll in a narrow window: {scroll}")

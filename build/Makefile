@@ -43,7 +43,7 @@ PREFIX_aid       := /boba
 SANDBOX_aid      :=
 MODELS_aid       := onnx-genai
 PARTS_aid        := app_root/public app_root/public/page.js app_root/public/vendor \
-                    app_root/ui/index.html app_root/ui/index.js
+                    app_root/ui/index.html app_root/ui/index.js app_root/mcp-apps/sandbox.html
 
 # boba-mcp — MCP-сервер с инструментами boba; фронта у него нет
 PACKAGES_mcp      = boba-mcp $(PLUGIN_PACKAGES) boba-llm-fastembed
