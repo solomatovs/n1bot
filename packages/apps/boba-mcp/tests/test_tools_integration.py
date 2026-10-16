@@ -26,9 +26,11 @@ from boba.db.postgres.connection import PostgresConfig
 from boba.stand.database import TestDatabase
 from boba.stand.sandbox import section_profile
 from boba.stand.shell import ShellRun
+from boba.stand.site import Stand
 from boba.stand.toolsetup import Call, ToolSetup
 from boba.stand.zygote import SandboxCgroup, ZygoteStand
 from boba.tool.confluence.ingest_base import ConfluenceIngestConfig
+from boba.tool.kb.kb import KbToolConfig
 from boba.tool.kb.search import ConfluenceCollection
 from boba.tool.shell.tools import BashToolConfig
 from boba.toolkit.calls import ToolCallModels
@@ -347,10 +349,11 @@ def kb_tools(
     raw_config,
     kb_collection: str,
     kb_store: ConfluenceIngestConfig,
+    stand: Stand,
 ):
     """kb-функции новой модели: обёртка запуска + конфиг, как в загрузчике;
     поиск по чанкам ходит в тестовую базу, куда пишет ingest, поиск по схеме
-    ix — в индексы dev-стенда."""
+    ix — в индексы базы dev-стенда site.pg_database."""
     from importlib import reload
 
     import boba.tool.kb.tools as kb_module
@@ -362,6 +365,10 @@ def kb_tools(
     def resolve(name: str, annotation: Any) -> object:
         sandboxed = ToolSetup.sandbox_raw(raw_config)
         cfg = bind(sandboxed, path=annotation.SECTION, model=annotation)
+        if isinstance(cfg, KbToolConfig):
+            dev = cfg.connection.model_copy(update={"dbname": stand.pg_database})
+            return cfg.model_copy(update={"connection": dev})
+
         if "collection" not in type(cfg).model_fields:
             return cfg
 
