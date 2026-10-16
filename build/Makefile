@@ -1,4 +1,4 @@
-# Единая сборка boba: приложения chainlit, studio и mcp и образы корней плагинов. Из сети берутся две вещи: артефакты цели fetch (github,
+# Единая сборка boba: приложения chainlit и mcp и образы корней плагинов. Из сети берутся две вещи: артефакты цели fetch (github,
 # huggingface, kernel.org — в src/) и пакеты pypi/npm при сборке — из реестров образов
 # (в закрытом контуре nexus: conf/pip.conf, conf/uv.toml, npmrc образа nodejs).
 # Остальные цели работают из src/ и локальных образов.
@@ -15,8 +15,7 @@ BUILD_CONTEXT   ?= $(SRC_DIR)
 TEST_DIR        := $(BASE_DIR)/test
 SCRIPTS_DIR     := $(BASE_DIR)/scripts
 CONF_DIR        := $(BASE_DIR)/conf
-# значения переменных сборки для этого хоста (в git не попадает): например
-# WEB_DEV_NETWORK и WEB_DEV_HOST для демона без проброса портов
+# значения переменных сборки для этого хоста (в git не попадает)
 -include $(CONF_DIR)/local.mk
 # артефакты для сборки: tarball'ы, uv, webassets, колесо oracledb
 DEPS_DIR        ?= $(BASE_DIR)/src
@@ -30,7 +29,7 @@ RELEASE_DIR     := $(SRC_DIR)/release
 
 # приложения сборки; цели build, test, dev и release работают по одному приложению
 # (APP=<имя> либо <цель>-<имя>), без APP — по всем
-APPS            := chainlit studio mcp
+APPS            := chainlit mcp
 APP             ?=
 
 # чат инструментов не исполняет: песочницы, cgroup и моделей плагинов у него нет
@@ -45,17 +44,6 @@ SANDBOX_chainlit :=
 MODELS_chainlit  := onnx-genai
 PARTS_chainlit   := app_root/public app_root/public/page.js app_root/public/vendor \
                     app_root/ui/index.html app_root/ui/index.js
-
-PACKAGES_studio   = boba-studio $(PLUGIN_PACKAGES) boba-llm-http boba-llm-onnx boba-llm-fastembed
-IMPORTS_studio   := boba.studio
-MODULE_studio    := boba.studio
-STAGE_studio     := runtime-studio
-HEALTH_studio    := /api/openapi.json
-PORT_studio      := 8502
-PREFIX_studio    := /boba-studio
-SANDBOX_studio   := yes
-MODELS_studio    := fastembed rapidocr
-PARTS_studio     := app_root/public app_root/public/workflow app_root/public/vendor
 
 # boba-mcp — MCP-сервер с инструментами boba; фронта у него нет
 PACKAGES_mcp      = boba-mcp $(PLUGIN_PACKAGES) boba-llm-fastembed
@@ -73,7 +61,6 @@ PARTS_mcp        :=
 
 # лимиты пользовательского юнита установки без Docker: те же, что у контейнера compose
 UNIT_LIMITS_chainlit := 4G 400% 512
-UNIT_LIMITS_studio   := 16G 800% 2048
 UNIT_LIMITS_mcp      := 16G 800% 2048
 
 APP_PACKAGES      = $(PACKAGES_$(APP))
@@ -140,7 +127,6 @@ GLIBC_IMAGE     ?= dmp/glibc:2.28
 GCC_IMAGE       ?= dmp/gcc:8.5.0
 PYTHON_IMAGE    ?= dmp/python:$(PYTHON_VERSION)-dist
 NODE_IMAGE      ?= dmp/nodejs:20
-STUDIO_NODE_IMAGE ?= dmp/nodejs:22
 BASE_IMAGE      := boba-base:$(PYTHON_VERSION)
 SANDBOX_DIR     := $(RUNTIME_DIR)/sandbox
 # сколько build cache оставляет prune
@@ -238,29 +224,6 @@ PAGE_SRCS       := $(shell find $(WEB_PROJECT)/src -type f) \
 UI_DIST         := $(ASSETS_DIR)/ui
 UI_SRCS         := $(shell find $(UI_DIR) -type f) $(SCRIPTS_DIR)/chainlit_ui.sh
 
-# страница workflow studio: в образ её собирает стадия studio-web-build, в dev-дерево —
-# цель web-studio; типы api берутся из openapi.json, который печатает приложение
-STUDIO_DIR      := $(SRC_DIR)/packages/apps/boba-studio
-STUDIO_ASSETS   := $(STUDIO_DIR)/assets
-STUDIO_PROJECT  := $(STUDIO_DIR)/web/workflow
-STUDIO_DIST     := $(STUDIO_ASSETS)/workflow
-STUDIO_SRCS     := $(shell find $(STUDIO_PROJECT)/src -type f -not -name schema.d.ts) \
-                   $(wildcard $(STUDIO_PROJECT)/*.json $(STUDIO_PROJECT)/*.ts $(STUDIO_PROJECT)/*.js $(STUDIO_PROJECT)/index.html)
-OPENAPI_JSON    := $(STUDIO_PROJECT)/openapi.json
-# vite dev-сервер страницы: make web-dev
-WEB_DEV_NAME    ?= boba-web-dev
-WEB_DEV_PORT    ?= 5173
-BOBA_URL_PREFIX ?= /boba-studio-debug
-# где vite слышен с хоста. По умолчанию порт контейнера публикуется на 127.0.0.1.
-# Демон без проброса портов (rootless с port driver none) так не умеет: там контейнер
-# подключают к сети, маршрутизируемой с хоста (WEB_DEV_NETWORK), и называют его адрес
-# или имя (WEB_DEV_HOST)
-WEB_DEV_HOST    ?= 127.0.0.1
-WEB_DEV_NETWORK ?=
-WEB_DEV_LISTEN   = $(if $(WEB_DEV_NETWORK),--network $(WEB_DEV_NETWORK),-p 127.0.0.1:$(WEB_DEV_PORT):5173)
-WEB_DEV_URL      = http://$(WEB_DEV_HOST):$(WEB_DEV_PORT)$(BOBA_URL_PREFIX)/workflow-dev/
-WEB_DEV_WAIT    ?= 180
-
 # --- что кладут sandbox и release ------------------------------------------------
 
 SANDBOX_PARTS   := $(THIRD_DIR)/bin/bwrap $(THIRD_DIR)/bin/fuse2fs \
@@ -325,7 +288,6 @@ DOCKER_ARGS      = --build-arg GLIBC_IMAGE=$(GLIBC_IMAGE)              \
     --build-arg LIBFUSE_VERSION=$(LIBFUSE_VERSION)                     \
     --build-arg E2FSPROGS_VERSION=$(E2FSPROGS_VERSION)                 \
     --build-arg NODE_IMAGE=$(NODE_IMAGE)                               \
-    --build-arg STUDIO_NODE_IMAGE=$(STUDIO_NODE_IMAGE)                 \
     --build-arg CHAINLIT_VERSION=$(CHAINLIT_VERSION)                   \
     --build-arg ORACLEDB_VERSION=$(ORACLEDB_VERSION)                   \
     --build-arg ORACLEDB_SHA256=$(ORACLEDB_SHA256)                     \
@@ -417,13 +379,6 @@ find "$(1)" ! -type d -printf '%P\n' | while IFS= read -r name; do
 done
 endef
 
-# опустошить каталог, не пересоздавая: compose держит его bind-mount'ом по inode,
-# после rm -rf контейнер до перезапуска видел бы пустоту
-define refill
-mkdir -p "$(1)"
-find "$(1)" -mindepth 1 -delete
-endef
-
 # --- справка --------------------------------------------------------------------
 
 define HELP
@@ -443,17 +398,13 @@ define HELP
   plugin-rootfs-all     rootfs.ext4 всех плагинов с entry points boba.tools
   boba-bin              агент одним файлом (Nuitka в образе base) -> $(RELEASE_DIR)/$(VERSION)/bin/boba;
                         BIN_ONNX= — без рантайма onnxruntime-genai
-  web                   фронт для dev-деревьев: web-chainlit и web-studio
   web-chainlit          page.js и UI chainlit (фронт + copilot); chainlit-ui — UI заново
-  web-studio            страница workflow -> assets/workflow
-  web-dev               vite dev-сервер страницы workflow на $(WEB_DEV_HOST):$(WEB_DEV_PORT); STOP=1 — остановить;
-                        без проброса портов у демона: WEB_DEV_NETWORK=<сеть> WEB_DEV_HOST=<имя или адрес>
 
 По приложению: APP=<$(APPS)> либо <цель>-<приложение>; без APP — все приложения
   build                 образ boba-<приложение>:$(BOBA_TAG); в образ mcp уезжают образы корней
                         плагинов и шаблон workspace из runtime/sandbox
   test                  проверка релиза внутри образа
-  dev                   дерево compose в $(SRC_DIR)/compose/<приложение>: conf, data, app_root
+  dev                   дерево compose в $(SRC_DIR)/compose/<приложение>: conf и data
   debug                 дерево отладки и тестов в $(SRC_DIR)/debug/<приложение>: свой site.toml
                         (пишет администратор) и свои data
   site-keys             перечень ключей site.toml приложения по ссылкам общего конфига
@@ -477,7 +428,7 @@ BWRAP_URL, LIBFUSE_URL, E2FSPROGS_URL, RAPIDOCR_REPO, KATEX_URL, INTER_URL, MERM
 ONNX_HUB_URL, CHAINLIT_SRC_URL.
 
 Переменные: BOBA_TAG, NO_CACHE=1, JOBS=$(JOBS) (заданий на шаг сборки), PYTHON_VERSION=$(PYTHON_VERSION), GLIBC_IMAGE, GCC_IMAGE,
-PYTHON_IMAGE, NODE_IMAGE, STUDIO_NODE_IMAGE, DEST_DIR; хосту нужен python >= 3.11.
+PYTHON_IMAGE, NODE_IMAGE, DEST_DIR; хосту нужен python >= 3.11.
 endef
 
 .PHONY: help
@@ -688,12 +639,10 @@ boba-bin: version-check
 	"$(BIN_OUT)/boba" --help > /dev/null
 	echo ">>> $(BIN_OUT)/boba ($$(du -h "$(BIN_OUT)/boba" | cut -f1))"
 
-.PHONY: web web-chainlit web-studio web-mcp
-web: web-chainlit web-studio
+.PHONY: web web-chainlit web-mcp
+web: web-chainlit
 
 web-chainlit: $(PAGE_JS) $(UI_DIST)/index.html
-
-web-studio: $(STUDIO_DIST)/index.html
 
 # у boba-mcp фронта нет: цель существует, чтобы dev APP=mcp шёл общим путём
 web-mcp:
@@ -723,58 +672,6 @@ chainlit-ui:
 	rm -f "$(UI_DIST)/index.html"
 	$(MAKE) -f "$(MAKEFILE)" "$(UI_DIST)/index.html"
 
-# контракт api studio печатает приложение из venv репозитория; страница генерирует по нему типы
-$(OPENAPI_JSON): $(shell find $(STUDIO_DIR)/src -name "*.py")
-	@$(PYTHON) -m boba.studio.api.schema > "$@"
-	echo "== openapi: $@ =="
-
-# страница workflow node'ом образа: на хосте node не нужен
-$(STUDIO_DIST)/index.html: $(STUDIO_SRCS) $(OPENAPI_JSON)
-	@echo "== workflow page: $(STUDIO_NODE_IMAGE) =="
-	docker run --rm --entrypoint /bin/sh -u "$(RUN_OWNER)" -e HOME=/tmp \
-	    -v "$(STUDIO_DIR):/pkg" -w /pkg/web/workflow $(STUDIO_NODE_IMAGE) \
-	    -c 'npm ci --no-audit --no-fund && npm run generate && npm run check && npm run build'
-	touch "$@"
-	du -sh "$(STUDIO_DIST)"
-
-# vite с HMR в контейнере; studio с workflow_page = http://$(WEB_DEV_HOST):$(WEB_DEV_PORT)
-# проксирует его под {BOBA_URL_PREFIX}/workflow-dev. Живой контейнер не трогается
-.PHONY: web-dev
-ifeq ($(STOP),1)
-web-dev:
-	docker rm -f $(WEB_DEV_NAME) > /dev/null 2>&1 || true
-else
-web-dev: $(OPENAPI_JSON)
-	@running=$$(docker ps --filter name=^$(WEB_DEV_NAME)$$ --format '{{.Label "boba.url_prefix"}}')
-	if [ "$$running" = "$(BOBA_URL_PREFIX)" ] && curl -sf -m 3 -o /dev/null "$(WEB_DEV_URL)"; then
-	    echo "  ✓ $(WEB_DEV_NAME) is running: $(WEB_DEV_URL)"
-	    exit 0
-	fi
-	docker rm -f $(WEB_DEV_NAME) > /dev/null 2>&1 || true
-	docker run -d --name $(WEB_DEV_NAME) --entrypoint /bin/sh \
-	    --label boba.url_prefix=$(BOBA_URL_PREFIX) \
-	    -u "$(RUN_OWNER)" -e HOME=/tmp -e BOBA_URL_PREFIX=$(BOBA_URL_PREFIX) \
-	    -e __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS=$(WEB_DEV_HOST) \
-	    $(WEB_DEV_LISTEN) \
-	    -v "$(STUDIO_DIR):/pkg" -w /pkg/web/workflow $(STUDIO_NODE_IMAGE) \
-	    -c '[ -d node_modules ] || npm ci --no-audit --no-fund; npm run generate; exec npm run dev -- --host 0.0.0.0 --port 5173 --strictPort --base $(BOBA_URL_PREFIX)/workflow-dev/'
-	for i in $$(seq $(WEB_DEV_WAIT)); do
-	    if curl -sf -m 3 -o /dev/null "$(WEB_DEV_URL)"; then
-	        echo "== $(WEB_DEV_NAME): vite is ready at $(WEB_DEV_URL), logs: docker logs -f $(WEB_DEV_NAME) =="
-	        exit 0
-	    fi
-	    if [ -z "$$(docker ps -q --filter name=^$(WEB_DEV_NAME)$$)" ]; then
-	        echo "== $(WEB_DEV_NAME) exited; last log lines: =="
-	        docker logs --tail 30 $(WEB_DEV_NAME)
-	        exit 1
-	    fi
-	    sleep 1
-	done
-	echo "== $(WEB_DEV_NAME): vite did not answer at $(WEB_DEV_URL) in $(WEB_DEV_WAIT)s =="
-	docker logs --tail 30 $(WEB_DEV_NAME)
-	exit 1
-endif
-
 # --- по приложению: образ, проверка, деревья ---------------------------------------
 
 # <цель>-<приложение> — то же, что <цель> APP=<приложение>
@@ -792,22 +689,6 @@ debug: $(APPS:%=debug-%)
 release: $(APPS:%=release-%)
 
 else
-
-# содержимое app_root dev-дерева: у каждого приложения своё
-# app_root дерева compose: том нужен только studio — страница workflow меняется чаще
-# образа. У chainlit и mcp статика лежит в образе
-define DEV_ROOT_chainlit
-endef
-
-define DEV_ROOT_studio
-$(call refill,$(OUT)/app_root)
-mkdir -p "$(OUT)/app_root/public"
-cp -a "$(STUDIO_DIST)" "$(OUT)/app_root/public/workflow"
-cp -a "$(WEBASSETS_DIR)" "$(OUT)/app_root/public/vendor"
-endef
-
-define DEV_ROOT_mcp
-endef
 
 # каталог cgroup песочницы экземпляра $(1) у текущего пользователя: подкаталог sandbox
 # юнита boba-sandbox@$(1).service
@@ -839,7 +720,7 @@ endef
 # .env дерева compose называет каждую переменную docker-compose.yml: значений по
 # умолчанию в compose-файлах нет, и пропущенная переменная молча стала бы пустой строкой
 COMPOSE_VARS     = BOBA_USER BOBA_NETWORK BOBA_NETWORK_EXTERNAL BOBA_ADDRESS \
-                   $(if $(filter-out studio,$(APP)),BOBA_ADDRESS_2) $(if $(APP_SANDBOX),BOBA_SANDBOX_CGROUP)
+                   BOBA_ADDRESS_2 $(if $(APP_SANDBOX),BOBA_SANDBOX_CGROUP)
 COMPOSE_REQUIRED = BOBA_USER BOBA_NETWORK BOBA_NETWORK_EXTERNAL $(if $(APP_SANDBOX),BOBA_SANDBOX_CGROUP)
 define compose-env-check
 for name in $(COMPOSE_VARS); do
@@ -1033,7 +914,7 @@ install:
 	echo "    запуск:  systemctl --user start boba-$(INSTANCE).service"
 	echo "    журнал:  journalctl --user -u boba-$(INSTANCE).service -f"
 
-# рабочее дерево приложения для docker compose: conf, data, .env и у studio app_root;
+# рабочее дерево приложения для docker compose: conf, data и .env;
 # docker-compose*.yml лежат в нём же и трекаются git'ом. Модели и образы песочницы
 # compose монтирует из runtime/, общий конфиг лежит в образе. В conf дерева — только
 # специфика машины: site.toml (пишет администратор), keytab и krb5.conf. Готовые
@@ -1051,7 +932,6 @@ dev: web-$(APP)
 	    mkdir -p "$(OUT)/data/workspace" "$(OUT)/data/tool-logs"
 	    $(call sandbox-unit,$(APP))
 	fi
-	$(DEV_ROOT_$(APP))
 	( umask 027; mkdir -p "$(OUT)/conf/krb" )
 	$(call app-env,$(DEST_DIR),$(DEST_DIR)/data) > "$(OUT)/conf/boba.env"
 	$(call site-hint,$(OUT)/conf)
@@ -1066,9 +946,7 @@ dev: web-$(APP)
 	        echo "BOBA_NETWORK=boba"
 	        echo "BOBA_NETWORK_EXTERNAL=true"
 	        echo "BOBA_ADDRESS="
-	        if [ "$(APP)" != studio ]; then
-	            echo "BOBA_ADDRESS_2="
-	        fi
+	        echo "BOBA_ADDRESS_2="
 	    } > "$(OUT)/.env"
 	    echo "    .env создан: $(OUT)/.env (сеть и адреса — по образцу $(CONF_DIR)/compose.env.example)"
 	fi
@@ -1135,8 +1013,7 @@ vscode:
 # --- прочее ---------------------------------------------------------------------
 
 # всё целиком: артефакты, песочница, образы корней плагинов, фронт, образы и
-# compose-деревья всех приложений. Compose studio монтирует app_root поверх образа,
-# поэтому фронт нужен и в дереве, а не только в образе
+# compose-деревья всех приложений
 .PHONY: all
 all: fetch sandbox plugin-rootfs-all web
 	@$(MAKE) -f "$(MAKEFILE)" build APP=
@@ -1165,4 +1042,4 @@ prune:
 clean:
 	rm -rf $(RELEASE_DIR) $(DEPS_DIR)/uv $(MODELS_DIR)/rapidocr $(WEBASSETS_DIR) $(SANDBOX_DIR) $(ORACLEDB_DIR) \
 	       $(FETCH_CONSTRAINTS) \
-	       $(DEPS_DIR)/*.tar.xz $(DEPS_DIR)/*.tar.gz $(PAGE_JS) $(ASSETS_VENDOR) $(UI_DIST) $(STUDIO_DIST)
+	       $(DEPS_DIR)/*.tar.xz $(DEPS_DIR)/*.tar.gz $(PAGE_JS) $(ASSETS_VENDOR) $(UI_DIST)

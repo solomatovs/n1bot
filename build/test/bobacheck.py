@@ -30,7 +30,7 @@ parser.add_argument(
     default="/app/packages",
     help="каталог с исходниками boba (если нет --names)",
 )
-parser.add_argument("--app", required=True, help="приложение: chainlit, studio или mcp")
+parser.add_argument("--app", required=True, help="приложение: chainlit или mcp")
 parser.add_argument(
     "--sandbox",
     action="store_true",
@@ -83,7 +83,6 @@ import importlib
 
 THIRD_PARTY = {
     "chainlit": ["pydantic", "fastapi", "chainlit"],
-    "studio": ["pydantic", "fastapi"],
     "mcp": ["pydantic", "fastmcp"],
 }
 for m in THIRD_PARTY[APP]:
@@ -201,20 +200,10 @@ def t_model_loads_offline():
         raise RuntimeError(f"{name}: токенайзер не кодирует")
 
 
-def t_workflow_page():
-    index = os.path.join(BASE_DIR, "app_root", "public", "workflow", "index.html")
-    if not os.path.isfile(index):
-        raise RuntimeError(f"нет {index}")
-
-
 if APP == "chainlit":
     print("== local onnx-genai models ==")
     check("models present with genai_config.json", t_models_present)
     check("smallest model loads offline", t_model_loads_offline)
-
-if APP == "studio":
-    print("== workflow page ==")
-    check("workflow page built", t_workflow_page)
 
 # 7) образы корня плагинов: по одному rootfs.ext4 на пакет с entry point boba.tools;
 # они, веса эмбеддера и модели OCR есть только у приложения, исполняющего инструменты
