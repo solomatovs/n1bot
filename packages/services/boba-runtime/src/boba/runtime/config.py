@@ -19,7 +19,15 @@ from pathlib import Path
 from typing import Annotated, Any, ClassVar, Literal, Self
 
 from omegaconf import DictConfig
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    Base64Bytes,
+    BaseModel,
+    ConfigDict,
+    Field,
+    Secret,
+    field_validator,
+    model_validator,
+)
 
 from boba.access import RoleConfig
 from boba.auth.config import (
@@ -46,6 +54,7 @@ __all__ = [
     "ConfigLocator",
     "DevPage",
     "EnvOverride",
+    "KeysConfig",
     "LocalMessagingConfig",
     "MessagingConfig",
     "PageSource",
@@ -476,6 +485,24 @@ class StudioPath(StrEnum):
     PAGE = "/workflow"
 
 
+class KeysConfig(BaseModel):
+    """Секция [keys]: общие ключи процесса. Код читает только ключ шифрования
+    значений в таблицах (соединения, настройки агента); остальные ключи —
+    секрет сессии, подпись proxy, секрет клиента MCP — секции берут ссылками
+    ${keys.*}."""
+
+    model_config = ConfigDict(frozen=True, hide_input_in_errors=True)
+
+    encryption: Secret[Annotated[Base64Bytes, Field(min_length=32, max_length=32)]] = (
+        Field(
+            description=(
+                "Ключ шифрования значений: 32 байта в base64; смена ключа делает "
+                "сохранённые секреты нечитаемыми."
+            ),
+        )
+    )
+
+
 class TokenConfig(BaseModel):
     """Секция [session] любого процесса со входом: секрет подписи, срок
     токена, потолок сессии и поколение сессий. Базовая для SessionConfig;
@@ -743,6 +770,7 @@ class RuntimeConfig(ProcessConfig):
             "единственный пул, его получают все таблицы приложения."
         ),
     )
+    keys: KeysConfig
     profiles: dict[str, ChatProfileConfig]
     roles: dict[str, RoleConfig]
     session: SessionConfig

@@ -6,6 +6,7 @@
 [app]
     schema          = "aid"
     postgres        = "${postgres}"
+    keys            = "${keys}"
     krb             = "${krb}"
     chainlit        = "${chainlit}"
     session         = "${session}"
@@ -22,6 +23,21 @@
         "${auth.local}",
         "${auth.proxy}"
     ]
+
+[keys]
+    encryption = "${site.database_encryption_key}"
+    session    = "${site.auth_secret}"
+    proxy      = "${site.proxy_secret}"
+    mcp_client = "${site.mcp_client.secret}"
+
+[ldap]
+    server        = "${site.ldap_url}"
+    base_dn       = "${site.ldap_base_dn}"
+    bind_dn       = "${site.ldap_bind_user}"
+    bind_password = "${site.ldap_bind_password}"
+    [ldap.mapping]
+        member_of = "${site.ldap_roles.memberof}"
+        dn        = "${site.ldap_roles.dn}"
 
 [roles]
     [roles.wrt]
@@ -118,7 +134,8 @@
         num_workers       = 3
 
 [agent]
-    public_url = "http://127.0.0.1:${env.port}${env.url_prefix}"
+    public_url   = "http://127.0.0.1:${env.port}${env.url_prefix}"
+    seal_ttl_sec = 600
     [agent.process]
         command           = "boba"
         args              = ["acp", "--setting-sources", ""]
@@ -138,12 +155,6 @@
     [agent.limits]
         context_window    = 128000
         max_output_tokens = 8192
-
-# конфигурация для chainlit
-## соединения в базе: профили postgres/web со скрытыми секретами
-[connections]
-    ## 32 байта в base64; смена ключа делает сохранённые секреты нечитаемыми
-    encryption_key = "${site.database_encryption_key}"
 
 [catalog]
     connection = "${postgres}"
@@ -186,8 +197,8 @@
 [mcp_auth.boba]
     auth          = "proxy"
     client_id     = "boba-chat"
-    client_secret = "${site.mcp_client.secret}"
-    secret        = "${site.proxy_secret}"
+    client_secret = "${keys.mcp_client}"
+    secret        = "${keys.proxy}"
     [mcp_auth.boba.issuer]
         scheme = "${env.mcp_scheme}"
         host   = "${env.mcp_host}"
@@ -198,11 +209,6 @@
     enable = false
     dir    = "${env.data}/tool-logs"
 
-# источники ролей пользователя: memberOf и DN — значения в [site]
-[role.ldap]
-    memberof = "${site.ldap_roles.memberof}"
-    dn       = "${site.ldap_roles.dn}"
-
 [auth.kerberos]
     type                = "kerberos"
     principal_format    = "{username}@${site.krb_realm}"
@@ -212,26 +218,19 @@
     [auth.kerberos.delegation]
         mode            = "constrained"
         service_ccache  = "FILE:${site.krb_ccache_http}"
-        krb5_config     = "${site.krb_config}"
-    [auth.kerberos.roles.ldap]
-        server          = "${site.ldap_url}"
-        base_dn         = "${site.ldap_base_dn}"
-        bind_dn         = "${site.ldap_bind_user}"
-        bind_password   = "${site.ldap_bind_password}"
-        [auth.kerberos.roles.ldap.mapping]
-            member_of   = "${role.ldap.memberof}"
-            dn          = "${role.ldap.dn}"
+        krb5_config     = "${krb.config}"
+    [auth.kerberos.roles]
+        ldap            = "${ldap}"
 
 # ldap авторизация
 [auth.ldap]
     type                = "ldap"
-    server              = "${site.ldap_url}"
-    base_dn             = "${site.ldap_base_dn}"
+    server              = "${ldap.server}"
+    base_dn             = "${ldap.base_dn}"
     user_filter         = "(sAMAccountName={username})"
     bind_dn_template    = '${site.ldap_netbios}\{username}'
-    [auth.ldap.roles.directory]
-        member_of       = "${role.ldap.memberof}"
-        dn              = "${role.ldap.dn}"
+    [auth.ldap.roles]
+        directory       = "${ldap.mapping}"
 
 # local авторизация: учётки и роли — в [site.local_auth]
 [auth.local]
@@ -244,7 +243,7 @@
 [auth.proxy]
     type            = "proxy"
     path            = "/auth/proxy"
-    secret          = "${site.proxy_secret}"
+    secret          = "${keys.proxy}"
     max_skew_sec    = 60
     allowed_clients = "${site.proxy.allowed_clients}"
     require_roles   = true
@@ -252,16 +251,10 @@
         user      = "X-Remote-User"
         timestamp = "X-Boba-Timestamp"
         signature = "X-Boba-Signature"
+    [auth.proxy.roles]
+        ldap = "${ldap}"
     [auth.proxy.roles.local]
         mapping = "${site.proxy.local_roles}"
-    [auth.proxy.roles.ldap]
-        server        = "${site.ldap_url}"
-        base_dn       = "${site.ldap_base_dn}"
-        bind_dn       = "${site.ldap_bind_user}"
-        bind_password = "${site.ldap_bind_password}"
-        [auth.proxy.roles.ldap.mapping]
-            member_of = "${role.ldap.memberof}"
-            dn        = "${role.ldap.dn}"
     [auth.proxy.roles.header]
         name = "X-Remote-Roles"
     [auth.proxy.profiles.header]
@@ -288,7 +281,7 @@
     retention_sec     = 3600
 
 [session]
-    auth_secret     = "${site.auth_secret}"
+    auth_secret     = "${keys.session}"
     cookie          = "access_token"
     cookie_samesite = "none"
     session_ttl_sec = 86400

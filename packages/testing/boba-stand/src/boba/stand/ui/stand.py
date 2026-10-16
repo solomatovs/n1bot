@@ -745,6 +745,7 @@ class StandConfig(StandService):
         private_dir.mkdir(parents=True, exist_ok=True)
         doc["agent"] = {
             "public_url": self.base_url,
+            "seal_ttl_sec": 600,
             "process": {
                 "command": self.agent_process["command"],
                 "args": self.agent_process["args"],

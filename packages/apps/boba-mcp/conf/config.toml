@@ -16,6 +16,11 @@
         "${auth.proxy}"
     ]
 
+[keys]
+    session    = "${site.auth_secret}"
+    proxy      = "${site.proxy_secret}"
+    mcp_client = "${site.mcp_client.secret}"
+
 [mcp]
     host = "${env.listen_host}"
     port = "${env.port}"
@@ -50,7 +55,7 @@
         ]
 
     [mcp.clients.boba-chat]
-        secret = "${site.mcp_client.secret}"
+        secret = "${keys.mcp_client}"
 
 [http]
     dump                      = { enable = false, path = "" }
@@ -154,7 +159,7 @@
 [auth.proxy]
     type            = "proxy"
     path            = "/auth/proxy"
-    secret          = "${site.proxy_secret}"
+    secret          = "${keys.proxy}"
     max_skew_sec    = 60
     allowed_clients = "${site.proxy.allowed_clients}"
     require_roles   = true
@@ -194,7 +199,7 @@
     kill_grace_sec      = 5
 
 [session]
-    auth_secret     = "${site.auth_secret}"
+    auth_secret     = "${keys.session}"
     session_ttl_sec = 3600
     session_max_sec = 28800
     generation      = ""
