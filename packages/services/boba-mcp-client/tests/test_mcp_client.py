@@ -23,6 +23,7 @@ import httpx
 import mcp.types as mt
 import pytest
 from mcp.shared.exceptions import MCPError
+from mcp.shared.uri_template import UriTemplate
 from pydantic import BaseModel, ConfigDict, SecretStr, ValidationError
 
 from boba.auth.config import ProxyAuthConfig
@@ -49,22 +50,20 @@ from boba.stand.service_signin import ServiceSignIn
 from boba.stand.ui.stand import StandApp, StandFiles
 from boba.toolkit.calls import CallViews
 from boba.toolkit.channels import ToolChannel
-from boba.toolkit.dag import CallDag, DagNode, ToolCard, ToolHints
+from boba.toolkit.dag import (
+    CallDag,
+    NestedCallsOutput,
+    ToolCard,
+    ToolHints,
+)
 from boba.toolkit.mcp import McpFailure, McpResults, McpToolStubs
 from boba.toolkit.result import (
     ErrorResult,
     FailureResult,
     MarkdownResult,
-    ShellResult,
 )
 from boba.toolkit.types import SecretReveal
-from boba.toolkit.wire import (
-    JournalFeature,
-    JournalRead,
-    NestedCallsReply,
-    ResultWire,
-    WireResult,
-)
+from boba.toolkit.wire import JournalFeature, JournalRead
 from boba.workspace.launcher import ReadWindow
 
 pytestmark = pytest.mark.anyio
@@ -81,6 +80,28 @@ def _config(endpoint: HttpEndpoint | StdioCommand) -> McpServerConfig:
 
 
 CALLER = McpCaller(login="alice", roles=frozenset({"dev"}))
+
+
+def _stdout(port: McpToolServer, reply: mt.CallToolResult) -> JournalRead:
+    """Адрес канала stdout журнала вызова по ссылке в итоге."""
+    feature = port.journal_feature()
+    if feature is None:
+        raise AssertionError("the server declares its journal")
+
+    template = UriTemplate.parse(feature.resource)
+    for block in reply.content:
+        if not isinstance(block, mt.ResourceLink):
+            continue
+
+        params = template.match(str(block.uri))
+        if params is None:
+            continue
+
+        read = JournalRead.model_validate(params)
+        if read.channel is ToolChannel.STDOUT:
+            return read
+
+    raise AssertionError(f"the result links the stdout of its journal: {reply}")
 
 
 def _call(name: str, **args: object) -> mt.CallToolRequestParams:
@@ -198,15 +219,12 @@ class TestStandardServerOverStdio:
         server = McpToolServer("standard", _config(endpoint))
         await server.open()
         try:
-            names: list[str] = []
-            for tool in server.tools():
-                names.append(tool.name)
+            journal = server.journal_feature()
         finally:
             await server.close()
 
-        # журнал разобран: его операцию чтения (add) клиент исполняет сам
-        if "add" in names:
-            raise AssertionError(f"the journal extension is parsed: {names}")
+        if journal is None or journal.read != "add":
+            raise AssertionError(f"the journal extension is parsed: {journal}")
 
         if server.nested_calls() is not None:
             raise AssertionError("broken nested calls settings declare nothing")
@@ -624,12 +642,19 @@ class TestWorkspaceFiles:
             with pytest.raises(StorageNotFoundError, match="404"):
                 await files.stat(key)
 
-    async def test_upload_tool_is_not_offered_to_the_model(
-        self, dag: McpToolServer
-    ) -> None:
-        names = [tool.name for tool in dag.tools()]
-        if "file_upload" in names:
-            raise AssertionError(f"the client uploads files itself: {names}")
+    async def test_upload_tool_is_for_the_app_only(self, dag: McpToolServer) -> None:
+        """Файлы шлёт сам клиент: инструмент адреса загрузки сервер помечает
+        видимым только интерфейсу, модели его прячет ретранслятор."""
+        visible: dict[str, object] = {}
+        for tool in dag.tools():
+            meta = tool.meta
+            if meta is None:
+                continue
+
+            visible[tool.name] = meta.get("ui")
+
+        if visible.get("file_upload") != {"visibility": ["app"]}:
+            raise AssertionError(f"the upload tool is for the app only: {visible}")
 
 
 @pytest.mark.integration
@@ -676,26 +701,11 @@ class TestBobaMcpJournal:
         self, dag: McpToolServer
     ) -> None:
         heard = HeardCall()
-        call = DagNode(key="call-echo", tool="mcp__boba__fake_echo")
         reply = await dag.call(_call("fake_echo", text="hi", repeat=2), None, heard)
         if not isinstance(reply, mt.CallToolResult):
             raise AssertionError(f"the call is answered: {reply}")
 
-        wire = WireResult(
-            content=reply.content,
-            structured=reply.structured_content,
-            is_error=reply.is_error,
-            meta={},
-        )
-        outcome = ResultWire().revived(wire, call, "boba")
-        if outcome is None or outcome.journal is None:
-            raise AssertionError(f"the result names its journal: {reply}")
-
-        address = outcome.journal
-        request = JournalRead(
-            run=address.run, node=address.call, channel=ToolChannel.STDOUT
-        )
-        window = await dag.journal(request)
+        window = await dag.journal(_stdout(dag, reply))
 
         if heard.reports:
             raise AssertionError(f"a silent tool sends no progress: {heard.reports}")
@@ -707,24 +717,16 @@ class TestBobaMcpJournal:
     async def test_journal_channel_is_downloaded_whole_and_by_range(
         self, dag: McpToolServer
     ) -> None:
-        call = DagNode(key="call-echo", tool="mcp__boba__fake_echo")
         reply = await dag.call(_call("fake_echo", text="hi", repeat=2), None, None)
         if not isinstance(reply, mt.CallToolResult):
             raise AssertionError(f"the call is answered: {reply}")
 
-        wire = WireResult(
-            content=reply.content,
-            structured=reply.structured_content,
-            is_error=reply.is_error,
-            meta={},
-        )
-        outcome = ResultWire().revived(wire, call, "boba")
         files = dag.journal_files()
-        if outcome is None or outcome.journal is None or files is None:
+        if files is None:
             raise AssertionError(f"the journal is addressable: {reply}")
 
-        address = outcome.journal
-        rel = f"{address.run}/{address.call}/{ToolChannel.STDOUT.value}"
+        address = _stdout(dag, reply)
+        rel = f"{address.run}/{address.node}/{address.channel.value}"
         whole = await files.relay(rel, "")
         body = b"".join([chunk async for chunk in whole.chunks])
         await whole.release()
@@ -826,7 +828,7 @@ class TestSignInAsTheUser:
         finally:
             await servers.stop()
 
-        if names != ["fake_echo"]:
+        if names != ["fake_echo", "file_upload", "stream_read"]:
             raise AssertionError(f"the endpoint decides the tools: {names}")
 
     async def test_endpoint_outside_the_roles_refuses_the_port(
@@ -858,28 +860,17 @@ class TestSignInAsTheUser:
 
 @pytest.mark.integration
 class TestBobaMcpServer:
-    """Свой сервер: тот же стандартный путь плюс модель результата в
-    structuredContent."""
+    """Свой сервер: тот же стандартный путь плюс расширения сервера —
+    вложенные вызовы, журнал, файлы."""
 
-    async def test_result_carries_its_model(self, dag: McpToolServer) -> None:
-        call = DagNode(key="call-echo", tool="mcp__boba__fake_echo")
+    async def test_result_carries_its_text(self, dag: McpToolServer) -> None:
         reply = await dag.call(_call("fake_echo", text="hi", repeat=2), None, None)
         if not isinstance(reply, mt.CallToolResult) or reply.is_error:
             raise AssertionError(f"the call succeeds: {reply}")
 
-        wire = WireResult(
-            content=reply.content,
-            structured=reply.structured_content,
-            is_error=reply.is_error,
-            meta={},
-        )
-        outcome = ResultWire().revived(wire, call, "boba")
-        if outcome is None:
-            raise AssertionError(f"the server sends its model: {reply}")
-
-        artifact = outcome.artifact
-        if not isinstance(artifact, MarkdownResult) or artifact.text != "hi hi|t0ken":
-            raise AssertionError(f"the server's model is revived: {artifact}")
+        text = McpResults().result("fake_echo", "call-echo", reply).llm_view()
+        if text != "hi hi|t0ken":
+            raise AssertionError(f"the model reads the text of the result: {text}")
 
     async def test_nested_calls_name_the_workflow_offered_to_the_model(
         self, dag: McpToolServer
@@ -902,7 +893,7 @@ class TestBobaMcpServer:
         self, dag: McpToolServer, tmp_path: Path
     ) -> None:
         """Итог связки проходит проверку outputSchema клиентом SDK и
-        разбирается моделью NestedCallsReply; карточка несёт схему сервера."""
+        разбирается моделью NestedCallsOutput; карточка несёт схему сервера."""
         nodes = [
             {
                 "key": "src",
@@ -932,7 +923,7 @@ class TestBobaMcpServer:
         if not isinstance(reply, mt.CallToolResult) or reply.is_error:
             raise AssertionError(f"the workflow succeeds: {reply}")
 
-        answered = NestedCallsReply.model_validate(reply.structured_content)
+        answered = NestedCallsOutput.model_validate(reply.structured_content)
         for node in answered.nodes:
             heading = reply.content[node.blocks[0] - 1]
             if heading != mt.TextContent(text=f"[{node.key}] {node.tool} — ok"):
@@ -943,7 +934,7 @@ class TestBobaMcpServer:
         for tool in dag.tools():
             cards[tool.name] = stubs.card("boba", tool)
 
-        if cards["workflow"].output != NestedCallsReply.model_json_schema():
+        if cards["workflow"].output != NestedCallsOutput.model_json_schema():
             raise AssertionError(f"the card carries the output schema: {cards}")
 
     async def test_card_view_comes_from_the_schema_alone(
@@ -960,29 +951,16 @@ class TestBobaMcpServer:
         if views.seen(workflow.input_schema):
             raise AssertionError(f"a built-in node has no special view: {workflow}")
 
-    async def test_failure_keeps_the_server_failure_model(
-        self, dag: McpToolServer
-    ) -> None:
-        call = DagNode(key="call-echo", tool="mcp__boba__fake_echo")
+    async def test_failure_names_its_cause(self, dag: McpToolServer) -> None:
         reply = await dag.call(_call("fake_echo", text="boom", repeat=1), None, None)
         if not isinstance(reply, mt.CallToolResult) or not reply.is_error:
             raise AssertionError(f"the server reports isError: {reply}")
 
-        wire = WireResult(
-            content=reply.content,
-            structured=reply.structured_content,
-            is_error=reply.is_error,
-            meta={},
-        )
-        outcome = ResultWire().revived(wire, call, "boba")
-        if outcome is None:
-            raise AssertionError(f"the server sends its failure model: {reply}")
-
-        failure = outcome.artifact
+        failure = McpResults().result("fake_echo", "call-echo", reply)
         if not isinstance(failure, FailureResult):
-            raise AssertionError(f"the failure model of the server: {failure}")
+            raise AssertionError(f"isError is a failure for the model: {failure}")
         if "fake backend is down" not in failure.llm_view():
-            raise AssertionError(f"the cause travels with the model: {failure}")
+            raise AssertionError(f"the cause travels with the text: {failure}")
 
     async def test_connection_sealed_with_the_declared_key_reaches_the_body(
         self, dag: McpToolServer
@@ -1171,28 +1149,22 @@ class TestBobaMcpService:
         if "bash" not in names or "workflow" not in names:
             raise AssertionError(f"the service offers its plugin tools: {names}")
 
-        call = DagNode(key="call-bash", tool="mcp__boba__bash")
         reply = await service.call(
             _call("bash", command="echo from the service"), None, None
         )
         if not isinstance(reply, mt.CallToolResult):
             raise AssertionError(f"the call is answered: {reply}")
 
-        wire = WireResult(
-            content=reply.content,
-            structured=reply.structured_content,
-            is_error=reply.is_error,
-            meta={},
-        )
-        outcome = ResultWire().revived(wire, call, "boba")
-        if outcome is None:
-            raise AssertionError(f"the service sends its model: {reply}")
+        shown: list[str] = []
+        for block in reply.content:
+            if not isinstance(block, mt.EmbeddedResource):
+                continue
 
-        artifact = outcome.artifact
-        if not isinstance(artifact, ShellResult):
-            raise AssertionError(f"the shell model is revived: {artifact}")
-        if artifact.stdout.strip() != "from the service":
-            raise AssertionError(f"the body ran in the service: {artifact}")
+            if isinstance(block.resource, mt.TextResourceContents):
+                shown.append(block.resource.text)
+
+        if shown != ["from the service"]:
+            raise AssertionError(f"the body ran in the service: {reply}")
 
     async def test_calls_of_one_scope_share_the_files_of_the_scope(
         self, service: McpToolServer

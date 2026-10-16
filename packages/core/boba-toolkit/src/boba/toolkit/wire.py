@@ -1,28 +1,23 @@
-"""Результат инструмента в формате MCP и обратно.
+"""Результат инструмента в формате MCP.
 
 Сервер инструментов отдаёт итог вызова стандартными полями результата MCP:
-блоки для модели (content), признак сбоя (isError) и structuredContent со
-сведениями о вызове и собственными данными результата по outputSchema
-инструмента, а у результата без неё — результатом семейства ToolResultBase.
-Клиент собирает из них тот же итог NodeOutcome: класс результата
-выбирается по kind через реестр видов, статус и адрес журнала — из
-сведений о вызове. Обе стороны
-пользуются одним ResultWire, поэтому формат описан в одном месте.
+блоки для модели и человека (content), признак сбоя (isError), длительность
+вызова в _meta и structuredContent — только собственные данные результата
+по outputSchema инструмента. Перевод описан в одном месте — ResultWire.
 
 Здесь же модели границы клиент—сервер: служебные поля запроса
-(RequestFields) и настройки расширений сервера (JournalFeature, FilesFeature).
+(RequestFields), аргументы чтения журнала (JournalRead) и настройки
+расширений сервера (JournalFeature, FilesFeature).
 
 Ошибки:
-ValidationError — kind результата клиенту известен, а поля не проходят его
-    модель; сведения о вызове, служебные поля запроса либо настройки
-    расширения не проходят свою модель.
+ValidationError — служебные поля запроса либо настройки расширения не
+    проходят свою модель.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from enum import StrEnum
 from typing import Any, ClassVar
 from urllib.parse import quote, urlunsplit
 
@@ -30,35 +25,17 @@ import mcp_types as mt
 from pydantic import BaseModel, ConfigDict, Field
 
 from boba.toolkit.channels import JournalChannel
-from boba.toolkit.dag import (
-    DagNode,
-    JournalAddress,
-    NestedCallsOutput,
-    NodeOutcome,
-    NodeOutcomes,
-    ServerFeature,
-)
-from boba.toolkit.result import BlockAudience, ContentOut, ToolArtifact
+from boba.toolkit.dag import NodeOutcome, ServerFeature
+from boba.toolkit.result import BlockAudience, ContentOut
 
 __all__ = [
-    "CallStatus",
-    "CallWire",
     "FilesFeature",
     "JournalFeature",
     "JournalRead",
-    "NestedCallsReply",
     "RequestFields",
     "ResultWire",
-    "WirePart",
     "WireResult",
 ]
-
-
-class CallStatus(StrEnum):
-    """Статус итога вызова: тот же, что у сообщения инструмента в истории."""
-
-    SUCCESS = "success"
-    ERROR = "error"
 
 
 class RequestFields(BaseModel):
@@ -89,13 +66,16 @@ class JournalFeature(ServerFeature):
     разбирает объявление этой же моделью один раз, в open(). read — имя
     инструмента, читающего журнал окнами. path — путь маршрута, по которому
     канал журнала скачивается целиком: `{path}/{run}/{node}/{channel}` (GET,
-    потоком, с Range).
+    потоком, с Range). resource — шаблон uri (RFC 6570) ресурса канала
+    журнала с переменными run, node и channel: итог вызова несёт ссылки
+    resource_link на каналы его журнала по этому шаблону.
     """
 
     ID: ClassVar[str] = "com.boba/journal"
 
     read: str = Field(min_length=1)
     path: str = Field(min_length=1)
+    resource: str = Field(min_length=1)
 
 
 class FilesFeature(ServerFeature):
@@ -125,7 +105,7 @@ class JournalRead(BaseModel):
     """Аргументы чтения журнала вызова: окно от offset либо перед before.
 
     Адрес журнала — запуск run и идентификатор вызова на сервере node: оба
-    приходят в сведениях о вызове итога (CallWire).
+    приходят ссылкой resource_link на канал журнала в итоге вызова.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -147,45 +127,13 @@ class JournalRead(BaseModel):
     )
 
 
-class WirePart(StrEnum):
-    """Части structuredContent итога вызова: сведения о вызове и результат."""
-
-    CALL = "call"
-    RESULT = "result"
-
-
-class CallWire(BaseModel):
-    """Сведения о вызове в итоге, который сервер отдаёт клиенту.
-
-    id — идентификатор вызова на сервере: под ним сервер ведёт журнал
-    вызова. run — запуск, в котором вызов исполнен; пусто — вызов до запуска
-    не дошёл. status — error, если вызов не дошёл до тела инструмента
-    (аргументы, права, отказ сервера); тело, вернувшее отказ результатом,
-    — success.
-    """
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    id: str = Field(min_length=1)
-    status: CallStatus
-    run: str = ""
-
-
-class NestedCallsReply(NestedCallsOutput):
-    """structuredContent итога инструмента со вложенными вызовами: сведения о
-    вызове (CallWire) и узлы. Из неё outputSchema связки; клиент разбирает
-    ею ответ связки."""
-
-    call: CallWire
-
-
 @dataclass(frozen=True)
 class WireResult:
     """Итог вызова, как он едет по MCP.
 
     content — блоки для модели и человека; structured — structuredContent
-    итога: части WirePart у ответа сервера инструментов, None — сервер его
-    не прислал; is_error — вызов кончился сбоем; meta — _meta ответа.
+    по outputSchema инструмента, None — у результата его нет; is_error —
+    вызов кончился сбоем; meta — _meta ответа.
     """
 
     content: Sequence[mt.ContentBlock]
@@ -250,42 +198,22 @@ class McpContent(ContentOut):
 
 
 class ResultWire:
-    """Перевод итога вызова в части MCP (сервер) и обратно (клиент).
+    """Перевод итога вызова в части MCP.
 
-    Создаётся компонентом ответов сервера (McpReplies) и разбором ответов в
-    клиенте (McpToolServer). Итог едет стандартными полями результата MCP:
-    блоки результата — в content, признак сбоя — в isError, остальное — в
-    structuredContent: сведения о вызове (CallWire) и собственные данные
-    результата (ToolResultBase.structured), а у результата без них —
-    результат семейства частью WirePart.RESULT. По ним клиент
-    восстанавливает итог таким, каким его отдал порт сервера, и узнаёт
-    адрес журнала вызова.
+    Создаётся компонентом ответов сервера (McpReplies). Блоки результата
+    (ToolResultBase.sent) едут в content, сбой — в isError, длительность
+    вызова — в _meta, собственные данные результата по outputSchema
+    (ToolResultBase.structured) — в structuredContent.
     """
 
     ELAPSED: ClassVar[str] = "com.boba/elapsed"
     """Ключ _meta ответа: длительность вызова в миллисекундах; без ключа —
     не измерена. Длительность узлов связки — в их записях (NestedCallReply)."""
 
-    def __init__(self) -> None:
-        self._outcomes = NodeOutcomes()
-
     def packed(self, outcome: NodeOutcome) -> WireResult:
-        """Итог вызова частями MCP; запуск дописывает stamped()."""
-        status = CallStatus.SUCCESS
-        if outcome.errored:
-            status = CallStatus.ERROR
-
-        failed = not outcome.ok()
-
-        call = CallWire(id=outcome.key, status=status)
+        """Итог вызова частями MCP."""
         disclosed = outcome.artifact.disclosed()
-        structured: dict[str, Any] = {WirePart.CALL.value: call.model_dump(mode="json")}
-
-        own = disclosed.structured(McpContent(outcome.key))
-        if own is None:
-            structured[WirePart.RESULT.value] = disclosed.model_dump(mode="json")
-        else:
-            structured.update(own)
+        structured = disclosed.structured(McpContent(outcome.key))
 
         content = McpContent(outcome.key)
         disclosed.sent(content)
@@ -295,60 +223,8 @@ class ResultWire:
             meta[self.ELAPSED] = disclosed.elapsed_ms
 
         return WireResult(
-            content=content.blocks(), structured=structured, is_error=failed, meta=meta
+            content=content.blocks(),
+            structured=structured,
+            is_error=not outcome.ok(),
+            meta=meta,
         )
-
-    def stamped(self, structured: Mapping[str, Any], run: str) -> dict[str, Any]:
-        """Тот же structuredContent с запуском run в сведениях о вызове;
-        без сведений о вызове (ответ операции сервиса) — как есть.
-
-        Ошибки:
-        ValidationError — сведения о вызове не проходят модель CallWire.
-        """
-        stamped = dict(structured)
-        sent = structured.get(WirePart.CALL.value)
-        if sent is None:
-            return stamped
-
-        call = CallWire.model_validate(sent).model_copy(update={"run": run})
-        stamped[WirePart.CALL.value] = call.model_dump(mode="json")
-
-        return stamped
-
-    def revived(
-        self, wire: WireResult, call: DagNode, server: str
-    ) -> NodeOutcome | None:
-        """Итог вызова call из частей MCP — обратный перевод packed. server —
-        имя, под которым клиент знает сервер: с запуском и идентификатором
-        вызова на сервере оно даёт адрес журнала. None — частей WirePart в
-        structuredContent нет либо вид результата клиенту неизвестен.
-
-        Ошибки:
-        ValidationError — сведения о вызове либо поля результата известного
-            вида не проходят свою модель.
-        """
-        structured = wire.structured
-        if structured is None:
-            return None
-
-        sent = structured.get(WirePart.CALL.value)
-        if sent is None:
-            return None
-
-        result = structured.get(WirePart.RESULT.value)
-        if not isinstance(result, Mapping):
-            return None
-
-        artifact = ToolArtifact.revive(result)
-        if artifact is None:
-            return None
-
-        served = CallWire.model_validate(sent)
-        errored = served.status is CallStatus.ERROR
-        outcome = self._outcomes.of(call, artifact, errored)
-        if not served.run:
-            return outcome
-
-        address = JournalAddress(server=server, run=served.run, call=served.id)
-
-        return outcome.model_copy(update={"journal": address})

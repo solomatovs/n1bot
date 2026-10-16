@@ -1130,21 +1130,13 @@ class McpToolServer:
             )
             raise McpClientError(msg) from exc
 
-        client_side = self._client_side()
-        tools: list[mt.Tool] = []
-        for tool in listed:
-            if tool.name in client_side:
-                continue
-
-            tools.append(tool)
-
-        self._tools = tools
+        self._tools = list(listed)
         await self._open_files()
         await self._open_journal_files()
         logger.info(
             "mcp server %s: %d tools, features %s",
             self._name,
-            len(tools),
+            len(self._tools),
             sorted(self._features),
         )
 
@@ -1185,6 +1177,11 @@ class McpToolServer:
         None — сервер такого не объявил."""
         return self._nested
 
+    def journal_feature(self) -> JournalFeature | None:
+        """Настройки расширения журнала вызовов; None — сервер журнала не
+        объявил."""
+        return self._journal
+
     async def _open_journal_files(self) -> None:
         if self._journal_files is not None:
             await self._journal_files.close()
@@ -1218,19 +1215,6 @@ class McpToolServer:
         # каталога workspace: по нему клиент разбирает их в ключи файлов
         WorkspaceMount.configure(declared.workspace)
         self._files = McpFiles(self._name, endpoint, declared.path)
-
-    def _client_side(self) -> frozenset[str]:
-        """Операции сервера, которые исполняет сам клиент, а не модель: файл
-        он шлёт потоком на маршрут файлов, журнал вызова читает окнами для
-        панели живого вывода."""
-        names: set[str] = set()
-        if self._files_feature is not None:
-            names.add(self._files_feature.upload)
-
-        if self._journal is not None:
-            names.add(self._journal.read)
-
-        return frozenset(names)
 
     async def close(self) -> None:
         if self._files is not None:

@@ -14,16 +14,25 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any, ClassVar
 
+import mcp_types as mt
 import pytest
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
 from service_stand import PROFILE, ServiceStand
 
+from boba.mcp_adapter import JournalUris
+from boba.mcp_server.files import JournalRoutes
 from boba.mcp_server.server import RunLimits, StreamReadTool
 from boba.toolkit.channels import ToolChannel
-from boba.toolkit.wire import CallStatus, CallWire, WirePart
+from boba.toolkit.mcp import McpResults
+from boba.toolkit.wire import JournalRead
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
+
+
+def _text(result: mt.CallToolResult) -> str:
+    """Текст итога, каким его получает модель клиента."""
+    return McpResults().result("probe", "call", result).llm_view()
 
 
 @pytest.fixture
@@ -180,15 +189,10 @@ class TestArguments:
     ) -> None:
         result = await client.call_tool_mcp("fake_echo", {"text": "hi", "repeat": "2"})
 
-        sent = result.structured_content
-        if result.is_error or sent is None:
-            raise AssertionError(f"the call succeeds with a result: {result}")
-
-        structured = sent[WirePart.RESULT.value]
-        if structured is None:
+        if result.is_error:
             raise AssertionError(f"a numeric string is accepted: {result}")
-        if structured.get("text") != "hi hi|t0ken":
-            raise AssertionError(f"the body got the number: {structured}")
+        if _text(result) != "hi hi|t0ken":
+            raise AssertionError(f"the body got the number: {result}")
 
     async def test_service_fields_and_strays_do_not_fail_the_call(
         self, client: Client[Any]
@@ -196,15 +200,10 @@ class TestArguments:
         arguments = {"text": "hi", "repeat": 1, "intent": "say hi", "stray": True}
         result = await client.call_tool_mcp("fake_echo", arguments)
 
-        sent = result.structured_content
-        if result.is_error or sent is None:
-            raise AssertionError(f"the call succeeds with a result: {result}")
-
-        structured = sent[WirePart.RESULT.value]
-        if structured is None:
+        if result.is_error:
             raise AssertionError(f"the call succeeds: {result}")
-        if structured.get("text") != "hi|t0ken":
-            raise AssertionError(f"the body got its own arguments: {structured}")
+        if _text(result) != "hi|t0ken":
+            raise AssertionError(f"the body got its own arguments: {result}")
 
 
 class TestRefusal:
@@ -229,21 +228,11 @@ class TestRefusal:
         if len(lines) != 2 or not lines[1].startswith(self.RAISED_AT):
             raise AssertionError(f"the refusal names its place: {text!r}")
 
-        sent = result.structured_content
-        if sent is None:
-            raise AssertionError(f"the refusal carries structured content: {result}")
+        if result.structured_content is not None:
+            raise AssertionError(f"the refusal has no output schema: {result}")
 
-        structured = sent[WirePart.RESULT.value]
-        if structured.get("kind") != "exception":
-            raise AssertionError(f"the refusal carries its model: {structured}")
-        if structured.get("error_kind") != "ValidationError":
-            raise AssertionError(f"the kind is the error class: {structured}")
-        if structured.get("traceback"):
-            raise AssertionError(f"the trace stays in the server log: {structured}")
-
-        served = CallWire.model_validate(sent[WirePart.CALL.value])
-        if served.status is not CallStatus.ERROR:
-            raise AssertionError(f"the status of the call is error: {served}")
+        if "Traceback" in result.model_dump_json():
+            raise AssertionError(f"the trace stays in the server log: {result}")
 
     async def test_missing_argument_is_named(self, client: Client[Any]) -> None:
         result = await client.call_tool_mcp("fake_echo", {"text": "hi"})
@@ -260,20 +249,28 @@ class TestCallIdInJournal:
     async def test_journal_of_the_call_lives_under_the_id_of_the_server(
         self, client: Client[Any]
     ) -> None:
-        """Сервер называет вызов сам и возвращает идентификатор в итоге: по
-        нему и по запуску читается журнал."""
+        """Сервер называет вызов сам и ссылается в итоге на каналы его
+        журнала: по адресу из ссылки журнал читается окнами."""
         result = await client.call_tool_mcp("fake_echo", {"text": "hi", "repeat": 1})
 
-        sent = result.structured_content
-        if sent is None:
-            raise AssertionError(f"the result carries structured content: {result}")
+        uris = JournalUris(JournalRoutes.RESOURCE)
+        found: list[JournalRead] = []
+        for block in result.content:
+            if not isinstance(block, mt.ResourceLink):
+                continue
 
-        served = CallWire.model_validate(sent[WirePart.CALL.value])
-        address = {
-            "run": served.run,
-            "node": served.id,
-            "channel": ToolChannel.STDOUT.value,
-        }
+            if read := uris.address(str(block.uri)):
+                found.append(read)
+
+        stdout: list[JournalRead] = []
+        for read in found:
+            if read.channel is ToolChannel.STDOUT:
+                stdout.append(read)
+
+        if len(stdout) != 1:
+            raise AssertionError(f"the result links the journal channels: {found}")
+
+        address = stdout[0].model_dump(mode="json", exclude_none=True)
         window = await client.call_tool_mcp(StreamReadTool.NAME, address)
         piece = window.structured_content
         if window.is_error or piece is None:

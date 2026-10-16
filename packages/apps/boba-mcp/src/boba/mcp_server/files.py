@@ -13,6 +13,8 @@ HTTPException 401 — запрос без токена входа либо то�
 HTTPException 404 — файла нет в workspace.
 HTTPException 416 — диапазон начинается за концом файла.
 HTTPException 507 — в workspace не осталось места.
+ResourceError — resources/read канала журнала: канал не читается либо
+    журнала вызова у вызывающего нет.
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ from enum import StrEnum
 from typing import ClassVar
 
 from fastmcp import FastMCP
+from fastmcp.exceptions import ResourceError
 from fastmcp.server.auth import AccessToken
 from mcp.server.auth.middleware.bearer_auth import AuthenticatedUser
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -119,26 +122,33 @@ class RouteCallers:
 
 
 class JournalRoutes:
-    """Журнал вызова целым файлом по маршруту endpoint'а.
+    """Адреса журнала вызова на endpoint'е: канал целым файлом по маршруту
+    и ресурсом MCP.
 
     Создаётся сервером endpoint'а из журналов процесса. Окна журнала читает
-    операция stream_read; скачать канал целиком — этот маршрут:
-    `{base}/journals/{run}/{node}/{channel}`, потоком и с Range. Журнал
-    отдаётся только тому, кто вызывал инструмент: чужой запуск — 404.
+    операция stream_read; скачать канал целиком — маршрут
+    `{base}/journals/{run}/{node}/{channel}`, потоком и с Range. Канал —
+    ресурс по шаблону RESOURCE: на него ведут ссылки итога вызова, а
+    resources/read отдаёт первое окно канала. Журнал отдаётся только тому,
+    кто вызывал инструмент: чужой запуск — 404.
     """
 
     MIME: ClassVar[str] = "text/plain; charset=utf-8"
+    RESOURCE: ClassVar[str] = "boba-journal://{run}/{node}/{channel}"
+    """Шаблон uri ресурса канала журнала (JournalFeature.resource)."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 — маршрут собирается всеми входами endpoint'а
         self,
         journals: CallJournals,
         callers: RouteCallers,
+        subjects: TokenSubjects,
         config: LocalStorageConfig,
         base: str,
         published: str,
     ) -> None:
         self._journals = journals
         self._callers = callers
+        self._subjects = subjects
         self._config = config
         self._base = f"{base}/journals"
         self._published = f"{published}{self._base}"
@@ -153,6 +163,33 @@ class JournalRoutes:
     def install(self, server: FastMCP) -> None:
         path = "/".join((self._base, "{run}", "{node}", "{channel}"))
         server.custom_route(path, methods=["GET"])(self.get)
+        server.resource(self.RESOURCE, mime_type=ContentMime.PLAIN.value)(self.read)
+
+    async def read(self, run: str, node: str, channel: str) -> str:
+        """resources/read канала журнала: его первое окно, как stream_read
+        от начала; канал целиком отдаёт маршрут журналов.
+
+        Ошибки:
+        ResourceError — канал не читается либо журнала нет у вызывающего.
+        """
+        visible = JournalChannels.parse_visible(channel)
+        if visible is None:
+            msg = (
+                f"resources/read {run}/{node}/{channel}: channel {channel!r} is "
+                "not readable, expected one of the visible journal channels"
+            )
+            raise ResourceError(msg)
+
+        user = self._subjects.current().user_key
+        piece = self._journals.recorded_slice(user, run, node, 0, visible)
+        if piece is None:
+            msg = (
+                f"resources/read {run}/{node}/{channel}: no journal of call "
+                f"{node!r} in run {run!r} on channel {channel!r} for the caller"
+            )
+            raise ResourceError(msg)
+
+        return piece.text
 
     async def get(self, request: Request) -> Response:
         subject = await self._callers.of(request)
