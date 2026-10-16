@@ -407,7 +407,7 @@ class CallSealing:
 
     Создаётся провайдером call_sealing; зовёт ретранслятор mcp/message.
     Какие аргументы — соединения и какого вида, читает из схемы
-    инструмента (SealedParamSchema); ключ сервера — из объявленных им
+    инструмента по пометке (SealedParamSchema.offers); ключ сервера — из объявленных им
     возможностей (SealFeature); соединение пользователя по виду и имени
     берёт ArmedConnections в контексте вызывающего.
     """
@@ -445,17 +445,18 @@ class CallSealing:
         KerberosError — билет к соединению не выпущен.
         """
         updated: dict[str, Any] = dict(arguments)
-        kinds = self._declared.kinds_of(tool_schema)
-        if not kinds:
+        offers = self._declared.offers(tool_schema)
+        if not offers:
             return updated
 
         seal = ConnectionSeal(self._key(server))
         with self._contexts.applied(self._callers.context(caller)):
-            for param, kind in kinds.items():
+            for param, offer in offers.items():
                 name = updated.get(param)
                 if not isinstance(name, str):
                     continue
 
+                kind = offer.kind
                 sealed = await self._connections.sealed(kind, name, self._ttl)
                 updated[param] = seal.seal(sealed)
 
