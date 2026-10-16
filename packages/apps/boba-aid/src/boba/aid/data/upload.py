@@ -1,0 +1,647 @@
+"""Загрузка и отдача вложения потоком: тело не оседает ни в памяти, ни в tmp.
+
+Штатный роут chainlit получает файл уже разобранным: FastAPI собирает multipart
+целиком (до 1 МиБ в памяти, дальше во временный файл), затем `await file.read()`
+поднимает его в память и `persist_file` пишет копию в каталог сессии. Здесь тело
+разбирается по мере поступления и чанками уходит прямо в образ пользователя,
+поэтому единственный предел размера — свободное место в образе. Отдача тоже
+потоковая: тело идёт окном чанков из хранилища, заголовок Range отвечает 206.
+
+Ошибки: HTTPException 400 — тело без файловой части или файл не прошёл проверку
+chainlit; 401 — сессия чужая; 404 — сессия, родительское сообщение или файл
+неизвестны; 416 — диапазон за концом файла; 502 — сервер MCP журналов
+недоступен; 507 — в образе не осталось места.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import io
+import logging
+import mimetypes
+import time
+import unicodedata
+import uuid
+from collections.abc import AsyncIterator, Callable
+from typing import Annotated, Any, ClassVar, Literal
+
+from chainlit.auth import get_current_user
+from chainlit.user import PersistedUser, User
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi.datastructures import UploadFile
+from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import ValidationError
+from python_multipart.multipart import MultipartParser, parse_options_header
+from starlette.datastructures import Headers
+
+from boba.aid.canvas.remote import RemoteJournals
+from boba.aid.domain.fields import FileField
+from boba.aid.domain.keys import AppPrefix
+from boba.aid.infra.session import ChainlitSession, session_source_ref
+from boba.canvas.keys import ObjectKey, ThreadDir
+from boba.canvas.storage import (
+    StorageError,
+    StorageFullError,
+    StorageNotFoundError,
+)
+from boba.canvas.transfer import (
+    ContentDisposition,
+    FileHeader,
+    TransferFormat,
+    UploadPolicy,
+)
+from boba.identity.errors import AuthenticationError
+from boba.identity.session import Login
+from boba.mcp_client.client import McpCaller, McpClientError, McpServers, RelayedFile
+from boba.runtime.served import StreamedFile
+from boba.runtime.storage import StorageClient
+from boba.toolkit.channels import JournalChannels, ToolChannel
+from boba.toolkit.failure import ValidationText
+
+__all__ = [
+    "CanvasServing",
+    "MultipartFile",
+    "SessionFiles",
+    "StreamServing",
+    "UploadRoute",
+]
+
+logger = logging.getLogger(__name__)
+
+
+class MultipartFile:
+    """Файловая часть multipart-тела, читаемая по мере поступления запроса.
+
+    Парсер python_multipart синхронный и работает на колбэках: `_pump` скармливает
+    ему очередной сетевой чанк, а колбэки складывают распакованные данные в
+    `_pending`, откуда их забирает `chunks`. За раз в памяти лежит столько, сколько
+    принёс один чанк сети, независимо от размера файла.
+    """
+
+    DISPOSITION: ClassVar[bytes] = b"content-disposition"
+    CONTENT_TYPE: ClassVar[bytes] = b"content-type"
+    DEFAULT_MIME: ClassVar[str] = "application/octet-stream"
+    NAME_FORM: ClassVar[Literal["NFC"]] = "NFC"
+
+    def __init__(self, request: Request) -> None:
+        self.filename: str = ""
+        self.content_type: str = ""
+
+        self._stream = request.stream().__aiter__()
+        self._parser = MultipartParser(self._boundary(request), self._callbacks())
+        self._headers: dict[bytes, bytes] = {}
+        self._field = bytearray()
+        self._value = bytearray()
+        self._pending: list[bytes] = []
+        self._found = False
+        self._part_done = False
+        self._eof = False
+
+    async def open(self) -> None:
+        """Дочитывает тело до конца заголовков файловой части."""
+        while not self._found and not self._eof:
+            await self._pump()
+
+        if not self._found:
+            msg = (
+                "the multipart body has no file part: expected a part with a "
+                "filename in content-disposition, none of the parts carries one"
+            )
+            raise HTTPException(status_code=400, detail=msg)
+
+    async def chunks(self) -> AsyncIterator[bytes]:
+        """Данные файловой части в порядке поступления."""
+        while True:
+            pending, self._pending = self._pending, []
+            for chunk in pending:
+                yield chunk
+
+            if self._part_done or self._eof:
+                return
+
+            await self._pump()
+
+    async def drain(self, max_bytes: int, max_seconds: float) -> int:
+        """Выбрасывает то, что клиент успевает дослать; возвращает пропущенный объём.
+
+        Аналог lingering_close в nginx. Закрыть сокет, пока клиент шлёт, нельзя:
+        придёт RST, клиент потеряет уже отправленный ответ и повторит запрос.
+        Поэтому входящее какое-то время вычитывается впустую — но с потолком, чтобы
+        отвергнутый файл не заливался целиком.
+        """
+        deadline = time.monotonic() + max_seconds
+        skipped = 0
+        while not self._eof and skipped < max_bytes:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                break
+            try:
+                await asyncio.wait_for(self._pump(), timeout=left)
+            except TimeoutError:
+                break
+            for chunk in self._pending:
+                skipped += len(chunk)
+            self._pending.clear()
+        return skipped
+
+    async def _pump(self) -> None:
+        try:
+            chunk = await self._stream.__anext__()
+        except StopAsyncIteration:
+            self._eof = True
+            self._parser.finalize()
+            return
+
+        self._parser.write(chunk)
+
+    @classmethod
+    def _boundary(cls, request: Request) -> bytes:
+        content_type = request.headers.get("content-type", "")
+        kind, options = parse_options_header(content_type)
+        boundary = options.get(b"boundary")
+        if kind != b"multipart/form-data" or not boundary:
+            msg = (
+                "expected a multipart/form-data body with a boundary, "
+                f"got content-type {content_type[:200]!r}"
+            )
+            raise HTTPException(status_code=400, detail=msg)
+        return boundary
+
+    def _callbacks(self) -> Any:
+        return {
+            "on_part_begin": self._on_part_begin,
+            "on_header_field": self._on_header_field,
+            "on_header_value": self._on_header_value,
+            "on_header_end": self._on_header_end,
+            "on_headers_finished": self._on_headers_finished,
+            "on_part_data": self._on_part_data,
+            "on_part_end": self._on_part_end,
+        }
+
+    def _on_part_begin(self) -> None:
+        self._headers.clear()
+        self._field.clear()
+        self._value.clear()
+
+    def _on_header_field(self, data: bytes, start: int, end: int) -> None:
+        self._field.extend(data[start:end])
+
+    def _on_header_value(self, data: bytes, start: int, end: int) -> None:
+        self._value.extend(data[start:end])
+
+    def _on_header_end(self) -> None:
+        self._headers[bytes(self._field).lower()] = bytes(self._value)
+        self._field.clear()
+        self._value.clear()
+
+    def _on_headers_finished(self) -> None:
+        """Части без имени файла — обычные поля формы: они просто пропускаются."""
+        _, options = parse_options_header(self._headers.get(self.DISPOSITION, b""))
+        filename = options.get(b"filename")
+        if not filename:
+            return
+
+        # браузер macOS шлёт имя разложенным (й = и + знак), модель пишет его
+        # составными буквами: путь к файлу обязан совпасть побайтно
+        raw = filename.decode("utf-8", errors="replace")
+        self.filename = unicodedata.normalize(self.NAME_FORM, raw)
+        mime = self._headers.get(self.CONTENT_TYPE, b"").decode()
+        self.content_type = mime or self.DEFAULT_MIME
+        self._found = True
+
+    def _on_part_data(self, data: bytes, start: int, end: int) -> None:
+        if not self._found or self._part_done:
+            return
+        self._pending.append(bytes(data[start:end]))
+
+    def _on_part_end(self) -> None:
+        if self._found:
+            self._part_done = True
+
+
+class SessionFiles:
+    """Файлы сессии, которые роут отдаёт прямо из хранилища.
+
+    Ключ object_key — расширение чужого FileDict: по нему download узнаёт, что
+    тело файла лежит в storage, а не на диске chainlit.
+    """
+
+    OBJECT_KEY: ClassVar[str] = "object_key"
+    """Поле записи: тело файла лежит в storage по этому ключу."""
+
+    LINK: ClassVar[str] = "/project/file/{file_id}?session_id={session_id}"
+    """Шаблон ссылки chainlit на файл сессии."""
+
+    @classmethod
+    def register(
+        cls, session: ChainlitSession, key: ObjectKey, *, mime: str, size: int
+    ) -> str:
+        """Регистрирует объект хранилища как файл сессии; отдаёт его id."""
+        file_id = str(uuid.uuid4())
+        suffix = mimetypes.guess_extension(mime) or ""
+        session.files[file_id] = {
+            "id": file_id,
+            # копии на диске нет: путь остаётся лишь именем для потребителей chainlit
+            "path": session.files_dir / f"{file_id}{suffix}",
+            "name": key.name,
+            "type": mime,
+            "size": size,
+            cls.OBJECT_KEY: key.render(),
+        }
+        return file_id
+
+    @classmethod
+    def url_for(cls, session: ChainlitSession, file_id: str) -> str:
+        """Ссылка на файл сессии — тот же вид, что строит фронт по chainlit_key."""
+        link = cls.LINK.format(file_id=file_id, session_id=session.id)
+
+        return AppPrefix.render() + link
+
+
+class UploadRoute:
+    """Замена chainlit-роутов вложения: файл течёт в хранилище и обратно."""
+
+    CURRENT_USER: ClassVar[Any] = Depends(get_current_user)
+    """Та же проверка токена, что и у chainlit; дефолт сигнатуры — только класс."""
+
+    def __init__(self, storage: StorageClient, policy: UploadPolicy) -> None:
+        self._storage = storage
+        self._policy = policy
+        self._format = TransferFormat(policy.mib)
+        self._files = StreamedFile(storage, policy)
+
+    def install(self, chainlit_app: FastAPI) -> None:
+        """Роуты встают перед chainlit-овскими: побеждает первый совпавший."""
+        routes = [
+            (self._policy.upload_path, self.upload, "POST"),
+            (self._policy.download_path, self.download, "GET"),
+        ]
+        for path, endpoint, method in routes:
+            chainlit_app.add_api_route(
+                path, endpoint, methods=[method], include_in_schema=False
+            )
+            chainlit_app.router.routes.insert(0, chainlit_app.router.routes.pop())
+            logger.info(
+                "upload: %s %s handled by %s", method, path, type(self).__name__
+            )
+
+    async def upload(
+        self,
+        request: Request,
+        session_id: str,
+        ask_parent_id: str | None = None,
+        current_user: Any = CURRENT_USER,
+    ) -> JSONResponse:
+        """Принимает файл и отдаёт ссылку в том же виде, что и chainlit."""
+        started = time.monotonic()
+        logger.info(
+            "upload: request accepted, session=%s declared=%s bytes type=%s",
+            session_id,
+            request.headers.get("content-length", "unknown"),
+            request.headers.get("content-type", "unknown"),
+        )
+        part = MultipartFile(request)
+        try:
+            session = self._session(session_id, current_user)
+
+            await part.open()
+            logger.info(
+                "upload: headers parsed in %s, file=%r mime=%s",
+                self._took(started),
+                part.filename,
+                part.content_type,
+            )
+
+            self._validate(session, part, request, ask_parent_id)
+
+            key = ObjectKey.build(
+                self._user_id(session), session.thread_id, part.filename, uuid.uuid4()
+            )
+            try:
+                written = await self._store(key, part)
+            except StorageFullError as e:
+                logger.warning("upload: %s rejected, %s", key.render(), e)
+                msg = f"upload of {key.name!r} rejected: {e}"
+                raise HTTPException(
+                    status_code=self._policy.no_space_status, detail=msg
+                ) from e
+        except HTTPException:
+            # клиент ещё шлёт файл: без этого соединение оборвётся и он повторит запрос
+            skipped = await part.drain(
+                self._policy.drain_bytes,
+                self._policy.drain_seconds,
+            )
+            logger.info(
+                "upload: %s of the rejected body discarded", self._volume(skipped)
+            )
+            raise
+
+        logger.info(
+            "upload: %s done, %s in %s",
+            key.render(),
+            self._volume(written),
+            self._took(started),
+        )
+        return JSONResponse(content=self._register(session, part, key, written))
+
+    async def download(
+        self,
+        request: Request,
+        file_id: str,
+        session_id: str,
+        current_user: Any = CURRENT_USER,
+    ) -> Response:
+        """Отдаёт ранее загруженный файл потоком прямо из хранилища."""
+        session = self._session(session_id, current_user)
+
+        record = session.files.get(file_id)
+        if not record or SessionFiles.OBJECT_KEY not in record:
+            msg = f"file {file_id} is not registered in session {session_id}"
+            raise HTTPException(status_code=404, detail=msg)
+
+        name = str(record[FileField.NAME])
+        logger.info(
+            "upload: serving %s from storage (%s)",
+            name,
+            record[SessionFiles.OBJECT_KEY],
+        )
+        return await self._files.respond(
+            str(record[SessionFiles.OBJECT_KEY]),
+            mime=str(record[FileField.TYPE]),
+            range_header=request.headers.get(FileHeader.RANGE, ""),
+            content_disposition=ContentDisposition.inline(name),
+        )
+
+    async def _store(self, key: ObjectKey, part: MultipartFile) -> int:
+        """Переливает часть в хранилище и возвращает записанный объём."""
+        written = 0
+        started = time.monotonic()
+        target = key.render()
+
+        async def counted() -> AsyncIterator[bytes]:
+            nonlocal written
+            milestone = self._policy.log_every_bytes
+            async for chunk in part.chunks():
+                written += len(chunk)
+                if written >= milestone:
+                    milestone = written + self._policy.log_every_bytes
+                    logger.info(
+                        "upload: %s streaming, %s in %s (%s)",
+                        target,
+                        self._volume(written),
+                        self._took(started),
+                        self._rate(written, started),
+                    )
+                yield chunk
+
+        logger.info("upload: %s streaming into storage", target)
+        await self._storage.upload_stream(target, counted(), part.content_type)
+        logger.info(
+            "upload: %s written, %s in %s (%s)",
+            target,
+            self._volume(written),
+            self._took(started),
+            self._rate(written, started),
+        )
+        return written
+
+    def _volume(self, written: int) -> str:
+        return self._format.volume(written)
+
+    def _took(self, started: float) -> str:
+        return self._format.took(started)
+
+    def _rate(self, written: int, started: float) -> str:
+        return self._format.rate(written, started)
+
+    def _validate(
+        self,
+        session: ChainlitSession,
+        part: MultipartFile,
+        request: Request,
+        ask_parent_id: str | None,
+    ) -> None:
+        """Проверки chainlit по заголовкам: тело ещё не прочитано."""
+        from chainlit.server import validate_file_upload  # noqa: PLC0415
+
+        spec = session.file_spec(ask_parent_id)
+        if not spec and ask_parent_id:
+            msg = (
+                f"parent message {ask_parent_id} has no file spec in session "
+                f"{session.id}"
+            )
+            raise HTTPException(status_code=404, detail=msg)
+
+        # размер части заранее неизвестен: его верхняя оценка — длина всего тела
+        declared = int(request.headers.get("content-length") or 0)
+        probe = UploadFile(
+            file=io.BytesIO(),
+            size=declared,
+            filename=part.filename,
+            headers=Headers({"content-type": part.content_type}),
+        )
+        try:
+            validate_file_upload(probe, spec=spec)
+        except ValueError as e:
+            msg = f"file {part.filename!r} ({part.content_type}) rejected: {e}"
+            raise HTTPException(status_code=400, detail=msg) from e
+
+    def _register(
+        self,
+        session: Any,
+        part: MultipartFile,
+        key: ObjectKey,
+        written: int,
+    ) -> dict[str, Any]:
+        """Запись о файле там же, где её ждут emitter и роут скачивания."""
+        file_id = SessionFiles.register(
+            session, key, mime=part.content_type, size=written
+        )
+        return {
+            "id": file_id,
+            "name": key.name,
+            "type": part.content_type,
+            "size": written,
+        }
+
+    @staticmethod
+    def _session(session_id: str, current_user: Any) -> ChainlitSession:
+        session = session_source_ref().by_id(session_id)
+        if not session.present:
+            msg = f"chainlit session {session_id} is not found"
+            raise HTTPException(status_code=404, detail=msg)
+
+        if not current_user:
+            return session
+
+        # current_user — cl.User из JWT chainlit, логин в нём как набран
+        if session.identifier != Login(current_user.identifier):
+            msg = (
+                f"session {session_id} belongs to another user: "
+                f"{session.identifier!r}, not {current_user.identifier!r}"
+            )
+            raise AuthenticationError(msg)
+
+        return session
+
+    @staticmethod
+    def _user_id(session: ChainlitSession) -> str:
+        """Ключ вложений — id строки users; логин в него не подставляется.
+
+        Логин у пользователя меняется (регистр, переименование в каталоге),
+        и подстановка увела бы часть вложений в чужой префикс.
+        """
+        user_id = session.user_id
+        if not user_id:
+            msg = f"session {session.id} has no persisted user (users row)"
+            raise HTTPException(status_code=401, detail=msg)
+
+        return str(user_id)
+
+
+class CanvasServing:
+    """Отдаёт файл панели по треду, каталогу и имени; сессия здесь ни при чём.
+
+    Содержимое панели переживает и переподключение вкладки, и перезапуск
+    приложения, поэтому ссылка адресует файл его местом в workspace, а
+    пользователя берёт из токена — как это делает отдача журналов.
+    """
+
+    FALLBACK_MIME: ClassVar[str] = "application/octet-stream"
+
+    def __init__(self, storage: StorageClient, policy: UploadPolicy) -> None:
+        self._files = StreamedFile(storage, policy)
+
+    async def serve(
+        self,
+        request: Request,
+        thread_id: str,
+        dir: ThreadDir,  # noqa: A002
+        name: str,
+        current_user: Annotated[User | PersistedUser | None, Depends(get_current_user)],
+    ) -> Response:
+        if not isinstance(current_user, PersistedUser):
+            got = type(current_user).__name__
+            msg = f"sign-in required: expected a persisted user, got {got}"
+            raise HTTPException(status_code=401, detail=msg)
+
+        try:
+            key = ObjectKey(
+                user_id=str(current_user.id),
+                thread_id=thread_id,
+                name=name,
+                dir=dir,
+            )
+        except ValidationError as e:
+            msg = (
+                f"file not found: thread {thread_id!r}, dir {dir.value}, "
+                f"name {name!r}: {ValidationText.of(e)}"
+            )
+            raise HTTPException(status_code=404, detail=msg) from e
+
+        mime = mimetypes.guess_type(key.name)[0]
+        if not mime:
+            mime = self.FALLBACK_MIME
+
+        return await self._files.respond(
+            key.render(),
+            mime=mime,
+            range_header=request.headers.get(FileHeader.RANGE, ""),
+            content_disposition="",
+        )
+
+
+class StreamServing:
+    """Отдаёт канал журнала вызова файлом.
+
+    Журнал лежит у MCP-сервера, который исполнял вызов: адрес журнала даёт
+    реестр RemoteJournals (из памяти живого вызова либо из истории треда),
+    файл читается клиентом MCP от имени вошедшего, и ответ сервера — статус,
+    заголовки тела, чанки — уходит браузеру как есть. Чужой журнал сервер не
+    отдаёт.
+    """
+
+    BAD_GATEWAY: ClassVar[int] = 502
+
+    def __init__(
+        self,
+        journals_ref: Callable[[], RemoteJournals],
+        servers_ref: Callable[[], McpServers],
+    ) -> None:
+        self._journals_ref = journals_ref
+        self._servers_ref = servers_ref
+        """Реестр журналов и клиент серверов резолвятся на запрос: роут
+        ставится до сборки контейнера."""
+
+    async def serve(
+        self,
+        request: Request,
+        thread_id: str,
+        call_id: str,
+        current_user: Annotated[User | PersistedUser | None, Depends(get_current_user)],
+        channel: str = ToolChannel.STDOUT.value,
+    ) -> Response:
+        if not isinstance(current_user, PersistedUser):
+            got = type(current_user).__name__
+            msg = f"sign-in required: expected a persisted user, got {got}"
+            raise HTTPException(status_code=401, detail=msg)
+
+        # служебные каналы вызова наружу не отдаются: скачать можно то же,
+        # что показывает панель
+        log_channel = JournalChannels.parse_visible(channel)
+        if log_channel is None:
+            visible = ", ".join(str(item) for item in JournalChannels.VISIBLE)
+            msg = (
+                f"stream channel {channel!r} of call {call_id} is not "
+                f"downloadable, visible channels: {visible}"
+            )
+            raise HTTPException(status_code=404, detail=msg)
+
+        address = await self._journals_ref().address(thread_id, call_id)
+        if address is None:
+            msg = (
+                f"stream {call_id}/{log_channel} of thread {thread_id} is not "
+                "found: no server keeps a journal of this call"
+            )
+            raise HTTPException(status_code=404, detail=msg)
+
+        caller = McpCaller(
+            login=Login(current_user.identifier),
+            roles=ChainlitSession.roles_of(current_user),
+        )
+        try:
+            files = await self._servers_ref().journal_files(address.server, caller)
+        except McpClientError as e:
+            msg = f"stream {call_id}/{log_channel} of thread {thread_id}: {e}"
+            raise HTTPException(status_code=self.BAD_GATEWAY, detail=msg) from e
+
+        if files is None:
+            msg = (
+                f"stream {call_id}/{log_channel} of thread {thread_id}: mcp "
+                f"server {address.server!r} serves no journals"
+            )
+            raise HTTPException(status_code=404, detail=msg)
+
+        rel = "/".join((address.run, address.call, log_channel.value))
+        try:
+            relayed = await files.relay(rel, request.headers.get(FileHeader.RANGE, ""))
+        except StorageNotFoundError as e:
+            msg = f"stream {call_id}/{log_channel} of thread {thread_id}: {e}"
+            raise HTTPException(status_code=404, detail=msg) from e
+        except StorageError as e:
+            msg = f"stream {call_id}/{log_channel} of thread {thread_id}: {e}"
+            raise HTTPException(status_code=self.BAD_GATEWAY, detail=msg) from e
+
+        return StreamingResponse(
+            self._body(relayed),
+            status_code=relayed.status,
+            headers=dict(relayed.headers),
+        )
+
+    @staticmethod
+    async def _body(relayed: RelayedFile) -> AsyncIterator[bytes]:
+        try:
+            async for chunk in relayed.chunks:
+                yield chunk
+        finally:
+            await relayed.release()

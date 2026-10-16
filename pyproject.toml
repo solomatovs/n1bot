@@ -44,7 +44,7 @@ pythonpath = [
     "packages/core/boba-indexing/src",
     "packages/infra/config/boba-config/src",
     "packages/core/boba-toolkit/src",
-    "packages/apps/boba-chainlit/src",
+    "packages/apps/boba-aid/src",
     "packages/apps/boba-mcp/src",
     "packages/tools/boba-tool-shell/src",
     "packages/tools/boba-tool-canvas/src",
@@ -139,7 +139,7 @@ extraPaths = [
     "packages/core/boba-indexing/src",
     "packages/infra/config/boba-config/src",
     "packages/core/boba-toolkit/src",
-    "packages/apps/boba-chainlit/src",
+    "packages/apps/boba-aid/src",
     "packages/apps/boba-mcp/src",
     "packages/tools/boba-tool-shell/src",
     "packages/tools/boba-tool-canvas/src",
@@ -243,7 +243,7 @@ environments = ["python_full_version >= '3.11' and python_full_version < '3.12' 
 [tool.uv.workspace]
 members = [
     "packages/core/*",
-    "packages/apps/boba-chainlit",
+    "packages/apps/boba-aid",
     "packages/apps/boba-mcp",
     "packages/apps/boba-cli",
     "packages/apps/ix/*",
@@ -317,7 +317,7 @@ boba-llm            = { workspace = true }
 boba-llm-http       = { workspace = true }
 boba-llm-onnx       = { workspace = true }
 boba-llm-fastembed  = { workspace = true }
-boba-chainlit       = { workspace = true }
+boba-aid            = { workspace = true }
 boba-agent          = { workspace = true }
 boba-history-jsonl  = { workspace = true }
 boba-history-postgres = { workspace = true }
