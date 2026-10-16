@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from abc import abstractmethod
-from collections.abc import Coroutine, Mapping, Sequence
+from collections.abc import Coroutine, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -23,6 +23,7 @@ from urllib.parse import urljoin
 from uuid import UUID
 
 import chainlit as cl
+import mcp_types as mt
 from acp.experimental.v2 import schema
 from pydantic import AliasPath, AnyUrl, BaseModel, ConfigDict, Field
 
@@ -60,6 +61,7 @@ from boba.chat.threads import DataLayerError, ThreadUpsert
 from boba.db.postgres.connection import PostgresConfig
 from boba.identity.errors import InternalServiceError
 from boba.runtime.threads import ThreadsTable
+from boba.toolkit.result import BlockAudience, JsonBlock
 from boba.transport.acp.protocol import AcpErrorCode, MetaKey
 
 __all__ = [
@@ -70,6 +72,7 @@ __all__ = [
     "ConfigCategory",
     "ConfigOption",
     "LaunchedAgent",
+    "ModelContextUpdate",
     "MuteUpdates",
     "PermissionKind",
     "Question",
@@ -140,6 +143,33 @@ class Question(BaseModel):
     def body(self, author: str = "") -> QuestionBody:
         """Тело вопроса для шины; author — имя шага вопроса во всех вкладках."""
         return QuestionBody(text=self.text, links=self.links, author=author)
+
+
+class ModelContextUpdate(BaseModel):
+    """Параметры ui/update-model-context приложения MCP Apps: что приложение
+    хочет сообщить модели к следующему вопросу — текст и структурные данные.
+    Картинок и прочих блоков чат приложению не объявляет, валидация их
+    отвергает."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    content: Sequence[mt.TextContent] = ()
+    structured_content: Mapping[str, Any] = Field(
+        default_factory=dict, alias="structuredContent"
+    )
+
+    def blocks(self) -> Iterator[PromptBlock]:
+        """Блоки вопроса агенту только для модели: при воспроизведении
+        вопрос показывается без них."""
+        annotations = schema.Annotations(audience=[BlockAudience.MODEL.value])
+        for block in self.content:
+            yield schema.TextContentBlock(text=block.text, annotations=annotations)
+
+        if not self.structured_content:
+            return
+
+        text = JsonBlock.pretty(self.structured_content)
+        yield schema.TextContentBlock(text=text, annotations=annotations)
 
 
 class PermissionKind(StrEnum):
@@ -609,6 +639,7 @@ class ThreadAgent:
         self._gate = asyncio.Lock()
         self._restart_pending = False
         self._restarts = 0
+        self._contexts: dict[str, Sequence[PromptBlock]] = {}
 
     @property
     def thread_id(self) -> str:
@@ -995,9 +1026,25 @@ class ThreadAgent:
 
         return forked
 
+    def app_context(self, call_id: str, blocks: Sequence[PromptBlock]) -> None:
+        """Контекст приложения MCP Apps вызова call_id уйдёт модели со
+        следующим вопросом; новый контекст того же приложения заменяет
+        прежний."""
+        self._contexts[call_id] = blocks
+
     def _blocks(self, question: Question) -> list[PromptBlock]:
-        """Текст вопроса и ссылки на его вложения."""
-        return [schema.TextContentBlock(text=question.text), *question.links]
+        """Текст вопроса, ссылки на его вложения и ждущие контексты
+        приложений: они уходят один раз."""
+        blocks: list[PromptBlock] = [
+            schema.TextContentBlock(text=question.text),
+            *question.links,
+        ]
+        for context in self._contexts.values():
+            blocks.extend(context)
+
+        self._contexts.clear()
+
+        return blocks
 
 
 class ThreadAgentsIndex(ThreadRewinds):
