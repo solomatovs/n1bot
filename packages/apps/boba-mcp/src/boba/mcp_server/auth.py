@@ -24,7 +24,7 @@ endpoint'ами, выданными ролям вошедшего, — и рес
 Ошибки:
 TokenClaimsError — токен принят, но логина и ролей вызывающего в нём нет.
 CallScopeError — служебные поля запроса в _meta не проходят модель либо
-    область вызова не годится сегментом пути.
+    тред вызова (аргумент thread_id) не строка или не годится сегментом пути.
 AuthorizeError — запрос авторизации не принят (по контракту OAuthProvider).
 TokenError — код авторизации или утверждение не приняты (по контракту
     OAuthProvider).
@@ -96,6 +96,7 @@ from boba.identity.signin import ProxyRequest, SignedIn, SignInMetadata
 from boba.identity.sso import SsoChallenge
 from boba.runtime.http import SsoRequests, SsoResponses
 from boba.toolkit.wire import RequestFields
+from boba.toolrun.call_id import CallFields
 
 __all__ = [
     "AuthServer",
@@ -207,8 +208,8 @@ class TokenSubjects:
 
 
 class CallScopeError(Exception):
-    """Клиент прислал служебные поля запроса, с которыми вызов не принять:
-    область не годится сегментом пути либо поля не проходят свою модель."""
+    """Клиент прислал вызов, который не принять: тред не годится сегментом
+    пути либо служебные поля запроса не проходят свою модель."""
 
 
 class SentMeta:
@@ -238,27 +239,34 @@ class SentMeta:
             return RequestFields.model_validate(meta)
         except ValidationError as exc:
             msg = (
-                f"reading _meta of the call: expected {RequestFields.SCOPE!r} "
-                f"as a string and progressToken as a string or an integer, "
-                f"got {dict(meta)!r}: {exc}"
+                f"reading _meta of the call: expected progressToken as a string "
+                f"or an integer, got {dict(meta)!r}: {exc}"
             )
             raise CallScopeError(msg) from exc
 
 
 class CallScopes:
-    """Область вызова по полю области из _meta запроса (SentMeta).
+    """Область вызова по аргументу треда (CallFields.THREAD).
 
-    Создаётся CallContextMiddleware и FileUploadTool. Область —
-    место файлов и описаний вызова в workspace пользователя; клиент с
-    собственными разговорами (чат) присылает в ней id разговора, чтобы
-    вызовы одного разговора видели файлы друг друга. Клиент без области
-    получает область по умолчанию — id самого пользователя, то есть свою
-    у каждого пользователя.
+    Создаётся CallContextMiddleware и FileUploadTool. Область — место файлов
+    и описаний вызова в workspace пользователя; клиент с собственными
+    разговорами (чат) присылает в ней id разговора, чтобы вызовы одного
+    разговора видели файлы друг друга. Вызов без треда получает область по
+    умолчанию — id самого пользователя, то есть свою у каждого пользователя.
     """
 
-    def of(self, subject: Subject, sent: str) -> Scope:
-        """Область запроса субъекта subject по присланному полю области sent;
-        пустое поле — область по умолчанию, негодный id — CallScopeError."""
+    def of(self, subject: Subject, arguments: Mapping[str, object]) -> Scope:
+        """Область вызова субъекта subject по его аргументам arguments: нет
+        треда или он пуст — область по умолчанию; тред не строка или негодный
+        id — CallScopeError."""
+        sent = arguments.get(CallFields.THREAD, "")
+        if not isinstance(sent, str):
+            msg = (
+                f"resolving the scope of the call: argument {CallFields.THREAD!r} "
+                f"expects a string, got {type(sent).__name__}"
+            )
+            raise CallScopeError(msg)
+
         if not sent:
             return Scope.chat(str(subject.user_id))
 
@@ -266,7 +274,7 @@ class CallScopes:
             return Scope.chat(sent)
         except ValidationError as exc:
             msg = (
-                f"resolving the scope of the call: _meta[{RequestFields.SCOPE!r}] "
+                f"resolving the scope of the call: argument {CallFields.THREAD!r} "
                 f"expects one path segment, got {sent!r}: {exc}"
             )
             raise CallScopeError(msg) from exc

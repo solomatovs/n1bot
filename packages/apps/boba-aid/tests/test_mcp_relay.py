@@ -31,6 +31,7 @@ from boba.db.postgres.connection import PostgresConfig
 from boba.identity.errors import RefusalError
 from boba.mcp_client.client import McpServerConfig, McpServers, McpServersConfig
 from boba.stand_core.context import CallStand
+from boba.toolrun.call_id import CallFields
 from boba.transport.acp.protocol import (
     AcpErrorCode,
     McpErrorOutcome,
@@ -450,3 +451,62 @@ class TestRelaySealing:
         assert answer.is_error is case.errored, answer
         for part in case.expected:
             assert part in str(answer.content), answer
+
+    async def test_thread_is_hidden_from_the_model_and_filled_by_the_relay(
+        self,
+        service_process: ServiceProcess,
+        call_stand: CallStand,
+        tab: TabSession,
+    ) -> None:
+        """Параметр треда агент в списке не видит, а вызов идёт в треде
+        вкладки: ретранслятор ставит его в параметр с пометкой x-boba-thread."""
+        credentials = KerberosCredentialSource(None, NoRefresh())
+        stand = RelayStand(
+            NoConnectionStore(), lambda: credentials, call_stand.contexts
+        )
+        servers = McpServers(service_process.servers())
+        relay = stand.relay(servers)
+        holder = tab.holder(uuid4(), "general")
+        server_id = stand.keys.register(holder, ["boba"])[0].server_id
+        heard: asyncio.Queue[McpMessage] = asyncio.Queue()
+        listing = McpMessage(
+            server_id=server_id,
+            request_id="mcp:listing",
+            method="tools/list",
+            params={"_meta": self.ENVELOPE},
+        )
+        try:
+            listed: McpOutcome | None = None
+            for _ in range(150):
+                try:
+                    listed = await relay.answer(listing, heard.put)
+                except RequestError:
+                    await asyncio.sleep(0.2)
+                    continue
+
+                break
+
+            called = await relay.answer(
+                McpMessage(
+                    server_id=server_id,
+                    request_id="mcp:call",
+                    method="tools/call",
+                    params={
+                        "name": "fake_scope",
+                        "arguments": {},
+                        "_meta": self.ENVELOPE,
+                    },
+                ),
+                heard.put,
+            )
+        finally:
+            await servers.stop()
+
+        assert isinstance(listed, McpResultOutcome), listed
+        tools = mt.ListToolsResult.model_validate(listed.result).tools
+        scoped = next(tool for tool in tools if tool.name == "fake_scope")
+        assert CallFields.THREAD not in scoped.input_schema["properties"], scoped
+        assert isinstance(called, McpResultOutcome), called
+        answer = mt.CallToolResult.model_validate(called.result)
+        assert not answer.is_error, answer
+        assert holder.thread_id in str(answer.content), answer

@@ -87,6 +87,7 @@ from boba.toolkit.failure import ValidationText
 from boba.toolkit.ports import ProgressReport
 from boba.toolkit.result import ErrorResult
 from boba.toolkit.wire import FilesFeature, JournalFeature, JournalRead
+from boba.toolrun.call_id import CallFields
 from boba.toolrun.hosted import DirectCalls
 from boba.toolrun.registry import ToolRegistry
 from boba.toolrun.streams import CallJournals, ToolStream
@@ -490,9 +491,10 @@ class StreamReadTool(Tool):
 
 
 class FileUploadRequest(BaseModel):
-    """Аргументы file_upload: имя файла в каталоге вложений области."""
+    """Аргументы file_upload: имя файла в каталоге вложений области. Тред
+    вызова среди аргументов читает CallScopes, модель его пропускает."""
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="ignore")
 
     name: str = Field(
         min_length=1,
@@ -533,27 +535,25 @@ class FileUploadTool(Tool):
     _routes: FileRoutes = PrivateAttr()
     _subjects: TokenSubjects = PrivateAttr()
     _scopes: CallScopes = PrivateAttr()
-    _meta: SentMeta = PrivateAttr()
     _replies: McpReplies = PrivateAttr()
 
     def __init__(self, routes: FileRoutes, subjects: TokenSubjects) -> None:
+        threaded = CallFields().threaded(FileUploadRequest)
         super().__init__(
             name=self.NAME,
             description=self.DESCRIPTION,
-            parameters=FileUploadRequest.model_json_schema(),
+            parameters=threaded.model_json_schema(),
         )
         self._routes = routes
         self._subjects = subjects
         self._scopes = CallScopes()
-        self._meta = SentMeta()
         self._replies = McpReplies()
 
     async def run(self, arguments: dict[str, object]) -> ToolResult:
         try:
             request = FileUploadRequest.model_validate(arguments)
             subject = self._subjects.current()
-            sent = self._meta.sent()
-            scope = self._scopes.of(subject, sent.scope)
+            scope = self._scopes.of(subject, arguments)
             key = ObjectKey(
                 user_id=subject.user_key, thread_id=scope.id, name=request.name
             )
@@ -630,8 +630,12 @@ class CallContextMiddleware(Middleware):
 
             return self._replies.refused(context.message.name, failure)
 
+        arguments: Mapping[str, Any] = {}
+        if sent := context.message.arguments:
+            arguments = sent
+
         try:
-            scope = self._scopes.of(subject, fields.scope)
+            scope = self._scopes.of(subject, arguments)
         except CallScopeError as exc:
             failure = ErrorResult(
                 message=str(exc), error_kind=ServerRefusal.INVALID_REQUEST
@@ -652,12 +656,8 @@ class CallContextMiddleware(Middleware):
 
         shape: ProgressShape = OwnProgress()
         if context.message.name == CallDag.WORKFLOW:
-            described: dict[str, Any] = {}
-            if sent := context.message.arguments:
-                described = dict(sent)
-
             shape = NodeProgress(
-                DagNode(key=run_id, tool=context.message.name, args=described)
+                DagNode(key=run_id, tool=context.message.name, args=dict(arguments))
             )
 
         progress = CallProgress(

@@ -1264,15 +1264,13 @@ class McpToolServer:
     async def call(
         self,
         params: mt.CallToolRequestParams,
-        scope: str | None,
         progress: Callable[[mt.ProgressNotificationParams], Awaitable[None]] | None,
     ) -> mt.CallToolResult | mt.InputRequiredResult:
         """tools/call с готовыми аргументами; ответ сервера — как есть.
 
         params — запрос на имя инструмента на сервере, с ответами на прежний
-        input_required, если они есть. scope — область вызова: серверу с
-        расширением файлов она уходит в _meta, None — вызов идёт в области
-        пользователя. progress получает уведомления сервера о ходе вызова
+        input_required, если они есть; тред вызова — среди его аргументов.
+        progress получает уведомления сервера о ходе вызова
         целиком, с _meta: вызов просит их своим токеном прогресса.
 
         Ошибки:
@@ -1288,11 +1286,12 @@ class McpToolServer:
             raise McpClientError(msg) from exc
 
         label = f"mcp server {self._name!r} ({self._config.endpoint.label()})"
-        token: str | None = None
         listened: AbstractAsyncContextManager[None] = nullcontext()
+        meta = mt.RequestParamsMeta()
         if progress is not None:
             token = uuid4().hex
             listened = self._connection.listening(token, progress)
+            meta = mt.RequestParamsMeta(progress_token=token)
 
         try:
             async with listened:
@@ -1302,7 +1301,7 @@ class McpToolServer:
                     read_timeout_seconds=self._config.call_timeout_sec,
                     input_responses=params.input_responses,
                     request_state=params.request_state,
-                    meta=self._meta(scope, token),
+                    meta=meta,
                     allow_input_required=True,
                 )
         except MCPError as exc:
@@ -1341,7 +1340,7 @@ class McpToolServer:
         arguments = request.model_dump(mode="json", exclude_none=True)
         params = mt.CallToolRequestParams(name=tool, arguments=arguments)
         try:
-            result = await self.call(params, None, None)
+            result = await self.call(params, None)
         except MCPError as exc:
             msg = (
                 f"mcp server {self._name!r}: reading the journal of call "
@@ -1369,25 +1368,6 @@ class McpToolServer:
                 f"than a journal window: {exc}"
             )
             raise McpClientError(msg) from exc
-
-    def _meta(self, scope: str | None, token: str | None) -> mt.RequestParamsMeta:
-        """Служебные поля запроса: токен прогресса token и область вызова под
-        ключом, который назвал сервер в расширении файлов; серверу без
-        расширения и вызову без области она не уходит."""
-        meta = mt.RequestParamsMeta()
-        if token is not None:
-            meta = mt.RequestParamsMeta(progress_token=token)
-
-        if scope is None:
-            return meta
-
-        files = self._files_feature
-        if files is None:
-            return meta
-
-        meta[files.scope] = scope
-
-        return meta
 
     @staticmethod
     async def _list(session: ClientSession) -> list[mt.Tool]:
