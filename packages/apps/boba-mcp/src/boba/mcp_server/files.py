@@ -18,7 +18,6 @@ HTTPException 507 — в workspace не осталось места.
 from __future__ import annotations
 
 import logging
-import mimetypes
 from collections.abc import AsyncIterator
 from enum import StrEnum
 from typing import ClassVar
@@ -45,6 +44,7 @@ from boba.runtime.storage import (
 )
 from boba.toolkit.channels import JournalChannels
 from boba.toolkit.failure import ValidationText
+from boba.toolkit.result import ContentMime
 from boba.toolkit.wire import FilesFeature, RequestFields
 from boba.toolrun.streams import CallJournals
 
@@ -62,7 +62,6 @@ class FilePart(StrEnum):
     ETAG = "etag"
     AUTHORIZATION = "authorization"
     BEARER = "bearer "
-    FALLBACK_MIME = "application/octet-stream"
 
 
 class FileStored(BaseModel):
@@ -271,7 +270,7 @@ class FileRoutes:
         counted = CountedBody(request.stream())
         try:
             await self._storage.upload_stream(
-                key.render(), counted.chunks(), self._mime(key)
+                key.render(), counted.chunks(), ContentMime.of_name(key.name)
             )
         except StorageFullError as exc:
             msg = f"PUT {request.url.path}: no space left in the workspace: {exc}"
@@ -290,7 +289,7 @@ class FileRoutes:
 
         return await self._files.respond(
             key.render(),
-            mime=self._mime(key),
+            mime=ContentMime.of_name(key.name),
             range_header=request.headers.get("range", ""),
             content_disposition="",
         )
@@ -310,7 +309,9 @@ class FileRoutes:
             FilePart.ETAG.value: f'"{stat.revision}"',
         }
 
-        return Response(status_code=200, headers=headers, media_type=self._mime(key))
+        return Response(
+            status_code=200, headers=headers, media_type=ContentMime.of_name(key.name)
+        )
 
     async def delete(self, request: Request) -> Response:
         key = await self._key(request)
@@ -363,14 +364,6 @@ class FileRoutes:
                 f"dirs {dirs}: {exc}"
             )
             raise HTTPException(status_code=400, detail=msg) from exc
-
-    @staticmethod
-    def _mime(key: ObjectKey) -> str:
-        guessed = mimetypes.guess_type(key.name)[0]
-        if not guessed:
-            return FilePart.FALLBACK_MIME.value
-
-        return guessed
 
 
 class CountedBody:

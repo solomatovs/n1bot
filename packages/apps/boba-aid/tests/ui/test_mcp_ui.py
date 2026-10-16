@@ -179,25 +179,14 @@ class TestMcpToolInTheFeed:
         if "5" not in str(step.get(StepField.OUTPUT.value)):
             raise AssertionError(f"the step shows the server's answer: {step}")
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "the agent has no place for files of tool results: an image block of "
-            "an MCP tool reaches the model and the feed as the placeholder "
-            "'[image/png, N bytes]', nothing is saved to the workspace of the "
-            "thread and no attachment is shown; where the agent stores such "
-            "files is a design decision (ui-fix-report.md, question 2)"
-        ),
-    )
-    def test_image_of_a_tool_is_attached_and_served(
+    def test_image_of_a_tool_is_drawn_as_a_picture(
         self, mcp_stand: StandProcess, open_chat: OpenChat
     ) -> None:
+        """Картинка чужого сервера рисуется по своему типу: элемент <img> у
+        шага, а ссылка элемента отдаёт те же байты."""
         chat = open_chat(mcp_stand, "")
 
         step = _ask(chat, "mcp__standard__picture", {})
-
-        if "file saved to the workspace" not in str(step.get(StepField.OUTPUT.value)):
-            raise AssertionError(f"the model is told where the file is: {step}")
 
         images: list[dict[str, Any]] = []
         for frame in chat.log.of_event(ChatEvent.ELEMENT):
@@ -209,19 +198,39 @@ class TestMcpToolInTheFeed:
 
         if len(images) != 1:
             raise AssertionError(
-                f"the feed gets one image attachment: {images}\n{chat.log.describe()}"
+                f"the feed gets one image of the step: {images}\n{chat.log.describe()}"
             )
+
+        if images[0].get("forId") != step.get(StepField.ID.value):
+            raise AssertionError(f"the image belongs to the tool step: {images[0]}")
 
         url = str(images[0].get("url"))
         reply = chat.page.request.get(urljoin(chat.base_url, url))
         if reply.status != 200 or reply.body() != PNG:
             raise AssertionError(
-                f"the attachment link serves the file of the workspace: "
-                f"{reply.status} {url}"
+                f"the image link serves the bytes of the tool: {reply.status} {url}"
             )
 
-        name = str(images[0].get("name"))
-        chat.page.get_by_text(name).first.wait_for(timeout=30_000)
+    def test_blocks_of_a_tool_are_drawn_by_their_type(
+        self, mcp_stand: StandProcess, open_chat: OpenChat
+    ) -> None:
+        """Ответ из блоков разных видов: текст человеку, ресурс text/plain
+        блоком кода, ссылка на файл вне workspace — пояснением; текст только
+        для модели в ленту не попадает."""
+        chat = open_chat(mcp_stand, "")
+
+        step = _ask(chat, "mcp__standard__blocks", {"empty": False})
+
+        output = str(step.get(StepField.OUTPUT.value))
+        expected = (
+            "for the user\n\nfor the model\n\n"
+            "/report.csv is not shown: file is outside the thread attachments dir"
+        )
+        if not output.startswith(expected):
+            raise AssertionError(f"the blocks are drawn in order: {output!r}")
+
+        if "```notes.txt\nnotes\n```" not in output:
+            raise AssertionError(f"the text resource is a code block: {output!r}")
 
 
 class TestOwnServerInTheFeed:

@@ -2,7 +2,9 @@
 
 Тело инструмента возвращает модель-наследника ToolResultBase; всё, что нужно
 остальным частям системы, семейство отдаёт методами базы: llm_view для
-LLM, chat_view для ленты чата (markdown и элемент интерфейса). Экземпляр
+LLM, chat_view для ленты чата (markdown и элемент интерфейса), sent — блоки
+ответа MCP в приёмник ContentOut (текст для модели и блоки для человека по
+видам содержимого ContentMime). Экземпляр
 результата без данных служит объявлением показа аргумента вызова: bound
 кладёт значение аргумента на место данных. Наследник регистрируется
 по kind при объявлении, и значение поля типа ToolResult восстанавливается из
@@ -18,16 +20,21 @@ ResultKindError — вид результата объявлен с наруше
 
 from __future__ import annotations
 
+import csv
+import io
 import json
+import mimetypes
 from abc import ABC, abstractmethod
 from collections.abc import Iterator, Mapping, Sequence
-from enum import StrEnum
+from enum import StrEnum, nonmember
+from pathlib import PurePosixPath
 from types import UnionType
 from typing import (
     Annotated,
     Any,
     ClassVar,
     Literal,
+    Protocol,
     Self,
     TypeAlias,
     Union,
@@ -51,11 +58,14 @@ from pydantic.json_schema import JsonSchemaValue
 from pydantic_core import CoreSchema, to_jsonable_python
 
 __all__ = [
+    "BlockAudience",
     "CanvasResult",
     "ChatElement",
     "ChatItem",
     "ChatView",
     "CodeBlock",
+    "ContentMime",
+    "ContentOut",
     "DetailBlock",
     "ErrorResult",
     "ExceptionResult",
@@ -208,6 +218,97 @@ class NoteLine:
         return f"_{text}_"
 
 
+class ContentMime(StrEnum):
+    """Виды содержимого блоков ответа и аргументов вызова (contentMediaType).
+
+    Член называет язык блока кода ленты своим именем в нижнем регистре:
+    язык показа результата и аргумента переводится в MIME одним of_language,
+    обратно — свойством language. of_name — MIME файла по имени: stdlib
+    mimetypes, а .mmd, которого stdlib не знает, — mermaid.
+    """
+
+    CSV = "text/csv"
+    SQL = "application/sql"
+    JSON = "application/json"
+    BASH = "text/x-shellscript"
+    MERMAID = "text/vnd.mermaid"
+    PLOTLY = "application/vnd.plotly.v1+json"
+    PLAIN = "text/plain"
+    OCTET = "application/octet-stream"
+
+    MERMAID_SUFFIX = nonmember(".mmd")
+
+    @property
+    def language(self) -> str:
+        return self.name.lower()
+
+    @classmethod
+    def of_language(cls, language: str) -> ContentMime:
+        """MIME текста языка language; язык без своего MIME — простой текст."""
+        for mime in cls:
+            if mime.language == language:
+                return mime
+
+        return cls.PLAIN
+
+    @classmethod
+    def of_name(cls, name: str) -> str:
+        """MIME файла по имени; неизвестное — application/octet-stream."""
+        if PurePosixPath(name).suffix == cls.MERMAID_SUFFIX:
+            return cls.MERMAID.value
+
+        guessed, _ = mimetypes.guess_type(name)
+        if guessed is None:
+            return cls.OCTET.value
+
+        return guessed
+
+
+class BlockAudience(StrEnum):
+    """Кому блок ответа: значения роли annotations.audience стандарта MCP;
+    BOTH — блок без audience, его видят и модель, и человек."""
+
+    MODEL = "assistant"
+    USER = "user"
+    BOTH = "both"
+
+    def reads(self, audience: Sequence[str] | None) -> bool:
+        """Адресован ли этой стороне блок с annotations.audience audience:
+        блок без audience — всем."""
+        if audience is None:
+            return True
+
+        return self.value in audience
+
+
+class ContentOut(Protocol):
+    """Приёмник блоков ответа на вызов инструмента.
+
+    Результат семейства пишет в него свой content (ToolResultBase.sent):
+    текст для модели и блоки для человека — текст markdown, встроенный
+    ресурс с MIME и ссылку на файл. Реализует McpContent (boba.toolkit.wire):
+    там блоки становятся блоками MCP, поэтому семейство обходится без
+    mcp_types.
+    """
+
+    @abstractmethod
+    def text(self, markdown: str, audience: BlockAudience) -> None:
+        """Текстовый блок markdown для audience."""
+
+    @abstractmethod
+    def resource(self, mime: str, text: str, name: str) -> None:
+        """Встроенный ресурс человеку: текст вида mime; name — подпись блока
+        (язык ограды, поток вывода, заголовок графика)."""
+
+    @abstractmethod
+    def link(self, uri: str, name: str, mime: str) -> None:
+        """Ссылка человеку на файл uri с именем name и видом mime."""
+
+    @abstractmethod
+    def __len__(self) -> int:
+        """Сколько блоков уже записано."""
+
+
 class MarkdownTable:
     """Таблица GitHub-markdown из строк с общими ключами: шапка из ключей
     первой строки, колонки выровнены по самой широкой ячейке."""
@@ -217,7 +318,7 @@ class MarkdownTable:
 
     @classmethod
     def render(cls, rows: Sequence[Mapping[str, str]]) -> str:
-        headers = list(cls._headers(rows))
+        headers = list(cls.headers(rows))
 
         widths: dict[str, int] = {}
         for header in headers:
@@ -241,7 +342,8 @@ class MarkdownTable:
         return "\n".join(lines)
 
     @staticmethod
-    def _headers(rows: Sequence[Mapping[str, str]]) -> Iterator[str]:
+    def headers(rows: Sequence[Mapping[str, str]]) -> Iterator[str]:
+        """Ключи всех строк по порядку первого появления."""
         seen: set[str] = set()
         for row in rows:
             for key in row:
@@ -660,6 +762,11 @@ class ToolResultBase(BaseModel, ABC):
     def chat_view(self) -> ChatView:
         """Показ результата в ленте чата: markdown шага и элемент."""
 
+    @abstractmethod
+    def shown(self, out: ContentOut) -> None:
+        """Блоки результата для человека в приёмник out по видам
+        содержимого: текст, встроенный ресурс, ссылка на файл."""
+
     def disclosed(self) -> Self:
         """Результат, каким он уходит клиенту другого процесса: без того,
         чему место только в журнале своего процесса."""
@@ -679,15 +786,20 @@ class ToolResultBase(BaseModel, ABC):
         """Пара (content, artifact): текст для модели и сам результат."""
         return self.llm_view(), self
 
-    def texts(self) -> Sequence[str]:
-        """Тексты ответа по порядку, каждый — отдельный текстовый блок
-        content ответа MCP: у базы — один текст для модели."""
-        return (self.llm_view(),)
+    def sent(self, out: ContentOut) -> int:
+        """Весь content ответа в приёмник out: текст для модели, затем блоки
+        для человека; отдаёт число записанных блоков."""
+        before = len(out)
+        out.text(self.llm_view(), BlockAudience.MODEL)
+        self.shown(out)
 
-    def structured(self) -> dict[str, JsonValue] | None:
+        return len(out) - before
+
+    def structured(self, out: ContentOut) -> dict[str, JsonValue] | None:
         """Собственные данные результата для structuredContent по
         outputSchema инструмента; None — outputSchema у результата нет, и
-        ответ несёт сам результат моделью вида."""
+        ответ несёт сам результат моделью вида. out — пустой приёмник, по
+        которому результат считает свои блоки; в ответ он не идёт."""
         return None
 
 
@@ -737,6 +849,35 @@ class MarkdownResult(ToolResultBase):
 
         return ChatView(markdown=f"{body}\n\n{NoteLine.render(self.note)}")
 
+    def shown(self, out: ContentOut) -> None:
+        """Текст как есть либо ресурсом по языку; под ним подпись."""
+        if not self.text.strip():
+            if self.note is not None:
+                out.text(NoteLine.render(self.note), BlockAudience.USER)
+
+            return
+
+        if self.language:
+            mime = ContentMime.of_language(self.language)
+            out.resource(mime, self.text.strip("\n"), self.language)
+        else:
+            out.text(self.text, BlockAudience.USER)
+
+        if self.note is not None:
+            out.text(NoteLine.render(self.note), BlockAudience.USER)
+
+    def sent(self, out: ContentOut) -> int:
+        """Текст без языка и подписи модели и человеку одинаков: один блок."""
+        if self.language:
+            return super().sent(out)
+
+        if self.note is not None:
+            return super().sent(out)
+
+        out.text(self.text, BlockAudience.BOTH)
+
+        return 1
+
     def bound(self, value: Any) -> Self:
         return self.model_copy(update={"text": str(value).strip("\n")})
 
@@ -755,6 +896,22 @@ class TableText:
         flat = list(cls._flat_rows(rows))
 
         return MarkdownTable.render(flat)
+
+    @classmethod
+    def csv(cls, rows: Sequence[Mapping[str, Any]]) -> str:
+        """Строки выборки текстом text/csv: шапка — ключи всех строк по
+        порядку, ячейки — те же, что у таблицы."""
+        flat = list(cls._flat_rows(rows))
+        headers = list(MarkdownTable.headers(flat))
+
+        buffer = io.StringIO()
+        writer = csv.DictWriter(buffer, fieldnames=headers, lineterminator="\n")
+        if headers:
+            writer.writeheader()
+
+        writer.writerows(flat)
+
+        return buffer.getvalue()
 
     @classmethod
     def _flat_rows(cls, rows: Sequence[Mapping[str, Any]]) -> Iterator[dict[str, str]]:
@@ -807,6 +964,13 @@ class TableResult(ToolResultBase):
             return ChatView(markdown=f"\n{body}\n\n{NoteLine.render(self.note)}")
 
         return ChatView(markdown=f"\n{body}")
+
+    def shown(self, out: ContentOut) -> None:
+        out.resource(
+            ContentMime.CSV, TableText.csv(self.rows), ContentMime.CSV.language
+        )
+        if self.note:
+            out.text(NoteLine.render(self.note), BlockAudience.USER)
 
     def bound(self, value: Any) -> Self:
         return self.model_copy(update={"rows": list(value)})
@@ -897,6 +1061,25 @@ class SqlStatement(BaseModel):
 
         return "\n\n".join(parts)
 
+    def shown(self, out: ContentOut, captioned: bool) -> None:
+        """Текст команды, подпись, факты, строки и note — блоками по порядку."""
+        if self.text:
+            out.resource(ContentMime.SQL, self.text, ContentMime.SQL.language)
+
+        if self._captioned(captioned):
+            out.text(NoteLine.render(self.caption()), BlockAudience.USER)
+
+        if self.facts:
+            out.text(FactsBlock(facts=self.facts).markdown(), BlockAudience.USER)
+
+        if self.rows is not None:
+            out.resource(
+                ContentMime.CSV, TableText.csv(self.rows), ContentMime.CSV.language
+            )
+
+        if self.note:
+            out.text(NoteLine.render(self.note), BlockAudience.USER)
+
     def _captioned(self, captioned: bool) -> bool:
         """Подпись нужна среди нескольких команд, у команды без строк и у
         отчёта — команды с текстом или фактами."""
@@ -945,6 +1128,11 @@ class SqlResult(ToolResultBase):
 
         return ChatView(markdown="\n\n".join(blocks))
 
+    def shown(self, out: ContentOut) -> None:
+        captioned = len(self.statements) > 1
+        for statement in self.statements:
+            statement.shown(out, captioned)
+
 
 class VisualResult(ToolResultBase):
     """Визуальный виджет ленты: имя элемента и его props.
@@ -992,6 +1180,21 @@ class VisualResult(ToolResultBase):
 
         return ChatView(markdown=caption, items=[widget])
 
+    def shown(self, out: ContentOut) -> None:
+        """Подпись, а у графика plotly — его фигура ресурсом с заголовком."""
+        name = self.element
+        caption = f"({self.element})"
+        if self.title:
+            name = self.title
+            caption = f"({self.element}: {self.title})"
+
+        out.text(NoteLine.render(caption), BlockAudience.USER)
+        if self.element != ChatElement.PLOTLY:
+            return
+
+        figure = json.dumps(self.props[self.PLOTLY_SPEC], ensure_ascii=False)
+        out.resource(ContentMime.PLOTLY, figure, name)
+
     def bound(self, value: Any) -> Self:
         return self.model_copy(update={"props": dict(value)})
 
@@ -1011,6 +1214,16 @@ class FileResult(ToolResultBase):
         attachment = FileElement(path=self.path, name=self.name, mime=self.mime)
 
         return ChatView(markdown=self.llm_view(), items=[attachment])
+
+    def shown(self, out: ContentOut) -> None:
+        out.link(PurePosixPath(self.path).as_uri(), self.name, self.mime)
+
+    def sent(self, out: ContentOut) -> int:
+        """Текст модели и человеку один, под ним ссылка на файл."""
+        out.text(self.llm_view(), BlockAudience.BOTH)
+        self.shown(out)
+
+        return 2
 
 
 class CanvasResult(ToolResultBase):
@@ -1037,6 +1250,17 @@ class CanvasResult(ToolResultBase):
 
     def chat_view(self) -> ChatView:
         return ChatView(markdown=self.llm_view(), items=[PanelOpen(path=self.path)])
+
+    def shown(self, out: ContentOut) -> None:
+        mime = ContentMime.of_name(self.path)
+        out.link(PurePosixPath(self.path).as_uri(), self.label, mime)
+
+    def sent(self, out: ContentOut) -> int:
+        """Текст модели и человеку один, под ним ссылка на файл."""
+        out.text(self.llm_view(), BlockAudience.BOTH)
+        self.shown(out)
+
+        return 2
 
 
 class ShellResult(ToolResultBase):
@@ -1110,6 +1334,21 @@ class ShellResult(ToolResultBase):
         blocks.append(self._note())
 
         return ChatView(markdown="\n\n".join(blocks))
+
+    def shown(self, out: ContentOut) -> None:
+        """Показанный поток ресурсом с его именем, под ним итог выполнения."""
+        output = self.output.strip("\n")
+        if not output:
+            out.text(NoteLine.render("(no output)"), BlockAudience.USER)
+            out.text(self._note(), BlockAudience.USER)
+            return
+
+        stream = "stdout"
+        if not self.shows_stdout:
+            stream = "stderr"
+
+        out.resource(ContentMime.PLAIN, output, stream)
+        out.text(self._note(), BlockAudience.USER)
 
     def _note(self) -> str:
         """Итог выполнения одной строкой: код возврата всегда, помехи следом.
@@ -1203,7 +1442,14 @@ class FailureResult(ToolResultBase):
         return self._LAYOUT.plain(self.headline(), self.details())
 
     def chat_view(self) -> ChatView:
-        return ChatView(markdown=self._LAYOUT.markdown(self.headline(), self.details()))
+        return ChatView(markdown=self.markdown())
+
+    def markdown(self) -> str:
+        """Текст ошибки для человека: заголовок и подробности."""
+        return self._LAYOUT.markdown(self.headline(), self.details())
+
+    def shown(self, out: ContentOut) -> None:
+        out.text(self.markdown(), BlockAudience.USER)
 
     def log_view(self) -> str:
         """Текст для журнала: то же, что видит LLM, плюс трасса."""
@@ -1411,6 +1657,16 @@ class SqlFailureResult(FailureResult):
             parts.append(statement.markdown(True))
 
         return ChatView(markdown="\n\n".join(parts))
+
+    def shown(self, out: ContentOut) -> None:
+        """Ошибка, колонки, с которыми шла работа, и команды по порядку."""
+        out.text(self.cause.markdown(), BlockAudience.USER)
+        if self.columns:
+            csv_text = TableText.csv(self.columns)
+            out.resource(ContentMime.CSV, csv_text, ContentMime.CSV.language)
+
+        for statement in self.statements:
+            statement.shown(out, True)
 
 
 class ToolArtifact:

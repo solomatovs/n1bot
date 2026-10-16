@@ -8,8 +8,7 @@
 прежним id; вопрос с вложениями всем вкладкам рисует рендерер треда по
 TurnStarted. Воспроизведение `session/resume` своего процесса рисуется тем
 же переводчиком прямо в вкладке, без шины: история есть у каждого процесса
-агента. Панель канваса по итогу вызова открывает только держатель хода
-(ResultMounts); файлы и ссылки итогов рисует лента.
+агента. Файлы и ссылки итогов рисует лента.
 
 Ошибки:
 LockBusyError — тред уже ведёт другой держатель: ход не начат.
@@ -46,7 +45,6 @@ from boba.aid.agent.chat import (
     TurnRenderers,
 )
 from boba.aid.agent.client import SessionUpdate
-from boba.aid.canvas.panel import CanvasPanel
 from boba.aid.canvas.remote import RemoteJournals
 from boba.aid.chat.feed import TurnFeed
 from boba.aid.data.data_layer import FeedRows
@@ -55,20 +53,17 @@ from boba.aid.rendering.acp_view import ToolMedia, UpdateView
 from boba.aid.rendering.chat_view import ChatView, LiveSink, StepText
 from boba.aid.rendering.renderer import RenderSurface
 from boba.cancellation import RunCancellation
-from boba.canvas.canvas import CanvasError
 from boba.identity.context import Scope
 from boba.identity.errors import InternalServiceError
 from boba.identity.locks import LiveLocks, LockKeeper, LockMode, LockPurpose
 from boba.mcp_client.client import McpCaller, McpServers
 from boba.messaging import MessageBus, NoticeLevel, PayloadStore, TurnOutcome
-from boba.toolkit.result import PanelOpen, ToolResultBase
-from boba.transport.acp.protocol import IdleErrorUpdate, StopReason, ToolStatus
+from boba.transport.acp.protocol import IdleErrorUpdate, StopReason
 
 __all__ = [
     "AgentFeed",
     "AgentFeeds",
     "BusParts",
-    "ResultMounts",
     "TabEmitter",
     "TabSurface",
     "TabSurfaces",
@@ -161,79 +156,6 @@ class TabSurface:
             context_var.reset(token)
 
 
-class ResultMounts:
-    """Побочное действие итога вызова у держателя хода: открыть файл в
-    панели канваса (PanelOpen); отказ панели — пометка в ленте, итог у агента
-    уже записан. Ссылку на файл и файлы итога рисует переводчик ленты из
-    `rawOutput` — и вживую, и при воспроизведении. Создаётся приёмником
-    потока на тред и видит все уведомления живого хода: имя инструмента
-    агент называет только в первом уведомлении вызова, и его запоминает
-    здесь же, а итог из `rawOutput` оживляет переводчик приёмника
-    (UpdateView.outcome).
-    """
-
-    def __init__(
-        self, thread_id: str, surface: RenderSurface, view: UpdateView
-    ) -> None:
-        self._thread_id = thread_id
-        self._surface = surface
-        self._view = view
-        self._called: dict[str, str] = {}
-        """Идущий вызов живого хода → имя его инструмента."""
-
-    async def mounted(self, update: SessionUpdate, feed: TurnFeed) -> None:
-        """Панель по итогу вызова; уведомление не итог — ничего."""
-        if not isinstance(update, schema.SessionToolCallUpdate):
-            return
-
-        call_id = update.tool_call_id
-        if update.name:
-            self._called[call_id] = update.name
-
-        if update.status is None:
-            return
-
-        if not ToolStatus(update.status).terminal:
-            return
-
-        name = self._called.pop(call_id, None)
-        if name is None:
-            return
-
-        outcome = self._view.outcome(update, name)
-        if outcome is None:
-            return
-
-        artifact = outcome.artifact
-
-        context = self._surface.context()
-        if context is None:
-            return
-
-        token = context_var.set(context)
-        try:
-            await self._mount(artifact, call_id, feed)
-        finally:
-            context_var.reset(token)
-
-    async def _mount(
-        self, artifact: ToolResultBase, call_id: str, feed: TurnFeed
-    ) -> None:
-        for item in artifact.chat_view().items:
-            if isinstance(item, PanelOpen):
-                await self._panel(item, call_id, feed)
-
-    async def _panel(self, item: PanelOpen, call_id: str, feed: TurnFeed) -> None:
-        """Панель с файлом; отказ панели — пометка в ленте."""
-        try:
-            key = self._view.view.key_of(item.path)
-            await CanvasPanel.open(key)
-        except CanvasError as exc:
-            note = f"canvas refused {item.path!r} of call {call_id}: {exc}"
-            logger.info("thread %s: %s", self._thread_id, note)
-            await feed.notice(NoticeLevel.ERROR, note)
-
-
 @dataclass
 class LiveTurn:
     """Идущий ход держателя: его производитель, ключ вопроса и замок области
@@ -291,7 +213,6 @@ class AgentFeed(TurnRenderer):
         self._surface = surface
         self._parts = parts
         self._rows = rows
-        self._mounts = ResultMounts(identity.thread_id, surface, replay)
         self._scope = Scope.chat(identity.thread_id)
         self._turn: LiveTurn | None = None
         self._stopping: set[str] = set()
@@ -409,7 +330,6 @@ class AgentFeed(TurnRenderer):
             return
 
         await turn.feed.agent_update(update)
-        await self._mounts.mounted(update, turn.feed)
 
     async def permission(
         self, session_id: str, title: str, options: Sequence[schema.PermissionOption]

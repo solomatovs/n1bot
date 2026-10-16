@@ -24,6 +24,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, ClassVar
+from urllib.parse import quote, urlunsplit
 
 import mcp_types as mt
 from pydantic import BaseModel, ConfigDict, Field
@@ -37,7 +38,7 @@ from boba.toolkit.dag import (
     NodeOutcomes,
     ServerFeature,
 )
-from boba.toolkit.result import ToolArtifact
+from boba.toolkit.result import BlockAudience, ContentOut, ToolArtifact
 
 __all__ = [
     "CallStatus",
@@ -182,14 +183,70 @@ class NestedCallsReply(NestedCallsOutput):
 class WireResult:
     """Итог вызова, как он едет по MCP.
 
-    content — блоки для модели; structured — structuredContent итога: части
-    WirePart у ответа сервера инструментов, None — сервер его не прислал;
-    is_error — вызов кончился сбоем.
+    content — блоки для модели и человека; structured — structuredContent
+    итога: части WirePart у ответа сервера инструментов, None — сервер его
+    не прислал; is_error — вызов кончился сбоем; meta — _meta ответа.
     """
 
     content: Sequence[mt.ContentBlock]
     structured: Mapping[str, Any] | None
     is_error: bool
+    meta: Mapping[str, Any]
+
+
+class McpContent(ContentOut):
+    """Реализация ContentOut блоками MCP: content одного ответа на вызов.
+
+    Создаёт его ResultWire.packed на каждый ответ; результат семейства пишет
+    в него свои блоки (ToolResultBase.sent). Блок для одной стороны получает
+    annotations.audience, общий — без неё. Встроенный ресурс получает uri
+    схемы RESOURCE_SCHEME: вызов, номер блока и имя ресурса последним
+    сегментом — по нему клиент подписывает блок.
+    """
+
+    RESOURCE_SCHEME: ClassVar[str] = "boba-result"
+
+    def __init__(self, call_id: str) -> None:
+        self._call_id = call_id
+        self._blocks: list[mt.ContentBlock] = []
+
+    def text(self, markdown: str, audience: BlockAudience) -> None:
+        annotations = None
+        if audience is not BlockAudience.BOTH:
+            annotations = mt.Annotations.model_validate({"audience": [audience.value]})
+
+        self._blocks.append(mt.TextContent(text=markdown, annotations=annotations))
+
+    def resource(self, mime: str, text: str, name: str) -> None:
+        segments = (
+            "",
+            quote(self._call_id, safe=""),
+            str(len(self._blocks)),
+            quote(name, safe=""),
+        )
+        address = (self.RESOURCE_SCHEME, "", "/".join(segments), "", "")
+        contents = mt.TextResourceContents(
+            uri=urlunsplit(address), mime_type=mime, text=text
+        )
+        self._blocks.append(
+            mt.EmbeddedResource(resource=contents, annotations=self._for_user())
+        )
+
+    def link(self, uri: str, name: str, mime: str) -> None:
+        self._blocks.append(
+            mt.ResourceLink(
+                uri=uri, name=name, mime_type=mime, annotations=self._for_user()
+            )
+        )
+
+    def __len__(self) -> int:
+        return len(self._blocks)
+
+    def blocks(self) -> Sequence[mt.ContentBlock]:
+        return list(self._blocks)
+
+    def _for_user(self) -> mt.Annotations:
+        return mt.Annotations.model_validate({"audience": [BlockAudience.USER.value]})
 
 
 class ResultWire:
@@ -204,6 +261,10 @@ class ResultWire:
     восстанавливает итог таким, каким его отдал порт сервера, и узнаёт
     адрес журнала вызова.
     """
+
+    ELAPSED: ClassVar[str] = "com.boba/elapsed"
+    """Ключ _meta ответа: длительность вызова в миллисекундах; без ключа —
+    не измерена. Длительность узлов связки — в их записях (NestedCallReply)."""
 
     def __init__(self) -> None:
         self._outcomes = NodeOutcomes()
@@ -222,17 +283,22 @@ class ResultWire:
         disclosed = outcome.artifact.disclosed()
         structured: dict[str, Any] = {WirePart.CALL.value: call.model_dump(mode="json")}
 
-        own = disclosed.structured()
+        own = disclosed.structured(McpContent(outcome.key))
         if own is None:
             structured[WirePart.RESULT.value] = disclosed.model_dump(mode="json")
         else:
             structured.update(own)
 
-        content: list[mt.ContentBlock] = []
-        for text in disclosed.texts():
-            content.append(mt.TextContent(text=text))
+        content = McpContent(outcome.key)
+        disclosed.sent(content)
 
-        return WireResult(content=content, structured=structured, is_error=failed)
+        meta: dict[str, Any] = {}
+        if disclosed.elapsed_ms > 0:
+            meta[self.ELAPSED] = disclosed.elapsed_ms
+
+        return WireResult(
+            content=content.blocks(), structured=structured, is_error=failed, meta=meta
+        )
 
     def stamped(self, structured: Mapping[str, Any], run: str) -> dict[str, Any]:
         """Тот же structuredContent с запуском run в сведениях о вызове;

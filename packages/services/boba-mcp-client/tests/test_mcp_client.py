@@ -685,6 +685,7 @@ class TestBobaMcpJournal:
             content=reply.content,
             structured=reply.structured_content,
             is_error=reply.is_error,
+            meta={},
         )
         outcome = ResultWire().revived(wire, call, "boba")
         if outcome is None or outcome.journal is None:
@@ -715,6 +716,7 @@ class TestBobaMcpJournal:
             content=reply.content,
             structured=reply.structured_content,
             is_error=reply.is_error,
+            meta={},
         )
         outcome = ResultWire().revived(wire, call, "boba")
         files = dag.journal_files()
@@ -869,6 +871,7 @@ class TestBobaMcpServer:
             content=reply.content,
             structured=reply.structured_content,
             is_error=reply.is_error,
+            meta={},
         )
         outcome = ResultWire().revived(wire, call, "boba")
         if outcome is None:
@@ -969,6 +972,7 @@ class TestBobaMcpServer:
             content=reply.content,
             structured=reply.structured_content,
             is_error=reply.is_error,
+            meta={},
         )
         outcome = ResultWire().revived(wire, call, "boba")
         if outcome is None:
@@ -1178,6 +1182,7 @@ class TestBobaMcpService:
             content=reply.content,
             structured=reply.structured_content,
             is_error=reply.is_error,
+            meta={},
         )
         outcome = ResultWire().revived(wire, call, "boba")
         if outcome is None:

@@ -35,6 +35,7 @@ from pydantic.fields import FieldInfo
 from boba.toolkit.ports import StreamPorts
 from boba.toolkit.result import (
     ChatView,
+    ContentMime,
     FieldLines,
     JsonBlock,
     MarkdownResult,
@@ -394,14 +395,6 @@ class CallViews:
 
     PROPERTIES: ClassVar[str] = "properties"
 
-    MEDIA: ClassVar[Mapping[str, str]] = {
-        "sql": "application/sql",
-        "json": "application/json",
-        "bash": "text/x-shellscript",
-        "mermaid": "text/vnd.mermaid",
-    }
-    """Язык блока кода ленты → тип содержимого аргумента в схеме."""
-
     def of(self, model: type[ToolCallBase]) -> Mapping[str, FieldView]:
         """Вид полей модели вызова, который отличается от обычной строки
         «имя: значение»."""
@@ -478,13 +471,12 @@ class CallViews:
         """Вид аргументов по их типам содержимого: аргумент известного типа
         показывается блоком кода его языка, остальные — строкой."""
         views: dict[str, FieldView] = {}
-        languages = {value: language for language, value in self.MEDIA.items()}
+        known = set(ContentMime)
         for name, value in media.items():
-            language = languages.get(value)
-            if language is None:
+            if value not in known:
                 continue
 
-            display = MarkdownResult(text="", language=language)
+            display = MarkdownResult(text="", language=ContentMime(value).language)
             views[name] = FieldView(
                 placement=FieldPlacement.BODY, display=display.model_dump(mode="json")
             )
@@ -509,7 +501,7 @@ class CallViews:
         if not isinstance(display, MarkdownResult):
             return None
 
-        return self.MEDIA.get(display.language)
+        return ContentMime.of_language(display.language)
 
     def model_of(
         self, tool_name: str, views: Mapping[str, FieldView]

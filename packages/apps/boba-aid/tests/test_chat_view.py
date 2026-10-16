@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, cast
 
+import mcp_types as mt
 import pytest
 from chainlit.config import config as chainlit_config
 from chainlit.context import ChainlitContext, context_var
@@ -25,7 +26,7 @@ from boba.aid.rendering.chat_view import (
     TurnPulse,
 )
 from boba.stand.refs import StandRefs
-from boba.toolkit.result import FieldLines, MarkdownResult
+from boba.toolkit.result import FieldLines
 
 THREAD = "11111111-1111-1111-1111-111111111111"
 TURN = "22222222-2222-2222-2222-222222222222"
@@ -328,7 +329,12 @@ class TestLivePulseFrames:
             await view.await_model()
             await view.stream_answer("сейчас посмотрю", TURN)
             step = await view.tool_started("bash", {"cmd": "ls"}, "call-1", None)
-            await view.tool_finished(step, MarkdownResult(text="ok"), "call-1")
+            await view.tool_finished(
+                step,
+                mt.CallToolResult(content=[mt.TextContent(text="ok")]),
+                "call-1",
+                0,
+            )
             await view.close_answer(TURN)
             await view.finish_turn()
 
@@ -420,7 +426,10 @@ class TestToolStepDuration:
 
         step = await view.tool_started("kb_fts_search", {"query": "x"}, "call-1", None)
         await view.tool_finished(
-            step, MarkdownResult(text="hits", elapsed_ms=1500), "call-1"
+            step,
+            mt.CallToolResult(content=[mt.TextContent(text="hits")]),
+            "call-1",
+            1500,
         )
 
         if step.name != "✔ kb_fts_search · 1.5 s":
@@ -440,7 +449,9 @@ class TestToolStepDuration:
         view.begin_turn(TURN)
 
         step = await view.tool_started("kb_fts_search", {"query": "x"}, "call-2", None)
-        await view.tool_finished(step, MarkdownResult(text="hits"), "call-2")
+        await view.tool_finished(
+            step, mt.CallToolResult(content=[mt.TextContent(text="hits")]), "call-2", 0
+        )
 
         if step.name != "✔ kb_fts_search":
             raise AssertionError(step.name)
@@ -487,7 +498,10 @@ class TestToolIntent:
         args = {"query": "kerberos", "intent": "ищу настройку kerberos"}
         step = await view.tool_started("kb_fts_search", args, "call-2", None)
         await view.tool_finished(
-            step, MarkdownResult(text="hits", elapsed_ms=240), "call-2"
+            step,
+            mt.CallToolResult(content=[mt.TextContent(text="hits")]),
+            "call-2",
+            240,
         )
 
         if step.name != "✔ kb_fts_search · ищу настройку kerberos · 240 ms":
