@@ -6,7 +6,8 @@
 по моделям клиента (DeclaredExtension). Кроме четырёх
 обычных инструментов держит отказы стенда: задержку, большой результат,
 обрыв посреди вызова, смену списка инструментов с уведомлением и отчёты о
-ходе вызова, — ответ из блоков разных видов и адресатов, просьбу о вводе
+ходе вызова, — ответ из блоков разных видов и адресатов, файл, который
+клиенту стоит показать сразу (priority 1), просьбу о вводе
 (input_required), отказ ошибкой MCP и инструмент только для интерфейса
 (visibility ["app"]).
 """
@@ -15,6 +16,7 @@ import asyncio
 import json
 import os
 import sys
+from pathlib import PurePosixPath
 from typing import Any, ClassVar
 
 from mcp.server.extension import Extension
@@ -86,6 +88,7 @@ class StandardServer:
         self._mcp.tool()(self.broken)
         self._mcp.tool()(self.picture)
         self._mcp.tool()(self.blocks)
+        self._mcp.tool()(self.show)
         self._mcp.tool()(self.sleep_for)
         self._mcp.tool()(self.large)
         self._mcp.tool()(self.die)
@@ -144,6 +147,17 @@ class StandardServer:
                 ),
             ]
         )
+
+    def show(self, path: str, mime: str) -> CallToolResult:
+        """Answers with a workspace file the client should show right away."""
+        link = ResourceLink(
+            name=PurePosixPath(path).name,
+            uri=PurePosixPath(path).as_uri(),
+            mime_type=mime,
+            annotations=Annotations(audience=["user"], priority=1.0),
+        )
+
+        return CallToolResult(content=[TextContent(text="shown"), link])
 
     async def sleep_for(self, seconds: float) -> str:
         """Answers after the given delay."""

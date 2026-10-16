@@ -37,6 +37,7 @@ __all__ = [
     "CanvasKind",
     "CanvasPush",
     "CanvasRegistry",
+    "CanvasScope",
     "CanvasSignal",
     "CanvasViewer",
     "CanvasWatch",
@@ -71,6 +72,28 @@ class CanvasErrorKind(StrEnum):
 
 class CanvasError(RefusalError):
     """Панель не показала файл; kind — код причины, текст готов для LLM."""
+
+
+@dataclass(frozen=True, slots=True)
+class CanvasScope:
+    """Чьи файлы показывает панель: пользователь и тред. Строят его лента
+    (ChatView), обработчики действий панели по сессии чата и ретранслятор по
+    регистрации сервера; key переводит путь workspace в ключ файла этой
+    области."""
+
+    user_id: str
+    thread_id: str
+
+    def key(self, path: str) -> ObjectKey:
+        """Ключ файла по пути в workspace треда.
+
+        Ошибки:
+        CanvasError — путь вне каталогов треда (BAD_PATH).
+        """
+        try:
+            return ObjectKey.from_workspace(self.user_id, self.thread_id, path)
+        except ValueError as exc:
+            raise CanvasError(CanvasErrorKind.BAD_PATH, str(exc)) from exc
 
 
 class CanvasAction(StrEnum):

@@ -1211,6 +1211,7 @@ class TestFailureStand:
         "picture",
         "progress",
         "shout",
+        "show",
         "sleep_for",
         "toggle_extra",
     ]

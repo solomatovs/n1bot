@@ -17,9 +17,17 @@ from uuid import uuid4
 import mcp_types as mt
 import pytest
 from acp.exceptions import RequestError
-from aid_stand import NoConnectionStore, RelayStand, ServiceProcess, TabSession
+from aid_stand import (
+    HolderSurface,
+    NoConnectionStore,
+    RelayStand,
+    ServiceProcess,
+    TabSession,
+)
+from chainlit.context import context_var
 
 from boba.aid.agent.relay import ChatTools, McpRegistrations, McpRelay
+from boba.aid.canvas.tools import CanvasOpener
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.connection_broker.sealing import McpServerInfo
 from boba.connection_broker.store import ConnectionStore
@@ -239,6 +247,67 @@ class TestMcpRelay:
             assert note.request_id == message.request_id
             progress = mt.ProgressNotificationParams.model_validate(note.params)
             assert progress.progress_token == "call_001"
+
+    async def test_shown_file_without_live_tabs_comes_back_as_is(
+        self, relay: McpRelay, relay_stand: RelayStand, tab: TabSession
+    ) -> None:
+        """Файл, который сервер просит показать, открывать некому: у треда
+        нет живых вкладок на этом инстансе — ответ агенту как есть."""
+        registration = tab.registration(uuid4(), SignInStand.PROFILE)
+        server_id = relay_stand.registrations.register(registration, ["standard"])[
+            0
+        ].server_id
+        path = f"/workspace/{registration.thread_id}/upload/data.bin"
+        shown = {"name": "show", "arguments": {"path": path, "mime": "x/unknown"}}
+
+        outcome, _ = await self._answer(
+            relay, self._message(server_id, "tools/call", shown)
+        )
+
+        assert isinstance(outcome, McpResultOutcome), outcome
+        reply = mt.CallToolResult.model_validate(outcome.result)
+        assert not reply.is_error, reply
+        assert len(reply.content) == 2, reply
+
+    async def test_refused_show_is_an_error_of_the_call(
+        self,
+        relay_stand: RelayStand,
+        standard: McpServerConfig,
+        tab: TabSession,
+        call_stand: CallStand,
+    ) -> None:
+        """Панель живой вкладки не показала файл (вьювера для MIME нет):
+        агент получает isError с причиной в том же вызове."""
+        servers = McpServers(McpServersConfig(servers={"standard": standard}))
+        canvas = CanvasOpener(HolderSurface(context_var.get()))
+        relay = McpRelay(
+            relay_stand.registrations,
+            servers,
+            relay_stand.sealing,
+            call_stand.contexts,
+            relay_stand.chat,
+            canvas,
+        )
+        registration = tab.registration(uuid4(), SignInStand.PROFILE)
+        server_id = relay_stand.registrations.register(registration, ["standard"])[
+            0
+        ].server_id
+        path = f"/workspace/{registration.thread_id}/upload/data.bin"
+        shown = {"name": "show", "arguments": {"path": path, "mime": "x/unknown"}}
+        try:
+            outcome, _ = await self._answer(
+                relay, self._message(server_id, "tools/call", shown)
+            )
+        finally:
+            await servers.stop()
+
+        assert isinstance(outcome, McpResultOutcome), outcome
+        reply = mt.CallToolResult.model_validate(outcome.result)
+        assert reply.is_error, reply
+        refusal = reply.content[-1]
+        assert isinstance(refusal, mt.TextContent), reply
+        assert refusal.text.startswith(f"{path} is not shown in the canvas: "), refusal
+        assert "x/unknown" in refusal.text, refusal
 
     async def test_input_required_and_server_errors_come_back_as_they_are(
         self, relay: McpRelay, relay_stand: RelayStand, tab: TabSession
@@ -706,7 +775,12 @@ class TestChatServer:
         )
         servers = McpServers(McpServersConfig(servers={}))
         relay = McpRelay(
-            stand.registrations, servers, stand.sealing, call_stand.contexts, chat
+            stand.registrations,
+            servers,
+            stand.sealing,
+            call_stand.contexts,
+            chat,
+            stand.canvas,
         )
         registration = tab.registration(uuid4(), SignInStand.PROFILE)
         server_id = stand.registrations.register(registration, [ChatTools.NAME])[

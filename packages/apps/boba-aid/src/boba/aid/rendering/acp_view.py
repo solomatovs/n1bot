@@ -23,14 +23,13 @@ from __future__ import annotations
 import logging
 from abc import abstractmethod
 from collections.abc import Iterable, Mapping, Sequence
-from typing import Any, ClassVar, Protocol
+from typing import Any, ClassVar, Protocol, TypeAlias
 
 import mcp_types as mt
 from acp.experimental.v2 import schema
 from chainlit.step import Step
 from pydantic import TypeAdapter, ValidationError
 
-from boba.aid.agent.client import SessionUpdate
 from boba.aid.rendering.chat_view import ChatView, StepText
 from boba.mcp_adapter import JournalUris
 from boba.toolkit.calls import CallViews
@@ -45,16 +44,48 @@ from boba.toolkit.dag import (
 )
 from boba.toolkit.mcp import McpToolNames
 from boba.toolkit.wire import JournalFeature, ResultWire
-from boba.transport.acp.protocol import ToolStatus
+from boba.transport.acp.protocol import IdleErrorUpdate, ToolStatus
 
 __all__ = [
     "JournalRegistry",
+    "SessionUpdate",
     "SessionUpdateCodec",
     "ToolMedia",
     "UpdateView",
 ]
 
 logger = logging.getLogger(__name__)
+
+
+SessionUpdate: TypeAlias = (
+    schema.UserMessageChunk
+    | schema.UserMessageUpdate
+    | schema.AgentMessageChunk
+    | schema.AgentMessageUpdate
+    | schema.AgentThoughtChunk
+    | schema.AgentThoughtUpdate
+    | schema.ToolCallContentChunkUpdate
+    | schema.SessionToolCallUpdate
+    | schema.SessionTerminalUpdate
+    | schema.SessionTerminalOutputChunk
+    | schema.SessionPlanUpdate
+    | schema.SessionPlanRemovedUpdate
+    | schema.AvailableCommandsUpdate
+    | schema.ConfigOptionUpdate
+    | schema.SessionInfoUpdate
+    | schema.UsageUpdate
+    | schema.SessionNotice
+    | schema.SessionCompactionUpdate
+    | schema.SessionCompactionSummaryChunk
+    | schema.OtherSessionUpdate
+    | schema.RunningSessionStateUpdate
+    | IdleErrorUpdate
+    | schema.IdleSessionStateUpdate
+    | schema.RequiresActionSessionStateUpdate
+    | schema.OtherSessionStateUpdate
+)
+"""Уведомление `session/update` v2; idle с ошибкой — до обычного idle, чтобы
+разбор не терял его поле error."""
 
 
 class SessionUpdateCodec:

@@ -16,9 +16,7 @@ from boba.aid.canvas.diagram import MermaidViewer
 from boba.aid.canvas.panel import CanvasPanel
 from boba.aid.canvas.tools import (
     AudioViewer,
-    CanvasActions,
     CanvasOpener,
-    CanvasScope,
     CanvasViewers,
     ImageViewer,
     LogViewer,
@@ -26,6 +24,7 @@ from boba.aid.canvas.tools import (
     PdfViewer,
     VideoViewer,
 )
+from boba.aid.infra.thread_room import ThreadSurfaces
 from boba.canvas.canvas import (
     CanvasAction,
     CanvasContent,
@@ -35,6 +34,7 @@ from boba.canvas.canvas import (
     CanvasKind,
     CanvasPush,
     CanvasRegistry,
+    CanvasScope,
     CanvasViewer,
     OpenedCanvas,
 )
@@ -202,7 +202,7 @@ class TestRefusal:
         scope = CanvasScope(user_id=USER, thread_id=THREAD)
 
         with pytest.raises(CanvasError) as failure:
-            await CanvasOpener().show("/etc/passwd", scope)
+            await CanvasOpener(ThreadSurfaces()).show("/etc/passwd", scope)
 
         if failure.value.kind != CanvasErrorKind.BAD_PATH:
             raise AssertionError(failure.value.kind)
@@ -253,7 +253,7 @@ class TestShow:
         CanvasRegistry.register(viewer)
         await put_bytes(storage, f"{USER}/{THREAD}/mermaid/a.mmd", "erDiagram")
 
-        opened = await CanvasOpener().show(
+        opened = await CanvasOpener(ThreadSurfaces()).show(
             f"/workspace/{THREAD}/mermaid/a.mmd",
             CanvasScope(user_id=USER, thread_id=THREAD),
         )
@@ -294,11 +294,11 @@ class TestShow:
         monkeypatch.setattr(rendering_canvas.cl.CustomElement, "send", capture)
         monkeypatch.setattr(rendering_canvas.cl, "ElementSidebar", Sidebar)
 
-        await CanvasOpener().show(
+        await CanvasOpener(ThreadSurfaces()).show(
             f"/workspace/{THREAD}/upload/a.png",
             CanvasScope(user_id=USER, thread_id=THREAD),
         )
-        await CanvasOpener().show(
+        await CanvasOpener(ThreadSurfaces()).show(
             f"/workspace/{THREAD}/upload/b.png",
             CanvasScope(user_id=USER, thread_id=THREAD),
         )
@@ -400,7 +400,7 @@ class TestFileViewers:
         CanvasViewers.register_all()
         await put_bytes(storage, f"{USER}/{THREAD}/upload/график.png", self.PNG)
 
-        opened = await CanvasOpener().show(
+        opened = await CanvasOpener(ThreadSurfaces()).show(
             f"/workspace/{THREAD}/upload/график.png",
             CanvasScope(user_id=USER, thread_id=THREAD),
         )
@@ -623,9 +623,11 @@ class TestActionsWithoutCallContext:
             payload={CanvasAction.PATH.value: f"/workspace/{THREAD}/upload/a.log"},
         )
 
-        described = await CanvasActions.content(
-            action, CanvasScope(user_id=USER, thread_id=THREAD)
+        path = str(action.payload[CanvasAction.PATH.value])
+        content = await CanvasOpener(ThreadSurfaces()).content(
+            path, watch=True, scope=CanvasScope(user_id=USER, thread_id=THREAD)
         )
+        described = content.props()
 
         if described.get("path") != f"/workspace/{THREAD}/upload/a.log":
             raise AssertionError(f"описание файла из сессии: {described}")

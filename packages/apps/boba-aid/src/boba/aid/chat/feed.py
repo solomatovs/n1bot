@@ -14,8 +14,7 @@ from typing import ClassVar
 from acp.experimental.v2 import schema
 from pydantic import BaseModel, ConfigDict
 
-from boba.aid.agent.client import SessionUpdate
-from boba.aid.rendering.acp_view import SessionUpdateCodec
+from boba.aid.rendering.acp_view import SessionUpdate, SessionUpdateCodec
 from boba.identity.context import Scope
 from boba.messaging import (
     AgentUpdate,

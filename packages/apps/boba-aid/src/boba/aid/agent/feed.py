@@ -23,11 +23,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from abc import abstractmethod
 from collections.abc import Coroutine, Iterator, Sequence
 from contextlib import AsyncExitStack, contextmanager
 from dataclasses import dataclass
-from typing import Any, ClassVar, Protocol
+from typing import Any, ClassVar
 
 from acp.experimental.v2 import schema
 from chainlit.context import ChainlitContext, context, context_var
@@ -44,14 +43,13 @@ from boba.aid.agent.chat import (
     TurnRenderer,
     TurnRenderers,
 )
-from boba.aid.agent.client import SessionUpdate
 from boba.aid.canvas.remote import RemoteJournals
 from boba.aid.chat.feed import TurnFeed
 from boba.aid.data.data_layer import FeedRows
 from boba.aid.domain.fields import StepField
-from boba.aid.rendering.acp_view import ToolMedia, UpdateView
+from boba.aid.rendering.acp_view import SessionUpdate, ToolMedia, UpdateView
 from boba.aid.rendering.chat_view import ChatView, LiveSink, StepText
-from boba.aid.rendering.renderer import RenderSurface
+from boba.aid.rendering.renderer import RenderSurface, TabSurfaces
 from boba.cancellation import RunCancellation
 from boba.identity.context import Scope
 from boba.identity.errors import InternalServiceError
@@ -67,28 +65,9 @@ __all__ = [
     "BusParts",
     "TabEmitter",
     "TabSurface",
-    "TabSurfaces",
 ]
 
 logger = logging.getLogger(__name__)
-
-
-class TabSurfaces(Protocol):
-    """Откуда у приёмника вкладка и поверхность рассылки треда: сокет текущего
-    обработчика и контекст с эмиттером по всем вкладкам треда. Реализует
-    ThreadSurfaces (infra.thread_room)."""
-
-    @abstractmethod
-    def anchor(self) -> WebsocketSession:
-        """Сокет текущего обработчика chainlit.
-
-        Ошибки:
-        InternalServiceError — у текущей сессии нет сокета.
-        """
-
-    @abstractmethod
-    def thread(self, anchor: WebsocketSession, thread_id: str) -> RenderSurface:
-        """Поверхность рассылки по всем вкладкам треда с якорной сессией."""
 
 
 @dataclass(frozen=True)
