@@ -1200,6 +1200,60 @@ class TestConversation:
 
         assert await boba.wait() == 0
 
+    async def test_context_for_the_model_is_not_the_question_in_the_replay(
+        self,
+        boba: AcpProcess,
+        registration: StandRegistration,
+        model: FakeModel,
+        tmp_path: Path,
+    ) -> None:
+        """Текст только для модели (контекст приложения клиента) модель
+        получает, а воспроизведение показывает вопрос без него."""
+        client = AcpClient()
+        conn = await boba.start(client, registration)
+        context = schema.TextContentBlock(
+            text="the board shows three cells",
+            annotations=schema.Annotations(audience=["assistant"]),
+        )
+        try:
+            await handshake(conn)
+            session = await conn.new_session(cwd=str(tmp_path), mcp_servers=[])
+            _, idle = await boba.turn(
+                client,
+                session.session_id,
+                [
+                    schema.TextContentBlock(text=f"{ScenarioName.ANSWER.value} go"),
+                    context,
+                ],
+            )
+
+            assert idle.stop_reason == StopReason.END_TURN
+            sent = json.dumps(model.app.requests[0]["messages"])
+            assert "the board shows three cells" in sent
+
+            await conn.close_session(session_id=session.session_id)
+            await conn.resume_session(
+                cwd=str(tmp_path),
+                session_id=session.session_id,
+                mcp_servers=[],
+                replay_from=schema.ReplayFromStartVariant(),
+            )
+            asked = [
+                update
+                for update in client.updates_of(session.session_id)
+                if isinstance(update, schema.UserMessageUpdate)
+            ]
+            replayed = asked[-1].content
+            assert replayed is not None
+            assert [block.model_dump(exclude_none=True) for block in replayed] == [
+                {"type": "text", "text": f"{ScenarioName.ANSWER.value} go"}
+            ]
+        finally:
+            await conn.close()
+            await boba.close_stdin()
+
+        assert await boba.wait() == 0
+
 
 class TestMcpOverAcp:
     """Инструменты только через MCP-over-ACP: регистрация отвечает сама."""
