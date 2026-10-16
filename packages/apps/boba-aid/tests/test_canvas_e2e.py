@@ -56,7 +56,7 @@ class E2eStand:
     """
 
     ROOT: ClassVar[Path] = REPO / "debug" / "e2e"
-    APP_DATA: ClassVar[Path] = ROOT / "chainlit" / "data"
+    APP_DATA: ClassVar[Path] = ROOT / "aid" / "data"
     SERVICE_DATA: ClassVar[Path] = ROOT / "mcp" / "data"
     SERVICE_PORT: ClassVar[int] = free_port()
     SERVICE_HOST: ClassVar[str] = "localhost"
@@ -71,10 +71,10 @@ class E2eStand:
             for name in self.DATA_DIRS:
                 (data / name).mkdir(parents=True, exist_ok=True)
 
-        database = StandDatabase(StandApp.CHAINLIT, StandNames().of(self.DB_NAME))
+        database = StandDatabase(StandApp.AID, StandNames().of(self.DB_NAME))
         name = database.prepare()
 
-        for app in (StandApp.CHAINLIT, StandApp.MCP):
+        for app in (StandApp.AID, StandApp.MCP):
             self._files(app).write_debug(app, name)
 
     def files(self, app: StandApp) -> ConfigFiles:
@@ -101,7 +101,7 @@ class E2eStand:
 
     def app_env(self) -> dict[str, str]:
         return {
-            EnvOverride.BASE.var: str(StandApp.CHAINLIT.files().base()),
+            EnvOverride.BASE.var: str(StandApp.AID.files().base()),
             EnvOverride.PORT.var: str(PORT),
             EnvOverride.INSTANCE_ID.var: self.INSTANCE,
             EnvOverride.DATA.var: str(self.APP_DATA),
@@ -245,7 +245,7 @@ def app_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
     except ConfigLayoutError as exc:
         pytest.fail(f"файлы конфигурации стенда недоступны: {exc}")
 
-    chat = stand.files(StandApp.CHAINLIT)
+    chat = stand.files(StandApp.AID)
     service_files = stand.files(StandApp.MCP)
 
     # чужой процесс на порту молча увёл бы тесты на другой код
@@ -313,7 +313,7 @@ def _app_config() -> Any:
     from boba.config import bind
     from boba.runtime.config import AppLayers
 
-    raw = AppLayers.compose(E2eStand().files(StandApp.CHAINLIT))
+    raw = AppLayers.compose(E2eStand().files(StandApp.AID))
     return bind(raw, path="app", model=AppConfig)
 
 

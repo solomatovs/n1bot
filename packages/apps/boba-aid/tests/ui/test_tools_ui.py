@@ -762,7 +762,7 @@ class ConfluenceSite:
 
     @classmethod
     def load(cls) -> ConfluenceSite:
-        built = AppLayers.compose(StandApp.CHAINLIT.tools_app().files())
+        built = AppLayers.compose(StandApp.AID.tools_app().files())
         config = bind(built, path=ConfluenceSection.SECTION, model=ConfluenceSection)
         ingest = bind(built, path=IngestSection.SECTION, model=IngestSection)
         return cls(config, ingest.table_shape)
@@ -980,7 +980,7 @@ def sandbox_stand(
     """Стенд с песочницей: инструменты идут через зиготы, как в проде."""
     config = StandConfig(
         workdir=stand_workdir / "sandbox",
-        app=StandApp.CHAINLIT,
+        app=StandApp.AID,
         app_port=free_port(),
         llm_port=llm_port,
         db_name=stand_database,
@@ -989,7 +989,7 @@ def sandbox_stand(
     )
     process = StandProcess(config=config, log_path=stand_workdir / "sandbox-app.log")
     process.start(boot_timeout_sec=BOOT_TIMEOUT_SEC)
-    database = StandDatabase(StandApp.CHAINLIT, stand_database)
+    database = StandDatabase(StandApp.AID, stand_database)
     try:
         # роли стенда в таблице появляются на старте: гранты кладутся после него
         database.seed_connections(llm_port)
@@ -1006,13 +1006,13 @@ def sandbox_stand(
 @pytest.fixture(scope="module")
 def stream_sinks(sandbox_stand: StandProcess, stand_database: str) -> StreamSinks:
     """База ClickHouse и схема Oracle приёмников насосов, заведённые стендом."""
-    return StandDatabase(StandApp.CHAINLIT, stand_database).stream_sinks()
+    return StandDatabase(StandApp.AID, stand_database).stream_sinks()
 
 
 @pytest.fixture(scope="module")
 def ix_nodes(sandbox_stand: StandProcess, stand_database: str) -> list[int]:
     """Страницы IxProbe в схеме ix базы стенда с индексами: id их node."""
-    database = StandDatabase(StandApp.CHAINLIT, stand_database)
+    database = StandDatabase(StandApp.AID, stand_database)
     return database.seed_ix(IxProbe.PAGES)
 
 
@@ -1190,7 +1190,7 @@ class TablePattern:
 def _connection_catalog(stand_database: str, llm_port: int) -> TableResult:
     """Выдача connection_list: все строки стенда, по виду и имени; url каждой
     строит пакет её типа по тому же профилю, что посеял стенд."""
-    built = StandLayers.compose(StandApp.CHAINLIT.files())
+    built = StandLayers.compose(StandApp.AID.files())
     stand_postgres = bind(built, path="postgres", model=PostgresConfig)
     postgres = stand_postgres.model_copy(update={"dbname": stand_database})
     clickhouse = bind(built, path="clickhouse", model=ClickHouseConfig)
@@ -2187,7 +2187,7 @@ class TestAddressTools:
         feed.call(call, expect)
 
     def test_ora_address(self, feed: ToolFeed) -> None:
-        oracle = StandOracle(StandLayers.compose(StandApp.CHAINLIT.files()))
+        oracle = StandOracle(StandLayers.compose(StandApp.AID.files()))
         url = re.escape(f"oracle://{oracle.host}:{oracle.port}/{oracle.service}")
         call = ToolCall(tool="ora_address", arguments={"connection": "main"})
         feed.call(call, self._expect("main", url))
@@ -2474,7 +2474,7 @@ class TestStreamTools:
 
         feed.call_group(grouped)
 
-        database = StandDatabase(StandApp.CHAINLIT, stand_database)
+        database = StandDatabase(StandApp.AID, stand_database)
         numbers = [(1, "1"), (2, "2"), (3, "3")]
         levels = [(1, "n1"), (2, "n2"), (3, "n3")]
         probe = [(1, "alpha"), (2, "beta")]

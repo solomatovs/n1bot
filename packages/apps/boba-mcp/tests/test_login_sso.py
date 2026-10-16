@@ -75,7 +75,7 @@ def krb5_env() -> Iterator[None]:
 @pytest.fixture
 def chat_config() -> DictConfig:
     """Конфиг чата со стендовым слоем: в нём живёт секция [auth.kerberos]."""
-    raw = StandLayers.compose(StandApp.CHAINLIT.files())
+    raw = StandLayers.compose(StandApp.AID.files())
     if not isinstance(raw, DictConfig):
         got = type(raw).__name__
         msg = f"chat config: expected to compose into a table, got {got}"

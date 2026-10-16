@@ -85,7 +85,7 @@ async def _bus(
         cfg,
         bus_config.db_schema,
         name,
-        AppName.CHAINLIT,
+        AppName.AID,
         bus_config.cluster,
     )
     bus._pool_ref = pool
@@ -101,8 +101,8 @@ async def _bus(
 async def buses(
     bus_config: RuntimeConfig, test_database: str, pool: AsyncPostgresPool
 ) -> AsyncIterator[tuple[PgMessageBus, PgMessageBus]]:
-    first = await _bus(bus_config, test_database, pool, "node1-chainlit")
-    second = await _bus(bus_config, test_database, pool, "node2-chainlit")
+    first = await _bus(bus_config, test_database, pool, "node1-aid")
+    second = await _bus(bus_config, test_database, pool, "node2-aid")
     try:
         yield first, second
     finally:
@@ -134,7 +134,7 @@ async def test_messages_cross_instances_in_seq_order(
     await remote.wait(30)
     assert local.tokens() == [str(i) for i in range(30)]
     assert remote.tokens() == [str(i) for i in range(30)]
-    assert remote.envelopes[0].origin == "node1-chainlit"
+    assert remote.envelopes[0].origin == "node1-aid"
     assert remote.envelopes[0].scope == scope
 
 
@@ -163,7 +163,7 @@ async def test_replay_and_purge(buses: tuple[PgMessageBus, PgMessageBus]) -> Non
     tail = await second.replay(scope, after_seq=seqs[0])
 
     assert [e.seq for e in tail] == seqs[1:]
-    assert tail[0].origin == "node1-chainlit"
+    assert tail[0].origin == "node1-aid"
 
     assert await second.purge(scope) == 3
     assert await first.replay(scope, after_seq=0) == []
@@ -275,7 +275,7 @@ async def test_listener_reconnects_and_catches_up(
 async def test_failing_subscriber_stops_the_listener_and_the_bus_refuses(
     bus_config: RuntimeConfig, test_database: str, pool: AsyncPostgresPool
 ) -> None:
-    bus = await _bus(bus_config, test_database, pool, "node3-chainlit")
+    bus = await _bus(bus_config, test_database, pool, "node3-aid")
     try:
         scope = Scope.chat(str(uuid4()))
         seen: list[int] = []
@@ -369,8 +369,8 @@ async def test_user_scopes_of_two_users_do_not_cross(
     """Одна шина на два узла: область пользователя — его users.id, поэтому
     события одного пользователя не приходят в область другого.
     """
-    chat = await _bus(bus_config, test_database, pool, "node1-chainlit")
-    other = await _bus(bus_config, test_database, pool, "node2-chainlit")
+    chat = await _bus(bus_config, test_database, pool, "node1-aid")
+    other = await _bus(bus_config, test_database, pool, "node2-aid")
     try:
         chat_user = Scope.user(UUID(int=1))
         other_user = Scope.user(UUID(int=2))
@@ -400,7 +400,7 @@ async def test_neighbour_setup_does_not_deadlock_with_purge(
     захватывать таблицы в том же порядке — при инверсии одна из сторон
     падала с DeadlockDetected.
     """
-    first = await _bus(bus_config, test_database, pool, "node1-chainlit")
+    first = await _bus(bus_config, test_database, pool, "node1-aid")
     schema = bus_config.db_schema
     scope = Scope.chat(str(uuid4()))
     token = LockToken.local()
@@ -420,7 +420,7 @@ async def test_neighbour_setup_does_not_deadlock_with_purge(
             await sweeper.execute(clear_events.text, clear_events.params)
 
             second_task = asyncio.create_task(
-                _bus(bus_config, test_database, pool, "node2-chainlit")
+                _bus(bus_config, test_database, pool, "node2-aid")
             )
 
             deadline = asyncio.get_running_loop().time() + WAIT_SEC
@@ -478,7 +478,7 @@ async def test_start_drops_events_of_retired_kinds(
             (scope.uuid(), kept + 1),
         )
 
-    third = await _bus(bus_config, test_database, pool, "node3-chainlit")
+    third = await _bus(bus_config, test_database, pool, "node3-aid")
     await third.stop()
 
     replayed = await first.replay(scope, after_seq=0)

@@ -332,7 +332,7 @@ def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
         runtime.own_tools, plugins.own_tools(runtime.connection_store_ref)
     )
     container.provide(runtime.grant_check, GrantCheck.STRICT)
-    container.provide(runtime.app_name, AppName.CHAINLIT)
+    container.provide(runtime.app_name, AppName.AID)
     tokens = runtime.session_tokens(c)
     container.provide(runtime.session_tokens, tokens)
     sessions = ChainlitSessions(tokens)

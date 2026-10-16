@@ -360,7 +360,7 @@ class AppName(StrEnum):
     app в live_instances.
     """
 
-    CHAINLIT = "chainlit"
+    AID = "aid"
     MCP = "mcp"
 
 

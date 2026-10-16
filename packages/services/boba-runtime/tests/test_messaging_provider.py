@@ -39,7 +39,7 @@ async def test_local_messaging_builds_the_memory_stack(
 ) -> None:
     container = Container(level="app")
     container.provide(providers.get_runtime_config, local_config)
-    container.provide(providers.app_name, AppName.CHAINLIT)
+    container.provide(providers.app_name, AppName.AID)
     container.provide(providers.postgres_pool, pool)
     container.eager(providers.message_bus)
     container.eager(providers.payload_store)
@@ -70,7 +70,7 @@ async def test_local_bus_delivers_between_container_consumers(
 ) -> None:
     container = Container(level="app")
     container.provide(providers.get_runtime_config, local_config)
-    container.provide(providers.app_name, AppName.CHAINLIT)
+    container.provide(providers.app_name, AppName.AID)
     container.provide(providers.postgres_pool, pool)
     container.eager(providers.message_bus)
     Container.set_root(container)

@@ -16,7 +16,7 @@ from boba.stand.names import StandSuite
 
 def pytest_configure(config: pytest.Config) -> None:
     """Метка набора и процесса в именах стенда ставится до импорта модулей тестов."""
-    StandSuite(config).configure("chainlit")
+    StandSuite(config).configure("aid")
 
 
 @pytest.hookimpl(tryfirst=True)

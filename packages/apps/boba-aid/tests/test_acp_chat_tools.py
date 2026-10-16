@@ -79,7 +79,7 @@ def chainlit_context() -> None:
 
 @pytest.fixture(scope="module")
 def stand_database() -> StandDatabase:
-    return StandDatabase(StandApp.CHAINLIT, StandNames().of(DB_NAME))
+    return StandDatabase(StandApp.AID, StandNames().of(DB_NAME))
 
 
 @pytest.fixture(scope="module")
@@ -147,7 +147,7 @@ def app(
     workdir = tmp_path_factory.mktemp("acp-tools-stand")
     config = StandConfig(
         workdir=workdir,
-        app=StandApp.CHAINLIT,
+        app=StandApp.AID,
         app_port=free_port(),
         llm_port=llm_port,
         db_name=db_name,
@@ -590,7 +590,7 @@ def local_app(
     workdir = tmp_path_factory.mktemp("acp-tools-local")
     config = StandConfig(
         workdir=workdir,
-        app=StandApp.CHAINLIT,
+        app=StandApp.AID,
         app_port=free_port(),
         llm_port=llm_port,
         db_name=db_name,

@@ -31,7 +31,7 @@ def _scope() -> Scope:
 
 async def test_second_exclusive_holder_is_refused_with_the_first_described() -> None:
     clock = Clock()
-    locks = MemoryLiveLocks("node1-chainlit", ttl_sec=20, clock=clock)
+    locks = MemoryLiveLocks("node1-aid", ttl_sec=20, clock=clock)
     scope = _scope()
     await locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.TURN, UUID(int=7))
     clock.now += 3
@@ -41,7 +41,7 @@ async def test_second_exclusive_holder_is_refused_with_the_first_described() -> 
             scope, LockMode.EXCLUSIVE, LockPurpose.TOOL_CALL, UUID(int=7)
         )
 
-    assert caught.value.busy.holder == "node1-chainlit"
+    assert caught.value.busy.holder == "node1-aid"
     assert caught.value.busy.purpose is LockPurpose.TURN
     assert caught.value.busy.silent_sec == 3
     assert "is running a turn (last seen 3s ago)" in str(caught.value)

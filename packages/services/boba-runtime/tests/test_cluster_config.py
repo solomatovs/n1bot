@@ -25,7 +25,7 @@ def _cluster(**overrides: object) -> ClusterConfig:
 def test_instance_names_differ_per_application() -> None:
     cluster = _cluster()
 
-    assert cluster.instance_of(AppName.CHAINLIT) == "node1-chainlit"
+    assert cluster.instance_of(AppName.AID) == "node1-aid"
     assert cluster.instance_of(AppName.MCP) == "node1-mcp"
 
 

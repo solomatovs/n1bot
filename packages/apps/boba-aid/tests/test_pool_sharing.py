@@ -62,7 +62,7 @@ def app_container(
     container.provide(providers.get_app_config, stand_config)
     container.provide(runtime.get_runtime_config, stand_config)
     container.provide(runtime.get_raw_config, stand_raw)
-    container.provide(runtime.app_name, AppName.CHAINLIT)
+    container.provide(runtime.app_name, AppName.AID)
     container.provide(providers.storage_provider, storage)
     container.provide(providers.session_source, ChainlitSessions(StandTokens()))
     container.provide(runtime.connection_types, runtime.connection_types())

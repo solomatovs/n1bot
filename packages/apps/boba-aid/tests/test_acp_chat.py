@@ -77,7 +77,7 @@ def chainlit_context() -> None:
 
 @pytest.fixture(scope="module")
 def stand_database() -> str:
-    return StandDatabase(StandApp.CHAINLIT, StandNames().of(DB_NAME)).prepare()
+    return StandDatabase(StandApp.AID, StandNames().of(DB_NAME)).prepare()
 
 
 @pytest.fixture(scope="module")
@@ -125,7 +125,7 @@ def app(
     workdir = tmp_path_factory.mktemp("acp-chat-stand")
     config = StandConfig(
         workdir=workdir,
-        app=StandApp.CHAINLIT,
+        app=StandApp.AID,
         app_port=free_port(),
         llm_port=llm_port,
         db_name=stand_database,
@@ -152,7 +152,7 @@ def second(
     workdir = tmp_path_factory.mktemp("acp-chat-second")
     config = StandConfig(
         workdir=workdir,
-        app=StandApp.CHAINLIT,
+        app=StandApp.AID,
         app_port=free_port(),
         llm_port=llm_port,
         db_name=stand_database,
@@ -180,7 +180,7 @@ def foreign_app(
     workdir = tmp_path_factory.mktemp("acp-chat-foreign")
     config = StandConfig(
         workdir=workdir,
-        app=StandApp.CHAINLIT,
+        app=StandApp.AID,
         app_port=free_port(),
         llm_port=llm_port,
         db_name=stand_database,
@@ -208,7 +208,7 @@ def sandboxed(
     workdir = tmp_path_factory.mktemp("acp-chat-sandbox")
     config = StandConfig(
         workdir=workdir,
-        app=StandApp.CHAINLIT,
+        app=StandApp.AID,
         app_port=free_port(),
         llm_port=llm_port,
         db_name=stand_database,

@@ -35,7 +35,7 @@ def _token(text: str) -> Notice:
 
 
 async def test_messages_arrive_in_seq_order_to_every_subscriber() -> None:
-    bus = MemoryMessageBus("node1-chainlit")
+    bus = MemoryMessageBus("node1-aid")
     scope = _scope()
     first: list[Envelope] = []
     second: list[Envelope] = []
@@ -55,7 +55,7 @@ async def test_messages_arrive_in_seq_order_to_every_subscriber() -> None:
     assert seqs == [1, 2, 3]
     assert [e.seq for e in first] == [1, 2, 3]
     assert [e.message.model_dump()["text"] for e in second] == ["a", "b", "c"]
-    assert first[0].origin == "node1-chainlit"
+    assert first[0].origin == "node1-aid"
     assert first[0].scope == scope
 
     leave()

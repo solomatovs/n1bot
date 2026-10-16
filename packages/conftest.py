@@ -32,7 +32,7 @@ class ChainlitTestRoot:
     """
 
     ENV: ClassVar[str] = "CHAINLIT_APP_ROOT"
-    PREFIX: ClassVar[str] = "boba-chainlit-root-"
+    PREFIX: ClassVar[str] = "boba-aid-root-"
 
     def install(self) -> None:
         root = tempfile.mkdtemp(prefix=self.PREFIX)

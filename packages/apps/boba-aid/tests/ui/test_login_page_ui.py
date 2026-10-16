@@ -44,7 +44,7 @@ def _sso_stand(
 
     config = StandConfig(
         workdir=workdir,
-        app=StandApp.CHAINLIT,
+        app=StandApp.AID,
         app_port=free_port(),
         llm_port=llm_port,
         db_name=db_name,
