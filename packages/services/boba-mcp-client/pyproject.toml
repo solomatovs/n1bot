@@ -12,6 +12,7 @@ dependencies = [
     "boba-canvas==0.0.26.dev4",
     "boba-auth==0.0.26.dev4",
     "boba-sandbox==0.0.26.dev4",
+    "boba-connections==0.0.26.dev4",
     "mcp>=2.3,<3",
     "httpx2>=2.10,<3",
     "pydantic>=2.12,<3",
@@ -20,7 +21,6 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "boba-stand==0.0.26.dev4",
-    "boba-connections==0.0.26.dev4",
     "boba-db-postgres==0.0.26.dev4",
     "boba-runtime==0.0.26.dev4",
     "boba-config==0.0.26.dev4",

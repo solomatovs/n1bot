@@ -17,8 +17,10 @@ from typing import Any, ClassVar
 import pytest
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
+from mcp.client.extension import advertise
 from service_stand import PROFILE, ServiceStand
 
+from boba.connections.sealed import SealFeature
 from boba.mcp_server.server import RunLimits, StreamReadTool
 from boba.toolkit.calls import SchemaMark
 from boba.toolkit.channels import ToolChannel
@@ -153,13 +155,19 @@ class TestToolSchema:
             raise AssertionError(f"a number has no content type: {properties}")
 
     async def test_connection_parameter_declares_a_sealed_profile(
-        self, client: Client[Any]
+        self, stand: ServiceStand
     ) -> None:
         """Параметр-соединение — строка с пометкой вида x-boba-connection, чьё
         содержимое объявлено стандартными ключами JSON Schema: JWE
         (contentMediaType) с содержимым вида postgres внутри (contentSchema,
-        константа kind)."""
-        listed = await client.list_tools()
+        константа kind). Endpoint предлагает соединения пользователя клиенту,
+        который их запечатывает."""
+        async with stand.serving():
+            token = await stand.dev_token(PROFILE)
+            transport = StreamableHttpTransport(stand.url(PROFILE), auth=token)
+            sealing = [advertise(SealFeature.ID)]
+            async with Client(transport, extensions=sealing) as opened:
+                listed = await opened.list_tools()
 
         tool = next(tool for tool in listed if tool.name == "fake_connection_host")
         declared = tool.input_schema["properties"]["connection"]

@@ -16,15 +16,16 @@ import asyncio
 import logging
 import logging.config
 import signal
+from typing import Annotated
 
 import uvicorn
 from mcp.shared.auth import OAuthClientInformationFull
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
-from boba.access import ProfileGrant
 from boba.auth.credentials import NoRefresh
 from boba.auth.proxy import ProxyAssertions
 from boba.cancellation import ProcessStop, StopReason
+from boba.connection_broker.sealed import ServerConnection
 from boba.connections.sealed import SealKeys
 from boba.identity.context import CallContexts
 from boba.identity.run import Runs
@@ -38,6 +39,7 @@ from boba.mcp_server.auth import (
 )
 from boba.mcp_server.server import (
     EndpointCatalog,
+    McpEndpoint,
     McpEndpoints,
     RunLimits,
 )
@@ -56,8 +58,9 @@ logger = logging.getLogger(__name__)
 class McpSection(BaseModel):
     """Секция [mcp]: адрес сервиса, общий путь endpoint'ов MCP, пределы
     запусков, endpoint'ы и доверенные клиенты. Endpoint
-    [mcp.endpoints.<имя>] — набор инструментов (tools) и роли, которым он
-    доступен (roles); отвечает на `{path}/{имя}`. Вход — секции [auth.*]."""
+    [mcp.endpoints.<имя>] — набор инструментов (tools), роли, которым он
+    доступен (roles), и правила предложения соединений (connections);
+    отвечает на `{path}/{имя}`. Вход — секции [auth.*]."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -74,18 +77,25 @@ class McpSection(BaseModel):
     """Адрес сервиса, каким его видят клиенты (за nginx — с префиксом): от
     него строятся метаданные OAuth, адреса входа и издатель токена. Вне
     localhost — только https."""
-    endpoints: dict[str, ProfileGrant] = Field(min_length=1)
+    endpoints: dict[str, McpEndpoint] = Field(min_length=1)
     clients: dict[str, McpClient]
     """Доверенные клиенты OAuth по client_id: им разрешён вход proxy."""
 
 
 class McpAppConfig(ProcessConfig):
-    """Секции процесса сервиса: секции процесса, [mcp] и хранилище workspace."""
+    """Секции процесса сервиса: секции процесса, [mcp], хранилище workspace и
+    заданные соединения сервера."""
 
     mcp: McpSection
     storage: LocalStorageConfig
     """Хранилище workspace: туда пишут маршруты файлов и оттуда читают
     инструменты."""
+    connections: dict[
+        Annotated[str, StringConstraints(pattern=r"^[A-Za-z_][A-Za-z0-9_-]*$")],
+        ServerConnection,
+    ]
+    """Заданные соединения сервера [connections.<имя>]: имя — идентификатор
+    без точек, поэтому его не спутать с запечатанным значением."""
 
 
 class StoppedRuns:
@@ -121,6 +131,7 @@ class McpHost:
         self._container.provide(providers.get_process_config, config)
         self._container.provide(providers.plugin_table, EntryPointPlugins().discover)
         self._container.provide(providers.seal_keys, SealKeys())
+        self._container.provide(providers.server_connections, config.connections)
         self._container.provide(providers.call_contexts, CallContexts())
         # сигнал «обнови билет входа» слушает страница чата: у сервиса её нет
         self._container.provide(providers.refresh_signal, NoRefresh())
@@ -153,6 +164,8 @@ class McpHost:
                 self._container.resolved(providers.runs),
                 self._container.resolved(providers.call_journals),
                 auth,
+                section.endpoints,
+                self._container.resolved(providers.connection_params),
                 section.limits,
                 section.path,
                 self._config.storage,

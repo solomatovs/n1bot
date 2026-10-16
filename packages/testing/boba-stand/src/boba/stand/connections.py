@@ -29,9 +29,10 @@ from boba.connection_broker.user_connections import (
     TypesRef,
 )
 from boba.connections.sealed import ConnectionSeal, SealKeys
+from boba.connections.whitelist import ConnectionWhitelist
 from boba.identity.context import CallContexts
 from boba.toolrun.hosted import HostedTool
-from boba.toolrun.injected import AsyncInjected
+from boba.toolrun.injected import AsyncInjected, StaticConfig
 
 __all__ = ["StandUserConnections"]
 
@@ -95,13 +96,20 @@ class StandUserConnections:
         self._seal = ConnectionSeal(self._keys.public())
         self._connections = ArmedConnections(store_ref, credentials_ref, contexts)
         self._hooks = ConnectionParamHooks(types_ref)
+        self._unlisted = ConnectionWhitelist(connections={}, ambiguous=frozenset())
 
     def bind_all(self, tools: Sequence[HostedTool]) -> None:
         self._hooks.bind_all(tools, self._hook)
 
     def _hook(self, tool: str, param: str, kind: str) -> AsyncInjected:
         executor = SealedConnectionParam(
-            self._keys, self._types_ref, self._contexts, param, kind
+            self._keys,
+            self._types_ref,
+            self._contexts,
+            StaticConfig(),
+            self._unlisted,
+            param,
+            kind,
         )
 
         return StandConnectionParam(self._connections, executor, self._seal, kind)

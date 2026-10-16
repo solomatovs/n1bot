@@ -48,6 +48,7 @@ from boba.toolkit.failure import ValidationText
 __all__ = [
     "ConnectionOffer",
     "ConnectionSeal",
+    "OfferedSource",
     "SealFeature",
     "SealKey",
     "SealKeys",
@@ -65,6 +66,15 @@ class SealAlgorithm(StrEnum):
     HEADER_ALG = "alg"
     HEADER_ENC = "enc"
     HEADER_KID = "kid"
+
+
+class OfferedSource(StrEnum):
+    """Источник соединений, который предлагается вызывающему: SEALED —
+    соединения пользователя, запечатанные клиентом; SERVER — заданные
+    соединения сервера из его конфига."""
+
+    SEALED = "sealed"
+    SERVER = "server"
 
 
 @dataclass(frozen=True)

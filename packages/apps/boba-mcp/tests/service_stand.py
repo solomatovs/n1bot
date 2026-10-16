@@ -4,7 +4,9 @@
 этот файл субпроцессом в окружении сервиса: `python service_stand.py <port>
 <workdir> [<срок токена, с>]` — клиент живёт на других версиях библиотек и
 видит сервер только по сети. Endpoint'ы стенда: `/mcp/service` (все
-инструменты, всем ролям) и `/mcp/narrow` (один инструмент, только роли dev).
+инструменты, всем ролям), `/mcp/narrow` (один инструмент, только роли dev) и
+`/mcp/offers` (все инструменты с правилами предложения соединений по ролям и
+признаку клиента).
 """
 
 from __future__ import annotations
@@ -14,11 +16,12 @@ import sys
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import ClassVar
 
 import uvicorn
 from pydantic import SecretStr
 
-from boba.access import ProfileGrant, RoleConfig, ToolAccess
+from boba.access import RoleConfig, ToolAccess
 from boba.auth import SignIns
 from boba.auth.config import (
     HeaderRolesConfig,
@@ -33,9 +36,9 @@ from boba.auth.proxy import HmacProxySignIn, ProxyAssertions
 from boba.auth.roles import HeaderRoles, LocalRoles, RoleProviders
 from boba.auth.signin import CompositeSignIn, LocalSignIn
 from boba.canvas.keys import WorkspaceMount
-from boba.connection_broker.sealed import SealedConnectionParams
+from boba.connection_broker.sealed import SealedConnectionParams, ServerConnection
 from boba.connections.manifest import ConnectionTypes
-from boba.connections.sealed import SealKeys
+from boba.connections.sealed import OfferedSource, SealKeys
 from boba.identity.admission import RoleMappingConfig
 from boba.identity.context import CallContexts
 from boba.identity.run import Runs
@@ -48,8 +51,11 @@ from boba.mcp_server.auth import (
     ServiceTokens,
 )
 from boba.mcp_server.server import (
+    ConnectionOfferRule,
     EndpointCatalog,
+    McpEndpoint,
     McpEndpoints,
+    OfferClient,
     RunLimits,
 )
 from boba.runtime.journal import DirVault, StreamJournal
@@ -97,9 +103,37 @@ class ServiceStand:
     как его собирает загрузчик; роли dev и ADM (роль пользователя стенда
     чата) видят всё, weak — один инструмент.
     Вход — proxy сервиса входа: роли вошедшего называет доверенный клиент;
-    dev_token() и weak_token() входят так пользователями стенда alice и
-    bob. Вход формой — пользователь local. port — порт, на котором стенд
-    слушает."""
+    dev_token(), weak_token() и analyst_token() входят так пользователями
+    стенда alice, bob и dave. Вход формой — пользователь local. port — порт,
+    на котором стенд слушает. Заданное соединение сервера DWH видно только
+    роли ANALYST и стоит в списке fake_connection_host."""
+
+    OFFERS: ClassVar[str] = "offers"
+    """Endpoint с правилами предложения соединений по таблице 6.8: аналитику с
+    запечатыванием — оба источника, остальным с запечатыванием — свои
+    соединения, клиенту без запечатывания — заданные соединения сервера."""
+
+    ANALYST: ClassVar[str] = "analyst"
+
+    DWH: ClassVar[str] = "dwh"
+
+    SERVER_CONNECTIONS: ClassVar[dict[str, ServerConnection]] = {
+        DWH: ServerConnection(
+            kind="postgres",
+            description="data warehouse, read only",
+            roles=[ANALYST],
+            connection={
+                "host": "dwh.local",
+                "dbname": "dwh",
+                "auth": {"method": "trust", "user": "u"},
+            },
+        )
+    }
+
+    SEALING: ClassVar[ConnectionOfferRule] = ConnectionOfferRule(
+        roles=["*"], client=OfferClient.SEALING, offer=[OfferedSource.SEALED]
+    )
+    """Правило по умолчанию: клиенту, который запечатывает, — свои соединения."""
 
     STREAM: StreamGroupsConfig = StreamGroupsConfig(
         open_sec=20.0,
@@ -119,7 +153,14 @@ class ServiceStand:
         self.port = port
         contexts = CallContexts()
         runs = Runs(contexts)
-        sealed = SealedConnectionParams(SealKeys(), ConnectionTypes.discover, contexts)
+        params = SealedConnectionParams(
+            SealKeys(),
+            ConnectionTypes.discover,
+            contexts,
+            self.SERVER_CONNECTIONS,
+            StaticConfig(),
+        )
+        params.listed({"fake_connection_host": [self.DWH]})
         journals = CallJournals(
             StreamJournal(DirVault(str(workdir / "journal")), 0), runs
         )
@@ -130,7 +171,7 @@ class ServiceStand:
             CallAmbient(),
             (
                 CallContextValues(contexts),
-                sealed,
+                params,
                 InjectedConfig(self._config_of, StaticConfig()),
             ),
         )
@@ -153,20 +194,34 @@ class ServiceStand:
         for tool in tools:
             names.append(tool.name)
 
+        both = ConnectionOfferRule(
+            roles=[self.ANALYST],
+            client=OfferClient.SEALING,
+            offer=[OfferedSource.SEALED, OfferedSource.SERVER],
+        )
+        plain = ConnectionOfferRule(
+            roles=["*"], client=OfferClient.PLAIN, offer=[OfferedSource.SERVER]
+        )
         granted = {
-            PROFILE: ProfileGrant(tools=["*"], roles=["*"]),
-            NARROW: ProfileGrant(tools=["fake_echo"], roles=["dev"]),
+            PROFILE: McpEndpoint(tools=["*"], roles=["*"], connections=[self.SEALING]),
+            NARROW: McpEndpoint(
+                tools=["fake_echo"], roles=["dev"], connections=[self.SEALING]
+            ),
+            self.OFFERS: McpEndpoint(
+                tools=["*"], roles=["*"], connections=[both, self.SEALING, plain]
+            ),
         }
         access = ToolAccess(
             tool_names=names,
             roles={
                 "dev": RoleConfig(tools=["*"]),
                 "ADM": RoleConfig(tools=["*"]),
+                self.ANALYST: RoleConfig(tools=["*"]),
                 "weak": RoleConfig(tools=["fake_echo"]),
             },
             profiles=granted,
         )
-        self.registry = stand.registry(access, (sealed,))
+        self.registry = stand.registry(access, (params,))
         proxy = ProxyAuthConfig(
             secret=SecretStr(PROXY_SECRET),
             roles=ProxyRoleProviders(header=HeaderRolesConfig()),
@@ -212,7 +267,11 @@ class ServiceStand:
             ProxyAssertions(PROXY_SECRET, 60),
             RegisteredClients(sealed, {CLIENT_ID: declared}),
             sealed,
-            [f"{public_url}/mcp/{PROFILE}", f"{public_url}/mcp/{NARROW}"],
+            [
+                f"{public_url}/mcp/{PROFILE}",
+                f"{public_url}/mcp/{NARROW}",
+                f"{public_url}/mcp/{self.OFFERS}",
+            ],
         )
         auth = ServiceAuth(
             public_url,
@@ -221,6 +280,7 @@ class ServiceStand:
             {
                 PROFILE: f"{public_url}/mcp/{PROFILE}",
                 NARROW: f"{public_url}/mcp/{NARROW}",
+                self.OFFERS: f"{public_url}/mcp/{self.OFFERS}",
             },
         )
         self._sign_in = ServiceSignIn(
@@ -231,6 +291,8 @@ class ServiceStand:
             runs,
             journals,
             auth,
+            granted,
+            params,
             limits,
             "/mcp",
             LocalStorageConfig(
@@ -260,6 +322,12 @@ class ServiceStand:
         """Токен пользователя bob с ролью weak для endpoint'а profile."""
         return await asyncio.to_thread(
             self._sign_in.token, "bob", "weak", self.url(profile)
+        )
+
+    async def analyst_token(self, profile: str) -> str:
+        """Токен пользователя dave с ролью ANALYST для endpoint'а profile."""
+        return await asyncio.to_thread(
+            self._sign_in.token, "dave", self.ANALYST, self.url(profile)
         )
 
     @asynccontextmanager

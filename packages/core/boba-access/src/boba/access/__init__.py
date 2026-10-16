@@ -25,6 +25,7 @@ __all__ = [
     "GrantCheck",
     "ProfileGrant",
     "RoleConfig",
+    "RoleVisibility",
     "ToolAccess",
     "ToolAccessError",
     "ToolAvailability",
@@ -97,12 +98,17 @@ class ToolGrant(BaseModel):
         return missing
 
 
-class ProfileGrant(ToolGrant):
-    """Грант профиля: кроме инструментов — роли, которым профиль виден."""
+class RoleVisibility(BaseModel):
+    """Роли, которым виден элемент конфига: хотя бы одна роль вызывающего
+    совпала или среди ролей '*'.
+
+    База секций с ролями: грант профиля (ProfileGrant), правило предложения
+    соединений endpoint'а и заданное соединение сервера boba-mcp.
+    """
 
     roles: StringList = Field(
         default=[],
-        description="Роли, которым профиль виден; '*' — всем.",
+        description="Роли, которым элемент виден; '*' — всем.",
     )
 
     def visible_for(self, user_roles: Iterable[str]) -> bool:
@@ -110,10 +116,14 @@ class ProfileGrant(ToolGrant):
         if not roles:
             return False
 
-        if self.WILDCARD in self.roles:
+        if ToolGrant.WILDCARD in self.roles:
             return True
 
         return bool(frozenset(self.roles) & roles)
+
+
+class ProfileGrant(ToolGrant, RoleVisibility):
+    """Грант профиля: кроме инструментов — роли, которым профиль виден."""
 
 
 class AccessSubject(Protocol):

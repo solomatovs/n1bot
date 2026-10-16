@@ -14,7 +14,9 @@ from omegaconf import DictConfig
 
 from boba.access import GrantCheck, ProfileGrant, ToolGrant, ToolGrants
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
+from boba.connection_broker.sealed import SealedConnectionParams
 from boba.connection_broker.store import ConnectionStore
+from boba.connection_broker.tickets import ServiceTickets
 from boba.connection_broker.tools import ConnectionTools
 from boba.connection_broker.user_connections import StoreRef
 from boba.connections.manifest import ConnectionTypes
@@ -125,6 +127,14 @@ class StandRefs:
         def credentials() -> KerberosCredentialSource:
             return KerberosCredentialSource(tickets(), NoRefresh())
 
+        params = SealedConnectionParams(
+            SealKeys(),
+            ConnectionTypes.discover,
+            self.contexts,
+            {},
+            ServiceTickets(credentials),
+        )
+
         return RuntimeRefs(
             connection_store=store,
             connection_types=ConnectionTypes.discover,
@@ -132,7 +142,7 @@ class StandRefs:
             contexts=self.contexts,
             journals=self.journals,
             ambient=self.ambient,
-            seal_keys=SealKeys(),
+            connection_params=params,
         )
 
     @staticmethod

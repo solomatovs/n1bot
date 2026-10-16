@@ -10,7 +10,7 @@ ServerStartError — плагин не подготовил свои табли�
 """
 
 import logging
-from collections.abc import AsyncGenerator, Generator, Sequence
+from collections.abc import AsyncGenerator, Generator, Mapping, Sequence
 from typing import Annotated
 
 from omegaconf import DictConfig
@@ -21,7 +21,9 @@ from boba.auth.credentials import KerberosCredentialSource
 from boba.auth.sso import SpnegoGate
 from boba.chat.profiles import ChatProfiles, RolesSection
 from boba.config import bind
+from boba.connection_broker.sealed import SealedConnectionParams, ServerConnection
 from boba.connection_broker.store import ConnectionStore
+from boba.connection_broker.tickets import ServiceTickets
 from boba.connections.manifest import ConnectionTypes
 from boba.connections.sealed import SealKeys
 from boba.connections.secrets import SecretCipher
@@ -258,15 +260,45 @@ def connection_types_ref() -> ConnectionTypes:
     return _root().resolved(connection_types)
 
 
-def exec_refs() -> ExecRefs:
-    """Входы исполнения инструментов: ссылки в корневой контейнер."""
+def seal_keys() -> SealKeys:
+    """Ключевая пара исполнителя для запечатанных соединений; кладёт процесс."""
+    msg = (
+        "DI provider seal_keys resolved before the process supplied SealKeys "
+        "via Container.provide"
+    )
+    raise RuntimeError(msg)
+
+
+def server_connections() -> Mapping[str, ServerConnection]:
+    """Заданные соединения сервера [connections.<имя>]: у чата их нет,
+    сервис boba-mcp кладёт свои через provide."""
+    return {}
+
+
+def connection_params(
+    keys: Annotated[SealKeys, Depends(seal_keys)],
+    contexts: Annotated[CallContexts, Depends(call_contexts)],
+    servers: Annotated[Mapping[str, ServerConnection], Depends(server_connections)],
+) -> SealedConnectionParams:
+    """Соединения инструментов процесса: приём запечатанных значений и
+    заданные соединения сервера под сервисными кредами; одни на процесс."""
+    tickets = ServiceTickets(credential_source_ref)
+
+    return SealedConnectionParams(
+        keys, connection_types_ref, contexts, servers, tickets
+    )
+
+
+def exec_refs(params: SealedConnectionParams) -> ExecRefs:
+    """Входы исполнения инструментов: ссылки в корневой контейнер и
+    соединения инструментов params."""
     return ExecRefs(
         connection_types=connection_types_ref,
         credentials=credential_source_ref,
         contexts=_root().resolved(call_contexts),
         journals=_root().resolved(call_journals),
         ambient=_root().resolved(call_ambient),
-        seal_keys=_root().resolved(seal_keys),
+        connection_params=params,
     )
 
 
@@ -300,14 +332,15 @@ def profile_catalog(
     return ChatProfiles(config.profiles)
 
 
-def tool_registry(
+def tool_registry(  # noqa: PLR0913 — реестр собирается всеми входами процесса
     raw: Annotated[DictConfig, Depends(get_raw_config)],
     table: Annotated[PluginTable, Depends(plugin_table)],
     grants: Annotated[ToolGrants, Depends(tool_grants)],
     own: Annotated[Sequence[HostedTool], Depends(own_tools)],
     launchers: Annotated[SectionLaunchers, Depends(tool_launchers)],
+    params: Annotated[SealedConnectionParams, Depends(connection_params)],
 ) -> ToolRegistry:
-    loader = ToolLoader(raw, table(), exec_refs(), launchers, grants, own)
+    loader = ToolLoader(raw, table(), exec_refs(params), launchers, grants, own)
 
     return loader.load()
 
@@ -360,15 +393,6 @@ async def live_locks(
     )
     await locks.register_instance()
     return locks
-
-
-def seal_keys() -> SealKeys:
-    """Ключевая пара исполнителя для запечатанных соединений; кладёт процесс."""
-    msg = (
-        "DI provider seal_keys resolved before the process supplied SealKeys "
-        "via Container.provide"
-    )
-    raise RuntimeError(msg)
 
 
 def connection_types() -> ConnectionTypes:

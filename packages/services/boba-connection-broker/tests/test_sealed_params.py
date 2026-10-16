@@ -35,6 +35,7 @@ from boba.stand_core.context import CallStand
 from boba.toolkit.calls import SchemaMark
 from boba.toolkit.entry import ToolArgv
 from boba.toolkit.types import SecretReveal
+from boba.toolrun.injected import StaticConfig
 
 pytestmark = pytest.mark.anyio
 
@@ -208,7 +209,9 @@ class TestDeclaredFeature:
         self, tools: ProbeTools, call_stand: CallStand
     ) -> None:
         keys = SealKeys()
-        params = SealedConnectionParams(keys, lambda: TYPES, call_stand.contexts)
+        params = SealedConnectionParams(
+            keys, lambda: TYPES, call_stand.contexts, {}, StaticConfig()
+        )
         params.bind_all([tools.one_connection()])
 
         declared = SealFeature.model_validate(params.features()[SealFeature.ID])
@@ -223,7 +226,9 @@ class TestDeclaredFeature:
     def test_server_without_connection_tools_declares_nothing(
         self, call_stand: CallStand
     ) -> None:
-        params = SealedConnectionParams(SealKeys(), lambda: TYPES, call_stand.contexts)
+        params = SealedConnectionParams(
+            SealKeys(), lambda: TYPES, call_stand.contexts, {}, StaticConfig()
+        )
 
         if params.features():
             raise AssertionError(f"возможности нет: {params.features()}")
