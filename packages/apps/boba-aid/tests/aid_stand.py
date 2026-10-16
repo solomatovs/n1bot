@@ -559,7 +559,7 @@ class PerCallStreams(RemoteStreams):
 
     def __init__(self, journals: RemoteJournals, caller: McpCaller) -> None:
         self._config = McpServersConfig(servers={})
-        super().__init__(journals, self._client(), caller)
+        super().__init__(journals, self._client(), caller, ToolMedia())
 
     def serve(self, config: McpServersConfig) -> None:
         """Серверы, с которых дальше читаются журналы."""
@@ -573,7 +573,7 @@ class PerCallStreams(RemoteStreams):
     ) -> StreamSlice | None:
         servers = self._client()
         try:
-            reading = RemoteStreams(self._journals, servers, self._caller)
+            reading = RemoteStreams(self._journals, servers, self._caller, self._media)
             return await reading.slice_at(thread_id, call_id, channel, offset)
         finally:
             await servers.stop()
@@ -583,7 +583,7 @@ class PerCallStreams(RemoteStreams):
     ) -> StreamSlice | None:
         servers = self._client()
         try:
-            reading = RemoteStreams(self._journals, servers, self._caller)
+            reading = RemoteStreams(self._journals, servers, self._caller, self._media)
             return await reading.slice_before(thread_id, call_id, channel, end)
         finally:
             await servers.stop()

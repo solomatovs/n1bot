@@ -32,6 +32,7 @@ from boba.canvas.storage import StorageNotFoundError
 from boba.config import bind
 from boba.connections.sealed import ConnectionSeal, SealedConnection, SealFeature
 from boba.db.postgres.connection import PostgresConfig
+from boba.mcp_adapter import JournalUris
 from boba.mcp_client.client import (
     BearerAuth,
     HttpEndpoint,
@@ -808,6 +809,69 @@ class TestSignInAsTheUser:
                 await asyncio.sleep(0.2)
 
         return await servers.port(name, caller)
+
+    async def test_journal_growth_is_heard_only_by_its_caller(
+        self, boba_mcp_stand: BobaMcpStand
+    ) -> None:
+        """Ссылку на канал журнала сервер называет, пока вызов идёт;
+        subscriptions/listen по ней отдаёт события роста канала тому, кто
+        вызывал, а чужому пользователю отказывает до подтверждения."""
+        servers = self._servers(boba_mcp_stand, self.SECRET)
+        owner = McpCaller(login="ivanov", roles=frozenset({"dev"}))
+        stranger = McpCaller(login="petrov", roles=frozenset({"dev"}))
+        heard = HeardCall()
+        events: list[str] = []
+        try:
+            port = await self._port(servers, owner, "boba")
+            other = await self._port(servers, stranger, "boba")
+            feature = port.journal_feature()
+            if feature is None:
+                raise AssertionError("the server declares its journal")
+
+            slow = _call("fake_progress", steps=8, pause=0.5)
+            running = asyncio.create_task(port.call(slow, heard))
+            async with asyncio.timeout(30):
+                while not heard.journals:
+                    await asyncio.sleep(0.05)
+
+                meta = heard.journals[0]
+                if meta is None:
+                    raise AssertionError("the journal names its links in _meta")
+
+                links = meta[JournalFeature.ID]
+                if not isinstance(links, list):
+                    raise AssertionError(f"the links are a list: {meta}")
+
+                uri = str(links[0])
+                read = JournalUris(feature.resource).address(uri)
+                if read is None:
+                    raise AssertionError(f"{uri} names a journal channel")
+
+                # канал появляется с первой записью: так панель и подписывается
+                while await port.journal(read) is None:
+                    await asyncio.sleep(0.05)
+
+            with pytest.raises(McpClientError) as refused:
+                async with other.listen([uri]):
+                    pass
+
+            async with asyncio.timeout(30), port.listen([uri]) as subscription:
+                async for event in subscription:
+                    events.append(getattr(event, "uri", ""))
+                    window = await port.journal(read)
+                    if window is not None and window.closed:
+                        break
+
+            await running
+        finally:
+            await servers.stop()
+
+        if "another user" not in str(refused.value):
+            raise AssertionError(f"a foreign run is refused: {refused.value}")
+        if not events:
+            raise AssertionError("the growth of the channel is heard")
+        if set(events) != {uri}:
+            raise AssertionError(f"events name the channel: {events}")
 
     async def test_body_runs_as_the_user_of_the_client(
         self, boba_mcp_stand: BobaMcpStand
