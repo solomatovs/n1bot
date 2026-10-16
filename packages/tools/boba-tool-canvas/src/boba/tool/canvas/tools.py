@@ -2,8 +2,8 @@
 
 Тела работают с файлами в смонтированном /workspace и возвращают результат
 по форме данных: CanvasResult — файл для панели, FileResult — вложение.
-Показ в панели, карточка в переписке и вердикт браузера — дело поверхности
-чата, которая монтирует элементы по chat_view() результата; тела о ней не
+Клиенту оба уходят ссылкой resource_link на файл; показ в панели, карточка
+в переписке и вердикт браузера — дело поверхности чата, тела о ней не
 знают.
 
 Ошибки:
@@ -13,7 +13,6 @@
 
 from __future__ import annotations
 
-import mimetypes
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, ClassVar, Final
@@ -33,6 +32,7 @@ from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, tool
 from boba.toolkit.result import (
     CanvasResult,
+    ContentMime,
     ErrorResult,
     FileResult,
     MarkdownResult,
@@ -103,8 +103,6 @@ class CanvasRefusedError(Exception):
 class ThreadFiles:
     """Файлы треда в смонтированном workspace: ключ по пути и проверка наличия."""
 
-    FALLBACK_MIME: ClassVar[str] = "application/octet-stream"
-
     def __init__(self, subject: Subject, scope: Scope, root: WorkspaceRoot) -> None:
         root.apply()
         self._user_id = subject.user_key
@@ -136,14 +134,6 @@ class ThreadFiles:
             DiagramMarker.FALLBACK_NAME,
             dir_thread=ThreadDir.MERMAID,
         )
-
-    @classmethod
-    def mime_of(cls, key: ObjectKey) -> str:
-        guessed = mimetypes.guess_type(key.name)[0]
-        if not guessed:
-            return cls.FALLBACK_MIME
-
-        return guessed
 
 
 class DiagramSpec:
@@ -197,7 +187,7 @@ async def send_file(
         return e.result()
 
     return FileResult(
-        path=key.in_workspace(), name=key.name, mime=ThreadFiles.mime_of(key)
+        path=key.in_workspace(), name=key.name, mime=ContentMime.of_name(key.name)
     )
 
 

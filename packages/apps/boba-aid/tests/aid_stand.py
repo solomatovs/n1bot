@@ -1,6 +1,7 @@
 """Общие фикстуры тестов chainlit: слой данных, сессии, стенды сервиса инструментов."""
 
 import asyncio
+import json
 import os
 import shutil
 import socket
@@ -99,12 +100,10 @@ from boba.stand_core.fakes import FakeSecret as FakeSecret
 from boba.stand_core.fakes import FakeUrl as FakeUrl
 from boba.toolkit.channels import JournalChannel
 from boba.toolkit.dag import (
-    DagNode,
     JournalAddress,
 )
 from boba.toolkit.mcp import McpResults, McpToolNames
 from boba.toolkit.result import ToolResultBase
-from boba.toolkit.wire import ResultWire, WireResult
 from boba.transport.acp.protocol import McpErrorOutcome, McpMessage, McpVersion
 from boba.workspace.binaries import TrustedBinaries
 from boba.workspace.launcher import MountingConfig, ReadWindow
@@ -357,8 +356,8 @@ class ServiceTools:
     Создаётся фикстурой теста из сервиса (ToolService), хранилища соединений
     пользователя, его кредов и контекстов вызова; ретранслятор собирает
     RelayStand. Регистрация сервера выдаётся на вызов и снимается после
-    него; ответ сервера оживает моделью результата
-    (ResultWire), как в ленте чата, иначе — текстом для модели (McpResults).
+    него; ответ сервера — текст для модели (McpResults): у таблиц и выборок
+    это JSON строк.
     """
 
     def __init__(
@@ -373,12 +372,19 @@ class ServiceTools:
         self._servers = McpServers(service.servers())
         self._stand = RelayStand(store, credentials, contexts)
         self._relay = self._stand.relay(self._servers)
-        self._wire = ResultWire()
         self._results = McpResults()
+        self._decoder = json.JSONDecoder()
         self._heard: asyncio.Queue[McpMessage] = asyncio.Queue()
 
     async def stop(self) -> None:
         await self._servers.stop()
+
+    def rows(self, result: ToolResultBase) -> list[dict[str, Any]]:
+        """Строки таблицы или выборки из текста итога для модели: он
+        начинается JSON-списком строк."""
+        rows, _ = self._decoder.raw_decode(result.llm_view())
+
+        return rows
 
     def __getitem__(self, name: str) -> ServiceTool:
         """Инструмент сервиса по имени на сервере."""
@@ -437,14 +443,6 @@ class ServiceTools:
 
         reply = mt.CallToolResult.model_validate(outcome.result)
         full = self._names.full(server, tool)
-        wire = WireResult(
-            content=reply.content,
-            structured=reply.structured_content,
-            is_error=reply.is_error,
-        )
-        revived = self._wire.revived(wire, DagNode(key=call_id, tool=full), server)
-        if revived is not None:
-            return revived.artifact
 
         return self._results.result(full, call_id, reply)
 
@@ -908,7 +906,9 @@ def catalog(store: ConnectionStore, call_stand: CallStand) -> Any:
 
 
 @pytest.fixture(autouse=True)
-def di_root(app_config: AppConfig, runtime_stand: StandRefs) -> Iterator[None]:
+def di_root(
+    app_config: AppConfig, runtime_stand: StandRefs, storage: LocalStorageClient
+) -> Iterator[None]:
     """Корневой контейнер с источником сессий, как его собирает приложение.
 
     Без него ref-функции падают: отсутствие контейнера — ошибка сборки, а
@@ -918,6 +918,7 @@ def di_root(app_config: AppConfig, runtime_stand: StandRefs) -> Iterator[None]:
     from boba.aid.infra.providers import (
         remote_journals,
         session_source,
+        storage_provider,
         thread_agents_index,
         tool_media,
     )
@@ -938,6 +939,7 @@ def di_root(app_config: AppConfig, runtime_stand: StandRefs) -> Iterator[None]:
     root.provide(runtime.call_journals, runtime_stand.journals)
     root.provide(remote_journals, RemoteJournals())
     root.provide(tool_media, ToolMedia())
+    root.provide(storage_provider, storage)
     root.provide(thread_agents_index, ThreadAgentsIndex())
     Container.set_root(root)
     try:

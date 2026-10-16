@@ -7,11 +7,12 @@
 теми же правилами ChatView.derive_id, что и у сохранённой истории:
 вопрос и его ответы — id вопроса (`"{id}#{n}"` у n-го ответа хода),
 рассуждения — id сообщения ассистента, вызов, график и элемент — id вызова.
-Итог вызова — ответ сервера MCP в `rawOutput`: у сервера boba-mcp он
-оживает моделью результата с адресом журнала. Вызов инструмента, который
-сервер объявил несущим вложенные вызовы (NestedCallsFeature), рисуется
-шагами его узлов: ход узла приходит с ключом узла в `_meta`, итог узла —
-записью списка узлов в structuredContent (NestedCallsReply).
+Итог вызова — ответ сервера MCP в `rawOutput`: его блоки рисует лента по
+виду и MIME, ссылки на каналы журнала (по шаблону расширения журнала
+сервера) дают адрес журнала вызова. Вызов инструмента, который сервер
+объявил несущим вложенные вызовы (NestedCallsFeature), рисуется шагами его
+узлов: ход узла приходит с ключом узла в `_meta`, итог узла — его блоки по
+записи списка узлов в structuredContent (NestedCallsOutput).
 
 Ошибки:
 ValidationError — тело уведомления из шины не по схеме ACP v2.
@@ -31,6 +32,7 @@ from pydantic import TypeAdapter, ValidationError
 
 from boba.aid.agent.client import SessionUpdate
 from boba.aid.rendering.chat_view import ChatView, StepText
+from boba.mcp_adapter import JournalUris
 from boba.toolkit.calls import CallViews
 from boba.toolkit.chain import StreamPlanError
 from boba.toolkit.dag import (
@@ -38,11 +40,11 @@ from boba.toolkit.dag import (
     JournalAddress,
     NestedCallReply,
     NestedCallsFeature,
-    NodeOutcome,
+    NestedCallsOutput,
+    NodeStatus,
 )
 from boba.toolkit.mcp import McpToolNames
-from boba.toolkit.result import MarkdownResult
-from boba.toolkit.wire import NestedCallsReply, ResultWire, WireResult
+from boba.toolkit.wire import JournalFeature, ResultWire
 from boba.transport.acp.protocol import ToolStatus
 
 __all__ = [
@@ -75,34 +77,45 @@ class SessionUpdateCodec:
 
 class ToolMedia:
     """Что лента знает об инструментах серверов профиля по полным именам:
-    типы содержимого аргументов (по ним рисуется вход шага: sql, bash, json)
-    и вложенные вызовы, которые объявил сервер (по ним вызов рисуется шагами
-    узлов). Один объект на процесс; инструменты называет сборка приёмника по
-    портам серверов профиля."""
+    типы содержимого аргументов (по ним рисуется вход шага: sql, bash, json),
+    вложенные вызовы, которые объявил сервер (по ним вызов рисуется шагами
+    узлов), и ссылки на журнал вызовов сервера (по ним у шага кнопка
+    журнала). Один объект на процесс; инструменты называет сборка приёмника
+    по портам серверов профиля."""
 
     def __init__(self) -> None:
         self._views = CallViews()
         self._names = McpToolNames()
         self._media: dict[str, Mapping[str, str]] = {}
         self._nested: dict[str, NestedCallsFeature] = {}
+        self._journals: dict[str, JournalUris] = {}
 
     def shown(
         self,
         server: str,
         tools: Iterable[mt.Tool],
         nested: NestedCallsFeature | None,
+        journal: JournalFeature | None,
     ) -> None:
         """Типы аргументов инструментов tools сервера server под полными
-        именами и вложенные вызовы, объявленные сервером; None — сервер их
-        не объявил."""
+        именами, вложенные вызовы и журнал вызовов, объявленные сервером;
+        None — сервер их не объявил."""
         for tool in tools:
             name = self._names.full(server, tool.name)
             self._media[name] = self._views.media_of(tool.input_schema)
+
+        if journal is not None:
+            self._journals[server] = JournalUris(journal.resource)
 
         if nested is None:
             return
 
         self._nested[self._names.full(server, nested.tool)] = nested
+
+    def journal(self, server: str) -> JournalUris | None:
+        """Ссылки на журнал вызовов сервера; None — сервер журнала не
+        объявил."""
+        return self._journals.get(server)
 
     def of(self, name: str) -> Mapping[str, str] | None:
         """Типы аргументов инструмента; None — инструмент серверам неизвестен."""
@@ -132,8 +145,7 @@ class UpdateView:
     `begin_turn`/`question` (живой — по TurnStarted из шины, при
     воспроизведении — по `user_message`), уведомления идут в `apply`, конец
     хода — `finish_turn`. Вызов создаёт и меняет одно уведомление
-    `tool_call_update`; его итог (outcome) нужен и держателю хода
-    (ResultMounts).
+    `tool_call_update`.
     """
 
     STEP_FALLBACK_NAME: ClassVar[str] = StepText.TOOL.value
@@ -150,7 +162,6 @@ class UpdateView:
         self._journals = journals
         self._media = media
         self._names = McpToolNames()
-        self._wire = ResultWire()
         self._turn_key: str | None = None
         self._thought_id: str | None = None
         self._answer_id: str | None = None
@@ -158,10 +169,10 @@ class UpdateView:
         self._called: dict[str, str] = {}
         """Идущий вызов → имя его инструмента: агент называет инструмент
         только в первом уведомлении вызова."""
-        self._groups: dict[str, tuple[NestedCallsFeature, str, Sequence[DagNode]]] = {}
-        """Идущий вызов со вложенными вызовами → объявление сервера, имя
-        сервера и узлы подшагов: ключ узла — ключ подшага, title — ключ узла
-        от автора связки."""
+        self._groups: dict[str, tuple[NestedCallsFeature, Sequence[DagNode]]] = {}
+        """Идущий вызов со вложенными вызовами → объявление сервера и узлы
+        подшагов: ключ узла — ключ подшага, title — ключ узла от автора
+        связки."""
 
     @property
     def view(self) -> ChatView:
@@ -234,42 +245,6 @@ class UpdateView:
         self._groups.clear()
         await self._view.finish_turn()
         self._turn_key = None
-
-    def outcome(
-        self, update: schema.SessionToolCallUpdate, name: str
-    ) -> NodeOutcome | None:
-        """Итог вызова инструмента name из `rawOutput` конечного уведомления
-        update — ответа сервера MCP: модель результата и адрес журнала у
-        сервера boba-mcp. Имя вызова держит вызывающий: агент называет
-        инструмент только в первом уведомлении вызова. None — инструмент не
-        сервера MCP, ответ не CallToolResult либо сервер модели результата
-        не прислал."""
-        owner = self._names.parse(name)
-        if owner is None:
-            return None
-
-        reply = self._reply(update)
-        if reply is None:
-            return None
-
-        wire = WireResult(
-            content=reply.content,
-            structured=reply.structured_content,
-            is_error=reply.is_error,
-        )
-        call = DagNode(key=update.tool_call_id, tool=name)
-        try:
-            return self._wire.revived(wire, call, owner.server)
-        except ValidationError as exc:
-            logger.warning(
-                "thread %s: the result of call %s of %s names a known kind but "
-                "does not match its model, shown as text: %s",
-                self._thread_id,
-                update.tool_call_id,
-                name,
-                exc,
-            )
-            return None
 
     def _reply(self, update: schema.SessionToolCallUpdate) -> mt.CallToolResult | None:
         """Ответ сервера MCP в `rawOutput` конечного уведомления; None —
@@ -363,7 +338,7 @@ class UpdateView:
             if group is None:
                 await self._step_of(name, args, call_id)
             else:
-                for node in group[2]:
+                for node in group[1]:
                     await self._step_of(node.tool, node.args, node.key)
 
                 self._groups[call_id] = group
@@ -399,8 +374,8 @@ class UpdateView:
 
     def _nodes_of(
         self, name: str, call_id: str, args: Mapping[str, Any]
-    ) -> tuple[NestedCallsFeature, str, Sequence[DagNode]] | None:
-        """Объявление сервера, имя сервера и узлы вызова call_id инструмента
+    ) -> tuple[NestedCallsFeature, Sequence[DagNode]] | None:
+        """Объявление сервера и узлы вызова call_id инструмента
         name под ключами подшагов, с полными именами инструментов, как их
         называет ретранслятор; None — сервер вложенных вызовов для name не
         объявил либо вызов не по объявленной форме, и он рисуется одним
@@ -430,18 +405,18 @@ class UpdateView:
             full = self._names.full(owner.server, node.tool)
             nodes.append(node.model_copy(update={"tool": full}))
 
-        return nested, owner.server, nodes
+        return nested, nodes
 
     async def _node_progress(
         self,
         update: schema.SessionToolCallUpdate,
-        group: tuple[NestedCallsFeature, str, Sequence[DagNode]],
+        group: tuple[NestedCallsFeature, Sequence[DagNode]],
         progress: str,
     ) -> None:
         """Ход работы progress — подшагу узла, чей ключ сервер положил в
         `_meta` под ключом, объявленным расширением; строка без ключа узла
         этого вызова уходит в лог."""
-        nested, _, nodes = group
+        nested, nodes = group
         title = None
         if meta := update.field_meta:
             title = meta.get(nested.progress_key)
@@ -467,21 +442,22 @@ class UpdateView:
         self,
         update: schema.SessionToolCallUpdate,
         name: str,
-        group: tuple[NestedCallsFeature, str, Sequence[DagNode]],
+        group: tuple[NestedCallsFeature, Sequence[DagNode]],
         status: ToolStatus,
     ) -> None:
-        """Итог каждому подшагу по его записи в списке узлов ответа
-        (NestedCallsReply): запуск у узлов общий, журнал у каждого свой.
+        """Итог каждому подшагу — его блоки ответа по записи в списке узлов
+        (NestedCallsOutput), журнал — по ссылке на журнал его вызова.
         Подшаг без записи и все подшаги ответа без списка узлов (отказ до
         старта, не результат tools/call, чужой ответ) получают общий итог
         вызова."""
-        _, server, nodes = group
+        _, nodes = group
         entries: dict[str, NestedCallReply] = {}
-        run = ""
+        journals: Mapping[str, JournalAddress] = {}
         reply = self._reply(update)
         if reply is not None:
+            _, journals = self._journaled(reply, name)
             try:
-                replied = NestedCallsReply.model_validate(reply.structured_content)
+                replied = NestedCallsOutput.model_validate(reply.structured_content)
             except ValidationError as exc:
                 logger.info(
                     "thread %s: the result of call %s of %s lists no nodes, "
@@ -492,7 +468,6 @@ class UpdateView:
                     exc,
                 )
             else:
-                run = replied.call.run
                 for entry in replied.nodes:
                     entries[entry.key] = entry
 
@@ -503,11 +478,17 @@ class UpdateView:
                 await self._tool_result(step, update, status, name)
                 continue
 
-            journal = None
-            if run:
-                journal = JournalAddress(server=server, run=run, call=entry.call_id)
+            if reply is None:
+                continue
 
-            await self._finished(step, node.key, journal, entry.result)
+            journal = journals.get(entry.call_id)
+            blocks: list[mt.ContentBlock] = []
+            for index in entry.blocks:
+                blocks.append(reply.content[index])
+
+            failed = entry.status is NodeStatus.FAILED
+            shown = mt.CallToolResult(content=blocks, is_error=failed)
+            await self._finished(step, node.key, journal, shown, entry.elapsed_ms)
 
     async def _tool_result(
         self,
@@ -516,11 +497,20 @@ class UpdateView:
         status: ToolStatus,
         name: str,
     ) -> None:
-        """Итог вызова инструмента name шагу step."""
+        """Итог вызова инструмента name шагу step: ответ сервера MCP из
+        `rawOutput`; без него — текст уведомления, а у сорванного вызова —
+        отказ; rawOutput другого вида — как есть."""
         call_id = update.tool_call_id
-        outcome = self.outcome(update, name)
-        if outcome is not None:
-            await self._finished(step, call_id, outcome.journal, outcome.artifact)
+        reply = self._reply(update)
+        if reply is not None:
+            shown, journals = self._journaled(reply, name)
+            # журналов несколько только у связки: любой из них — чужого узла
+            journal: JournalAddress | None = None
+            if len(journals) == 1:
+                (journal,) = journals.values()
+
+            elapsed = self._elapsed(reply)
+            await self._finished(step, call_id, journal, shown, elapsed)
             return
 
         if status is not ToolStatus.COMPLETED:
@@ -528,20 +518,77 @@ class UpdateView:
             await self._view.tool_failed(step, self._failure_text(update))
             return
 
-        text = MarkdownResult(text=self._content_text(update))
-        await self._finished(step, call_id, None, text)
+        raw = update.raw_output
+        if raw is None:
+            text = mt.TextContent(text=self._content_text(update))
+            raw = mt.CallToolResult(content=[text])
+
+        await self._finished(step, call_id, None, raw, 0)
 
     async def _finished(
-        self, step: Step, key: str, journal: JournalAddress | None, artifact: Any
+        self,
+        step: Step,
+        key: str,
+        journal: JournalAddress | None,
+        reply: object,
+        elapsed_ms: int,
     ) -> None:
         """Итог шагу step с ключом key: кнопка журнала по адресу journal
-        (None — журнала нет) и показ результата artifact."""
+        (None — журнала нет) и показ ответа reply."""
         if journal is None:
             self._view.drop_journal(step)
         else:
             self._journals.remember(self._thread_id, key, journal)
 
-        await self._view.tool_finished(step, artifact, key)
+        await self._view.tool_finished(step, reply, key, elapsed_ms)
+
+    def _journaled(
+        self, reply: mt.CallToolResult, name: str
+    ) -> tuple[mt.CallToolResult, Mapping[str, JournalAddress]]:
+        """Ответ инструмента name без ссылок на каналы журнала и адреса
+        журналов вызовов по идентификаторам вызовов на сервере: ссылка
+        журнала — кнопка у шага, а не блок выхода."""
+        owner = self._names.parse(name)
+        if owner is None:
+            return reply, {}
+
+        server = owner.server
+        uris = self._media.journal(server)
+        if uris is None:
+            return reply, {}
+
+        shown: list[mt.ContentBlock] = []
+        journals: dict[str, JournalAddress] = {}
+        for block in reply.content:
+            if not isinstance(block, mt.ResourceLink):
+                shown.append(block)
+                continue
+
+            read = uris.address(str(block.uri))
+            if read is None:
+                shown.append(block)
+                continue
+
+            journals[read.node] = JournalAddress(
+                server=server, run=read.run, call=read.node
+            )
+
+        return reply.model_copy(update={"content": shown}), journals
+
+    def _elapsed(self, reply: mt.CallToolResult) -> int:
+        """Длительность вызова из _meta ответа; 0 — сервер её не назвал."""
+        meta = reply.meta
+        if meta is None:
+            return 0
+
+        value = meta.get(ResultWire.ELAPSED)
+        if not isinstance(value, int):
+            return 0
+
+        if value < 0:
+            return 0
+
+        return value
 
     async def _close_thinking(self) -> None:
         if self._thought_id is None:

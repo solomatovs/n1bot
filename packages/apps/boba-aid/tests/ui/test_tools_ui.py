@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import base64
+import csv
 import io
 import json
 import re
@@ -20,10 +21,12 @@ import time
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar
+from urllib.parse import unquote, urlsplit
 
 import httpx
+import mcp_types as mt
 import pytest
 from chat_ui import ChatOpener
 from pydantic import BaseModel, ConfigDict
@@ -65,17 +68,22 @@ from boba.stand.ui.stand import (
 )
 from boba.text.grep import GrepLimits, TextGrep
 from boba.toolkit.calls import ToolIntent
+from boba.toolkit.dag import DagNode, NodeOutcomes
 from boba.toolkit.result import (
     CanvasResult,
+    ContentMime,
     ErrorResult,
+    Fence,
     FieldLines,
     FileResult,
     MarkdownResult,
     SqlResult,
     SqlStatement,
     TableResult,
+    TableText,
     ToolResult,
 )
+from boba.toolkit.wire import ResultWire
 from boba.toolrun.stream_calls import WorkflowTool
 from boba.transport.http import HttpxAuth
 from boba.transport.http.connection import HttpConnection, UrlScheme
@@ -352,10 +360,7 @@ class ToolCall:
                 continue
 
             if name == self.code:
-                shown = MarkdownResult(
-                    text=str(value).strip("\n"), language=self.language
-                )
-                blocks.append(shown.chat_view().markdown)
+                blocks.append(Fence.around(str(value).strip("\n"), self.language))
                 continue
 
             if isinstance(value, str) and not value:
@@ -386,12 +391,69 @@ class ToolExpect:
 
     @classmethod
     def of(cls, result: ToolResult, dom: Sequence[str] = ()) -> ToolExpect:
-        """Ожидание из модели результата: лента рисует её тем же рендером."""
+        """Ожидание из модели результата: выход шага — блоки ответа для
+        человека по таблице 7.3 (ShownBlocks)."""
         return cls(
             mark=StepMark.of(result.ok),
-            output=result.chat_view().markdown,
+            output=ShownBlocks().markdown(result),
             dom=dom,
         )
+
+
+class ShownBlocks:
+    """Выход шага по блокам ответа сервера на результат, как его задаёт
+    таблица 7.3: текст как есть, text/csv — таблица, прочий текстовый
+    ресурс — блок кода с именем ресурса; ссылки и графики — элементы рядом
+    с шагом, в выход не попадают; блок только для модели не показывается."""
+
+    def __init__(self) -> None:
+        self._wire = ResultWire()
+        self._outcomes = NodeOutcomes()
+
+    def markdown(self, result: ToolResult) -> str:
+        call = DagNode(key="call", tool="probe")
+        wire = self._wire.packed(self._outcomes.of(call, result, False))
+
+        pieces: list[str] = []
+        for block in wire.content:
+            if piece := self._piece(block):
+                pieces.append(piece)
+
+        return "\n\n".join(pieces)
+
+    @staticmethod
+    def _piece(block: mt.ContentBlock) -> str:
+        annotations = block.annotations
+        if annotations is None:
+            annotations = mt.Annotations()
+
+        if annotations.audience == ["assistant"]:
+            return ""
+
+        if isinstance(block, mt.TextContent):
+            return block.text
+
+        if not isinstance(block, mt.EmbeddedResource):
+            return ""
+
+        resource = block.resource
+        if not isinstance(resource, mt.TextResourceContents):
+            return ""
+
+        return ShownBlocks._resource(resource)
+
+    @staticmethod
+    def _resource(resource: mt.TextResourceContents) -> str:
+        if resource.mime_type == ContentMime.CSV:
+            rows = list(csv.DictReader(io.StringIO(resource.text)))
+            return TableText.render(rows)
+
+        if resource.mime_type == ContentMime.PLOTLY:
+            return ""
+
+        name = PurePosixPath(urlsplit(str(resource.uri)).path).name
+
+        return Fence.around(resource.text, unquote(name))
 
 
 @dataclass(frozen=True)

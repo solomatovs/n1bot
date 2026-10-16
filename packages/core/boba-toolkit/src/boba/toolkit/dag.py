@@ -61,10 +61,9 @@ from boba.toolkit.chain import (
 from boba.toolkit.failure import InvokeErrorKind, ValidationText
 from boba.toolkit.ports import PortDecl, StreamSpec
 from boba.toolkit.result import (
-    ChatView,
+    BlockAudience,
+    ContentOut,
     ErrorResult,
-    Fact,
-    FactsBlock,
     FailureResult,
     ToolResult,
     ToolResultBase,
@@ -406,8 +405,8 @@ class NestedCallReply(BaseModel):
     key, call_id, tool — те же, что у итога узла (WorkflowNodeResult):
     имя узла от автора связки, идентификатор вызова узла (под ним сервер
     ведёт журнал узла) и инструмент на сервере. blocks — номера блоков узла
-    в content ответа, без его заголовка; result — модель результата узла с
-    kind, по ней клиент показывает узел подробнее текста.
+    в content ответа, без его заголовка; elapsed_ms — длительность вызова
+    узла, 0 — не измерена.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -417,13 +416,13 @@ class NestedCallReply(BaseModel):
     tool: str
     status: NodeStatus
     blocks: Sequence[int]
-    result: Mapping[str, JsonValue]
+    elapsed_ms: int = Field(ge=0)
 
 
 class NestedCallsOutput(BaseModel):
     """Собственные данные итога связки для structuredContent: узлы в
-    порядке описания. Строит её WorkflowResult.structured; сведения о
-    вызове к ней добавляет NestedCallsReply (boba.toolkit.wire)."""
+    порядке описания. Строит её WorkflowResult.sent, из неё же
+    outputSchema связки; клиент разбирает ею ответ связки."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -450,9 +449,6 @@ class WorkflowResult(ToolResultBase):
 
         return "\n".join(parts)
 
-    def chat_view(self) -> ChatView:
-        return ChatView(markdown=FactsBlock(facts=self._facts()).markdown())
-
     def disclosed(self) -> Self:
         nodes: list[WorkflowNodeResult] = []
         for node in self.nodes:
@@ -460,48 +456,33 @@ class WorkflowResult(ToolResultBase):
 
         return self.model_copy(update={"nodes": nodes})
 
-    def texts(self) -> Sequence[str]:
-        texts: list[str] = []
-        for node, node_texts, _ in self._numbered():
-            texts.append(node.heading())
-            texts.extend(node_texts)
+    def shown(self, out: ContentOut) -> None:
+        self.sent(out)
 
-        return texts
+    def sent(self, out: ContentOut) -> dict[str, JsonValue] | None:
+        """Блоки узлов по порядку: своего текста для модели у связки нет,
+        модель читает заголовки и тексты узлов. structuredContent — записи
+        узлов с номерами их блоков."""
+        replies = list(self._numbered(out))
+        output = NestedCallsOutput(nodes=replies)
 
-    def structured(self) -> dict[str, JsonValue] | None:
-        replies: list[NestedCallReply] = []
-        for node, _, numbers in self._numbered():
-            reply = NestedCallReply(
+        return output.model_dump(mode="json")
+
+    def _numbered(self, out: ContentOut) -> Iterator[NestedCallReply]:
+        """Блоки узлов в out и запись каждого узла с номерами его блоков:
+        перед блоками узла стоит его заголовок, номера с нуля от начала out."""
+        for node in self.nodes:
+            out.text(node.heading(), BlockAudience.BOTH)
+            start = len(out)
+            node.result.sent(out)
+            yield NestedCallReply(
                 key=node.key,
                 call_id=node.call_id,
                 tool=node.tool,
                 status=node.status,
-                blocks=numbers,
-                result=node.result.model_dump(mode="json"),
+                blocks=range(start, len(out)),
+                elapsed_ms=node.result.elapsed_ms,
             )
-            replies.append(reply)
-
-        return NestedCallsOutput(nodes=replies).model_dump(mode="json")
-
-    def _numbered(
-        self,
-    ) -> Iterator[tuple[WorkflowNodeResult, Sequence[str], Sequence[int]]]:
-        """Узлы с их текстами и номерами их блоков в content одним проходом:
-        перед блоками узла стоит его заголовок, номера с нуля."""
-        position = 0
-        for node in self.nodes:
-            texts = node.result.texts()
-            start = position + 1
-            position = start + len(texts)
-            yield node, texts, range(start, position)
-
-    def _facts(self) -> list[Fact]:
-        facts: list[Fact] = []
-        for node in self.nodes:
-            fact = Fact(key=f"{node.key} ({node.tool})", value=node.status.value)
-            facts.append(fact)
-
-        return facts
 
 
 @dataclass(frozen=True)
@@ -555,8 +536,7 @@ class NodeOutcome(BaseModel):
 
     errored — вызов кончился ошибкой самого вызова: инструмент поднял
     исключение до тела (аргументы, права) либо сервер отказал вызову до
-    старта. journal — адрес журнала вызова на сервере, который его исполнил;
-    None — вызов исполнен в своём процессе либо сервер журнала не ведёт.
+    старта.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -566,11 +546,6 @@ class NodeOutcome(BaseModel):
     content: str
     artifact: ToolResult
     errored: bool = False
-    journal: JournalAddress | None = None
-    media: Mapping[str, Mapping[str, str]] | None = None
-    """Типы содержимого аргументов по идентификаторам вызовов. Их называет
-    порт сервера, чьи инструменты описаны схемой; None — вызов исполнен в
-    своём процессе, и его аргументы показывает модель вызова инструмента."""
     reply: Mapping[str, JsonValue] | None = None
     """Ответ сервера MCP на вызов как пришёл; None — порт его не хранит."""
 
@@ -596,13 +571,12 @@ class NodeOutcome(BaseModel):
 
     def use_result(self) -> ToolUseResult:
         """Итог в форме записи истории: ответ сервера MCP как пришёл, а без
-        него — результат семейства; адрес журнала и типы содержимого
-        аргументов."""
+        него — результат семейства."""
         artifact: Any = self.artifact.model_dump(mode="json", exclude_none=True)
         if self.reply is not None:
             artifact = self.reply
 
-        return ToolUseResult(artifact=artifact, journal=self.journal, media=self.media)
+        return ToolUseResult(artifact=artifact)
 
 
 class ToolUseResultKey(StrEnum):
@@ -615,10 +589,11 @@ class ToolUseResultKey(StrEnum):
 
 class ToolUseResult(BaseModel):
     """Итог вызова, каким его хранит история агента и несёт `rawOutput`
-    уведомления `tool_call_update`: результат семейства словарём (artifact),
-    адрес журнала вызова на сервере (journal) и типы содержимого аргументов
-    по идентификаторам вызовов (media). Пишет агент по NodeOutcome.use_result
-    и скрипт миграции истории; читает лента чата (ToolUseResults)."""
+    уведомления `tool_call_update`: ответ сервера MCP либо результат
+    семейства словарём (artifact). Адрес журнала (journal) и типы
+    содержимого аргументов (media) есть только в записях скрипта миграции
+    истории. Пишет агент по NodeOutcome.use_result; читает лента чата
+    (ToolUseResults)."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 

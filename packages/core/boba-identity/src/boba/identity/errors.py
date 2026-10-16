@@ -238,7 +238,7 @@ class FailureReport:
         if not isinstance(error, BaseError):
             return cls(
                 log=described,
-                view=failure.chat_view().markdown,
+                view=failure.markdown(),
                 history=described,
             )
 

@@ -146,9 +146,6 @@ class TestCanvasOpen:
         if "opened in the canvas: chart.png" not in result.llm_view():
             raise AssertionError(result.llm_view())
 
-        if [item.item for item in result.chat_view().items] != ["panel"]:
-            raise AssertionError(result.chat_view())
-
 
 class TestDiagramSave:
     CFG = CanvasToolConfig(max_chars=1000)

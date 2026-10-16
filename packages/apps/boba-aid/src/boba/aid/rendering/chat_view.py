@@ -3,17 +3,31 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
+import csv
+import io
 import json
 import logging
+import mimetypes
 from abc import ABC, abstractmethod
 from collections import deque
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import (
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Iterator,
+    Mapping,
+    Sequence,
+)
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, ClassVar, Protocol, cast
-from urllib.parse import urlsplit, urlunsplit
+from pathlib import PurePosixPath
+from typing import Any, ClassVar, Protocol, TypeAlias, cast
+from urllib.parse import unquote, urlsplit, urlunsplit
 from uuid import UUID, uuid5
 
+import mcp_types as mt
 from acp.experimental.v2 import schema
 from chainlit.config import config as chainlit_config
 from chainlit.context import context
@@ -34,9 +48,18 @@ from boba.canvas.canvas import (
     CanvasRegistry,
 )
 from boba.canvas.keys import ObjectKey
+from boba.canvas.storage import StorageError, StorageNotFoundError
+from boba.runtime.storage import StorageClient
 from boba.toolkit.calls import CallViews, ToolCallBase, ToolCallModels, ToolIntent
 from boba.toolkit.mcp import McpToolNames
-from boba.toolkit.result import FileElement, PanelOpen, ToolArtifact, VisualElement
+from boba.toolkit.result import (
+    BlockAudience,
+    ContentMime,
+    Fence,
+    JsonBlock,
+    TableText,
+)
+from boba.transport.http.connection import UrlScheme
 
 __all__ = [
     "ChatSink",
@@ -520,6 +543,17 @@ class StreamableTools(Protocol):
         которым инструмент видит модель (у сервера MCP — полное)."""
 
 
+BlockDrawing: TypeAlias = Callable[
+    [mt.ContentBlock, Step, str | None, int], Awaitable[str]
+]
+"""Отрисовщик блока ответа: блок, шаг вызова, ключ вызова и номер блока-не-
+текста; итог — markdown для выхода шага (пусто — блок стал элементом)."""
+
+ResourceDrawing: TypeAlias = Callable[[str, str, str | None], Awaitable[str]]
+"""Отрисовщик текстового встроенного ресурса по его MIME: текст ресурса, его
+имя (последний сегмент uri) и ключ вызова."""
+
+
 class ChatView:
     """Строит step-иерархию хода диалога и пишет её в sink.
 
@@ -533,23 +567,39 @@ class ChatView:
 
     Пока ход не закончен, в конце ленты держится кружок ожидания (TurnPulse) —
     независимо от того, думает модель, зовёт инструмент или молчит.
+
+    Итог вызова — ответ сервера MCP: блоки для человека рисуются реестром по
+    виду блока и MIME ресурса (таблица, блок кода, график, вьювер канваса
+    или вложение); картинка и звук ложатся файлом в хранилище треда
+    (storage) и рисуются как файл workspace; неизвестное — JSON без байтов.
     """
 
     NAMESPACE: ClassVar[UUID] = UUID("6f9b1f4e-2f1a-4c1a-9a2f-1d3b5c7e9a11")
+    FILE_SCHEME: ClassVar[str] = "file"
+    """Схема ссылки на файл workspace сервера."""
+    TEXT_FAMILY: ClassVar[str] = "text/"
+    """Начало MIME текстовых ресурсов: неизвестный текст рисуется блоком кода."""
+    BASE64_SLICE: ClassVar[int] = 64 * 1024
+    """Срез base64 картинки и звука при записи в хранилище: кратен 4,
+    поэтому каждый срез декодируется сам по себе."""
+    BYTES: ClassVar[Mapping[str, Any]] = {"data": True, "resource": {"blob": True}}
+    """Поля байтов base64, которых JSON неизвестного блока не раскрывает."""
     AVATAR_NAME_KEY: ClassVar[str] = "avatarName"
     """Ключ metadata шага, по которому фронт chainlit выбирает аватар вместо имени."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 — лента собирается всеми входами вкладки
         self,
         thread_id: str,
         sink: ChatSink,
         journals: StreamableTools,
         user_key: str,
+        storage: StorageClient,
         *,
         user_name: str | None = None,
     ) -> None:
         self._thread_id = thread_id
         self._user_key = user_key
+        self._storage = storage
         self._journals = journals
         self._batch = StreamBatch()
         self._sink = BatchedSink(sink, self._batch)
@@ -564,6 +614,22 @@ class ChatView:
         self._progress: dict[str, ProgressText] = {}
         self._call_views = CallViews()
         self._names = McpToolNames()
+        self._elements = ChatElements()
+        self._drawings: dict[type[mt.ContentBlock], BlockDrawing] = {
+            mt.TextContent: self._text,
+            mt.EmbeddedResource: self._embedded,
+            mt.ResourceLink: self._linked,
+            mt.ImageContent: self._media,
+            mt.AudioContent: self._media,
+        }
+        """Отрисовка блока ответа по его виду (type)."""
+        self._resources: dict[str, ResourceDrawing] = {
+            ContentMime.CSV: self._table,
+            ContentMime.PLOTLY: self._chart,
+            ContentMime.SQL: self._fenced,
+            ContentMime.JSON: self._fenced,
+        }
+        """Отрисовка встроенного ресурса по MIME; прочий text/* — блоком кода."""
         self._pulse = self._new_pulse(None)
 
     @property
@@ -852,9 +918,9 @@ class ChatView:
         self._tool_names[step.id] = label
 
         if call_args:
-            view = self._call_of(shown, call_args, media).chat_view()
-            if view.markdown:
-                step.input = view.markdown
+            markdown = self._call_of(shown, call_args, media).markdown()
+            if markdown:
+                step.input = markdown
                 step.show_input = True
 
         # фронт chainlit рисует секцию output (с inline-элементами, в том числе
@@ -927,51 +993,231 @@ class ChatView:
     async def tool_finished(
         self,
         step: Step,
-        artifact: Any,
-        tool_call_id: str | None = None,
+        reply: object,
+        tool_call_id: str | None,
+        elapsed_ms: int,
     ) -> None:
+        """Итог вызова шагу step. Ответ сервера MCP (CallToolResult)
+        рисуется блоками для человека по их виду и MIME, ✖ — по isError;
+        elapsed_ms — длительность вызова, 0 — не измерена. Любой другой
+        rawOutput (итог старого треда, ответ чужого агента) показывается
+        своим JSON."""
         # завершённость шага = start == end; иначе фронт считает его живым
         ended = utc_now()
         step.start = ended
         step.end = ended
         self._progress.pop(step.id, None)
         self._journaled(step)
-        result = ToolArtifact.revive(artifact)
-        if result is None:
-            step.output = self._raw_output(artifact)
-            step.language = self._raw_language(artifact)
-            step.name = StepStatus.DONE.title(self._tool_names.get(step.id, step.name))
+        label = self._tool_names.get(step.id, step.name)
+        if not isinstance(reply, mt.CallToolResult):
+            step.output = self._raw_output(reply)
+            step.language = self._raw_language(reply)
+            step.name = StepStatus.DONE.title(label)
             await self._sink.put(step)
             return
 
-        failed = not result.ok
         status = StepStatus.DONE
-        if failed:
+        if reply.is_error:
             status = StepStatus.FAILED
-        step.name = status.timed(
-            self._tool_names.get(step.id, step.name), result.elapsed_ms
-        )
-        view = result.chat_view()
-        step.output = view.markdown
 
-        widgets: list[VisualElement] = []
+        step.name = status.timed(label, elapsed_ms)
+        step.is_error = reply.is_error
+        shown: list[str] = []
+        async for piece in self._pieces(reply, step, tool_call_id):
+            shown.append(piece)
+
+        step.output = "\n\n".join(shown)
+        await self._sink.put(step)
+
+    async def _pieces(
+        self, reply: mt.CallToolResult, step: Step, key: str | None
+    ) -> AsyncIterator[str]:
+        """Непустой markdown блоков ответа для человека по порядку: блок
+        только для модели не показывается; номер — порядковый номер
+        блока-не-текста, из него id элемента."""
         number = 0
-        for item in view.items:
-            if isinstance(item, VisualElement):
-                widgets.append(item)
+        for block in reply.content:
+            annotations = block.annotations
+            if annotations is not None:
+                if not BlockAudience.USER.reads(annotations.audience):
+                    continue
+
+            drawing = self._drawings.get(type(block), self._unknown)
+            piece = await drawing(block, step, key, number)
+
+            if not isinstance(block, mt.TextContent):
+                number += 1
+
+            if not piece:
                 continue
 
-            if note := await self._mounted(item, tool_call_id, number):
-                step.output = f"{step.output}\n\n{note}"
+            yield piece
 
-            number += 1
+    async def _text(
+        self, block: mt.ContentBlock, step: Step, key: str | None, number: int
+    ) -> str:
+        if not isinstance(block, mt.TextContent):
+            return await self._unknown(block, step, key, number)
 
-        if not widgets:
-            step.is_error = failed
+        return block.text
 
-        await self._sink.put(step)
-        for widget in widgets:
-            await self._element(widget, tool_call_id)
+    async def _embedded(
+        self, block: mt.ContentBlock, step: Step, key: str | None, number: int
+    ) -> str:
+        """Встроенный ресурс по MIME; двоичный и неизвестного вида — JSON."""
+        if not isinstance(block, mt.EmbeddedResource):
+            return await self._unknown(block, step, key, number)
+
+        resource = block.resource
+        if not isinstance(resource, mt.TextResourceContents):
+            return await self._unknown(block, step, key, number)
+
+        mime = resource.mime_type
+        if mime is None:
+            mime = ContentMime.PLAIN.value
+
+        drawing = self._resources.get(mime)
+        if drawing is None and mime.startswith(self.TEXT_FAMILY):
+            drawing = self._fenced
+
+        if drawing is None:
+            return await self._unknown(block, step, key, number)
+
+        segment = PurePosixPath(urlsplit(str(resource.uri)).path).name
+        name = unquote(segment)
+
+        return await drawing(resource.text, name, key)
+
+    async def _table(self, text: str, name: str, key: str | None) -> str:
+        """text/csv — таблица markdown, как у таблиц семейства."""
+        rows = list(csv.DictReader(io.StringIO(text)))
+
+        return TableText.render(rows)
+
+    async def _fenced(self, text: str, name: str, key: str | None) -> str:
+        """Текст блоком кода; подпись ограды — имя ресурса."""
+        return Fence.around(text, name)
+
+    async def _chart(self, text: str, name: str, key: str | None) -> str:
+        """Фигура plotly — график шагом рядом с вызовом; заголовок — имя
+        ресурса. Фигура не JSON — текстом."""
+        try:
+            figure = json.loads(text)
+        except ValueError as exc:
+            logger.info(
+                "thread %s: plotly figure of call %s is not JSON, shown as text: %s",
+                self._thread_id,
+                key,
+                exc,
+            )
+            return await self._fenced(text, name, key)
+
+        await self._element(figure, name, key)
+
+        return ""
+
+    async def _media(
+        self, block: mt.ContentBlock, step: Step, key: str | None, number: int
+    ) -> str:
+        """Картинка и звук — файл в хранилище треда под именем от шага вызова
+        и номера блока: вживую, при воспроизведении и во второй вкладке это
+        один файл, записанный один раз. Дальше он рисуется как файл
+        workspace (_mounted). Не base64 — JSON блока без байтов."""
+        if not isinstance(block, mt.ImageContent | mt.AudioContent):
+            return await self._unknown(block, step, key, number)
+
+        try:
+            # проверка срезами до записи: битый блок не оставит в хранилище обрывка
+            async for _ in self._decoded(block.data):
+                pass
+        except binascii.Error as exc:
+            logger.info(
+                "thread %s: %s of call %s is not base64, shown as JSON: %s",
+                self._thread_id,
+                block.type,
+                key,
+                exc,
+            )
+            return await self._unknown(block, step, key, number)
+
+        if not self._sink.emits_elements:
+            return ""
+
+        suffix = mimetypes.guess_extension(block.mime_type)
+        if suffix is None:
+            suffix = ""
+
+        stem = uuid5(self.NAMESPACE, f"{step.id}:{number}")
+        file_key = ObjectKey(
+            user_id=self._user_key, thread_id=self._thread_id, name=f"{stem}{suffix}"
+        )
+        target = file_key.render()
+        stored = True
+        try:
+            await self._storage.stat(target)
+        except StorageNotFoundError:
+            stored = False
+        except StorageError as exc:
+            return f"{file_key.in_workspace()} is not shown: {exc}"
+
+        if not stored:
+            chunks = self._decoded(block.data)
+            try:
+                await self._storage.upload_stream(target, chunks, block.mime_type)
+            except StorageError as exc:
+                return f"{file_key.in_workspace()} is not shown: {exc}"
+
+        return await self._mounted(
+            file_key.in_workspace(), file_key.name, block.mime_type, key, number
+        )
+
+    async def _decoded(self, data: str) -> AsyncIterator[bytes]:
+        """Байты base64 срезами BASE64_SLICE: в памяти — один срез.
+
+        Ошибки:
+        binascii.Error — срез не base64.
+        """
+        for start in range(0, len(data), self.BASE64_SLICE):
+            piece = data[start : start + self.BASE64_SLICE]
+            yield base64.b64decode(piece, validate=True)
+
+    async def _linked(
+        self, block: mt.ContentBlock, step: Step, key: str | None, number: int
+    ) -> str:
+        """Ссылка: файл workspace (file://) — вьювер канваса либо вложение у
+        ответа хода; http(s) — вложение по адресу; другая схема — JSON."""
+        if not isinstance(block, mt.ResourceLink):
+            return await self._unknown(block, step, key, number)
+
+        address = urlsplit(str(block.uri))
+        if address.scheme == self.FILE_SCHEME:
+            path = unquote(address.path)
+            return await self._mounted(path, block.name, block.mime_type, key, number)
+
+        if address.scheme not in set(UrlScheme):
+            return await self._unknown(block, step, key, number)
+
+        answer_id = self.derive_id(self._thread_id, self._turn.key, StepRole.ANSWER)
+        if answer_id is None:
+            return ""
+
+        if not self._sink.emits_elements:
+            return ""
+
+        attached = self._file(block.name, str(block.uri), block.mime_type, key, number)
+        await attached.send(for_id=answer_id)
+
+        return ""
+
+    async def _unknown(
+        self, block: mt.ContentBlock, step: Step, key: str | None, number: int
+    ) -> str:
+        """Неизвестный блок — его JSON; байты blob и data не раскрываются."""
+        shown = block.model_dump(
+            mode="json", by_alias=True, exclude_none=True, exclude=self.BYTES
+        )
+
+        return Fence.around(JsonBlock.pretty(shown), StepLanguage.JSON.value)
 
     def key_of(self, path: str) -> ObjectKey:
         """Ключ файла итога в области треда пользователя ленты.
@@ -985,11 +1231,12 @@ class ChatView:
             raise CanvasError(CanvasErrorKind.BAD_PATH, str(exc)) from exc
 
     async def _mounted(
-        self, item: FileElement | PanelOpen, tool_call_id: str | None, number: int
+        self, path: str, name: str, mime: str | None, key: str | None, number: int
     ) -> str:
-        """Файл итога или ссылка панели — элемент у ответа хода, одинаково
-        вживую и при воспроизведении; итог — пояснение для выхода шага
-        вызова, когда элемента нет (путь вне треда, формата без вьювера)."""
+        """Файл workspace по ссылке — элемент у ответа хода, одинаково вживую
+        и при воспроизведении: файл с вьювером канваса — его карточкой,
+        остальное — вложением. Итог — пояснение для выхода шага вызова,
+        когда элемента нет (путь вне треда, вьювер отказал)."""
         answer_id = self.derive_id(self._thread_id, self._turn.key, StepRole.ANSWER)
         if answer_id is None:
             return ""
@@ -998,27 +1245,23 @@ class ChatView:
             return ""
 
         try:
-            key = self.key_of(item.path)
+            file_key = self.key_of(path)
         except CanvasError as exc:
-            return f"{item.path} is not shown: {exc}"
+            return f"{path} is not shown: {exc}"
 
         element: Element
-        if isinstance(item, FileElement):
-            url = CanvasFileUrl.path(key)
-            element = self._file(item.name, url, item.mime, tool_call_id, number)
+        viewer = CanvasRegistry.viewer_for(file_key.name)
+        if viewer is None:
+            url = CanvasFileUrl.path(file_key)
+            element = self._file(name, url, mime, key, number)
         else:
-            viewer = CanvasRegistry.viewer_for(key.name)
-            if viewer is None:
-                hint = CanvasRegistry.suffixes_hint()
-                return f"{key.in_workspace()} has no canvas viewer; supported: {hint}"
-
             try:
-                link = await viewer.link(key)
+                card = await viewer.link(file_key)
             except CanvasError as exc:
-                return f"{key.in_workspace()} is not shown: {exc}"
+                return f"{file_key.in_workspace()} is not shown: {exc}"
 
-            element = ChatElements.of_result(link)
-            self._numbered(element, tool_call_id, number)
+            element = self._elements.of_result(card)
+            self._numbered(element, key, number)
 
         await element.send(for_id=answer_id)
 
@@ -1093,8 +1336,10 @@ class ChatView:
         step.end = ended
         await self._sink.put(step)
 
-    async def _element(self, widget: VisualElement, tool_call_id: str | None) -> None:
-        """Шаг-носитель элемента: график и кастомный компонент рисуются одинаково."""
+    async def _element(
+        self, figure: Mapping[str, Any], title: str, tool_call_id: str | None
+    ) -> None:
+        """Шаг-носитель графика plotly рядом с шагом вызова."""
         step = self._step(
             self._assistant_name,
             StepKind.ASSISTANT,
@@ -1102,10 +1347,10 @@ class ChatView:
             step_id=self.derive_id(self._thread_id, tool_call_id, StepRole.CHART),
         )
 
-        step.output = widget.title
+        step.output = title
 
         if self._sink.emits_elements:
-            element = ChatElements.of(widget)
+            element = self._elements.plotly(figure, title)
             element_id = self.derive_id(self._thread_id, tool_call_id, StepRole.ELEMENT)
             if not element_id:
                 element_id = element.id

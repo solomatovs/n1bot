@@ -13,17 +13,20 @@ HTTPException 401 — запрос без токена входа либо то�
 HTTPException 404 — файла нет в workspace.
 HTTPException 416 — диапазон начинается за концом файла.
 HTTPException 507 — в workspace не осталось места.
+ResourceError — resources/read канала журнала: канал не читается либо
+    журнала вызова у вызывающего нет.
 """
 
 from __future__ import annotations
 
 import logging
-import mimetypes
 from collections.abc import AsyncIterator
 from enum import StrEnum
 from typing import ClassVar
+from urllib.parse import urlsplit
 
 from fastmcp import FastMCP
+from fastmcp.exceptions import ResourceError
 from fastmcp.server.auth import AccessToken
 from mcp.server.auth.middleware.bearer_auth import AuthenticatedUser
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -31,7 +34,7 @@ from starlette.exceptions import HTTPException
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
-from boba.canvas.journal import StreamJournalError, StreamKey
+from boba.canvas.journal import StreamJournalError, StreamKey, StreamSlice
 from boba.canvas.keys import ObjectKey, ThreadDir, WorkspaceMount
 from boba.canvas.storage import StorageFullError, StorageNotFoundError
 from boba.canvas.transfer import FileHeader, UploadPolicy
@@ -45,10 +48,11 @@ from boba.runtime.storage import (
 )
 from boba.toolkit.channels import JournalChannels
 from boba.toolkit.failure import ValidationText
-from boba.toolkit.wire import FilesFeature
+from boba.toolkit.result import ContentMime, ErrorResult
+from boba.toolkit.wire import FilesFeature, JournalRead
 from boba.toolrun.streams import CallJournals
 
-__all__ = ["FileRoutes", "JournalRoutes", "RouteCallers"]
+__all__ = ["FileRoutes", "JournalRoutes", "RouteCallers", "ServerRefusal"]
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +66,17 @@ class FilePart(StrEnum):
     ETAG = "etag"
     AUTHORIZATION = "authorization"
     BEARER = "bearer "
-    FALLBACK_MIME = "application/octet-stream"
+
+
+class ServerRefusal(StrEnum):
+    """Виды отказов сервера вызову: не дошёл до исполнителя либо остановлен
+    вместе с запуском."""
+
+    INVALID_REQUEST = "invalid_request"
+    FORBIDDEN = "forbidden"
+    NOT_FOUND = "not_found"
+    RUN_LIMIT = "run_limit"
+    STOPPED = "stopped"
 
 
 class FileStored(BaseModel):
@@ -120,26 +134,34 @@ class RouteCallers:
 
 
 class JournalRoutes:
-    """Журнал вызова целым файлом по маршруту endpoint'а.
+    """Адреса журнала вызова на endpoint'е: канал целым файлом по маршруту
+    и ресурсом MCP.
 
-    Создаётся сервером endpoint'а из журналов процесса. Окна журнала читает
-    операция stream_read; скачать канал целиком — этот маршрут:
-    `{base}/journals/{run}/{node}/{channel}`, потоком и с Range. Журнал
-    отдаётся только тому, кто вызывал инструмент: чужой запуск — 404.
+    Создаётся сервером endpoint'а из журналов процесса. Окно канала с
+    проверкой доступа (window) — общий путь операции stream_read и
+    resources/read; скачать канал целиком — маршрут
+    `{base}/journals/{run}/{node}/{channel}`, потоком и с Range. Канал —
+    ресурс по шаблону RESOURCE: на него ведут ссылки итога вызова, а
+    resources/read отдаёт первое окно канала. Журнал отдаётся только тому,
+    кто вызывал инструмент: чужой запуск — 404.
     """
 
     MIME: ClassVar[str] = "text/plain; charset=utf-8"
+    RESOURCE: ClassVar[str] = "boba-journal://{run}/{node}/{channel}"
+    """Шаблон uri ресурса канала журнала (JournalFeature.resource)."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 — маршрут собирается всеми входами endpoint'а
         self,
         journals: CallJournals,
         callers: RouteCallers,
+        subjects: TokenSubjects,
         config: LocalStorageConfig,
         base: str,
         published: str,
     ) -> None:
         self._journals = journals
         self._callers = callers
+        self._subjects = subjects
         self._config = config
         self._base = f"{base}/journals"
         self._published = f"{published}{self._base}"
@@ -152,8 +174,85 @@ class JournalRoutes:
         return self._published
 
     def install(self, server: FastMCP) -> None:
-        path = "/".join((self._base, "{run}", "{node}", "{channel}"))
+        # маршрут канала — тот же шаблон ресурса под путём журналов
+        resource = urlsplit(self.RESOURCE)
+        path = f"{self._base}/{resource.netloc}{resource.path}"
         server.custom_route(path, methods=["GET"])(self.get)
+        server.resource(self.RESOURCE, mime_type=ContentMime.PLAIN.value)(self.read)
+
+    async def read(self, run: str, node: str, channel: str) -> str:
+        """resources/read канала журнала: его первое окно, как stream_read
+        от начала; канал целиком отдаёт маршрут журналов.
+
+        Ошибки:
+        ResourceError — адрес канала негоден, канал не читается либо журнала
+            нет у вызывающего.
+        """
+        try:
+            request = JournalRead.model_validate(
+                {"run": run, "node": node, "channel": channel}
+            )
+        except ValidationError as exc:
+            msg = (
+                f"resources/read {run}/{node}/{channel}: expected a journal "
+                f"channel address, got {ValidationText.of(exc)}"
+            )
+            raise ResourceError(msg) from exc
+
+        window = self.window(request)
+        if isinstance(window, ErrorResult):
+            msg = f"resources/read {run}/{node}/{channel}: {window.message}"
+            raise ResourceError(msg)
+
+        return window.text
+
+    def window(self, request: JournalRead) -> StreamSlice | ErrorResult:
+        """Окно канала журнала для вызывающего: от offset (без него — от
+        начала) либо перед before. Отказ — ErrorResult вида ServerRefusal:
+        канал не читается, запуск чужой, журнала нет."""
+        address = f"journal of call {request.node!r} in run {request.run!r}"
+        if not JournalChannels.visible(request.channel):
+            return ErrorResult(
+                message=(
+                    f"{address}: channel {request.channel.value!r} is not "
+                    "readable, expected one of the visible journal channels"
+                ),
+                error_kind=ServerRefusal.INVALID_REQUEST,
+            )
+
+        user = self._subjects.current().user_key
+        owner = self._journals.owner_of(request.run)
+        if owner not in (None, user):
+            return ErrorResult(
+                message=(
+                    f"{address}: the run belongs to another user; expected a "
+                    "run of the caller"
+                ),
+                error_kind=ServerRefusal.FORBIDDEN,
+            )
+
+        piece = self._slice(request, user)
+        if piece is None:
+            return ErrorResult(
+                message=f"{address}: no journal on channel {request.channel.value!r}",
+                error_kind=ServerRefusal.NOT_FOUND,
+            )
+
+        return piece
+
+    def _slice(self, request: JournalRead, user: str) -> StreamSlice | None:
+        if request.before is not None:
+            return self._journals.recorded_slice_before(
+                user, request.run, request.node, request.before, request.channel
+            )
+
+        offset = request.offset
+        if offset is None:
+            offset = 0
+
+        return self._journals.recorded_slice(
+            user, request.run, request.node, offset, request.channel
+        )
 
     async def get(self, request: Request) -> Response:
         subject = await self._callers.of(request)
@@ -270,7 +369,7 @@ class FileRoutes:
         counted = CountedBody(request.stream())
         try:
             await self._storage.upload_stream(
-                key.render(), counted.chunks(), self._mime(key)
+                key.render(), counted.chunks(), ContentMime.of_name(key.name)
             )
         except StorageFullError as exc:
             msg = f"PUT {request.url.path}: no space left in the workspace: {exc}"
@@ -289,7 +388,7 @@ class FileRoutes:
 
         return await self._files.respond(
             key.render(),
-            mime=self._mime(key),
+            mime=ContentMime.of_name(key.name),
             range_header=request.headers.get("range", ""),
             content_disposition="",
         )
@@ -309,7 +408,9 @@ class FileRoutes:
             FilePart.ETAG.value: f'"{stat.revision}"',
         }
 
-        return Response(status_code=200, headers=headers, media_type=self._mime(key))
+        return Response(
+            status_code=200, headers=headers, media_type=ContentMime.of_name(key.name)
+        )
 
     async def delete(self, request: Request) -> Response:
         key = await self._key(request)
@@ -362,14 +463,6 @@ class FileRoutes:
                 f"dirs {dirs}: {exc}"
             )
             raise HTTPException(status_code=400, detail=msg) from exc
-
-    @staticmethod
-    def _mime(key: ObjectKey) -> str:
-        guessed = mimetypes.guess_type(key.name)[0]
-        if not guessed:
-            return FilePart.FALLBACK_MIME.value
-
-        return guessed
 
 
 class CountedBody:

@@ -6,16 +6,19 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
-from pathlib import Path
+import base64
+import json
+from collections.abc import AsyncIterator, Sequence
+from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar, cast
+from urllib.parse import urlsplit
 
 import chainlit.data as chainlit_data
 import mcp_types as mt
 import pytest
 from acp.experimental.v2 import schema
-from aid_stand import Seed
-from chainlit.context import ChainlitContext, context_var, init_http_context
+from aid_stand import Seed, get_bytes
+from chainlit.context import ChainlitContext, context_var
 from chainlit.step import StepDict
 from pydantic import AnyUrl, SecretStr
 
@@ -23,7 +26,6 @@ from boba.agent.records import PermissionMode
 from boba.agent.settings import ModelSettings, ProviderKind, ProviderSettings
 from boba.aid.agent.chat import SessionOptions, ThreadAgentsIndex
 from boba.aid.agent.client import SessionUpdate
-from boba.aid.agent.feed import ResultMounts
 from boba.aid.agent.panel import AgentPanel
 from boba.aid.agent.settings import (
     AgentSettingsError,
@@ -31,11 +33,12 @@ from boba.aid.agent.settings import (
     UserAgentSettings,
 )
 from boba.aid.canvas.diagram import DiagramFiles, MermaidViewer
-from boba.aid.canvas.panel import ImageViewer
+from boba.aid.canvas.panel import CanvasPanel, ImageViewer
 from boba.aid.canvas.remote import RemoteJournals
 from boba.aid.chat.feed import QuestionBody, TurnFeed
 from boba.aid.chat.panel_text import PanelText
 from boba.aid.domain.fields import StepField
+from boba.aid.domain.keys import CanvasFileUrl
 from boba.aid.rendering.acp_view import (
     SessionUpdateCodec,
     ToolMedia,
@@ -53,16 +56,17 @@ from boba.canvas.canvas import CanvasRegistry
 from boba.canvas.keys import ObjectKey, ThreadDir
 from boba.chat.profiles import ChatProfileConfig, UserSetting
 from boba.identity.context import Scope
+from boba.mcp_adapter import JournalUris
 from boba.messaging import (
-    Envelope,
     LockToken,
     MemoryMessageBus,
     MemoryPayloadStore,
-    Notice,
     TurnOutcome,
 )
+from boba.runtime.storage import LocalStorageClient
 from boba.stand.refs import StandRefs
 from boba.stand.storage import StorageSeed
+from boba.toolkit.channels import ToolChannel
 from boba.toolkit.dag import (
     CallDag,
     DagNode,
@@ -73,13 +77,14 @@ from boba.toolkit.dag import (
 )
 from boba.toolkit.result import (
     CanvasResult,
-    ChatElement,
+    ContentMime,
     ErrorResult,
     FileResult,
     MarkdownResult,
+    ToolArtifact,
     ToolResultBase,
 )
-from boba.toolkit.wire import ResultWire
+from boba.toolkit.wire import JournalFeature, JournalRead, McpContent, ResultWire
 from boba.transport.acp.protocol import IdleErrorUpdate
 
 THREAD = "11111111-1111-1111-1111-111111111111"
@@ -88,6 +93,13 @@ MESSAGE = "msg_a"
 SECOND_MESSAGE = "msg_b"
 CALL = "call_1"
 SECOND_CALL = "call_2"
+RUN = "run-7"
+JOURNAL = JournalFeature(
+    read="stream_read",
+    path="/journals",
+    resource="boba-journal://{run}/{node}/{channel}",
+)
+"""Журнал вызовов сервера boba стенда ленты."""
 
 
 @pytest.fixture(autouse=True)
@@ -244,20 +256,26 @@ def _done(call_id: str, text: str, raw_output: Any) -> SessionUpdate:
     )
 
 
-def _result(artifact: ToolResultBase, run: str = "") -> dict[str, Any]:
-    """Ответ tools/call сервера boba-mcp: текст для модели и модель результата
-    в structuredContent; run — запуск, под которым сервер ведёт журнал."""
+def _result(artifact: ToolResultBase, journaled: Sequence[str] = ()) -> dict[str, Any]:
+    """Ответ tools/call сервера boba-mcp: блоки результата и ссылки на
+    stdout журналов вызовов journaled запуска RUN, как их дописывает
+    сервер."""
     call = DagNode(key="srv-call", tool="pg_query")
     outcome = NodeOutcomes().of(call, artifact, False)
     wire = ResultWire().packed(outcome)
-    structured = wire.structured
-    if run and structured is not None:
-        structured = ResultWire().stamped(structured, run)
+    uris = JournalUris(JOURNAL.resource)
+    links = McpContent(RUN)
+    for node in journaled:
+        address = JournalRead(run=RUN, node=node, channel=ToolChannel.STDOUT)
+        links.link(uris.uri(address), ToolChannel.STDOUT.value, ContentMime.PLAIN)
+
+    content = [*wire.content, *links.blocks()]
 
     reply = mt.CallToolResult(
-        content=list(wire.content),
-        structured_content=structured,
+        content=content,
+        structured_content=wire.structured,
         is_error=wire.is_error,
+        _meta=dict(wire.meta),
     )
 
     return reply.model_dump(mode="json", by_alias=True, exclude_none=True)
@@ -305,12 +323,16 @@ def _replayed_updates() -> list[SessionUpdate]:
     ]
 
 
-def _view(runtime_stand: StandRefs, journals: RemoteJournals) -> UpdateView:
+def _view(
+    runtime_stand: StandRefs, storage: LocalStorageClient, journals: RemoteJournals
+) -> UpdateView:
     view = ChatView(
-        THREAD, LiveSink(), runtime_stand.journals, "u-1", user_name="alice"
+        THREAD, LiveSink(), runtime_stand.journals, "u-1", storage, user_name="alice"
     )
+    media = ToolMedia()
+    media.shown("boba", [], None, JOURNAL)
 
-    return UpdateView(view, THREAD, journals, ToolMedia())
+    return UpdateView(view, THREAD, journals, media)
 
 
 class TestUpdateViewIds:
@@ -318,9 +340,12 @@ class TestUpdateViewIds:
 
     @pytest.mark.anyio
     async def test_replay_derives_ids_from_message_and_call_ids(
-        self, runtime_stand: StandRefs, recorded: FakeEmitter
+        self,
+        runtime_stand: StandRefs,
+        storage: LocalStorageClient,
+        recorded: FakeEmitter,
     ) -> None:
-        updates = _view(runtime_stand, RemoteJournals())
+        updates = _view(runtime_stand, storage, RemoteJournals())
         await updates.apply(_question())
         for update in _turn_updates():
             await updates.apply(update)
@@ -352,27 +377,37 @@ class TestUpdateViewIds:
 
     @pytest.mark.anyio
     async def test_journal_address_is_remembered_from_raw_output(
-        self, runtime_stand: StandRefs, recorded: FakeEmitter
+        self,
+        runtime_stand: StandRefs,
+        storage: LocalStorageClient,
+        recorded: FakeEmitter,
     ) -> None:
         journals = RemoteJournals()
-        updates = _view(runtime_stand, journals)
+        updates = _view(runtime_stand, storage, journals)
         updates.begin_turn(QUESTION)
 
-        address = JournalAddress(server="boba", run="run-7", call="srv-call")
+        address = JournalAddress(server="boba", run=RUN, call="srv-call")
         await updates.apply(_call(CALL, "mcp__boba__bash", {"cmd": "ls"}))
         await updates.apply(
             _done(
-                CALL, "ok", _result(MarkdownResult(text="ok", elapsed_ms=12), "run-7")
+                CALL,
+                "ok",
+                _result(MarkdownResult(text="ok", elapsed_ms=12), ["srv-call"]),
             )
         )
 
         assert await journals.address(THREAD, CALL) == address
+        step = recorded.last()[_id(CALL, StepRole.TOOL)]
+        assert step.get(StepField.OUTPUT) == "ok", "a journal link is not drawn"
 
     @pytest.mark.anyio
     async def test_failed_call_without_artifact_is_an_error_step(
-        self, runtime_stand: StandRefs, recorded: FakeEmitter
+        self,
+        runtime_stand: StandRefs,
+        storage: LocalStorageClient,
+        recorded: FakeEmitter,
     ) -> None:
-        updates = _view(runtime_stand, RemoteJournals())
+        updates = _view(runtime_stand, storage, RemoteJournals())
         updates.begin_turn(QUESTION)
 
         await updates.apply(_call(CALL, "nope", {}))
@@ -392,7 +427,10 @@ class TestUpdateViewIds:
 
     @pytest.mark.anyio
     async def test_step_is_named_without_the_server_and_drawn_by_the_card(
-        self, runtime_stand: StandRefs, recorded: FakeEmitter
+        self,
+        runtime_stand: StandRefs,
+        storage: LocalStorageClient,
+        recorded: FakeEmitter,
     ) -> None:
         """Агент называет инструмент полным именем: шаг подписан именем без
         сервера, а вид аргументов найден по схеме инструмента сервера."""
@@ -403,9 +441,16 @@ class TestUpdateViewIds:
             },
         }
         media = ToolMedia()
-        media.shown("boba", [mt.Tool(name="pg_query", input_schema=arguments)], None)
+        media.shown(
+            "boba", [mt.Tool(name="pg_query", input_schema=arguments)], None, None
+        )
         view = ChatView(
-            THREAD, LiveSink(), runtime_stand.journals, "u-1", user_name="alice"
+            THREAD,
+            LiveSink(),
+            runtime_stand.journals,
+            "u-1",
+            storage,
+            user_name="alice",
         )
         updates = UpdateView(view, THREAD, RemoteJournals(), media)
         updates.begin_turn(QUESTION)
@@ -419,10 +464,13 @@ class TestUpdateViewIds:
 
     @pytest.mark.anyio
     async def test_progress_text_is_shown_in_the_running_step(
-        self, runtime_stand: StandRefs, recorded: FakeEmitter
+        self,
+        runtime_stand: StandRefs,
+        storage: LocalStorageClient,
+        recorded: FakeEmitter,
     ) -> None:
         """Ход вызова агент шлёт текстом `content` идущего вызова."""
-        updates = _view(runtime_stand, RemoteJournals())
+        updates = _view(runtime_stand, storage, RemoteJournals())
         updates.begin_turn(QUESTION)
 
         await updates.apply(_call(CALL, "pg_copy", {}))
@@ -457,16 +505,25 @@ class TestNestedCallSteps:
     ]
 
     def _updates(
-        self, runtime_stand: StandRefs, journals: RemoteJournals, nested: bool
+        self,
+        runtime_stand: StandRefs,
+        storage: LocalStorageClient,
+        journals: RemoteJournals,
+        nested: bool,
     ) -> UpdateView:
         media = ToolMedia()
         declared = None
         if nested:
             declared = CallDag().feature()
 
-        media.shown("boba", [], declared)
+        media.shown("boba", [], declared, JOURNAL)
         view = ChatView(
-            THREAD, LiveSink(), runtime_stand.journals, "u-1", user_name="alice"
+            THREAD,
+            LiveSink(),
+            runtime_stand.journals,
+            "u-1",
+            storage,
+            user_name="alice",
         )
 
         return UpdateView(view, THREAD, journals, media)
@@ -504,9 +561,12 @@ class TestNestedCallSteps:
 
     @pytest.mark.anyio
     async def test_nodes_are_steps_named_by_their_tool_and_intent(
-        self, runtime_stand: StandRefs, recorded: FakeEmitter
+        self,
+        runtime_stand: StandRefs,
+        storage: LocalStorageClient,
+        recorded: FakeEmitter,
     ) -> None:
-        updates = self._updates(runtime_stand, RemoteJournals(), True)
+        updates = self._updates(runtime_stand, storage, RemoteJournals(), True)
         updates.begin_turn(QUESTION)
 
         await updates.apply(_call(CALL, "mcp__boba__workflow", {"nodes": self.NODES}))
@@ -521,9 +581,12 @@ class TestNestedCallSteps:
 
     @pytest.mark.anyio
     async def test_progress_goes_to_the_node_named_in_meta(
-        self, runtime_stand: StandRefs, recorded: FakeEmitter
+        self,
+        runtime_stand: StandRefs,
+        storage: LocalStorageClient,
+        recorded: FakeEmitter,
     ) -> None:
-        updates = self._updates(runtime_stand, RemoteJournals(), True)
+        updates = self._updates(runtime_stand, storage, RemoteJournals(), True)
         updates.begin_turn(QUESTION)
         await updates.apply(_call(CALL, "mcp__boba__workflow", {"nodes": self.NODES}))
 
@@ -544,14 +607,19 @@ class TestNestedCallSteps:
 
     @pytest.mark.anyio
     async def test_each_node_ends_with_its_own_result_and_journal(
-        self, runtime_stand: StandRefs, recorded: FakeEmitter
+        self,
+        runtime_stand: StandRefs,
+        storage: LocalStorageClient,
+        recorded: FakeEmitter,
     ) -> None:
         journals = RemoteJournals()
-        updates = self._updates(runtime_stand, journals, True)
+        updates = self._updates(runtime_stand, storage, journals, True)
         updates.begin_turn(QUESTION)
         await updates.apply(_call(CALL, "mcp__boba__workflow", {"nodes": self.NODES}))
 
-        await updates.apply(self._failed(CALL, _result(self._workflow(), "run-7")))
+        await updates.apply(
+            self._failed(CALL, _result(self._workflow(), ["srv-call_0", "srv-call_1"]))
+        )
 
         steps = recorded.last()
         source = steps[_id(f"{CALL}_0", StepRole.TOOL)]
@@ -562,13 +630,16 @@ class TestNestedCallSteps:
         assert "table orders does not exist" in str(sink.get(StepField.OUTPUT))
 
         address = await journals.address(THREAD, f"{CALL}_1")
-        assert address == JournalAddress(server="boba", run="run-7", call="srv-call_1")
+        assert address == JournalAddress(server="boba", run=RUN, call="srv-call_1")
 
     @pytest.mark.anyio
     async def test_refusal_before_the_start_ends_every_node(
-        self, runtime_stand: StandRefs, recorded: FakeEmitter
+        self,
+        runtime_stand: StandRefs,
+        storage: LocalStorageClient,
+        recorded: FakeEmitter,
     ) -> None:
-        updates = self._updates(runtime_stand, RemoteJournals(), True)
+        updates = self._updates(runtime_stand, storage, RemoteJournals(), True)
         updates.begin_turn(QUESTION)
         await updates.apply(_call(CALL, "mcp__boba__workflow", {"nodes": self.NODES}))
 
@@ -585,9 +656,12 @@ class TestNestedCallSteps:
 
     @pytest.mark.anyio
     async def test_without_the_extension_the_call_is_one_step_of_its_blocks(
-        self, runtime_stand: StandRefs, recorded: FakeEmitter
+        self,
+        runtime_stand: StandRefs,
+        storage: LocalStorageClient,
+        recorded: FakeEmitter,
     ) -> None:
-        updates = self._updates(runtime_stand, RemoteJournals(), False)
+        updates = self._updates(runtime_stand, storage, RemoteJournals(), False)
         updates.begin_turn(QUESTION)
         await updates.apply(_call(CALL, "mcp__boba__workflow", {"nodes": self.NODES}))
 
@@ -606,7 +680,7 @@ class TestLiveEqualsReplay:
 
     @pytest.mark.anyio
     async def test_bus_rendering_matches_the_replay(
-        self, runtime_stand: StandRefs
+        self, runtime_stand: StandRefs, storage: LocalStorageClient
     ) -> None:
         pulse = _id(QUESTION, StepRole.PULSE)
 
@@ -618,7 +692,7 @@ class TestLiveEqualsReplay:
             scope = Scope.chat(THREAD)
             renderer = ChatRenderer(
                 THREAD,
-                _view(runtime_stand, RemoteJournals()),
+                _view(runtime_stand, storage, RemoteJournals()),
                 payloads,
                 NoSurface(),
                 ThreadAgentsIndex(),
@@ -639,7 +713,7 @@ class TestLiveEqualsReplay:
         replay_context = FakeContext(THREAD)
         token = context_var.set(cast("ChainlitContext", replay_context))
         try:
-            replay = _view(runtime_stand, RemoteJournals())
+            replay = _view(runtime_stand, storage, RemoteJournals())
             await replay.apply(_question())
             for update in _replayed_updates():
                 await replay.apply(update)
@@ -655,7 +729,7 @@ class TestLiveEqualsReplay:
 
     @pytest.mark.anyio
     async def test_question_attachments_are_the_same_live_and_in_the_replay(
-        self, runtime_stand: StandRefs
+        self, runtime_stand: StandRefs, storage: LocalStorageClient
     ) -> None:
         """Вложение вопроса — блок resource_link: живой ход (TurnStarted) и
         воспроизведение (`user_message`) дают шагу вопроса один и тот же файл
@@ -675,7 +749,7 @@ class TestLiveEqualsReplay:
             scope = Scope.chat(THREAD)
             renderer = ChatRenderer(
                 THREAD,
-                _view(runtime_stand, RemoteJournals()),
+                _view(runtime_stand, storage, RemoteJournals()),
                 payloads,
                 NoSurface(),
                 ThreadAgentsIndex(),
@@ -694,7 +768,7 @@ class TestLiveEqualsReplay:
         replay_context = FakeContext(THREAD)
         token = context_var.set(cast("ChainlitContext", replay_context))
         try:
-            replay = _view(runtime_stand, RemoteJournals())
+            replay = _view(runtime_stand, storage, RemoteJournals())
             asked = schema.UserMessageUpdate(
                 message_id=QUESTION,
                 content=[schema.TextContentBlock(text="hello"), link],
@@ -726,7 +800,10 @@ class TestLiveEqualsReplay:
 
     @pytest.mark.anyio
     async def test_large_call_result_reaches_the_tabs_by_reference(
-        self, runtime_stand: StandRefs, recorded: FakeEmitter
+        self,
+        runtime_stand: StandRefs,
+        storage: LocalStorageClient,
+        recorded: FakeEmitter,
     ) -> None:
         """Итог вызова больше предела сообщения шины уходит телом в
         PayloadStore: вкладки получают его целиком."""
@@ -736,7 +813,7 @@ class TestLiveEqualsReplay:
         scope = Scope.chat(THREAD)
         renderer = ChatRenderer(
             THREAD,
-            _view(runtime_stand, RemoteJournals()),
+            _view(runtime_stand, storage, RemoteJournals()),
             payloads,
             NoSurface(),
             ThreadAgentsIndex(),
@@ -766,61 +843,6 @@ class HolderSurface(NoSurface):
 
     def context(self) -> ChainlitContext | None:
         return self._context
-
-
-class TestResultMounts:
-    """Побочное действие итогов живого хода у держателя: панель канваса
-    открывается по итогу вызова, путь вне треда — пометка в ленте. Агент
-    называет инструмент только в первом уведомлении вызова, итог приходит
-    без имени и заголовка."""
-
-    @pytest.mark.anyio
-    async def test_live_result_opens_the_panel_and_a_bad_path_is_noted(
-        self, runtime_stand: StandRefs, seeded: Seed
-    ) -> None:
-        thread_id = seeded.thread_id
-        chart = f"/workspace/{thread_id}/upload/chart.png"
-        outside = "/etc/chart.png"
-        updates = [
-            _call(CALL, "mcp__boba__canvas_open", {"path": chart}),
-            _call(SECOND_CALL, "mcp__boba__canvas_open", {"path": outside}),
-            schema.SessionToolCallUpdate(tool_call_id=CALL, status="in_progress"),
-            _done(CALL, "shown", _result(CanvasResult(path=chart, label="chart.png"))),
-            _done(
-                SECOND_CALL,
-                "shown",
-                _result(CanvasResult(path=outside, label="chart.png")),
-            ),
-        ]
-        view = ChatView(
-            thread_id, LiveSink(), runtime_stand.journals, seeded.user.id, user_name="u"
-        )
-        replay = UpdateView(view, thread_id, RemoteJournals(), ToolMedia())
-        bus = MemoryMessageBus("test-aid")
-        scope = Scope.chat(thread_id)
-        notes: list[str] = []
-
-        async def collect(envelope: Envelope) -> None:
-            message = envelope.message
-            if isinstance(message, Notice):
-                notes.append(message.text)
-
-        leave = bus.subscribe(scope, collect)
-        feed = TurnFeed(bus, MemoryPayloadStore(), scope, QUESTION, LockToken.local())
-        CanvasRegistry.register(ImageViewer())
-        context = init_http_context(user=seeded.user, thread_id=thread_id)
-        mounts = ResultMounts(thread_id, HolderSurface(context), replay)
-        try:
-            for update in updates:
-                await mounts.mounted(update, feed)
-        finally:
-            leave()
-            init_http_context()
-            CanvasRegistry.reset()
-
-        assert len(notes) == 1, notes
-        assert outside in notes[0]
-        assert SECOND_CALL in notes[0]
 
 
 class TestResultsFromRawOutput:
@@ -873,7 +895,7 @@ class TestResultsFromRawOutput:
         return sorted(found)
 
     async def _drawn(
-        self, runtime_stand: StandRefs, seeded: Seed
+        self, runtime_stand: StandRefs, storage: LocalStorageClient, seeded: Seed
     ) -> tuple[FakeContext, FakeContext]:
         """Ход со снапшотами итогов вживую через шину и при воспроизведении."""
         thread_id = seeded.thread_id
@@ -884,7 +906,7 @@ class TestResultsFromRawOutput:
             payloads = MemoryPayloadStore()
             scope = Scope.chat(thread_id)
             view = ChatView(
-                thread_id, LiveSink(), runtime_stand.journals, seeded.user.id
+                thread_id, LiveSink(), runtime_stand.journals, seeded.user.id, storage
             )
             renderer = ChatRenderer(
                 thread_id,
@@ -910,7 +932,7 @@ class TestResultsFromRawOutput:
         token = context_var.set(cast("ChainlitContext", replay_context))
         try:
             view = ChatView(
-                thread_id, LiveSink(), runtime_stand.journals, seeded.user.id
+                thread_id, LiveSink(), runtime_stand.journals, seeded.user.id, storage
             )
             replay = UpdateView(view, thread_id, RemoteJournals(), ToolMedia())
             await replay.apply(_question())
@@ -925,7 +947,11 @@ class TestResultsFromRawOutput:
 
     @pytest.mark.anyio
     async def test_live_and_replay_draw_the_same_elements(
-        self, runtime_stand: StandRefs, seeded: Seed, monkeypatch: pytest.MonkeyPatch
+        self,
+        runtime_stand: StandRefs,
+        storage: LocalStorageClient,
+        seeded: Seed,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setattr(chainlit_data, "_data_layer", seeded.layer)
         monkeypatch.setattr(chainlit_data, "_data_layer_initialized", True)
@@ -938,7 +964,9 @@ class TestResultsFromRawOutput:
         await StorageSeed().put(seeded.layer.storage, spec.render(), self.SPEC)
         CanvasRegistry.register(MermaidViewer(DiagramFiles()))
         try:
-            live_context, replay_context = await self._drawn(runtime_stand, seeded)
+            live_context, replay_context = await self._drawn(
+                runtime_stand, storage, seeded
+            )
         finally:
             CanvasRegistry.reset()
 
@@ -952,15 +980,19 @@ class TestResultsFromRawOutput:
         answer = ChatView.derive_id(thread_id, QUESTION, StepRole.ANSWER)
         attached = ChatView.derive_id(thread_id, f"{CALL}/0", StepRole.ELEMENT)
         card = ChatView.derive_id(thread_id, f"{SECOND_CALL}/0", StepRole.ELEMENT)
-        assert sorted(drawn) == sorted(["a.pdf", ChatElement.CANVAS_VIEW.value])
+        assert sorted(drawn) == sorted(["a.pdf", CanvasPanel.VIEW_ELEMENT])
         assert drawn["a.pdf"][:2] == (attached, answer), live
         assert f"/canvas/{thread_id}/upload/a.pdf" in drawn["a.pdf"][2], live
-        assert drawn[ChatElement.CANVAS_VIEW.value][:2] == (card, answer), live
-        assert spec.in_workspace() in drawn[ChatElement.CANVAS_VIEW.value][2], live
+        assert drawn[CanvasPanel.VIEW_ELEMENT][:2] == (card, answer), live
+        assert spec.in_workspace() in drawn[CanvasPanel.VIEW_ELEMENT][2], live
 
     @pytest.mark.anyio
     async def test_missing_spec_is_noted_the_same_live_and_in_the_replay(
-        self, runtime_stand: StandRefs, seeded: Seed, monkeypatch: pytest.MonkeyPatch
+        self,
+        runtime_stand: StandRefs,
+        storage: LocalStorageClient,
+        seeded: Seed,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Спеки диаграммы в хранилище нет: ссылки панели нет, в выходе шага
         вызова одно и то же пояснение вживую и при воспроизведении."""
@@ -968,7 +1000,9 @@ class TestResultsFromRawOutput:
         monkeypatch.setattr(chainlit_data, "_data_layer_initialized", True)
         CanvasRegistry.register(MermaidViewer(DiagramFiles()))
         try:
-            live_context, replay_context = await self._drawn(runtime_stand, seeded)
+            live_context, replay_context = await self._drawn(
+                runtime_stand, storage, seeded
+            )
         finally:
             CanvasRegistry.reset()
 
@@ -992,9 +1026,12 @@ class TestElementIdsWithoutKey:
 
     @pytest.mark.anyio
     async def test_questions_and_calls_without_a_key_get_distinct_elements(
-        self, runtime_stand: StandRefs, recorded: FakeEmitter
+        self,
+        runtime_stand: StandRefs,
+        storage: LocalStorageClient,
+        recorded: FakeEmitter,
     ) -> None:
-        view = ChatView(THREAD, LiveSink(), runtime_stand.journals, "u-1")
+        view = ChatView(THREAD, LiveSink(), runtime_stand.journals, "u-1", storage)
         link = schema.ResourceContentBlock(
             name="note.txt",
             uri=AnyUrl(f"http://agent-side:1/boba-test/canvas/{THREAD}/upload/n.txt"),
@@ -1012,7 +1049,8 @@ class TestElementIdsWithoutKey:
             step = await view.tool_started(
                 "mcp__boba__send_file", {"path": attached.path}, None, None
             )
-            await view.tool_finished(step, attached)
+            reply = mt.CallToolResult.model_validate(_result(attached))
+            await view.tool_finished(step, reply, None, 0)
 
         await view.finish_turn()
 
@@ -1030,10 +1068,13 @@ class TestOldThreads:
 
     @pytest.mark.anyio
     async def test_old_question_with_a_glued_link_is_drawn_as_text(
-        self, runtime_stand: StandRefs, recorded: FakeEmitter
+        self,
+        runtime_stand: StandRefs,
+        storage: LocalStorageClient,
+        recorded: FakeEmitter,
     ) -> None:
         text = f"look[@note.txt](/boba-test/workspace/attachment/{THREAD}/upload/e)"
-        replay = _view(runtime_stand, RemoteJournals())
+        replay = _view(runtime_stand, storage, RemoteJournals())
         await replay.apply(
             schema.UserMessageUpdate(
                 message_id=QUESTION, content=[schema.TextContentBlock(text=text)]
@@ -1237,3 +1278,362 @@ class TestAgentPanel:
 
         with pytest.raises(AgentSettingsError, match="no-such-mode"):
             panel.parse({"session_mode": "no-such-mode"})
+
+
+class TestBlockDrawings:
+    """Look-тесты отрисовщика: блок ответа рисуется по виду и MIME (7.3) —
+    одинаково у boba-mcp и у чужого сервера; каждый вид результата boba-mcp
+    (7.4) выглядит как до перехода на стандартные блоки (без ведущего
+    перевода строки у таблиц — markdown его не показывает)."""
+
+    SNAPSHOTS: ClassVar[Path] = (
+        Path(__file__).resolve().parents[3] / "core/boba-toolkit/tests/history"
+    )
+
+    LOOKS: ClassVar[dict[str, str]] = {
+        "error": ("**boom**"),
+        "exception": (
+            "**ClickHouseQueryError: clickhouse statement failed: Code: 36. "
+            "DB::Exception: Macro 'uuid' in engine arguments is only supported "
+            "when the UUID is explicitly specified. (BAD\\_ARGUMENTS)**\n"
+            "\n"
+            "**raised at:** `boba/tool/ch/tools.py:812 in ch_stream_in`\n"
+            "\n"
+            "**caused by:** `DatabaseError (same message)`"
+        ),
+        "markdown": ("```sql\nx\n```\n\n_n_"),
+        "shell": ("```stdout\nhi\n```\n\n_exit code: 0_"),
+        "sql": ("| a  |\n|----|\n| 1  |"),
+        "sql_failure": (
+            "**ClickHouseQueryError: clickhouse statement failed: Code: 44. "
+            "DB::Exception: Sorting key contains nullable columns "
+            "(ILLEGAL\\_COLUMN)**\n"
+            "\n"
+            "**raised at:** `boba/db/clickhouse/transfer.py:175 in command`\n"
+            "\n"
+            "| column | stream field | type            | nullable | source type | "
+            "note |\n"
+            "|--------|--------------|-----------------|----------|-------------|------|\n"
+            "| id     | id           | Nullable(Int32) | nullable | integer     |  "
+            "    |\n"
+            "\n"
+            "```sql\n"
+            "drop table if exists `default`.`people_src__ex`\n"
+            "```\n"
+            "\n"
+            "_done_\n"
+            "\n"
+            "```sql\n"
+            "create table `default`.`people_src` (`id` Nullable(Int32)) engine = "
+            "MergeTree order by id\n"
+            "```\n"
+            "\n"
+            "_failed: ClickHouseQueryError_"
+        ),
+        "sql_pump": (
+            "```sql\n"
+            "set work_mem = '64MB'\n"
+            "```\n"
+            "\n"
+            "_SET_\n"
+            "\n"
+            "```sql\n"
+            "copy (select id from t) to stdout (format csv)\n"
+            "```\n"
+            "\n"
+            "_streamed out copy csv from postgres 17.10, 1 columns_\n"
+            "\n"
+            "**server:** `backend pid 1, version 170010`\n"
+            "\n"
+            "| column | type    | not null |\n"
+            "|--------|---------|----------|\n"
+            "| id     | integer | ✓        |"
+        ),
+        "stream_group_failure": (
+            "**stopped: ch\\_stream\\_in failed in the stream group**\n"
+            "\n"
+            "**failed call:** `ch_stream_in (call_01)`\n"
+            "\n"
+            "**cause:**\n"
+            "```\n"
+            "ClickHouseQueryError: clickhouse statement failed: Code: 36. "
+            "DB::Exception: Macro 'uuid' in engine arguments is only supported "
+            "when the UUID is explicitly specified. (BAD_ARGUMENTS)\n"
+            "```\n"
+            "\n"
+            "_nothing was committed_"
+        ),
+        "table": ("| a  |\n|----|\n| 1  |\n\n_n_"),
+        "visual": ("_(plotly: t)_"),
+    }
+
+    async def _drawn(
+        self,
+        runtime_stand: StandRefs,
+        storage: LocalStorageClient,
+        raw: Any,
+        name: str = "mcp__boba__probe",
+    ) -> None:
+        view = ChatView(THREAD, LiveSink(), runtime_stand.journals, "u-1", storage)
+        updates = UpdateView(view, THREAD, RemoteJournals(), ToolMedia())
+        await updates.apply(_question())
+        await updates.apply(_call(CALL, name, {}))
+        await updates.apply(_done(CALL, "text for the model", raw))
+        await updates.finish_turn()
+
+    def _reply(self, *blocks: mt.ContentBlock) -> dict[str, Any]:
+        reply = mt.CallToolResult(content=list(blocks))
+
+        return reply.model_dump(mode="json", by_alias=True, exclude_none=True)
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("kind", sorted(LOOKS))
+    async def test_kind_of_boba_mcp_looks_as_before(
+        self,
+        runtime_stand: StandRefs,
+        storage: LocalStorageClient,
+        recorded: FakeEmitter,
+        kind: str,
+    ) -> None:
+        raw = (self.SNAPSHOTS / f"{kind}.json").read_text(encoding="utf-8")
+        artifact = ToolArtifact.revive(json.loads(raw))
+        assert artifact is not None
+
+        await self._drawn(runtime_stand, storage, _result(artifact))
+
+        step = recorded.last()[_id(CALL, StepRole.TOOL)]
+        assert step.get(StepField.OUTPUT) == self.LOOKS[kind]
+        assert step.get(StepField.IS_ERROR) is (not artifact.ok), step
+
+    def _output(self, recorded: FakeEmitter) -> str:
+        return str(recorded.last()[_id(CALL, StepRole.TOOL)].get(StepField.OUTPUT))
+
+    def _resource(self, mime: str, text: str, name: str) -> mt.EmbeddedResource:
+        contents = mt.TextResourceContents(
+            uri=f"file:///srv/{name}", mime_type=mime, text=text
+        )
+
+        return mt.EmbeddedResource(resource=contents)
+
+    @pytest.mark.anyio
+    async def test_text_is_markdown_and_model_only_blocks_are_hidden(
+        self,
+        runtime_stand: StandRefs,
+        storage: LocalStorageClient,
+        recorded: FakeEmitter,
+    ) -> None:
+        model = mt.Annotations(audience=["assistant"])
+        user = mt.Annotations(audience=["user"])
+        reply = self._reply(
+            mt.TextContent(text="for the model", annotations=model),
+            mt.TextContent(text="**for the user**", annotations=user),
+            mt.TextContent(text="for both"),
+        )
+
+        await self._drawn(runtime_stand, storage, reply)
+
+        assert self._output(recorded) == "**for the user**\n\nfor both"
+
+    @pytest.mark.anyio
+    async def test_csv_resource_is_a_table(
+        self,
+        runtime_stand: StandRefs,
+        storage: LocalStorageClient,
+        recorded: FakeEmitter,
+    ) -> None:
+        table = self._resource("text/csv", "a,b\n1,\n", "report.csv")
+
+        await self._drawn(runtime_stand, storage, self._reply(table))
+
+        assert self._output(recorded) == "| a  | b  |\n|----|----|\n| 1  |    |"
+
+    @pytest.mark.anyio
+    async def test_code_and_unknown_text_are_fenced_with_the_resource_name(
+        self,
+        runtime_stand: StandRefs,
+        storage: LocalStorageClient,
+        recorded: FakeEmitter,
+    ) -> None:
+        reply = self._reply(
+            self._resource("application/sql", "select 1", "sql"),
+            self._resource("application/json", '{"a": 1}', "json"),
+            self._resource("text/plain", "line", "stdout"),
+            self._resource("text/x-unknown", "<b>raw</b>", "notes"),
+            self._resource("text/html", "<script>x()</script>", "page"),
+        )
+
+        await self._drawn(runtime_stand, storage, reply)
+
+        assert self._output(recorded) == (
+            "```sql\nselect 1\n```\n\n"
+            '```json\n{"a": 1}\n```\n\n'
+            "```stdout\nline\n```\n\n"
+            "```notes\n<b>raw</b>\n```\n\n"
+            "```page\n<script>x()</script>\n```"
+        )
+
+    @pytest.mark.anyio
+    async def test_plotly_figure_is_a_chart_next_to_the_step(
+        self,
+        runtime_stand: StandRefs,
+        storage: LocalStorageClient,
+        recorded: FakeEmitter,
+    ) -> None:
+        figure = {"data": [{"type": "bar", "y": [1, 2]}]}
+        chart = self._resource(
+            "application/vnd.plotly.v1+json", json.dumps(figure), "orders"
+        )
+
+        await self._drawn(runtime_stand, storage, self._reply(chart))
+
+        assert self._output(recorded) == ""
+        carrier = recorded.last()[_id(CALL, StepRole.CHART)]
+        assert carrier.get(StepField.OUTPUT) == "orders"
+        plotted: list[str] = []
+        for element in recorded.elements:
+            plotted.append(str(element.get("type")))
+
+        assert plotted == ["plotly"], recorded.elements
+
+    @pytest.mark.anyio
+    async def test_image_and_audio_are_thread_files_of_the_answer(
+        self,
+        runtime_stand: StandRefs,
+        storage: LocalStorageClient,
+        recorded: FakeEmitter,
+    ) -> None:
+        """Картинка и звук ложатся файлом в хранилище треда и рисуются как
+        файл workspace у ответа хода: картинка — карточкой вьювера, звук без
+        вьювера — вложением по адресу канваса. Байтов в ленте нет, второй
+        показ (воспроизведение, другая вкладка) ведёт к тому же файлу."""
+        body = bytes(range(256)) * 400
+        data = base64.b64encode(body).decode("ascii")
+        assert len(data) > ChatView.BASE64_SLICE, "the block spans several slices"
+        reply = self._reply(
+            mt.ImageContent(data=data, mime_type="image/png"),
+            mt.AudioContent(data=data, mime_type="audio/mpeg"),
+        )
+
+        CanvasRegistry.register(ImageViewer())
+        try:
+            await self._drawn(runtime_stand, storage, reply)
+            await self._drawn(runtime_stand, storage, reply)
+        finally:
+            CanvasRegistry.reset()
+
+        assert self._output(recorded) == ""
+        shown: list[tuple[str, str, str, str]] = []
+        for element in recorded.elements:
+            props = element.get("props")
+            url = str(element.get("url"))
+            if isinstance(props, dict):
+                url = str(props.get("path"))
+
+            shown.append(
+                (str(element["name"]), url, str(element["id"]), str(element["forId"]))
+            )
+
+        assert len(shown) == 4, recorded.elements
+        assert shown[:2] == shown[2:], "a replay draws the same files"
+        card, attached = shown[:2]
+        answer = _id(QUESTION, StepRole.ANSWER)
+        assert card[0] == ImageViewer.LINK_ELEMENT, card
+        assert card[2:] == (_id(f"{CALL}/0", StepRole.ELEMENT), answer), card
+        image = ObjectKey.from_workspace("u-1", THREAD, card[1])
+        assert image.name.endswith(".png"), image
+        assert await get_bytes(storage, image.render()) == body
+
+        name = PurePosixPath(urlsplit(attached[1]).path).name
+        audio = ObjectKey(user_id="u-1", thread_id=THREAD, name=name)
+        assert attached == (
+            name,
+            CanvasFileUrl.path(audio),
+            _id(f"{CALL}/1", StepRole.ELEMENT),
+            answer,
+        ), attached
+        assert name.endswith(".mp3"), name
+        assert await get_bytes(storage, audio.render()) == body
+
+    @pytest.mark.anyio
+    async def test_bytes_and_unknown_links_are_json_without_the_bytes(
+        self,
+        runtime_stand: StandRefs,
+        storage: LocalStorageClient,
+        recorded: FakeEmitter,
+    ) -> None:
+        blob = base64.b64encode(b"zip-bytes-of-the-file").decode("ascii")
+        contents = mt.BlobResourceContents(
+            uri="file:///srv/a.zip", mime_type="application/zip", blob=blob
+        )
+        reply = self._reply(
+            mt.EmbeddedResource(resource=contents),
+            mt.ResourceLink(name="x", uri="javascript:alert(1)"),
+            mt.ImageContent(data="not base64!", mime_type="image/png"),
+        )
+
+        await self._drawn(runtime_stand, storage, reply)
+
+        output = self._output(recorded)
+        assert blob not in output
+        assert '"mimeType": "application/zip"' in output
+        assert '"uri": "javascript:alert(1)"' in output
+        assert '"mimeType": "image/png"' in output
+        assert "not base64!" not in output
+        assert output.startswith("```json\n")
+        assert not recorded.elements
+
+    @pytest.mark.anyio
+    async def test_http_link_is_an_attachment(
+        self,
+        runtime_stand: StandRefs,
+        storage: LocalStorageClient,
+        recorded: FakeEmitter,
+    ) -> None:
+        link = mt.ResourceLink(
+            name="report.csv", uri="https://example.org/r.csv", mime_type="text/csv"
+        )
+
+        await self._drawn(runtime_stand, storage, self._reply(link))
+
+        attached: list[tuple[str, str, str]] = []
+        for element in recorded.elements:
+            attached.append(
+                (str(element["name"]), str(element["url"]), str(element["forId"]))
+            )
+
+        answer = _id(QUESTION, StepRole.ANSWER)
+        assert attached == [("report.csv", "https://example.org/r.csv", answer)]
+
+    @pytest.mark.anyio
+    async def test_error_flag_marks_the_step_failed(
+        self,
+        runtime_stand: StandRefs,
+        storage: LocalStorageClient,
+        recorded: FakeEmitter,
+    ) -> None:
+        reply = mt.CallToolResult(content=[mt.TextContent(text="boom")], is_error=True)
+        raw = reply.model_dump(mode="json", by_alias=True, exclude_none=True)
+
+        await self._drawn(runtime_stand, storage, raw)
+
+        step = recorded.last()[_id(CALL, StepRole.TOOL)]
+        assert step.get(StepField.IS_ERROR) is True
+        assert str(step.get(StepField.NAME)).startswith("✖ probe")
+        assert step.get(StepField.OUTPUT) == "boom"
+
+    @pytest.mark.anyio
+    async def test_raw_output_of_an_old_thread_is_json(
+        self,
+        runtime_stand: StandRefs,
+        storage: LocalStorageClient,
+        recorded: FakeEmitter,
+    ) -> None:
+        """Старый тред хранит в rawOutput модель результата с kind: второго
+        пути чтения нет, она показывается неизвестным — своим JSON."""
+        old = {"kind": "markdown", "text": "rows", "ok": True}
+
+        await self._drawn(runtime_stand, storage, old)
+
+        step = recorded.last()[_id(CALL, StepRole.TOOL)]
+        assert json.loads(str(step.get(StepField.OUTPUT))) == old
+        assert step.get("language") == "json"

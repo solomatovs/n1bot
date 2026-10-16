@@ -13,15 +13,15 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import socket
 import subprocess
 import sys
 import time
 from collections.abc import Iterator
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
-from urllib.parse import urljoin
 
 import pytest
 from chat_ui import BOOT_TIMEOUT_SEC, OpenChat
@@ -43,6 +43,9 @@ pytestmark = [pytest.mark.ui, pytest.mark.xdist_group("mcp-ui")]
 CHAT_LOGIN = "admin"
 CHAT_ROLE = "ADM"
 """Логин пользователя стенда чата: под ним открыт чат в браузере."""
+
+RUNNING = "○"
+"""Кружок идущего вызова в названии шага."""
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
 """Картинка, которую отдаёт инструмент picture стандартного сервера."""
@@ -152,18 +155,26 @@ def mcp_stand(  # noqa: PLR0913 — стенд собирается из фик�
 
 
 def _ask(chat: ChatPage, tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    """Ход с вызовом инструмента; отдаёт его шаг из журнала сокета."""
+    """Ход с вызовом инструмента; отдаёт его законченный шаг из журнала
+    сокета. Конец хода ждётся по самому шагу: пара task_start/task_end от
+    старта чата может прийти уже после вопроса."""
     request = json.dumps({"name": tool, "arguments": arguments})
     chat.ask(f"{ScenarioName.CALL.value} {request}")
     chat.await_idle(timeout_sec=120.0)
 
-    step = chat.log.last_step(StepKind.TOOL.value)
-    if step is None:
-        raise AssertionError(
-            f"no tool step of {tool} in the feed\n{chat.log.describe()}"
-        )
+    deadline = time.monotonic() + 120.0
+    while time.monotonic() < deadline:
+        chat.page.wait_for_timeout(100)
+        step = chat.log.last_step(StepKind.TOOL.value)
+        if step is None:
+            continue
 
-    return step
+        if str(step.get(StepField.NAME.value)).startswith(RUNNING):
+            continue
+
+        return step
+
+    raise AssertionError(f"no finished tool step of {tool}\n{chat.log.describe()}")
 
 
 class TestMcpToolInTheFeed:
@@ -179,49 +190,69 @@ class TestMcpToolInTheFeed:
         if "5" not in str(step.get(StepField.OUTPUT.value)):
             raise AssertionError(f"the step shows the server's answer: {step}")
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "the agent has no place for files of tool results: an image block of "
-            "an MCP tool reaches the model and the feed as the placeholder "
-            "'[image/png, N bytes]', nothing is saved to the workspace of the "
-            "thread and no attachment is shown; where the agent stores such "
-            "files is a design decision (ui-fix-report.md, question 2)"
-        ),
-    )
-    def test_image_of_a_tool_is_attached_and_served(
+    def test_image_of_a_tool_is_a_file_of_the_thread(
         self, mcp_stand: StandProcess, open_chat: OpenChat
     ) -> None:
+        """Картинка чужого сервера ложится файлом в хранилище треда и
+        рисуется по своему типу карточкой вьювера картинок у ответа хода;
+        байтов блока в ленте нет, тело файла отдаёт маршрут канваса с Range."""
         chat = open_chat(mcp_stand, "")
 
         step = _ask(chat, "mcp__standard__picture", {})
 
-        if "file saved to the workspace" not in str(step.get(StepField.OUTPUT.value)):
-            raise AssertionError(f"the model is told where the file is: {step}")
-
-        images: list[dict[str, Any]] = []
+        cards: list[dict[str, Any]] = []
         for frame in chat.log.of_event(ChatEvent.ELEMENT):
             if not isinstance(frame.payload, dict):
                 continue
 
-            if frame.payload.get("mime") == "image/png":
-                images.append(frame.payload)
+            props = frame.payload.get("props")
+            if not isinstance(props, dict):
+                continue
 
-        if len(images) != 1:
+            if str(props.get("path")).endswith(".png"):
+                cards.append(props)
+
+        if len(cards) != 1:
             raise AssertionError(
-                f"the feed gets one image attachment: {images}\n{chat.log.describe()}"
+                f"the feed gets one image card: {cards}\n{chat.log.describe()}"
             )
 
-        url = str(images[0].get("url"))
-        reply = chat.page.request.get(urljoin(chat.base_url, url))
-        if reply.status != 200 or reply.body() != PNG:
+        encoded = base64.b64encode(PNG).decode("ascii")
+        if encoded in str(step.get(StepField.OUTPUT.value)):
+            raise AssertionError(f"the bytes of the image stay out of the step: {step}")
+
+        name = PurePosixPath(str(cards[0].get("path"))).name
+        thread_id = str(step.get(StepField.THREAD_ID.value))
+        url = f"{chat.base_url}/canvas/{thread_id}/upload/{name}"
+        reply = chat.page.request.get(url, headers={"Range": "bytes=0-7"})
+        if reply.status != 206:
             raise AssertionError(
-                f"the attachment link serves the file of the workspace: "
-                f"{reply.status} {url}"
+                f"GET {url} with Range: expected 206, got {reply.status}"
             )
 
-        name = str(images[0].get("name"))
-        chat.page.get_by_text(name).first.wait_for(timeout=30_000)
+        if reply.body() != PNG[:8]:
+            raise AssertionError(f"GET {url}: the file is the image: {reply.body()!r}")
+
+    def test_blocks_of_a_tool_are_drawn_by_their_type(
+        self, mcp_stand: StandProcess, open_chat: OpenChat
+    ) -> None:
+        """Ответ из блоков разных видов: текст человеку, ресурс text/plain
+        блоком кода, ссылка на файл вне workspace — пояснением; текст только
+        для модели в ленту не попадает."""
+        chat = open_chat(mcp_stand, "")
+
+        step = _ask(chat, "mcp__standard__blocks", {"empty": False})
+
+        output = str(step.get(StepField.OUTPUT.value))
+        expected = (
+            "for the user\n\nfor the model\n\n"
+            "/report.csv is not shown: file is outside the thread attachments dir"
+        )
+        if not output.startswith(expected):
+            raise AssertionError(f"the blocks are drawn in order: {output!r}")
+
+        if "```notes.txt\nnotes\n```" not in output:
+            raise AssertionError(f"the text resource is a code block: {output!r}")
 
 
 class TestOwnServerInTheFeed:
