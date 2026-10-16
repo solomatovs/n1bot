@@ -28,7 +28,7 @@ from boba.canvas.canvas import (
 from boba.canvas.diagram import DiagramEntry, DiagramMarker
 from boba.canvas.keys import ObjectKey
 from boba.canvas.storage import StorageError, StorageNotFoundError
-from boba.toolkit.result import VisualResult
+from boba.toolkit.result import ContentMime, VisualResult
 from boba.workspace.launcher import ReadWindow
 
 __all__ = [
@@ -101,7 +101,7 @@ class MermaidViewer(FileViewer):
     """
 
     kind: ClassVar[CanvasKind] = CanvasKind.MERMAID
-    suffixes: ClassVar[frozenset[str]] = frozenset({DiagramMarker.SUFFIX})
+    mimes: ClassVar[frozenset[str]] = frozenset({ContentMime.MERMAID})
 
     VERDICT_TIMEOUT_SEC: ClassVar[float] = 10.0
 
@@ -127,16 +127,11 @@ class MermaidViewer(FileViewer):
 
         entry = DiagramEntry.of(key, text)
 
-        return OpenedCanvas(
-            label=entry.label, path=entry.path, nonce=nonce, link=self._link(key, text)
-        )
+        return OpenedCanvas(label=entry.label, path=entry.path, nonce=nonce)
 
     async def link(self, key: ObjectKey) -> VisualResult:
         """Карточка диаграммы читает спеку: подпись берётся из её заголовка."""
-        return self._link(key, await self._read(key))
-
-    def _link(self, key: ObjectKey, text: str) -> VisualResult:
-        return DiagramCard.link(DiagramEntry.of(key, text))
+        return DiagramCard.link(DiagramEntry.of(key, await self._read(key)))
 
     def watch_source(self, key: ObjectKey) -> WatchSource | None:
         """Слежение по содержимому: спека мала, а размер может не меняться."""

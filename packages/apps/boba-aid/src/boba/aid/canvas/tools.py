@@ -35,6 +35,7 @@ from boba.canvas.canvas import (
 )
 from boba.canvas.keys import ObjectKey
 from boba.identity.errors import RefusalError
+from boba.toolkit.result import ContentMime
 
 __all__ = [
     "CanvasActions",
@@ -78,7 +79,7 @@ class CanvasOpener:
         """Панель с содержимым одного файла; слежение ставит CanvasPanel."""
         key = self._key(path, scope)
 
-        return await CanvasPanel.open(key)
+        return await CanvasPanel.open(key, ContentMime.of_name(key.name))
 
     async def content(
         self, path: str, watch: bool, scope: CanvasScope
@@ -90,7 +91,7 @@ class CanvasOpener:
         """
         key = self._key(path, scope)
 
-        viewer = CanvasRegistry.viewer_for(key.name)
+        viewer = CanvasRegistry.viewer_for(ContentMime.of_name(key.name))
         if viewer is None:
             return CanvasPanel.notice(key)
 

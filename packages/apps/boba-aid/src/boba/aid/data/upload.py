@@ -18,7 +18,6 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
-import mimetypes
 import time
 import unicodedata
 import uuid
@@ -239,7 +238,7 @@ class SessionFiles:
     ) -> str:
         """Регистрирует объект хранилища как файл сессии; отдаёт его id."""
         file_id = str(uuid.uuid4())
-        suffix = mimetypes.guess_extension(mime) or ""
+        suffix = ContentMime.suffix_of(mime)
         session.files[file_id] = {
             "id": file_id,
             # копии на диске нет: путь остаётся лишь именем для потребителей chainlit

@@ -249,12 +249,12 @@ class FileViewer(CanvasViewer):
     """Имя jsx-компонента ссылки: public/elements/CanvasLink.jsx."""
 
     kind: ClassVar[CanvasKind] = CanvasKind.NOTICE
-    suffixes: ClassVar[frozenset[str]] = frozenset()
+    mimes: ClassVar[frozenset[str]] = frozenset()
 
-    def handles(self, name: str) -> bool:
-        lowered = name.lower()
+    def handles(self, mime: str) -> bool:
+        known = tuple(self.mimes)
 
-        return any(lowered.endswith(suffix) for suffix in self.suffixes)
+        return mime.lower().startswith(known)
 
     def describe(self, key: ObjectKey, **extra: Any) -> CanvasContent:
         """Описание файла: путь, подпись, ссылка на файл и метка показа.
@@ -288,10 +288,7 @@ class FileViewer(CanvasViewer):
         await push(described)
 
         return OpenedCanvas(
-            label=key.name,
-            path=key.in_workspace(),
-            nonce=described.nonce,
-            link=await self.link(key),
+            label=key.name, path=key.in_workspace(), nonce=described.nonce
         )
 
     def watch_source(self, key: ObjectKey) -> WatchSource | None:
@@ -312,46 +309,42 @@ class ImageViewer(FileViewer):
     """Картинки: главный формат графиков, которые рисуют bash/python-тулы."""
 
     kind: ClassVar[CanvasKind] = CanvasKind.IMAGE
-    suffixes: ClassVar[frozenset[str]] = frozenset(
-        {".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp"}
-    )
+    mimes: ClassVar[frozenset[str]] = frozenset({"image/"})
 
 
 class PdfViewer(FileViewer):
     """PDF: встроенный просмотрщик браузера."""
 
     kind: ClassVar[CanvasKind] = CanvasKind.PDF
-    suffixes: ClassVar[frozenset[str]] = frozenset({".pdf"})
+    mimes: ClassVar[frozenset[str]] = frozenset({"application/pdf"})
 
 
 class VideoViewer(FileViewer):
     """Видео: плеер браузера."""
 
     kind: ClassVar[CanvasKind] = CanvasKind.VIDEO
-    suffixes: ClassVar[frozenset[str]] = frozenset({".mp4", ".webm", ".mov"})
+    mimes: ClassVar[frozenset[str]] = frozenset({"video/"})
 
 
 class AudioViewer(FileViewer):
     """Аудио: плеер браузера."""
 
     kind: ClassVar[CanvasKind] = CanvasKind.AUDIO
-    suffixes: ClassVar[frozenset[str]] = frozenset(
-        {".mp3", ".wav", ".ogg", ".m4a", ".flac"}
-    )
+    mimes: ClassVar[frozenset[str]] = frozenset({"audio/"})
 
 
 class MarkdownViewer(FileViewer):
     """Markdown: формат требует документ целиком, фронт читает его по ссылке."""
 
     kind: ClassVar[CanvasKind] = CanvasKind.TEXT
-    suffixes: ClassVar[frozenset[str]] = frozenset({".md"})
+    mimes: ClassVar[frozenset[str]] = frozenset({"text/markdown"})
 
 
 class LogViewer(FileViewer):
     """Логи и плоский текст: окна по смещению, файл целиком не читается."""
 
     kind: ClassVar[CanvasKind] = CanvasKind.STREAM
-    suffixes: ClassVar[frozenset[str]] = frozenset({".txt", ".log"})
+    mimes: ClassVar[frozenset[str]] = frozenset({ContentMime.PLAIN})
 
     async def content(self, key: ObjectKey) -> CanvasContent:
         windows = StorageWindows(PanelStorage.client(), key.render())
@@ -405,12 +398,17 @@ class CanvasPanel:
     """
 
     @classmethod
-    async def open(cls, key: ObjectKey) -> OpenedCanvas:
-        viewer = CanvasRegistry.viewer_for(key.name)
+    async def open(cls, key: ObjectKey, mime: str) -> OpenedCanvas:
+        """Показ файла key вьювером его MIME mime; MIME без вьювера — отказ
+        и объяснение в панели."""
+        viewer = CanvasRegistry.viewer_for(mime)
         if viewer is None:
             await cls._explain(key)
-            hint = CanvasRegistry.suffixes_hint()
-            msg = f"no canvas viewer for {key.in_workspace()}; supported: {hint}"
+            hint = CanvasRegistry.mimes_hint()
+            msg = (
+                f"no canvas viewer for {key.in_workspace()} of type {mime}; "
+                f"supported: {hint}"
+            )
             raise CanvasError(CanvasErrorKind.NO_VIEWER, msg)
 
         opened = await viewer.open(key, cls._push)
@@ -449,7 +447,7 @@ class CanvasPanel:
             url=CanvasFileUrl.path(key),
             note=(
                 "The panel cannot display this file format. Supported: "
-                f"{CanvasRegistry.suffixes_hint()}"
+                f"{CanvasRegistry.mimes_hint()}"
             ),
         )
 
