@@ -467,7 +467,12 @@ class TestRetiredServers:
         agent_stand = AgentStand(tmp_path / "agents", history.history())
         layers = AgentSettingsLayers(table, specs)
         launcher = AgentLauncher(
-            agent_stand.config(), history.postgres(), layers, relays.keys, relay, "0.0"
+            agent_stand.config(),
+            history.postgres(),
+            layers,
+            relays.registrations,
+            relay,
+            "0.0",
         )
         tab = TabSession()
         tab.password_sign_in(frozenset({"dev"}))
@@ -491,13 +496,15 @@ class TestRetiredServers:
         try:
             await agent.start()
             first = agent.process._servers[0].server_id
-            assert relays.keys.holder(first) is not None
+            relays.registrations.of(first)
 
             assert await agent.restart()
             second = agent.process._servers[0].server_id
             assert second != first
-            assert relays.keys.holder(second) is not None
-            assert relays.keys.holder(first) is None
+            relays.registrations.of(second)
+            with pytest.raises(RequestError):
+                relays.registrations.of(first)
+
             after_restart = McpMessage(
                 server_id=first,
                 request_id="mcp:after-restart",
@@ -508,7 +515,9 @@ class TestRetiredServers:
                 await relay.answer(after_restart, asyncio.Queue[McpMessage]().put)
 
             await agent.close()
-            assert relays.keys.holder(second) is None
+            with pytest.raises(RequestError):
+                relays.registrations.of(second)
+
             after_close = McpMessage(
                 server_id=second,
                 request_id="mcp:after-close",
@@ -556,7 +565,7 @@ class TestForkCut:
             config.model_copy(update={"process": foreign}),
             history.postgres(),
             AgentSettingsLayers(table, specs),
-            relays.keys,
+            relays.registrations,
             relay,
             "0.0",
         )

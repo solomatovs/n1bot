@@ -573,7 +573,9 @@ class TestRelayAcceptance:
         """Процесс агента вкладки пользователя с ролями roles и его сессия."""
         tab = TabSession()
         tab.password_sign_in(roles)
-        servers = agents.keys.register(tab.holder(uuid4(), "general"), self.SERVERS)
+        servers = agents.registrations.register(
+            tab.holder(uuid4(), "general"), self.SERVERS
+        )
         updates = RecordingUpdates()
         process = await agents.start(updates, thread, servers)
         opened = await process.open_session()
