@@ -24,7 +24,7 @@ from boba.aid.agent.server import McpServerInfo
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.connection_broker.store import ConnectionStore
 from boba.connections.manifest import ConnectionTypes
-from boba.connections.sealed import SealedParamSchema, SealFeature
+from boba.connections.sealed import ConnectionOffer, SealedParamSchema, SealFeature
 from boba.connections.secrets import SecretCipher
 from boba.db.postgres import AsyncPostgresPool, PostgresSchema
 from boba.db.postgres.connection import PostgresConfig
@@ -267,7 +267,8 @@ class TestMcpRelay:
     ) -> None:
         server_id = self._server_id(relay_stand, tab)
         caller = relay_stand.callers.of_key(server_id)
-        declared = SealedParamSchema().declared("postgres")
+        offer = ConnectionOffer(kind="postgres", sealed=True, names={})
+        declared = SealedParamSchema().declared(offer)
         schema = {
             "type": "object",
             "properties": {"connection": {"type": "string", **declared}},

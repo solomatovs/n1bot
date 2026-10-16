@@ -155,9 +155,10 @@ class TestToolSchema:
     async def test_connection_parameter_declares_a_sealed_profile(
         self, client: Client[Any]
     ) -> None:
-        """Параметр-соединение — строка, чьё содержимое объявлено стандартными
-        ключами JSON Schema: JWE (contentMediaType) с содержимым вида postgres
-        внутри (contentSchema, константа kind); своих ключей в схеме нет."""
+        """Параметр-соединение — строка с пометкой вида x-boba-connection, чьё
+        содержимое объявлено стандартными ключами JSON Schema: JWE
+        (contentMediaType) с содержимым вида postgres внутри (contentSchema,
+        константа kind)."""
         listed = await client.list_tools()
 
         tool = next(tool for tool in listed if tool.name == "fake_connection_host")
@@ -181,9 +182,12 @@ class TestToolSchema:
             "minLength",
             "title",
             "type",
+            SchemaMark.CONNECTION.value,
         ]
         if sorted(declared) != expected:
-            raise AssertionError(f"only standard schema keys: {sorted(declared)}")
+            raise AssertionError(f"standard keys and the mark: {sorted(declared)}")
+        if declared[SchemaMark.CONNECTION.value] != "postgres":
+            raise AssertionError(f"the mark names the kind: {declared}")
 
 
 class TestArguments:

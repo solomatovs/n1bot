@@ -32,6 +32,7 @@ from boba.connections.sealed import (
 )
 from boba.identity.errors import RefusalError
 from boba.stand_core.context import CallStand
+from boba.toolkit.calls import SchemaMark
 from boba.toolkit.entry import ToolArgv
 from boba.toolkit.types import SecretReveal
 
@@ -84,15 +85,15 @@ class TestSchemaDeclaredToTheClient:
         if ToolArgv.connection_fields(schema):
             raise AssertionError("маркер соединения со схемы снят")
 
-        description = str(field.description)
-        if "probe" not in description:
-            raise AssertionError(f"описание называет вид: {description}")
-
         declared = field.json_schema_extra
         if not isinstance(declared, dict):
             raise AssertionError(f"ключи содержимого объявлены: {declared!r}")
-        if SealedParamSchema().kind_of(declared) != "probe":
-            raise AssertionError(f"схема называет тип содержимого и вид: {declared}")
+        if declared[SchemaMark.CONNECTION.value] != "probe":
+            raise AssertionError(f"пометка называет вид: {declared}")
+        if "probe" not in str(declared["description"]):
+            raise AssertionError(f"описание называет вид: {declared}")
+        if declared[SchemaMark.MEDIA.value] != SealedParamSchema.MEDIA_TYPE:
+            raise AssertionError(f"схема называет тип содержимого: {declared}")
 
 
 class TestSealedValueReachesTheBody:

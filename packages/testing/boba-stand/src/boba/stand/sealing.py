@@ -95,18 +95,18 @@ class SealingStand(ToolServer):
         if card is None:
             return call
 
-        kinds = self._declared.kinds_of(card.parameters)
-        if not kinds:
+        offers = self._declared.offers(card.parameters)
+        if not offers:
             return call
 
         seal = ConnectionSeal(self._key())
         sent: dict[str, JsonValue] = dict(call.args)
-        for param, kind in kinds.items():
+        for param, offer in offers.items():
             name = call.args.get(param)
             if not isinstance(name, str):
                 continue
 
-            connection = await self._connections.sealed(kind, name, self._ttl)
+            connection = await self._connections.sealed(offer.kind, name, self._ttl)
             sent[param] = seal.seal(connection)
 
         return call.model_copy(update={"args": sent})

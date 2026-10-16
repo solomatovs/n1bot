@@ -52,14 +52,6 @@ class SealedConnectionParam(AsyncInjected):
     SealedConnectionParams.
     """
 
-    ARGUMENT: ClassVar[str] = (
-        "Соединение пользователя вида {kind}.\n"
-        "   - профиль соединения, запечатанный открытым ключом сервера: "
-        "компактная JWE, содержимое по contentSchema\n"
-        "   - соединение другого вида сервер не принимает"
-    )
-    """Описание параметра-соединения в схеме инструмента; {kind} — вид."""
-
     APPLICATION: ClassVar[str] = "boba"
     """Имя приложения в подписи профиля: под ним ходят все инструменты."""
 
@@ -160,7 +152,7 @@ class SealedConnectionParams(NodeArgs, ParamSource):
         self._keys = keys
         self._types_ref = types_ref
         self._contexts = contexts
-        self._hooks = ConnectionParamHooks(types_ref, SealedConnectionParam.ARGUMENT)
+        self._hooks = ConnectionParamHooks(types_ref)
         self._params: dict[str, dict[str, SealedConnectionParam]] = {}
 
     def bind_all(self, tools: Sequence[HostedTool]) -> None:

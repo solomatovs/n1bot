@@ -27,7 +27,12 @@ from probe_stand import (
 from boba.connection_broker.sealed import SealedConnectionParams
 from boba.connections.base import ConnectionBase
 from boba.connections.marks import ConnectionRefusal
-from boba.connections.sealed import SealedParamSchema, SealFeature, SealKeys
+from boba.connections.sealed import (
+    ConnectionOffer,
+    SealedParamSchema,
+    SealFeature,
+    SealKeys,
+)
 from boba.stand.sealing import SealingStand
 from boba.stand_core.context import CallStand
 from boba.toolkit.dag import DagNode, NodeOutcome, ToolCard, ToolServer
@@ -96,8 +101,11 @@ class TestSchemaShownToTheModel:
             raise AssertionError(f"сервер ждёт строку: {declared}")
         if declared["contentMediaType"] != "application/jose":
             raise AssertionError(f"содержимое строки — JWE: {declared}")
-        if SealedParamSchema().kind_of(declared) != "probe":
-            raise AssertionError(f"схема профиля называет вид: {declared}")
+        offers = SealedParamSchema().offers(served["probe_query"].parameters)
+        if offers["connection"] != ConnectionOffer(kind="probe", sealed=True, names={}):
+            raise AssertionError(
+                f"схема предлагает запечатанный профиль вида: {offers}"
+            )
         if "probe" not in declared["description"]:
             raise AssertionError(f"описание называет вид: {declared}")
 

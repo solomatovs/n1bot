@@ -4,8 +4,8 @@
 Модель видит на этом месте строку. Здесь две части пути соединения:
 
 - ConnectionParamHooks ставит на такие параметры обвязку, которая отдаст телу
-  профиль, а в схеме инструмента делает параметр строкой с запечатанным
-  профилем вида (SealedParamSchema). Откуда обвязка берёт профиль, решает
+  профиль, а в схеме инструмента делает параметр строкой с пометкой вида и
+  запечатанным профилем (SealedParamSchema). Откуда обвязка берёт профиль, решает
   её владелец (запечатанное значение клиента — boba.connection_broker.sealed).
 - ArmedConnections — сторона клиента: по виду и имени ищет соединение среди
   выданных субъекту вызова и заменяет kerberos-секцию билетом этого вызова.
@@ -34,7 +34,11 @@ from boba.connection_broker.tickets import CredentialsRef
 from boba.connections.base import ConnectionBase
 from boba.connections.manifest import ConnectionTypes, UnknownConnectionKindError
 from boba.connections.marks import ConnectionRefusal
-from boba.connections.sealed import SealedConnection, SealedParamSchema
+from boba.connections.sealed import (
+    ConnectionOffer,
+    SealedConnection,
+    SealedParamSchema,
+)
 from boba.connections.whitelist import (
     AmbiguousConnectionError,
     ConnectionWhitelist,
@@ -78,17 +82,16 @@ class ConnectionParamHooks:
 
     Инструмент объявляет соединение параметром с моделью профиля. Здесь
     каждый такой параметр получает обвязку, которая отдаст телу профиль, а в
-    схеме инструмента становится строкой с описанием description, где назван
-    вид соединения ({kind}), и ключами SealedParamSchema: тип содержимого и
-    схема содержимого с видом, по которым клиент узнаёт параметр и вид. Значение в лог
-    не пишется: там запечатанное соединение. Вид берётся из типа параметра —
+    схеме инструмента становится строкой с ключами SealedParamSchema:
+    пометкой вида, по которой клиент узнаёт параметр, и веткой
+    запечатанного значения. Значение в лог не пишется: там запечатанное
+    соединение. Вид берётся из типа параметра —
     реестр знает, какому пакету принадлежит модель профиля. Откуда обвязка
     возьмёт профиль, решает вызывающий фабрикой make (SealedConnectionParams).
     """
 
-    def __init__(self, types_ref: TypesRef, description: str) -> None:
+    def __init__(self, types_ref: TypesRef) -> None:
         self._types_ref = types_ref
-        self._description = description
         self._bodies = ToolBody()
         self._schemas = ToolSchema()
         self._declared = SealedParamSchema()
@@ -110,7 +113,9 @@ class ConnectionParamHooks:
             kind = self._kind_of(tool.name, param, annotation)
 
             self._bodies.hook_all([tool], make(tool.name, param, kind))
-            shown[param] = self._field(kind)
+            shown[param] = self._field(
+                ConnectionOffer(kind=kind, sealed=True, names={})
+            )
 
             logger.info(
                 "tool %s: %s is a %s connection of the caller", tool.name, param, kind
@@ -118,15 +123,11 @@ class ConnectionParamHooks:
 
         tool.args_schema = self._schemas.rebuild(schema, shown, ())
 
-    def _field(self, kind: str) -> tuple[Any, FieldInfo]:
+    def _field(self, offer: ConnectionOffer) -> tuple[Any, FieldInfo]:
         marked = Annotated[str, NotLogged]
+        declared = self._declared.declared(offer)
 
-        described = self._description.format(kind=kind)
-        declared = self._declared.declared(kind)
-
-        return marked, FieldInfo(
-            min_length=1, description=described, json_schema_extra=declared
-        )
+        return marked, FieldInfo(min_length=1, json_schema_extra=declared)
 
     def _kind_of(self, tool: str, param: str, annotation: object) -> str:
         """Вид соединения по модели профиля параметра."""

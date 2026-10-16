@@ -8,10 +8,12 @@
 под A256GCM. Ключевая пара живёт у сервера (SealKeys), клиент получает
 открытую половину (SealKey) и запечатывает ею (ConnectionSeal); о приёме
 запечатанных соединений и о ключе сервер объявляет возможностью SealFeature
-при подключении клиента. Какой параметр
-инструмента — соединение и какого вида, сервер пишет в схему параметра
-стандартными ключами JSON Schema, а клиент по ним же читает
-(SealedParamSchema); модели клиент показывает на этом месте имя соединения.
+при подключении клиента. Параметр-соединение сервер помечает в схеме
+ключом x-boba-connection с видом соединения, а что предложено вызывающему
+(ConnectionOffer: запечатанное соединение пользователя, имена заданных
+соединений сервера или то и другое), пишет стандартными ключами JSON Schema;
+клиент читает предложение обратно той же SealedParamSchema. Модель на месте
+параметра пишет имя соединения.
 
 Ошибки:
 RefusalError — значение не открывается: оно не запечатано, запечатано другим
@@ -21,7 +23,8 @@ RefusalError — значение не открывается: оно не за�
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
+from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 from typing import Any, ClassVar
@@ -39,9 +42,11 @@ from pydantic import (
 
 from boba.connections.marks import ConnectionRefusal
 from boba.identity.errors import RefusalError
+from boba.toolkit.calls import SchemaMark
 from boba.toolkit.failure import ValidationText
 
 __all__ = [
+    "ConnectionOffer",
     "ConnectionSeal",
     "SealFeature",
     "SealKey",
@@ -62,79 +67,120 @@ class SealAlgorithm(StrEnum):
     HEADER_KID = "kid"
 
 
+@dataclass(frozen=True)
+class ConnectionOffer:
+    """Что предложено вызывающему на месте одного параметра-соединения.
+
+    kind — вид соединения параметра; sealed — принимается запечатанное
+    соединение пользователя; names — видимые вызывающему заданные
+    соединения сервера: имя → описание (у клиента, прочитавшего схему,
+    описаний нет — пустые строки). Сервер пишет предложение в схему
+    параметра (SealedParamSchema.declared), клиент читает его обратно
+    (SealedParamSchema.offers).
+    """
+
+    kind: str
+    sealed: bool
+    names: Mapping[str, str]
+
+
 class SealedParamSchema:
     """Схема параметра-соединения на проводе: сервер пишет, клиент читает.
 
-    Параметр — строка с запечатанным профилем, и схема говорит это
-    стандартными ключами JSON Schema о содержимом строки: contentMediaType
-    — тип компактной JWE (application/jose), contentSchema — схема
-    содержимого: объект, чьё поле kind — константа вида соединения. Полную
-    модель профиля сервер держит у себя и проверяет ею открытое значение;
-    в схему она не идёт: её ссылки $ref генератор схемы инструмента не
-    разрешает. Своих ключей в схеме нет: чужой клиент читает её обычным
-    разбором JSON Schema.
+    Параметр помечен ключом x-boba-connection (SchemaMark.CONNECTION) с видом
+    соединения. Дальше — по предложению вызывающему: запечатанное значение
+    объявлено стандартными ключами о содержимом строки — contentMediaType
+    (компактная JWE, application/jose) и contentSchema (объект, чьё поле
+    kind — константа вида); имена заданных соединений сервера — enum, их
+    описания — в description; оба источника — anyOf из двух веток. Полную
+    модель профиля сервер держит у себя и проверяет ею открытое значение; в
+    схему она не идёт: её ссылки $ref генератор схемы инструмента не
+    разрешает. Описание параметра пишется для модели чужого клиента.
     """
 
     MEDIA_TYPE: ClassVar[str] = "application/jose"
-    MEDIA_KEY: ClassVar[str] = "contentMediaType"
     CONTENT_KEY: ClassVar[str] = "contentSchema"
-    PROPERTIES: ClassVar[str] = "properties"
     KIND_FIELD: ClassVar[str] = "kind"
     CONST_KEY: ClassVar[str] = "const"
+    ENUM_KEY: ClassVar[str] = "enum"
+    ANY_OF_KEY: ClassVar[str] = "anyOf"
+    DESCRIPTION_KEY: ClassVar[str] = "description"
 
-    def declared(self, kind: str) -> dict[str, Any]:
-        """Ключи схемы параметра: тип содержимого и схема содержимого с
-        константой вида kind."""
-        return {
-            self.MEDIA_KEY: self.MEDIA_TYPE,
+    def declared(self, offer: ConnectionOffer) -> dict[str, Any]:
+        """Ключи схемы параметра по предложению offer: пометка с видом,
+        ветка запечатанного значения и/или enum имён сервера, описание."""
+        sealed = {
+            "type": "string",
+            SchemaMark.MEDIA.value: self.MEDIA_TYPE,
             self.CONTENT_KEY: {
                 "type": "object",
-                self.PROPERTIES: {self.KIND_FIELD: {self.CONST_KEY: kind}},
+                SchemaMark.PROPERTIES: {self.KIND_FIELD: {self.CONST_KEY: offer.kind}},
                 "required": [self.KIND_FIELD],
             },
         }
+        named = {"type": "string", self.ENUM_KEY: list(offer.names)}
 
-    def kind_of(self, declared: Mapping[str, Any]) -> str | None:
-        """Вид соединения параметра по его схеме; None — параметр не соединение."""
-        if declared.get(self.MEDIA_KEY) != self.MEDIA_TYPE:
-            return None
+        described: list[str] = []
+        for name, text in offer.names.items():
+            described.append(f"{name} — {text}")
 
-        content = declared.get(self.CONTENT_KEY)
-        if not isinstance(content, Mapping):
-            return None
+        listed = "; ".join(described)
+        own = "Pass the name of one of your own connections, the client seals it"
+        head = f"Name of the {offer.kind} connection to use."
+        declared: dict[str, Any] = {SchemaMark.CONNECTION.value: offer.kind}
+        if not offer.names:
+            text = f"{head} {own}."
+            return {**declared, self.DESCRIPTION_KEY: text, **sealed}
 
-        properties = content.get(self.PROPERTIES)
+        if not offer.sealed:
+            text = f"{head} Use one of: {listed}."
+            return {**declared, self.DESCRIPTION_KEY: text, **named}
+
+        text = f"{head} {own}, or one of the server connections: {listed}."
+
+        return {
+            **declared,
+            self.DESCRIPTION_KEY: text,
+            self.ANY_OF_KEY: [sealed, named],
+        }
+
+    def offers(self, schema: Mapping[str, Any]) -> dict[str, ConnectionOffer]:
+        """Параметры-соединения инструмента по его схеме schema: имя →
+        предложение, прочитанное из схемы параметра."""
+        offers: dict[str, ConnectionOffer] = {}
+        properties = schema.get(SchemaMark.PROPERTIES)
         if not isinstance(properties, Mapping):
-            return None
+            return offers
 
-        kind = properties.get(self.KIND_FIELD)
-        if not isinstance(kind, Mapping):
-            return None
-
-        const = kind.get(self.CONST_KEY)
-        if not isinstance(const, str):
-            return None
-
-        return const
-
-    def kinds_of(self, schema: Mapping[str, Any]) -> dict[str, str]:
-        """Параметры-соединения инструмента по его схеме: имя → вид."""
-        return dict(self._kinds_of(schema))
-
-    def _kinds_of(self, schema: Mapping[str, Any]) -> Iterator[tuple[str, str]]:
-        properties = schema.get(self.PROPERTIES)
-        if not isinstance(properties, Mapping):
-            return
-
-        for param, declared in properties.items():
-            if not isinstance(declared, Mapping):
+        for param, kind in SchemaMark.CONNECTION.params(schema).items():
+            if not isinstance(kind, str):
                 continue
 
-            kind = self.kind_of(declared)
-            if kind is None:
-                continue
+            declared = properties[param]
+            branches: list[object] = [declared]
+            nested = declared.get(self.ANY_OF_KEY)
+            if isinstance(nested, list):
+                branches.extend(nested)
 
-            yield param, kind
+            sealed = False
+            names: dict[str, str] = {}
+            for branch in branches:
+                if not isinstance(branch, Mapping):
+                    continue
+
+                if branch.get(SchemaMark.MEDIA.value) == self.MEDIA_TYPE:
+                    sealed = True
+
+                enum = branch.get(self.ENUM_KEY)
+                if not isinstance(enum, list):
+                    continue
+
+                for name in enum:
+                    names[str(name)] = ""
+
+            offers[param] = ConnectionOffer(kind=kind, sealed=sealed, names=names)
+
+        return offers
 
 
 class SealKey(BaseModel):

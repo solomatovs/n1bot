@@ -94,7 +94,7 @@ class StandUserConnections:
         self._keys = SealKeys()
         self._seal = ConnectionSeal(self._keys.public())
         self._connections = ArmedConnections(store_ref, credentials_ref, contexts)
-        self._hooks = ConnectionParamHooks(types_ref, SealedConnectionParam.ARGUMENT)
+        self._hooks = ConnectionParamHooks(types_ref)
 
     def bind_all(self, tools: Sequence[HostedTool]) -> None:
         self._hooks.bind_all(tools, self._hook)
