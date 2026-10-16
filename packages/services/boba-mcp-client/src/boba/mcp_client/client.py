@@ -668,8 +668,17 @@ class McpServerApps(BaseModel):
 
     def origin(self) -> str:
         """Источник страницы-прокси в форме браузера: схема, хост и порт,
-        если он не порт схемы по умолчанию."""
-        parts = urlsplit(str(self.sandbox_url))
+        если он не порт схемы по умолчанию; учётные данные адреса в
+        источник не входят."""
+        url = self.sandbox_url
+        host = url.host
+        if host is None:
+            msg = f"[apps] sandbox_url {url} expects a host, got none"
+            raise ValueError(msg)
+
+        bare = HttpUrl.build(scheme=url.scheme, host=host, port=url.port)
+        parts = urlsplit(str(bare))
+
         return urlunsplit((parts.scheme, parts.netloc, "", "", ""))
 
     def extension(self) -> ClientExtension:

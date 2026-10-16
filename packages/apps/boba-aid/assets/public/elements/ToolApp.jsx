@@ -64,9 +64,9 @@ async function ask(name, payload) {
   return response;
 }
 
-// HTML и CSP ресурса: AppRenderer сам _meta.ui.csp не читает; домены чата
-// из CSP выбрасываются — источник чата приложению не открывается
-function appOf(read, chat) {
+// HTML и CSP ресурса: AppRenderer сам _meta.ui.csp не читает; домены,
+// накрывающие источник чата, выбрасывает страница-прокси песочницы
+function appOf(read) {
   const contents = (read && read.contents) || [];
   if (contents.length !== 1) {
     throw new Error(`the app resource has ${contents.length} contents, expected one`);
@@ -80,15 +80,7 @@ function appOf(read, chat) {
   if (typeof html !== "string") html = atob(resource.blob || "");
 
   const meta = (resource._meta && resource._meta.ui) || {};
-  let csp;
-  if (meta.csp) {
-    csp = {};
-    for (const [key, domains] of Object.entries(meta.csp)) {
-      if (!Array.isArray(domains)) continue;
-      csp[key] = domains.filter((domain) => originOf(domain) !== chat);
-    }
-  }
-  return { html, csp };
+  return { html, csp: meta.csp };
 }
 
 function textOf(content) {
@@ -133,7 +125,7 @@ export default function ToolApp() {
     let cancelled = false;
     ask("mcp_app_read", request({ uri: props.resource_uri }))
       .then((read) => {
-        if (!cancelled) setApp(appOf(read, chat));
+        if (!cancelled) setApp(appOf(read));
       })
       .catch((failed) => {
         if (!cancelled) setError(failed.message);

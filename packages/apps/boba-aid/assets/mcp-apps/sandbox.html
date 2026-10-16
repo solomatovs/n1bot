@@ -13,11 +13,14 @@
   // Страница-прокси песочницы MCP Apps (раздел Sandbox proxy спецификации):
   // лежит на источнике сервера приложения, получает от чата HTML приложения и
   // грузит его во внутренний iframe без allow-same-origin с CSP по _meta.ui.csp
-  // ресурса; сообщения чата и приложения пересылает как есть, кроме своих
-  // ui/notifications/sandbox-*.
+  // ресурса без доменов, которые накрывают источник чата; сообщения чата и
+  // приложения пересылает как есть, кроме своих ui/notifications/sandbox-*.
   const PREFIX = "ui/notifications/sandbox-";
   const READY = "ui/notifications/sandbox-proxy-ready";
   const RESOURCE = "ui/notifications/sandbox-resource-ready";
+  const DOCTYPE = /^\s*<!doctype[^>]*>/i;
+  // схема://хост[:порт][/путь]; хост — имя, * или *.суффикс
+  const SOURCE = /^[a-z][a-z0-9+.-]*:\/\/(\*|(?:\*\.)?[a-z0-9.-]+)(?::(\d+|\*))?(?:\/[^\s;,'"]*)?$/i;
   const PERMISSIONS = {
     camera: "camera",
     microphone: "microphone",
@@ -28,11 +31,42 @@
   let inner = null;
   let host = null;
 
+  // домен CSP, под который подпадает источник чата, открыл бы скрипту
+  // приложения API чата с куками пользователя
+  function opensChat(name, port) {
+    const chat = new URL(host);
+    if (name === "*") {
+      return true;
+    }
+    if (name.startsWith("*.")) {
+      if (!chat.hostname.endsWith(name.slice(1))) {
+        return false;
+      }
+    } else if (name !== chat.hostname) {
+      return false;
+    }
+    if (!port || port === "*" || !chat.port) {
+      return true;
+    }
+    return port === chat.port;
+  }
+
   function sources(domains) {
     if (!Array.isArray(domains)) {
       return "";
     }
-    return domains.filter((domain) => /^[a-z][a-z0-9+.-]*:\/\/[^\s;,'"]+$/i.test(domain)).join(" ");
+    const kept = [];
+    for (const domain of domains) {
+      const source = SOURCE.exec(String(domain));
+      if (!source) {
+        continue;
+      }
+      if (opensChat(source[1].toLowerCase(), source[2])) {
+        continue;
+      }
+      kept.push(domain);
+    }
+    return kept.join(" ");
   }
 
   function policy(csp) {
@@ -83,13 +117,13 @@
     return features.join("; ");
   }
 
-  // meta CSP — первым узлом документа: раньше любого скрипта приложения
+  // meta CSP — первым узлом документа, сразу за ведущим <!DOCTYPE>: парсер
+  // кладёт её в head раньше любой разметки и скрипта приложения
   function guarded(html, csp) {
     const meta = `<meta http-equiv="Content-Security-Policy" content="${policy(csp)}">`;
-    const head = /<head[^>]*>/i.exec(html);
-    if (head) {
-      const at = head.index + head[0].length;
-      return html.slice(0, at) + meta + html.slice(at);
+    const doctype = DOCTYPE.exec(html);
+    if (doctype) {
+      return doctype[0] + meta + html.slice(doctype[0].length);
     }
     return meta + html;
   }

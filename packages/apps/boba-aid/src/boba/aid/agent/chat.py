@@ -239,6 +239,7 @@ class ThreadIdentity:
             profile=self.profile.name,
             session=self.session,
             server=server,
+            servers=frozenset(self.profile.config.mcp),
         )
 
 

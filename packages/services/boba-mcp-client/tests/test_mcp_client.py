@@ -568,7 +568,12 @@ class TestServerApps:
         assert "https://apps.example.com" in str(refused.value)
 
     def test_origin_of_the_sandbox_is_scheme_host_and_port(self) -> None:
+        signed = McpServerApps.model_validate(
+            {"sandbox_url": "https://u:p@apps.example.com:443/mcp-apps/sandbox.html"}
+        )
+
         assert self.SANDBOX.origin() == "http://localhost:8123"
+        assert signed.origin() == "https://apps.example.com"
 
 
 class BobaMcpStand:

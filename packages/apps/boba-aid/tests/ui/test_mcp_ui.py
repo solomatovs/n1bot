@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import socket
 import subprocess
 import sys
@@ -25,10 +26,11 @@ import time
 from collections.abc import Iterator
 from pathlib import Path, PurePosixPath
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 import pytest
 from chat_ui import BOOT_TIMEOUT_SEC, OpenChat
-from playwright.sync_api import FrameLocator, Locator
+from playwright.sync_api import Browser, FrameLocator, Locator, Page
 
 from boba.mcp_client.client import McpServerConfig
 from boba.stand.ui.chat_page import ChatPage, Selector, StepKind
@@ -155,15 +157,6 @@ def mcp_stand(  # noqa: PLR0913 — стенд собирается из фик�
     sandbox_server = subprocess.Popen(
         [sys.executable, *serve, "--directory", str(pages)]
     )
-    for port in (apps_port, sandbox_port):
-        deadline = time.monotonic() + BobaMcpStand.BOOT_SEC
-        while time.monotonic() < deadline:
-            try:
-                with socket.create_connection(("127.0.0.1", port), timeout=1.0):
-                    break
-            except OSError:
-                time.sleep(0.2)
-
     plain = {
         "connect_timeout_sec": 30.0,
         "call_timeout_sec": 60.0,
@@ -196,6 +189,23 @@ def mcp_stand(  # noqa: PLR0913 — стенд собирается из фик�
     )
     process = StandProcess(config=config, log_path=stand_workdir / "mcp-app.log")
     try:
+        for port in (apps_port, sandbox_port):
+            deadline = time.monotonic() + BobaMcpStand.BOOT_SEC
+            while True:
+                try:
+                    with socket.create_connection(("127.0.0.1", port), timeout=1.0):
+                        break
+                except OSError as exc:
+                    if time.monotonic() > deadline:
+                        msg = (
+                            f"the apps server ({apps_server.args}) or the sandbox page "
+                            f"({sandbox_server.args}) is not listening on port {port} "
+                            f"within {BobaMcpStand.BOOT_SEC}s: {exc}"
+                        )
+                        raise AssertionError(msg) from exc
+
+                    time.sleep(0.2)
+
         process.start(boot_timeout_sec=BOOT_TIMEOUT_SEC)
         yield process
     finally:
@@ -567,7 +577,10 @@ class TestToolAppLook:
 
         inner.locator("#theme").get_by_text(f"theme: {theme}").wait_for()
         box = outer.bounding_box()
-        if box is None or not 0 < box["height"] < 600:
+        if box is None:
+            raise AssertionError("the frame of the app is laid out on the page")
+
+        if not 0 < box["height"] < 600:
             raise AssertionError(f"the frame takes the height of the app: {box}")
 
     def test_app_follows_the_theme_and_the_narrow_window(
@@ -589,3 +602,96 @@ class TestToolAppLook:
         scroll = chat.page.evaluate(f"[{width}, {shown}]")
         if scroll[0] > scroll[1]:
             raise AssertionError(f"no horizontal scroll in a narrow window: {scroll}")
+
+
+class TestSandboxPage:
+    """Страница-прокси песочницы сама по себе: CSP приложения встаёт первым
+    узлом документа при любой разметке, домены, под которые подпадает
+    источник чата, в CSP не попадают. Страница открыта верхним окном и
+    шлёт себе sandbox-resource-ready — источник чата здесь её же источник."""
+
+    PROBE: str = (
+        "<script>fetch({target!r}, {{mode: 'no-cors'}})"
+        ".then(() => {{ window.reached = 'reached'; }})"
+        ".catch(() => {{ window.reached = 'blocked'; }});</script>"
+    )
+
+    @staticmethod
+    def _loaded(
+        browser: Browser, stand: StandProcess, html: str, csp: dict[str, Any] | None
+    ) -> Page:
+        sandbox = stand.config.mcp_servers["apps"]["apps"]["sandbox_url"]
+        page = browser.new_page()
+        page.goto(str(sandbox))
+        page.evaluate(
+            "([html, csp]) => window.postMessage({jsonrpc: '2.0', method: "
+            "'ui/notifications/sandbox-resource-ready', params: {html, csp}}, '*')",
+            [html, csp],
+        )
+        page.locator("iframe").wait_for()
+
+        return page
+
+    def _reached(
+        self,
+        browser: Browser,
+        stand: StandProcess,
+        html: str,
+        csp: dict[str, Any] | None,
+    ) -> str:
+        """Исход запроса скрипта приложения: reached или blocked его CSP."""
+        page = self._loaded(browser, stand, html, csp)
+        try:
+            app = page.frames[-1]
+            app.wait_for_function("window.reached !== undefined", timeout=10_000)
+            return str(app.evaluate("window.reached"))
+        finally:
+            page.close()
+
+    @pytest.mark.parametrize(
+        "markup",
+        [
+            "<!--<head>--><html><body>{probe}</body></html>",
+            "<html><header>board</header>{probe}</html>",
+            "<!DOCTYPE html>{probe}<head></head><body></body>",
+        ],
+        ids=["head-in-a-comment", "header-without-head", "script-before-head"],
+    )
+    def test_csp_of_the_app_is_the_first_node_of_any_markup(
+        self, mcp_stand: StandProcess, browser: Browser, markup: str
+    ) -> None:
+        chat = urlsplit(mcp_stand.config.base_url)
+        target = urlunsplit((chat.scheme, chat.netloc, "/", "", ""))
+        html = markup.format(probe=self.PROBE.format(target=target))
+        allowed = {"connectDomains": [target]}
+
+        blocked = self._reached(browser, mcp_stand, html, None)
+        reached = self._reached(browser, mcp_stand, html, allowed)
+
+        assert (blocked, reached) == ("blocked", "reached")
+
+    def test_domains_over_the_chat_origin_leave_the_csp(
+        self, mcp_stand: StandProcess, browser: Browser
+    ) -> None:
+        sandbox = str(mcp_stand.config.mcp_servers["apps"]["apps"]["sandbox_url"])
+        port = urlsplit(sandbox).port
+        csp = {
+            "connectDomains": [
+                "*",
+                "http://*",
+                "http://localhost",
+                f"http://localhost:{port}",
+                "http://localhost:*",
+                "https://cdn.example.com",
+            ]
+        }
+        page = self._loaded(browser, mcp_stand, "<p>board</p>", csp)
+        try:
+            srcdoc = str(page.locator("iframe").get_attribute("srcdoc"))
+        finally:
+            page.close()
+
+        connect = re.search(r"connect-src ([^;]*)", srcdoc)
+
+        assert connect is not None, srcdoc
+        assert connect.group(1).split() == ["'self'", "https://cdn.example.com"]

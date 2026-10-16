@@ -822,7 +822,10 @@ async def on_app_read(
 
 @cl.action_callback(AppAction.CONTEXT)
 @chainlit_error_ctx_handler
-async def on_app_context(action: cl.Action) -> dict[str, Any]:
+@di_inject
+async def on_app_context(
+    action: cl.Action, relay: Annotated[McpRelay, Depends(mcp_relay)]
+) -> dict[str, Any]:
     """ui/update-model-context приложения: контекст уйдёт модели со
     следующим вопросом вкладки."""
     request = AppRequest[ModelContextUpdate].model_validate(action.payload)
@@ -833,7 +836,7 @@ async def on_app_context(action: cl.Action) -> dict[str, Any]:
             "tab has no agent to take the context, ask a question first"
         )
         error = mt.ErrorData(code=mt.INVALID_REQUEST, message=message)
-        return {"error": error.model_dump(mode="json", exclude_none=True)}
+        return relay.app_refusal(error)
 
     agent.app_context(request.call_id, list(request.params.blocks()))
 
