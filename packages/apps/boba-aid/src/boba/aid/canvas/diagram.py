@@ -12,10 +12,11 @@ import logging
 import uuid
 from typing import Any, ClassVar
 
-from boba.aid.canvas.panel import CanvasPanel, FileViewer, StorageHashSource
+from boba.aid.canvas.panel import FileViewer, StorageHashSource
 from boba.aid.data.data_layer import AttachmentDataLayer
 from boba.canvas.canvas import (
     CanvasContent,
+    CanvasElement,
     CanvasError,
     CanvasErrorKind,
     CanvasKind,
@@ -165,7 +166,7 @@ class DiagramCard:
     def link(cls, entry: DiagramEntry) -> VisualResult:
         """Карточка как результат инструмента: ссылка на файл в ленте."""
         return VisualResult(
-            element=CanvasPanel.VIEW_ELEMENT,
+            element=CanvasElement.VIEW,
             props=cls.props_of(entry),
             title=entry.label,
         )

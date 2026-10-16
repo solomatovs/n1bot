@@ -29,6 +29,7 @@ from boba.aid.canvas.tools import (
 from boba.canvas.canvas import (
     CanvasAction,
     CanvasContent,
+    CanvasElement,
     CanvasError,
     CanvasErrorKind,
     CanvasKind,
@@ -304,8 +305,8 @@ class TestShow:
 
         if [e.props["label"] for e in shown] != ["a.png", "b.png"]:
             raise AssertionError('[e.props["label"] for e in shown] == ["a.png", "b.p…')
-        if [e.name for e in shown] != [CanvasPanel.VIEW_ELEMENT] * 2:
-            raise AssertionError("[e.name for e in shown] == [CanvasPanel.VIEW_ELEMEN…")
+        if [e.name for e in shown] != [CanvasElement.VIEW] * 2:
+            raise AssertionError("[e.name for e in shown] == [CanvasElement.VIEW] * 2")
         if [e.display for e in shown] != ["side", "side"]:
             raise AssertionError('[e.display for e in shown] == ["side", "side"]')
         if shown[0].id != CanvasPanel.CONTENT_ID:

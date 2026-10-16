@@ -33,6 +33,7 @@ from boba.aid.data.data_layer import AttachmentDataLayer
 from boba.aid.domain.keys import CanvasFileUrl, StreamUrl
 from boba.canvas.canvas import (
     CanvasContent,
+    CanvasElement,
     CanvasError,
     CanvasErrorKind,
     CanvasKind,
@@ -245,9 +246,6 @@ class FileViewer(CanvasViewer):
     содержимое по той же ссылке.
     """
 
-    LINK_ELEMENT: ClassVar[str] = "CanvasLink"
-    """Имя jsx-компонента ссылки: public/elements/CanvasLink.jsx."""
-
     kind: ClassVar[CanvasKind] = CanvasKind.NOTICE
     mimes: ClassVar[frozenset[str]] = frozenset()
 
@@ -278,7 +276,7 @@ class FileViewer(CanvasViewer):
 
     async def link(self, key: ObjectKey) -> VisualResult:
         return VisualResult(
-            element=self.LINK_ELEMENT,
+            element=CanvasElement.LINK,
             props={"path": key.in_workspace(), "label": key.name},
             title=key.name,
         )
@@ -390,13 +388,6 @@ class CanvasPanel:
     """Один id на слот содержимого: React обновляет элемент, а не пересоздаёт —
     панель не мигает при смене файла, а вьюверы не теряют своё состояние."""
 
-    VIEW_ELEMENT: ClassVar[str] = "CanvasView"
-    """Единственный компонент панели: рисует любое содержимое по его kind.
-
-    Один компонент на все типы позволяет менять файл, не подменяя элемент:
-    фронт сам забирает следующее содержимое, и панель не открывается заново.
-    """
-
     @classmethod
     async def open(cls, key: ObjectKey, mime: str) -> OpenedCanvas:
         """Показ файла key вьювером его MIME mime; MIME без вьювера — отказ
@@ -468,7 +459,7 @@ class CanvasPanel:
         включает полноэкранный canvas-режим панели.
         """
         element = cl.CustomElement(
-            name=cls.VIEW_ELEMENT, props=content.props(), display="side"
+            name=CanvasElement.VIEW, props=content.props(), display="side"
         )
         element.id = cls.CONTENT_ID
         await element.send(for_id="")
