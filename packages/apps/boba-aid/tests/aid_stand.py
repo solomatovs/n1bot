@@ -903,7 +903,9 @@ def catalog(store: ConnectionStore, call_stand: CallStand) -> Any:
 
 
 @pytest.fixture(autouse=True)
-def di_root(app_config: AppConfig, runtime_stand: StandRefs) -> Iterator[None]:
+def di_root(
+    app_config: AppConfig, runtime_stand: StandRefs, storage: LocalStorageClient
+) -> Iterator[None]:
     """Корневой контейнер с источником сессий, как его собирает приложение.
 
     Без него ref-функции падают: отсутствие контейнера — ошибка сборки, а
@@ -913,6 +915,7 @@ def di_root(app_config: AppConfig, runtime_stand: StandRefs) -> Iterator[None]:
     from boba.aid.infra.providers import (
         remote_journals,
         session_source,
+        storage_provider,
         thread_agents_index,
         tool_media,
     )
@@ -933,6 +936,7 @@ def di_root(app_config: AppConfig, runtime_stand: StandRefs) -> Iterator[None]:
     root.provide(runtime.call_journals, runtime_stand.journals)
     root.provide(remote_journals, RemoteJournals())
     root.provide(tool_media, ToolMedia())
+    root.provide(storage_provider, storage)
     root.provide(thread_agents_index, ThreadAgentsIndex())
     Container.set_root(root)
     try:
