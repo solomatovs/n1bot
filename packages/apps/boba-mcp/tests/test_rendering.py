@@ -1,11 +1,17 @@
-"""Тесты семейств вызова и результата: llm_view, chat_view и рендер входа."""
+"""Тесты семейств вызова и результата: llm_view, блоки ответа для человека
+по таблице 7.4 и рендер входа."""
 
 from __future__ import annotations
 
 import json
+from pathlib import PurePosixPath
 from typing import Any
+from urllib.parse import unquote, urlsplit
+
+import mcp_types as mt
 
 from boba.toolkit.calls import FieldMarks, ToolCallBase, ToolCallModels
+from boba.toolkit.dag import DagNode, NodeOutcomes
 from boba.toolkit.result import (
     ErrorResult,
     MarkdownResult,
@@ -14,9 +20,42 @@ from boba.toolkit.result import (
     SqlStatement,
     TableResult,
     ToolArtifact,
-    VisualElement,
+    ToolResultBase,
     VisualResult,
 )
+from boba.toolkit.wire import ResultWire
+
+
+def shown(result: ToolResultBase) -> list[tuple[str, str, str]]:
+    """Блоки ответа для человека: (вид, MIME и имя ресурса, текст)."""
+    call = DagNode(key="call", tool="probe")
+    wire = ResultWire().packed(NodeOutcomes().of(call, result, False))
+
+    blocks: list[tuple[str, str, str]] = []
+    for block in wire.content:
+        annotations = block.annotations
+        if annotations is None:
+            annotations = mt.Annotations()
+
+        if annotations.audience == ["assistant"]:
+            continue
+
+        if isinstance(block, mt.TextContent):
+            blocks.append(("text", "", block.text))
+            continue
+
+        if isinstance(block, mt.EmbeddedResource):
+            resource = block.resource
+            if not isinstance(resource, mt.TextResourceContents):
+                raise AssertionError(f"a resource of the family is text: {block}")
+
+            name = unquote(PurePosixPath(urlsplit(str(resource.uri)).path).name)
+            blocks.append(("resource", f"{resource.mime_type} {name}", resource.text))
+            continue
+
+        raise AssertionError(f"unexpected block: {block}")
+
+    return blocks
 
 
 def shell_result(**overrides: object) -> ShellResult:
@@ -77,63 +116,45 @@ class TestPacked:
             raise AssertionError("artifact is result")
 
 
-class TestChatElement:
-    def test_chart(self) -> None:
+class TestShownBlocks:
+    def test_chart_is_a_caption_and_its_figure(self) -> None:
         result = VisualResult.plotly({"data": []}, "t")
-        view = result.chat_view()
-        widgets = [item for item in view.items if isinstance(item, VisualElement)]
-        if len(widgets) != 1 or widgets[0].element != "plotly":
-            raise AssertionError(view.items)
-        if view.markdown != "_(plotly: t)_":
-            raise AssertionError('view.markdown == "_(plotly: t)_"')
 
-    def test_text_variants_have_no_visual(self) -> None:
-        for result in (
-            MarkdownResult(text="x"),
-            TableResult(rows=[{"a": 1}]),
-            ErrorResult(message="boom", error_kind="e"),
-        ):
-            if result.chat_view().items != ():
-                raise AssertionError(result.chat_view().items)
-            if not (result.chat_view().markdown):
-                raise AssertionError("result.chat_view().markdown")
+        if shown(result) != [
+            ("text", "", "_(plotly: t)_"),
+            ("resource", "application/vnd.plotly.v1+json t", '{"data": []}'),
+        ]:
+            raise AssertionError(shown(result))
 
-
-class TestHumanText:
-    def test_table_is_gfm(self) -> None:
+    def test_table_is_csv_with_the_note_below(self) -> None:
         result = TableResult(rows=[{"name": "a", "n": 1}], note="cut")
-        md = result.chat_view().markdown
-        if "|" not in md:
-            raise AssertionError('"|" in md')
-        if "_cut_" not in md:
-            raise AssertionError('"_cut_" in md')
-        if not (md.startswith("\n")):
-            raise AssertionError('md.startswith("\\n")')
+
+        if shown(result) != [
+            ("resource", "text/csv csv", "name,n\na,1\n"),
+            ("text", "", "_cut_"),
+        ]:
+            raise AssertionError(shown(result))
 
     def test_empty_table(self) -> None:
-        if TableResult(rows=[]).chat_view().markdown != "\n_(no rows)_":
-            raise AssertionError("TableResult(rows=[]).chat_view().markdown =…")
+        if shown(TableResult(rows=[])) != [("resource", "text/csv csv", "")]:
+            raise AssertionError(shown(TableResult(rows=[])))
 
     def test_error(self) -> None:
-        rendered = ErrorResult(message="boom", error_kind="e").chat_view().markdown
-        if rendered != "**boom**":
+        rendered = shown(ErrorResult(message="boom", error_kind="e"))
+        if rendered != [("text", "", "**boom**")]:
             raise AssertionError(f"rendered: {rendered!r}")
 
     def test_multiline_error_keeps_the_rest_in_a_block(self) -> None:
         message = "permission denied\nLINE 1: select 1\n       ^"
-        rendered = ErrorResult(message=message, error_kind="e").chat_view().markdown
-        if rendered != "**permission denied**\n\n```\nLINE 1: select 1\n       ^\n```":
+        rendered = shown(ErrorResult(message=message, error_kind="e"))
+        expected = "**permission denied**\n\n```\nLINE 1: select 1\n       ^\n```"
+        if rendered != [("text", "", expected)]:
             raise AssertionError(f"rendered: {rendered!r}")
 
     def test_flatten_cell_newlines(self) -> None:
-        result = TableResult(rows=[{"a": "x\ny"}])
-        md = result.chat_view().markdown
-        if not ("\n" not in md.split("| a")[1].split("|")[1] or True):
-            raise AssertionError(
-                '"\\n" not in md.split("| a")[1].split("|")[1] or True'
-            )
-        if "⏎" not in md:
-            raise AssertionError('"⏎" in md')
+        rendered = shown(TableResult(rows=[{"a": "x\ny"}]))
+        if rendered != [("resource", "text/csv csv", "a\nx ⏎ y\n")]:
+            raise AssertionError(f"rendered: {rendered!r}")
 
 
 class TestShellResult:
@@ -180,31 +201,24 @@ class TestShellResult:
         if not result.truncated:
             raise AssertionError("result.truncated")
 
-    def test_markdown_shows_stdout_with_the_exit_code_below(self) -> None:
-        """Блок с шапкой потока, код возврата строкой под ним; команды нет."""
-        result = shell_result(stdout="total 0\n")
+    def test_stdout_is_a_resource_with_the_exit_code_below(self) -> None:
+        """Ресурс с именем потока, код возврата строкой под ним; команды нет."""
+        rendered = shown(shell_result(stdout="total 0\n"))
 
-        md = result.chat_view().markdown
-
-        if "```stdout\ntotal 0\n```" not in md:
-            raise AssertionError('"```stdout\\ntotal 0\\n```" in md')
-        if "_exit code: 0_" not in md:
-            raise AssertionError('"_exit code: 0_" in md')
-        if "ls -la" in md:
-            raise AssertionError('"ls -la" not in md')
+        if rendered != [
+            ("resource", "text/plain stdout", "total 0"),
+            ("text", "", "_exit code: 0_"),
+        ]:
+            raise AssertionError(f"rendered: {rendered!r}")
 
     def test_markdown_of_a_killed_process(self) -> None:
         """Отрицательный код — процесс убит сигналом, а не «exit code: -9»."""
-        result = shell_result(exit_code=-9, stdout="partial\n")
+        rendered = shown(shell_result(exit_code=-9, stdout="partial\n"))
 
-        md = result.chat_view().markdown
+        if rendered[-1] != ("text", "", "_killed by signal 9_"):
+            raise AssertionError(f"rendered: {rendered!r}")
 
-        if "_killed by signal 9_" not in md:
-            raise AssertionError('"_killed by signal 9_" in md')
-        if "-9" in md:
-            raise AssertionError('"-9" not in md')
-
-    def test_markdown_shows_stderr_when_stdout_is_empty(self) -> None:
+    def test_stderr_is_shown_when_stdout_is_empty(self) -> None:
         result = shell_result(
             exit_code=2,
             stdout="",
@@ -213,23 +227,21 @@ class TestShellResult:
             stderr_bytes=17,
         )
 
-        md = result.chat_view().markdown
-
-        if "```stderr\nls: no such file\n```" not in md:
-            raise AssertionError('"```stderr\\nls: no such file\\n```" in md')
-        if "_exit code: 2_" not in md:
-            raise AssertionError('"_exit code: 2_" in md')
+        if shown(result) != [
+            ("resource", "text/plain stderr", "ls: no such file"),
+            ("text", "", "_exit code: 2_"),
+        ]:
+            raise AssertionError(f"rendered: {shown(result)!r}")
 
     def test_markdown_marks_silent_command(self) -> None:
         """Молчат оба потока: блока нет, код возврата остаётся на виду."""
         result = shell_result(stdout="", stdout_bytes=0, exit_code=7)
 
-        md = result.chat_view().markdown
-
-        if "_(no output)_" not in md:
-            raise AssertionError('"_(no output)_" in md')
-        if "_exit code: 7_" not in md:
-            raise AssertionError('"_exit code: 7_" in md')
+        if shown(result) != [
+            ("text", "", "_(no output)_"),
+            ("text", "", "_exit code: 7_"),
+        ]:
+            raise AssertionError(f"rendered: {shown(result)!r}")
 
     def test_markdown_collects_notes(self) -> None:
         result = shell_result(
@@ -239,7 +251,7 @@ class TestShellResult:
             timed_out=True,
         )
 
-        md = result.chat_view().markdown
+        md = shown(result)[-1][2]
 
         if "timed out" not in md:
             raise AssertionError('"timed out" in md')
@@ -248,21 +260,15 @@ class TestShellResult:
         if "output truncated" not in md:
             raise AssertionError('"output truncated" in md')
 
-    def test_fence_survives_backticks_in_the_output(self) -> None:
-        """Вывод с ``` внутри не разрывает блок: ограда длиннее вложенной."""
-        result = shell_result(stdout="```\nnested\n```\n")
+    def test_output_with_backticks_travels_as_is(self) -> None:
+        """Ограду ставит лента: ресурс несёт вывод без изменений."""
+        rendered = shown(shell_result(stdout="```\nnested\n```\n"))
 
-        md = result.chat_view().markdown
-
-        if "````stdout\n```\nnested\n```\n````" not in md:
-            raise AssertionError("ограда не переросла вложенную")
-
-    def test_shell_has_no_visual(self) -> None:
-        if shell_result().chat_view().items != ():
-            raise AssertionError(shell_result().chat_view().items)
+        if rendered[0] != ("resource", "text/plain stdout", "```\nnested\n```"):
+            raise AssertionError(f"rendered: {rendered!r}")
 
 
-class TestToolCallChatView:
+class TestToolCallMarkdown:
     """Вход шага рисует модель вызова из объявленных у полей результатов."""
 
     @staticmethod
@@ -278,18 +284,14 @@ class TestToolCallChatView:
             raise AssertionError("shell module declared its tools")
 
     def test_unknown_tool_renders_json(self) -> None:
-        markdown = (
-            self._call("no_such_tool", {"path": "/workspace/a.png"})
-            .chat_view()
-            .markdown
-        )
+        markdown = self._call("no_such_tool", {"path": "/workspace/a.png"}).markdown()
 
         if not markdown.startswith("```json\n{"):
             raise AssertionError('markdown.startswith("```json\\n{")')
 
     def test_bash_renders_a_language_block(self) -> None:
         self._declare_bash()
-        markdown = self._call("bash", {"command": "ls -la"}).chat_view().markdown
+        markdown = self._call("bash", {"command": "ls -la"}).markdown()
 
         if markdown != "```bash\nls -la\n```":
             raise AssertionError(
@@ -299,7 +301,7 @@ class TestToolCallChatView:
     def test_missing_argument_is_skipped(self) -> None:
         """Аргументы разошлись со схемой: показывается то, что пришло."""
         self._declare_bash()
-        markdown = self._call("bash", {"path": "/workspace/a.png"}).chat_view().markdown
+        markdown = self._call("bash", {"path": "/workspace/a.png"}).markdown()
 
         if markdown != "":
             raise AssertionError(f"пустой вход, дано {markdown!r}")
@@ -309,11 +311,9 @@ class TestToolCallChatView:
 
         if not TOOLS:
             raise AssertionError("pg module declared its tools")
-        markdown = (
-            self._call("pg_query", {"connection": "dwh", "sql": "select 1\nfrom t"})
-            .chat_view()
-            .markdown
-        )
+        markdown = self._call(
+            "pg_query", {"connection": "dwh", "sql": "select 1\nfrom t"}
+        ).markdown()
 
         if "```sql\nselect 1\nfrom t\n```" not in markdown:
             raise AssertionError('"```sql\\nselect 1\\nfrom t\\n```" in markdown')
@@ -325,13 +325,9 @@ class TestToolCallChatView:
 
         if not TOOLS:
             raise AssertionError("canvas module declared its tools")
-        markdown = (
-            self._call(
-                "diagram_save", {"name": "a.mmd", "spec": "flowchart LR\n    A --> B"}
-            )
-            .chat_view()
-            .markdown
-        )
+        markdown = self._call(
+            "diagram_save", {"name": "a.mmd", "spec": "flowchart LR\n    A --> B"}
+        ).markdown()
 
         if "```mermaid\nflowchart LR\n    A --> B\n```" not in markdown:
             raise AssertionError("спека рисуется mermaid-блоком")
@@ -366,29 +362,18 @@ class TestDeclaredDisplays:
 
 
 class TestTextResultLanguage:
-    """Текст с языком уходит в блок, как и объявленный показ аргумента."""
+    """Текст с языком уходит ресурсом своего MIME, как и объявленный показ
+    аргумента; без языка — текстом."""
 
     def test_plain_text_stays_markdown(self) -> None:
-        rendered = MarkdownResult(text="**bold**").chat_view().markdown
+        if shown(MarkdownResult(text="**bold**")) != [("text", "", "**bold**")]:
+            raise AssertionError(shown(MarkdownResult(text="**bold**")))
 
-        if rendered != "**bold**":
-            raise AssertionError('rendered == "**bold**"')
-
-    def test_language_wraps_the_text_into_a_block(self) -> None:
+    def test_language_is_the_mime_and_the_name_of_the_resource(self) -> None:
         result = MarkdownResult(text="one,two\n1,два\n", language="csv")
 
-        rendered = result.chat_view().markdown
-
-        if rendered != "```csv\none,two\n1,два\n```":
-            raise AssertionError('rendered == "```csv\\none,two\\n1,два\\n```"')
-
-    def test_fence_survives_backticks_inside(self) -> None:
-        result = MarkdownResult(text="a\n```\nb", language="csv")
-
-        rendered = result.chat_view().markdown
-
-        if not rendered.startswith("````csv\n"):
-            raise AssertionError('rendered.startswith("````csv\\n")')
+        if shown(result) != [("resource", "text/csv csv", "one,two\n1,два")]:
+            raise AssertionError(shown(result))
 
     def test_llm_gets_the_text_without_the_fence(self) -> None:
         """Блок — дело показа: LLM получает дамп как есть."""
@@ -401,26 +386,25 @@ class TestTextResultLanguage:
 class TestTextResultNote:
     """Подпись источника под текстом: окно строк страницы, сводка грепа."""
 
-    def test_note_goes_under_the_block(self) -> None:
+    def test_note_goes_under_the_resource(self) -> None:
         result = MarkdownResult(
             text="<p>hi</p>", language="html", note="url=x; lines 1-1"
         )
 
-        rendered = result.chat_view().markdown
-
-        if rendered != "```html\n<p>hi</p>\n```\n\n_url=x; lines 1-1_":
-            raise AssertionError(f"подпись под блоком, получено {rendered!r}")
+        if shown(result) != [
+            ("resource", "text/plain html", "<p>hi</p>"),
+            ("text", "", "_url=x; lines 1-1_"),
+        ]:
+            raise AssertionError(f"подпись под блоком, получено {shown(result)!r}")
 
     def test_empty_text_leaves_only_the_note(self) -> None:
-        """Греп без совпадений: пустой блок в ленте не рисуется."""
+        """Греп без совпадений: пустого ресурса нет."""
         result = MarkdownResult(
             text="", language="text", note="url=x: no matches found"
         )
 
-        rendered = result.chat_view().markdown
-
-        if rendered != "_url=x: no matches found_":
-            raise AssertionError(f"одна подпись, получено {rendered!r}")
+        if shown(result) != [("text", "", "_url=x: no matches found_")]:
+            raise AssertionError(f"одна подпись, получено {shown(result)!r}")
 
     def test_llm_gets_the_note_after_the_text(self) -> None:
         result = MarkdownResult(text="page", note="url=x; lines 1-1 of 9")
@@ -460,19 +444,13 @@ class TestSqlResult:
         if report.count("DELETE 5") != 1:
             raise AssertionError(f"caption repeated: {report!r}")
 
-    def test_markdown_keeps_each_kind_of_statement(self) -> None:
-        md = self._both().chat_view().markdown
-
-        if "_SELECT 1_" not in md:
-            raise AssertionError('"_SELECT 1_" in md')
-        if "| blobs" not in md:
-            raise AssertionError("выборка осталась таблицей")
-        if "_DELETE 5_" not in md:
-            raise AssertionError("счётчик остался строкой статуса")
-
-    def test_the_result_has_no_visual(self) -> None:
-        if self._both().chat_view().items != ():
-            raise AssertionError(self._both().chat_view().items)
+    def test_blocks_keep_each_kind_of_statement(self) -> None:
+        if shown(self._both()) != [
+            ("text", "", "_SELECT 1_"),
+            ("resource", "text/csv csv", "blobs\n3\n"),
+            ("text", "", "_DELETE 5_"),
+        ]:
+            raise AssertionError(shown(self._both()))
 
     def test_result_survives_the_artifact_round_trip(self) -> None:
         """Итог персистится в checkpointer: команды оживают."""

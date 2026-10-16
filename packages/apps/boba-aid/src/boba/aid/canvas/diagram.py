@@ -12,7 +12,7 @@ import logging
 import uuid
 from typing import Any, ClassVar
 
-from boba.aid.canvas.panel import FileViewer, StorageHashSource
+from boba.aid.canvas.panel import CanvasPanel, FileViewer, StorageHashSource
 from boba.aid.data.data_layer import AttachmentDataLayer
 from boba.canvas.canvas import (
     CanvasContent,
@@ -28,7 +28,7 @@ from boba.canvas.canvas import (
 from boba.canvas.diagram import DiagramEntry, DiagramMarker
 from boba.canvas.keys import ObjectKey
 from boba.canvas.storage import StorageError, StorageNotFoundError
-from boba.toolkit.result import ChatElement, VisualResult
+from boba.toolkit.result import VisualResult
 from boba.workspace.launcher import ReadWindow
 
 __all__ = [
@@ -170,7 +170,7 @@ class DiagramCard:
     def link(cls, entry: DiagramEntry) -> VisualResult:
         """Карточка как результат инструмента: ссылка на файл в ленте."""
         return VisualResult(
-            element=ChatElement.CANVAS_VIEW,
+            element=CanvasPanel.VIEW_ELEMENT,
             props=cls.props_of(entry),
             title=entry.label,
         )

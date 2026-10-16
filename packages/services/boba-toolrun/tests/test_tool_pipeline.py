@@ -121,10 +121,8 @@ class TestArtifactRendering:
         if not (isinstance(revived, MarkdownResult)):
             raise AssertionError("isinstance(revived, MarkdownResult)")
 
-        if revived.chat_view().items != ():
-            raise AssertionError(revived.chat_view().items)
-        if "hi|p1p3" not in revived.chat_view().markdown:
-            raise AssertionError('"hi|p1p3" in revived.chat_view().markdown')
+        if "hi|p1p3" not in revived.text:
+            raise AssertionError('"hi|p1p3" in revived.text')
 
     def test_serialized_artifact_revives_from_history(self) -> None:
         """История хранит артефакт сериализованным dict'ом."""

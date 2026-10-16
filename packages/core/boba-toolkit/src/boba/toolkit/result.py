@@ -2,9 +2,8 @@
 
 Тело инструмента возвращает модель-наследника ToolResultBase; всё, что нужно
 остальным частям системы, семейство отдаёт методами базы: llm_view для
-LLM, chat_view для ленты чата (markdown и элемент интерфейса), sent — блоки
-ответа MCP в приёмник ContentOut (текст для модели и блоки для человека по
-видам содержимого ContentMime). Экземпляр
+LLM, sent — блоки ответа MCP в приёмник ContentOut (текст для модели и
+блоки для человека по видам содержимого ContentMime). Экземпляр
 результата без данных служит объявлением показа аргумента вызова: bound
 кладёт значение аргумента на место данных. Наследник регистрируется
 по kind при объявлении, и значение поля типа ToolResult восстанавливается из
@@ -60,9 +59,6 @@ from pydantic_core import CoreSchema, to_jsonable_python
 __all__ = [
     "BlockAudience",
     "CanvasResult",
-    "ChatElement",
-    "ChatItem",
-    "ChatView",
     "CodeBlock",
     "ContentMime",
     "ContentOut",
@@ -77,7 +73,6 @@ __all__ = [
     "FailureResultField",
     "Fence",
     "FieldLines",
-    "FileElement",
     "FileResult",
     "GridBlock",
     "JsonBlock",
@@ -85,7 +80,6 @@ __all__ = [
     "MarkdownTable",
     "NoteBlock",
     "NoteLine",
-    "PanelOpen",
     "ResultKindError",
     "ResultKinds",
     "ResultTooLargeError",
@@ -98,7 +92,6 @@ __all__ = [
     "ToolArtifact",
     "ToolResult",
     "ToolResultBase",
-    "VisualElement",
     "VisualResult",
 ]
 
@@ -372,70 +365,6 @@ class MarkdownTable:
         return "|" + "|".join(dashes) + "|"
 
 
-class ChatElement(StrEnum):
-    """Имена элементов ленты, которые результаты семейства зовут по себе.
-
-    PLOTLY — встроенный элемент chainlit с фигурой из props; остальные —
-    jsx-компоненты public/elements/<имя>.jsx.
-    """
-
-    PLOTLY = "plotly"
-    CANVAS_VIEW = "CanvasView"
-
-
-class VisualElement(BaseModel):
-    """Виджет рядом с шагом: график plotly по имени ChatElement.PLOTLY либо
-    jsx-компонент public/elements/<element>.jsx с props."""
-
-    model_config = ConfigDict(frozen=True)
-
-    item: Literal["visual"] = "visual"
-    element: str
-    props: Mapping[str, Any]
-    title: str = ""
-
-
-class FileElement(BaseModel):
-    """Вложение: файл workspace, который чат отдаёт пользователю ссылкой."""
-
-    model_config = ConfigDict(frozen=True)
-
-    item: Literal["file"] = "file"
-    path: str
-    name: str
-    mime: str
-
-
-class PanelOpen(BaseModel):
-    """Команда поверхности: открыть файл workspace в панели канваса и оставить
-    ссылку на него в переписке. Показ и есть проверка файла: если вьювер
-    браузера отвечает вердиктом и не смог показать файл, вызов считается
-    неудачным."""
-
-    model_config = ConfigDict(frozen=True)
-
-    item: Literal["panel"] = "panel"
-    path: str
-
-
-ChatItem: TypeAlias = Annotated[
-    VisualElement | FileElement | PanelOpen,
-    Field(discriminator="item"),
-]
-"""Словарь того, что лента умеет смонтировать помимо markdown: закрыт
-намеренно; результаты собирают показ из него."""
-
-
-class ChatView(BaseModel):
-    """Показ результата в ленте чата: markdown выхода шага и элементы,
-    которые поверхность чата монтирует рядом с шагом."""
-
-    model_config = ConfigDict(frozen=True)
-
-    markdown: str
-    items: Sequence[ChatItem] = ()
-
-
 class Fact(BaseModel):
     """Пара «ключ: значение» списка фактов.
 
@@ -645,7 +574,7 @@ class ToolResultBase(BaseModel, ABC):
     """База открытого семейства результатов инструмента.
 
     Наследник задаёт kind литералом с дефолтом и реализует llm_view (текст
-    для LLM) и chat_view (показ в ленте: markdown и элемент).
+    для LLM) и shown (блоки ответа для человека).
     Объявление наследника регистрирует его в ResultKinds по kind, а
     валидация значения как ToolResultBase находит класс по kind в JSON — так
     поле artifact конверта и items набора восстанавливаются без перечисления
@@ -759,9 +688,6 @@ class ToolResultBase(BaseModel, ABC):
         """Текст результата для LLM: он же content конверта вызова."""
 
     @abstractmethod
-    def chat_view(self) -> ChatView:
-        """Показ результата в ленте чата: markdown шага и элемент."""
-
     @abstractmethod
     def shown(self, out: ContentOut) -> None:
         """Блоки результата для человека в приёмник out по видам
@@ -831,23 +757,6 @@ class MarkdownResult(ToolResultBase):
             return self.note
 
         return f"{self.text}\n\n{self.note}"
-
-    def chat_view(self) -> ChatView:
-        """Текст как есть либо блоком с языком; пустой текст оставляет одну подпись."""
-        if not self.text.strip():
-            if self.note is None:
-                return ChatView(markdown="")
-
-            return ChatView(markdown=NoteLine.render(self.note))
-
-        body = self.text
-        if self.language:
-            body = Fence.around(self.text.strip("\n"), self.language)
-
-        if self.note is None:
-            return ChatView(markdown=body)
-
-        return ChatView(markdown=f"{body}\n\n{NoteLine.render(self.note)}")
 
     def shown(self, out: ContentOut) -> None:
         """Текст как есть либо ресурсом по языку; под ним подпись."""
@@ -958,13 +867,6 @@ class TableResult(ToolResultBase):
 
         return f"{body}\n\n{self.note}"
 
-    def chat_view(self) -> ChatView:
-        body = TableText.render(self.rows)
-        if self.note:
-            return ChatView(markdown=f"\n{body}\n\n{NoteLine.render(self.note)}")
-
-        return ChatView(markdown=f"\n{body}")
-
     def shown(self, out: ContentOut) -> None:
         out.resource(
             ContentMime.CSV, TableText.csv(self.rows), ContentMime.CSV.language
@@ -1041,26 +943,6 @@ class SqlStatement(BaseModel):
 
         return "\n\n".join(parts)
 
-    def markdown(self, captioned: bool) -> str:
-        """Блок SQL, подпись курсивом, факты, таблица и note под ними."""
-        parts: list[str] = []
-        if self.text:
-            parts.append(Fence.around(self.text, "sql"))
-
-        if self._captioned(captioned):
-            parts.append(NoteLine.render(self.caption()))
-
-        if self.facts:
-            parts.append(FactsBlock(facts=self.facts).markdown())
-
-        if self.rows is not None:
-            parts.append(TableText.render(self.rows))
-
-        if self.note:
-            parts.append(NoteLine.render(self.note))
-
-        return "\n\n".join(parts)
-
     def shown(self, out: ContentOut, captioned: bool) -> None:
         """Текст команды, подпись, факты, строки и note — блоками по порядку."""
         if self.text:
@@ -1118,16 +1000,6 @@ class SqlResult(ToolResultBase):
 
         return "\n\n".join(parts)
 
-    def chat_view(self) -> ChatView:
-        if len(self.statements) == 1:
-            return ChatView(markdown=f"\n{self.statements[0].markdown(False)}")
-
-        blocks: list[str] = []
-        for statement in self.statements:
-            blocks.append(statement.markdown(True))
-
-        return ChatView(markdown="\n\n".join(blocks))
-
     def shown(self, out: ContentOut) -> None:
         captioned = len(self.statements) > 1
         for statement in self.statements:
@@ -1135,10 +1007,11 @@ class SqlResult(ToolResultBase):
 
 
 class VisualResult(ToolResultBase):
-    """Визуальный виджет ленты: имя элемента и его props.
+    """Визуальный виджет: имя элемента и его props.
 
-    Имя из ChatElement.PLOTLY — встроенный график chainlit с figure spec в
-    props; любое другое — jsx-компонент public/elements/<element>.jsx.
+    Элемент PLOTLY — график plotly с фигурой в props, клиенту он уходит
+    ресурсом application/vnd.plotly.v1+json; любое другое имя — карточка
+    вьювера канваса ленты (jsx-компонент public/elements/<element>.jsx).
     """
 
     kind: Literal["visual"] = "visual"
@@ -1149,15 +1022,15 @@ class VisualResult(ToolResultBase):
     summary: str = ""
     """Текст для LLM вместо пометки о показе: что сделано и что дальше."""
 
+    PLOTLY: ClassVar[str] = "plotly"
+    """Имя элемента графика plotly."""
     PLOTLY_SPEC: ClassVar[str] = "spec"
     """Ключ props графика, под которым едет figure spec."""
 
     @classmethod
     def plotly(cls, spec: Mapping[str, Any], title: str | None) -> VisualResult:
         """График plotly: элемент встроенный, spec — figure как dict."""
-        return cls(
-            element=ChatElement.PLOTLY, props={cls.PLOTLY_SPEC: spec}, title=title
-        )
+        return cls(element=cls.PLOTLY, props={cls.PLOTLY_SPEC: spec}, title=title)
 
     def llm_view(self) -> str:
         if self.summary:
@@ -1168,18 +1041,6 @@ class VisualResult(ToolResultBase):
 
         return f"[{self.element} rendered]"
 
-    def chat_view(self) -> ChatView:
-        """Подпись вместо самого элемента: элемент уходит рядом с шагом."""
-        caption = NoteLine.render(f"({self.element})")
-        title = ""
-        if self.title:
-            caption = NoteLine.render(f"({self.element}: {self.title})")
-            title = self.title
-
-        widget = VisualElement(element=self.element, props=self.props, title=title)
-
-        return ChatView(markdown=caption, items=[widget])
-
     def shown(self, out: ContentOut) -> None:
         """Подпись, а у графика plotly — его фигура ресурсом с заголовком."""
         name = self.element
@@ -1189,7 +1050,7 @@ class VisualResult(ToolResultBase):
             caption = f"({self.element}: {self.title})"
 
         out.text(NoteLine.render(caption), BlockAudience.USER)
-        if self.element != ChatElement.PLOTLY:
+        if self.element != self.PLOTLY:
             return
 
         figure = json.dumps(self.props[self.PLOTLY_SPEC], ensure_ascii=False)
@@ -1209,11 +1070,6 @@ class FileResult(ToolResultBase):
 
     def llm_view(self) -> str:
         return f"file attached to the chat: {self.name}"
-
-    def chat_view(self) -> ChatView:
-        attachment = FileElement(path=self.path, name=self.name, mime=self.mime)
-
-        return ChatView(markdown=self.llm_view(), items=[attachment])
 
     def shown(self, out: ContentOut) -> None:
         out.link(PurePosixPath(self.path).as_uri(), self.name, self.mime)
@@ -1247,9 +1103,6 @@ class CanvasResult(ToolResultBase):
             text = f"{text}; {self.note}"
 
         return text
-
-    def chat_view(self) -> ChatView:
-        return ChatView(markdown=self.llm_view(), items=[PanelOpen(path=self.path)])
 
     def shown(self, out: ContentOut) -> None:
         mime = ContentMime.of_name(self.path)
@@ -1312,28 +1165,6 @@ class ShellResult(ToolResultBase):
         report = self.model_dump(exclude=set(self.LLM_SKIP))
 
         return json.dumps(report, ensure_ascii=False)
-
-    def chat_view(self) -> ChatView:
-        """Вывод команды блоком, под ним код возврата обычной строкой.
-
-        Шапка блока называет показанный поток: chainlit берёт её из ограды
-        регуляркой language-(\\w+), человеческий текст туда не проходит —
-        поэтому код возврата живёт строкой под блоком.
-        """
-        blocks: list[str] = []
-
-        output = self.output.strip("\n")
-        if output:
-            heading = "stdout"
-            if not self.shows_stdout:
-                heading = "stderr"
-            blocks.append(Fence.around(output, heading))
-        else:
-            blocks.append(NoteLine.render("(no output)"))
-
-        blocks.append(self._note())
-
-        return ChatView(markdown="\n\n".join(blocks))
 
     def shown(self, out: ContentOut) -> None:
         """Показанный поток ресурсом с его именем, под ним итог выполнения."""
@@ -1440,9 +1271,6 @@ class FailureResult(ToolResultBase):
 
     def llm_view(self) -> str:
         return self._LAYOUT.plain(self.headline(), self.details())
-
-    def chat_view(self) -> ChatView:
-        return ChatView(markdown=self.markdown())
 
     def markdown(self) -> str:
         """Текст ошибки для человека: заголовок и подробности."""
@@ -1647,16 +1475,6 @@ class SqlFailureResult(FailureResult):
             parts.append(statement.llm_text(True))
 
         return "\n\n".join(parts)
-
-    def chat_view(self) -> ChatView:
-        parts: list[str] = [self.cause.chat_view().markdown]
-        if self.columns:
-            parts.append(TableText.render(self.columns))
-
-        for statement in self.statements:
-            parts.append(statement.markdown(True))
-
-        return ChatView(markdown="\n\n".join(parts))
 
     def shown(self, out: ContentOut) -> None:
         """Ошибка, колонки, с которыми шла работа, и команды по порядку."""

@@ -17,7 +17,6 @@ from boba.toolkit.calls import (
 )
 from boba.toolkit.facade import Injected, tool
 from boba.toolkit.result import (
-    ChatView,
     FieldLines,
     MarkdownResult,
     ResultKindError,
@@ -61,9 +60,9 @@ def test_llm_view_hides_injected() -> None:
     assert '"sql": "select 1"' in call.llm_view()
 
 
-def test_chat_view_uses_declared_results_and_field_lines() -> None:
+def test_markdown_uses_declared_results_and_field_lines() -> None:
     call = Args(sql="select 1", connection_name="main", token=SecretStr("x"))
-    markdown = call.chat_view().markdown
+    markdown = call.markdown()
     assert markdown.startswith("```sql\nselect 1\n```")
     assert "**connection_name:** `main`" in markdown
     assert "x" not in markdown.split("`main`")[1]
@@ -80,7 +79,7 @@ def test_structured_arguments_keep_their_shape() -> None:
         limits=Limits(rows=10),
         tags=["x" * 70, "y" * 70],
     )
-    markdown = call.chat_view().markdown
+    markdown = call.markdown()
     assert '**limits:** `{"rows": 10}`' in markdown
     assert '**tags:**\n```json\n[\n  "' in markdown
 
@@ -93,7 +92,7 @@ def test_structured_arguments_keep_their_shape() -> None:
 
 
 def test_call_of_renders_unknown_tool_as_json() -> None:
-    markdown = ToolCallModels.call_of("no_such_tool", {"a": 1}).chat_view().markdown
+    markdown = ToolCallModels.call_of("no_such_tool", {"a": 1}).markdown()
     assert markdown.startswith("```json")
 
 
@@ -123,8 +122,8 @@ class BashCall(ToolCallBase):
     command: Annotated[str, Field(min_length=1), MarkdownResult(language="bash")]
     stdin: str = ""
 
-    def chat_view(self) -> ChatView:
-        return ChatView(markdown=f"custom:{self.command}")
+    def markdown(self) -> str:
+        return f"custom:{self.command}"
 
 
 class TestDeclaredCallClass:
@@ -142,15 +141,14 @@ class TestDeclaredCallClass:
         assert bash1.func(**kwargs).text == "ls|3"
         assert list(bash1.args_schema.model_fields) == ["command", "stdin", "cfg"]
 
-    def test_custom_chat_view_survives_registration(self) -> None:
+    def test_custom_markdown_survives_registration(self) -> None:
         @tool
         def bash2(call: BashCall) -> MarkdownResult:
             """Bash."""
             return MarkdownResult(text=call.command)
 
         assert (
-            ToolCallModels.call_of("bash2", {"command": "ls"}).chat_view().markdown
-            == "custom:ls"
+            ToolCallModels.call_of("bash2", {"command": "ls"}).markdown() == "custom:ls"
         )
 
     def test_llm_argument_next_to_the_model_is_refused(self) -> None:
@@ -192,8 +190,8 @@ class TestViewsTravelWithTheSchema:
             raise AssertionError(f"the client derives the view itself: {seen}")
 
         model = views.model_of("remote_probe", seen)
-        local = Args.model_construct(**self.ARGS).chat_view().markdown
-        remote = model.model_construct(**self.ARGS).chat_view().markdown
+        local = Args.model_construct(**self.ARGS).markdown()
+        remote = model.model_construct(**self.ARGS).markdown()
         if remote != local:
             raise AssertionError(f"same step input:\n{remote}\n---\n{local}")
         if "```sql" not in remote:
@@ -256,7 +254,7 @@ class TestContentTypes:
             "probe", media, {"sql": "select 1", "note": "n", "limit": 3}
         )
 
-        shown = call.chat_view().markdown
+        shown = call.markdown()
         if not shown.startswith("```sql\nselect 1\n```"):
             raise AssertionError(f"известный тип показан блоком кода: {shown!r}")
         if FieldLines.line("note", "n") not in shown:

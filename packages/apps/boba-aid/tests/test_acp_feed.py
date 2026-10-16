@@ -32,6 +32,7 @@ from boba.aid.agent.settings import (
     UserAgentSettings,
 )
 from boba.aid.canvas.diagram import DiagramFiles, MermaidViewer
+from boba.aid.canvas.panel import CanvasPanel
 from boba.aid.canvas.remote import RemoteJournals
 from boba.aid.chat.feed import QuestionBody, TurnFeed
 from boba.aid.chat.panel_text import PanelText
@@ -73,7 +74,6 @@ from boba.toolkit.dag import (
 )
 from boba.toolkit.result import (
     CanvasResult,
-    ChatElement,
     ErrorResult,
     FileResult,
     MarkdownResult,
@@ -918,11 +918,11 @@ class TestResultsFromRawOutput:
         answer = ChatView.derive_id(thread_id, QUESTION, StepRole.ANSWER)
         attached = ChatView.derive_id(thread_id, f"{CALL}/0", StepRole.ELEMENT)
         card = ChatView.derive_id(thread_id, f"{SECOND_CALL}/0", StepRole.ELEMENT)
-        assert sorted(drawn) == sorted(["a.pdf", ChatElement.CANVAS_VIEW.value])
+        assert sorted(drawn) == sorted(["a.pdf", CanvasPanel.VIEW_ELEMENT])
         assert drawn["a.pdf"][:2] == (attached, answer), live
         assert f"/canvas/{thread_id}/upload/a.pdf" in drawn["a.pdf"][2], live
-        assert drawn[ChatElement.CANVAS_VIEW.value][:2] == (card, answer), live
-        assert spec.in_workspace() in drawn[ChatElement.CANVAS_VIEW.value][2], live
+        assert drawn[CanvasPanel.VIEW_ELEMENT][:2] == (card, answer), live
+        assert spec.in_workspace() in drawn[CanvasPanel.VIEW_ELEMENT][2], live
 
     @pytest.mark.anyio
     async def test_missing_spec_is_noted_the_same_live_and_in_the_replay(
