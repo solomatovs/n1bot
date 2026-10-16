@@ -572,7 +572,7 @@ class TestNoTokenExchangeInTheChat:
         assert session_jwt not in text
         assert "mcpServers" not in document, document
         assert "hooks" not in document, document
-        assert "mcp" not in document, document
+        assert document["mcp"] is None, document
 
         log = "\n".join(_lines_since(app, since))
         assert "mcp token issued" not in log, log[-2000:]
