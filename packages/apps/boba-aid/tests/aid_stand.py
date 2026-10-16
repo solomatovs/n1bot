@@ -29,7 +29,7 @@ from psycopg import sql
 
 from boba.aid.agent.config import ChatMcpConfig
 from boba.aid.agent.relay import McpRelay
-from boba.aid.agent.server import CallSealing, ChatCallers, KeyHolder, ProcessKeys
+from boba.aid.agent.server import ChatCallers, KeyHolder, ProcessKeys
 from boba.aid.canvas.remote import RemoteJournals, RemoteStreams
 from boba.aid.data.data_layer import PostgresDataLayer
 from boba.aid.domain.keys import AppPrefix
@@ -46,6 +46,7 @@ from boba.auth import JwtTokens
 from boba.canvas.journal import StreamSlice
 from boba.canvas.keys import WorkspaceMount
 from boba.config import bind
+from boba.connection_broker.sealing import CallSealing
 from boba.connection_broker.store import ConnectionStore
 from boba.connection_broker.tickets import CredentialsRef
 from boba.connection_broker.tools import ConnectionTools
@@ -318,12 +319,19 @@ class RelayStand:
     ) -> None:
         self.keys = ProcessKeys()
         self.callers = ChatCallers(self.keys)
+        self._contexts = contexts
         connections = ArmedConnections(store, credentials, contexts)
-        self.sealing = CallSealing(self.callers, connections, contexts, self.SEAL_TTL)
+        self.sealing = CallSealing(connections, self.SEAL_TTL)
 
     def relay(self, servers: McpServers) -> McpRelay:
         return McpRelay(
-            self.keys, self.callers, servers, self.sealing, self.CHAT, self.PUBLIC_URL
+            self.keys,
+            self.callers,
+            servers,
+            self.sealing,
+            self._contexts,
+            self.CHAT,
+            self.PUBLIC_URL,
         )
 
 

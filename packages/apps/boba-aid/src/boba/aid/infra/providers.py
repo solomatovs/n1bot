@@ -24,7 +24,6 @@ from boba.aid.agent.config import AgentConfig
 from boba.aid.agent.feed import AgentFeeds, BusParts, TabSurfaces
 from boba.aid.agent.relay import McpRelay
 from boba.aid.agent.server import (
-    CallSealing,
     ChatCallers,
     ChatCallMiddleware,
     ChatMcpServer,
@@ -49,6 +48,7 @@ from boba.aid.infra.session import (
 from boba.aid.rendering.acp_view import ToolMedia
 from boba.auth import JwtTokens
 from boba.chat.profiles import ChatProfiles, SelectedProfile
+from boba.connection_broker.sealing import CallSealing
 from boba.connection_broker.user_connections import ArmedConnections
 from boba.connections.secrets import SecretCipher
 from boba.db.postgres import AsyncPostgresPool, PostgresSchema
@@ -258,7 +258,6 @@ def chat_callers(
 
 def call_sealing(
     config: Annotated[AgentConfig, Depends(agent_config)],
-    callers: Annotated[ChatCallers, Depends(chat_callers)],
     contexts: Annotated[CallContexts, Depends(runtime.call_contexts)],
 ) -> CallSealing:
     """Запечатывание соединений пользователя ключом сервера MCP для
@@ -268,18 +267,21 @@ def call_sealing(
     )
     ttl = timedelta(seconds=config.seal_ttl_sec)
 
-    return CallSealing(callers, connections, contexts, ttl)
+    return CallSealing(connections, ttl)
 
 
-def mcp_relay(
+def mcp_relay(  # noqa: PLR0913 — ретранслятор собирается всеми входами процесса
     keys: Annotated[ProcessKeys, Depends(process_keys)],
     callers: Annotated[ChatCallers, Depends(chat_callers)],
     servers: Annotated[McpServers, Depends(mcp_servers)],
     sealing: Annotated[CallSealing, Depends(call_sealing)],
+    contexts: Annotated[CallContexts, Depends(runtime.call_contexts)],
     config: Annotated[AgentConfig, Depends(agent_config)],
 ) -> McpRelay:
     """Ретранслятор mcp/message процессов агента: один на инстанс."""
-    return McpRelay(keys, callers, servers, sealing, config.chat_mcp, config.public_url)
+    return McpRelay(
+        keys, callers, servers, sealing, contexts, config.chat_mcp, config.public_url
+    )
 
 
 def agent_launcher(

@@ -1,7 +1,6 @@
 """Чат как сервер инструментов своего агента: MCP-сервер инструментов
-соединений под `[agent.chat_mcp].path`, запечатывание соединений в вызовах
-агента и ключи процессов агента, по которым вход и ретранслятор mcp/message
-узнают вызывающего.
+соединений под `[agent.chat_mcp].path` и ключи процессов агента, по которым
+вход и ретранслятор mcp/message узнают вызывающего.
 
 Ключ процесса — serverId, который запуск агента (AgentLauncher) выдаёт на
 каждый сервер процесса и объявляет агенту записью type "acp"; токен входа
@@ -13,19 +12,10 @@
 Сессий MCP нет: сервер stateless streamable HTTP, собран из общего адаптера
 boba.mcp_adapter; инструменты — собственные инструменты чата из реестра
 (connection_list, connection_search) по ролям пользователя и профилю треда.
-Запечатывание (CallSealing) находит по схеме инструмента
-параметры-соединения (SealedParamSchema) и заменяет имя соединения профилем,
-запечатанным ключом сервера MCP из его возможностей (SealFeature);
-неизвестное или невыданное соединение — отказ с причиной.
 
 Ошибки:
 AuthenticationError — ключа нет, он неизвестен или снят либо сессия его
     держателя больше не несёт годного входа: вход отвечает 401.
-RefusalError — соединение неизвестно, не выдано пользователю или сервер
-    инструмента не принимает соединений.
-ToolConfigError — соединение не годится инструменту.
-ConnectionStoreError — таблица соединений недоступна.
-KerberosError — билет к соединению не выпущен.
 """
 
 from __future__ import annotations
@@ -33,10 +23,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import secrets
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, replace
-from datetime import timedelta
 from enum import StrEnum
 from typing import Any, ClassVar
 from uuid import UUID, uuid4
@@ -49,46 +38,33 @@ from fastmcp.server.dependencies import get_access_token
 from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
 from fastmcp.tools.base import ToolResult
 from mcp.server.auth.provider import AccessToken
-from pydantic import ValidationError
 from starlette.routing import Route
 
 from boba.aid.agent.config import ChatMcpConfig
 from boba.aid.infra.session import LiveSignIn
 from boba.cancellation import RunCancellation, StopReason
-from boba.connection_broker.user_connections import ArmedConnections
-from boba.connections.marks import ConnectionRefusal
-from boba.connections.sealed import (
-    ConnectionSeal,
-    SealedParamSchema,
-    SealFeature,
-    SealKey,
-)
 from boba.identity.context import (
     CallContext,
-    CallContexts,
     Credential,
     HumanInitiator,
     Scope,
     Subject,
 )
-from boba.identity.errors import AuthenticationError, RefusalError
+from boba.identity.errors import AuthenticationError
 from boba.identity.run import Runs
 from boba.mcp_adapter import CallerServers, McpReplies, McpToolProvider
 from boba.toolkit.dag import ToolServer
-from boba.toolkit.failure import ValidationText
 from boba.toolkit.result import ErrorResult
 from boba.toolrun.hosted import DirectCalls
 from boba.toolrun.registry import ToolRegistry
 
 __all__ = [
-    "CallSealing",
     "ChatCaller",
     "ChatCallers",
     "ChatMcpServer",
     "ChatTokenVerifier",
     "ChatToolServers",
     "KeyHolder",
-    "McpServerInfo",
     "ProcessKeys",
 ]
 
@@ -389,107 +365,3 @@ class ChatMcpServer:
     def lifespan(self) -> AbstractAsyncContextManager[Any]:
         """Жизненный цикл менеджера сессий fastmcp: входит bootstrap."""
         return self._app.router.lifespan_context(self._app)
-
-
-@dataclass(frozen=True)
-class McpServerInfo:
-    """Сервер MCP вызываемого инструмента и возможности, которые он объявил:
-    по ним запечатывание находит ключ сервера."""
-
-    name: str
-    features: Mapping[str, Mapping[str, object]]
-
-
-class CallSealing:
-    """Запечатывание соединений в аргументах вызова инструмента сервера MCP:
-    имя соединения пользователя заменяется профилем, запечатанным ключом
-    сервера, либо вызов получает отказ.
-
-    Создаётся провайдером call_sealing; зовёт ретранслятор mcp/message.
-    Какие аргументы — соединения и какого вида, читает из схемы
-    инструмента по пометке (SealedParamSchema.offers); ключ сервера — из объявленных им
-    возможностей (SealFeature); соединение пользователя по виду и имени
-    берёт ArmedConnections в контексте вызывающего.
-    """
-
-    def __init__(
-        self,
-        callers: ChatCallers,
-        connections: ArmedConnections,
-        contexts: CallContexts,
-        ttl: timedelta,
-    ) -> None:
-        self._callers = callers
-        self._connections = connections
-        self._contexts = contexts
-        self._ttl = ttl
-        self._declared = SealedParamSchema()
-
-    async def seal(
-        self,
-        tool: str,
-        arguments: Mapping[str, Any],
-        tool_schema: Mapping[str, Any],
-        server: McpServerInfo,
-        caller: ChatCaller,
-    ) -> dict[str, Any]:
-        """Аргументы вызова tool с запечатанными соединениями на месте имён;
-        у инструмента без параметров-соединений — как есть. Значение не
-        строка уходит как есть, его отвергнет сервер.
-
-        Ошибки:
-        RefusalError — соединение неизвестно или не выдано пользователю либо
-            сервер инструмента не принимает соединений.
-        ToolConfigError — соединение не годится инструменту.
-        ConnectionStoreError — таблица соединений недоступна.
-        KerberosError — билет к соединению не выпущен.
-        """
-        updated: dict[str, Any] = dict(arguments)
-        offers = self._declared.offers(tool_schema)
-        if not offers:
-            return updated
-
-        seal = ConnectionSeal(self._key(server))
-        with self._contexts.applied(self._callers.context(caller)):
-            for param, offer in offers.items():
-                name = updated.get(param)
-                if not isinstance(name, str):
-                    continue
-
-                kind = offer.kind
-                sealed = await self._connections.sealed(kind, name, self._ttl)
-                updated[param] = seal.seal(sealed)
-
-                logger.info(
-                    "sealing: connection %s of kind %s sealed in %s of %s for %s",
-                    name,
-                    kind,
-                    param,
-                    tool,
-                    caller.subject.login,
-                )
-
-        return updated
-
-    def _key(self, server: McpServerInfo) -> SealKey:
-        """Ключ сервера инструмента из возможностей, которые он объявил.
-
-        Ошибки:
-        RefusalError — сервер не принимает соединений.
-        """
-        declared = server.features.get(SealFeature.ID)
-        if declared is None:
-            msg = (
-                f"mcp server {server.name!r} does not declare the feature "
-                f"{SealFeature.ID!r}, so it does not accept connections"
-            )
-            raise RefusalError(ConnectionRefusal.SEAL_KEY_UNKNOWN, msg)
-
-        try:
-            return SealFeature.model_validate(declared).key
-        except ValidationError as exc:
-            msg = (
-                f"mcp server {server.name!r}: the feature {SealFeature.ID!r} does "
-                f"not carry an encryption key: {ValidationText.of(exc)}"
-            )
-            raise RefusalError(ConnectionRefusal.SEAL_KEY_UNKNOWN, msg) from exc
