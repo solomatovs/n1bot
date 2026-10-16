@@ -40,13 +40,11 @@ pythonpath = [
     "packages/services/boba-connection-broker/src",
     "packages/services/boba-mcp-client/src",
     "packages/services/boba-mcp-adapter/src",
-    "packages/services/boba-catalog-service/src",
     "packages/services/boba-runtime/src",
     "packages/services/boba-auth/src",
     "packages/core/boba-indexing/src",
     "packages/infra/config/boba-config/src",
     "packages/core/boba-toolkit/src",
-    "packages/apps/boba-studio/src",
     "packages/apps/boba-chainlit/src",
     "packages/apps/boba-mcp/src",
     "packages/tools/boba-tool-shell/src",
@@ -88,7 +86,7 @@ markers = [
 ]
 
 [tool.pyright]
-include = ["packages", "build/test", "build/test"]
+include = ["packages", "build/test"]
 exclude = [
     ".venv",
     "**/node_modules",
@@ -96,6 +94,8 @@ exclude = [
     "**/.*",
     "packages/*/*/build",
     "packages/*/*/*/build",
+    "packages/apps/boba-studio",
+    "packages/services/boba-catalog-service",
 ]
 extraPaths = [
     "packages/infra/format/boba-confluence/src",
@@ -135,13 +135,11 @@ extraPaths = [
     "packages/services/boba-connection-broker/src",
     "packages/services/boba-mcp-client/src",
     "packages/services/boba-mcp-adapter/src",
-    "packages/services/boba-catalog-service/src",
     "packages/services/boba-runtime/src",
     "packages/services/boba-auth/src",
     "packages/core/boba-indexing/src",
     "packages/infra/config/boba-config/src",
     "packages/core/boba-toolkit/src",
-    "packages/apps/boba-studio/src",
     "packages/apps/boba-chainlit/src",
     "packages/apps/boba-mcp/src",
     "packages/tools/boba-tool-shell/src",
@@ -190,6 +188,8 @@ extend-exclude = [
     "debug",
     "build/*/src",
     "packages/*/*/build",
+    "packages/apps/boba-studio",
+    "packages/services/boba-catalog-service",
 ]
 
 [tool.ruff.lint]
@@ -244,7 +244,6 @@ environments = ["python_full_version >= '3.11' and python_full_version < '3.12' 
 members = [
     "packages/core/*",
     "packages/apps/boba-chainlit",
-    "packages/apps/boba-studio",
     "packages/apps/boba-mcp",
     "packages/apps/boba-cli",
     "packages/apps/ix/*",
@@ -253,6 +252,7 @@ members = [
     "packages/services/*",
     "packages/testing/*",
 ]
+exclude = ["packages/services/boba-catalog-service"]
 
 [tool.uv.sources]
 boba-config         = { workspace = true }
@@ -273,10 +273,8 @@ boba-mcp-client = { workspace = true }
 boba-mcp-adapter = { workspace = true }
 boba-mcp = { workspace = true }
 boba-tool-describer = { workspace = true }
-boba-catalog-service = { workspace = true }
 boba-runtime = { workspace = true }
 boba-auth = { workspace = true }
-boba-studio = { workspace = true }
 boba-indexing       = { workspace = true }
 boba-toolkit        = { workspace = true }
 boba-tool-shell     = { workspace = true }
