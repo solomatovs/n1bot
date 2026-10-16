@@ -12,6 +12,7 @@ import json
 import os
 import stat
 import sys
+from importlib.resources import files
 from pathlib import Path
 from typing import Any, ClassVar
 from uuid import uuid4
@@ -57,7 +58,7 @@ from boba.chainlit.agent.settings import (
 )
 from boba.chat.profiles import ChatProfileConfig, SelectedProfile
 from boba.connections.secrets import SecretCipher
-from boba.db.postgres import AsyncPostgresPool
+from boba.db.postgres import AsyncPostgresPool, PostgresSchema
 from boba.db.postgres.connection import PostgresConfig
 from boba.db.postgres.connection.auth import CertificateAuth
 from boba.identity.context import CallContexts
@@ -91,10 +92,11 @@ async def table(
             sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(SCHEMA))
         )
 
-    table = AgentSettingsTable(test_postgres, SCHEMA, SecretCipher(CIPHER_KEY), pool)
-    await table.setup()
+    schema_dir = files("boba.chainlit.agent") / "schema"
+    async with pool.connection() as conn:
+        await PostgresSchema(SCHEMA).apply_files(conn, schema_dir, {})
 
-    return table
+    return AgentSettingsTable(test_postgres, SCHEMA, SecretCipher(CIPHER_KEY), pool)
 
 
 @pytest.fixture
@@ -539,6 +541,7 @@ class TestForkCut:
         table: AgentSettingsTable,
         specs: ProfileModelSpecs,
         test_postgres: PostgresConfig,
+        pool: AsyncPostgresPool,
         auth_token: str,
     ) -> None:
         credentials = KerberosCredentialSource(None, NoRefresh())
@@ -571,8 +574,11 @@ class TestForkCut:
                 name=SignInStand.PROFILE, config=SignInStand.profile()
             ),
         )
+        runtime_schema = files("boba.runtime") / "schema"
+        async with pool.connection() as conn:
+            await PostgresSchema(SCHEMA).apply_files(conn, runtime_schema, {})
+
         threads = ThreadsTable(test_postgres, SCHEMA)
-        await threads.setup()
         updates = RecordingUpdates()
         agent = ThreadAgent(
             identity,

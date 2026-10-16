@@ -8,6 +8,7 @@ from uuid import uuid4
 
 import pytest
 
+from boba.db.postgres import AsyncPostgresPool
 from boba.identity.context import Scope
 from boba.identity.locks import MemoryLiveLocks
 from boba.messaging import (
@@ -35,10 +36,12 @@ def local_config(runtime_config: RuntimeConfig) -> RuntimeConfig:
 
 async def test_local_messaging_builds_the_memory_stack(
     local_config: RuntimeConfig,
+    pool: AsyncPostgresPool,
 ) -> None:
     container = Container(level="app")
     container.provide(providers.get_runtime_config, local_config)
     container.provide(providers.app_name, AppName.STUDIO)
+    container.provide(providers.postgres_pool, pool)
     container.eager(providers.message_bus)
     container.eager(providers.payload_store)
     container.eager(providers.live_locks)
@@ -67,10 +70,12 @@ async def test_local_messaging_builds_the_memory_stack(
 
 async def test_local_bus_delivers_between_container_consumers(
     local_config: RuntimeConfig,
+    pool: AsyncPostgresPool,
 ) -> None:
     container = Container(level="app")
     container.provide(providers.get_runtime_config, local_config)
     container.provide(providers.app_name, AppName.STUDIO)
+    container.provide(providers.postgres_pool, pool)
     container.eager(providers.message_bus)
     Container.set_root(container)
 

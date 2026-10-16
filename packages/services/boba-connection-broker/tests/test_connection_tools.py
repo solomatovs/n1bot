@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import secrets
 from collections.abc import Mapping, Sequence
+from importlib.resources import files
 from uuid import uuid4
 
 import pytest
@@ -21,7 +22,7 @@ from boba.connection_broker.tools import GrantedConnections
 from boba.connections.manifest import ConnectionTypes
 from boba.connections.secrets import SecretCipher
 from boba.connections.stored import GrantTarget
-from boba.db.postgres import AsyncPostgresPool
+from boba.db.postgres import AsyncPostgresPool, PostgresSchema
 from boba.db.postgres.connection import (
     PasswordAuth,
     PostgresConfig,
@@ -45,8 +46,11 @@ async def store(pool: AsyncPostgresPool) -> ConnectionStore:
         )
 
     cipher = SecretCipher(secrets.token_bytes(32))
+    schema_dir = files("boba.connection_broker") / "schema"
+    async with pool.connection() as conn:
+        await PostgresSchema(SCHEMA).apply_files(conn, schema_dir, {})
+
     built = ConnectionStore(pool, SCHEMA, cipher, ConnectionTypes.discover())
-    await built.setup()
     await built.sync_roles([ROLE])
     return built
 

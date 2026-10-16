@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import secrets as std_secrets
+from importlib.resources import files
 from uuid import UUID
 
 import pytest
@@ -24,7 +25,7 @@ from boba.db.clickhouse.connection import (
     ClickHouseSettingsConfig,
     NoPasswordAuth,
 )
-from boba.db.postgres import AsyncPostgresPool
+from boba.db.postgres import AsyncPostgresPool, PostgresSchema
 from boba.db.postgres.connection import (
     PasswordAuth,
     PostgresConfig,
@@ -85,9 +86,11 @@ async def store(pool: AsyncPostgresPool) -> ConnectionStore:
             sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(SCHEMA))
         )
 
-    built = ConnectionStore(pool, SCHEMA, _cipher(), ConnectionTypes.discover())
-    await built.setup()
-    return built
+    schema_dir = files("boba.connection_broker") / "schema"
+    async with pool.connection() as conn:
+        await PostgresSchema(SCHEMA).apply_files(conn, schema_dir, {})
+
+    return ConnectionStore(pool, SCHEMA, _cipher(), ConnectionTypes.discover())
 
 
 async def test_unknown_kind_is_skipped_in_lists_and_fails_on_get(
@@ -96,7 +99,6 @@ async def test_unknown_kind_is_skipped_in_lists_and_fails_on_get(
     """Строка типа без установленного пакета: списки живут, точечный get падает."""
     cipher = _cipher()
     full = ConnectionStore(pool, SCHEMA, cipher, ConnectionTypes.discover())
-    await full.setup()
     connection_id = await full.add("legacy", _pg(FakeSecret.DB))
 
     # реестр без postgres: как будто пакет-владелец удалили
@@ -108,11 +110,6 @@ async def test_unknown_kind_is_skipped_in_lists_and_fails_on_get(
 
     with pytest.raises(UnknownConnectionKindError, match="not installed"):
         await stripped.get(connection_id)
-
-
-async def test_setup_is_idempotent(store: ConnectionStore) -> None:
-    await store.setup()
-    await store.setup()
 
 
 async def test_add_and_get_restores_profile(store: ConnectionStore) -> None:

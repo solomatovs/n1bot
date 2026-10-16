@@ -68,6 +68,7 @@ def app_container(
     container.provide(runtime.connection_types, runtime.connection_types())
     container.provide(runtime.seal_keys, SealKeys())
     container.provide(runtime.call_contexts, CallContexts())
+    container.eager(providers.harness_storage)
     container.eager(runtime.users_table)
     container.eager(runtime.message_bus)
     container.eager(runtime.payload_store)

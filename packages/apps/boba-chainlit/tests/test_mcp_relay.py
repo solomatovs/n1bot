@@ -10,6 +10,7 @@ import asyncio
 import secrets
 from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass
+from importlib.resources import files
 from typing import Any, ClassVar
 from uuid import uuid4
 
@@ -25,7 +26,7 @@ from boba.connection_broker.store import ConnectionStore
 from boba.connections.manifest import ConnectionTypes
 from boba.connections.sealed import SealedParamSchema, SealFeature
 from boba.connections.secrets import SecretCipher
-from boba.db.postgres import AsyncPostgresPool
+from boba.db.postgres import AsyncPostgresPool, PostgresSchema
 from boba.db.postgres.connection import PostgresConfig
 from boba.identity.errors import RefusalError
 from boba.mcp_client.client import McpServerConfig, McpServers, McpServersConfig
@@ -306,8 +307,11 @@ class TestRelaySealing:
     @pytest.fixture
     async def store(self, pool: AsyncPostgresPool) -> ConnectionStore:
         cipher = SecretCipher(secrets.token_bytes(32))
+        schema_dir = files("boba.connection_broker") / "schema"
+        async with pool.connection() as conn:
+            await PostgresSchema(self.SCHEMA).apply_files(conn, schema_dir, {})
+
         built = ConnectionStore(pool, self.SCHEMA, cipher, ConnectionTypes.discover())
-        await built.setup()
 
         return built
 

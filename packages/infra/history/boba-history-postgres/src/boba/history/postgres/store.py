@@ -11,8 +11,8 @@ release: второй процесс на ту же сессию получае�
 сессию работающего процесса удалить нельзя. Копия (ветвление) — одна
 транзакция `insert … select` строк источника до записи среза под новым
 идентификатором с `sessionId` цели в документе; замок источника не
-берётся. Схема и таблица создаются на месте под замком DDL, раскладка
-таблицы сверяется с ожидаемой.
+берётся. Схема и таблица создаются файлами schema/*.sql пакета под замком
+DDL, раскладка таблицы сверяется с ожидаемой.
 
 Ошибки:
 HistoryError — база недоступна или отказала, пачка не по порядку seq, у
@@ -30,6 +30,7 @@ import json
 from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
+from importlib.resources import files
 from typing import Any, ClassVar
 
 import psycopg
@@ -54,7 +55,7 @@ from boba.agent.records import Record, RecordCodec
 from boba.db.postgres import (
     AsyncPostgresPool,
     Cursor,
-    PgQuery,
+    PostgresError,
     PostgresPool,
     PostgresTable,
 )
@@ -417,59 +418,24 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
         return HistoryError(self._detail(action, exc))
 
     async def _prepare(self) -> None:
-        """Схема, таблица и сверка раскладки — один раз на хранилище."""
+        """Файлы схемы пакета и сверка раскладки — один раз на хранилище:
+        агент — отдельная программа, таблицы истории создаёт сам."""
         if self._ready:
             return
 
-        await self._apply_ddl(list(self._ddl()))
+        schema_dir = files("boba.history.postgres") / "schema"
+        conn = await self._dedicated()
+        try:
+            await self._schema.apply_files(conn, schema_dir, {})
+        except PostgresError as exc:
+            raise self._failure("applying the history schema files", exc) from exc
+        finally:
+            await conn.close()
+
         await self._check_layouts(
             {HistoryTable.RECORDS.value: [column.value for column in HistoryColumn]}
         )
         self._ready = True
-
-    def _ddl(self) -> Iterator[PgQuery]:
-        yield (
-            self._query()
-            .add(
-                """
-                create table if not exists {schema}.history_records (
-                    session_id text        not null,
-                    seq        integer     not null,
-                    type       text        not null,
-                    record     jsonb       not null,
-                    created_at timestamptz not null default now(),
-                    primary key (session_id, seq)
-                )
-                """
-            )
-            .build()
-        )
-        yield (
-            self._query()
-            .add(
-                "comment on table {schema}.history_records is "
-                "'Журнал сессий агента: по записи на строку, в порядке seq внутри "
-                "сессии; документ записи такой же, как строка журнала JSONL'"
-            )
-            .build()
-        )
-        yield (
-            self._query()
-            .add(
-                "comment on column {schema}.history_records.seq is "
-                "'Порядковый номер записи в сессии с 1; выдаёт сессия агента'"
-            )
-            .build()
-        )
-        yield (
-            self._query()
-            .add(
-                "comment on column {schema}.history_records.type is "
-                "'Вид записи: user, assistant, attachment, system, queue-operation, "
-                "permission-mode, permission-rule, api-request'"
-            )
-            .build()
-        )
 
     async def _dedicated(self) -> psycopg.AsyncConnection[Any]:
         """Соединение замка вне пула: замок сеанса живёт, пока живо оно."""

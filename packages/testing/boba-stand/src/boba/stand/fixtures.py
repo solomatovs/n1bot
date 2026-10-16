@@ -176,11 +176,10 @@ def test_postgres(stand_postgres: PostgresConfig, test_database: str) -> Postgre
 
 @pytest.fixture
 async def pool(
-    stand_postgres: PostgresConfig, test_database: str, process_config: ProcessConfig
+    stand_postgres: PostgresConfig, test_database: str
 ) -> AsyncIterator[AsyncPostgresPool]:
-    """Пул в тестовой базе с search_path на схему хранения приложения."""
-    postgres = TestDatabase.config_of(stand_postgres, test_database)
-    p = AsyncPostgresPool(postgres.with_schema(process_config.db_schema))
+    """Пул в тестовой базе: таблицы квалифицируются схемой в запросах."""
+    p = AsyncPostgresPool(TestDatabase.config_of(stand_postgres, test_database))
     await p.open()
     try:
         yield p

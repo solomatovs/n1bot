@@ -344,6 +344,7 @@ def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
     container.provide(runtime.seal_keys, SealKeys())
     container.eager(providers.get_app_config)
     container.eager(runtime.postgres_pool)
+    container.eager(providers.harness_storage)
     container.eager(runtime.users_table)
     container.eager(runtime.auth_service)
     container.eager(runtime.credential_source)

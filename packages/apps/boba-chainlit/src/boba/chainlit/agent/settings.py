@@ -350,38 +350,6 @@ class AgentSettingsTable(PgTable):
         super().__init__(postgres, db_schema, pool)
         self._cipher = cipher
 
-    async def setup(self) -> None:
-        ddl = (
-            self._query()
-            .add(
-                """
-                create table if not exists {schema}.agent_user_settings (
-                    user_id    uuid not null,
-                    profile    text not null,
-                    settings   jsonb not null,
-                    updated_at timestamptz not null default now(),
-                    primary key (user_id, profile)
-                )
-                """
-            )
-            .build(),
-            self._query()
-            .add(
-                """
-                create table if not exists {schema}.agent_chat_settings (
-                    thread_id  uuid primary key,
-                    user_id    uuid not null,
-                    profile    text not null,
-                    settings   jsonb not null,
-                    updated_at timestamptz not null default now()
-                )
-                """
-            )
-            .build(),
-        )
-
-        await self._apply_ddl(ddl)
-
     async def user_layer(self, user_id: UUID, profile: str) -> UserAgentSettings:
         """Слой пользователя; без строки — ничего не переопределено."""
         query = (

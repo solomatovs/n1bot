@@ -10,6 +10,7 @@ pytest -m integration.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Sequence
+from importlib.resources import files
 from typing import Any
 
 import numpy as np
@@ -22,7 +23,7 @@ from boba.db.pgvector.config import PostgresStoreConfig, PostgresStoreSchema
 from boba.db.pgvector.migrations import Migrations
 from boba.db.pgvector.schema import KbSchema
 from boba.db.pgvector.store import KbPool
-from boba.db.postgres import AsyncPostgresPool
+from boba.db.postgres import AsyncPostgresPool, PostgresSchema
 from boba.stand.database import TestDatabase
 from boba.tool.kb.kb import PostgresKnowledgeBaseConfig
 
@@ -59,7 +60,9 @@ async def store_cfg(raw_config: DictConfig) -> AsyncIterator[PostgresStoreConfig
         async with pool.connection() as conn:
             await _execute(conn, _drop_schema())
             await _execute(conn, sql.SQL("create schema {}").format(_schema()))
-            await Migrations(tables).apply(conn)
+            schema_dir = files("boba.db.pgvector") / "schema"
+            names = Migrations(tables).names()
+            await PostgresSchema(tables.pg_schema).apply_files(conn, schema_dir, names)
             await Migrations(tables).ensure_vector_index(conn, DIM)
 
         yield cfg
