@@ -750,7 +750,7 @@ class CallContextMiddleware(Middleware):
         links = McpContent(run_id)
         for address in self._recorded(progress, subject.user_key, run_id):
             uri = self._uris.uri(address)
-            links.link(uri, address.channel.value, ContentMime.PLAIN)
+            links.link(uri, address.channel.value, ContentMime.PLAIN, False)
 
         return self._replies.journaled(result, links.blocks())
 

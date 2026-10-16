@@ -140,10 +140,15 @@ class McpContent(ContentOut):
     в него свои блоки (ToolResultBase.sent). Блок для одной стороны получает
     annotations.audience, общий — без неё. Встроенный ресурс получает uri
     схемы RESOURCE_SCHEME: вызов, номер блока и имя ресурса последним
-    сегментом — по нему клиент подписывает блок.
+    сегментом — по нему клиент подписывает блок. Ссылка на файл, который
+    клиенту стоит показать сразу, получает стандартное annotations.priority
+    SHOWN_PRIORITY.
     """
 
     RESOURCE_SCHEME: ClassVar[str] = "boba-result"
+
+    SHOWN_PRIORITY: ClassVar[float] = 1.0
+    """annotations.priority ссылки, которую клиенту стоит показать сразу."""
 
     def __init__(self, call_id: str) -> None:
         self._call_id = call_id
@@ -152,7 +157,7 @@ class McpContent(ContentOut):
     def text(self, markdown: str, audience: BlockAudience) -> None:
         annotations = None
         if audience is not BlockAudience.BOTH:
-            annotations = self._for(audience)
+            annotations = self._for(audience, None)
 
         block = mt.TextContent(text=markdown, annotations=annotations)
         self._blocks.append(block)
@@ -167,12 +172,16 @@ class McpContent(ContentOut):
         path = "/".join(segments)
         uri = urlunsplit((self.RESOURCE_SCHEME, "", path, "", ""))
         contents = mt.TextResourceContents(uri=uri, mime_type=mime, text=text)
-        annotations = self._for(BlockAudience.USER)
+        annotations = self._for(BlockAudience.USER, None)
         block = mt.EmbeddedResource(resource=contents, annotations=annotations)
         self._blocks.append(block)
 
-    def link(self, uri: str, name: str, mime: str) -> None:
-        annotations = self._for(BlockAudience.USER)
+    def link(self, uri: str, name: str, mime: str, shown: bool) -> None:
+        priority = None
+        if shown:
+            priority = self.SHOWN_PRIORITY
+
+        annotations = self._for(BlockAudience.USER, priority)
         block = mt.ResourceLink(
             uri=uri, name=name, mime_type=mime, annotations=annotations
         )
@@ -184,8 +193,11 @@ class McpContent(ContentOut):
     def blocks(self) -> Sequence[mt.ContentBlock]:
         return list(self._blocks)
 
-    def _for(self, audience: BlockAudience) -> mt.Annotations:
-        return mt.Annotations.model_validate({"audience": [audience.value]})
+    def _for(self, audience: BlockAudience, priority: float | None) -> mt.Annotations:
+        """Кому блок и насколько он важен; priority None — без пометки."""
+        return mt.Annotations.model_validate(
+            {"audience": [audience.value], "priority": priority}
+        )
 
 
 class ResultWire:

@@ -322,8 +322,10 @@ class ContentOut(Protocol):
         (язык ограды, поток вывода, заголовок графика)."""
 
     @abstractmethod
-    def link(self, uri: str, name: str, mime: str) -> None:
-        """Ссылка человеку на файл uri с именем name и видом mime."""
+    def link(self, uri: str, name: str, mime: str, shown: bool) -> None:
+        """Ссылка человеку на файл uri с именем name и видом mime; shown —
+        клиенту стоит показать файл сразу (панелью канваса), а не только
+        ссылкой."""
 
     @abstractmethod
     def __len__(self) -> int:
@@ -1093,7 +1095,7 @@ class FileResult(ToolResultBase):
         return f"file attached to the chat: {self.name}"
 
     def shown(self, out: ContentOut) -> None:
-        out.link(PurePosixPath(self.path).as_uri(), self.name, self.mime)
+        out.link(PurePosixPath(self.path).as_uri(), self.name, self.mime, False)
 
     def sent(self, out: ContentOut) -> dict[str, JsonValue] | None:
         """Текст модели и человеку один, под ним ссылка на файл."""
@@ -1127,7 +1129,7 @@ class CanvasResult(ToolResultBase):
 
     def shown(self, out: ContentOut) -> None:
         mime = ContentMime.of_name(self.path)
-        out.link(PurePosixPath(self.path).as_uri(), self.label, mime)
+        out.link(PurePosixPath(self.path).as_uri(), self.label, mime, True)
 
     def sent(self, out: ContentOut) -> dict[str, JsonValue] | None:
         """Текст модели и человеку один, под ним ссылка на файл."""

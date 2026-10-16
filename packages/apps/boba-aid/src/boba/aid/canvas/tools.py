@@ -9,9 +9,13 @@ CanvasError — путь вне каталогов треда, файл неко
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterator
 from typing import Any
+from urllib.parse import unquote, urlsplit
 
 import chainlit as cl
+import mcp_types as mt
+from chainlit.context import context_var
 from pydantic import BaseModel, ConfigDict
 
 from boba.aid.canvas.diagram import DiagramFiles, MermaidViewer
@@ -24,7 +28,8 @@ from boba.aid.canvas.panel import (
     PdfViewer,
     VideoViewer,
 )
-from boba.aid.infra.thread_room import ChatNotices
+from boba.aid.infra.thread_room import ChatNotices, ChatRoomSurface, ThreadRoom
+from boba.aid.rendering.chat_view import ChatView
 from boba.canvas.canvas import (
     CanvasAction,
     CanvasContent,
@@ -35,7 +40,8 @@ from boba.canvas.canvas import (
 )
 from boba.canvas.keys import ObjectKey
 from boba.identity.errors import RefusalError
-from boba.toolkit.result import ContentMime
+from boba.toolkit.result import BlockAudience, ContentMime
+from boba.toolkit.wire import McpContent
 
 __all__ = [
     "CanvasActions",
@@ -73,7 +79,14 @@ class CanvasScope(BaseModel):
 
 
 class CanvasOpener:
-    """Показ панели по клику: файл в панель и описание для смены файла."""
+    """Показ панели: по клику — файл в панель и описание для смены файла; по
+    ответу tools/call — файлы, которые сервер просит показать сразу.
+
+    Ответ показывает ретранслятор chainlit, прежде чем отдать его агенту:
+    панель открывается во вкладках треда этого инстанса, у диаграммы
+    вьювер ждёт вердикт браузера, и отказ показа модель видит в том же
+    вызове.
+    """
 
     async def show(self, path: str, scope: CanvasScope) -> OpenedCanvas:
         """Панель с содержимым одного файла; слежение ставит CanvasPanel."""
@@ -100,6 +113,74 @@ class CanvasOpener:
             CanvasPanel.watch_file(key, viewer, described.nonce)
 
         return described
+
+    async def reply(
+        self, scope: CanvasScope, reply: mt.CallToolResult
+    ) -> mt.CallToolResult:
+        """Ответ tools/call после показа его файлов в панели треда scope.
+
+        Ссылка file:// человеку с annotations.priority McpContent.SHOWN_PRIORITY
+        открывает панель; отказ показа (диаграмма не отрисовалась, вьювера
+        нет, файл не читается) превращает ответ в isError с причиной. Без
+        живых вкладок треда на этом инстансе и при молчании браузера ответ
+        уходит как есть.
+        """
+        sessions = ThreadRoom.sessions(scope.thread_id)
+        if not sessions:
+            return reply
+
+        context = ChatRoomSurface(sessions[0], scope.thread_id).context()
+        if context is None:
+            return reply
+
+        refusals: list[mt.ContentBlock] = []
+        token = context_var.set(context)
+        try:
+            for path, mime in self._shown(reply):
+                try:
+                    await CanvasPanel.open(self._key(path, scope), mime)
+                except CanvasError as exc:
+                    note = f"{path} is not shown in the canvas: {exc}"
+                    refusals.append(mt.TextContent(text=note))
+        finally:
+            context_var.reset(token)
+
+        if not refusals:
+            return reply
+
+        content = [*reply.content, *refusals]
+
+        return reply.model_copy(update={"content": content, "is_error": True})
+
+    @staticmethod
+    def _shown(reply: mt.CallToolResult) -> Iterator[tuple[str, str]]:
+        """Путь в workspace и MIME файлов ответа, которые сервер просит
+        показать человеку сразу."""
+        for block in reply.content:
+            if not isinstance(block, mt.ResourceLink):
+                continue
+
+            annotations = block.annotations
+            if annotations is None:
+                continue
+
+            if not BlockAudience.USER.reads(annotations.audience):
+                continue
+
+            if annotations.priority != McpContent.SHOWN_PRIORITY:
+                continue
+
+            address = urlsplit(str(block.uri))
+            if address.scheme != ChatView.FILE_SCHEME:
+                continue
+
+            path = unquote(address.path)
+
+            mime = block.mime_type
+            if mime is None:
+                mime = ContentMime.of_name(path)
+
+            yield path, mime
 
     @staticmethod
     def _key(path: str, scope: CanvasScope) -> ObjectKey:
