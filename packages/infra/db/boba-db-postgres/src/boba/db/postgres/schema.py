@@ -1,14 +1,17 @@
 """Схема postgres хранилища и транзакционный advisory-замок: то, что нужно
-каждому хранилищу до первого запроса.
+каждому хранилищу до первого запроса, и применение файлов schema/*.sql пакета.
 
 Ошибки:
-PostgresError — схему создать не удалось не по правам либо таблица есть в
-    обеих схемах при переносе; соединение или пул отказали.
+PostgresError — схему создать не удалось не по правам, каталога файлов схемы
+    нет, он пуст или сервер отклонил файл, соединение или пул отказали.
 """
 
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping, Sequence
+from importlib.resources.abc import Traversable
+from operator import attrgetter
 from typing import Any, ClassVar
 
 import psycopg
@@ -53,10 +56,13 @@ class AdvisoryLock:
 
 class PostgresSchema:
     """Схема postgres хранилища: идентификатор для запросов, создание с
-    терпимостью к отсутствию прав, замок DDL и сведения о таблицах.
+    терпимостью к отсутствию прав, замок DDL, применение файлов schema/*.sql
+    пакета и сведения о таблицах.
 
-    Создаёт её PostgresTable по имени из конфига; без права на create schema
-    её заводит администратор, и отказ по правам только пишется в лог.
+    Создаёт её PostgresTable по имени из конфига, а DDL на старте процесса
+    применяют корень приложения, хранилища плагинов, история агента и
+    накат ix; без права на create schema её заводит администратор, и отказ
+    по правам только пишется в лог.
     """
 
     DDL_LOCK_PREFIX: ClassVar[str] = "boba.ddl."
@@ -94,6 +100,70 @@ class PostgresSchema:
                 "created it",
                 self._name,
             )
+
+    async def apply_files(
+        self,
+        conn: psycopg.AsyncConnection[Any],
+        schema_dir: Traversable,
+        names: Mapping[str, sql.Composable],
+    ) -> Sequence[str]:
+        """Файлы *.sql каталога schema_dir по порядку имён в этой схеме; итог —
+        имена применённых файлов. Схема создаётся, каждый файл идёт своей
+        транзакцией под замком DDL схемы: процессы кластера стартуют разом, а
+        значение enum из alter type add value можно использовать только в
+        следующем файле. {schema} и имена names подставляются стоящими
+        именами; файлы идемпотентны, повтор безвреден.
+
+        Ошибки:
+        PostgresError — каталога нет, он пуст или сервер отклонил файл.
+        """
+        files = self._files(schema_dir)
+
+        async with conn.transaction():
+            await self.ddl_lock().acquire(conn)
+            await self.ensure(conn)
+
+        applied: list[str] = []
+        for path in files:
+            query = PgQueryBuilder(schema=self.ident, **names).from_file(path).build()
+            try:
+                async with conn.transaction():
+                    await self.ddl_lock().acquire(conn)
+                    await conn.execute(query.text, query.params, prepare=False)
+            except psycopg.Error as exc:
+                msg = (
+                    f"applying {path.name} of {schema_dir} in schema {self._name} "
+                    f"failed: {exc}"
+                )
+                raise PostgresError(msg) from exc
+
+            logger.info("schema %s: applied %s", self._name, path.name)
+            applied.append(path.name)
+
+        return applied
+
+    def _files(self, schema_dir: Traversable) -> list[Traversable]:
+        """Файлы *.sql каталога по порядку имён.
+
+        Ошибки:
+        PostgresError — каталога нет или в нём нет *.sql.
+        """
+        if not schema_dir.is_dir():
+            msg = f"schema {self._name}: schema directory {schema_dir} does not exist"
+            raise PostgresError(msg)
+
+        files: list[Traversable] = []
+        for path in schema_dir.iterdir():
+            if path.name.endswith(".sql"):
+                files.append(path)
+
+        if not files:
+            msg = f"schema {self._name}: no *.sql files under {schema_dir}"
+            raise PostgresError(msg)
+
+        files.sort(key=attrgetter("name"))
+
+        return files
 
     async def ensure_with(self, pool: AsyncPostgresPool) -> None:
         """То же на соединении из пула; отказ пула — PostgresError."""
@@ -149,44 +219,3 @@ class PostgresSchema:
             names.add(str(row[0]))
 
         return names
-
-    async def move_table(
-        self, conn: psycopg.AsyncConnection[Any], table: str, target: PostgresSchema
-    ) -> None:
-        """Таблица переезжает из этой схемы в target (перевод выпусков на
-        месте); пустой дубль здесь рядом с уже переехавшей — сносится.
-
-        Ошибки:
-        PostgresError — таблица есть в обеих схемах и здесь в ней есть строки.
-        """
-        if not await self.has_table(conn, table):
-            return
-
-        source = sql.Identifier(self._name, table)
-
-        if await target.has_table(conn, table):
-            probe = (
-                PgQueryBuilder(source=source)
-                .add("select 1 from {source} limit 1")
-                .build()
-            )
-            cur = await conn.execute(probe.text, probe.params)
-            if await cur.fetchone() is not None:
-                msg = (
-                    f"table {table} exists both in {self._name} and {target.name} "
-                    f"with rows in {self._name}; merge them by hand and restart"
-                )
-                raise PostgresError(msg)
-
-            drop = (
-                PgQueryBuilder(source=source).add("drop table {source} cascade").build()
-            )
-            await conn.execute(drop.text, drop.params)
-            return
-
-        move = (
-            PgQueryBuilder(source=source, target=target.ident)
-            .add("alter table {source} set schema {target}")
-            .build()
-        )
-        await conn.execute(move.text, move.params)

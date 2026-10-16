@@ -3,17 +3,18 @@
     ccache_dir = "${env.data}/krb/cache"
 
 [app]
+    schema          = "mcp"
     krb             = "${krb}"
     session         = "${session}"
     stream_journal  = "${stream_journal}"
     mcp             = "${mcp}"
     storage         = "${storage}"
-    auth            = [
-        "${auth.kerberos}",
-        "${auth.ldap}",
-        "${auth.local}",
-        "${auth.proxy}"
-    ]
+    auth            = ["${auth.proxy}"]
+
+[keys]
+    session    = "${site.auth_secret}"
+    proxy      = "${site.proxy_secret}"
+    mcp_client = "${site.mcp_client.secret}"
 
 [mcp]
     host = "${env.listen_host}"
@@ -49,7 +50,7 @@
         ]
 
     [mcp.clients.boba-chat]
-        secret = "${site.mcp_client.secret}"
+        secret = "${keys.mcp_client}"
 
 [http]
     dump                      = { enable = false, path = "" }
@@ -110,67 +111,11 @@
     enable = true
     dir    = "${env.data}/tool-logs"
 
-[role.ldap]
-    memberof = "${site.ldap_roles.memberof}"
-    dn       = "${site.ldap_roles.dn}"
-
-[auth.kerberos]
-    type                = "kerberos"
-    principal_format    = "{username}@${site.krb_realm}"
-    [auth.kerberos.accept]
-        service_name    = "HTTP/${site.krb_domain}@${site.krb_realm}"
-        keytab          = "${site.krb_http_keytab}"
-    [auth.kerberos.delegation]
-        mode            = "constrained"
-        service_ccache  = "FILE:${site.krb_ccache_http}"
-        krb5_config     = "${site.krb_config}"
-    [auth.kerberos.roles.ldap]
-        server          = "${site.ldap_url}"
-        base_dn         = "${site.ldap_base_dn}"
-        bind_dn         = "${site.ldap_bind_user}"
-        bind_password   = "${site.ldap_bind_password}"
-        [auth.kerberos.roles.ldap.mapping]
-            member_of   = "${role.ldap.memberof}"
-            dn          = "${role.ldap.dn}"
-
-[auth.ldap]
-    type                = "ldap"
-    server              = "${site.ldap_url}"
-    base_dn             = "${site.ldap_base_dn}"
-    user_filter         = "(sAMAccountName={username})"
-    bind_dn_template    = '${site.ldap_netbios}\{username}'
-    [auth.ldap.roles.directory]
-        member_of       = "${role.ldap.memberof}"
-        dn              = "${role.ldap.dn}"
-
-[auth.local]
-    type          = "local"
-    users         = "${site.local_auth.users}"
-    require_roles = true
-    [auth.local.roles.local]
-        mapping = "${site.local_auth.roles}"
-
 [auth.proxy]
-    type            = "proxy"
-    path            = "/auth/proxy"
-    secret          = "${site.proxy_secret}"
-    max_skew_sec    = 60
-    allowed_clients = "${site.proxy.allowed_clients}"
-    require_roles   = true
-    [auth.proxy.headers]
-        user      = "X-Remote-User"
-        timestamp = "X-Boba-Timestamp"
-        signature = "X-Boba-Signature"
-    [auth.proxy.roles.local]
-        mapping = "${site.proxy.local_roles}"
-    [auth.proxy.roles.ldap]
-        server        = "${site.ldap_url}"
-        base_dn       = "${site.ldap_base_dn}"
-        bind_dn       = "${site.ldap_bind_user}"
-        bind_password = "${site.ldap_bind_password}"
-        [auth.proxy.roles.ldap.mapping]
-            member_of = "${role.ldap.memberof}"
-            dn        = "${role.ldap.dn}"
+    type          = "proxy"
+    secret        = "${keys.proxy}"
+    max_skew_sec  = 60
+    require_roles = true
     [auth.proxy.roles.header]
         name = "X-Remote-Roles"
     [auth.proxy.profiles.header]
@@ -193,7 +138,7 @@
     kill_grace_sec      = 5
 
 [session]
-    auth_secret     = "${site.auth_secret}"
+    auth_secret     = "${keys.session}"
     session_ttl_sec = 3600
     session_max_sec = 28800
     generation      = ""

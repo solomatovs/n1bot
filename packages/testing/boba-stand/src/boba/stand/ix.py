@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator, Sequence
 from contextlib import asynccontextmanager
+from importlib.resources import files
 from pathlib import Path
 from typing import Any, ClassVar, Self
 
@@ -28,8 +29,8 @@ from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
 from boba.db.postgres.query import PgQueryBuilder
 from boba.ix_core.database import IxDatabase
-from boba.ix_core.main import SCHEMA_DIR as CORE_SCHEMA_DIR
 from boba.ix_core.registry import IxRegistry
+from boba.ix_core.scrape import PackageDir
 from boba.ix_core.upgrade import SchemaUpgrade
 from boba.krb import KerberosWorkspaceConfig
 from boba.runtime.config import ConfigLocator
@@ -100,7 +101,8 @@ class IxSchemas:
         self._database = database
 
     async def apply(self, schema_dirs: Sequence[Path]) -> None:
-        await SchemaUpgrade(CORE_SCHEMA_DIR, requires_core=False).run(self._database)
+        core = files("boba.ix_core") / PackageDir.SCHEMA
+        await SchemaUpgrade(core, requires_core=False).run(self._database)
         for schema_dir in schema_dirs:
             await SchemaUpgrade(schema_dir).run(self._database)
 

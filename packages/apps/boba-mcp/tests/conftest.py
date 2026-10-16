@@ -4,9 +4,8 @@
 import pytest
 from omegaconf import DictConfig
 
-from boba.runtime.config import DataLayerConfig, ProcessConfig
+from boba.runtime.config import ProcessConfig
 from boba.stand.names import StandSuite
-from boba.stand.site import ServiceRuntime
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -21,12 +20,6 @@ def raw_config(service_raw_config: DictConfig) -> DictConfig:
 
 
 @pytest.fixture(scope="session")
-def process_config(service_runtime: ServiceRuntime) -> ProcessConfig:
+def process_config(service_runtime: ProcessConfig) -> ProcessConfig:
     """Секции процесса набора — сервиса: профилей и ролей чата у него нет."""
     return service_runtime
-
-
-@pytest.fixture(scope="session")
-def stand_data_layer(service_runtime: ServiceRuntime) -> DataLayerConfig:
-    """База тестов набора — из стендового слоя конфига сервиса."""
-    return service_runtime.data_layer

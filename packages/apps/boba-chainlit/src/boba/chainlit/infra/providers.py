@@ -7,10 +7,10 @@
 
 from collections.abc import AsyncIterator
 from datetime import timedelta
+from enum import StrEnum
 from importlib.metadata import version
+from importlib.resources import files
 from typing import Annotated
-
-from omegaconf import DictConfig
 
 from boba.auth import JwtTokens
 from boba.chainlit.agent.chat import (
@@ -25,13 +25,12 @@ from boba.chainlit.agent.config import AgentConfig
 from boba.chainlit.agent.feed import AgentFeeds, BusParts, TabSurfaces
 from boba.chainlit.agent.relay import McpRelay
 from boba.chainlit.agent.server import (
+    CallSealing,
     ChatCallers,
     ChatCallMiddleware,
     ChatMcpServer,
     ChatTokenVerifier,
     ChatToolServers,
-    HookSealing,
-    PreToolUseHandler,
     ProcessKeys,
 )
 from boba.chainlit.agent.settings import (
@@ -42,10 +41,7 @@ from boba.chainlit.agent.settings import (
 from boba.chainlit.canvas.remote import RemoteJournals
 from boba.chainlit.data import PostgresDataLayer
 from boba.chainlit.data.remote_storage import FileOwners, RemoteStorageClient
-from boba.chainlit.infra.config import (
-    AppConfig,
-    DataLayerConfig,
-)
+from boba.chainlit.infra.config import AppConfig
 from boba.chainlit.infra.session import (
     ChainlitSessions,
     current_session,
@@ -53,11 +49,9 @@ from boba.chainlit.infra.session import (
 )
 from boba.chainlit.rendering.acp_view import ToolMedia
 from boba.chat.profiles import ChatProfiles, SelectedProfile
-from boba.config import bind
-from boba.connection_broker.store import ConnectionsConfig
 from boba.connection_broker.user_connections import ArmedConnections
 from boba.connections.secrets import SecretCipher
-from boba.db.postgres import AsyncPostgresPool
+from boba.db.postgres import AsyncPostgresPool, PostgresSchema
 from boba.identity.api import UserRows
 from boba.identity.context import CallContexts
 from boba.identity.locks import LiveLocks
@@ -68,8 +62,7 @@ from boba.messaging import MessageBus, PayloadStore
 from boba.runtime import providers as runtime
 from boba.runtime.config import RuntimeConfig
 from boba.runtime.di import Container, Depends
-from boba.runtime.elements import ChatTables
-from boba.runtime.http import RequestTokens
+from boba.runtime.elements import FeedbacksTable
 from boba.runtime.storage import StorageClient
 from boba.runtime.threads import ThreadsTable
 from boba.runtime.users import UsersTable
@@ -83,12 +76,6 @@ def get_app_config() -> AppConfig:
         "override, the provider itself produces nothing"
     )
     raise RuntimeError(msg)
-
-
-def get_data_layer_config(
-    app_config: Annotated[AppConfig, Depends(get_app_config)],
-) -> DataLayerConfig:
-    return app_config.data_layer
 
 
 def chat_profiles_registry(
@@ -171,21 +158,45 @@ def tool_media() -> ToolMedia:
     return ToolMedia()
 
 
-async def chainlit_data_layer(
-    cfg: Annotated[DataLayerConfig, Depends(get_data_layer_config)],
+class HarnessSchema(StrEnum):
+    """Пакеты, чьи файлы schema/*.sql чат применяет в схеме приложения на
+    старте: таблицы чата и шины, соединения и гранты, настройки агента."""
+
+    RUNTIME = "boba.runtime"
+    CONNECTIONS = "boba.connection_broker"
+    AGENT_SETTINGS = "boba.chainlit.agent"
+
+
+async def harness_storage(
+    app_config: Annotated[AppConfig, Depends(get_app_config)],
+    pool: Annotated[AsyncPostgresPool, Depends(runtime.postgres_pool)],
+) -> None:
+    """Таблицы чата одним механизмом на старте процесса: файлы схемы каждого
+    пакета HarnessSchema в схеме [app].schema. Поднимается первым после
+    пула: таблицы процесса работают на готовой схеме."""
+    schema = PostgresSchema(app_config.db_schema)
+    async with pool.connection() as conn:
+        for member in HarnessSchema:
+            schema_dir = files(member.value) / "schema"
+            await schema.apply_files(conn, schema_dir, {})
+
+
+async def chainlit_data_layer(  # noqa: PLR0913 — слой данных собирается таблицами процесса
+    app_config: Annotated[AppConfig, Depends(get_app_config)],
     storage: Annotated[StorageClient, Depends(storage_provider)],
     bus: Annotated[MessageBus, Depends(runtime.message_bus)],
     users: Annotated[UsersTable, Depends(runtime.users_table)],
+    threads: Annotated[ThreadsTable, Depends(runtime.threads_table)],
+    pool: Annotated[AsyncPostgresPool, Depends(runtime.postgres_pool)],
+    storage_ready: Annotated[None, Depends(harness_storage)],
 ) -> PostgresDataLayer:
-    """Слой данных чата на общем пуле процесса: схему таблицы ставят в запрос."""
-    pool = await AsyncPostgresPool.get(cfg.postgres)
-    tables = ChatTables.around(users, cfg.postgres, cfg.db_schema, pool)
-    await tables.setup()
+    """Слой данных чата на пуле процесса: схему таблицы ставят в запрос."""
+    feedbacks = FeedbacksTable(app_config.postgres, app_config.db_schema, pool)
 
     return PostgresDataLayer(
-        users=tables.users,
-        threads=tables.threads,
-        feedbacks=tables.feedbacks,
+        users=users,
+        threads=threads,
+        feedbacks=feedbacks,
         storage=storage,
         bus=bus,
     )
@@ -210,17 +221,15 @@ def agent_config(
     return app_config.agent
 
 
-async def agent_settings_table(
-    cfg: Annotated[DataLayerConfig, Depends(get_data_layer_config)],
-    raw: Annotated[DictConfig, Depends(runtime.get_raw_config)],
+def agent_settings_table(
+    app_config: Annotated[AppConfig, Depends(get_app_config)],
+    pool: Annotated[AsyncPostgresPool, Depends(runtime.postgres_pool)],
+    storage_ready: Annotated[None, Depends(harness_storage)],
 ) -> AgentSettingsTable:
     """Слои настроек агента в схеме чата; секреты строк — под ключом
-    [connections].encryption_key."""
-    cipher = SecretCipher(bind(raw, "connections", ConnectionsConfig).key_bytes())
-    table = AgentSettingsTable(cfg.postgres, cfg.db_schema, cipher)
-    await table.setup()
-
-    return table
+    [keys].encryption."""
+    cipher = SecretCipher(app_config.keys.encryption.get_secret_value())
+    return AgentSettingsTable(app_config.postgres, app_config.db_schema, cipher, pool)
 
 
 def agent_settings_layers(
@@ -243,30 +252,30 @@ def chat_callers(
     keys: Annotated[ProcessKeys, Depends(process_keys)],
 ) -> ChatCallers:
     """Вызывающий по ключу процесса агента: для сервера инструментов чата и
-    хука."""
+    ретранслятора."""
     return ChatCallers(keys)
 
 
-def hook_sealing(
-    raw: Annotated[DictConfig, Depends(runtime.get_raw_config)],
+def call_sealing(
+    config: Annotated[AgentConfig, Depends(agent_config)],
     callers: Annotated[ChatCallers, Depends(chat_callers)],
     contexts: Annotated[CallContexts, Depends(runtime.call_contexts)],
-) -> HookSealing:
-    """Запечатывание соединений пользователя ключом сервера MCP: для
-    ретранслятора mcp/message и обработчика хука."""
+) -> CallSealing:
+    """Запечатывание соединений пользователя ключом сервера MCP для
+    ретранслятора mcp/message."""
     connections = ArmedConnections(
         runtime.connection_store_ref, runtime.credential_source_ref, contexts
     )
-    ttl = timedelta(seconds=bind(raw, "connections", ConnectionsConfig).seal_ttl_sec)
+    ttl = timedelta(seconds=config.seal_ttl_sec)
 
-    return HookSealing(callers, connections, contexts, ttl)
+    return CallSealing(callers, connections, contexts, ttl)
 
 
 def mcp_relay(
     keys: Annotated[ProcessKeys, Depends(process_keys)],
     callers: Annotated[ChatCallers, Depends(chat_callers)],
     servers: Annotated[McpServers, Depends(mcp_servers)],
-    sealing: Annotated[HookSealing, Depends(hook_sealing)],
+    sealing: Annotated[CallSealing, Depends(call_sealing)],
     config: Annotated[AgentConfig, Depends(agent_config)],
 ) -> McpRelay:
     """Ретранслятор mcp/message процессов агента: один на инстанс."""
@@ -274,6 +283,7 @@ def mcp_relay(
 
 
 def agent_launcher(
+    app_config: Annotated[AppConfig, Depends(get_app_config)],
     config: Annotated[AgentConfig, Depends(agent_config)],
     layers: Annotated[AgentSettingsLayers, Depends(agent_settings_layers)],
     keys: Annotated[ProcessKeys, Depends(process_keys)],
@@ -281,7 +291,9 @@ def agent_launcher(
 ) -> AgentLauncher:
     """Запуск процессов агента: регистрации серверов профиля и чата, файл
     настроек, рукопожатие; mcp/message процессов отвечает ретранслятор."""
-    return AgentLauncher(config, layers, keys, relay, version("boba-chainlit"))
+    return AgentLauncher(
+        config, app_config.postgres, layers, keys, relay, version("boba-chainlit")
+    )
 
 
 def agent_session_meta(
@@ -361,19 +373,4 @@ def chat_mcp_server(
         ChatTokenVerifier(keys),
         ChatToolServers(registry, callers),
         ChatCallMiddleware(callers, runs),
-    )
-
-
-def pre_tool_use_hook(
-    app_config: Annotated[AppConfig, Depends(get_app_config)],
-    callers: Annotated[ChatCallers, Depends(chat_callers)],
-    sealing: Annotated[HookSealing, Depends(hook_sealing)],
-) -> PreToolUseHandler:
-    """Обработчик хука PreToolUse агента под [agent.hook].path: запечатывает
-    соединения пользователя ключом сервера MCP из события."""
-    return PreToolUseHandler(
-        app_config.agent.hook,
-        RequestTokens(app_config.session.cookie),
-        callers,
-        sealing,
     )

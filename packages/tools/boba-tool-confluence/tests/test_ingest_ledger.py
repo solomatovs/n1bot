@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncIterator, Sequence
+from importlib.resources import files
 from typing import Any, ClassVar
 
 import pytest
@@ -36,7 +37,7 @@ from boba.db.pgvector.store import (
     PostgresCollectionsStore,
     PostgresSourceLedger,
 )
-from boba.db.postgres import AsyncPostgresPool
+from boba.db.postgres import AsyncPostgresPool, PostgresSchema
 from boba.indexing import (
     CollectionId,
     RawDocument,
@@ -138,7 +139,9 @@ async def store_cfg(raw_config: DictConfig) -> AsyncIterator[PostgresStoreConfig
                 conn, sql.SQL("drop schema if exists {} cascade").format(_schema())
             )
             await _execute(conn, sql.SQL("create schema {}").format(_schema()))
-            await Migrations(tables).apply(conn)
+            schema_dir = files("boba.db.pgvector") / "schema"
+            names = Migrations(tables).names()
+            await PostgresSchema(tables.pg_schema).apply_files(conn, schema_dir, names)
             await Migrations(tables).ensure_vector_index(conn, DIM)
 
         yield cfg

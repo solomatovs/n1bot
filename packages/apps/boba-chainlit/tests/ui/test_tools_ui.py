@@ -42,10 +42,11 @@ from boba.confluence.rest import CflRestBuilder
 from boba.connections.base import ConnectionBase
 from boba.connections.manifest import ConnectionTypes
 from boba.db.clickhouse.connection import ClickHouseConfig
+from boba.db.postgres.connection import PostgresConfig
 from boba.doc.config import DocConfig
 from boba.doc.document import DisabledOcr, DocumentHint, PageWindow
 from boba.doc.router import DocumentRouter
-from boba.runtime.config import AppLayers, DataLayerConfig
+from boba.runtime.config import AppLayers
 from boba.stand.edm import Asset, EdmSources
 from boba.stand.ix_index import IxPage
 from boba.stand.site import Stand, StandLayers
@@ -1190,10 +1191,8 @@ def _connection_catalog(stand_database: str, llm_port: int) -> TableResult:
     """Выдача connection_list: все строки стенда, по виду и имени; url каждой
     строит пакет её типа по тому же профилю, что посеял стенд."""
     built = StandLayers.compose(StandApp.CHAINLIT.files())
-    layer = bind(
-        built, path=StandApp.CHAINLIT.data_layer_section, model=DataLayerConfig
-    )
-    postgres = layer.postgres.model_copy(update={"dbname": stand_database})
+    stand_postgres = bind(built, path="postgres", model=PostgresConfig)
+    postgres = stand_postgres.model_copy(update={"dbname": stand_database})
     clickhouse = bind(built, path="clickhouse", model=ClickHouseConfig)
     web = HttpConnection(
         scheme=UrlScheme(StandUrl.SCHEME.value),

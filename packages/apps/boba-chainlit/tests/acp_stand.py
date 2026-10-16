@@ -17,6 +17,7 @@ from acp.experimental.v2 import schema
 from chainlit_stand import NoConnectionStore, RelayStand
 from pydantic import SecretStr
 
+from boba.agent.settings import ModelSettings, ProviderKind, ProviderSettings
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.chainlit.agent.chat import (
     AskedQuestions,
@@ -33,16 +34,12 @@ from boba.chainlit.agent.client import (
 from boba.chainlit.agent.config import (
     AgentCommandConfig,
     AgentConfig,
-    HookConfig,
     ModelLimitsConfig,
     PostgresAgentHistory,
 )
 from boba.chainlit.agent.settings import (
-    AgentModel,
-    AgentProvider,
     AgentWorkdirs,
     ChatAgentSettings,
-    ProviderKindName,
     SettingsFileBuilder,
 )
 from boba.db.postgres.connection import PostgresConfig
@@ -99,9 +96,9 @@ class FakeModel:
     ) -> ChatAgentSettings:
         return ChatAgentSettings(
             model_name=MODEL_NAME,
-            model=AgentModel(
-                provider=AgentProvider(
-                    kind=ProviderKindName.OPENAI,
+            model=ModelSettings(
+                provider=ProviderSettings(
+                    kind=ProviderKind.OPENAI,
                     base_url=self.base_url(),
                     api_key=SecretStr(API_KEY),
                 ),
@@ -150,31 +147,8 @@ class AgentHistoryStand:
 
     def history(self) -> PostgresAgentHistory:
         return PostgresAgentHistory.model_validate(
-            {"kind": "postgres", "postgres": self.postgres(), "schema": self.schema()}
+            {"kind": "postgres", "schema": self.schema()}
         )
-
-    def document(self) -> dict[str, Any]:
-        """Секция [agent.history] для стенда приложения."""
-        postgres = self.postgres()
-        auth = postgres.auth
-        assert isinstance(auth, PasswordAuth)
-
-        return {
-            "kind": "postgres",
-            "schema": self.schema(),
-            "postgres": {
-                "host": postgres.host,
-                "hostaddr": postgres.hostaddr,
-                "port": postgres.port,
-                "dbname": postgres.dbname,
-                "connect_timeout": postgres.connect_timeout,
-                "auth": {
-                    "method": "password",
-                    "user": auth.user,
-                    "password": auth.password.get_secret_value(),
-                },
-            },
-        }
 
 
 class AgentStand:
@@ -206,7 +180,7 @@ class AgentStand:
             history=self._history,
             public_url=public_url,
             chat_mcp=RelayStand.CHAT,
-            hook=HookConfig(enable=True, path="/chat/hooks/pre-tool-use"),
+            seal_ttl_sec=600,
             limits=ModelLimitsConfig(context_window=32000, max_output_tokens=4096),
         )
 
@@ -293,8 +267,9 @@ class Agents:
     ) -> None:
         self._root = root
         self._model = model
-        self._stand = AgentStand(root, AgentHistoryStand(stand).history())
-        self._builder = SettingsFileBuilder(self._stand.config())
+        history = AgentHistoryStand(stand)
+        self._stand = AgentStand(root, history.history())
+        self._builder = SettingsFileBuilder(self._stand.config(), history.postgres())
         self._servers = McpServers(servers)
         credentials = KerberosCredentialSource(None, NoRefresh())
         relay = RelayStand(NoConnectionStore(), lambda: credentials, CallContexts())

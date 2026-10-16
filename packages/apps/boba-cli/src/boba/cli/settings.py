@@ -30,7 +30,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Annotated, Any, ClassVar, Literal, TypeGuard
+from typing import Any, ClassVar, Literal, TypeGuard
 
 import httpx
 import psycopg
@@ -38,20 +38,30 @@ from psycopg.conninfo import conninfo_to_dict
 from pydantic import (
     BaseModel,
     ConfigDict,
-    Field,
     SecretStr,
     ValidationError,
-    model_validator,
 )
-from pydantic.alias_generators import to_camel
 
 from boba.agent.profile import (
     CompactionSettings,
     ModelProfile,
-    ReasoningReturn,
     TurnLimits,
 )
 from boba.agent.records import PermissionMode
+from boba.agent.settings import (
+    HistoryKind,
+    JsonlHistorySettings,
+    LimitsJson,
+    McpClientJson,
+    MemoryHistorySettings,
+    ModelSettings,
+    PermissionSettings,
+    PostgresHistorySettings,
+    ProviderKind,
+    ProviderSettings,
+    SecretKey,
+    SettingsLayer,
+)
 from boba.db.postgres.connection import PostgresConfig
 from boba.llm.providers import ChatModelConfig, LlmProvidersError
 
@@ -59,19 +69,10 @@ __all__ = [
     "Arguments",
     "EffectiveSettings",
     "EnvName",
-    "HistoryKind",
-    "JsonlHistorySettings",
-    "MemoryHistorySettings",
-    "ModelSettings",
-    "PermissionSettings",
     "PostgresBuilder",
-    "PostgresHistorySettings",
-    "ProviderKind",
-    "ProviderSettings",
     "SecretsGuard",
     "Settings",
     "SettingsError",
-    "SettingsLayer",
     "SettingsSource",
 ]
 
@@ -106,34 +107,6 @@ class EnvName(StrEnum):
     LLM_MODEL = "BOBA_LLM_MODEL"
     LLM_API_KEY = "BOBA_LLM_API_KEY"
     SHELL = "SHELL"
-
-
-class ProviderKind(StrEnum):
-    """Виды провайдеров модели, которые умеет собрать вход процесса."""
-
-    OPENAI = "openai"
-    OLLAMA = "ollama"
-    ONNX = "onnx"
-
-    @property
-    def remote(self) -> bool:
-        return self is not ProviderKind.ONNX
-
-
-class HistoryKind(StrEnum):
-    """Виды хранилища истории: файлы, Postgres, только память процесса."""
-
-    JSONL = "jsonl"
-    POSTGRES = "postgres"
-    MEMORY = "memory"
-
-
-class SecretKey(StrEnum):
-    """Ключи файла настроек, под которыми лежат секреты."""
-
-    PROVIDER = "provider"
-    API_KEY = "apiKey"
-    DSN = "dsn"
 
 
 WebScheme = Literal["http", "https"]
@@ -174,179 +147,6 @@ class HttpUrls:
             raise ValueError(msg)
 
         return WebAddress(scheme=scheme, host=url.host, port=url.port, path=url.path)
-
-
-class SettingsModel(BaseModel):
-    """Основа моделей настроек: ключи файлов — camelCase, лишние ключи — ошибка."""
-
-    model_config = ConfigDict(
-        alias_generator=to_camel, populate_by_name=True, extra="forbid", frozen=True
-    )
-
-
-class ProviderSettings(SettingsModel):
-    """Провайдер модели: вид, адрес, ключ значением либо именем переменной,
-    для локальной модели — каталог весов."""
-
-    kind: ProviderKind
-    base_url: str | None = None
-    api_key: SecretStr | None = None
-    api_key_env: str | None = Field(default=None, min_length=1)
-    model_dir: str | None = None
-    timeout_sec: float = Field(default=120.0, gt=0)
-    retry_attempts: int = Field(default=1, ge=0)
-
-    @model_validator(mode="after")
-    def _one_key_source(self) -> ProviderSettings:
-        by_value = self.api_key is not None
-        by_variable = self.api_key_env is not None
-        if by_value and by_variable:
-            msg = (
-                "'apiKey' and 'apiKeyEnv' are both set; keep one: the key itself "
-                "in a file with mode 0600, or the name of the variable that holds it."
-            )
-            raise ValueError(msg)
-
-        return self
-
-
-class ModelSettings(SettingsModel):
-    """Ключ `models.<имя>`: всё, что ядро знает о модели (ModelProfile)."""
-
-    provider: ProviderSettings
-    model: str = Field(min_length=1)
-    sampling: dict[str, Any] = Field(default_factory=dict)
-    context_window: int = Field(gt=0)
-    max_output_tokens: int = Field(gt=0)
-    chars_per_token: int = Field(default=3, gt=0)
-    supports_tools: bool = True
-    supports_images: bool = False
-    system_turns: bool = False
-    reasoning_return: ReasoningReturn = ReasoningReturn.NEVER
-
-
-class PermissionSettings(SettingsModel):
-    """Ключ `permissions`: режим по умолчанию, право на обход, правила."""
-
-    default_mode: PermissionMode | None = None
-    allow_bypass: bool | None = None
-    allow: Sequence[str] = ()
-    deny: Sequence[str] = ()
-
-
-class JsonlHistorySettings(SettingsModel):
-    kind: Literal[HistoryKind.JSONL]
-    root: str = Field(min_length=1)
-
-
-class PostgresHistorySettings(SettingsModel):
-    """Журнал в Postgres: строка подключения libpq значением либо именем
-    переменной окружения, таблица — в схеме из ключа `schema`."""
-
-    DEFAULT_SCHEMA: ClassVar[str] = "agent_history"
-
-    kind: Literal[HistoryKind.POSTGRES]
-    dsn: SecretStr | None = None
-    dsn_env: str | None = Field(default=None, min_length=1)
-    db_schema: str = Field(default=DEFAULT_SCHEMA, min_length=1, alias="schema")
-
-    @model_validator(mode="after")
-    def _one_dsn_source(self) -> PostgresHistorySettings:
-        by_value = self.dsn is not None
-        by_variable = self.dsn_env is not None
-        if not by_value and not by_variable:
-            msg = (
-                "history of kind 'postgres' needs 'dsn' with the libpq connection "
-                "string or 'dsnEnv' with the name of the variable that holds it."
-            )
-            raise ValueError(msg)
-
-        if by_value and by_variable:
-            msg = (
-                "'dsn' and 'dsnEnv' are both set; keep one: the connection string "
-                "itself in a file with mode 0600, or the name of the variable."
-            )
-            raise ValueError(msg)
-
-        return self
-
-
-class MemoryHistorySettings(SettingsModel):
-    """Журнал только в памяти процесса: после перезапуска истории нет."""
-
-    kind: Literal[HistoryKind.MEMORY]
-
-
-HistorySettings = Annotated[
-    JsonlHistorySettings | PostgresHistorySettings | MemoryHistorySettings,
-    Field(discriminator="kind"),
-]
-
-
-class CompactionJson(SettingsModel):
-    compact_at: float | None = Field(default=None, gt=0, lt=1)
-    block_at: float | None = Field(default=None, gt=0, le=1)
-
-    def core(self) -> CompactionSettings:
-        values = self.model_dump(exclude_none=True, by_alias=False)
-
-        return CompactionSettings.model_validate(values)
-
-
-class LimitsJson(SettingsModel):
-    max_turns: int | None = Field(default=None, gt=0)
-    tool_result_max_chars: int | None = Field(default=None, gt=0)
-    api_retries: int | None = Field(default=None, ge=0)
-    output_limit_retries: int | None = Field(default=None, ge=0)
-
-    def core(self) -> TurnLimits:
-        values = self.model_dump(exclude_none=True, by_alias=False)
-
-        return TurnLimits.model_validate(values)
-
-
-class McpClientJson(SettingsModel):
-    """Ключ `mcp`: сроки ожидания серверов MCP-over-ACP — одной страницы
-    `tools/list` и одного вызова `tools/call`."""
-
-    list_timeout_sec: float = Field(default=30.0, gt=0)
-    call_timeout_sec: float = Field(default=600.0, gt=0)
-
-
-class SettingsLayer(SettingsModel):
-    """Один слой `settings.json`; каждый ключ необязателен. Профили `models`
-    лежат сырыми таблицами: слой вправе дополнить профиль одним полем, а
-    целиком профиль проверяется после слияния."""
-
-    model: str | None = None
-    models: Mapping[str, Mapping[str, Any]] = Field(default_factory=dict)
-    permissions: PermissionSettings | None = None
-    history: HistorySettings | None = None
-    compaction: CompactionJson | None = None
-    limits: LimitsJson | None = None
-    mcp: McpClientJson | None = None
-    env: Mapping[str, str] = Field(default_factory=dict)
-    system_prompt_file: str | None = None
-    skills_dir: str | None = None
-    agent_name: str | None = None
-
-    def secrets(self) -> Iterator[str]:
-        """Ключи слоя, под которыми лежат секреты значениями: по ним решается,
-        откуда слой разрешено читать."""
-        history = self.history
-        in_postgres = isinstance(history, PostgresHistorySettings)
-        if in_postgres and history.dsn is not None:
-            yield f"history.{SecretKey.DSN.value}"
-
-        for name, raw in self.models.items():
-            provider = raw.get(SecretKey.PROVIDER.value)
-            if not isinstance(provider, Mapping):
-                continue
-
-            if provider.get(SecretKey.API_KEY.value) is None:
-                continue
-
-            yield f"models.{name}.{SecretKey.PROVIDER.value}.{SecretKey.API_KEY.value}"
 
 
 class SecretsGuard:

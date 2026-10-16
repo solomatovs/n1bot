@@ -1,49 +1,43 @@
-"""Миграции KB-схемы: DDL из migrations/*.sql, каждый файл идемпотентен, и
-HNSW-индекс под размерность модели.
+"""Имена KB-схемы для файлов schema/*.sql пакета и HNSW-индекс под
+размерность модели.
 
 Ошибки:
-KbMigrationError — каталог миграций пуст или его нет, размерность вектора не
-    положительна.
+KbMigrationError — размерность вектора не положительна.
 """
 
 from __future__ import annotations
 
-import logging
-from pathlib import Path
-from typing import Any, ClassVar
+from collections.abc import Mapping
+from typing import Any
 
 from psycopg import sql
 
 from boba.db.pgvector.config import PostgresStoreSchema
 from boba.db.postgres import PgQuery, PgQueryBuilder
 
-logger = logging.getLogger(__name__)
-
 __all__ = ["KbMigrationError", "Migrations"]
 
 
 class KbMigrationError(Exception):
-    """Миграции не собрать: нет файлов или негодная размерность."""
+    """Векторный индекс не собрать: негодная размерность."""
 
 
 class Migrations:
-    """DDL-bootstrap KB-схемы: имена таблиц и индексов конфига подставляются в
-    файлы migrations/*.sql стоящими именами сборщика; KbSchema применяет
-    их при старте, стенды — напрямую на соединении."""
-
-    DIRECTORY: ClassVar[Path] = Path(__file__).parent / "migrations"
+    """Имена KB-схемы для файлов schema/*.sql пакета: таблицы и индексы
+    конфига подставляются стоящими именами сборщика, схему {schema} ставит
+    PostgresSchema.apply_files. KbSchema применяет файлы и векторный индекс
+    при старте плагина."""
 
     def __init__(self, tables: PostgresStoreSchema) -> None:
         self._tables = tables
 
-    def _names(self) -> dict[str, sql.Composable]:
+    def names(self) -> Mapping[str, sql.Composable]:
         """Плейсхолдеры файлов: таблицы, литералы имён и имена индексов."""
         schema = self._tables.pg_schema
         chunks = self._tables.chunks_table
         sources = self._tables.sources_table
 
         return {
-            "schema": sql.Identifier(schema),
             "chunks_table": sql.Identifier(schema, chunks),
             "collections_table": sql.Identifier(schema, self._tables.collections_table),
             "sources_table": sql.Identifier(schema, sources),
@@ -83,32 +77,6 @@ class Migrations:
             ),
         }
 
-    def files(self) -> list[Path]:
-        """Файлы миграций в лексикографическом порядке.
-
-        Ошибки:
-        KbMigrationError — каталога нет или он пуст.
-        """
-        if not self.DIRECTORY.is_dir():
-            msg = f"pgvector migrations: {self.DIRECTORY} is not an existing directory"
-            raise KbMigrationError(msg)
-
-        files = sorted(self.DIRECTORY.glob("*.sql"))
-        if not files:
-            msg = f"pgvector migrations: no *.sql files in {self.DIRECTORY}"
-            raise KbMigrationError(msg)
-
-        return files
-
-    def statements(self) -> list[PgQuery]:
-        """DDL каждого файла с подставленными именами, в порядке файлов."""
-        names = self._names()
-        statements: list[PgQuery] = []
-        for path in self.files():
-            statements.append(PgQueryBuilder(**names).from_file(path).build())
-
-        return statements
-
     def vector_index(self, dim: int) -> PgQuery:
         """HNSW-индекс на выражение embedding::vector(dim): pgvector требует
         фиксированной размерности, поэтому один индекс = одна dim (dim в имени).
@@ -139,20 +107,6 @@ class Migrations:
             )
             .build()
         )
-
-    async def apply(self, conn: Any) -> None:
-        """Все миграции на соединении; каждая логируется по имени файла."""
-        names = self._names()
-        for path in self.files():
-            statement = PgQueryBuilder(**names).from_file(path).build()
-            logger.info(
-                "applying migration %s (schema=%s, chunks=%s, collections=%s)",
-                path.name,
-                self._tables.pg_schema,
-                self._tables.chunks_table,
-                self._tables.collections_table,
-            )
-            await conn.execute(statement.text, statement.params, prepare=False)
 
     async def ensure_vector_index(self, conn: Any, dim: int) -> None:
         statement = self.vector_index(dim)

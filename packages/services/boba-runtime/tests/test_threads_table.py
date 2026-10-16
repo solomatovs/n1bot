@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+from importlib.resources import files
 from uuid import uuid4
 
 import pytest
 from psycopg import sql
 
 from boba.chat.threads import DataRejectedError, ThreadUpsert
-from boba.db.postgres import AsyncPostgresPool
+from boba.db.postgres import AsyncPostgresPool, PostgresSchema
 from boba.identity.session import Login
 from boba.identity.signin import SignedIn, SignInMetadata
 from boba.runtime.config import RuntimeConfig
@@ -28,15 +29,13 @@ async def tables(
         await conn.execute(
             sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(SCHEMA))
         )
-    postgres = runtime_config.data_layer.postgres
+    postgres = runtime_config.postgres
     cfg = postgres.model_copy(update={"dbname": test_database})
-    users = UsersTable(cfg, SCHEMA, pool)
-    threads = ThreadsTable(cfg, SCHEMA, pool)
-    await users.setup()
-    await threads.setup()
-    await threads.setup()
+    schema_dir = files("boba.runtime") / "schema"
+    async with pool.connection() as conn:
+        await PostgresSchema(SCHEMA).apply_files(conn, schema_dir, {})
 
-    return users, threads
+    return UsersTable(cfg, SCHEMA, pool), ThreadsTable(cfg, SCHEMA, pool)
 
 
 async def test_upsert_get_list_and_author(

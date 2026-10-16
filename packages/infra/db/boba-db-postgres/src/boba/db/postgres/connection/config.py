@@ -500,11 +500,6 @@ class PostgresConfig(ConnectionBase):
 
         return conn
 
-    def with_schema(self, schema: str) -> PostgresConfig:
-        """Копия профиля с search_path сервиса."""
-        options = self.options.model_copy(update={"search_path": schema})
-        return self.model_copy(update={"options": options})
-
     def pool_settings(self) -> dict[str, Any]:
         """kwargs конструктора ConnectionPool (без None)."""
         res: dict[str, Any] = {}

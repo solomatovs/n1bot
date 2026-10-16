@@ -14,7 +14,7 @@ db_schema        = "ix"
 max_result_chars = 200000
 
 [tables]
-    pg_schema         = "mcp"
+    pg_schema         = "${app.schema}"
     chunks_table      = "kb_chunks"
     collections_table = "kb_collections"
     sources_table     = "kb_sources"

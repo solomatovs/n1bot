@@ -15,6 +15,7 @@ from collections.abc import (
 )
 from dataclasses import dataclass
 from datetime import timedelta
+from importlib.resources import files
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, ClassVar
@@ -31,7 +32,7 @@ from boba.canvas.journal import StreamSlice
 from boba.canvas.keys import WorkspaceMount
 from boba.chainlit.agent.config import ChatMcpConfig
 from boba.chainlit.agent.relay import McpRelay
-from boba.chainlit.agent.server import ChatCallers, HookSealing, KeyHolder, ProcessKeys
+from boba.chainlit.agent.server import CallSealing, ChatCallers, KeyHolder, ProcessKeys
 from boba.chainlit.canvas.remote import RemoteJournals, RemoteStreams
 from boba.chainlit.data.data_layer import PostgresDataLayer
 from boba.chainlit.domain.keys import AppPrefix
@@ -49,7 +50,7 @@ from boba.connection_broker.store import ConnectionStore
 from boba.connection_broker.tickets import CredentialsRef
 from boba.connection_broker.tools import ConnectionTools
 from boba.connection_broker.user_connections import ArmedConnections, StoreRef
-from boba.db.postgres import AsyncPostgresPool
+from boba.db.postgres import AsyncPostgresPool, PostgresSchema
 from boba.identity.api import StoredUser, UserRows
 from boba.identity.context import (
     CallContext,
@@ -68,12 +69,14 @@ from boba.mcp_client.client import (
 )
 from boba.messaging import MemoryMessageBus, MemoryPayloadStore
 from boba.runtime.config import AppLayers, ConfigLocator
-from boba.runtime.elements import ChatTables
+from boba.runtime.elements import FeedbacksTable
 from boba.runtime.storage import (
     LocalStorageClient,
     LocalStorageConfig,
     StorageClient,
 )
+from boba.runtime.threads import ThreadsTable
+from boba.runtime.users import UsersTable
 from boba.stand.refs import StandRefs
 from boba.stand.service_signin import ServiceSignIn
 from boba.stand.storage import StorageSeed
@@ -316,7 +319,7 @@ class RelayStand:
         self.keys = ProcessKeys()
         self.callers = ChatCallers(self.keys)
         connections = ArmedConnections(store, credentials, contexts)
-        self.sealing = HookSealing(self.callers, connections, contexts, self.SEAL_TTL)
+        self.sealing = CallSealing(self.callers, connections, contexts, self.SEAL_TTL)
 
     def relay(self, servers: McpServers) -> McpRelay:
         return McpRelay(
@@ -344,7 +347,7 @@ class ServiceTool:
 class ServiceTools:
     """Чат к сервису инструментов стенда тем же путём, что вызов агента:
     ретранслятор mcp/message (McpRelay) запечатывает соединения
-    (HookSealing) и зовёт MCP-порт сервиса от имени пользователя текущей
+    (CallSealing) и зовёт MCP-порт сервиса от имени пользователя текущей
     сессии chainlit.
 
     Создаётся фикстурой теста из сервиса (ToolService), хранилища соединений
@@ -653,17 +656,19 @@ async def layer(
     data_bus: MemoryMessageBus,
     runtime_stand: StandRefs,
 ) -> PostgresDataLayer:
-    schema = app_config.data_layer.db_schema
+    schema = app_config.db_schema
     async with pool.connection() as conn:
         await conn.execute(
             sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(sql.Identifier(schema))
         )
-    tables = ChatTables.of(app_config.data_layer.postgres, schema, pool)
-    await tables.setup()
+    schema_dir = files("boba.runtime") / "schema"
+    async with pool.connection() as conn:
+        await PostgresSchema(schema).apply_files(conn, schema_dir, {})
+
     data_layer = PostgresDataLayer(
-        users=tables.users,
-        threads=tables.threads,
-        feedbacks=tables.feedbacks,
+        users=UsersTable(app_config.postgres, schema, pool),
+        threads=ThreadsTable(app_config.postgres, schema, pool),
+        feedbacks=FeedbacksTable(app_config.postgres, schema, pool),
         storage=storage,
         bus=data_bus,
     )

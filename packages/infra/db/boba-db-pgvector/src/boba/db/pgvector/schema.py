@@ -1,71 +1,83 @@
-"""Создание схемы KB при старте приложения: идемпотентный DDL на каждом запуске.
+"""Создание схемы KB при старте плагина: идемпотентный DDL на каждом запуске.
 
 Ошибки:
-KbMigrationError — миграций нет или размерность вектора негодна.
-PostgresError — пул недоступен.
-psycopg.Error — DDL отклонён не по правам.
+KbMigrationError — размерность вектора негодна.
+PostgresError — соединение не открылось, каталога файлов схемы нет или сервер
+    отклонил файл либо векторный индекс; текст называет базу, схему и
+    расширения, без которых таблицы не создаются.
 """
 
 from __future__ import annotations
 
 import logging
+from importlib.resources import files
+from typing import ClassVar
 
-from psycopg.errors import InsufficientPrivilege
+import psycopg
 
-from boba.db.pgvector.config import PostgresStoreConfig
+from boba.db.pgvector.config import KnowledgeBaseSchemaConfig
 from boba.db.pgvector.migrations import Migrations
-from boba.db.postgres import AsyncPostgresPool, PostgresSchema
+from boba.db.postgres import AsyncPostgresPool, PostgresError, PostgresSchema
+from boba.toolkit.manifest import PluginStorage
 
 __all__ = ["KbSchema"]
 
 logger = logging.getLogger(__name__)
 
 
-class KbSchema:
-    """Приводит схему базы знаний к актуальному виду: схема, миграции под
-    замком DDL и векторный индекс под размерность модели. Здесь только DDL,
-    векторных значений не летает, поэтому берётся общий пул процесса, а не
-    отдельный пул store с адаптером vector. Без прав на DDL считаем, что
-    администратор всё завёл сам."""
+class KbSchema(PluginStorage):
+    """Приводит схему базы знаний к актуальному виду: файлы schema/*.sql
+    пакета под замком DDL и векторный индекс под размерность модели.
 
-    def __init__(self, cfg: PostgresStoreConfig, *, dim: int) -> None:
+    Реализация PluginStorage: её объявляют стартом плагины kb и ingest, и
+    boba-mcp зовёт setup на своём старте. Работает на одном выделенном
+    соединении: процесс boba-mcp пулов не держит, а векторных значений здесь
+    не летает.
+    """
+
+    EXTENSIONS: ClassVar[str] = "vector, pg_trgm, unaccent, btree_gin"
+    """Расширения, которые создают файлы схемы: без прав суперпользователя их
+    заводит администратор."""
+
+    def __init__(self, cfg: KnowledgeBaseSchemaConfig) -> None:
         self._cfg = cfg
-        self._dim = dim
         self._schema = PostgresSchema(cfg.tables.pg_schema)
         self._migrations = Migrations(cfg.tables)
 
     async def setup(self) -> None:
-        pool = await AsyncPostgresPool.get(self._cfg.connection)
-        async with pool.connection() as conn:
-            try:
-                # несколько процессов стартуют разом: DDL под одним advisory-lock,
-                # иначе каталог отвечает «tuple concurrently updated»
-                async with conn.transaction():
-                    await self._schema.ddl_lock().acquire(conn)
-                    await self._schema.ensure(conn)
-                    await self._migrations.apply(conn)
-            except InsufficientPrivilege as exc:
-                logger.info(
-                    "no permission for the kb migrations in schema %s, assuming an "
-                    "administrator applied them: %s",
-                    self._schema.name,
-                    exc,
-                )
+        schema_dir = files("boba.db.pgvector") / "schema"
+        names = self._migrations.names()
+        where = (
+            f"kb tables in schema {self._schema.name} of {self._cfg.connection.where()}"
+        )
+        try:
+            conn = await AsyncPostgresPool.dedicated(self._cfg.connection)
+        except psycopg.Error as exc:
+            msg = f"{where}: connecting to the database failed: {exc}"
+            raise PostgresError(msg) from exc
 
-        async with pool.connection() as conn:
+        async with conn:
             try:
-                await self._migrations.ensure_vector_index(conn, self._dim)
-            except InsufficientPrivilege as exc:
-                logger.info(
-                    "no permission for the kb vector index in schema %s, assuming an "
-                    "administrator created it: %s",
-                    self._schema.name,
-                    exc,
+                await self._schema.apply_files(conn, schema_dir, names)
+            except PostgresError as exc:
+                msg = (
+                    f"{where}: {exc}; the extensions {self.EXTENSIONS} must exist "
+                    "in the database: create them as superuser or create the "
+                    "database from a template that has them"
                 )
+                raise PostgresError(msg) from exc
+
+            try:
+                await self._migrations.ensure_vector_index(
+                    conn, self._cfg.embedding.dim
+                )
+            except psycopg.Error as exc:
+                msg = f"{where}: creating the vector index failed: {exc}"
+                raise PostgresError(msg) from exc
 
         logger.info(
             "KB schema ready: schema=%s chunks=%s dim=%d",
             self._cfg.tables.pg_schema,
             self._cfg.tables.chunks_table,
-            self._dim,
+            self._cfg.embedding.dim,
         )

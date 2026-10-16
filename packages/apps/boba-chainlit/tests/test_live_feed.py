@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import AsyncIterator, Iterator
+from importlib.resources import files
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -20,7 +21,7 @@ from boba.chainlit.infra.config import AppConfig
 from boba.chainlit.rendering.acp_view import ToolMedia, UpdateView
 from boba.chainlit.rendering.chat_view import ChatView, RecordingSink, StepRole
 from boba.chainlit.rendering.renderer import ChatRenderer, NoSurface, ThreadRewinds
-from boba.db.postgres import AsyncPostgresPool
+from boba.db.postgres import AsyncPostgresPool, PostgresSchema
 from boba.identity.context import Scope
 from boba.identity.locks import LockMode, LockPurpose
 from boba.messaging import (
@@ -66,19 +67,20 @@ class Node:
 async def _node(
     app_config: AppConfig, test_database: str, pool: AsyncPostgresPool, name: str
 ) -> Node:
-    cfg = app_config.data_layer.postgres.model_copy(update={"dbname": test_database})
-    schema = app_config.data_layer.db_schema
+    cfg = app_config.postgres.model_copy(update={"dbname": test_database})
+    schema = app_config.db_schema
     bus = PgMessageBus(cfg, schema, name, AppName.CHAINLIT, app_config.cluster)
     bus._pool_ref = pool
-    await bus.setup()
+    schema_dir = files("boba.runtime") / "schema"
+    async with pool.connection() as conn:
+        await PostgresSchema(schema).apply_files(conn, schema_dir, {})
+
     await bus.start()
     locks = PgLiveLocks(cfg, schema, name, AppName.CHAINLIT, app_config.cluster)
     locks._pool_ref = pool
-    await locks.setup()
     await locks.register_instance()
     payloads = PgPayloadStore(cfg, schema)
     payloads._pool_ref = pool
-    await payloads.setup()
     return Node(bus, locks, payloads)
 
 

@@ -7,9 +7,9 @@ boba-mcp: чат запечатывает соединение, сервис о�
 
 from __future__ import annotations
 
-import base64
 import secrets as std_secrets
 from collections.abc import AsyncIterator
+from importlib.resources import files
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -25,10 +25,11 @@ from boba.auth.credentials import KerberosCredentialSource
 from boba.chainlit.auth.kerberos import KerberosAuth
 from boba.chainlit.data.data_layer import PostgresDataLayer
 from boba.config import bind
-from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
+from boba.connection_broker.store import ConnectionStore
 from boba.connections.manifest import ConnectionTypes
+from boba.connections.secrets import SecretCipher
 from boba.connections.stored import GrantTarget, StoredRole
-from boba.db.postgres import AsyncPostgresPool
+from boba.db.postgres import AsyncPostgresPool, PostgresSchema
 from boba.db.postgres.connection import PasswordAuth, PostgresConfig
 from boba.identity.context import ContextKind
 from boba.identity.errors import RefusalError
@@ -55,8 +56,8 @@ pytestmark = [
 ]
 
 
-def _key() -> SecretStr:
-    return SecretStr(base64.b64encode(std_secrets.token_bytes(32)).decode())
+def _cipher() -> SecretCipher:
+    return SecretCipher(std_secrets.token_bytes(32))
 
 
 @pytest.fixture
@@ -66,9 +67,11 @@ async def store(pool: AsyncPostgresPool) -> ConnectionStore:
             sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(SCHEMA))
         )
 
-    cfg = ConnectionsConfig(enable=True, db_schema=SCHEMA, encryption_key=_key())
-    built = ConnectionStore(cfg, ConnectionTypes.discover(), pool)
-    await built.setup()
+    schema_dir = files("boba.connection_broker") / "schema"
+    async with pool.connection() as conn:
+        await PostgresSchema(SCHEMA).apply_files(conn, schema_dir, {})
+
+    built = ConnectionStore(pool, SCHEMA, _cipher(), ConnectionTypes.discover())
     await built.sync_roles([ROLE])
     return built
 

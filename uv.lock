@@ -1092,6 +1092,7 @@ source = { editable = "packages/infra/db/boba-db-pgvector" }
 dependencies = [
     { name = "boba-db-postgres", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-indexing", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-toolkit", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "pgvector", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "psycopg", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "pydantic", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -1101,6 +1102,7 @@ dependencies = [
 requires-dist = [
     { name = "boba-db-postgres", editable = "packages/infra/db/boba-db-postgres" },
     { name = "boba-indexing", editable = "packages/core/boba-indexing" },
+    { name = "boba-toolkit", editable = "packages/core/boba-toolkit" },
     { name = "pgvector", specifier = ">=0.3,<1" },
     { name = "psycopg", specifier = ">=3.3,<4" },
     { name = "pydantic", specifier = ">=2.12,<3" },
@@ -2028,7 +2030,6 @@ dependencies = [
     { name = "boba-config", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-connection-broker", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-connections", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-    { name = "boba-db-pgvector", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-db-postgres", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-identity", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-krb", extra = ["seal"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -2064,7 +2065,6 @@ requires-dist = [
     { name = "boba-config", editable = "packages/infra/config/boba-config" },
     { name = "boba-connection-broker", editable = "packages/services/boba-connection-broker" },
     { name = "boba-connections", editable = "packages/core/boba-connections" },
-    { name = "boba-db-pgvector", editable = "packages/infra/db/boba-db-pgvector" },
     { name = "boba-db-postgres", editable = "packages/infra/db/boba-db-postgres" },
     { name = "boba-identity", editable = "packages/core/boba-identity" },
     { name = "boba-krb", extras = ["seal"], editable = "packages/infra/auth/boba-krb" },

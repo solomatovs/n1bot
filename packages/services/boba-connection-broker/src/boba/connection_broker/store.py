@@ -14,8 +14,6 @@ SecretCryptoError — секрет строки не расшифровался 
 
 from __future__ import annotations
 
-import base64
-import binascii
 import logging
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from typing import Any, ClassVar
@@ -25,9 +23,6 @@ from psycopg.types.json import Jsonb
 from pydantic import (
     BaseModel,
     ConfigDict,
-    Field,
-    SecretStr,
-    field_validator,
 )
 
 from boba.access.grants import ConnectionFilter, SubjectGrantsQuery, SubjectRowColumn
@@ -53,7 +48,6 @@ from boba.connections.stored import (
     StoredRole,
 )
 from boba.db.postgres import PgQuery, PostgresPool, PostgresTable
-from boba.db.postgres.connection import PostgresConfig
 from boba.identity.context import Subject
 
 logger = logging.getLogger(__name__)
@@ -61,7 +55,6 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "CatalogEntry",
     "ConnectionStore",
-    "ConnectionsConfig",
 ]
 
 
@@ -85,89 +78,6 @@ class CatalogEntry(BaseModel):
     description: str = ""
 
 
-class ConnectionsConfig(BaseModel):
-    """Секция [connections]: где лежат таблицы и чем шифруются значения."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    KEY_BYTES: ClassVar[int] = 32
-
-    enable: bool = Field(
-        default=False,
-        description="Создавать таблицы connections/roles/grants при старте.",
-    )
-    connection: PostgresConfig | None = Field(
-        default=None,
-        description='Postgres-профиль ссылкой: connection = "${postgres}".',
-    )
-    db_schema: str = Field(
-        min_length=1,
-        description="Схема postgres, в которой живут таблицы.",
-    )
-    encryption_key: SecretStr = Field(
-        default=SecretStr(""),
-        description=(
-            "Ключ шифрования значений: 32 байта в base64. Сгенерировать — "
-            'python -c "import base64,secrets;'
-            'print(base64.b64encode(secrets.token_bytes(32)).decode())"'
-        ),
-    )
-    seal_ttl_sec: int = Field(
-        default=600,
-        gt=0,
-        description=(
-            "Срок годности соединения, запечатанного для сервера инструментов, "
-            "в секундах: сервер отвергает значение старше этого срока."
-        ),
-    )
-
-    @field_validator("encryption_key")
-    @classmethod
-    def _validate_key(cls, value: SecretStr) -> SecretStr:
-        raw = value.get_secret_value()
-        if not raw:
-            return value
-
-        try:
-            decoded = base64.b64decode(raw, validate=True)
-        except (binascii.Error, ValueError) as e:
-            msg = (
-                f"[connections].encryption_key: expected {cls.KEY_BYTES} bytes "
-                f"in base64, got a value that does not decode: {e}"
-            )
-            raise ValueError(msg) from e
-
-        if len(decoded) != cls.KEY_BYTES:
-            msg = (
-                f"[connections].encryption_key: expected {cls.KEY_BYTES} bytes "
-                f"in base64, got {len(decoded)} bytes"
-            )
-            raise ValueError(msg)
-
-        return value
-
-    def key_bytes(self) -> bytes:
-        raw = self.encryption_key.get_secret_value()
-        if not raw:
-            msg = (
-                "[connections].encryption_key is not set: expected "
-                f"{self.KEY_BYTES} bytes in base64 to encrypt stored profiles"
-            )
-            raise ValueError(msg)
-
-        return base64.b64decode(raw, validate=True)
-
-    def require_conn(self) -> PostgresConfig:
-        if self.connection is None:
-            msg = (
-                "[connections].connection is not set: expected a postgres "
-                'reference such as connection = "${postgres}"'
-            )
-            raise ValueError(msg)
-
-        return self.connection
-
-
 class ConnectionStore(PostgresTable, ConnectionRepository):
     """CRUD над connections/roles/grants: наружу — модели, в базе — шифротекст.
 
@@ -179,92 +89,17 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
 
     def __init__(
         self,
-        cfg: ConnectionsConfig,
+        pool: PostgresPool,
+        db_schema: str,
+        cipher: SecretCipher,
         types: ConnectionTypes,
-        pool: PostgresPool | None = None,
     ) -> None:
-        postgres = cfg.connection
-        if pool is None:
-            postgres = cfg.require_conn()
-
-        super().__init__(postgres, cfg.db_schema, pool)
-        self._cfg = cfg
+        super().__init__(None, db_schema, pool)
         self._types = types
-        self._cipher = SecretCipher(cfg.key_bytes())
+        self._cipher = cipher
 
     def _failure(self, action: str, exc: Exception) -> Exception:
         return ConnectionStoreError(self._detail(action, exc))
-
-    async def setup(self) -> None:
-        """Схема и три таблицы; повтор безвреден."""
-        ddl = (*self._connections_ddl(), *self._roles_ddl(), *self._grants_ddl())
-        await self._apply_ddl(ddl)
-
-        logger.info("connections ready: %s", self.schema)
-
-    def _connections_ddl(self) -> tuple[PgQuery, ...]:
-        return (
-            self._query()
-            .add(
-                """
-                create table if not exists {schema}.connections (
-                    id   uuid primary key default gen_random_uuid(),
-                    name text not null,
-                    data jsonb not null default '{{}}'::jsonb
-                )
-                """
-            )
-            .build(),
-            self._query()
-            .add(
-                """
-                create index if not exists idx_connections_kind
-                    on {schema}.connections ((data ->> 'kind'))
-                """
-            )
-            .build(),
-        )
-
-    def _roles_ddl(self) -> tuple[PgQuery, ...]:
-        return (
-            self._query()
-            .add(
-                """
-                create table if not exists {schema}.roles (
-                    id        uuid primary key default gen_random_uuid(),
-                    role      varchar not null unique,
-                    create_at timestamptz not null default now()
-                )
-                """
-            )
-            .build(),
-        )
-
-    def _grants_ddl(self) -> tuple[PgQuery, ...]:
-        return (
-            self._query()
-            .add(
-                """
-                create table if not exists {schema}.grants (
-                    id          uuid primary key default gen_random_uuid(),
-                    src_kind    varchar not null,
-                    src_kind_id uuid not null,
-                    tgt_kind    varchar not null,
-                    tgt_kind_id uuid not null,
-                    unique (src_kind, src_kind_id, tgt_kind, tgt_kind_id)
-                )
-                """
-            )
-            .build(),
-            self._query()
-            .add(
-                """
-                create index if not exists idx_grants_target
-                    on {schema}.grants (tgt_kind, tgt_kind_id)
-                """
-            )
-            .build(),
-        )
 
     async def sync_roles(self, names: Iterable[str]) -> None:
         """Добавляет в roles имена, которых там ещё нет; ничего не удаляет."""

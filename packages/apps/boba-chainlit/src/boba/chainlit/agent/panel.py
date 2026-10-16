@@ -20,12 +20,12 @@ from typing import Any, ClassVar
 from acp.experimental.v2 import schema
 from pydantic import SecretStr
 
+from boba.agent.records import PermissionMode
 from boba.chainlit.agent.chat import ConfigCategory, SessionOptions
 from boba.chainlit.agent.settings import (
     AgentSettingsChange,
     AgentSettingsError,
     ChatAgentSettings,
-    PermissionModeName,
     UserAgentSettings,
 )
 from boba.chainlit.chat.panel_text import PanelText
@@ -115,7 +115,7 @@ class AgentPanel:
         if self._allowed():
             user = self._parsed_user(form)
 
-        mode: PermissionModeName | None = None
+        mode: PermissionMode | None = None
         if chosen := self._chosen(form, ConfigCategory.MODE):
             mode = self._mode(chosen)
 
@@ -247,14 +247,14 @@ class AgentPanel:
         return value
 
     @staticmethod
-    def _mode(value: str) -> PermissionModeName:
+    def _mode(value: str) -> PermissionMode:
         """Ошибки:
         AgentSettingsError — режим агента, которого чат не знает.
         """
         try:
-            return PermissionModeName(value)
+            return PermissionMode(value)
         except ValueError as exc:
-            known = [mode.value for mode in PermissionModeName]
+            known = [mode.value for mode in PermissionMode]
             msg = (
                 f"settings panel: permission mode {value!r} is offered by the "
                 f"agent but unknown to the chat, expected one of {known}"

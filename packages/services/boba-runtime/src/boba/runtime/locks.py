@@ -15,7 +15,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any, ClassVar
 from uuid import UUID
 
-from boba.db.postgres import Cursor, PgQuery, PostgresPool, PostgresTable
+from boba.db.postgres import Cursor, PostgresPool, PostgresTable
 from boba.db.postgres.connection import PostgresConfig
 from boba.identity.context import Scope, ScopeKind
 from boba.identity.locks import (
@@ -30,8 +30,7 @@ from boba.identity.locks import (
     StaleLock,
 )
 from boba.messaging import MessageBusError
-from boba.messaging.bus import LiveInstancesColumn, LiveTable
-from boba.runtime.bus import ScopeKindCheck
+from boba.messaging.bus import LiveInstancesColumn
 from boba.runtime.config import AppName, ClusterConfig
 from boba.runtime.payloads import PayloadStoreError
 
@@ -64,7 +63,6 @@ class PgLiveLocks(PostgresTable, LiveLocks):
         self._instance = instance
         self._app = app
         self._cluster = cluster
-        self._scope_kind_check = ScopeKindCheck(db_schema)
 
     @property
     def instance(self) -> str:
@@ -229,47 +227,6 @@ class PgLiveLocks(PostgresTable, LiveLocks):
         touched = await self._execute(query, f"heartbeat of token {token.value}")
 
         return touched == 1
-
-    async def setup(self) -> None:
-        """Создаёт live_locks; live_instances, на которую она ссылается, создаёт
-        шина, поэтому шина поднимается первой.
-        """
-        ddl: tuple[PgQuery, ...] = (
-            self._query()
-            .add(
-                """
-                create unlogged table if not exists {schema}.live_locks (
-                    scope_kind   text not null,
-                    scope_id     uuid not null,
-                    mode         text not null
-                        check (mode in ('exclusive', 'shared')),
-                    holder       text not null
-                        references {schema}.live_instances (instance_id)
-                        on delete cascade,
-                    token        uuid not null,
-                    purpose      text not null
-                        check (purpose in ('turn', 'run', 'tool_call', 'cleanup')),
-                    user_id      uuid not null,
-                    acquired_at  timestamptz not null default now(),
-                    heartbeat_at timestamptz not null default now(),
-                    ttl_sec      integer not null check (ttl_sec > 0),
-                    primary key (scope_kind, scope_id, token)
-                )
-                """
-            )
-            .build(),
-            self._query()
-            .add(
-                """
-                create index if not exists idx_live_locks_scope
-                on {schema}.live_locks (scope_kind, scope_id)
-                """
-            )
-            .build(),
-            self._scope_kind_check.of(LiveTable.LOCKS),
-        )
-
-        await self._apply_ddl(ddl)
 
     async def register_instance(self) -> None:
         """Записывает инстанс в live_instances или подтверждает его жизнь: строка

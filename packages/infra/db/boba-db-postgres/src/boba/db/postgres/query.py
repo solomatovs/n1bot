@@ -10,7 +10,7 @@ QueryBuildError — кусок ждёт плейсхолдер, которому
 from __future__ import annotations
 
 from collections.abc import Mapping
-from pathlib import Path
+from importlib.resources.abc import Traversable
 from typing import Any, LiteralString, Self, cast
 
 from psycopg import sql
@@ -66,7 +66,7 @@ class PgQueryBuilder(QueryBuilder[sql.Composed]):
 
         return self.add(text, **bind)
 
-    def from_file(self, path: Path, /, **bind: Any) -> Self:
+    def from_file(self, path: Traversable, /, **bind: Any) -> Self:
         """Кусок из файла пакета: текст читается целиком и добавляется как add."""
         text = path.read_text(encoding="utf-8")
 

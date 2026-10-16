@@ -19,7 +19,15 @@ from pathlib import Path
 from typing import Annotated, Any, ClassVar, Literal, Self
 
 from omegaconf import DictConfig
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    Base64Bytes,
+    BaseModel,
+    ConfigDict,
+    Field,
+    Secret,
+    field_validator,
+    model_validator,
+)
 
 from boba.access import RoleConfig
 from boba.auth.config import (
@@ -43,8 +51,8 @@ __all__ = [
     "ConfigFiles",
     "ConfigLayoutError",
     "ConfigLocator",
-    "DataLayerConfig",
     "EnvOverride",
+    "KeysConfig",
     "LocalMessagingConfig",
     "MessagingConfig",
     "PostgresMessagingConfig",
@@ -305,27 +313,6 @@ class RawConfig:
         return cls._raw
 
 
-class DataLayerConfig(BaseModel):
-    """Конфиг chainlit data layer: postgres-подключение + схема БД."""
-
-    model_config = ConfigDict(extra="ignore", populate_by_name=True)
-
-    postgres: Annotated[
-        PostgresConfig,
-        Field(
-            description=(
-                "Подключение и пул; в конфиге подключается ссылкой ${postgres}."
-            ),
-        ),
-    ]
-
-    db_schema: str = Field(
-        default="public",
-        alias="schema",
-        description="Схема таблиц data layer; PostgresDataLayer квалифицирует ею SQL.",
-    )
-
-
 class StreamJournalConfig(BaseModel):
     """Журнал живого вывода инструментов: служебный том на пользователя."""
 
@@ -435,21 +422,12 @@ class LocalMessagingConfig(BaseModel):
 
 
 class PostgresMessagingConfig(BaseModel):
-    """Шина сообщений в Postgres: доставка между инстансами через LISTEN/NOTIFY."""
+    """Шина сообщений в Postgres: доставка между инстансами через LISTEN/NOTIFY.
+    Таблицы live_* живут в схеме приложения на пуле процесса."""
 
-    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+    model_config = ConfigDict(extra="ignore")
 
     provider: Literal["postgres"]
-
-    postgres: PostgresConfig = Field(
-        description="Подключение и пул; в конфиге подключается ссылкой ${postgres}.",
-    )
-
-    db_schema: str = Field(
-        min_length=1,
-        alias="schema",
-        description="Схема таблиц шины live_*: общая для всех приложений кластера.",
-    )
 
 
 MessagingConfig = Annotated[
@@ -457,6 +435,24 @@ MessagingConfig = Annotated[
     Field(discriminator="provider"),
 ]
 """Discriminated union по provider — точная диагностика ошибок валидации."""
+
+
+class KeysConfig(BaseModel):
+    """Секция [keys]: общие ключи процесса. Код читает только ключ шифрования
+    значений в таблицах (соединения, настройки агента); остальные ключи —
+    секрет сессии, подпись proxy, секрет клиента MCP — секции берут ссылками
+    ${keys.*}."""
+
+    model_config = ConfigDict(frozen=True, hide_input_in_errors=True)
+
+    encryption: Secret[Annotated[Base64Bytes, Field(min_length=32, max_length=32)]] = (
+        Field(
+            description=(
+                "Ключ шифрования значений: 32 байта в base64; смена ключа делает "
+                "сохранённые секреты нечитаемыми."
+            ),
+        )
+    )
 
 
 class TokenConfig(BaseModel):
@@ -589,10 +585,18 @@ class ProcessConfig(BaseModel):
     Базовая для RuntimeConfig (чат) и конфига сервиса boba-mcp.
     """
 
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
     SECTION: ClassVar[str] = "app"
 
+    db_schema: str = Field(
+        alias="schema",
+        min_length=1,
+        description=(
+            "Схема хранения приложения: в ней все его таблицы; плагины берут "
+            "её ссылкой ${app.schema}."
+        ),
+    )
     krb: KerberosWorkspaceConfig
     auth: list[AuthConfig]
     logger: dict[str, Any] = Field(default_factory=ProcessLogging.default)
@@ -671,23 +675,18 @@ class ProcessConfig(BaseModel):
 
 class RuntimeConfig(ProcessConfig):
     """Секции [app] приложения с браузером: к секциям процесса добавлены
-    профили и роли чата, data layer, браузерная часть сессии, шина сообщений
-    и узел кластера."""
+    подключение процесса, профили и роли чата, браузерная часть сессии, шина
+    сообщений и узел кластера."""
 
+    postgres: PostgresConfig = Field(
+        description=(
+            "Подключение процесса ссылкой ${postgres}: по нему открывается "
+            "единственный пул, его получают все таблицы приложения."
+        ),
+    )
+    keys: KeysConfig
     profiles: dict[str, ChatProfileConfig]
     roles: dict[str, RoleConfig]
-    data_layer: DataLayerConfig
     session: SessionConfig
     cluster: ClusterConfig
     messaging: MessagingConfig
-
-    def pg_messaging(self) -> PostgresMessagingConfig:
-        """Секция [messaging] postgres-провайдера; при local — RuntimeError."""
-        if isinstance(self.messaging, PostgresMessagingConfig):
-            return self.messaging
-
-        msg = (
-            "[messaging]: a postgres provider is required here, "
-            f"got provider = {self.messaging.provider!r}"
-        )
-        raise RuntimeError(msg)

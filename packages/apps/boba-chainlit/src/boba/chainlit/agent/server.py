@@ -1,30 +1,31 @@
 """Чат как сервер инструментов своего агента: MCP-сервер инструментов
-соединений под `[agent.chat_mcp].path`, обработчик хука PreToolUse под
-`[agent.hook].path` и ключи процессов агента, по которым входы и
-ретранслятор mcp/message узнают вызывающего.
+соединений под `[agent.chat_mcp].path`, запечатывание соединений в вызовах
+агента и ключи процессов агента, по которым вход и ретранслятор mcp/message
+узнают вызывающего.
 
 Ключ процесса — serverId, который запуск агента (AgentLauncher) выдаёт на
 каждый сервер процесса и объявляет агенту записью type "acp"; токен входа
-пользователя агенту не передаётся. Оба HTTP-входа живут в FastAPI chainlit
-и принимают такой ключ Bearer-токеном: сервер инструментов чата зовёт
+пользователя агенту не передаётся. HTTP-вход сервера инструментов чата
+живёт в FastAPI chainlit и принимает такой ключ Bearer-токеном: его зовёт
 ретранслятор ключом регистрации сервера чата. По ключу чат находит запись
 его держателя (ProcessKeys): пользователя, тред, профиль треда и сервер;
 роли и секреты входа читаются из живой сессии пользователя в момент вызова.
 Сессий MCP нет: сервер stateless streamable HTTP, собран из общего адаптера
 boba.mcp_adapter; инструменты — собственные инструменты чата из реестра
 (connection_list, connection_search) по ролям пользователя и профилю треда.
-Запечатывание (HookSealing) находит по схеме инструмента
-параметры-соединения (SealedParamSchema), заменяет имя соединения профилем,
-запечатанным ключом сервера MCP из `mcp_server.features` (SealFeature), и
-отвечает `updatedInput`; неизвестное или невыданное соединение — `deny` с
-причиной.
+Запечатывание (CallSealing) находит по схеме инструмента
+параметры-соединения (SealedParamSchema) и заменяет имя соединения профилем,
+запечатанным ключом сервера MCP из его возможностей (SealFeature);
+неизвестное или невыданное соединение — отказ с причиной.
 
 Ошибки:
 AuthenticationError — ключа нет, он неизвестен или снят либо сессия его
     держателя больше не несёт годного входа: вход отвечает 401.
-ConnectionStoreError — таблица соединений недоступна: обработчик отвечает
-    500, агент блокирует вызов по onFailure.
-KerberosError — билет к соединению не выпущен: то же.
+RefusalError — соединение неизвестно, не выдано пользователю или сервер
+    инструмента не принимает соединений.
+ToolConfigError — соединение не годится инструменту.
+ConnectionStoreError — таблица соединений недоступна.
+KerberosError — билет к соединению не выпущен.
 """
 
 from __future__ import annotations
@@ -37,7 +38,6 @@ from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, replace
 from datetime import timedelta
 from enum import StrEnum
-from http import HTTPStatus
 from typing import Any, ClassVar
 from uuid import UUID, uuid4
 
@@ -50,20 +50,10 @@ from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
 from fastmcp.tools.base import ToolResult
 from mcp.server.auth.provider import AccessToken
 from pydantic import ValidationError
-from starlette.requests import Request
-from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
-from boba.agent.hooks import (
-    HookDecision,
-    HookEventName,
-    HookReplyBody,
-    HookSpecificOutput,
-    McpServerInfo,
-    PreToolUseEvent,
-)
 from boba.cancellation import RunCancellation, StopReason
-from boba.chainlit.agent.config import ChatMcpConfig, HookConfig
+from boba.chainlit.agent.config import ChatMcpConfig
 from boba.chainlit.infra.session import LiveSignIn
 from boba.connection_broker.user_connections import ArmedConnections
 from boba.connections.marks import ConnectionRefusal
@@ -84,23 +74,21 @@ from boba.identity.context import (
 from boba.identity.errors import AuthenticationError, RefusalError
 from boba.identity.run import Runs
 from boba.mcp_adapter import CallerServers, McpReplies, McpToolProvider
-from boba.runtime.http import RequestTokens
 from boba.toolkit.dag import ToolServer
 from boba.toolkit.failure import ValidationText
 from boba.toolkit.result import ErrorResult
 from boba.toolrun.hosted import DirectCalls
-from boba.toolrun.injected import ToolConfigError
 from boba.toolrun.registry import ToolRegistry
 
 __all__ = [
+    "CallSealing",
     "ChatCaller",
     "ChatCallers",
     "ChatMcpServer",
     "ChatTokenVerifier",
     "ChatToolServers",
-    "HookSealing",
     "KeyHolder",
-    "PreToolUseHandler",
+    "McpServerInfo",
     "ProcessKeys",
 ]
 
@@ -119,19 +107,6 @@ class HttpMethod(StrEnum):
     GET = "GET"
     POST = "POST"
     DELETE = "DELETE"
-
-
-class ResponseHeader(StrEnum):
-    """Заголовки отказа входа по форме RFC 6750."""
-
-    CHALLENGE = "WWW-Authenticate"
-    BEARER = "Bearer"
-
-
-class DetailKey(StrEnum):
-    """Ключ текста отказа в JSON-ответе входа, как у chainlit."""
-
-    DETAIL = "detail"
 
 
 @dataclass(frozen=True)
@@ -160,8 +135,8 @@ class ProcessKeys:
     Создаётся провайдером процесса, один на инстанс. Запуск агента
     регистрирует серверы процесса (register): ключ каждого — serverId его
     объявления агенту; при остановке и перезапуске ключи снимаются
-    (revoke). Ретранслятор mcp/message, сервер инструментов чата и
-    обработчик хука находят по ключу держателя (holder). Реестр живёт в
+    (revoke). Ретранслятор mcp/message и сервер инструментов чата находят
+    по ключу держателя (holder). Реестр живёт в
     памяти: процесс агента — потомок этого же инстанса и с его рестартом не
     остаётся.
     """
@@ -212,8 +187,8 @@ class ChatCallers:
     """Вызывающий по Bearer ключу процесса агента.
 
     Создаётся провайдером процесса; им пользуются сервер инструментов (порт
-    по ролям и профилю), обработчик хука и ретранслятор mcp/message (субъект
-    и креды для соединений).
+    по ролям и профилю) и ретранслятор mcp/message (субъект и креды для
+    соединений).
     Держателя ключа отдаёт реестр ProcessKeys; роли и секреты входа читаются
     из живой сессии держателя.
     """
@@ -416,15 +391,23 @@ class ChatMcpServer:
         return self._app.router.lifespan_context(self._app)
 
 
-class HookSealing:
+@dataclass(frozen=True)
+class McpServerInfo:
+    """Сервер MCP вызываемого инструмента и возможности, которые он объявил:
+    по ним запечатывание находит ключ сервера."""
+
+    name: str
+    features: Mapping[str, Mapping[str, object]]
+
+
+class CallSealing:
     """Запечатывание соединений в аргументах вызова инструмента сервера MCP:
     имя соединения пользователя заменяется профилем, запечатанным ключом
     сервера, либо вызов получает отказ.
 
-    Создаётся провайдером hook_sealing; зовут ретранслятор mcp/message
-    (seal) и обработчик хука PreToolUse (reply — та же логика в форме
-    ответа хука). Какие аргументы — соединения и какого вида, читает из
-    схемы инструмента (SealedParamSchema); ключ сервера — из объявленных им
+    Создаётся провайдером call_sealing; зовёт ретранслятор mcp/message.
+    Какие аргументы — соединения и какого вида, читает из схемы
+    инструмента (SealedParamSchema); ключ сервера — из объявленных им
     возможностей (SealFeature); соединение пользователя по виду и имени
     берёт ArmedConnections в контексте вызывающего.
     """
@@ -442,36 +425,12 @@ class HookSealing:
         self._ttl = ttl
         self._declared = SealedParamSchema()
 
-    async def reply(self, event: PreToolUseEvent, caller: ChatCaller) -> HookReplyBody:
-        """Ошибки:
-        ConnectionStoreError — таблица соединений недоступна.
-        KerberosError — билет к соединению не выпущен.
-        """
-        try:
-            updated = await self.seal(
-                event.tool_name,
-                event.tool_input,
-                event.tool_schema,
-                event.mcp_server,
-                caller,
-            )
-        except (RefusalError, ToolConfigError) as exc:
-            logger.warning(
-                "hook: sealing connections of %s for %s refused: %s",
-                event.tool_name,
-                caller.subject.login,
-                exc,
-            )
-            return self._decided(HookDecision.DENY, f"{event.tool_name}: {exc}", None)
-
-        return self._decided(HookDecision.ALLOW, "", updated)
-
     async def seal(
         self,
         tool: str,
         arguments: Mapping[str, Any],
         tool_schema: Mapping[str, Any],
-        server: McpServerInfo | None,
+        server: McpServerInfo,
         caller: ChatCaller,
     ) -> dict[str, Any]:
         """Аргументы вызова tool с запечатанными соединениями на месте имён;
@@ -490,7 +449,7 @@ class HookSealing:
         if not kinds:
             return updated
 
-        seal = ConnectionSeal(self._key(tool, server))
+        seal = ConnectionSeal(self._key(server))
         with self._contexts.applied(self._callers.context(caller)):
             for param, kind in kinds.items():
                 name = updated.get(param)
@@ -511,19 +470,12 @@ class HookSealing:
 
         return updated
 
-    def _key(self, tool: str, server: McpServerInfo | None) -> SealKey:
+    def _key(self, server: McpServerInfo) -> SealKey:
         """Ключ сервера инструмента из возможностей, которые он объявил.
 
         Ошибки:
-        RefusalError — сервера у инструмента нет либо он не принимает соединений.
+        RefusalError — сервер не принимает соединений.
         """
-        if server is None:
-            msg = (
-                f"{tool} is not a tool of an MCP server, so a connection "
-                "cannot be sent to it sealed"
-            )
-            raise RefusalError(ConnectionRefusal.SEAL_KEY_UNKNOWN, msg)
-
         declared = server.features.get(SealFeature.ID)
         if declared is None:
             msg = (
@@ -540,80 +492,3 @@ class HookSealing:
                 f"not carry an encryption key: {ValidationText.of(exc)}"
             )
             raise RefusalError(ConnectionRefusal.SEAL_KEY_UNKNOWN, msg) from exc
-
-    @staticmethod
-    def _decided(
-        decision: HookDecision, reason: str, updated: Mapping[str, Any] | None
-    ) -> HookReplyBody:
-        return HookReplyBody(
-            hook_specific_output=HookSpecificOutput(
-                hook_event_name=HookEventName.PRE_TOOL_USE.value,
-                permission_decision=decision,
-                permission_decision_reason=reason,
-                updated_input=updated,
-            )
-        )
-
-
-class PreToolUseHandler:
-    """HTTP-обработчик хука PreToolUse агента под `[agent.hook].path`.
-
-    Создаётся провайдером процесса, маршрут ставит bootstrap. Запрос: Bearer
-    ключ процесса агента и JSON события по форме хуков (PreToolUseEvent); ответ — JSON
-    по форме ответа (HookReplyBody): `allow` с `updatedInput`, где имена
-    соединений заменены запечатанными профилями, либо `deny` с причиной.
-    """
-
-    def __init__(
-        self,
-        config: HookConfig,
-        tokens: RequestTokens,
-        callers: ChatCallers,
-        sealing: HookSealing,
-    ) -> None:
-        self._path = config.path
-        self._tokens = tokens
-        self._callers = callers
-        self._sealing = sealing
-
-    def route(self) -> Route:
-        return Route(self._path, self.handle, methods=[HttpMethod.POST.value])
-
-    async def handle(self, request: Request) -> Response:
-        token = self._tokens.of_request(request)
-        if token is None:
-            return self._unauthorized(
-                "the hook request carries no bearer token, expected the "
-                "key of the agent process"
-            )
-
-        try:
-            caller = self._callers.of_key(token)
-        except AuthenticationError as exc:
-            return self._unauthorized(str(exc))
-
-        try:
-            event = PreToolUseEvent.model_validate(await request.json())
-        except (ValueError, ValidationError) as exc:
-            return JSONResponse(
-                {
-                    DetailKey.DETAIL.value: (
-                        f"the hook request body is not a PreToolUse event: {exc}"
-                    )
-                },
-                status_code=HTTPStatus.BAD_REQUEST,
-            )
-
-        reply = await self._sealing.reply(event, caller)
-
-        return JSONResponse(
-            reply.model_dump(mode="json", by_alias=True, exclude_none=True)
-        )
-
-    @staticmethod
-    def _unauthorized(message: str) -> Response:
-        return JSONResponse(
-            {DetailKey.DETAIL.value: message},
-            status_code=HTTPStatus.UNAUTHORIZED,
-            headers={ResponseHeader.CHALLENGE.value: ResponseHeader.BEARER.value},
-        )

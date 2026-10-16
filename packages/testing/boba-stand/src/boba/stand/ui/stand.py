@@ -155,14 +155,13 @@ class StandCredential:
 @dataclass(frozen=True)
 class StandAppTraits:
     """Чем приложения стенда отличаются друг от друга: модуль запуска, корень
-    рантайма, конфиг, проба готовности и секция хранения."""
+    рантайма, конфиг и проба готовности."""
 
     module: str
     base: StandPaths
     conf: StandPaths
     """Каталог общего конфига приложения и его плагинов в пакете."""
     ready_path: str
-    data_layer_section: str
 
 
 class StandApp(StrEnum):
@@ -178,14 +177,12 @@ class StandApp(StrEnum):
                 base=StandPaths.CHAINLIT_BASE,
                 conf=StandPaths.CHAINLIT_CONF,
                 ready_path="/",
-                data_layer_section="data_layer",
             ),
             StandApp.MCP: StandAppTraits(
                 module="boba.mcp_server",
                 base=StandPaths.MCP_BASE,
                 conf=StandPaths.MCP_CONF,
                 ready_path="/health",
-                data_layer_section="data_layer",
             ),
         }
 
@@ -238,11 +235,6 @@ class StandApp(StrEnum):
     def ready_path(self) -> str:
         """Путь готовности под префиксом приложения."""
         return self.traits().ready_path
-
-    @property
-    def data_layer_section(self) -> str:
-        """Секция конфига со схемой хранения приложения."""
-        return self.traits().data_layer_section
 
 
 class StandService(Protocol):
@@ -530,10 +522,9 @@ class StandPlugins:
     """Файлы conf/plugins приложения стенда рядом с его конфигом: загрузчик
     требует файл на каждый установленный плагин.
 
-    Создаётся конфигом приложения на запись. У чата инструменты исполняет
-    сервис boba-mcp, поэтому включён остаётся только его собственный плагин
-    соединений; у сервиса без песочницы выключены инструменты, которым
-    нужна она или внешние сервисы.
+    Создаётся конфигом приложения на запись. У чата файлов плагинов нет:
+    инструменты исполняет сервис boba-mcp; у сервиса без песочницы
+    выключены инструменты, которым нужна она или внешние сервисы.
     """
 
     SANDBOXED: ClassVar[tuple[str, ...]] = (
@@ -550,9 +541,6 @@ class StandPlugins:
         "describer",
     )
     """Инструменты, которым нужна песочница или внешние сервисы."""
-
-    CHAT_OWN: ClassVar[tuple[str, ...]] = ("connections",)
-    """Плагины, которые чат исполняет сам."""
 
     def __init__(self, app: StandApp, sandbox: bool, extra: Sequence[str] = ()) -> None:
         self._app = app
@@ -572,9 +560,6 @@ class StandPlugins:
             (target / path.name).write_text(TomlText.dumps(doc), encoding="utf-8")
 
     def _enabled(self, plugin: str) -> bool:
-        if self._app is StandApp.CHAINLIT:
-            return plugin in self.CHAT_OWN
-
         if plugin in self._extra:
             return True
 
@@ -616,14 +601,10 @@ class StandConfig(StandService):
     """Порт сервиса boba-mcp стенда чата."""
 
     agent_history: dict[str, Any] = field(
-        default_factory=lambda: {
-            "kind": "postgres",
-            "postgres": "${postgres}",
-            "schema": "boba",
-        }
+        default_factory=lambda: {"kind": "postgres", "schema": "boba"}
     )
-    """Секция [agent.history] чата: по умолчанию Postgres стенда тем же
-    подключением, что у чата (kerberos), схема boba в базе стенда."""
+    """Секция [agent.history] чата: по умолчанию Postgres стенда подключением
+    процесса [postgres] (kerberos), схема boba в базе стенда."""
 
     agent_process: dict[str, Any] = field(
         default_factory=lambda: {
@@ -636,10 +617,6 @@ class StandConfig(StandService):
 
     agent_chat_mcp: bool = True
     """Объявлять ли агенту сервер инструментов чата /chat/mcp."""
-
-    agent_hook: bool = True
-    """Поднимать ли в чате HTTP-вход хука PreToolUse; соединения в вызовах
-    агента запечатывает ретранслятор чата и без него."""
 
     generation: str = ""
     """Поколение сессий: пустое — случайное на каждый старт процесса; общее у
@@ -757,6 +734,7 @@ class StandConfig(StandService):
         private_dir.mkdir(parents=True, exist_ok=True)
         doc["agent"] = {
             "public_url": self.base_url,
+            "seal_ttl_sec": 600,
             "process": {
                 "command": self.agent_process["command"],
                 "args": self.agent_process["args"],
@@ -772,10 +750,6 @@ class StandConfig(StandService):
                 "path": "/chat/mcp",
                 "connect_timeout_sec": 10,
                 "call_timeout_sec": 120,
-            },
-            "hook": {
-                "enable": self.agent_hook,
-                "path": "/chat/hooks/pre-tool-use",
             },
             "limits": {"context_window": 200000, "max_output_tokens": 4096},
         }

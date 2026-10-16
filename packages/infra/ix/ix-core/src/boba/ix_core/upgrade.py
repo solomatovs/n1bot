@@ -1,11 +1,12 @@
 """Накат схемы в базу ix: ядро пакетом ix-core, свои таблицы каждым пакетом.
 
-Файлы schema/*.sql применяются по порядку имён, каждый файл одной командой
-psycopg в autocommit; схема подставляется в `{schema}` перед отправкой. Файл
-самодостаточен: значения enum, добавленные `alter type ... add value`, нельзя
-использовать в своей же транзакции, поэтому пакет кладёт их отдельным файлом,
-а их использование следующим. Файлы идемпотентны (`if not exists`,
-`on conflict do nothing`), повторный накат безопасен.
+Файлы schema/*.sql применяет PostgresSchema.apply_files: по порядку имён,
+каждый файл своей транзакцией под замком DDL схемы, схема подставляется в
+`{schema}`. Файл самодостаточен: значения enum, добавленные
+`alter type ... add value`, нельзя использовать в своей же транзакции,
+поэтому пакет кладёт их отдельным файлом, а их использование следующим.
+Файлы идемпотентны (`if not exists`, `on conflict do nothing`), повторный
+накат безопасен.
 
 После файлов проверяется всё, что владельцы объявили в ядре: тело объявления аспекта
 выполняется с limit 0 и сверяется с контрактом, таблица индекса — на существование и
@@ -24,7 +25,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
-from pathlib import Path
+from importlib.resources.abc import Traversable
 from typing import Any
 
 import psycopg
@@ -76,26 +77,19 @@ class SchemaUpgrade:
     сессии приходят секцией IxDatabase приложения.
     """
 
-    def __init__(self, schema_dir: Path, *, requires_core: bool = True) -> None:
+    def __init__(self, schema_dir: Traversable, *, requires_core: bool = True) -> None:
         self._schema_dir = schema_dir
         self._requires_core = requires_core
 
     async def run(self, database: IxDatabase) -> UpgradeReport:
-        files = self._files()
+        schema = PostgresSchema(database.db_schema)
 
         try:
             async with await AsyncPostgresPool.dedicated(database.postgres) as conn:
                 if self._requires_core:
                     await self._validate_core_layer_exists(conn, database.db_schema)
 
-                for path in files:
-                    logger.info("applying %s", path.name)
-                    query = (
-                        PgQueryBuilder(schema=sql.Identifier(database.db_schema))
-                        .from_file(path)
-                        .build()
-                    )
-                    await conn.execute(query.text, query.params)
+                applied = await schema.apply_files(conn, self._schema_dir, {})
 
                 registry = IxRegistry(database.db_schema)
                 await self._check_declarations(conn, registry)
@@ -125,19 +119,7 @@ class SchemaUpgrade:
             msg = f"upgrade {self._schema_dir}: describe prompt rejected: {exc}"
             raise SchemaUpgradeError(msg) from exc
 
-        return UpgradeReport(files=[path.name for path in files])
-
-    def _files(self) -> list[Path]:
-        if not self._schema_dir.is_dir():
-            msg = f"upgrade: schema directory {self._schema_dir} does not exist"
-            raise SchemaUpgradeError(msg)
-
-        files = sorted(self._schema_dir.glob("*.sql"))
-        if not files:
-            msg = f"upgrade: no *.sql files under {self._schema_dir}"
-            raise SchemaUpgradeError(msg)
-
-        return files
+        return UpgradeReport(files=applied)
 
     async def _check_declarations(
         self, conn: psycopg.AsyncConnection[Any], registry: IxRegistry

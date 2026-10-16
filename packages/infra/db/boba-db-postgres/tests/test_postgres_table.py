@@ -1,5 +1,5 @@
-"""PostgresTable на живой базе стенда: DDL под замком, запросы, граница ошибок
-слоя, проверка раскладки и перенос таблиц между схемами.
+"""PostgresTable и PostgresSchema на живой базе стенда: файлы схемы под
+замком, запросы, граница ошибок слоя и проверка раскладки.
 
 pytest -m integration.
 """
@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import ClassVar
 
 import pytest
@@ -16,7 +17,6 @@ from psycopg import sql
 from boba.db.postgres import (
     AdvisoryLock,
     AsyncPostgresPool,
-    PgQuery,
     PgQueryBuilder,
     PostgresError,
     PostgresSchema,
@@ -26,7 +26,12 @@ from boba.db.postgres import (
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
 SCHEMA = "table_test"
-OTHER = "table_test_other"
+NOTES_SQL = """
+create table if not exists {schema}.notes (
+    id   serial primary key,
+    text text not null
+);
+"""
 
 
 class NotesError(Exception):
@@ -40,23 +45,6 @@ class NotesTable(PostgresTable):
 
     def _failure(self, action: str, exc: Exception) -> Exception:
         return NotesError(self._detail(action, exc))
-
-    def ddl(self) -> tuple[PgQuery, ...]:
-        return (
-            self._query()
-            .add(
-                """
-                create table if not exists {schema}.notes (
-                    id   serial primary key,
-                    text text not null
-                )
-                """
-            )
-            .build(),
-        )
-
-    async def setup(self) -> None:
-        await self._apply_ddl(self.ddl())
 
     async def add(self, text: str) -> int:
         query = (
@@ -106,19 +94,66 @@ async def _drop(pool: AsyncPostgresPool, *schemas: str) -> None:
 
 
 @pytest.fixture
-async def notes(pool: AsyncPostgresPool) -> AsyncIterator[NotesTable]:
-    await _drop(pool, SCHEMA, OTHER)
-    table = NotesTable(None, SCHEMA, pool)
-    await table.setup()
+def schema_dir(tmp_path: Path) -> Path:
+    """Каталог файлов схемы тестового пакета: заметки и индекс по тексту."""
+    directory = tmp_path / "schema"
+    directory.mkdir()
+    (directory / "10_notes.sql").write_text(NOTES_SQL, encoding="utf-8")
+    (directory / "20_index.sql").write_text(
+        "create index if not exists idx_notes_text on {schema}.notes (text);",
+        encoding="utf-8",
+    )
+
+    return directory
+
+
+@pytest.fixture
+async def notes(pool: AsyncPostgresPool, schema_dir: Path) -> AsyncIterator[NotesTable]:
+    await _drop(pool, SCHEMA)
+    async with pool.connection() as conn:
+        await PostgresSchema(SCHEMA).apply_files(conn, schema_dir, {})
+
     try:
-        yield table
+        yield NotesTable(None, SCHEMA, pool)
     finally:
-        await _drop(pool, SCHEMA, OTHER)
+        await _drop(pool, SCHEMA)
 
 
-async def test_ddl_is_idempotent_and_queries_round_trip(notes: NotesTable) -> None:
-    await notes.setup()
+async def test_files_apply_in_order_and_repeat_harmlessly(
+    pool: AsyncPostgresPool, schema_dir: Path, notes: NotesTable
+) -> None:
+    async with pool.connection() as conn:
+        applied = await PostgresSchema(SCHEMA).apply_files(conn, schema_dir, {})
 
+    assert applied == ["10_notes.sql", "20_index.sql"]
+    assert await notes.texts() == []
+
+
+async def test_rejected_file_names_itself_and_the_schema(
+    pool: AsyncPostgresPool, tmp_path: Path, notes: NotesTable
+) -> None:
+    (tmp_path / "10_broken.sql").write_text(
+        "create table {schema}.notes_broken (id no_such_type);", encoding="utf-8"
+    )
+
+    async with pool.connection() as conn:
+        with pytest.raises(PostgresError) as refused:
+            await PostgresSchema(SCHEMA).apply_files(conn, tmp_path, {})
+
+    text = str(refused.value)
+    assert f"applying 10_broken.sql of {tmp_path} in schema {SCHEMA}" in text
+    assert "no_such_type" in text
+
+
+async def test_missing_schema_directory_is_refused(
+    pool: AsyncPostgresPool, tmp_path: Path
+) -> None:
+    async with pool.connection() as conn:
+        with pytest.raises(PostgresError, match="does not exist"):
+            await PostgresSchema(SCHEMA).apply_files(conn, tmp_path / "none", {})
+
+
+async def test_queries_round_trip(notes: NotesTable) -> None:
     first = await notes.add("one")
     second = await notes.add("two")
     assert second == first + 1
@@ -147,39 +182,6 @@ async def test_layout_check_names_the_drift(notes: NotesTable) -> None:
     assert "missing columns ['body']" in text
     assert "unexpected columns ['text']" in text
     assert "drop the schema" in text
-
-
-async def test_table_moves_between_schemas(
-    pool: AsyncPostgresPool, notes: NotesTable
-) -> None:
-    await notes.add("kept")
-    source = PostgresSchema(SCHEMA)
-    target = PostgresSchema(OTHER)
-
-    async with pool.connection() as conn:
-        await target.ensure(conn)
-        await source.move_table(conn, "notes", target)
-        assert not await source.has_table(conn, "notes")
-        assert await target.has_table(conn, "notes")
-        assert await target.columns_of(conn, "notes") == {"id", "text"}
-
-    # пустой дубль на старом месте сносится, строки остаются в новой схеме
-    await notes.setup()
-    async with pool.connection() as conn:
-        await source.move_table(conn, "notes", target)
-        assert not await source.has_table(conn, "notes")
-
-    moved = NotesTable(None, OTHER, pool)
-    assert await moved.texts() == ["kept"]
-
-    # строки с обеих сторон переносить нельзя
-    await notes.setup()
-    await notes.add("clash")
-    async with pool.connection() as conn:
-        with pytest.raises(PostgresError) as refused:
-            await source.move_table(conn, "notes", target)
-
-    assert "merge them by hand" in str(refused.value)
 
 
 async def test_advisory_lock_serialises_transactions(pool: AsyncPostgresPool) -> None:
