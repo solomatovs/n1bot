@@ -40,7 +40,7 @@ from boba.canvas.canvas import (
 from boba.canvas.keys import ObjectKey
 from boba.runtime.storage import LocalStorageClient, LocalStorageConfig
 from boba.stand_core.context import CallStand
-from boba.toolkit.result import VisualResult
+from boba.toolkit.result import ContentMime, VisualResult
 from boba.workspace.binaries import TrustedBinaries
 from boba.workspace.launcher import MountingConfig
 
@@ -57,16 +57,17 @@ def chainlit_context() -> None:
 
 
 class FakeViewer(CanvasViewer):
-    """Вьювер под тест: берётся за своё расширение и запоминает показанное."""
+    """Вьювер под тест: берётся за свой MIME и запоминает показанное."""
 
-    suffixes: ClassVar[frozenset[str]] = frozenset({".mmd"})
+    kind: ClassVar[CanvasKind] = CanvasKind.MERMAID
+    mimes: ClassVar[frozenset[str]] = frozenset({ContentMime.MERMAID})
 
-    def __init__(self, suffix: str) -> None:
-        self._suffix = suffix
+    def __init__(self, mime: str) -> None:
+        self._mime = mime
         self.opened: list[ObjectKey] = []
 
-    def handles(self, name: str) -> bool:
-        return name.endswith(self._suffix)
+    def handles(self, mime: str) -> bool:
+        return mime == self._mime
 
     async def content(self, key: ObjectKey) -> CanvasContent:
         return CanvasContent(
@@ -87,12 +88,7 @@ class FakeViewer(CanvasViewer):
         self.opened.append(key)
         await push(await self.content(key))
 
-        return OpenedCanvas(
-            label=key.name,
-            path=key.in_workspace(),
-            nonce="n-1",
-            link=await self.link(key),
-        )
+        return OpenedCanvas(label=key.name, path=key.in_workspace(), nonce="n-1")
 
     def watch_source(self, key: ObjectKey) -> None:
         return None
@@ -116,38 +112,40 @@ async def http_context() -> None:
 
 
 class TestRegistry:
-    def test_viewer_is_found_by_suffix(self) -> None:
-        viewer: CanvasViewer = FakeViewer(".mmd")
+    def test_viewer_is_found_by_mime(self) -> None:
+        viewer: CanvasViewer = FakeViewer(ContentMime.MERMAID)
         CanvasRegistry.register(viewer)
 
-        if CanvasRegistry.viewer_for("a.mmd") is not viewer:
-            raise AssertionError('CanvasRegistry.viewer_for("a.mmd") is viewer')
-        if CanvasRegistry.viewer_for("a.pdf") is not None:
-            raise AssertionError('CanvasRegistry.viewer_for("a.pdf") is None')
+        if CanvasRegistry.viewer_for(ContentMime.MERMAID) is not viewer:
+            raise AssertionError("CanvasRegistry.viewer_for(MERMAID) is viewer")
+        if CanvasRegistry.viewer_for("application/pdf") is not None:
+            raise AssertionError('CanvasRegistry.viewer_for("application/pdf") is None')
 
     def test_registration_is_idempotent_per_type(self) -> None:
         """Тулы собираются на каждую сессию — реестр не должен расти."""
-        first = FakeViewer(".mmd")
-        second = FakeViewer(".mmd")
+        first = FakeViewer(ContentMime.MERMAID)
+        second = FakeViewer(ContentMime.MERMAID)
 
         CanvasRegistry.register(first)
         CanvasRegistry.register(second)
 
-        if CanvasRegistry.viewer_for("a.mmd") is not second:
-            raise AssertionError('CanvasRegistry.viewer_for("a.mmd") is second')
-        if CanvasRegistry.viewers_hint() != "FakeViewer":
-            raise AssertionError('CanvasRegistry.viewers_hint() == "FakeViewer"')
+        if CanvasRegistry.viewer_for(ContentMime.MERMAID) is not second:
+            raise AssertionError("CanvasRegistry.viewer_for(MERMAID) is second")
 
     def test_different_types_live_together(self) -> None:
-        CanvasRegistry.register(FakeViewer(".mmd"))
-        CanvasRegistry.register(OtherViewer(".pdf"))
+        first = FakeViewer(ContentMime.MERMAID)
+        other = OtherViewer("application/pdf")
+        CanvasRegistry.register(first)
+        CanvasRegistry.register(other)
 
-        if CanvasRegistry.viewers_hint() != "FakeViewer, OtherViewer":
-            raise AssertionError('CanvasRegistry.viewers_hint() == "FakeViewer, Other…')
+        if CanvasRegistry.viewer_for(ContentMime.MERMAID) is not first:
+            raise AssertionError("CanvasRegistry.viewer_for(MERMAID) is first")
+        if CanvasRegistry.viewer_for("application/pdf") is not other:
+            raise AssertionError("CanvasRegistry.viewer_for(pdf) is other")
 
     def test_hint_without_viewers(self) -> None:
-        if CanvasRegistry.viewers_hint() != "none registered":
-            raise AssertionError('CanvasRegistry.viewers_hint() == "none registered"')
+        if CanvasRegistry.mimes_hint() != "no viewers registered":
+            raise AssertionError('CanvasRegistry.mimes_hint() == "no viewers regist…')
 
 
 class TestPanel:
@@ -156,7 +154,7 @@ class TestPanel:
         key = ObjectKey.build(USER, THREAD, "notes.txt", "el-1")
 
         with pytest.raises(CanvasError) as failure:
-            await CanvasPanel.open(key)
+            await CanvasPanel.open(key, ContentMime.PLAIN)
 
         if failure.value.kind != CanvasErrorKind.NO_VIEWER:
             raise AssertionError("failure.value.kind == CanvasErrorKind.NO_VIEWER")
@@ -170,24 +168,29 @@ class TestViewers:
         CanvasRegistry.reset()
         CanvasViewers.register_all()
 
-        if not (isinstance(CanvasRegistry.viewer_for("график.png"), ImageViewer)):
-            raise AssertionError('isinstance(CanvasRegistry.viewer_for("график.png"),…')
-        if not (isinstance(CanvasRegistry.viewer_for("report.PDF"), PdfViewer)):
-            raise AssertionError('isinstance(CanvasRegistry.viewer_for("report.PDF"),…')
-        if not (isinstance(CanvasRegistry.viewer_for("notes.md"), MarkdownViewer)):
-            raise AssertionError('isinstance(CanvasRegistry.viewer_for("notes.md"), M…')
-        if not (isinstance(CanvasRegistry.viewer_for("run.log"), LogViewer)):
-            raise AssertionError('isinstance(CanvasRegistry.viewer_for("run.log"), Lo…')
-        if not (isinstance(CanvasRegistry.viewer_for("demo.mp4"), VideoViewer)):
-            raise AssertionError('isinstance(CanvasRegistry.viewer_for("demo.mp4"), V…')
-        if not (isinstance(CanvasRegistry.viewer_for("voice.mp3"), AudioViewer)):
-            raise AssertionError('isinstance(CanvasRegistry.viewer_for("voice.mp3"), …')
-        if not (isinstance(CanvasRegistry.viewer_for("orders.mmd"), MermaidViewer)):
-            raise AssertionError(
-                'isinstance(CanvasRegistry.viewer_for("orders.mmd"), …'
-            )
-        if CanvasRegistry.viewer_for("data.bin") is not None:
-            raise AssertionError('CanvasRegistry.viewer_for("data.bin") is None')
+        expected: dict[str, type[CanvasViewer]] = {
+            "график.png": ImageViewer,
+            "report.PDF": PdfViewer,
+            "notes.md": MarkdownViewer,
+            "run.log": LogViewer,
+            "notes.txt": LogViewer,
+            "demo.mp4": VideoViewer,
+            "voice.mp3": AudioViewer,
+            "voice.ogg": AudioViewer,
+            "shot.webp": ImageViewer,
+            "orders.mmd": MermaidViewer,
+        }
+        for name, viewer_type in expected.items():
+            viewer = CanvasRegistry.viewer_for(ContentMime.of_name(name))
+            if not isinstance(viewer, viewer_type):
+                raise AssertionError(f"{name}: {viewer!r} is {viewer_type.__name__}")
+
+        if CanvasRegistry.viewer_for(ContentMime.of_name("data.bin")) is not None:
+            raise AssertionError("data.bin has no viewer")
+        if CanvasRegistry.viewer_for("text/plain; charset=utf-8") is None:
+            raise AssertionError("MIME parameters do not hide the plain text viewer")
+        if CanvasRegistry.viewer_for("text/csv") is not None:
+            raise AssertionError("text/csv has no viewer")
 
 
 class TestRefusal:
@@ -245,7 +248,7 @@ class TestShow:
     async def test_show_opens_the_file(
         self, storage: LocalStorageClient, http_context: None
     ) -> None:
-        viewer = FakeViewer(".mmd")
+        viewer = FakeViewer(ContentMime.MERMAID)
         CanvasRegistry.register(viewer)
         await put_bytes(storage, f"{USER}/{THREAD}/mermaid/a.mmd", "erDiagram")
 
@@ -341,10 +344,6 @@ class TestFileViewers:
 
         if opened.label != "график.png":
             raise AssertionError('opened.label == "график.png"')
-        if not (isinstance(opened.link, VisualResult)):
-            raise AssertionError("isinstance(opened.link, VisualResult)")
-        if opened.link.props["path"] != opened.path:
-            raise AssertionError('opened.link.props["path"] == opened.path')
         content = sink.shown[0]
         if content.kind is not CanvasKind.IMAGE:
             raise AssertionError("content.kind is CanvasKind.IMAGE")
@@ -380,17 +379,17 @@ class TestFileViewers:
             raise AssertionError("not list(cl.context.session.files.values())")
 
     @pytest.mark.anyio
-    async def test_viewers_cover_expected_suffixes(self) -> None:
-        if ".pdf" not in PdfViewer.suffixes:
-            raise AssertionError('".pdf" in PdfViewer.suffixes')
-        if ".md" not in MarkdownViewer.suffixes:
-            raise AssertionError('".md" in MarkdownViewer.suffixes')
-        if ".log" not in LogViewer.suffixes:
-            raise AssertionError('".log" in LogViewer.suffixes')
-        if ".mp4" not in VideoViewer.suffixes:
-            raise AssertionError('".mp4" in VideoViewer.suffixes')
-        if ".mp3" not in AudioViewer.suffixes:
-            raise AssertionError('".mp3" in AudioViewer.suffixes')
+    async def test_viewers_cover_expected_mimes(self) -> None:
+        if not PdfViewer().handles("application/pdf"):
+            raise AssertionError("PdfViewer handles application/pdf")
+        if not MarkdownViewer().handles("text/markdown"):
+            raise AssertionError("MarkdownViewer handles text/markdown")
+        if not LogViewer().handles("text/plain"):
+            raise AssertionError("LogViewer handles text/plain")
+        if not VideoViewer().handles("video/mp4"):
+            raise AssertionError("VideoViewer handles video/mp4")
+        if not AudioViewer().handles("audio/mpeg"):
+            raise AssertionError("AudioViewer handles audio/mpeg")
 
     @pytest.mark.anyio
     async def test_click_opens_png_end_to_end(

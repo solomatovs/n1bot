@@ -188,6 +188,7 @@ class CanvasKind(StrEnum):
     """Формат показать некому: панель объясняет это вместо содержимого."""
 
 
+
 class StreamPos(BaseModel):
     """Координаты окна потока в файле: где стоим и сколько всего."""
 
@@ -231,12 +232,11 @@ class CanvasContent(BaseModel):
 
 @dataclass(frozen=True, slots=True)
 class OpenedCanvas:
-    """Открытый в панели файл: подпись, путь, метка показа и элемент ленты."""
+    """Открытый в панели файл: подпись, путь и метка показа."""
 
     label: str
     path: str
     nonce: str
-    link: VisualResult
 
 
 class CanvasPush(Protocol):
@@ -280,19 +280,23 @@ class WatchSource(Protocol):
 
 
 class CanvasViewer(Protocol):
-    """Файлы одного вида: какие расширения умеет и чем их описать."""
+    """Файлы одного вида: какие MIME умеет и чем их описать."""
 
-    suffixes: ClassVar[frozenset[str]]
-    """Расширения вьювера: панель перечисляет их, когда файл показать некому."""
+    kind: ClassVar[CanvasKind]
+    """Чем фронт рисует файлы вьювера."""
+
+    mimes: ClassVar[frozenset[str]]
+    """MIME вьювера: точный тип или семейство с '/' на конце ('image/');
+    панель перечисляет их, когда файл показать некому."""
 
     @abstractmethod
-    def handles(self, name: str) -> bool:
-        """Берётся ли вьювер за файл с таким именем."""
+    def handles(self, mime: str) -> bool:
+        """Берётся ли вьювер за файл с таким MIME."""
         ...
 
     @abstractmethod
     async def open(self, key: ObjectKey, push: CanvasPush) -> OpenedCanvas:
-        """Показать файл через push; вернуть подпись, путь и элемент для ленты."""
+        """Показать файл через push; вернуть подпись, путь и метку показа."""
         ...
 
     @abstractmethod
@@ -313,7 +317,8 @@ class CanvasViewer(Protocol):
 
 
 class CanvasRegistry:
-    """Вьюверы канваса: файл -> кто его рисует; порядок регистрации решает спор."""
+    """Вьюверы канваса: MIME файла -> кто его рисует; порядок регистрации
+    решает спор."""
 
     _VIEWERS: ClassVar[list[CanvasViewer]] = []
 
@@ -335,30 +340,19 @@ class CanvasRegistry:
         cls._VIEWERS.clear()
 
     @classmethod
-    def viewer_for(cls, name: str) -> CanvasViewer | None:
+    def viewer_for(cls, mime: str) -> CanvasViewer | None:
+        """Вьювер файла с MIME mime; None — показать его некому."""
         for viewer in cls._VIEWERS:
-            if viewer.handles(name):
+            if viewer.handles(mime):
                 return viewer
         return None
 
     @classmethod
-    def viewers_hint(cls) -> str:
-        """Какие вьюверы зарегистрированы — для логов и диагностики."""
-        if not cls._VIEWERS:
-            return "none registered"
-
-        names: list[str] = []
-        for viewer in cls._VIEWERS:
-            names.append(type(viewer).__name__)
-
-        return ", ".join(sorted(names))
-
-    @classmethod
-    def suffixes_hint(cls) -> str:
-        """Какие расширения панель показывает — для пользователя и LLM."""
+    def mimes_hint(cls) -> str:
+        """Какие MIME панель показывает — для пользователя и LLM."""
         known: set[str] = set()
         for viewer in cls._VIEWERS:
-            known.update(viewer.suffixes)
+            known.update(viewer.mimes)
 
         if not known:
             return "no viewers registered"

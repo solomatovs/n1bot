@@ -21,7 +21,6 @@ from boba.canvas.canvas import (
 from boba.canvas.diagram import DiagramEntry, DiagramSpecError, MermaidSpec
 from boba.canvas.keys import ObjectKey, ThreadDir
 from boba.runtime.storage import LocalStorageClient, LocalStorageConfig
-from boba.toolkit.result import VisualResult
 from boba.workspace.binaries import TrustedBinaries
 from boba.workspace.launcher import MountingConfig
 
@@ -175,10 +174,6 @@ class TestSaveAndView:
 
         if opened.label != "orders.mmd":
             raise AssertionError('opened.label == "orders.mmd"')
-        if not (isinstance(opened.link, VisualResult)):
-            raise AssertionError("isinstance(opened.link, VisualResult)")
-        if opened.link.props["text"] != ER_SPEC:
-            raise AssertionError('opened.link.props["text"] == ER_SPEC')
         if len(shown) != 1:
             raise AssertionError("len(shown) == 1")
         content = shown[0]
@@ -212,10 +207,10 @@ class TestSaveAndView:
     def test_viewer_handles_only_mmd(self, files: DiagramFiles) -> None:
         viewer = MermaidViewer(files)
 
-        if viewer.handles("orders.mmd") is not True:
-            raise AssertionError('viewer.handles("orders.mmd") is True')
-        if viewer.handles("report.pdf") is not False:
-            raise AssertionError('viewer.handles("report.pdf") is False')
+        if viewer.handles("text/vnd.mermaid") is not True:
+            raise AssertionError('viewer.handles("text/vnd.mermaid") is True')
+        if viewer.handles("application/pdf") is not False:
+            raise AssertionError('viewer.handles("application/pdf") is False')
 
     @pytest.mark.anyio
     async def test_read_missing_file(self, files: DiagramFiles) -> None:

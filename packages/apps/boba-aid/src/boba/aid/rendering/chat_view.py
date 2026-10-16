@@ -9,7 +9,6 @@ import csv
 import io
 import json
 import logging
-import mimetypes
 from abc import ABC, abstractmethod
 from collections import deque
 from collections.abc import (
@@ -1143,9 +1142,7 @@ class ChatView:
         if not self._sink.emits_elements:
             return ""
 
-        suffix = mimetypes.guess_extension(block.mime_type)
-        if suffix is None:
-            suffix = ""
+        suffix = ContentMime.suffix_of(block.mime_type)
 
         stem = uuid5(self.NAMESPACE, f"{step.id}:{number}")
         file_key = ObjectKey(
@@ -1249,8 +1246,11 @@ class ChatView:
         except CanvasError as exc:
             return f"{path} is not shown: {exc}"
 
+        if mime is None:
+            mime = ContentMime.of_name(file_key.name)
+
         element: Element
-        viewer = CanvasRegistry.viewer_for(file_key.name)
+        viewer = CanvasRegistry.viewer_for(mime)
         if viewer is None:
             url = CanvasFileUrl.path(file_key)
             element = self._file(name, url, mime, key, number)
