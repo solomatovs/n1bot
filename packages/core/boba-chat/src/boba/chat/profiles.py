@@ -187,15 +187,6 @@ class ChatProfiles(ProfileCatalog):
     def all(self) -> Mapping[str, ChatProfileConfig]:
         return self._profiles
 
-    def default_name(self) -> str:
-        """Имя профиля по умолчанию; конструктор гарантирует ровно один."""
-        for name, profile in self._profiles.items():
-            if profile.default:
-                return name
-
-        msg = f"section [profiles]: none of {list(self._profiles)} sets default = true"
-        raise RuntimeError(msg)
-
     def granted_by_roles(self, user_roles: frozenset[str]) -> frozenset[str]:
         """Имена профилей, видимых ролям по [profiles.X].roles: провайдер входа."""
         names: set[str] = set()

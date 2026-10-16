@@ -8,7 +8,6 @@ FrameError — фрейм не разобрать как событие socket.i
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
@@ -281,11 +280,3 @@ class SocketLog:
             payload = body[1]
 
         return SocketFrame(event=ChatEvent(name), payload=payload)
-
-
-def frames_of(log: SocketLog, events: Sequence[ChatEvent]) -> Iterator[SocketFrame]:
-    """Фреймы указанных событий в порядке прихода."""
-    wanted = set(events)
-    for frame in log.frames:
-        if frame.event in wanted:
-            yield frame

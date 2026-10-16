@@ -1,6 +1,4 @@
-"""Таблица users приложения: studio создаёт свою схему сам и работает с ней теми же
-запросами, что слой данных чата со своей.
-"""
+"""Таблица users приложения: своя схема и запросы слоя данных чата."""
 
 from __future__ import annotations
 
@@ -8,7 +6,7 @@ import pytest
 from psycopg import sql
 
 from boba.db.postgres import AsyncPostgresPool
-from boba.identity.session import Login, UserMetadataField
+from boba.identity.session import Login
 from boba.identity.signin import SignedIn, SignInMetadata
 from boba.runtime.config import RuntimeConfig
 from boba.runtime.users import UsersTable
@@ -47,9 +45,3 @@ async def test_setup_creates_the_schema_and_users_round_trip(users: UsersTable) 
     assert found is not None
     assert found.id == created.id
     assert found.roles == frozenset({"DEV"})
-
-    await users.set_studio_profile(created.id, "search")
-    again = await users.get_user(Login("reader"))
-    assert again is not None
-    assert again.settings.get(UserMetadataField.STUDIO_PROFILE) == "search"
-    assert again.roles == frozenset({"DEV"})

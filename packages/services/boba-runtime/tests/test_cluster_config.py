@@ -26,7 +26,7 @@ def test_instance_names_differ_per_application() -> None:
     cluster = _cluster()
 
     assert cluster.instance_of(AppName.CHAINLIT) == "node1-chainlit"
-    assert cluster.instance_of(AppName.STUDIO) == "node1-studio"
+    assert cluster.instance_of(AppName.MCP) == "node1-mcp"
 
 
 def test_node_id_is_required_and_safe() -> None:

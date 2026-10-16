@@ -7,7 +7,7 @@ ServiceDisabledError — стенд попросили сервис, котор�
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Callable, Sequence
 from typing import ClassVar
 
 from omegaconf import DictConfig
@@ -21,11 +21,8 @@ from boba.connections.manifest import ConnectionTypes
 from boba.connections.sealed import SealKeys
 from boba.identity.context import CallContexts
 from boba.identity.errors import ServiceDisabledError
-from boba.identity.locks import MemoryLiveLocks
 from boba.identity.run import Runs
 from boba.krb.seal import SsoTickets
-from boba.messaging import MemoryMessageBus
-from boba.messaging.bus import ListenerState, StaticBusWatch
 from boba.runtime.launchers import SectionLaunchers, ToolLaunchers
 from boba.runtime.plugins import EntryPointPlugins, ToolLoader
 from boba.runtime.refs import RuntimeRefs
@@ -42,15 +39,11 @@ TicketsRef = Callable[[], SsoTickets | None]
 
 
 class StandRefs:
-    """Сборка RuntimeRefs под стенд: шина, блокировки и слушатель — в памяти.
+    """Сборка RuntimeRefs и реестра инструментов под стенд.
 
-    Создаётся тестом с держателем контекста вызова своего CallStand; шина и
-    блокировки — одни на объект.
+    Создаётся тестом с держателем контекста вызова своего CallStand; реестр
+    запусков, журналы и обстановка вызова — одни на объект.
     """
-
-    HEARTBEAT_SEC: ClassVar[float] = 1.0
-    LOCK_TTL_SEC: ClassVar[int] = 20
-    NAME: ClassVar[str] = "stand"
 
     STREAM_CONFIG: ClassVar[StreamGroupsConfig] = StreamGroupsConfig(
         open_sec=30.0,
@@ -67,8 +60,6 @@ class StandRefs:
         self.journals = CallJournals(None, self.runs)
         self.ambient = CallAmbient()
         self._launchers: list[SectionLaunchers] = []
-        self._locks = MemoryLiveLocks(self.NAME, self.LOCK_TTL_SEC)
-        self._bus = MemoryMessageBus(self.NAME)
 
     def tool_stand(self, sources: Sequence[ParamSource]) -> ToolStand:
         """Общий стенд инструментов над держателем контекста, журналами и
@@ -124,49 +115,25 @@ class StandRefs:
 
     def none(self) -> RuntimeRefs:
         """Ни реестра, ни соединений: как процесс без этих секций."""
-        return self._build(self._no_registry, self._disabled_store, self._no_tickets)
+        return self._build(self._disabled_store, self._no_tickets)
 
     def of(self, store: StoreRef, tickets: TicketsRef) -> RuntimeRefs:
         """Соединения и билеты есть, реестра нет."""
-        return self._build(self._no_registry, store, tickets)
+        return self._build(store, tickets)
 
-    def _build(
-        self,
-        tool_registry: Callable[[], Awaitable[ToolRegistry]],
-        store: StoreRef,
-        tickets: TicketsRef,
-    ) -> RuntimeRefs:
+    def _build(self, store: StoreRef, tickets: TicketsRef) -> RuntimeRefs:
         def credentials() -> KerberosCredentialSource:
             return KerberosCredentialSource(tickets(), NoRefresh())
 
         return RuntimeRefs(
-            tool_registry=tool_registry,
             connection_store=store,
             connection_types=ConnectionTypes.discover,
             credentials=credentials,
             contexts=self.contexts,
-            runs=self.runs,
             journals=self.journals,
             ambient=self.ambient,
             seal_keys=SealKeys(),
-            live_locks=self._live_locks,
-            heartbeat_sec=self.HEARTBEAT_SEC,
-            bus_watch=lambda: StaticBusWatch(ListenerState.LISTENING),
-            message_bus=self._message_bus,
         )
-
-    def _live_locks(self) -> MemoryLiveLocks:
-        return self._locks
-
-    def _message_bus(self) -> MemoryMessageBus:
-        return self._bus
-
-    @staticmethod
-    async def _no_registry() -> ToolRegistry:
-        msg = (
-            f"resolving the tool registry: it is not part of the {StandRefs.NAME} stand"
-        )
-        raise ServiceDisabledError("tool", msg)
 
     @staticmethod
     def _disabled_store() -> ConnectionStore:

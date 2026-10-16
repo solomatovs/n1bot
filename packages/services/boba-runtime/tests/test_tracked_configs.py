@@ -82,8 +82,8 @@ class TestTrackedConfigs:
         names = {path.parent.parent.name for path in TrackedConfigs().files()}
         names |= {path.parent.name for path in TrackedConfigs().files()}
 
-        if not {"boba-chainlit", "boba-mcp", "boba-studio"} <= names:
-            raise AssertionError(f"common configs of the three apps exist: {names}")
+        if not {"boba-chainlit", "boba-mcp"} <= names:
+            raise AssertionError(f"common configs of the two apps exist: {names}")
 
     @pytest.mark.parametrize(
         "path", TrackedConfigs().files(), ids=lambda path: str(path)[-48:]

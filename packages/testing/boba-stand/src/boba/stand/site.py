@@ -198,10 +198,6 @@ class Stand(BaseModel):
     def confluence_spn(self) -> str:
         return f"HTTP@{self.confluence_host}"
 
-    def krb_dir(self) -> Path:
-        """Каталог krb5.conf: рядом лежат keytab'ы стенда."""
-        return Path(self.krb_config).parent
-
     def live(self) -> bool:
         """Есть ли на машине живой KDC стенда: krb5.conf и keytab на месте."""
         if not Path(self.krb_config).is_file():

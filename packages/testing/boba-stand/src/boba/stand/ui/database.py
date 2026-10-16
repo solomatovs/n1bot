@@ -11,7 +11,7 @@ import asyncio
 from collections.abc import Coroutine, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from enum import StrEnum
-from typing import Any, ClassVar, LiteralString
+from typing import Any, ClassVar
 from uuid import UUID
 
 from omegaconf import OmegaConf
@@ -28,10 +28,9 @@ from boba.connections.stored import (
     StoredRole,
 )
 from boba.db.clickhouse.connection import ClickHouseConfig
-from boba.db.clickhouse.snapshot import ChSourceKind
+from boba.db.oracle.connection import OracleConfig
 from boba.db.postgres import AsyncPostgresPool, PgQuery, PgQueryBuilder
 from boba.db.postgres.connection.config import PostgresConfig
-from boba.identity.session import UserMetadataField
 from boba.ix_core.database import IxDatabase
 from boba.runtime.config import DataLayerConfig
 from boba.stand.database import TestDatabase
@@ -77,10 +76,9 @@ def run_blocking(work: Coroutine[Any, Any, Any]) -> Any:
 class StandOracle:
     """Oracle стенда под именем main: первый источник [ix_stand].ora_sources,
     учёткой, под которой ходят скраперы. Модель соединения выбирает реестр
-    типов по kind, поэтому пакет стенда не зависит от драйвера Oracle."""
+    типов по kind."""
 
     SOURCES: ClassVar[str] = "ix_stand.ora_sources"
-    KIND: ClassVar[str] = "oracle"
 
     def __init__(self, built: Any) -> None:
         sources = OmegaConf.select(built, self.SOURCES)
@@ -103,7 +101,7 @@ class StandOracle:
         for key, value in raw.items():
             fields[str(key)] = value
 
-        fields["kind"] = self.KIND
+        fields["kind"] = OracleConfig.KIND
         self._raw = fields
 
     def connection(self) -> ConnectionBase:
@@ -177,8 +175,6 @@ class StandDatabase:
                 )
                 await cur.execute(query.text, query.params)
 
-        await self._forget_studio_profiles()
-
     async def _ensure_database(self) -> None:
         maintenance = AsyncPostgresPool(self._maintenance)
         await maintenance.open()
@@ -218,24 +214,6 @@ class StandDatabase:
                 except InsufficientPrivilege as exc:
                     msg = f"{extension.manual_hint(self._name)}: {exc}"
                     raise StandError(msg) from exc
-
-    async def _forget_studio_profiles(self) -> None:
-        """Выбор профиля studio хранится на пользователе и пережил бы прогон."""
-        query = (
-            PgQueryBuilder(schema=sql.Identifier(self._schema))
-            .add(
-                "update {schema}.users set meta = meta - %(key)s where meta ? %(key)s",
-                key=UserMetadataField.STUDIO_PROFILE,
-            )
-            .build()
-        )
-        try:
-            async with self._pool() as pool, pool.cursor() as cur:
-                await cur.execute(query.text, query.params)
-        except Exception as exc:
-            # таблицы users ещё нет у чистой базы: приложение создаст её на старте
-            if "does not exist" not in str(exc):
-                raise
 
     def wipe_agent_user_layers(self) -> None:
         """Снимает слой пользователя настроек агента у всех пользователей
@@ -319,51 +297,6 @@ class StandDatabase:
 
         return dict(row[0])
 
-    def break_connection_kind(self, name: str, kind: str) -> None:
-        """Строке connections по имени ставится несуществующий kind.
-
-        Стенд пометки «type not installed»: приложение видит строку, чей
-        пакет-владелец как будто удалён.
-        """
-        run_blocking(self._break_connection_kind(name, kind))
-
-    async def _break_connection_kind(self, name: str, kind: str) -> None:
-        connections = bind(self._built, path="connections", model=ConnectionsConfig)
-        query = (
-            PgQueryBuilder()
-            .add(
-                "update {table} "
-                "set data = jsonb_set(data, '{{kind}}', to_jsonb(%(kind)s::text)) "
-                "where name = %(name)s",
-                table=sql.Identifier(
-                    connections.db_schema, ConnectionTable.CONNECTIONS.value
-                ),
-                kind=kind,
-                name=name,
-            )
-            .build()
-        )
-
-        async with self._pool() as pool, pool.cursor() as cur:
-            await cur.execute(query.text, query.params)
-
-    def ddl(self, statement: LiteralString) -> None:
-        """DDL в базе стенда: таблицы-пробники для синхронизации каталога."""
-        run_blocking(self._execute(PgQueryBuilder().add(statement).build()))
-
-    def add_connection(self, name: str, kind: str) -> UUID:
-        """Подключение стенда к своей базе под именем name: копия профиля
-        postgres или clickhouse стенда, выдана всем ролям стенда. Сеятели
-        каталога заводят по подключению на источник."""
-        return run_blocking(self._add_connection(name, kind))
-
-    async def _add_connection(self, name: str, kind: str) -> UUID:
-        connection: ConnectionBase = self._postgres
-        if kind == ChSourceKind.CLICKHOUSE:
-            connection = bind(self._built, path="clickhouse", model=ClickHouseConfig)
-
-        return await self._add_stored(name, connection)
-
     def add_stored_connection(self, name: str, connection: ConnectionBase) -> UUID:
         """Готовый профиль под именем name, выданный всем ролям стенда: тест
         с соединениями пользователя заводит подключение к своей базе."""
@@ -392,18 +325,6 @@ class StandDatabase:
         for connection_id in connection_ids:
             for target in targets:
                 await store.grant(connection_id, target)
-
-    def remove_connections(self, prefix: str) -> None:
-        """Подключения стенда по префиксу имени: снос за сеятелями каталога."""
-        run_blocking(self._remove_connections(prefix))
-
-    async def _remove_connections(self, prefix: str) -> None:
-        connections = bind(self._built, path="connections", model=ConnectionsConfig)
-        async with self._pool() as pool:
-            store = ConnectionStore(connections, ConnectionTypes.discover(), pool)
-            for row in await store.list_all():
-                if row.name.startswith(prefix):
-                    await store.remove(row.id)
 
     def seed_connections(self, llm_port: int) -> None:
         """Соединения инструментов стенда: сервисные pg/ch под именем main и

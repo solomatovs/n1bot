@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "boba-auth"
 version = "0.0.26.dev4"
-description = "Boba auth: вход пользователя общий для chainlit и studio — токены, пароли, SPNEGO, креды."
+description = "Boba auth: вход пользователя приложений — токены, пароли, SPNEGO, креды."
 requires-python = ">=3.11,<4"
 dependencies = [
     "boba-identity==0.0.26.dev4",

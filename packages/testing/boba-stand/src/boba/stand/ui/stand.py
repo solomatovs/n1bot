@@ -54,10 +54,8 @@ class StandPaths(StrEnum):
     debug/<приложение>, зависимости — общий каталог runtime."""
 
     CHAINLIT_CONF = "packages/apps/boba-chainlit/conf"
-    STUDIO_CONF = "packages/apps/boba-studio/conf"
     MCP_CONF = "packages/apps/boba-mcp/conf"
     CHAINLIT_BASE = "debug/chainlit"
-    STUDIO_BASE = "debug/studio"
     MCP_BASE = "debug/mcp"
     SANDBOX = "runtime/sandbox"
     MODELS = "runtime/models"
@@ -171,7 +169,6 @@ class StandApp(StrEnum):
     """Приложения стенда: у каждого свой корень рантайма, конфиг, данные и порт."""
 
     CHAINLIT = "chainlit"
-    STUDIO = "studio"
     MCP = "mcp"
 
     def traits(self) -> StandAppTraits:
@@ -182,13 +179,6 @@ class StandApp(StrEnum):
                 conf=StandPaths.CHAINLIT_CONF,
                 ready_path="/",
                 data_layer_section="data_layer",
-            ),
-            StandApp.STUDIO: StandAppTraits(
-                module="boba.studio",
-                base=StandPaths.STUDIO_BASE,
-                conf=StandPaths.STUDIO_CONF,
-                ready_path="/api/openapi.json",
-                data_layer_section="automation",
             ),
             StandApp.MCP: StandAppTraits(
                 module="boba.mcp_server",
@@ -526,8 +516,8 @@ class StandPlugins:
 
     Создаётся конфигом приложения на запись. У чата инструменты исполняет
     сервис boba-mcp, поэтому включён остаётся только его собственный плагин
-    соединений; у сервиса и studio без песочницы выключены инструменты,
-    которым нужна она или внешние сервисы.
+    соединений; у сервиса без песочницы выключены инструменты, которым
+    нужна она или внешние сервисы.
     """
 
     SANDBOXED: ClassVar[tuple[str, ...]] = (
@@ -729,12 +719,10 @@ class StandConfig(StandService):
 
         self._use_fake_llm(doc)
         self._use_test_profiles(doc)
-        self._use_catalog_roles(doc)
         self._use_test_database(doc)
         self._use_local_storage(doc)
         self._without_mcp_servers(doc)
         self._use_local_auth(doc)
-        self._use_studio(doc)
         self._use_sandbox_artifacts(doc)
         self._use_agent(doc)
         self._shrink_pools(doc)
@@ -815,16 +803,6 @@ class StandConfig(StandService):
         env.pop("KRB5CCNAME", None)
         return env
 
-    @staticmethod
-    def _use_catalog_roles(doc: MutableMapping[str, Any]) -> None:
-        """Каталог стенда studio: DEV читает, ADM правит; у chainlit секция
-        [catalog] — лишь подключение инструмента снятия, ролей там нет."""
-        if "studio" not in doc:
-            return
-
-        doc["catalog"]["view_roles"] = ["DEV"]
-        doc["catalog"]["edit_roles"] = ["ADM"]
-
     def _use_fake_llm(self, doc: MutableMapping[str, Any]) -> None:
         """Провайдер стенда: fake llm процесса тестов вместо секций [llm] конфига."""
         doc["http"] = {"dump": {"enable": False}}
@@ -901,7 +879,7 @@ class StandConfig(StandService):
 
     def _search_tools(self) -> list[str]:
         """Свои инструменты профиля search: у чата узкий набор отдаёт endpoint
-        сервиса, у studio — её собственные инструменты."""
+        сервиса, у сервиса — его собственные инструменты."""
         if self.app is StandApp.CHAINLIT:
             return []
 
@@ -986,16 +964,6 @@ class StandConfig(StandService):
             }
 
         doc["app"]["auth"] = providers
-
-    @staticmethod
-    def _use_studio(doc: MutableMapping[str, Any]) -> None:
-        """Студия стенда: сборка страницы из dist конфига, слушает все адреса хоста."""
-        if "studio" not in doc:
-            return
-
-        # SSO-тесты ходят доменным именем площадки, оно резолвится в адрес хоста
-        doc["studio"]["host"] = "0.0.0.0"  # noqa: S104 — стенд, а не прод  # nosec B104
-        doc["studio"]["page"] = "built"
 
     def _use_sandbox_artifacts(self, doc: MutableMapping[str, Any]) -> None:
         """Стенд с песочницей берёт rootfs плагинов и workspace.ext4 из сборки."""

@@ -35,14 +35,11 @@ from boba.identity.signin import ProfileCatalog
 from boba.identity.sso import RefreshSignal
 from boba.ldap import Ldap3Directory
 from boba.messaging import (
-    ListenerState,
     MemoryMessageBus,
     MemoryPayloadStore,
     MessageBus,
     PayloadStore,
-    StaticBusWatch,
 )
-from boba.messaging.bus import BusWatch
 from boba.runtime.bus import PgMessageBus
 from boba.runtime.commands import CommandRunner
 from boba.runtime.config import (
@@ -59,7 +56,7 @@ from boba.runtime.locks import LockReaper, PgLiveLocks
 from boba.runtime.payloads import PgPayloadStore
 from boba.runtime.plugins import ConfigGrants, PluginMeta, PluginTable, ToolLoader
 from boba.runtime.refresh import BusRefreshSignal, LiveSessions, SessionKeeper
-from boba.runtime.refs import ExecRefs, RuntimeRefs
+from boba.runtime.refs import ExecRefs
 from boba.runtime.signin import SignInAssembly
 from boba.runtime.threads import ThreadsTable
 from boba.runtime.turns import StaleTurnCloser
@@ -239,17 +236,6 @@ def credential_source_ref() -> KerberosCredentialSource:
     return _root().resolved(credential_source)
 
 
-def bus_watch_ref() -> BusWatch:
-    """Возвращает слушателя шины процесса, по которому страница показывает состояние
-    живой связи; у шины в памяти сетевой подписки нет — связь всегда живая.
-    """
-    bus = _root().resolved(message_bus)
-    if isinstance(bus, PgMessageBus):
-        return bus.listener
-
-    return StaticBusWatch(ListenerState.LISTENING)
-
-
 def message_bus_ref() -> MessageBus:
     """Шина процесса для обвязок инструментов; зовётся на каждый вызов."""
     return _root().resolved(message_bus)
@@ -291,25 +277,6 @@ def exec_refs() -> ExecRefs:
         journals=_root().resolved(call_journals),
         ambient=_root().resolved(call_ambient),
         seal_keys=_root().resolved(seal_keys),
-    )
-
-
-def runtime_refs() -> RuntimeRefs:
-    """Входы приложения для api и обвязок: ссылки в корневой контейнер."""
-    return RuntimeRefs(
-        tool_registry=tool_registry_ref,
-        connection_store=connection_store_ref,
-        connection_types=connection_types_ref,
-        credentials=credential_source_ref,
-        contexts=_root().resolved(call_contexts),
-        runs=_root().resolved(runs),
-        journals=_root().resolved(call_journals),
-        ambient=_root().resolved(call_ambient),
-        seal_keys=_root().resolved(seal_keys),
-        live_locks=live_locks_ref,
-        heartbeat_sec=_root().resolved(get_runtime_config).cluster.heartbeat_sec,
-        bus_watch=bus_watch_ref,
-        message_bus=message_bus_ref,
     )
 
 
@@ -355,11 +322,6 @@ def tool_registry(
     return loader.load()
 
 
-async def tool_registry_ref() -> ToolRegistry:
-    """Реестр инструментов из корневого контейнера: для вызовов вне сессии."""
-    return await _root().resolve(Depends(tool_registry))
-
-
 async def kb_schema(
     raw: Annotated[DictConfig, Depends(get_raw_config)],
 ) -> None:
@@ -395,11 +357,6 @@ async def live_locks(
     await locks.setup()
     await locks.register_instance()
     return locks
-
-
-def live_locks_ref() -> LiveLocks:
-    """Блокировки для обвязок инструментов; зовётся на каждый вызов."""
-    return _root().resolved(live_locks)
 
 
 def seal_keys() -> SealKeys:

@@ -30,11 +30,9 @@ __all__ = [
     "ApiSubject",
     "AuthenticatedUser",
     "Authenticator",
-    "ChosenProfiles",
     "PersistedUsers",
     "StoredUser",
     "UserRows",
-    "UserSettingsStore",
     "UsersColumn",
     "UsersUpsert",
 ]
@@ -49,7 +47,7 @@ class AuthenticatedUser(BaseModel):
     identifier: Login
     sign_in: SignInMetadata
     settings: Mapping[str, object] = {}
-    """Строка users как есть: metadata входа и выбранный профиль studio."""
+    """Строка users как есть: metadata входа."""
 
     @property
     def roles(self) -> frozenset[str]:
@@ -156,14 +154,3 @@ class PersistedUsers(Protocol):
     @abstractmethod
     async def get_user(self, identifier: Login) -> AuthenticatedUser | None:
         """None — вход ещё не заводил строку users."""
-
-
-class ChosenProfiles(Protocol):
-    """Выбранный пользователем профиль в metadata его строки users."""
-
-    @abstractmethod
-    async def set_studio_profile(self, user_id: UUID, profile: str) -> None: ...
-
-
-class UserSettingsStore(PersistedUsers, ChosenProfiles, Protocol):
-    """Что нужно ресурсу /me: строка пользователя и запись выбранного профиля."""

@@ -57,14 +57,12 @@ from boba.messaging import (
     Unsubscribe,
 )
 from boba.messaging.bus import (
-    BusWatch,
     ListenerState,
     LiveChannel,
     LiveCommandsColumn,
     LiveEventsColumn,
     LiveSequence,
     LiveTable,
-    StateListener,
 )
 from boba.runtime.config import AppName, ClusterConfig
 
@@ -142,7 +140,7 @@ class ScopeKindCheck:
         )
 
 
-class LiveListener(BusWatch):
+class LiveListener:
     """Слушает канал boba_live на выделенном autocommit-соединении, переподключается
     после обрыва и добирает пропущенное через обработчик реконнекта.
     """
@@ -165,29 +163,11 @@ class LiveListener(BusWatch):
         self._ready = asyncio.Event()
         self._connections = 0
         self._failure: MessageBusError | None = None
-        self._watchers: list[StateListener] = []
         self._stopping = False
 
     @property
     def state(self) -> ListenerState:
         return self._state
-
-    def watch(self, listener: StateListener) -> Unsubscribe:
-        self._watchers.append(listener)
-
-        def leave() -> None:
-            if listener in self._watchers:
-                self._watchers.remove(listener)
-
-        return leave
-
-    def _set_state(self, state: ListenerState) -> None:
-        if state is self._state:
-            return
-
-        self._state = state
-        for watcher in list(self._watchers):
-            watcher(state)
 
     async def reconnect(self) -> None:
         """Рвёт соединение слушателя, чтобы освободить его долю очереди уведомлений;
@@ -228,7 +208,7 @@ class LiveListener(BusWatch):
             return
 
         self._stopping = False
-        self._set_state(ListenerState.CONNECTING)
+        self._state = ListenerState.CONNECTING
         self._task = asyncio.create_task(self._run(), name="live-listener")
         await self._ready.wait()
 
@@ -251,7 +231,7 @@ class LiveListener(BusWatch):
             # сбой уже учтён: он в журнале и поднимается ensure_alive при обращении
             pass
 
-        self._set_state(ListenerState.STOPPED)
+        self._state = ListenerState.STOPPED
 
     async def wait_listening(self, timeout_sec: float) -> None:
         """Ждёт повторного подключения слушателя не дольше timeout_sec; нужен тестам
@@ -281,7 +261,7 @@ class LiveListener(BusWatch):
                 if self._stopping:
                     return
 
-                self._set_state(ListenerState.CONNECTING)
+                self._state = ListenerState.CONNECTING
                 await self._close()
                 logger.warning(
                     "live listener lost the connection, reconnecting in %.1fs: %s",
@@ -294,7 +274,7 @@ class LiveListener(BusWatch):
             except ListenerFailedError as exc:
                 # сбой подписчика: слушатель встаёт, шина отказывает при следующем
                 # обращении, а не молчит
-                self._set_state(ListenerState.FAILED)
+                self._state = ListenerState.FAILED
                 self._failure = exc
                 await self._close()
                 logger.exception("live listener stopped: %s", exc)
@@ -306,7 +286,7 @@ class LiveListener(BusWatch):
                 if self._stopping:
                     return
 
-                self._set_state(ListenerState.CONNECTING)
+                self._state = ListenerState.CONNECTING
                 await self._close()
                 logger.warning(
                     "live listener retries in %.1fs after a bus error: %s", delay, exc
@@ -319,7 +299,7 @@ class LiveListener(BusWatch):
                 # подписчика — иначе задача умерла бы молча, а шина считалась бы живой
                 failure = MessageBusError(f"live listener crashed: {exc}")
                 failure.__cause__ = exc
-                self._set_state(ListenerState.FAILED)
+                self._state = ListenerState.FAILED
                 self._failure = failure
                 await self._close()
                 logger.exception("live listener crashed: %s", exc)
@@ -335,7 +315,7 @@ class LiveListener(BusWatch):
             .build()
         )
         await conn.execute(listen.text, listen.params)
-        self._set_state(ListenerState.LISTENING)
+        self._state = ListenerState.LISTENING
         self._connections += 1
         self._ready.set()
         logger.info("live listener connected (pid %d)", conn.info.backend_pid)
@@ -443,7 +423,7 @@ class PgMessageBus(PostgresTable, MessageBus):
                 """
                 create unlogged table if not exists {schema}.live_instances (
                     instance_id  text primary key,
-                    app          text not null check (app in ('chainlit', 'studio')),
+                    app          text not null check (app in ('chainlit')),
                     host         text not null,
                     started_at   timestamptz not null default now(),
                     heartbeat_at timestamptz not null default now()

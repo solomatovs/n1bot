@@ -38,18 +38,15 @@ from boba.runtime.launchers import ToolLaunchers
 __all__ = [
     "AppLayers",
     "AppName",
-    "BuiltPage",
     "ClusterConfig",
     "ConfigArguments",
     "ConfigFiles",
     "ConfigLayoutError",
     "ConfigLocator",
     "DataLayerConfig",
-    "DevPage",
     "EnvOverride",
     "LocalMessagingConfig",
     "MessagingConfig",
-    "PageSource",
     "PostgresMessagingConfig",
     "ProcessConfig",
     "ProcessLogging",
@@ -57,9 +54,6 @@ __all__ = [
     "RuntimeConfig",
     "SessionConfig",
     "StreamJournalConfig",
-    "StudioConfig",
-    "StudioPath",
-    "StudioRuntimeConfig",
     "TokenConfig",
 ]
 
@@ -332,39 +326,6 @@ class DataLayerConfig(BaseModel):
     )
 
 
-class BuiltPage(BaseModel):
-    """Страница workflow отдаётся из сборки в public/workflow."""
-
-    model_config = ConfigDict(frozen=True)
-
-    kind: Literal["built"] = "built"
-
-
-class DevPage(BaseModel):
-    """Страница workflow проксируется с vite dev-сервера по адресу url."""
-
-    model_config = ConfigDict(frozen=True)
-
-    kind: Literal["dev"] = "dev"
-    url: str = Field(pattern=r"^https?://[^/]+$", description="Адрес vite без пути.")
-
-
-class PageSource:
-    """Разбор значения [workflow] page: 'built' либо адрес vite dev-сервера."""
-
-    BUILT: ClassVar[str] = "built"
-
-    @classmethod
-    def parse(cls, raw: object) -> object:
-        if not isinstance(raw, str):
-            return raw
-
-        if raw == cls.BUILT:
-            return BuiltPage()
-
-        return DevPage(url=raw.rstrip("/"))
-
-
 class StreamJournalConfig(BaseModel):
     """Журнал живого вывода инструментов: служебный том на пользователя."""
 
@@ -413,7 +374,6 @@ class AppName(StrEnum):
     """
 
     CHAINLIT = "chainlit"
-    STUDIO = "studio"
     MCP = "mcp"
 
 
@@ -499,14 +459,6 @@ MessagingConfig = Annotated[
 """Discriminated union по provider — точная диагностика ошибок валидации."""
 
 
-class StudioPath(StrEnum):
-    """Что студия вешает под url_prefix: api, его socket.io и страница."""
-
-    API = "/api"
-    SOCKET = "/socket.io"
-    PAGE = "/workflow"
-
-
 class TokenConfig(BaseModel):
     """Секция [session] любого процесса со входом: секрет подписи, срок
     токена, потолок сессии и поколение сессий. Базовая для SessionConfig;
@@ -567,7 +519,7 @@ class TokenConfig(BaseModel):
 
 class SessionConfig(TokenConfig):
     """Секция [session] приложения с браузером: к токену сессии добавлена
-    cookie входа. Общая для чата и studio — токен одного принимает другое.
+    cookie входа.
     """
 
     cookie: str = Field(min_length=1, description="Имя cookie входа.")
@@ -581,44 +533,6 @@ class SessionConfig(TokenConfig):
             samesite=self.cookie_samesite,
             ttl_sec=self.session_ttl_sec,
         )
-
-
-class StudioConfig(BaseModel):
-    """Секция [studio]: адрес процесса и источник страницы workflow."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    host: str
-    port: int
-    url_prefix: str = Field(
-        description="Префикс приложения: api под /api, страница — /workflow."
-    )
-    ws_protocol: Literal["auto", "websockets", "wsproto", "none"] = Field(
-        description=(
-            "WebSocket-реализация uvicorn; websockets режет заголовки длиннее 8 КБ, "
-            "а cookie входа с билетом SSO больше — нужен wsproto."
-        )
-    )
-    page: BuiltPage | DevPage = Field(
-        discriminator="kind",
-        description="'built' — сборка из dist; адрес — vite dev-сервер.",
-    )
-    dist: Path = Field(description="Каталог сборки страницы: index.html и assets/.")
-
-    @field_validator("page", mode="before")
-    @classmethod
-    def _parse_page(cls, raw: object) -> object:
-        return PageSource.parse(raw)
-
-    def api_prefix(self) -> str:
-        return f"{self.url_prefix}{StudioPath.API}"
-
-    def socket_path(self) -> str:
-        return f"{self.api_prefix()}{StudioPath.SOCKET}"
-
-    def page_prefix(self) -> str:
-        """Полный адрес страницы studio: {prefix}/workflow."""
-        return f"{self.url_prefix}{StudioPath.PAGE}"
 
 
 class ProcessLogging:
@@ -672,7 +586,7 @@ class ProcessLogging:
 class ProcessConfig(BaseModel):
     """Секции [app], нужные любому процессу, который исполняет инструменты и
     принимает вход: kerberos, способы входа, токен сессии, журналы вызовов.
-    Базовая для RuntimeConfig (чат, studio) и конфига сервиса boba-mcp.
+    Базовая для RuntimeConfig (чат) и конфига сервиса boba-mcp.
     """
 
     model_config = ConfigDict(extra="ignore")
@@ -777,11 +691,3 @@ class RuntimeConfig(ProcessConfig):
             f"got provider = {self.messaging.provider!r}"
         )
         raise RuntimeError(msg)
-
-
-class StudioRuntimeConfig(RuntimeConfig):
-    """Конфиг процесса studio: общие секции плюс [studio]."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    studio: StudioConfig

@@ -53,13 +53,13 @@ async def _stand(
     cfg = bus_config.data_layer.postgres.model_copy(update={"dbname": test_database})
     cluster = _cluster(bus_config)
     bus = PgMessageBus(
-        cfg, bus_config.pg_messaging().db_schema, name, AppName.STUDIO, cluster
+        cfg, bus_config.pg_messaging().db_schema, name, AppName.CHAINLIT, cluster
     )
     bus._pool_ref = pool
     await bus.setup()
     await bus.start()
     locks = PgLiveLocks(
-        cfg, bus_config.pg_messaging().db_schema, name, AppName.STUDIO, cluster
+        cfg, bus_config.pg_messaging().db_schema, name, AppName.CHAINLIT, cluster
     )
     locks._pool_ref = pool
     await locks.setup()
@@ -71,8 +71,8 @@ async def _stand(
 async def stands(
     bus_config: RuntimeConfig, test_database: str, pool: AsyncPostgresPool
 ) -> AsyncIterator[tuple[Stand, Stand]]:
-    first = await _stand(bus_config, test_database, pool, "node1-studio")
-    second = await _stand(bus_config, test_database, pool, "node2-studio")
+    first = await _stand(bus_config, test_database, pool, "node1-chainlit")
+    second = await _stand(bus_config, test_database, pool, "node2-chainlit")
     try:
         yield first, second
     finally:
@@ -94,7 +94,7 @@ async def test_only_one_of_concurrent_holders_gets_the_scope(
 
     refused = [r for r in results if isinstance(r, LockBusyError)]
     assert len(refused) == 1
-    assert refused[0].busy.holder in ("node1-studio", "node2-studio")
+    assert refused[0].busy.holder in ("node1-chainlit", "node2-chainlit")
     holders = await first.locks.holders_of(scope)
     assert [h.purpose for h in holders] == [LockPurpose.RUN]
 
@@ -132,7 +132,7 @@ async def test_stale_lock_expires_by_ttl_and_lost_heartbeat_returns_false(
     taken = await second.locks.acquire(
         scope, LockMode.EXCLUSIVE, LockPurpose.TURN, UUID(int=2)
     )
-    assert taken.holder == "node2-studio"
+    assert taken.holder == "node2-chainlit"
     assert await first.locks.heartbeat(lock.token) is False
     assert await second.locks.heartbeat(taken.token) is True
 
@@ -179,7 +179,7 @@ async def test_reaper_removes_stale_locks_and_dead_instances(
 
     ours = [s for s in stale if s.scope == scope]
     assert len(ours) == 1
-    assert ours[0].holder == "node2-studio"
+    assert ours[0].holder == "node2-chainlit"
     assert ours[0].purpose is LockPurpose.RUN
     assert ours[0] in seen
     assert await first.locks.holders_of(scope) == []

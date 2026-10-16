@@ -2073,13 +2073,11 @@ dependencies = [
     { name = "boba-toolkit", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-toolrun", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "fastapi", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-    { name = "httpx", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "omegaconf", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "psycopg", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "pydantic", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "starlette", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "uvicorn", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-    { name = "websockets", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
 ]
 
 [package.optional-dependencies]
@@ -2113,7 +2111,6 @@ requires-dist = [
     { name = "boba-toolkit", editable = "packages/core/boba-toolkit" },
     { name = "boba-toolrun", editable = "packages/services/boba-toolrun" },
     { name = "fastapi", specifier = ">=0.116,<1" },
-    { name = "httpx", specifier = ">=0.28,<1" },
     { name = "omegaconf", specifier = ">=2.3,<3" },
     { name = "psycopg", specifier = ">=3.3,<4" },
     { name = "pydantic", specifier = ">=2.12,<3" },
@@ -2121,7 +2118,6 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.1,<10" },
     { name = "starlette", specifier = ">=1.0,<2" },
     { name = "uvicorn", specifier = ">=0.35,<1" },
-    { name = "websockets", specifier = ">=13,<16" },
 ]
 provides-extras = ["dev"]
 
@@ -2190,7 +2186,6 @@ dependencies = [
     { name = "boba-llm", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-llm-fastembed", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-llm-http", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-    { name = "boba-messaging", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-runtime", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-sandbox", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-stand-core", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -2202,10 +2197,8 @@ dependencies = [
     { name = "boba-toolrun", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-transport-http", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "fastapi", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-    { name = "gssapi", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "httpx", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "jsonschema", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-    { name = "krb5", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "omegaconf", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "playwright", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "psycopg", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -2213,12 +2206,6 @@ dependencies = [
     { name = "pytest", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "typing-extensions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "uvicorn", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "boba-chainlit", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-    { name = "starlette", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
 ]
 
 [package.metadata]
@@ -2229,7 +2216,6 @@ requires-dist = [
     { name = "boba-agent", editable = "packages/core/boba-agent" },
     { name = "boba-auth", editable = "packages/services/boba-auth" },
     { name = "boba-cfl-indexer", editable = "packages/apps/ix/cfl-indexer" },
-    { name = "boba-chainlit", marker = "extra == 'dev'", editable = "packages/apps/boba-chainlit" },
     { name = "boba-chat", editable = "packages/core/boba-chat" },
     { name = "boba-config", editable = "packages/infra/config/boba-config" },
     { name = "boba-confluence", editable = "packages/infra/format/boba-confluence" },
@@ -2250,7 +2236,6 @@ requires-dist = [
     { name = "boba-llm", editable = "packages/core/boba-llm" },
     { name = "boba-llm-fastembed", editable = "packages/infra/llm/boba-llm-fastembed" },
     { name = "boba-llm-http", editable = "packages/infra/llm/boba-llm-http" },
-    { name = "boba-messaging", editable = "packages/core/boba-messaging" },
     { name = "boba-runtime", editable = "packages/services/boba-runtime" },
     { name = "boba-sandbox", editable = "packages/infra/sandbox/boba-sandbox" },
     { name = "boba-stand-core", editable = "packages/core/boba-stand-core" },
@@ -2262,20 +2247,16 @@ requires-dist = [
     { name = "boba-toolrun", editable = "packages/services/boba-toolrun" },
     { name = "boba-transport-http", editable = "packages/infra/transport/boba-transport-http" },
     { name = "fastapi", specifier = ">=0.116,<1" },
-    { name = "gssapi", specifier = ">=1.9,<2" },
     { name = "httpx", specifier = ">=0.28,<1" },
     { name = "jsonschema", specifier = ">=4.23,<5" },
-    { name = "krb5", specifier = ">=0.7,<1" },
     { name = "omegaconf", specifier = ">=2.3,<3" },
     { name = "playwright", specifier = ">=1.47,<2" },
     { name = "psycopg", specifier = ">=3.3,<4" },
     { name = "pydantic", specifier = ">=2.12,<3" },
     { name = "pytest", specifier = ">=9.1,<10" },
-    { name = "starlette", marker = "extra == 'dev'", specifier = ">=1.0,<2" },
     { name = "typing-extensions", specifier = ">=4.12,<5" },
     { name = "uvicorn", specifier = ">=0.35,<1" },
 ]
-provides-extras = ["dev"]
 
 [[package]]
 name = "boba-stand-core"
@@ -2283,7 +2264,6 @@ version = "0.0.26.dev4"
 source = { editable = "packages/core/boba-stand-core" }
 dependencies = [
     { name = "boba-cancellation", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-    { name = "boba-chat", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-identity", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-toolkit", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "pydantic", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -2298,7 +2278,6 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "boba-cancellation", editable = "packages/core/boba-cancellation" },
-    { name = "boba-chat", editable = "packages/core/boba-chat" },
     { name = "boba-identity", editable = "packages/core/boba-identity" },
     { name = "boba-stand", marker = "extra == 'dev'", editable = "packages/testing/boba-stand" },
     { name = "boba-toolkit", editable = "packages/core/boba-toolkit" },
