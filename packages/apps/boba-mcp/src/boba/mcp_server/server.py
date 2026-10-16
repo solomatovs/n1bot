@@ -55,10 +55,18 @@ from starlette.routing import BaseRoute, Mount, Route
 from starlette.types import ASGIApp, Receive, Send
 from starlette.types import Scope as AsgiScope
 
-from boba.access import GrantCheck, ProfileGrant, ToolGrant, ToolGrants
+from boba.access import (
+    GrantCheck,
+    ProfileGrant,
+    RoleVisibility,
+    ToolGrant,
+    ToolGrants,
+)
 from boba.cancellation import RunCancellation, StopReason, ToolStopped
 from boba.canvas.journal import StreamSlice
 from boba.canvas.keys import ObjectKey
+from boba.connection_broker.sealed import SealedConnectionParams
+from boba.connections.sealed import OfferedSource, SealFeature
 from boba.identity.context import (
     CallContext,
     HumanInitiator,
@@ -86,6 +94,7 @@ from boba.toolkit.dag import CallDag, DagNode, ToolServer
 from boba.toolkit.failure import ValidationText
 from boba.toolkit.ports import ProgressReport
 from boba.toolkit.result import ErrorResult
+from boba.toolkit.types import StringList
 from boba.toolkit.wire import FilesFeature, JournalFeature, JournalRead
 from boba.toolrun.call_id import CallFields
 from boba.toolrun.hosted import DirectCalls
@@ -95,10 +104,13 @@ from boba.toolrun.streams import CallJournals, ToolStream
 __all__ = [
     "CallContextMiddleware",
     "CallProgress",
+    "ConnectionOfferRule",
     "EndpointCatalog",
     "FileUploadTool",
+    "McpEndpoint",
     "McpEndpoints",
     "McpServer",
+    "OfferClient",
     "RoleToolServers",
     "RunLimitMiddleware",
     "RunLimits",
@@ -109,34 +121,109 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 
-class RoleToolServers(CallerServers):
-    """Реализация CallerServers сервиса: порт инструментов на набор ролей и
-    профиль вызывающего по его токену.
+class OfferClient(StrEnum):
+    """Признак клиента в правиле предложения соединений: SEALING — запрос
+    объявил расширение запечатывания соединений (SealFeature), PLAIN — не
+    объявил, ANY — неважно."""
 
-    Создаётся сборкой сервера из реестра инструментов и субъектов токена.
-    Порт (ToolServer) строится один раз на пару «роли, профиль» и содержит
-    только инструменты, доступные этой паре: по ним же собирается
-    инструмент workflow.
+    SEALING = "sealing"
+    PLAIN = "plain"
+    ANY = "any"
+
+    def matches(self, sealing: bool) -> bool:
+        """Подходит ли правило клиенту, который запечатывает (sealing) или нет."""
+        if self is OfferClient.ANY:
+            return True
+
+        if sealing:
+            return self is OfferClient.SEALING
+
+        return self is OfferClient.PLAIN
+
+
+class ConnectionOfferRule(RoleVisibility):
+    """Правило предложения соединений [[mcp.endpoints.<имя>.connections]]:
+    кому (roles, '*' — всем), какому клиенту (client) и какие источники
+    соединений предложить (offer). Правила endpoint'а проверяет по порядку
+    McpEndpoint.offer."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    roles: StringList = Field(default=[], min_length=1, validate_default=True)
+    client: OfferClient
+    offer: list[OfferedSource] = Field(min_length=1)
+
+    def matches(self, roles: frozenset[str], sealing: bool) -> bool:
+        """Подходит ли правило вызывающему с ролями roles и признаком
+        клиента sealing."""
+        if not self.visible_for(roles):
+            return False
+
+        return self.client.matches(sealing)
+
+
+class McpEndpoint(ProfileGrant):
+    """Секция [mcp.endpoints.<имя>]: грант профиля (роли, инструменты) и
+    правила предложения соединений. Правило пишется явно, у endpoint'а без
+    соединений — пустым списком. Конфиг сервиса разбирает секцию на старте;
+    EndpointCatalog берёт её грантом профиля, RoleToolServers — правилами."""
+
+    connections: list[ConnectionOfferRule]
+
+    def offer(self, roles: frozenset[str], sealing: bool) -> frozenset[OfferedSource]:
+        """Источники соединений по первому подходящему правилу; ни одно не
+        подошло — соединений нет."""
+        for rule in self.connections:
+            if rule.matches(roles, sealing):
+                return frozenset(rule.offer)
+
+        return frozenset()
+
+
+class RoleToolServers(CallerServers):
+    """Реализация CallerServers сервиса: порт инструментов вызывающего по его
+    токену и признаку клиента из запроса.
+
+    Создаётся сборкой сервера endpoint'а из реестра инструментов, субъектов
+    токена, секции endpoint'а и соединений инструментов. Порт (ToolServer)
+    строится один раз на ключ «роли, профиль, клиент запечатывает» и содержит
+    только инструменты, доступные этим ролям, — с параметрами-соединениями
+    под предложение правил endpoint'а (SealedConnectionParams.offered); по
+    ним же собирается инструмент workflow. Признак клиента — объявленное в
+    запросе расширение запечатывания соединений (SealFeature).
     """
 
-    def __init__(self, registry: ToolRegistry, subjects: TokenSubjects) -> None:
+    def __init__(
+        self,
+        registry: ToolRegistry,
+        subjects: TokenSubjects,
+        endpoint: McpEndpoint,
+        params: SealedConnectionParams,
+    ) -> None:
         self._registry = registry
         self._subjects = subjects
+        self._endpoint = endpoint
+        self._params = params
         self._calls = DirectCalls()
-        self._servers: dict[tuple[frozenset[str], str], ToolServer] = {}
+        self._servers: dict[tuple[frozenset[str], str, bool], ToolServer] = {}
 
     async def current(self) -> ToolServer:
         """Порт вызывающего текущего запроса; без токена — TokenClaimsError."""
-        return self.of(self._subjects.current())
+        settings = get_context().client_extension_settings(SealFeature.ID)
+        sealing = settings is not None
 
-    def of(self, subject: Subject) -> ToolServer:
-        key = (subject.roles, subject.profile)
+        return self.of(self._subjects.current(), sealing)
+
+    def of(self, subject: Subject, sealing: bool) -> ToolServer:
+        key = (subject.roles, subject.profile, sealing)
         server = self._servers.get(key)
         if server is not None:
             return server
 
         tools = self._registry.for_headless(subject.roles, subject.profile)
-        server = self._registry.server(tools.values(), self._calls)
+        sources = self._endpoint.offer(subject.roles, sealing)
+        offered = self._params.offered(list(tools.values()), subject.roles, sources)
+        server = self._registry.server(offered, self._calls)
         self._servers[key] = server
 
         return server
@@ -785,6 +872,8 @@ class McpServer:
         journals: CallJournals,
         auth: AuthProvider,
         profile: str,
+        endpoint: McpEndpoint,
+        params: SealedConnectionParams,
         limits: RunLimitMiddleware,
         storage: LocalStorageConfig,
         path: str,
@@ -813,7 +902,7 @@ class McpServer:
             self._features[JournalFeature.ID] = journal.settings()
 
         self._provider = McpToolProvider(
-            RoleToolServers(registry, self._subjects), operations
+            RoleToolServers(registry, self._subjects, endpoint, params), operations
         )
         self._contexts = CallContextMiddleware(
             runs, journals, self._subjects, McpEndpoints.OPERATIONS
@@ -904,10 +993,11 @@ class McpEndpoints:
     """Endpoint'ы MCP сервиса исполнения: по одному на секцию
     [mcp.endpoints.<имя>].
 
-    Создаётся сборкой процесса. Endpoint — набор инструментов и роли,
-    которым он выдан; каждый отвечает отдельным MCP-сервером на пути
-    `{base_path}/{имя}`. Токен без области endpoint'а получает 403 от входа
-    fastmcp (EndpointTokens). Реестр инструментов, запуски, журналы и предел запусков
+    Создаётся сборкой процесса. Endpoint — набор инструментов, роли,
+    которым он выдан, и правила предложения соединений; каждый отвечает
+    отдельным MCP-сервером на пути `{base_path}/{имя}`. Токен без области
+    endpoint'а получает 403 от входа fastmcp (EndpointTokens). Реестр
+    инструментов, соединения инструментов, запуски, журналы и предел запусков
     у endpoint'ов общие. app() — приложение ASGI со всеми endpoint'ами,
     маршрутами входа и пробой готовности.
     """
@@ -926,6 +1016,8 @@ class McpEndpoints:
         runs: Runs,
         journals: CallJournals,
         auth: ServiceAuth,
+        endpoints: Mapping[str, McpEndpoint],
+        params: SealedConnectionParams,
         limits: RunLimits,
         base_path: str,
         storage: LocalStorageConfig,
@@ -943,6 +1035,8 @@ class McpEndpoints:
                 journals,
                 provider,
                 profile,
+                endpoints[profile],
+                params,
                 slots,
                 storage,
                 path,

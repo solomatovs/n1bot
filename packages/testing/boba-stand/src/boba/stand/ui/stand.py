@@ -371,6 +371,14 @@ class ServiceStand(StandService):
     """Endpoint'ы стенда по профилям чата: general — все инструменты,
     search — узкий набор."""
 
+    SEALING: ClassVar[Mapping[str, Any]] = {
+        "roles": ["*"],
+        "client": "sealing",
+        "offer": ["sealed"],
+    }
+    """Правило предложения соединений endpoint'ов стенда: клиенту, который
+    запечатывает, — соединения пользователя, как в рабочем конфиге."""
+
     HEADERS: ClassVar[Mapping[str, str]] = {
         "user": "X-Remote-User",
         "timestamp": "X-Boba-Timestamp",
@@ -454,7 +462,11 @@ class ServiceStand(StandService):
 
         endpoints: dict[str, Any] = {}
         for name, tools in self.ENDPOINTS.items():
-            endpoints[name] = {"roles": ["*"], "tools": list(tools)}
+            endpoints[name] = {
+                "roles": ["*"],
+                "tools": list(tools),
+                "connections": [dict(self.SEALING)],
+            }
 
         doc["mcp"]["endpoints"] = endpoints
         doc["mcp"]["public_url"] = f"http://127.0.0.1:{self.app_port}"

@@ -27,7 +27,6 @@ from pydantic import BaseModel, ConfigDict
 from boba.access import GrantCheck, ToolAccess, ToolGrants, ToolSurfaces
 from boba.chat.profiles import ProfilesSection, RolesSection
 from boba.config import bind
-from boba.connection_broker.sealed import SealedConnectionParams
 from boba.connection_broker.tickets import ServiceTickets
 from boba.runtime.launchers import SectionLaunchers
 from boba.runtime.refs import ExecRefs
@@ -91,6 +90,9 @@ class PluginMeta(BaseModel):
     headless: StringList = []
     """Инструменты из tools, которые модели в чате не отдаются: их зовут
     страница, REST и workflow (снятие снимка каталога и подобные задачи)."""
+    connections: dict[str, StringList] = {}
+    """Списки заданных соединений сервера у инструментов плагина: имя
+    инструмента → имена из [connections]."""
 
 
 class ToolLoader:
@@ -124,11 +126,9 @@ class ToolLoader:
         self._ambient = refs.ambient
         self._drain = DevNullTool(refs.ambient)
         self._hosting = ToolHosting()
-        self._sealed = SealedConnectionParams(
-            refs.seal_keys, refs.connection_types, refs.contexts
-        )
-        """Приём запечатанных соединений: обвязки параметров-соединений,
-        правило аргументов узлов и возможность сервера с ключом."""
+        self._sealed = refs.connection_params
+        """Соединения инструментов: обвязки параметров-соединений, правило
+        аргументов узлов и возможность сервера с ключом."""
         self._chain = ToolChain(
             self._stream_cfg,
             refs.journals,
@@ -162,11 +162,13 @@ class ToolLoader:
             if not meta.enable:
                 continue
 
+            self._sealed.listed(meta.connections)
             plugged = self._plugin_tools(plugin, meta, self._launchers)
             built = plugged.tools
             tools.extend(built)
             specs = specs.merged(plugged.specs)
-            headless_only.update(self._headless_of(name, meta, built))
+            headless_only.update(self._listed(name, "headless", meta.headless, built))
+            self._listed(name, "connections", meta.connections, built)
 
             # живой вывод есть у отдельных процессов: кнопка потока
             # рисуется на шагах инструментов
@@ -269,23 +271,24 @@ class ToolLoader:
         return resolve
 
     @staticmethod
-    def _headless_of(
-        name: str, meta: PluginMeta, built: Sequence[HostedTool]
+    def _listed(
+        name: str, key: str, listed: Iterable[str], built: Sequence[HostedTool]
     ) -> set[str]:
-        """Инструменты плагина, помеченные headless: имя вне собранных — отказ."""
+        """Инструменты плагина name, названные в его списке key: имя вне
+        собранных — отказ."""
         known: set[str] = set()
         for tool in built:
             known.add(tool.name)
 
-        stray = sorted(set(meta.headless) - known)
+        stray = sorted(set(listed) - known)
         if stray:
             msg = (
-                f"[tool.{name}] headless names {stray} are not among its enabled "
+                f"[tool.{name}] {key} names {stray} are not among its enabled "
                 f"tools {sorted(known)}"
             )
             raise RuntimeError(msg)
 
-        return set(meta.headless)
+        return set(listed)
 
     def _access_of(
         self,

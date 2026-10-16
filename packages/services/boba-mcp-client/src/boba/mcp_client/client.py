@@ -81,6 +81,7 @@ from boba.canvas.storage import (
     StorageFullError,
     StorageNotFoundError,
 )
+from boba.connections.sealed import SealFeature
 from boba.toolkit.dag import NestedCallsFeature, ServerFeature
 from boba.toolkit.mcp import McpToolNames
 from boba.toolkit.wire import FilesFeature, JournalFeature, JournalRead
@@ -718,9 +719,13 @@ class McpConnection:
         name="boba-chat", version="1"
     )
 
-    EXTENSIONS: ClassVar[Sequence[ClientExtension]] = (advertise(JournalFeature.ID),)
+    EXTENSIONS: ClassVar[Sequence[ClientExtension]] = (
+        advertise(JournalFeature.ID),
+        advertise(SealFeature.ID),
+    )
     """Расширения, которые клиент объявляет серверу: журнал вызовов он
-    читает окнами и слушает сигналы его роста."""
+    читает окнами и слушает сигналы его роста; соединения пользователя
+    запечатывает ключом сервера, и сервер по этому предлагает их."""
 
     def __init__(
         self,

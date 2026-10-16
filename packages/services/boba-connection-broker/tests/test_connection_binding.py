@@ -38,7 +38,7 @@ from boba.stand_core.context import CallStand
 from boba.toolkit.dag import DagNode, NodeOutcome, ToolCard, ToolServer
 from boba.toolkit.facade import UserConnection
 from boba.toolkit.result import ErrorResult, TableResult
-from boba.toolrun.injected import ToolConfigError
+from boba.toolrun.injected import StaticConfig, ToolConfigError
 
 pytestmark = pytest.mark.anyio
 
@@ -264,7 +264,7 @@ class TestDeclarationIsChecked:
 
         with pytest.raises(ToolConfigError, match="not a connection model"):
             SealedConnectionParams(
-                SealKeys(), lambda: TYPES, call_stand.contexts
+                SealKeys(), lambda: TYPES, call_stand.contexts, {}, StaticConfig()
             ).bind_all([tool])
 
     def test_type_package_must_be_installed(self, call_stand: CallStand) -> None:
@@ -280,5 +280,5 @@ class TestDeclarationIsChecked:
 
         with pytest.raises(ToolConfigError, match="not installed"):
             SealedConnectionParams(
-                SealKeys(), lambda: TYPES, call_stand.contexts
+                SealKeys(), lambda: TYPES, call_stand.contexts, {}, StaticConfig()
             ).bind_all([tool])

@@ -5,9 +5,9 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from boba.connection_broker.sealed import SealedConnectionParams
 from boba.connection_broker.user_connections import CredentialsRef, StoreRef
 from boba.connections.manifest import ConnectionTypes
-from boba.connections.sealed import SealKeys
 from boba.identity.context import CallContexts
 from boba.toolkit.chain import CallAmbient
 from boba.toolrun.streams import CallJournals
@@ -26,7 +26,7 @@ class ExecRefs:
     contexts: CallContexts
     journals: CallJournals
     ambient: CallAmbient
-    seal_keys: SealKeys
+    connection_params: SealedConnectionParams
 
 
 @dataclass(frozen=True)
@@ -47,9 +47,10 @@ class RuntimeRefs:
     ambient: CallAmbient
     """Обстановка вызова инструмента процесса: приёмники журнала и ручка
     группы для исполнителей."""
-    seal_keys: SealKeys
-    """Ключевая пара исполнителя: ею открываются соединения, запечатанные
-    клиентом; одна на процесс."""
+    connection_params: SealedConnectionParams
+    """Соединения инструментов исполнителя: ключевая пара, которой
+    открываются соединения, запечатанные клиентом, и заданные соединения
+    сервера; одни на процесс."""
 
     def execution(self) -> ExecRefs:
         """Часть входов, нужная загрузчику инструментов."""
@@ -59,5 +60,5 @@ class RuntimeRefs:
             contexts=self.contexts,
             journals=self.journals,
             ambient=self.ambient,
-            seal_keys=self.seal_keys,
+            connection_params=self.connection_params,
         )

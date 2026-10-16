@@ -1,8 +1,11 @@
 """Запись конфига обратно в TOML: стенду нужен свой файл поверх рабочего.
 
-В конфиге приложения после tomllib остаются только скаляры, строки и списки
-строк, поэтому writer покрывает ровно их. Ошибки: TomlTypeError — значение
-такого типа стенд писать не умеет.
+В конфиге приложения после tomllib остаются скаляры, строки, списки строк и
+массивы таблиц (правила предложения соединений endpoint'ов), поэтому writer
+покрывает ровно их: таблица внутри списка пишется встроенной.
+
+Ошибки:
+TomlTypeError — значение такого типа стенд писать не умеет.
 """
 
 from __future__ import annotations
@@ -64,6 +67,12 @@ class TomlText:
         if isinstance(value, Sequence):
             items = [cls._value(item) for item in value]
             return f"[{', '.join(items)}]"
+
+        if isinstance(value, Mapping):
+            pairs = [
+                f"{cls._key(key)} = {cls._value(item)}" for key, item in value.items()
+            ]
+            return f"{{{', '.join(pairs)}}}"
 
         got = type(value).__name__
         msg = f"rendering toml value {value!r}: type {got} is not supported"

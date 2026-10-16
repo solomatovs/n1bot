@@ -27,6 +27,7 @@ from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 
+from pydantic import AfterValidator
 from pydantic.fields import FieldInfo
 
 from boba.connection_broker.store import ConnectionStore
@@ -113,9 +114,7 @@ class ConnectionParamHooks:
             kind = self._kind_of(tool.name, param, annotation)
 
             self._bodies.hook_all([tool], make(tool.name, param, kind))
-            shown[param] = self._field(
-                ConnectionOffer(kind=kind, sealed=True, names={})
-            )
+            shown[param] = self.field(ConnectionOffer(kind=kind, sealed=True, names={}))
 
             logger.info(
                 "tool %s: %s is a %s connection of the caller", tool.name, param, kind
@@ -123,11 +122,17 @@ class ConnectionParamHooks:
 
         tool.args_schema = self._schemas.rebuild(schema, shown, ())
 
-    def _field(self, offer: ConnectionOffer) -> tuple[Any, FieldInfo]:
+    def field(
+        self, offer: ConnectionOffer, *checks: AfterValidator
+    ) -> tuple[Any, FieldInfo]:
+        """Поле параметра-соединения по предложению offer: строка, которая в
+        лог не пишется, со схемой SealedParamSchema и проверками checks."""
         marked = Annotated[str, NotLogged]
         declared = self._declared.declared(offer)
+        info = FieldInfo(min_length=1, json_schema_extra=declared)
+        info.metadata.extend(checks)
 
-        return marked, FieldInfo(min_length=1, json_schema_extra=declared)
+        return marked, info
 
     def _kind_of(self, tool: str, param: str, annotation: object) -> str:
         """Вид соединения по модели профиля параметра."""
