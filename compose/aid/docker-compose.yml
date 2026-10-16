@@ -1,5 +1,5 @@
 services:
-  chainlit:
+  aid:
     init: true
     user: "${BOBA_USER}"
     security_opt:
@@ -10,7 +10,7 @@ services:
     cpus: 4
     pids_limit: 512
     restart: unless-stopped
-    image: boba-chainlit:0.0.26.dev4
+    image: boba-aid:0.0.26.dev4
     hostname: chainlit
     container_name: chainlit
     networks:
@@ -19,7 +19,7 @@ services:
     env_file: ./conf/boba.env
     command:
       - -m
-      - boba.chainlit.main
+      - boba.aid.main
       - --config
       - /app/boba/conf/config.toml
       - --site
@@ -32,7 +32,7 @@ services:
       - ../../runtime/models:/app/boba/models:ro
     ports:
       - "8501"
-  chainlit2:
+  aid2:
     init: true
     user: "${BOBA_USER}"
     security_opt:
@@ -43,7 +43,7 @@ services:
     cpus: 4
     pids_limit: 512
     restart: unless-stopped
-    image: boba-chainlit:0.0.26.dev4
+    image: boba-aid:0.0.26.dev4
     hostname: chainlit2
     container_name: chainlit2
     networks:
@@ -52,7 +52,7 @@ services:
     env_file: ./conf/boba.env
     command:
       - -m
-      - boba.chainlit.main
+      - boba.aid.main
       - --config
       - /app/boba/conf/config.toml
       - --site

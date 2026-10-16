@@ -25,6 +25,6 @@ packages/**/node_modules
 packages/apps/boba-studio
 packages/services/boba-catalog-service
 packages/core/boba-catalog
-packages/apps/boba-chainlit/assets/public/page.js
-packages/apps/boba-chainlit/assets/public/vendor
-packages/apps/boba-chainlit/assets/ui
+packages/apps/boba-aid/assets/public/page.js
+packages/apps/boba-aid/assets/public/vendor
+packages/apps/boba-aid/assets/ui

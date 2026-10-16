@@ -2,20 +2,20 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Chainlit: agent",
+            "name": "Aid: agent",
             "type": "debugpy",
             "request": "launch",
-            "preLaunchTask": "chainlit: debug tree",
-            "program": "${workspaceFolder}/packages/apps/boba-chainlit/src/boba/chainlit/main.py",
+            "preLaunchTask": "aid: debug tree",
+            "program": "${workspaceFolder}/packages/apps/boba-aid/src/boba/aid/main.py",
             "console": "integratedTerminal",
             "jinja": true,
-            "cwd": "${workspaceFolder}/debug/chainlit",
+            "cwd": "${workspaceFolder}/debug/aid",
             "python": "${workspaceFolder}/.venv/bin/python",
             "args": [
                 "--config",
-                "${workspaceFolder}/packages/apps/boba-chainlit/conf/config.toml",
+                "${workspaceFolder}/packages/apps/boba-aid/conf/config.toml",
                 "--site",
-                "${workspaceFolder}/debug/chainlit/conf/site.toml"
+                "${workspaceFolder}/debug/aid/conf/site.toml"
             ],
             "env": {
                 "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/runtime/third/bin:${env:PATH}",
@@ -76,7 +76,7 @@
             "request": "launch",
             "module": "boba.runtime.toolcli",
             "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}/debug/chainlit",
+            "cwd": "${workspaceFolder}/debug/aid",
             "python": "${workspaceFolder}/.venv/bin/python",
             "env": {
                 "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/runtime/third/bin:${env:PATH}",
@@ -88,9 +88,9 @@
                 "boba.tool.connections.tools",
                 "connection_list",
                 "--config",
-                "${workspaceFolder}/packages/apps/boba-chainlit/conf/config.toml",
+                "${workspaceFolder}/packages/apps/boba-aid/conf/config.toml",
                 "--site",
-                "${workspaceFolder}/debug/chainlit/conf/site.toml",
+                "${workspaceFolder}/debug/aid/conf/site.toml",
                 "--injected",
                 "${workspaceFolder}/.vscode/injected/pg.json"
             ]
@@ -185,13 +185,13 @@
             "request": "launch",
             "module": "pytest",
             "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}/debug/chainlit",
+            "cwd": "${workspaceFolder}/debug/aid",
             "python": "${workspaceFolder}/.vscode/python-debug-slice.sh",
             "env": {
                 "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/runtime/third/bin:${env:PATH}",
                 "LD_LIBRARY_PATH": "${workspaceFolder}/runtime/third/lib",
-                "BOBA_CONFIG_PATH": "${workspaceFolder}/packages/apps/boba-chainlit/conf/config.toml",
-                "BOBA_SITE_PATH": "${workspaceFolder}/debug/chainlit/conf/site.toml",
+                "BOBA_CONFIG_PATH": "${workspaceFolder}/packages/apps/boba-aid/conf/config.toml",
+                "BOBA_SITE_PATH": "${workspaceFolder}/debug/aid/conf/site.toml",
                 "BOBA_CGROUP_BASE": "@DEBUG_CGROUP@"
             },
             "justMyCode": false,
@@ -208,13 +208,13 @@
             "request": "launch",
             "module": "pytest",
             "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}/debug/chainlit",
+            "cwd": "${workspaceFolder}/debug/aid",
             "python": "${workspaceFolder}/.vscode/python-debug-slice.sh",
             "env": {
                 "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/runtime/third/bin:${env:PATH}",
                 "LD_LIBRARY_PATH": "${workspaceFolder}/runtime/third/lib",
-                "BOBA_CONFIG_PATH": "${workspaceFolder}/packages/apps/boba-chainlit/conf/config.toml",
-                "BOBA_SITE_PATH": "${workspaceFolder}/debug/chainlit/conf/site.toml",
+                "BOBA_CONFIG_PATH": "${workspaceFolder}/packages/apps/boba-aid/conf/config.toml",
+                "BOBA_SITE_PATH": "${workspaceFolder}/debug/aid/conf/site.toml",
                 "BOBA_CGROUP_BASE": "@DEBUG_CGROUP@"
             },
             "justMyCode": false,
@@ -234,13 +234,13 @@
             "request": "launch",
             "module": "pytest",
             "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}/debug/chainlit",
+            "cwd": "${workspaceFolder}/debug/aid",
             "python": "${workspaceFolder}/.vscode/python-debug-slice.sh",
             "env": {
                 "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/runtime/third/bin:${env:PATH}",
                 "LD_LIBRARY_PATH": "${workspaceFolder}/runtime/third/lib",
-                "BOBA_CONFIG_PATH": "${workspaceFolder}/packages/apps/boba-chainlit/conf/config.toml",
-                "BOBA_SITE_PATH": "${workspaceFolder}/debug/chainlit/conf/site.toml",
+                "BOBA_CONFIG_PATH": "${workspaceFolder}/packages/apps/boba-aid/conf/config.toml",
+                "BOBA_SITE_PATH": "${workspaceFolder}/debug/aid/conf/site.toml",
                 "BOBA_CGROUP_BASE": "@DEBUG_CGROUP@"
             },
             "justMyCode": false,
@@ -255,13 +255,13 @@
             "request": "launch",
             "module": "pytest",
             "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}/debug/chainlit",
+            "cwd": "${workspaceFolder}/debug/aid",
             "python": "${workspaceFolder}/.vscode/python-debug-slice.sh",
             "env": {
                 "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/runtime/third/bin:${env:PATH}",
                 "LD_LIBRARY_PATH": "${workspaceFolder}/runtime/third/lib",
-                "BOBA_CONFIG_PATH": "${workspaceFolder}/packages/apps/boba-chainlit/conf/config.toml",
-                "BOBA_SITE_PATH": "${workspaceFolder}/debug/chainlit/conf/site.toml",
+                "BOBA_CONFIG_PATH": "${workspaceFolder}/packages/apps/boba-aid/conf/config.toml",
+                "BOBA_SITE_PATH": "${workspaceFolder}/debug/aid/conf/site.toml",
                 "BOBA_CGROUP_BASE": "@DEBUG_CGROUP@"
             },
             "justMyCode": false,
@@ -275,8 +275,8 @@
     ],
     "compounds": [
         {
-            "name": "Boba: chainlit + studio",
-            "configurations": ["Chainlit: agent", "Studio: api + workflow & catalog page"],
+            "name": "Boba: aid + studio",
+            "configurations": ["Aid: agent", "Studio: api + workflow & catalog page"],
             "stopAll": true
         }
     ]
