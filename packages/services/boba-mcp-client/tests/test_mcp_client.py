@@ -22,6 +22,7 @@ from uuid import uuid4
 import httpx
 import mcp.types as mt
 import pytest
+from mcp.server.apps import APP_MIME_TYPE
 from mcp.shared.exceptions import MCPError
 from mcp.shared.uri_template import UriTemplate
 from pydantic import BaseModel, ConfigDict, SecretStr, ValidationError
@@ -38,6 +39,7 @@ from boba.mcp_client.client import (
     HttpLocation,
     McpCaller,
     McpClientError,
+    McpServerApps,
     McpServerConfig,
     McpServers,
     McpServersConfig,
@@ -480,6 +482,93 @@ class TestServersOfASession:
                 await servers.port("typo", CALLER)
         finally:
             await servers.stop()
+
+
+class TestServerApps:
+    """Секция apps: расширение MCP Apps объявляется только её серверу, ресурс
+    приложения читается с его CSP, песочницы серверов не делят источник."""
+
+    BOARD: ClassVar[str] = "ui://standard/board.html"
+    SANDBOX: ClassVar[McpServerApps] = McpServerApps.model_validate(
+        {"sandbox_url": "http://localhost:8123/mcp-apps/sandbox.html"}
+    )
+
+    async def _open(self, apps: McpServerApps | None) -> McpToolServer:
+        endpoint = StdioCommand(command=sys.executable, args=(str(SERVER), "stdio"))
+        config = McpServerConfig(
+            endpoint=endpoint,
+            connect_timeout_sec=20.0,
+            call_timeout_sec=60.0,
+            apps=apps,
+        )
+        server = McpToolServer("standard", config)
+        await server.open()
+
+        return server
+
+    async def test_ui_is_declared_only_to_a_server_with_apps(self) -> None:
+        drawn = await self._open(self.SANDBOX)
+        plain = await self._open(None)
+        try:
+            by_app = await drawn.call(_call("board", markup="<b>x</b>"), None)
+            by_blocks = await plain.call(_call("board", markup="<b>x</b>"), None)
+        finally:
+            await drawn.close()
+            await plain.close()
+
+        app_text = McpResults().result("board", "c1", by_app).llm_view()
+        block_text = McpResults().result("board", "c2", by_blocks).llm_view()
+
+        assert app_text == "the board is drawn by its app"
+        assert block_text == "board markup: <b>x</b>"
+
+    async def test_app_resource_is_read_with_its_csp(self) -> None:
+        server = await self._open(self.SANDBOX)
+        try:
+            read = await server.read(self.BOARD)
+        finally:
+            await server.close()
+
+        resource = read.contents[0]
+
+        assert resource.mime_type == APP_MIME_TYPE
+        assert isinstance(resource, mt.TextResourceContents)
+        assert "ui/initialize" in resource.text
+        assert resource.meta == {
+            "ui": {"csp": {"resourceDomains": ["https://cdn.example.com"]}}
+        }
+
+    async def test_missing_resource_is_an_mcp_error(self, stdio: McpToolServer) -> None:
+        with pytest.raises(MCPError):
+            await stdio.read("ui://standard/missing.html")
+
+    def test_sandboxes_of_two_servers_on_one_origin_are_refused(self) -> None:
+        endpoint = StdioCommand(command=sys.executable, args=(str(SERVER), "stdio"))
+        first = McpServerConfig.model_validate(
+            {
+                "endpoint": endpoint,
+                "connect_timeout_sec": 1.0,
+                "call_timeout_sec": 1.0,
+                "apps": {"sandbox_url": "https://apps.example.com/one/sandbox.html"},
+            }
+        )
+        second = first.model_copy(
+            update={
+                "apps": McpServerApps.model_validate(
+                    {"sandbox_url": "https://apps.example.com:443/two/sandbox.html"}
+                )
+            }
+        )
+
+        with pytest.raises(ValidationError) as refused:
+            McpServersConfig(servers={"one": first, "two": second})
+
+        assert "'one'" in str(refused.value)
+        assert "[mcp.servers.two.apps]" in str(refused.value)
+        assert "https://apps.example.com" in str(refused.value)
+
+    def test_origin_of_the_sandbox_is_scheme_host_and_port(self) -> None:
+        assert self.SANDBOX.origin() == "http://localhost:8123"
 
 
 class BobaMcpStand:
@@ -1194,12 +1283,14 @@ class TestFailureStand:
 
     STANDARD_TOOLS: ClassVar[list[str]] = [
         "add",
+        "app_only",
         "ask",
         "blocks",
+        "board",
         "broken",
         "die",
         "large",
-        "panel_refresh",
+        "model_only",
         "picture",
         "progress",
         "shout",

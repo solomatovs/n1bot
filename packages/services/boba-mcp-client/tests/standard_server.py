@@ -1,21 +1,26 @@
 """Обычный MCP-сервер на официальном SDK: про boba он ничего не знает.
 
 Запускается субпроцессом из тестов клиента: `python standard_server.py stdio`
-либо `python standard_server.py streamable-http <port>`; транспорт
-`stdio-extended` — тот же сервер, объявляющий расширения с настройками не
-по моделям клиента (DeclaredExtension). Кроме четырёх
+либо `python standard_server.py streamable-http <port> [<sandbox.html>]`;
+транспорт `stdio-extended` — тот же сервер, объявляющий расширения с
+настройками не по моделям клиента (DeclaredExtension). Кроме четырёх
 обычных инструментов держит отказы стенда: задержку, большой результат,
 обрыв посреди вызова, смену списка инструментов с уведомлением и отчёты о
 ходе вызова, — ответ из блоков разных видов и адресатов, просьбу о вводе
-(input_required), отказ ошибкой MCP и инструмент только для интерфейса
-(visibility ["app"]).
+(input_required) и отказ ошибкой MCP. Расширение MCP Apps даёт приложение
+доски (board.html): инструмент board рисует разметку, которую пишет модель,
+app_only зовёт только приложение, model_only — только модель. По HTTP с
+путём страницы-прокси сервер отдаёт её как /mcp-apps/sandbox.html — так
+песочница приложений живёт на хосте самого сервера.
 """
 
 import asyncio
 import os
 import sys
+from pathlib import Path
 from typing import Any, ClassVar
 
+from mcp.server.apps import Apps, ResourceCsp, client_supports_apps
 from mcp.server.extension import Extension
 from mcp.server.mcpserver import Context, Image, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
@@ -31,6 +36,8 @@ from mcp.types import (
     TextResourceContents,
     ToolAnnotations,
 )
+from starlette.requests import Request
+from starlette.responses import FileResponse, Response
 
 
 class DeclaredExtension(Extension):
@@ -45,14 +52,19 @@ class DeclaredExtension(Extension):
 
 
 class StandardServer:
-    """Сервер с инструментами: число, текст, сбой, картинка и отказы стенда."""
+    """Сервер с инструментами: число, текст, сбой, картинка, отказы стенда и
+    приложение доски."""
 
     PNG: bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
     EXTRA: ClassVar[str] = "extra"
     LARGE_LINE: ClassVar[str] = "0123456789"
     ASKED: ClassVar[str] = "asked once"
     REFUSAL: ClassVar[dict[str, str]] = {"reason": "the stand refuses"}
-    EXTENSIONS: ClassVar[tuple[DeclaredExtension, ...]] = (
+    BOARD: ClassVar[str] = "ui://standard/board.html"
+    BOARD_CSP: ClassVar[ResourceCsp] = ResourceCsp(
+        resource_domains=["https://cdn.example.com"]
+    )
+    EXTENSIONS: ClassVar[tuple[Extension, ...]] = (
         DeclaredExtension(
             "com.boba/journal",
             {
@@ -65,13 +77,24 @@ class StandardServer:
         DeclaredExtension("com.boba/nested-calls", {"tool": "workflow"}),
     )
 
-    def __init__(self, port: int, extended: bool) -> None:
-        extensions: tuple[DeclaredExtension, ...] = ()
+    def __init__(self, port: int, extended: bool, sandbox: Path | None) -> None:
+        apps = Apps()
+        apps.tool(resource_uri=self.BOARD)(self.board)
+        apps.tool(resource_uri=self.BOARD, visibility=["app"])(self.app_only)
+        apps.tool(resource_uri=self.BOARD, visibility=["model"])(self.model_only)
+        html = Path(__file__).with_name("board.html").read_text()
+        apps.add_html_resource(self.BOARD, html, csp=self.BOARD_CSP)
+        extensions: tuple[Extension, ...] = (apps,)
         if extended:
-            extensions = self.EXTENSIONS
+            extensions = (apps, *self.EXTENSIONS)
 
         self._mcp = MCPServer("standard", extensions=extensions)
         self._port = port
+        self._sandbox = sandbox
+        self._mcp.custom_route("/mcp-apps/sandbox.html", methods=["GET"])(
+            self.sandbox_page
+        )
+
         self._extra_on = False
         self._mcp.tool(annotations=ToolAnnotations(read_only_hint=True))(self.add)
         self._mcp.tool(
@@ -86,7 +109,6 @@ class StandardServer:
         self._mcp.tool()(self.toggle_extra)
         self._mcp.tool(annotations=ToolAnnotations(read_only_hint=True))(self.progress)
         self._mcp.tool()(self.ask)
-        self._mcp.tool(meta={"ui": {"visibility": ["app"]}})(self.panel_refresh)
 
     def add(self, a: int, b: int) -> int:
         """Adds two numbers."""
@@ -178,9 +200,28 @@ class StandardServer:
 
         return InputRequiredResult(request_state=self.ASKED)
 
-    def panel_refresh(self) -> str:
-        """Refreshes the panel of the app; the model does not call it."""
-        return "panel refreshed"
+    def board(self, ctx: Context, markup: str) -> str:
+        """Draws the given HTML markup on a board."""
+        if client_supports_apps(ctx):
+            return "the board is drawn by its app"
+
+        return f"board markup: {markup}"
+
+    def app_only(self) -> str:
+        """Refreshes the board; only its app calls it."""
+        return "app_only answered"
+
+    def model_only(self) -> str:
+        """Clears the board; only the model calls it."""
+        return "model_only answered"
+
+    async def sandbox_page(self, request: Request) -> Response:
+        """Страница-прокси песочницы приложений с хоста сервера; без пути
+        страницы при запуске её нет."""
+        if self._sandbox is None:
+            return Response("no sandbox page was given to the server", 404)
+
+        return FileResponse(self._sandbox, media_type="text/html")
 
     def run(self, transport: str) -> None:
         if transport.startswith("stdio"):
@@ -195,4 +236,8 @@ if __name__ == "__main__":
     if len(sys.argv) > 2:
         port = int(sys.argv[2])
 
-    StandardServer(port, sys.argv[1] == "stdio-extended").run(sys.argv[1])
+    sandbox = None
+    if len(sys.argv) > 3:
+        sandbox = Path(sys.argv[3])
+
+    StandardServer(port, sys.argv[1] == "stdio-extended", sandbox).run(sys.argv[1])
