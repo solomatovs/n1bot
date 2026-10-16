@@ -15,8 +15,6 @@ dependencies = [
     "boba-kerberos==0.0.26.dev4",
     "boba-toolrun==0.0.26.dev4",
     "boba-db-postgres==0.0.26.dev4",
-    "boba-messaging==0.0.26.dev4",
-    "fastapi>=0.116,<1",
     "pydantic>=2.12,<3",
     "psycopg>=3.3,<4",
 ]

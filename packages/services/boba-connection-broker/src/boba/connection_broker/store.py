@@ -48,11 +48,9 @@ from boba.connections.stored import (
     GrantKind,
     GrantsColumn,
     GrantTarget,
-    MissingTypeConnection,
     RolesColumn,
     StoredConnection,
     StoredRole,
-    SubjectConnections,
 )
 from boba.db.postgres import PgQuery, PostgresPool, PostgresTable
 from boba.db.postgres.connection import PostgresConfig
@@ -389,35 +387,6 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
 
         return touched > 0
 
-    async def owned_ids(self, user_id: UUID) -> frozenset[UUID]:
-        """Соединения с личным грантом пользователя: их он правит и удаляет сам."""
-        query = (
-            self._query()
-            .add(
-                """
-                select
-                    src_kind_id
-                from
-                    {schema}.grants
-                where 1=1
-                    and src_kind = %(src_kind)s
-                    and tgt_kind = %(tgt_kind)s
-                    and tgt_kind_id = %(user_id)s
-                """,
-                src_kind=GrantKind.CONNECTIONS.value,
-                tgt_kind=GrantKind.USERS.value,
-                user_id=user_id,
-            )
-            .build()
-        )
-        rows = await self._rows(query, "owned_ids")
-
-        ids: set[UUID] = set()
-        for row in rows:
-            ids.add(UUID(str(row[GrantsColumn.SRC_KIND_ID.value])))
-
-        return frozenset(ids)
-
     async def get(self, connection_id: UUID) -> StoredConnection:
         query = (
             self._query()
@@ -445,33 +414,6 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
             raise ConnectionNotFoundError(msg)
 
         return self._stored(row)
-
-    async def name_of(self, connection_id: UUID) -> str:
-        """Имя строки без разбора профиля: живёт и у строк без типа."""
-        query = (
-            self._query()
-            .add(
-                """
-                select
-                    name
-                from
-                    {schema}.connections
-                where
-                    id = %(id)s
-                """,
-                id=connection_id,
-            )
-            .build()
-        )
-        row = await self._row(query, "name of")
-        if row is None:
-            msg = (
-                f"connections: connection #{connection_id} not found in "
-                f"{self.schema}.connections"
-            )
-            raise ConnectionNotFoundError(msg)
-
-        return str(row[ConnectionsColumn.NAME.value])
 
     async def list_all(self) -> Sequence[StoredConnection]:
         query = (
@@ -653,30 +595,6 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
             )
 
         return targets
-
-    async def for_subject_all(self, subject: Subject) -> SubjectConnections:
-        """Все соединения субъекта: разобранные строки плюс строки без типа.
-
-        Строка типа без установленного пакета не теряется — она попадает в
-        missing и показывается спискам с пометкой.
-        """
-        raw_rows = await self._subject_rows(subject, ConnectionFilter.none())
-
-        rows: list[StoredConnection] = []
-        missing: list[MissingTypeConnection] = []
-        for row in raw_rows:
-            try:
-                rows.append(self._stored(row))
-            except UnknownConnectionKindError as exc:
-                missing.append(
-                    MissingTypeConnection(
-                        id=UUID(str(row[SubjectRowColumn.ID])),
-                        name=row[SubjectRowColumn.NAME],
-                        kind=exc.kind,
-                    )
-                )
-
-        return SubjectConnections(rows=rows, missing=missing)
 
     async def for_subject(
         self, subject: Subject, kind: str

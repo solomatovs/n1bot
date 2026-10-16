@@ -34,7 +34,6 @@ __all__ = [
     "InvokeErrorKind",
     "ReportedError",
     "ToolRefusalError",
-    "ToolUnavailableError",
     "ValidationText",
 ]
 
@@ -242,10 +241,6 @@ class FailurePacker:
             line = f"{line}: {text}"
 
         return head + "".join(frames) + line
-
-
-class ToolUnavailableError(Exception):
-    """Инструмент не виден субъекту вне чата: не собран или запрещён."""
 
 
 class InvokeErrorKind(StrEnum):

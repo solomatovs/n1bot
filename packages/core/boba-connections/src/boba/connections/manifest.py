@@ -2,7 +2,7 @@
 
 Пакет типа декларирует ConnectionTypeManifest в entry points группы
 "boba.connections"; реестр собирается один раз на старте и отвечает за разбор
-профилей из jsonb, схему форм, пробы и адрес соединения.
+профилей из jsonb, схему форм и адрес соединения.
 
 Ошибки:
 ConnectionTypesError — манифест плагина не соответствует контракту.
@@ -27,7 +27,6 @@ __all__ = [
     "ConnectionTypeManifest",
     "ConnectionTypes",
     "ConnectionTypesError",
-    "ProbeHook",
     "UnknownConnectionKindError",
 ]
 
@@ -53,15 +52,6 @@ class UnknownConnectionKindError(ConnectionTypesError):
         self.installed = tuple(installed)
 
 
-class ProbeHook(Protocol):
-    """Проверка живого соединения по профилю с билетом вызова: текст об успехе.
-
-    Ошибки реализация выпускает свои — границу к ProbeResult держит вызывающий.
-    """
-
-    async def __call__(self, connection: ConnectionBase) -> str: ...
-
-
 class AddressHook(Protocol):
     """URL соединения по профилю: сервер и база, без учётных данных.
 
@@ -79,7 +69,6 @@ class ConnectionTypeManifest:
 
     kind: str
     model: type[ConnectionBase]
-    probe: ProbeHook
     address: AddressHook
 
 
