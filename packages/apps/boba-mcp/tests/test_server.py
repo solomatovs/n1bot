@@ -1677,7 +1677,7 @@ class TestConnectionOffers:
             raise AssertionError(f"the parameter is marked with its kind: {declared}")
 
         both = sealed and bool(names)
-        if both != (SealedParamSchema.ANY_OF_KEY in declared):
+        if both != (SchemaMark.ANY_OF.value in declared):
             raise AssertionError(f"both sources come as anyOf: {declared}")
 
         for name in names:

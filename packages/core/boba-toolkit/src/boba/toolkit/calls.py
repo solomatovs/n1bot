@@ -149,17 +149,24 @@ class SchemaMark(StrEnum):
     соединение). THREAD и CONNECTION — свои пометки x-boba-…: параметр
     треда, который harness прячет от модели и заполняет сам, и
     параметр-соединение со значением вида соединения. Клиент, который
-    пометку не знает, её не замечает. Единственный читатель этих ключей и
-    у сервера, и у клиента — params().
+    пометку не знает, её не замечает. CONTENT, CONST, ENUM, ANY_OF и
+    DESCRIPTION — стандартные ключи, которыми схема параметра-соединения
+    говорит, что предложено на его месте (SealedParamSchema). Единственный
+    читатель параметров с ключом и у сервера, и у клиента — params().
     """
 
     MEDIA = "contentMediaType"
     THREAD = "x-boba-thread"
     CONNECTION = "x-boba-connection"
+    CONTENT = "contentSchema"
+    CONST = "const"
+    ENUM = "enum"
+    ANY_OF = "anyOf"
+    DESCRIPTION = "description"
 
     PROPERTIES = nonmember("properties")
 
-    def params(self, schema: Mapping[str, Any]) -> dict[str, object]:
+    def params(self, schema: Mapping[str, Any]) -> Mapping[str, object]:
         """Параметры схемы инструмента schema с этим ключом: имя → значение."""
         marked: dict[str, object] = {}
         declared = schema.get(self.PROPERTIES)

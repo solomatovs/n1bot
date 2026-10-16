@@ -17,6 +17,7 @@ from collections.abc import Sequence
 from typing import Annotated, ClassVar
 
 from pydantic import BaseModel, Field
+from pydantic.fields import FieldInfo
 
 from boba.toolkit.calls import SchemaMark, ToolIntent
 from boba.toolrun.hosted import HostedTool, ToolSchema
@@ -52,25 +53,29 @@ class CallFields:
 
     def extended(self, schema: type[BaseModel]) -> type[BaseModel]:
         """Схема с полем подписи вызова; уже подписанная — как есть."""
-        if ToolIntent.NAME in schema.model_fields:
-            return schema
-
         # необязательное: инструмент без своих аргументов модель зовёт с {},
         # и обязательная подпись роняла бы вызов. Потолок длины держит показ
         declared = Field(description=ToolIntent.DESCRIPTION)
-        fields = {ToolIntent.NAME: (Annotated[str, declared], "")}
 
-        return self._schemas.rebuild(schema, fields, ())
+        return self._added(schema, ToolIntent.NAME, declared)
 
     def threaded(self, schema: type[BaseModel]) -> type[BaseModel]:
         """Схема с необязательным параметром треда; уже с ним — как есть."""
-        if self.THREAD in schema.model_fields:
-            return schema
-
         declared = Field(
             description=self.THREAD_DESCRIPTION,
             json_schema_extra={SchemaMark.THREAD.value: True},
         )
-        fields = {self.THREAD: (Annotated[str, declared], "")}
+
+        return self._added(schema, self.THREAD, declared)
+
+    def _added(
+        self, schema: type[BaseModel], name: str, declared: FieldInfo
+    ) -> type[BaseModel]:
+        """Схема с необязательной строкой name, объявленной declared; уже с
+        ней — как есть."""
+        if name in schema.model_fields:
+            return schema
+
+        fields = {name: (Annotated[str, declared], "")}
 
         return self._schemas.rebuild(schema, fields, ())

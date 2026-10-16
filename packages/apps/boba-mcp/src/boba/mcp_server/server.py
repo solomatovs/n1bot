@@ -94,7 +94,6 @@ from boba.toolkit.dag import CallDag, DagNode, ToolServer
 from boba.toolkit.failure import ValidationText
 from boba.toolkit.ports import ProgressReport
 from boba.toolkit.result import ErrorResult
-from boba.toolkit.types import StringList
 from boba.toolkit.wire import FilesFeature, JournalFeature, JournalRead
 from boba.toolrun.call_id import CallFields
 from boba.toolrun.hosted import DirectCalls
@@ -149,7 +148,6 @@ class ConnectionOfferRule(RoleVisibility):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    roles: StringList = Field(default=[], min_length=1, validate_default=True)
     client: OfferClient
     offer: list[OfferedSource] = Field(min_length=1)
 
@@ -578,10 +576,11 @@ class StreamReadTool(Tool):
 
 
 class FileUploadRequest(BaseModel):
-    """Аргументы file_upload: имя файла в каталоге вложений области. Тред
-    вызова среди аргументов читает CallScopes, модель его пропускает."""
+    """Аргументы file_upload: имя файла в каталоге вложений области. Схему
+    вызова и проверку аргументов FileUploadTool собирает из неё с
+    параметром треда (CallFields.threaded)."""
 
-    model_config = ConfigDict(frozen=True, extra="ignore")
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     name: str = Field(
         min_length=1,
@@ -619,6 +618,7 @@ class FileUploadTool(Tool):
         "file at the returned workspace path"
     )
 
+    _request: type[BaseModel] = PrivateAttr()
     _routes: FileRoutes = PrivateAttr()
     _subjects: TokenSubjects = PrivateAttr()
     _scopes: CallScopes = PrivateAttr()
@@ -631,6 +631,7 @@ class FileUploadTool(Tool):
             description=self.DESCRIPTION,
             parameters=threaded.model_json_schema(),
         )
+        self._request = threaded
         self._routes = routes
         self._subjects = subjects
         self._scopes = CallScopes()
@@ -638,7 +639,8 @@ class FileUploadTool(Tool):
 
     async def run(self, arguments: dict[str, object]) -> ToolResult:
         try:
-            request = FileUploadRequest.model_validate(arguments)
+            checked = self._request.model_validate(arguments)
+            request = FileUploadRequest.model_construct(**checked.model_dump())
             subject = self._subjects.current()
             scope = self._scopes.of(subject, arguments)
             key = ObjectKey(
