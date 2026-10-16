@@ -424,8 +424,8 @@ class NestedCallReply(BaseModel):
 
 class NestedCallsOutput(BaseModel):
     """Собственные данные итога связки для structuredContent: узлы в
-    порядке описания. Строит её WorkflowResult.structured; сведения о
-    вызове к ней добавляет NestedCallsReply (boba.toolkit.wire)."""
+    порядке описания. Строит её WorkflowResult.structured, из неё же
+    outputSchema связки; клиент разбирает ею ответ связки."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 

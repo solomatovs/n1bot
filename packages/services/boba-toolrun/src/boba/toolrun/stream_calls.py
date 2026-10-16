@@ -50,6 +50,7 @@ from boba.toolkit.dag import (
     DagNode,
     DagPlanner,
     DagSpec,
+    NestedCallsOutput,
     NodeCalls,
     NodeOutcome,
     NodeOutcomes,
@@ -65,7 +66,6 @@ from boba.toolkit.result import (
     ErrorResult,
     FailureResult,
 )
-from boba.toolkit.wire import NestedCallsReply
 from boba.toolrun.call_id import CallFields
 from boba.toolrun.dag_run import DagOutcome, DagRunError, DagRunner
 from boba.toolrun.hosted import HostedTool, ToolSchema
@@ -303,7 +303,7 @@ class WorkflowTool:
 
     def card(self) -> ToolCard:
         """Карточка для модели: узлы называют инструменты сервера по имени;
-        итог — узлы связки по схеме NestedCallsReply."""
+        итог — узлы связки по схеме NestedCallsOutput."""
         card = self._schemas.card(
             self.NAME,
             self.DESCRIPTION.strip(),
@@ -311,7 +311,7 @@ class WorkflowTool:
             None,
         )
 
-        return dataclasses.replace(card, output=NestedCallsReply.model_json_schema())
+        return dataclasses.replace(card, output=NestedCallsOutput.model_json_schema())
 
 
 class NodeArgs(Protocol):

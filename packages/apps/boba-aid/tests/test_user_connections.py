@@ -168,7 +168,7 @@ async def test_granted_connection_is_visible_and_works(  # noqa: PLR0913 — ф�
     chat_session.sign_in(user, user.metadata, THREAD, PROFILE)
 
     targets = await Call.ok(catalog)
-    names = [row["name"] for row in targets.rows]
+    names = [row["name"] for row in tools.rows(targets)]
     if names != ["main"]:
         raise AssertionError(f"whitelist must hold the granted row only: {names}")
 
@@ -179,7 +179,7 @@ async def test_granted_connection_is_visible_and_works(  # noqa: PLR0913 — ф�
         offset=0,
         limit=50,
     )
-    if result.statements[0].rows != [{"answer": 1}]:
+    if tools.rows(result) != [{"answer": 1}]:
         raise AssertionError(f"query must run on the granted connection: {result}")
 
 
@@ -198,7 +198,7 @@ async def test_role_grant_reaches_every_role_holder(  # noqa: PLR0913 — фик
     chat_session.sign_in(user, user.metadata, THREAD, PROFILE)
 
     targets = await Call.ok(catalog)
-    names = [row["name"] for row in targets.rows]
+    names = [row["name"] for row in tools.rows(targets)]
     if names != ["shared"]:
         raise AssertionError(f"role grant must be visible: {names}")
 
@@ -218,8 +218,8 @@ async def test_stranger_sees_nothing(  # noqa: PLR0913 — фикстуры те
     chat_session.sign_in(stranger, stranger.metadata, THREAD, PROFILE)
 
     targets = await Call.ok(catalog)
-    if targets.rows:
-        raise AssertionError(f"stranger must see no connections: {targets.rows}")
+    if tools.rows(targets):
+        raise AssertionError(f"stranger must see no connections: {tools.rows(targets)}")
 
     refused = await Call.result(
         tools["pg_query"], connection="main", sql="select 1", offset=0, limit=50
@@ -244,13 +244,13 @@ async def test_revoke_applies_to_the_next_call(  # noqa: PLR0913 — фикст�
     chat_session.sign_in(user, user.metadata, THREAD, PROFILE)
 
     before = await Call.ok(catalog)
-    if not before.rows:
+    if not tools.rows(before):
         raise AssertionError("granted row must be visible before revoke")
 
     await store.revoke(connection_id, target)
 
     after = await Call.ok(catalog)
-    if after.rows:
+    if tools.rows(after):
         raise AssertionError("revoked row must disappear without a restart")
 
 
@@ -270,8 +270,10 @@ async def test_ambiguous_name_is_refused(  # noqa: PLR0913 — фикстуры 
     chat_session.sign_in(user, user.metadata, THREAD, PROFILE)
 
     targets = await Call.ok(catalog)
-    if targets.rows:
-        raise AssertionError(f"ambiguous name must not be listed: {targets.rows}")
+    if tools.rows(targets):
+        raise AssertionError(
+            f"ambiguous name must not be listed: {tools.rows(targets)}"
+        )
 
     refused = await Call.result(
         tools["pg_query"], connection="main", sql="select 1", offset=0, limit=50
@@ -307,7 +309,7 @@ async def test_delegated_connection_runs_as_the_session_principal(  # noqa: PLR0
         offset=0,
         limit=50,
     )
-    if result.statements[0].rows != [{"who": SERVICE_USER}]:
+    if tools.rows(result) != [{"who": SERVICE_USER}]:
         raise AssertionError(f"query must run as the delegated principal: {result}")
 
 
@@ -361,7 +363,7 @@ async def test_unreachable_database_is_reported_by_the_body(
         tools["pg_query"], connection="dead", sql="select 1", offset=0, limit=50
     )
 
-    if refused.error_kind != "PostgresError":
+    if "PostgresError: connecting to postgres" not in refused.llm_view():
         raise AssertionError(f"unexpected failure: {refused}")
 
 
@@ -402,8 +404,8 @@ async def test_web_negotiate_connection_authenticates_as_the_principal(
         line_offset=0,
         line_count=5,
     )
-    if SERVICE_USER not in result.text:
-        raise AssertionError(f"clickhouse must see the principal: {result.text}")
+    if SERVICE_USER not in result.llm_view():
+        raise AssertionError(f"clickhouse must see the principal: {result.llm_view()}")
 
 
 async def test_call_outside_session_is_refused(

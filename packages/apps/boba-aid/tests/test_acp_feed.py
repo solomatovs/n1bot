@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import base64
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from pathlib import Path
 from typing import Any, ClassVar, cast
 
@@ -53,6 +53,7 @@ from boba.canvas.canvas import CanvasRegistry
 from boba.canvas.keys import ObjectKey, ThreadDir
 from boba.chat.profiles import ChatProfileConfig, UserSetting
 from boba.identity.context import Scope
+from boba.mcp_adapter import JournalUris
 from boba.messaging import (
     LockToken,
     MemoryMessageBus,
@@ -61,6 +62,7 @@ from boba.messaging import (
 )
 from boba.stand.refs import StandRefs
 from boba.stand.storage import StorageSeed
+from boba.toolkit.channels import ToolChannel
 from boba.toolkit.dag import (
     CallDag,
     DagNode,
@@ -78,7 +80,7 @@ from boba.toolkit.result import (
     ToolArtifact,
     ToolResultBase,
 )
-from boba.toolkit.wire import ResultWire
+from boba.toolkit.wire import JournalFeature, ResultWire
 from boba.transport.acp.protocol import IdleErrorUpdate
 
 THREAD = "11111111-1111-1111-1111-111111111111"
@@ -87,6 +89,13 @@ MESSAGE = "msg_a"
 SECOND_MESSAGE = "msg_b"
 CALL = "call_1"
 SECOND_CALL = "call_2"
+RUN = "run-7"
+JOURNAL = JournalFeature(
+    read="stream_read",
+    path="/journals",
+    resource="boba-journal://{run}/{node}/{channel}",
+)
+"""Журнал вызовов сервера boba стенда ленты."""
 
 
 @pytest.fixture(autouse=True)
@@ -243,19 +252,21 @@ def _done(call_id: str, text: str, raw_output: Any) -> SessionUpdate:
     )
 
 
-def _result(artifact: ToolResultBase, run: str = "") -> dict[str, Any]:
-    """Ответ tools/call сервера boba-mcp: текст для модели и модель результата
-    в structuredContent; run — запуск, под которым сервер ведёт журнал."""
+def _result(artifact: ToolResultBase, journaled: Sequence[str] = ()) -> dict[str, Any]:
+    """Ответ tools/call сервера boba-mcp: блоки результата и ссылки на
+    stdout журналов вызовов journaled запуска RUN, как их дописывает
+    сервер."""
     call = DagNode(key="srv-call", tool="pg_query")
     outcome = NodeOutcomes().of(call, artifact, False)
     wire = ResultWire().packed(outcome)
-    structured = wire.structured
-    if run and structured is not None:
-        structured = ResultWire().stamped(structured, run)
+    content = list(wire.content)
+    uris = JournalUris(JOURNAL.resource)
+    for node in journaled:
+        content.append(uris.link(RUN, node, ToolChannel.STDOUT))
 
     reply = mt.CallToolResult(
-        content=list(wire.content),
-        structured_content=structured,
+        content=content,
+        structured_content=wire.structured,
         is_error=wire.is_error,
         _meta=dict(wire.meta),
     )
@@ -309,8 +320,10 @@ def _view(runtime_stand: StandRefs, journals: RemoteJournals) -> UpdateView:
     view = ChatView(
         THREAD, LiveSink(), runtime_stand.journals, "u-1", user_name="alice"
     )
+    media = ToolMedia()
+    media.shown("boba", [], None, JOURNAL)
 
-    return UpdateView(view, THREAD, journals, ToolMedia())
+    return UpdateView(view, THREAD, journals, media)
 
 
 class TestUpdateViewIds:
@@ -358,15 +371,19 @@ class TestUpdateViewIds:
         updates = _view(runtime_stand, journals)
         updates.begin_turn(QUESTION)
 
-        address = JournalAddress(server="boba", run="run-7", call="srv-call")
+        address = JournalAddress(server="boba", run=RUN, call="srv-call")
         await updates.apply(_call(CALL, "mcp__boba__bash", {"cmd": "ls"}))
         await updates.apply(
             _done(
-                CALL, "ok", _result(MarkdownResult(text="ok", elapsed_ms=12), "run-7")
+                CALL,
+                "ok",
+                _result(MarkdownResult(text="ok", elapsed_ms=12), ["srv-call"]),
             )
         )
 
         assert await journals.address(THREAD, CALL) == address
+        step = recorded.last()[_id(CALL, StepRole.TOOL)]
+        assert step.get(StepField.OUTPUT) == "ok", "a journal link is not drawn"
 
     @pytest.mark.anyio
     async def test_failed_call_without_artifact_is_an_error_step(
@@ -403,7 +420,9 @@ class TestUpdateViewIds:
             },
         }
         media = ToolMedia()
-        media.shown("boba", [mt.Tool(name="pg_query", input_schema=arguments)], None)
+        media.shown(
+            "boba", [mt.Tool(name="pg_query", input_schema=arguments)], None, None
+        )
         view = ChatView(
             THREAD, LiveSink(), runtime_stand.journals, "u-1", user_name="alice"
         )
@@ -464,7 +483,7 @@ class TestNestedCallSteps:
         if nested:
             declared = CallDag().feature()
 
-        media.shown("boba", [], declared)
+        media.shown("boba", [], declared, JOURNAL)
         view = ChatView(
             THREAD, LiveSink(), runtime_stand.journals, "u-1", user_name="alice"
         )
@@ -551,7 +570,9 @@ class TestNestedCallSteps:
         updates.begin_turn(QUESTION)
         await updates.apply(_call(CALL, "mcp__boba__workflow", {"nodes": self.NODES}))
 
-        await updates.apply(self._failed(CALL, _result(self._workflow(), "run-7")))
+        await updates.apply(
+            self._failed(CALL, _result(self._workflow(), ["srv-call_0", "srv-call_1"]))
+        )
 
         steps = recorded.last()
         source = steps[_id(f"{CALL}_0", StepRole.TOOL)]
@@ -562,7 +583,7 @@ class TestNestedCallSteps:
         assert "table orders does not exist" in str(sink.get(StepField.OUTPUT))
 
         address = await journals.address(THREAD, f"{CALL}_1")
-        assert address == JournalAddress(server="boba", run="run-7", call="srv-call_1")
+        assert address == JournalAddress(server="boba", run=RUN, call="srv-call_1")
 
     @pytest.mark.anyio
     async def test_refusal_before_the_start_ends_every_node(
