@@ -57,6 +57,7 @@ from boba.toolkit.result import (
     Fence,
     JsonBlock,
     TableText,
+    VisualResult,
 )
 from boba.transport.http.connection import UrlScheme
 
@@ -548,9 +549,10 @@ BlockDrawing: TypeAlias = Callable[
 """Отрисовщик блока ответа: блок, шаг вызова, ключ вызова и номер блока-не-
 текста; итог — markdown для выхода шага (пусто — блок стал элементом)."""
 
-ResourceDrawing: TypeAlias = Callable[[str, str, str | None], Awaitable[str]]
+ResourceDrawing: TypeAlias = Callable[[str, str, Step, str | None, int], Awaitable[str]]
 """Отрисовщик текстового встроенного ресурса по его MIME: текст ресурса, его
-имя (последний сегмент uri) и ключ вызова."""
+имя (последний сегмент uri), шаг вызова, ключ вызова и номер блока-не-текста;
+итог — markdown для выхода шага (пусто — ресурс стал элементом)."""
 
 
 class ChatView:
@@ -578,6 +580,8 @@ class ChatView:
     """Схема ссылки на файл workspace сервера."""
     TEXT_FAMILY: ClassVar[str] = "text/"
     """Начало MIME текстовых ресурсов: неизвестный текст рисуется блоком кода."""
+    TREE_BYTES: ClassVar[int] = 1 << 20
+    """Предел JSON для дерева: больший документ рисуется блоком кода."""
     BASE64_SLICE: ClassVar[int] = 64 * 1024
     """Срез base64 картинки и звука при записи в хранилище: кратен 4,
     поэтому каждый срез декодируется сам по себе."""
@@ -626,7 +630,7 @@ class ChatView:
             ContentMime.CSV: self._table,
             ContentMime.PLOTLY: self._chart,
             ContentMime.SQL: self._fenced,
-            ContentMime.JSON: self._fenced,
+            ContentMime.JSON: self._tree,
         }
         """Отрисовка встроенного ресурса по MIME; прочий text/* — блоком кода."""
         self._pulse = self._new_pulse(None)
@@ -1085,19 +1089,25 @@ class ChatView:
         segment = PurePosixPath(urlsplit(str(resource.uri)).path).name
         name = unquote(segment)
 
-        return await drawing(resource.text, name, key)
+        return await drawing(resource.text, name, step, key, number)
 
-    async def _table(self, text: str, name: str, key: str | None) -> str:
+    async def _table(
+        self, text: str, name: str, step: Step, key: str | None, number: int
+    ) -> str:
         """text/csv — таблица markdown, как у таблиц семейства."""
         rows = list(csv.DictReader(io.StringIO(text)))
 
         return TableText.render(rows)
 
-    async def _fenced(self, text: str, name: str, key: str | None) -> str:
+    async def _fenced(
+        self, text: str, name: str, step: Step, key: str | None, number: int
+    ) -> str:
         """Текст блоком кода; подпись ограды — имя ресурса."""
         return Fence.around(text, name)
 
-    async def _chart(self, text: str, name: str, key: str | None) -> str:
+    async def _chart(
+        self, text: str, name: str, step: Step, key: str | None, number: int
+    ) -> str:
         """Фигура plotly — график шагом рядом с вызовом; заголовок — имя
         ресурса. Фигура не JSON — текстом."""
         try:
@@ -1109,9 +1119,47 @@ class ChatView:
                 key,
                 exc,
             )
-            return await self._fenced(text, name, key)
+            return await self._fenced(text, name, step, key, number)
 
         await self._element(figure, name, key)
+
+        return ""
+
+    async def _tree(
+        self, text: str, name: str, step: Step, key: str | None, number: int
+    ) -> str:
+        """application/json — дерево JSON элементом шага вызова под его
+        выходом; больше TREE_BYTES или не JSON — блоком кода."""
+        if len(text.encode()) > self.TREE_BYTES:
+            return await self._fenced(text, name, step, key, number)
+
+        try:
+            value = json.loads(text)
+        except ValueError as exc:
+            logger.info(
+                "thread %s: JSON resource %r of call %s is not JSON, shown as text: %s",
+                self._thread_id,
+                name,
+                key,
+                exc,
+            )
+            return await self._fenced(text, name, step, key, number)
+
+        if not self._sink.emits_elements:
+            return ""
+
+        tree = VisualResult(
+            element=CanvasElement.JSON_TREE, props={"value": value}, title=name
+        )
+        element = self._elements.of_result(tree)
+        self._numbered(element, key, number)
+
+        elements: list[Element] = []
+        if step.elements:
+            elements = list(step.elements)
+
+        elements.append(element)
+        step.elements = elements
 
         return ""
 

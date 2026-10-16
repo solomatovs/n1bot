@@ -33,7 +33,7 @@ from boba.aid.agent.settings import (
     UserAgentSettings,
 )
 from boba.aid.canvas.diagram import DiagramFiles, MermaidViewer
-from boba.aid.canvas.panel import CanvasPanel, ImageViewer
+from boba.aid.canvas.panel import ImageViewer
 from boba.aid.canvas.remote import RemoteJournals
 from boba.aid.chat.feed import QuestionBody, TurnFeed
 from boba.aid.chat.panel_text import PanelText
@@ -52,7 +52,7 @@ from boba.aid.rendering.chat_view import (
     StepText,
 )
 from boba.aid.rendering.renderer import ChatRenderer, NoSurface
-from boba.canvas.canvas import CanvasRegistry
+from boba.canvas.canvas import CanvasElement, CanvasRegistry
 from boba.canvas.keys import ObjectKey, ThreadDir
 from boba.chat.profiles import ChatProfileConfig, UserSetting
 from boba.identity.context import Scope
@@ -982,11 +982,11 @@ class TestResultsFromRawOutput:
         answer = ChatView.derive_id(thread_id, QUESTION, StepRole.ANSWER)
         attached = ChatView.derive_id(thread_id, f"{CALL}/0", StepRole.ELEMENT)
         card = ChatView.derive_id(thread_id, f"{SECOND_CALL}/0", StepRole.ELEMENT)
-        assert sorted(drawn) == sorted(["a.pdf", CanvasPanel.VIEW_ELEMENT])
+        assert sorted(drawn) == sorted(["a.pdf", CanvasElement.VIEW])
         assert drawn["a.pdf"][:2] == (attached, answer), live
         assert f"/canvas/{thread_id}/upload/a.pdf" in drawn["a.pdf"][2], live
-        assert drawn[CanvasPanel.VIEW_ELEMENT][:2] == (card, answer), live
-        assert spec.in_workspace() in drawn[CanvasPanel.VIEW_ELEMENT][2], live
+        assert drawn[CanvasElement.VIEW][:2] == (card, answer), live
+        assert spec.in_workspace() in drawn[CanvasElement.VIEW][2], live
 
     @pytest.mark.anyio
     async def test_missing_spec_is_noted_the_same_live_and_in_the_replay(
@@ -1458,7 +1458,7 @@ class TestBlockDrawings:
     ) -> None:
         reply = self._reply(
             self._resource("application/sql", "select 1", "sql"),
-            self._resource("application/json", '{"a": 1}', "json"),
+            self._resource("application/json", '{"a": 1', "json"),
             self._resource("text/plain", "line", "stdout"),
             self._resource("text/x-unknown", "<b>raw</b>", "notes"),
             self._resource("text/html", "<script>x()</script>", "page"),
@@ -1468,11 +1468,57 @@ class TestBlockDrawings:
 
         assert self._output(recorded) == (
             "```sql\nselect 1\n```\n\n"
-            '```json\n{"a": 1}\n```\n\n'
+            '```json\n{"a": 1\n```\n\n'
             "```stdout\nline\n```\n\n"
             "```notes\n<b>raw</b>\n```\n\n"
             "```page\n<script>x()</script>\n```"
         )
+
+    @pytest.mark.anyio
+    async def test_json_is_a_tree_under_the_step_output(
+        self,
+        runtime_stand: StandRefs,
+        storage: LocalStorageClient,
+        recorded: FakeEmitter,
+    ) -> None:
+        """JSON рисуется деревом элементом шага вызова под его выходом; текст
+        вокруг остаётся выходом шага, а не JSON-строкой."""
+        document = {"rows": [1, 2], "note": "<script>x()</script>"}
+        reply = self._reply(
+            mt.TextContent(text="before"),
+            self._resource("application/json", json.dumps(document), "answer"),
+        )
+
+        await self._drawn(runtime_stand, storage, reply)
+
+        assert self._output(recorded) == "before"
+        trees: list[Any] = []
+        for element in recorded.elements:
+            if element.get("name") != CanvasElement.JSON_TREE:
+                continue
+            trees.append(element)
+
+        assert len(trees) == 1, recorded.elements
+        tree = trees[0]
+        assert tree["props"] == {"value": document}, tree
+        assert tree["forId"] == _id(CALL, StepRole.TOOL), tree
+        assert tree["id"] == _id(f"{CALL}/0", StepRole.ELEMENT), tree
+
+    @pytest.mark.anyio
+    async def test_too_large_json_is_fenced(
+        self,
+        runtime_stand: StandRefs,
+        storage: LocalStorageClient,
+        recorded: FakeEmitter,
+    ) -> None:
+        text = json.dumps({"blob": "x" * ChatView.TREE_BYTES})
+        reply = self._reply(self._resource("application/json", text, "big"))
+
+        await self._drawn(runtime_stand, storage, reply)
+
+        assert self._output(recorded) == f"```big\n{text}\n```"
+        for element in recorded.elements:
+            assert element.get("name") != CanvasElement.JSON_TREE, element
 
     @pytest.mark.anyio
     async def test_plotly_figure_is_a_chart_next_to_the_step(
@@ -1539,7 +1585,7 @@ class TestBlockDrawings:
         assert shown[:2] == shown[2:], "a replay draws the same files"
         card, attached = shown[:2]
         answer = _id(QUESTION, StepRole.ANSWER)
-        assert card[0] == ImageViewer.LINK_ELEMENT, card
+        assert card[0] == CanvasElement.LINK, card
         assert card[2:] == (_id(f"{CALL}/0", StepRole.ELEMENT), answer), card
         image = ObjectKey.from_workspace("u-1", THREAD, card[1])
         assert image.name.endswith(".png"), image

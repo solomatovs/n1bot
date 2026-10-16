@@ -12,6 +12,7 @@
 """
 
 import asyncio
+import json
 import os
 import sys
 from typing import Any, ClassVar
@@ -52,6 +53,11 @@ class StandardServer:
     LARGE_LINE: ClassVar[str] = "0123456789"
     ASKED: ClassVar[str] = "asked once"
     REFUSAL: ClassVar[dict[str, str]] = {"reason": "the stand refuses"}
+    DOCUMENT: ClassVar[dict[str, Any]] = {
+        "rows": [{"id": 1, "name": "<script>window.__boba_pwned=1</script>"}],
+        "total": 1,
+    }
+    """JSON ответа blocks человеку: дерево в ленте, строка со скриптом — текстом."""
     EXTENSIONS: ClassVar[tuple[DeclaredExtension, ...]] = (
         DeclaredExtension(
             "com.boba/journal",
@@ -127,6 +133,14 @@ class StandardServer:
                     resource=TextResourceContents(
                         uri="file:///notes.txt", mime_type="text/plain", text="notes"
                     )
+                ),
+                EmbeddedResource(
+                    resource=TextResourceContents(
+                        uri="file:///answer.json",
+                        mime_type="application/json",
+                        text=json.dumps(self.DOCUMENT),
+                    ),
+                    annotations=Annotations(audience=["user"]),
                 ),
             ]
         )
