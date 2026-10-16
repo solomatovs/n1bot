@@ -64,15 +64,29 @@ class Stand(BaseModel):
     SECTION: ClassVar[str] = "site"
     NETBIOS_SEPARATOR: ClassVar[str] = "\\"
 
-    ldap_url: str = Field(description="Контроллер домена стенда, ldaps://…")
-    ldap_base_dn: str
-    ldap_bind_user: str = Field(description="Второй пользователь стенда, DOMAIN\\user.")
-    ldap_bind_password: SecretStr
+    ldap_url: str = Field(
+        default="",
+        description=(
+            "Контроллер домена стенда, ldaps://…; пусто (site сервиса без входа "
+            "ldap) — тесты входа падают."
+        ),
+    )
+    ldap_base_dn: str = ""
+    ldap_bind_user: str = Field(
+        default="", description="Второй пользователь стенда, DOMAIN\\user."
+    )
+    ldap_bind_password: SecretStr = SecretStr("")
 
     krb_domain: str
     krb_realm: str
     krb_config: str = Field(description="krb5.conf стенда.")
-    krb_http_keytab: str = Field(description="Keytab принципала SSO-приёма.")
+    krb_http_keytab: str = Field(
+        default="",
+        description=(
+            "Keytab принципала SSO-приёма; пусто (site сервиса без входа "
+            "kerberos) — тесты входа падают."
+        ),
+    )
     krb_pg_user: str
     krb_pg_keytab: str
     krb_ch_user: str = Field(

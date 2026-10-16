@@ -17,7 +17,6 @@ import pytest
 from chainlit.user import PersistedUser
 from chainlit.user import User as ChainlitUser
 from chainlit_stand import ChatSessionStand, SsoStand
-from omegaconf import OmegaConf
 from psycopg import sql
 from pydantic import create_model
 
@@ -143,12 +142,12 @@ class Tgt:
 
 
 @pytest.fixture
-def sso(tmp_path: Path, service_raw_config: Any) -> tuple[SsoTickets, dict[str, str]]:
+def sso(tmp_path: Path) -> tuple[SsoTickets, dict[str, str]]:
     """Билеты входов стенда: TGT сервиса и TGT второй учётки, запечатанные для JWT."""
     tickets = SsoStand.tickets(str(KRB5_CONF))
     service = Tgt.from_keytab()
     reader = f"FILE:{tmp_path / 'reader'}"
-    password = str(OmegaConf.select(service_raw_config, "site.ldap_bind_password"))
+    password = STAND.reader_password.get_secret_value()
     Tgt.from_password(reader, READER_PRINCIPAL, password)
     sealed = {
         SERVICE_PRINCIPAL: SsoStand.sealed(
