@@ -35,14 +35,14 @@ from mcp.shared.transport_context import TransportContext
 from mcp_types.jsonrpc import ErrorData
 from pydantic import SecretStr, ValidationError
 
-from boba.agent.hooks import McpServerInfo
 from boba.chainlit.agent.config import ChatMcpConfig
 from boba.chainlit.agent.server import (
+    CallSealing,
     ChatCaller,
     ChatCallers,
     ChatMcpServer,
-    HookSealing,
     KeyHolder,
+    McpServerInfo,
     ProcessKeys,
 )
 from boba.connections.stored import ConnectionStoreError
@@ -170,7 +170,7 @@ class McpRelay:
     отвечает его lowlevel Server; свои здесь — tools/list и tools/call.
     Сервер профиля зовётся портом McpServers от имени пользователя вкладки,
     сервер инструментов чата до переноса в процесс — по его HTTP-адресу
-    ключом регистрации. Соединения в аргументах запечатывает HookSealing,
+    ключом регистрации. Соединения в аргументах запечатывает CallSealing,
     у инструмента со вложенными вызовами (расширение NestedCallsFeature
     сервера) — и в аргументах каждого узла по схеме его инструмента. Ход
     вызова уходит агенту уведомлением notifications/progress, ответ
@@ -186,7 +186,7 @@ class McpRelay:
         keys: ProcessKeys,
         callers: ChatCallers,
         servers: McpServers,
-        sealing: HookSealing,
+        sealing: CallSealing,
         chat: ChatMcpConfig,
         public_url: str,
     ) -> None:

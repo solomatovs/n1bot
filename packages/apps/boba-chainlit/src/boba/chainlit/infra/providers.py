@@ -25,13 +25,12 @@ from boba.chainlit.agent.config import AgentConfig
 from boba.chainlit.agent.feed import AgentFeeds, BusParts, TabSurfaces
 from boba.chainlit.agent.relay import McpRelay
 from boba.chainlit.agent.server import (
+    CallSealing,
     ChatCallers,
     ChatCallMiddleware,
     ChatMcpServer,
     ChatTokenVerifier,
     ChatToolServers,
-    HookSealing,
-    PreToolUseHandler,
     ProcessKeys,
 )
 from boba.chainlit.agent.settings import (
@@ -69,7 +68,6 @@ from boba.runtime import providers as runtime
 from boba.runtime.config import RuntimeConfig
 from boba.runtime.di import Container, Depends
 from boba.runtime.elements import ChatTables
-from boba.runtime.http import RequestTokens
 from boba.runtime.storage import StorageClient
 from boba.runtime.threads import ThreadsTable
 from boba.runtime.users import UsersTable
@@ -243,30 +241,30 @@ def chat_callers(
     keys: Annotated[ProcessKeys, Depends(process_keys)],
 ) -> ChatCallers:
     """Вызывающий по ключу процесса агента: для сервера инструментов чата и
-    хука."""
+    ретранслятора."""
     return ChatCallers(keys)
 
 
-def hook_sealing(
+def call_sealing(
     raw: Annotated[DictConfig, Depends(runtime.get_raw_config)],
     callers: Annotated[ChatCallers, Depends(chat_callers)],
     contexts: Annotated[CallContexts, Depends(runtime.call_contexts)],
-) -> HookSealing:
-    """Запечатывание соединений пользователя ключом сервера MCP: для
-    ретранслятора mcp/message и обработчика хука."""
+) -> CallSealing:
+    """Запечатывание соединений пользователя ключом сервера MCP для
+    ретранслятора mcp/message."""
     connections = ArmedConnections(
         runtime.connection_store_ref, runtime.credential_source_ref, contexts
     )
     ttl = timedelta(seconds=bind(raw, "connections", ConnectionsConfig).seal_ttl_sec)
 
-    return HookSealing(callers, connections, contexts, ttl)
+    return CallSealing(callers, connections, contexts, ttl)
 
 
 def mcp_relay(
     keys: Annotated[ProcessKeys, Depends(process_keys)],
     callers: Annotated[ChatCallers, Depends(chat_callers)],
     servers: Annotated[McpServers, Depends(mcp_servers)],
-    sealing: Annotated[HookSealing, Depends(hook_sealing)],
+    sealing: Annotated[CallSealing, Depends(call_sealing)],
     config: Annotated[AgentConfig, Depends(agent_config)],
 ) -> McpRelay:
     """Ретранслятор mcp/message процессов агента: один на инстанс."""
@@ -361,19 +359,4 @@ def chat_mcp_server(
         ChatTokenVerifier(keys),
         ChatToolServers(registry, callers),
         ChatCallMiddleware(callers, runs),
-    )
-
-
-def pre_tool_use_hook(
-    app_config: Annotated[AppConfig, Depends(get_app_config)],
-    callers: Annotated[ChatCallers, Depends(chat_callers)],
-    sealing: Annotated[HookSealing, Depends(hook_sealing)],
-) -> PreToolUseHandler:
-    """Обработчик хука PreToolUse агента под [agent.hook].path: запечатывает
-    соединения пользователя ключом сервера MCP из события."""
-    return PreToolUseHandler(
-        app_config.agent.hook,
-        RequestTokens(app_config.session.cookie),
-        callers,
-        sealing,
     )

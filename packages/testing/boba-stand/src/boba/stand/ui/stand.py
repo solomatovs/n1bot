@@ -540,10 +540,9 @@ class StandPlugins:
     """Файлы conf/plugins приложения стенда рядом с его конфигом: загрузчик
     требует файл на каждый установленный плагин.
 
-    Создаётся конфигом приложения на запись. У чата инструменты исполняет
-    сервис boba-mcp, поэтому включён остаётся только его собственный плагин
-    соединений; у сервиса и studio без песочницы выключены инструменты,
-    которым нужна она или внешние сервисы.
+    Создаётся конфигом приложения на запись. У чата файлов плагинов нет:
+    инструменты исполняет сервис boba-mcp; у сервиса и studio без песочницы
+    выключены инструменты, которым нужна она или внешние сервисы.
     """
 
     SANDBOXED: ClassVar[tuple[str, ...]] = (
@@ -560,9 +559,6 @@ class StandPlugins:
         "describer",
     )
     """Инструменты, которым нужна песочница или внешние сервисы."""
-
-    CHAT_OWN: ClassVar[tuple[str, ...]] = ("connections",)
-    """Плагины, которые чат исполняет сам."""
 
     def __init__(self, app: StandApp, sandbox: bool, extra: Sequence[str] = ()) -> None:
         self._app = app
@@ -582,9 +578,6 @@ class StandPlugins:
             (target / path.name).write_text(TomlText.dumps(doc), encoding="utf-8")
 
     def _enabled(self, plugin: str) -> bool:
-        if self._app is StandApp.CHAINLIT:
-            return plugin in self.CHAT_OWN
-
         if plugin in self._extra:
             return True
 
@@ -646,10 +639,6 @@ class StandConfig(StandService):
 
     agent_chat_mcp: bool = True
     """Объявлять ли агенту сервер инструментов чата /chat/mcp."""
-
-    agent_hook: bool = True
-    """Поднимать ли в чате HTTP-вход хука PreToolUse; соединения в вызовах
-    агента запечатывает ретранслятор чата и без него."""
 
     generation: str = ""
     """Поколение сессий: пустое — случайное на каждый старт процесса; общее у
@@ -784,10 +773,6 @@ class StandConfig(StandService):
                 "path": "/chat/mcp",
                 "connect_timeout_sec": 10,
                 "call_timeout_sec": 120,
-            },
-            "hook": {
-                "enable": self.agent_hook,
-                "path": "/chat/hooks/pre-tool-use",
             },
             "limits": {"context_window": 200000, "max_output_tokens": 4096},
         }
