@@ -1,17 +1,15 @@
 """Обычный MCP-сервер на официальном SDK: про boba он ничего не знает.
 
 Запускается субпроцессом из тестов клиента: `python standard_server.py stdio`
-либо `python standard_server.py streamable-http <port> [<sandbox.html>]`;
-транспорт `stdio-extended` — тот же сервер, объявляющий расширения с
-настройками не по моделям клиента (DeclaredExtension). Кроме четырёх
+либо `python standard_server.py streamable-http <port>`; транспорт
+`stdio-extended` — тот же сервер, объявляющий расширения с настройками не
+по моделям клиента (DeclaredExtension). Кроме четырёх
 обычных инструментов держит отказы стенда: задержку, большой результат,
 обрыв посреди вызова, смену списка инструментов с уведомлением и отчёты о
 ходе вызова, — ответ из блоков разных видов и адресатов, просьбу о вводе
 (input_required) и отказ ошибкой MCP. Расширение MCP Apps даёт приложение
 доски (board.html): инструмент board рисует разметку, которую пишет модель,
-app_only зовёт только приложение, model_only — только модель. По HTTP с
-путём страницы-прокси сервер отдаёт её как /mcp-apps/sandbox.html — так
-песочница приложений живёт на хосте самого сервера.
+app_only зовёт только приложение, model_only — только модель.
 """
 
 import asyncio
@@ -36,8 +34,6 @@ from mcp.types import (
     TextResourceContents,
     ToolAnnotations,
 )
-from starlette.requests import Request
-from starlette.responses import FileResponse, Response
 
 
 class DeclaredExtension(Extension):
@@ -77,7 +73,7 @@ class StandardServer:
         DeclaredExtension("com.boba/nested-calls", {"tool": "workflow"}),
     )
 
-    def __init__(self, port: int, extended: bool, sandbox: Path | None) -> None:
+    def __init__(self, port: int, extended: bool) -> None:
         apps = Apps()
         apps.tool(resource_uri=self.BOARD)(self.board)
         apps.tool(resource_uri=self.BOARD, visibility=["app"])(self.app_only)
@@ -90,11 +86,6 @@ class StandardServer:
 
         self._mcp = MCPServer("standard", extensions=extensions)
         self._port = port
-        self._sandbox = sandbox
-        self._mcp.custom_route("/mcp-apps/sandbox.html", methods=["GET"])(
-            self.sandbox_page
-        )
-
         self._extra_on = False
         self._mcp.tool(annotations=ToolAnnotations(read_only_hint=True))(self.add)
         self._mcp.tool(
@@ -215,14 +206,6 @@ class StandardServer:
         """Clears the board; only the model calls it."""
         return "model_only answered"
 
-    async def sandbox_page(self, request: Request) -> Response:
-        """Страница-прокси песочницы приложений с хоста сервера; без пути
-        страницы при запуске её нет."""
-        if self._sandbox is None:
-            return Response("no sandbox page was given to the server", 404)
-
-        return FileResponse(self._sandbox, media_type="text/html")
-
     def run(self, transport: str) -> None:
         if transport.startswith("stdio"):
             self._mcp.run("stdio")
@@ -236,8 +219,4 @@ if __name__ == "__main__":
     if len(sys.argv) > 2:
         port = int(sys.argv[2])
 
-    sandbox = None
-    if len(sys.argv) > 3:
-        sandbox = Path(sys.argv[3])
-
-    StandardServer(port, sys.argv[1] == "stdio-extended", sandbox).run(sys.argv[1])
+    StandardServer(port, sys.argv[1] == "stdio-extended").run(sys.argv[1])
