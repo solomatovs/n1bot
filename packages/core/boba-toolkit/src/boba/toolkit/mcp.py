@@ -22,7 +22,13 @@ from mcp_types.jsonrpc import ErrorData
 
 from boba.toolkit.calls import CallViews
 from boba.toolkit.dag import ToolCard, ToolHints
-from boba.toolkit.result import ErrorResult, JsonBlock, MarkdownResult, ToolResultBase
+from boba.toolkit.result import (
+    BlockAudience,
+    ErrorResult,
+    JsonBlock,
+    MarkdownResult,
+    ToolResultBase,
+)
 
 __all__ = [
     "McpFailure",
@@ -306,11 +312,7 @@ class McpResults:
         if annotations is None:
             return True
 
-        audience = annotations.audience
-        if audience is None:
-            return True
-
-        return "assistant" in audience
+        return BlockAudience.MODEL.reads(annotations.audience)
 
     def _block_text(self, block: mt.ContentBlock) -> str:
         if isinstance(block, mt.TextContent):

@@ -272,7 +272,7 @@ async def test_postgres_query_runs_as_the_signed_in_principal(
         limit=50,
     )
 
-    rows = result.statements[0].rows
+    rows = tools.rows(result)
     if rows != [{"who": ROLE_NAME}]:
         raise AssertionError(f"postgres must see the principal: {rows}")
 
@@ -293,7 +293,7 @@ async def test_clickhouse_query_runs_as_the_signed_in_principal(
         limit=50,
     )
 
-    rows = result.statements[0].rows
+    rows = tools.rows(result)
     if rows != [{"who": ROLE_NAME}]:
         raise AssertionError(f"clickhouse must see the principal: {rows}")
 
@@ -316,8 +316,10 @@ async def test_web_page_is_fetched_as_the_signed_in_principal(
         line_count=5,
     )
 
-    if ROLE_NAME not in result.text.splitlines():
-        raise AssertionError(f"clickhouse must see the principal: {result.text!r}")
+    if ROLE_NAME not in result.llm_view().splitlines():
+        raise AssertionError(
+            f"clickhouse must see the principal: {result.llm_view()!r}"
+        )
 
 
 async def test_targets_list_only_granted_connections(  # noqa: PLR0913 — три вида сразу
@@ -336,16 +338,16 @@ async def test_targets_list_only_granted_connections(  # noqa: PLR0913 — тр�
 
     listed = await Call.ok(catalog)
     by_kind: dict[str, list[str]] = {}
-    for row in listed.rows:
+    for row in tools.rows(listed):
         name = str(row["name"])
         by_kind.setdefault(str(row["kind"]), []).append(name)
 
     if by_kind.get("postgres") != ["pg-me"]:
-        raise AssertionError(f"pg targets: {listed.rows}")
+        raise AssertionError(f"pg targets: {tools.rows(listed)}")
     if by_kind.get("clickhouse") != ["ch-me"]:
-        raise AssertionError(f"ch targets: {listed.rows}")
+        raise AssertionError(f"ch targets: {tools.rows(listed)}")
     if by_kind.get("web") != ["ch-http"]:
-        raise AssertionError(f"web targets: {listed.rows}")
+        raise AssertionError(f"web targets: {tools.rows(listed)}")
 
 
 async def test_revoked_connection_stops_working_at_once(

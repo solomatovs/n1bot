@@ -37,7 +37,6 @@ from boba.tool.shell.tools import BashToolConfig
 from boba.toolkit.calls import ToolCallModels
 from boba.toolkit.launcher import PayloadFailureError
 from boba.toolkit.result import (
-    ChatElement,
     MarkdownResult,
     ShellResult,
     SqlResult,
@@ -488,15 +487,14 @@ class TestBashTool:
         result = await Call.ok(bash_tool, command="echo hello")
 
         call = ToolCallModels.call_of("bash", {"command": "echo hello"})
-        shown = call.chat_view().markdown
-        md = result.chat_view().markdown
+        shown = call.markdown()
 
         if shown != "```bash\necho hello\n```":
             raise AssertionError('shown == "```bash\\necho hello\\n```"')
-        if "```stdout\nhello\n```" not in md:
-            raise AssertionError('"```stdout\\nhello\\n```" in md')
-        if "_exit code: 0_" not in md:
-            raise AssertionError('"_exit code: 0_" in md')
+        if result.output.strip() != "hello":
+            raise AssertionError(f"the step shows stdout: {result.output!r}")
+        if result.exit_code != 0:
+            raise AssertionError(f"exit code 0: {result.exit_code}")
 
     async def test_stdin_is_closed(self, bash_tool, workspace_image) -> None:
         """Команда не ждёт ввода: stdin у bash-тула — /dev/null."""
@@ -519,14 +517,10 @@ class TestBashTool:
         """Команда молчит в stdout: на экран идёт stderr, а не пустой блок."""
         result = await Call.result(bash_tool, command="echo boom >&2; exit 3")
 
-        md = result.chat_view().markdown
-
         if result.output.strip() != "boom":
             raise AssertionError('result.output.strip() == "boom"')
-        if "```stderr\nboom\n```" not in md:
-            raise AssertionError('"```stderr\\nboom\\n```" in md')
-        if "_exit code: 3_" not in md:
-            raise AssertionError('"_exit code: 3_" in md')
+        if result.shows_stdout:
+            raise AssertionError("the step shows stderr")
 
     async def test_network_is_unavailable(self, bash_tool, workspace_image) -> None:
         """Профиль bash без сети: имена не резолвятся, наружу хода нет."""
@@ -635,8 +629,8 @@ class TestChartTool:
         result = await Call.ok(chart_tool, spec=spec)
         if not (isinstance(result, VisualResult)):
             raise AssertionError("isinstance(result, VisualResult)")
-        if result.element != ChatElement.PLOTLY:
-            raise AssertionError("result.element == ChatElement.PLOTLY")
+        if result.element != VisualResult.PLOTLY:
+            raise AssertionError("result.element == VisualResult.PLOTLY")
         if result.title != "итоги":
             raise AssertionError('result.title == "итоги"')
         spec = result.props[VisualResult.PLOTLY_SPEC]

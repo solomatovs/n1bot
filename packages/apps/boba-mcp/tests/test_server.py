@@ -52,28 +52,33 @@ from boba.connections.sealed import (
 )
 from boba.identity.session import SignInProvider
 from boba.identity.signin import SignInMetadata
+from boba.mcp_adapter import JournalUris
 from boba.mcp_server.auth import (
     RegisteredClients,
     SealedValues,
     ServiceTokens,
     TokenHolder,
 )
+from boba.mcp_server.files import JournalRoutes
 from boba.mcp_server.server import (
     FileUploadTool,
     RunLimits,
-    ServerRefusal,
     StreamReadTool,
 )
 from boba.toolkit.calls import CallViews, SchemaMark
 from boba.toolkit.channels import ToolChannel
-from boba.toolkit.dag import CallDag, NestedCallsFeature, NodeStatus
+from boba.toolkit.dag import (
+    CallDag,
+    NestedCallsFeature,
+    NestedCallsOutput,
+    NodeStatus,
+)
+from boba.toolkit.mcp import McpResults
 from boba.toolkit.wire import (
-    CallStatus,
-    CallWire,
     FilesFeature,
     JournalFeature,
-    NestedCallsReply,
-    WirePart,
+    JournalRead,
+    ResultWire,
 )
 from boba.toolrun.call_id import CallFields
 from boba.toolrun.hosted import ToolSchema
@@ -117,25 +122,30 @@ def _client(url: str, token: str) -> Client[Any]:
 
 
 def _shown(result: mt.CallToolResult) -> dict[str, Any] | None:
-    """Данные ответа: у итога инструмента — его результат (часть
-    WirePart.RESULT), у ответа операции сервиса — её модель целиком."""
-    structured = result.structured_content
-    if structured is None:
-        return None
-
-    if WirePart.CALL.value not in structured:
-        return structured
-
-    return structured[WirePart.RESULT.value]
+    """Модель ответа операции сервиса в structuredContent."""
+    return result.structured_content
 
 
-def _served(result: mt.CallToolResult) -> CallWire:
-    """Сведения о вызове из итога инструмента."""
-    structured = result.structured_content
-    if structured is None:
-        raise AssertionError(f"the result carries structured content: {result}")
+def _text(result: mt.CallToolResult) -> str:
+    """Текст итога инструмента, каким его получает модель клиента."""
+    return McpResults().result("probe", "call", result).llm_view()
 
-    return CallWire.model_validate(structured[WirePart.CALL.value])
+
+def _journal(result: mt.CallToolResult) -> JournalRead:
+    """Адрес канала stdout журнала вызова по ссылке в итоге."""
+    uris = JournalUris(JournalRoutes.RESOURCE)
+    for block in result.content:
+        if not isinstance(block, mt.ResourceLink):
+            continue
+
+        read = uris.address(str(block.uri))
+        if read is None:
+            continue
+
+        if read.channel is ToolChannel.STDOUT:
+            return read
+
+    raise AssertionError(f"the result links the stdout of its journal: {result}")
 
 
 class TestToolList:
@@ -224,18 +234,12 @@ class TestCall:
         if result.is_error:
             raise AssertionError(f"the call succeeds: {result}")
 
-        structured = _shown(result)
-        if structured is None or structured.get("kind") != "markdown":
-            raise AssertionError(f"the artifact travels as its model: {structured}")
-        if structured.get("text") != "hi hi|t0ken":
-            raise AssertionError(f"the body got its config: {structured}")
-
-        if _served(result).status is not CallStatus.SUCCESS:
-            raise AssertionError(f"the result names the status of the call: {result}")
+        if _text(result) != "hi hi|t0ken":
+            raise AssertionError(f"the body got its config: {result}")
 
         own = [key for key in result.meta or {} if "boba" in key]
-        if own:
-            raise AssertionError(f"the service puts nothing in _meta: {result.meta}")
+        if own != [ResultWire.ELAPSED]:
+            raise AssertionError(f"the service puts only the elapsed time: {own}")
 
     async def test_body_sees_the_caller_of_the_token(
         self, stand: ServiceStand, url: str, dev_token: str
@@ -243,8 +247,7 @@ class TestCall:
         async with _client(url, dev_token) as client:
             result = await client.call_tool_mcp("fake_whoami", {})
 
-        structured = _shown(result)
-        if structured is None or structured.get("text") != f"alice|dev|{PROFILE}":
+        if _text(result) != f"alice|dev|{PROFILE}":
             raise AssertionError(f"the body is called as the token's caller: {result}")
 
     async def test_server_names_the_call_itself(
@@ -256,9 +259,9 @@ class TestCall:
             first = await client.call_tool_mcp("fake_echo", {"text": "a", "repeat": 1})
             second = await client.call_tool_mcp("fake_echo", {"text": "b", "repeat": 1})
 
-        one = _served(first)
-        two = _served(second)
-        if one.id == two.id:
+        one = _journal(first)
+        two = _journal(second)
+        if one.node == two.node:
             raise AssertionError(f"every call gets its own id: {one} and {two}")
 
         if not one.run or one.run == two.run:
@@ -275,8 +278,7 @@ class TestCall:
                 "fake_scope", {CallFields.THREAD: scope}
             )
 
-        structured = _shown(result)
-        if structured is None or structured.get("text") != scope:
+        if _text(result) != scope:
             raise AssertionError(f"the body runs in the client's scope: {result}")
 
     async def test_call_without_a_scope_runs_in_the_own_scope_of_the_user(
@@ -288,8 +290,7 @@ class TestCall:
             result = await client.call_tool_mcp("fake_scope", {})
 
         own = str(uuid5(NAMESPACE_URL, "boba-mcp:alice"))
-        structured = _shown(result)
-        if structured is None or structured.get("text") != own:
+        if _text(result) != own:
             raise AssertionError(f"the default scope is the user's own: {result}")
 
     async def test_scope_that_is_not_a_path_segment_is_refused(
@@ -412,9 +413,7 @@ class TestCall:
         if result.is_error:
             raise AssertionError(f"the group succeeds: {result}")
 
-        reply = NestedCallsReply.model_validate(result.structured_content)
-        if not reply.call.run:
-            raise AssertionError(f"the call names its run: {reply.call}")
+        reply = NestedCallsOutput.model_validate(result.structured_content)
 
         keys: list[str] = []
         for node in reply.nodes:
@@ -450,7 +449,7 @@ class TestCall:
         if not result.is_error:
             raise AssertionError(f"a failed node fails the call: {result}")
 
-        reply = NestedCallsReply.model_validate(result.structured_content)
+        reply = NestedCallsOutput.model_validate(result.structured_content)
         statuses: dict[str, NodeStatus] = {}
         for node in reply.nodes:
             statuses[node.key] = node.status
@@ -468,8 +467,8 @@ class TestCall:
         for tool in listed:
             declared[tool.name] = tool.output_schema
 
-        if declared[WorkflowTool.NAME] != NestedCallsReply.model_json_schema():
-            raise AssertionError(f"workflow returns NestedCallsReply: {declared}")
+        if declared[WorkflowTool.NAME] != NestedCallsOutput.model_json_schema():
+            raise AssertionError(f"workflow returns NestedCallsOutput: {declared}")
 
         others: list[str] = []
         for name, schema in declared.items():
@@ -630,21 +629,13 @@ class TestProgress:
 
 
 class TestJournal:
-    """Журнал вызова читается окнами по адресу из итога вызова: запуск и
-    идентификатор вызова на сервере."""
+    """Каналы журнала вызова — ресурсы сервера, итог ссылается на них;
+    окна читает операция stream_read, видимая только интерфейсу клиента."""
 
     async def _echoed(self, client: Client[Any]) -> dict[str, str]:
         """Адрес журнала закончившегося вызова."""
         result = await client.call_tool_mcp("fake_echo", {"text": "hi", "repeat": 2})
-        served = _served(result)
-        if not served.run:
-            raise AssertionError(f"the result names its run: {result}")
-
-        return {
-            "run": served.run,
-            "node": served.id,
-            "channel": ToolChannel.STDOUT.value,
-        }
+        return _journal(result).model_dump(mode="json", exclude_none=True)
 
     async def test_windows_of_the_journal_join_at_line_borders(
         self, stand: ServiceStand, url: str, dev_token: str
@@ -668,6 +659,54 @@ class TestJournal:
         if rest is None or not piece["text"].endswith(rest["text"]):
             raise AssertionError(f"a window from the middle starts at a line: {rest}")
 
+    async def test_channel_link_is_a_readable_resource(
+        self, stand: ServiceStand, url: str, dev_token: str
+    ) -> None:
+        async with _client(url, dev_token) as client:
+            result = await client.call_tool_mcp(
+                "fake_echo", {"text": "hi", "repeat": 2}
+            )
+            links: list[mt.ResourceLink] = []
+            for block in result.content:
+                if isinstance(block, mt.ResourceLink):
+                    links.append(block)
+
+            read = await client.read_resource(str(links[0].uri))
+
+        if links[0].mime_type != "text/plain":
+            raise AssertionError(f"a journal channel is plain text: {links}")
+        if links[0].annotations != mt.Annotations(audience=["user"]):
+            raise AssertionError(f"a journal link is for the user: {links}")
+
+        texts: list[str] = []
+        for contents in read:
+            if isinstance(contents, mt.TextResourceContents):
+                texts.append(contents.text)
+
+        if "echo progress: hi" not in "".join(texts):
+            raise AssertionError(f"the resource reads the channel window: {read}")
+
+    async def test_operations_are_visible_to_the_app_only(
+        self, stand: ServiceStand, url: str, dev_token: str
+    ) -> None:
+        async with _client(url, dev_token) as client:
+            listed = await client.list_tools()
+
+        hidden: dict[str, object] = {}
+        for tool in listed:
+            if tool.name not in {StreamReadTool.NAME, FileUploadTool.NAME}:
+                continue
+
+            meta = tool.meta
+            if meta is None:
+                raise AssertionError(f"{tool.name} declares its visibility")
+
+            hidden[tool.name] = meta.get("ui")
+
+        expected = {"visibility": ["app"]}
+        if hidden != {StreamReadTool.NAME: expected, FileUploadTool.NAME: expected}:
+            raise AssertionError(f"operations are hidden from the model: {hidden}")
+
     async def test_journal_of_another_caller_is_not_readable(
         self, stand: ServiceStand, url: str, dev_token: str, weak_token: str
     ) -> None:
@@ -680,8 +719,7 @@ class TestJournal:
         if not foreign.is_error:
             raise AssertionError(f"a journal is read only by its caller: {foreign}")
 
-        refusal = _shown(foreign)
-        if refusal is None or refusal.get("error_kind") != ServerRefusal.FORBIDDEN:
+        if "belongs to another user" not in _text(foreign):
             raise AssertionError(
                 f"a foreign journal is refused as forbidden: {foreign}"
             )
@@ -696,8 +734,8 @@ class TestFailures:
 
         if not result.is_error:
             raise AssertionError(f"a missing argument is an error: {result}")
-        if _shown(result) is None:
-            raise AssertionError("the refusal carries its model, not bare text")
+        if not _text(result):
+            raise AssertionError(f"the refusal names its reason: {result}")
 
     async def test_body_failure_is_an_error_result(
         self, stand: ServiceStand, url: str, dev_token: str
@@ -710,9 +748,8 @@ class TestFailures:
         if not result.is_error:
             raise AssertionError(f"a failed body is an error: {result}")
 
-        structured = _shown(result)
-        if structured is None or "fake backend is down" not in str(structured):
-            raise AssertionError(f"the failure model names the cause: {structured}")
+        if "fake backend is down" not in _text(result):
+            raise AssertionError(f"the failure names the cause: {result}")
 
     async def test_stream_tool_alone_is_refused_with_a_hint(
         self, stand: ServiceStand, url: str, dev_token: str
@@ -729,8 +766,8 @@ class TestFailures:
 
         if not result.is_error:
             raise AssertionError(f"a pump without a partner is refused: {result}")
-        if _shown(result) is None:
-            raise AssertionError("the plan refusal carries its model")
+        if not _text(result):
+            raise AssertionError(f"the plan refusal names its reason: {result}")
 
     async def test_tool_outside_the_role_is_not_callable(
         self, stand: ServiceStand, url: str, weak_token: str
@@ -790,11 +827,8 @@ class TestRunLimit:
         if not third.is_error:
             raise AssertionError(f"a call over the queue is refused: {third}")
 
-        structured = _shown(third)
-        if structured is None:
-            raise AssertionError("the refusal carries its model")
-        if structured.get("error_kind") != ServerRefusal.RUN_LIMIT:
-            raise AssertionError(f"the refusal names the run limit: {structured}")
+        if "wait for a slot" not in _text(third):
+            raise AssertionError(f"the refusal names the run limit: {third}")
 
         waited = await second
         if waited.is_error or (await first).is_error:
@@ -938,8 +972,7 @@ class TestProxySignIn:
         async with _client(url, token) as client:
             result = await client.call_tool_mcp("fake_whoami", {})
 
-        structured = _shown(result)
-        if structured is None or structured.get("text") != f"ivanov|dev|{PROFILE}":
+        if _text(result) != f"ivanov|dev|{PROFILE}":
             raise AssertionError(f"the body runs as the signed-in user: {result}")
 
     async def test_roles_of_the_sign_in_open_the_endpoints(
@@ -1120,9 +1153,8 @@ class TestHumanSignIn:
         async with _client(url, issued.json()["access_token"]) as client:
             result = await client.call_tool_mcp("fake_whoami", {})
 
-        structured = _shown(result)
         expected = f"{LOCAL_LOGIN}|dev|{PROFILE}"
-        if structured is None or structured.get("text") != expected:
+        if _text(result) != expected:
             raise AssertionError(f"the body runs as the signed-in user: {result}")
 
     async def _signed_in(self, stand: ServiceStand) -> tuple[str, dict[str, Any]]:
@@ -1184,9 +1216,8 @@ class TestHumanSignIn:
         async with _client(url, pair["access_token"]) as client:
             result = await client.call_tool_mcp("fake_whoami", {})
 
-        structured = _shown(result)
         expected = f"{LOCAL_LOGIN}|dev|{PROFILE}"
-        if structured is None or structured.get("text") != expected:
+        if _text(result) != expected:
             raise AssertionError(f"the renewed token keeps the user: {result}")
 
     async def test_access_token_does_not_renew(
@@ -1708,11 +1739,10 @@ class TestConnectionOffers:
                 self.TOOL, {"connection": ServiceStand.DWH}
             )
 
-        structured = _shown(result)
-        if result.is_error or structured is None:
+        if result.is_error:
             raise AssertionError(f"the server connection is taken: {result}")
 
-        if structured.get("text") != "dwh.local|dwh":
+        if _text(result) != "dwh.local|dwh":
             raise AssertionError(f"the body gets the server profile: {result}")
 
     async def test_sealed_value_is_refused_when_only_the_server_is_offered(
@@ -1782,8 +1812,8 @@ class TestJournalFile:
                 "fake_echo", {"text": "hi", "repeat": 2}
             )
 
-        served = _served(result)
-        address = f"{url}/journals/{served.run}/{served.id}/{ToolChannel.STDOUT.value}"
+        served = _journal(result)
+        address = f"{url}/journals/{served.run}/{served.node}/{served.channel.value}"
         async with httpx.AsyncClient() as http:
             mine = await http.get(
                 address, headers={"Authorization": f"Bearer {dev_token}"}

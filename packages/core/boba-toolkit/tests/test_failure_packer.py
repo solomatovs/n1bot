@@ -90,7 +90,7 @@ class TestSingleError:
         )
         result = packed(raised(Exception(text)))
 
-        markdown = result.chat_view().markdown
+        markdown = result.markdown()
         if "**Exception: permission denied for schema catalog**" not in markdown:
             raise AssertionError(markdown)
         if "```\nLINE 1: select id from catalog.pg_relations\n" not in markdown:
@@ -219,7 +219,7 @@ class TestSecrets:
         if not result:
             raise AssertionError("result is None")
 
-        for text in (result.llm_view(), result.log_view(), result.chat_view().markdown):
+        for text in (result.llm_view(), result.log_view(), result.markdown()):
             if secret in text:
                 raise AssertionError(f"secret leaked: {text!r}")
 
@@ -280,7 +280,7 @@ class TestEnvelopeAndHistory:
 
         if not isinstance(revived, FailureResult):
             raise AssertionError(f"revived: {revived!r}")
-        if revived.chat_view() != failure.chat_view():
+        if revived.markdown() != failure.markdown():
             raise AssertionError("revived failure renders differently")
 
 
@@ -300,7 +300,7 @@ class TestGroupFailure:
         )
 
     def test_origin_shows_its_error_and_the_stopped_calls(self) -> None:
-        markdown = self.group(own=True).chat_view().markdown
+        markdown = self.group(own=True).markdown()
 
         if "**RuntimeError: Code: 36. DB::Exception: bad macro**" not in markdown:
             raise AssertionError(markdown)

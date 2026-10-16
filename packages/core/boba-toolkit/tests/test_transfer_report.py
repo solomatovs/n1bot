@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 
+import mcp_types as mt
 import pytest
 
 from boba.toolkit.ports import ToolProgress
@@ -24,6 +25,7 @@ from boba.toolkit.transfer import (
     TransferReport,
     Verdict,
 )
+from boba.toolkit.wire import McpContent
 
 
 def nullable(name: str, stream: str, table: str) -> ColumnCheck:
@@ -102,7 +104,22 @@ class TestClickHouseLoad:
     def markdown(self) -> str:
         result = SqlResult(engine="clickhouse", statements=[self.REPORT.summary()])
 
-        return result.chat_view().markdown
+        content = McpContent("call")
+        result.shown(content)
+
+        texts: list[str] = []
+        for block in content.blocks():
+            if isinstance(block, mt.TextContent):
+                texts.append(block.text)
+                continue
+
+            if not isinstance(block, mt.EmbeddedResource):
+                continue
+
+            if isinstance(block.resource, mt.TextResourceContents):
+                texts.append(block.resource.text)
+
+        return "\n\n".join(texts)
 
     def test_caption_says_how_many_rows_went_where(self) -> None:
         assert "_50235 rows loaded into default.kb_chunks_" in self.markdown()
@@ -117,8 +134,8 @@ class TestClickHouseLoad:
     def test_columns_table_follows_the_facts(self) -> None:
         markdown = self.markdown()
 
-        assert "| column" in markdown
-        assert markdown.index("**table:**") < markdown.index("| column")
+        assert "column," in markdown
+        assert markdown.index("**table:**") < markdown.index("column,")
 
     def test_kept_table_note_explains_why_errors_did_not_stop_it(self) -> None:
         note = self.REPORT.summary().note
@@ -169,12 +186,20 @@ class TestCommandJournal:
 
         assert isinstance(failure, SqlFailureResult)
 
-        markdown = failure.chat_view().markdown
+        markdown = failure.markdown()
         assert "**RuntimeError: Sorting key contains nullable columns**" in markdown
         assert "| id     | Nullable(Int32) |" in markdown
-        assert "```sql\ndrop table if exists t__ex\n```\n\n_done_" in markdown
-        assert "create table t (id Nullable(Int32)) order by id" in markdown
-        assert "_failed: RuntimeError_" in markdown
+        shown: list[tuple[str, str]] = []
+        for statement in failure.statements:
+            shown.append((statement.text, statement.status))
+
+        assert shown == [
+            ("drop table if exists t__ex", "done"),
+            (
+                "create table t (id Nullable(Int32)) order by id",
+                "failed: RuntimeError",
+            ),
+        ]
 
         llm = failure.llm_view()
         assert llm.startswith("RuntimeError: Sorting key contains nullable columns")

@@ -1,11 +1,11 @@
 """Семейство вызова инструмента: аргументы протокола LLM как модель.
 
 ToolCallBase — база модели аргументов: фасад @tool строит наследника из
-подписи тела, тул с особым показом объявляет наследника сам. Показы те же,
-что у результата: llm_view (аргументы, как их прислала модель) и chat_view
-(вход шага ленты). Показ значения аргумента объявляется экземпляром
-результата в Annotated поля — MarkdownResult(language="sql") — и рисуется
-этим результатом.
+подписи тела, тул с особым показом объявляет наследника сам. Показы:
+llm_view (аргументы, как их прислала модель) и markdown (вход шага ленты).
+Показ значения аргумента объявляется экземпляром MarkdownResult с языком в
+Annotated поля — MarkdownResult(language="sql") — и рисуется блоком кода
+этого языка.
 
 ToolIntent — общая для всех инструментов подпись вызова: строку пишет LLM,
 показывает её название шага ленты. SchemaMark — ключи схемы параметра, по
@@ -35,7 +35,8 @@ from pydantic.fields import FieldInfo
 
 from boba.toolkit.ports import StreamPorts
 from boba.toolkit.result import (
-    ChatView,
+    ContentMime,
+    Fence,
     FieldLines,
     JsonBlock,
     MarkdownResult,
@@ -260,15 +261,24 @@ class ToolCallBase(BaseModel, ABC):
 
         return json.dumps(shown, ensure_ascii=False)
 
-    def chat_view(self) -> ChatView:
-        """Вход шага: показы аргументов по порядку полей; пусто — входа нет."""
+    def markdown(self) -> str:
+        """Вход шага: показы аргументов по порядку полей — текст с языком
+        блоком кода; пусто — входа нет."""
         blocks: list[str] = []
         for result in self._argument_results():
-            blocks.append(result.chat_view().markdown)
+            if not result.text.strip():
+                blocks.append("")
+                continue
 
-        return ChatView(markdown="\n\n".join(blocks))
+            if not result.language:
+                blocks.append(result.text)
+                continue
 
-    def _argument_results(self) -> Iterator[ToolResultBase]:
+            blocks.append(Fence.around(result.text, result.language))
+
+        return "\n\n".join(blocks)
+
+    def _argument_results(self) -> Iterator[MarkdownResult]:
         """Значение каждого присланного поля тела результатом по его объявлению;
         дефолты, которых модель не писала, во вход не идут."""
         for name, field in type(self).model_fields.items():
@@ -286,7 +296,7 @@ class ToolCallBase(BaseModel, ABC):
                 continue
 
             display = FieldMarks.display(field)
-            if display is not None:
+            if isinstance(display, MarkdownResult):
                 yield display.bound(value)
                 continue
 
@@ -374,14 +384,7 @@ class SchemaCall(ToolCallBase):
 
     VIEWS: ClassVar[Mapping[str, FieldView]] = {}
 
-    def chat_view(self) -> ChatView:
-        blocks: list[str] = []
-        for result in self._shown():
-            blocks.append(result.chat_view().markdown)
-
-        return ChatView(markdown="\n\n".join(blocks))
-
-    def _shown(self) -> Iterator[ToolResultBase]:
+    def _argument_results(self) -> Iterator[MarkdownResult]:
         sent = self.model_extra
         if sent is None:
             return
@@ -406,14 +409,14 @@ class SchemaCall(ToolCallBase):
                 continue
 
             display = ToolArtifact.revive(view.display)
-            if display is None:
+            if not isinstance(display, MarkdownResult):
                 yield from self._line(name, value)
                 continue
 
             yield display.bound(value)
 
     @staticmethod
-    def _line(name: str, value: object) -> Iterator[ToolResultBase]:
+    def _line(name: str, value: object) -> Iterator[MarkdownResult]:
         if isinstance(value, str) and not value:
             return
 
@@ -435,13 +438,11 @@ class CallViews:
     показа входа шага — одинаково в живом ходе и в истории.
     """
 
-    MEDIA: ClassVar[Mapping[str, str]] = {
-        "sql": "application/sql",
-        "json": "application/json",
-        "bash": "text/x-shellscript",
-        "mermaid": "text/vnd.mermaid",
-    }
-    """Язык блока кода ленты → тип содержимого аргумента в схеме."""
+    MEDIA: ClassVar[frozenset[ContentMime]] = frozenset(
+        {ContentMime.SQL, ContentMime.JSON, ContentMime.BASH, ContentMime.MERMAID}
+    )
+    """Типы содержимого аргументов-кода: такой аргумент показывается блоком
+    кода своего языка, любой другой — строкой «имя: значение»."""
 
     def of(self, model: type[ToolCallBase]) -> Mapping[str, FieldView]:
         """Вид полей модели вызова, который отличается от обычной строки
@@ -511,16 +512,14 @@ class CallViews:
         """Вид аргументов по их типам содержимого: аргумент известного типа
         показывается блоком кода его языка, остальные — строкой."""
         views: dict[str, FieldView] = {}
-        languages = {value: language for language, value in self.MEDIA.items()}
         for name, value in media.items():
-            language = languages.get(value)
-            if language is None:
+            if value not in self.MEDIA:
                 continue
 
+            language = ContentMime(value).language
             display = MarkdownResult(text="", language=language)
-            views[name] = FieldView(
-                placement=FieldPlacement.BODY, display=display.model_dump(mode="json")
-            )
+            dumped = display.model_dump(mode="json")
+            views[name] = FieldView(placement=FieldPlacement.BODY, display=dumped)
 
         return views
 
@@ -542,7 +541,11 @@ class CallViews:
         if not isinstance(display, MarkdownResult):
             return None
 
-        return self.MEDIA.get(display.language)
+        mime = ContentMime.of_language(display.language)
+        if mime not in self.MEDIA:
+            return None
+
+        return mime
 
     def model_of(
         self, tool_name: str, views: Mapping[str, FieldView]
@@ -556,7 +559,7 @@ class RawCall(ToolCallBase):
 
     args: Mapping[str, Any]
 
-    def chat_view(self) -> ChatView:
-        return MarkdownResult(
-            text=JsonBlock.pretty(dict(self.args)), language="json"
-        ).chat_view()
+    def markdown(self) -> str:
+        return Fence.around(
+            JsonBlock.pretty(dict(self.args)), ContentMime.JSON.language
+        )

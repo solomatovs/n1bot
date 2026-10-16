@@ -12,7 +12,9 @@ from collections.abc import Iterator, Sequence
 from pathlib import Path
 from typing import ClassVar
 
+from boba.toolkit.dag import DagNode, NodeOutcomes
 from boba.toolkit.result import ResultKinds, ToolArtifact
+from boba.toolkit.wire import ResultWire
 
 __all__ = ["HistorySnapshots"]
 
@@ -29,6 +31,8 @@ class HistorySnapshots:
     def __init__(self, directory: Path, package: str) -> None:
         self._directory = directory
         self._package = package
+        self._wire = ResultWire()
+        self._outcomes = NodeOutcomes()
 
     def paths(self) -> Sequence[Path]:
         return sorted(self._directory.glob("*.json"))
@@ -42,7 +46,7 @@ class HistorySnapshots:
         return sorted(set(self._own_kinds()) - covered)
 
     def check(self, path: Path) -> None:
-        """Снимок восстанавливается своим видом и показывается модели и чату."""
+        """Снимок восстанавливается своим видом и уходит клиенту блоками MCP."""
         stored = self._stored(path)
 
         revived = ToolArtifact.revive(stored)
@@ -55,7 +59,10 @@ class HistorySnapshots:
         if not revived.llm_view():
             raise AssertionError(f"{path.name}: empty llm view")
 
-        revived.chat_view()
+        call = DagNode(key=path.stem, tool=path.stem)
+        wire = self._wire.packed(self._outcomes.of(call, revived, False))
+        if not wire.content:
+            raise AssertionError(f"{path.name}: no content blocks")
 
     def _stored(self, path: Path) -> dict[str, object]:
         return json.loads(path.read_text(encoding=self.ENCODING))

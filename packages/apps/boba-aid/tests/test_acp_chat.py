@@ -1447,12 +1447,13 @@ class TestFeed:
         for name, *_ in live.values():
             shown.append(name)
 
-        # вложение вопроса, файл итога, ссылка панели и кнопки журналов вызовов
+        # вложение вопроса, ссылки на файл итога у обоих вызовов (у текста
+        # есть вьювер канваса) и кнопки журналов вызовов
         assert sorted(shown) == [
+            "CanvasLink",
             "CanvasLink",
             "CanvasStream",
             "CanvasStream",
-            "note.txt",
             "note.txt",
         ], live
         assert live == replayed, (live, replayed)

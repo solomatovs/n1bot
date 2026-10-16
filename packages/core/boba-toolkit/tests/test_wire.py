@@ -17,28 +17,29 @@ from boba.stand_core.history import HistorySnapshots
 from boba.toolkit.chain import GroupFailureResult
 from boba.toolkit.dag import (
     DagNode,
-    JournalAddress,
+    NestedCallsOutput,
     NodeOutcomes,
     NodeStatus,
     WorkflowNodeResult,
     WorkflowResult,
 )
+from boba.toolkit.mcp import McpResults
 from boba.toolkit.result import (
+    CanvasResult,
+    ContentMime,
     ErrorResult,
     ExceptionResult,
-    FailureResult,
+    FileResult,
     MarkdownResult,
+    ShellResult,
+    SqlResult,
+    SqlStatement,
     TableResult,
     ToolArtifact,
+    ToolResultBase,
+    VisualResult,
 )
-from boba.toolkit.wire import (
-    CallStatus,
-    CallWire,
-    NestedCallsReply,
-    ResultWire,
-    WirePart,
-    WireResult,
-)
+from boba.toolkit.wire import ResultWire, WireResult
 
 SNAPSHOTS = HistorySnapshots(Path(__file__).parent / "history", "boba.toolkit")
 
@@ -60,6 +61,13 @@ def _snapshot(path: Path):
     return revived
 
 
+def _for_model(wire: WireResult) -> str:
+    """Текст, который из ответа получает модель клиента MCP."""
+    reply = mt.CallToolResult(content=list(wire.content), is_error=wire.is_error)
+
+    return McpResults().result(CALL.tool, CALL.key, reply).llm_view()
+
+
 class TestRoundTrip:
     def test_kinds_of_other_modules_are_registered(self) -> None:
         """Виды, объявленные вне result.py, попадают в реестр при импорте."""
@@ -67,78 +75,6 @@ class TestRoundTrip:
             raise AssertionError("вид срыва группы объявлен в boba.toolkit.chain")
         if WorkflowResult.declared_kind() is None:
             raise AssertionError("вид workflow объявлен в boba.toolkit.dag")
-
-    @pytest.mark.parametrize("path", SNAPSHOTS.paths(), ids=lambda path: path.stem)
-    def test_every_kind_survives_the_wire(self, path: Path) -> None:
-        artifact = _snapshot(path)
-        if artifact.structured() is not None:
-            # вид со своей outputSchema едет её данными: TestNestedCallsWire
-            return
-
-        outcome = OUTCOMES.of(CALL, artifact, False)
-
-        wire = WIRE.packed(outcome)
-        sent = json.loads(json.dumps(wire.structured))
-        revived = WIRE.revived(
-            WireResult(content=wire.content, structured=sent, is_error=wire.is_error),
-            CALL,
-            SERVER,
-        )
-
-        # клиенту уходит результат без того, чему место в журнале сервера
-        disclosed = artifact.disclosed()
-        if revived is None:
-            raise AssertionError(f"результат вида {path.stem} оживает итогом")
-        if revived.artifact != disclosed:
-            raise AssertionError(f"результат вида {path.stem} оживает тем же")
-        if type(revived.artifact) is not type(artifact):
-            raise AssertionError(f"класс результата тот же: {type(revived.artifact)}")
-        if revived.content != artifact.llm_view():
-            raise AssertionError("текст для модели доехал как есть")
-        if revived != outcome.model_copy(update={"artifact": disclosed}):
-            raise AssertionError(f"итог вызова доехал тем же: {revived!r}")
-
-    def test_call_id_and_status_ride_in_the_structured_content(self) -> None:
-        table = TableResult(rows=[{"a": 1}])
-
-        wire = WIRE.packed(OUTCOMES.of(CALL, table, False))
-
-        structured = wire.structured
-        if structured is None:
-            raise AssertionError("итог несёт structuredContent")
-
-        call = CallWire.model_validate(structured[WirePart.CALL.value])
-        if call != CallWire(id=CALL.key, status=CallStatus.SUCCESS):
-            raise AssertionError(f"сведения о вызове доехали: {call!r}")
-        if structured[WirePart.RESULT.value] != table.model_dump(mode="json"):
-            raise AssertionError(f"результат лежит своей частью: {structured!r}")
-
-    def test_run_and_call_of_the_server_become_the_journal_address(self) -> None:
-        """Журнал сервер ведёт под своим идентификатором вызова: он и запуск
-        дают адрес, а вызов клиента называется по-своему."""
-        table = TableResult(rows=[{"a": 1}])
-        served = DagNode(key="api-served", tool="probe")
-        wire = WIRE.packed(OUTCOMES.of(served, table, False))
-        structured = wire.structured
-        if structured is None:
-            raise AssertionError("итог несёт structuredContent")
-
-        stamped = WireResult(
-            content=wire.content,
-            structured=WIRE.stamped(structured, "run-7"),
-            is_error=wire.is_error,
-        )
-
-        revived = WIRE.revived(stamped, CALL, SERVER)
-
-        if revived is None:
-            raise AssertionError("результат оживает итогом")
-        if revived.key != CALL.key:
-            raise AssertionError(f"итог называется вызовом клиента: {revived.key}")
-
-        expected = JournalAddress(server=SERVER, run="run-7", call="api-served")
-        if revived.journal != expected:
-            raise AssertionError(f"адрес журнала собран: {revived.journal!r}")
 
     def test_traceback_stays_on_the_server(self) -> None:
         crashed = ExceptionResult(
@@ -149,36 +85,21 @@ class TestRoundTrip:
 
         wire = WIRE.packed(OUTCOMES.refused(CALL, crashed))
 
-        if "/srv/x.py" in json.dumps(wire.structured):
-            raise AssertionError(f"трасса сервера клиенту не уходит: {wire!r}")
-
-    def test_result_without_a_run_has_no_journal(self) -> None:
-        table = TableResult(rows=[{"a": 1}])
-
-        revived = WIRE.revived(
-            WIRE.packed(OUTCOMES.of(CALL, table, False)), CALL, SERVER
-        )
-
-        if revived is None:
-            raise AssertionError("результат оживает итогом")
-        if revived.journal is not None:
-            raise AssertionError(f"без запуска адреса журнала нет: {revived.journal}")
+        for block in wire.content:
+            if "/srv/x.py" in block.model_dump_json():
+                raise AssertionError(f"трасса сервера клиенту не уходит: {block!r}")
 
 
 class TestPlainBlocks:
-    def test_result_without_own_data_is_one_text_block_and_its_model(self) -> None:
+    def test_result_without_an_output_schema_has_no_structured_content(
+        self,
+    ) -> None:
         table = TableResult(rows=[{"a": 1}])
 
         wire = WIRE.packed(OUTCOMES.of(CALL, table, False))
 
-        if list(wire.content) != [mt.TextContent(text=table.llm_view())]:
-            raise AssertionError(f"один текстовый блок для модели: {wire.content}")
-
-        structured = wire.structured
-        if structured is None:
-            raise AssertionError("итог несёт structuredContent")
-        if sorted(structured) != sorted(WirePart):
-            raise AssertionError(f"части итога — call и result: {sorted(structured)}")
+        if wire.structured is not None:
+            raise AssertionError(f"structuredContent только по outputSchema: {wire}")
 
 
 class TestNestedCallsWire:
@@ -225,18 +146,20 @@ class TestNestedCallsWire:
             if not isinstance(block, mt.TextContent):
                 raise AssertionError(f"блоки узлов — текст: {block!r}")
 
+            if block.annotations is not None:
+                continue
+
             texts.append(block.text)
 
         expected = [
             "[src] pg_stream_out — ok",
             "sent 3 rows into orders",
             "[sink] ch_stream_in — failed",
-            workflow.nodes[1].content,
         ]
         if texts != expected:
             raise AssertionError(f"заголовок узла стоит перед его блоками: {texts}")
 
-        if "\n".join(texts) != workflow.llm_view():
+        if _for_model(wire) != workflow.llm_view():
             raise AssertionError("модель в своём процессе видит тот же текст")
 
     def test_nodes_point_at_their_blocks(self) -> None:
@@ -244,9 +167,7 @@ class TestNestedCallsWire:
 
         wire = WIRE.packed(OUTCOMES.of(CALL, workflow, True))
 
-        reply = NestedCallsReply.model_validate(wire.structured)
-        if reply.call != CallWire(id=CALL.key, status=CallStatus.ERROR):
-            raise AssertionError(f"сведения о вызове доехали: {reply.call!r}")
+        reply = NestedCallsOutput.model_validate(wire.structured)
 
         statuses: list[NodeStatus] = []
         for node, sent in zip(workflow.nodes, reply.nodes, strict=True):
@@ -254,19 +175,13 @@ class TestNestedCallsWire:
             if sent.call_id != node.call_id:
                 raise AssertionError(f"узел назван вызовом узла: {sent!r}")
 
-            pointed: list[str] = []
+            pointed: list[mt.ContentBlock] = []
             for index in sent.blocks:
-                block = wire.content[index]
-                if not isinstance(block, mt.TextContent):
-                    raise AssertionError(f"блок узла {node.key} текстовый: {block!r}")
+                pointed.append(wire.content[index])
 
-                pointed.append(block.text)
-
-            if pointed != list(node.result.disclosed().texts()):
+            alone = WIRE.packed(OUTCOMES.of(CALL, node.result, False))
+            if pointed != list(alone.content):
                 raise AssertionError(f"номера ведут на блоки узла {node.key}: {sent}")
-
-            if sent.result != node.result.disclosed().model_dump(mode="json"):
-                raise AssertionError(f"модель узла доехала: {sent.result}")
 
         if statuses != [NodeStatus.OK, NodeStatus.FAILED]:
             raise AssertionError(f"статус по результату узла: {statuses}")
@@ -281,42 +196,16 @@ class TestNestedCallsWire:
             if self.SECRET in block.model_dump_json():
                 raise AssertionError(f"трасса узла не уходит в блоки: {block!r}")
 
-    def test_run_is_stamped_into_the_call(self) -> None:
-        wire = WIRE.packed(OUTCOMES.of(CALL, self._workflow(), True))
-        structured = wire.structured
-        if structured is None:
-            raise AssertionError("итог несёт structuredContent")
-
-        reply = NestedCallsReply.model_validate(WIRE.stamped(structured, "run-7"))
-        if reply.call.run != "run-7":
-            raise AssertionError(f"запуск проставлен в сведения о вызове: {reply}")
-
-    def test_client_without_the_model_gets_no_outcome(self) -> None:
-        """Частей call/result у связки нет: клиент показывает её блоки."""
-        wire = WIRE.packed(OUTCOMES.of(CALL, self._workflow(), True))
-
-        if WIRE.revived(wire, CALL, SERVER) is not None:
-            raise AssertionError("итог связки не оживает моделью вида")
-
 
 class TestErrorFlag:
     def test_failure_result_is_an_error_even_with_success_status(self) -> None:
-        """Тело вернуло отказ упакованным результатом: статус вызова success,
-        а по MCP это сбой; клиент получает статус как был."""
+        """Тело вернуло отказ упакованным результатом: по MCP это сбой."""
         refusal = ErrorResult(message="no such table", error_kind="probe")
 
         wire = WIRE.packed(OUTCOMES.of(CALL, refusal, False))
 
         if not wire.is_error:
             raise AssertionError("отказ тела — сбой по MCP")
-
-        revived = WIRE.revived(wire, CALL, SERVER)
-        if revived is None:
-            raise AssertionError("отказ оживает итогом")
-        if revived.errored:
-            raise AssertionError(f"статус вызова восстановлен: {revived!r}")
-        if not isinstance(revived.artifact, FailureResult):
-            raise AssertionError(f"отказ оживает отказом: {revived.artifact!r}")
 
     def test_error_status_is_an_error(self) -> None:
         refusal = ErrorResult(message="bad arguments", error_kind="probe")
@@ -326,9 +215,24 @@ class TestErrorFlag:
         if not wire.is_error:
             raise AssertionError("сорванный вызов — сбой по MCP")
 
-        revived = WIRE.revived(wire, CALL, SERVER)
-        if revived is None or not revived.errored:
-            raise AssertionError(f"статус error восстановлен: {revived!r}")
+    def test_non_zero_exit_is_an_error(self) -> None:
+        shell = ShellResult(
+            exit_code=2,
+            stdout="",
+            stdout_bytes=0,
+            stdout_truncated=False,
+            stderr="no such file",
+            stderr_bytes=12,
+            stderr_truncated=False,
+            duration_ms=1,
+            timed_out=False,
+            ok=False,
+        )
+
+        wire = WIRE.packed(OUTCOMES.of(CALL, shell, False))
+
+        if not wire.is_error:
+            raise AssertionError("ненулевой код возврата — сбой по MCP")
 
     def test_plain_result_is_not_an_error(self) -> None:
         table = TableResult(rows=[{"a": 1}])
@@ -339,39 +243,152 @@ class TestErrorFlag:
             raise AssertionError("обычный результат — не сбой")
 
 
-class TestForeignServer:
-    """Сервер с чужим содержимым: клиент показывает текст."""
+class TestContentBlocks:
+    """content ответа по таблице 7.4: модель получает текст результата,
+    человек — блоки по видам содержимого с audience user."""
 
-    def test_unknown_kind_falls_back_to_the_text(self) -> None:
-        call = CallWire(id="api-1", status=CallStatus.SUCCESS)
-        wire = WireResult(
-            content=[mt.TextContent(text="plain text")],
-            structured={
-                WirePart.CALL.value: call.model_dump(mode="json"),
-                WirePart.RESULT.value: {"kind": "kind_of_a_newer_server", "x": 1},
-            },
-            is_error=False,
+    @pytest.mark.parametrize("path", SNAPSHOTS.paths(), ids=lambda path: path.stem)
+    def test_model_reads_the_text_of_the_result(self, path: Path) -> None:
+        artifact = _snapshot(path)
+
+        wire = WIRE.packed(OUTCOMES.of(CALL, artifact, False))
+
+        if _for_model(wire) != artifact.disclosed().llm_view():
+            raise AssertionError(f"модель видит текст результата {path.stem}")
+
+    def _user_blocks(self, artifact: ToolResultBase) -> list[mt.ContentBlock]:
+        blocks: list[mt.ContentBlock] = []
+        for block in WIRE.packed(OUTCOMES.of(CALL, artifact, False)).content:
+            if block.annotations is None:
+                blocks.append(block)
+                continue
+
+            if block.annotations.audience == ["user"]:
+                blocks.append(block)
+
+        return blocks
+
+    def _resource(self, block: mt.ContentBlock) -> mt.TextResourceContents:
+        if not isinstance(block, mt.EmbeddedResource):
+            raise AssertionError(f"встроенный ресурс: {block!r}")
+
+        if not isinstance(block.resource, mt.TextResourceContents):
+            raise AssertionError(f"ресурс текстом: {block.resource!r}")
+
+        return block.resource
+
+    def test_plain_markdown_is_one_text_for_both(self) -> None:
+        wire = WIRE.packed(OUTCOMES.of(CALL, MarkdownResult(text="hello"), False))
+
+        if list(wire.content) != [mt.TextContent(text="hello")]:
+            raise AssertionError(f"один текст без audience: {wire.content}")
+
+    def test_markdown_with_a_language_is_a_resource_of_its_mime(self) -> None:
+        shown = MarkdownResult(text='{"a": 1}\n', language="json", note="source x")
+
+        blocks = self._user_blocks(shown)
+
+        resource = self._resource(blocks[0])
+        if resource.mime_type != ContentMime.JSON:
+            raise AssertionError(f"MIME по языку: {resource.mime_type}")
+        if resource.text != '{"a": 1}':
+            raise AssertionError(f"текст без краевых переводов строк: {resource.text}")
+        if not str(resource.uri).endswith("/json"):
+            raise AssertionError(f"имя ресурса — язык: {resource.uri}")
+        if blocks[1] != mt.TextContent(
+            text="_source x_", annotations=mt.Annotations(audience=["user"])
+        ):
+            raise AssertionError(f"подпись — текстом человеку: {blocks[1]!r}")
+
+    def test_table_is_csv(self) -> None:
+        table = TableResult(rows=[{"a": 1, "b": None}, {"a": 2, "c": [1]}])
+
+        blocks = self._user_blocks(table)
+
+        resource = self._resource(blocks[0])
+        if resource.mime_type != ContentMime.CSV:
+            raise AssertionError(f"таблица — text/csv: {resource.mime_type}")
+        if resource.text != "a,b,c\n1,,\n2,,[1]\n":
+            raise AssertionError(f"строки таблицы в csv: {resource.text!r}")
+
+    def test_sql_statement_is_its_text_and_rows(self) -> None:
+        statement = SqlStatement(text="select 1 as a", rows=[{"a": 1}])
+        result = SqlResult(engine="postgres", statements=[statement])
+
+        blocks = self._user_blocks(result)
+
+        mimes: list[str | None] = []
+        for block in blocks:
+            if isinstance(block, mt.EmbeddedResource):
+                mimes.append(block.resource.mime_type)
+                continue
+
+            mimes.append(None)
+
+        if mimes != [ContentMime.SQL, None, ContentMime.CSV]:
+            raise AssertionError(f"команда, подпись, строки: {blocks}")
+
+    def test_shell_output_is_plain_text_named_after_the_stream(self) -> None:
+        shell = ShellResult(
+            exit_code=1,
+            stdout="",
+            stdout_bytes=0,
+            stdout_truncated=False,
+            stderr="boom\n",
+            stderr_bytes=5,
+            stderr_truncated=False,
+            duration_ms=3,
+            timed_out=False,
         )
 
-        if WIRE.revived(wire, CALL, SERVER) is not None:
-            raise AssertionError("неизвестный вид не оживает итогом")
+        blocks = self._user_blocks(shell)
 
-    def test_result_without_structured_content_is_not_revived(self) -> None:
-        wire = WireResult(
-            content=[mt.TextContent(text="boom")], structured=None, is_error=True
+        resource = self._resource(blocks[0])
+        if resource.mime_type != ContentMime.PLAIN:
+            raise AssertionError(f"вывод — text/plain: {resource.mime_type}")
+        if not str(resource.uri).endswith("/stderr"):
+            raise AssertionError(f"имя ресурса — поток: {resource.uri}")
+        if blocks[1] != mt.TextContent(
+            text="_exit code: 1_", annotations=mt.Annotations(audience=["user"])
+        ):
+            raise AssertionError(f"код возврата строкой: {blocks[1]!r}")
+
+    def test_plotly_figure_is_its_resource(self) -> None:
+        figure = {"data": [{"type": "bar", "y": [1, 2]}]}
+        chart = VisualResult.plotly(figure, "orders")
+
+        blocks = self._user_blocks(chart)
+
+        resource = self._resource(blocks[1])
+        if resource.mime_type != ContentMime.PLOTLY:
+            raise AssertionError(f"фигура plotly: {resource.mime_type}")
+        if json.loads(resource.text) != figure:
+            raise AssertionError(f"фигура доехала: {resource.text}")
+        if not str(resource.uri).endswith("/orders"):
+            raise AssertionError(f"имя ресурса — заголовок: {resource.uri}")
+
+    def test_file_and_canvas_are_links_under_one_text(self) -> None:
+        attached = FileResult(
+            path="/workspace/t/upload/a.pdf", name="a.pdf", mime="x/y"
         )
+        shown = CanvasResult(path="/workspace/t/mermaid/a.mmd", label="a.mmd")
 
-        if WIRE.revived(wire, CALL, SERVER) is not None:
-            raise AssertionError("без structuredContent итога семейства нет")
+        for result, mime in ((attached, "x/y"), (shown, ContentMime.MERMAID)):
+            wire = WIRE.packed(OUTCOMES.of(CALL, result, False))
+            text, link = wire.content
+            if text != mt.TextContent(text=result.llm_view()):
+                raise AssertionError(f"текст модели и человека один: {text!r}")
+            if not isinstance(link, mt.ResourceLink):
+                raise AssertionError(f"файл — ссылкой: {link!r}")
+            if link.uri != f"file://{result.path}":
+                raise AssertionError(f"адрес — путь в workspace: {link.uri}")
+            if link.mime_type != mime:
+                raise AssertionError(f"MIME файла: {link.mime_type}")
 
-    def test_structured_content_of_another_shape_is_not_revived(self) -> None:
-        """Чужой сервер прислал свои данные: частей итога в них нет."""
-        table = TableResult(rows=[{"a": 1}])
-        wire = WireResult(
-            content=[mt.TextContent(text=table.llm_view())],
-            structured=table.model_dump(mode="json"),
-            is_error=False,
-        )
+    def test_elapsed_rides_in_the_meta(self) -> None:
+        table = TableResult(rows=[], elapsed_ms=42)
 
-        if WIRE.revived(wire, CALL, SERVER) is not None:
-            raise AssertionError("данные без сведений о вызове не оживают итогом")
+        wire = WIRE.packed(OUTCOMES.of(CALL, table, False))
+
+        if wire.meta != {ResultWire.ELAPSED: 42}:
+            raise AssertionError(f"длительность вызова в _meta: {wire.meta}")

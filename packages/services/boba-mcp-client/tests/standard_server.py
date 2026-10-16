@@ -54,7 +54,13 @@ class StandardServer:
     REFUSAL: ClassVar[dict[str, str]] = {"reason": "the stand refuses"}
     EXTENSIONS: ClassVar[tuple[DeclaredExtension, ...]] = (
         DeclaredExtension(
-            "com.boba/journal", {"read": "add", "path": "/journal", "since": 2}
+            "com.boba/journal",
+            {
+                "read": "add",
+                "path": "/journal",
+                "resource": "journal://{run}/{node}/{channel}",
+                "since": 2,
+            },
         ),
         DeclaredExtension("com.boba/nested-calls", {"tool": "workflow"}),
     )

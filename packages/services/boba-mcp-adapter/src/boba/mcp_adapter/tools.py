@@ -10,11 +10,12 @@
 провайдер fastmcp: на каждый запрос берёт инструменты вызывающего у
 CallerServers (кто вызывает, решает приложение по своему токену).
 FeatureExtension — возможность сервера, объявляемая клиенту при
-согласовании протокола.
+согласовании протокола. JournalUris — uri каналов журнала вызова ресурсами
+MCP и их разбор.
 
 Ошибки:
 наружу уходит только итог вызова — сбой любого вида возвращается
-    результатом с isError и моделью отказа (FailureResult) в structuredContent.
+    результатом с isError и текстом отказа в content.
 исключения CallerServers.current() — реализация приложения не узнала
     вызывающего; список инструментов и вызов для него отказывают.
 исключения RoleTools._server() — наследник не собрал порт ключа.
@@ -28,24 +29,26 @@ from collections.abc import Hashable, Mapping, Sequence
 from typing import Any, Generic, Protocol, TypeVar
 
 import mcp_types as mt
+from fastmcp.resources.template import expand_uri_template, match_uri_template
 from fastmcp.server.extensions import ServerExtension
 from fastmcp.server.providers import Provider
 from fastmcp.tools import Tool
 from fastmcp.tools.base import ToolResult
 from fastmcp.utilities.components import FastMCPComponent
 from fastmcp.utilities.versions import VersionSpec
-from pydantic import BaseModel, PrivateAttr
+from pydantic import BaseModel, PrivateAttr, ValidationError
 
 from boba.toolkit.calls import CallIdPrefix, CallViews
 from boba.toolkit.dag import DagNode, NodeOutcome, NodeOutcomes, ToolCard, ToolServer
 from boba.toolkit.failure import FailurePacker
 from boba.toolkit.mcp import McpToolStubs
 from boba.toolkit.result import FailureResult
-from boba.toolkit.wire import ResultWire
+from boba.toolkit.wire import JournalRead, ResultWire
 
 __all__ = [
     "CallerServers",
     "FeatureExtension",
+    "JournalUris",
     "McpReplies",
     "McpTool",
     "McpToolProvider",
@@ -64,8 +67,8 @@ class McpReplies:
     Создаётся каждым, кто отвечает на tools/call: инструментом порта
     (McpTool), операциями приложения и его middleware. Итог вызова
     (NodeOutcome) и отказ сервера едут клиенту полями ResultWire: блоки
-    результата в content, сведения о вызове и данные результата в
-    structuredContent. Ответ операции — её модель в structuredContent.
+    результата в content, данные по outputSchema в structuredContent.
+    Ответ операции — её модель в structuredContent.
     """
 
     def __init__(self) -> None:
@@ -76,13 +79,14 @@ class McpReplies:
         """Итог вызова инструмента."""
         packed = self._wire.packed(outcome)
 
-        structured: dict[str, Any] = {}
+        structured: dict[str, Any] | None = None
         if packed.structured is not None:
             structured = dict(packed.structured)
 
         return ToolResult(
             content=list(packed.content),
             structured_content=structured,
+            meta=dict(packed.meta),
             is_error=packed.is_error,
         )
 
@@ -100,19 +104,52 @@ class McpReplies:
             structured_content=answer.model_dump(mode="json"),
         )
 
-    def stamped(self, result: ToolResult, run: str) -> ToolResult:
-        """Тот же ответ с запуском run в сведениях о вызове: по запуску и
-        идентификатору вызова клиент читает журнал."""
-        structured = result.structured_content
-        if structured is None:
+    def journaled(
+        self, result: ToolResult, links: Sequence[mt.ContentBlock]
+    ) -> ToolResult:
+        """Тот же ответ со ссылками на каналы журнала вызова в конце content:
+        по ним клиент читает журнал (JournalUris)."""
+        if not links:
             return result
 
         return ToolResult(
-            content=result.content,
-            structured_content=self._wire.stamped(structured, run),
+            content=[*result.content, *links],
+            structured_content=result.structured_content,
             meta=result.meta,
             is_error=result.is_error,
         )
+
+
+class JournalUris:
+    """Адреса каналов журнала вызова ресурсами MCP по шаблону uri расширения
+    журнала (JournalFeature.resource).
+
+    Сервер (CallContextMiddleware) по uri() пишет в конец итога ссылки на
+    каналы журнала вызова, клиент (лента чата) по address() узнаёт в такой
+    ссылке адрес журнала. Шаблон раскрывают и сопоставляют функции шаблонов
+    fastmcp — те же, по которым сервер отвечает на resources/read.
+    """
+
+    def __init__(self, template: str) -> None:
+        self._template = template
+
+    def uri(self, address: JournalRead) -> str:
+        """Uri ресурса канала журнала по его адресу."""
+        params = address.model_dump(mode="json", exclude_none=True)
+
+        return expand_uri_template(self._template, params)
+
+    def address(self, uri: str) -> JournalRead | None:
+        """Адрес канала журнала по ссылке; None — ссылка не на журнал."""
+        params = match_uri_template(uri, self._template)
+        if params is None:
+            return None
+
+        try:
+            return JournalRead.model_validate(params)
+        except ValidationError as exc:
+            logger.info("journal link %s names no journal channel: %s", uri, exc)
+            return None
 
 
 class McpTool(Tool):

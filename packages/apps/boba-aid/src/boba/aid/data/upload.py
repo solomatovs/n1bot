@@ -57,6 +57,7 @@ from boba.runtime.served import StreamedFile
 from boba.runtime.storage import StorageClient
 from boba.toolkit.channels import JournalChannels, ToolChannel
 from boba.toolkit.failure import ValidationText
+from boba.toolkit.result import ContentMime
 
 __all__ = [
     "CanvasServing",
@@ -507,8 +508,6 @@ class CanvasServing:
     пользователя берёт из токена — как это делает отдача журналов.
     """
 
-    FALLBACK_MIME: ClassVar[str] = "application/octet-stream"
-
     def __init__(self, storage: StorageClient, policy: UploadPolicy) -> None:
         self._files = StreamedFile(storage, policy)
 
@@ -539,13 +538,9 @@ class CanvasServing:
             )
             raise HTTPException(status_code=404, detail=msg) from e
 
-        mime = mimetypes.guess_type(key.name)[0]
-        if not mime:
-            mime = self.FALLBACK_MIME
-
         return await self._files.respond(
             key.render(),
-            mime=mime,
+            mime=ContentMime.of_name(key.name),
             range_header=request.headers.get(FileHeader.RANGE, ""),
             content_disposition="",
         )

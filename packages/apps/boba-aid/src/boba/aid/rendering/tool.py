@@ -1,57 +1,36 @@
-"""Элемент ленты для визуального виджета.
-
-Вход и выход шага рисуют сами семейства вызова и результата (chat_view);
-здесь только то, что требует chainlit-объекта: cl.Plotly и cl.CustomElement
-для VisualElement из показа результата.
+"""Элементы ленты, которым нужен объект chainlit: график plotly из фигуры
+блока ответа и карточка вьювера канваса.
 
 Ошибки: своих не выпускает.
 """
 
 from __future__ import annotations
 
-import chainlit as cl
-from chainlit.element import ElementDisplay
+from collections.abc import Mapping
+from typing import Any
 
-from boba.toolkit.result import ChatElement, VisualElement, VisualResult
+import chainlit as cl
+
+from boba.toolkit.result import VisualResult
 
 __all__ = ["ChatElements"]
 
 
 class ChatElements:
-    """Элемент ленты для VisualElement: встроенный Plotly по имени
-    ChatElement.PLOTLY, остальное — jsx-компонент public/elements/<имя>.jsx."""
+    """Элементы ленты: cl.Plotly по фигуре plotly и jsx-компонент
+    public/elements/<имя>.jsx по карточке вьювера канваса (VisualResult).
+    Создаёт его лента (ChatView) и зовёт из отрисовки блоков ответа."""
 
-    @classmethod
-    def of(
-        cls, widget: VisualElement, *, display: ElementDisplay = "inline"
-    ) -> cl.Plotly | cl.CustomElement:
-        if widget.element == ChatElement.PLOTLY:
-            return cls._plotly(widget, display)
-
+    def of_result(self, result: VisualResult) -> cl.CustomElement:
+        """Карточка вьювера у шага ответа."""
         return cl.CustomElement(
-            name=widget.element, props=dict(widget.props), display=display
+            name=result.element, props=dict(result.props), display="inline"
         )
 
-    @classmethod
-    def of_result(cls, result: VisualResult) -> cl.Plotly | cl.CustomElement:
-        """Элемент по визуальному результату: ссылка панели у шага ответа."""
-        title = ""
-        if result.title:
-            title = result.title
-
-        widget = VisualElement(element=result.element, props=result.props, title=title)
-
-        return cls.of(widget)
-
-    @staticmethod
-    def _plotly(widget: VisualElement, display: ElementDisplay) -> cl.Plotly:
-        """cl.Plotly из spec — единственное место, знающее про plotly."""
+    def plotly(self, figure: Mapping[str, Any], title: str) -> cl.Plotly:
+        """cl.Plotly из фигуры — единственное место, знающее про plotly."""
         from plotly import graph_objects as go  # noqa: PLC0415
 
-        name = widget.title
-        if not name:
-            name = "chart"
+        plotted = go.Figure(dict(figure))
 
-        figure = go.Figure(dict(widget.props[VisualResult.PLOTLY_SPEC]))
-
-        return cl.Plotly(name=name, figure=figure, display=display)
+        return cl.Plotly(name=title, figure=plotted, display="inline")
