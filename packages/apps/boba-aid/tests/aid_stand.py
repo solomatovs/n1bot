@@ -27,8 +27,7 @@ from chainlit.user import PersistedUser
 from chainlit.user import User as ChainlitUser
 from psycopg import sql
 
-from boba.aid.agent.config import ChatMcpConfig
-from boba.aid.agent.relay import McpRelay
+from boba.aid.agent.relay import ChatTools, McpRelay
 from boba.aid.agent.server import CallSealing, ChatCallers, KeyHolder, ProcessKeys
 from boba.aid.canvas.remote import RemoteJournals, RemoteStreams
 from boba.aid.data.data_layer import PostgresDataLayer
@@ -294,24 +293,18 @@ class ToolService:
 
 class RelayStand:
     """Ретранслятор mcp/message стенда (McpRelay) в сборке, как у провайдера
-    процесса: ключи процессов, вызывающие по ключу и запечатывание соединений
-    пользователя из хранилища store с кредами credentials.
+    процесса: ключи процессов, вызывающие по ключу, запечатывание соединений
+    пользователя из хранилища store с кредами credentials и сервер chat —
+    собственные инструменты чата над тем же хранилищем.
 
     Им собирают ретранслятор тесты ретранслятора, вызовы сервиса
     (ServiceTools) и процессы агента стенда (Agents); серверы профиля каждый
-    тест открывает сам. Сервер инструментов чата стенду не объявляется.
+    тест открывает сам. Инструменты chat видят роль ROLE и профиль PROFILE.
     """
 
-    CHAT: ClassVar[ChatMcpConfig] = ChatMcpConfig(
-        enable=False,
-        name="chat",
-        path="/chat/mcp",
-        connect_timeout_sec=10.0,
-        call_timeout_sec=60.0,
-    )
-    PUBLIC_URL: ClassVar[str] = "http://127.0.0.1"
-    """Адрес чата для ретранслятора: без сервера чата по нему никто не ходит."""
     SEAL_TTL: ClassVar[timedelta] = timedelta(minutes=2)
+    ROLE: ClassVar[str] = "dev"
+    PROFILE: ClassVar[str] = "general"
 
     def __init__(
         self, store: StoreRef, credentials: CredentialsRef, contexts: CallContexts
@@ -320,11 +313,14 @@ class RelayStand:
         self.callers = ChatCallers(self.keys)
         connections = ArmedConnections(store, credentials, contexts)
         self.sealing = CallSealing(self.callers, connections, contexts, self.SEAL_TTL)
+        refs = StandRefs(contexts)
+        tools = refs.tool_stand(())
+        tools.adopt(ConnectionTools(store, contexts).build())
+        registry = tools.registry(tools.access(self.ROLE, self.PROFILE), ())
+        self.chat = ChatTools(registry, refs.runs)
 
     def relay(self, servers: McpServers) -> McpRelay:
-        return McpRelay(
-            self.keys, self.callers, servers, self.sealing, self.CHAT, self.PUBLIC_URL
-        )
+        return McpRelay(self.keys, self.callers, servers, self.sealing, self.chat)
 
 
 class ServiceTool:

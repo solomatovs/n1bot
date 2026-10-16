@@ -19,7 +19,7 @@ import pytest
 from acp.exceptions import RequestError
 from aid_stand import NoConnectionStore, RelayStand, ServiceProcess, TabSession
 
-from boba.aid.agent.relay import McpRelay
+from boba.aid.agent.relay import ChatTools, McpRelay
 from boba.aid.agent.server import McpServerInfo
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.connection_broker.store import ConnectionStore
@@ -282,6 +282,18 @@ class TestMcpRelay:
         assert "'standard'" in str(refused.value)
 
 
+@pytest.fixture
+async def store(pool: AsyncPostgresPool) -> ConnectionStore:
+    """Хранилище соединений пользователей стенда ретранслятора."""
+    schema = "relay_connections"
+    cipher = SecretCipher(secrets.token_bytes(32))
+    schema_dir = files("boba.connection_broker") / "schema"
+    async with pool.connection() as conn:
+        await PostgresSchema(schema).apply_files(conn, schema_dir, {})
+
+    return ConnectionStore(pool, schema, cipher, ConnectionTypes.discover())
+
+
 @dataclass(frozen=True)
 class RelayCall:
     """Случай вызова через ретранслятор: инструмент, аргументы модели и
@@ -301,19 +313,7 @@ class TestRelaySealing:
     запечатываются в каждом узле; отказ узла — isError всего вызова с
     ключом узла, вызов не по объявленной форме уходит серверу как есть."""
 
-    SCHEMA: ClassVar[str] = "relay_connections"
     ENVELOPE: ClassVar[dict[str, Any]] = TestMcpRelay.ENVELOPE
-
-    @pytest.fixture
-    async def store(self, pool: AsyncPostgresPool) -> ConnectionStore:
-        cipher = SecretCipher(secrets.token_bytes(32))
-        schema_dir = files("boba.connection_broker") / "schema"
-        async with pool.connection() as conn:
-            await PostgresSchema(self.SCHEMA).apply_files(conn, schema_dir, {})
-
-        built = ConnectionStore(pool, self.SCHEMA, cipher, ConnectionTypes.discover())
-
-        return built
 
     @pytest.mark.parametrize(
         "case",
@@ -450,3 +450,64 @@ class TestRelaySealing:
         assert answer.is_error is case.errored, answer
         for part in case.expected:
             assert part in str(answer.content), answer
+
+
+@pytest.mark.integration
+class TestChatServer:
+    """Сервер chat в процессе чата через ретранслятор: собственные
+    инструменты чата по ролям вкладки, connection_list отдаёт соединения,
+    выданные пользователю регистрации."""
+
+    ENVELOPE: ClassVar[dict[str, Any]] = TestMcpRelay.ENVELOPE
+
+    async def test_own_tools_are_listed_and_called_in_process(
+        self, store: ConnectionStore, call_stand: CallStand, tab: TabSession
+    ) -> None:
+        credentials = KerberosCredentialSource(None, NoRefresh())
+        stand = RelayStand(lambda: store, lambda: credentials, call_stand.contexts)
+        relay = stand.relay(McpServers(McpServersConfig(servers={})))
+        holder = tab.holder(uuid4(), RelayStand.PROFILE)
+        server_id = stand.keys.register(holder, [ChatTools.NAME])[0].server_id
+        profile = PostgresConfig.model_validate(
+            {
+                "host": "db.local",
+                "dbname": "orders",
+                "auth": {"method": "trust", "user": "u"},
+            }
+        )
+        await store.add_owned("orders", profile, holder.user_id)
+        heard: asyncio.Queue[McpMessage] = asyncio.Queue()
+
+        listed = await relay.answer(
+            McpMessage(
+                server_id=server_id,
+                request_id="mcp:listing",
+                method="tools/list",
+                params={"_meta": self.ENVELOPE},
+            ),
+            heard.put,
+        )
+        called = await relay.answer(
+            McpMessage(
+                server_id=server_id,
+                request_id="mcp:call",
+                method="tools/call",
+                params={
+                    "name": "connection_list",
+                    "arguments": {},
+                    "_meta": self.ENVELOPE,
+                },
+            ),
+            heard.put,
+        )
+
+        assert isinstance(listed, McpResultOutcome), listed
+        names: list[str] = []
+        for tool in mt.ListToolsResult.model_validate(listed.result).tools:
+            names.append(tool.name)
+
+        assert sorted(names) == ["connection_list", "connection_search"], names
+        assert isinstance(called, McpResultOutcome), called
+        answer = mt.CallToolResult.model_validate(called.result)
+        assert answer.is_error is False, answer
+        assert "orders" in str(answer.content), answer

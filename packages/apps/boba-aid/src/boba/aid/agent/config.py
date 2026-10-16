@@ -1,5 +1,5 @@
 """Секция [agent] конфига chainlit: команда запуска агента ACP, хранилище его
-истории, адрес chainlit глазами агента и сервер инструментов чата.
+истории и адрес chainlit глазами агента.
 
 Ошибки: своих не выпускает; разбор — pydantic при загрузке AppConfig.
 """
@@ -16,20 +16,17 @@ from pydantic import (
     ConfigDict,
     Field,
     SecretStr,
-    field_validator,
 )
 
 from boba.agent.settings import HistoryKind
 from boba.db.postgres.connection import PostgresConfig
 from boba.db.postgres.connection.auth import PasswordAuth, PostgresKerberos, TrustAuth
 from boba.kerberos import KerberosPasswordAuth, KeytabAuth
-from boba.toolkit.mcp import McpToolNames
 
 __all__ = [
     "AgentCommandConfig",
     "AgentConfig",
     "AgentHistoryConfig",
-    "ChatMcpConfig",
     "DsnKey",
     "LibpqConnection",
     "MemoryAgentHistory",
@@ -184,29 +181,6 @@ AgentHistoryConfig = Annotated[
 ]
 
 
-class ChatMcpConfig(BaseModel):
-    """Сервер инструментов чата `/chat/mcp`, объявленный агенту записью
-    type "acp": имя сервера задаёт полные имена его инструментов у агента
-    (McpToolNames), сроки — подключение ретранслятора к нему и один вызов."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    enable: bool = Field(description="Объявлять ли сервер чата агенту.")
-    name: str = Field(min_length=1, description="Имя сервера в объявлении агенту.")
-    path: str = Field(
-        min_length=1, description="Путь сервера под адресом chainlit: /chat/mcp."
-    )
-    connect_timeout_sec: float = Field(
-        gt=0, description="Срок подключения ретранслятора к серверу чата."
-    )
-    call_timeout_sec: float = Field(gt=0, description="Срок одного вызова.")
-
-    @field_validator("name")
-    @classmethod
-    def _named(cls, value: str) -> str:
-        return McpToolNames().checked_server(value)
-
-
 class ModelLimitsConfig(BaseModel):
     """Пределы профиля модели, которых нет в профиле чата."""
 
@@ -227,10 +201,9 @@ class AgentConfig(BaseModel):
         min_length=1,
         description=(
             "Адрес chainlit: схема, хост, порт и префикс приложения. По нему "
-            "ретранслятор зовёт сервер инструментов чата, агент берёт вложения."
+            "агент берёт вложения сообщений пользователя."
         ),
     )
-    chat_mcp: ChatMcpConfig
     seal_ttl_sec: int = Field(
         gt=0,
         description=(

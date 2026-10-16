@@ -22,16 +22,8 @@ from boba.aid.agent.chat import (
 )
 from boba.aid.agent.config import AgentConfig
 from boba.aid.agent.feed import AgentFeeds, BusParts, TabSurfaces
-from boba.aid.agent.relay import McpRelay
-from boba.aid.agent.server import (
-    CallSealing,
-    ChatCallers,
-    ChatCallMiddleware,
-    ChatMcpServer,
-    ChatTokenVerifier,
-    ChatToolServers,
-    ProcessKeys,
-)
+from boba.aid.agent.relay import ChatTools, McpRelay
+from boba.aid.agent.server import CallSealing, ChatCallers, ProcessKeys
 from boba.aid.agent.settings import (
     AgentSettingsLayers,
     AgentSettingsTable,
@@ -271,15 +263,19 @@ def call_sealing(
     return CallSealing(callers, connections, contexts, ttl)
 
 
-def mcp_relay(
+def mcp_relay(  # noqa: PLR0913 — ретранслятор собирается всеми входами процесса
     keys: Annotated[ProcessKeys, Depends(process_keys)],
     callers: Annotated[ChatCallers, Depends(chat_callers)],
     servers: Annotated[McpServers, Depends(mcp_servers)],
     sealing: Annotated[CallSealing, Depends(call_sealing)],
-    config: Annotated[AgentConfig, Depends(agent_config)],
+    registry: Annotated[ToolRegistry, Depends(runtime.tool_registry)],
+    runs: Annotated[Runs, Depends(runtime.runs)],
 ) -> McpRelay:
-    """Ретранслятор mcp/message процессов агента: один на инстанс."""
-    return McpRelay(keys, callers, servers, sealing, config.chat_mcp, config.public_url)
+    """Ретранслятор mcp/message процессов агента: один на инстанс; сервер
+    chat — собственные инструменты чата из реестра."""
+    chat = ChatTools(registry, runs)
+
+    return McpRelay(keys, callers, servers, sealing, chat)
 
 
 def agent_launcher(
@@ -358,19 +354,3 @@ async def thread_agents(
         yield agents
     finally:
         await agents.close_all()
-
-
-def chat_mcp_server(
-    config: Annotated[AgentConfig, Depends(agent_config)],
-    keys: Annotated[ProcessKeys, Depends(process_keys)],
-    registry: Annotated[ToolRegistry, Depends(runtime.tool_registry)],
-    callers: Annotated[ChatCallers, Depends(chat_callers)],
-    runs: Annotated[Runs, Depends(runtime.runs)],
-) -> ChatMcpServer:
-    """MCP-сервер инструментов чата для агента под [agent.chat_mcp].path."""
-    return ChatMcpServer(
-        config.chat_mcp,
-        ChatTokenVerifier(keys),
-        ChatToolServers(registry, callers),
-        ChatCallMiddleware(callers, runs),
-    )

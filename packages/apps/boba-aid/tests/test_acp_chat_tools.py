@@ -1,14 +1,14 @@
-"""Чат исполняет инструменты своего агента: стенд chainlit с включёнными
-`/chat/mcp`, сервис boba-mcp стенда с плагином
-pg процессами хоста, настоящий `boba acp` v2 с фейковой моделью.
+"""Чат исполняет инструменты своего агента: стенд chainlit, сервис boba-mcp
+стенда с плагином pg процессами хоста, настоящий `boba acp` v2 с фейковой
+моделью.
 
-Агент получает серверы профиля и сервер чата объявлениями type "acp" и зовёт
+Агент получает серверы профиля и сервер chat объявлениями type "acp" и зовёт
 их через mcp/message; ретранслятор чата запечатывает соединения и исполняет
-вызовы от имени пользователя вкладки. Проверяется ход «connection_list на
-сервере чата → pg_query на boba-mcp с именем соединения»: имя подменяется
-запечатанным профилем, сервис открывает его и исполняет запрос, в ленте
-остаётся имя; вход чата для агента отвечает 401 всему, что не serverId
-процесса; файл настроек агента не несёт ни серверов, ни хуков, ни токенов.
+вызовы от имени пользователя вкладки, инструменты chat — в процессе чата.
+Проверяется ход «connection_list на сервере chat → pg_query на boba-mcp с
+именем соединения»: имя подменяется запечатанным профилем, сервис открывает
+его и исполняет запрос, в ленте остаётся имя; файл настроек агента не несёт
+ни серверов, ни хуков, ни токенов.
 Приёмка ретранслятора — настоящий агент и стенд boba-mcp со входом proxy:
 инструмента чужой роли нет у агента, остановка отменяет вызов на сервере,
 инструмент только для интерфейса агенту не виден и не вызывается."""
@@ -26,21 +26,16 @@ from typing import Any, ClassVar
 from uuid import uuid4
 
 import httpx
-import httpx2
-import jwt
 import pytest
 from acp.experimental.v2 import schema
 from acp_stand import AgentHistoryStand, Agents, FakeModel, RecordingUpdates
 from aid_stand import ServiceProcess, TabSession
-from mcp.client.session import ClientSession
-from mcp.client.streamable_http import streamable_http_client
 from test_acp_chat import BOOT_TIMEOUT_SEC, AgentProcesses, ChatSocket
 
 import boba.aid.agent
 from boba.aid.agent.client import AgentProcess
 from boba.aid.rendering.chat_view import StepStatus
 from boba.db.postgres.connection import PostgresConfig
-from boba.identity.token import ClaimKey
 from boba.mcp_client.client import McpServerConfig, McpServersConfig
 from boba.runtime.config import RuntimeConfig
 from boba.runtime.http import RequestTokens
@@ -67,7 +62,6 @@ CONNECTION = "probe"
 SERVICE_PLUGINS = ("pg",)
 MCP_SERVER = "boba_general"
 ADMIN = "admin"
-JSON_RPC = "2.0"
 SHORT_TOKEN_SEC = 4
 """Срок токена сервиса на стенде входа local: агент успевает его пережить."""
 
@@ -151,7 +145,6 @@ def app(
         app_port=free_port(),
         llm_port=llm_port,
         db_name=db_name,
-        agent_chat_mcp=True,
         service_plugins=SERVICE_PLUGINS,
     )
     process = StandProcess(config=config, log_path=workdir / "app.log")
@@ -208,21 +201,6 @@ def session_jwt(login: httpx.Response, runtime_config: RuntimeConfig) -> str:
     return token
 
 
-class Addresses:
-    """Адреса входов чата для агента на стенде."""
-
-    def __init__(self, app: StandProcess) -> None:
-        self._base = app.config.base_url
-
-    def mcp(self) -> str:
-        return f"{self._base}/chat/mcp"
-
-
-@pytest.fixture(scope="module")
-def addresses(app: StandProcess) -> Addresses:
-    return Addresses(app)
-
-
 class AgentFiles:
     """Файл настроек процесса агента вкладки: то, что чат отдал агенту."""
 
@@ -234,110 +212,6 @@ class AgentFiles:
         path = self._agents.of_thread(thread_id)[pid]
 
         return path.read_text(encoding="utf-8")
-
-
-class Bearer:
-    """Заголовок Authorization с токеном носителя."""
-
-    @staticmethod
-    def headers(token: str) -> dict[str, str]:
-        return {"Authorization": f"Bearer {token}"}
-
-
-class ForgedTokens:
-    """Токены, которые чат принимать не должен: чужой подписи и просроченный."""
-
-    ALGORITHM: ClassVar[str] = "HS256"
-
-    def __init__(self, secret: str) -> None:
-        self._secret = secret
-
-    def foreign(self) -> str:
-        return self._encoded("not-the-chat-secret", int(time.time()) + 600)
-
-    def expired(self) -> str:
-        return self._encoded(self._secret, int(time.time()) - 60)
-
-    def headers(self, kind: str, sign_in: str) -> dict[str, str]:
-        """Заголовки запроса с токеном вида kind, который ключом процесса не
-        является: чужой подписи, просроченный, JWT входа пользователя,
-        случайная строка; none — без заголовка."""
-        tokens = {
-            "foreign": self.foreign(),
-            "expired": self.expired(),
-            "sign_in": sign_in,
-            "random": uuid4().hex,
-        }
-        if kind not in tokens:
-            return {}
-
-        return Bearer.headers(tokens[kind])
-
-    def _encoded(self, secret: str, exp: int) -> str:
-        claims = {
-            ClaimKey.IDENTIFIER.value: ADMIN,
-            ClaimKey.METADATA.value: {},
-            ClaimKey.EXP.value: exp,
-        }
-
-        return jwt.encode(claims, secret, algorithm=self.ALGORITHM)
-
-
-class McpTab:
-    """Клиент MCP теста на `/chat/mcp`: тот же транспорт, что у агента."""
-
-    def __init__(self, url: str, token: str) -> None:
-        self._url = url
-        self._token = token
-
-    async def tool_names(self) -> list[str]:
-        async with self._session() as session:
-            listed = await session.list_tools()
-
-        return sorted(tool.name for tool in listed.tools)
-
-    async def call_text(self, name: str, arguments: Mapping[str, Any]) -> str:
-        async with self._session() as session:
-            result = await session.call_tool(name, dict(arguments))
-
-        assert not result.is_error, result
-        texts: list[str] = []
-        for block in result.content:
-            text = getattr(block, "text", None)
-            if isinstance(text, str):
-                texts.append(text)
-
-        return "\n".join(texts)
-
-    def _session(self) -> _OpenedSession:
-        return _OpenedSession(self._url, self._token)
-
-
-class _OpenedSession:
-    """Сессия MCP на время блока: http-клиент с Bearer, потоки, initialize."""
-
-    def __init__(self, url: str, token: str) -> None:
-        self._url = url
-        self._token = token
-        self._http: httpx2.AsyncClient | None = None
-        self._streams: Any = None
-        self._session: Any = None
-
-    async def __aenter__(self) -> ClientSession:
-        self._http = httpx2.AsyncClient(headers=Bearer.headers(self._token))
-        self._streams = streamable_http_client(self._url, http_client=self._http)
-        read, write = await self._streams.__aenter__()
-        self._session = ClientSession(read, write)
-        session = await self._session.__aenter__()
-        await session.initialize()
-
-        return session
-
-    async def __aexit__(self, *exc: object) -> None:
-        await self._session.__aexit__(*exc)
-        await self._streams.__aexit__(*exc)
-        if self._http is not None:
-            await self._http.aclose()
 
 
 @pytest.fixture
@@ -395,7 +269,7 @@ class ToolSteps:
 
 
 class TestAgentTurn:
-    """Агент стенда зовёт connection_list на /chat/mcp и pg_query на boba-mcp."""
+    """Агент стенда зовёт connection_list на сервере chat и pg_query на boba-mcp."""
 
     async def test_connection_list_then_sealed_pg_query(
         self, app: StandProcess, tab: ChatSocket, probe: PostgresConfig
@@ -509,39 +383,6 @@ def _lines_since(process: StandProcess[Any], since: int) -> list[str]:
     return text.splitlines()[since:]
 
 
-class TestChatMcp:
-    """Сервер инструментов чата принимает только serverId процесса агента."""
-
-    @pytest.mark.parametrize(
-        "token", ["foreign", "expired", "none", "sign_in", "random"]
-    )
-    async def test_rejects_everything_that_is_not_a_process_key(
-        self,
-        addresses: Addresses,
-        runtime_config: RuntimeConfig,
-        session_jwt: str,
-        token: str,
-    ) -> None:
-        forged = ForgedTokens(runtime_config.session.auth_secret)
-        headers = forged.headers(token, session_jwt)
-
-        response = httpx.post(
-            addresses.mcp(),
-            json={
-                "jsonrpc": JSON_RPC,
-                "id": 1,
-                "method": "tools/list",
-                "params": {},
-            },
-            headers={
-                **headers,
-                "Accept": "application/json, text/event-stream",
-            },
-            timeout=30.0,
-        )
-        assert response.status_code == HTTPStatus.UNAUTHORIZED, response.text[:300]
-
-
 class TestNoTokenExchangeInTheChat:
     """Чат не получает токенов сервиса для агента и не кладёт их в файл."""
 
@@ -594,7 +435,6 @@ def local_app(
         app_port=free_port(),
         llm_port=llm_port,
         db_name=db_name,
-        agent_chat_mcp=True,
         service_plugins=SERVICE_PLUGINS,
         agent_auth=StandAgentAuth.LOCAL,
         service_token_ttl_sec=SHORT_TOKEN_SEC,
