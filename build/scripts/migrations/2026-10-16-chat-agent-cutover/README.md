@@ -35,8 +35,8 @@
 | `chainlit.agent_user_settings`, `agent_chat_settings` | настройки агента | `aid` | да | переносит, если есть (в базе dev их нет) |
 | `checkpoints.*` | dev: чекпойнтер langgraph | — | нет | переводит в историю агента и удаляет вместе со схемой |
 | `agent_history.history_records` | агент (boba-history-postgres) | `boba` | агент — при первом обращении | создаёт определением из `history_records.sql` и пишет перенесённые сессии; таблица старой базы, если есть, переезжает со своей схемой |
-| `kb.kb_collections`, `kb_chunks`, `kb_sources`, `immutable_unaccent` | база знаний (плагин boba-mcp, рабочий индексатор) | `mcp` | да, своими миграциями | переносит в `mcp`, данные не трогает |
-| `describer.node`, `edge` | инструмент описаний (плагин boba-mcp) | `mcp` | да, при первом обращении | переносит в `mcp` с последовательностями |
+| `kb.kb_collections`, `kb_chunks`, `kb_sources`, `immutable_unaccent` | база знаний (плагин boba-mcp, рабочий индексатор) | `mcp` | плагины kb и ingest при старте boba-mcp, файлами своей схемы; без расширений базы boba-mcp не стартует | переносит в `mcp`, данные не трогает |
+| `describer.node`, `edge` | инструмент описаний (плагин boba-mcp) | `mcp` | плагин describer при старте boba-mcp | переносит в `mcp` с последовательностями |
 | `ix.*` | ix-core и индексаторы | `ix` | индексатор при своём старте | ничего |
 | `automation.*`, `catalog.*` | studio | как были | да | ничего |
 | `live.*` (шина) | чат, studio | `aid` | да | не копируются: в них состояние работающих процессов |
@@ -89,18 +89,24 @@
    В каталоге появятся `tables.dump`, `prelude.sql`, `extensions.txt`,
    `functions.txt`, `counts.tsv`. Сообщения `skipped …` перечисляют таблицы
    неразвёрнутых компонентов.
-3. Создать новую пустую базу (администратором, если у роли приложения нет прав):
+3. Создать новую пустую базу с расширениями. Новому приложению нужны `vector`,
+   `pg_trgm`, `unaccent` и `btree_gin` (их перечисляет и `extensions.txt`), а
+   создать расширение может только суперпользователь, поэтому базу заводит
+   администратор. Проще всего — из шаблона, в котором они уже есть; на стенде
+   это `boba_stand_template`:
    ```sh
-   createdb -O boba-svc boba_v2
+   createdb -T boba_stand_template -O boba-svc boba_v2
    ```
-   Расширения из `extensions.txt` (`vector`, `pg_trgm`, `btree_gin`, `unaccent`)
-   `restore.sh` создаёт сам; если у роли нет на это прав, их заранее создаёт
-   администратор: `psql -d boba_v2 -c 'create extension vector'` и т. д.
+   Без шаблона администратор создаёт пустую базу и в ней расширения:
+   `psql -d boba_v2 -c 'create extension vector'` и т. д.
 4. Накатить копию:
    ```sh
    PGHOST=… PGUSER=… PGDATABASE=boba_v2 ./restore.sh /backup/cutover-2026-10
    ```
-   Скрипт откажет, если в базе уже есть таблицы. Ошибка откатывает всё.
+   До загрузки скрипт проверяет, что в базе есть все расширения из
+   `extensions.txt`, и отказывает с их списком, если какого-то нет. Скрипт
+   откажет и тогда, когда в базе уже есть таблицы. Ошибка загрузки откатывает
+   всё.
 5. Перевести:
    ```sh
    PGHOST=… PGUSER=… PGDATABASE=boba_v2 psql -v chat_url=https://chat.example.com/boba -f migrate.sql

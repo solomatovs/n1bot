@@ -37,6 +37,9 @@ dev = [
     "pytest>=9.1,<10",
 ]
 
+[tool.setuptools.package-data]
+"boba.tool.describer" = ["schema/*.sql"]
+
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["boba*"]
