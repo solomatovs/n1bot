@@ -9,7 +9,8 @@ RequestError (acp.exceptions) — ошибка доставки MCP-over-ACP:
     UNKNOWN_SERVER — serverId не выдан этим чатом или снят;
     INVALID_PARAMS — requestId уже в работе;
     BACKEND_FAILED — сервер за регистрацией недоступен, ответил не по схеме
-    инструмента либо вход пользователя вкладки больше не годен, исхода MCP нет.
+    инструмента, имена инструментов сервера chat совпали либо вход
+    пользователя вкладки больше не годен, исхода MCP нет.
 """
 
 from __future__ import annotations
@@ -59,7 +60,7 @@ from boba.mcp_client.client import (
     McpToolPort,
 )
 from boba.toolkit.chain import StreamPlanError
-from boba.toolkit.dag import DagNode, NestedCallsFeature, ToolServer
+from boba.toolkit.dag import DagNode, NestedCallsFeature, ToolServer, ToolServersError
 from boba.toolkit.failure import InvokeErrorKind, ValidationText
 from boba.toolkit.mcp import McpToolNames
 from boba.toolrun.hosted import DirectCalls
@@ -235,7 +236,7 @@ class McpRegistrations:
 
     def register(
         self, registration: McpRegistration, names: Sequence[str]
-    ) -> list[schema.AcpMcpServer]:
+    ) -> Sequence[schema.AcpMcpServer]:
         """Объявления серверов names для агента: на каждое имя новый serverId
         регистрации с этим сервером."""
         servers: list[schema.AcpMcpServer] = []
@@ -456,6 +457,13 @@ class McpRelay:
             msg = (
                 f"mcp/message {message.method!r} to server {message.server_id!r} "
                 f"got no MCP outcome: {exc}"
+            )
+            raise RequestError(AcpErrorCode.BACKEND_FAILED, msg) from exc
+        except ToolServersError as exc:
+            msg = (
+                f"mcp/message {message.method!r} to server {message.server_id!r}: "
+                f"the tools of the server cannot be offered, expected every tool "
+                f"name once: {exc}"
             )
             raise RequestError(AcpErrorCode.BACKEND_FAILED, msg) from exc
         finally:
