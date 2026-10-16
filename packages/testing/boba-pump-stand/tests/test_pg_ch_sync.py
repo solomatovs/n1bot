@@ -736,10 +736,9 @@ class TestFailureView:
         assert "`id` Nullable(Int64)" in create.text
         assert create.status == "failed: ClickHouseQueryError"
 
-        markdown = failure.chat_view().markdown
+        markdown = failure.markdown()
         assert "Sorting key contains nullable columns" in markdown
         assert "| id " in markdown
-        assert "```sql\ncreate table" in markdown
 
 
 class TestServerTraps:
@@ -757,7 +756,7 @@ class TestServerTraps:
 
         failure = outcome.failure("ch")
         assert isinstance(failure, SqlFailureResult), failure
-        assert "Cannot parse" in failure.chat_view().markdown
+        assert "Cannot parse" in failure.markdown()
         assert await ChLoaded(clickhouse, "masked").count() == 0
 
     async def test_json_array_on_top_fails_at_load(

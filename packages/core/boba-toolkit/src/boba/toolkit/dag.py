@@ -62,11 +62,8 @@ from boba.toolkit.failure import InvokeErrorKind, ValidationText
 from boba.toolkit.ports import PortDecl, StreamSpec
 from boba.toolkit.result import (
     BlockAudience,
-    ChatView,
     ContentOut,
     ErrorResult,
-    Fact,
-    FactsBlock,
     FailureResult,
     ToolResult,
     ToolResultBase,
@@ -452,9 +449,6 @@ class WorkflowResult(ToolResultBase):
 
         return "\n".join(parts)
 
-    def chat_view(self) -> ChatView:
-        return ChatView(markdown=FactsBlock(facts=self._facts()).markdown())
-
     def disclosed(self) -> Self:
         nodes: list[WorkflowNodeResult] = []
         for node in self.nodes:
@@ -501,14 +495,6 @@ class WorkflowResult(ToolResultBase):
             numbered.append((node, range(start, len(out))))
 
         return numbered
-
-    def _facts(self) -> list[Fact]:
-        facts: list[Fact] = []
-        for node in self.nodes:
-            fact = Fact(key=f"{node.key} ({node.tool})", value=node.status.value)
-            facts.append(fact)
-
-        return facts
 
 
 @dataclass(frozen=True)

@@ -917,9 +917,9 @@ class ChatView:
         self._tool_names[step.id] = label
 
         if call_args:
-            view = self._call_of(shown, call_args, media).chat_view()
-            if view.markdown:
-                step.input = view.markdown
+            markdown = self._call_of(shown, call_args, media).markdown()
+            if markdown:
+                step.input = markdown
                 step.show_input = True
 
         # фронт chainlit рисует секцию output (с inline-элементами, в том числе

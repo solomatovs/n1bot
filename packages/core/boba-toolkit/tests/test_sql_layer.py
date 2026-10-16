@@ -7,9 +7,38 @@ from decimal import Decimal
 from typing import Any, ClassVar
 from uuid import UUID
 
+import mcp_types as mt
+
 from boba.toolkit.launcher import RowStream
-from boba.toolkit.result import Fact, SqlResult, SqlStatement, ToolArtifact
+from boba.toolkit.result import (
+    Fact,
+    SqlResult,
+    SqlStatement,
+    ToolArtifact,
+    ToolResultBase,
+)
 from boba.toolkit.sql import SqlLimits
+from boba.toolkit.wire import McpContent
+
+
+def _shown(result: ToolResultBase) -> str:
+    """Тексты блоков ответа для человека подряд: текст и ресурсы как есть."""
+    content = McpContent("call")
+    result.shown(content)
+
+    texts: list[str] = []
+    for block in content.blocks():
+        if isinstance(block, mt.TextContent):
+            texts.append(block.text)
+            continue
+
+        if not isinstance(block, mt.EmbeddedResource):
+            continue
+
+        if isinstance(block.resource, mt.TextResourceContents):
+            texts.append(block.resource.text)
+
+    return "\n\n".join(texts)
 
 
 class FakeLimits(SqlLimits):
@@ -99,9 +128,9 @@ class TestSqlResult:
         )
         if result.llm_view() != '[{"a": 1}]\n\ntruncated to limit (1)':
             raise AssertionError(f"llm_view: {result.llm_view()!r}")
-        if "| a" not in result.chat_view().markdown:
-            raise AssertionError("markdown table in chat view")
-        if "_truncated to limit (1)_" not in result.chat_view().markdown:
+        if "a\n1\n" not in _shown(result):
+            raise AssertionError("rows as csv for the user")
+        if "_truncated to limit (1)_" not in _shown(result):
             raise AssertionError("note under the table")
 
     def test_several_statements_are_captioned(self) -> None:
@@ -114,7 +143,7 @@ class TestSqlResult:
         )
         if result.llm_view() != 'SELECT 1\n[{"id": 1}]\n\nUPDATE 5':
             raise AssertionError(f"llm_view: {result.llm_view()!r}")
-        markdown = result.chat_view().markdown
+        markdown = _shown(result)
         if not markdown.startswith("_SELECT 1_\n\n"):
             raise AssertionError(f"caption first: {markdown!r}")
         if not markdown.endswith("\n\n_UPDATE 5_"):
@@ -147,14 +176,14 @@ class TestPumpStatement:
         before = SqlStatement(text="set work_mem = '64MB'", status="SET")
         return SqlResult(engine="postgres", statements=[before, self.STATEMENT])
 
-    def test_markdown_shows_sql_caption_contract_and_server(self) -> None:
-        markdown = self.result().chat_view().markdown
+    def test_blocks_show_sql_caption_contract_and_server(self) -> None:
+        markdown = _shown(self.result())
 
         expected = [
-            "```sql\nset work_mem = '64MB'\n```\n\n_SET_",
-            "```sql\ncopy (\nselect id, note from t\n) to stdout (format csv)\n```",
+            "set work_mem = '64MB'\n\n_SET_",
+            "copy (\nselect id, note from t\n) to stdout (format csv)",
             "_streamed out copy csv from postgres 17.10, 2 columns_",
-            "| column | type    | not null |",
+            "column,type,not null",
             "**server:** `backend pid 776600, version 170010`",
         ]
         for part in expected:
