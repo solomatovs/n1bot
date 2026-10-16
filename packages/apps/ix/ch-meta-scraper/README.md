@@ -162,7 +162,7 @@ system-таблицах структурно (цель `TO` у представ�
 `tests/stand/server/run.sh` поднимает `edge-ch-<ver>` из локальных образов
 `dmp/clickhouse` с конфигом из того же каталога (пользователь `scraper`/`scraper`,
 `default` без пароля). Адреса целей в `[ix_stand].ch_sources` файла
-`compose/chainlit/conf/stand.toml`; источник с `demo = false` (dev-кластер по kerberos)
+`compose/aid/conf/stand.toml`; источник с `demo = false` (dev-кластер по kerberos)
 снимается как есть, без пересоздания набора. Набор `edge_demo` в `tests/stand/ddl/`,
 инварианты и отпечатки в `tests/stand/cons/`.
 

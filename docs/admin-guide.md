@@ -33,7 +33,7 @@ compose; как запустить без Docker, юнитами systemd; как
 
 Boba — три приложения, каждое в своём процессе и со своим образом.
 
-**chainlit** (чат, порт 8501) — веб-интерфейс, в котором пользователь
+**aid** (чат на chainlit, порт 8501) — веб-интерфейс, в котором пользователь
 разговаривает с языковой моделью. Сам он инструментов почти не исполняет: когда
 модель просит выполнить команду, запрос к базе или поиск по базе знаний, чат
 обращается к сервису boba-mcp.
@@ -309,11 +309,11 @@ runtime/
 | `sandbox` | собирает `bwrap` и `fuse2fs`, делает шаблон `workspace.ext4` | `runtime/third`, `runtime/sandbox` | около минуты, 1 ГБ |
 | `plugin-rootfs-all` | образ корня файловой системы на каждый плагин инструментов | `runtime/sandbox/plugins/<пакет>/rootfs.ext4` | 10–15 минут, 7–8 ГБ |
 | `web` | фронт: страница чата и страница workflow | каталоги `assets` пакетов (в git не входят) | минуты в первый раз |
-| `build APP=<приложение>` | образ `boba-<приложение>:<версия>` | демон Docker | chainlit и studio — около минуты, mcp — 3–4 минуты |
+| `build APP=<приложение>` | образ `boba-<приложение>:<версия>` | демон Docker | aid и studio — около минуты, mcp — 3–4 минуты |
 | `test APP=<приложение>` | проверка образа: импорт модулей, запуск бинарников песочницы | — | секунды; печатает `RESULT: ALL OK` |
 | `dev APP=<приложение>` | готовит дерево `compose/<приложение>` | `compose/<приложение>` | секунды |
 | `debug APP=<приложение>` | готовит дерево `debug/<приложение>` и цели VS Code | `debug/<приложение>`, `.vscode` | секунды |
-| `release APP=<приложение>` | дерево установки без Docker из готового образа | `release/<версия>/<экземпляр>` | до минуты; chainlit 4 ГБ, studio 9 ГБ, mcp 11 ГБ |
+| `release APP=<приложение>` | дерево установки без Docker из готового образа | `release/<версия>/<экземпляр>` | до минуты; aid 4 ГБ, studio 9 ГБ, mcp 11 ГБ |
 
 Цели `build`, `test`, `dev`, `debug`, `release` без `APP` идут по всем трём
 приложениям; `make all` выполняет `fetch sandbox plugin-rootfs-all web build dev`
@@ -705,22 +705,22 @@ boba`. Имя сети пустым быть не может: `docker compose` �
 
 ```
 cd compose/mcp
-docker compose up -d mcp        # в chainlit — сервис chainlit, в studio — studio
+docker compose up -d mcp        # в aid — сервис aid, в studio — studio
 docker compose ps               # через минуту-полторы: Up ... (healthy)
 docker logs -f boba-mcp
 ```
 
-Сервисы `mcp2` и `chainlit2` в тех же файлах — вторые узлы тех же приложений;
+Сервисы `mcp2` и `aid2` в тех же файлах — вторые узлы тех же приложений;
 у каждого свой `conf2/site.toml` и `conf2/krb`, окружение `conf/boba.env` у
 узлов общее. Каталог `conf2` заводят вручную, когда второй узел нужен.
 
-Порядок запуска: boba-mcp раньше chainlit. Чат подключается к сервису, когда
+Порядок запуска: boba-mcp раньше aid. Чат подключается к сервису, когда
 пользователь открывает сессию; пока сервис недоступен, в логе чата стоит
 `mcp server boba_general is unavailable: ... connecting and initializing
 failed`, а инструментов сервиса в профиле нет.
 
 Проверка здоровья встроена в образ: раз в 30 секунд контейнер сам запрашивает
-свой адрес (`/` у chainlit, `/api/openapi.json` у studio, `/health` у
+свой адрес (`/` у aid, `/api/openapi.json` у studio, `/health` у
 boba-mcp), порт и префикс берёт из `conf/boba.env`. Значения `BOBA_PORT` и
 `BOBA_URL_PREFIX` в этом файле — те же переопределения `[env]`, что и в разделе
 5, поэтому порт контейнера задаётся там, а не в site.toml.
@@ -975,7 +975,7 @@ site.toml. Его удобно получить из site.toml дерева comp
 
 | Цель VS Code | Что запускает | Адрес по умолчанию |
 |---|---|---|
-| `Chainlit: agent` | чат | `http://127.0.0.1:8601/boba-debug/` |
+| `Aid: agent` | чат | `http://127.0.0.1:8601/boba-debug/` |
 | `MCP: tools service` | сервис инструментов | `http://localhost:8651/health` |
 | `Studio: api + workflow & catalog page` | studio | `http://127.0.0.1:8602/boba-studio-debug/` |
 | `tool` | один инструмент без сервиса (`boba.runtime.toolcli`) | — |
@@ -1046,18 +1046,18 @@ site.toml. По умолчанию порт контейнера публику�
 (постоянно — в `build/conf/local.mk`), а в `workflow_page` пишут
 `http://<имя>:5173`.
 
-Статику чата отладка читает прямо из `packages/apps/boba-chainlit/assets`:
+Статику чата отладка читает прямо из `packages/apps/boba-aid/assets`:
 правка ассета видна без пересборки, а писать туда приложение не может
 (раздел 5, «Вложения чата»).
 
 ### Тесты
 
-Тесты запускаются из `debug/chainlit` и берут файлы конфигурации из двух
+Тесты запускаются из `debug/aid` и берут файлы конфигурации из двух
 переменных — пути общего конфига и site.toml:
 
 ```
-cd debug/chainlit
-BOBA_CONFIG_PATH=$PWD/../../packages/apps/boba-chainlit/conf/config.toml \
+cd debug/aid
+BOBA_CONFIG_PATH=$PWD/../../packages/apps/boba-aid/conf/config.toml \
 BOBA_SITE_PATH=$PWD/conf/site.toml \
     ../../.venv/bin/pytest ../../packages/apps/boba-mcp/tests
 ```
@@ -1432,8 +1432,8 @@ server {
 
   location /boba/ {
     resolver 127.0.0.53 valid=5s;
-    set $chainlit http://boba-chainlit.internal:8501;
-    proxy_pass $chainlit;
+    set $aid http://boba-aid.internal:8501;
+    proxy_pass $aid;
 
     include /etc/nginx/conf.d/options/boba-headers.conf;
   }
@@ -2055,7 +2055,7 @@ curl -s -b cookies.txt -X POST "$S/auth/logout" -H "x-boba-request: 1"
 
 ### Разрешённые origin (CORS)
 
-Файл `packages/apps/boba-chainlit/assets/.chainlit/config.toml` (в образе и
+Файл `packages/apps/boba-aid/assets/.chainlit/config.toml` (в образе и
 релизе — `app_root/.chainlit/config.toml`), ключ `allow_origins` в секции
 `[project]`. Файл входит в образ при сборке, поэтому правка требует пересборки
 образа чата. По умолчанию стоит `["*"]`. Запросы к chainlit идут с cookie
