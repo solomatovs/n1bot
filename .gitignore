@@ -36,7 +36,7 @@ packages/**/dist/
 .files/
 
 # ассеты — готовый app_root: debug-сессия читает их напрямую ([env].app_root конфига отладки)
-!/packages/apps/boba-chainlit/assets/.chainlit/
+!/packages/apps/boba-aid/assets/.chainlit/
 
 # сборка: артефакты make fetch и локальные настройки закрытого контура
 /build/src/
@@ -48,7 +48,7 @@ packages/**/dist/
 /sec/semgrep/
 
 # статика фронта: кладёт make fetch, в образ идёт из build/src/webassets
-packages/apps/boba-chainlit/assets/public/vendor/
+packages/apps/boba-aid/assets/public/vendor/
 
 # страница workflow: зависимости, кэши и сборка (собирает Dockerfile / make web)
 packages/apps/boba-studio/web/workflow/node_modules/
@@ -59,18 +59,18 @@ packages/apps/boba-studio/web/workflow/.eslintcache
 packages/apps/boba-studio/web/workflow/coverage/
 packages/apps/boba-studio/web/workflow/*.tsbuildinfo
 packages/apps/boba-studio/assets/workflow/
-packages/apps/boba-chainlit/web/page/node_modules/
-packages/apps/boba-chainlit/web/page/.vite/
-packages/apps/boba-chainlit/web/page/.eslintcache
-packages/apps/boba-chainlit/web/page/*.tsbuildinfo
-packages/apps/boba-chainlit/assets/public/page.js
+packages/apps/boba-aid/web/page/node_modules/
+packages/apps/boba-aid/web/page/.vite/
+packages/apps/boba-aid/web/page/.eslintcache
+packages/apps/boba-aid/web/page/*.tsbuildinfo
+packages/apps/boba-aid/assets/public/page.js
 
 # страница каталога: зависимости, кэши и сборка (собирает Dockerfile / make web-catalog)
-packages/apps/boba-chainlit/web/catalog/node_modules/
-packages/apps/boba-chainlit/web/catalog/.vite/
-packages/apps/boba-chainlit/web/catalog/src/api/schema.d.ts
-packages/apps/boba-chainlit/web/catalog/.eslintcache
-packages/apps/boba-chainlit/web/catalog/*.tsbuildinfo
-packages/apps/boba-chainlit/assets/catalog/
-packages/apps/boba-chainlit/assets/ui/
+packages/apps/boba-aid/web/catalog/node_modules/
+packages/apps/boba-aid/web/catalog/.vite/
+packages/apps/boba-aid/web/catalog/src/api/schema.d.ts
+packages/apps/boba-aid/web/catalog/.eslintcache
+packages/apps/boba-aid/web/catalog/*.tsbuildinfo
+packages/apps/boba-aid/assets/catalog/
+packages/apps/boba-aid/assets/ui/
 /docs/catalog.md
