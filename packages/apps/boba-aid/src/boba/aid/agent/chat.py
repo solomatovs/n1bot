@@ -38,7 +38,7 @@ from boba.aid.agent.client import (
     SessionUpdates,
 )
 from boba.aid.agent.config import AgentConfig
-from boba.aid.agent.relay import McpRelay
+from boba.aid.agent.relay import ChatTools, McpRelay
 from boba.aid.agent.server import KeyHolder, ProcessKeys
 from boba.aid.agent.settings import (
     AgentSettingsChange,
@@ -498,8 +498,7 @@ class AgentLauncher:
         AgentProcessError — процесс не запустился.
         """
         names = list(identity.profile.config.mcp)
-        if self._config.chat_mcp.enable:
-            names.append(self._config.chat_mcp.name)
+        names.append(ChatTools.NAME)
 
         holder = KeyHolder(
             user_id=identity.user_id,
@@ -507,7 +506,7 @@ class AgentLauncher:
             thread_id=identity.thread_id,
             profile=identity.profile.name,
             session=identity.session,
-            server=self._config.chat_mcp.name,
+            server=ChatTools.NAME,
         )
         servers = self._keys.register(holder, names)
         try:
