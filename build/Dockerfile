@@ -337,7 +337,7 @@ ARG CHAINLIT_VERSION
 
 COPY build/scripts/chainlit_ui.sh                   /tmp/chainlit_ui.sh
 COPY build/src/chainlit-${CHAINLIT_VERSION}.tar.gz  /tmp/chainlit.tar.gz
-COPY packages/apps/boba-chainlit/web/chainlit-ui/overlay/  /tmp/overlay/
+COPY packages/apps/boba-aid/web/chainlit-ui/overlay/  /tmp/overlay/
 
 # без cache mount (его нет у классического builder'а): store pnpm живёт только
 # в этом шаге и удаляется, в слой попадает лишь /out/ui
@@ -346,9 +346,9 @@ RUN sh /tmp/chainlit_ui.sh /tmp/chainlit.tar.gz /tmp/overlay /out/ui \
 
 
 # скрипт страницы chainlit (web/page, TypeScript)
-FROM ${NODE_IMAGE} AS chainlit-page-build
+FROM ${NODE_IMAGE} AS aid-page-build
 
-COPY packages/apps/boba-chainlit/web/page/  /src/web/page/
+COPY packages/apps/boba-aid/web/page/  /src/web/page/
 
 WORKDIR /src/web/page
 RUN npm ci --no-audit --no-fund && npm run check && npm run build
@@ -444,21 +444,21 @@ RUN chmod -R go-w ${BOBA_DIR}/third/bin ${BOBA_DIR}/sandbox \
 
 # образ чата: общий конфиг, ассеты chainlit, vendor-шрифты и стили формул вместо CDN.
 # Вложения сессий приложение держит в данных ([chainlit].files_dir), app_root не пишется
-FROM runtime-base AS runtime-chainlit
+FROM runtime-base AS runtime-aid
 
 ARG BOBA_DIR=/app/boba
 ARG BOBA_UID=1000
 ARG BOBA_GID=1000
 
-COPY --chown=${BOBA_UID}:${BOBA_GID} packages/apps/boba-chainlit/assets/.chainlit/config.toml   ${BOBA_DIR}/app_root/.chainlit/
-COPY --chown=${BOBA_UID}:${BOBA_GID} packages/apps/boba-chainlit/assets/.chainlit/translations/ ${BOBA_DIR}/app_root/.chainlit/translations/
-COPY --chown=${BOBA_UID}:${BOBA_GID} packages/apps/boba-chainlit/assets/chainlit.md             ${BOBA_DIR}/app_root/
-COPY --chown=${BOBA_UID}:${BOBA_GID} packages/apps/boba-chainlit/assets/public/                 ${BOBA_DIR}/app_root/public/
-COPY --chown=${BOBA_UID}:${BOBA_GID} --from=chainlit-page-build /src/assets/public/page.js                  ${BOBA_DIR}/app_root/public/page.js
+COPY --chown=${BOBA_UID}:${BOBA_GID} packages/apps/boba-aid/assets/.chainlit/config.toml   ${BOBA_DIR}/app_root/.chainlit/
+COPY --chown=${BOBA_UID}:${BOBA_GID} packages/apps/boba-aid/assets/.chainlit/translations/ ${BOBA_DIR}/app_root/.chainlit/translations/
+COPY --chown=${BOBA_UID}:${BOBA_GID} packages/apps/boba-aid/assets/chainlit.md             ${BOBA_DIR}/app_root/
+COPY --chown=${BOBA_UID}:${BOBA_GID} packages/apps/boba-aid/assets/public/                 ${BOBA_DIR}/app_root/public/
+COPY --chown=${BOBA_UID}:${BOBA_GID} --from=aid-page-build /src/assets/public/page.js                  ${BOBA_DIR}/app_root/public/page.js
 COPY --chown=${BOBA_UID}:${BOBA_GID} --from=chainlit-ui-build /out/ui/                            ${BOBA_DIR}/app_root/ui/
 COPY --chown=${BOBA_UID}:${BOBA_GID} build/src/webassets/                                ${BOBA_DIR}/app_root/public/vendor/
 
-COPY packages/apps/boba-chainlit/conf/  ${BOBA_DIR}/conf/
+COPY packages/apps/boba-aid/conf/  ${BOBA_DIR}/conf/
 
 # файлы уже принадлежат пользователю, каталогам владелец ставится без рекурсии
 RUN chown ${BOBA_UID}:${BOBA_GID} ${BOBA_DIR}/app_root \
@@ -466,7 +466,7 @@ RUN chown ${BOBA_UID}:${BOBA_GID} ${BOBA_DIR}/app_root \
 
 EXPOSE 8501
 USER ${BOBA_UID}:${BOBA_GID}
-CMD ["-m", "boba.chainlit.main", "--config", "/app/boba/conf/config.toml", "--site", "/app/boba/conf/site.toml"]
+CMD ["-m", "boba.aid.main", "--config", "/app/boba/conf/config.toml", "--site", "/app/boba/conf/site.toml"]
 
 
 # --- boba-mcp: MCP-сервер с инструментами boba -------------------------------------

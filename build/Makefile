@@ -1,4 +1,4 @@
-# Единая сборка boba: приложения chainlit и mcp и образы корней плагинов. Из сети берутся две вещи: артефакты цели fetch (github,
+# Единая сборка boba: приложения aid и mcp и образы корней плагинов. Из сети берутся две вещи: артефакты цели fetch (github,
 # huggingface, kernel.org — в src/) и пакеты pypi/npm при сборке — из реестров образов
 # (в закрытом контуре nexus: conf/pip.conf, conf/uv.toml, npmrc образа nodejs).
 # Остальные цели работают из src/ и локальных образов.
@@ -29,20 +29,20 @@ RELEASE_DIR     := $(SRC_DIR)/release
 
 # приложения сборки; цели build, test, dev и release работают по одному приложению
 # (APP=<имя> либо <цель>-<имя>), без APP — по всем
-APPS            := chainlit mcp
+APPS            := aid mcp
 APP             ?=
 
 # чат инструментов не исполняет: песочницы, cgroup и моделей плагинов у него нет
-PACKAGES_chainlit = boba-chainlit boba-llm-http boba-llm-onnx[generation]
-IMPORTS_chainlit := boba.chainlit onnxruntime_genai
-MODULE_chainlit  := boba.chainlit.main
-STAGE_chainlit   := runtime-chainlit
-HEALTH_chainlit  := /
-PORT_chainlit    := 8501
-PREFIX_chainlit  := /boba
-SANDBOX_chainlit :=
-MODELS_chainlit  := onnx-genai
-PARTS_chainlit   := app_root/public app_root/public/page.js app_root/public/vendor \
+PACKAGES_aid      = boba-aid boba-llm-http boba-llm-onnx[generation]
+IMPORTS_aid      := boba.aid onnxruntime_genai
+MODULE_aid       := boba.aid.main
+STAGE_aid        := runtime-aid
+HEALTH_aid       := /
+PORT_aid         := 8501
+PREFIX_aid       := /boba
+SANDBOX_aid      :=
+MODELS_aid       := onnx-genai
+PARTS_aid        := app_root/public app_root/public/page.js app_root/public/vendor \
                     app_root/ui/index.html app_root/ui/index.js
 
 # boba-mcp — MCP-сервер с инструментами boba; фронта у него нет
@@ -60,7 +60,7 @@ MODELS_mcp       := fastembed rapidocr
 PARTS_mcp        :=
 
 # лимиты пользовательского юнита установки без Docker: те же, что у контейнера compose
-UNIT_LIMITS_chainlit := 4G 400% 512
+UNIT_LIMITS_aid      := 4G 400% 512
 UNIT_LIMITS_mcp      := 16G 800% 2048
 
 APP_PACKAGES      = $(PACKAGES_$(APP))
@@ -201,7 +201,7 @@ ORACLEDB_DIR     := $(DEPS_DIR)/oracledb
 ORACLEDB_WHEEL   := $(ORACLEDB_DIR)/oracledb-$(ORACLEDB_VERSION)+$(ORACLEDB_LOCAL)-cp$(subst .,,$(PYTHON_VERSION))-cp$(subst .,,$(PYTHON_VERSION))-linux_x86_64.whl
 
 # исходники chainlit: UI собирается из тега, версия — в UPSTREAM рядом с overlay
-WEB_DIR         := $(SRC_DIR)/packages/apps/boba-chainlit
+WEB_DIR         := $(SRC_DIR)/packages/apps/boba-aid
 UI_DIR          := $(WEB_DIR)/web/chainlit-ui
 CHAINLIT_VERSION := $(shell cat $(UI_DIR)/UPSTREAM)
 CHAINLIT_SRC_URL ?= https://codeload.github.com/Chainlit/chainlit/tar.gz/refs/tags/$(CHAINLIT_VERSION)
@@ -398,7 +398,7 @@ define HELP
   plugin-rootfs-all     rootfs.ext4 всех плагинов с entry points boba.tools
   boba-bin              агент одним файлом (Nuitka в образе base) -> $(RELEASE_DIR)/$(VERSION)/bin/boba;
                         BIN_ONNX= — без рантайма onnxruntime-genai
-  web-chainlit          page.js и UI chainlit (фронт + copilot); chainlit-ui — UI заново
+  web-aid               page.js и UI chainlit (фронт + copilot); chainlit-ui — UI заново
 
 По приложению: APP=<$(APPS)> либо <цель>-<приложение>; без APP — все приложения
   build                 образ boba-<приложение>:$(BOBA_TAG); в образ mcp уезжают образы корней
@@ -639,10 +639,10 @@ boba-bin: version-check
 	"$(BIN_OUT)/boba" --help > /dev/null
 	echo ">>> $(BIN_OUT)/boba ($$(du -h "$(BIN_OUT)/boba" | cut -f1))"
 
-.PHONY: web web-chainlit web-mcp
-web: web-chainlit
+.PHONY: web web-aid web-mcp
+web: web-aid
 
-web-chainlit: $(PAGE_JS) $(UI_DIST)/index.html
+web-aid: $(PAGE_JS) $(UI_DIST)/index.html
 
 # у boba-mcp фронта нет: цель существует, чтобы dev APP=mcp шёл общим путём
 web-mcp:

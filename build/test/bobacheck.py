@@ -30,7 +30,7 @@ parser.add_argument(
     default="/app/packages",
     help="каталог с исходниками boba (если нет --names)",
 )
-parser.add_argument("--app", required=True, help="приложение: chainlit или mcp")
+parser.add_argument("--app", required=True, help="приложение: aid или mcp")
 parser.add_argument(
     "--sandbox",
     action="store_true",
@@ -82,7 +82,7 @@ import glob
 import importlib
 
 THIRD_PARTY = {
-    "chainlit": ["pydantic", "fastapi", "chainlit"],
+    "aid": ["pydantic", "fastapi", "chainlit"],
     "mcp": ["pydantic", "fastmcp"],
 }
 for m in THIRD_PARTY[APP]:
@@ -200,7 +200,7 @@ def t_model_loads_offline():
         raise RuntimeError(f"{name}: токенайзер не кодирует")
 
 
-if APP == "chainlit":
+if APP == "aid":
     print("== local onnx-genai models ==")
     check("models present with genai_config.json", t_models_present)
     check("smallest model loads offline", t_model_loads_offline)

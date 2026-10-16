@@ -8,7 +8,7 @@
 #   схема чата ([data_layer].schema, она же [connections].db_schema чата):
 #     users, threads — boba-runtime UsersTable и ThreadsTable;
 #     feedbacks, elements — boba-runtime FeedbacksTable и ElementsTable;
-#     agent_user_settings, agent_chat_settings — boba-chainlit AgentSettingsTable;
+#     agent_user_settings, agent_chat_settings — boba-aid AgentSettingsTable;
 #     connections, roles, grants — boba-connection-broker ConnectionStore;
 #   схема истории агента ([agent.history].schema): history_records —
 #     boba-history-postgres PostgresHistoryStore (есть, если агент уже работал);
