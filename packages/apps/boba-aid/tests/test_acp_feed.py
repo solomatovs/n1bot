@@ -267,7 +267,9 @@ def _result(artifact: ToolResultBase, journaled: Sequence[str] = ()) -> dict[str
     links = McpContent(RUN)
     for node in journaled:
         address = JournalRead(run=RUN, node=node, channel=ToolChannel.STDOUT)
-        links.link(uris.uri(address), ToolChannel.STDOUT.value, ContentMime.PLAIN)
+        links.link(
+            uris.uri(address), ToolChannel.STDOUT.value, ContentMime.PLAIN, False
+        )
 
     content = [*wire.content, *links.blocks()]
 
