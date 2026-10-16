@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import socket
 import subprocess
@@ -21,7 +22,6 @@ import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
-from urllib.parse import urljoin
 
 import pytest
 from chat_ui import BOOT_TIMEOUT_SEC, OpenChat
@@ -43,6 +43,9 @@ pytestmark = [pytest.mark.ui, pytest.mark.xdist_group("mcp-ui")]
 CHAT_LOGIN = "admin"
 CHAT_ROLE = "ADM"
 """Логин пользователя стенда чата: под ним открыт чат в браузере."""
+
+RUNNING = "○"
+"""Кружок идущего вызова в названии шага."""
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
 """Картинка, которую отдаёт инструмент picture стандартного сервера."""
@@ -152,18 +155,26 @@ def mcp_stand(  # noqa: PLR0913 — стенд собирается из фик�
 
 
 def _ask(chat: ChatPage, tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    """Ход с вызовом инструмента; отдаёт его шаг из журнала сокета."""
+    """Ход с вызовом инструмента; отдаёт его законченный шаг из журнала
+    сокета. Конец хода ждётся по самому шагу: пара task_start/task_end от
+    старта чата может прийти уже после вопроса."""
     request = json.dumps({"name": tool, "arguments": arguments})
     chat.ask(f"{ScenarioName.CALL.value} {request}")
     chat.await_idle(timeout_sec=120.0)
 
-    step = chat.log.last_step(StepKind.TOOL.value)
-    if step is None:
-        raise AssertionError(
-            f"no tool step of {tool} in the feed\n{chat.log.describe()}"
-        )
+    deadline = time.monotonic() + 120.0
+    while time.monotonic() < deadline:
+        chat.page.wait_for_timeout(100)
+        step = chat.log.last_step(StepKind.TOOL.value)
+        if step is None:
+            continue
 
-    return step
+        if str(step.get(StepField.NAME.value)).startswith(RUNNING):
+            continue
+
+        return step
+
+    raise AssertionError(f"no finished tool step of {tool}\n{chat.log.describe()}")
 
 
 class TestMcpToolInTheFeed:
@@ -183,7 +194,7 @@ class TestMcpToolInTheFeed:
         self, mcp_stand: StandProcess, open_chat: OpenChat
     ) -> None:
         """Картинка чужого сервера рисуется по своему типу: элемент <img> у
-        шага, а ссылка элемента отдаёт те же байты."""
+        шага с байтами блока в адресе data:."""
         chat = open_chat(mcp_stand, "")
 
         step = _ask(chat, "mcp__standard__picture", {})
@@ -205,11 +216,10 @@ class TestMcpToolInTheFeed:
             raise AssertionError(f"the image belongs to the tool step: {images[0]}")
 
         url = str(images[0].get("url"))
-        reply = chat.page.request.get(urljoin(chat.base_url, url))
-        if reply.status != 200 or reply.body() != PNG:
-            raise AssertionError(
-                f"the image link serves the bytes of the tool: {reply.status} {url}"
-            )
+        image = chat.expand_last_tool().locator(f'img[src="{url}"]').first
+        image.wait_for(state="attached", timeout=30_000)
+        if url != f"data:image/png;base64,{base64.b64encode(PNG).decode('ascii')}":
+            raise AssertionError(f"the image carries the bytes of the tool: {url}")
 
     def test_blocks_of_a_tool_are_drawn_by_their_type(
         self, mcp_stand: StandProcess, open_chat: OpenChat

@@ -275,9 +275,7 @@ class ResultWire:
         if outcome.errored:
             status = CallStatus.ERROR
 
-        failed = outcome.errored
-        if outcome.failed():
-            failed = True
+        failed = not outcome.ok()
 
         call = CallWire(id=outcome.key, status=status)
         disclosed = outcome.artifact.disclosed()

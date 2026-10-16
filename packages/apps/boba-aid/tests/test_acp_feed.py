@@ -1392,7 +1392,7 @@ class TestBlockDrawings:
 
         await self._drawn(runtime_stand, reply)
 
-        assert self._output(recorded) == ""
+        assert self._output(recorded) == "_(image/png)_\n\n_(audio/wav)_"
         step_id = _id(CALL, StepRole.TOOL)
         shown: list[tuple[str, str, str]] = []
         for element in recorded.elements:
