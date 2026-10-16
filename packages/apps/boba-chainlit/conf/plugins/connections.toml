@@ -1,6 +1,6 @@
 enable     = true
 connection = "${postgres}"
-db_schema  = "chainlit"
+db_schema  = "aid"
 tools      = ["connection_list", "connection_search"]
 
 [sandbox]
