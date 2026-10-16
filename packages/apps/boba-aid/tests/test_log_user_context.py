@@ -8,7 +8,7 @@ from typing import Any, ClassVar
 from uuid import UUID
 
 import pytest
-from chainlit_stand import ChatSessionStand
+from aid_stand import ChatSessionStand
 
 from boba.aid.infra.log_context import (
     RequestUserContext,

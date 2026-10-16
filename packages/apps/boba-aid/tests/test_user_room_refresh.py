@@ -8,7 +8,7 @@ from typing import Any
 from uuid import UUID
 
 import pytest
-from chainlit_stand import StandTokens
+from aid_stand import StandTokens
 
 from boba.aid.infra.session import ChainlitSession, ChainlitSessions
 from boba.aid.infra.thread_room import ChatRoomSurface, UserRoom

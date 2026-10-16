@@ -22,9 +22,9 @@ from uuid import UUID
 
 import krb5
 import pytest
+from aid_stand import ChatSessionStand, ServiceTools, SsoStand, ToolService
 from chainlit.user import PersistedUser
 from chainlit.user import User as ChainlitUser
-from chainlit_stand import ChatSessionStand, ServiceTools, SsoStand, ToolService
 from gssapi import Credentials, Name, NameType, SecurityContext
 from psycopg import sql
 

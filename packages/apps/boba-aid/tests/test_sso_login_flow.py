@@ -16,8 +16,8 @@ from typing import Any
 import chainlit as cl
 import krb5
 import pytest
+from aid_stand import StandTokens
 from chainlit.auth.jwt import create_jwt
-from chainlit_stand import StandTokens
 from gssapi import Credentials, Name, NameType, SecurityContext
 from starlette.requests import Request
 

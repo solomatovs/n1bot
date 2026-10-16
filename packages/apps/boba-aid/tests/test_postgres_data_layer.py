@@ -4,12 +4,12 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
+from aid_stand import NoTabs, Seed
 from chainlit.step import StepDict
 from chainlit.types import Feedback as FeedbackPayload
 from chainlit.types import Pagination, ThreadFilter
 from chainlit.user import PersistedUser
 from chainlit.user import User as ChainlitUser
-from chainlit_stand import NoTabs, Seed
 
 from boba.aid.data.data_layer import PostgresDataLayer
 from boba.aid.data.remote_storage import FileOwners, RemoteStorageClient

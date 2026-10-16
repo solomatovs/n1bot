@@ -8,7 +8,7 @@ from typing import Any
 from uuid import UUID
 
 import pytest
-from chainlit_stand import ChatSessionStand, put_bytes
+from aid_stand import ChatSessionStand, put_bytes
 
 from boba.aid.canvas.diagram import DiagramFiles, MermaidViewer
 from boba.aid.data.data_layer import AttachmentDataLayer

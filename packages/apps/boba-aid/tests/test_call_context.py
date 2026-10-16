@@ -7,7 +7,7 @@ from uuid import UUID
 
 import jwt
 import pytest
-from chainlit_stand import (
+from aid_stand import (
     ChatSessionStand,
     StandTokens,
 )

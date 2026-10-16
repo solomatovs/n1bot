@@ -11,7 +11,7 @@ import copy
 from collections.abc import AsyncIterator
 
 import pytest
-from chainlit_stand import StandTokens
+from aid_stand import StandTokens
 from omegaconf import DictConfig, OmegaConf
 
 from boba.aid.data.data_layer import PostgresDataLayer

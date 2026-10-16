@@ -9,7 +9,7 @@ from uuid import UUID
 
 import jwt
 import pytest
-from chainlit_stand import StandTokens
+from aid_stand import StandTokens
 from fastapi import Request
 
 from boba.aid.auth.refresh import PageUrls, SessionRefresh
