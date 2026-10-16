@@ -63,10 +63,15 @@ class FakePackage:
 
 
 class FakeTree:
-    """Дерево packages/<слой>/<пакет> с pyproject и одним модулем на пакет."""
+    """Дерево packages/<слой>/<пакет> с pyproject и одним модулем на пакет;
+    корневой pyproject объявляет их членами uv workspace."""
 
     def __init__(self, root: Path) -> None:
-        self._root = root
+        self._root = root / "packages"
+        self._root.mkdir()
+        (root / "pyproject.toml").write_text(
+            '[tool.uv.workspace]\nmembers = ["packages/*/*"]\n'
+        )
 
     def add(self, package: FakePackage) -> None:
         pkg = self._root / package.layer / package.name

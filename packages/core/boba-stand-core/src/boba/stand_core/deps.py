@@ -1,7 +1,9 @@
-"""Сверка объявленных зависимостей пакетов репозитория с их импортами и
+"""Сверка объявленных зависимостей членов uv workspace с их импортами и
 правилами графа.
 
-Источник правды — pyproject каждого пакета и AST его модулей: src сверяется с
+Пакеты берутся из [tool.uv.workspace] корневого pyproject: замороженные
+каталоги вне workspace в сверку не попадают. Источник правды — pyproject
+каждого пакета и AST его модулей: src сверяется с
 dependencies и extras кроме dev, tests — с dependencies и экстрой dev. К tests
 пакета относятся и conftest.py каталогов над ним до корня packages: pytest
 подключает их к его тестам, и без их импортов набор не стартует. Дистрибутив,
@@ -32,7 +34,7 @@ from importlib import metadata
 from pathlib import Path
 from typing import ClassVar
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 __all__ = ["DepsAudit", "DepsAuditError", "Finding", "PackageProject"]
 
@@ -293,12 +295,6 @@ class PackageProject(BaseModel):
                 continue
             yield from requirements
 
-    def all_requirements(self) -> Iterator[Requirement]:
-        yield from self.dependencies
-
-        for requirements in self.extras.values():
-            yield from requirements
-
     def extra_of_module(self, module: str) -> str | None:
         """Extra, за которым живёт модуль пакета или его родитель; None — ни за
         каким."""
@@ -406,9 +402,6 @@ class ModuleOwners:
 
     def is_plugin_of_pytest(self, dist: str) -> bool:
         return dist in self._plugins
-
-    def project_of(self, dist: str) -> PackageProject | None:
-        return self._projects.get(dist)
 
     def gated_of(self, modules: Iterable[str]) -> Iterator[tuple[str, str]]:
         """Пары (дистрибутив, extra) для импортов boba.*, живущих за extra владельца."""
@@ -576,10 +569,36 @@ class Finding(BaseModel):
         return line.rstrip()
 
 
-class DepsAudit:
-    """Проход по всем пакетам репозитория: src против pyproject, tests против dev."""
+class UvWorkspace(BaseModel):
+    """Секция [tool.uv.workspace] корневого pyproject: глобы членов и исключений.
 
-    GLOBS: ClassVar[tuple[str, ...]] = ("*/*/pyproject.toml", "*/*/*/pyproject.toml")
+    DepsAudit разбирает её на входе и берёт из roots каталоги пакетов, поэтому
+    сверка видит ровно то, что ставит uv.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="ignore")
+
+    members: Sequence[str]
+    exclude: Sequence[str] = ()
+
+    def roots(self, root: Path) -> Iterator[Path]:
+        """Каталоги членов с pyproject.toml: глоб члена может задеть и файл."""
+        excluded: set[Path] = set()
+        for pattern in self.exclude:
+            excluded.update(root.glob(pattern))
+
+        for pattern in self.members:
+            for directory in sorted(root.glob(pattern)):
+                if directory in excluded:
+                    continue
+                if not (directory / PackageProject.FILE).is_file():
+                    continue
+                yield directory
+
+
+class DepsAudit:
+    """Проход по членам uv workspace: src против pyproject, tests против dev."""
+
     SHARED_CONFTEST: ClassVar[str] = "conftest.py"
 
     def __init__(self, packages_root: Path) -> None:
@@ -594,10 +613,31 @@ class DepsAudit:
         self._layers = {p.name: Layer.of(packages_root, p.root) for p in self._projects}
 
     def _load_projects(self) -> list[PackageProject]:
+        root = self._root.parent
+        pyproject = root / PackageProject.FILE
+        try:
+            with pyproject.open("rb") as handle:
+                document = tomllib.load(handle)
+            section = document["tool"]["uv"]["workspace"]
+        except (OSError, tomllib.TOMLDecodeError, KeyError) as exc:
+            msg = (
+                f"reading [tool.uv.workspace] of {pyproject}: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            raise DepsAuditError(msg) from exc
+
+        try:
+            workspace = UvWorkspace.model_validate(section)
+        except ValidationError as exc:
+            msg = (
+                f"{pyproject}: [tool.uv.workspace] expects members and exclude "
+                f"as lists of globs: {exc}"
+            )
+            raise DepsAuditError(msg) from exc
+
         projects: list[PackageProject] = []
-        for pattern in self.GLOBS:
-            for pyproject in sorted(self._root.glob(pattern)):
-                projects.append(PackageProject.load(pyproject))
+        for directory in workspace.roots(root):
+            projects.append(PackageProject.load(directory / PackageProject.FILE))
 
         return projects
 
