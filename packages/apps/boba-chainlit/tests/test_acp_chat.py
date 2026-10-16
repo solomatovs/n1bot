@@ -59,7 +59,6 @@ BOOT_TIMEOUT_SEC = 180.0
 TURN_TIMEOUT_SEC = 120.0
 TOKEN_DELAY_SEC = 0.03
 PROFILE = "general"
-HISTORY_SCHEMA = "agent_history"
 HELD_TEXT = "held by another process"
 GENERATION = "acp-chat-stand"
 MESSAGING = "postgres"
@@ -608,11 +607,14 @@ class AgentProcesses:
 
 
 class ChatRows:
-    """Строки базы стенда: metadata треда."""
+    """Строки базы стенда: metadata треда и записи истории агента."""
 
-    def __init__(self, stand_data_layer: DataLayerConfig, database: str) -> None:
+    def __init__(
+        self, stand_data_layer: DataLayerConfig, database: str, history_schema: str
+    ) -> None:
         self._postgres = TestDatabase.config_of(stand_data_layer.postgres, database)
         self._schema = stand_data_layer.db_schema
+        self._history_schema = history_schema
 
     async def thread_meta(self, thread_id: str) -> dict[str, Any] | None:
         pool = AsyncPostgresPool(self._postgres)
@@ -635,7 +637,7 @@ class ChatRows:
         return row[0]
 
     async def history_rows(self, session_id: str) -> int:
-        """Записи сессии в истории агента (схема agent_history базы стенда)."""
+        """Записи сессии в истории агента (схема [agent.history] стенда)."""
         pool = AsyncPostgresPool(self._postgres)
         await pool.open()
         try:
@@ -643,7 +645,7 @@ class ChatRows:
                 cursor = await conn.execute(
                     sql.SQL(
                         "select count(*) from {}.history_records where session_id = %s"
-                    ).format(sql.Identifier(HISTORY_SCHEMA)),
+                    ).format(sql.Identifier(self._history_schema)),
                     (session_id,),
                 )
                 row = await cursor.fetchone()
@@ -691,8 +693,14 @@ class ChatRows:
 
 
 @pytest.fixture
-def rows(stand_data_layer: DataLayerConfig, stand_database: str) -> ChatRows:
-    return ChatRows(stand_data_layer, stand_database)
+def rows(
+    stand_data_layer: DataLayerConfig,
+    stand_database: str,
+    app: StandProcess[StandConfig],
+) -> ChatRows:
+    history_schema = app.config.agent_history["schema"]
+
+    return ChatRows(stand_data_layer, stand_database, history_schema)
 
 
 class TestConversation:

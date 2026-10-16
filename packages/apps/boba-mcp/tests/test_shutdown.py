@@ -23,9 +23,11 @@ import httpx
 import pytest
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
-from omegaconf import DictConfig, OmegaConf
 
 from boba.auth.proxy import ProxyAssertions
+from boba.stand.database import TestDatabase
+from boba.stand.site import ServiceRuntime
+from boba.stand.ui.database import run_blocking
 from boba.stand.ui.stand import ServiceStand, StandProcess, free_port
 
 pytestmark = pytest.mark.integration
@@ -87,15 +89,9 @@ class RunningCall:
 
 @pytest.fixture
 def service(
-    tmp_path: Path, service_raw_config: DictConfig
+    tmp_path: Path, service_runtime: ServiceRuntime
 ) -> Iterator[StandProcess[ServiceStand]]:
-    db_name = OmegaConf.select(service_raw_config, "postgres.dbname")
-    if not isinstance(db_name, str):
-        msg = (
-            "shutdown stand: section [postgres] of the service config expects "
-            f"dbname as a string, got {db_name!r}"
-        )
-        raise TypeError(msg)
+    db_name = run_blocking(TestDatabase.ensure(service_runtime.data_layer.postgres))
 
     config = ServiceStand(
         workdir=tmp_path, app_port=free_port(), db_name=db_name, sandbox=True

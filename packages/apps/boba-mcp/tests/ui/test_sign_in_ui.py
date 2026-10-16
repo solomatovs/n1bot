@@ -32,9 +32,11 @@ from fastmcp import Client
 from fastmcp.client.auth import OAuth
 from fastmcp.client.transports import StreamableHttpTransport
 from key_value.aio.stores.memory import MemoryStore
-from omegaconf import DictConfig, OmegaConf
 from playwright.sync_api import Browser, Page, expect
 
+from boba.stand.database import TestDatabase
+from boba.stand.site import ServiceRuntime
+from boba.stand.ui.database import run_blocking
 from boba.stand.ui.stand import (
     REPO_ROOT,
     ServiceStand,
@@ -214,15 +216,9 @@ class LoginPage:
 
 
 def _service(
-    workdir: Path, raw: DictConfig, generation: str, ttl_sec: int
+    workdir: Path, runtime: ServiceRuntime, generation: str, ttl_sec: int
 ) -> Iterator[StandProcess[ServiceStand]]:
-    db_name = OmegaConf.select(raw, "postgres.dbname")
-    if not isinstance(db_name, str):
-        msg = (
-            "sign-in stand: section [postgres] of the service config expects "
-            f"dbname as a string, got {db_name!r}"
-        )
-        raise TypeError(msg)
+    db_name = run_blocking(TestDatabase.ensure(runtime.data_layer.postgres))
 
     config = ServiceStand(
         workdir=workdir,
@@ -242,20 +238,20 @@ def _service(
 
 @pytest.fixture(scope="module")
 def service(
-    tmp_path_factory: pytest.TempPathFactory, service_raw_config: DictConfig
+    tmp_path_factory: pytest.TempPathFactory, service_runtime: ServiceRuntime
 ) -> Iterator[StandProcess[ServiceStand]]:
     """Сервис со случайным поколением сессий: рестарт снимает все входы."""
-    yield from _service(tmp_path_factory.mktemp("sign-in"), service_raw_config, "", 300)
+    yield from _service(tmp_path_factory.mktemp("sign-in"), service_runtime, "", 300)
 
 
 @pytest.fixture(scope="module")
 def lasting(
-    tmp_path_factory: pytest.TempPathFactory, service_raw_config: DictConfig
+    tmp_path_factory: pytest.TempPathFactory, service_runtime: ServiceRuntime
 ) -> Iterator[StandProcess[ServiceStand]]:
     """Сервис с заданным поколением сессий и коротким токеном доступа: вход
     переживает рестарт, а токен приходится продлевать."""
     yield from _service(
-        tmp_path_factory.mktemp("sign-in-lasting"), service_raw_config, "stand", 4
+        tmp_path_factory.mktemp("sign-in-lasting"), service_runtime, "stand", 4
     )
 
 
