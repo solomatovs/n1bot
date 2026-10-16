@@ -1571,6 +1571,6 @@ UNUSABLE.
   его отсутствие (ClickHouse), `replace partition` и `exchange partition`
   из staging.
 
-Запускаются из `compose/chainlit` с окружением из `launch.json` и маркером
+Запускаются из `compose/aid` с окружением из `launch.json` и маркером
 `integration`. Стенды общие: тесты создают свои схемы и базы и сносят их по
 завершении, пробы вне тестов должны делать то же самое.
