@@ -9,7 +9,6 @@ import time
 from dataclasses import dataclass
 from email.message import Message
 from enum import StrEnum
-from typing import ClassVar
 
 __all__ = [
     "ContentDisposition",
@@ -30,15 +29,17 @@ class FileHeader(StrEnum):
     RANGE = "Range"
 
 
-class ContentDisposition:
-    """Значение Content-Disposition: имя по RFC 2231, не-ASCII — через filename*."""
+class ContentDisposition(StrEnum):
+    """Как браузеру обойтись с отданным файлом: показать сам (INLINE) или
+    скачать (ATTACHMENT). header — значение Content-Disposition с именем по
+    RFC 2231, не-ASCII — через filename*."""
 
-    INLINE: ClassVar[str] = "inline"
+    INLINE = "inline"
+    ATTACHMENT = "attachment"
 
-    @classmethod
-    def inline(cls, name: str) -> str:
+    def header(self, name: str) -> str:
         message = Message()
-        message.add_header(FileHeader.CONTENT_DISPOSITION, cls.INLINE, filename=name)
+        message.add_header(FileHeader.CONTENT_DISPOSITION, self.value, filename=name)
 
         return str(message[FileHeader.CONTENT_DISPOSITION])
 

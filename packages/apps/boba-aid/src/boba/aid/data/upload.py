@@ -37,6 +37,7 @@ from boba.aid.canvas.remote import RemoteJournals
 from boba.aid.domain.fields import FileField
 from boba.aid.domain.keys import AppPrefix
 from boba.aid.infra.session import ChainlitSession, session_source_ref
+from boba.canvas.canvas import CanvasRegistry
 from boba.canvas.keys import ObjectKey, ThreadDir
 from boba.canvas.storage import (
     StorageError,
@@ -360,16 +361,22 @@ class UploadRoute:
             raise HTTPException(status_code=404, detail=msg)
 
         name = str(record[FileField.NAME])
+        mime = str(record[FileField.TYPE])
         logger.info(
             "upload: serving %s from storage (%s)",
             name,
             record[SessionFiles.OBJECT_KEY],
         )
+
+        disposition = ContentDisposition.ATTACHMENT
+        if viewer := CanvasRegistry.viewer_for(mime):
+            disposition = viewer.kind.disposition
+
         return await self._files.respond(
             str(record[SessionFiles.OBJECT_KEY]),
-            mime=str(record[FileField.TYPE]),
+            mime=mime,
             range_header=request.headers.get(FileHeader.RANGE, ""),
-            content_disposition=ContentDisposition.inline(name),
+            content_disposition=disposition.header(name),
         )
 
     async def _store(self, key: ObjectKey, part: MultipartFile) -> int:
@@ -537,11 +544,17 @@ class CanvasServing:
             )
             raise HTTPException(status_code=404, detail=msg) from e
 
+        mime = ContentMime.of_name(key.name)
+
+        disposition = ContentDisposition.ATTACHMENT
+        if viewer := CanvasRegistry.viewer_for(mime):
+            disposition = viewer.kind.disposition
+
         return await self._files.respond(
             key.render(),
-            mime=ContentMime.of_name(key.name),
+            mime=mime,
             range_header=request.headers.get(FileHeader.RANGE, ""),
-            content_disposition="",
+            content_disposition=disposition.header(key.name),
         )
 
 

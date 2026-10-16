@@ -37,7 +37,7 @@ from starlette.responses import JSONResponse, Response
 from boba.canvas.journal import StreamJournalError, StreamKey, StreamSlice
 from boba.canvas.keys import ObjectKey, ThreadDir, WorkspaceMount
 from boba.canvas.storage import StorageFullError, StorageNotFoundError
-from boba.canvas.transfer import FileHeader, UploadPolicy
+from boba.canvas.transfer import ContentDisposition, FileHeader, UploadPolicy
 from boba.identity.context import Scope, Subject
 from boba.mcp_server.auth import TokenSubjects
 from boba.runtime.served import StreamedFile
@@ -288,7 +288,8 @@ class JournalRoutes:
             )
             raise HTTPException(status_code=404, detail=msg)
 
-        disposition = f'attachment; filename="{key.call_id}.{channel}.log"'
+        name = f"{key.call_id}.{channel.value}.log"
+        disposition = ContentDisposition.ATTACHMENT.header(name)
 
         return await self._files_for(root).respond(
             rel_log,
