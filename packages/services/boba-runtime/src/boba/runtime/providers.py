@@ -20,7 +20,7 @@ from boba.auth.credentials import KerberosCredentialSource
 from boba.auth.sso import SpnegoGate
 from boba.chat.profiles import ChatProfiles, RolesSection
 from boba.config import bind
-from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
+from boba.connection_broker.store import ConnectionStore
 from boba.connections.manifest import ConnectionTypes
 from boba.connections.sealed import SealKeys
 from boba.connections.secrets import SecretCipher
@@ -415,7 +415,7 @@ async def connection_store(
     pool: Annotated[AsyncPostgresPool, Depends(postgres_pool)],
 ) -> ConnectionStore:
     """Хранилище соединений; роли из [roles] попадают в таблицу roles на старте."""
-    cipher = SecretCipher(bind(raw, "connections", ConnectionsConfig).key_bytes())
+    cipher = SecretCipher(config.keys.encryption.get_secret_value())
     store = ConnectionStore(pool, config.db_schema, cipher, types)
     await store.setup()
 

@@ -21,7 +21,7 @@ from psycopg.errors import InsufficientPrivilege
 from boba.catalog_service import CatalogConfig, CatalogTable
 from boba.catalog_service import ConnectionTable as SnapshotTable
 from boba.config import bind
-from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
+from boba.connection_broker.store import ConnectionStore
 from boba.connections.manifest import ConnectionTypes
 from boba.connections.secrets import SecretCipher
 from boba.connections.stored import (
@@ -154,8 +154,7 @@ class StandDatabase:
         self._postgres = postgres.model_copy(update={"dbname": name, "pool": pool})
         runtime = bind(self._built, path=RuntimeConfig.SECTION, model=RuntimeConfig)
         self._schema = runtime.db_schema
-        connections = bind(self._built, path="connections", model=ConnectionsConfig)
-        self._cipher = SecretCipher(connections.key_bytes())
+        self._cipher = SecretCipher(runtime.keys.encryption.get_secret_value())
         self._types = ConnectionTypes.discover()
 
     @property

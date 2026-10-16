@@ -10,8 +10,6 @@ from datetime import timedelta
 from importlib.metadata import version
 from typing import Annotated
 
-from omegaconf import DictConfig
-
 from boba.auth import JwtTokens
 from boba.chainlit.agent.chat import (
     AgentLauncher,
@@ -49,8 +47,6 @@ from boba.chainlit.infra.session import (
 )
 from boba.chainlit.rendering.acp_view import ToolMedia
 from boba.chat.profiles import ChatProfiles, SelectedProfile
-from boba.config import bind
-from boba.connection_broker.store import ConnectionsConfig
 from boba.connection_broker.user_connections import ArmedConnections
 from boba.connections.secrets import SecretCipher
 from boba.db.postgres import AsyncPostgresPool
@@ -201,12 +197,11 @@ def agent_config(
 
 async def agent_settings_table(
     app_config: Annotated[AppConfig, Depends(get_app_config)],
-    raw: Annotated[DictConfig, Depends(runtime.get_raw_config)],
     pool: Annotated[AsyncPostgresPool, Depends(runtime.postgres_pool)],
 ) -> AgentSettingsTable:
     """Слои настроек агента в схеме чата; секреты строк — под ключом
-    [connections].encryption_key."""
-    cipher = SecretCipher(bind(raw, "connections", ConnectionsConfig).key_bytes())
+    [keys].encryption."""
+    cipher = SecretCipher(app_config.keys.encryption.get_secret_value())
     table = AgentSettingsTable(app_config.postgres, app_config.db_schema, cipher, pool)
     await table.setup()
 
@@ -238,7 +233,7 @@ def chat_callers(
 
 
 def call_sealing(
-    raw: Annotated[DictConfig, Depends(runtime.get_raw_config)],
+    config: Annotated[AgentConfig, Depends(agent_config)],
     callers: Annotated[ChatCallers, Depends(chat_callers)],
     contexts: Annotated[CallContexts, Depends(runtime.call_contexts)],
 ) -> CallSealing:
@@ -247,7 +242,7 @@ def call_sealing(
     connections = ArmedConnections(
         runtime.connection_store_ref, runtime.credential_source_ref, contexts
     )
-    ttl = timedelta(seconds=bind(raw, "connections", ConnectionsConfig).seal_ttl_sec)
+    ttl = timedelta(seconds=config.seal_ttl_sec)
 
     return CallSealing(callers, connections, contexts, ttl)
 

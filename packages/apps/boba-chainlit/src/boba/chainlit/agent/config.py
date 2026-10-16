@@ -238,4 +238,11 @@ class AgentConfig(BaseModel):
         ),
     )
     chat_mcp: ChatMcpConfig
+    seal_ttl_sec: int = Field(
+        gt=0,
+        description=(
+            "Срок годности соединения, запечатанного ретранслятором для сервера "
+            "инструментов, в секундах: сервер отвергает значение старше срока."
+        ),
+    )
     limits: ModelLimitsConfig

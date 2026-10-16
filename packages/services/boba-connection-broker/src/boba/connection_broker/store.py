@@ -14,8 +14,6 @@ SecretCryptoError — секрет строки не расшифровался 
 
 from __future__ import annotations
 
-import base64
-import binascii
 import logging
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from typing import Any, ClassVar
@@ -25,9 +23,6 @@ from psycopg.types.json import Jsonb
 from pydantic import (
     BaseModel,
     ConfigDict,
-    Field,
-    SecretStr,
-    field_validator,
 )
 
 from boba.access.grants import ConnectionFilter, SubjectGrantsQuery, SubjectRowColumn
@@ -62,7 +57,6 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "CatalogEntry",
     "ConnectionStore",
-    "ConnectionsConfig",
 ]
 
 
@@ -84,67 +78,6 @@ class CatalogEntry(BaseModel):
     url: str
     host: str = ""
     description: str = ""
-
-
-class ConnectionsConfig(BaseModel):
-    """Секция [connections]: чем шифруются значения и срок запечатывания."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    KEY_BYTES: ClassVar[int] = 32
-
-    encryption_key: SecretStr = Field(
-        default=SecretStr(""),
-        description=(
-            "Ключ шифрования значений: 32 байта в base64. Сгенерировать — "
-            'python -c "import base64,secrets;'
-            'print(base64.b64encode(secrets.token_bytes(32)).decode())"'
-        ),
-    )
-    seal_ttl_sec: int = Field(
-        default=600,
-        gt=0,
-        description=(
-            "Срок годности соединения, запечатанного для сервера инструментов, "
-            "в секундах: сервер отвергает значение старше этого срока."
-        ),
-    )
-
-    @field_validator("encryption_key")
-    @classmethod
-    def _validate_key(cls, value: SecretStr) -> SecretStr:
-        raw = value.get_secret_value()
-        if not raw:
-            return value
-
-        try:
-            decoded = base64.b64decode(raw, validate=True)
-        except (binascii.Error, ValueError) as e:
-            msg = (
-                f"[connections].encryption_key: expected {cls.KEY_BYTES} bytes "
-                f"in base64, got a value that does not decode: {e}"
-            )
-            raise ValueError(msg) from e
-
-        if len(decoded) != cls.KEY_BYTES:
-            msg = (
-                f"[connections].encryption_key: expected {cls.KEY_BYTES} bytes "
-                f"in base64, got {len(decoded)} bytes"
-            )
-            raise ValueError(msg)
-
-        return value
-
-    def key_bytes(self) -> bytes:
-        raw = self.encryption_key.get_secret_value()
-        if not raw:
-            msg = (
-                "[connections].encryption_key is not set: expected "
-                f"{self.KEY_BYTES} bytes in base64 to encrypt stored profiles"
-            )
-            raise ValueError(msg)
-
-        return base64.b64decode(raw, validate=True)
 
 
 class ConnectionStore(PostgresTable, ConnectionRepository):

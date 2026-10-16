@@ -182,6 +182,7 @@ class AgentStand:
             history=self._history,
             public_url=public_url,
             chat_mcp=RelayStand.CHAT,
+            seal_ttl_sec=600,
             limits=ModelLimitsConfig(context_window=32000, max_output_tokens=4096),
         )
 
