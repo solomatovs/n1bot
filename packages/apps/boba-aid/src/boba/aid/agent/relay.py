@@ -321,6 +321,7 @@ class ChatToolPort(McpToolPort):
             content=result.content,
             structured_content=result.structured_content,
             is_error=result.is_error,
+            _meta=result.meta,
         )
 
 

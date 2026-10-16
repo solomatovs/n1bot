@@ -397,6 +397,12 @@ class CallViews:
 
     PROPERTIES: ClassVar[str] = "properties"
 
+    MEDIA: ClassVar[frozenset[ContentMime]] = frozenset(
+        {ContentMime.SQL, ContentMime.JSON, ContentMime.BASH, ContentMime.MERMAID}
+    )
+    """Типы содержимого аргументов-кода: такой аргумент показывается блоком
+    кода своего языка, любой другой — строкой «имя: значение»."""
+
     def of(self, model: type[ToolCallBase]) -> Mapping[str, FieldView]:
         """Вид полей модели вызова, который отличается от обычной строки
         «имя: значение»."""
@@ -473,15 +479,14 @@ class CallViews:
         """Вид аргументов по их типам содержимого: аргумент известного типа
         показывается блоком кода его языка, остальные — строкой."""
         views: dict[str, FieldView] = {}
-        known = set(ContentMime)
         for name, value in media.items():
-            if value not in known:
+            if value not in self.MEDIA:
                 continue
 
-            display = MarkdownResult(text="", language=ContentMime(value).language)
-            views[name] = FieldView(
-                placement=FieldPlacement.BODY, display=display.model_dump(mode="json")
-            )
+            language = ContentMime(value).language
+            display = MarkdownResult(text="", language=language)
+            dumped = display.model_dump(mode="json")
+            views[name] = FieldView(placement=FieldPlacement.BODY, display=dumped)
 
         return views
 
@@ -503,7 +508,11 @@ class CallViews:
         if not isinstance(display, MarkdownResult):
             return None
 
-        return ContentMime.of_language(display.language)
+        mime = ContentMime.of_language(display.language)
+        if mime not in self.MEDIA:
+            return None
+
+        return mime
 
     def model_of(
         self, tool_name: str, views: Mapping[str, FieldView]

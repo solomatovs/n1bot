@@ -9,7 +9,7 @@
 один раз. McpToolProvider — провайдер fastmcp: на каждый запрос берёт
 инструменты вызывающего у CallerServers (кто вызывает, решает приложение по
 своему токену). FeatureExtension — возможность сервера, объявляемая клиенту
-при согласовании протокола. JournalUris — ссылки на каналы журнала вызова
+при согласовании протокола. JournalUris — uri каналов журнала вызова
 ресурсами MCP и их разбор.
 
 Ошибки:
@@ -38,11 +38,10 @@ from fastmcp.utilities.versions import VersionSpec
 from pydantic import BaseModel, PrivateAttr, ValidationError
 
 from boba.toolkit.calls import CallIdPrefix, CallViews
-from boba.toolkit.channels import JournalChannel
 from boba.toolkit.dag import DagNode, NodeOutcome, NodeOutcomes, ToolCard, ToolServer
 from boba.toolkit.failure import FailurePacker
 from boba.toolkit.mcp import McpToolStubs
-from boba.toolkit.result import BlockAudience, ContentMime, FailureResult
+from boba.toolkit.result import FailureResult
 from boba.toolkit.wire import JournalRead, ResultWire
 
 __all__ = [
@@ -103,7 +102,7 @@ class McpReplies:
         )
 
     def journaled(
-        self, result: ToolResult, links: Sequence[mt.ResourceLink]
+        self, result: ToolResult, links: Sequence[mt.ContentBlock]
     ) -> ToolResult:
         """Тот же ответ со ссылками на каналы журнала вызова в конце content:
         по ним клиент читает журнал (JournalUris)."""
@@ -119,30 +118,23 @@ class McpReplies:
 
 
 class JournalUris:
-    """Каналы журнала вызова ресурсами MCP по шаблону uri расширения журнала
-    (JournalFeature.resource).
+    """Адреса каналов журнала вызова ресурсами MCP по шаблону uri расширения
+    журнала (JournalFeature.resource).
 
-    Сервер (CallContextMiddleware) строит ссылки resource_link на каналы
-    журнала вызова в конце итога, клиент (лента чата) узнаёт по такой ссылке
-    адрес журнала. Шаблон раскрывают и сопоставляют функции шаблонов
+    Сервер (CallContextMiddleware) по uri() пишет в конец итога ссылки на
+    каналы журнала вызова, клиент (лента чата) по address() узнаёт в такой
+    ссылке адрес журнала. Шаблон раскрывают и сопоставляют функции шаблонов
     fastmcp — те же, по которым сервер отвечает на resources/read.
     """
 
     def __init__(self, template: str) -> None:
         self._template = template
 
-    def link(self, run: str, node: str, channel: JournalChannel) -> mt.ResourceLink:
-        """Ссылка человеку на канал channel журнала вызова node запуска run."""
-        address = JournalRead(run=run, node=node, channel=channel)
+    def uri(self, address: JournalRead) -> str:
+        """Uri ресурса канала журнала по его адресу."""
         params = address.model_dump(mode="json", exclude_none=True)
-        audience = mt.Annotations.model_validate({"audience": [BlockAudience.USER]})
 
-        return mt.ResourceLink(
-            uri=expand_uri_template(self._template, params),
-            name=channel.value,
-            mime_type=ContentMime.PLAIN,
-            annotations=audience,
-        )
+        return expand_uri_template(self._template, params)
 
     def address(self, uri: str) -> JournalRead | None:
         """Адрес канала журнала по ссылке; None — ссылка не на журнал."""

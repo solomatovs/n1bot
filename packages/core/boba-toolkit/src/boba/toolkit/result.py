@@ -712,20 +712,14 @@ class ToolResultBase(BaseModel, ABC):
         """Пара (content, artifact): текст для модели и сам результат."""
         return self.llm_view(), self
 
-    def sent(self, out: ContentOut) -> int:
+    def sent(self, out: ContentOut) -> dict[str, JsonValue] | None:
         """Весь content ответа в приёмник out: текст для модели, затем блоки
-        для человека; отдаёт число записанных блоков."""
-        before = len(out)
+        для человека. Итог — собственные данные результата для
+        structuredContent по outputSchema инструмента; None — outputSchema
+        у результата нет."""
         out.text(self.llm_view(), BlockAudience.MODEL)
         self.shown(out)
 
-        return len(out) - before
-
-    def structured(self, out: ContentOut) -> dict[str, JsonValue] | None:
-        """Собственные данные результата для structuredContent по
-        outputSchema инструмента; None — outputSchema у результата нет, и
-        ответ несёт сам результат моделью вида. out — пустой приёмник, по
-        которому результат считает свои блоки; в ответ он не идёт."""
         return None
 
 
@@ -775,7 +769,7 @@ class MarkdownResult(ToolResultBase):
         if self.note is not None:
             out.text(NoteLine.render(self.note), BlockAudience.USER)
 
-    def sent(self, out: ContentOut) -> int:
+    def sent(self, out: ContentOut) -> dict[str, JsonValue] | None:
         """Текст без языка и подписи модели и человеку одинаков: один блок."""
         if self.language:
             return super().sent(out)
@@ -785,7 +779,7 @@ class MarkdownResult(ToolResultBase):
 
         out.text(self.text, BlockAudience.BOTH)
 
-        return 1
+        return None
 
     def bound(self, value: Any) -> Self:
         return self.model_copy(update={"text": str(value).strip("\n")})
@@ -868,9 +862,9 @@ class TableResult(ToolResultBase):
         return f"{body}\n\n{self.note}"
 
     def shown(self, out: ContentOut) -> None:
-        out.resource(
-            ContentMime.CSV, TableText.csv(self.rows), ContentMime.CSV.language
-        )
+        csv_text = TableText.csv(self.rows)
+        out.resource(ContentMime.CSV, csv_text, ContentMime.CSV.language)
+
         if self.note:
             out.text(NoteLine.render(self.note), BlockAudience.USER)
 
@@ -955,9 +949,8 @@ class SqlStatement(BaseModel):
             out.text(FactsBlock(facts=self.facts).markdown(), BlockAudience.USER)
 
         if self.rows is not None:
-            out.resource(
-                ContentMime.CSV, TableText.csv(self.rows), ContentMime.CSV.language
-            )
+            csv_text = TableText.csv(self.rows)
+            out.resource(ContentMime.CSV, csv_text, ContentMime.CSV.language)
 
         if self.note:
             out.text(NoteLine.render(self.note), BlockAudience.USER)
@@ -1074,12 +1067,12 @@ class FileResult(ToolResultBase):
     def shown(self, out: ContentOut) -> None:
         out.link(PurePosixPath(self.path).as_uri(), self.name, self.mime)
 
-    def sent(self, out: ContentOut) -> int:
+    def sent(self, out: ContentOut) -> dict[str, JsonValue] | None:
         """Текст модели и человеку один, под ним ссылка на файл."""
         out.text(self.llm_view(), BlockAudience.BOTH)
         self.shown(out)
 
-        return 2
+        return None
 
 
 class CanvasResult(ToolResultBase):
@@ -1108,12 +1101,12 @@ class CanvasResult(ToolResultBase):
         mime = ContentMime.of_name(self.path)
         out.link(PurePosixPath(self.path).as_uri(), self.label, mime)
 
-    def sent(self, out: ContentOut) -> int:
+    def sent(self, out: ContentOut) -> dict[str, JsonValue] | None:
         """Текст модели и человеку один, под ним ссылка на файл."""
         out.text(self.llm_view(), BlockAudience.BOTH)
         self.shown(out)
 
-        return 2
+        return None
 
 
 class ShellResult(ToolResultBase):

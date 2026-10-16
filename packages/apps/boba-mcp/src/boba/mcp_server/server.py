@@ -32,9 +32,8 @@ import asyncio
 import contextlib
 import logging
 from abc import abstractmethod
-from collections.abc import AsyncGenerator, Mapping, Sequence
+from collections.abc import AsyncGenerator, Iterator, Mapping, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
-from enum import StrEnum
 from typing import Any, ClassVar, Protocol
 from uuid import uuid4
 
@@ -57,7 +56,6 @@ from starlette.types import Scope as AsgiScope
 
 from boba.access import GrantCheck, ProfileGrant, ToolGrant, ToolGrants
 from boba.cancellation import RunCancellation, StopReason, ToolStopped
-from boba.canvas.journal import StreamSlice
 from boba.canvas.keys import ObjectKey
 from boba.identity.context import (
     CallContext,
@@ -81,14 +79,19 @@ from boba.mcp_server.auth import (
     ServiceAuth,
     TokenSubjects,
 )
-from boba.mcp_server.files import FileRoutes, JournalRoutes, RouteCallers
+from boba.mcp_server.files import (
+    FileRoutes,
+    JournalRoutes,
+    RouteCallers,
+    ServerRefusal,
+)
 from boba.runtime.storage import LocalStorageConfig, StorageFactory
-from boba.toolkit.channels import JournalChannels, ToolChannel
+from boba.toolkit.channels import ToolChannel
 from boba.toolkit.dag import CallDag, DagNode, ToolServer
 from boba.toolkit.failure import ValidationText
 from boba.toolkit.ports import ProgressReport
-from boba.toolkit.result import ErrorResult
-from boba.toolkit.wire import FilesFeature, JournalFeature, JournalRead
+from boba.toolkit.result import ContentMime, ErrorResult
+from boba.toolkit.wire import FilesFeature, JournalFeature, JournalRead, McpContent
 from boba.toolrun.hosted import DirectCalls
 from boba.toolrun.registry import ToolRegistry
 from boba.toolrun.streams import CallJournals, ToolStream
@@ -137,17 +140,6 @@ class RoleToolServers(RoleTools, CallerServers):
         tools = self._registry.for_headless(roles, profile)
 
         return self._registry.server(tools.values(), self._calls)
-
-
-class ServerRefusal(StrEnum):
-    """Виды отказов сервера вызову: не дошёл до исполнителя либо остановлен
-    вместе с запуском."""
-
-    INVALID_REQUEST = "invalid_request"
-    FORBIDDEN = "forbidden"
-    NOT_FOUND = "not_found"
-    RUN_LIMIT = "run_limit"
-    STOPPED = "stopped"
 
 
 class ProgressChannelError(Exception):
@@ -408,10 +400,10 @@ class CallProgress:
 class StreamReadTool(Tool):
     """Операция сервиса stream_read: кусок журнала вызова по границам строк.
 
-    Создаётся сборкой сервера из журналов процесса. Журнал доступен только
-    тому, кто вызывал инструмент: ключ журнала — пользователь токена, запуск
-    и узел; чужой запуск — отказ вида ServerRefusal.FORBIDDEN.
-    Итог — текст окна и его координаты (StreamSlice) в structuredContent;
+    Создаётся сборкой сервера над адресами журнала endpoint'а
+    (JournalRoutes): окно и проверки доступа — их window, тот же путь, что у
+    resources/read канала. Итог — текст окна и его координаты (StreamSlice)
+    в structuredContent;
     по ним клиент стыкует следующее окно. Запуск области операция не
     открывает и в предел запусков не входит.
     """
@@ -426,73 +418,35 @@ class StreamReadTool(Tool):
         "   - offset — window from this byte, or before — window ending at this byte"
     )
 
-    _journals: CallJournals = PrivateAttr()
-    _subjects: TokenSubjects = PrivateAttr()
+    _routes: JournalRoutes = PrivateAttr()
     _replies: McpReplies = PrivateAttr()
 
-    def __init__(self, journals: CallJournals, subjects: TokenSubjects) -> None:
+    def __init__(self, routes: JournalRoutes) -> None:
         super().__init__(
             name=self.NAME,
             description=self.DESCRIPTION,
             parameters=JournalRead.model_json_schema(),
             meta=dict(McpEndpoints.OPERATION_META),
         )
-        self._journals = journals
-        self._subjects = subjects
+        self._routes = routes
         self._replies = McpReplies()
 
     async def run(self, arguments: dict[str, object]) -> ToolResult:
         try:
             request = JournalRead.model_validate(arguments)
         except ValidationError as exc:
-            return self._refused(
-                ServerRefusal.INVALID_REQUEST,
-                f"stream_read: the arguments are invalid: {exc}",
+            failure = ErrorResult(
+                message=f"stream_read: the arguments are invalid: {exc}",
+                error_kind=ServerRefusal.INVALID_REQUEST,
             )
 
-        if not JournalChannels.visible(request.channel):
-            return self._refused(
-                ServerRefusal.INVALID_REQUEST,
-                f"stream_read: channel {request.channel.value!r} is not readable",
-            )
+            return self._replies.refused(self.NAME, failure)
 
-        user = self._subjects.current().user_key
-        owner = self._journals.owner_of(request.run)
-        if owner is not None and owner != user:
-            return self._refused(
-                ServerRefusal.FORBIDDEN,
-                f"stream_read: the journal of run {request.run!r} belongs to "
-                "another user; expected a run of the caller",
-            )
+        window = self._routes.window(request)
+        if isinstance(window, ErrorResult):
+            return self._replies.refused(self.NAME, window)
 
-        piece = self._slice(request, user)
-        if piece is None:
-            return self._refused(
-                ServerRefusal.NOT_FOUND,
-                f"stream_read: no journal of call {request.node!r} in run "
-                f"{request.run!r} on channel {request.channel.value!r}",
-            )
-
-        return self._replies.answered(piece.text, piece)
-
-    def _slice(self, request: JournalRead, user: str) -> StreamSlice | None:
-        if request.before is not None:
-            return self._journals.recorded_slice_before(
-                user, request.run, request.node, request.before, request.channel
-            )
-
-        offset = request.offset
-        if offset is None:
-            offset = 0
-
-        return self._journals.recorded_slice(
-            user, request.run, request.node, offset, request.channel
-        )
-
-    def _refused(self, kind: ServerRefusal, message: str) -> ToolResult:
-        failure = ErrorResult(message=message, error_kind=kind)
-
-        return self._replies.refused(self.NAME, failure)
+        return self._replies.answered(window.text, window)
 
 
 class FileUploadRequest(BaseModel):
@@ -702,14 +656,21 @@ class CallContextMiddleware(Middleware):
             # журналы закрыты вместе с запуском: досылаются последние отчёты
             await progress.close()
 
-        links: list[mt.ResourceLink] = []
-        for node in progress.journaled():
-            for channel in self._journals.recorded_channels(
-                subject.user_key, run_id, node
-            ):
-                links.append(self._uris.link(run_id, node, channel))
+        links = McpContent(run_id)
+        for address in self._recorded(progress, subject.user_key, run_id):
+            uri = self._uris.uri(address)
+            links.link(uri, address.channel.value, ContentMime.PLAIN)
 
-        return self._replies.journaled(result, links)
+        return self._replies.journaled(result, links.blocks())
+
+    def _recorded(
+        self, progress: CallProgress, user: str, run_id: str
+    ) -> Iterator[JournalRead]:
+        """Каналы с записью журналов вызовов запуска run_id."""
+        for node in progress.journaled():
+            channels = self._journals.recorded_channels(user, run_id, node)
+            for channel in channels:
+                yield JournalRead(run=run_id, node=node, channel=channel)
 
 
 class RunLimits(BaseModel):
@@ -822,7 +783,7 @@ class McpServer:
         self._features[FilesFeature.ID] = self._files.feature(upload.name).settings()
         self._journaled = journals.active()
         if self._journaled:
-            stream_read = StreamReadTool(journals, self._subjects)
+            stream_read = StreamReadTool(self._journal_files)
             operations.append(stream_read)
             journal = JournalFeature(
                 read=stream_read.name,

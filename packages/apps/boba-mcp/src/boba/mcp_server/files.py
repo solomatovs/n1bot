@@ -23,6 +23,7 @@ import logging
 from collections.abc import AsyncIterator
 from enum import StrEnum
 from typing import ClassVar
+from urllib.parse import urlsplit
 
 from fastmcp import FastMCP
 from fastmcp.exceptions import ResourceError
@@ -33,7 +34,7 @@ from starlette.exceptions import HTTPException
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
-from boba.canvas.journal import StreamJournalError, StreamKey
+from boba.canvas.journal import StreamJournalError, StreamKey, StreamSlice
 from boba.canvas.keys import ObjectKey, ThreadDir, WorkspaceMount
 from boba.canvas.storage import StorageFullError, StorageNotFoundError
 from boba.canvas.transfer import FileHeader, UploadPolicy
@@ -47,11 +48,11 @@ from boba.runtime.storage import (
 )
 from boba.toolkit.channels import JournalChannels
 from boba.toolkit.failure import ValidationText
-from boba.toolkit.result import ContentMime
-from boba.toolkit.wire import FilesFeature, RequestFields
+from boba.toolkit.result import ContentMime, ErrorResult
+from boba.toolkit.wire import FilesFeature, JournalRead, RequestFields
 from boba.toolrun.streams import CallJournals
 
-__all__ = ["FileRoutes", "JournalRoutes", "RouteCallers"]
+__all__ = ["FileRoutes", "JournalRoutes", "RouteCallers", "ServerRefusal"]
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +66,17 @@ class FilePart(StrEnum):
     ETAG = "etag"
     AUTHORIZATION = "authorization"
     BEARER = "bearer "
+
+
+class ServerRefusal(StrEnum):
+    """Виды отказов сервера вызову: не дошёл до исполнителя либо остановлен
+    вместе с запуском."""
+
+    INVALID_REQUEST = "invalid_request"
+    FORBIDDEN = "forbidden"
+    NOT_FOUND = "not_found"
+    RUN_LIMIT = "run_limit"
+    STOPPED = "stopped"
 
 
 class FileStored(BaseModel):
@@ -125,8 +137,9 @@ class JournalRoutes:
     """Адреса журнала вызова на endpoint'е: канал целым файлом по маршруту
     и ресурсом MCP.
 
-    Создаётся сервером endpoint'а из журналов процесса. Окна журнала читает
-    операция stream_read; скачать канал целиком — маршрут
+    Создаётся сервером endpoint'а из журналов процесса. Окно канала с
+    проверкой доступа (window) — общий путь операции stream_read и
+    resources/read; скачать канал целиком — маршрут
     `{base}/journals/{run}/{node}/{channel}`, потоком и с Range. Канал —
     ресурс по шаблону RESOURCE: на него ведут ссылки итога вызова, а
     resources/read отдаёт первое окно канала. Журнал отдаётся только тому,
@@ -161,7 +174,9 @@ class JournalRoutes:
         return self._published
 
     def install(self, server: FastMCP) -> None:
-        path = "/".join((self._base, "{run}", "{node}", "{channel}"))
+        # маршрут канала — тот же шаблон ресурса под путём журналов
+        resource = urlsplit(self.RESOURCE)
+        path = f"{self._base}/{resource.netloc}{resource.path}"
         server.custom_route(path, methods=["GET"])(self.get)
         server.resource(self.RESOURCE, mime_type=ContentMime.PLAIN.value)(self.read)
 
@@ -170,26 +185,74 @@ class JournalRoutes:
         от начала; канал целиком отдаёт маршрут журналов.
 
         Ошибки:
-        ResourceError — канал не читается либо журнала нет у вызывающего.
+        ResourceError — адрес канала негоден, канал не читается либо журнала
+            нет у вызывающего.
         """
-        visible = JournalChannels.parse_visible(channel)
-        if visible is None:
-            msg = (
-                f"resources/read {run}/{node}/{channel}: channel {channel!r} is "
-                "not readable, expected one of the visible journal channels"
+        try:
+            request = JournalRead.model_validate(
+                {"run": run, "node": node, "channel": channel}
             )
+        except ValidationError as exc:
+            msg = (
+                f"resources/read {run}/{node}/{channel}: expected a journal "
+                f"channel address, got {ValidationText.of(exc)}"
+            )
+            raise ResourceError(msg) from exc
+
+        window = self.window(request)
+        if isinstance(window, ErrorResult):
+            msg = f"resources/read {run}/{node}/{channel}: {window.message}"
             raise ResourceError(msg)
+
+        return window.text
+
+    def window(self, request: JournalRead) -> StreamSlice | ErrorResult:
+        """Окно канала журнала для вызывающего: от offset (без него — от
+        начала) либо перед before. Отказ — ErrorResult вида ServerRefusal:
+        канал не читается, запуск чужой, журнала нет."""
+        address = f"journal of call {request.node!r} in run {request.run!r}"
+        if not JournalChannels.visible(request.channel):
+            return ErrorResult(
+                message=(
+                    f"{address}: channel {request.channel.value!r} is not "
+                    "readable, expected one of the visible journal channels"
+                ),
+                error_kind=ServerRefusal.INVALID_REQUEST,
+            )
 
         user = self._subjects.current().user_key
-        piece = self._journals.recorded_slice(user, run, node, 0, visible)
-        if piece is None:
-            msg = (
-                f"resources/read {run}/{node}/{channel}: no journal of call "
-                f"{node!r} in run {run!r} on channel {channel!r} for the caller"
+        owner = self._journals.owner_of(request.run)
+        if owner not in (None, user):
+            return ErrorResult(
+                message=(
+                    f"{address}: the run belongs to another user; expected a "
+                    "run of the caller"
+                ),
+                error_kind=ServerRefusal.FORBIDDEN,
             )
-            raise ResourceError(msg)
 
-        return piece.text
+        piece = self._slice(request, user)
+        if piece is None:
+            return ErrorResult(
+                message=f"{address}: no journal on channel {request.channel.value!r}",
+                error_kind=ServerRefusal.NOT_FOUND,
+            )
+
+        return piece
+
+    def _slice(self, request: JournalRead, user: str) -> StreamSlice | None:
+        if request.before is not None:
+            return self._journals.recorded_slice_before(
+                user, request.run, request.node, request.before, request.channel
+            )
+
+        offset = request.offset
+        if offset is None:
+            offset = 0
+
+        return self._journals.recorded_slice(
+            user, request.run, request.node, offset, request.channel
+        )
 
     async def get(self, request: Request) -> Response:
         subject = await self._callers.of(request)
