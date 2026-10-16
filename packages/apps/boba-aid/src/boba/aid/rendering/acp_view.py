@@ -28,7 +28,7 @@ from typing import Any, ClassVar, Protocol
 import mcp_types as mt
 from acp.experimental.v2 import schema
 from chainlit.step import Step
-from pydantic import NonNegativeInt, TypeAdapter, ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from boba.aid.agent.client import SessionUpdate
 from boba.aid.rendering.chat_view import ChatView, StepText
@@ -162,7 +162,6 @@ class UpdateView:
         self._journals = journals
         self._media = media
         self._names = McpToolNames()
-        self._durations: TypeAdapter[int] = TypeAdapter(NonNegativeInt)
         self._turn_key: str | None = None
         self._thought_id: str | None = None
         self._answer_id: str | None = None
@@ -505,9 +504,10 @@ class UpdateView:
         reply = self._reply(update)
         if reply is not None:
             shown, journals = self._journaled(reply, name)
-            journal = None
-            for address in journals.values():
-                journal = address
+            # журналов несколько только у связки: любой из них — чужого узла
+            journal: JournalAddress | None = None
+            if len(journals) == 1:
+                (journal,) = journals.values()
 
             elapsed = self._elapsed(reply)
             await self._finished(step, call_id, journal, shown, elapsed)
@@ -581,16 +581,14 @@ class UpdateView:
         if meta is None:
             return 0
 
-        try:
-            return self._durations.validate_python(meta.get(ResultWire.ELAPSED, 0))
-        except ValidationError as exc:
-            logger.info(
-                "thread %s: elapsed time in the result is not a count of "
-                "milliseconds, the step is shown without it: %s",
-                self._thread_id,
-                exc,
-            )
+        value = meta.get(ResultWire.ELAPSED)
+        if not isinstance(value, int):
             return 0
+
+        if value < 0:
+            return 0
+
+        return value
 
     async def _close_thinking(self) -> None:
         if self._thought_id is None:

@@ -31,4 +31,6 @@ class ChatElements:
         """cl.Plotly из фигуры — единственное место, знающее про plotly."""
         from plotly import graph_objects as go  # noqa: PLC0415
 
-        return cl.Plotly(name=title, figure=go.Figure(dict(figure)), display="inline")
+        plotted = go.Figure(dict(figure))
+
+        return cl.Plotly(name=title, figure=plotted, display="inline")

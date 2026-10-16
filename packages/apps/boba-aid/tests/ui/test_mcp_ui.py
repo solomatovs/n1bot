@@ -20,7 +20,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Iterator
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import pytest
@@ -190,36 +190,48 @@ class TestMcpToolInTheFeed:
         if "5" not in str(step.get(StepField.OUTPUT.value)):
             raise AssertionError(f"the step shows the server's answer: {step}")
 
-    def test_image_of_a_tool_is_drawn_as_a_picture(
+    def test_image_of_a_tool_is_a_file_of_the_thread(
         self, mcp_stand: StandProcess, open_chat: OpenChat
     ) -> None:
-        """Картинка чужого сервера рисуется по своему типу: элемент <img> у
-        шага с байтами блока в адресе data:."""
+        """Картинка чужого сервера ложится файлом в хранилище треда и
+        рисуется по своему типу карточкой вьювера картинок у ответа хода;
+        байтов блока в ленте нет, тело файла отдаёт маршрут канваса с Range."""
         chat = open_chat(mcp_stand, "")
 
         step = _ask(chat, "mcp__standard__picture", {})
 
-        images: list[dict[str, Any]] = []
+        cards: list[dict[str, Any]] = []
         for frame in chat.log.of_event(ChatEvent.ELEMENT):
             if not isinstance(frame.payload, dict):
                 continue
 
-            if frame.payload.get("mime") == "image/png":
-                images.append(frame.payload)
+            props = frame.payload.get("props")
+            if not isinstance(props, dict):
+                continue
 
-        if len(images) != 1:
+            if str(props.get("path")).endswith(".png"):
+                cards.append(props)
+
+        if len(cards) != 1:
             raise AssertionError(
-                f"the feed gets one image of the step: {images}\n{chat.log.describe()}"
+                f"the feed gets one image card: {cards}\n{chat.log.describe()}"
             )
 
-        if images[0].get("forId") != step.get(StepField.ID.value):
-            raise AssertionError(f"the image belongs to the tool step: {images[0]}")
+        encoded = base64.b64encode(PNG).decode("ascii")
+        if encoded in str(step.get(StepField.OUTPUT.value)):
+            raise AssertionError(f"the bytes of the image stay out of the step: {step}")
 
-        url = str(images[0].get("url"))
-        image = chat.expand_last_tool().locator(f'img[src="{url}"]').first
-        image.wait_for(state="attached", timeout=30_000)
-        if url != f"data:image/png;base64,{base64.b64encode(PNG).decode('ascii')}":
-            raise AssertionError(f"the image carries the bytes of the tool: {url}")
+        name = PurePosixPath(str(cards[0].get("path"))).name
+        thread_id = str(step.get(StepField.THREAD_ID.value))
+        url = f"{chat.base_url}/canvas/{thread_id}/upload/{name}"
+        reply = chat.page.request.get(url, headers={"Range": "bytes=0-7"})
+        if reply.status != 206:
+            raise AssertionError(
+                f"GET {url} with Range: expected 206, got {reply.status}"
+            )
+
+        if reply.body() != PNG[:8]:
+            raise AssertionError(f"GET {url}: the file is the image: {reply.body()!r}")
 
     def test_blocks_of_a_tool_are_drawn_by_their_type(
         self, mcp_stand: StandProcess, open_chat: OpenChat
