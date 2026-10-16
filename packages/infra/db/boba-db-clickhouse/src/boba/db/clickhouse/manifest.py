@@ -11,7 +11,6 @@ from boba.connections.base import ConnectionBase, ConnectionTypeError
 from boba.connections.manifest import ConnectionTypeManifest
 from boba.db.clickhouse.address import ChAddresses
 from boba.db.clickhouse.connection import ClickHouseConfig
-from boba.db.clickhouse.snapshot import ChSourceKind
 
 __all__ = ["MANIFEST"]
 
@@ -28,7 +27,7 @@ def _address(connection: ConnectionBase) -> str:
 
 
 MANIFEST = ConnectionTypeManifest(
-    kind=ChSourceKind.CLICKHOUSE.value,
+    kind=ClickHouseConfig.KIND,
     model=ClickHouseConfig,
     address=_address,
 )

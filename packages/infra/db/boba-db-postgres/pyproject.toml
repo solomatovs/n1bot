@@ -9,7 +9,6 @@ description = "Boba PostgreSQL: PostgresConfig + AsyncPostgresPool — един�
 requires-python = ">=3.11,<4"
 dependencies = [
     "pydantic>=2.12,<3",
-    "boba-catalog==0.0.26.dev4",
     "boba-connections==0.0.26.dev4",
     "boba-kerberos==0.0.26.dev4",
     "boba-cancellation==0.0.26.dev4",
@@ -20,9 +19,6 @@ dependencies = [
 
 [project.entry-points."boba.addresses"]
 postgresql = "boba.db.postgres.address:PgAddresses"
-
-[project.entry-points."boba.catalog"]
-postgres = "boba.db.postgres.snapshot:PgSnapshot"
 
 [project.entry-points."boba.connections"]
 postgres = "boba.db.postgres.manifest:MANIFEST"

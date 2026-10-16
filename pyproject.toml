@@ -27,7 +27,6 @@ pythonpath = [
     "packages/core/boba-cancellation/src",
     "packages/core/boba-access/src",
     "packages/core/boba-connections/src",
-    "packages/core/boba-catalog/src",
     "packages/core/boba-chat/src",
     "packages/core/boba-identity/src",
     "packages/core/boba-kerberos/src",
@@ -96,6 +95,7 @@ exclude = [
     "packages/*/*/*/build",
     "packages/apps/boba-studio",
     "packages/services/boba-catalog-service",
+    "packages/core/boba-catalog",
 ]
 extraPaths = [
     "packages/infra/format/boba-confluence/src",
@@ -122,7 +122,6 @@ extraPaths = [
     "packages/core/boba-cancellation/src",
     "packages/core/boba-access/src",
     "packages/core/boba-connections/src",
-    "packages/core/boba-catalog/src",
     "packages/core/boba-chat/src",
     "packages/core/boba-identity/src",
     "packages/core/boba-kerberos/src",
@@ -190,6 +189,7 @@ extend-exclude = [
     "packages/*/*/build",
     "packages/apps/boba-studio",
     "packages/services/boba-catalog-service",
+    "packages/core/boba-catalog",
 ]
 
 [tool.ruff.lint]
@@ -252,14 +252,13 @@ members = [
     "packages/services/*",
     "packages/testing/*",
 ]
-exclude = ["packages/services/boba-catalog-service"]
+exclude = ["packages/services/boba-catalog-service", "packages/core/boba-catalog"]
 
 [tool.uv.sources]
 boba-config         = { workspace = true }
 boba-cancellation   = { workspace = true }
 boba-access         = { workspace = true }
 boba-connections    = { workspace = true }
-boba-catalog        = { workspace = true }
 boba-chat           = { workspace = true }
 boba-identity       = { workspace = true }
 boba-kerberos       = { workspace = true }

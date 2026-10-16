@@ -10,7 +10,6 @@ requires-python = ">=3.11,<4"
 dependencies = [
     "pydantic>=2.12,<3",
     "boba-toolkit==0.0.26.dev4",
-    "boba-catalog==0.0.26.dev4",
     "boba-connections==0.0.26.dev4",
     "boba-kerberos==0.0.26.dev4",
     "boba-krb==0.0.26.dev4",
@@ -18,9 +17,6 @@ dependencies = [
 
 [project.entry-points."boba.addresses"]
 clickhouse = "boba.db.clickhouse.address:ChAddresses"
-
-[project.entry-points."boba.catalog"]
-clickhouse = "boba.db.clickhouse.snapshot:ChSnapshot"
 
 [project.entry-points."boba.connections"]
 clickhouse = "boba.db.clickhouse.manifest:MANIFEST"

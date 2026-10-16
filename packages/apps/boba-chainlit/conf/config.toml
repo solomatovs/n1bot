@@ -166,10 +166,6 @@
     ## 32 байта в base64; смена ключа делает сохранённые секреты нечитаемыми
     encryption_key = "${site.database_encryption_key}"
 
-[catalog]
-    connection = "${postgres}"
-    db_schema  = "catalog"
-
 # хранилище вложений (upload файлов)
 [mcp.servers.boba_base]
     connect_timeout_sec  = 20.0
