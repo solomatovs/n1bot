@@ -69,7 +69,7 @@ class StandServerName(StrEnum):
     """Имена серверов MCP стенда чата, под которыми их получает агент треда."""
 
     CHAT = "chat"
-    """Сервер инструментов самого чата `/chat/mcp`."""
+    """Собственные инструменты чата в его процессе."""
 
     SERVICE = "boba_{endpoint}"
     """Endpoint сервиса boba-mcp: у каждого профиля чата свой."""
@@ -615,9 +615,6 @@ class StandConfig(StandService):
     """Команда и аргументы секции [agent.process] чата: по умолчанию агент
     boba.cli.app интерпретатором прогона; тест чужого агента ставит свою."""
 
-    agent_chat_mcp: bool = True
-    """Объявлять ли агенту сервер инструментов чата /chat/mcp."""
-
     generation: str = ""
     """Поколение сессий: пустое — случайное на каждый старт процесса; общее у
     двух инстансов стенда даёт им принимать одну и ту же cookie входа."""
@@ -744,13 +741,6 @@ class StandConfig(StandService):
                 "stop_timeout_sec": 10,
             },
             "history": dict(self.agent_history),
-            "chat_mcp": {
-                "enable": self.agent_chat_mcp,
-                "name": StandServerName.CHAT.value,
-                "path": "/chat/mcp",
-                "connect_timeout_sec": 10,
-                "call_timeout_sec": 120,
-            },
             "limits": {"context_window": 200000, "max_output_tokens": 4096},
         }
 

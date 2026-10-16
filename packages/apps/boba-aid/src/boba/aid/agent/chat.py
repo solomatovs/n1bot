@@ -38,8 +38,7 @@ from boba.aid.agent.client import (
     SessionUpdates,
 )
 from boba.aid.agent.config import AgentConfig
-from boba.aid.agent.relay import McpRelay
-from boba.aid.agent.server import KeyHolder, ProcessKeys
+from boba.aid.agent.relay import ChatTools, McpRegistration, McpRegistrations, McpRelay
 from boba.aid.agent.settings import (
     AgentSettingsChange,
     AgentSettingsLayers,
@@ -156,7 +155,7 @@ class PermissionKind(StrEnum):
 class ThreadIdentity:
     """Кто и в каком треде говорит с агентом: тред, пользователь, его вход и
     профиль чата. Собирается из сессии chainlit в обработчике. session —
-    живой вход пользователя вкладки: по нему держатель ключа процесса
+    живой вход пользователя вкладки: по нему регистрация сервера агента
     читает роли и секреты входа в момент вызова."""
 
     thread_id: str
@@ -427,9 +426,9 @@ class AgentLaunch:
 @dataclass(frozen=True)
 class LaunchedAgent:
     """Запущенный процесс агента и серверы, объявленные ему записями type
-    "acp": serverId каждого — ключ процесса в ProcessKeys. Отдаёт
-    AgentLauncher, держит ThreadAgent и возвращает запуску на снятие ключей
-    (AgentLauncher.retire)."""
+    "acp": serverId каждого — регистрация в McpRegistrations. Отдаёт
+    AgentLauncher, держит ThreadAgent и возвращает запуску на снятие
+    регистраций (AgentLauncher.retire)."""
 
     process: AgentProcess
     servers: Sequence[schema.AcpMcpServer]
@@ -437,11 +436,11 @@ class LaunchedAgent:
 
 class AgentLauncher:
     """Запуск процесса агента под тред: слой чата из Postgres → регистрации
-    серверов профиля и сервера чата → файл настроек в приватном каталоге →
+    серверов профиля и сервера chat → файл настроек в приватном каталоге →
     процесс → рукопожатие.
 
     Создаётся провайдером процесса; зовут ThreadAgent и ThreadDeleter.
-    Регистрации выдаёт и снимает реестр ProcessKeys: каждый запуск получает
+    Регистрации выдаёт и снимает реестр McpRegistrations: каждый запуск получает
     новые serverId, остановка процесса и несостоявшийся запуск их снимают.
     Запросы mcp/message процесса отвечает общий ретранслятор (McpRelay).
     """
@@ -451,13 +450,13 @@ class AgentLauncher:
         config: AgentConfig,
         postgres: PostgresConfig,
         layers: AgentSettingsLayers,
-        keys: ProcessKeys,
+        registrations: McpRegistrations,
         relay: McpRelay,
         version: str,
     ) -> None:
         self._config = config
         self._layers = layers
-        self._keys = keys
+        self._registrations = registrations
         self._relay = relay
         self._files = SettingsFileBuilder(config, postgres)
         self._workdirs = AgentWorkdirs(Path(config.process.private_dir))
@@ -498,35 +497,34 @@ class AgentLauncher:
         AgentProcessError — процесс не запустился.
         """
         names = list(identity.profile.config.mcp)
-        if self._config.chat_mcp.enable:
-            names.append(self._config.chat_mcp.name)
+        names.append(ChatTools.NAME)
 
-        holder = KeyHolder(
+        registration = McpRegistration(
             user_id=identity.user_id,
             login=identity.login,
             thread_id=identity.thread_id,
             profile=identity.profile.name,
             session=identity.session,
-            server=self._config.chat_mcp.name,
+            server=ChatTools.NAME,
         )
-        servers = self._keys.register(holder, names)
+        servers = self._registrations.register(registration, names)
         try:
             process = await self.launch_settings(
                 identity.thread_id, chat, servers, client
             )
         except Exception:
             for server in servers:
-                self._keys.revoke(server.server_id)
+                self._registrations.revoke(server.server_id)
 
             raise
 
         return LaunchedAgent(process=process, servers=servers)
 
     def retire(self, launched: LaunchedAgent) -> None:
-        """Снимает регистрации остановленного процесса: ретранслятор и сервер
-        чата их больше не принимают."""
+        """Снимает регистрации остановленного процесса: ретранслятор их больше
+        не принимает."""
         for server in launched.servers:
-            self._keys.revoke(server.server_id)
+            self._registrations.revoke(server.server_id)
 
     async def launch_settings(
         self,

@@ -62,7 +62,6 @@ from boba.canvas.keys import ObjectKey
 from boba.identity.context import (
     CallContext,
     HumanInitiator,
-    Subject,
 )
 from boba.identity.run import Runs
 from boba.identity.signin import ProfileCatalog
@@ -71,7 +70,9 @@ from boba.mcp_adapter import (
     FeatureExtension,
     JournalUris,
     McpReplies,
+    McpTool,
     McpToolProvider,
+    RoleTools,
 )
 from boba.mcp_server.auth import (
     CallScopeError,
@@ -109,37 +110,33 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 
-class RoleToolServers(CallerServers):
-    """Реализация CallerServers сервиса: порт инструментов на набор ролей и
-    профиль вызывающего по его токену.
+# RoleTools первым: иначе __init__ протокола CallerServers молча пропустит его __init__
+class RoleToolServers(RoleTools, CallerServers):
+    """Реализация CallerServers сервиса на базе RoleTools: инструменты на
+    набор ролей и профиль вызывающего по его токену.
 
     Создаётся сборкой сервера из реестра инструментов и субъектов токена.
-    Порт (ToolServer) строится один раз на пару «роли, профиль» и содержит
-    только инструменты, доступные этой паре: по ним же собирается
-    инструмент workflow.
+    Порт (ToolServer) пары «роли, профиль» содержит только инструменты,
+    доступные этой паре вне чата: по ним же собирается инструмент workflow.
     """
 
     def __init__(self, registry: ToolRegistry, subjects: TokenSubjects) -> None:
+        super().__init__()
         self._registry = registry
         self._subjects = subjects
         self._calls = DirectCalls()
-        self._servers: dict[tuple[frozenset[str], str], ToolServer] = {}
 
-    async def current(self) -> ToolServer:
-        """Порт вызывающего текущего запроса; без токена — TokenClaimsError."""
-        return self.of(self._subjects.current())
+    async def current(self) -> Mapping[str, McpTool]:
+        """Инструменты вызывающего текущего запроса; без токена —
+        TokenClaimsError."""
+        subject = self._subjects.current()
 
-    def of(self, subject: Subject) -> ToolServer:
-        key = (subject.roles, subject.profile)
-        server = self._servers.get(key)
-        if server is not None:
-            return server
+        return self.tools(subject.roles, subject.profile)
 
-        tools = self._registry.for_headless(subject.roles, subject.profile)
-        server = self._registry.server(tools.values(), self._calls)
-        self._servers[key] = server
+    def _server(self, roles: frozenset[str], profile: str) -> ToolServer:
+        tools = self._registry.for_headless(roles, profile)
 
-        return server
+        return self._registry.server(tools.values(), self._calls)
 
 
 class ServerRefusal(StrEnum):

@@ -4,7 +4,7 @@ import asyncio
 import logging
 import logging.config
 from collections.abc import AsyncGenerator
-from contextlib import AsyncExitStack, asynccontextmanager
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import uvicorn
@@ -121,37 +121,14 @@ async def _run_container(app: FastAPI) -> AsyncGenerator[None, None]:
     _use_auth(container)
     _use_thread_deletion(container)
 
-    async with AsyncExitStack() as stack:
-        try:
-            await _use_agent_tools(container, stack)
-            yield
-        finally:
-            container.resolved(runtime.runs).stop_all(StopReason.SHUTDOWN)
-            Container.set_session_hook(None)
-            await SessionContainers.close_all()
-            Container.set_root(None)
-            await container.aclose()
-
-
-async def _use_agent_tools(container: Container, stack: AsyncExitStack) -> None:
-    """Вход чата для агента: MCP-сервер инструментов — маршрутом приложения
-    chainlit впереди его собственных; жизненный цикл сервера fastmcp живёт в
-    stack до остановки приложения."""
-    from chainlit.server import app as chainlit_app  # noqa: PLC0415
-
-    config = container.resolved(providers.get_app_config)
-    if not isinstance(config, AppConfig):
-        msg = (
-            "agent tools setup expects AppConfig from the app config provider, "
-            f"got {type(config).__name__}"
-        )
-        raise RuntimeError(msg)
-
-    if config.agent.chat_mcp.enable:
-        server = container.resolved(providers.chat_mcp_server)
-        await stack.enter_async_context(server.lifespan())
-        chainlit_app.router.routes.insert(0, server.route())
-        logging.getLogger(__name__).info("chat mcp server serves %s", server.path)
+    try:
+        yield
+    finally:
+        container.resolved(runtime.runs).stop_all(StopReason.SHUTDOWN)
+        Container.set_session_hook(None)
+        await SessionContainers.close_all()
+        Container.set_root(None)
+        await container.aclose()
 
 
 def _use_thread_deletion(container: Container) -> None:
@@ -352,7 +329,6 @@ def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
     container.eager(runtime.session_keeper)
     container.eager(providers.chat_profiles_registry)
     container.eager(providers.chainlit_data_layer)
-    _eager_agent(container)
     container.eager(runtime.message_bus)
     container.eager(runtime.payload_store)
     container.eager(runtime.call_ambient)
@@ -362,8 +338,8 @@ def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
     # инструменты собираются на старте: конфиг плагинов проверяется до сессий
     container.eager(runtime.tool_launchers)
     container.eager(runtime.tool_registry)
-    # входы чата для агента — после реестра: сервер отдаёт его инструменты
-    _eager_agent_tools(container, c)
+    # запуск агента — после реестра: ретранслятор отдаёт его инструменты сервером chat
+    _eager_agent(container)
     container.eager(providers.remote_journals)
     container.eager(providers.mcp_servers)
     container.eager(providers.agent_feeds)
@@ -375,13 +351,6 @@ def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
     Container.set_root(container)
     Container.set_session_hook(_session_container)
     return container
-
-
-def _eager_agent_tools(container: Container, c: AppConfig) -> None:
-    """Вход чата для агента поднимается на старте, если включён конфигом:
-    маршрут ставится из готового объекта."""
-    if c.agent.chat_mcp.enable:
-        container.eager(providers.chat_mcp_server)
 
 
 def _eager_agent(container: Container) -> None:
