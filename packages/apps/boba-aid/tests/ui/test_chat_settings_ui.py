@@ -26,6 +26,7 @@ from boba.aid.chat.panel_text import PanelText
 from boba.chat.profiles import UserSetting
 from boba.stand.ui.chat_page import ChatPage, StepKind
 from boba.stand.ui.fake_llm import ScenarioName
+from boba.stand.ui.socket_log import ChatEvent
 from boba.stand.ui.stand import StandProcess, StandUrl
 
 pytestmark = pytest.mark.ui
@@ -63,10 +64,6 @@ def _app_language() -> str:
 
 TEXT = PanelText("", _app_language())
 """Подписи панели на языке приложения."""
-
-SAVE_GRACE_MS = 1500
-"""Пауза после Confirm: сохранение идёт по сокету."""
-
 
 class PanelSelector(StrEnum):
     """Селекторы модала настроек chainlit."""
@@ -118,8 +115,9 @@ def _open_settings(page: ChatPage) -> None:
 
 
 def _open_tab(page: ChatPage, tab: AgentPanelTab) -> None:
-    page.page.get_by_role("tab", name=TEXT.tab(tab.value), exact=True).click()
-    page.page.wait_for_timeout(300)
+    trigger = page.page.get_by_role("tab", name=TEXT.tab(tab.value), exact=True)
+    trigger.click()
+    expect(trigger).to_have_attribute("aria-selected", "true")
 
 
 def _tab_labels(page: ChatPage) -> set[str]:
@@ -132,8 +130,14 @@ def _tab_labels(page: ChatPage) -> set[str]:
 
 
 def _confirm_settings(page: ChatPage) -> None:
+    """Confirm и ожидание конца сохранения.
+
+    Сервер записывает слои, перезапускает агента вкладки и только потом
+    присылает панель заново, поэтому её кадр и есть конец сохранения.
+    """
+    page.log.clear()
     page.page.locator(PanelSelector.CONFIRM.value).click()
-    page.page.wait_for_timeout(SAVE_GRACE_MS)
+    page.await_event(ChatEvent.CHAT_SETTINGS)
 
 
 def _fill(page: ChatPage, setting: UserSetting, value: str) -> None:

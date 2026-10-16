@@ -30,6 +30,7 @@ class ChatEvent(StrEnum):
     TASK_START = "task_start"
     TASK_END = "task_end"
     ELEMENT = "element"
+    CHAT_SETTINGS = "chat_settings"
 
 
 class StepField(StrEnum):
