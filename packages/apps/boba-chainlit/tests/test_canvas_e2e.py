@@ -7,10 +7,10 @@ DOM: картинка загрузилась, диаграмма отрисов�
 
 Запуск: BOBA_CONFIG_PATH=... BOBA_SITE_PATH=... pytest -m integration
 packages/apps/boba-chainlit/tests/test_canvas_e2e.py
-Стенд — два собственных процесса на site.toml деревьев отладки: сервис boba-mcp
-(debug/mcp) и чат (файлы стенда), который ходит к этому сервису. Порты и
-каталоги данных у стенда свои (E2eStand): прогон не занимает адреса отладки
-из конфигов и не трогает её данные; контейнеры compose не участвуют.
+Стенд — два собственных процесса на конфигах деревьев отладки: сервис boba-mcp
+(debug/mcp) и чат (файлы стенда), который ходит к этому сервису. Порты,
+каталоги данных и база у стенда свои (E2eStand): прогон не занимает адреса
+отладки из конфигов и не трогает её данные; контейнеры compose не участвуют.
 Нужны: playwright + chromium, postgres, образ workspace из runtime/sandbox.
 """
 
@@ -33,8 +33,10 @@ from chainlit_stand import FakeUrl
 from playwright.async_api import TimeoutError as PlaywrightTimeout
 from playwright.async_api import async_playwright
 
-from boba.runtime.config import ConfigLayoutError, ConfigLocator, EnvOverride
-from boba.stand.ui.stand import StandApp, free_port
+from boba.runtime.config import ConfigFiles, ConfigLayoutError, EnvOverride
+from boba.stand.names import StandNames
+from boba.stand.ui.database import StandDatabase
+from boba.stand.ui.stand import StandApp, StandFiles, StandPlugins, free_port
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -45,11 +47,12 @@ MCP_MODULE = "boba.mcp_server"
 
 
 class E2eStand:
-    """Адреса и каталоги стенда e2e поверх конфигов отладки.
+    """Адреса, каталоги и база стенда e2e поверх конфигов отладки.
 
-    Конфиги отладки называют порты и данные интерактивной отладки; стенд
-    переопределяет их окружением, чтобы прогон шёл рядом с запущенной отладкой:
-    свои порты чата и сервиса и свои каталоги данных в debug/e2e.
+    Конфиги отладки называют порты, данные и базу интерактивной отладки; стенд
+    переписывает их в debug/e2e/<приложение>/conf со своей базой и
+    переопределяет окружением порты и каталоги данных, чтобы прогон шёл рядом
+    с запущенной отладкой. Чат и сервис делят одну базу стенда.
     """
 
     ROOT: ClassVar[Path] = REPO / "debug" / "e2e"
@@ -60,16 +63,40 @@ class E2eStand:
     INSTANCE: ClassVar[str] = "e2e"
     SERVICE_LAUNCHER: ClassVar[str] = "sandbox"
     DATA_DIRS: ClassVar[tuple[str, ...]] = ("krb", "dump", "workspace", "tool-logs")
+    DB_NAME: ClassVar[str] = "boba_e2e"
+    CONF: ClassVar[str] = "conf"
 
     def prepare(self) -> None:
         for data in (self.APP_DATA, self.SERVICE_DATA):
             for name in self.DATA_DIRS:
                 (data / name).mkdir(parents=True, exist_ok=True)
 
+        database = StandDatabase(StandApp.CHAINLIT, StandNames().of(self.DB_NAME))
+        name = database.prepare()
+
+        for app in (StandApp.CHAINLIT, StandApp.MCP):
+            doc = app.document()
+            doc["postgres"]["dbname"] = name
+
+            files = self._files(app)
+            files.workdir.mkdir(parents=True, exist_ok=True)
+            files.write(doc)
+            StandPlugins(app, sandbox=True).copy_to(files.plugins)
+
+    def files(self, app: StandApp) -> ConfigFiles:
+        """Файлы конфигурации приложения стенда, записанные prepare."""
+        files = self._files(app)
+
+        return ConfigFiles(config=files.config, site=files.site)
+
+    def _files(self, app: StandApp) -> StandFiles:
+        return StandFiles(self.ROOT / app.value / self.CONF)
+
     def service_env(self) -> dict[str, str]:
         public = f"http://{self.SERVICE_HOST}:{self.SERVICE_PORT}"
 
         return {
+            EnvOverride.BASE.var: str(StandApp.MCP.files().base()),
             EnvOverride.PORT.var: str(self.SERVICE_PORT),
             EnvOverride.PUBLIC_URL.var: public,
             EnvOverride.DATA.var: str(self.SERVICE_DATA),
@@ -80,6 +107,7 @@ class E2eStand:
 
     def app_env(self) -> dict[str, str]:
         return {
+            EnvOverride.BASE.var: str(StandApp.CHAINLIT.files().base()),
             EnvOverride.PORT.var: str(PORT),
             EnvOverride.INSTANCE_ID.var: self.INSTANCE,
             EnvOverride.DATA.var: str(self.APP_DATA),
@@ -217,14 +245,14 @@ class E2eApp:
 
 @pytest.fixture(scope="module")
 def app_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
+    stand = E2eStand()
     try:
-        chat = ConfigLocator.files()
-        service_files = StandApp.MCP.files()
+        stand.prepare()
     except ConfigLayoutError as exc:
         pytest.fail(f"файлы конфигурации стенда недоступны: {exc}")
 
-    stand = E2eStand()
-    stand.prepare()
+    chat = stand.files(StandApp.CHAINLIT)
+    service_files = stand.files(StandApp.MCP)
 
     # чужой процесс на порту молча увёл бы тесты на другой код
     for port in (PORT, stand.SERVICE_PORT):
@@ -291,7 +319,7 @@ def _app_config() -> Any:
     from boba.config import bind
     from boba.runtime.config import AppLayers
 
-    raw = AppLayers.compose(ConfigLocator.files())
+    raw = AppLayers.compose(E2eStand().files(StandApp.CHAINLIT))
     return bind(raw, path="app", model=AppConfig)
 
 
