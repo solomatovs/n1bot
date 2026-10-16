@@ -14,7 +14,7 @@ from typing import Any, ClassVar
 import pytest
 import uvicorn
 from acp.experimental.v2 import schema
-from chainlit_stand import NoConnectionStore, RelayStand
+from aid_stand import NoConnectionStore, RelayStand
 from pydantic import SecretStr
 
 from boba.agent.settings import ModelSettings, ProviderKind, ProviderSettings

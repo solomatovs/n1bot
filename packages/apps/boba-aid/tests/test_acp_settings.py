@@ -28,7 +28,7 @@ from acp_stand import (
     ProcFiles,
     RecordingUpdates,
 )
-from chainlit_stand import NoConnectionStore, RelayStand, TabSession
+from aid_stand import NoConnectionStore, RelayStand, TabSession
 from psycopg import sql
 from psycopg.types.json import Jsonb
 from pydantic import SecretStr

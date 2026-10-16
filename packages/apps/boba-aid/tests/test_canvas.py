@@ -9,7 +9,7 @@ from uuid import UUID
 
 import chainlit as cl
 import pytest
-from chainlit_stand import ChatSessionStand, RemoteStand, put_bytes
+from aid_stand import ChatSessionStand, RemoteStand, put_bytes
 
 from boba.aid.canvas import panel as rendering_canvas
 from boba.aid.canvas.diagram import MermaidViewer

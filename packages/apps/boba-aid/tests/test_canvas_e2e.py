@@ -29,7 +29,7 @@ from typing import Any, ClassVar
 
 import httpx
 import pytest
-from chainlit_stand import FakeUrl
+from aid_stand import FakeUrl
 from playwright.async_api import TimeoutError as PlaywrightTimeout
 from playwright.async_api import async_playwright
 

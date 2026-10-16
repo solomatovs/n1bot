@@ -645,7 +645,7 @@ def storage(files_dir: Path) -> LocalStorageClient:
 @pytest.fixture
 def data_bus() -> MemoryMessageBus:
     """Шина слоя данных в тестах: изменения тредов уходят в область пользователя."""
-    return MemoryMessageBus("test-chainlit")
+    return MemoryMessageBus("test-aid")
 
 
 @pytest.fixture
@@ -926,8 +926,8 @@ def di_root(app_config: AppConfig, runtime_stand: StandRefs) -> Iterator[None]:
     ChainlitSessions.install(sessions)
     root.provide(session_source, sessions)
     root.provide(runtime.get_runtime_config, app_config)
-    root.provide(runtime.live_locks, MemoryLiveLocks("test-chainlit", 20))
-    root.provide(runtime.message_bus, MemoryMessageBus("test-chainlit"))
+    root.provide(runtime.live_locks, MemoryLiveLocks("test-aid", 20))
+    root.provide(runtime.message_bus, MemoryMessageBus("test-aid"))
     root.provide(runtime.payload_store, MemoryPayloadStore())
     root.provide(runtime.call_contexts, runtime_stand.contexts)
     root.provide(runtime.runs, runtime_stand.runs)

@@ -15,9 +15,9 @@ from uuid import UUID
 
 import krb5
 import pytest
+from aid_stand import ChatSessionStand, SsoStand
 from chainlit.user import PersistedUser
 from chainlit.user import User as ChainlitUser
-from chainlit_stand import ChatSessionStand, SsoStand
 from psycopg import sql
 from pydantic import create_model
 

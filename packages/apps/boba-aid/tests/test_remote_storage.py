@@ -10,7 +10,7 @@ from typing import Any
 from uuid import UUID
 
 import pytest
-from chainlit_stand import NoTabs, OwnerRows, ServiceProcess
+from aid_stand import NoTabs, OwnerRows, ServiceProcess
 
 from boba.aid.data.remote_storage import FileOwners, RemoteStorageClient
 from boba.canvas.keys import ObjectKey, ThreadDir

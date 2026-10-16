@@ -14,11 +14,11 @@ from collections.abc import AsyncIterator
 from typing import Any, ClassVar
 
 import pytest
+from aid_stand import FakeTurn
 from chainlit.config import config as chainlit_config
 from chainlit.server import sio
 from chainlit.session import WebsocketSession
 from chainlit.user import PersistedUser
-from chainlit_stand import FakeTurn
 
 from boba.aid.agent.chat import Question
 from boba.aid.infra.session import SessionContainers

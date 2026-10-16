@@ -17,7 +17,7 @@ from uuid import uuid4
 import mcp_types as mt
 import pytest
 from acp.exceptions import RequestError
-from chainlit_stand import NoConnectionStore, RelayStand, ServiceProcess, TabSession
+from aid_stand import NoConnectionStore, RelayStand, ServiceProcess, TabSession
 
 from boba.aid.agent.relay import McpRelay
 from boba.aid.agent.server import McpServerInfo

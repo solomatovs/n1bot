@@ -10,7 +10,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from chainlit_stand import FakeSecret
+from aid_stand import FakeSecret
 
 from boba.aid.infra.entry import AppEntry, ChainlitEnv
 from boba.runtime.config import ConfigFiles

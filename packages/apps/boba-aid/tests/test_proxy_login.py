@@ -9,7 +9,7 @@ from uuid import UUID
 
 import jwt
 import pytest
-from chainlit_stand import StandTokens
+from aid_stand import StandTokens
 from fastapi import FastAPI, Request
 from pydantic import SecretStr
 

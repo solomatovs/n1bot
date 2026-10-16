@@ -31,7 +31,7 @@ import jwt
 import pytest
 from acp.experimental.v2 import schema
 from acp_stand import AgentHistoryStand, Agents, FakeModel, RecordingUpdates
-from chainlit_stand import ServiceProcess, TabSession
+from aid_stand import ServiceProcess, TabSession
 from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 from test_acp_chat import BOOT_TIMEOUT_SEC, AgentProcesses, ChatSocket

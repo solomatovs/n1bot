@@ -14,9 +14,9 @@ import chainlit.data as chainlit_data
 import mcp_types as mt
 import pytest
 from acp.experimental.v2 import schema
+from aid_stand import Seed
 from chainlit.context import ChainlitContext, context_var, init_http_context
 from chainlit.step import StepDict
-from chainlit_stand import Seed
 from pydantic import AnyUrl, SecretStr
 
 from boba.agent.records import PermissionMode
@@ -613,7 +613,7 @@ class TestLiveEqualsReplay:
         live_context = FakeContext(THREAD)
         token = context_var.set(cast("ChainlitContext", live_context))
         try:
-            bus = MemoryMessageBus("test-chainlit")
+            bus = MemoryMessageBus("test-aid")
             payloads = MemoryPayloadStore()
             scope = Scope.chat(THREAD)
             renderer = ChatRenderer(
@@ -670,7 +670,7 @@ class TestLiveEqualsReplay:
         live_context = FakeContext(THREAD)
         token = context_var.set(cast("ChainlitContext", live_context))
         try:
-            bus = MemoryMessageBus("test-chainlit")
+            bus = MemoryMessageBus("test-aid")
             payloads = MemoryPayloadStore()
             scope = Scope.chat(THREAD)
             renderer = ChatRenderer(
@@ -731,7 +731,7 @@ class TestLiveEqualsReplay:
         """Итог вызова больше предела сообщения шины уходит телом в
         PayloadStore: вкладки получают его целиком."""
         rows = "row " * 5000
-        bus = MemoryMessageBus("test-chainlit")
+        bus = MemoryMessageBus("test-aid")
         payloads = MemoryPayloadStore()
         scope = Scope.chat(THREAD)
         renderer = ChatRenderer(
@@ -796,7 +796,7 @@ class TestResultMounts:
             thread_id, LiveSink(), runtime_stand.journals, seeded.user.id, user_name="u"
         )
         replay = UpdateView(view, thread_id, RemoteJournals(), ToolMedia())
-        bus = MemoryMessageBus("test-chainlit")
+        bus = MemoryMessageBus("test-aid")
         scope = Scope.chat(thread_id)
         notes: list[str] = []
 
@@ -880,7 +880,7 @@ class TestResultsFromRawOutput:
         live_context = FakeContext(thread_id)
         token = context_var.set(cast("ChainlitContext", live_context))
         try:
-            bus = MemoryMessageBus("test-chainlit")
+            bus = MemoryMessageBus("test-aid")
             payloads = MemoryPayloadStore()
             scope = Scope.chat(thread_id)
             view = ChatView(

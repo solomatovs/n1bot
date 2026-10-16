@@ -8,7 +8,7 @@ from __future__ import annotations
 from uuid import uuid4
 
 import pytest
-from chainlit_stand import TabSession
+from aid_stand import TabSession
 
 from boba.aid.agent.server import ChatCallers, ProcessKeys
 from boba.identity.context import DelegatedTicket, NoUserCredential

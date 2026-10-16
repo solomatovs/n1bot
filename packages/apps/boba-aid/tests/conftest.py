@@ -1,4 +1,4 @@
-"""Фикстуры тестов chainlit: определены в chainlit_stand и acp_stand, здесь
+"""Фикстуры тестов chainlit: определены в aid_stand и acp_stand, здесь
 регистрация, метка набора в именах стенда и группы pytest-xdist."""
 
 from enum import StrEnum
@@ -8,7 +8,7 @@ from typing import ClassVar
 import pytest
 from acp_stand import model as model
 from acp_stand import standard as standard
-from chainlit_stand import *  # noqa: F403 — модуль стенда и есть набор фикстур
+from aid_stand import *  # noqa: F403 — модуль стенда и есть набор фикстур
 
 from boba.stand.collection import SuiteItems
 from boba.stand.names import StandSuite

@@ -15,9 +15,9 @@ from typing import Any
 from uuid import UUID
 
 import pytest
+from aid_stand import ChatSessionStand, ServiceTools, SsoStand, ToolService
 from chainlit.user import PersistedUser
 from chainlit.user import User as ChainlitUser
-from chainlit_stand import ChatSessionStand, ServiceTools, SsoStand, ToolService
 from psycopg import sql
 from pydantic import SecretStr
 
