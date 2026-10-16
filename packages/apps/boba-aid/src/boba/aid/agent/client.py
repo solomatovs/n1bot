@@ -18,7 +18,6 @@ from asyncio.subprocess import Process
 from collections.abc import Awaitable, Mapping, Sequence
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
-from enum import StrEnum
 from pathlib import Path
 from typing import Any, ClassVar, Protocol, TypeAlias, TypeVar
 from uuid import UUID
@@ -28,7 +27,7 @@ from acp.experimental.v2 import Client, schema
 from acp.transports import spawn_stdio_transport
 from pydantic import BaseModel, ValidationError
 
-from boba.aid.agent.relay import McpRelay
+from boba.aid.agent.relay import ClientName, McpRelay
 from boba.aid.agent.settings import AgentWorkdir, WorkdirFile
 from boba.transport.acp.protocol import (
     AcpVersion,
@@ -118,12 +117,6 @@ class AgentRequestError(AcpClientError):
             return text
 
         return f"{text}: {details}"
-
-
-class ClientName(StrEnum):
-    """Как клиент представляется агенту в initialize."""
-
-    NAME = "boba-aid"
 
 
 class SessionUpdates(Protocol):

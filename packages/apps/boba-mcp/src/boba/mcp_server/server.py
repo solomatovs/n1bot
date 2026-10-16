@@ -70,7 +70,6 @@ from boba.connections.sealed import OfferedSource, SealFeature
 from boba.identity.context import (
     CallContext,
     HumanInitiator,
-    Subject,
 )
 from boba.identity.run import Runs
 from boba.identity.signin import ProfileCatalog
@@ -78,7 +77,9 @@ from boba.mcp_adapter import (
     CallerServers,
     FeatureExtension,
     McpReplies,
+    McpTool,
     McpToolProvider,
+    RoleTools,
 )
 from boba.mcp_server.auth import (
     CallScopeError,
@@ -178,17 +179,19 @@ class McpEndpoint(ProfileGrant):
         return frozenset()
 
 
-class RoleToolServers(CallerServers):
-    """Реализация CallerServers сервиса: порт инструментов вызывающего по его
-    токену и признаку клиента из запроса.
+# RoleTools первым: иначе __init__ протокола CallerServers молча пропустит его __init__
+class RoleToolServers(RoleTools[tuple[frozenset[str], str, bool]], CallerServers):
+    """Реализация CallerServers сервиса на базе RoleTools: инструменты
+    вызывающего по его токену и признаку клиента из запроса.
 
     Создаётся сборкой сервера endpoint'а из реестра инструментов, субъектов
-    токена, секции endpoint'а и соединений инструментов. Порт (ToolServer)
-    строится один раз на ключ «роли, профиль, клиент запечатывает» и содержит
-    только инструменты, доступные этим ролям, — с параметрами-соединениями
-    под предложение правил endpoint'а (SealedConnectionParams.offered); по
-    ним же собирается инструмент workflow. Признак клиента — объявленное в
-    запросе расширение запечатывания соединений (SealFeature).
+    токена, секции endpoint'а и соединений инструментов. Ключ кэша —
+    «роли, профиль, клиент запечатывает»; порт (ToolServer) ключа содержит
+    только инструменты, доступные этим ролям вне чата, — с
+    параметрами-соединениями под предложение правил endpoint'а
+    (SealedConnectionParams.offered); по ним же собирается инструмент
+    workflow. Признак клиента — объявленное в запросе расширение
+    запечатывания соединений (SealFeature).
     """
 
     def __init__(
@@ -198,33 +201,29 @@ class RoleToolServers(CallerServers):
         endpoint: McpEndpoint,
         params: SealedConnectionParams,
     ) -> None:
+        super().__init__()
         self._registry = registry
         self._subjects = subjects
         self._endpoint = endpoint
         self._params = params
         self._calls = DirectCalls()
-        self._servers: dict[tuple[frozenset[str], str, bool], ToolServer] = {}
 
-    async def current(self) -> ToolServer:
-        """Порт вызывающего текущего запроса; без токена — TokenClaimsError."""
+    async def current(self) -> Mapping[str, McpTool]:
+        """Инструменты вызывающего текущего запроса; без токена —
+        TokenClaimsError."""
+        subject = self._subjects.current()
         settings = get_context().client_extension_settings(SealFeature.ID)
         sealing = settings is not None
 
-        return self.of(self._subjects.current(), sealing)
+        return self.tools((subject.roles, subject.profile, sealing))
 
-    def of(self, subject: Subject, sealing: bool) -> ToolServer:
-        key = (subject.roles, subject.profile, sealing)
-        server = self._servers.get(key)
-        if server is not None:
-            return server
+    def _server(self, key: tuple[frozenset[str], str, bool]) -> ToolServer:
+        roles, profile, sealing = key
+        tools = self._registry.for_headless(roles, profile)
+        sources = self._endpoint.offer(roles, sealing)
+        offered = self._params.offered(list(tools.values()), roles, sources)
 
-        tools = self._registry.for_headless(subject.roles, subject.profile)
-        sources = self._endpoint.offer(subject.roles, sealing)
-        offered = self._params.offered(list(tools.values()), subject.roles, sources)
-        server = self._registry.server(offered, self._calls)
-        self._servers[key] = server
-
-        return server
+        return self._registry.server(offered, self._calls)
 
 
 class ServerRefusal(StrEnum):

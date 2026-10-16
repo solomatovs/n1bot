@@ -1,26 +1,35 @@
 """Ретранслятор MCP-over-ACP: ответы chainlit на запросы mcp/message агента
-серверам, которые chainlit объявил ему записями type "acp".
+серверам, которые chainlit объявил ему записями type "acp", и реестр этих
+регистраций (serverId → пользователь, тред, сервер). Сервер профиля
+отвечает своим портом McpServers, сервер chat — собственными инструментами
+чата прямо в процессе, без своего HTTP-входа.
 
 Ошибки:
 RequestError (acp.exceptions) — ошибка доставки MCP-over-ACP:
     UNKNOWN_SERVER — serverId не выдан этим чатом или снят;
     INVALID_PARAMS — requestId уже в работе;
     BACKEND_FAILED — сервер за регистрацией недоступен, ответил не по схеме
-    инструмента либо вход пользователя вкладки больше не годен, исхода MCP нет.
+    инструмента, имена инструментов сервера chat совпали либо вход
+    пользователя вкладки больше не годен, исхода MCP нет.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping
-from contextlib import asynccontextmanager, nullcontext
+import secrets
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
+from contextlib import nullcontext
+from dataclasses import dataclass, replace
+from enum import StrEnum
 from functools import partial
 from typing import Any, ClassVar
-from urllib.parse import urlsplit
+from uuid import UUID, uuid4
 
 import anyio
 import mcp_types as mt
 from acp.exceptions import RequestError
+from acp.experimental.v2 import schema
 from fastmcp.apps.config import AppConfig
 from fastmcp.utilities.json_schema import compress_schema
 from mcp.server.connection import Connection, NotifyOnlyOutbound
@@ -34,36 +43,37 @@ from mcp.shared.jsonrpc_dispatcher import progress_token_from_params
 from mcp.shared.message import MessageMetadata
 from mcp.shared.transport_context import TransportContext
 from mcp_types.jsonrpc import ErrorData
-from pydantic import SecretStr, ValidationError
+from pydantic import ValidationError
 
-from boba.aid.agent.config import ChatMcpConfig
-from boba.aid.agent.server import (
-    ChatCaller,
-    ChatCallers,
-    ChatMcpServer,
-    KeyHolder,
-    ProcessKeys,
-)
+from boba.aid.infra.session import LiveSignIn
+from boba.cancellation import RunCancellation, StopReason
 from boba.connection_broker.sealing import CallSealing, McpServerInfo
 from boba.connections.stored import ConnectionStoreError
-from boba.identity.context import CallContexts
+from boba.identity.context import (
+    CallContext,
+    CallContexts,
+    HumanInitiator,
+    Scope,
+    Subject,
+)
 from boba.identity.errors import AuthenticationError, RefusalError
+from boba.identity.run import Runs
 from boba.kerberos import KerberosError
+from boba.mcp_adapter import McpTool, RoleTools
 from boba.mcp_client.client import (
-    BearerAuth,
-    HttpEndpoint,
     McpCaller,
     McpClientError,
-    McpServerConfig,
     McpServers,
-    McpToolServer,
+    McpToolPort,
 )
 from boba.toolkit.calls import SchemaMark
 from boba.toolkit.chain import StreamPlanError
-from boba.toolkit.dag import DagNode
+from boba.toolkit.dag import DagNode, NestedCallsFeature, ToolServer, ToolServersError
 from boba.toolkit.failure import InvokeErrorKind, ValidationText
 from boba.toolkit.mcp import McpToolNames
+from boba.toolrun.hosted import DirectCalls
 from boba.toolrun.injected import ToolConfigError
+from boba.toolrun.registry import ToolRegistry
 from boba.transport.acp.protocol import (
     AcpErrorCode,
     McpErrorOutcome,
@@ -72,9 +82,24 @@ from boba.transport.acp.protocol import (
     McpResultOutcome,
 )
 
-__all__ = ["McpRelay", "RelayExchange"]
+__all__ = [
+    "ChatToolPort",
+    "ChatTools",
+    "ClientName",
+    "McpRegistration",
+    "McpRegistrations",
+    "McpRelay",
+    "RelayExchange",
+]
 
 logger = logging.getLogger(__name__)
+
+
+class ClientName(StrEnum):
+    """Как чат представляется агенту: клиентом в initialize и сервером
+    MCP ретранслятора в server/discover."""
+
+    NAME = "boba-aid"
 
 
 class RelayExchange(DispatchContext[TransportContext]):
@@ -159,66 +184,232 @@ class RelayExchange(DispatchContext[TransportContext]):
         await self.notify(notification.method, dumped)
 
 
+@dataclass(frozen=True)
+class McpRegistration:
+    """Регистрация сервера процесса агента: чей это агент, какого треда и
+    какой сервер объявлен ему под serverId.
+
+    Создаётся запуском агента (AgentLauncher) и хранится в McpRegistrations
+    на каждый сервер, который процесс получает объявлением type "acp".
+    profile — профиль треда: по нему сервер chat выбирает набор
+    инструментов. session — живой вход пользователя вкладки. server — имя
+    сервера профиля либо ChatTools.NAME. Контекст вызова от агента
+    ретранслятор строит из регистрации (context).
+    """
+
+    user_id: UUID
+    login: str
+    thread_id: str
+    profile: str
+    session: LiveSignIn
+    server: str
+
+    def context(self) -> CallContext:
+        """Контекст вызова от агента пользователя: роли и секреты входа из
+        живой сессии в момент вызова, область пользователя, свой ключ
+        запуска, инициатор — человек через API.
+
+        Ошибки:
+        AuthenticationError — сессия больше не несёт годного входа.
+        """
+        sign_in = self.session.signed_in().sign_in()
+        subject = Subject.of_user(self.user_id, self.login, sign_in.roles, self.profile)
+
+        return CallContext(
+            subject=subject,
+            scope=Scope.user(self.user_id),
+            run_id=uuid4().hex,
+            initiator=HumanInitiator(via="api"),
+            credential=sign_in.credential(),
+            cancellation=RunCancellation(),
+        )
+
+
+class McpRegistrations:
+    """Регистрации серверов процессов агента этого инстанса чата:
+    serverId → регистрация.
+
+    Создаётся провайдером процесса, один на инстанс. Запуск агента
+    регистрирует серверы процесса (register): каждому — новый случайный
+    serverId его объявления агенту; при остановке и перезапуске регистрации
+    снимаются (revoke). Ретранслятор mcp/message находит по serverId
+    регистрацию (of). Реестр живёт в памяти: процесс агента — потомок этого
+    же инстанса и с его рестартом не остаётся.
+    """
+
+    KEY_BYTES: ClassVar[int] = 32
+
+    def __init__(self) -> None:
+        self._registrations: dict[str, McpRegistration] = {}
+
+    def register(
+        self, registration: McpRegistration, names: Sequence[str]
+    ) -> Sequence[schema.AcpMcpServer]:
+        """Объявления серверов names для агента: на каждое имя новый serverId
+        регистрации с этим сервером."""
+        servers: list[schema.AcpMcpServer] = []
+        for name in names:
+            server_id = secrets.token_urlsafe(self.KEY_BYTES)
+            self._registrations[server_id] = replace(registration, server=name)
+            servers.append(schema.AcpMcpServer(name=name, server_id=server_id))
+
+        return servers
+
+    def revoke(self, server_id: str) -> None:
+        """Снимает регистрацию; неизвестный serverId — ничего."""
+        self._registrations.pop(server_id, None)
+
+    def of(self, server_id: str) -> McpRegistration:
+        """Ошибки:
+        RequestError — serverId не выдан этим чатом либо снят с процессом.
+        """
+        registration = self._registrations.get(server_id)
+        if registration is None:
+            msg = (
+                f"mcp/message: serverId {server_id!r} is not a server this chat "
+                "registered for a running agent process, or it was revoked with "
+                "its process"
+            )
+            raise RequestError(AcpErrorCode.UNKNOWN_SERVER, msg)
+
+        return registration
+
+
+class ChatToolPort(McpToolPort):
+    """Реализация McpToolPort собственными инструментами чата в его процессе
+    на один запрос mcp/message.
+
+    Создаёт ChatTools.port из инструментов McpTool пары «роли, профиль»
+    вызывающего и контекста вызова регистрации. Карточки и ответы — общего
+    адаптера boba.mcp_adapter; вызов идёт под открытым запуском контекста:
+    тела читают субъекта из контекста, как в ходе чата. Файлов, хода и
+    расширений у инструментов чата нет.
+    """
+
+    def __init__(
+        self, tools: Mapping[str, McpTool], context: CallContext, runs: Runs
+    ) -> None:
+        self._tools = tools
+        self._context = context
+        self._runs = runs
+
+    def tools(self) -> Sequence[mt.Tool]:
+        listed: list[mt.Tool] = []
+        for tool in self._tools.values():
+            listed.append(tool.to_mcp_tool())
+
+        return listed
+
+    def features(self) -> Mapping[str, Mapping[str, object]]:
+        return {}
+
+    def nested_calls(self) -> NestedCallsFeature | None:
+        return None
+
+    async def call(
+        self,
+        params: mt.CallToolRequestParams,
+        progress: Callable[[mt.ProgressNotificationParams], Awaitable[None]] | None,
+    ) -> mt.CallToolResult | mt.InputRequiredResult:
+        tool = self._tools[params.name]
+
+        arguments: dict[str, object] = {}
+        if params.arguments is not None:
+            arguments = dict(params.arguments)
+
+        with self._runs.open(self._context):
+            try:
+                result = await tool.run(arguments)
+            except asyncio.CancelledError:
+                self._context.cancellation.cancel(StopReason.ABORTED)
+                raise
+
+        return mt.CallToolResult(
+            content=result.content,
+            structured_content=result.structured_content,
+            is_error=result.is_error,
+        )
+
+
+class ChatTools(RoleTools[tuple[frozenset[str], str]]):
+    """Собственные инструменты чата (connection_list, connection_search) как
+    сервер chat, объявленный агенту, на базе RoleTools.
+
+    Создаётся провайдером ретранслятора и живёт в нём рядом с McpServers:
+    на запрос регистрации chat ретранслятор берёт порт ChatToolPort по
+    контексту вызова. Порт пары «роли, профиль» — инструменты хода чата
+    реестра с прямым вызовом тел (DirectCalls): ленты у вызова от агента
+    нет, шаг рисует агент по своим уведомлениям.
+    """
+
+    NAME: ClassVar[str] = "chat"
+
+    def __init__(self, registry: ToolRegistry, runs: Runs) -> None:
+        super().__init__()
+        self._registry = registry
+        self._runs = runs
+        self._calls = DirectCalls()
+
+    def port(self, context: CallContext) -> ChatToolPort:
+        """Порт инструментов вызывающего context."""
+        subject = context.subject
+        tools = self.tools((subject.roles, subject.profile))
+
+        return ChatToolPort(tools, context, self._runs)
+
+    def _server(self, key: tuple[frozenset[str], str]) -> ToolServer:
+        roles, profile = key
+        tools = self._registry.for_session(roles, profile)
+
+        return self._registry.server(tools, self._calls)
+
+
 class McpRelay:
     """Ретранслятор mcp/message: исполняет запросы MCP агента серверами,
     которые chainlit объявил его процессу.
 
     Создаётся провайдером процесса, один на инстанс; процесс агента
     (AgentProcess) отдаёт ему каждый запрос вместе с отправкой уведомлений
-    своего соединения. serverId запроса — ключ процесса: держателя
-    (пользователь, тред, имя сервера) даёт ProcessKeys, вызывающего —
-    ChatCallers. Конверт и версию запроса проверяет SDK mcp
+    своего соединения. По serverId запроса McpRegistrations даёт
+    регистрацию (пользователь, тред, имя сервера), а она — контекст вызова.
+    Конверт и версию запроса проверяет SDK mcp
     (classify_inbound_request), server/discover и неизвестные методы
     отвечает его lowlevel Server; свои здесь — tools/list и tools/call.
     Сервер профиля зовётся портом McpServers от имени пользователя вкладки,
-    сервер инструментов чата до переноса в процесс — по его HTTP-адресу
-    ключом регистрации. Соединения в аргументах запечатывает CallSealing в
-    контексте вызывающего, у инструмента со вложенными вызовами (расширение
+    сервер chat — собственными инструментами чата в процессе (ChatTools).
+    Соединения в аргументах запечатывает CallSealing в контексте вызова
+    регистрации, у инструмента со вложенными вызовами (расширение
     NestedCallsFeature сервера) — и в аргументах каждого узла по схеме его
-    инструмента. Ход
-    вызова уходит агенту уведомлением notifications/progress, ответ
-    сервера — как есть. Параметры треда (пометка SchemaMark.THREAD) агент в
-    списке не видит: на вызове ретранслятор ставит в них тред вкладки.
-    Инструменты только для интерфейса (_meta.ui.visibility без "model")
-    агенту не видны и не вызываются.
+    инструмента. Ход вызова уходит агенту уведомлением
+    notifications/progress, ответ сервера — как есть. Параметры треда
+    (пометка SchemaMark.THREAD) агент в списке не видит: на вызове
+    ретранслятор ставит в них тред регистрации. Инструменты только для
+    интерфейса (_meta.ui.visibility без "model") агенту не видны и не
+    вызываются.
     """
 
     UI_META: ClassVar[str] = "ui"
     """Ключ _meta инструмента с настройками MCP Apps (AppConfig)."""
 
-    def __init__(  # noqa: PLR0913 — ретранслятор собирается всеми входами процесса
+    def __init__(
         self,
-        keys: ProcessKeys,
-        callers: ChatCallers,
+        registrations: McpRegistrations,
         servers: McpServers,
         sealing: CallSealing,
         contexts: CallContexts,
-        chat: ChatMcpConfig,
-        public_url: str,
+        chat: ChatTools,
     ) -> None:
-        self._keys = keys
-        self._callers = callers
+        self._registrations = registrations
         self._servers = servers
         self._sealing = sealing
         self._contexts = contexts
         self._chat = chat
-        public = urlsplit(public_url)
-        self._chat_endpoint = HttpEndpoint.model_validate(
-            {
-                "scheme": public.scheme,
-                "host": public.hostname,
-                "port": public.port,
-                "path": public.path.rstrip("/") + chat.path,
-            }
-        )
-        """Адрес сервера инструментов чата без входа: ключ регистрации
-        ставится Bearer-токеном на запрос."""
         self._names = McpToolNames()
         self._active: set[tuple[str, str]] = set()
         # состояние запроса (serverId) ретранслятор отдаёт serve_one сам:
         # lifespan сервера здесь не запускается и только задаёт его тип
         self._server: Server[str] = Server(
-            ChatMcpServer.NAME,
+            ClientName.NAME.value,
             lifespan=lambda _server: nullcontext(""),
             on_list_tools=self._list_tools,
             on_call_tool=self._call_tool,
@@ -233,7 +424,7 @@ class McpRelay:
         RequestError — нет регистрации serverId, requestId уже в работе либо
             сервер за регистрацией не дал исхода.
         """
-        self._holder(message.server_id)
+        self._registrations.of(message.server_id)
         active = (message.server_id, message.request_id)
         if active in self._active:
             msg = (
@@ -281,6 +472,13 @@ class McpRelay:
                 f"got no MCP outcome: {exc}"
             )
             raise RequestError(AcpErrorCode.BACKEND_FAILED, msg) from exc
+        except ToolServersError as exc:
+            msg = (
+                f"mcp/message {message.method!r} to server {message.server_id!r}: "
+                f"the tools of the server cannot be offered, expected every tool "
+                f"name once: {exc}"
+            )
+            raise RequestError(AcpErrorCode.BACKEND_FAILED, msg) from exc
         finally:
             self._active.discard(active)
 
@@ -290,14 +488,15 @@ class McpRelay:
         self, ctx: ServerRequestContext[str], params: mt.PaginatedRequestParams | None
     ) -> mt.ListToolsResult:
         server_id = ctx.lifespan_context
-        holder = self._holder(server_id)
-        caller = self._callers.of_key(server_id)
+        registration = self._registrations.of(server_id)
+        context = registration.context()
+        port = await self._port(registration, context)
+
         tools: list[mt.Tool] = []
-        async with self._port(server_id, holder, caller) as port:
-            for tool in self._model_tools(port, holder.server):
-                threads = list(SchemaMark.THREAD.params(tool.input_schema))
-                schema = compress_schema(dict(tool.input_schema), prune_params=threads)
-                tools.append(tool.model_copy(update={"input_schema": schema}))
+        for tool in self._model_tools(port, registration.server):
+            threads = list(SchemaMark.THREAD.params(tool.input_schema))
+            schema = compress_schema(dict(tool.input_schema), prune_params=threads)
+            tools.append(tool.model_copy(update={"input_schema": schema}))
 
         return mt.ListToolsResult(tools=tools)
 
@@ -305,63 +504,63 @@ class McpRelay:
         self, ctx: ServerRequestContext[str], params: mt.CallToolRequestParams
     ) -> mt.CallToolResult | mt.InputRequiredResult:
         """Вызов инструмента для модели: соединения запечатаны, у вызова со
-        вложенными вызовами — и в узлах, тред вкладки — в параметрах с
+        вложенными вызовами — и в узлах, тред регистрации — в параметрах с
         пометкой SchemaMark.THREAD, отказ запечатывания — isError с причиной.
 
         Ошибки:
         MCPError — инструмента у сервера нет либо он не для модели.
         """
         server_id = ctx.lifespan_context
-        holder = self._holder(server_id)
-        caller = self._callers.of_key(server_id)
-        async with self._port(server_id, holder, caller) as port:
-            offered: dict[str, mt.Tool] = {}
-            for tool in self._model_tools(port, holder.server):
-                offered[tool.name] = tool
+        registration = self._registrations.of(server_id)
+        context = registration.context()
+        port = await self._port(registration, context)
 
-            tool = offered.get(params.name)
-            if tool is None:
-                msg = (
-                    f"mcp server {holder.server!r} offers the model no tool "
-                    f"{params.name!r}; expected one of {sorted(offered)}"
-                )
-                raise MCPError(code=mt.INVALID_PARAMS, message=msg)
+        offered: dict[str, mt.Tool] = {}
+        for tool in self._model_tools(port, registration.server):
+            offered[tool.name] = tool
 
-            asked: dict[str, Any] = {}
-            if params.arguments is not None:
-                asked = dict(params.arguments)
+        tool = offered.get(params.name)
+        if tool is None:
+            msg = (
+                f"mcp server {registration.server!r} offers the model no tool "
+                f"{params.name!r}; expected one of {sorted(offered)}"
+            )
+            raise MCPError(code=mt.INVALID_PARAMS, message=msg)
 
-            for name in SchemaMark.THREAD.params(tool.input_schema):
-                asked[name] = holder.thread_id
+        asked: dict[str, Any] = {}
+        if params.arguments is not None:
+            asked = dict(params.arguments)
 
-            full = self._names.full(holder.server, tool.name)
-            server = McpServerInfo(name=holder.server, features=port.features())
-            try:
-                arguments = await self._sealed(
-                    port, tool, asked, offered, server, caller
-                )
-            except (RefusalError, ToolConfigError) as exc:
-                reason = f"{full}: {exc}"
-                logger.warning("mcp relay: sealing refused: %s", reason)
-                denied = mt.TextContent(text=reason)
+        for name in SchemaMark.THREAD.params(tool.input_schema):
+            asked[name] = registration.thread_id
 
-                return mt.CallToolResult(content=[denied], is_error=True)
-            except (ConnectionStoreError, KerberosError) as exc:
-                reason = f"{full}: sealing the connections failed: {exc}"
-                logger.warning("mcp relay: %s", reason)
-                failed = mt.TextContent(text=reason)
+        full = self._names.full(registration.server, tool.name)
+        server = McpServerInfo(name=registration.server, features=port.features())
+        try:
+            with self._contexts.applied(context):
+                arguments = await self._sealed(port, tool, asked, offered, server)
+        except (RefusalError, ToolConfigError) as exc:
+            reason = f"{full}: {exc}"
+            logger.warning("mcp relay: sealing refused: %s", reason)
+            denied = mt.TextContent(text=reason)
 
-                return mt.CallToolResult(content=[failed], is_error=True)
+            return mt.CallToolResult(content=[denied], is_error=True)
+        except (ConnectionStoreError, KerberosError) as exc:
+            reason = f"{full}: sealing the connections failed: {exc}"
+            logger.warning("mcp relay: %s", reason)
+            failed = mt.TextContent(text=reason)
 
-            sent = params.model_copy(update={"arguments": arguments})
+            return mt.CallToolResult(content=[failed], is_error=True)
 
-            forwarded: Callable[[mt.ProgressNotificationParams], Awaitable[None]] | None
-            forwarded = None
-            token = progress_token_from_params(ctx.params)
-            if token is not None:
-                forwarded = partial(self._forwarded, ctx, token)
+        sent = params.model_copy(update={"arguments": arguments})
 
-            return await port.call(sent, forwarded)
+        forwarded: Callable[[mt.ProgressNotificationParams], Awaitable[None]] | None
+        forwarded = None
+        token = progress_token_from_params(ctx.params)
+        if token is not None:
+            forwarded = partial(self._forwarded, ctx, token)
+
+        return await port.call(sent, forwarded)
 
     async def _forwarded(
         self,
@@ -377,14 +576,13 @@ class McpRelay:
             notification, related_request_id=ctx.request_id
         )
 
-    async def _sealed(  # noqa: PLR0913 — вызов запечатывается по порту, инструменту и вызывающему
+    async def _sealed(
         self,
-        port: McpToolServer,
+        port: McpToolPort,
         tool: mt.Tool,
         asked: Mapping[str, Any],
         offered: Mapping[str, mt.Tool],
         server: McpServerInfo,
-        caller: ChatCaller,
     ) -> dict[str, Any]:
         """Аргументы вызова tool с запечатанными соединениями: по схеме
         инструмента, а у инструмента, который сервер объявил несущим
@@ -400,8 +598,7 @@ class McpRelay:
         KerberosError — билет к соединению не выпущен.
         """
         full = self._names.full(server.name, tool.name)
-        with self._contexts.applied(self._callers.context(caller)):
-            arguments = await self._sealing.seal(full, asked, tool.input_schema, server)
+        arguments = await self._sealing.seal(full, asked, tool.input_schema, server)
 
         nested = port.nested_calls()
         if nested is None:
@@ -429,10 +626,9 @@ class McpRelay:
                 raise RefusalError(InvokeErrorKind.UNKNOWN_TOOL, msg)
 
             try:
-                with self._contexts.applied(self._callers.context(caller)):
-                    args = await self._sealing.seal(
-                        node_full, call.args, node_tool.input_schema, server
-                    )
+                args = await self._sealing.seal(
+                    node_full, call.args, node_tool.input_schema, server
+                )
             except RefusalError as exc:
                 msg = f"node {call.key!r} ({node_full}): {exc}"
                 raise RefusalError(exc.kind, msg) from exc
@@ -444,38 +640,25 @@ class McpRelay:
 
         return nested.replaced(arguments, sealed)
 
-    @asynccontextmanager
     async def _port(
-        self, server_id: str, holder: KeyHolder, caller: ChatCaller
-    ) -> AsyncIterator[McpToolServer]:
-        """Открытый порт сервера регистрации server_id. Сервер профиля — порт
-        McpServers от имени пользователя вкладки; сервер чата — его HTTP-вход
-        с ключом регистрации, открытый на один запрос.
+        self, registration: McpRegistration, context: CallContext
+    ) -> McpToolPort:
+        """Порт сервера регистрации: сервер chat — собственные инструменты
+        чата в процессе, сервер профиля — порт McpServers от имени
+        пользователя вкладки.
 
         Ошибки:
-        McpClientError — сервер недоступен.
+        McpClientError — сервер профиля недоступен.
         """
-        if holder.server != self._chat.name:
-            subject = caller.subject
-            user = McpCaller(login=subject.login, roles=subject.roles)
-            yield await self._servers.port(holder.server, user)
-            return
+        if registration.server == ChatTools.NAME:
+            return self._chat.port(context)
 
-        auth = BearerAuth(token=SecretStr(server_id))
-        endpoint = self._chat_endpoint.model_copy(update={"auth": auth})
-        config = McpServerConfig(
-            endpoint=endpoint,
-            connect_timeout_sec=self._chat.connect_timeout_sec,
-            call_timeout_sec=self._chat.call_timeout_sec,
-        )
-        port = McpToolServer(holder.server, config)
-        try:
-            await port.open()
-            yield port
-        finally:
-            await port.close()
+        subject = context.subject
+        user = McpCaller(login=subject.login, roles=subject.roles)
 
-    def _model_tools(self, port: McpToolServer, server: str) -> Iterator[mt.Tool]:
+        return await self._servers.port(registration.server, user)
+
+    def _model_tools(self, port: McpToolPort, server: str) -> Iterator[mt.Tool]:
         """Инструменты сервера server, видимые модели: без _meta.ui.visibility
         либо с "model" в нём.
 
@@ -509,18 +692,3 @@ class McpRelay:
 
             if "model" in visibility:
                 yield tool
-
-    def _holder(self, server_id: str) -> KeyHolder:
-        """Ошибки:
-        RequestError — serverId не выдан этим чатом либо снят с процессом.
-        """
-        holder = self._keys.holder(server_id)
-        if holder is None:
-            msg = (
-                f"mcp/message: serverId {server_id!r} is not a server this chat "
-                "registered for a running agent process, or it was revoked with "
-                "its process"
-            )
-            raise RequestError(AcpErrorCode.UNKNOWN_SERVER, msg)
-
-        return holder
