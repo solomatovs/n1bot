@@ -8,9 +8,10 @@ RuntimeError — провайдер контейнера отдал не тот 
 import asyncio
 import logging
 import logging.config
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import ClassVar
 
 import uvicorn
 from chainlit.config import config as chainlit_config
@@ -55,7 +56,7 @@ from boba.runtime.storage import StorageClient
 def run_app(files: ConfigFiles):
     """Запуск приложения; env chainlit к этому моменту выставлен AppEntry."""
     c = AppConfig.load(files)
-    _apps_without_cors(c)
+    SandboxCors(chainlit_config.project.allow_origins).check(c)
 
     UserLogContext.install()
     logging.config.dictConfig(c.logger)
@@ -121,33 +122,42 @@ def run_app(files: ConfigFiles):
     asyncio.run(start())
 
 
-def _apps_without_cors(config: AppConfig) -> None:
-    """Скрипт песочницы приложений сервера не ходит в API чата с куками
+class SandboxCors:
+    """Проверка старта: CORS chainlit закрыт песочницам приложений MCP Apps.
+
+    Скрипт песочницы приложений сервера не должен ходить в API чата с куками
     пользователя: при секции apps у любого сервера allow_origins chainlit не
-    содержит ни "*", ни источника песочницы.
-
-    Ошибки:
-    ConfigError — CORS chainlit открыт песочнице.
+    содержит ни "*", ни источника песочницы. Создаёт run_app со списком
+    allow_origins, который chainlit разобрал из своего конфига.
     """
-    allowed = chainlit_config.project.allow_origins
-    for name, server in config.mcp.servers.items():
-        apps = server.apps
-        if apps is None:
-            continue
 
-        origin = apps.origin()
-        for opened in ("*", origin):
-            if opened not in allowed:
+    ANY: ClassVar[str] = "*"
+
+    def __init__(self, allowed: Sequence[str]) -> None:
+        self._allowed = allowed
+
+    def check(self, config: AppConfig) -> None:
+        """Ошибки:
+        ConfigError — CORS chainlit открыт песочнице.
+        """
+        for name, server in config.mcp.servers.items():
+            apps = server.apps
+            if apps is None:
                 continue
 
-            msg = (
-                f"[mcp.servers.{name}.apps]: chainlit [project].allow_origins "
-                f"{allowed} lets {opened!r} call the chat API with the cookies of "
-                f"the user, so the apps of the sandbox {origin} could act as the "
-                "user; list in allow_origins only the origins that embed the "
-                "chat, without '*' and without the sandbox origin"
-            )
-            raise ConfigError(msg)
+            origin = apps.origin()
+            for opened in (self.ANY, origin):
+                if opened not in self._allowed:
+                    continue
+
+                msg = (
+                    f"[mcp.servers.{name}.apps]: chainlit [project].allow_origins "
+                    f"{list(self._allowed)} lets {opened!r} call the chat API with "
+                    f"the cookies of the user, so the apps of the sandbox {origin} "
+                    "could act as the user; list in allow_origins only the origins "
+                    "that embed the chat, without '*' and without the sandbox origin"
+                )
+                raise ConfigError(msg)
 
 
 @asynccontextmanager

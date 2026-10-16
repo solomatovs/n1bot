@@ -341,14 +341,19 @@ class TestAppRequests:
         finally:
             await servers.stop()
 
+    PROFILE_SERVERS: ClassVar[frozenset[str]] = frozenset({"apps", "standard"})
+    """Серверы профиля треда регистрации приложения."""
+
     @staticmethod
-    def _of(tab: TabSession, server: str) -> McpRegistration:
-        return replace(tab.registration(uuid4(), SignInStand.PROFILE), server=server)
+    def _of(tab: TabSession, server: str, servers: frozenset[str]) -> McpRegistration:
+        registration = tab.registration(uuid4(), SignInStand.PROFILE)
+
+        return replace(registration, server=server, servers=servers)
 
     async def test_app_calls_the_tools_for_the_app(
         self, relay: McpRelay, tab: TabSession
     ) -> None:
-        registration = self._of(tab, "apps")
+        registration = self._of(tab, "apps", self.PROFILE_SERVERS)
         app_only = mt.CallToolRequestParams(name="app_only", arguments={})
         board = mt.CallToolRequestParams(name="board", arguments={"markup": "<i/>"})
 
@@ -362,7 +367,7 @@ class TestAppRequests:
     async def test_tool_for_the_model_is_refused_to_the_app(
         self, relay: McpRelay, tab: TabSession
     ) -> None:
-        registration = self._of(tab, "apps")
+        registration = self._of(tab, "apps", self.PROFILE_SERVERS)
         model_only = mt.CallToolRequestParams(name="model_only", arguments={})
 
         with pytest.raises(MCPError) as refused:
@@ -379,7 +384,7 @@ class TestAppRequests:
     async def test_server_without_apps_refuses_the_app(
         self, relay: McpRelay, tab: TabSession, server: str
     ) -> None:
-        registration = self._of(tab, server)
+        registration = self._of(tab, server, self.PROFILE_SERVERS)
         board = mt.CallToolRequestParams(name="board", arguments={"markup": "<i/>"})
         read = mt.ReadResourceRequestParams(uri="ui://standard/board.html")
 
@@ -393,10 +398,29 @@ class TestAppRequests:
         assert f"{server!r}" in called.value.error.message
         assert reading.value.error.code == mt.INVALID_PARAMS
 
+    async def test_server_outside_the_profile_of_the_thread_refuses_the_app(
+        self, relay: McpRelay, tab: TabSession
+    ) -> None:
+        """Сервер с секцией apps, которого профиль треда не даёт: приложение
+        и любой код вкладки его не зовут и не читают."""
+        registration = self._of(tab, "apps", frozenset({"standard"}))
+        board = mt.CallToolRequestParams(name="board", arguments={"markup": "<i/>"})
+        read = mt.ReadResourceRequestParams(uri="ui://standard/board.html")
+
+        with pytest.raises(MCPError) as called:
+            await relay.app_call(registration, board)
+
+        with pytest.raises(MCPError) as reading:
+            await relay.app_read(registration, read)
+
+        assert called.value.error.code == mt.INVALID_PARAMS
+        assert "is not a server of profile" in called.value.error.message
+        assert reading.value.error.code == mt.INVALID_PARAMS
+
     async def test_app_reads_the_resources_of_its_server(
         self, relay: McpRelay, tab: TabSession
     ) -> None:
-        registration = self._of(tab, "apps")
+        registration = self._of(tab, "apps", self.PROFILE_SERVERS)
         read = mt.ReadResourceRequestParams(uri="ui://standard/board.html")
 
         answered = await relay.app_answer(relay.app_read(registration, read))
@@ -497,7 +521,10 @@ class TestRelaySealing:
                     "nodes": [{"key": "n0", "tool": "no_such_tool", "args": {}}]
                 },
                 errored=True,
-                expected=["node 'n0'", "offers the model no tool 'no_such_tool'"],
+                expected=[
+                    "node 'n0'",
+                    "offers the caller of the call no tool 'no_such_tool'",
+                ],
             ),
             RelayCall(
                 name="workflow",

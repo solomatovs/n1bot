@@ -255,7 +255,8 @@ class McpRegistration:
     на каждый сервер, который процесс получает объявлением type "acp".
     profile — профиль треда: по нему сервер chat выбирает набор
     инструментов. session — живой вход пользователя вкладки. server — имя
-    сервера профиля либо ChatTools.NAME. Контекст вызова от агента
+    сервера профиля либо ChatTools.NAME; servers — серверы, которые профиль
+    даёт треду: приложение зовёт только их. Контекст вызова от агента
     ретранслятор строит из регистрации (context).
     """
 
@@ -265,6 +266,7 @@ class McpRegistration:
     profile: str
     session: LiveSignIn
     server: str
+    servers: frozenset[str]
 
     def context(self) -> CallContext:
         """Контекст вызова от агента пользователя: роли и секреты входа из
@@ -629,20 +631,25 @@ class McpRelay:
         return await port.read(params.uri)
 
     async def app_answer(self, request: Awaitable[BaseModel]) -> dict[str, Any]:
-        """Ответ приложению на его запрос: итог по форме MCP либо
-        {"error": ErrorData} с причиной — приложение получит ошибку JSON-RPC,
-        а не тишину."""
+        """Ответ приложению на его запрос: итог по форме MCP либо отказ
+        app_refusal с причиной — приложение получит ошибку JSON-RPC, а не
+        тишину."""
         try:
             result = await request
         except MCPError as exc:
             logger.warning("mcp app request refused: %s", exc.error.message)
-            return {"error": exc.error.model_dump(mode="json", exclude_none=True)}
+            return self.app_refusal(exc.error)
         except (McpClientError, AuthenticationError) as exc:
             logger.warning("mcp app request failed: %s", exc)
             error = ErrorData(code=mt.INTERNAL_ERROR, message=str(exc))
-            return {"error": error.model_dump(mode="json", exclude_none=True)}
+            return self.app_refusal(error)
 
         return result.model_dump(mode="json", by_alias=True, exclude_none=True)
+
+    def app_refusal(self, error: ErrorData) -> dict[str, Any]:
+        """Отказ на запрос приложения в ответе действия: элемент приложения
+        отдаёт его мосту ошибкой JSON-RPC."""
+        return {"error": error.model_dump(mode="json", exclude_none=True)}
 
     async def _called(  # noqa: PLR0913 — вызов собирается регистрацией, портом и стороной
         self,
@@ -760,8 +767,8 @@ class McpRelay:
             if node_tool is None:
                 msg = (
                     f"node {call.key!r} ({node_full}): mcp server {server.name!r} "
-                    f"offers the model no tool {call.tool!r}; expected one of "
-                    f"{sorted(offered)}"
+                    f"offers the caller of the call no tool {call.tool!r}; "
+                    f"expected one of {sorted(offered)}"
                 )
                 raise RefusalError(InvokeErrorKind.UNKNOWN_TOOL, msg)
 
@@ -805,9 +812,19 @@ class McpRelay:
         профиля с секцией apps.
 
         Ошибки:
-        MCPError — сервер chat или сервер без секции apps.
+        MCPError — сервер chat, сервер не из профиля треда или сервер без
+            секции apps.
         McpClientError — сервер недоступен.
         """
+        if registration.server not in registration.servers:
+            msg = (
+                f"mcp server {registration.server!r} is not a server of profile "
+                f"{registration.profile!r} of the thread, its servers are "
+                f"{sorted(registration.servers)}; an app may call only the server "
+                "that gave it"
+            )
+            raise MCPError(code=mt.INVALID_PARAMS, message=msg)
+
         if registration.server == ChatTools.NAME:
             msg = (
                 f"server {ChatTools.NAME!r} is the chat itself and has no apps; "

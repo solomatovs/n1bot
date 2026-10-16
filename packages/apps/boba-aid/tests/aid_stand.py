@@ -150,6 +150,7 @@ class TabSession:
             profile=profile,
             session=self.live,
             server=self.SERVER,
+            servers=frozenset({self.SERVER}),
         )
 
 
@@ -419,6 +420,7 @@ class ServiceTools:
             profile=profile,
             session=session,
             server=server,
+            servers=frozenset({server}),
         )
         registrations = self._stand.registrations
         registered = registrations.register(registration, [server])[0]

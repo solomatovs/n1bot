@@ -16,8 +16,10 @@ import pytest
 from omegaconf import DictConfig, OmegaConf
 from pydantic import ValidationError
 
+from boba.aid.infra.bootstrap import SandboxCors
 from boba.aid.infra.config import AppConfig
 from boba.config import bind
+from boba.config.section import ConfigError
 
 
 @pytest.fixture(autouse=True)
@@ -64,3 +66,32 @@ class TestAppsSandbox:
         config = AppConfig.model_validate(app)
 
         assert any(server.apps for server in config.mcp.servers.values())
+
+
+class TestSandboxCors:
+    """Старт с секцией apps отказывает, если CORS chainlit открыт песочнице:
+    allow_origins с "*" или с её источником; без секции apps список не
+    проверяется."""
+
+    SANDBOX: str = "http://sandbox.invalid:8123/mcp-apps/sandbox.html"
+
+    @pytest.mark.parametrize("opened", ["*", "http://sandbox.invalid:8123"])
+    def test_cors_open_to_the_sandbox_refuses_the_start(
+        self, raw_config: DictConfig, opened: str
+    ) -> None:
+        config = AppConfig.model_validate(
+            TestAppsSandbox._app(raw_config, self.SANDBOX)
+        )
+
+        with pytest.raises(ConfigError) as refused:
+            SandboxCors(["https://chat.invalid", opened]).check(config)
+
+        assert "allow_origins" in str(refused.value)
+        assert repr(opened) in str(refused.value)
+
+    def test_closed_cors_or_no_apps_start(self, raw_config: DictConfig) -> None:
+        drawn = AppConfig.model_validate(TestAppsSandbox._app(raw_config, self.SANDBOX))
+        plain = bind(raw_config, path="app", model=AppConfig)
+
+        SandboxCors(["https://chat.invalid"]).check(drawn)
+        SandboxCors(["*"]).check(plain)
