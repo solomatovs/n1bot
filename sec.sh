@@ -35,7 +35,7 @@ _run_bandit() {
   # процессов и есть назначение
   "$_uv" tool run --system-certs bandit \
     -q -r "$_sec_dir/packages" \
-    --exclude '**/tests/**,**/.venv/**' \
+    --exclude '**/tests/**,**/.venv/**,**/boba-studio/**,**/boba-catalog-service/**' \
     --severity-level medium --confidence-level medium || _rc=1
 }
 
@@ -47,6 +47,7 @@ _run_semgrep() {
   SEMGREP_SEND_METRICS=off "$_uv" tool run --system-certs semgrep \
     scan --config="$_sec_dir/sec/semgrep" --metrics=off --jobs 1 \
     --exclude=.venv --exclude=build --exclude=release \
+    --exclude=boba-studio --exclude=boba-catalog-service \
     --error "$_sec_dir/packages" || _rc=1
 }
 

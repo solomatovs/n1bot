@@ -22,9 +22,8 @@ build/test
 packages/**/*.egg-info
 packages/**/node_modules
 
-packages/apps/boba-studio/assets/workflow
-packages/apps/boba-studio/web/workflow/openapi.json
-packages/apps/boba-studio/web/workflow/src/api/schema.d.ts
+packages/apps/boba-studio
+packages/services/boba-catalog-service
 packages/apps/boba-chainlit/assets/public/page.js
 packages/apps/boba-chainlit/assets/public/vendor
 packages/apps/boba-chainlit/assets/ui

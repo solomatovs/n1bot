@@ -16,22 +16,6 @@
                 "panel": "shared"
             },
             "problemMatcher": []
-        },
-        {
-            "label": "web: dev server",
-            "type": "shell",
-            "command": "make",
-            "args": [
-                "-C",
-                "${workspaceFolder}/build",
-                "web-dev",
-                "BOBA_URL_PREFIX=/boba-studio-debug"
-            ],
-            "presentation": {
-                "reveal": "silent",
-                "panel": "shared"
-            },
-            "problemMatcher": []
         }
     ]
 }

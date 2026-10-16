@@ -3,7 +3,6 @@ ARG GLIBC_IMAGE=dmp/glibc:2.28
 ARG GCC_IMAGE=dmp/gcc:8.5.0
 ARG PYTHON_IMAGE=dmp/python:${PYTHON_VERSION}-dist
 ARG NODE_IMAGE=dmp/nodejs:20
-ARG STUDIO_NODE_IMAGE=dmp/nodejs:22
 
 FROM ${PYTHON_IMAGE} AS python-dist
 
@@ -425,7 +424,7 @@ COPY --from=app-site /opt/app-packages.txt  ${BOBA_DIR}/app/packages.txt
 RUN sed -i "1s|^#!.*python3.*|#!${BOBA_DIR}/third/bin/python3|" ${BOBA_DIR}/app/bin/*
 
 
-# основа приложений, которые исполняют инструменты в песочнице (studio, mcp): bwrap,
+# основа приложений, которые исполняют инструменты в песочнице (mcp): bwrap,
 # fuse2fs и каталог образов корней плагинов и workspace
 FROM runtime-base AS runtime-sandbox
 
@@ -468,43 +467,6 @@ RUN chown ${BOBA_UID}:${BOBA_GID} ${BOBA_DIR}/app_root \
 EXPOSE 8501
 USER ${BOBA_UID}:${BOBA_GID}
 CMD ["-m", "boba.chainlit.main", "--config", "/app/boba/conf/config.toml", "--site", "/app/boba/conf/site.toml"]
-
-
-# --- boba-studio ---------------------------------------------------------------------
-
-# контракт api: OpenAPI-документ из установленного приложения, без хоста и конфига
-FROM app-site AS studio-openapi
-
-RUN python3 -m boba.studio.api.schema > /tmp/openapi.json
-
-
-# страница workflow: типы из openapi.json стадии выше
-FROM ${STUDIO_NODE_IMAGE} AS studio-web-build
-
-COPY packages/apps/boba-studio/web/workflow/    /src/web/workflow/
-COPY --from=studio-openapi /tmp/openapi.json    /src/web/workflow/openapi.json
-
-WORKDIR /src/web/workflow
-RUN npm ci --no-audit --no-fund && npm run generate && npm run check && npm run build
-
-
-# образ studio: страница workflow и vendor-шрифты; моделей чата нет
-FROM runtime-sandbox AS runtime-studio
-
-ARG BOBA_DIR=/app/boba
-ARG BOBA_UID=1000
-ARG BOBA_GID=1000
-
-COPY --chown=${BOBA_UID}:${BOBA_GID} --from=studio-web-build /src/assets/workflow/  ${BOBA_DIR}/app_root/public/workflow/
-COPY --chown=${BOBA_UID}:${BOBA_GID} build/src/webassets/                           ${BOBA_DIR}/app_root/public/vendor/
-
-COPY packages/apps/boba-studio/conf/  ${BOBA_DIR}/conf/
-
-RUN chown ${BOBA_UID}:${BOBA_GID} ${BOBA_DIR}/app_root ${BOBA_DIR}/app_root/public
-
-EXPOSE 8502
-USER ${BOBA_UID}:${BOBA_GID}
-CMD ["-m", "boba.studio", "--config", "/app/boba/conf/config.toml", "--site", "/app/boba/conf/site.toml"]
 
 
 # --- boba-mcp: MCP-сервер с инструментами boba -------------------------------------
