@@ -19,7 +19,6 @@ __all__ = [
     "AnyCommand",
     "AnyMessage",
     "CanvasChanged",
-    "CatalogChanged",
     "ChangeAction",
     "ChatSettingsChanged",
     "Command",
@@ -37,7 +36,6 @@ __all__ = [
     "SignInRefreshRequested",
     "StopRequested",
     "StreamAppended",
-    "StudioProfileChanged",
     "ThreadChanged",
     "ThreadRewound",
     "TurnFinished",
@@ -75,8 +73,6 @@ class MessageKind(StrEnum):
     WORKFLOW_DRAFT_CHANGED = "workflow_draft_changed"
     FEEDBACK_CHANGED = "feedback_changed"
     CHAT_SETTINGS_CHANGED = "chat_settings_changed"
-    STUDIO_PROFILE_CHANGED = "studio_profile_changed"
-    CATALOG_CHANGED = "catalog_changed"
 
 
 _HOLDER_ONLY: frozenset[MessageKind] = frozenset(
@@ -354,71 +350,6 @@ class ChatSettingsChanged(Message):
     by_session: str
 
 
-class StudioProfileChanged(Message):
-    """Пользователь выбрал профиль studio из вкладки с сокетом by_sid."""
-
-    kind: Literal[MessageKind.STUDIO_PROFILE_CHANGED] = (
-        MessageKind.STUDIO_PROFILE_CHANGED
-    )
-    profile: str = Field(min_length=1)
-    by_sid: str
-
-
-class CatalogChanged(Message):
-    """Каталог данных изменился: процесс process_id (создан, переименован,
-    удалён; с version — опубликована версия), черновик draft_id (порция или
-    закрытие), подключение connection_id (новая версия снимка, версии забыты),
-    синхронизация sync_id либо upgrade upgrade_id (старт, ход, итог).
-    Заполнен ровно один из пяти идентификаторов; version идёт только с
-    process_id.
-    """
-
-    kind: Literal[MessageKind.CATALOG_CHANGED] = MessageKind.CATALOG_CHANGED
-    process_id: UUID | None = None
-    version: int | None = None
-    draft_id: UUID | None = None
-    connection_id: UUID | None = None
-    sync_id: UUID | None = None
-    upgrade_id: UUID | None = None
-    action: ChangeAction
-
-    @model_validator(mode="after")
-    def _exactly_one_target(self) -> Self:
-        targets = (
-            self.process_id,
-            self.draft_id,
-            self.connection_id,
-            self.sync_id,
-            self.upgrade_id,
-        )
-
-        filled = 0
-        for target in targets:
-            if target is None:
-                continue
-
-            filled += 1
-
-        if filled != 1:
-            msg = (
-                "catalog_changed: exactly one of process_id, draft_id,"
-                f" connection_id, sync_id, upgrade_id expected, got {filled} of "
-                f"them set: process_id={self.process_id}, draft_id={self.draft_id}, "
-                f"connection_id={self.connection_id}, sync_id={self.sync_id}, "
-                f"upgrade_id={self.upgrade_id}"
-            )
-            raise ValueError(msg)
-
-        if self.version is not None and self.process_id is None:
-            msg = (
-                "catalog_changed: version names a published version and goes "
-                f"only with process_id, got version={self.version} without it"
-            )
-            raise ValueError(msg)
-
-        return self
-
-
 class StopRequested(Command):
     """Пользователь by_user попросил остановить область; просьба принята инстансом
     by_instance.
@@ -447,10 +378,8 @@ AnyMessage = Annotated[
     | WorkflowDraftChanged
     | FeedbackChanged
     | ChatSettingsChanged
-    | StudioProfileChanged
     | WorkflowChanged
-    | ConnectionsChanged
-    | CatalogChanged,
+    | ConnectionsChanged,
     Field(discriminator="kind"),
 ]
 

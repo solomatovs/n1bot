@@ -1,7 +1,7 @@
 """Таблица users приложения: единственный владелец строки пользователя.
 
-Одна схема и один набор запросов для chainlit и studio: строка входа, чтение по
-логину и id, выбранный профиль studio в jsonb meta.
+Одна схема и один набор запросов: строка входа, чтение по логину и id, metadata
+входа в jsonb meta.
 
 Ошибки:
 DataUnavailableError — postgres недоступен или ответил не тем.
@@ -18,20 +18,20 @@ from psycopg.types.json import Jsonb
 
 from boba.identity.api import (
     AuthenticatedUser,
+    PersistedUsers,
     StoredUser,
     UserRows,
     UsersColumn,
-    UserSettingsStore,
     UsersUpsert,
 )
-from boba.identity.session import Login, UserMetadataField
+from boba.identity.session import Login
 from boba.identity.signin import SignedIn
 from boba.runtime.table import PgTable
 
 __all__ = ["UsersTable"]
 
 
-class UsersTable(PgTable, UserRows, UserSettingsStore, UsersUpsert):
+class UsersTable(PgTable, UserRows, PersistedUsers, UsersUpsert):
     """users приложения: DDL, строки входа и настройки пользователя."""
 
     def _stored(self, row: Mapping[str, Any]) -> StoredUser:
@@ -160,24 +160,3 @@ class UsersTable(PgTable, UserRows, UserSettingsStore, UsersUpsert):
         )
 
         return stored.authenticated()
-
-    async def set_studio_profile(self, user_id: UUID, profile: str) -> None:
-        query = (
-            self._query()
-            .add(
-                """
-                update {schema}.users
-                set
-                    meta = coalesce(meta, '{{}}'::jsonb)
-                        || jsonb_build_object(%(key)s::text, %(profile)s::text)
-                where
-                    id = %(user_id)s
-                """,
-                key=UserMetadataField.STUDIO_PROFILE,
-                profile=profile,
-                user_id=user_id,
-            )
-            .build()
-        )
-
-        await self._execute(query, "set_studio_profile")

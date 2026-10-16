@@ -4,7 +4,7 @@
 BusRefreshSignal публикует SignInRefreshRequested в область пользователя текущего
 вызова; SessionKeeper раз в период обходит живые сессии инстанса (порт
 LiveSessions — его реализуют приложения) и шлёт тот же сигнал по правилу
-SessionRenewal. Страницы chainlit и studio слушают свою область и делают refresh.
+SessionRenewal. Страница chainlit слушает свою область и делает refresh.
 
 Ошибки:
 MessageBusError — шина не приняла сообщение; вызов инструмента получает её, сторож

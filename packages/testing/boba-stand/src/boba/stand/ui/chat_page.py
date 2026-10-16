@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import ClassVar
@@ -16,7 +15,7 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeout
 
 from boba.stand.ui.socket_log import ChatEvent, SocketLog
 
-__all__ = ["ChatPage", "ChatPageError", "Selector", "StepKind", "TextSample"]
+__all__ = ["ChatPage", "ChatPageError", "Selector", "StepKind"]
 
 
 class ChatPageError(RuntimeError):
@@ -52,18 +51,6 @@ class StepKind(StrEnum):
     RUN = "run"
     TOOL = "tool"
     LLM = "llm"
-
-
-@dataclass(frozen=True)
-class TextSample:
-    """Снимок текста узла в момент времени."""
-
-    at_sec: float
-    text: str
-
-    @property
-    def size(self) -> int:
-        return len(self.text)
 
 
 @dataclass
@@ -264,22 +251,6 @@ class ChatPage:
         self._await(selector, timeout_ms)
         return self.page.locator(selector).first
 
-    def await_tokens(self, step_id: str, count: int, timeout_sec: float = 30.0) -> None:
-        """Ждёт, пока в шаг прилетит нужное число токенов."""
-        deadline = time.monotonic() + timeout_sec
-        while time.monotonic() < deadline:
-            if len(self.log.tokens_of(step_id)) >= count:
-                return
-
-            self.page.wait_for_timeout(50)
-
-        got = len(self.log.tokens_of(step_id))
-        msg = (
-            f"step {step_id}: expected {count} tokens within {timeout_sec}s, "
-            f"got {got}\n{self.log.describe()}"
-        )
-        raise ChatPageError(msg)
-
     def await_idle(self, timeout_sec: float = 60.0) -> None:
         """Ждёт конца хода: task_end, пришедший после task_start этого хода.
 
@@ -313,25 +284,6 @@ class ChatPage:
                 return True
 
         return False
-
-    def sample_text(
-        self,
-        locator: Locator,
-        samples: int,
-        interval_ms: float,
-    ) -> Sequence[TextSample]:
-        """Серия снимков текста узла: по ней видно, рос он или возник целиком."""
-        started = time.monotonic()
-        taken: list[TextSample] = []
-        for _ in range(samples):
-            text = ""
-            if locator.count():
-                text = locator.first.inner_text()
-
-            taken.append(TextSample(at_sec=time.monotonic() - started, text=text))
-            self.page.wait_for_timeout(interval_ms)
-
-        return taken
 
     def dom(self) -> str:
         """Разметка ленты: её печатает упавший тест."""

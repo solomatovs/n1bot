@@ -1,6 +1,4 @@
-"""Сборка FastAPI-приложения chainlit: авторизация, DI и отдача файлов.
-
-API и страница workflow живут в процессе boba-studio; маршруты разводит nginx."""
+"""Сборка FastAPI-приложения chainlit: авторизация, DI и отдача файлов."""
 
 import asyncio
 import logging

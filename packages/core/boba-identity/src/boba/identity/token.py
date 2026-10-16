@@ -1,7 +1,7 @@
 """Токен и cookie входа: claims, порты выпуска и чтения, cookie целиком и чанками.
 
-Claims одни у обоих приложений: identifier, display_name, metadata, exp, iat,
-since — так их выпускает chainlit (без since) и так их читает studio. Правило
+Claims входа: identifier, display_name, metadata, exp, iat, since; chainlit
+выпускает их без since. Правило
 продления сессии — SessionRenewal: когда просить обмен и до какого потолка можно
 перевыпускать токен без нового входа. Cookie длиннее лимита браузера едет чанками
 name_0..name_n; сборка и разбор — только здесь.

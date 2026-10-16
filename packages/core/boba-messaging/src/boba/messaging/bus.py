@@ -26,7 +26,6 @@ from boba.messaging.messages import AnyCommand, AnyMessage, Message, StreamAppen
 
 __all__ = [
     "BusLimit",
-    "BusWatch",
     "CommandEnvelope",
     "CommandListener",
     "Envelope",
@@ -45,8 +44,6 @@ __all__ = [
     "MessageBus",
     "MessageBusError",
     "MessageTooLargeError",
-    "StateListener",
-    "StaticBusWatch",
     "StreamFeed",
     "Unsubscribe",
 ]
@@ -204,45 +201,12 @@ class LivePayloadsColumn(StrEnum):
 
 
 class ListenerState(StrEnum):
-    """Состояние слушателя процесса; страница показывает его лампочкой рядом с
-    сокетом.
-    """
+    """Состояние слушателя шины процесса."""
 
     STOPPED = "stopped"
     CONNECTING = "connecting"
     LISTENING = "listening"
     FAILED = "failed"
-
-
-StateListener = Callable[[ListenerState], None]
-
-
-class BusWatch(Protocol):
-    """Порт наблюдения за слушателем шины: текущее состояние и подписка на его смену."""
-
-    @property
-    @abstractmethod
-    def state(self) -> ListenerState: ...
-
-    @abstractmethod
-    def watch(self, listener: StateListener) -> Unsubscribe: ...
-
-
-class StaticBusWatch(BusWatch):
-    """Наблюдатель с постоянным состоянием для стендов и тестов без Postgres."""
-
-    def __init__(self, state: ListenerState) -> None:
-        self._state = state
-
-    @property
-    def state(self) -> ListenerState:
-        return self._state
-
-    def watch(self, listener: StateListener) -> Unsubscribe:
-        def leave() -> None:
-            return None
-
-        return leave
 
 
 class StreamFeed(Protocol):

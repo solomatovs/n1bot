@@ -1,4 +1,4 @@
-"""HTTP-граница входа, общая для chainlit и studio: BaseError -> статус и тело,
+"""HTTP-граница входа приложений: BaseError -> статус и тело,
 запрос SSO -> модель сервиса, токен входа из cookie или Authorization, cookie
 сессии в ответе и ответы SPNEGO-обмена (401 Negotiate со страницей-переходом).
 SignalledServer — сервер uvicorn, остановку которого по сигналу ведёт
@@ -12,9 +12,8 @@ ServerStartError — приложение сервера не поднялось
 import html
 import logging
 from collections.abc import Mapping
-from http.cookies import SimpleCookie
 from types import FrameType
-from typing import Any, ClassVar
+from typing import ClassVar
 
 import uvicorn
 from starlette.requests import HTTPConnection, Request
@@ -164,7 +163,6 @@ class RequestTokens:
     """Токен входа запроса: cookie (целиком либо чанками), иначе Bearer."""
 
     BEARER: ClassVar[str] = "Bearer "
-    COOKIE_HEADER: ClassVar[str] = "HTTP_COOKIE"
     AUTHORIZATION: ClassVar[str] = "Authorization"
 
     def __init__(self, cookie: str) -> None:
@@ -187,24 +185,6 @@ class RequestTokens:
             return None
 
         return header[len(self.BEARER) :]
-
-    def of_environ(self, environ: Mapping[str, Any]) -> str | None:
-        """Cookie из WSGI/ASGI environ подключения socket.io."""
-        raw = environ.get(self.COOKIE_HEADER)
-        if not isinstance(raw, str):
-            return None
-
-        if not raw:
-            return None
-
-        parsed = SimpleCookie()
-        parsed.load(raw)
-
-        cookies: dict[str, str] = {}
-        for name, morsel in parsed.items():
-            cookies[name] = morsel.value
-
-        return self.of_cookies(cookies)
 
 
 class StaleSessionMiddleware:
@@ -397,7 +377,7 @@ class ServerStartError(Exception):
 class SignalledServer(uvicorn.Server):
     """Сервер uvicorn, остановку которого по сигналу ведёт ProcessStop.
 
-    Создаётся входом процесса приложения (чат, сервис MCP, studio) из
+    Создаётся входом процесса приложения (чат, сервис MCP) из
     настроек uvicorn и остановки процесса. На время работы uvicorn ставит
     свои обработчики сигналов: пойманный сигнал сервер сразу сообщает
     остановке процесса — та выполняет действия владельца, не дожидаясь

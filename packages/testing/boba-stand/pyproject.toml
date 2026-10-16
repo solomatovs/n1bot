@@ -23,7 +23,6 @@ dependencies = [
     "boba-tool-web==0.0.26.dev4",
     "boba-config==0.0.26.dev4",
     "boba-identity==0.0.26.dev4",
-    "boba-messaging==0.0.26.dev4",
     "boba-krb[seal]==0.0.26.dev4",
     "boba-kerberos==0.0.26.dev4",
     "boba-db-postgres==0.0.26.dev4",
@@ -54,15 +53,7 @@ dependencies = [
     "anyio>=4,<5",
     "psycopg>=3.3,<4",
     "omegaconf>=2.3,<3",
-    "krb5>=0.7,<1",
-    "gssapi>=1.9,<2",
     "jsonschema>=4.23,<5",
-]
-
-[project.optional-dependencies]
-dev = [
-    "boba-chainlit==0.0.26.dev4",
-    "starlette>=1.0,<2",
 ]
 
 [tool.setuptools.package-data]
