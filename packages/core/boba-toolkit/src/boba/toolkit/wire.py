@@ -41,19 +41,13 @@ __all__ = [
 class RequestFields(BaseModel):
     """Служебные поля запроса tools/call в _meta, моделью.
 
-    Сервер разбирает ею _meta запроса (SentMeta). scope — область вызова:
-    её шлёт клиент, читающий расширение файлов (FilesFeature.scope называет
-    ключ); пустое поле — клиент его не прислал. progress_token — стандартный
-    токен прогресса запроса; None — клиент о ходе вызова не просил.
-    Остальные ключи _meta модель пропускает.
+    Сервер разбирает ею _meta запроса (SentMeta). progress_token —
+    стандартный токен прогресса запроса; None — клиент о ходе вызова не
+    просил. Остальные ключи _meta модель пропускает.
     """
 
     model_config = ConfigDict(frozen=True, extra="ignore", populate_by_name=True)
 
-    SCOPE: ClassVar[str] = "com.boba/scope"
-    """Ключ области вызова в _meta запроса."""
-
-    scope: str = Field(default="", validation_alias=SCOPE)
     progress_token: mt.ProgressToken | None = Field(
         default=None, validation_alias="progressToken"
     )
@@ -88,9 +82,7 @@ class FilesFeature(ServerFeature):
     Range, HEAD — размер и версия, DELETE — удаление). upload — имя
     инструмента, которым модель узнаёт адрес загрузки файла. workspace —
     каталог workspace глазами инструментов сервера: пути файлов в их
-    результатах начинаются с него. scope — ключ _meta запроса tools/call,
-    которым клиент называет область вызова: вызовы одной области видят
-    файлы друг друга; клиент без области работает в области пользователя.
+    результатах начинаются с него.
     """
 
     ID: ClassVar[str] = "com.boba/files"
@@ -98,7 +90,6 @@ class FilesFeature(ServerFeature):
     path: str = Field(min_length=1)
     upload: str = Field(min_length=1)
     workspace: str = Field(min_length=1)
-    scope: str = Field(min_length=1)
 
 
 class JournalRead(BaseModel):

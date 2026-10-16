@@ -315,8 +315,9 @@ class RelayStand:
         self, store: StoreRef, credentials: CredentialsRef, contexts: CallContexts
     ) -> None:
         self.registrations = McpRegistrations()
+        self._contexts = contexts
         connections = ArmedConnections(store, credentials, contexts)
-        self.sealing = CallSealing(connections, contexts, self.SEAL_TTL)
+        self.sealing = CallSealing(connections, self.SEAL_TTL)
         refs = StandRefs(contexts)
         tools = refs.tool_stand(())
         tools.adopt(ConnectionTools(store, contexts).build())
@@ -324,7 +325,9 @@ class RelayStand:
         self.chat = ChatTools(registry, refs.runs)
 
     def relay(self, servers: McpServers) -> McpRelay:
-        return McpRelay(self.registrations, servers, self.sealing, self.chat)
+        return McpRelay(
+            self.registrations, servers, self.sealing, self._contexts, self.chat
+        )
 
 
 class ServiceTool:

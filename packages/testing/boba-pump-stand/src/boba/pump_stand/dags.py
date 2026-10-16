@@ -80,8 +80,6 @@ class PumpDags(ParamSource):
     проверяются по его роли и профилю.
     """
 
-    CONNECTION_TEXT: ClassVar[str] = "Имя соединения из справочника стенда."
-
     ROLE: ClassVar[str] = "pump"
     THREAD: ClassVar[str] = "pump-dags"
     TIMEOUT_SEC: ClassVar[float] = 300.0
@@ -103,9 +101,7 @@ class PumpDags(ParamSource):
         self._names = dict(names)
         self._directory = dict(connections)
         self._calls = CallStand()
-        self._hooks = ConnectionParamHooks(
-            ConnectionTypes.discover, self.CONNECTION_TEXT
-        )
+        self._hooks = ConnectionParamHooks(ConnectionTypes.discover)
 
         contexts = self._calls.contexts
         stand = ToolStand(

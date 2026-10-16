@@ -32,6 +32,7 @@ from boba.toolkit.dag import DagNode, NodeOutcome, ToolServer
 from boba.toolkit.facade import PayloadTool, UserConnection, tool
 from boba.toolkit.result import TableResult
 from boba.toolrun.hosted import DirectCalls, HostedTool
+from boba.toolrun.injected import StaticConfig
 from boba.toolrun.stream_calls import StreamGroupsConfig
 from boba.toolrun.streams import CallJournals
 
@@ -95,7 +96,9 @@ class ProbeTools:
 
     def bound(self, tool: HostedTool, keys: SealKeys) -> HostedTool:
         """Инструмент под обвязкой запечатанных соединений с ключами keys."""
-        params = SealedConnectionParams(keys, lambda: TYPES, self._calls.contexts)
+        params = SealedConnectionParams(
+            keys, lambda: TYPES, self._calls.contexts, {}, StaticConfig()
+        )
         params.bind_all([tool])
 
         return tool
@@ -194,7 +197,7 @@ class SealedStand:
         self._calls = CallStand()
         self.keys = SealKeys()
         self.params = SealedConnectionParams(
-            self.keys, lambda: TYPES, self._calls.contexts
+            self.keys, lambda: TYPES, self._calls.contexts, {}, StaticConfig()
         )
 
         contexts = self._calls.contexts

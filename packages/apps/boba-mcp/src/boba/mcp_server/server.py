@@ -34,6 +34,7 @@ import logging
 from abc import abstractmethod
 from collections.abc import AsyncGenerator, Iterator, Mapping, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
+from enum import StrEnum
 from typing import Any, ClassVar, Protocol
 from uuid import uuid4
 
@@ -54,9 +55,17 @@ from starlette.routing import BaseRoute, Mount, Route
 from starlette.types import ASGIApp, Receive, Send
 from starlette.types import Scope as AsgiScope
 
-from boba.access import GrantCheck, ProfileGrant, ToolGrant, ToolGrants
+from boba.access import (
+    GrantCheck,
+    ProfileGrant,
+    RoleVisibility,
+    ToolGrant,
+    ToolGrants,
+)
 from boba.cancellation import RunCancellation, StopReason, ToolStopped
 from boba.canvas.keys import ObjectKey
+from boba.connection_broker.sealed import SealedConnectionParams
+from boba.connections.sealed import OfferedSource, SealFeature
 from boba.identity.context import (
     CallContext,
     HumanInitiator,
@@ -92,6 +101,7 @@ from boba.toolkit.failure import ValidationText
 from boba.toolkit.ports import ProgressReport
 from boba.toolkit.result import ContentMime, ErrorResult
 from boba.toolkit.wire import FilesFeature, JournalFeature, JournalRead, McpContent
+from boba.toolrun.call_id import CallFields
 from boba.toolrun.hosted import DirectCalls
 from boba.toolrun.registry import ToolRegistry
 from boba.toolrun.streams import CallJournals, ToolStream
@@ -99,47 +109,125 @@ from boba.toolrun.streams import CallJournals, ToolStream
 __all__ = [
     "CallContextMiddleware",
     "CallProgress",
+    "ConnectionOfferRule",
     "EndpointCatalog",
     "FileUploadTool",
+    "McpEndpoint",
     "McpEndpoints",
     "McpServer",
+    "OfferClient",
     "RoleToolServers",
     "RunLimitMiddleware",
     "RunLimits",
-    "ServerRefusal",
     "StreamReadTool",
 ]
 
 logger = logging.getLogger(__name__)
 
 
-# RoleTools первым: иначе __init__ протокола CallerServers молча пропустит его __init__
-class RoleToolServers(RoleTools, CallerServers):
-    """Реализация CallerServers сервиса на базе RoleTools: инструменты на
-    набор ролей и профиль вызывающего по его токену.
+class OfferClient(StrEnum):
+    """Признак клиента в правиле предложения соединений: SEALING — запрос
+    объявил расширение запечатывания соединений (SealFeature), PLAIN — не
+    объявил, ANY — неважно."""
 
-    Создаётся сборкой сервера из реестра инструментов и субъектов токена.
-    Порт (ToolServer) пары «роли, профиль» содержит только инструменты,
-    доступные этой паре вне чата: по ним же собирается инструмент workflow.
+    SEALING = "sealing"
+    PLAIN = "plain"
+    ANY = "any"
+
+    def matches(self, sealing: bool) -> bool:
+        """Подходит ли правило клиенту, который запечатывает (sealing) или нет."""
+        if self is OfferClient.ANY:
+            return True
+
+        if sealing:
+            return self is OfferClient.SEALING
+
+        return self is OfferClient.PLAIN
+
+
+class ConnectionOfferRule(RoleVisibility):
+    """Правило предложения соединений [[mcp.endpoints.<имя>.connections]]:
+    кому (roles, '*' — всем), какому клиенту (client) и какие источники
+    соединений предложить (offer). Правила endpoint'а проверяет по порядку
+    McpEndpoint.offer."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    client: OfferClient
+    offer: list[OfferedSource] = Field(min_length=1)
+
+    def matches(self, roles: frozenset[str], sealing: bool) -> bool:
+        """Подходит ли правило вызывающему с ролями roles и признаком
+        клиента sealing."""
+        if not self.visible_for(roles):
+            return False
+
+        return self.client.matches(sealing)
+
+
+class McpEndpoint(ProfileGrant):
+    """Секция [mcp.endpoints.<имя>]: грант профиля (роли, инструменты) и
+    правила предложения соединений. Правило пишется явно, у endpoint'а без
+    соединений — пустым списком. Конфиг сервиса разбирает секцию на старте;
+    EndpointCatalog берёт её грантом профиля, RoleToolServers — правилами."""
+
+    connections: list[ConnectionOfferRule]
+
+    def offer(self, roles: frozenset[str], sealing: bool) -> frozenset[OfferedSource]:
+        """Источники соединений по первому подходящему правилу; ни одно не
+        подошло — соединений нет."""
+        for rule in self.connections:
+            if rule.matches(roles, sealing):
+                return frozenset(rule.offer)
+
+        return frozenset()
+
+
+# RoleTools первым: иначе __init__ протокола CallerServers молча пропустит его __init__
+class RoleToolServers(RoleTools[tuple[frozenset[str], str, bool]], CallerServers):
+    """Реализация CallerServers сервиса на базе RoleTools: инструменты
+    вызывающего по его токену и признаку клиента из запроса.
+
+    Создаётся сборкой сервера endpoint'а из реестра инструментов, субъектов
+    токена, секции endpoint'а и соединений инструментов. Ключ кэша —
+    «роли, профиль, клиент запечатывает»; порт (ToolServer) ключа содержит
+    только инструменты, доступные этим ролям вне чата, — с
+    параметрами-соединениями под предложение правил endpoint'а
+    (SealedConnectionParams.offered); по ним же собирается инструмент
+    workflow. Признак клиента — объявленное в запросе расширение
+    запечатывания соединений (SealFeature).
     """
 
-    def __init__(self, registry: ToolRegistry, subjects: TokenSubjects) -> None:
+    def __init__(
+        self,
+        registry: ToolRegistry,
+        subjects: TokenSubjects,
+        endpoint: McpEndpoint,
+        params: SealedConnectionParams,
+    ) -> None:
         super().__init__()
         self._registry = registry
         self._subjects = subjects
+        self._endpoint = endpoint
+        self._params = params
         self._calls = DirectCalls()
 
     async def current(self) -> Mapping[str, McpTool]:
         """Инструменты вызывающего текущего запроса; без токена —
         TokenClaimsError."""
         subject = self._subjects.current()
+        settings = get_context().client_extension_settings(SealFeature.ID)
+        sealing = settings is not None
 
-        return self.tools(subject.roles, subject.profile)
+        return self.tools((subject.roles, subject.profile, sealing))
 
-    def _server(self, roles: frozenset[str], profile: str) -> ToolServer:
+    def _server(self, key: tuple[frozenset[str], str, bool]) -> ToolServer:
+        roles, profile, sealing = key
         tools = self._registry.for_headless(roles, profile)
+        sources = self._endpoint.offer(roles, sealing)
+        offered = self._params.offered(list(tools.values()), roles, sources)
 
-        return self._registry.server(tools.values(), self._calls)
+        return self._registry.server(offered, self._calls)
 
 
 class ProgressChannelError(Exception):
@@ -450,7 +538,9 @@ class StreamReadTool(Tool):
 
 
 class FileUploadRequest(BaseModel):
-    """Аргументы file_upload: имя файла в каталоге вложений области."""
+    """Аргументы file_upload: имя файла в каталоге вложений области. Схему
+    вызова и проверку аргументов FileUploadTool собирает из неё с
+    параметром треда (CallFields.threaded)."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -490,31 +580,32 @@ class FileUploadTool(Tool):
         "file at the returned workspace path"
     )
 
+    _request: type[BaseModel] = PrivateAttr()
     _routes: FileRoutes = PrivateAttr()
     _subjects: TokenSubjects = PrivateAttr()
     _scopes: CallScopes = PrivateAttr()
-    _meta: SentMeta = PrivateAttr()
     _replies: McpReplies = PrivateAttr()
 
     def __init__(self, routes: FileRoutes, subjects: TokenSubjects) -> None:
+        threaded = CallFields().threaded(FileUploadRequest)
         super().__init__(
             name=self.NAME,
             description=self.DESCRIPTION,
-            parameters=FileUploadRequest.model_json_schema(),
+            parameters=threaded.model_json_schema(),
             meta=dict(McpEndpoints.OPERATION_META),
         )
+        self._request = threaded
         self._routes = routes
         self._subjects = subjects
         self._scopes = CallScopes()
-        self._meta = SentMeta()
         self._replies = McpReplies()
 
     async def run(self, arguments: dict[str, object]) -> ToolResult:
         try:
-            request = FileUploadRequest.model_validate(arguments)
+            checked = self._request.model_validate(arguments)
+            request = FileUploadRequest.model_construct(**checked.model_dump())
             subject = self._subjects.current()
-            sent = self._meta.sent()
-            scope = self._scopes.of(subject, sent.scope)
+            scope = self._scopes.of(subject, arguments)
             key = ObjectKey(
                 user_id=subject.user_key, thread_id=scope.id, name=request.name
             )
@@ -592,8 +683,12 @@ class CallContextMiddleware(Middleware):
 
             return self._replies.refused(context.message.name, failure)
 
+        arguments: Mapping[str, Any] = {}
+        if sent := context.message.arguments:
+            arguments = sent
+
         try:
-            scope = self._scopes.of(subject, fields.scope)
+            scope = self._scopes.of(subject, arguments)
         except CallScopeError as exc:
             failure = ErrorResult(
                 message=str(exc), error_kind=ServerRefusal.INVALID_REQUEST
@@ -614,12 +709,8 @@ class CallContextMiddleware(Middleware):
 
         shape: ProgressShape = OwnProgress()
         if context.message.name == CallDag.WORKFLOW:
-            described: dict[str, Any] = {}
-            if sent := context.message.arguments:
-                described = dict(sent)
-
             shape = NodeProgress(
-                DagNode(key=run_id, tool=context.message.name, args=described)
+                DagNode(key=run_id, tool=context.message.name, args=dict(arguments))
             )
 
         progress = CallProgress(
@@ -761,6 +852,8 @@ class McpServer:
         journals: CallJournals,
         auth: AuthProvider,
         profile: str,
+        endpoint: McpEndpoint,
+        params: SealedConnectionParams,
         limits: RunLimitMiddleware,
         storage: LocalStorageConfig,
         path: str,
@@ -793,7 +886,7 @@ class McpServer:
             self._features[JournalFeature.ID] = journal.settings()
 
         self._provider = McpToolProvider(
-            RoleToolServers(registry, self._subjects), operations
+            RoleToolServers(registry, self._subjects, endpoint, params), operations
         )
         self._contexts = CallContextMiddleware(
             runs, journals, self._subjects, McpEndpoints.OPERATIONS
@@ -884,10 +977,11 @@ class McpEndpoints:
     """Endpoint'ы MCP сервиса исполнения: по одному на секцию
     [mcp.endpoints.<имя>].
 
-    Создаётся сборкой процесса. Endpoint — набор инструментов и роли,
-    которым он выдан; каждый отвечает отдельным MCP-сервером на пути
-    `{base_path}/{имя}`. Токен без области endpoint'а получает 403 от входа
-    fastmcp (EndpointTokens). Реестр инструментов, запуски, журналы и предел запусков
+    Создаётся сборкой процесса. Endpoint — набор инструментов, роли,
+    которым он выдан, и правила предложения соединений; каждый отвечает
+    отдельным MCP-сервером на пути `{base_path}/{имя}`. Токен без области
+    endpoint'а получает 403 от входа fastmcp (EndpointTokens). Реестр
+    инструментов, соединения инструментов, запуски, журналы и предел запусков
     у endpoint'ов общие. app() — приложение ASGI со всеми endpoint'ами,
     маршрутами входа и пробой готовности.
     """
@@ -912,6 +1006,8 @@ class McpEndpoints:
         runs: Runs,
         journals: CallJournals,
         auth: ServiceAuth,
+        endpoints: Mapping[str, McpEndpoint],
+        params: SealedConnectionParams,
         limits: RunLimits,
         base_path: str,
         storage: LocalStorageConfig,
@@ -929,6 +1025,8 @@ class McpEndpoints:
                 journals,
                 provider,
                 profile,
+                endpoints[profile],
+                params,
                 slots,
                 storage,
                 path,

@@ -18,14 +18,18 @@ import mcp_types as mt
 import pytest
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
+from mcp.client.extension import advertise
 from service_stand import PROFILE, ServiceStand
 
+from boba.connections.sealed import SealFeature
 from boba.mcp_adapter import JournalUris
 from boba.mcp_server.files import JournalRoutes
 from boba.mcp_server.server import RunLimits, StreamReadTool
+from boba.toolkit.calls import SchemaMark
 from boba.toolkit.channels import ToolChannel
 from boba.toolkit.mcp import McpResults
 from boba.toolkit.wire import JournalRead
+from boba.toolrun.call_id import CallFields
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -67,6 +71,14 @@ class TestToolSchema:
         "type": "string",
     }
 
+    THREAD: ClassVar[dict[str, Any]] = {
+        "default": "",
+        "description": CallFields.THREAD_DESCRIPTION,
+        "title": "Thread Id",
+        "type": "string",
+        SchemaMark.THREAD.value: True,
+    }
+
     ECHO: ClassVar[dict[str, Any]] = {
         "description": "Повторяет текст, приправив секретом из конфига.",
         "properties": {
@@ -82,6 +94,7 @@ class TestToolSchema:
                 "title": "Repeat",
                 "type": "integer",
             },
+            CallFields.THREAD: THREAD,
             "intent": INTENT,
         },
         "required": ["text", "repeat"],
@@ -94,6 +107,7 @@ class TestToolSchema:
         "count",
         "size",
         "fail_midway",
+        CallFields.THREAD,
         "out",
         "pipe_bytes",
         "intent",
@@ -112,8 +126,8 @@ class TestToolSchema:
             raise AssertionError(f"the schema of fake_echo: {echo.input_schema}")
 
         own = [key for key in json.dumps(published).split('"') if "x-boba" in key]
-        if own:
-            raise AssertionError(f"the schema carries no marks of its own: {own}")
+        if own != [SchemaMark.THREAD.value]:
+            raise AssertionError(f"the only own mark is the thread: {own}")
         if list(echo.input_schema["properties"]) != list(self.ECHO["properties"]):
             raise AssertionError(
                 f"the order of the arguments is kept: {echo.input_schema}"
@@ -150,12 +164,19 @@ class TestToolSchema:
             raise AssertionError(f"a number has no content type: {properties}")
 
     async def test_connection_parameter_declares_a_sealed_profile(
-        self, client: Client[Any]
+        self, stand: ServiceStand
     ) -> None:
-        """Параметр-соединение — строка, чьё содержимое объявлено стандартными
-        ключами JSON Schema: JWE (contentMediaType) с содержимым вида postgres
-        внутри (contentSchema, константа kind); своих ключей в схеме нет."""
-        listed = await client.list_tools()
+        """Параметр-соединение — строка с пометкой вида x-boba-connection, чьё
+        содержимое объявлено стандартными ключами JSON Schema: JWE
+        (contentMediaType) с содержимым вида postgres внутри (contentSchema,
+        константа kind). Endpoint предлагает соединения пользователя клиенту,
+        который их запечатывает."""
+        async with stand.serving():
+            token = await stand.dev_token(PROFILE)
+            transport = StreamableHttpTransport(stand.url(PROFILE), auth=token)
+            sealing = [advertise(SealFeature.ID)]
+            async with Client(transport, extensions=sealing) as opened:
+                listed = await opened.list_tools()
 
         tool = next(tool for tool in listed if tool.name == "fake_connection_host")
         declared = tool.input_schema["properties"]["connection"]
@@ -178,9 +199,12 @@ class TestToolSchema:
             "minLength",
             "title",
             "type",
+            SchemaMark.CONNECTION.value,
         ]
         if sorted(declared) != expected:
-            raise AssertionError(f"only standard schema keys: {sorted(declared)}")
+            raise AssertionError(f"standard keys and the mark: {sorted(declared)}")
+        if declared[SchemaMark.CONNECTION.value] != "postgres":
+            raise AssertionError(f"the mark names the kind: {declared}")
 
 
 class TestArguments:
