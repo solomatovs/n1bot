@@ -437,6 +437,7 @@ class ServiceTools:
             content=reply.content,
             structured=reply.structured_content,
             is_error=reply.is_error,
+            meta={},
         )
         revived = self._wire.revived(wire, DagNode(key=call_id, tool=full), server)
         if revived is not None:

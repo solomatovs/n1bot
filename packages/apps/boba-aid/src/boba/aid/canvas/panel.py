@@ -21,7 +21,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-import mimetypes
 import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any, ClassVar
@@ -61,7 +60,7 @@ from boba.canvas.storage import StorageError, StorageNotFoundError
 from boba.identity.errors import RefusalError
 from boba.runtime.storage import StorageClient
 from boba.toolkit.channels import JournalChannel
-from boba.toolkit.result import VisualResult
+from boba.toolkit.result import ContentMime, VisualResult
 from boba.workspace.launcher import ReadWindow
 
 __all__ = [
@@ -269,7 +268,7 @@ class FileViewer(CanvasViewer):
             path=key.in_workspace(),
             label=key.name,
             url=self._serve(key),
-            mime=self._mime(key.name),
+            mime=ContentMime.of_name(key.name),
             nonce=str(uuid.uuid4()),
             **extra,
         )
@@ -307,13 +306,6 @@ class FileViewer(CanvasViewer):
         нет, и картинка ломалась бы молча.
         """
         return CanvasFileUrl.path(key)
-
-    @staticmethod
-    def _mime(name: str) -> str:
-        guessed = mimetypes.guess_type(name)[0]
-        if guessed:
-            return guessed
-        return "application/octet-stream"
 
 
 class ImageViewer(FileViewer):

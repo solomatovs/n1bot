@@ -386,10 +386,11 @@ class ToolExpect:
 
     @classmethod
     def of(cls, result: ToolResult, dom: Sequence[str] = ()) -> ToolExpect:
-        """Ожидание из модели результата: лента рисует её тем же рендером."""
+        """Ожидание из модели результата: лента рисует блоки ответа так же,
+        как прежний показ результата (без ведущего перевода строки у таблиц)."""
         return cls(
             mark=StepMark.of(result.ok),
-            output=result.chat_view().markdown,
+            output=result.chat_view().markdown.lstrip("\n"),
             dom=dom,
         )
 

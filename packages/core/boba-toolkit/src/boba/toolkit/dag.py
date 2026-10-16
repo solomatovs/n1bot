@@ -61,7 +61,9 @@ from boba.toolkit.chain import (
 from boba.toolkit.failure import InvokeErrorKind, ValidationText
 from boba.toolkit.ports import PortDecl, StreamSpec
 from boba.toolkit.result import (
+    BlockAudience,
     ChatView,
+    ContentOut,
     ErrorResult,
     Fact,
     FactsBlock,
@@ -406,8 +408,8 @@ class NestedCallReply(BaseModel):
     key, call_id, tool — те же, что у итога узла (WorkflowNodeResult):
     имя узла от автора связки, идентификатор вызова узла (под ним сервер
     ведёт журнал узла) и инструмент на сервере. blocks — номера блоков узла
-    в content ответа, без его заголовка; result — модель результата узла с
-    kind, по ней клиент показывает узел подробнее текста.
+    в content ответа, без его заголовка; elapsed_ms — длительность вызова
+    узла, 0 — не измерена.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -417,7 +419,7 @@ class NestedCallReply(BaseModel):
     tool: str
     status: NodeStatus
     blocks: Sequence[int]
-    result: Mapping[str, JsonValue]
+    elapsed_ms: int = Field(ge=0)
 
 
 class NestedCallsOutput(BaseModel):
@@ -460,40 +462,45 @@ class WorkflowResult(ToolResultBase):
 
         return self.model_copy(update={"nodes": nodes})
 
-    def texts(self) -> Sequence[str]:
-        texts: list[str] = []
-        for node, node_texts, _ in self._numbered():
-            texts.append(node.heading())
-            texts.extend(node_texts)
+    def shown(self, out: ContentOut) -> None:
+        self._numbered(out)
 
-        return texts
+    def sent(self, out: ContentOut) -> int:
+        """Блоки узлов по порядку: своего текста для модели у связки нет,
+        модель читает заголовки и тексты узлов."""
+        before = len(out)
+        self.shown(out)
 
-    def structured(self) -> dict[str, JsonValue] | None:
+        return len(out) - before
+
+    def structured(self, out: ContentOut) -> dict[str, JsonValue] | None:
         replies: list[NestedCallReply] = []
-        for node, _, numbers in self._numbered():
+        for node, numbers in self._numbered(out):
             reply = NestedCallReply(
                 key=node.key,
                 call_id=node.call_id,
                 tool=node.tool,
                 status=node.status,
                 blocks=numbers,
-                result=node.result.model_dump(mode="json"),
+                elapsed_ms=node.result.elapsed_ms,
             )
             replies.append(reply)
 
         return NestedCallsOutput(nodes=replies).model_dump(mode="json")
 
     def _numbered(
-        self,
-    ) -> Iterator[tuple[WorkflowNodeResult, Sequence[str], Sequence[int]]]:
-        """Узлы с их текстами и номерами их блоков в content одним проходом:
-        перед блоками узла стоит его заголовок, номера с нуля."""
-        position = 0
+        self, out: ContentOut
+    ) -> list[tuple[WorkflowNodeResult, Sequence[int]]]:
+        """Блоки узлов в out и номера блоков каждого узла одним проходом:
+        перед блоками узла стоит его заголовок, номера с нуля от начала out."""
+        numbered: list[tuple[WorkflowNodeResult, Sequence[int]]] = []
         for node in self.nodes:
-            texts = node.result.texts()
-            start = position + 1
-            position = start + len(texts)
-            yield node, texts, range(start, position)
+            out.text(node.heading(), BlockAudience.BOTH)
+            start = len(out)
+            node.result.sent(out)
+            numbered.append((node, range(start, len(out))))
+
+        return numbered
 
     def _facts(self) -> list[Fact]:
         facts: list[Fact] = []

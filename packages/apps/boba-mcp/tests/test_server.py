@@ -66,6 +66,7 @@ from boba.toolkit.wire import (
     JournalFeature,
     NestedCallsReply,
     RequestFields,
+    ResultWire,
     WirePart,
 )
 from boba.toolrun.hosted import ToolSchema
@@ -204,8 +205,8 @@ class TestCall:
             raise AssertionError(f"the result names the status of the call: {result}")
 
         own = [key for key in result.meta or {} if "boba" in key]
-        if own:
-            raise AssertionError(f"the service puts nothing in _meta: {result.meta}")
+        if own != [ResultWire.ELAPSED]:
+            raise AssertionError(f"the service puts only the elapsed time: {own}")
 
     async def test_body_sees_the_caller_of_the_token(
         self, stand: ServiceStand, url: str, dev_token: str

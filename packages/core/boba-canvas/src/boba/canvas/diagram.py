@@ -45,9 +45,8 @@ class MermaidToken(StrEnum):
 
 
 class DiagramMarker(StrEnum):
-    """Служебные имена: jsx-компонент, mime файла, канвас, fallback-имя."""
+    """Служебные имена: кодировка спеки, fallback-имя, суффикс файла."""
 
-    MIME = "text/plain"
     ENCODING = "utf-8"
     FALLBACK_NAME = "diagram.mmd"
     SUFFIX = ".mmd"

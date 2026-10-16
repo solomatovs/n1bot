@@ -77,6 +77,7 @@ class McpReplies:
         return ToolResult(
             content=list(packed.content),
             structured_content=structured,
+            meta=dict(packed.meta),
             is_error=packed.is_error,
         )
 

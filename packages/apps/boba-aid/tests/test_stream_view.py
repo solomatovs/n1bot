@@ -1096,7 +1096,7 @@ class TestStreamButton:
         name: str,
     ) -> Step:
         view, step = await self._running_step(journals, sink, name)
-        await view.tool_finished(step, "done", CALL_ID)
+        await view.tool_finished(step, "done", CALL_ID, 0)
 
         return step
 
@@ -1122,7 +1122,7 @@ class TestStreamButton:
                 await view.tool_progressed(step, f"message {number}")
 
             running = str(step.output)
-            await view.tool_finished(step, "done", CALL_ID)
+            await view.tool_finished(step, "done", CALL_ID, 0)
 
             return running, str(step.output)
 

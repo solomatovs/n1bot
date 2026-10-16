@@ -27,7 +27,7 @@ from typing import Any, ClassVar, Protocol
 import mcp_types as mt
 from acp.experimental.v2 import schema
 from chainlit.step import Step
-from pydantic import TypeAdapter, ValidationError
+from pydantic import NonNegativeInt, TypeAdapter, ValidationError
 
 from boba.aid.agent.client import SessionUpdate
 from boba.aid.rendering.chat_view import ChatView, StepText
@@ -39,9 +39,9 @@ from boba.toolkit.dag import (
     NestedCallReply,
     NestedCallsFeature,
     NodeOutcome,
+    NodeStatus,
 )
 from boba.toolkit.mcp import McpToolNames
-from boba.toolkit.result import MarkdownResult
 from boba.toolkit.wire import NestedCallsReply, ResultWire, WireResult
 from boba.transport.acp.protocol import ToolStatus
 
@@ -151,6 +151,7 @@ class UpdateView:
         self._media = media
         self._names = McpToolNames()
         self._wire = ResultWire()
+        self._durations: TypeAdapter[int] = TypeAdapter(NonNegativeInt)
         self._turn_key: str | None = None
         self._thought_id: str | None = None
         self._answer_id: str | None = None
@@ -256,6 +257,7 @@ class UpdateView:
             content=reply.content,
             structured=reply.structured_content,
             is_error=reply.is_error,
+            meta={},
         )
         call = DagNode(key=update.tool_call_id, tool=name)
         try:
@@ -470,7 +472,7 @@ class UpdateView:
         group: tuple[NestedCallsFeature, str, Sequence[DagNode]],
         status: ToolStatus,
     ) -> None:
-        """Итог каждому подшагу по его записи в списке узлов ответа
+        """Итог каждому подшагу — его блоки ответа по записи в списке узлов
         (NestedCallsReply): запуск у узлов общий, журнал у каждого свой.
         Подшаг без записи и все подшаги ответа без списка узлов (отказ до
         старта, не результат tools/call, чужой ответ) получают общий итог
@@ -503,11 +505,20 @@ class UpdateView:
                 await self._tool_result(step, update, status, name)
                 continue
 
+            if reply is None:
+                continue
+
             journal = None
             if run:
                 journal = JournalAddress(server=server, run=run, call=entry.call_id)
 
-            await self._finished(step, node.key, journal, entry.result)
+            blocks: list[mt.ContentBlock] = []
+            for index in entry.blocks:
+                blocks.append(reply.content[index])
+
+            failed = entry.status is NodeStatus.FAILED
+            shown = mt.CallToolResult(content=blocks, is_error=failed)
+            await self._finished(step, node.key, journal, shown, entry.elapsed_ms)
 
     async def _tool_result(
         self,
@@ -516,11 +527,18 @@ class UpdateView:
         status: ToolStatus,
         name: str,
     ) -> None:
-        """Итог вызова инструмента name шагу step."""
+        """Итог вызова инструмента name шагу step: ответ сервера MCP из
+        `rawOutput`; без него — текст уведомления, а у сорванного вызова —
+        отказ; rawOutput другого вида — как есть."""
         call_id = update.tool_call_id
-        outcome = self.outcome(update, name)
-        if outcome is not None:
-            await self._finished(step, call_id, outcome.journal, outcome.artifact)
+        reply = self._reply(update)
+        if reply is not None:
+            journal = None
+            if outcome := self.outcome(update, name):
+                journal = outcome.journal
+
+            elapsed = self._elapsed(reply)
+            await self._finished(step, call_id, journal, reply, elapsed)
             return
 
         if status is not ToolStatus.COMPLETED:
@@ -528,20 +546,46 @@ class UpdateView:
             await self._view.tool_failed(step, self._failure_text(update))
             return
 
-        text = MarkdownResult(text=self._content_text(update))
-        await self._finished(step, call_id, None, text)
+        raw = update.raw_output
+        if raw is None:
+            text = mt.TextContent(text=self._content_text(update))
+            raw = mt.CallToolResult(content=[text])
+
+        await self._finished(step, call_id, None, raw, 0)
 
     async def _finished(
-        self, step: Step, key: str, journal: JournalAddress | None, artifact: Any
+        self,
+        step: Step,
+        key: str,
+        journal: JournalAddress | None,
+        reply: object,
+        elapsed_ms: int,
     ) -> None:
         """Итог шагу step с ключом key: кнопка журнала по адресу journal
-        (None — журнала нет) и показ результата artifact."""
+        (None — журнала нет) и показ ответа reply."""
         if journal is None:
             self._view.drop_journal(step)
         else:
             self._journals.remember(self._thread_id, key, journal)
 
-        await self._view.tool_finished(step, artifact, key)
+        await self._view.tool_finished(step, reply, key, elapsed_ms)
+
+    def _elapsed(self, reply: mt.CallToolResult) -> int:
+        """Длительность вызова из _meta ответа; 0 — сервер её не назвал."""
+        meta = reply.meta
+        if meta is None:
+            return 0
+
+        try:
+            return self._durations.validate_python(meta.get(ResultWire.ELAPSED, 0))
+        except ValidationError as exc:
+            logger.info(
+                "thread %s: elapsed time in the result is not a count of "
+                "milliseconds, the step is shown without it: %s",
+                self._thread_id,
+                exc,
+            )
+            return 0
 
     async def _close_thinking(self) -> None:
         if self._thought_id is None:
