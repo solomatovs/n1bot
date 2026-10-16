@@ -293,6 +293,7 @@ def _root_remote_streams() -> RemoteStreams:
         root.resolved(providers.remote_journals),
         root.resolved(providers.mcp_servers),
         caller,
+        root.resolved(providers.tool_media),
     )
 
 

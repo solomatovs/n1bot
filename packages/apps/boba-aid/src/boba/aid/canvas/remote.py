@@ -15,12 +15,18 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import OrderedDict
+from collections.abc import Sequence
 from typing import ClassVar
 
-from boba.aid.rendering.acp_view import JournalRegistry
+from boba.aid.rendering.acp_view import JournalRegistry, ToolMedia
 from boba.canvas.canvas import WatchProbe, WatchSource
 from boba.canvas.journal import StreamSlice
-from boba.mcp_client.client import McpCaller, McpClientError, McpServers
+from boba.mcp_client.client import (
+    McpCaller,
+    McpClientError,
+    McpServers,
+    McpToolServer,
+)
 from boba.toolkit.channels import JournalChannel, JournalChannels
 from boba.toolkit.dag import JournalAddress
 from boba.toolkit.wire import JournalRead
@@ -66,18 +72,25 @@ class RemoteJournals(JournalRegistry):
 class RemoteStreams:
     """Чтение журналов вызовов MCP-серверов для панели живого вывода.
 
-    Создаётся обработчиком действия панели из реестра журналов, клиента MCP
-    и пользователя сессии: сервер отдаёт журнал только тому, кто вызывал.
+    Создаётся обработчиком действия панели из реестра журналов, клиента MCP,
+    пользователя сессии и знаний ленты о серверах (ToolMedia: шаблон
+    ресурсов журнала для подписки): сервер отдаёт журнал только тому, кто
+    вызывал.
     Панель зовёт его, когда своего журнала у вызова нет: окно читает
     операция сервера, адрес журнала даёт реестр RemoteJournals.
     """
 
     def __init__(
-        self, journals: RemoteJournals, servers: McpServers, caller: McpCaller
+        self,
+        journals: RemoteJournals,
+        servers: McpServers,
+        caller: McpCaller,
+        media: ToolMedia,
     ) -> None:
         self._journals = journals
         self._servers = servers
         self._caller = caller
+        self._media = media
 
     async def slice_at(
         self, thread_id: str, call_id: str, channel: JournalChannel, offset: int
@@ -119,37 +132,83 @@ class RemoteStreams:
 
         return tuple(readable)
 
-    def watch_source(
+    async def watch_source(
         self, thread_id: str, call_id: str, channel: JournalChannel
     ) -> WatchSource:
-        """Слежение за журналом вызова опросом сервера."""
-        return PolledChannelWatch(self, thread_id, call_id, channel)
+        """Слежение за каналом журнала вызова: по подписке на рост его
+        ресурса, если сервер журнала известен и подключается; опрос сервера —
+        страховка и запасной путь."""
+        address = await self._journals.address(thread_id, call_id)
+        if address is None:
+            return ListenedChannelWatch(self, thread_id, call_id, channel, None, ())
+
+        uris = self._media.journal(address.server)
+        if uris is None:
+            return ListenedChannelWatch(self, thread_id, call_id, channel, None, ())
+
+        read = JournalRead(run=address.run, node=address.call, channel=channel)
+        try:
+            port = await self._servers.port(address.server, self._caller)
+        except McpClientError as exc:
+            logger.warning(
+                "journal watch: call %s of thread %s is polled, the server is "
+                "not reachable to listen: %s",
+                call_id,
+                thread_id,
+                exc,
+            )
+            return ListenedChannelWatch(self, thread_id, call_id, channel, None, ())
+
+        return ListenedChannelWatch(
+            self, thread_id, call_id, channel, port, (uris.uri(read),)
+        )
 
 
-class PolledChannelWatch(WatchSource):
-    """Слежение панели за каналом журнала опросом сервера.
+class ListenedChannelWatch(WatchSource):
+    """Слежение панели за каналом журнала вызова, исполненного сервером.
 
-    Создаётся RemoteStreams.watch_source(). Состояние канала — размер и
-    признак конца — берётся пустым окном за концом журнала: текст при этом
-    не читается. Будильника нет, панель опрашивает источник своим тактом.
+    Создаётся RemoteStreams.watch_source(). Рост канала сервер сообщает
+    событием notifications/resources/updated подписки subscriptions/listen:
+    задача подписки (attach_waker) ставит признак «изменилось» и будит
+    сторож панели (CanvasWatch). Состояние канала — размер и признак конца —
+    берётся пустым окном за концом журнала, текст при этом не читается;
+    пока подписка жива, окно читается только после события. Без порта и
+    uri, а также после потери подписки источник опрашивается тактом
+    сторожа, как раньше.
     """
 
     BEYOND: ClassVar[int] = 1 << 62
     """Смещение заведомо за концом журнала: окно без текста, только координаты."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 — источник собирается адресом канала и подпиской
         self,
         streams: RemoteStreams,
         thread_id: str,
         call_id: str,
         channel: JournalChannel,
+        port: McpToolServer | None,
+        uris: Sequence[str],
     ) -> None:
         self._streams = streams
         self._thread_id = thread_id
         self._call_id = call_id
         self._channel = channel
+        self._port = port
+        self._uris = uris
+        self._listener: asyncio.Task[None] | None = None
+        self._listening = False
+        self._changed = True
+        self._last: WatchProbe | None = None
 
     async def probe(self) -> WatchProbe | None:
+        stale = self._changed
+        if not self._listening:
+            stale = True
+
+        if not stale:
+            return self._last
+
+        self._changed = False
         try:
             piece = await self._streams.slice_at(
                 self._thread_id, self._call_id, self._channel, self.BEYOND
@@ -166,16 +225,56 @@ class PolledChannelWatch(WatchSource):
         if piece is None:
             return None
 
-        return WatchProbe(
+        self._last = WatchProbe(
             revision=f"{piece.size}:{int(piece.closed)}",
             size=piece.size,
             closed=piece.closed,
             final=piece.closed,
             note=piece.note,
         )
+        return self._last
 
     def attach_waker(self) -> asyncio.Event | None:
-        return None
+        port = self._port
+        if port is None:
+            return None
+
+        if not self._uris:
+            return None
+
+        waker = asyncio.Event()
+        self._listener = asyncio.create_task(
+            self._listen(port, waker), name=f"journal-listen:{self._call_id}"
+        )
+        return waker
 
     def detach_waker(self, event: asyncio.Event) -> None:
-        return None
+        listener = self._listener
+        self._listener = None
+        if listener is None:
+            return
+
+        listener.cancel()
+
+    async def _listen(self, port: McpToolServer, waker: asyncio.Event) -> None:
+        """Подписка на рост канала: событие — признак и будильник; потеря
+        подписки — в лог, источник возвращается к опросу."""
+        try:
+            async with port.listen(self._uris) as subscription:
+                self._listening = True
+                self._changed = True
+                async for _ in subscription:
+                    self._changed = True
+                    waker.set()
+        except McpClientError as exc:
+            logger.warning(
+                "journal watch: call %s of thread %s falls back to polling, "
+                "listening on %s failed: %s",
+                self._call_id,
+                self._thread_id,
+                list(self._uris),
+                exc,
+            )
+        finally:
+            self._listening = False
+            self._changed = True

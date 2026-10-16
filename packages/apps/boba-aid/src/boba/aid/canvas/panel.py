@@ -521,7 +521,7 @@ class StreamActions:
         if not request.inline:
             await CanvasPanel.show(content)
 
-        source = remote.watch_source(thread_id, request.call_id, request.channel)
+        source = await remote.watch_source(thread_id, request.call_id, request.channel)
         seen = f"{piece.size}:{int(piece.closed)}"
         CanvasWatch.show(thread_id, content.path, content.nonce, source, seen)
 

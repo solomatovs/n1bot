@@ -29,7 +29,6 @@ ProgressChannelError — тело написало в канал отчётов 
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 from abc import abstractmethod
 from collections.abc import AsyncGenerator, Iterator, Mapping, Sequence
@@ -47,6 +46,11 @@ from fastmcp.server.http import StarletteWithLifespan
 from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
 from fastmcp.tools import Tool
 from fastmcp.tools.base import ToolResult
+from mcp.server.subscriptions import (
+    InMemorySubscriptionBus,
+    ResourceUpdated,
+    SubscriptionBus,
+)
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError
 from starlette.applications import Starlette
 from starlette.requests import Request
@@ -104,7 +108,13 @@ from boba.toolkit.wire import FilesFeature, JournalFeature, JournalRead, McpCont
 from boba.toolrun.call_id import CallFields
 from boba.toolrun.hosted import DirectCalls
 from boba.toolrun.registry import ToolRegistry
-from boba.toolrun.streams import CallJournals, ToolStream
+from boba.toolrun.streams import (
+    CallJournals,
+    StreamAppended,
+    StreamFeed,
+    StreamPumps,
+    ToolStream,
+)
 
 __all__ = [
     "CallContextMiddleware",
@@ -351,29 +361,26 @@ class NodeProgress(ProgressShape):
         )
 
 
-class CallProgress:
-    """Ход работы вызова уведомлениями notifications/progress.
+class CallProgress(StreamFeed):
+    """Ход работы вызова уведомлениями notifications/progress и рост его
+    журнала событиями подписки на ресурсы. Реализация StreamFeed: за
+    журналами запуска следят насосы StreamPumps.
 
     Создаётся CallContextMiddleware на каждый вызов инструмента и следит за
     журналами запуска (CallJournals.following зовёт opened). Открытый журнал
     вызова сразу называется клиенту уведомлением со ссылками на его каналы
     (JournalUris) в _meta: по ним клиент читает журнал, пока вызов идёт.
-    Тело пишет отчёты о ходе работы в канал ToolChannel.PROGRESS; отсюда они
-    уходят клиенту стандартным прогрессом запроса: числа done и total и
-    текст отчёта. token — токен
-    прогресса из _meta запроса; None — клиент о ходе вызова не просил, и
-    за каналами отчётов никто не следит. Отчёты ждут в очереди, а отправляет их задача,
-    заведённая start() внутри запроса: уведомление привязано к запросу, и
-    из чужой задачи оно не уходит. Каким отчёт уходит клиенту, решает
-    shape: у вызова одного инструмента — как есть, у связки — с ключом
-    узла в _meta.
+    Рост видимого канала уходит событием ResourceUpdated по uri канала в
+    шину подписок сервера (bus): его получают потоки subscriptions/listen
+    этого uri. Тело пишет отчёты о ходе работы в канал ToolChannel.PROGRESS;
+    отсюда они уходят клиенту стандартным прогрессом запроса: числа done и
+    total и текст отчёта. token — токен прогресса из _meta запроса; None —
+    клиент о ходе вызова не просил, и уведомлений нет. Уведомления ждут в
+    очереди, а отправляет их задача, заведённая start() внутри запроса:
+    уведомление привязано к запросу, и из чужой задачи оно не уходит. Каким
+    отчёт уходит клиенту, решает shape: у вызова одного инструмента — как
+    есть, у связки — с ключом узла в _meta.
     """
-
-    POLL_SEC: ClassVar[float] = 1.0
-    """Предел ожидания будильника журнала: страховка от пропущенного
-    пробуждения."""
-
-    CLOSE_SEC: ClassVar[float] = 2.0
 
     def __init__(  # noqa: PLR0913 — ход вызова привязан к запросу, журналам, запуску и токену
         self,
@@ -383,6 +390,7 @@ class CallProgress:
         run: str,
         shape: ProgressShape,
         uris: JournalUris,
+        bus: SubscriptionBus,
         token: mt.ProgressToken | None,
     ) -> None:
         self._context = context
@@ -391,11 +399,14 @@ class CallProgress:
         self._run = run
         self._shape = shape
         self._uris = uris
+        self._bus = bus
         self._token = token
         self._queue: asyncio.Queue[mt.ProgressNotificationParams | None]
         self._queue = asyncio.Queue()
         self._sender: asyncio.Task[None] | None = None
-        self._followers: set[asyncio.Task[None]] = set()
+        self._pumps = StreamPumps(self)
+        self._offsets: dict[str, int] = {}
+        """Вызов → байт, до которого прочитан его канал отчётов."""
         self._journaled: list[str] = []
 
     def start(self) -> None:
@@ -407,10 +418,10 @@ class CallProgress:
 
     def opened(self, call_id: str, stream: ToolStream) -> None:
         """Наблюдатель CallJournals: журнал вызова открыт — вызов попадает в
-        список журналов запуска; если клиент просил о ходе вызова, ему
-        уходят ссылки на каналы журнала, а за каналом отчётов следит своя
-        задача."""
+        список журналов запуска, за журналом следит насос; если клиент
+        просил о ходе вызова, ему уходят ссылки на каналы журнала."""
         self._journaled.append(call_id)
+        self._pumps.opened(call_id, stream)
         token = self._token
         if token is None:
             return
@@ -423,31 +434,32 @@ class CallProgress:
         if shaped := self._shape.journal(call_id, links, token):
             self._queue.put_nowait(shaped)
 
-        task = asyncio.create_task(
-            self._follow(call_id, stream, token), name=f"progress-follow:{call_id}"
-        )
-        self._followers.add(task)
-        task.add_done_callback(self._followers.discard)
-
     def journaled(self) -> Sequence[str]:
         """Вызовы запуска с журналом в порядке их открытия."""
         return list(self._journaled)
 
+    async def stream_appended(self, message: StreamAppended) -> None:
+        """Канал отчётов — уведомлениями прогресса, если клиент о нём просил;
+        видимый канал — событием роста ресурса журнала."""
+        if message.channel is ToolChannel.PROGRESS:
+            token = self._token
+            if token is None:
+                return
+
+            offset = self._offsets.get(message.call_id, 0)
+            self._offsets[message.call_id] = self._take(message.call_id, offset, token)
+            return
+
+        if not JournalChannels.visible(message.channel):
+            return
+
+        read = JournalRead(run=self._run, node=message.call_id, channel=message.channel)
+        await self._bus.publish(ResourceUpdated(uri=self._uris.uri(read)))
+
     async def close(self) -> None:
-        """Дожидается чтения и отправки всех отчётов: после ответа на вызов
+        """Дожидается насосов и отправки всех отчётов: после ответа на вызов
         уведомления теряются без ошибки."""
-        followers = list(self._followers)
-        if followers:
-            done, pending = await asyncio.wait(followers, timeout=self.CLOSE_SEC)
-            for task in pending:
-                task.cancel()
-
-            for task in pending:
-                with contextlib.suppress(asyncio.CancelledError):
-                    await task
-
-            for task in done:
-                self._logged(task)
+        await self._pumps.close()
 
         sender = self._sender
         if sender is None:
@@ -455,36 +467,6 @@ class CallProgress:
 
         self._queue.put_nowait(None)
         await sender
-
-    @staticmethod
-    def _logged(task: asyncio.Task[None]) -> None:
-        """Сбой чтения отчётов — в лог сервиса: вызов от него не срывается."""
-        if task.cancelled():
-            return
-
-        error = task.exception()
-        if error is None:
-            return
-
-        logger.error(
-            "progress follower %s failed: %s", task.get_name(), error, exc_info=error
-        )
-
-    async def _follow(
-        self, call_id: str, stream: ToolStream, token: mt.ProgressToken
-    ) -> None:
-        waker = stream.attach_waker()
-        offset = 0
-        try:
-            while True:
-                closed = stream.closed
-                offset = self._take(call_id, offset, token)
-                if closed:
-                    return
-
-                await self._pause(waker)
-        finally:
-            stream.detach_waker(waker)
 
     def _take(self, call_id: str, offset: int, token: mt.ProgressToken) -> int:
         """Уведомления по отчётам канала с байта offset — в очередь; итог —
@@ -516,14 +498,6 @@ class CallProgress:
                 f"not match ProgressReport, got {line!r}: {exc}"
             )
             raise ProgressChannelError(msg) from exc
-
-    async def _pause(self, waker: asyncio.Event) -> None:
-        try:
-            await asyncio.wait_for(waker.wait(), timeout=self.POLL_SEC)
-        except TimeoutError:
-            return
-
-        waker.clear()
 
     async def _send(self) -> None:
         while True:
@@ -707,11 +681,13 @@ class CallContextMiddleware(Middleware):
         journals: CallJournals,
         subjects: TokenSubjects,
         operations: frozenset[str],
+        bus: SubscriptionBus,
     ) -> None:
         self._runs = runs
         self._journals = journals
         self._subjects = subjects
         self._operations = operations
+        self._bus = bus
         self._replies = McpReplies()
         self._uris = JournalUris(JournalRoutes.RESOURCE)
         self._scopes = CallScopes()
@@ -772,6 +748,7 @@ class CallContextMiddleware(Middleware):
             run_id,
             shape,
             self._uris,
+            self._bus,
             fields.progress_token,
         )
         progress.start()
@@ -917,11 +894,12 @@ class McpServer:
         self._subjects = TokenSubjects(profile)
         self._limits = limits
         callers = RouteCallers(self._subjects, profile)
+        bus = InMemorySubscriptionBus()
         self._files = FileRoutes(
             StorageFactory.create(storage), callers, path, published
         )
         self._journal_files = JournalRoutes(
-            journals, callers, self._subjects, storage, path, published
+            journals, callers, self._subjects, storage, path, published, bus
         )
         upload = FileUploadTool(self._files, self._subjects)
         operations: list[Tool] = [upload]
@@ -942,7 +920,7 @@ class McpServer:
             RoleToolServers(registry, self._subjects, endpoint, params), operations
         )
         self._contexts = CallContextMiddleware(
-            runs, journals, self._subjects, McpEndpoints.OPERATIONS
+            runs, journals, self._subjects, McpEndpoints.OPERATIONS, bus
         )
 
     @staticmethod

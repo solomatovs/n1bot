@@ -48,6 +48,12 @@ from mcp.client.session import IncomingMessage
 from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamable_http_client
+from mcp.client.subscriptions import (
+    ListenNotSupportedError,
+    Subscription,
+    SubscriptionLost,
+    listen,
+)
 from mcp.shared._httpx_utils import create_mcp_http_client
 from mcp.shared._stream_protocols import ReadStream, WriteStream
 from mcp.shared.auth import (
@@ -1341,6 +1347,39 @@ class McpToolServer(McpToolPort):
                 f"tool: the result does not match its output schema or is an "
                 f"extension result the client did not ask for: {exc}"
             )
+            raise McpClientError(msg) from exc
+
+    @asynccontextmanager
+    async def listen(self, uris: Sequence[str]) -> AsyncGenerator[Subscription, None]:
+        """Подписка subscriptions/listen сессии этого порта на события
+        роста ресурсов uris; поток живёт, пока открыт контекст.
+
+        Ошибки:
+        McpClientError — сервер недоступен, подписку не поддерживает, отказал
+            в ней или поток оборвался без штатного закрытия.
+        """
+        label = f"mcp server {self._name!r}: subscriptions/listen on {list(uris)}"
+        try:
+            session = await self._connection.open()
+        except McpClientError as exc:
+            raise McpClientError(f"{label}: {exc}") from exc
+
+        try:
+            async with listen(session, resource_subscriptions=uris) as subscription:
+                yield subscription
+        except ListenNotSupportedError as exc:
+            msg = f"{label}: the negotiated protocol has no listen streams: {exc}"
+            raise McpClientError(msg) from exc
+        except MCPError as exc:
+            msg = (
+                f"{label}: refused with MCP error {exc.error.code}: {exc.error.message}"
+            )
+            raise McpClientError(msg) from exc
+        except SubscriptionLost as exc:
+            msg = f"{label}: the stream ended without the server's close: {exc}"
+            raise McpClientError(msg) from exc
+        except TimeoutError as exc:
+            msg = f"{label}: the server did not acknowledge the subscription: {exc}"
             raise McpClientError(msg) from exc
 
     async def journal(self, request: JournalRead) -> StreamSlice | None:
