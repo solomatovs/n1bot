@@ -14,14 +14,16 @@ from pydantic import SecretStr
 from boba.agent.history import HistoryError, MemoryHistoryStore, SessionId
 from boba.agent.queue import QueueEntry, QueueKind
 from boba.agent.records import PermissionMode, UserRecord
-from boba.cli.settings import (
-    Arguments,
-    EnvName,
+from boba.agent.settings import (
     HistoryKind,
     JsonlHistorySettings,
     MemoryHistorySettings,
-    PostgresBuilder,
     PostgresHistorySettings,
+)
+from boba.cli.settings import (
+    Arguments,
+    EnvName,
+    PostgresBuilder,
     ProfileBuilder,
     Settings,
     SettingsError,
@@ -219,7 +221,9 @@ class TestProfile:
 
 class TestPostgresHistory:
     def test_dsn_from_the_named_variable_becomes_a_config(self) -> None:
-        history = PostgresHistorySettings(kind=HistoryKind.POSTGRES, dsn_env="PG")
+        history = PostgresHistorySettings(
+            kind=HistoryKind.POSTGRES, dsn_env="PG", schema="boba"
+        )
         env = {
             "PG": "postgresql://agent:s3cret@db.example.org:5433/boba?sslmode=require"
         }
@@ -233,10 +237,12 @@ class TestPostgresHistory:
         assert config.auth.method == "password"
         assert config.auth.user == "agent"
         assert "s3cret" not in config.model_dump_json()
-        assert history.db_schema == "agent_history"
+        assert history.db_schema == "boba"
 
     def test_missing_variable_and_missing_user_are_errors(self) -> None:
-        history = PostgresHistorySettings(kind=HistoryKind.POSTGRES, dsn_env="PG")
+        history = PostgresHistorySettings(
+            kind=HistoryKind.POSTGRES, dsn_env="PG", schema="boba"
+        )
 
         with pytest.raises(SettingsError, match="PG"):
             PostgresBuilder({}).config(history)
@@ -346,7 +352,7 @@ class TestSecretsInFile:
 
     def test_postgres_history_needs_dsn_or_dsn_env(self, tmp_path: Path) -> None:
         path = tmp_path / "settings.json"
-        write_private(path, {"history": {"kind": "postgres"}})
+        write_private(path, {"history": {"kind": "postgres", "schema": "boba"}})
 
         with pytest.raises(SettingsError, match="'dsn'"):
             settings(tmp_path, Arguments(settings=(str(path),))).effective()

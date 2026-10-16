@@ -37,7 +37,8 @@ from psycopg import sql
 from boba.chainlit.agent.settings import WorkdirFile
 from boba.chainlit.domain.fields import ThreadMetaField
 from boba.db.postgres import AsyncPostgresPool
-from boba.runtime.config import DataLayerConfig
+from boba.db.postgres.connection import PostgresConfig
+from boba.runtime.config import RuntimeConfig
 from boba.stand.database import TestDatabase
 from boba.stand.names import StandNames
 from boba.stand.site import Stand
@@ -610,10 +611,10 @@ class ChatRows:
     """Строки базы стенда: metadata треда и записи истории агента."""
 
     def __init__(
-        self, stand_data_layer: DataLayerConfig, database: str, history_schema: str
+        self, postgres: PostgresConfig, schema: str, database: str, history_schema: str
     ) -> None:
-        self._postgres = TestDatabase.config_of(stand_data_layer.postgres, database)
-        self._schema = stand_data_layer.db_schema
+        self._postgres = TestDatabase.config_of(postgres, database)
+        self._schema = schema
         self._history_schema = history_schema
 
     async def thread_meta(self, thread_id: str) -> dict[str, Any] | None:
@@ -694,13 +695,16 @@ class ChatRows:
 
 @pytest.fixture
 def rows(
-    stand_data_layer: DataLayerConfig,
+    stand_postgres: PostgresConfig,
+    runtime_config: RuntimeConfig,
     stand_database: str,
     app: StandProcess[StandConfig],
 ) -> ChatRows:
     history_schema = app.config.agent_history["schema"]
 
-    return ChatRows(stand_data_layer, stand_database, history_schema)
+    return ChatRows(
+        stand_postgres, runtime_config.db_schema, stand_database, history_schema
+    )
 
 
 class TestConversation:
@@ -1695,7 +1699,7 @@ class TestSettingsRestart:
 
             new_settings = agents.of_thread(tab.thread_id)[new_pid]
             body = json.loads(new_settings.read_text(encoding="utf-8"))
-            assert body["permissions"]["defaultMode"] == "default"
+            assert body["permissions"]["default_mode"] == "default"
             assert body["models"][PROFILE]["model"] == "fake-model-restarted"
             self._assert_private(new_pid, new_settings, stand, cookie)
 

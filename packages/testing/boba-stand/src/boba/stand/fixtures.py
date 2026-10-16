@@ -15,7 +15,6 @@ from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
 from boba.runtime.config import (
     ConfigLocator,
-    DataLayerConfig,
     EnvOverride,
     ProcessConfig,
     RawConfig,
@@ -23,7 +22,7 @@ from boba.runtime.config import (
 )
 from boba.stand.database import TestDatabase
 from boba.stand.refs import StandRefs
-from boba.stand.site import ServiceRuntime, StandLayers
+from boba.stand.site import StandLayers
 from boba.stand.ui.stand import REPO_ROOT, StandApp, StandPaths
 from boba.stand.zygote import ZygoteStand
 from boba.stand_core.context import CallStand, call_stand
@@ -133,9 +132,10 @@ def bus_config(raw_config: DictConfig) -> RuntimeConfig:
 
 
 @pytest.fixture(scope="session")
-def service_runtime(service_raw_config: DictConfig) -> ServiceRuntime:
-    """Конфиг процесса сервиса boba-mcp со стендовой базой тестов."""
-    return bind(service_raw_config, path=ServiceRuntime.SECTION, model=ServiceRuntime)
+def service_runtime(service_raw_config: DictConfig) -> ProcessConfig:
+    """Секции процесса сервиса boba-mcp: модель самого сервиса лежит в его
+    пакете и пакетам инструментов недоступна по слоям."""
+    return bind(service_raw_config, path=ProcessConfig.SECTION, model=ProcessConfig)
 
 
 @pytest.fixture(scope="session")
@@ -146,10 +146,10 @@ def process_config(runtime_config: RuntimeConfig) -> ProcessConfig:
 
 
 @pytest.fixture(scope="session")
-def stand_data_layer(runtime_config: RuntimeConfig) -> DataLayerConfig:
-    """Сервер и схема базы тестов набора: по умолчанию — data layer
-    приложения; набор над конфигом сервиса отдаёт слой стенда."""
-    return runtime_config.data_layer
+def stand_postgres(raw_config: DictConfig) -> PostgresConfig:
+    """Сервер базы тестов набора: подключение процесса [postgres] конфига
+    набора — приложения или сервиса."""
+    return bind(raw_config, path="postgres", model=PostgresConfig)
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -164,25 +164,22 @@ def kerberos_workspace(
 
 
 @pytest.fixture(scope="session")
-async def test_database(stand_data_layer: DataLayerConfig) -> str:
-    return await TestDatabase.ensure(stand_data_layer.postgres)
+async def test_database(stand_postgres: PostgresConfig) -> str:
+    return await TestDatabase.ensure(stand_postgres)
 
 
 @pytest.fixture
-def test_postgres(
-    stand_data_layer: DataLayerConfig, test_database: str
-) -> PostgresConfig:
+def test_postgres(stand_postgres: PostgresConfig, test_database: str) -> PostgresConfig:
     """Профиль тестовой базы: тем, кто подключается сам, а не пулом."""
-    return TestDatabase.config_of(stand_data_layer.postgres, test_database)
+    return TestDatabase.config_of(stand_postgres, test_database)
 
 
 @pytest.fixture
 async def pool(
-    stand_data_layer: DataLayerConfig, test_database: str
+    stand_postgres: PostgresConfig, test_database: str
 ) -> AsyncIterator[AsyncPostgresPool]:
-    """Пул в тестовой базе с search_path на схему хранения приложения."""
-    postgres = TestDatabase.config_of(stand_data_layer.postgres, test_database)
-    p = AsyncPostgresPool(postgres.with_schema(stand_data_layer.db_schema))
+    """Пул в тестовой базе: таблицы квалифицируются схемой в запросах."""
+    p = AsyncPostgresPool(TestDatabase.config_of(stand_postgres, test_database))
     await p.open()
     try:
         yield p

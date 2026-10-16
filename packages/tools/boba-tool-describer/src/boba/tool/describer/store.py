@@ -1,14 +1,16 @@
-"""Общая часть хранилища описаний: конфиг, сессия с готовой схемой, ключ области.
+"""Общая часть хранилища описаний: конфиг, сессия, ключ области и создание
+таблиц на старте плагина.
 
 Сущности живут в своих модулях (nodes, edges) со своими SQL, моделями,
-ошибками и инструментами; отсюда они берут только сессию — соединение с
-подготовленными таблицами и сборщик запросов со схемой — и ключ области.
-Схему и обе таблицы сессия готовит идемпотентно на каждом вызове: внешний
-потребитель забирает строки и делает truncate, схему и таблицы не трогает.
+ошибками и инструментами; отсюда они берут только сессию — соединение и
+сборщик запросов со схемой — и ключ области. Схему и обе таблицы создаёт
+setup один раз при старте плагина: внешний потребитель забирает строки и
+делает truncate, схему и таблицы не трогает.
 
 Ошибки:
 DescriberError — область вызова не годится ключом: id не uuid.
-PostgresError — до базы приложения не достучаться.
+PostgresError — до базы приложения не достучаться или сервер отклонил файл
+    схемы.
 psycopg.Error — СУБД отклонила запрос.
 """
 
@@ -18,6 +20,7 @@ import logging
 from collections.abc import AsyncGenerator, Sequence
 from contextlib import asynccontextmanager
 from enum import StrEnum
+from importlib.resources import files
 from typing import Any, ClassVar
 from uuid import UUID
 
@@ -27,6 +30,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from boba.db.postgres import PayloadPostgres, PgQueryBuilder, PostgresSchema
 from boba.db.postgres.connection import PostgresConfig
 from boba.identity.context import Scope, ScopeKind
+from boba.toolkit.manifest import PluginStorage
 from boba.toolkit.types import SecretRevealing
 
 logger = logging.getLogger(__name__)
@@ -120,62 +124,25 @@ class DescriberSession:
         return PgQueryBuilder(schema=self._schema.ident)
 
 
-class DescriberStore:
-    """Сессии хранилища: одно соединение на вызов инструмента, схема и
-    таблицы готовы к первому запросу."""
+class DescriberStore(PluginStorage):
+    """Сессии хранилища: одно соединение на вызов инструмента. Таблицы node и
+    edge создаёт setup файлами schema/*.sql пакета при старте плагина в
+    процессе boba-mcp; реализация PluginStorage."""
 
     def __init__(self, cfg: DescriberToolConfig) -> None:
         self._connection = cfg.connection
         self._schema = PostgresSchema(cfg.db_schema)
 
-    @asynccontextmanager
-    async def session(self) -> AsyncGenerator[DescriberSession, None]:
-        """Сессия с готовыми таблицами; соединение закрывается по выходу."""
+    async def setup(self) -> None:
+        """Схема и таблицы описаний на старте плагина; повтор безвреден."""
+        schema_dir = files("boba.tool.describer") / "schema"
         conn = await PayloadPostgres.connect_config(self._connection)
         async with conn:
-            await self._ensure(conn)
+            await self._schema.apply_files(conn, schema_dir, {})
+
+    @asynccontextmanager
+    async def session(self) -> AsyncGenerator[DescriberSession, None]:
+        """Сессия на готовых таблицах; соединение закрывается по выходу."""
+        conn = await PayloadPostgres.connect_config(self._connection)
+        async with conn:
             yield DescriberSession(conn, self._schema)
-
-    async def _ensure(self, conn: psycopg.AsyncConnection[Any]) -> None:
-        """Схема и таблицы под одним advisory-замком: параллельные вызовы одного
-        ответа модели иначе роняют create schema if not exists на уникальности
-        pg_namespace. Без права на create schema её заводит администратор."""
-        tables = (
-            PgQueryBuilder(schema=self._schema.ident)
-            .add(
-                """
-                create table if not exists {schema}.node (
-                    id          bigserial primary key,
-                    scope_kind  varchar not null,
-                    scope_id    uuid not null,
-                    kind        varchar not null,
-                    address     jsonb not null,
-                    url_address varchar not null,
-                    description varchar not null,
-                    s__wrt_ts   timestamptz not null default now()
-                );
-                create unique index if not exists node_uk
-                    on {schema}.node (scope_id, address);
-                create index if not exists node_address_gin
-                    on {schema}.node using gin (address jsonb_path_ops);
-                create index if not exists node_kind_btree on {schema}.node (kind);
-                create table if not exists {schema}.edge (
-                    id          bigserial primary key,
-                    source_id   bigint not null
-                                references {schema}.node on delete cascade,
-                    target_id   bigint not null
-                                references {schema}.node on delete cascade,
-                    kind        varchar not null,
-                    description varchar not null,
-                    s__wrt_ts   timestamptz not null default now(),
-                    unique (source_id, target_id, kind)
-                )
-                """
-            )
-            .build()
-        )
-
-        async with conn.transaction():
-            await self._schema.ddl_lock().acquire(conn)
-            await self._schema.ensure(conn)
-            await conn.execute(tables.text, tables.params, prepare=False)

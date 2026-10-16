@@ -7,8 +7,8 @@
 
 from __future__ import annotations
 
-import base64
 import secrets as std_secrets
+from importlib.resources import files
 from pathlib import Path
 from typing import Annotated, Any
 from uuid import UUID
@@ -18,19 +18,19 @@ import pytest
 from chainlit.user import PersistedUser
 from chainlit.user import User as ChainlitUser
 from chainlit_stand import ChatSessionStand, SsoStand
-from omegaconf import OmegaConf
 from psycopg import sql
-from pydantic import SecretStr, create_model
+from pydantic import create_model
 
 from boba.auth.credentials import KerberosCredentialSource
 from boba.chainlit.auth.kerberos import KerberosAuth
 from boba.chainlit.data.data_layer import PostgresDataLayer
 from boba.config import bind
-from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
+from boba.connection_broker.store import ConnectionStore
 from boba.connections.manifest import ConnectionTypes
 from boba.connections.marks import ConnectionRefusal
+from boba.connections.secrets import SecretCipher
 from boba.connections.stored import GrantTarget, StoredRole
-from boba.db.postgres import AsyncPostgresPool
+from boba.db.postgres import AsyncPostgresPool, PostgresSchema
 from boba.db.postgres.connection import PostgresConfig, TrustAuth
 from boba.identity.errors import RefusalError
 from boba.identity.session import UserMetadataField
@@ -81,8 +81,8 @@ THREAD = "44444444-4444-4444-4444-444444444444"
 PROFILE = "test"
 
 
-def _key() -> SecretStr:
-    return SecretStr(base64.b64encode(std_secrets.token_bytes(32)).decode())
+def _cipher() -> SecretCipher:
+    return SecretCipher(std_secrets.token_bytes(32))
 
 
 @pytest.fixture
@@ -92,9 +92,11 @@ async def store(pool: AsyncPostgresPool) -> ConnectionStore:
             sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(SCHEMA))
         )
 
-    cfg = ConnectionsConfig(enable=True, db_schema=SCHEMA, encryption_key=_key())
-    built = ConnectionStore(cfg, ConnectionTypes.discover(), pool)
-    await built.setup()
+    schema_dir = files("boba.connection_broker") / "schema"
+    async with pool.connection() as conn:
+        await PostgresSchema(SCHEMA).apply_files(conn, schema_dir, {})
+
+    built = ConnectionStore(pool, SCHEMA, _cipher(), ConnectionTypes.discover())
     await built.sync_roles([ROLE])
     return built
 
@@ -144,12 +146,12 @@ class Tgt:
 
 
 @pytest.fixture
-def sso(tmp_path: Path, service_raw_config: Any) -> tuple[SsoTickets, dict[str, str]]:
+def sso(tmp_path: Path) -> tuple[SsoTickets, dict[str, str]]:
     """Билеты входов стенда: TGT сервиса и TGT второй учётки, запечатанные для JWT."""
     tickets = SsoStand.tickets(str(KRB5_CONF))
     service = Tgt.from_keytab()
     reader = f"FILE:{tmp_path / 'reader'}"
-    password = str(OmegaConf.select(service_raw_config, "site.ldap_bind_password"))
+    password = STAND.reader_password.get_secret_value()
     Tgt.from_password(reader, READER_PRINCIPAL, password)
     sealed = {
         SERVICE_PRINCIPAL: SsoStand.sealed(

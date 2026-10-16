@@ -2,18 +2,18 @@
 
 from __future__ import annotations
 
-import base64
 import json
 import secrets as std_secrets
+from importlib.resources import files
 from uuid import UUID
 
 import pytest
 from psycopg import sql
 from pydantic import SecretStr
 
-from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
+from boba.connection_broker.store import ConnectionStore
 from boba.connections.manifest import ConnectionTypes, UnknownConnectionKindError
-from boba.connections.secrets import SecretCryptoError
+from boba.connections.secrets import SecretCipher, SecretCryptoError
 from boba.connections.stored import (
     ConnectionNotFoundError,
     GrantKind,
@@ -25,7 +25,7 @@ from boba.db.clickhouse.connection import (
     ClickHouseSettingsConfig,
     NoPasswordAuth,
 )
-from boba.db.postgres import AsyncPostgresPool
+from boba.db.postgres import AsyncPostgresPool, PostgresSchema
 from boba.db.postgres.connection import (
     PasswordAuth,
     PostgresConfig,
@@ -41,12 +41,8 @@ pytestmark = pytest.mark.anyio
 SCHEMA = "connections_test"
 
 
-def _key() -> SecretStr:
-    return SecretStr(base64.b64encode(std_secrets.token_bytes(32)).decode())
-
-
-def _config(key: SecretStr) -> ConnectionsConfig:
-    return ConnectionsConfig(enable=True, db_schema=SCHEMA, encryption_key=key)
+def _cipher() -> SecretCipher:
+    return SecretCipher(std_secrets.token_bytes(32))
 
 
 def _pg(password: str) -> PostgresConfig:
@@ -90,22 +86,23 @@ async def store(pool: AsyncPostgresPool) -> ConnectionStore:
             sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(SCHEMA))
         )
 
-    built = ConnectionStore(_config(_key()), ConnectionTypes.discover(), pool)
-    await built.setup()
-    return built
+    schema_dir = files("boba.connection_broker") / "schema"
+    async with pool.connection() as conn:
+        await PostgresSchema(SCHEMA).apply_files(conn, schema_dir, {})
+
+    return ConnectionStore(pool, SCHEMA, _cipher(), ConnectionTypes.discover())
 
 
 async def test_unknown_kind_is_skipped_in_lists_and_fails_on_get(
     store: ConnectionStore, pool: AsyncPostgresPool
 ) -> None:
     """Строка типа без установленного пакета: списки живут, точечный get падает."""
-    key = _key()
-    full = ConnectionStore(_config(key), ConnectionTypes.discover(), pool)
-    await full.setup()
+    cipher = _cipher()
+    full = ConnectionStore(pool, SCHEMA, cipher, ConnectionTypes.discover())
     connection_id = await full.add("legacy", _pg(FakeSecret.DB))
 
     # реестр без postgres: как будто пакет-владелец удалили
-    stripped = ConnectionStore(_config(key), ConnectionTypes({}), pool)
+    stripped = ConnectionStore(pool, SCHEMA, cipher, ConnectionTypes({}))
 
     rows = await stripped.list_all()
     if [row.name for row in rows] != []:
@@ -113,11 +110,6 @@ async def test_unknown_kind_is_skipped_in_lists_and_fails_on_get(
 
     with pytest.raises(UnknownConnectionKindError, match="not installed"):
         await stripped.get(connection_id)
-
-
-async def test_setup_is_idempotent(store: ConnectionStore) -> None:
-    await store.setup()
-    await store.setup()
 
 
 async def test_add_and_get_restores_profile(store: ConnectionStore) -> None:
@@ -214,7 +206,7 @@ async def test_foreign_key_cannot_read_rows(
 ) -> None:
     connection_id = await store.add("main", _pg(FakeSecret.DB))
 
-    foreign = ConnectionStore(_config(_key()), ConnectionTypes.discover(), pool)
+    foreign = ConnectionStore(pool, SCHEMA, _cipher(), ConnectionTypes.discover())
     with pytest.raises(SecretCryptoError):
         await foreign.get(connection_id)
 

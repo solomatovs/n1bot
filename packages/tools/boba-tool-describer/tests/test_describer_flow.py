@@ -13,10 +13,10 @@ describe_list_edges → удаление по id → ответ. Строки
 
 from __future__ import annotations
 
-import base64
 import secrets as std_secrets
 import shutil
 from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
+from importlib.resources import files
 from pathlib import Path
 from typing import Any, ClassVar
 from uuid import UUID
@@ -24,18 +24,18 @@ from uuid import UUID
 import pytest
 from omegaconf import DictConfig, OmegaConf
 from psycopg import sql
-from pydantic import SecretStr
 
 from boba.config import bind
-from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
+from boba.connection_broker.store import ConnectionStore
 from boba.connection_broker.user_connections import ArmedConnections
 from boba.connections.manifest import ConnectionTypes
+from boba.connections.secrets import SecretCipher
 from boba.connections.stored import GrantTarget
 from boba.db.clickhouse.address import ChAddresses, ChTableColumnAddress
 from boba.db.clickhouse.connection import ClickHouseConfig
 from boba.db.clickhouse.connection import PasswordAuth as ChPasswordAuth
 from boba.db.clickhouse.payload import PayloadClickHouse
-from boba.db.postgres import AsyncPostgresPool
+from boba.db.postgres import AsyncPostgresPool, PostgresSchema
 from boba.db.postgres.address import (
     PgAddresses,
     PgTableAddress,
@@ -51,6 +51,7 @@ from boba.stand_core.context import CallStand
 from boba.tool.describer.address import Addresses, EntityAddress
 from boba.tool.describer.edges import EdgeKind, EdgeListColumn
 from boba.tool.describer.nodes import NodeListColumn
+from boba.tool.describer.store import DescriberStore, DescriberToolConfig
 from boba.toolkit.dag import DagNode, NodeOutcome, ToolServer
 from boba.toolkit.result import (
     ErrorResult,
@@ -212,8 +213,8 @@ class Expected:
         return EntityAddress(name=name).render()
 
 
-def _key() -> SecretStr:
-    return SecretStr(base64.b64encode(std_secrets.token_bytes(32)).decode())
+def _cipher() -> SecretCipher:
+    return SecretCipher(std_secrets.token_bytes(32))
 
 
 def _call(call_id: str, name: str, **args: Any) -> DagNode:
@@ -286,11 +287,13 @@ async def store(pool: AsyncPostgresPool) -> AsyncIterator[ConnectionStore]:
             )
         )
 
-    cfg = ConnectionsConfig(
-        enable=True, db_schema=CONNECTIONS_SCHEMA, encryption_key=_key()
+    schema_dir = files("boba.connection_broker") / "schema"
+    async with pool.connection() as conn:
+        await PostgresSchema(CONNECTIONS_SCHEMA).apply_files(conn, schema_dir, {})
+
+    built = ConnectionStore(
+        pool, CONNECTIONS_SCHEMA, _cipher(), ConnectionTypes.discover()
     )
-    built = ConnectionStore(cfg, ConnectionTypes.discover(), pool)
-    await built.setup()
     StoreHolder.store = built
     try:
         yield built
@@ -311,9 +314,9 @@ async def granted(
 
 
 @pytest.fixture
-async def seeded_pg(pool: AsyncPostgresPool) -> None:
+async def seeded_pg(pool: AsyncPostgresPool, flow_raw: DictConfig) -> None:
     """Описываемые таблицы: customers и orders с внешним ключом; таблицы
-    describer сброшены."""
+    describer пересозданы стартом плагина."""
     async with pool.connection() as conn:
         await conn.execute(
             sql.SQL("drop schema if exists {} cascade").format(
@@ -339,6 +342,9 @@ async def seeded_pg(pool: AsyncPostgresPool) -> None:
                 customers=sql.Identifier(DM, "customers"),
             )
         )
+
+    describer = bind(flow_raw, path="tool.describer", model=DescriberToolConfig)
+    await DescriberStore(describer).setup()
 
 
 @pytest.fixture

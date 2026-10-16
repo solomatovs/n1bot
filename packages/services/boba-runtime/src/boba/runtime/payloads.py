@@ -17,12 +17,11 @@ from uuid import UUID, uuid4
 from psycopg.types.json import Json
 from pydantic import BaseModel
 
-from boba.db.postgres import PgQuery, PostgresPool, PostgresTable
+from boba.db.postgres import PostgresPool, PostgresTable
 from boba.db.postgres.connection import PostgresConfig
 from boba.identity.context import Scope
 from boba.messaging import PayloadMissingError, PayloadRef, PayloadStore
-from boba.messaging.bus import LivePayloadsColumn, LiveTable
-from boba.runtime.bus import ScopeKindCheck
+from boba.messaging.bus import LivePayloadsColumn
 
 __all__ = ["PayloadBody", "PayloadStoreError", "PgPayloadStore"]
 
@@ -72,7 +71,6 @@ class PgPayloadStore(PostgresTable, PayloadStore):
         self, cfg: PostgresConfig, db_schema: str, pool: PostgresPool | None = None
     ) -> None:
         super().__init__(cfg, db_schema, pool)
-        self._scope_kind_check = ScopeKindCheck(db_schema)
 
     def _failure(self, action: str, exc: Exception) -> Exception:
         return PayloadStoreError(self._detail(action, exc))
@@ -82,43 +80,6 @@ class PgPayloadStore(PostgresTable, PayloadStore):
             return scope.uuid()
         except ValueError as exc:
             raise PayloadStoreError(f"payloads: {exc}") from exc
-
-    async def setup(self) -> None:
-        """Создаёт live_payloads; схему готовит шина."""
-        ddl: tuple[PgQuery, ...] = (
-            self._query()
-            .add(
-                """
-                create unlogged table if not exists {schema}.live_payloads (
-                    scope_kind text not null,
-                    scope_id   uuid not null,
-                    id         uuid primary key,
-                    body       json not null,
-                    at         timestamptz not null default now()
-                )
-                """
-            )
-            .build(),
-            self._query()
-            .add(
-                """
-                alter table {schema}.live_payloads
-                    alter column body type json using body::text::json
-                """
-            )
-            .build(),
-            self._query()
-            .add(
-                """
-                create index if not exists idx_live_payloads_scope
-                on {schema}.live_payloads (scope_kind, scope_id)
-                """
-            )
-            .build(),
-            self._scope_kind_check.of(LiveTable.PAYLOADS),
-        )
-
-        await self._apply_ddl(ddl)
 
     async def put(self, scope: Scope, payload: object) -> PayloadRef:
         ref = PayloadRef(scope=scope, id=uuid4().hex)

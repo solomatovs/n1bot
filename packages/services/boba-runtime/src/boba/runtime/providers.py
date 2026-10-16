@@ -6,12 +6,12 @@ get_process_config: провайдеры ядра читают только се
 
 Ошибки:
 RuntimeError — контейнер не поднят или процесс не дал значение.
-ServiceDisabledError — сервис выключаемой секции запрошен при выключенной секции.
+ServerStartError — плагин не подготовил свои таблицы на старте процесса.
 """
 
 import logging
 from collections.abc import AsyncGenerator, Generator, Sequence
-from typing import Annotated, TypeVar
+from typing import Annotated
 
 from omegaconf import DictConfig
 
@@ -21,14 +21,13 @@ from boba.auth.credentials import KerberosCredentialSource
 from boba.auth.sso import SpnegoGate
 from boba.chat.profiles import ChatProfiles, RolesSection
 from boba.config import bind
-from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
+from boba.connection_broker.store import ConnectionStore
 from boba.connections.manifest import ConnectionTypes
 from boba.connections.sealed import SealKeys
-from boba.db.pgvector.config import KnowledgeBaseSchemaConfig
-from boba.db.pgvector.schema import KbSchema
+from boba.connections.secrets import SecretCipher
+from boba.db.postgres import AsyncPostgresPool, PostgresError
 from boba.identity.context import CallContexts
 from boba.identity.directory import UserDirectory
-from boba.identity.errors import ServiceDisabledError
 from boba.identity.locks import LiveLocks, MemoryLiveLocks, StaleLock
 from boba.identity.run import Runs
 from boba.identity.signin import ProfileCatalog
@@ -50,6 +49,7 @@ from boba.runtime.config import (
     RuntimeConfig,
 )
 from boba.runtime.di import Container, Depends
+from boba.runtime.http import ServerStartError
 from boba.runtime.journal import DirVault, StreamJournal
 from boba.runtime.launchers import SectionLaunchers, ToolLaunchers
 from boba.runtime.locks import LockReaper, PgLiveLocks
@@ -67,9 +67,6 @@ from boba.toolrun.registry import ToolRegistry
 from boba.toolrun.streams import CallJournals
 
 logger = logging.getLogger(__name__)
-
-
-ValueT = TypeVar("ValueT")
 
 
 def get_raw_config() -> DictConfig:
@@ -110,27 +107,36 @@ def instance_name(
     return config.cluster.instance_of(app)
 
 
+async def postgres_pool(
+    config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
+) -> AsyncGenerator[AsyncPostgresPool, None]:
+    """Пул процесса по [postgres]: открывается один раз в корне процесса,
+    его получают все таблицы приложения; закрывается с контейнером."""
+    pool = await AsyncPostgresPool.get(config.postgres)
+    try:
+        yield pool
+    finally:
+        await pool.close()
+
+
 async def message_bus(
     config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
     app: Annotated[AppName, Depends(app_name)],
     instance: Annotated[str, Depends(instance_name)],
+    pool: Annotated[AsyncPostgresPool, Depends(postgres_pool)],
 ) -> AsyncGenerator[MessageBus, None]:
     """Поднимает шину процесса по секции [messaging]: local живёт в памяти одного
-    инстанса, postgres готовит таблицы, запускает слушателя на всё время работы и
-    останавливает его при закрытии контейнера.
+    инстанса, postgres запускает слушателя на всё время работы и останавливает
+    его при закрытии контейнера. Таблицы live_* готовит корень приложения
+    файлами схемы до шины.
     """
     if isinstance(config.messaging, LocalMessagingConfig):
         yield MemoryMessageBus(instance)
         return
 
     bus = PgMessageBus(
-        config.messaging.postgres,
-        config.messaging.db_schema,
-        instance,
-        app,
-        config.cluster,
+        config.postgres, config.db_schema, instance, app, config.cluster, pool
     )
-    await bus.setup()
     await bus.start()
 
     try:
@@ -142,18 +148,14 @@ async def message_bus(
 async def payload_store(
     config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
     bus: Annotated[MessageBus, Depends(message_bus)],
+    pool: Annotated[AsyncPostgresPool, Depends(postgres_pool)],
 ) -> PayloadStore:
     """Хранилище тел сообщений: при local — в памяти рядом с шиной, при postgres —
-    в live_payloads; схему готовит шина, поэтому она поднимается первой, таблицу —
-    само хранилище.
-    """
+    в live_payloads."""
     if isinstance(config.messaging, LocalMessagingConfig):
         return MemoryPayloadStore()
 
-    store = PgPayloadStore(config.messaging.postgres, config.messaging.db_schema)
-    await store.setup()
-
-    return store
+    return PgPayloadStore(config.postgres, config.db_schema, pool)
 
 
 def plugin_table() -> PluginTable:
@@ -211,16 +213,6 @@ def _root() -> Container:
     return Container.require_root("runtime providers")
 
 
-def required(value: ValueT | None, section: str, what: str) -> ValueT:
-    """Значение провайдера выключаемой секции; None — ServiceDisabledError,
-    которую api отдаёт как 503, а инструмент — текстом отказа."""
-    if value is None:
-        msg = f"{what} requested but [{section}] is disabled in the config"
-        raise ServiceDisabledError(section, msg)
-
-    return value
-
-
 def credential_source(
     config: Annotated[ProcessConfig, Depends(get_process_config)],
     refresh: Annotated[RefreshSignal, Depends(refresh_signal)],
@@ -243,9 +235,7 @@ def message_bus_ref() -> MessageBus:
 
 def connection_store_ref() -> ConnectionStore:
     """Хранилище соединений для обвязок инструментов; зовётся на каждый вызов."""
-    store = _root().resolved(connection_store)
-
-    return required(store, "connections", "the connection store")
+    return _root().resolved(connection_store)
 
 
 def call_contexts_ref() -> CallContexts:
@@ -322,16 +312,34 @@ def tool_registry(
     return loader.load()
 
 
-async def kb_schema(
+async def plugin_storages(
     raw: Annotated[DictConfig, Depends(get_raw_config)],
+    table: Annotated[PluginTable, Depends(plugin_table)],
 ) -> None:
-    """Готовит таблицы базы знаний, если секция [tool.kb] включена."""
-    meta = bind(raw, "tool.kb", PluginMeta)
-    if not meta.enable:
-        return
+    """Старт плагинов с хранилищем: каждый включённый плагин, объявивший
+    PluginStart, создаёт свои таблицы по своей секции tool.<section>. Отказ
+    плагина валит старт процесса с именем плагина.
 
-    cfg = bind(raw, "tool.kb", KnowledgeBaseSchemaConfig)
-    await KbSchema(cfg, dim=cfg.embedding.dim).setup()
+    Ошибки:
+    ServerStartError — хранилище плагина не подготовилось.
+    """
+    for name, plugin in table().items():
+        start = plugin.start
+        if start is None:
+            continue
+
+        section = f"tool.{plugin.section}"
+        meta = bind(raw, section, PluginMeta)
+        if not meta.enable:
+            continue
+
+        cfg = bind(raw, section, start.config)
+        storage = start.storage(cfg)
+        try:
+            await storage.setup()
+        except PostgresError as exc:
+            msg = f"plugin {name!r} ([{section}]) could not prepare its tables: {exc}"
+            raise ServerStartError(msg) from exc
 
 
 async def live_locks(
@@ -339,22 +347,17 @@ async def live_locks(
     instance: Annotated[str, Depends(instance_name)],
     app: Annotated[AppName, Depends(app_name)],
     bus: Annotated[MessageBus, Depends(message_bus)],
+    pool: Annotated[AsyncPostgresPool, Depends(postgres_pool)],
 ) -> LiveLocks:
     """Блокировки областей процесса; при local они живут в памяти, при postgres
-    live_instances готовит шина, поэтому она поднимается первой, live_locks создаёт
-    хранилище само, инстанс регистрируется здесь и дальше подтверждается сторожем.
+    инстанс регистрируется здесь и дальше подтверждается сторожем.
     """
     if isinstance(config.messaging, LocalMessagingConfig):
         return MemoryLiveLocks(instance, config.cluster.lock_ttl_sec)
 
     locks = PgLiveLocks(
-        config.messaging.postgres,
-        config.messaging.db_schema,
-        instance,
-        app,
-        config.cluster,
+        config.postgres, config.db_schema, instance, app, config.cluster, pool
     )
-    await locks.setup()
     await locks.register_instance()
     return locks
 
@@ -374,16 +377,14 @@ def connection_types() -> ConnectionTypes:
 
 
 async def connection_store(
+    config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
     raw: Annotated[DictConfig, Depends(get_raw_config)],
     types: Annotated[ConnectionTypes, Depends(connection_types)],
-) -> ConnectionStore | None:
+    pool: Annotated[AsyncPostgresPool, Depends(postgres_pool)],
+) -> ConnectionStore:
     """Хранилище соединений; роли из [roles] попадают в таблицу roles на старте."""
-    cfg = bind(raw, "connections", ConnectionsConfig)
-    if not cfg.enable:
-        return None
-
-    store = ConnectionStore(cfg, types)
-    await store.setup()
+    cipher = SecretCipher(config.keys.encryption.get_secret_value())
+    store = ConnectionStore(pool, config.db_schema, cipher, types)
 
     roles = bind(raw, "roles", RolesSection).root
     await store.sync_roles(roles)
@@ -419,16 +420,18 @@ def call_journals(
 
 def users_table(
     config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
+    pool: Annotated[AsyncPostgresPool, Depends(postgres_pool)],
 ) -> UsersTable:
-    """Строки users и авторы тредов той же схемы, что у data layer чата."""
-    return UsersTable(config.data_layer.postgres, config.data_layer.db_schema)
+    """Строки users и авторы тредов в схеме приложения на пуле процесса."""
+    return UsersTable(config.postgres, config.db_schema, pool)
 
 
 def threads_table(
     config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
+    pool: Annotated[AsyncPostgresPool, Depends(postgres_pool)],
 ) -> ThreadsTable:
-    """Строки threads той же схемы, что у data layer чата."""
-    return ThreadsTable(config.data_layer.postgres, config.data_layer.db_schema)
+    """Строки threads в схеме приложения на пуле процесса."""
+    return ThreadsTable(config.postgres, config.db_schema, pool)
 
 
 def session_tokens(

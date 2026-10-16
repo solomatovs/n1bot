@@ -18,13 +18,7 @@ from typing import Any, ClassVar
 from omegaconf import OmegaConf
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError
 
-from boba.runtime.config import (
-    AppLayers,
-    ConfigFiles,
-    ConfigLocator,
-    DataLayerConfig,
-    ProcessConfig,
-)
+from boba.runtime.config import AppLayers, ConfigFiles, ConfigLocator
 
 __all__ = ["Stand", "StandError", "StandLayers"]
 
@@ -62,16 +56,6 @@ class StandLayers:
         return OmegaConf.merge(raw, OmegaConf.create(overlay))
 
 
-class ServiceRuntime(ProcessConfig):
-    """Конфиг процесса сервиса boba-mcp глазами тестов плагинов и песочницы:
-    секции процесса и база тестов. Модель самого сервиса лежит в его пакете
-    и пакетам инструментов недоступна по слоям. Базы у сервиса нет: секцию
-    [data_layer] добавляет стендовый слой conf/stand.toml — в ней живут
-    таблицы, которые тесты плагинов создают сами."""
-
-    data_layer: DataLayerConfig
-
-
 class Stand(BaseModel):
     """Секция [site] конфига приложения глазами теста."""
 
@@ -80,15 +64,29 @@ class Stand(BaseModel):
     SECTION: ClassVar[str] = "site"
     NETBIOS_SEPARATOR: ClassVar[str] = "\\"
 
-    ldap_url: str = Field(description="Контроллер домена стенда, ldaps://…")
-    ldap_base_dn: str
-    ldap_bind_user: str = Field(description="Второй пользователь стенда, DOMAIN\\user.")
-    ldap_bind_password: SecretStr
+    ldap_url: str = Field(
+        default="",
+        description=(
+            "Контроллер домена стенда, ldaps://…; пусто (site сервиса без входа "
+            "ldap) — тесты входа падают."
+        ),
+    )
+    ldap_base_dn: str = ""
+    ldap_bind_user: str = Field(
+        default="", description="Второй пользователь стенда, DOMAIN\\user."
+    )
+    ldap_bind_password: SecretStr = SecretStr("")
 
     krb_domain: str
     krb_realm: str
     krb_config: str = Field(description="krb5.conf стенда.")
-    krb_http_keytab: str = Field(description="Keytab принципала SSO-приёма.")
+    krb_http_keytab: str = Field(
+        default="",
+        description=(
+            "Keytab принципала SSO-приёма; пусто (site сервиса без входа "
+            "kerberos) — тесты входа падают."
+        ),
+    )
     krb_pg_user: str
     krb_pg_keytab: str
     krb_ch_user: str = Field(

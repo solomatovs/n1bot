@@ -13,9 +13,9 @@ HTTP-интерфейс того же clickhouse по Negotiate. Учётка п
 
 from __future__ import annotations
 
-import base64
 import secrets as std_secrets
 from collections.abc import AsyncIterator
+from importlib.resources import files
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -27,17 +27,17 @@ from chainlit.user import User as ChainlitUser
 from chainlit_stand import ChatSessionStand, ServiceTools, SsoStand, ToolService
 from gssapi import Credentials, Name, NameType, SecurityContext
 from psycopg import sql
-from pydantic import SecretStr
 
 from boba.auth.credentials import KerberosCredentialSource
 from boba.chainlit.auth.kerberos import KerberosAuth
 from boba.chainlit.data.data_layer import PostgresDataLayer
 from boba.config import bind
-from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
+from boba.connection_broker.store import ConnectionStore
 from boba.connections.manifest import ConnectionTypes
+from boba.connections.secrets import SecretCipher
 from boba.connections.stored import ConnectionBase, GrantTarget
 from boba.db.clickhouse.connection import ClickHouseConfig
-from boba.db.postgres import AsyncPostgresPool
+from boba.db.postgres import AsyncPostgresPool, PostgresSchema
 from boba.db.postgres.connection import PostgresConfig
 from boba.identity.session import UserMetadataField
 from boba.kerberos import (
@@ -79,8 +79,8 @@ pytestmark = [
 ]
 
 
-def _key() -> SecretStr:
-    return SecretStr(base64.b64encode(std_secrets.token_bytes(32)).decode())
+def _cipher() -> SecretCipher:
+    return SecretCipher(std_secrets.token_bytes(32))
 
 
 @pytest.fixture
@@ -90,9 +90,11 @@ async def store(pool: AsyncPostgresPool) -> ConnectionStore:
             sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(SCHEMA))
         )
 
-    cfg = ConnectionsConfig(enable=True, db_schema=SCHEMA, encryption_key=_key())
-    built = ConnectionStore(cfg, ConnectionTypes.discover(), pool)
-    await built.setup()
+    schema_dir = files("boba.connection_broker") / "schema"
+    async with pool.connection() as conn:
+        await PostgresSchema(SCHEMA).apply_files(conn, schema_dir, {})
+
+    built = ConnectionStore(pool, SCHEMA, _cipher(), ConnectionTypes.discover())
     await built.sync_roles([ROLE])
     return built
 
@@ -121,11 +123,9 @@ class Browser:
 
 
 @pytest.fixture
-def user_password(service_raw_config: Any) -> str:
+def user_password() -> str:
     """Пароль тестового пользователя домена; браузер им получает свой TGT."""
-    from omegaconf import OmegaConf
-
-    return str(OmegaConf.select(service_raw_config, "site.ldap_bind_password"))
+    return STAND.reader_password.get_secret_value()
 
 
 @pytest.fixture

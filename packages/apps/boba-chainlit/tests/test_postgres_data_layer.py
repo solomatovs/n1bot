@@ -28,17 +28,11 @@ from boba.messaging import (
     MemoryMessageBus,
     ThreadChanged,
 )
-from boba.runtime.elements import ChatTables
+from boba.runtime.elements import FeedbacksTable
 from boba.runtime.threads import ThreadsTable
+from boba.runtime.users import UsersTable
 
 pytestmark = pytest.mark.anyio
-
-
-async def test_setup_is_idempotent(
-    app_config: AppConfig, pool: AsyncPostgresPool, layer: PostgresDataLayer
-):
-    schema = app_config.data_layer.db_schema
-    await ChatTables.of(app_config.data_layer.postgres, schema, pool).setup()
 
 
 async def test_create_and_get_user(layer: PostgresDataLayer):
@@ -175,9 +169,7 @@ async def test_update_thread_leaves_the_agent_session_to_the_agent(
     chainlit на отключении вкладки не возвращает тред на прежнюю сессию и не
     стирает указатель."""
     layer = seeded.layer
-    threads = ThreadsTable(
-        app_config.data_layer.postgres, app_config.data_layer.db_schema, pool
-    )
+    threads = ThreadsTable(app_config.postgres, app_config.db_schema, pool)
     await threads.upsert(
         ThreadUpsert(
             id=UUID(seeded.thread_id),
@@ -338,19 +330,17 @@ async def test_delete_thread_of_a_user_without_file_storage(
 ):
     """Профиль пользователя не называет MCP-серверов — хранилища файлов у него
     нет: удаление треда не падает, удалять из хранилища нечего."""
-    tables = ChatTables.of(
-        app_config.data_layer.postgres, app_config.data_layer.db_schema, pool
-    )
+    users = UsersTable(app_config.postgres, app_config.db_schema, pool)
     profiles = ChatProfiles(
         {"bare": ChatProfileConfig.model_construct(mcp=[], roles=["*"], default=True)}
     )
     sessions = NoTabs()
     servers = McpServers(McpServersConfig(servers={}))
-    owners = FileOwners(lambda: sessions, lambda: tables.users, profiles)
+    owners = FileOwners(lambda: sessions, lambda: users, profiles)
     bare = PostgresDataLayer(
-        users=tables.users,
-        threads=tables.threads,
-        feedbacks=tables.feedbacks,
+        users=users,
+        threads=ThreadsTable(app_config.postgres, app_config.db_schema, pool),
+        feedbacks=FeedbacksTable(app_config.postgres, app_config.db_schema, pool),
         storage=RemoteStorageClient("/workspace", owners, lambda: servers),
         bus=data_bus,
     )

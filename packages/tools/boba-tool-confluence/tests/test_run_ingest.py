@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+from importlib.resources import files
 from typing import ClassVar
 
 import pytest
@@ -15,7 +16,7 @@ from psycopg import sql
 
 from boba.config import bind
 from boba.db.pgvector.migrations import Migrations
-from boba.db.postgres import AsyncPostgresPool
+from boba.db.postgres import AsyncPostgresPool, PostgresSchema
 from boba.stand.database import TestDatabase
 from boba.tool.confluence.ingest_tools import (
     IngestToolConfig,
@@ -55,7 +56,11 @@ async def ingest_cfg(raw_config: DictConfig) -> IngestToolConfig:
     try:
         async with pool.connection() as conn:
             await conn.execute(schema)
-            await Migrations(store.tables).apply(conn)
+            schema_dir = files("boba.db.pgvector") / "schema"
+            names = Migrations(store.tables).names()
+            await PostgresSchema(store.tables.pg_schema).apply_files(
+                conn, schema_dir, names
+            )
             await Migrations(store.tables).ensure_vector_index(
                 conn, store.embedding.dim
             )

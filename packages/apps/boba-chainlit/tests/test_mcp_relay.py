@@ -7,10 +7,10 @@ boba-mcp со входом proxy. Проверяются строки табли
 from __future__ import annotations
 
 import asyncio
-import base64
 import secrets
 from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass
+from importlib.resources import files
 from typing import Any, ClassVar
 from uuid import uuid4
 
@@ -18,15 +18,15 @@ import mcp_types as mt
 import pytest
 from acp.exceptions import RequestError
 from chainlit_stand import NoConnectionStore, RelayStand, ServiceProcess, TabSession
-from pydantic import SecretStr
 
-from boba.agent.hooks import McpServerInfo
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.chainlit.agent.relay import McpRelay
-from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
+from boba.chainlit.agent.server import McpServerInfo
+from boba.connection_broker.store import ConnectionStore
 from boba.connections.manifest import ConnectionTypes
 from boba.connections.sealed import SealedParamSchema, SealFeature
-from boba.db.postgres import AsyncPostgresPool
+from boba.connections.secrets import SecretCipher
+from boba.db.postgres import AsyncPostgresPool, PostgresSchema
 from boba.db.postgres.connection import PostgresConfig
 from boba.identity.errors import RefusalError
 from boba.mcp_client.client import McpServerConfig, McpServers, McpServersConfig
@@ -295,7 +295,7 @@ class RelayCall:
 
 @pytest.mark.integration
 class TestRelaySealing:
-    """Ретранслятор запечатывает соединения пользователя через HookSealing:
+    """Ретранслятор запечатывает соединения пользователя через CallSealing:
     невыданное имя — отказ isError, выданное доходит до тела сервера. У
     инструмента со вложенными вызовами, объявленного сервером, соединения
     запечатываются в каждом узле; отказ узла — isError всего вызова с
@@ -306,12 +306,12 @@ class TestRelaySealing:
 
     @pytest.fixture
     async def store(self, pool: AsyncPostgresPool) -> ConnectionStore:
-        key = SecretStr(base64.b64encode(secrets.token_bytes(32)).decode())
-        config = ConnectionsConfig(
-            enable=True, db_schema=self.SCHEMA, encryption_key=key
-        )
-        built = ConnectionStore(config, ConnectionTypes.discover(), pool)
-        await built.setup()
+        cipher = SecretCipher(secrets.token_bytes(32))
+        schema_dir = files("boba.connection_broker") / "schema"
+        async with pool.connection() as conn:
+            await PostgresSchema(self.SCHEMA).apply_files(conn, schema_dir, {})
+
+        built = ConnectionStore(pool, self.SCHEMA, cipher, ConnectionTypes.discover())
 
         return built
 

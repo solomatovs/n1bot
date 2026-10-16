@@ -1,5 +1,4 @@
-"""Таблица feedbacks чата и набор таблиц схемы чата: единственный владелец их
-DDL и SQL.
+"""Таблица feedbacks чата: единственный владелец её SQL.
 
 Ошибки:
 DataUnavailableError — postgres недоступен или ответил не тем.
@@ -16,13 +15,10 @@ from boba.chat.threads import (
     FeedbackStore,
     StoredFeedback,
 )
-from boba.db.postgres import AsyncPostgresPool, PgQueryBuilder
-from boba.db.postgres.connection import PostgresConfig
+from boba.db.postgres import PgQueryBuilder
 from boba.runtime.table import PgTable
-from boba.runtime.threads import ThreadsTable
-from boba.runtime.users import UsersTable
 
-__all__ = ["ChatTables", "FeedbacksTable"]
+__all__ = ["FeedbacksTable"]
 
 
 class FeedbacksTable(PgTable, FeedbackStore):
@@ -45,33 +41,6 @@ class FeedbacksTable(PgTable, FeedbackStore):
             thread_id=row[FeedbacksColumn.THREAD_ID.value],
             comment=comment,
         )
-
-    async def setup(self) -> None:
-        ddl = (
-            self._query()
-            .add(
-                """
-                create table if not exists {schema}.feedbacks (
-                    id        uuid primary key,
-                    for_id    uuid not null,
-                    value     smallint not null,
-                    thread_id uuid,
-                    comment   text
-                )
-                """
-            )
-            .build(),
-            self._query()
-            .add(
-                """
-                create index if not exists idx_feedbacks_for_id
-                    on {schema}.feedbacks (for_id)
-                """
-            )
-            .build(),
-        )
-
-        await self._apply_ddl(ddl)
 
     async def upsert(self, feedback: StoredFeedback) -> None:
         params: dict[str, Any] = feedback.model_dump()
@@ -152,47 +121,3 @@ class FeedbacksTable(PgTable, FeedbackStore):
         )
 
         await self._execute(query, "delete_thread")
-
-
-class ChatTables:
-    """Три таблицы схемы чата одним набором: сборка на общем пуле и DDL разом."""
-
-    def __init__(
-        self,
-        users: UsersTable,
-        threads: ThreadsTable,
-        feedbacks: FeedbacksTable,
-    ) -> None:
-        self.users = users
-        self.threads = threads
-        self.feedbacks = feedbacks
-
-    @classmethod
-    def of(
-        cls, postgres: PostgresConfig, db_schema: str, pool: AsyncPostgresPool
-    ) -> ChatTables:
-        return cls(
-            users=UsersTable(postgres, db_schema, pool),
-            threads=ThreadsTable(postgres, db_schema, pool),
-            feedbacks=FeedbacksTable(postgres, db_schema, pool),
-        )
-
-    @classmethod
-    def around(
-        cls,
-        users: UsersTable,
-        postgres: PostgresConfig,
-        db_schema: str,
-        pool: AsyncPostgresPool,
-    ) -> ChatTables:
-        """Таблицы чата вокруг уже существующей users: одна строка users на процесс."""
-        return cls(
-            users=users,
-            threads=ThreadsTable(postgres, db_schema, pool),
-            feedbacks=FeedbacksTable(postgres, db_schema, pool),
-        )
-
-    async def setup(self) -> None:
-        await self.users.setup()
-        await self.threads.setup()
-        await self.feedbacks.setup()

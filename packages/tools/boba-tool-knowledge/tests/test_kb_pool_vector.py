@@ -18,8 +18,12 @@ from omegaconf import DictConfig
 from psycopg import AsyncConnection, sql
 
 from boba.config import bind
-from boba.db.pgvector.config import PostgresStoreConfig, PostgresStoreSchema
-from boba.db.pgvector.migrations import Migrations
+from boba.db.pgvector.config import (
+    EmbeddingDimension,
+    KnowledgeBaseSchemaConfig,
+    PostgresStoreConfig,
+    PostgresStoreSchema,
+)
 from boba.db.pgvector.schema import KbSchema
 from boba.db.pgvector.store import KbPool
 from boba.db.postgres import AsyncPostgresPool
@@ -38,10 +42,12 @@ def anyio_backend() -> str:
 
 
 @pytest.fixture(scope="module")
-async def store_cfg(raw_config: DictConfig) -> AsyncIterator[PostgresStoreConfig]:
-    """Схема стенда под боевыми миграциями в тестовой базе набора; сносится
-    после модуля. База берётся здесь, а не сессионной фикстурой: цикл событий
-    у модуля свой."""
+async def store_cfg(
+    raw_config: DictConfig,
+) -> AsyncIterator[KnowledgeBaseSchemaConfig]:
+    """Схема стенда, которую готовит старт плагина (KbSchema), в тестовой базе
+    набора; сносится после модуля. База берётся здесь, а не сессионной
+    фикстурой: цикл событий у модуля свой."""
     app_cfg = bind(raw_config, "tool.kb", PostgresKnowledgeBaseConfig)
     database = await TestDatabase.ensure(app_cfg.connection)
     connection = TestDatabase.config_of(app_cfg.connection, database)
@@ -51,16 +57,17 @@ async def store_cfg(raw_config: DictConfig) -> AsyncIterator[PostgresStoreConfig
         collections_table="kb_collections",
         sources_table="kb_sources",
     )
-    cfg = PostgresStoreConfig(connection=connection, tables=tables)
+    cfg = KnowledgeBaseSchemaConfig(
+        connection=connection, tables=tables, embedding=EmbeddingDimension(dim=DIM)
+    )
 
     pool = AsyncPostgresPool(cfg.connection)
     await pool.open()
     try:
         async with pool.connection() as conn:
             await _execute(conn, _drop_schema())
-            await _execute(conn, sql.SQL("create schema {}").format(_schema()))
-            await Migrations(tables).apply(conn)
-            await Migrations(tables).ensure_vector_index(conn, DIM)
+
+        await KbSchema(cfg).setup()
 
         yield cfg
     finally:
@@ -95,22 +102,18 @@ async def _roundtrip(pool: Any, value: Sequence[float]) -> Any:
     return row[0]
 
 
-async def test_kb_schema_setup_stays_on_the_shared_pool(
-    store_cfg: PostgresStoreConfig,
+async def test_kb_schema_setup_repeats_without_a_pool(
+    store_cfg: KnowledgeBaseSchemaConfig,
 ) -> None:
-    """DDL базы знаний идёт общим пулом: своего пула схема не заводит."""
-    shared = await AsyncPostgresPool.get(store_cfg.connection)
+    """Старт плагина повторяет DDL безвредно и пула не заводит: процесс
+    boba-mcp пулов не держит, DDL идёт выделенным соединением."""
     before = len(AsyncPostgresPool.opened())
 
-    try:
-        await KbSchema(store_cfg, dim=DIM).setup()
-        after = len(AsyncPostgresPool.opened())
-        if after != before:
-            raise AssertionError(
-                f"kb schema setup opens no pool of its own, {before} -> {after}"
-            )
-    finally:
-        await shared.close()
+    await KbSchema(store_cfg).setup()
+
+    after = len(AsyncPostgresPool.opened())
+    if after != before:
+        raise AssertionError(f"kb schema setup opens no pool, {before} -> {after}")
 
 
 async def test_kb_pool_knows_vector_after_a_plain_pool_is_opened(

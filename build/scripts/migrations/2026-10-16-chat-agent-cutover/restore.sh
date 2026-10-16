@@ -1,9 +1,10 @@
 #!/bin/bash
 # Второй шаг перехода чата на процесс-агента: копия, снятая dump.sh,
-# накатывается в новую пустую базу. Одна транзакция: расширения, схемы, типы
-# и функции из prelude.sql, затем таблицы с данными из tables.dump, затем
-# сверка числа строк с counts.tsv. Любая ошибка откатывает всё, и база
-# остаётся пустой.
+# накатывается в новую пустую базу. До загрузки проверяется, что в базе уже
+# есть расширения из extensions.txt: создать их может только суперпользователь.
+# Одна транзакция: схемы, типы и функции из prelude.sql, затем таблицы с
+# данными из tables.dump, затем сверка числа строк с counts.tsv. Любая ошибка
+# откатывает всё, и база остаётся пустой.
 #
 # Функции без своего search_path (immutable_unaccent базы знаний) зовут
 # расширение по короткому имени, а pg_restore грузит данные с пустым
@@ -13,8 +14,8 @@
 #
 # Подключение к новой базе — стандартными переменными libpq (PGHOST, PGPORT,
 # PGDATABASE, PGUSER …); пароль — из ~/.pgpass или файла PGPASSFILE. Базу
-# заранее создаёт администратор, расширения из extensions.txt должны быть
-# доступны серверу (vector — пакетом pgvector).
+# с расширениями заранее создаёт администратор: из шаблона, в котором они есть
+# (на стенде — createdb -T boba_stand_template), или create extension.
 #
 # Вызов: PGDATABASE=<новая база> restore.sh <каталог копии>
 set -euo pipefail
@@ -44,17 +45,21 @@ if [ "$taken" != "0" ]; then
     exit 1
 fi
 
+wanted=$(cut -d' ' -f1 "$dump/extensions.txt" | sed '/^$/d' | sort -u)
+present=$(psql -X -q -At -v ON_ERROR_STOP=1 -c "select extname from pg_extension" | sort -u)
+missing=$(comm -23 <(echo "$wanted") <(echo "$present") | paste -sd' ' -)
+if [ -n "$missing" ]; then
+    echo "database $PGDATABASE lacks the extensions $missing, and only a superuser can create them: create the database from a template that has them (createdb -T boba_stand_template $PGDATABASE on the stand) or run create extension as superuser, then restore again" >&2
+    exit 1
+fi
+
+path=$(psql -X -q -At -v ON_ERROR_STOP=1 -c "select distinct n.nspname from pg_extension e join pg_namespace n on n.oid = e.extnamespace where e.extname <> 'plpgsql'" | paste -sd, -)
+
 script() {
     echo '\set ON_ERROR_STOP on'
 
-    while read -r name schema; do
-        [ -n "$name" ] || continue
-        echo "create extension if not exists \"$name\" schema \"$schema\";"
-    done < "$dump/extensions.txt"
-
     cat "$dump/prelude.sql"
 
-    path=$(cut -d' ' -f2 "$dump/extensions.txt" | sort -u | paste -sd, -)
     while read -r function; do
         [ -n "$function" ] || continue
         echo "alter function $function set search_path = $path;"

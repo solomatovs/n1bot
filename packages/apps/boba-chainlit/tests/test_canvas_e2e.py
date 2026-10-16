@@ -328,12 +328,12 @@ async def _user_row(config: Any, identifier: str) -> tuple[str, Mapping[str, Any
     from boba.chat.threads import ChatTable
     from boba.db.postgres import AsyncPostgresPool, PgQueryBuilder
 
-    pool = AsyncPostgresPool(config.data_layer.postgres)
+    pool = AsyncPostgresPool(config.postgres)
     await pool.open()
     try:
         query = (
             PgQueryBuilder(
-                users=sql.Identifier(config.data_layer.db_schema, ChatTable.USERS.value)
+                users=sql.Identifier(config.db_schema, ChatTable.USERS.value)
             )
             .add(
                 "select id, meta from {users} where identifier = %(identifier)s",

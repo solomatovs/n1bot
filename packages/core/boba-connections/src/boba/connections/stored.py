@@ -160,9 +160,6 @@ class ConnectionRepository(Protocol):
     """Хранилище соединений и грантов; реализация — ConnectionStore на postgres."""
 
     @abstractmethod
-    async def setup(self) -> None: ...
-
-    @abstractmethod
     async def sync_roles(self, names: Iterable[str]) -> None: ...
 
     @abstractmethod

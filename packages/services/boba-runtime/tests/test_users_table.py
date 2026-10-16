@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from importlib.resources import files
+
 import pytest
 from psycopg import sql
 
-from boba.db.postgres import AsyncPostgresPool
+from boba.db.postgres import AsyncPostgresPool, PostgresSchema
 from boba.identity.session import Login
 from boba.identity.signin import SignedIn, SignInMetadata
 from boba.runtime.config import RuntimeConfig
@@ -25,13 +27,12 @@ async def users(
             sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(SCHEMA))
         )
 
-    cfg = runtime_config.data_layer.postgres.model_copy(
-        update={"dbname": test_database}
-    )
-    table = UsersTable(cfg, SCHEMA, pool)
-    await table.setup()
-    await table.setup()
-    return table
+    cfg = runtime_config.postgres.model_copy(update={"dbname": test_database})
+    schema_dir = files("boba.runtime") / "schema"
+    async with pool.connection() as conn:
+        await PostgresSchema(SCHEMA).apply_files(conn, schema_dir, {})
+
+    return UsersTable(cfg, SCHEMA, pool)
 
 
 async def test_setup_creates_the_schema_and_users_round_trip(users: UsersTable) -> None:

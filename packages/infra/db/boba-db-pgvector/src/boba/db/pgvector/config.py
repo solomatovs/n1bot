@@ -31,11 +31,10 @@ class PostgresStoreSchema(BaseModel):
         description="batch_size",
     )
     pg_schema: str = Field(
-        default="public",
+        min_length=1,
         description=(
             "Postgres schema, в которой живут таблицы KB (`chunks_table`, "
-            "`collections_table`, `sources_table`) + функция `immutable_unaccent`. "
-            "Должна существовать к моменту запуска bootstrap-CLI (или быть `public`)."
+            "`collections_table`, `sources_table`) + функция `immutable_unaccent`."
         ),
     )
     chunks_table: str = Field(

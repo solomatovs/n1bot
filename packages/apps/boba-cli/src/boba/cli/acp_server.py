@@ -109,9 +109,11 @@ from boba.agent.records import (
     UserRecord,
 )
 from boba.agent.session import SessionState
+from boba.agent.settings import (
+    McpClientJson,
+)
 from boba.agent.turn import ContextUsage
 from boba.cancellation import StopReason as CoreStopReason
-from boba.cli.settings import McpClientJson
 from boba.toolkit.dag import (
     DagNode,
     NodeOutcome,

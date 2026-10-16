@@ -39,7 +39,11 @@ from boba.tool.describer.nodes import (
     describe_list_nodes,
     describe_node,
 )
-from boba.tool.describer.store import DescriberToolConfig, WriteAction
+from boba.tool.describer.store import (
+    DescriberStore,
+    DescriberToolConfig,
+    WriteAction,
+)
 from boba.toolkit.facade import PayloadTool
 
 pytestmark = [pytest.mark.anyio, pytest.mark.integration]
@@ -71,7 +75,10 @@ async def cfg(
             sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(SCHEMA))
         )
 
-    return DescriberToolConfig(connection=test_postgres, db_schema=SCHEMA)
+    built = DescriberToolConfig(connection=test_postgres, db_schema=SCHEMA)
+    await DescriberStore(built).setup()
+
+    return built
 
 
 @pytest.fixture
@@ -289,11 +296,23 @@ async def test_tables_survive_truncate_by_the_consumer(
     assert await _count(pool, "node") == 1
 
 
-async def test_parallel_calls_on_a_fresh_schema(
+async def test_parallel_starts_and_calls_on_a_fresh_schema(
     cfg: DescriberToolConfig, scope: Scope, pool: AsyncPostgresPool
 ) -> None:
-    """Модель зовёт несколько describe_node одним ответом, и хост исполняет их
-    параллельно: схема и таблицы создаются под общим замком без гонки."""
+    """Инстансы сервиса стартуют разом и готовят таблицы под общим замком без
+    гонки; модель зовёт несколько describe_node одним ответом, и хост
+    исполняет их параллельно."""
+    async with pool.connection() as conn:
+        await conn.execute(
+            sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(SCHEMA))
+        )
+
+    starts: list[Awaitable[None]] = []
+    for _ in range(4):
+        starts.append(DescriberStore(cfg).setup())
+
+    await asyncio.gather(*starts)
+
     calls: list[Awaitable[dict[str, Any]]] = []
     for index in range(8):
         url = f"postgresql://dwh.local:5432/dwh?schema=dm&table=t{index}"

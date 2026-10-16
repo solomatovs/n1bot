@@ -19,6 +19,8 @@ from chainlit.step import StepDict
 from chainlit_stand import Seed
 from pydantic import AnyUrl, SecretStr
 
+from boba.agent.records import PermissionMode
+from boba.agent.settings import ModelSettings, ProviderKind, ProviderSettings
 from boba.canvas.canvas import CanvasRegistry
 from boba.canvas.keys import ObjectKey, ThreadDir
 from boba.chainlit.agent.chat import SessionOptions, ThreadAgentsIndex
@@ -26,12 +28,8 @@ from boba.chainlit.agent.client import SessionUpdate
 from boba.chainlit.agent.feed import ResultMounts
 from boba.chainlit.agent.panel import AgentPanel
 from boba.chainlit.agent.settings import (
-    AgentModel,
-    AgentProvider,
     AgentSettingsError,
     ChatAgentSettings,
-    PermissionModeName,
-    ProviderKindName,
     UserAgentSettings,
 )
 from boba.chainlit.canvas.diagram import DiagramFiles, MermaidViewer
@@ -1117,12 +1115,12 @@ def _options() -> SessionOptions:
     return options
 
 
-def _chat(mode: PermissionModeName) -> ChatAgentSettings:
+def _chat(mode: PermissionMode) -> ChatAgentSettings:
     return ChatAgentSettings(
         model_name="general",
-        model=AgentModel(
-            provider=AgentProvider(
-                kind=ProviderKindName.OPENAI, base_url="http://llm.example/v1"
+        model=ModelSettings(
+            provider=ProviderSettings(
+                kind=ProviderKind.OPENAI, base_url="http://llm.example/v1"
             ),
             model="m",
             sampling={},
@@ -1165,7 +1163,7 @@ class TestAgentPanel:
         panel = AgentPanel(
             _profile(["*"]),
             UserAgentSettings(),
-            _chat(PermissionModeName.DEFAULT),
+            _chat(PermissionMode.DEFAULT),
             _options(),
             PanelText("", "en-US"),
         )
@@ -1210,7 +1208,7 @@ class TestAgentPanel:
         assert change.user.model is None
         assert change.user.api_key is not None
         assert change.user.api_key.get_secret_value() == "old"
-        assert change.mode is PermissionModeName.DEFAULT
+        assert change.mode is PermissionMode.DEFAULT
         assert change.model_name == "general"
 
     def test_parse_without_session_fields_keeps_the_chat_choice(self) -> None:
