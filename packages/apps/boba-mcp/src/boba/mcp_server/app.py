@@ -136,6 +136,7 @@ class McpHost:
         self._container.eager(providers.credential_source)
         self._container.eager(providers.user_directory)
         self._container.eager(providers.sign_ins)
+        self._container.eager(providers.kb_schema)
         self._container.eager(providers.tool_launchers)
         self._container.eager(providers.tool_registry)
 

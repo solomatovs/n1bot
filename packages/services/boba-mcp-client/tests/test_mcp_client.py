@@ -46,7 +46,7 @@ from boba.mcp_client.client import (
 )
 from boba.runtime.config import AppLayers, ConfigLayoutError, EnvOverride
 from boba.stand.service_signin import ServiceSignIn
-from boba.stand.ui.stand import StandApp
+from boba.stand.ui.stand import StandApp, StandFiles
 from boba.toolkit.calls import CallViews
 from boba.toolkit.channels import ToolChannel
 from boba.toolkit.dag import CallDag, DagNode, ToolCard, ToolHints
@@ -1053,9 +1053,10 @@ class DeclaredClient(BaseModel):
 
 
 class BobaMcpService:
-    """Настоящий процесс сервиса на его общем конфиге и site.toml дерева отладки:
-    `python -m boba.mcp_server --config <пакет>/conf/config.toml --site
-    debug/mcp/conf/site.toml`, данные процесса — в debug/mcp/data. Порт и способ
+    """Настоящий процесс сервиса на его общем конфиге и site.toml дерева отладки,
+    переписанных в рабочий каталог теста с тестовой базой набора: `python -m
+    boba.mcp_server --config <каталог>/conf/config.toml --site
+    <каталог>/conf/site.toml`, данные процесса — в debug/mcp/data. Порт и способ
     запуска стенд задаёт переопределениями [env]; вход — proxy, ключ
     утверждений и клиент берутся из [auth.proxy] и [mcp.clients] того же
     конфига."""
@@ -1067,16 +1068,19 @@ class BobaMcpService:
     CLIENT: str = "boba-chat"
     THIRD: Path = BobaMcpStand.REPO / "runtime" / "third"
 
-    def __init__(self, log: Path) -> None:
+    def __init__(self, workdir: Path, database: str) -> None:
         with socket.socket() as probe:
             probe.bind((self.HOST, 0))
             self.port = int(probe.getsockname()[1])
 
-        files = StandApp.MCP.files()
-        raw = AppLayers.compose(files)
+        debug = StandApp.MCP.files()
+        raw = AppLayers.compose(debug)
         self._proxy = bind(raw, "auth.proxy", ProxyAuthConfig)
         self._client = bind(raw, f"mcp.clients.{self.CLIENT}", DeclaredClient)
-        self._log = log.open("wb")
+
+        files = StandFiles(workdir / "conf").write_debug(StandApp.MCP, database)
+
+        self._log = (workdir / "mcp.log").open("wb")
         self._process = subprocess.Popen(
             [
                 sys.executable,
@@ -1088,6 +1092,7 @@ class BobaMcpService:
                 str(files.site),
             ],
             env={
+                EnvOverride.BASE.var: str(debug.base()),
                 EnvOverride.PORT.var: str(self.port),
                 EnvOverride.PUBLIC_URL.var: f"http://{self.HOST}:{self.port}",
                 EnvOverride.TOOL_LAUNCHER.var: "process",
@@ -1129,13 +1134,15 @@ class TestBobaMcpService:
     клиент чата входит через proxy и ходит к нему по сети."""
 
     @pytest.fixture
-    async def service(self, tmp_path: Path) -> AsyncIterator[McpToolServer]:
+    async def service(
+        self, tmp_path: Path, test_database: str
+    ) -> AsyncIterator[McpToolServer]:
         try:
             StandApp.MCP.files()
         except ConfigLayoutError as exc:
             pytest.fail(f"the service config files are not placed: {exc}")
 
-        process = BobaMcpService(tmp_path / "mcp.log")
+        process = BobaMcpService(tmp_path, test_database)
         caller = McpCaller(login="tester", roles=frozenset({"wrt"}))
         server = McpToolServer("boba", _config(process.endpoint()).on_behalf_of(caller))
         try:

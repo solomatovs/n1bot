@@ -310,6 +310,22 @@ class StandFiles:
         self.config.write_text(TomlText.dumps(common), encoding="utf-8")
         self.site.write_text(TomlText.dumps(site), encoding="utf-8")
 
+    def write_debug(self, app: StandApp, database: str) -> ConfigFiles:
+        """Конфиг, site.toml и плагины отладки приложения app в этом каталоге,
+        но с базой database: процесс на конфиге отладки не пишет в её базу.
+
+        Пути site.toml считаются от base отладки, поэтому процессу нужен
+        BOBA_BASE со значением app.files().base().
+        """
+        doc = app.document()
+        doc["postgres"]["dbname"] = database
+
+        self.workdir.mkdir(parents=True, exist_ok=True)
+        self.write(doc)
+        StandPlugins(app, sandbox=True).copy_to(self.plugins)
+
+        return ConfigFiles(config=self.config, site=self.site)
+
 
 @dataclass
 class ServiceStand(StandService):
@@ -603,11 +619,11 @@ class StandConfig(StandService):
         default_factory=lambda: {
             "kind": "postgres",
             "postgres": "${postgres}",
-            "schema": "agent_history",
+            "schema": "boba",
         }
     )
     """Секция [agent.history] чата: по умолчанию Postgres стенда тем же
-    подключением, что у чата (kerberos), схема agent_history в базе стенда."""
+    подключением, что у чата (kerberos), схема boba в базе стенда."""
 
     agent_process: dict[str, Any] = field(
         default_factory=lambda: {

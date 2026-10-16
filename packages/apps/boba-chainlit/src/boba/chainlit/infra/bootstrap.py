@@ -362,7 +362,6 @@ def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
     container.eager(runtime.call_ambient)
     # своих журналов у чата нет, но реестр инструментов читает их держатель
     container.eager(runtime.call_journals)
-    container.eager(runtime.kb_schema)
     container.eager(runtime.connection_store)
     # инструменты собираются на старте: конфиг плагинов проверяется до сессий
     container.eager(runtime.tool_launchers)
