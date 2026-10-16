@@ -117,6 +117,19 @@ class ToolMedia:
         объявил."""
         return self._journals.get(server)
 
+    def journal_address(self, server: str, uri: str) -> JournalAddress | None:
+        """Адрес журнала вызова по ссылке uri на канал журнала сервера
+        server; None — сервер журнала не объявил либо ссылка не на журнал."""
+        uris = self._journals.get(server)
+        if uris is None:
+            return None
+
+        read = uris.address(uri)
+        if read is None:
+            return None
+
+        return JournalAddress(server=server, run=read.run, call=read.node)
+
     def of(self, name: str) -> Mapping[str, str] | None:
         """Типы аргументов инструмента; None — инструмент серверам неизвестен."""
         return self._media.get(name)
@@ -344,6 +357,8 @@ class UpdateView:
                 self._groups[call_id] = group
 
         if not status.terminal:
+            await self._live_journal(update, name, group)
+
             progress = self._content_text(update)
             if not progress:
                 return
@@ -416,27 +431,79 @@ class UpdateView:
         """Ход работы progress — подшагу узла, чей ключ сервер положил в
         `_meta` под ключом, объявленным расширением; строка без ключа узла
         этого вызова уходит в лог."""
-        nested, nodes = group
-        title = None
-        if meta := update.field_meta:
-            title = meta.get(nested.progress_key)
-
-        for node in nodes:
-            if node.title != title:
-                continue
-
-            if step := self._steps.get(node.key):
-                await self._view.tool_progressed(step, progress)
-
+        node = self._node_of(update, group)
+        if node is None:
+            logger.debug(
+                "thread %s: progress of call %s names no node of it: %r",
+                self._thread_id,
+                update.tool_call_id,
+                progress,
+            )
             return
 
-        logger.debug(
-            "thread %s: progress of call %s names no node of it (%r): %r",
-            self._thread_id,
-            update.tool_call_id,
-            title,
-            progress,
-        )
+        if step := self._steps.get(node.key):
+            await self._view.tool_progressed(step, progress)
+
+    def _node_of(
+        self,
+        update: schema.SessionToolCallUpdate,
+        group: tuple[NestedCallsFeature, Sequence[DagNode]],
+    ) -> DagNode | None:
+        """Узел вызова, чей ключ сервер положил в `_meta` уведомления под
+        ключом, объявленным расширением вложенных вызовов; None — ключа нет
+        или он не называет узел этого вызова."""
+        nested, nodes = group
+        meta = update.field_meta
+        if meta is None:
+            return None
+
+        title = meta.get(nested.progress_key)
+        for node in nodes:
+            if node.title == title:
+                return node
+
+        return None
+
+    async def _live_journal(
+        self,
+        update: schema.SessionToolCallUpdate,
+        name: str,
+        group: tuple[NestedCallsFeature, Sequence[DagNode]] | None,
+    ) -> None:
+        """Журнал идущего вызова: сервер называет ссылки на каналы журнала
+        в `_meta` уведомления о ходе под ключом расширения журнала, едва
+        журнал открыт. Адрес запоминается, шагу вызова (у связки — подшагу
+        узла) встаёт кнопка журнала; уведомление без ссылок — ничего."""
+        match update.field_meta:
+            case {JournalFeature.ID: [str() as link, *_]}:
+                uri = link
+            case _:
+                return
+
+        owner = self._names.parse(name)
+        if owner is None:
+            return
+
+        address = self._media.journal_address(owner.server, uri)
+        if address is None:
+            return
+
+        tool = name
+        key = update.tool_call_id
+        if group is not None:
+            node = self._node_of(update, group)
+            if node is None:
+                return
+
+            tool = node.tool
+            key = node.key
+
+        step = self._steps.get(key)
+        if step is None:
+            return
+
+        self._journals.remember(self._thread_id, key, address)
+        await self._view.tool_journaled(step, tool, key)
 
     async def _nodes_result(
         self,
@@ -488,7 +555,9 @@ class UpdateView:
 
             failed = entry.status is NodeStatus.FAILED
             shown = mt.CallToolResult(content=blocks, is_error=failed)
-            await self._finished(step, node.key, journal, shown, entry.elapsed_ms)
+            await self._finished(
+                step, node.tool, node.key, journal, shown, entry.elapsed_ms
+            )
 
     async def _tool_result(
         self,
@@ -510,11 +579,10 @@ class UpdateView:
                 (journal,) = journals.values()
 
             elapsed = self._elapsed(reply)
-            await self._finished(step, call_id, journal, shown, elapsed)
+            await self._finished(step, name, call_id, journal, shown, elapsed)
             return
 
         if status is not ToolStatus.COMPLETED:
-            self._view.drop_journal(step)
             await self._view.tool_failed(step, self._failure_text(update))
             return
 
@@ -523,22 +591,23 @@ class UpdateView:
             text = mt.TextContent(text=self._content_text(update))
             raw = mt.CallToolResult(content=[text])
 
-        await self._finished(step, call_id, None, raw, 0)
+        await self._finished(step, name, call_id, None, raw, 0)
 
-    async def _finished(
+    async def _finished(  # noqa: PLR0913 — итог шага собирается всеми частями ответа
         self,
         step: Step,
+        name: str,
         key: str,
         journal: JournalAddress | None,
         reply: object,
         elapsed_ms: int,
     ) -> None:
-        """Итог шагу step с ключом key: кнопка журнала по адресу journal
-        (None — журнала нет) и показ ответа reply."""
-        if journal is None:
-            self._view.drop_journal(step)
-        else:
+        """Итог шагу step вызова инструмента name с ключом key: кнопка
+        журнала по адресу journal (None — журнала нет) и показ ответа
+        reply."""
+        if journal is not None:
             self._journals.remember(self._thread_id, key, journal)
+            await self._view.tool_journaled(step, name, key)
 
         await self._view.tool_finished(step, reply, key, elapsed_ms)
 
@@ -552,11 +621,6 @@ class UpdateView:
         if owner is None:
             return reply, {}
 
-        server = owner.server
-        uris = self._media.journal(server)
-        if uris is None:
-            return reply, {}
-
         shown: list[mt.ContentBlock] = []
         journals: dict[str, JournalAddress] = {}
         for block in reply.content:
@@ -564,14 +628,12 @@ class UpdateView:
                 shown.append(block)
                 continue
 
-            read = uris.address(str(block.uri))
-            if read is None:
+            address = self._media.journal_address(owner.server, str(block.uri))
+            if address is None:
                 shown.append(block)
                 continue
 
-            journals[read.node] = JournalAddress(
-                server=server, run=read.run, call=read.node
-            )
+            journals[address.call] = address
 
         return reply.model_copy(update={"content": shown}), journals
 

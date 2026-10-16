@@ -1490,26 +1490,6 @@ class McpServers:
 
         return port.journal_files()
 
-    def journaled(self) -> frozenset[str]:
-        """Полные имена инструментов подключённых серверов, которые ведут
-        журнал вызовов: у их шагов есть живой вывод."""
-        held: list[tuple[str, McpToolServer]] = list(self._shared.items())
-        for (name, _caller), server in self._personal.items():
-            held.append((name, server))
-
-        names: set[str] = set()
-        for name, server in held:
-            if not server.opened:
-                continue
-
-            if JournalFeature.ID not in server.features():
-                continue
-
-            for tool in server.tools():
-                names.add(self._names.full(name, tool.name))
-
-        return frozenset(names)
-
     async def port(self, name: str, caller: McpCaller) -> McpToolServer:
         """Открытый порт сервера name для пользователя caller: общий либо его
         личный.

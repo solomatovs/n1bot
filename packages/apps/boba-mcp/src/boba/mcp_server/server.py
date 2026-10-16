@@ -95,7 +95,7 @@ from boba.mcp_server.files import (
     ServerRefusal,
 )
 from boba.runtime.storage import LocalStorageConfig, StorageFactory
-from boba.toolkit.channels import ToolChannel
+from boba.toolkit.channels import JournalChannels, ToolChannel
 from boba.toolkit.dag import CallDag, DagNode, ToolServer
 from boba.toolkit.failure import ValidationText
 from boba.toolkit.ports import ProgressReport
@@ -245,6 +245,15 @@ class ProgressShape(Protocol):
         """Уведомление по отчёту вызова call_id под токеном прогресса
         запроса token; None — отчёт не уходит."""
 
+    @abstractmethod
+    def journal(
+        self, call_id: str, links: Sequence[str], token: mt.ProgressToken
+    ) -> mt.ProgressNotificationParams | None:
+        """Уведомление «журнал вызова call_id открыт» под токеном token:
+        ссылки links на его каналы — в _meta под ключом расширения журнала
+        (JournalFeature.ID), без текста и итога; None — уведомление не
+        уходит."""
+
 
 class OwnProgress(ProgressShape):
     """Реализация ProgressShape вызовом одного инструмента: числа и текст
@@ -267,6 +276,20 @@ class OwnProgress(ProgressShape):
             progress=report.done,
             total=report.total,
             message=report.message,
+        )
+
+    def journal(
+        self, call_id: str, links: Sequence[str], token: mt.ProgressToken
+    ) -> mt.ProgressNotificationParams | None:
+        """Журнал открывается до первого отчёта тела: уведомление занимает
+        значение прогресса 0; после отчётов значение уже не вырастет."""
+        if self._sent >= 0:
+            return None
+
+        self._sent = 0.0
+
+        return mt.ProgressNotificationParams(
+            progress_token=token, progress=0.0, _meta={JournalFeature.ID: list(links)}
         )
 
 
@@ -310,15 +333,34 @@ class NodeProgress(ProgressShape):
             _meta={self._feature.progress_key: title},
         )
 
+    def journal(
+        self, call_id: str, links: Sequence[str], token: mt.ProgressToken
+    ) -> mt.ProgressNotificationParams | None:
+        title = self._dags.title_of(self._call, call_id)
+        if title is None:
+            logger.warning(
+                "workflow journal: call %s matches no node of the workflow", call_id
+            )
+            return None
+
+        self._count += 1
+        meta = {JournalFeature.ID: list(links), self._feature.progress_key: title}
+
+        return mt.ProgressNotificationParams(
+            progress_token=token, progress=self._count, _meta=meta
+        )
+
 
 class CallProgress:
     """Ход работы вызова уведомлениями notifications/progress.
 
     Создаётся CallContextMiddleware на каждый вызов инструмента и следит за
-    журналами запуска (CallJournals.following зовёт opened). Тело пишет
-    отчёты о ходе работы в канал ToolChannel.PROGRESS; отсюда они уходят
-    клиенту стандартным прогрессом запроса: числа done и total и текст
-    отчёта. Тело ничего не сообщило — уведомлений нет. token — токен
+    журналами запуска (CallJournals.following зовёт opened). Открытый журнал
+    вызова сразу называется клиенту уведомлением со ссылками на его каналы
+    (JournalUris) в _meta: по ним клиент читает журнал, пока вызов идёт.
+    Тело пишет отчёты о ходе работы в канал ToolChannel.PROGRESS; отсюда они
+    уходят клиенту стандартным прогрессом запроса: числа done и total и
+    текст отчёта. token — токен
     прогресса из _meta запроса; None — клиент о ходе вызова не просил, и
     за каналами отчётов никто не следит. Отчёты ждут в очереди, а отправляет их задача,
     заведённая start() внутри запроса: уведомление привязано к запросу, и
@@ -340,6 +382,7 @@ class CallProgress:
         user: str,
         run: str,
         shape: ProgressShape,
+        uris: JournalUris,
         token: mt.ProgressToken | None,
     ) -> None:
         self._context = context
@@ -347,8 +390,10 @@ class CallProgress:
         self._user = user
         self._run = run
         self._shape = shape
+        self._uris = uris
         self._token = token
-        self._queue: asyncio.Queue[tuple[str, ProgressReport] | None] = asyncio.Queue()
+        self._queue: asyncio.Queue[mt.ProgressNotificationParams | None]
+        self._queue = asyncio.Queue()
         self._sender: asyncio.Task[None] | None = None
         self._followers: set[asyncio.Task[None]] = set()
         self._journaled: list[str] = []
@@ -358,20 +403,28 @@ class CallProgress:
         if token is None:
             return
 
-        self._sender = asyncio.create_task(
-            self._send(token), name=f"progress:{self._run}"
-        )
+        self._sender = asyncio.create_task(self._send(), name=f"progress:{self._run}")
 
     def opened(self, call_id: str, stream: ToolStream) -> None:
         """Наблюдатель CallJournals: журнал вызова открыт — вызов попадает в
-        список журналов запуска, а за его каналом отчётов следит своя задача,
-        если клиент просил о ходе вызова."""
+        список журналов запуска; если клиент просил о ходе вызова, ему
+        уходят ссылки на каналы журнала, а за каналом отчётов следит своя
+        задача."""
         self._journaled.append(call_id)
-        if self._token is None:
+        token = self._token
+        if token is None:
             return
 
+        links: list[str] = []
+        for channel in JournalChannels.VISIBLE:
+            read = JournalRead(run=self._run, node=call_id, channel=channel)
+            links.append(self._uris.uri(read))
+
+        if shaped := self._shape.journal(call_id, links, token):
+            self._queue.put_nowait(shaped)
+
         task = asyncio.create_task(
-            self._follow(call_id, stream), name=f"progress-follow:{call_id}"
+            self._follow(call_id, stream, token), name=f"progress-follow:{call_id}"
         )
         self._followers.add(task)
         task.add_done_callback(self._followers.discard)
@@ -417,13 +470,15 @@ class CallProgress:
             "progress follower %s failed: %s", task.get_name(), error, exc_info=error
         )
 
-    async def _follow(self, call_id: str, stream: ToolStream) -> None:
+    async def _follow(
+        self, call_id: str, stream: ToolStream, token: mt.ProgressToken
+    ) -> None:
         waker = stream.attach_waker()
         offset = 0
         try:
             while True:
                 closed = stream.closed
-                offset = self._take(call_id, offset)
+                offset = self._take(call_id, offset, token)
                 if closed:
                     return
 
@@ -431,9 +486,9 @@ class CallProgress:
         finally:
             stream.detach_waker(waker)
 
-    def _take(self, call_id: str, offset: int) -> int:
-        """Отчёты канала с байта offset — в очередь; итог — байт, до
-        которого канал прочитан."""
+    def _take(self, call_id: str, offset: int, token: mt.ProgressToken) -> int:
+        """Уведомления по отчётам канала с байта offset — в очередь; итог —
+        байт, до которого канал прочитан."""
         while True:
             piece = self._journals.recorded_slice(
                 self._user, self._run, call_id, offset, ToolChannel.PROGRESS
@@ -445,7 +500,9 @@ class CallProgress:
                 return offset
 
             for line in piece.text.splitlines():
-                self._queue.put_nowait((call_id, self._report_of(call_id, line)))
+                report = self._report_of(call_id, line)
+                if shaped := self._shape.shaped(call_id, report, token):
+                    self._queue.put_nowait(shaped)
 
             offset = piece.end
 
@@ -468,16 +525,11 @@ class CallProgress:
 
         waker.clear()
 
-    async def _send(self, token: mt.ProgressToken) -> None:
+    async def _send(self) -> None:
         while True:
-            taken = await self._queue.get()
-            if taken is None:
-                return
-
-            call_id, report = taken
-            shaped = self._shape.shaped(call_id, report, token)
+            shaped = await self._queue.get()
             if shaped is None:
-                continue
+                return
 
             notification = mt.ProgressNotification(params=shaped)
             await self._context.session.send_notification(
@@ -719,6 +771,7 @@ class CallContextMiddleware(Middleware):
             subject.user_key,
             run_id,
             shape,
+            self._uris,
             fields.progress_token,
         )
         progress.start()
