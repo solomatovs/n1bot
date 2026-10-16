@@ -76,7 +76,7 @@ def silent_postgres() -> Iterator[SilentPostgres]:
         postgres.close()
 
 
-@pytest.mark.parametrize("app", [StandApp.CHAINLIT])
+@pytest.mark.parametrize("app", [StandApp.AID])
 def test_startup_without_postgres_exits_with_a_failure(
     app: StandApp, tmp_path: Path, silent_postgres: SilentPostgres
 ) -> None:

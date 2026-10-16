@@ -82,7 +82,7 @@ class TestTrackedConfigs:
         names = {path.parent.parent.name for path in TrackedConfigs().files()}
         names |= {path.parent.name for path in TrackedConfigs().files()}
 
-        if not {"boba-chainlit", "boba-mcp"} <= names:
+        if not {"boba-aid", "boba-mcp"} <= names:
             raise AssertionError(f"common configs of the two apps exist: {names}")
 
     @pytest.mark.parametrize(

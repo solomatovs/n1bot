@@ -136,7 +136,7 @@ def mcp_stand(  # noqa: PLR0913 — стенд собирается из фик�
     config = StandConfig(
         # не "mcp": это каталог сервиса boba-mcp общего стенда (StandConfig.service)
         workdir=stand_workdir / "chat-mcp",
-        app=StandApp.CHAINLIT,
+        app=StandApp.AID,
         app_port=free_port(),
         llm_port=llm_port,
         db_name=stand_database,

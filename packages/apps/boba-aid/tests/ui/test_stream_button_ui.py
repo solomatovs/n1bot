@@ -38,7 +38,7 @@ def sandbox_stand(
 ) -> Iterator[StandProcess]:
     config = StandConfig(
         workdir=stand_workdir / "sandbox-stream",
-        app=StandApp.CHAINLIT,
+        app=StandApp.AID,
         app_port=free_port(),
         llm_port=llm_port,
         db_name=stand_database,

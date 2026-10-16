@@ -36,12 +36,12 @@ TOKEN_DELAY_SEC = 0.03
 
 @pytest.fixture(scope="session")
 def stand_database() -> str:
-    return StandDatabase(StandApp.CHAINLIT, StandNames().of(DB_NAME)).prepare()
+    return StandDatabase(StandApp.AID, StandNames().of(DB_NAME)).prepare()
 
 
 @pytest.fixture(scope="session")
 def stand_db(stand_database: str) -> StandDatabase:
-    return StandDatabase(StandApp.CHAINLIT, stand_database)
+    return StandDatabase(StandApp.AID, stand_database)
 
 
 @pytest.fixture
@@ -105,7 +105,7 @@ def stand(
 ) -> Iterator[StandProcess]:
     config = StandConfig(
         workdir=stand_workdir,
-        app=StandApp.CHAINLIT,
+        app=StandApp.AID,
         app_port=free_port(),
         llm_port=llm_port,
         db_name=stand_database,
@@ -130,7 +130,7 @@ def solo_stand(
     """Второй стенд с единственным профилем: селектора в UI быть не должно."""
     config = StandConfig(
         workdir=stand_workdir / "solo",
-        app=StandApp.CHAINLIT,
+        app=StandApp.AID,
         app_port=free_port(),
         llm_port=llm_port,
         db_name=stand_database,

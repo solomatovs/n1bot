@@ -53,9 +53,9 @@ class StandPaths(StrEnum):
     общие конфиги приложений — в их пакетах, базы и site.toml — деревья отладки
     debug/<приложение>, зависимости — общий каталог runtime."""
 
-    CHAINLIT_CONF = "packages/apps/boba-chainlit/conf"
+    AID_CONF = "packages/apps/boba-aid/conf"
     MCP_CONF = "packages/apps/boba-mcp/conf"
-    CHAINLIT_BASE = "debug/chainlit"
+    AID_BASE = "debug/aid"
     MCP_BASE = "debug/mcp"
     SANDBOX = "runtime/sandbox"
     MODELS = "runtime/models"
@@ -167,15 +167,15 @@ class StandAppTraits:
 class StandApp(StrEnum):
     """Приложения стенда: у каждого свой корень рантайма, конфиг, данные и порт."""
 
-    CHAINLIT = "chainlit"
+    AID = "aid"
     MCP = "mcp"
 
     def traits(self) -> StandAppTraits:
         known = {
-            StandApp.CHAINLIT: StandAppTraits(
-                module="boba.chainlit.main",
-                base=StandPaths.CHAINLIT_BASE,
-                conf=StandPaths.CHAINLIT_CONF,
+            StandApp.AID: StandAppTraits(
+                module="boba.aid.main",
+                base=StandPaths.AID_BASE,
+                conf=StandPaths.AID_CONF,
                 ready_path="/",
             ),
             StandApp.MCP: StandAppTraits(
@@ -209,7 +209,7 @@ class StandApp(StrEnum):
     def tools_app(self) -> StandApp:
         """Приложение, которое исполняет инструменты этого: у чата — сервис
         boba-mcp, у остальных — оно само."""
-        if self is StandApp.CHAINLIT:
+        if self is StandApp.AID:
             return StandApp.MCP
 
         return self
@@ -643,7 +643,7 @@ class StandConfig(StandService):
         return self.service()
 
     def service(self) -> ServiceStand | None:
-        if self.app is not StandApp.CHAINLIT:
+        if self.app is not StandApp.AID:
             return None
 
         return ServiceStand(
@@ -821,7 +821,7 @@ class StandConfig(StandService):
         # у чата роль режет только его собственные инструменты: DEV без поиска
         # соединений; набор инструментов сервиса решает endpoint, не роль
         own = ["connection_list"]
-        if self.app is not StandApp.CHAINLIT:
+        if self.app is not StandApp.AID:
             own = ["diagram_save", "send_file", *self.CHAT_TOOLS]
 
         doc["roles"] = {
@@ -870,7 +870,7 @@ class StandConfig(StandService):
     def _search_tools(self) -> list[str]:
         """Свои инструменты профиля search: у чата узкий набор отдаёт endpoint
         сервиса, у сервиса — его собственные инструменты."""
-        if self.app is StandApp.CHAINLIT:
+        if self.app is StandApp.AID:
             return []
 
         return ["diagram_save", "canvas_open"]

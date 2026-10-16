@@ -69,14 +69,14 @@ async def _node(
 ) -> Node:
     cfg = app_config.postgres.model_copy(update={"dbname": test_database})
     schema = app_config.db_schema
-    bus = PgMessageBus(cfg, schema, name, AppName.CHAINLIT, app_config.cluster)
+    bus = PgMessageBus(cfg, schema, name, AppName.AID, app_config.cluster)
     bus._pool_ref = pool
     schema_dir = files("boba.runtime") / "schema"
     async with pool.connection() as conn:
         await PostgresSchema(schema).apply_files(conn, schema_dir, {})
 
     await bus.start()
-    locks = PgLiveLocks(cfg, schema, name, AppName.CHAINLIT, app_config.cluster)
+    locks = PgLiveLocks(cfg, schema, name, AppName.AID, app_config.cluster)
     locks._pool_ref = pool
     await locks.register_instance()
     payloads = PgPayloadStore(cfg, schema)
@@ -88,8 +88,8 @@ async def _node(
 async def nodes(
     app_config: AppConfig, test_database: str, pool: AsyncPostgresPool
 ) -> AsyncIterator[tuple[Node, Node]]:
-    first = await _node(app_config, test_database, pool, "node1-chainlit")
-    second = await _node(app_config, test_database, pool, "node2-chainlit")
+    first = await _node(app_config, test_database, pool, "node1-aid")
+    second = await _node(app_config, test_database, pool, "node2-aid")
     try:
         yield first, second
     finally:
@@ -265,8 +265,8 @@ async def test_reaper_closes_the_turn_of_a_dead_holder_and_resume_marks_it(
             )
         }
     )
-    holder = await _node(short, test_database, pool, "node1-chainlit")
-    viewer = await _node(short, test_database, pool, "node2-chainlit")
+    holder = await _node(short, test_database, pool, "node1-aid")
+    viewer = await _node(short, test_database, pool, "node2-aid")
     try:
         thread_id = str(uuid4())
         scope = Scope.chat(thread_id)

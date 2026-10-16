@@ -334,7 +334,7 @@ def sso_stand(
     workdir = tmp_path_factory.mktemp("sso-delegation")
     config = StandConfig(
         workdir=workdir,
-        app=StandApp.CHAINLIT,
+        app=StandApp.AID,
         app_port=free_port(),
         llm_port=llm_port,
         db_name=stand_database,
