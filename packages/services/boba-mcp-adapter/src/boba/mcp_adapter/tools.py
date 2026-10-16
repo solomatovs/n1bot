@@ -1,13 +1,15 @@
 """Карточки инструментов порта ToolServer как инструменты сервера fastmcp.
 
-Один адаптер для всех MCP-серверов boba: сервис исполнения boba-mcp и
-сервер инструментов чата собирают свой FastMCP из одних и тех же частей.
-McpTool — инструмент fastmcp над карточкой порта: схема карточки для
-клиента, вызов портом узлом DagNode, итог клиенту ответом McpReplies
-стандартными полями результата MCP (ResultWire). McpToolProvider —
-провайдер fastmcp: на каждый запрос берёт порт вызывающего у CallerServers
-(кто вызывает, решает приложение по своему токену) и отдаёт инструменты
-порта. FeatureExtension — возможность сервера, объявляемая клиенту при
+Один адаптер для инструментов boba по MCP: сервис исполнения boba-mcp
+собирает из этих частей свой FastMCP, ретранслятор чата отдаёт ими
+собственные инструменты чата агенту. McpTool — инструмент fastmcp над
+карточкой порта: схема карточки для клиента, вызов портом узлом DagNode,
+итог клиенту ответом McpReplies стандартными полями результата MCP
+(ResultWire). RoleTools — McpTool порта на ключ наследника (роли, профиль
+и всё, что решает о составе порта), собранные один раз. McpToolProvider —
+провайдер fastmcp: на каждый запрос берёт инструменты вызывающего у
+CallerServers (кто вызывает, решает приложение по своему токену).
+FeatureExtension — возможность сервера, объявляемая клиенту при
 согласовании протокола.
 
 Ошибки:
@@ -15,14 +17,15 @@ McpTool — инструмент fastmcp над карточкой порта: �
     результатом с isError и моделью отказа (FailureResult) в structuredContent.
 исключения CallerServers.current() — реализация приложения не узнала
     вызывающего; список инструментов и вызов для него отказывают.
+исключения RoleTools._server() — наследник не собрал порт ключа.
 """
 
 from __future__ import annotations
 
 import logging
-from abc import abstractmethod
-from collections.abc import Mapping, Sequence
-from typing import Any, Protocol
+from abc import ABC, abstractmethod
+from collections.abc import Hashable, Mapping, Sequence
+from typing import Any, Generic, Protocol, TypeVar
 
 import mcp_types as mt
 from fastmcp.server.extensions import ServerExtension
@@ -46,9 +49,12 @@ __all__ = [
     "McpReplies",
     "McpTool",
     "McpToolProvider",
+    "RoleTools",
 ]
 
 logger = logging.getLogger(__name__)
+
+ToolsKey = TypeVar("ToolsKey", bound=Hashable)
 
 
 class McpReplies:
@@ -112,7 +118,7 @@ class McpReplies:
 class McpTool(Tool):
     """Инструмент порта как инструмент fastmcp.
 
-    Создаёт его McpToolProvider из карточки инструмента порта: схема для
+    Создаёт его RoleTools из карточки инструмента порта: схема для
     клиента — готовая схема вызова после всех обвязок, где аргументы с кодом
     названы типом содержимого (CallViews), и схема итога карточки; тело —
     вызов порта ToolServer узлом DagNode под идентификатором, который
@@ -159,33 +165,64 @@ class McpTool(Tool):
         return self._replies.of(outcome)
 
 
+class RoleTools(ABC, Generic[ToolsKey]):
+    """Базовый класс инструментов порта на ключ ToolsKey: McpTool по
+    карточкам порта строятся один раз на ключ и дальше отдаются готовыми.
+
+    Наследуют RoleToolServers сервиса boba-mcp (ключ — роли, профиль и
+    признак клиента, который запечатывает соединения) и ChatTools
+    ретранслятора чата (ключ — роли и профиль): наследник решает, какой порт
+    ToolServer видит ключ (_server).
+    """
+
+    def __init__(self) -> None:
+        self._tools: dict[ToolsKey, dict[str, McpTool]] = {}
+
+    def tools(self, key: ToolsKey) -> Mapping[str, McpTool]:
+        """Инструменты ключа key по именам."""
+        offered = self._tools.get(key)
+        if offered is not None:
+            return offered
+
+        server = self._server(key)
+        offered = {}
+        for card in server.tools():
+            offered[card.name] = McpTool(card, server)
+
+        self._tools[key] = offered
+
+        return offered
+
+    @abstractmethod
+    def _server(self, key: ToolsKey) -> ToolServer:
+        """Порт инструментов, доступных ключу key."""
+
+
 class CallerServers(Protocol):
-    """Порт инструментов вызывающего текущего запроса.
+    """Инструменты вызывающего текущего запроса.
 
     Реализует приложение: по токену запроса узнаёт вызывающего и отдаёт
-    порт с инструментами, которые ему доступны. Зовёт McpToolProvider на
-    каждый список и вызов инструментов.
+    инструменты, которые ему доступны. Зовёт McpToolProvider на каждый
+    список и вызов инструментов.
     """
 
     @abstractmethod
-    async def current(self) -> ToolServer:
+    async def current(self) -> Mapping[str, McpTool]:
         """Ошибки — свои у приложения: вызывающего по запросу не узнать."""
 
 
 class McpToolProvider(Provider):
-    """Провайдер fastmcp: инструменты порта вызывающего.
+    """Провайдер fastmcp: инструменты вызывающего и операции приложения.
 
-    Создаётся сборкой сервера. На каждый запрос берёт порт вызывающего у
-    CallerServers и отдаёт инструменты порта как McpTool; объекты McpTool
-    строятся один раз на порт. Операции приложения (operations) видит
-    каждый вызывающий.
+    Создаётся сборкой сервера. На каждый запрос берёт инструменты
+    вызывающего у CallerServers и добавляет к ним операции приложения
+    (operations), которые видит каждый вызывающий.
     """
 
     def __init__(self, servers: CallerServers, operations: Sequence[Tool]) -> None:
         super().__init__()
         self._servers = servers
         self._operations = tuple(operations)
-        self._tools: dict[ToolServer, dict[str, Tool]] = {}
 
     async def _list_tools(self) -> Sequence[Tool]:
         offered = await self._offered()
@@ -204,19 +241,11 @@ class McpToolProvider(Provider):
         return []
 
     async def _offered(self) -> dict[str, Tool]:
-        server = await self._servers.current()
-        offered = self._tools.get(server)
-        if offered is not None:
-            return offered
+        tools = await self._servers.current()
 
-        offered = {}
-        for card in server.tools():
-            offered[card.name] = McpTool(card, server)
-
+        offered: dict[str, Tool] = dict(tools)
         for operation in self._operations:
             offered[operation.name] = operation
-
-        self._tools[server] = offered
 
         return offered
 

@@ -99,6 +99,7 @@ __all__ = [
     "McpServerConfig",
     "McpServers",
     "McpServersConfig",
+    "McpToolPort",
     "McpToolServer",
     "NoAuth",
     "ProxyAuth",
@@ -1080,7 +1081,50 @@ class FileStored(BaseModel):
     size: int = Field(ge=0)
 
 
-class McpToolServer:
+class McpToolPort(Protocol):
+    """Порт сервера инструментов, которым ретранслятор чата отвечает на
+    tools/list и tools/call агента.
+
+    Реализации: McpToolServer — сервер MCP профиля по его транспорту;
+    ChatToolPort чата — собственные инструменты чата в его процессе.
+    """
+
+    @abstractmethod
+    def tools(self) -> Sequence[mt.Tool]:
+        """Инструменты сервера как есть."""
+
+    @abstractmethod
+    def features(self) -> Mapping[str, Mapping[str, object]]:
+        """Расширения com.boba/*, объявленные сервером: идентификатор →
+        настройки; у стороннего сервера их нет."""
+
+    @abstractmethod
+    def nested_calls(self) -> NestedCallsFeature | None:
+        """Инструмент сервера со вложенными вызовами и форма его узлов;
+        None — сервер такого не объявил."""
+
+    @abstractmethod
+    async def call(
+        self,
+        params: mt.CallToolRequestParams,
+        progress: Callable[[mt.ProgressNotificationParams], Awaitable[None]] | None,
+    ) -> mt.CallToolResult | mt.InputRequiredResult:
+        """tools/call с готовыми аргументами; ответ сервера — как есть.
+
+        params — запрос на имя инструмента на сервере, с ответами на прежний
+        input_required, если они есть; тред вызова — среди его аргументов.
+        progress получает уведомления сервера о ходе вызова
+        целиком, с _meta: вызов просит их своим токеном прогресса.
+
+        Ошибки:
+        McpClientError — сервер недоступен либо ответа нет: сессия оборвалась
+            или вышел срок вызова, соединение закрывается, следующий вызов
+            подключается заново; либо ответ не по схеме инструмента.
+        MCPError — сервер ответил на запрос ошибкой MCP.
+        """
+
+
+class McpToolServer(McpToolPort):
     """Порт одного MCP-сервера: подключение, список инструментов и вызовы.
 
     Создаётся McpServers на сервер с общим входом либо на пару «сервер,
@@ -1186,8 +1230,6 @@ class McpToolServer:
         return self._journal_files
 
     def nested_calls(self) -> NestedCallsFeature | None:
-        """Инструмент сервера со вложенными вызовами и форма его узлов;
-        None — сервер такого не объявил."""
         return self._nested
 
     async def _open_journal_files(self) -> None:
@@ -1271,19 +1313,6 @@ class McpToolServer:
         params: mt.CallToolRequestParams,
         progress: Callable[[mt.ProgressNotificationParams], Awaitable[None]] | None,
     ) -> mt.CallToolResult | mt.InputRequiredResult:
-        """tools/call с готовыми аргументами; ответ сервера — как есть.
-
-        params — запрос на имя инструмента на сервере, с ответами на прежний
-        input_required, если они есть; тред вызова — среди его аргументов.
-        progress получает уведомления сервера о ходе вызова
-        целиком, с _meta: вызов просит их своим токеном прогресса.
-
-        Ошибки:
-        McpClientError — сервер недоступен либо ответа нет: сессия оборвалась
-            или вышел срок вызова, соединение закрывается, следующий вызов
-            подключается заново; либо ответ не по схеме инструмента.
-        MCPError — сервер ответил на запрос ошибкой MCP.
-        """
         try:
             session = await self._connection.open()
         except McpClientError as exc:
