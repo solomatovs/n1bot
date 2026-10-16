@@ -83,6 +83,7 @@ from boba.runtime.threads import ThreadsTable
 from boba.runtime.users import UsersTable
 from boba.stand.refs import StandRefs
 from boba.stand.service_signin import ServiceSignIn
+from boba.stand.signin import SignInStand
 from boba.stand.storage import StorageSeed
 from boba.stand.ui.stand import (
     REPO_ROOT,
@@ -142,7 +143,7 @@ class TabSession:
         metadata = SignInMetadata(provider=SignInProvider.LOCAL.value, roles=roles)
         self.raw.token = create_jwt(StandTokens.user(self.LOGIN, metadata.render()))
 
-    def holder(self, user_id: UUID, profile: str) -> McpRegistration:
+    def registration(self, user_id: UUID, profile: str) -> McpRegistration:
         return McpRegistration(
             user_id=user_id,
             login=self.LOGIN,
@@ -304,12 +305,12 @@ class RelayStand:
 
     Им собирают ретранслятор тесты ретранслятора, вызовы сервиса
     (ServiceTools) и процессы агента стенда (Agents); серверы профиля каждый
-    тест открывает сам. Инструменты chat видят роль ROLE и профиль PROFILE.
+    тест открывает сам. Инструменты chat видят роль ROLE и профиль стенда
+    SignInStand.PROFILE.
     """
 
     SEAL_TTL: ClassVar[timedelta] = timedelta(minutes=2)
     ROLE: ClassVar[str] = "dev"
-    PROFILE: ClassVar[str] = "general"
 
     def __init__(
         self, store: StoreRef, credentials: CredentialsRef, contexts: CallContexts
@@ -320,7 +321,7 @@ class RelayStand:
         refs = StandRefs(contexts)
         tools = refs.tool_stand(())
         tools.adopt(ConnectionTools(store, contexts).build())
-        registry = tools.registry(tools.access(self.ROLE, self.PROFILE), ())
+        registry = tools.registry(tools.access(self.ROLE, SignInStand.PROFILE), ())
         self.chat = ChatTools(registry, refs.runs)
 
     def relay(self, servers: McpServers) -> McpRelay:

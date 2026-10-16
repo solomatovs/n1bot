@@ -109,6 +109,7 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 
+# RoleTools первым: иначе __init__ протокола CallerServers молча пропустит его __init__
 class RoleToolServers(RoleTools, CallerServers):
     """Реализация CallerServers сервиса на базе RoleTools: инструменты на
     набор ролей и профиль вызывающего по его токену.

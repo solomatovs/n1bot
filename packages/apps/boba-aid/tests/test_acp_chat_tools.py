@@ -574,7 +574,7 @@ class TestRelayAcceptance:
         tab = TabSession()
         tab.password_sign_in(roles)
         servers = agents.registrations.register(
-            tab.holder(uuid4(), "general"), self.SERVERS
+            tab.registration(uuid4(), "general"), self.SERVERS
         )
         updates = RecordingUpdates()
         process = await agents.start(updates, thread, servers)

@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import secrets
 from collections.abc import AsyncIterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from importlib.resources import files
 from typing import Any, ClassVar
 from uuid import uuid4
@@ -18,6 +18,7 @@ import mcp_types as mt
 import pytest
 from acp.exceptions import RequestError
 from aid_stand import NoConnectionStore, RelayStand, ServiceProcess, TabSession
+from pydantic import BaseModel
 
 from boba.aid.agent.relay import ChatTools, McpRegistrations, McpRelay
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
@@ -31,7 +32,14 @@ from boba.db.postgres.connection import PostgresConfig
 from boba.identity.context import DelegatedTicket, NoUserCredential
 from boba.identity.errors import AuthenticationError, RefusalError
 from boba.mcp_client.client import McpServerConfig, McpServers, McpServersConfig
+from boba.stand.refs import StandRefs
+from boba.stand.signin import SignInStand
+from boba.stand.toolstand import ProbeTools
 from boba.stand_core.context import CallStand
+from boba.toolkit.ports import StreamSpecs
+from boba.toolrun.dev_null import DevNullTool
+from boba.toolrun.hosted import ToolHosting
+from boba.toolrun.stream_calls import WorkflowTool
 from boba.transport.acp.protocol import (
     AcpErrorCode,
     McpErrorOutcome,
@@ -46,9 +54,10 @@ pytestmark = pytest.mark.anyio
 
 @pytest.fixture
 def tab(auth_token: str) -> TabSession:
-    """Вкладка пользователя ivanov, вошедшего паролем с ролью dev."""
+    """Вкладка пользователя ivanov, вошедшего паролем с ролью, которой
+    инструменты chat стенда ретранслятора видны (RelayStand.ROLE)."""
     session = TabSession()
-    session.password_sign_in(frozenset({"dev"}))
+    session.password_sign_in(frozenset({RelayStand.ROLE}))
 
     return session
 
@@ -106,9 +115,9 @@ class TestMcpRelay:
         return outcome, notes
 
     def _server_id(self, stand: RelayStand, tab: TabSession) -> str:
-        holder = tab.holder(uuid4(), "general")
+        registration = tab.registration(uuid4(), SignInStand.PROFILE)
 
-        return stand.registrations.register(holder, ["standard"])[0].server_id
+        return stand.registrations.register(registration, ["standard"])[0].server_id
 
     async def test_unknown_server_id_is_an_external_error(
         self, relay: McpRelay
@@ -403,8 +412,8 @@ class TestRelaySealing:
         stand = RelayStand(lambda: store, lambda: credentials, call_stand.contexts)
         servers = McpServers(service_process.servers())
         relay = stand.relay(servers)
-        holder = tab.holder(uuid4(), "general")
-        server_id = stand.registrations.register(holder, ["boba"])[0].server_id
+        registration = tab.registration(uuid4(), SignInStand.PROFILE)
+        server_id = stand.registrations.register(registration, ["boba"])[0].server_id
         profile = PostgresConfig.model_validate(
             {
                 "host": "db.local",
@@ -412,7 +421,7 @@ class TestRelaySealing:
                 "auth": {"method": "trust", "user": "u"},
             }
         )
-        await store.add_owned("orders", profile, holder.user_id)
+        await store.add_owned("orders", profile, registration.user_id)
         heard: asyncio.Queue[McpMessage] = asyncio.Queue()
         listing = McpMessage(
             server_id=server_id,
@@ -461,7 +470,8 @@ class TestRelaySealing:
 class TestChatServer:
     """Сервер chat в процессе чата через ретранслятор: собственные
     инструменты чата по ролям вкладки, connection_list отдаёт соединения,
-    выданные пользователю регистрации."""
+    выданные пользователю регистрации; совпавшие имена инструментов —
+    ошибка доставки без исхода MCP."""
 
     ENVELOPE: ClassVar[dict[str, Any]] = TestMcpRelay.ENVELOPE
 
@@ -471,8 +481,10 @@ class TestChatServer:
         credentials = KerberosCredentialSource(None, NoRefresh())
         stand = RelayStand(lambda: store, lambda: credentials, call_stand.contexts)
         relay = stand.relay(McpServers(McpServersConfig(servers={})))
-        holder = tab.holder(uuid4(), RelayStand.PROFILE)
-        server_id = stand.registrations.register(holder, [ChatTools.NAME])[0].server_id
+        registration = tab.registration(uuid4(), SignInStand.PROFILE)
+        server_id = stand.registrations.register(registration, [ChatTools.NAME])[
+            0
+        ].server_id
         profile = PostgresConfig.model_validate(
             {
                 "host": "db.local",
@@ -480,7 +492,7 @@ class TestChatServer:
                 "auth": {"method": "trust", "user": "u"},
             }
         )
-        await store.add_owned("orders", profile, holder.user_id)
+        await store.add_owned("orders", profile, registration.user_id)
         heard: asyncio.Queue[McpMessage] = asyncio.Queue()
 
         listed = await relay.answer(
@@ -517,6 +529,49 @@ class TestChatServer:
         assert answer.is_error is False, answer
         assert "orders" in str(answer.content), answer
 
+    async def test_colliding_tool_names_are_an_external_error(
+        self, call_stand: CallStand, tab: TabSession
+    ) -> None:
+        refs = StandRefs(call_stand.contexts)
+        drain = DevNullTool(refs.ambient)
+        tools = refs.tool_stand(())
+        tools.adopt(
+            [
+                ToolHosting().hosted(drain.build()),
+                ProbeTools().recorder(WorkflowTool.NAME, BaseModel),
+            ]
+        )
+        registry = tools.registry(
+            tools.access(RelayStand.ROLE, SignInStand.PROFILE), ()
+        )
+        streaming = StreamSpecs({DevNullTool.NAME: drain.spec()})
+        own = frozenset({WorkflowTool.NAME})
+        chat = ChatTools(replace(registry, own=own, specs=streaming), refs.runs)
+        credentials = KerberosCredentialSource(None, NoRefresh())
+        stand = RelayStand(
+            NoConnectionStore(), lambda: credentials, call_stand.contexts
+        )
+        servers = McpServers(McpServersConfig(servers={}))
+        relay = McpRelay(stand.registrations, servers, stand.sealing, chat)
+        registration = tab.registration(uuid4(), SignInStand.PROFILE)
+        server_id = stand.registrations.register(registration, [ChatTools.NAME])[
+            0
+        ].server_id
+        message = McpMessage(
+            server_id=server_id,
+            request_id="mcp:listing",
+            method="tools/list",
+            params={"_meta": self.ENVELOPE},
+        )
+
+        with pytest.raises(RequestError) as refused:
+            await relay.answer(message, asyncio.Queue[McpMessage]().put)
+
+        assert refused.value.code == AcpErrorCode.BACKEND_FAILED
+        assert f"tool {WorkflowTool.NAME!r} is offered by two servers" in str(
+            refused.value
+        )
+
 
 class TestRegistrations:
     """Регистрации серверов процесса агента: свой serverId на каждый сервер
@@ -526,7 +581,7 @@ class TestRegistrations:
 
     async def test_each_server_gets_its_own_server_id_until_revoked(self) -> None:
         registrations = McpRegistrations()
-        registration = TabSession().holder(uuid4(), "general")
+        registration = TabSession().registration(uuid4(), SignInStand.PROFILE)
 
         servers = registrations.register(registration, ["boba_general", "chat"])
         ids: list[str] = []
@@ -561,7 +616,9 @@ class TestRegistrations:
         tab = TabSession()
         tab.password_sign_in(frozenset({"DEV"}))
         user_id = uuid4()
-        server = registrations.register(tab.holder(user_id, "search"), ["chat"])[0]
+        server = registrations.register(tab.registration(user_id, "search"), ["chat"])[
+            0
+        ]
 
         context = registrations.of(server.server_id).context()
 
@@ -577,7 +634,9 @@ class TestRegistrations:
         registrations = McpRegistrations()
         tab = TabSession()
         tab.sign_in(frozenset({"DEV"}), "sealed-ticket-at-launch")
-        server = registrations.register(tab.holder(uuid4(), "general"), ["chat"])[0]
+        server = registrations.register(
+            tab.registration(uuid4(), SignInStand.PROFILE), ["chat"]
+        )[0]
         registration = registrations.of(server.server_id)
         launched = registration.context()
 
@@ -593,7 +652,7 @@ class TestRegistrations:
 
     async def test_registration_without_a_sign_in_token_is_refused(self) -> None:
         registrations = McpRegistrations()
-        registration = TabSession().holder(uuid4(), "general")
+        registration = TabSession().registration(uuid4(), SignInStand.PROFILE)
         server = registrations.register(registration, ["chat"])[0]
 
         with pytest.raises(AuthenticationError, match="no sign-in token"):
