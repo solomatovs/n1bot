@@ -199,6 +199,18 @@ class ThreadIdentity:
             profile=profile,
         )
 
+    def registration(self, server: str) -> McpRegistration:
+        """Регистрация сервера server для агента или приложения этой
+        вкладки: вызовы идут от имени её пользователя в её треде."""
+        return McpRegistration(
+            user_id=self.user_id,
+            login=self.login,
+            thread_id=self.thread_id,
+            profile=self.profile.name,
+            session=self.session,
+            server=server,
+        )
+
 
 class AgentSessionMeta:
     """Соответствие тред → sessionId агента в threads.meta: его читают
@@ -499,14 +511,7 @@ class AgentLauncher:
         names = list(identity.profile.config.mcp)
         names.append(ChatTools.NAME)
 
-        registration = McpRegistration(
-            user_id=identity.user_id,
-            login=identity.login,
-            thread_id=identity.thread_id,
-            profile=identity.profile.name,
-            session=identity.session,
-            server=ChatTools.NAME,
-        )
+        registration = identity.registration(ChatTools.NAME)
         servers = self._registrations.register(registration, names)
         try:
             process = await self.launch_settings(
