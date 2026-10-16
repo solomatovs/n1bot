@@ -18,7 +18,6 @@ import mcp_types as mt
 import pytest
 from acp.exceptions import RequestError
 from aid_stand import NoConnectionStore, RelayStand, ServiceProcess, TabSession
-from pydantic import BaseModel
 
 from boba.aid.agent.relay import ChatTools, McpRegistrations, McpRelay
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
@@ -40,7 +39,7 @@ from boba.toolkit.ports import StreamSpecs
 from boba.toolrun.call_id import CallFields
 from boba.toolrun.dev_null import DevNullTool
 from boba.toolrun.hosted import ToolHosting
-from boba.toolrun.stream_calls import WorkflowTool
+from boba.toolrun.stream_calls import WorkflowCall, WorkflowTool
 from boba.transport.acp.protocol import (
     AcpErrorCode,
     McpErrorOutcome,
@@ -689,7 +688,7 @@ class TestChatServer:
         tools.adopt(
             [
                 ToolHosting().hosted(drain.build()),
-                ProbeTools().recorder(WorkflowTool.NAME, BaseModel),
+                ProbeTools().recorder(WorkflowTool.NAME, WorkflowCall),
             ]
         )
         registry = tools.registry(
