@@ -138,9 +138,9 @@ async def _run_container(app: FastAPI) -> AsyncGenerator[None, None]:
 
 
 async def _use_agent_tools(container: Container, stack: AsyncExitStack) -> None:
-    """Входы чата для агента: MCP-сервер инструментов и обработчик хука
-    PreToolUse — маршрутами приложения chainlit впереди его собственных;
-    жизненный цикл сервера fastmcp живёт в stack до остановки приложения."""
+    """Вход чата для агента: MCP-сервер инструментов — маршрутом приложения
+    chainlit впереди его собственных; жизненный цикл сервера fastmcp живёт в
+    stack до остановки приложения."""
     from chainlit.server import app as chainlit_app  # noqa: PLC0415
 
     config = container.resolved(providers.get_app_config)
@@ -156,13 +156,6 @@ async def _use_agent_tools(container: Container, stack: AsyncExitStack) -> None:
         await stack.enter_async_context(server.lifespan())
         chainlit_app.router.routes.insert(0, server.route())
         logging.getLogger(__name__).info("chat mcp server serves %s", server.path)
-
-    if config.agent.hook.enable:
-        handler = container.resolved(providers.pre_tool_use_hook)
-        chainlit_app.router.routes.insert(0, handler.route())
-        logging.getLogger(__name__).info(
-            "pre-tool-use hook handler serves %s", config.agent.hook.path
-        )
 
 
 def _use_thread_deletion(container: Container) -> None:
@@ -384,13 +377,10 @@ def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
 
 
 def _eager_agent_tools(container: Container, c: AppConfig) -> None:
-    """Входы чата для агента поднимаются на старте, если включены конфигом:
-    маршруты ставятся из их готовых объектов."""
+    """Вход чата для агента поднимается на старте, если включён конфигом:
+    маршрут ставится из готового объекта."""
     if c.agent.chat_mcp.enable:
         container.eager(providers.chat_mcp_server)
-
-    if c.agent.hook.enable:
-        container.eager(providers.pre_tool_use_hook)
 
 
 def _eager_agent(container: Container) -> None:

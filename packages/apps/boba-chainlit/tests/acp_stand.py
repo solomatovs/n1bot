@@ -33,7 +33,6 @@ from boba.chainlit.agent.client import (
 from boba.chainlit.agent.config import (
     AgentCommandConfig,
     AgentConfig,
-    HookConfig,
     ModelLimitsConfig,
     PostgresAgentHistory,
 )
@@ -206,7 +205,6 @@ class AgentStand:
             history=self._history,
             public_url=public_url,
             chat_mcp=RelayStand.CHAT,
-            hook=HookConfig(enable=True, path="/chat/hooks/pre-tool-use"),
             limits=ModelLimitsConfig(context_window=32000, max_output_tokens=4096),
         )
 

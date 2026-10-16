@@ -41,16 +41,6 @@
         retry_statuses    = { 429 = 5 }
         auth              = { method = "bearer", token = "${site.llm_token}" }
 
-[llm.ollama]
-    kind      = "ollama"
-    transport = "${http}"
-    [llm.ollama.connection]
-        scheme         = "${site.ollama.scheme}"
-        host           = "${site.ollama_host}"
-        port           = "${site.ollama_port}"
-        timeout_sec    = 600
-        retry_attempts = 3
-
 [profiles.general]
     display_name            = "General"
     description             = "Профиль общего назначения: доступны все инструменты"
@@ -150,9 +140,6 @@
         path                = "/chat/mcp"
         connect_timeout_sec = 10
         call_timeout_sec    = 120
-    [agent.hook]
-        enable = true
-        path   = "/chat/hooks/pre-tool-use"
     [agent.limits]
         context_window    = 128000
         max_output_tokens = 8192

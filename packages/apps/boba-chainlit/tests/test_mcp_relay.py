@@ -20,9 +20,9 @@ from acp.exceptions import RequestError
 from chainlit_stand import NoConnectionStore, RelayStand, ServiceProcess, TabSession
 from pydantic import SecretStr
 
-from boba.agent.hooks import McpServerInfo
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.chainlit.agent.relay import McpRelay
+from boba.chainlit.agent.server import McpServerInfo
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
 from boba.connections.manifest import ConnectionTypes
 from boba.connections.sealed import SealedParamSchema, SealFeature
@@ -295,7 +295,7 @@ class RelayCall:
 
 @pytest.mark.integration
 class TestRelaySealing:
-    """Ретранслятор запечатывает соединения пользователя через HookSealing:
+    """Ретранслятор запечатывает соединения пользователя через CallSealing:
     невыданное имя — отказ isError, выданное доходит до тела сервера. У
     инструмента со вложенными вызовами, объявленного сервером, соединения
     запечатываются в каждом узле; отказ узла — isError всего вызова с

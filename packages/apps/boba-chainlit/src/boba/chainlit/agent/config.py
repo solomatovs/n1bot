@@ -1,5 +1,5 @@
 """Секция [agent] конфига chainlit: команда запуска агента ACP, хранилище его
-истории, адрес chainlit глазами агента, сервер инструментов чата и хук.
+истории, адрес chainlit глазами агента и сервер инструментов чата.
 
 Ошибки: своих не выпускает; разбор — pydantic при загрузке AppConfig.
 """
@@ -32,7 +32,6 @@ __all__ = [
     "AgentHistoryKind",
     "ChatMcpConfig",
     "DsnKey",
-    "HookConfig",
     "MemoryAgentHistory",
     "ModelLimitsConfig",
     "PostgresAgentHistory",
@@ -210,19 +209,6 @@ class ChatMcpConfig(BaseModel):
         return McpToolNames().checked_server(value)
 
 
-class HookConfig(BaseModel):
-    """HTTP-вход хука PreToolUse в chainlit: запечатывание соединений в форме
-    ответа хука."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    enable: bool = Field(description="Поднимать ли HTTP-вход хука PreToolUse.")
-    path: str = Field(
-        min_length=1,
-        description="Путь входа под адресом chainlit: /chat/hooks/pre-tool-use.",
-    )
-
-
 class ModelLimitsConfig(BaseModel):
     """Пределы профиля модели, которых нет в профиле чата."""
 
@@ -247,5 +233,4 @@ class AgentConfig(BaseModel):
         ),
     )
     chat_mcp: ChatMcpConfig
-    hook: HookConfig
     limits: ModelLimitsConfig

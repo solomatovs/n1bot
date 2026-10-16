@@ -521,8 +521,8 @@ class AgentLauncher:
         return LaunchedAgent(process=process, servers=servers)
 
     def retire(self, launched: LaunchedAgent) -> None:
-        """Снимает регистрации остановленного процесса: ретранслятор, сервер
-        чата и хук их больше не принимают."""
+        """Снимает регистрации остановленного процесса: ретранслятор и сервер
+        чата их больше не принимают."""
         for server in launched.servers:
             self._keys.revoke(server.server_id)
 

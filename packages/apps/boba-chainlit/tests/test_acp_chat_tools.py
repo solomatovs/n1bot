@@ -1,5 +1,5 @@
 """Чат исполняет инструменты своего агента: стенд chainlit с включёнными
-`/chat/mcp` и обработчиком хука PreToolUse, сервис boba-mcp стенда с плагином
+`/chat/mcp`, сервис boba-mcp стенда с плагином
 pg процессами хоста, настоящий `boba acp` v2 с фейковой моделью.
 
 Агент получает серверы профиля и сервер чата объявлениями type "acp" и зовёт
@@ -7,7 +7,7 @@ pg процессами хоста, настоящий `boba acp` v2 с фейк
 вызовы от имени пользователя вкладки. Проверяется ход «connection_list на
 сервере чата → pg_query на boba-mcp с именем соединения»: имя подменяется
 запечатанным профилем, сервис открывает его и исполняет запрос, в ленте
-остаётся имя; входы чата для агента отвечают 401 всему, что не serverId
+остаётся имя; вход чата для агента отвечает 401 всему, что не serverId
 процесса; файл настроек агента не несёт ни серверов, ни хуков, ни токенов.
 Приёмка ретранслятора — настоящий агент и стенд boba-mcp со входом proxy:
 инструмента чужой роли нет у агента, остановка отменяет вызов на сервере,
@@ -37,14 +37,8 @@ from mcp.client.streamable_http import streamable_http_client
 from test_acp_chat import BOOT_TIMEOUT_SEC, AgentProcesses, ChatSocket
 
 import boba.chainlit.agent
-from boba.agent.hooks import (
-    McpServerInfo,
-    PreToolUseEvent,
-)
-from boba.agent.records import PermissionMode
 from boba.chainlit.agent.client import AgentProcess
 from boba.chainlit.rendering.chat_view import StepStatus
-from boba.connections.sealed import SealedParamSchema, SealFeature, SealKeys
 from boba.db.postgres.connection import PostgresConfig
 from boba.identity.token import ClaimKey
 from boba.mcp_client.client import McpServerConfig, McpServersConfig
@@ -160,7 +154,6 @@ def app(
         db_name=db_name,
         agent_history=AgentHistoryStand(stand).document(),
         agent_chat_mcp=True,
-        agent_hook=True,
         service_plugins=SERVICE_PLUGINS,
     )
     process = StandProcess(config=config, log_path=workdir / "app.log")
@@ -225,9 +218,6 @@ class Addresses:
 
     def mcp(self) -> str:
         return f"{self._base}/chat/mcp"
-
-    def hook(self) -> str:
-        return f"{self._base}/chat/hooks/pre-tool-use"
 
 
 @pytest.fixture(scope="module")
@@ -447,7 +437,7 @@ class TestAgentTurn:
         assert not queried.get("isError"), (queried, companion.tail(80))
         assert "one" in str(queried.get("output")), queried
 
-        # запечатывает ретранслятор чата тем же HookSealing, что и вход хука
+        # запечатывает ретранслятор чата (CallSealing)
         app_log = _lines_since(app, since)
         assert any(
             f"sealing: connection {CONNECTION} of kind postgres sealed in connection "
@@ -554,85 +544,6 @@ class TestChatMcp:
         assert response.status_code == HTTPStatus.UNAUTHORIZED, response.text[:300]
 
 
-class HookEvents:
-    """События PreToolUse по форме агента для прямых запросов обработчику."""
-
-    def __init__(self, keys: SealKeys) -> None:
-        self._keys = keys
-        self._declared = SealedParamSchema()
-
-    def pg_query(self, connection: str, server: McpServerInfo | None) -> dict[str, Any]:
-        schema = {
-            "type": "object",
-            "properties": {
-                "connection": {"type": "string", **self._declared.declared("postgres")},
-                "sql": {"type": "string"},
-            },
-            "required": ["connection", "sql"],
-        }
-
-        return self._event(
-            "mcp__boba_general__pg_query",
-            {"connection": connection, "sql": "select 1"},
-            schema,
-            server,
-        )
-
-    def server(self) -> McpServerInfo:
-        return McpServerInfo(
-            name=MCP_SERVER,
-            features={SealFeature.ID: self._keys.feature().model_dump()},
-        )
-
-    @staticmethod
-    def _event(
-        tool: str,
-        arguments: Mapping[str, Any],
-        schema: Mapping[str, Any],
-        server: McpServerInfo | None,
-    ) -> dict[str, Any]:
-        event = PreToolUseEvent(
-            session_id=str(uuid4()),
-            cwd="/tmp/agent",  # noqa: S108 — путь события, не файл теста
-            permission_mode=PermissionMode.BYPASS_PERMISSIONS,
-            tool_name=tool,
-            tool_input=dict(arguments),
-            tool_use_id="toolu_01",
-            tool_schema=dict(schema),
-            mcp_server=server,
-        )
-
-        return event.model_dump(mode="json")
-
-
-class TestHookHandler:
-    """Обработчик хука PreToolUse принимает только serverId процесса агента;
-    запечатывание по событию проверяет ретранслятор (test_mcp_relay)."""
-
-    @pytest.mark.parametrize(
-        "token", ["foreign", "expired", "none", "sign_in", "random"]
-    )
-    async def test_rejects_everything_that_is_not_a_process_key(
-        self,
-        addresses: Addresses,
-        runtime_config: RuntimeConfig,
-        session_jwt: str,
-        token: str,
-    ) -> None:
-        forged = ForgedTokens(runtime_config.session.auth_secret)
-        headers = forged.headers(token, session_jwt)
-
-        events = HookEvents(SealKeys())
-        response = httpx.post(
-            addresses.hook(),
-            json=events.pg_query(CONNECTION, events.server()),
-            headers=headers,
-            timeout=30.0,
-        )
-        assert response.status_code == HTTPStatus.UNAUTHORIZED, response.text[:300]
-        assert response.headers.get("WWW-Authenticate") == "Bearer"
-
-
 class TestNoTokenExchangeInTheChat:
     """Чат не получает токенов сервиса для агента и не кладёт их в файл."""
 
@@ -688,7 +599,6 @@ def local_app(
         db_name=db_name,
         agent_history=AgentHistoryStand(stand).document(),
         agent_chat_mcp=True,
-        agent_hook=True,
         service_plugins=SERVICE_PLUGINS,
         agent_auth=StandAgentAuth.LOCAL,
         service_token_ttl_sec=SHORT_TOKEN_SEC,

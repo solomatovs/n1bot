@@ -31,7 +31,7 @@ from boba.canvas.journal import StreamSlice
 from boba.canvas.keys import WorkspaceMount
 from boba.chainlit.agent.config import ChatMcpConfig
 from boba.chainlit.agent.relay import McpRelay
-from boba.chainlit.agent.server import ChatCallers, HookSealing, KeyHolder, ProcessKeys
+from boba.chainlit.agent.server import CallSealing, ChatCallers, KeyHolder, ProcessKeys
 from boba.chainlit.canvas.remote import RemoteJournals, RemoteStreams
 from boba.chainlit.data.data_layer import PostgresDataLayer
 from boba.chainlit.domain.keys import AppPrefix
@@ -316,7 +316,7 @@ class RelayStand:
         self.keys = ProcessKeys()
         self.callers = ChatCallers(self.keys)
         connections = ArmedConnections(store, credentials, contexts)
-        self.sealing = HookSealing(self.callers, connections, contexts, self.SEAL_TTL)
+        self.sealing = CallSealing(self.callers, connections, contexts, self.SEAL_TTL)
 
     def relay(self, servers: McpServers) -> McpRelay:
         return McpRelay(
@@ -344,7 +344,7 @@ class ServiceTool:
 class ServiceTools:
     """Чат к сервису инструментов стенда тем же путём, что вызов агента:
     ретранслятор mcp/message (McpRelay) запечатывает соединения
-    (HookSealing) и зовёт MCP-порт сервиса от имени пользователя текущей
+    (CallSealing) и зовёт MCP-порт сервиса от имени пользователя текущей
     сессии chainlit.
 
     Создаётся фикстурой теста из сервиса (ToolService), хранилища соединений
