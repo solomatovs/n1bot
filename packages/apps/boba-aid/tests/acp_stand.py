@@ -179,7 +179,6 @@ class AgentStand:
             ),
             history=self._history,
             public_url=public_url,
-            chat_mcp=RelayStand.CHAT,
             seal_ttl_sec=600,
             limits=ModelLimitsConfig(context_window=32000, max_output_tokens=4096),
         )
@@ -258,7 +257,7 @@ class Agents:
     сессий идёт приёмнику теста через обёртку агента треда (AskedQuestions),
     которая решает конец хода по idle. Запросы mcp/message процессов отвечает
     ретранслятор стенда (RelayStand) над серверами servers; регистрации
-    выдаёт keys."""
+    выдаёт registrations."""
 
     TURN_TIMEOUT_SEC: float = 60.0
 
@@ -273,7 +272,7 @@ class Agents:
         self._servers = McpServers(servers)
         credentials = KerberosCredentialSource(None, NoRefresh())
         relay = RelayStand(NoConnectionStore(), lambda: credentials, CallContexts())
-        self.keys = relay.keys
+        self.registrations = relay.registrations
         self._relay = relay.relay(self._servers)
         self.started: list[AgentProcess] = []
         self.questions: dict[AgentProcess, AskedQuestions] = {}
