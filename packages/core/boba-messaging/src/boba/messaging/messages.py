@@ -23,7 +23,6 @@ __all__ = [
     "ChatSettingsChanged",
     "Command",
     "CommandKind",
-    "ConnectionsChanged",
     "FeedbackChanged",
     "LockLost",
     "Message",
@@ -67,7 +66,6 @@ class MessageKind(StrEnum):
     LOCK_LOST = "lock_lost"
     RUN_LIST_CHANGED = "run_list_changed"
     WORKFLOW_CHANGED = "workflow_changed"
-    CONNECTIONS_CHANGED = "connections_changed"
     THREAD_REWOUND = "thread_rewound"
     THREAD_CHANGED = "thread_changed"
     WORKFLOW_DRAFT_CHANGED = "workflow_draft_changed"
@@ -286,15 +284,6 @@ class WorkflowChanged(Message):
     action: ChangeAction
 
 
-class ConnectionsChanged(Message):
-    """Соединение connection_id пользователя создано, изменено или удалено."""
-
-    kind: Literal[MessageKind.CONNECTIONS_CHANGED] = MessageKind.CONNECTIONS_CHANGED
-    connection_id: UUID
-    name: str = Field(min_length=1)
-    action: ChangeAction
-
-
 class ThreadRewound(Message):
     """История треда заменена веткой session_id, обрезанной до правленого
     вопроса; turn_id — ключ хода по правленому вопросу. Вкладки треда, чья
@@ -378,8 +367,7 @@ AnyMessage = Annotated[
     | WorkflowDraftChanged
     | FeedbackChanged
     | ChatSettingsChanged
-    | WorkflowChanged
-    | ConnectionsChanged,
+    | WorkflowChanged,
     Field(discriminator="kind"),
 ]
 

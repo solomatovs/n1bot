@@ -14,15 +14,12 @@ __all__ = ["ConnectionRefusal"]
 
 
 class ConnectionRefusal(StrEnum):
-    """Отказы работы с соединениями субъекта: whitelist на вызов, правка строк
-    и приём запечатанного соединения исполнителем."""
+    """Отказы работы с соединениями субъекта: whitelist на вызов и приём
+    запечатанного соединения исполнителем."""
 
     AMBIGUOUS = "ambiguous_connection"
     NO_DELEGATION = "no_delegated_credentials"
     NOT_VISIBLE = "connection_not_visible"
-    NOT_OWNED = "connection_not_owned"
-    NAME_TAKEN = "connection_name_taken"
-    IN_USE = "connection_in_use"
     NOT_SEALED = "connection_not_sealed"
     SEAL_KEY_UNKNOWN = "connection_seal_key_unknown"
     SEAL_DAMAGED = "connection_seal_damaged"

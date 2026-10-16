@@ -66,10 +66,6 @@ class OtherConnection(ConnectionBase):
         return f"host={self.host}"
 
 
-async def _probe(connection: ConnectionBase) -> str:
-    return "ok"
-
-
 def _address(connection: ConnectionBase) -> str:
     return f"{connection.kind}://{getattr(connection, 'host', '')}"
 
@@ -77,10 +73,10 @@ def _address(connection: ConnectionBase) -> str:
 TYPES = ConnectionTypes(
     {
         "probe": ConnectionTypeManifest(
-            kind="probe", model=ProbeConnection, probe=_probe, address=_address
+            kind="probe", model=ProbeConnection, address=_address
         ),
         "other": ConnectionTypeManifest(
-            kind="other", model=OtherConnection, probe=_probe, address=_address
+            kind="other", model=OtherConnection, address=_address
         ),
     }
 )

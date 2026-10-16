@@ -1,4 +1,4 @@
-"""Вход через API: пользователь входа, субъект под профилем, порт аутентификации.
+"""Вход через API: пользователь входа, строки users и порт аутентификации.
 
 Ошибки:
 AuthenticationError — у входа нет строки users.
@@ -15,19 +15,13 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
 
-from boba.cancellation import RunCancellation
 from boba.identity.context import (
-    CallContext,
     Credential,
-    HumanInitiator,
-    Scope,
-    Subject,
 )
 from boba.identity.session import Login
 from boba.identity.signin import SignedIn, SignInMetadata
 
 __all__ = [
-    "ApiSubject",
     "AuthenticatedUser",
     "Authenticator",
     "PersistedUsers",
@@ -61,32 +55,6 @@ class AuthenticatedUser(BaseModel):
     def credential(self) -> Credential:
         """Делегированный билет входа либо причина его отсутствия."""
         return self.sign_in.credential()
-
-
-class ApiSubject(BaseModel):
-    """Субъект вызова через API под выбранным профилем и его секреты."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    subject: Subject
-    credential: Credential
-
-    @classmethod
-    def of(cls, user: AuthenticatedUser, profile: str) -> ApiSubject:
-        subject = Subject.of_user(user.id, user.identifier, user.roles, profile)
-
-        return cls(subject=subject, credential=user.credential)
-
-    def context(self, scope: Scope) -> CallContext:
-        """Контекст вызова человека через API в заданной области."""
-        return CallContext(
-            subject=self.subject,
-            scope=scope,
-            run_id=scope.id,
-            initiator=HumanInitiator(via="api"),
-            credential=self.credential,
-            cancellation=RunCancellation(),
-        )
 
 
 class UsersColumn(StrEnum):

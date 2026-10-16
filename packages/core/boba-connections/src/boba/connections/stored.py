@@ -31,11 +31,9 @@ __all__ = [
     "GrantTarget",
     "GrantedConnection",
     "GrantsColumn",
-    "MissingTypeConnection",
     "RolesColumn",
     "StoredConnection",
     "StoredRole",
-    "SubjectConnections",
 ]
 
 
@@ -158,25 +156,6 @@ class GrantedConnection(BaseModel):
     ambiguous: bool
 
 
-class MissingTypeConnection(BaseModel):
-    """Строка connections, чей тип не установлен: в списках живёт с пометкой."""
-
-    model_config = ConfigDict(frozen=True)
-
-    id: UUID
-    name: str
-    kind: str
-
-
-class SubjectConnections(BaseModel):
-    """Соединения субъекта целиком: разобранные строки и строки без типа."""
-
-    model_config = ConfigDict(frozen=True)
-
-    rows: Sequence[StoredConnection] = ()
-    missing: Sequence[MissingTypeConnection] = ()
-
-
 class ConnectionRepository(Protocol):
     """Хранилище соединений и грантов; реализация — ConnectionStore на postgres."""
 
@@ -198,9 +177,6 @@ class ConnectionRepository(Protocol):
     async def update(
         self, connection_id: UUID, name: str, connection: ConnectionBase
     ) -> bool: ...
-
-    @abstractmethod
-    async def owned_ids(self, user_id: UUID) -> frozenset[UUID]: ...
 
     @abstractmethod
     async def get(self, connection_id: UUID) -> StoredConnection: ...
@@ -227,13 +203,3 @@ class ConnectionRepository(Protocol):
     async def for_subject(
         self, subject: Subject, kind: str
     ) -> Sequence[GrantedConnection]: ...
-
-
-class ProbeResult(BaseModel):
-    """Исход проверки: удалось ли открыть соединение, что ответил сервер, за сколько."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    ok: bool
-    message: str
-    elapsed_ms: int
