@@ -51,6 +51,7 @@ from boba.stand_core.context import CallStand
 from boba.tool.describer.address import Addresses, EntityAddress
 from boba.tool.describer.edges import EdgeKind, EdgeListColumn
 from boba.tool.describer.nodes import NodeListColumn
+from boba.tool.describer.store import DescriberStore, DescriberToolConfig
 from boba.toolkit.dag import DagNode, NodeOutcome, ToolServer
 from boba.toolkit.result import (
     ErrorResult,
@@ -313,9 +314,9 @@ async def granted(
 
 
 @pytest.fixture
-async def seeded_pg(pool: AsyncPostgresPool) -> None:
+async def seeded_pg(pool: AsyncPostgresPool, flow_raw: DictConfig) -> None:
     """Описываемые таблицы: customers и orders с внешним ключом; таблицы
-    describer сброшены."""
+    describer пересозданы стартом плагина."""
     async with pool.connection() as conn:
         await conn.execute(
             sql.SQL("drop schema if exists {} cascade").format(
@@ -341,6 +342,9 @@ async def seeded_pg(pool: AsyncPostgresPool) -> None:
                 customers=sql.Identifier(DM, "customers"),
             )
         )
+
+    describer = bind(flow_raw, path="tool.describer", model=DescriberToolConfig)
+    await DescriberStore(describer).setup()
 
 
 @pytest.fixture

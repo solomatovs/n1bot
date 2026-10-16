@@ -34,7 +34,7 @@ from boba.runtime.refs import ExecRefs
 from boba.toolkit.entry import ToolArgv, ToolEntryError
 from boba.toolkit.facade import PayloadTool
 from boba.toolkit.launcher import ToolLauncher
-from boba.toolkit.manifest import LaunchSpec, ToolPluginManifest
+from boba.toolkit.manifest import LaunchSpec, PluginStart, ToolPluginManifest
 from boba.toolkit.ports import StreamSpecs
 from boba.toolkit.types import StringList
 from boba.toolrun.callvalues import CallContextValues
@@ -77,6 +77,8 @@ class ToolPlugin:
     package: str = ""
     """Дистрибутив entry point'а: по нему ищется образ корня песочницы
     plugins/<package>/rootfs.ext4."""
+    start: PluginStart[Any] | None = None
+    """Хранилище плагина из манифеста: его таблицы boba-mcp создаёт на старте."""
 
 
 class PluginMeta(BaseModel):
@@ -377,4 +379,5 @@ class EntryPointPlugins:
             module_tools=manifest.tools,
             modules=self._hosting.modules_of(manifest.tools),
             package=package,
+            start=manifest.start,
         )

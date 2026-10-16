@@ -6,6 +6,7 @@ get_process_config: провайдеры ядра читают только се
 
 Ошибки:
 RuntimeError — контейнер не поднят или процесс не дал значение.
+ServerStartError — плагин не подготовил свои таблицы на старте процесса.
 """
 
 import logging
@@ -24,9 +25,7 @@ from boba.connection_broker.store import ConnectionStore
 from boba.connections.manifest import ConnectionTypes
 from boba.connections.sealed import SealKeys
 from boba.connections.secrets import SecretCipher
-from boba.db.pgvector.config import KnowledgeBaseSchemaConfig
-from boba.db.pgvector.schema import KbSchema
-from boba.db.postgres import AsyncPostgresPool
+from boba.db.postgres import AsyncPostgresPool, PostgresError
 from boba.identity.context import CallContexts
 from boba.identity.directory import UserDirectory
 from boba.identity.locks import LiveLocks, MemoryLiveLocks, StaleLock
@@ -53,6 +52,7 @@ from boba.runtime.config import (
     RuntimeConfig,
 )
 from boba.runtime.di import Container, Depends
+from boba.runtime.http import ServerStartError
 from boba.runtime.journal import DirVault, StreamJournal
 from boba.runtime.launchers import SectionLaunchers, ToolLaunchers
 from boba.runtime.locks import LockReaper, PgLiveLocks
@@ -350,16 +350,34 @@ async def tool_registry_ref() -> ToolRegistry:
     return await _root().resolve(Depends(tool_registry))
 
 
-async def kb_schema(
+async def plugin_storages(
     raw: Annotated[DictConfig, Depends(get_raw_config)],
+    table: Annotated[PluginTable, Depends(plugin_table)],
 ) -> None:
-    """Готовит таблицы базы знаний, если секция [tool.kb] включена."""
-    meta = bind(raw, "tool.kb", PluginMeta)
-    if not meta.enable:
-        return
+    """Старт плагинов с хранилищем: каждый включённый плагин, объявивший
+    PluginStart, создаёт свои таблицы по своей секции tool.<section>. Отказ
+    плагина валит старт процесса с именем плагина.
 
-    cfg = bind(raw, "tool.kb", KnowledgeBaseSchemaConfig)
-    await KbSchema(cfg, dim=cfg.embedding.dim).setup()
+    Ошибки:
+    ServerStartError — хранилище плагина не подготовилось.
+    """
+    for name, plugin in table().items():
+        start = plugin.start
+        if start is None:
+            continue
+
+        section = f"tool.{plugin.section}"
+        meta = bind(raw, section, PluginMeta)
+        if not meta.enable:
+            continue
+
+        cfg = bind(raw, section, start.config)
+        storage = start.storage(cfg)
+        try:
+            await storage.setup()
+        except PostgresError as exc:
+            msg = f"plugin {name!r} ([{section}]) could not prepare its tables: {exc}"
+            raise ServerStartError(msg) from exc
 
 
 async def live_locks(

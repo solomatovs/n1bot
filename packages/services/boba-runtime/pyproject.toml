@@ -23,7 +23,6 @@ dependencies = [
     "boba-toolkit==0.0.26.dev4",
     "boba-toolrun==0.0.26.dev4",
     "boba-krb[seal]==0.0.26.dev4",
-    "boba-db-pgvector==0.0.26.dev4",
     "pydantic>=2.12,<3",
     "psycopg>=3.3,<4",
     "omegaconf>=2.3,<3",
