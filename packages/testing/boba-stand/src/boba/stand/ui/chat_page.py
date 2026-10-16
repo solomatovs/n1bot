@@ -270,6 +270,27 @@ class ChatPage:
         )
         raise ChatPageError(msg)
 
+    def await_event(self, event: ChatEvent, timeout_sec: float = 30.0) -> None:
+        """Ждёт событие сервера в журнале вкладки.
+
+        Действие, о конце которого страница ничем не сообщает в разметке
+        (сохранение настроек, перезапуск агента), тест узнаёт по событию,
+        которым сервер его завершает. Журнал тест очищает перед действием,
+        чтобы не принять за ответ событие, пришедшее раньше.
+        """
+        deadline = time.monotonic() + timeout_sec
+        while time.monotonic() < deadline:
+            if self.log.of_event(event):
+                return
+
+            self.page.wait_for_timeout(100)
+
+        msg = (
+            f"chat page: no {event.value!r} event in the socket log within "
+            f"{timeout_sec}s\n{self.log.describe()}"
+        )
+        raise ChatPageError(msg)
+
     def _turn_finished(self) -> bool:
         started = -1
         for index, frame in enumerate(self.log.frames):
