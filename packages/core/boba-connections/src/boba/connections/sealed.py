@@ -94,6 +94,27 @@ class ConnectionOffer:
     names: Mapping[str, str]
 
 
+class ConnectionParamText(StrEnum):
+    """Описание параметра-соединения для модели клиента по тому, что
+    предложено: SEALED — только свои соединения пользователя, SERVER — только
+    заданные соединения сервера (listed — имена с описаниями), BOTH — то и
+    другое. Пишет его SealedParamSchema.declared."""
+
+    SEALED = (
+        "Name of the {kind} connection to use. Pass the name of one of your "
+        "own connections, the client seals it."
+    )
+    SERVER = "Name of the {kind} connection to use. Use one of: {listed}."
+    BOTH = (
+        "Name of the {kind} connection to use. Pass the name of one of your "
+        "own connections, the client seals it, or one of the server "
+        "connections: {listed}."
+    )
+
+    def render(self, kind: str, listed: str) -> str:
+        return self.value.format(kind=kind, listed=listed)
+
+
 class SealedParamSchema:
     """Схема параметра-соединения на проводе: сервер пишет, клиент читает.
 
@@ -109,52 +130,55 @@ class SealedParamSchema:
     """
 
     MEDIA_TYPE: ClassVar[str] = "application/jose"
-    CONTENT_KEY: ClassVar[str] = "contentSchema"
     KIND_FIELD: ClassVar[str] = "kind"
-    CONST_KEY: ClassVar[str] = "const"
-    ENUM_KEY: ClassVar[str] = "enum"
-    ANY_OF_KEY: ClassVar[str] = "anyOf"
-    DESCRIPTION_KEY: ClassVar[str] = "description"
 
     def declared(self, offer: ConnectionOffer) -> dict[str, Any]:
         """Ключи схемы параметра по предложению offer: пометка с видом,
         ветка запечатанного значения и/или enum имён сервера, описание."""
-        sealed = {
-            "type": "string",
-            SchemaMark.MEDIA.value: self.MEDIA_TYPE,
-            self.CONTENT_KEY: {
+        branches: list[dict[str, Any]] = []
+        if offer.sealed:
+            content = {
                 "type": "object",
-                SchemaMark.PROPERTIES: {self.KIND_FIELD: {self.CONST_KEY: offer.kind}},
+                SchemaMark.PROPERTIES: {
+                    self.KIND_FIELD: {SchemaMark.CONST.value: offer.kind}
+                },
                 "required": [self.KIND_FIELD],
-            },
-        }
-        named = {"type": "string", self.ENUM_KEY: list(offer.names)}
+            }
+            branches.append(
+                {
+                    "type": "string",
+                    SchemaMark.MEDIA.value: self.MEDIA_TYPE,
+                    SchemaMark.CONTENT.value: content,
+                }
+            )
+
+        if offer.names:
+            branches.append(
+                {"type": "string", SchemaMark.ENUM.value: list(offer.names)}
+            )
 
         described: list[str] = []
-        for name, text in offer.names.items():
-            described.append(f"{name} — {text}")
+        for name, about in offer.names.items():
+            described.append(f"{name} — {about}")
 
         listed = "; ".join(described)
-        own = "Pass the name of one of your own connections, the client seals it"
-        head = f"Name of the {offer.kind} connection to use."
-        declared: dict[str, Any] = {SchemaMark.CONNECTION.value: offer.kind}
+        text = ConnectionParamText.BOTH
         if not offer.names:
-            text = f"{head} {own}."
-            return {**declared, self.DESCRIPTION_KEY: text, **sealed}
+            text = ConnectionParamText.SEALED
 
         if not offer.sealed:
-            text = f"{head} Use one of: {listed}."
-            return {**declared, self.DESCRIPTION_KEY: text, **named}
+            text = ConnectionParamText.SERVER
 
-        text = f"{head} {own}, or one of the server connections: {listed}."
-
-        return {
-            **declared,
-            self.DESCRIPTION_KEY: text,
-            self.ANY_OF_KEY: [sealed, named],
+        declared: dict[str, Any] = {
+            SchemaMark.CONNECTION.value: offer.kind,
+            SchemaMark.DESCRIPTION.value: text.render(offer.kind, listed),
         }
+        if len(branches) > 1:
+            return {**declared, SchemaMark.ANY_OF.value: branches}
 
-    def offers(self, schema: Mapping[str, Any]) -> dict[str, ConnectionOffer]:
+        return {**declared, **branches[0]}
+
+    def offers(self, schema: Mapping[str, Any]) -> Mapping[str, ConnectionOffer]:
         """Параметры-соединения инструмента по его схеме schema: имя →
         предложение, прочитанное из схемы параметра."""
         offers: dict[str, ConnectionOffer] = {}
@@ -168,7 +192,7 @@ class SealedParamSchema:
 
             declared = properties[param]
             branches: list[object] = [declared]
-            nested = declared.get(self.ANY_OF_KEY)
+            nested = declared.get(SchemaMark.ANY_OF.value)
             if isinstance(nested, list):
                 branches.extend(nested)
 
@@ -181,7 +205,7 @@ class SealedParamSchema:
                 if branch.get(SchemaMark.MEDIA.value) == self.MEDIA_TYPE:
                     sealed = True
 
-                enum = branch.get(self.ENUM_KEY)
+                enum = branch.get(SchemaMark.ENUM.value)
                 if not isinstance(enum, list):
                     continue
 

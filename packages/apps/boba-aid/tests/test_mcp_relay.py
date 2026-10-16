@@ -303,19 +303,13 @@ class TestMcpRelay:
 
 @dataclass(frozen=True)
 class RelayCall:
-    """Случай вызова через ретранслятор: инструмент, аргументы модели,
-    ожидаемый ответ сервера — isError и куски его текста. endpoint — путь
-    endpoint'а сервиса, roles — роли пользователя вкладки, owned — имена его
-    соединений, logged — куски предупреждений ретранслятора."""
+    """Случай вызова через ретранслятор: инструмент, аргументы модели и
+    ожидаемый ответ сервера — isError и куски его текста."""
 
     name: str
     arguments: Mapping[str, Any]
     errored: bool
     expected: Sequence[str]
-    endpoint: str
-    roles: frozenset[str]
-    owned: Sequence[str]
-    logged: Sequence[str]
 
 
 @pytest.mark.integration
@@ -351,20 +345,12 @@ class TestRelaySealing:
                 arguments={"connection": "missing"},
                 errored=True,
                 expected=["is not among the connections"],
-                endpoint="service",
-                roles=frozenset({"dev"}),
-                owned=("orders",),
-                logged=(),
             ),
             RelayCall(
                 name="fake_connection_host",
                 arguments={"connection": "orders"},
                 errored=False,
                 expected=["db.local|orders"],
-                endpoint="service",
-                roles=frozenset({"dev"}),
-                owned=("orders",),
-                logged=(),
             ),
             RelayCall(
                 name="workflow",
@@ -379,10 +365,6 @@ class TestRelaySealing:
                 },
                 errored=False,
                 expected=["db.local|orders"],
-                endpoint="service",
-                roles=frozenset({"dev"}),
-                owned=("orders",),
-                logged=(),
             ),
             RelayCall(
                 name="workflow",
@@ -401,10 +383,6 @@ class TestRelaySealing:
                     "fake_connection_host",
                     "is not among the connections",
                 ],
-                endpoint="service",
-                roles=frozenset({"dev"}),
-                owned=("orders",),
-                logged=(),
             ),
             RelayCall(
                 name="workflow",
@@ -413,40 +391,12 @@ class TestRelaySealing:
                 },
                 errored=True,
                 expected=["node 'n0'", "offers the model no tool 'no_such_tool'"],
-                endpoint="service",
-                roles=frozenset({"dev"}),
-                owned=("orders",),
-                logged=(),
             ),
             RelayCall(
                 name="workflow",
                 arguments={"nodes": "n0"},
                 errored=True,
                 expected=["does not match its schema", "nodes"],
-                endpoint="service",
-                roles=frozenset({"dev"}),
-                owned=("orders",),
-                logged=(),
-            ),
-            RelayCall(
-                name="fake_connection_host",
-                arguments={"connection": "dwh"},
-                errored=False,
-                expected=["dwh.local|dwh"],
-                endpoint="offers",
-                roles=frozenset({"analyst"}),
-                owned=(),
-                logged=(),
-            ),
-            RelayCall(
-                name="fake_connection_host",
-                arguments={"connection": "dwh"},
-                errored=False,
-                expected=["db.local|orders"],
-                endpoint="offers",
-                roles=frozenset({"analyst"}),
-                owned=("dwh",),
-                logged=("connection dwh of kind postgres is both yours",),
             ),
         ],
         ids=[
@@ -456,28 +406,94 @@ class TestRelaySealing:
             "node-refused",
             "node-unknown-tool",
             "off-shape-as-is",
-            "server-name-as-is",
-            "collision-user-wins",
         ],
     )
-    async def test_sealing_is_applied_to_the_call(  # noqa: PLR0913 — случай собирается фикстурами стендов
+    async def test_sealing_is_applied_to_the_call(
         self,
         service_process: ServiceProcess,
         store: ConnectionStore,
         call_stand: CallStand,
         tab: TabSession,
         case: RelayCall,
+    ) -> None:
+        config = service_process.servers()
+        answer = await self._called(config, store, call_stand, tab, ["orders"], case)
+
+        assert answer.is_error is case.errored, answer
+        for part in case.expected:
+            assert part in str(answer.content), answer
+
+    @pytest.mark.parametrize(
+        ("owned", "logged", "case"),
+        [
+            (
+                [],
+                [],
+                RelayCall(
+                    name="fake_connection_host",
+                    arguments={"connection": "dwh"},
+                    errored=False,
+                    expected=["dwh.local|dwh"],
+                ),
+            ),
+            (
+                ["dwh"],
+                ["connection dwh of kind postgres is both yours"],
+                RelayCall(
+                    name="fake_connection_host",
+                    arguments={"connection": "dwh"},
+                    errored=False,
+                    expected=["db.local|orders"],
+                ),
+            ),
+        ],
+        ids=["server-name-as-is", "collision-user-wins"],
+    )
+    async def test_server_connections_are_offered(  # noqa: PLR0913 — случай собирается фикстурами стендов
+        self,
+        service_process: ServiceProcess,
+        store: ConnectionStore,
+        call_stand: CallStand,
+        tab: TabSession,
+        owned: Sequence[str],
+        logged: Sequence[str],
+        case: RelayCall,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        credentials = KerberosCredentialSource(None, NoRefresh())
-        stand = RelayStand(lambda: store, lambda: credentials, call_stand.contexts)
+        """Endpoint offers предлагает роли analyst и соединение сервера dwh:
+        имя сервера уходит как есть, совпавшее с именем соединения
+        пользователя запечатывается с предупреждением."""
         config = service_process.servers()
         boba = config.servers["boba"]
-        endpoint = boba.endpoint.model_copy(update={"path": f"/mcp/{case.endpoint}"})
+        endpoint = boba.endpoint.model_copy(update={"path": "/mcp/offers"})
         served = boba.model_copy(update={"endpoint": endpoint})
-        servers = McpServers(config.model_copy(update={"servers": {"boba": served}}))
+        offers = config.model_copy(update={"servers": {"boba": served}})
+        tab.password_sign_in(frozenset({"analyst"}))
+        answer = await self._called(offers, store, call_stand, tab, owned, case)
+
+        assert answer.is_error is case.errored, answer
+        for part in case.expected:
+            assert part in str(answer.content), answer
+
+        for part in logged:
+            assert part in caplog.text, caplog.text
+
+    async def _called(  # noqa: PLR0913 — вызов собирается фикстурами стендов
+        self,
+        config: McpServersConfig,
+        store: ConnectionStore,
+        call_stand: CallStand,
+        tab: TabSession,
+        owned: Sequence[str],
+        case: RelayCall,
+    ) -> mt.CallToolResult:
+        """Итог вызова case через ретранслятор к серверам config, когда у
+        пользователя вкладки есть соединения owned; ждёт, пока стенд сервиса
+        начнёт отдавать список инструментов."""
+        credentials = KerberosCredentialSource(None, NoRefresh())
+        stand = RelayStand(lambda: store, lambda: credentials, call_stand.contexts)
+        servers = McpServers(config)
         relay = stand.relay(servers)
-        tab.password_sign_in(case.roles)
         holder = tab.holder(uuid4(), "general")
         server_id = stand.keys.register(holder, ["boba"])[0].server_id
         profile = PostgresConfig.model_validate(
@@ -487,8 +503,9 @@ class TestRelaySealing:
                 "auth": {"method": "trust", "user": "u"},
             }
         )
-        for name in case.owned:
+        for name in owned:
             await store.add_owned(name, profile, holder.user_id)
+
         heard: asyncio.Queue[McpMessage] = asyncio.Queue()
         listing = McpMessage(
             server_id=server_id,
@@ -527,13 +544,8 @@ class TestRelaySealing:
             await servers.stop()
 
         assert isinstance(called, McpResultOutcome), called
-        answer = mt.CallToolResult.model_validate(called.result)
-        assert answer.is_error is case.errored, answer
-        for part in case.expected:
-            assert part in str(answer.content), answer
 
-        for part in case.logged:
-            assert part in caplog.text, caplog.text
+        return mt.CallToolResult.model_validate(called.result)
 
     async def test_thread_is_hidden_from_the_model_and_filled_by_the_relay(
         self,

@@ -54,7 +54,6 @@ from boba.connections.sealed import (
 from boba.connections.whitelist import ConnectionWhitelist
 from boba.identity.context import CallContexts
 from boba.identity.errors import RefusalError
-from boba.toolkit.types import StringList
 from boba.toolrun.hosted import HostedTool, ToolSchema
 from boba.toolrun.injected import (
     AsyncInjected,
@@ -83,7 +82,6 @@ class ServerConnection(RoleVisibility):
 
     kind: str = Field(min_length=1)
     description: str = Field(min_length=1)
-    roles: StringList = Field(default=[], min_length=1, validate_default=True)
     connection: dict[str, Any]
 
 
@@ -279,12 +277,13 @@ class SealedConnectionParams(NodeArgs, ParamSource):
         tools: Sequence[HostedTool],
         roles: frozenset[str],
         sources: frozenset[OfferedSource],
-    ) -> list[HostedTool]:
+    ) -> Sequence[HostedTool]:
         """Инструменты под предложение вызывающему с ролями roles и
         источниками sources: инструмент без параметров-соединений — как
         есть; с ними — копия, у которой схема параметра по предложению и
         значение на вызове проверяется по нему же. Параметру, которому
         предложить нечего, инструмента в списке нет."""
+        sealed = OfferedSource.SEALED in sources
         offered: list[HostedTool] = []
         for tool in tools:
             params = self._params.get(tool.name)
@@ -292,23 +291,22 @@ class SealedConnectionParams(NodeArgs, ParamSource):
                 offered.append(tool)
                 continue
 
+            names: Mapping[str, str] = {}
+            if OfferedSource.SERVER in sources:
+                names = self._visible(tool.name, roles)
+
+            if not sealed and not names:
+                continue
+
             fields: dict[str, tuple[Any, FieldInfo]] = {}
             for param, hook in params.items():
-                names: dict[str, str] = {}
-                if OfferedSource.SERVER in sources:
-                    names = self._visible(tool.name, roles)
-
-                sealed = OfferedSource.SEALED in sources
                 offer = ConnectionOffer(kind=hook.kind, sealed=sealed, names=names)
-                if not offer.sealed and not offer.names:
-                    break
-
                 checked = AfterValidator(partial(self._checked, offer))
                 fields[param] = self._hooks.field(offer, checked)
-            else:
-                copy = tool.copy()
-                copy.args_schema = self._schemas.rebuild(tool.args_schema, fields, ())
-                offered.append(copy)
+
+            copy = tool.copy()
+            copy.args_schema = self._schemas.rebuild(tool.args_schema, fields, ())
+            offered.append(copy)
 
         return offered
 

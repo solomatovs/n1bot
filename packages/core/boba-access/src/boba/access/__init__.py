@@ -103,11 +103,13 @@ class RoleVisibility(BaseModel):
     совпала или среди ролей '*'.
 
     База секций с ролями: грант профиля (ProfileGrant), правило предложения
-    соединений endpoint'а и заданное соединение сервера boba-mcp.
+    соединений endpoint'а и заданное соединение сервера boba-mcp. Роли
+    обязательны; грант профиля может их не называть — такой профиль не
+    виден никому.
     """
 
     roles: StringList = Field(
-        default=[],
+        min_length=1,
         description="Роли, которым элемент виден; '*' — всем.",
     )
 
@@ -124,6 +126,11 @@ class RoleVisibility(BaseModel):
 
 class ProfileGrant(ToolGrant, RoleVisibility):
     """Грант профиля: кроме инструментов — роли, которым профиль виден."""
+
+    roles: StringList = Field(
+        default=[],
+        description="Роли, которым профиль виден; '*' — всем.",
+    )
 
 
 class AccessSubject(Protocol):

@@ -91,9 +91,6 @@ class CallSealing:
         """
         updated: dict[str, Any] = dict(arguments)
         offers = self._declared.offers(tool_schema)
-        if not offers:
-            return updated
-
         for param, offer in offers.items():
             name = updated.get(param)
             if not isinstance(name, str):
