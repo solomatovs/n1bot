@@ -66,7 +66,6 @@ dev = [
     "pytest>=9.1,<10",
     "pyjwt>=2.8,<3",
     "httpx>=0.28,<1",
-    "httpx2>=2.10,<3",
     "python-socketio>=5.11,<6",
 ]
 

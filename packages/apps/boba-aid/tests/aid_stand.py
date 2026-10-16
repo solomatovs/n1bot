@@ -27,8 +27,12 @@ from chainlit.user import PersistedUser
 from chainlit.user import User as ChainlitUser
 from psycopg import sql
 
-from boba.aid.agent.relay import ChatTools, McpRelay
-from boba.aid.agent.server import CallSealing, ChatCallers, KeyHolder, ProcessKeys
+from boba.aid.agent.relay import (
+    ChatTools,
+    McpRegistration,
+    McpRegistrations,
+    McpRelay,
+)
 from boba.aid.canvas.remote import RemoteJournals, RemoteStreams
 from boba.aid.data.data_layer import PostgresDataLayer
 from boba.aid.domain.keys import AppPrefix
@@ -45,6 +49,7 @@ from boba.auth import JwtTokens
 from boba.canvas.journal import StreamSlice
 from boba.canvas.keys import WorkspaceMount
 from boba.config import bind
+from boba.connection_broker.sealing import CallSealing
 from boba.connection_broker.store import ConnectionStore
 from boba.connection_broker.tickets import CredentialsRef
 from boba.connection_broker.tools import ConnectionTools
@@ -107,7 +112,7 @@ AUTH_USER = "test-user"
 
 
 class TabSession:
-    """Сессия вкладки в объёме, который читает держатель ключа: объект с
+    """Сессия вкладки в объёме, который читает регистрация сервера: объект с
     токеном входа, который обновление сессии заменяет на месте."""
 
     LOGIN: ClassVar[str] = "ivanov"
@@ -137,8 +142,8 @@ class TabSession:
         metadata = SignInMetadata(provider=SignInProvider.LOCAL.value, roles=roles)
         self.raw.token = create_jwt(StandTokens.user(self.LOGIN, metadata.render()))
 
-    def holder(self, user_id: UUID, profile: str) -> KeyHolder:
-        return KeyHolder(
+    def holder(self, user_id: UUID, profile: str) -> McpRegistration:
+        return McpRegistration(
             user_id=user_id,
             login=self.LOGIN,
             thread_id=str(uuid4()),
@@ -293,7 +298,7 @@ class ToolService:
 
 class RelayStand:
     """Ретранслятор mcp/message стенда (McpRelay) в сборке, как у провайдера
-    процесса: ключи процессов, вызывающие по ключу, запечатывание соединений
+    процесса: регистрации серверов, запечатывание соединений
     пользователя из хранилища store с кредами credentials и сервер chat —
     собственные инструменты чата над тем же хранилищем.
 
@@ -309,10 +314,9 @@ class RelayStand:
     def __init__(
         self, store: StoreRef, credentials: CredentialsRef, contexts: CallContexts
     ) -> None:
-        self.keys = ProcessKeys()
-        self.callers = ChatCallers(self.keys)
+        self.registrations = McpRegistrations()
         connections = ArmedConnections(store, credentials, contexts)
-        self.sealing = CallSealing(self.callers, connections, contexts, self.SEAL_TTL)
+        self.sealing = CallSealing(connections, contexts, self.SEAL_TTL)
         refs = StandRefs(contexts)
         tools = refs.tool_stand(())
         tools.adopt(ConnectionTools(store, contexts).build())
@@ -320,7 +324,7 @@ class RelayStand:
         self.chat = ChatTools(registry, refs.runs)
 
     def relay(self, servers: McpServers) -> McpRelay:
-        return McpRelay(self.keys, self.callers, servers, self.sealing, self.chat)
+        return McpRelay(self.registrations, servers, self.sealing, self.chat)
 
 
 class ServiceTool:
@@ -398,7 +402,7 @@ class ServiceTools:
             raise AssertionError(msg)
 
         server = self._service.server_name
-        holder = KeyHolder(
+        registration = McpRegistration(
             user_id=UUID(user_id),
             login=session.identifier,
             thread_id=thread_id,
@@ -406,8 +410,8 @@ class ServiceTools:
             session=session,
             server=server,
         )
-        keys = self._stand.keys
-        registered = keys.register(holder, [server])[0]
+        registrations = self._stand.registrations
+        registered = registrations.register(registration, [server])[0]
         envelope = {
             mt.PROTOCOL_VERSION_META_KEY: McpVersion.V2026_07_28.value,
             mt.CLIENT_CAPABILITIES_META_KEY: {},
@@ -421,7 +425,7 @@ class ServiceTools:
         try:
             outcome = await self._relay.answer(message, self._heard.put)
         finally:
-            keys.revoke(registered.server_id)
+            registrations.revoke(registered.server_id)
 
         if isinstance(outcome, McpErrorOutcome):
             msg = f"tool {tool!r} of {server!r} answered an MCP error: {outcome.error}"

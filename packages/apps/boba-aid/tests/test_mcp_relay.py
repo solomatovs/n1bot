@@ -19,16 +19,17 @@ import pytest
 from acp.exceptions import RequestError
 from aid_stand import NoConnectionStore, RelayStand, ServiceProcess, TabSession
 
-from boba.aid.agent.relay import ChatTools, McpRelay
-from boba.aid.agent.server import McpServerInfo
+from boba.aid.agent.relay import ChatTools, McpRegistrations, McpRelay
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
+from boba.connection_broker.sealing import McpServerInfo
 from boba.connection_broker.store import ConnectionStore
 from boba.connections.manifest import ConnectionTypes
 from boba.connections.sealed import SealedParamSchema, SealFeature
 from boba.connections.secrets import SecretCipher
 from boba.db.postgres import AsyncPostgresPool, PostgresSchema
 from boba.db.postgres.connection import PostgresConfig
-from boba.identity.errors import RefusalError
+from boba.identity.context import DelegatedTicket, NoUserCredential
+from boba.identity.errors import AuthenticationError, RefusalError
 from boba.mcp_client.client import McpServerConfig, McpServers, McpServersConfig
 from boba.stand_core.context import CallStand
 from boba.transport.acp.protocol import (
@@ -107,7 +108,7 @@ class TestMcpRelay:
     def _server_id(self, stand: RelayStand, tab: TabSession) -> str:
         holder = tab.holder(uuid4(), "general")
 
-        return stand.keys.register(holder, ["standard"])[0].server_id
+        return stand.registrations.register(holder, ["standard"])[0].server_id
 
     async def test_unknown_server_id_is_an_external_error(
         self, relay: McpRelay
@@ -265,7 +266,7 @@ class TestMcpRelay:
         self, relay_stand: RelayStand, tab: TabSession
     ) -> None:
         server_id = self._server_id(relay_stand, tab)
-        caller = relay_stand.callers.of_key(server_id)
+        context = relay_stand.registrations.of(server_id).context()
         declared = SealedParamSchema().declared("postgres")
         schema = {
             "type": "object",
@@ -275,7 +276,11 @@ class TestMcpRelay:
 
         with pytest.raises(RefusalError) as refused:
             await relay_stand.sealing.seal(
-                "mcp__standard__query", {"connection": "orders"}, schema, server, caller
+                "mcp__standard__query",
+                {"connection": "orders"},
+                schema,
+                server,
+                context,
             )
 
         assert SealFeature.ID in str(refused.value)
@@ -399,7 +404,7 @@ class TestRelaySealing:
         servers = McpServers(service_process.servers())
         relay = stand.relay(servers)
         holder = tab.holder(uuid4(), "general")
-        server_id = stand.keys.register(holder, ["boba"])[0].server_id
+        server_id = stand.registrations.register(holder, ["boba"])[0].server_id
         profile = PostgresConfig.model_validate(
             {
                 "host": "db.local",
@@ -467,7 +472,7 @@ class TestChatServer:
         stand = RelayStand(lambda: store, lambda: credentials, call_stand.contexts)
         relay = stand.relay(McpServers(McpServersConfig(servers={})))
         holder = tab.holder(uuid4(), RelayStand.PROFILE)
-        server_id = stand.keys.register(holder, [ChatTools.NAME])[0].server_id
+        server_id = stand.registrations.register(holder, [ChatTools.NAME])[0].server_id
         profile = PostgresConfig.model_validate(
             {
                 "host": "db.local",
@@ -511,3 +516,85 @@ class TestChatServer:
         answer = mt.CallToolResult.model_validate(called.result)
         assert answer.is_error is False, answer
         assert "orders" in str(answer.content), answer
+
+
+class TestRegistrations:
+    """Регистрации серверов процесса агента: свой serverId на каждый сервер
+    до снятия, профиль треда в субъекте и актуальность входа пользователя —
+    роли и делегированный билет kerberos читаются из живой сессии в момент
+    вызова."""
+
+    async def test_each_server_gets_its_own_server_id_until_revoked(self) -> None:
+        registrations = McpRegistrations()
+        registration = TabSession().holder(uuid4(), "general")
+
+        servers = registrations.register(registration, ["boba_general", "chat"])
+        ids: list[str] = []
+        for server in servers:
+            ids.append(server.server_id)
+
+        names: list[str] = []
+        kinds: list[str] = []
+        for server in servers:
+            names.append(server.name)
+            kinds.append(server.type)
+
+        assert names == ["boba_general", "chat"]
+        assert kinds == ["acp", "acp"]
+        assert len(set(ids)) == 2
+        for server in servers:
+            registered = registrations.of(server.server_id)
+            assert registered.server == server.name
+            assert registered.thread_id == registration.thread_id
+
+        registrations.revoke(ids[0])
+        with pytest.raises(RequestError) as revoked:
+            registrations.of(ids[0])
+
+        assert revoked.value.code == AcpErrorCode.UNKNOWN_SERVER
+        assert registrations.of(ids[1]).server == "chat"
+
+    async def test_subject_takes_the_profile_of_the_thread(
+        self, auth_token: str
+    ) -> None:
+        registrations = McpRegistrations()
+        tab = TabSession()
+        tab.password_sign_in(frozenset({"DEV"}))
+        user_id = uuid4()
+        server = registrations.register(tab.holder(user_id, "search"), ["chat"])[0]
+
+        context = registrations.of(server.server_id).context()
+
+        assert context.subject.user_id == user_id
+        assert context.subject.login == TabSession.LOGIN
+        assert context.subject.roles == frozenset({"DEV"})
+        assert context.subject.profile == "search"
+        assert isinstance(context.credential, NoUserCredential)
+
+    async def test_credential_follows_the_renewed_session_token(
+        self, auth_token: str
+    ) -> None:
+        registrations = McpRegistrations()
+        tab = TabSession()
+        tab.sign_in(frozenset({"DEV"}), "sealed-ticket-at-launch")
+        server = registrations.register(tab.holder(uuid4(), "general"), ["chat"])[0]
+        registration = registrations.of(server.server_id)
+        launched = registration.context()
+
+        tab.sign_in(frozenset({"DEV", "ADM"}), "sealed-ticket-renewed")
+        renewed = registration.context()
+
+        assert isinstance(launched.credential, DelegatedTicket)
+        assert launched.credential.sealed == "sealed-ticket-at-launch"
+        assert isinstance(renewed.credential, DelegatedTicket)
+        assert renewed.credential.sealed == "sealed-ticket-renewed"
+        assert renewed.credential.principal == TabSession.PRINCIPAL
+        assert renewed.subject.roles == frozenset({"DEV", "ADM"})
+
+    async def test_registration_without_a_sign_in_token_is_refused(self) -> None:
+        registrations = McpRegistrations()
+        registration = TabSession().holder(uuid4(), "general")
+        server = registrations.register(registration, ["chat"])[0]
+
+        with pytest.raises(AuthenticationError, match="no sign-in token"):
+            registrations.of(server.server_id).context()
