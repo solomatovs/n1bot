@@ -613,11 +613,11 @@ class StandConfig(StandService):
         default_factory=lambda: {
             "kind": "postgres",
             "postgres": "${postgres}",
-            "schema": "agent_history",
+            "schema": "boba",
         }
     )
     """Секция [agent.history] чата: по умолчанию Postgres стенда тем же
-    подключением, что у чата (kerberos), схема agent_history в базе стенда."""
+    подключением, что у чата (kerberos), схема boba в базе стенда."""
 
     agent_process: dict[str, Any] = field(
         default_factory=lambda: {
