@@ -38,7 +38,7 @@ from chainlit.utils import utc_now
 from literalai.observability.step import TrueStepType
 
 from boba.aid.domain.keys import CanvasFileUrl
-from boba.aid.rendering.tool import ChatElements
+from boba.aid.rendering.tool import ChatElements, ToolAppView
 from boba.cancellation import StopReason
 from boba.canvas.canvas import (
     CanvasAction,
@@ -200,6 +200,7 @@ class StepRole(StrEnum):
     CHART = "chart"
     ELEMENT = "element"
     STREAM = "stream"
+    APP = "app"
 
 
 @dataclass
@@ -610,7 +611,9 @@ class ChatView:
         self._assistant_name = chainlit_config.ui.name
         self._turn = TurnDraft()
         self._tool_names: dict[str, str] = {}
-        self._journal_buttons: dict[str, CustomElement] = {}
+        self._awaiting: dict[str, list[CustomElement]] = {}
+        """Элементы шага идущего вызова (кнопка журнала, приложение MCP
+        Apps): встают в шаг, когда вызов закончился."""
         self._progress: dict[str, ProgressText] = {}
         self._call_views = CallViews()
         self._names = McpToolNames()
@@ -894,13 +897,15 @@ class ChatView:
         args: Mapping[str, Any] | None,
         key: str | None,
         media: Mapping[str, str] | None,
+        app: ToolAppView | None,
     ) -> Step:
         """Шаг начатого вызова. name — имя инструмента у модели: у
         инструмента сервера MCP оно полное, а шаг подписан именем без
         сервера. media — типы содержимого аргументов инструмента сервера
         (имя → contentMediaType): по ним рисуется вход шага; None —
         инструмент свой либо запись истории их не несёт, и вход рисует
-        модель вызова инструмента, а без неё — json-текст."""
+        модель вызова инструмента, а без неё — json-текст. app — приложение
+        MCP Apps инструмента; None — итог рисуется только блоками."""
         await self.seal_answer()
         shown = self._names.tool_of(name)
 
@@ -928,10 +933,10 @@ class ChatView:
         step.output = StepText.RUNNING
         step.start = utc_now()
 
-        # журнал читается по адресу из итога вызова: кнопка встаёт в шаг,
-        # когда вызов закончился
-        if button := self._stream_button(name, key):
-            self._journal_buttons[step.id] = button
+        # журнал читается по адресу из итога вызова, приложение рисует итог:
+        # элементы встают в шаг, когда вызов закончился
+        if elements := self._call_elements(name, args, key, app):
+            self._awaiting[step.id] = elements
 
         await self._sink.put(step)
         return step
@@ -944,40 +949,87 @@ class ChatView:
 
         return self._call_views.call_of(name, media, args)
 
-    def _journaled(self, step: Step) -> None:
-        """Закончившемуся вызову — кнопка его журнала."""
-        if button := self._journal_buttons.pop(step.id, None):
-            step.elements = [button]
+    def _awaited(self, step: Step, result: mt.CallToolResult | None) -> None:
+        """Закончившемуся вызову — его элементы: кнопка журнала и приложение
+        с итогом вызова result; без итога tools/call приложению рисовать
+        нечего, и оно не ставится."""
+        kept: list[CustomElement] = []
+        for element in self._awaiting.pop(step.id, []):
+            if element.name != ChatElements.APP_ELEMENT:
+                kept.append(element)
+                continue
+
+            if result is None:
+                continue
+
+            element.props["result"] = result.model_dump(
+                mode="json", by_alias=True, exclude_none=True
+            )
+            kept.append(element)
+
+        if kept:
+            step.elements = list(kept)
 
     def drop_journal(self, step: Step) -> None:
-        """У итога вызова нет адреса журнала: кнопка журнала шагу не ставится."""
-        self._journal_buttons.pop(step.id, None)
+        """У итога вызова нет адреса журнала: кнопка журнала шагу не ставится,
+        прочие элементы шага остаются."""
+        kept: list[CustomElement] = []
+        for element in self._awaiting.get(step.id, []):
+            if element.name == CanvasElement.STREAM.value:
+                continue
 
-    def _stream_button(self, name: str, key: str | None) -> CustomElement | None:
-        """Кнопка журнала вызова: только live-лента и только потоковые тулы.
-        Журнал ищется по имени у модели, подпись кнопки — имя без сервера."""
+            kept.append(element)
+
+        self._awaiting[step.id] = kept
+
+    def _call_elements(
+        self,
+        name: str,
+        args: Mapping[str, Any] | None,
+        key: str | None,
+        app: ToolAppView | None,
+    ) -> list[CustomElement]:
+        """Элементы шага вызова: кнопка журнала у потоковых тулов и
+        приложение MCP Apps инструмента — только live-лента. Журнал ищется по
+        имени у модели, подпись кнопки — имя без сервера."""
         if not self._sink.emits_elements:
-            return None
+            return []
 
         if not key:
-            return None
+            return []
 
-        if not self._journals.streamable(name):
-            return None
+        elements: list[CustomElement] = []
+        if self._journals.streamable(name):
+            button = CustomElement(
+                name=CanvasElement.STREAM.value,
+                props={
+                    str(CanvasAction.CALL_ID): key,
+                    "label": self._names.tool_of(name),
+                },
+                thread_id=self._thread_id,
+            )
+            button_id = self.derive_id(self._thread_id, key, StepRole.STREAM)
+            if button_id:
+                button.id = button_id
 
-        element = CustomElement(
-            name=CanvasElement.STREAM.value,
-            props={
-                str(CanvasAction.CALL_ID): key,
-                "label": self._names.tool_of(name),
-            },
-            thread_id=self._thread_id,
-        )
-        element_id = self.derive_id(self._thread_id, key, StepRole.STREAM)
+            elements.append(button)
+
+        if app is None:
+            return elements
+
+        arguments: Mapping[str, Any] = {}
+        if args:
+            arguments = args
+
+        element = self._elements.app(app, key, arguments)
+        element.thread_id = self._thread_id
+        element_id = self.derive_id(self._thread_id, key, StepRole.APP)
         if element_id:
             element.id = element_id
 
-        return element
+        elements.append(element)
+
+        return elements
 
     async def tool_progressed(self, step: Step, text: str) -> None:
         """Ход работы идущего вызова: блок шага показывает последний отчёт
@@ -1007,7 +1059,11 @@ class ChatView:
         step.start = ended
         step.end = ended
         self._progress.pop(step.id, None)
-        self._journaled(step)
+        result: mt.CallToolResult | None = None
+        if isinstance(reply, mt.CallToolResult):
+            result = reply
+
+        self._awaited(step, result)
         label = self._tool_names.get(step.id, step.name)
         if not isinstance(reply, mt.CallToolResult):
             step.output = self._raw_output(reply)
@@ -1293,7 +1349,7 @@ class ChatView:
 
     async def tool_stopped(self, step: Step, note: str) -> None:
         """Инструмент не доработал: ход остановлен."""
-        self._journal_buttons.pop(step.id, None)
+        self._awaiting.pop(step.id, None)
         self._progress.pop(step.id, None)
         step.name = StepStatus.FAILED.title(self._tool_names.get(step.id, step.name))
         step.output = note
@@ -1327,7 +1383,7 @@ class ChatView:
 
     async def tool_failed(self, step: Step, markdown: str) -> None:
         """Провал инструмента мимо результата: markdown результата-ошибки."""
-        self._journaled(step)
+        self._awaited(step, None)
         step.is_error = True
         step.name = StepStatus.FAILED.title(self._tool_names.get(step.id, step.name))
         step.output = markdown

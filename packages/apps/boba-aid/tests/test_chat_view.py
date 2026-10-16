@@ -71,7 +71,7 @@ class TestAnswerOrder:
         if first is None:
             raise AssertionError("first is not None")
 
-        await view.tool_started("diagram_save", {"name": "a.mmd"}, "call-1", None)
+        await view.tool_started("diagram_save", {"name": "a.mmd"}, "call-1", None, None)
 
         if view.answer_message is not None:
             raise AssertionError("view.answer_message is None")
@@ -105,7 +105,7 @@ class TestAnswerOrder:
             if message is None:
                 raise AssertionError("message is not None")
             seen.append(message.id)
-            await view.tool_started("bash", {"cmd": "ls"}, f"call-{index}", None)
+            await view.tool_started("bash", {"cmd": "ls"}, f"call-{index}", None, None)
 
         if len(set(seen)) != len(seen):
             raise AssertionError("len(set(seen)) == len(seen)")
@@ -200,7 +200,7 @@ class TestTurnPulse:
 
         await view.await_model()
         await view.stream_answer("сейчас посмотрю", TURN)
-        await view.tool_started("bash", {"cmd": "ls"}, "call-1", None)
+        await view.tool_started("bash", {"cmd": "ls"}, "call-1", None, None)
 
         if self._pulse(sink.steps) is None:
             raise AssertionError("pulse is back while the tool runs")
@@ -224,7 +224,7 @@ class TestTurnPulse:
         view.begin_turn(TURN)
 
         await view.await_model()
-        await view.tool_started("bash", {"cmd": "ls"}, "call-1", None)
+        await view.tool_started("bash", {"cmd": "ls"}, "call-1", None, None)
         await view.finish_turn()
 
         if self._pulse(sink.steps) is not None:
@@ -355,7 +355,7 @@ class TestLivePulseFrames:
         async def scenario(view: ChatView) -> None:
             await view.await_model()
             await view.stream_answer("сейчас посмотрю", TURN)
-            step = await view.tool_started("bash", {"cmd": "ls"}, "call-1", None)
+            step = await view.tool_started("bash", {"cmd": "ls"}, "call-1", None, None)
             await view.tool_finished(
                 step,
                 mt.CallToolResult(content=[mt.TextContent(text="ok")]),
@@ -386,7 +386,7 @@ class TestLivePulseFrames:
         async def scenario(view: ChatView) -> None:
             await view.await_model()
             await view.stream_answer("сейчас посмотрю", TURN)
-            await view.tool_started("bash", {"cmd": "ls"}, "call-1", None)
+            await view.tool_started("bash", {"cmd": "ls"}, "call-1", None, None)
 
         emitter = self._play(runtime_stand, storage, scenario)
 
@@ -454,7 +454,9 @@ class TestToolStepDuration:
         )
         view.begin_turn(TURN)
 
-        step = await view.tool_started("kb_fts_search", {"query": "x"}, "call-1", None)
+        step = await view.tool_started(
+            "kb_fts_search", {"query": "x"}, "call-1", None, None
+        )
         await view.tool_finished(
             step,
             mt.CallToolResult(content=[mt.TextContent(text="hits")]),
@@ -479,7 +481,9 @@ class TestToolStepDuration:
         )
         view.begin_turn(TURN)
 
-        step = await view.tool_started("kb_fts_search", {"query": "x"}, "call-2", None)
+        step = await view.tool_started(
+            "kb_fts_search", {"query": "x"}, "call-2", None, None
+        )
         await view.tool_finished(
             step, mt.CallToolResult(content=[mt.TextContent(text="hits")]), "call-2", 0
         )
@@ -506,7 +510,7 @@ class TestToolIntent:
         view.begin_turn(TURN)
 
         args = {"command": "ls -la", "intent": "смотрю содержимое каталога"}
-        step = await view.tool_started("bash", args, "call-1", None)
+        step = await view.tool_started("bash", args, "call-1", None, None)
 
         if step.name != "○ bash · смотрю содержимое каталога":
             raise AssertionError(step.name)
@@ -529,7 +533,7 @@ class TestToolIntent:
         view.begin_turn(TURN)
 
         args = {"query": "kerberos", "intent": "ищу настройку kerberos"}
-        step = await view.tool_started("kb_fts_search", args, "call-2", None)
+        step = await view.tool_started("kb_fts_search", args, "call-2", None, None)
         await view.tool_finished(
             step,
             mt.CallToolResult(content=[mt.TextContent(text="hits")]),
@@ -556,7 +560,7 @@ class TestToolIntent:
         view.begin_turn(TURN)
 
         args = {"query": "kerberos", "intent": "ищу настройку kerberos"}
-        step = await view.tool_started("kb_fts_search", args, "call-3", None)
+        step = await view.tool_started("kb_fts_search", args, "call-3", None, None)
 
         if step.input is None:
             raise AssertionError("вход шага показан")
@@ -578,7 +582,7 @@ class TestToolIntent:
         view.begin_turn(TURN)
 
         step = await view.tool_started(
-            "kb_fts_search", {"query": "kerberos"}, "call-4", None
+            "kb_fts_search", {"query": "kerberos"}, "call-4", None, None
         )
 
         if step.name != "○ kb_fts_search":
@@ -647,7 +651,7 @@ class TestCallViewOfACard:
         view.begin_turn(TURN)
 
         step = await view.tool_started(
-            "typed_probe", self.ARGS, "call-card-1", {"sql": "application/sql"}
+            "typed_probe", self.ARGS, "call-card-1", {"sql": "application/sql"}, None
         )
 
         expected = "\n\n".join(
@@ -667,7 +671,9 @@ class TestCallViewOfACard:
         view = ChatView(THREAD, RecordingSink(), runtime_stand.journals, "u-1", storage)
         view.begin_turn(TURN)
 
-        step = await view.tool_started("plain_probe", self.ARGS, "call-card-2", None)
+        step = await view.tool_started(
+            "plain_probe", self.ARGS, "call-card-2", None, None
+        )
 
         if not step.input.startswith("```json"):
             raise AssertionError(f"a tool without views is shown raw: {step.input!r}")

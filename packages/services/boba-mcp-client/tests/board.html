@@ -73,6 +73,10 @@
       resized();
     }
 
+    if (data.method === "ui/notifications/host-context-changed" && data.params.theme) {
+      document.getElementById("theme").textContent = "theme: " + data.params.theme;
+    }
+
     if (data.method === "ui/notifications/tool-result") {
       document.getElementById("result").textContent = "result: " + text(data.params);
       resized();
@@ -86,7 +90,7 @@
   document.getElementById("send-message").onclick = () =>
     answer(request("ui/message", {
       role: "user",
-      content: [{ type: "text", text: "the board asks to go on" }],
+      content: [{ type: "text", text: "scenario:answer the board asks to go on" }],
     }));
   document.getElementById("send-context").onclick = () =>
     answer(request("ui/update-model-context", {
