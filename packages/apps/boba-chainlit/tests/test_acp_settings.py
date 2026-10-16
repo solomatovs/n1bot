@@ -33,6 +33,8 @@ from psycopg import sql
 from psycopg.types.json import Jsonb
 from pydantic import SecretStr
 
+from boba.agent.records import PermissionMode
+from boba.agent.settings import PermissionSettings
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.chainlit.agent.chat import (
     AgentLauncher,
@@ -51,7 +53,6 @@ from boba.chainlit.agent.settings import (
     AgentSettingsTable,
     AgentWorkdirs,
     HistoryEnvironment,
-    PermissionModeName,
     ProfileModelSpecs,
     SettingsFileBuilder,
     UserAgentSettings,
@@ -210,7 +211,7 @@ class TestLayers:
         untouched = await layers.chat_layer(
             other_thread, user_id, SignInStand.PROFILE, profile
         )
-        assert opened.mode is PermissionModeName.BYPASS
+        assert opened.mode is PermissionMode.BYPASS_PERMISSIONS
 
         edited = UserAgentSettings(model="picked", api_key=SecretStr("user-key"))
         changed = await layers.change(
@@ -219,14 +220,14 @@ class TestLayers:
             SignInStand.PROFILE,
             profile,
             AgentSettingsChange(
-                user=edited, mode=PermissionModeName.DEFAULT, model_name=None
+                user=edited, mode=PermissionMode.DEFAULT, model_name=None
             ),
         )
 
         assert changed.model.model == "picked"
         assert changed.model.provider.api_key == SecretStr("user-key")
         assert changed.model.provider.base_url == opened.model.provider.base_url
-        assert changed.mode is PermissionModeName.DEFAULT
+        assert changed.mode is PermissionMode.DEFAULT
         assert changed.system_prompt == "stand"
         assert await table.chat_layer(thread_id) == changed
         assert await table.user_layer(user_id, SignInStand.PROFILE) == edited
@@ -234,7 +235,7 @@ class TestLayers:
         assert await table.chat_layer(other_thread) == untouched
         fresh = await layers.chat_layer(uuid4(), user_id, SignInStand.PROFILE, profile)
         assert fresh.model.model == "picked"
-        assert fresh.mode is PermissionModeName.BYPASS
+        assert fresh.mode is PermissionMode.BYPASS_PERMISSIONS
 
     async def test_session_choice_alone_keeps_the_provider_of_the_chat(
         self, table: AgentSettingsTable, specs: ProfileModelSpecs
@@ -257,12 +258,12 @@ class TestLayers:
             SignInStand.PROFILE,
             profile,
             AgentSettingsChange(
-                user=elsewhere, mode=PermissionModeName.PLAN, model_name=None
+                user=elsewhere, mode=PermissionMode.PLAN, model_name=None
             ),
         )
 
         assert changed.model == opened.model
-        assert changed.mode is PermissionModeName.PLAN
+        assert changed.mode is PermissionMode.PLAN
 
     def test_local_provider_is_refused(self, specs: ProfileModelSpecs) -> None:
         profile = ChatProfileConfig.model_validate(
@@ -355,22 +356,18 @@ class TestSettingsFile:
         body = json.loads(workdir.settings_path.read_text(encoding="utf-8"))
         assert body["model"] == chat.model_name
         provider = body["models"][chat.model_name]["provider"]
-        assert provider == {
-            "kind": "openai",
-            "baseUrl": model.base_url(),
-            "apiKey": API_KEY,
-        }
-        assert body["models"][chat.model_name]["contextWindow"] == 32000
-        assert body["permissions"] == {
-            "defaultMode": "bypassPermissions",
-            "allowBypass": True,
-        }
+        assert provider["kind"] == "openai"
+        assert provider["base_url"] == model.base_url()
+        assert provider["api_key"] == API_KEY
+        assert body["models"][chat.model_name]["context_window"] == 32000
+        assert body["permissions"]["default_mode"] == "bypassPermissions"
+        assert body["permissions"]["allow_bypass"] is True
         assert body["history"]["kind"] == "postgres"
-        assert body["history"]["schema"] == history.db_schema
+        assert body["history"]["db_schema"] == history.db_schema
         dsn = LibpqConnection(history_stand.postgres()).dsn().get_secret_value()
         assert body["history"]["dsn"] == dsn
-        assert body["systemPromptFile"] == "system_prompt.txt"
-        assert "mcp" not in body
+        assert body["system_prompt_file"] == "system_prompt.txt"
+        assert body["mcp"] is None
         assert "mcpServers" not in body
         assert "hooks" not in body
 
@@ -382,12 +379,13 @@ class TestSettingsFile:
     ) -> None:
         history = AgentHistoryStand(stand)
         config = AgentStand(tmp_path, history.history()).config()
-        chat = FakeModel().chat_settings().with_session(PermissionModeName.PLAN, None)
+        chat = FakeModel().chat_settings().with_session(PermissionMode.PLAN, None)
 
-        builder = SettingsFileBuilder(config, history.postgres())
-        body = json.loads(builder.build(chat).render())
+        layer = SettingsFileBuilder(config, history.postgres()).build(chat)
 
-        assert body["permissions"] == {"defaultMode": "plan", "allowBypass": True}
+        assert layer.permissions == PermissionSettings(
+            default_mode=PermissionMode.PLAN, allow_bypass=True
+        )
 
 
 class TestAgentHandshake:

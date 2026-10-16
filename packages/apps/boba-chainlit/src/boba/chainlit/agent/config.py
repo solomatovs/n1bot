@@ -19,6 +19,7 @@ from pydantic import (
     field_validator,
 )
 
+from boba.agent.settings import HistoryKind
 from boba.db.postgres.connection import PostgresConfig
 from boba.db.postgres.connection.auth import PasswordAuth, PostgresKerberos, TrustAuth
 from boba.kerberos import KerberosPasswordAuth, KeytabAuth
@@ -28,7 +29,6 @@ __all__ = [
     "AgentCommandConfig",
     "AgentConfig",
     "AgentHistoryConfig",
-    "AgentHistoryKind",
     "ChatMcpConfig",
     "DsnKey",
     "LibpqConnection",
@@ -71,13 +71,6 @@ class AgentCommandConfig(BaseModel):
     )
 
 
-class AgentHistoryKind(StrEnum):
-    """Виды хранилища истории агента, которые умеет собрать chainlit."""
-
-    POSTGRES = "postgres"
-    MEMORY = "memory"
-
-
 class DsnKey(StrEnum):
     """Поля PostgresConfig, которые уходят в строку подключения libpq агента."""
 
@@ -106,7 +99,7 @@ class PostgresAgentHistory(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
 
-    kind: Literal[AgentHistoryKind.POSTGRES]
+    kind: Literal[HistoryKind.POSTGRES]
     db_schema: str = Field(alias="schema", min_length=1)
 
 
@@ -183,7 +176,7 @@ class MemoryAgentHistory(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    kind: Literal[AgentHistoryKind.MEMORY]
+    kind: Literal[HistoryKind.MEMORY]
 
 
 AgentHistoryConfig = Annotated[

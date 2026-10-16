@@ -23,7 +23,6 @@ import json
 import os
 import shutil
 import tempfile
-from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import IntEnum, StrEnum
 from pathlib import Path
@@ -36,16 +35,23 @@ from pydantic import (
     ConfigDict,
     Field,
     SecretStr,
-    SerializationInfo,
     ValidationError,
-    field_serializer,
 )
-from pydantic.alias_generators import to_camel
 
+from boba.agent.records import PermissionMode
+from boba.agent.settings import (
+    HistoryKind,
+    MemoryHistorySettings,
+    ModelSettings,
+    PermissionSettings,
+    PostgresHistorySettings,
+    ProviderKind,
+    ProviderSettings,
+    SettingsLayer,
+)
 from boba.chainlit.agent.config import (
     AgentConfig,
     AgentHistoryConfig,
-    AgentHistoryKind,
     LibpqConnection,
     MemoryAgentHistory,
     PostgresAgentHistory,
@@ -60,20 +66,15 @@ from boba.runtime.table import PgTable
 from boba.transport.http.connection import BearerAuth, HttpConnection
 
 __all__ = [
-    "AgentModel",
-    "AgentProvider",
     "AgentSettingsChange",
     "AgentSettingsError",
-    "AgentSettingsFile",
     "AgentSettingsLayers",
     "AgentSettingsTable",
     "AgentWorkdir",
     "AgentWorkdirs",
     "ChatAgentSettings",
     "HistoryEnvironment",
-    "PermissionModeName",
     "ProfileModelSpecs",
-    "ProviderKindName",
     "SettingsFileBuilder",
     "UserAgentSettings",
     "WorkdirFile",
@@ -82,24 +83,6 @@ __all__ = [
 
 class AgentSettingsError(Exception):
     """Профиль чата не складывается в профиль модели агента."""
-
-
-class ProviderKindName(StrEnum):
-    """Виды удалённых провайдеров модели, которые понимает файл агента."""
-
-    OPENAI = "openai"
-    OLLAMA = "ollama"
-
-
-class PermissionModeName(StrEnum):
-    """Режимы разрешений агента: значение `permissions.defaultMode` файла."""
-
-    DEFAULT = "default"
-    ACCEPT_EDITS = "acceptEdits"
-    PLAN = "plan"
-    DONT_ASK = "dontAsk"
-    BYPASS = "bypassPermissions"
-    AUTO = "auto"
 
 
 class WorkdirFile(StrEnum):
@@ -116,82 +99,6 @@ class PrivateMode(IntEnum):
 
     DIR = 0o700
     FILE = 0o600
-
-
-class SettingsFileModel(BaseModel):
-    """Основа моделей файла агента: ключи camelCase, лишние ключи — ошибка."""
-
-    model_config = ConfigDict(
-        alias_generator=to_camel, populate_by_name=True, extra="forbid", frozen=True
-    )
-
-
-class AgentProvider(SettingsFileModel):
-    """Провайдер профиля модели: вид, адрес API и ключ."""
-
-    kind: ProviderKindName
-    base_url: str = Field(min_length=1)
-    api_key: SecretStr | None = None
-
-    @field_serializer("api_key", when_used="json")
-    def _reveal_api_key(
-        self, value: SecretStr | None, info: SerializationInfo
-    ) -> str | None:
-        """Файл настроек — единственное место, где ключ лежит открыто."""
-        if value is None:
-            return None
-
-        return value.get_secret_value()
-
-
-class AgentModel(SettingsFileModel):
-    """Профиль модели агента: провайдер, имя модели, сэмплинг и пределы."""
-
-    provider: AgentProvider
-    model: str = Field(min_length=1)
-    sampling: Mapping[str, Any]
-    context_window: int = Field(gt=0)
-    max_output_tokens: int = Field(gt=0)
-
-
-class AgentPermissions(SettingsFileModel):
-    """Режим разрешений сессий процесса и право на режим без вопросов."""
-
-    default_mode: PermissionModeName
-    allow_bypass: bool
-
-
-class HistoryFile(SettingsFileModel):
-    """Секция history файла: Postgres со строкой подключения либо память."""
-
-    kind: AgentHistoryKind
-    dsn: SecretStr | None = None
-    db_schema: str | None = Field(default=None, alias="schema")
-
-    @field_serializer("dsn", when_used="json")
-    def _reveal_dsn(
-        self, value: SecretStr | None, info: SerializationInfo
-    ) -> str | None:
-        if value is None:
-            return None
-
-        return value.get_secret_value()
-
-
-class AgentSettingsFile(SettingsFileModel):
-    """Файл настроек агента целиком: то, что уходит в `--settings`."""
-
-    model: str = Field(min_length=1)
-    models: Mapping[str, AgentModel]
-    permissions: AgentPermissions
-    history: HistoryFile
-    system_prompt_file: str = Field(min_length=1)
-
-    def render(self) -> str:
-        """JSON файла с раскрытыми секретами."""
-        document = self.model_dump(mode="json", by_alias=True, exclude_none=True)
-
-        return json.dumps(document, ensure_ascii=False, indent=2)
 
 
 class UserAgentSettings(BaseModel):
@@ -214,7 +121,7 @@ class AgentSettingsChange:
     AgentSettingsLayers.change."""
 
     user: UserAgentSettings
-    mode: PermissionModeName | None
+    mode: PermissionMode | None
     model_name: str | None
 
 
@@ -225,9 +132,9 @@ class ChatAgentSettings(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     model_name: str = Field(min_length=1)
-    model: AgentModel
+    model: ModelSettings
     system_prompt: str
-    mode: PermissionModeName = PermissionModeName.BYPASS
+    mode: PermissionMode = PermissionMode.BYPASS_PERMISSIONS
 
     def with_user(self, user: UserAgentSettings) -> ChatAgentSettings:
         """Слой чата с полями, которые пользователь переопределил."""
@@ -245,7 +152,7 @@ class ChatAgentSettings(BaseModel):
         return self.model_copy(update={"model": model})
 
     def with_session(
-        self, mode: PermissionModeName | None, model_name: str | None
+        self, mode: PermissionMode | None, model_name: str | None
     ) -> ChatAgentSettings:
         """Слой чата с выбором вкладки «Сессия»: режим разрешений и имя
         профиля модели по умолчанию; None — значение остаётся прежним."""
@@ -264,7 +171,7 @@ class RemoteProviderView(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    kind: ProviderKindName
+    kind: ProviderKind
     connection: HttpConnection
 
 
@@ -286,7 +193,7 @@ class ProfileModelSpecs:
             system_prompt=profile.system_prompt,
         )
 
-    def model(self, name: str, profile: ChatProfileConfig) -> AgentModel:
+    def model(self, name: str, profile: ChatProfileConfig) -> ModelSettings:
         """Ошибки:
         AgentSettingsError — провайдер профиля не удалённый или без адреса.
         """
@@ -300,17 +207,26 @@ class ProfileModelSpecs:
             )
             raise AgentSettingsError(msg) from exc
 
+        if not view.kind.remote:
+            msg = (
+                f"chat profile {name!r}: provider kind {view.kind.value!r} runs in "
+                "the process of the agent, expected a remote provider (openai or "
+                "ollama) with an http connection"
+            )
+            raise AgentSettingsError(msg)
+
+        base_url = str(view.connection.public_url())
+        if not base_url:
+            msg = f"chat profile {name!r}: the provider connection gives no address"
+            raise AgentSettingsError(msg)
+
         api_key = None
         if isinstance(view.connection.auth, BearerAuth):
             api_key = view.connection.auth.token
 
-        provider = AgentProvider(
-            kind=view.kind,
-            base_url=str(view.connection.public_url()),
-            api_key=api_key,
-        )
+        provider = ProviderSettings(kind=view.kind, base_url=base_url, api_key=api_key)
 
-        return AgentModel(
+        return ModelSettings(
             provider=provider,
             model=profile.model,
             sampling=dict(profile.sampling),
@@ -530,37 +446,38 @@ class AgentSettingsLayers:
 
 
 class SettingsFileBuilder:
-    """Файл настроек агента из слоя чата и конфига [agent]: история и режим
-    разрешений добавляются к профилю модели чата; строка подключения истории
-    — подключение процесса [postgres]."""
+    """Слой файла настроек агента из слоя чата и конфига [agent]: история и
+    режим разрешений добавляются к профилю модели чата; строка подключения
+    истории — подключение процесса [postgres]."""
 
     def __init__(self, config: AgentConfig, postgres: PostgresConfig) -> None:
         self._config = config
         self._libpq = LibpqConnection(postgres)
 
-    def build(self, chat: ChatAgentSettings) -> AgentSettingsFile:
-        """Файл процесса агента по слою чата."""
-        return AgentSettingsFile(
+    def build(self, chat: ChatAgentSettings) -> SettingsLayer:
+        """Слой файла процесса агента по слою чата."""
+        permissions = PermissionSettings(default_mode=chat.mode, allow_bypass=True)
+        model = chat.model.revealed()
+
+        return SettingsLayer(
             model=chat.model_name,
-            models={chat.model_name: chat.model},
-            permissions=AgentPermissions(default_mode=chat.mode, allow_bypass=True),
+            models={chat.model_name: model},
+            permissions=permissions,
             history=self._history(),
             system_prompt_file=WorkdirFile.SYSTEM_PROMPT.value,
         )
 
-    def _history(self) -> HistoryFile:
+    def _history(self) -> PostgresHistorySettings | MemoryHistorySettings:
         history = self._config.history
         if isinstance(history, PostgresAgentHistory):
-            return HistoryFile.model_validate(
-                {
-                    "kind": AgentHistoryKind.POSTGRES,
-                    "dsn": self._libpq.dsn(),
-                    "schema": history.db_schema,
-                }
+            return PostgresHistorySettings(
+                kind=HistoryKind.POSTGRES,
+                dsn=self._libpq.dsn(),
+                schema=history.db_schema,
             )
 
         if isinstance(history, MemoryAgentHistory):
-            return HistoryFile(kind=AgentHistoryKind.MEMORY)
+            return MemoryHistorySettings(kind=HistoryKind.MEMORY)
 
         msg = f"[agent.history] of kind {history.kind!r} has no file form"
         raise AgentSettingsError(msg)
@@ -618,9 +535,10 @@ class AgentWorkdir:
     def stderr_path(self) -> Path:
         return self.path / WorkdirFile.STDERR.value
 
-    def write(self, file: AgentSettingsFile, system_prompt: str) -> None:
-        """Файл настроек и промпт с правами 0600."""
-        self._write_private(self.settings_path, file.render())
+    def write(self, layer: SettingsLayer, system_prompt: str) -> None:
+        """Файл настроек с открытыми секретами и промпт с правами 0600."""
+        text = json.dumps(layer.revealed(), ensure_ascii=False, indent=2)
+        self._write_private(self.settings_path, text)
         self._write_private(self.prompt_path, system_prompt)
 
     def remove(self) -> None:

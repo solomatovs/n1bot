@@ -51,6 +51,10 @@ from boba.agent.permissions import PermissionModeError
 from boba.agent.profile import ModelProfile, ProfileError
 from boba.agent.records import ChainRecord
 from boba.agent.session import Session, SessionError
+from boba.agent.settings import (
+    MemoryHistorySettings,
+    PostgresHistorySettings,
+)
 from boba.agent.skills import Skill, SkillsDir, SkillsError
 from boba.agent.template import AgentTemplate
 from boba.agent.tools import ToolsError
@@ -70,9 +74,7 @@ from boba.cli.settings import (
     Arguments,
     EffectiveSettings,
     EnvName,
-    MemoryHistorySettings,
     PostgresBuilder,
-    PostgresHistorySettings,
     ProfileBuilder,
     Settings,
     SettingsError,

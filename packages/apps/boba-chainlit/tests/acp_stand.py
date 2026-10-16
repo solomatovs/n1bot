@@ -17,6 +17,7 @@ from acp.experimental.v2 import schema
 from chainlit_stand import NoConnectionStore, RelayStand
 from pydantic import SecretStr
 
+from boba.agent.settings import ModelSettings, ProviderKind, ProviderSettings
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.chainlit.agent.chat import (
     AskedQuestions,
@@ -37,11 +38,8 @@ from boba.chainlit.agent.config import (
     PostgresAgentHistory,
 )
 from boba.chainlit.agent.settings import (
-    AgentModel,
-    AgentProvider,
     AgentWorkdirs,
     ChatAgentSettings,
-    ProviderKindName,
     SettingsFileBuilder,
 )
 from boba.db.postgres.connection import PostgresConfig
@@ -98,9 +96,9 @@ class FakeModel:
     ) -> ChatAgentSettings:
         return ChatAgentSettings(
             model_name=MODEL_NAME,
-            model=AgentModel(
-                provider=AgentProvider(
-                    kind=ProviderKindName.OPENAI,
+            model=ModelSettings(
+                provider=ProviderSettings(
+                    kind=ProviderKind.OPENAI,
                     base_url=self.base_url(),
                     api_key=SecretStr(API_KEY),
                 ),

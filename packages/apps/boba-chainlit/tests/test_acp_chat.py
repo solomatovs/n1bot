@@ -1699,7 +1699,7 @@ class TestSettingsRestart:
 
             new_settings = agents.of_thread(tab.thread_id)[new_pid]
             body = json.loads(new_settings.read_text(encoding="utf-8"))
-            assert body["permissions"]["defaultMode"] == "default"
+            assert body["permissions"]["default_mode"] == "default"
             assert body["models"][PROFILE]["model"] == "fake-model-restarted"
             self._assert_private(new_pid, new_settings, stand, cookie)
 
