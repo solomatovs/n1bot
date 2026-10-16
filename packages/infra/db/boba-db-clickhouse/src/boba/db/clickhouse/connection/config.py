@@ -101,6 +101,9 @@ class ClickHouseConfig(ConnectionBase):
     # не аргументы конструктора клиента: настройки сессии и креды kerberos
     NOT_CLIENT_FIELDS: ClassVar[frozenset[str]] = frozenset({"settings", "auth"})
 
+    KIND: ClassVar[str] = "clickhouse"
+    """Дискриминатор типа: он же имя entry point в реестре boba.connections."""
+
     kind: Literal["clickhouse"] = Field(
         default="clickhouse",
         description="Дискриминатор соединения при хранении в базе.",

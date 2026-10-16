@@ -257,6 +257,9 @@ class PostgresConfig(ConnectionBase):
         {"pool", "options", "auth"}
     )
 
+    KIND: ClassVar[str] = "postgres"
+    """Дискриминатор типа: он же имя entry point в реестре boba.connections."""
+
     kind: Literal["postgres"] = Field(
         default="postgres",
         description="Дискриминатор соединения при хранении в базе.",

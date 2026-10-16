@@ -171,15 +171,6 @@ class PostgresTable:
             )
             raise self._failure(f"parsing a {model.__name__} row", reason) from exc
 
-    def _parse_all(
-        self, model: type[ModelT], rows: Iterable[Mapping[str, Any]]
-    ) -> list[ModelT]:
-        parsed: list[ModelT] = []
-        for row in rows:
-            parsed.append(self._parse(model, row))
-
-        return parsed
-
     async def _advisory_lock(self, cur: Cursor, key: str) -> None:
         """Транзакционный advisory-замок по ключу; снимается с концом транзакции."""
         await AdvisoryLock(key).acquire(cur.connection)

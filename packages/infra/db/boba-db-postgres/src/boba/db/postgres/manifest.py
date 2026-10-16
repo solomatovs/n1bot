@@ -11,7 +11,6 @@ from boba.connections.base import ConnectionBase, ConnectionTypeError
 from boba.connections.manifest import ConnectionTypeManifest
 from boba.db.postgres.address import PgAddresses
 from boba.db.postgres.connection import PostgresConfig
-from boba.db.postgres.snapshot import PgSourceKind
 
 __all__ = ["MANIFEST"]
 
@@ -25,7 +24,7 @@ def _address(connection: ConnectionBase) -> str:
 
 
 MANIFEST = ConnectionTypeManifest(
-    kind=PgSourceKind.POSTGRES.value,
+    kind=PostgresConfig.KIND,
     model=PostgresConfig,
     address=_address,
 )
