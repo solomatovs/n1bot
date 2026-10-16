@@ -157,14 +157,13 @@ class StandCredential:
 @dataclass(frozen=True)
 class StandAppTraits:
     """Чем приложения стенда отличаются друг от друга: модуль запуска, корень
-    рантайма, конфиг, проба готовности и секция хранения."""
+    рантайма, конфиг и проба готовности."""
 
     module: str
     base: StandPaths
     conf: StandPaths
     """Каталог общего конфига приложения и его плагинов в пакете."""
     ready_path: str
-    data_layer_section: str
 
 
 class StandApp(StrEnum):
@@ -181,21 +180,18 @@ class StandApp(StrEnum):
                 base=StandPaths.CHAINLIT_BASE,
                 conf=StandPaths.CHAINLIT_CONF,
                 ready_path="/",
-                data_layer_section="data_layer",
             ),
             StandApp.STUDIO: StandAppTraits(
                 module="boba.studio",
                 base=StandPaths.STUDIO_BASE,
                 conf=StandPaths.STUDIO_CONF,
                 ready_path="/api/openapi.json",
-                data_layer_section="automation",
             ),
             StandApp.MCP: StandAppTraits(
                 module="boba.mcp_server",
                 base=StandPaths.MCP_BASE,
                 conf=StandPaths.MCP_CONF,
                 ready_path="/health",
-                data_layer_section="data_layer",
             ),
         }
 
@@ -248,11 +244,6 @@ class StandApp(StrEnum):
     def ready_path(self) -> str:
         """Путь готовности под префиксом приложения."""
         return self.traits().ready_path
-
-    @property
-    def data_layer_section(self) -> str:
-        """Секция конфига со схемой хранения приложения."""
-        return self.traits().data_layer_section
 
 
 class StandService(Protocol):
@@ -619,14 +610,10 @@ class StandConfig(StandService):
     """Порт сервиса boba-mcp стенда чата."""
 
     agent_history: dict[str, Any] = field(
-        default_factory=lambda: {
-            "kind": "postgres",
-            "postgres": "${postgres}",
-            "schema": "boba",
-        }
+        default_factory=lambda: {"kind": "postgres", "schema": "boba"}
     )
-    """Секция [agent.history] чата: по умолчанию Postgres стенда тем же
-    подключением, что у чата (kerberos), схема boba в базе стенда."""
+    """Секция [agent.history] чата: по умолчанию Postgres стенда подключением
+    процесса [postgres] (kerberos), схема boba в базе стенда."""
 
     agent_process: dict[str, Any] = field(
         default_factory=lambda: {

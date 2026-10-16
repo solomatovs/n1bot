@@ -41,10 +41,7 @@ from boba.chainlit.agent.settings import (
 from boba.chainlit.canvas.remote import RemoteJournals
 from boba.chainlit.data import PostgresDataLayer
 from boba.chainlit.data.remote_storage import FileOwners, RemoteStorageClient
-from boba.chainlit.infra.config import (
-    AppConfig,
-    DataLayerConfig,
-)
+from boba.chainlit.infra.config import AppConfig
 from boba.chainlit.infra.session import (
     ChainlitSessions,
     current_session,
@@ -81,12 +78,6 @@ def get_app_config() -> AppConfig:
         "override, the provider itself produces nothing"
     )
     raise RuntimeError(msg)
-
-
-def get_data_layer_config(
-    app_config: Annotated[AppConfig, Depends(get_app_config)],
-) -> DataLayerConfig:
-    return app_config.data_layer
 
 
 def chat_profiles_registry(
@@ -170,14 +161,14 @@ def tool_media() -> ToolMedia:
 
 
 async def chainlit_data_layer(
-    cfg: Annotated[DataLayerConfig, Depends(get_data_layer_config)],
+    app_config: Annotated[AppConfig, Depends(get_app_config)],
     storage: Annotated[StorageClient, Depends(storage_provider)],
     bus: Annotated[MessageBus, Depends(runtime.message_bus)],
     users: Annotated[UsersTable, Depends(runtime.users_table)],
+    pool: Annotated[AsyncPostgresPool, Depends(runtime.postgres_pool)],
 ) -> PostgresDataLayer:
-    """Слой данных чата на общем пуле процесса: схему таблицы ставят в запрос."""
-    pool = await AsyncPostgresPool.get(cfg.postgres)
-    tables = ChatTables.around(users, cfg.postgres, cfg.db_schema, pool)
+    """Слой данных чата на пуле процесса: схему таблицы ставят в запрос."""
+    tables = ChatTables.around(users, app_config.postgres, app_config.db_schema, pool)
     await tables.setup()
 
     return PostgresDataLayer(
@@ -209,13 +200,14 @@ def agent_config(
 
 
 async def agent_settings_table(
-    cfg: Annotated[DataLayerConfig, Depends(get_data_layer_config)],
+    app_config: Annotated[AppConfig, Depends(get_app_config)],
     raw: Annotated[DictConfig, Depends(runtime.get_raw_config)],
+    pool: Annotated[AsyncPostgresPool, Depends(runtime.postgres_pool)],
 ) -> AgentSettingsTable:
     """Слои настроек агента в схеме чата; секреты строк — под ключом
     [connections].encryption_key."""
     cipher = SecretCipher(bind(raw, "connections", ConnectionsConfig).key_bytes())
-    table = AgentSettingsTable(cfg.postgres, cfg.db_schema, cipher)
+    table = AgentSettingsTable(app_config.postgres, app_config.db_schema, cipher, pool)
     await table.setup()
 
     return table
@@ -272,6 +264,7 @@ def mcp_relay(
 
 
 def agent_launcher(
+    app_config: Annotated[AppConfig, Depends(get_app_config)],
     config: Annotated[AgentConfig, Depends(agent_config)],
     layers: Annotated[AgentSettingsLayers, Depends(agent_settings_layers)],
     keys: Annotated[ProcessKeys, Depends(process_keys)],
@@ -279,7 +272,9 @@ def agent_launcher(
 ) -> AgentLauncher:
     """Запуск процессов агента: регистрации серверов профиля и чата, файл
     настроек, рукопожатие; mcp/message процессов отвечает ретранслятор."""
-    return AgentLauncher(config, layers, keys, relay, version("boba-chainlit"))
+    return AgentLauncher(
+        config, app_config.postgres, layers, keys, relay, version("boba-chainlit")
+    )
 
 
 def agent_session_meta(

@@ -7,7 +7,6 @@
 
 from __future__ import annotations
 
-import base64
 import secrets
 from collections.abc import Mapping, Sequence
 from uuid import uuid4
@@ -17,9 +16,10 @@ from psycopg import sql
 from pydantic import SecretStr
 
 from boba.access.grants import ConnectionFilter
-from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
+from boba.connection_broker.store import ConnectionStore
 from boba.connection_broker.tools import GrantedConnections
 from boba.connections.manifest import ConnectionTypes
+from boba.connections.secrets import SecretCipher
 from boba.connections.stored import GrantTarget
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import (
@@ -44,9 +44,8 @@ async def store(pool: AsyncPostgresPool) -> ConnectionStore:
             sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(SCHEMA))
         )
 
-    key = SecretStr(base64.b64encode(secrets.token_bytes(32)).decode())
-    cfg = ConnectionsConfig(enable=True, db_schema=SCHEMA, encryption_key=key)
-    built = ConnectionStore(cfg, ConnectionTypes.discover(), pool)
+    cipher = SecretCipher(secrets.token_bytes(32))
+    built = ConnectionStore(pool, SCHEMA, cipher, ConnectionTypes.discover())
     await built.setup()
     await built.sync_roles([ROLE])
     return built

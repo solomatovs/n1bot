@@ -58,6 +58,7 @@ from boba.chainlit.infra.session import ChainlitSession, LiveSignIn
 from boba.chainlit.rendering.renderer import ThreadRewinds
 from boba.chat.profiles import SelectedProfile
 from boba.chat.threads import DataLayerError, ThreadUpsert
+from boba.db.postgres.connection import PostgresConfig
 from boba.identity.errors import InternalServiceError
 from boba.runtime.threads import ThreadsTable
 from boba.transport.acp.protocol import AcpErrorCode, MetaKey
@@ -445,9 +446,10 @@ class AgentLauncher:
     Запросы mcp/message процесса отвечает общий ретранслятор (McpRelay).
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 — запуск собирается конфигом, подключением и входами процесса
         self,
         config: AgentConfig,
+        postgres: PostgresConfig,
         layers: AgentSettingsLayers,
         keys: ProcessKeys,
         relay: McpRelay,
@@ -457,9 +459,9 @@ class AgentLauncher:
         self._layers = layers
         self._keys = keys
         self._relay = relay
-        self._files = SettingsFileBuilder(config)
+        self._files = SettingsFileBuilder(config, postgres)
         self._workdirs = AgentWorkdirs(Path(config.process.private_dir))
-        self._environment = HistoryEnvironment(config.history)
+        self._environment = HistoryEnvironment(config.history, postgres)
         self._command = AgentCommand(
             executable=config.process.command,
             args=tuple(config.process.args),

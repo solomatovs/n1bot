@@ -15,11 +15,15 @@ from pydantic import (
 
 from boba.access import RoleConfig
 from boba.auth.config import AuthConfig
-from boba.chainlit.agent.config import AgentConfig
+from boba.chainlit.agent.config import (
+    AgentConfig,
+    LibpqConnection,
+    PostgresAgentHistory,
+)
 from boba.chat.profiles import ChatProfileConfig
 from boba.krb import KerberosWorkspaceConfig
 from boba.mcp_client.client import McpServersConfig
-from boba.runtime.config import DataLayerConfig, RuntimeConfig
+from boba.runtime.config import RuntimeConfig
 
 LOGGING_CONFIG: dict[str, Any] = {
     "version": 1,
@@ -155,7 +159,7 @@ class ChainlitExtendConfig(BaseModel):
 
 
 class AppConfig(RuntimeConfig):
-    """Секции chainlit-процесса поверх общих: server, профили, data layer, агент."""
+    """Секции chainlit-процесса поверх общих: server, профили, агент."""
 
     model_config = ConfigDict(extra="ignore")
 
@@ -212,6 +216,15 @@ class AppConfig(RuntimeConfig):
 
         return self
 
+    @model_validator(mode="after")
+    def _history_fits_libpq(self) -> Self:
+        """История агента в Postgres идёт по подключению процесса строкой
+        libpq: вход [postgres], которого так не передать, — отказ на старте."""
+        if isinstance(self.agent.history, PostgresAgentHistory):
+            LibpqConnection(self.postgres).auth()
+
+        return self
+
     auth: Annotated[
         list[AuthConfig],
         Field(
@@ -224,11 +237,6 @@ class AppConfig(RuntimeConfig):
         default=LOGGING_CONFIG,
         description="Конфигурация логера: с полем user из сессии chainlit.",
     )
-
-    data_layer: Annotated[
-        DataLayerConfig,
-        Field(description="Сервис chainlit data layer: подключение + схема."),
-    ]
 
     agent: Annotated[
         AgentConfig,

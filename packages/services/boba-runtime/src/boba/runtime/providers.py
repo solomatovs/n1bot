@@ -6,12 +6,11 @@ get_process_config: провайдеры ядра читают только се
 
 Ошибки:
 RuntimeError — контейнер не поднят или процесс не дал значение.
-ServiceDisabledError — сервис выключаемой секции запрошен при выключенной секции.
 """
 
 import logging
 from collections.abc import AsyncGenerator, Generator, Sequence
-from typing import Annotated, TypeVar
+from typing import Annotated
 
 from omegaconf import DictConfig
 
@@ -24,11 +23,12 @@ from boba.config import bind
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
 from boba.connections.manifest import ConnectionTypes
 from boba.connections.sealed import SealKeys
+from boba.connections.secrets import SecretCipher
 from boba.db.pgvector.config import KnowledgeBaseSchemaConfig
 from boba.db.pgvector.schema import KbSchema
+from boba.db.postgres import AsyncPostgresPool
 from boba.identity.context import CallContexts
 from boba.identity.directory import UserDirectory
-from boba.identity.errors import ServiceDisabledError
 from boba.identity.locks import LiveLocks, MemoryLiveLocks, StaleLock
 from boba.identity.run import Runs
 from boba.identity.signin import ProfileCatalog
@@ -72,9 +72,6 @@ from boba.toolrun.streams import CallJournals
 logger = logging.getLogger(__name__)
 
 
-ValueT = TypeVar("ValueT")
-
-
 def get_raw_config() -> DictConfig:
     return RawConfig.get()
 
@@ -113,10 +110,23 @@ def instance_name(
     return config.cluster.instance_of(app)
 
 
+async def postgres_pool(
+    config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
+) -> AsyncGenerator[AsyncPostgresPool, None]:
+    """Пул процесса по [postgres]: открывается один раз в корне процесса,
+    его получают все таблицы приложения; закрывается с контейнером."""
+    pool = await AsyncPostgresPool.get(config.postgres)
+    try:
+        yield pool
+    finally:
+        await pool.close()
+
+
 async def message_bus(
     config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
     app: Annotated[AppName, Depends(app_name)],
     instance: Annotated[str, Depends(instance_name)],
+    pool: Annotated[AsyncPostgresPool, Depends(postgres_pool)],
 ) -> AsyncGenerator[MessageBus, None]:
     """Поднимает шину процесса по секции [messaging]: local живёт в памяти одного
     инстанса, postgres готовит таблицы, запускает слушателя на всё время работы и
@@ -127,11 +137,7 @@ async def message_bus(
         return
 
     bus = PgMessageBus(
-        config.messaging.postgres,
-        config.messaging.db_schema,
-        instance,
-        app,
-        config.cluster,
+        config.postgres, config.db_schema, instance, app, config.cluster, pool
     )
     await bus.setup()
     await bus.start()
@@ -145,6 +151,7 @@ async def message_bus(
 async def payload_store(
     config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
     bus: Annotated[MessageBus, Depends(message_bus)],
+    pool: Annotated[AsyncPostgresPool, Depends(postgres_pool)],
 ) -> PayloadStore:
     """Хранилище тел сообщений: при local — в памяти рядом с шиной, при postgres —
     в live_payloads; схему готовит шина, поэтому она поднимается первой, таблицу —
@@ -153,7 +160,7 @@ async def payload_store(
     if isinstance(config.messaging, LocalMessagingConfig):
         return MemoryPayloadStore()
 
-    store = PgPayloadStore(config.messaging.postgres, config.messaging.db_schema)
+    store = PgPayloadStore(config.postgres, config.db_schema, pool)
     await store.setup()
 
     return store
@@ -214,16 +221,6 @@ def _root() -> Container:
     return Container.require_root("runtime providers")
 
 
-def required(value: ValueT | None, section: str, what: str) -> ValueT:
-    """Значение провайдера выключаемой секции; None — ServiceDisabledError,
-    которую api отдаёт как 503, а инструмент — текстом отказа."""
-    if value is None:
-        msg = f"{what} requested but [{section}] is disabled in the config"
-        raise ServiceDisabledError(section, msg)
-
-    return value
-
-
 def credential_source(
     config: Annotated[ProcessConfig, Depends(get_process_config)],
     refresh: Annotated[RefreshSignal, Depends(refresh_signal)],
@@ -257,9 +254,7 @@ def message_bus_ref() -> MessageBus:
 
 def connection_store_ref() -> ConnectionStore:
     """Хранилище соединений для обвязок инструментов; зовётся на каждый вызов."""
-    store = _root().resolved(connection_store)
-
-    return required(store, "connections", "the connection store")
+    return _root().resolved(connection_store)
 
 
 def call_contexts_ref() -> CallContexts:
@@ -377,6 +372,7 @@ async def live_locks(
     instance: Annotated[str, Depends(instance_name)],
     app: Annotated[AppName, Depends(app_name)],
     bus: Annotated[MessageBus, Depends(message_bus)],
+    pool: Annotated[AsyncPostgresPool, Depends(postgres_pool)],
 ) -> LiveLocks:
     """Блокировки областей процесса; при local они живут в памяти, при postgres
     live_instances готовит шина, поэтому она поднимается первой, live_locks создаёт
@@ -386,11 +382,7 @@ async def live_locks(
         return MemoryLiveLocks(instance, config.cluster.lock_ttl_sec)
 
     locks = PgLiveLocks(
-        config.messaging.postgres,
-        config.messaging.db_schema,
-        instance,
-        app,
-        config.cluster,
+        config.postgres, config.db_schema, instance, app, config.cluster, pool
     )
     await locks.setup()
     await locks.register_instance()
@@ -417,15 +409,14 @@ def connection_types() -> ConnectionTypes:
 
 
 async def connection_store(
+    config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
     raw: Annotated[DictConfig, Depends(get_raw_config)],
     types: Annotated[ConnectionTypes, Depends(connection_types)],
-) -> ConnectionStore | None:
+    pool: Annotated[AsyncPostgresPool, Depends(postgres_pool)],
+) -> ConnectionStore:
     """Хранилище соединений; роли из [roles] попадают в таблицу roles на старте."""
-    cfg = bind(raw, "connections", ConnectionsConfig)
-    if not cfg.enable:
-        return None
-
-    store = ConnectionStore(cfg, types)
+    cipher = SecretCipher(bind(raw, "connections", ConnectionsConfig).key_bytes())
+    store = ConnectionStore(pool, config.db_schema, cipher, types)
     await store.setup()
 
     roles = bind(raw, "roles", RolesSection).root
@@ -462,16 +453,18 @@ def call_journals(
 
 def users_table(
     config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
+    pool: Annotated[AsyncPostgresPool, Depends(postgres_pool)],
 ) -> UsersTable:
-    """Строки users и авторы тредов той же схемы, что у data layer чата."""
-    return UsersTable(config.data_layer.postgres, config.data_layer.db_schema)
+    """Строки users и авторы тредов в схеме приложения на пуле процесса."""
+    return UsersTable(config.postgres, config.db_schema, pool)
 
 
 def threads_table(
     config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
+    pool: Annotated[AsyncPostgresPool, Depends(postgres_pool)],
 ) -> ThreadsTable:
-    """Строки threads той же схемы, что у data layer чата."""
-    return ThreadsTable(config.data_layer.postgres, config.data_layer.db_schema)
+    """Строки threads в схеме приложения на пуле процесса."""
+    return ThreadsTable(config.postgres, config.db_schema, pool)
 
 
 def session_tokens(

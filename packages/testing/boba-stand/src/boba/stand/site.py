@@ -18,13 +18,7 @@ from typing import Any, ClassVar
 from omegaconf import OmegaConf
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError
 
-from boba.runtime.config import (
-    AppLayers,
-    ConfigFiles,
-    ConfigLocator,
-    DataLayerConfig,
-    ProcessConfig,
-)
+from boba.runtime.config import AppLayers, ConfigFiles, ConfigLocator
 
 __all__ = ["Stand", "StandError", "StandLayers"]
 
@@ -60,16 +54,6 @@ class StandLayers:
             overlay = tomllib.load(handle)
 
         return OmegaConf.merge(raw, OmegaConf.create(overlay))
-
-
-class ServiceRuntime(ProcessConfig):
-    """Конфиг процесса сервиса boba-mcp глазами тестов плагинов и песочницы:
-    секции процесса и база тестов. Модель самого сервиса лежит в его пакете
-    и пакетам инструментов недоступна по слоям. Базы у сервиса нет: секцию
-    [data_layer] добавляет стендовый слой conf/stand.toml — в ней живут
-    таблицы, которые тесты плагинов создают сами."""
-
-    data_layer: DataLayerConfig
 
 
 class Stand(BaseModel):

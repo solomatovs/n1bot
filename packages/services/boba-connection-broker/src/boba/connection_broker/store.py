@@ -55,7 +55,6 @@ from boba.connections.stored import (
     SubjectConnections,
 )
 from boba.db.postgres import PgQuery, PostgresPool, PostgresTable
-from boba.db.postgres.connection import PostgresConfig
 from boba.identity.context import Subject
 
 logger = logging.getLogger(__name__)
@@ -88,24 +87,12 @@ class CatalogEntry(BaseModel):
 
 
 class ConnectionsConfig(BaseModel):
-    """Секция [connections]: где лежат таблицы и чем шифруются значения."""
+    """Секция [connections]: чем шифруются значения и срок запечатывания."""
 
     model_config = ConfigDict(extra="ignore")
 
     KEY_BYTES: ClassVar[int] = 32
 
-    enable: bool = Field(
-        default=False,
-        description="Создавать таблицы connections/roles/grants при старте.",
-    )
-    connection: PostgresConfig | None = Field(
-        default=None,
-        description='Postgres-профиль ссылкой: connection = "${postgres}".',
-    )
-    db_schema: str = Field(
-        min_length=1,
-        description="Схема postgres, в которой живут таблицы.",
-    )
     encryption_key: SecretStr = Field(
         default=SecretStr(""),
         description=(
@@ -159,16 +146,6 @@ class ConnectionsConfig(BaseModel):
 
         return base64.b64decode(raw, validate=True)
 
-    def require_conn(self) -> PostgresConfig:
-        if self.connection is None:
-            msg = (
-                "[connections].connection is not set: expected a postgres "
-                'reference such as connection = "${postgres}"'
-            )
-            raise ValueError(msg)
-
-        return self.connection
-
 
 class ConnectionStore(PostgresTable, ConnectionRepository):
     """CRUD над connections/roles/grants: наружу — модели, в базе — шифротекст.
@@ -181,18 +158,14 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
 
     def __init__(
         self,
-        cfg: ConnectionsConfig,
+        pool: PostgresPool,
+        db_schema: str,
+        cipher: SecretCipher,
         types: ConnectionTypes,
-        pool: PostgresPool | None = None,
     ) -> None:
-        postgres = cfg.connection
-        if pool is None:
-            postgres = cfg.require_conn()
-
-        super().__init__(postgres, cfg.db_schema, pool)
-        self._cfg = cfg
+        super().__init__(None, db_schema, pool)
         self._types = types
-        self._cipher = SecretCipher(cfg.key_bytes())
+        self._cipher = cipher
 
     def _failure(self, action: str, exc: Exception) -> Exception:
         return ConnectionStoreError(self._detail(action, exc))

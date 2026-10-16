@@ -50,17 +50,13 @@ async def _stand(
     pool: AsyncPostgresPool,
     name: str,
 ) -> Stand:
-    cfg = bus_config.data_layer.postgres.model_copy(update={"dbname": test_database})
+    cfg = bus_config.postgres.model_copy(update={"dbname": test_database})
     cluster = _cluster(bus_config)
-    bus = PgMessageBus(
-        cfg, bus_config.pg_messaging().db_schema, name, AppName.STUDIO, cluster
-    )
+    bus = PgMessageBus(cfg, bus_config.db_schema, name, AppName.STUDIO, cluster)
     bus._pool_ref = pool
     await bus.setup()
     await bus.start()
-    locks = PgLiveLocks(
-        cfg, bus_config.pg_messaging().db_schema, name, AppName.STUDIO, cluster
-    )
+    locks = PgLiveLocks(cfg, bus_config.db_schema, name, AppName.STUDIO, cluster)
     locks._pool_ref = pool
     await locks.setup()
     await locks.register_instance()

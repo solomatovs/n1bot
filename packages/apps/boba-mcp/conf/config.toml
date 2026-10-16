@@ -3,6 +3,7 @@
     ccache_dir = "${env.data}/krb/cache"
 
 [app]
+    schema          = "mcp"
     krb             = "${krb}"
     session         = "${session}"
     stream_journal  = "${stream_journal}"

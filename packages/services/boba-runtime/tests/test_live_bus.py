@@ -79,10 +79,10 @@ async def _bus(
     pool: AsyncPostgresPool,
     name: str,
 ) -> PgMessageBus:
-    cfg = bus_config.data_layer.postgres.model_copy(update={"dbname": test_database})
+    cfg = bus_config.postgres.model_copy(update={"dbname": test_database})
     bus = PgMessageBus(
         cfg,
-        bus_config.pg_messaging().db_schema,
+        bus_config.db_schema,
         name,
         AppName.STUDIO,
         bus_config.cluster,
@@ -326,7 +326,7 @@ async def test_listener_retries_when_the_catch_up_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Ошибка базы при догоне после реконнекта — повтор, а не остановка слушателя."""
-    cfg = bus_config.data_layer.postgres.model_copy(update={"dbname": test_database})
+    cfg = bus_config.postgres.model_copy(update={"dbname": test_database})
     calls: list[int] = []
 
     async def handler(pointer: Pointer) -> None:
@@ -397,7 +397,7 @@ async def test_neighbour_setup_does_not_deadlock_with_purge(
     падала с DeadlockDetected.
     """
     first = await _bus(bus_config, test_database, pool, "node1-studio")
-    schema = bus_config.pg_messaging().db_schema
+    schema = bus_config.db_schema
     scope = Scope.chat(str(uuid4()))
     token = LockToken.local()
 
@@ -462,7 +462,7 @@ async def test_setup_drops_events_of_retired_kinds(
     scope = Scope.chat(str(uuid4()))
     token = LockToken.local()
     kept = await first.publish(scope, _token("kept"), token)
-    schema = bus_config.pg_messaging().db_schema
+    schema = bus_config.db_schema
     async with pool.connection() as conn:
         await conn.execute(
             sql.SQL(

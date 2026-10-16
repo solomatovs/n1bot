@@ -13,7 +13,6 @@ HTTP-интерфейс того же clickhouse по Negotiate. Учётка п
 
 from __future__ import annotations
 
-import base64
 import secrets as std_secrets
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -27,14 +26,14 @@ from chainlit.user import User as ChainlitUser
 from chainlit_stand import ChatSessionStand, ServiceTools, SsoStand, ToolService
 from gssapi import Credentials, Name, NameType, SecurityContext
 from psycopg import sql
-from pydantic import SecretStr
 
 from boba.auth.credentials import KerberosCredentialSource
 from boba.chainlit.auth.kerberos import KerberosAuth
 from boba.chainlit.data.data_layer import PostgresDataLayer
 from boba.config import bind
-from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
+from boba.connection_broker.store import ConnectionStore
 from boba.connections.manifest import ConnectionTypes
+from boba.connections.secrets import SecretCipher
 from boba.connections.stored import ConnectionBase, GrantTarget
 from boba.db.clickhouse.connection import ClickHouseConfig
 from boba.db.postgres import AsyncPostgresPool
@@ -79,8 +78,8 @@ pytestmark = [
 ]
 
 
-def _key() -> SecretStr:
-    return SecretStr(base64.b64encode(std_secrets.token_bytes(32)).decode())
+def _cipher() -> SecretCipher:
+    return SecretCipher(std_secrets.token_bytes(32))
 
 
 @pytest.fixture
@@ -90,8 +89,7 @@ async def store(pool: AsyncPostgresPool) -> ConnectionStore:
             sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(SCHEMA))
         )
 
-    cfg = ConnectionsConfig(enable=True, db_schema=SCHEMA, encryption_key=_key())
-    built = ConnectionStore(cfg, ConnectionTypes.discover(), pool)
+    built = ConnectionStore(pool, SCHEMA, _cipher(), ConnectionTypes.discover())
     await built.setup()
     await built.sync_roles([ROLE])
     return built

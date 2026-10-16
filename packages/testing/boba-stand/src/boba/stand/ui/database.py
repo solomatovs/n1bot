@@ -23,6 +23,7 @@ from boba.catalog_service import ConnectionTable as SnapshotTable
 from boba.config import bind
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
 from boba.connections.manifest import ConnectionTypes
+from boba.connections.secrets import SecretCipher
 from boba.connections.stored import (
     ConnectionBase,
     ConnectionTable,
@@ -35,7 +36,7 @@ from boba.db.postgres import AsyncPostgresPool, PgQuery, PgQueryBuilder
 from boba.db.postgres.connection.config import PostgresConfig
 from boba.identity.session import UserMetadataField
 from boba.ix_core.database import IxDatabase
-from boba.runtime.config import DataLayerConfig
+from boba.runtime.config import RuntimeConfig
 from boba.stand.database import TestDatabase
 from boba.stand.edm import EdmDataset, EdmSource, EdmSources
 from boba.stand.ix_index import IxPage, IxPages, SharedIndexers, StandIxStack
@@ -147,13 +148,15 @@ class StandDatabase:
         self._built = StandLayers.compose(app.files())
         self._tools = StandLayers.compose(app.tools_app().files())
         """Конфиг процесса, исполняющего инструменты: секции [tool.*]."""
-        layer = bind(self._built, path=app.data_layer_section, model=DataLayerConfig)
-        pool = layer.postgres.pool.model_copy(update=self.POOL_OVERRIDE)
-        self._maintenance = layer.postgres.model_copy(update={"pool": pool})
-        self._postgres = layer.postgres.model_copy(
-            update={"dbname": name, "pool": pool}
-        )
-        self._schema = layer.db_schema
+        postgres = bind(self._built, path="postgres", model=PostgresConfig)
+        pool = postgres.pool.model_copy(update=self.POOL_OVERRIDE)
+        self._maintenance = postgres.model_copy(update={"pool": pool})
+        self._postgres = postgres.model_copy(update={"dbname": name, "pool": pool})
+        runtime = bind(self._built, path=RuntimeConfig.SECTION, model=RuntimeConfig)
+        self._schema = runtime.db_schema
+        connections = bind(self._built, path="connections", model=ConnectionsConfig)
+        self._cipher = SecretCipher(connections.key_bytes())
+        self._types = ConnectionTypes.discover()
 
     @property
     def schema(self) -> str:
@@ -167,14 +170,13 @@ class StandDatabase:
     async def _prepare(self) -> None:
         await self._ensure_database()
         await self._ensure_extensions()
-        connections = bind(self._built, path="connections", model=ConnectionsConfig)
         async with self._pool() as pool, pool.cursor() as cur:
             for table in (ConnectionTable.GRANTS, ConnectionTable.CONNECTIONS):
                 query = (
                     PgQueryBuilder()
                     .add(
                         "drop table if exists {table} cascade",
-                        table=sql.Identifier(connections.db_schema, table.value),
+                        table=sql.Identifier(self._schema, table.value),
                     )
                     .build()
                 )
@@ -395,16 +397,13 @@ class StandDatabase:
         run_blocking(self._break_connection_kind(name, kind))
 
     async def _break_connection_kind(self, name: str, kind: str) -> None:
-        connections = bind(self._built, path="connections", model=ConnectionsConfig)
         query = (
             PgQueryBuilder()
             .add(
                 "update {table} "
                 "set data = jsonb_set(data, '{{kind}}', to_jsonb(%(kind)s::text)) "
                 "where name = %(name)s",
-                table=sql.Identifier(
-                    connections.db_schema, ConnectionTable.CONNECTIONS.value
-                ),
+                table=sql.Identifier(self._schema, ConnectionTable.CONNECTIONS.value),
                 kind=kind,
                 name=name,
             )
@@ -437,9 +436,8 @@ class StandDatabase:
         return run_blocking(self._add_stored(name, connection))
 
     async def _add_stored(self, name: str, connection: ConnectionBase) -> UUID:
-        connections = bind(self._built, path="connections", model=ConnectionsConfig)
         async with self._pool() as pool:
-            store = ConnectionStore(connections, ConnectionTypes.discover(), pool)
+            store = ConnectionStore(pool, self._schema, self._cipher, self._types)
             connection_id = await store.add(name, connection)
             await self._grant_stand_roles(store, (connection_id,))
 
@@ -465,9 +463,8 @@ class StandDatabase:
         run_blocking(self._remove_connections(prefix))
 
     async def _remove_connections(self, prefix: str) -> None:
-        connections = bind(self._built, path="connections", model=ConnectionsConfig)
         async with self._pool() as pool:
-            store = ConnectionStore(connections, ConnectionTypes.discover(), pool)
+            store = ConnectionStore(pool, self._schema, self._cipher, self._types)
             for row in await store.list_all():
                 if row.name.startswith(prefix):
                     await store.remove(row.id)
@@ -481,7 +478,6 @@ class StandDatabase:
         run_blocking(self._seed_connections(llm_port))
 
     async def _seed_connections(self, llm_port: int) -> None:
-        connections = bind(self._built, path="connections", model=ConnectionsConfig)
         clickhouse = bind(self._built, path="clickhouse", model=ClickHouseConfig)
         web = HttpConnection(
             scheme=UrlScheme(StandUrl.SCHEME.value),
@@ -490,7 +486,7 @@ class StandDatabase:
             ssl_verify=False,
         )
         async with self._pool() as pool:
-            store = ConnectionStore(connections, ConnectionTypes.discover(), pool)
+            store = ConnectionStore(pool, self._schema, self._cipher, self._types)
             # строки прошлых прогонов могут не проходить нынешний валидатор
             # профиля, поэтому чистятся мимо стора
             async with pool.cursor() as cur:
@@ -499,7 +495,7 @@ class StandDatabase:
                         PgQueryBuilder()
                         .add(
                             "delete from {table}",
-                            table=sql.Identifier(connections.db_schema, table.value),
+                            table=sql.Identifier(self._schema, table.value),
                         )
                         .build()
                     )
@@ -521,9 +517,8 @@ class StandDatabase:
     async def _seed_oracle(self) -> None:
         oracle = StandOracle(self._built).connection()
 
-        connections = bind(self._built, path="connections", model=ConnectionsConfig)
         async with self._pool() as pool:
-            store = ConnectionStore(connections, ConnectionTypes.discover(), pool)
+            store = ConnectionStore(pool, self._schema, self._cipher, self._types)
             row = await store.add("main", oracle)
             await self._grant_stand_roles(store, [row])
 
@@ -581,9 +576,8 @@ class StandDatabase:
         source = self._edm_source()
         await EdmDataset(source, self.EDM_DATABASE).recreate()
 
-        connections = bind(self._built, path="connections", model=ConnectionsConfig)
         async with self._pool() as pool:
-            store = ConnectionStore(connections, ConnectionTypes.discover(), pool)
+            store = ConnectionStore(pool, self._schema, self._cipher, self._types)
             row = await store.add("edm", source.clickhouse)
             await self._grant_stand_roles(store, [row])
 
@@ -603,9 +597,8 @@ class StandDatabase:
         sinks = self.stream_sinks()
         await sinks.recreate()
 
-        connections = bind(self._built, path="connections", model=ConnectionsConfig)
         async with self._pool() as pool:
-            store = ConnectionStore(connections, ConnectionTypes.discover(), pool)
+            store = ConnectionStore(pool, self._schema, self._cipher, self._types)
             rows = [
                 await store.add(self.SINK_CH, sinks.ch_connection),
                 await store.add(self.SINK_ORA, sinks.ora_connection),

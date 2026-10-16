@@ -46,6 +46,7 @@ from boba.chainlit.agent.config import (
     AgentConfig,
     AgentHistoryConfig,
     AgentHistoryKind,
+    LibpqConnection,
     MemoryAgentHistory,
     PostgresAgentHistory,
 )
@@ -562,10 +563,12 @@ class AgentSettingsLayers:
 
 class SettingsFileBuilder:
     """Файл настроек агента из слоя чата и конфига [agent]: история и режим
-    разрешений добавляются к профилю модели чата."""
+    разрешений добавляются к профилю модели чата; строка подключения истории
+    — подключение процесса [postgres]."""
 
-    def __init__(self, config: AgentConfig) -> None:
+    def __init__(self, config: AgentConfig, postgres: PostgresConfig) -> None:
         self._config = config
+        self._libpq = LibpqConnection(postgres)
 
     def build(self, chat: ChatAgentSettings) -> AgentSettingsFile:
         """Файл процесса агента по слою чата."""
@@ -583,7 +586,7 @@ class SettingsFileBuilder:
             return HistoryFile.model_validate(
                 {
                     "kind": AgentHistoryKind.POSTGRES,
-                    "dsn": history.dsn(),
+                    "dsn": self._libpq.dsn(),
                     "schema": history.db_schema,
                 }
             )
@@ -604,8 +607,9 @@ class HistoryEnvironment:
     это пути к файлам того же пользователя, не секреты.
     """
 
-    def __init__(self, history: AgentHistoryConfig) -> None:
+    def __init__(self, history: AgentHistoryConfig, postgres: PostgresConfig) -> None:
         self._history = history
+        self._libpq = LibpqConnection(postgres)
 
     async def prepare(self) -> dict[str, str]:
         """Ошибки:
@@ -614,7 +618,7 @@ class HistoryEnvironment:
         if not isinstance(self._history, PostgresAgentHistory):
             return {}
 
-        auth = self._history.kerberos_auth()
+        auth = self._libpq.kerberos_auth()
         if auth is None:
             return {}
 

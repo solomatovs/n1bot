@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from enum import StrEnum
-from typing import Annotated, Any, Literal, Self
+from typing import Annotated, Any, Literal
 
 from psycopg.conninfo import make_conninfo
 from pydantic import (
@@ -17,7 +17,6 @@ from pydantic import (
     Field,
     SecretStr,
     field_validator,
-    model_validator,
 )
 
 from boba.db.postgres.connection import PostgresConfig
@@ -32,6 +31,7 @@ __all__ = [
     "AgentHistoryKind",
     "ChatMcpConfig",
     "DsnKey",
+    "LibpqConnection",
     "MemoryAgentHistory",
     "ModelLimitsConfig",
     "PostgresAgentHistory",
@@ -97,36 +97,41 @@ class DsnAuthKey(StrEnum):
 
 
 class PostgresAgentHistory(BaseModel):
-    """История агента в Postgres: подключение ролью с паролем, доверием pg_hba
-    либо билетом Kerberos; схема по A0.
+    """История агента в Postgres по подключению процесса [postgres] (роль с
+    паролем, доверием pg_hba либо билетом Kerberos) в своей схеме.
 
-    Агент принимает строку libpq: пароль идёт в ней, kerberos-роль входит
-    билетом из кэша, путь к которому процесс получает переменными libkrb5
-    (KRB5CCNAME, KRB5_CONFIG) — их собирает HistoryEnvironment.
+    Агент принимает строку libpq: её и окружение libkrb5 собирает
+    LibpqConnection; что подключение процесса ею выразимо, проверяет AppConfig.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
 
     kind: Literal[AgentHistoryKind.POSTGRES]
-    postgres: PostgresConfig
     db_schema: str = Field(alias="schema", min_length=1)
 
-    @model_validator(mode="after")
-    def _libpq_auth(self) -> Self:
-        self.libpq_auth()
 
-        return self
+class LibpqConnection:
+    """Подключение процесса [postgres] глазами агента: строка libpq файла
+    настроек и kerberos-вариант входа для окружения libkrb5.
 
-    def libpq_auth(
-        self,
-    ) -> PasswordAuth | TrustAuth | KeytabAuth | KerberosPasswordAuth:
+    Агент принимает строку libpq: пароль идёт в ней, kerberos-роль входит
+    билетом из кэша, путь к которому процесс получает переменными libkrb5
+    (KRB5CCNAME, KRB5_CONFIG). Строят его сборка файла настроек
+    (SettingsFileBuilder), окружение процесса агента (HistoryEnvironment) и
+    проверка AppConfig на старте.
+    """
+
+    def __init__(self, postgres: PostgresConfig) -> None:
+        self._postgres = postgres
+
+    def auth(self) -> PasswordAuth | TrustAuth | KeytabAuth | KerberosPasswordAuth:
         """Авторизация, выразимая строкой libpq и окружением libkrb5.
 
         Ошибки:
         ValueError — у подключения сертификатная, делегированная или билетная
             авторизация.
         """
-        auth = self.postgres.auth
+        auth = self._postgres.auth
         if isinstance(auth, PasswordAuth | TrustAuth):
             return auth
 
@@ -134,15 +139,15 @@ class PostgresAgentHistory(BaseModel):
             return auth
 
         msg = (
-            f"[agent.history] postgres auth {auth.method!r} cannot be handed to the "
-            "agent as a libpq connection string; expected method 'password', "
+            f"[postgres] auth {auth.method!r} cannot be handed to the agent "
+            "history as a libpq connection string; expected method 'password', "
             "'trust', 'kerberos_keytab' or 'kerberos_password'"
         )
         raise ValueError(msg)
 
     def kerberos_auth(self) -> KeytabAuth | KerberosPasswordAuth | None:
         """Kerberos-вариант авторизации; None — роль входит паролем или доверием."""
-        auth = self.libpq_auth()
+        auth = self.auth()
         if isinstance(auth, KeytabAuth | KerberosPasswordAuth):
             return auth
 
@@ -153,13 +158,13 @@ class PostgresAgentHistory(BaseModel):
         kerberos-роли (её имя — короткое имя принципала); уходит в файл 0600."""
         parts: dict[str, Any] = {}
         for key in DsnKey:
-            value = getattr(self.postgres, key.value)
+            value = getattr(self._postgres, key.value)
             if value is None:
                 continue
 
             parts[key.value] = value
 
-        auth = self.libpq_auth()
+        auth = self.auth()
         if isinstance(auth, PasswordAuth | TrustAuth):
             parts[DsnAuthKey.USER.value] = auth.user
 

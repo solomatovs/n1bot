@@ -25,8 +25,8 @@ from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
 
 from boba.auth.proxy import ProxyAssertions
+from boba.db.postgres.connection import PostgresConfig
 from boba.stand.database import TestDatabase
-from boba.stand.site import ServiceRuntime
 from boba.stand.ui.database import run_blocking
 from boba.stand.ui.stand import ServiceStand, StandProcess, free_port
 
@@ -89,9 +89,9 @@ class RunningCall:
 
 @pytest.fixture
 def service(
-    tmp_path: Path, service_runtime: ServiceRuntime
+    tmp_path: Path, stand_postgres: PostgresConfig
 ) -> Iterator[StandProcess[ServiceStand]]:
-    db_name = run_blocking(TestDatabase.ensure(service_runtime.data_layer.postgres))
+    db_name = run_blocking(TestDatabase.ensure(stand_postgres))
 
     config = ServiceStand(
         workdir=tmp_path, app_port=free_port(), db_name=db_name, sandbox=True
