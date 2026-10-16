@@ -119,11 +119,9 @@ class Browser:
 
 
 @pytest.fixture
-def user_password(service_raw_config: Any) -> str:
+def user_password() -> str:
     """Пароль тестового пользователя домена; браузер им получает свой TGT."""
-    from omegaconf import OmegaConf
-
-    return str(OmegaConf.select(service_raw_config, "site.ldap_bind_password"))
+    return STAND.reader_password.get_secret_value()
 
 
 @pytest.fixture
