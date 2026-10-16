@@ -232,7 +232,7 @@ class TestStandardServerOverStdio:
     async def test_text_result_becomes_a_tool_message(
         self, stdio: McpToolServer
     ) -> None:
-        reply = await stdio.call(_call("add", a=2, b=3), None, None)
+        reply = await stdio.call(_call("add", a=2, b=3), None)
         result = McpResults().result("add", "c1", reply)
 
         if not isinstance(result, MarkdownResult) or result.text != "5":
@@ -241,7 +241,7 @@ class TestStandardServerOverStdio:
     async def test_tool_error_is_an_error_message_with_the_server_text(
         self, stdio: McpToolServer
     ) -> None:
-        reply = await stdio.call(_call("broken"), None, None)
+        reply = await stdio.call(_call("broken"), None)
         result = McpResults().result("broken", "c1", reply)
 
         if not isinstance(reply, mt.CallToolResult) or not reply.is_error:
@@ -256,7 +256,7 @@ class TestStandardServerOverStdio:
     async def test_non_text_block_is_named_in_the_text(
         self, stdio: McpToolServer
     ) -> None:
-        reply = await stdio.call(_call("picture"), None, None)
+        reply = await stdio.call(_call("picture"), None)
         text = McpResults().result("picture", "c1", reply).llm_view()
 
         if text != "[image image/png]":
@@ -265,7 +265,7 @@ class TestStandardServerOverStdio:
     async def test_model_gets_its_blocks_text_and_marks(
         self, stdio: McpToolServer
     ) -> None:
-        reply = await stdio.call(_call("blocks", empty=False), None, None)
+        reply = await stdio.call(_call("blocks", empty=False), None)
         text = McpResults().result("blocks", "c1", reply).llm_view()
 
         expected = (
@@ -281,14 +281,14 @@ class TestStandardServerOverStdio:
     async def test_structured_content_without_blocks_is_json(
         self, stdio: McpToolServer
     ) -> None:
-        reply = await stdio.call(_call("blocks", empty=True), None, None)
+        reply = await stdio.call(_call("blocks", empty=True), None)
         text = McpResults().result("blocks", "c1", reply).llm_view()
 
         if text != '{\n  "rows": 2\n}':
             raise AssertionError(f"structured content becomes JSON text: {text}")
 
     async def test_input_required_comes_back_as_is(self, stdio: McpToolServer) -> None:
-        reply = await stdio.call(_call("ask", refuse=False), None, None)
+        reply = await stdio.call(_call("ask", refuse=False), None)
 
         if not isinstance(reply, mt.InputRequiredResult):
             raise AssertionError(f"the request for input is returned: {reply}")
@@ -297,7 +297,7 @@ class TestStandardServerOverStdio:
 
     async def test_server_error_goes_up_as_is(self, stdio: McpToolServer) -> None:
         with pytest.raises(MCPError) as refused:
-            await stdio.call(_call("ask", refuse=True), None, None)
+            await stdio.call(_call("ask", refuse=True), None)
 
         error = refused.value.error
         if error.code != mt.INVALID_PARAMS or "refuses" not in error.message:
@@ -310,7 +310,7 @@ class TestStandardServerOverStdio:
     ) -> None:
         heard = HeardCall()
 
-        await stdio.call(_call("progress", steps=2), None, heard)
+        await stdio.call(_call("progress", steps=2), heard)
 
         expected = [(1.0, 2.0, "step 1 of 2"), (2.0, 2.0, "step 2 of 2")]
         if heard.reports != expected:
@@ -319,7 +319,7 @@ class TestStandardServerOverStdio:
 
 class TestStandardServerOverHttp:
     async def test_call_goes_over_streamable_http(self, http: McpToolServer) -> None:
-        reply = await http.call(_call("shout", text="over http"), None, None)
+        reply = await http.call(_call("shout", text="over http"), None)
         text = McpResults().result("shout", "c1", reply).llm_view()
 
         if text != "OVER HTTP":
@@ -346,7 +346,7 @@ class TestUnreachableServer:
     ) -> None:
         await http.close()
 
-        reply = await http.call(_call("add", a=4, b=4), None, None)
+        reply = await http.call(_call("add", a=4, b=4), None)
         text = McpResults().result("add", "c1", reply).llm_view()
 
         if text != "8":
@@ -402,7 +402,7 @@ class TestPublicServers:
             for name in tool.input_schema.get("required", []):
                 args[name] = "fastapi"
 
-            reply = await server.call(_call(tool.name, **args), None, None)
+            reply = await server.call(_call(tool.name, **args), None)
         finally:
             await server.close()
 
@@ -556,7 +556,7 @@ class TestScopeOfTheCall:
     async def test_scope_of_the_call_travels_to_the_server(
         self, dag: McpToolServer
     ) -> None:
-        reply = await dag.call(_call("fake_scope"), self.THREAD, None)
+        reply = await dag.call(_call("fake_scope", thread_id=self.THREAD), None)
         text = McpResults().result("fake_scope", "c1", reply).llm_view()
 
         if self.THREAD not in text:
@@ -667,7 +667,7 @@ class TestBobaMcpJournal:
     ) -> None:
         heard = HeardCall()
 
-        reply = await dag.call(_call("fake_progress", steps=2, pause=0.6), None, heard)
+        reply = await dag.call(_call("fake_progress", steps=2, pause=0.6), heard)
 
         if not isinstance(reply, mt.CallToolResult) or reply.is_error:
             raise AssertionError(f"the call succeeds: {reply}")
@@ -688,7 +688,7 @@ class TestBobaMcpJournal:
         ]
         heard = HeardCall()
 
-        reply = await dag.call(_call("workflow", nodes=nodes), None, heard)
+        reply = await dag.call(_call("workflow", nodes=nodes), heard)
 
         if not isinstance(reply, mt.CallToolResult) or reply.is_error:
             raise AssertionError(f"the workflow succeeds: {reply}")
@@ -701,7 +701,7 @@ class TestBobaMcpJournal:
         self, dag: McpToolServer
     ) -> None:
         heard = HeardCall()
-        reply = await dag.call(_call("fake_echo", text="hi", repeat=2), None, heard)
+        reply = await dag.call(_call("fake_echo", text="hi", repeat=2), heard)
         if not isinstance(reply, mt.CallToolResult):
             raise AssertionError(f"the call is answered: {reply}")
 
@@ -717,7 +717,7 @@ class TestBobaMcpJournal:
     async def test_journal_channel_is_downloaded_whole_and_by_range(
         self, dag: McpToolServer
     ) -> None:
-        reply = await dag.call(_call("fake_echo", text="hi", repeat=2), None, None)
+        reply = await dag.call(_call("fake_echo", text="hi", repeat=2), None)
         if not isinstance(reply, mt.CallToolResult):
             raise AssertionError(f"the call is answered: {reply}")
 
@@ -808,7 +808,7 @@ class TestSignInAsTheUser:
         caller = McpCaller(login="ivanov", roles=frozenset({"dev"}))
         try:
             port = await self._port(servers, caller, "boba")
-            reply = await port.call(_call("fake_whoami"), None, None)
+            reply = await port.call(_call("fake_whoami"), None)
         finally:
             await servers.stop()
 
@@ -864,7 +864,7 @@ class TestBobaMcpServer:
     вложенные вызовы, журнал, файлы."""
 
     async def test_result_carries_its_text(self, dag: McpToolServer) -> None:
-        reply = await dag.call(_call("fake_echo", text="hi", repeat=2), None, None)
+        reply = await dag.call(_call("fake_echo", text="hi", repeat=2), None)
         if not isinstance(reply, mt.CallToolResult) or reply.is_error:
             raise AssertionError(f"the call succeeds: {reply}")
 
@@ -918,7 +918,7 @@ class TestBobaMcpServer:
             },
         ]
 
-        reply = await dag.call(_call("workflow", nodes=nodes), None, None)
+        reply = await dag.call(_call("workflow", nodes=nodes), None)
 
         if not isinstance(reply, mt.CallToolResult) or reply.is_error:
             raise AssertionError(f"the workflow succeeds: {reply}")
@@ -952,7 +952,7 @@ class TestBobaMcpServer:
             raise AssertionError(f"a built-in node has no special view: {workflow}")
 
     async def test_failure_names_its_cause(self, dag: McpToolServer) -> None:
-        reply = await dag.call(_call("fake_echo", text="boom", repeat=1), None, None)
+        reply = await dag.call(_call("fake_echo", text="boom", repeat=1), None)
         if not isinstance(reply, mt.CallToolResult) or not reply.is_error:
             raise AssertionError(f"the server reports isError: {reply}")
 
@@ -985,9 +985,7 @@ class TestBobaMcpServer:
         )
         value = ConnectionSeal(SealFeature.model_validate(declared).key).seal(sealed)
 
-        reply = await dag.call(
-            _call("fake_connection_host", connection=value), None, None
-        )
+        reply = await dag.call(_call("fake_connection_host", connection=value), None)
         result = McpResults().result("fake_connection_host", "c1", reply)
 
         if not result.ok or result.llm_view() != "db.local|orders":
@@ -996,9 +994,7 @@ class TestBobaMcpServer:
     async def test_plain_name_is_refused_by_the_server(
         self, dag: McpToolServer
     ) -> None:
-        reply = await dag.call(
-            _call("fake_connection_host", connection="main"), None, None
-        )
+        reply = await dag.call(_call("fake_connection_host", connection="main"), None)
 
         if not isinstance(reply, mt.CallToolResult) or not reply.is_error:
             raise AssertionError(f"an unsealed name is refused: {reply}")
@@ -1149,9 +1145,7 @@ class TestBobaMcpService:
         if "bash" not in names or "workflow" not in names:
             raise AssertionError(f"the service offers its plugin tools: {names}")
 
-        reply = await service.call(
-            _call("bash", command="echo from the service"), None, None
-        )
+        reply = await service.call(_call("bash", command="echo from the service"), None)
         if not isinstance(reply, mt.CallToolResult):
             raise AssertionError(f"the call is answered: {reply}")
 
@@ -1175,9 +1169,15 @@ class TestBobaMcpService:
         other = "8a1d7f2c-3b54-4e0a-9c1e-2f4b6d8a0c12"
         results = McpResults()
 
-        await service.call(_call("bash", command="echo kept > note.txt"), first, None)
-        again = await service.call(_call("bash", command="cat note.txt"), first, None)
-        apart = await service.call(_call("bash", command="cat note.txt"), other, None)
+        await service.call(
+            _call("bash", command="echo kept > note.txt", thread_id=first), None
+        )
+        again = await service.call(
+            _call("bash", command="cat note.txt", thread_id=first), None
+        )
+        apart = await service.call(
+            _call("bash", command="cat note.txt", thread_id=other), None
+        )
 
         seen = results.result("bash", "c1", again).llm_view()
         if "kept" not in seen:
@@ -1220,7 +1220,7 @@ class TestFailureStand:
         return server
 
     async def test_large_result_arrives_whole(self, stdio: McpToolServer) -> None:
-        reply = await stdio.call(_call("large", size=200_000), None, None)
+        reply = await stdio.call(_call("large", size=200_000), None)
         text = McpResults().result("large", "c1", reply).llm_view()
 
         assert len(text) == 200_000
@@ -1229,7 +1229,7 @@ class TestFailureStand:
         server = await self._open(call_timeout_sec=1.0)
         try:
             with pytest.raises(McpClientError, match="'sleep_for' got no answer"):
-                await server.call(_call("sleep_for", seconds=5.0), None, None)
+                await server.call(_call("sleep_for", seconds=5.0), None)
         finally:
             await server.close()
 
@@ -1237,7 +1237,7 @@ class TestFailureStand:
         server = await self._open(call_timeout_sec=10.0)
         try:
             with pytest.raises(McpClientError, match="'die' got no answer"):
-                await server.call(_call("die"), None, None)
+                await server.call(_call("die"), None)
         finally:
             await server.close()
 
@@ -1245,8 +1245,8 @@ class TestFailureStand:
         """Список читается при открытии: сервер меняет его, уведомление
         клиент не слушает, а вызов уходит серверу как есть."""
         before = sorted(tool.name for tool in stdio.tools())
-        toggled = await stdio.call(_call("toggle_extra"), None, None)
-        answered = await stdio.call(_call("extra"), None, None)
+        toggled = await stdio.call(_call("toggle_extra"), None)
+        answered = await stdio.call(_call("extra"), None)
 
         assert before == self.STANDARD_TOOLS
         assert McpResults().result("toggle_extra", "c1", toggled).llm_view() == (

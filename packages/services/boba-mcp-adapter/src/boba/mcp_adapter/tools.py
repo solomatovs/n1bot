@@ -5,27 +5,28 @@
 собственные инструменты чата агенту. McpTool — инструмент fastmcp над
 карточкой порта: схема карточки для клиента, вызов портом узлом DagNode,
 итог клиенту ответом McpReplies стандартными полями результата MCP
-(ResultWire). RoleTools — McpTool порта на пару «роли, профиль», собранные
-один раз. McpToolProvider — провайдер fastmcp: на каждый запрос берёт
-инструменты вызывающего у CallerServers (кто вызывает, решает приложение по
-своему токену). FeatureExtension — возможность сервера, объявляемая клиенту
-при согласовании протокола. JournalUris — uri каналов журнала вызова
-ресурсами MCP и их разбор.
+(ResultWire). RoleTools — McpTool порта на ключ наследника (роли, профиль
+и всё, что решает о составе порта), собранные один раз. McpToolProvider —
+провайдер fastmcp: на каждый запрос берёт инструменты вызывающего у
+CallerServers (кто вызывает, решает приложение по своему токену).
+FeatureExtension — возможность сервера, объявляемая клиенту при
+согласовании протокола. JournalUris — uri каналов журнала вызова ресурсами
+MCP и их разбор.
 
 Ошибки:
 наружу уходит только итог вызова — сбой любого вида возвращается
     результатом с isError и текстом отказа в content.
 исключения CallerServers.current() — реализация приложения не узнала
     вызывающего; список инструментов и вызов для него отказывают.
-исключения RoleTools._server() — наследник не собрал порт пары.
+исключения RoleTools._server() — наследник не собрал порт ключа.
 """
 
 from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from collections.abc import Mapping, Sequence
-from typing import Any, Protocol
+from collections.abc import Hashable, Mapping, Sequence
+from typing import Any, Generic, Protocol, TypeVar
 
 import mcp_types as mt
 from fastmcp.resources.template import expand_uri_template, match_uri_template
@@ -55,6 +56,8 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
+
+ToolsKey = TypeVar("ToolsKey", bound=Hashable)
 
 
 class McpReplies:
@@ -199,25 +202,26 @@ class McpTool(Tool):
         return self._replies.of(outcome)
 
 
-class RoleTools(ABC):
-    """Базовый класс инструментов порта на пару «роли, профиль»: McpTool по
-    карточкам порта строятся один раз на пару и дальше отдаются готовыми.
+class RoleTools(ABC, Generic[ToolsKey]):
+    """Базовый класс инструментов порта на ключ ToolsKey: McpTool по
+    карточкам порта строятся один раз на ключ и дальше отдаются готовыми.
 
-    Наследуют RoleToolServers сервиса boba-mcp и ChatTools ретранслятора
-    чата: наследник решает, какой порт ToolServer видит пара (_server).
+    Наследуют RoleToolServers сервиса boba-mcp (ключ — роли, профиль и
+    признак клиента, который запечатывает соединения) и ChatTools
+    ретранслятора чата (ключ — роли и профиль): наследник решает, какой порт
+    ToolServer видит ключ (_server).
     """
 
     def __init__(self) -> None:
-        self._tools: dict[tuple[frozenset[str], str], dict[str, McpTool]] = {}
+        self._tools: dict[ToolsKey, dict[str, McpTool]] = {}
 
-    def tools(self, roles: frozenset[str], profile: str) -> Mapping[str, McpTool]:
-        """Инструменты пары по именам."""
-        key = (roles, profile)
+    def tools(self, key: ToolsKey) -> Mapping[str, McpTool]:
+        """Инструменты ключа key по именам."""
         offered = self._tools.get(key)
         if offered is not None:
             return offered
 
-        server = self._server(roles, profile)
+        server = self._server(key)
         offered = {}
         for card in server.tools():
             offered[card.name] = McpTool(card, server)
@@ -227,8 +231,8 @@ class RoleTools(ABC):
         return offered
 
     @abstractmethod
-    def _server(self, roles: frozenset[str], profile: str) -> ToolServer:
-        """Порт инструментов, доступных паре."""
+    def _server(self, key: ToolsKey) -> ToolServer:
+        """Порт инструментов, доступных ключу key."""
 
 
 class CallerServers(Protocol):

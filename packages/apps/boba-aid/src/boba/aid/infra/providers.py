@@ -251,13 +251,14 @@ def call_sealing(
     )
     ttl = timedelta(seconds=config.seal_ttl_sec)
 
-    return CallSealing(connections, contexts, ttl)
+    return CallSealing(connections, ttl)
 
 
-def mcp_relay(
+def mcp_relay(  # noqa: PLR0913 — ретранслятор собирается всеми входами процесса
     registrations: Annotated[McpRegistrations, Depends(mcp_registrations)],
     servers: Annotated[McpServers, Depends(mcp_servers)],
     sealing: Annotated[CallSealing, Depends(call_sealing)],
+    contexts: Annotated[CallContexts, Depends(runtime.call_contexts)],
     registry: Annotated[ToolRegistry, Depends(runtime.tool_registry)],
     runs: Annotated[Runs, Depends(runtime.runs)],
 ) -> McpRelay:
@@ -265,7 +266,7 @@ def mcp_relay(
     chat — собственные инструменты чата из реестра."""
     chat = ChatTools(registry, runs)
 
-    return McpRelay(registrations, servers, sealing, chat)
+    return McpRelay(registrations, servers, sealing, contexts, chat)
 
 
 def agent_launcher(

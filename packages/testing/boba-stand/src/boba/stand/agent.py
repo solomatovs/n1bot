@@ -32,7 +32,7 @@ from boba.agent.profile import (
 from boba.agent.records import PermissionMode
 from boba.agent.session import Session
 from boba.agent.skills import Skill
-from boba.connections.sealed import SealedParamSchema
+from boba.connections.sealed import ConnectionOffer, SealedParamSchema
 from boba.history.jsonl import JsonlHistoryStore
 from boba.llm.chat import ChatModel
 from boba.llm.http.ollama import OllamaProvider
@@ -209,7 +209,11 @@ class StandTools(ToolServer):
         "properties": {
             StandArg.CONNECTION.value: {
                 "type": "string",
-                **SealedParamSchema().declared(StandKind.POSTGRES.value),
+                **SealedParamSchema().declared(
+                    ConnectionOffer(
+                        kind=StandKind.POSTGRES.value, sealed=True, names={}
+                    )
+                ),
             },
             StandArg.STATEMENT.value: {"type": "string"},
         },

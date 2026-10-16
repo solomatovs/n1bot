@@ -319,7 +319,7 @@ class TestAgentTurn:
 
         service_log = _lines_since(companion, service_since)
         assert any(
-            "sealed connection in connection (postgres)" in line for line in service_log
+            "connection in connection (postgres)" in line for line in service_log
         ), "\n".join(service_log[-40:])
 
         assert not app.complaints(since), app.complaints(since)

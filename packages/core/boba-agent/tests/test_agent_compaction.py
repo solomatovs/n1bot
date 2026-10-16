@@ -414,19 +414,21 @@ class TestBreakers:
         self, plain_server: FakeServer, plain_agents: StandAgents, failure: SummaryName
     ) -> None:
         """Каждая неудача пересказа считается; после трёх подряд попытки
-        прекращаются, и ход, дошедший до предела, кончается названным исходом."""
+        прекращаются, и ход, дошедший до предела, кончается названным исходом.
+
+        Шаг цикла — четверть порога сжатия: два раунда занимают не больше его
+        половины, поэтому порог переходится не раньше третьего раунда, когда
+        пересказу уже есть что сжимать, а три попытки остаются ниже предела."""
         sink = Collected()
+        profile = plain_agents.profile(Protocol.OPENAI)
+        settings = CompactionSettings(compact_at=0.3)
+        size = settings.threshold(profile) * profile.chars_per_token // 4
         served = Served(
-            plain_agents.agent(
-                plain_agents.profile(Protocol.OPENAI),
-                sink,
-                tools=StandTools(),
-                compaction=CompactionSettings(compact_at=0.3),
-            )
+            plain_agents.agent(profile, sink, tools=StandTools(), compaction=settings)
         )
         session = await served.open(SESSION, resume=False)
 
-        text = f"{failure.value} {FailureName.NO_USAGE.value} {loop(2_700)}"
+        text = f"{failure.value} {FailureName.NO_USAGE.value} {loop(size)}"
         served.agent.queue.enqueue(prompt(text))
         await served.agent.settled()
         await served.close()

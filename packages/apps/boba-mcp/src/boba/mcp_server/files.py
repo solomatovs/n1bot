@@ -49,7 +49,7 @@ from boba.runtime.storage import (
 from boba.toolkit.channels import JournalChannels
 from boba.toolkit.failure import ValidationText
 from boba.toolkit.result import ContentMime, ErrorResult
-from boba.toolkit.wire import FilesFeature, JournalRead, RequestFields
+from boba.toolkit.wire import FilesFeature, JournalRead
 from boba.toolrun.streams import CallJournals
 
 __all__ = ["FileRoutes", "JournalRoutes", "RouteCallers", "ServerRefusal"]
@@ -340,7 +340,6 @@ class FileRoutes:
             path=self._published,
             upload=upload_tool,
             workspace=WorkspaceMount.path(),
-            scope=RequestFields.SCOPE,
         )
 
     def address(self, scope: str, name: str) -> str:

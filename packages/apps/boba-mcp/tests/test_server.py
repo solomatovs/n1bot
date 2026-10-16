@@ -16,8 +16,9 @@ import secrets
 import socket
 import time
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 from uuid import NAMESPACE_URL, uuid5
 
 import httpx
@@ -25,6 +26,7 @@ import mcp_types as mt
 import pytest
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
+from mcp.client.extension import advertise
 from mcp.client.session import IncomingMessage
 from mcp.server.auth.provider import TokenError
 from mcp.shared.auth import JWT_BEARER_GRANT_TYPE, OAuthClientInformationFull
@@ -41,7 +43,13 @@ from service_stand import (
 )
 
 from boba.auth.proxy import ProxyAssertions
-from boba.connections.sealed import SealFeature
+from boba.connections.sealed import (
+    ConnectionOffer,
+    ConnectionSeal,
+    SealedConnection,
+    SealedParamSchema,
+    SealFeature,
+)
 from boba.identity.session import SignInProvider
 from boba.identity.signin import SignInMetadata
 from boba.mcp_adapter import JournalUris
@@ -57,7 +65,7 @@ from boba.mcp_server.server import (
     RunLimits,
     StreamReadTool,
 )
-from boba.toolkit.calls import CallViews
+from boba.toolkit.calls import CallViews, SchemaMark
 from boba.toolkit.channels import ToolChannel
 from boba.toolkit.dag import (
     CallDag,
@@ -70,9 +78,9 @@ from boba.toolkit.wire import (
     FilesFeature,
     JournalFeature,
     JournalRead,
-    RequestFields,
     ResultWire,
 )
+from boba.toolrun.call_id import CallFields
 from boba.toolrun.hosted import ToolSchema
 from boba.toolrun.stream_calls import WorkflowNodeCall, WorkflowTool
 
@@ -147,10 +155,10 @@ class TestToolList:
         async with _client(url, dev_token) as client:
             listed = await client.list_tools()
 
+        # клиенту без запечатывания endpoint соединений не предлагает
         names = sorted(tool.name for tool in listed)
         expected = [
             "fake_collect",
-            "fake_connection_host",
             "fake_echo",
             "fake_emit",
             "fake_progress",
@@ -180,6 +188,28 @@ class TestToolList:
         properties = echo.input_schema["properties"]
         if "cfg" in properties:
             raise AssertionError("the injected config is not shown to the client")
+
+    async def test_thread_parameter_is_marked_in_the_tools_of_a_workspace(
+        self, stand: ServiceStand, url: str, dev_token: str
+    ) -> None:
+        """Инструменты, которые работают в workspace, и связка несут
+        необязательный thread_id с пометкой x-boba-thread; операция чтения
+        журнала области не открывает и параметра не несёт."""
+        async with _client(url, dev_token) as client:
+            listed = await client.list_tools()
+
+        schemas = {tool.name: tool.input_schema for tool in listed}
+        for name in ("fake_scope", "fake_echo", WorkflowTool.NAME, FileUploadTool.NAME):
+            marked = SchemaMark.THREAD.params(schemas[name])
+            if marked != {CallFields.THREAD: True}:
+                raise AssertionError(f"{name} carries the thread: {schemas[name]}")
+
+            if CallFields.THREAD in schemas[name].get("required", []):
+                raise AssertionError(f"the thread of {name} is optional")
+
+        journal = SchemaMark.THREAD.params(schemas[StreamReadTool.NAME])
+        if journal:
+            raise AssertionError(f"the journal read has no thread: {journal}")
 
     async def test_weaker_role_sees_fewer_tools(
         self, stand: ServiceStand, url: str, weak_token: str
@@ -240,12 +270,12 @@ class TestCall:
     async def test_scope_of_the_client_is_the_scope_of_the_call(
         self, stand: ServiceStand, url: str, dev_token: str
     ) -> None:
-        """Область из _meta доходит до тела: вызовы одного разговора видят
-        одни и те же файлы."""
+        """Тред из аргумента thread_id доходит до тела областью вызова:
+        вызовы одного разговора видят одни и те же файлы."""
         scope = "0b6f6f0e-51d4-4a4b-9f6c-1d6c5f1f7a10"
         async with _client(url, dev_token) as client:
             result = await client.call_tool_mcp(
-                "fake_scope", {}, meta={RequestFields.SCOPE: scope}
+                "fake_scope", {CallFields.THREAD: scope}
             )
 
         if _text(result) != scope:
@@ -268,7 +298,7 @@ class TestCall:
     ) -> None:
         async with _client(url, dev_token) as client:
             result = await client.call_tool_mcp(
-                "fake_scope", {}, meta={RequestFields.SCOPE: "a/b"}
+                "fake_scope", {CallFields.THREAD: "a/b"}
             )
 
         if not result.is_error:
@@ -281,11 +311,13 @@ class TestCall:
         scope = "0b6f6f0e-51d4-4a4b-9f6c-1d6c5f1f7a11"
 
         async def slept(name: str) -> Any:
-            arguments = {"seconds": 1.0, "marker": str(tmp_path / name)}
+            arguments = {
+                "seconds": 1.0,
+                "marker": str(tmp_path / name),
+                CallFields.THREAD: scope,
+            }
             async with _client(url, dev_token) as client:
-                return await client.call_tool_mcp(
-                    "fake_sleep", arguments, meta={RequestFields.SCOPE: scope}
-                )
+                return await client.call_tool_mcp("fake_sleep", arguments)
 
         first, second = await asyncio.gather(slept("first"), slept("second"))
         if first.is_error or second.is_error:
@@ -315,10 +347,6 @@ class TestCall:
         ):
             if feature not in declared:
                 raise AssertionError(f"{feature} is declared: {sorted(declared)}")
-
-        files = FilesFeature.model_validate(declared[FilesFeature.ID])
-        if files.scope != RequestFields.SCOPE:
-            raise AssertionError(f"the files extension names the scope key: {files}")
 
         nested = NestedCallsFeature.model_validate(declared[NestedCallsFeature.ID])
         if nested != CallDag().feature():
@@ -596,7 +624,7 @@ class TestProgress:
 
         schema = next(tool for tool in listed if tool.name == "fake_progress")
         properties = sorted(schema.input_schema["properties"])
-        if properties != ["intent", "pause", "steps"]:
+        if properties != ["intent", "pause", "steps", CallFields.THREAD]:
             raise AssertionError(f"the model sees its own arguments: {properties}")
 
 
@@ -1598,8 +1626,7 @@ class TestWorkspaceFiles:
         async with _client(url, dev_token) as client:
             result = await client.call_tool_mcp(
                 FileUploadTool.NAME,
-                {"name": "report.csv"},
-                meta={RequestFields.SCOPE: self.SCOPE},
+                {"name": "report.csv", CallFields.THREAD: self.SCOPE},
             )
             declared = client.session.server_capabilities
 
@@ -1615,10 +1642,163 @@ class TestWorkspaceFiles:
             "path": "/mcp/service/files",
             "upload": FileUploadTool.NAME,
             "workspace": "/workspace",
-            "scope": RequestFields.SCOPE,
         }
         if files != expected_files:
             raise AssertionError(f"the files extension is declared: {files}")
+
+
+class TestConnectionOffers:
+    """Предложение соединений по правилам endpoint'а (таблица 6.8) на
+    настоящем сервере: схема параметра-соединения по признаку клиента и роли,
+    имя заданного соединения сервера доходит до тела, запечатанное значение
+    от того, кому предложен только сервер, отвергается. Клиент без
+    расширений — тестовый клиент fastmcp без com.boba/connection-seal."""
+
+    TOOL: ClassVar[str] = "fake_connection_host"
+
+    @pytest.fixture
+    async def offers(self, stand: ServiceStand) -> AsyncIterator[str]:
+        async with stand.serving():
+            yield stand.url(ServiceStand.OFFERS)
+
+    async def _token(self, stand: ServiceStand, analyst: bool) -> str:
+        if analyst:
+            return await stand.analyst_token(ServiceStand.OFFERS)
+
+        return await stand.dev_token(ServiceStand.OFFERS)
+
+    def _client(self, url: str, token: str, sealing: bool) -> Client[Any]:
+        transport = StreamableHttpTransport(url, auth=token)
+        if not sealing:
+            return Client(transport)
+
+        return Client(transport, extensions=[advertise(SealFeature.ID)])
+
+    @pytest.mark.parametrize(
+        ("sealing", "analyst", "sealed", "names"),
+        [
+            (True, True, True, [ServiceStand.DWH]),
+            (True, False, True, []),
+            (False, True, False, [ServiceStand.DWH]),
+        ],
+        ids=["sealing-analyst-both", "sealing-dev-sealed", "plain-analyst-server"],
+    )
+    async def test_schema_of_the_connection_follows_the_offer(  # noqa: PLR0913 — случай таблицы 6.8
+        self,
+        stand: ServiceStand,
+        offers: str,
+        sealing: bool,
+        analyst: bool,
+        sealed: bool,
+        names: list[str],
+    ) -> None:
+        token = await self._token(stand, analyst)
+        async with self._client(offers, token, sealing) as client:
+            listed = await client.list_tools()
+
+        tool = next(tool for tool in listed if tool.name == self.TOOL)
+        declared = tool.input_schema["properties"]["connection"]
+        offer = SealedParamSchema().offers(tool.input_schema)["connection"]
+        if offer != ConnectionOffer(
+            kind="postgres", sealed=sealed, names=dict.fromkeys(names, "")
+        ):
+            raise AssertionError(f"the parameter follows the offer: {declared}")
+
+        if declared[SchemaMark.CONNECTION.value] != "postgres":
+            raise AssertionError(f"the parameter is marked with its kind: {declared}")
+
+        both = sealed and bool(names)
+        if both != (SchemaMark.ANY_OF.value in declared):
+            raise AssertionError(f"both sources come as anyOf: {declared}")
+
+        for name in names:
+            if name not in declared["description"]:
+                raise AssertionError(f"the description names {name}: {declared}")
+
+    async def test_nothing_offered_hides_the_tool(
+        self, stand: ServiceStand, offers: str
+    ) -> None:
+        token = await self._token(stand, False)
+        async with self._client(offers, token, False) as client:
+            listed = await client.list_tools()
+
+        names = [tool.name for tool in listed]
+        if self.TOOL in names:
+            raise AssertionError(f"a tool with nothing to offer is hidden: {names}")
+
+        if "fake_echo" not in names:
+            raise AssertionError(f"tools without connections stay: {names}")
+
+    @pytest.mark.parametrize("sealing", [True, False], ids=["sealing", "plain"])
+    async def test_server_connection_reaches_the_body(
+        self, stand: ServiceStand, offers: str, sealing: bool
+    ) -> None:
+        token = await self._token(stand, True)
+        async with self._client(offers, token, sealing) as client:
+            result = await client.call_tool_mcp(
+                self.TOOL, {"connection": ServiceStand.DWH}
+            )
+
+        if result.is_error:
+            raise AssertionError(f"the server connection is taken: {result}")
+
+        if _text(result) != "dwh.local|dwh":
+            raise AssertionError(f"the body gets the server profile: {result}")
+
+    async def test_sealed_value_is_refused_when_only_the_server_is_offered(
+        self, stand: ServiceStand, offers: str
+    ) -> None:
+        token = await self._token(stand, True)
+        async with self._client(offers, token, False) as client:
+            capabilities = client.session.server_capabilities
+            if capabilities is None or capabilities.extensions is None:
+                raise AssertionError("the server declares its extensions")
+
+            key = SealFeature.model_validate(
+                capabilities.extensions[SealFeature.ID]
+            ).key
+            profile = {
+                "kind": "postgres",
+                "host": "db.local",
+                "dbname": "x",
+                "auth": {"method": "trust", "user": "u"},
+            }
+            value = ConnectionSeal(key).seal(
+                SealedConnection(
+                    name="mine",
+                    expires_at=datetime.now(UTC) + timedelta(minutes=5),
+                    profile=profile,
+                )
+            )
+            result = await client.call_tool_mcp(self.TOOL, {"connection": value})
+
+        text = str(result.content)
+        if not result.is_error:
+            raise AssertionError(f"the sealed value is refused: {result}")
+
+        expected = "sealed connections are not offered to this caller, use one of: dwh"
+        if expected not in text:
+            raise AssertionError(f"the refusal names the offer: {text}")
+
+    async def test_plain_client_sees_server_names_and_the_thread(
+        self, stand: ServiceStand, offers: str
+    ) -> None:
+        """Клиент без расширений видит enum имён сервера и параметр thread_id,
+        а список инструментов помечен личным."""
+        token = await self._token(stand, True)
+        async with self._client(offers, token, False) as client:
+            listed = await client.list_tools_mcp()
+
+        if listed.cache_scope != "private" or listed.ttl_ms != 0:
+            raise AssertionError(f"the list is private and not cached: {listed}")
+
+        tool = next(tool for tool in listed.tools if tool.name == self.TOOL)
+        properties = tool.input_schema["properties"]
+        if properties["connection"]["enum"] != [ServiceStand.DWH]:
+            raise AssertionError(f"the server names are an enum: {properties}")
+
+        if SchemaMark.THREAD.value not in properties[CallFields.THREAD]:
+            raise AssertionError(f"the thread parameter is shown: {properties}")
 
 
 class TestJournalFile:

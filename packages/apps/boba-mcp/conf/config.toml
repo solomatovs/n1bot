@@ -9,6 +9,7 @@
     stream_journal  = "${stream_journal}"
     mcp             = "${mcp}"
     storage         = "${storage}"
+    connections     = "${connections}"
     auth            = ["${auth.proxy}"]
 
 [keys]
@@ -28,9 +29,17 @@
     [mcp.endpoints.base]
         roles = ["*"]
         tools = ["canvas_open", "send_file", "diagram_save"]
+        [[mcp.endpoints.base.connections]]
+            roles  = ["*"]
+            client = "sealing"
+            offer  = ["sealed"]
     [mcp.endpoints.general]
         roles = ["*"]
         tools = ["*"]
+        [[mcp.endpoints.general.connections]]
+            roles  = ["*"]
+            client = "sealing"
+            offer  = ["sealed"]
     [mcp.endpoints.search]
         roles = ["*"]
         tools = [
@@ -48,9 +57,15 @@
             "web_fetch_page",
             "web_grep_page",
         ]
+        [[mcp.endpoints.search.connections]]
+            roles  = ["*"]
+            client = "sealing"
+            offer  = ["sealed"]
 
     [mcp.clients.boba-chat]
         secret = "${keys.mcp_client}"
+
+[connections]
 
 [http]
     dump                      = { enable = false, path = "" }

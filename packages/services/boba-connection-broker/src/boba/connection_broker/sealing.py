@@ -1,11 +1,16 @@
-"""Запечатывание соединений пользователя в аргументах вызова инструмента
-сервера MCP: имя соединения заменяется профилем, запечатанным ключом
-сервера из объявленных им возможностей (SealFeature); неизвестное или
-невыданное соединение — отказ с причиной.
+"""Запечатывание соединений в аргументах вызова инструмента сервера MCP на
+стороне клиента.
+
+Какие аргументы — соединения, какого вида и что сервер предлагает на их
+месте, клиент читает из схемы инструмента (SealedParamSchema.offers): имя
+соединения пользователя заменяется профилем, запечатанным ключом сервера из
+его возможностей (SealFeature), имя заданного соединения сервера уходит как
+есть. Соединение пользователя по виду и имени берёт ArmedConnections в
+контексте вызова, который ставит вызывающий.
 
 Ошибки:
-RefusalError — соединение неизвестно, не выдано пользователю или сервер
-    инструмента не принимает соединений.
+RefusalError — соединение неизвестно или не выдано пользователю либо сервер
+    инструмента не принимает соединений; kind из ConnectionRefusal.
 ToolConfigError — соединение не годится инструменту.
 ConnectionStoreError — таблица соединений недоступна.
 KerberosError — билет к соединению не выпущен.
@@ -29,7 +34,6 @@ from boba.connections.sealed import (
     SealFeature,
     SealKey,
 )
-from boba.identity.context import CallContext, CallContexts
 from boba.identity.errors import RefusalError
 from boba.toolkit.failure import ValidationText
 
@@ -50,20 +54,20 @@ class McpServerInfo:
 class CallSealing:
     """Запечатывание соединений в аргументах вызова инструмента сервера MCP:
     имя соединения пользователя заменяется профилем, запечатанным ключом
-    сервера, либо вызов получает отказ.
+    сервера, имя заданного соединения сервера уходит как есть, иначе вызов
+    получает отказ.
 
-    Создаётся провайдером call_sealing чата; зовёт ретранслятор mcp/message.
-    Какие аргументы — соединения и какого вида, читает из схемы
-    инструмента (SealedParamSchema); ключ сервера — из объявленных им
-    возможностей (SealFeature); соединение пользователя по виду и имени
-    берёт ArmedConnections в контексте вызывающего.
+    Создаётся провайдером ретранслятора чата (call_sealing) и стендом без
+    агента (SealingStand); зовут его ретранслятор mcp/message и стенд в
+    контексте вызывающего. Что предложено на месте параметра, читает из
+    схемы инструмента (SealedParamSchema.offers): параметр без ветки
+    запечатанного значения не трогается; имя, которое есть и у
+    пользователя, и среди заданных соединений сервера, — соединение
+    пользователя, с предупреждением в лог.
     """
 
-    def __init__(
-        self, connections: ArmedConnections, contexts: CallContexts, ttl: timedelta
-    ) -> None:
+    def __init__(self, connections: ArmedConnections, ttl: timedelta) -> None:
         self._connections = connections
-        self._contexts = contexts
         self._ttl = ttl
         self._declared = SealedParamSchema()
 
@@ -73,7 +77,6 @@ class CallSealing:
         arguments: Mapping[str, Any],
         tool_schema: Mapping[str, Any],
         server: McpServerInfo,
-        context: CallContext,
     ) -> dict[str, Any]:
         """Аргументы вызова tool с запечатанными соединениями на месте имён;
         у инструмента без параметров-соединений — как есть. Значение не
@@ -87,28 +90,46 @@ class CallSealing:
         KerberosError — билет к соединению не выпущен.
         """
         updated: dict[str, Any] = dict(arguments)
-        kinds = self._declared.kinds_of(tool_schema)
-        if not kinds:
-            return updated
+        offers = self._declared.offers(tool_schema)
+        for param, offer in offers.items():
+            name = updated.get(param)
+            if not isinstance(name, str):
+                continue
 
-        seal = ConnectionSeal(self._key(server))
-        with self._contexts.applied(context):
-            for param, kind in kinds.items():
-                name = updated.get(param)
-                if not isinstance(name, str):
-                    continue
+            if not offer.sealed:
+                continue
 
+            seal = ConnectionSeal(self._key(server))
+            kind = offer.kind
+            try:
                 sealed = await self._connections.sealed(kind, name, self._ttl)
-                updated[param] = seal.seal(sealed)
+            except RefusalError as exc:
+                if exc.kind != ConnectionRefusal.NOT_VISIBLE:
+                    raise
 
-                logger.info(
-                    "sealing: connection %s of kind %s sealed in %s of %s for %s",
+                if name not in offer.names:
+                    raise
+
+                continue
+
+            if name in offer.names:
+                logger.warning(
+                    "sealing: connection %s of kind %s is both yours and a server "
+                    "connection of %s, yours is used",
                     name,
                     kind,
-                    param,
                     tool,
-                    context.subject.login,
                 )
+
+            updated[param] = seal.seal(sealed)
+
+            logger.info(
+                "sealing: connection %s of kind %s sealed in %s of %s",
+                name,
+                kind,
+                param,
+                tool,
+            )
 
         return updated
 

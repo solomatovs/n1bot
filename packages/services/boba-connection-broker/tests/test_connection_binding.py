@@ -27,13 +27,18 @@ from probe_stand import (
 from boba.connection_broker.sealed import SealedConnectionParams
 from boba.connections.base import ConnectionBase
 from boba.connections.marks import ConnectionRefusal
-from boba.connections.sealed import SealedParamSchema, SealFeature, SealKeys
+from boba.connections.sealed import (
+    ConnectionOffer,
+    SealedParamSchema,
+    SealFeature,
+    SealKeys,
+)
 from boba.stand.sealing import SealingStand
 from boba.stand_core.context import CallStand
 from boba.toolkit.dag import DagNode, NodeOutcome, ToolCard, ToolServer
 from boba.toolkit.facade import UserConnection
 from boba.toolkit.result import ErrorResult, TableResult
-from boba.toolrun.injected import ToolConfigError
+from boba.toolrun.injected import StaticConfig, ToolConfigError
 
 pytestmark = pytest.mark.anyio
 
@@ -96,8 +101,11 @@ class TestSchemaShownToTheModel:
             raise AssertionError(f"сервер ждёт строку: {declared}")
         if declared["contentMediaType"] != "application/jose":
             raise AssertionError(f"содержимое строки — JWE: {declared}")
-        if SealedParamSchema().kind_of(declared) != "probe":
-            raise AssertionError(f"схема профиля называет вид: {declared}")
+        offers = SealedParamSchema().offers(served["probe_query"].parameters)
+        if offers["connection"] != ConnectionOffer(kind="probe", sealed=True, names={}):
+            raise AssertionError(
+                f"схема предлагает запечатанный профиль вида: {offers}"
+            )
         if "probe" not in declared["description"]:
             raise AssertionError(f"описание называет вид: {declared}")
 
@@ -256,7 +264,7 @@ class TestDeclarationIsChecked:
 
         with pytest.raises(ToolConfigError, match="not a connection model"):
             SealedConnectionParams(
-                SealKeys(), lambda: TYPES, call_stand.contexts
+                SealKeys(), lambda: TYPES, call_stand.contexts, {}, StaticConfig()
             ).bind_all([tool])
 
     def test_type_package_must_be_installed(self, call_stand: CallStand) -> None:
@@ -272,5 +280,5 @@ class TestDeclarationIsChecked:
 
         with pytest.raises(ToolConfigError, match="not installed"):
             SealedConnectionParams(
-                SealKeys(), lambda: TYPES, call_stand.contexts
+                SealKeys(), lambda: TYPES, call_stand.contexts, {}, StaticConfig()
             ).bind_all([tool])

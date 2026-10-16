@@ -1,8 +1,12 @@
-"""Подпись вызова в схеме инструмента.
+"""Поля приложения в схеме инструмента: подпись вызова и тред.
 
 Подпись (ToolIntent) заполняет LLM: одна строка о том, что делает вызов; без
 неё шаг ленты называется именем инструмента. Тело инструмента про поле не
-знает — его снимает из аргументов вызова обвязка ToolRunLogger.
+знает — его снимает из аргументов вызова обвязка ToolRunLogger. Тред —
+необязательный параметр с пометкой SchemaMark.THREAD у инструментов, которые
+работают в workspace треда: наш клиент прячет его от модели и подставляет
+тред сам, чужой клиент показывает модели. Сервер берёт из него область
+вызова; телу он не уходит — аргументы тела собираются по его схеме.
 
 Ошибки: своих не выпускает.
 """
@@ -10,23 +14,34 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Annotated
+from typing import Annotated, ClassVar
 
 from pydantic import BaseModel, Field
+from pydantic.fields import FieldInfo
 
-from boba.toolkit.calls import ToolIntent
+from boba.toolkit.calls import SchemaMark, ToolIntent
 from boba.toolrun.hosted import HostedTool, ToolSchema
 
 __all__ = ["CallFields"]
 
 
 class CallFields:
-    """Ставит поле подписи вызова в схему инструмента.
+    """Ставит поля приложения — подпись вызова и тред — в схему инструмента.
 
-    Создаётся цепочкой обвязок (ToolChain) и инструментом-связкой
-    (WorkflowTool): первая добавляет поле в схемы инструментов одним
-    проходом, второй — в схему своего вызова.
+    Создаётся цепочкой обвязок (ToolChain), источником значений контекста
+    (CallContextValues), инструментом-связкой (WorkflowTool) и операцией
+    загрузки файла сервера: первые два добавляют поля в схемы инструментов
+    хоста, остальные — в схему своего вызова. Сервер читает тред вызова по
+    имени THREAD.
     """
+
+    THREAD: ClassVar[str] = "thread_id"
+
+    THREAD_DESCRIPTION: ClassVar[str] = (
+        "Identifier of the current chat thread. Calls with the same thread_id "
+        "share files in the workspace, so use one value for all calls of a "
+        "thread. Omit it to work in your personal workspace."
+    )
 
     def __init__(self) -> None:
         self._schemas = ToolSchema()
@@ -38,12 +53,29 @@ class CallFields:
 
     def extended(self, schema: type[BaseModel]) -> type[BaseModel]:
         """Схема с полем подписи вызова; уже подписанная — как есть."""
-        if ToolIntent.NAME in schema.model_fields:
-            return schema
-
         # необязательное: инструмент без своих аргументов модель зовёт с {},
         # и обязательная подпись роняла бы вызов. Потолок длины держит показ
         declared = Field(description=ToolIntent.DESCRIPTION)
-        fields = {ToolIntent.NAME: (Annotated[str, declared], "")}
+
+        return self._added(schema, ToolIntent.NAME, declared)
+
+    def threaded(self, schema: type[BaseModel]) -> type[BaseModel]:
+        """Схема с необязательным параметром треда; уже с ним — как есть."""
+        declared = Field(
+            description=self.THREAD_DESCRIPTION,
+            json_schema_extra={SchemaMark.THREAD.value: True},
+        )
+
+        return self._added(schema, self.THREAD, declared)
+
+    def _added(
+        self, schema: type[BaseModel], name: str, declared: FieldInfo
+    ) -> type[BaseModel]:
+        """Схема с необязательной строкой name, объявленной declared; уже с
+        ней — как есть."""
+        if name in schema.model_fields:
+            return schema
+
+        fields = {name: (Annotated[str, declared], "")}
 
         return self._schemas.rebuild(schema, fields, ())

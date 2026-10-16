@@ -31,6 +31,7 @@ import mcp_types as mt
 from acp.exceptions import RequestError
 from acp.experimental.v2 import schema
 from fastmcp.apps.config import AppConfig
+from fastmcp.utilities.json_schema import compress_schema
 from mcp.server.connection import Connection, NotifyOnlyOutbound
 from mcp.server.context import ServerRequestContext
 from mcp.server.lowlevel import Server
@@ -48,7 +49,13 @@ from boba.aid.infra.session import LiveSignIn
 from boba.cancellation import RunCancellation, StopReason
 from boba.connection_broker.sealing import CallSealing, McpServerInfo
 from boba.connections.stored import ConnectionStoreError
-from boba.identity.context import CallContext, HumanInitiator, Scope, Subject
+from boba.identity.context import (
+    CallContext,
+    CallContexts,
+    HumanInitiator,
+    Scope,
+    Subject,
+)
 from boba.identity.errors import AuthenticationError, RefusalError
 from boba.identity.run import Runs
 from boba.kerberos import KerberosError
@@ -59,6 +66,7 @@ from boba.mcp_client.client import (
     McpServers,
     McpToolPort,
 )
+from boba.toolkit.calls import SchemaMark
 from boba.toolkit.chain import StreamPlanError
 from boba.toolkit.dag import DagNode, NestedCallsFeature, ToolServer, ToolServersError
 from boba.toolkit.failure import InvokeErrorKind, ValidationText
@@ -301,7 +309,6 @@ class ChatToolPort(McpToolPort):
     async def call(
         self,
         params: mt.CallToolRequestParams,
-        scope: str | None,
         progress: Callable[[mt.ProgressNotificationParams], Awaitable[None]] | None,
     ) -> mt.CallToolResult | mt.InputRequiredResult:
         tool = self._tools[params.name]
@@ -325,7 +332,7 @@ class ChatToolPort(McpToolPort):
         )
 
 
-class ChatTools(RoleTools):
+class ChatTools(RoleTools[tuple[frozenset[str], str]]):
     """Собственные инструменты чата (connection_list, connection_search) как
     сервер chat, объявленный агенту, на базе RoleTools.
 
@@ -347,11 +354,12 @@ class ChatTools(RoleTools):
     def port(self, context: CallContext) -> ChatToolPort:
         """Порт инструментов вызывающего context."""
         subject = context.subject
-        tools = self.tools(subject.roles, subject.profile)
+        tools = self.tools((subject.roles, subject.profile))
 
         return ChatToolPort(tools, context, self._runs)
 
-    def _server(self, roles: frozenset[str], profile: str) -> ToolServer:
+    def _server(self, key: tuple[frozenset[str], str]) -> ToolServer:
+        roles, profile = key
         tools = self._registry.for_session(roles, profile)
 
         return self._registry.server(tools, self._calls)
@@ -370,12 +378,15 @@ class McpRelay:
     отвечает его lowlevel Server; свои здесь — tools/list и tools/call.
     Сервер профиля зовётся портом McpServers от имени пользователя вкладки,
     сервер chat — собственными инструментами чата в процессе (ChatTools).
-    Соединения в аргументах запечатывает CallSealing,
-    у инструмента со вложенными вызовами (расширение NestedCallsFeature
-    сервера) — и в аргументах каждого узла по схеме его инструмента. Ход
-    вызова уходит агенту уведомлением notifications/progress, ответ
-    сервера — как есть. Инструменты только для интерфейса (_meta.ui.visibility
-    без "model") агенту не видны и не вызываются.
+    Соединения в аргументах запечатывает CallSealing в контексте вызова
+    регистрации, у инструмента со вложенными вызовами (расширение
+    NestedCallsFeature сервера) — и в аргументах каждого узла по схеме его
+    инструмента. Ход вызова уходит агенту уведомлением
+    notifications/progress, ответ сервера — как есть. Параметры треда
+    (пометка SchemaMark.THREAD) агент в списке не видит: на вызове
+    ретранслятор ставит в них тред регистрации. Инструменты только для
+    интерфейса (_meta.ui.visibility без "model") агенту не видны и не
+    вызываются.
     """
 
     UI_META: ClassVar[str] = "ui"
@@ -386,11 +397,13 @@ class McpRelay:
         registrations: McpRegistrations,
         servers: McpServers,
         sealing: CallSealing,
+        contexts: CallContexts,
         chat: ChatTools,
     ) -> None:
         self._registrations = registrations
         self._servers = servers
         self._sealing = sealing
+        self._contexts = contexts
         self._chat = chat
         self._names = McpToolNames()
         self._active: set[tuple[str, str]] = set()
@@ -479,7 +492,12 @@ class McpRelay:
         registration = self._registrations.of(server_id)
         context = registration.context()
         port = await self._port(registration, context)
-        tools = list(self._model_tools(port, registration.server))
+
+        tools: list[mt.Tool] = []
+        for tool in self._model_tools(port, registration.server):
+            threads = list(SchemaMark.THREAD.params(tool.input_schema))
+            schema = compress_schema(dict(tool.input_schema), prune_params=threads)
+            tools.append(tool.model_copy(update={"input_schema": schema}))
 
         return mt.ListToolsResult(tools=tools)
 
@@ -487,8 +505,8 @@ class McpRelay:
         self, ctx: ServerRequestContext[str], params: mt.CallToolRequestParams
     ) -> mt.CallToolResult | mt.InputRequiredResult:
         """Вызов инструмента для модели: соединения запечатаны, у вызова со
-        вложенными вызовами — и в узлах, тред — областью вызова, отказ
-        запечатывания — isError с причиной.
+        вложенными вызовами — и в узлах, тред регистрации — в параметрах с
+        пометкой SchemaMark.THREAD, отказ запечатывания — isError с причиной.
 
         Ошибки:
         MCPError — инструмента у сервера нет либо он не для модели.
@@ -510,14 +528,18 @@ class McpRelay:
             )
             raise MCPError(code=mt.INVALID_PARAMS, message=msg)
 
-        asked: Mapping[str, Any] = {}
+        asked: dict[str, Any] = {}
         if params.arguments is not None:
-            asked = params.arguments
+            asked = dict(params.arguments)
+
+        for name in SchemaMark.THREAD.params(tool.input_schema):
+            asked[name] = registration.thread_id
 
         full = self._names.full(registration.server, tool.name)
         server = McpServerInfo(name=registration.server, features=port.features())
         try:
-            arguments = await self._sealed(port, tool, asked, offered, server, context)
+            with self._contexts.applied(context):
+                arguments = await self._sealed(port, tool, asked, offered, server)
         except (RefusalError, ToolConfigError) as exc:
             reason = f"{full}: {exc}"
             logger.warning("mcp relay: sealing refused: %s", reason)
@@ -539,7 +561,7 @@ class McpRelay:
         if token is not None:
             forwarded = partial(self._forwarded, ctx, token)
 
-        return await port.call(sent, registration.thread_id, forwarded)
+        return await port.call(sent, forwarded)
 
     async def _forwarded(
         self,
@@ -555,14 +577,13 @@ class McpRelay:
             notification, related_request_id=ctx.request_id
         )
 
-    async def _sealed(  # noqa: PLR0913 — вызов запечатывается по порту, инструменту и контексту вызова
+    async def _sealed(
         self,
         port: McpToolPort,
         tool: mt.Tool,
         asked: Mapping[str, Any],
         offered: Mapping[str, mt.Tool],
         server: McpServerInfo,
-        context: CallContext,
     ) -> dict[str, Any]:
         """Аргументы вызова tool с запечатанными соединениями: по схеме
         инструмента, а у инструмента, который сервер объявил несущим
@@ -578,9 +599,7 @@ class McpRelay:
         KerberosError — билет к соединению не выпущен.
         """
         full = self._names.full(server.name, tool.name)
-        arguments = await self._sealing.seal(
-            full, asked, tool.input_schema, server, context
-        )
+        arguments = await self._sealing.seal(full, asked, tool.input_schema, server)
 
         nested = port.nested_calls()
         if nested is None:
@@ -609,7 +628,7 @@ class McpRelay:
 
             try:
                 args = await self._sealing.seal(
-                    node_full, call.args, node_tool.input_schema, server, context
+                    node_full, call.args, node_tool.input_schema, server
                 )
             except RefusalError as exc:
                 msg = f"node {call.key!r} ({node_full}): {exc}"
