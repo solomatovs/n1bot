@@ -54,6 +54,7 @@ from boba.toolkit.result import (
     ContentMime,
     Fence,
     JsonBlock,
+    NoteLine,
     TableText,
 )
 from boba.transport.http.connection import UrlScheme
@@ -576,6 +577,8 @@ class ChatView:
     """Схема ссылки на файл workspace сервера."""
     TEXT_FAMILY: ClassVar[str] = "text/"
     """Начало MIME текстовых ресурсов: неизвестный текст рисуется блоком кода."""
+    DATA_URL: ClassVar[str] = "data:{mime};base64,{data}"
+    """Адрес картинки и звука блока ответа: байты base64 самого блока."""
     BYTES: ClassVar[Mapping[str, Any]] = {"data": True, "resource": {"blob": True}}
     """Поля байтов base64, которых JSON неизвестного блока не раскрывает."""
     AVATAR_NAME_KEY: ClassVar[str] = "avatarName"
@@ -1109,12 +1112,14 @@ class ChatView:
         self, block: mt.ContentBlock, step: Step, key: str | None, number: int
     ) -> str:
         """Картинка — элемент шага <img> (скрипты svg в нём не исполняются),
-        звук — проигрыватель у шага."""
+        звук — проигрыватель у шага; байты блока едут адресом data: — файла
+        у них нет. В выходе шага — подпись с MIME: без выхода фронт не
+        рисует элементы шага."""
         if not isinstance(block, mt.ImageContent | mt.AudioContent):
             return await self._unknown(block, step, key, number)
 
         try:
-            content = base64.b64decode(block.data, validate=True)
+            base64.b64decode(block.data, validate=True)
         except binascii.Error as exc:
             logger.info(
                 "thread %s: %s of call %s is not base64, shown as JSON: %s",
@@ -1125,12 +1130,13 @@ class ChatView:
             )
             return await self._unknown(block, step, key, number)
 
+        caption = NoteLine.render(f"({block.mime_type})")
         if not self._sink.emits_elements:
-            return ""
+            return caption
 
         element = self._players[type(block)](
             name=f"{block.type}-{number}",
-            content=content,
+            url=self.DATA_URL.format(mime=block.mime_type, data=block.data),
             mime=block.mime_type,
             display="inline",
         )
@@ -1142,7 +1148,7 @@ class ChatView:
         elements.append(element)
         step.elements = elements
 
-        return ""
+        return caption
 
     async def _linked(
         self, block: mt.ContentBlock, step: Step, key: str | None, number: int
