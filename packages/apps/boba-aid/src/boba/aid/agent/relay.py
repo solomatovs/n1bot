@@ -22,6 +22,7 @@ import anyio
 import mcp_types as mt
 from acp.exceptions import RequestError
 from fastmcp.apps.config import AppConfig
+from fastmcp.utilities.json_schema import compress_schema
 from mcp.server.connection import Connection, NotifyOnlyOutbound
 from mcp.server.context import ServerRequestContext
 from mcp.server.lowlevel import Server
@@ -57,6 +58,7 @@ from boba.mcp_client.client import (
     McpServers,
     McpToolServer,
 )
+from boba.toolkit.calls import SchemaMark
 from boba.toolkit.chain import StreamPlanError
 from boba.toolkit.dag import DagNode
 from boba.toolkit.failure import InvokeErrorKind, ValidationText
@@ -174,8 +176,10 @@ class McpRelay:
     у инструмента со вложенными вызовами (расширение NestedCallsFeature
     сервера) — и в аргументах каждого узла по схеме его инструмента. Ход
     вызова уходит агенту уведомлением notifications/progress, ответ
-    сервера — как есть. Инструменты только для интерфейса (_meta.ui.visibility
-    без "model") агенту не видны и не вызываются.
+    сервера — как есть. Параметры треда (пометка SchemaMark.THREAD) агент в
+    списке не видит: на вызове ретранслятор ставит в них тред вкладки.
+    Инструменты только для интерфейса (_meta.ui.visibility без "model")
+    агенту не видны и не вызываются.
     """
 
     UI_META: ClassVar[str] = "ui"
@@ -285,8 +289,12 @@ class McpRelay:
         server_id = ctx.lifespan_context
         holder = self._holder(server_id)
         caller = self._callers.of_key(server_id)
+        tools: list[mt.Tool] = []
         async with self._port(server_id, holder, caller) as port:
-            tools = list(self._model_tools(port, holder.server))
+            for tool in self._model_tools(port, holder.server):
+                threads = list(SchemaMark.THREAD.params(tool.input_schema))
+                schema = compress_schema(dict(tool.input_schema), prune_params=threads)
+                tools.append(tool.model_copy(update={"input_schema": schema}))
 
         return mt.ListToolsResult(tools=tools)
 
@@ -294,8 +302,8 @@ class McpRelay:
         self, ctx: ServerRequestContext[str], params: mt.CallToolRequestParams
     ) -> mt.CallToolResult | mt.InputRequiredResult:
         """Вызов инструмента для модели: соединения запечатаны, у вызова со
-        вложенными вызовами — и в узлах, тред — областью вызова, отказ
-        запечатывания — isError с причиной.
+        вложенными вызовами — и в узлах, тред вкладки — в параметрах с
+        пометкой SchemaMark.THREAD, отказ запечатывания — isError с причиной.
 
         Ошибки:
         MCPError — инструмента у сервера нет либо он не для модели.
@@ -316,9 +324,12 @@ class McpRelay:
                 )
                 raise MCPError(code=mt.INVALID_PARAMS, message=msg)
 
-            asked: Mapping[str, Any] = {}
+            asked: dict[str, Any] = {}
             if params.arguments is not None:
-                asked = params.arguments
+                asked = dict(params.arguments)
+
+            for name in SchemaMark.THREAD.params(tool.input_schema):
+                asked[name] = holder.thread_id
 
             full = self._names.full(holder.server, tool.name)
             server = McpServerInfo(name=holder.server, features=port.features())
@@ -347,7 +358,7 @@ class McpRelay:
             if token is not None:
                 forwarded = partial(self._forwarded, ctx, token)
 
-            return await port.call(sent, holder.thread_id, forwarded)
+            return await port.call(sent, forwarded)
 
     async def _forwarded(
         self,

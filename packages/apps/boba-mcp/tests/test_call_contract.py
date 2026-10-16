@@ -20,8 +20,10 @@ from fastmcp.client.transports import StreamableHttpTransport
 from service_stand import PROFILE, ServiceStand
 
 from boba.mcp_server.server import RunLimits, StreamReadTool
+from boba.toolkit.calls import SchemaMark
 from boba.toolkit.channels import ToolChannel
 from boba.toolkit.wire import CallStatus, CallWire, WirePart
+from boba.toolrun.call_id import CallFields
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -58,6 +60,14 @@ class TestToolSchema:
         "type": "string",
     }
 
+    THREAD: ClassVar[dict[str, Any]] = {
+        "default": "",
+        "description": CallFields.THREAD_DESCRIPTION,
+        "title": "Thread Id",
+        "type": "string",
+        SchemaMark.THREAD.value: True,
+    }
+
     ECHO: ClassVar[dict[str, Any]] = {
         "description": "Повторяет текст, приправив секретом из конфига.",
         "properties": {
@@ -73,6 +83,7 @@ class TestToolSchema:
                 "title": "Repeat",
                 "type": "integer",
             },
+            CallFields.THREAD: THREAD,
             "intent": INTENT,
         },
         "required": ["text", "repeat"],
@@ -85,6 +96,7 @@ class TestToolSchema:
         "count",
         "size",
         "fail_midway",
+        CallFields.THREAD,
         "out",
         "pipe_bytes",
         "intent",
@@ -103,8 +115,8 @@ class TestToolSchema:
             raise AssertionError(f"the schema of fake_echo: {echo.input_schema}")
 
         own = [key for key in json.dumps(published).split('"') if "x-boba" in key]
-        if own:
-            raise AssertionError(f"the schema carries no marks of its own: {own}")
+        if own != [SchemaMark.THREAD.value]:
+            raise AssertionError(f"the only own mark is the thread: {own}")
         if list(echo.input_schema["properties"]) != list(self.ECHO["properties"]):
             raise AssertionError(
                 f"the order of the arguments is kept: {echo.input_schema}"

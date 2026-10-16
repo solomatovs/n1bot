@@ -56,7 +56,7 @@ from boba.mcp_server.server import (
     ServerRefusal,
     StreamReadTool,
 )
-from boba.toolkit.calls import CallViews
+from boba.toolkit.calls import CallViews, SchemaMark
 from boba.toolkit.channels import ToolChannel
 from boba.toolkit.dag import CallDag, NestedCallsFeature, NodeStatus
 from boba.toolkit.wire import (
@@ -65,9 +65,9 @@ from boba.toolkit.wire import (
     FilesFeature,
     JournalFeature,
     NestedCallsReply,
-    RequestFields,
     WirePart,
 )
+from boba.toolrun.call_id import CallFields
 from boba.toolrun.hosted import ToolSchema
 from boba.toolrun.stream_calls import WorkflowNodeCall, WorkflowTool
 
@@ -171,6 +171,28 @@ class TestToolList:
         if "cfg" in properties:
             raise AssertionError("the injected config is not shown to the client")
 
+    async def test_thread_parameter_is_marked_in_the_tools_of_a_workspace(
+        self, stand: ServiceStand, url: str, dev_token: str
+    ) -> None:
+        """Инструменты, которые работают в workspace, и связка несут
+        необязательный thread_id с пометкой x-boba-thread; операция чтения
+        журнала области не открывает и параметра не несёт."""
+        async with _client(url, dev_token) as client:
+            listed = await client.list_tools()
+
+        schemas = {tool.name: tool.input_schema for tool in listed}
+        for name in ("fake_scope", "fake_echo", WorkflowTool.NAME, FileUploadTool.NAME):
+            marked = SchemaMark.THREAD.params(schemas[name])
+            if marked != {CallFields.THREAD: True}:
+                raise AssertionError(f"{name} carries the thread: {schemas[name]}")
+
+            if CallFields.THREAD in schemas[name].get("required", []):
+                raise AssertionError(f"the thread of {name} is optional")
+
+        journal = SchemaMark.THREAD.params(schemas[StreamReadTool.NAME])
+        if journal:
+            raise AssertionError(f"the journal read has no thread: {journal}")
+
     async def test_weaker_role_sees_fewer_tools(
         self, stand: ServiceStand, url: str, weak_token: str
     ) -> None:
@@ -237,12 +259,12 @@ class TestCall:
     async def test_scope_of_the_client_is_the_scope_of_the_call(
         self, stand: ServiceStand, url: str, dev_token: str
     ) -> None:
-        """Область из _meta доходит до тела: вызовы одного разговора видят
-        одни и те же файлы."""
+        """Тред из аргумента thread_id доходит до тела областью вызова:
+        вызовы одного разговора видят одни и те же файлы."""
         scope = "0b6f6f0e-51d4-4a4b-9f6c-1d6c5f1f7a10"
         async with _client(url, dev_token) as client:
             result = await client.call_tool_mcp(
-                "fake_scope", {}, meta={RequestFields.SCOPE: scope}
+                "fake_scope", {CallFields.THREAD: scope}
             )
 
         structured = _shown(result)
@@ -267,7 +289,7 @@ class TestCall:
     ) -> None:
         async with _client(url, dev_token) as client:
             result = await client.call_tool_mcp(
-                "fake_scope", {}, meta={RequestFields.SCOPE: "a/b"}
+                "fake_scope", {CallFields.THREAD: "a/b"}
             )
 
         if not result.is_error:
@@ -280,11 +302,13 @@ class TestCall:
         scope = "0b6f6f0e-51d4-4a4b-9f6c-1d6c5f1f7a11"
 
         async def slept(name: str) -> Any:
-            arguments = {"seconds": 1.0, "marker": str(tmp_path / name)}
+            arguments = {
+                "seconds": 1.0,
+                "marker": str(tmp_path / name),
+                CallFields.THREAD: scope,
+            }
             async with _client(url, dev_token) as client:
-                return await client.call_tool_mcp(
-                    "fake_sleep", arguments, meta={RequestFields.SCOPE: scope}
-                )
+                return await client.call_tool_mcp("fake_sleep", arguments)
 
         first, second = await asyncio.gather(slept("first"), slept("second"))
         if first.is_error or second.is_error:
@@ -314,10 +338,6 @@ class TestCall:
         ):
             if feature not in declared:
                 raise AssertionError(f"{feature} is declared: {sorted(declared)}")
-
-        files = FilesFeature.model_validate(declared[FilesFeature.ID])
-        if files.scope != RequestFields.SCOPE:
-            raise AssertionError(f"the files extension names the scope key: {files}")
 
         nested = NestedCallsFeature.model_validate(declared[NestedCallsFeature.ID])
         if nested != CallDag().feature():
@@ -597,7 +617,7 @@ class TestProgress:
 
         schema = next(tool for tool in listed if tool.name == "fake_progress")
         properties = sorted(schema.input_schema["properties"])
-        if properties != ["intent", "pause", "steps"]:
+        if properties != ["intent", "pause", "steps", CallFields.THREAD]:
             raise AssertionError(f"the model sees its own arguments: {properties}")
 
 
@@ -1567,8 +1587,7 @@ class TestWorkspaceFiles:
         async with _client(url, dev_token) as client:
             result = await client.call_tool_mcp(
                 FileUploadTool.NAME,
-                {"name": "report.csv"},
-                meta={RequestFields.SCOPE: self.SCOPE},
+                {"name": "report.csv", CallFields.THREAD: self.SCOPE},
             )
             declared = client.session.server_capabilities
 
@@ -1584,7 +1603,6 @@ class TestWorkspaceFiles:
             "path": "/mcp/service/files",
             "upload": FileUploadTool.NAME,
             "workspace": "/workspace",
-            "scope": RequestFields.SCOPE,
         }
         if files != expected_files:
             raise AssertionError(f"the files extension is declared: {files}")

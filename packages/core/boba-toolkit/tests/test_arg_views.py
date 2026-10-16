@@ -12,6 +12,7 @@ from boba.toolkit.calls import (
     CallViews,
     FieldPlacement,
     FieldView,
+    SchemaMark,
     ToolCallBase,
     ToolCallModels,
 )
@@ -183,7 +184,7 @@ class TestViewsTravelWithTheSchema:
         own = views.of(Args)
         schema = views.typed(Args.model_json_schema(), own)
 
-        media = schema["properties"]["sql"][CallViews.MEDIA_KEY]
+        media = schema["properties"]["sql"][SchemaMark.MEDIA]
         if media != "application/sql":
             raise AssertionError(f"the code argument names its content: {schema}")
 

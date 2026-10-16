@@ -8,7 +8,8 @@ ToolCallBase — база модели аргументов: фасад @tool с
 этим результатом.
 
 ToolIntent — общая для всех инструментов подпись вызова: строку пишет LLM,
-показывает её название шага ленты.
+показывает её название шага ленты. SchemaMark — ключи схемы параметра, по
+которым клиент решает, что делать с аргументом.
 
 Ошибки: своих не выпускает.
 """
@@ -18,7 +19,7 @@ from __future__ import annotations
 import json
 from abc import ABC
 from collections.abc import Iterator, Mapping, Sequence
-from enum import StrEnum
+from enum import StrEnum, nonmember
 from typing import (
     Any,
     ClassVar,
@@ -49,6 +50,7 @@ __all__ = [
     "FieldPlacement",
     "FieldView",
     "SchemaCall",
+    "SchemaMark",
     "ToolCallBase",
     "ToolCallModels",
     "ToolIntent",
@@ -137,6 +139,43 @@ class FieldPlacement(StrEnum):
     BODY = "body"
     HEADER = "header"
     HIDDEN = "hidden"
+
+
+class SchemaMark(StrEnum):
+    """Ключ JSON Schema параметра инструмента, по которому клиент решает,
+    что делать с аргументом.
+
+    MEDIA — стандартный тип содержимого строки (показ кода, запечатанное
+    соединение). THREAD и CONNECTION — свои пометки x-boba-…: параметр
+    треда, который harness прячет от модели и заполняет сам, и
+    параметр-соединение со значением вида соединения. Клиент, который
+    пометку не знает, её не замечает. Единственный читатель этих ключей и
+    у сервера, и у клиента — params().
+    """
+
+    MEDIA = "contentMediaType"
+    THREAD = "x-boba-thread"
+    CONNECTION = "x-boba-connection"
+
+    PROPERTIES = nonmember("properties")
+
+    def params(self, schema: Mapping[str, Any]) -> dict[str, object]:
+        """Параметры схемы инструмента schema с этим ключом: имя → значение."""
+        marked: dict[str, object] = {}
+        declared = schema.get(self.PROPERTIES)
+        if not isinstance(declared, Mapping):
+            return marked
+
+        for name, described in declared.items():
+            if not isinstance(described, Mapping):
+                continue
+
+            if self.value not in described:
+                continue
+
+            marked[str(name)] = described[self.value]
+
+        return marked
 
 
 class FieldMarks:
@@ -389,11 +428,6 @@ class CallViews:
     показа входа шага — одинаково в живом ходе и в истории.
     """
 
-    MEDIA_KEY: ClassVar[str] = "contentMediaType"
-    """Ключ JSON Schema: тип содержимого строки."""
-
-    PROPERTIES: ClassVar[str] = "properties"
-
     MEDIA: ClassVar[Mapping[str, str]] = {
         "sql": "application/sql",
         "json": "application/json",
@@ -429,7 +463,7 @@ class CallViews:
         if views is None:
             return typed
 
-        declared = schema.get(self.PROPERTIES)
+        declared = schema.get(SchemaMark.PROPERTIES)
         if not isinstance(declared, Mapping):
             return typed
 
@@ -442,9 +476,9 @@ class CallViews:
             if name not in properties:
                 continue
 
-            properties[name] = {**properties[name], self.MEDIA_KEY: media}
+            properties[name] = {**properties[name], SchemaMark.MEDIA.value: media}
 
-        typed[self.PROPERTIES] = properties
+        typed[SchemaMark.PROPERTIES] = properties
 
         return typed
 
@@ -458,19 +492,11 @@ class CallViews:
         имя аргумента → значение contentMediaType. Это всё, что клиент
         хранит о вызове, чтобы показать его аргументы после конца хода."""
         media: dict[str, str] = {}
-        declared = schema.get(self.PROPERTIES)
-        if not isinstance(declared, Mapping):
-            return media
-
-        for name, described in declared.items():
-            if not isinstance(described, Mapping):
-                continue
-
-            value = described.get(self.MEDIA_KEY)
+        for name, value in SchemaMark.MEDIA.params(schema).items():
             if not isinstance(value, str):
                 continue
 
-            media[str(name)] = value
+            media[name] = value
 
         return media
 
