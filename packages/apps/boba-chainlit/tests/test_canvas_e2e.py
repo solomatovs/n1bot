@@ -36,7 +36,7 @@ from playwright.async_api import async_playwright
 from boba.runtime.config import ConfigFiles, ConfigLayoutError, EnvOverride
 from boba.stand.names import StandNames
 from boba.stand.ui.database import StandDatabase
-from boba.stand.ui.stand import StandApp, StandFiles, StandPlugins, free_port
+from boba.stand.ui.stand import StandApp, StandFiles, free_port
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -75,13 +75,7 @@ class E2eStand:
         name = database.prepare()
 
         for app in (StandApp.CHAINLIT, StandApp.MCP):
-            doc = app.document()
-            doc["postgres"]["dbname"] = name
-
-            files = self._files(app)
-            files.workdir.mkdir(parents=True, exist_ok=True)
-            files.write(doc)
-            StandPlugins(app, sandbox=True).copy_to(files.plugins)
+            self._files(app).write_debug(app, name)
 
     def files(self, app: StandApp) -> ConfigFiles:
         """Файлы конфигурации приложения стенда, записанные prepare."""
