@@ -38,15 +38,15 @@ from pydantic import SecretStr, ValidationError
 
 from boba.aid.agent.config import ChatMcpConfig
 from boba.aid.agent.server import (
-    CallSealing,
     ChatCaller,
     ChatCallers,
     ChatMcpServer,
     KeyHolder,
-    McpServerInfo,
     ProcessKeys,
 )
+from boba.connection_broker.sealing import CallSealing, McpServerInfo
 from boba.connections.stored import ConnectionStoreError
+from boba.identity.context import CallContexts
 from boba.identity.errors import AuthenticationError, RefusalError
 from boba.kerberos import KerberosError
 from boba.mcp_client.client import (
@@ -172,9 +172,10 @@ class McpRelay:
     отвечает его lowlevel Server; свои здесь — tools/list и tools/call.
     Сервер профиля зовётся портом McpServers от имени пользователя вкладки,
     сервер инструментов чата до переноса в процесс — по его HTTP-адресу
-    ключом регистрации. Соединения в аргументах запечатывает CallSealing,
-    у инструмента со вложенными вызовами (расширение NestedCallsFeature
-    сервера) — и в аргументах каждого узла по схеме его инструмента. Ход
+    ключом регистрации. Соединения в аргументах запечатывает CallSealing в
+    контексте вызывающего, у инструмента со вложенными вызовами (расширение
+    NestedCallsFeature сервера) — и в аргументах каждого узла по схеме его
+    инструмента. Ход
     вызова уходит агенту уведомлением notifications/progress, ответ
     сервера — как есть. Параметры треда (пометка SchemaMark.THREAD) агент в
     списке не видит: на вызове ретранслятор ставит в них тред вкладки.
@@ -191,6 +192,7 @@ class McpRelay:
         callers: ChatCallers,
         servers: McpServers,
         sealing: CallSealing,
+        contexts: CallContexts,
         chat: ChatMcpConfig,
         public_url: str,
     ) -> None:
@@ -198,6 +200,7 @@ class McpRelay:
         self._callers = callers
         self._servers = servers
         self._sealing = sealing
+        self._contexts = contexts
         self._chat = chat
         public = urlsplit(public_url)
         self._chat_endpoint = HttpEndpoint.model_validate(
@@ -397,9 +400,8 @@ class McpRelay:
         KerberosError — билет к соединению не выпущен.
         """
         full = self._names.full(server.name, tool.name)
-        arguments = await self._sealing.seal(
-            full, asked, tool.input_schema, server, caller
-        )
+        with self._contexts.applied(self._callers.context(caller)):
+            arguments = await self._sealing.seal(full, asked, tool.input_schema, server)
 
         nested = port.nested_calls()
         if nested is None:
@@ -427,9 +429,10 @@ class McpRelay:
                 raise RefusalError(InvokeErrorKind.UNKNOWN_TOOL, msg)
 
             try:
-                args = await self._sealing.seal(
-                    node_full, call.args, node_tool.input_schema, server, caller
-                )
+                with self._contexts.applied(self._callers.context(caller)):
+                    args = await self._sealing.seal(
+                        node_full, call.args, node_tool.input_schema, server
+                    )
             except RefusalError as exc:
                 msg = f"node {call.key!r} ({node_full}): {exc}"
                 raise RefusalError(exc.kind, msg) from exc
