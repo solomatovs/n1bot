@@ -30,7 +30,7 @@ from acp_stand import (
 from chainlit_stand import NoConnectionStore, RelayStand, TabSession
 from psycopg import sql
 from psycopg.types.json import Jsonb
-from pydantic import SecretStr, ValidationError
+from pydantic import SecretStr
 
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.chainlit.agent.chat import (
@@ -42,9 +42,7 @@ from boba.chainlit.agent.chat import (
     ThreadIdentity,
 )
 from boba.chainlit.agent.client import AcpClientError, AgentClient, AgentProcess
-from boba.chainlit.agent.config import (
-    PostgresAgentHistory,
-)
+from boba.chainlit.agent.config import LibpqConnection, PostgresAgentHistory
 from boba.chainlit.agent.settings import (
     AgentSettingsChange,
     AgentSettingsError,
@@ -280,11 +278,11 @@ class TestLayers:
 
 
 class TestHistoryDsn:
-    """Строка подключения истории агента из [agent.history]."""
+    """Строка подключения истории агента из подключения процесса [postgres]."""
 
     def test_password_auth_renders_a_libpq_dsn(self, stand: Stand) -> None:
-        history = AgentHistoryStand(stand).history()
-        dsn = history.dsn().get_secret_value()
+        postgres = AgentHistoryStand(stand).postgres()
+        dsn = LibpqConnection(postgres).dsn().get_secret_value()
         assert f"user={stand.pg_probe_user}" in dsn
         assert f"password={stand.pg_probe_password.get_secret_value()}" in dsn
         assert f"dbname={stand.pg_probe_database}" in dsn
@@ -298,10 +296,8 @@ class TestHistoryDsn:
                 )
             }
         )
-        with pytest.raises(ValidationError, match="cannot be handed to the agent"):
-            PostgresAgentHistory.model_validate(
-                {"kind": "postgres", "postgres": certificate, "schema": "agent"}
-            )
+        with pytest.raises(ValueError, match="cannot be handed to the agent"):
+            LibpqConnection(certificate).auth()
 
     async def test_kerberos_role_renders_a_dsn_without_password_and_libkrb5_env(
         self, test_postgres: PostgresConfig
@@ -311,22 +307,23 @@ class TestHistoryDsn:
             pytest.skip("the stand postgres is not entered with a keytab")
 
         history = PostgresAgentHistory.model_validate(
-            {"kind": "postgres", "postgres": test_postgres, "schema": "agent"}
+            {"kind": "postgres", "schema": "agent"}
         )
-        dsn = history.dsn().get_secret_value()
+        dsn = LibpqConnection(test_postgres).dsn().get_secret_value()
         assert f"user={auth.principal.partition('@')[0]}" in dsn
         assert "password" not in dsn
         assert f"dbname={test_postgres.dbname}" in dsn
 
-        environment = await HistoryEnvironment(history).prepare()
+        environment = await HistoryEnvironment(history, test_postgres).prepare()
         assert set(environment) == {KerberosEnv.CCACHE, KerberosEnv.CONFIG}
         assert Path(environment[KerberosEnv.CONFIG]).is_file()
         ccache = environment[KerberosEnv.CCACHE]
         assert Path(ccache.partition(":")[2]).is_file(), ccache
 
     async def test_password_role_needs_no_environment(self, stand: Stand) -> None:
-        history = AgentHistoryStand(stand).history()
-        assert await HistoryEnvironment(history).prepare() == {}
+        history = AgentHistoryStand(stand)
+        environment = HistoryEnvironment(history.history(), history.postgres())
+        assert await environment.prepare() == {}
 
 
 class TestSettingsFile:
@@ -336,11 +333,12 @@ class TestSettingsFile:
         self, tmp_path: Path, stand: Stand
     ) -> None:
         model = FakeModel()
-        history = AgentHistoryStand(stand).history()
+        history_stand = AgentHistoryStand(stand)
+        history = history_stand.history()
         config = AgentStand(tmp_path / "agents", history).config(
             "http://127.0.0.1:8000/boba"
         )
-        builder = SettingsFileBuilder(config)
+        builder = SettingsFileBuilder(config, history_stand.postgres())
         chat = model.chat_settings("Answer briefly")
 
         document = builder.build(chat)
@@ -367,7 +365,8 @@ class TestSettingsFile:
         }
         assert body["history"]["kind"] == "postgres"
         assert body["history"]["schema"] == history.db_schema
-        assert body["history"]["dsn"] == history.dsn().get_secret_value()
+        dsn = LibpqConnection(history_stand.postgres()).dsn().get_secret_value()
+        assert body["history"]["dsn"] == dsn
         assert body["systemPromptFile"] == "system_prompt.txt"
         assert "mcp" not in body
         assert "mcpServers" not in body
@@ -379,10 +378,12 @@ class TestSettingsFile:
     def test_permission_mode_of_the_chat_layer_is_the_default_mode(
         self, tmp_path: Path, stand: Stand
     ) -> None:
-        config = AgentStand(tmp_path, AgentHistoryStand(stand).history()).config()
+        history = AgentHistoryStand(stand)
+        config = AgentStand(tmp_path, history.history()).config()
         chat = FakeModel().chat_settings().with_session(PermissionModeName.PLAN, None)
 
-        body = json.loads(SettingsFileBuilder(config).build(chat).render())
+        builder = SettingsFileBuilder(config, history.postgres())
+        body = json.loads(builder.build(chat).render())
 
         assert body["permissions"] == {"defaultMode": "plan", "allowBypass": True}
 
@@ -393,10 +394,11 @@ class TestAgentHandshake:
     async def test_agent_initializes_and_leaks_nothing(
         self, tmp_path: Path, stand: Stand, model: FakeModel
     ) -> None:
-        history = AgentHistoryStand(stand).history()
-        agent_stand = AgentStand(tmp_path / "agents", history)
+        history = AgentHistoryStand(stand)
+        agent_stand = AgentStand(tmp_path / "agents", history.history())
         chat = model.chat_settings()
-        document = SettingsFileBuilder(agent_stand.config()).build(chat)
+        builder = SettingsFileBuilder(agent_stand.config(), history.postgres())
+        document = builder.build(chat)
         workdir = AgentWorkdirs(tmp_path / "agents").create("thread-2")
         workdir.write(document, chat.system_prompt)
 
@@ -461,12 +463,11 @@ class TestRetiredServers:
         relays = RelayStand(NoConnectionStore(), lambda: credentials, CallContexts())
         servers = McpServers(McpServersConfig(servers={}))
         relay = relays.relay(servers)
-        agent_stand = AgentStand(
-            tmp_path / "agents", AgentHistoryStand(stand).history()
-        )
+        history = AgentHistoryStand(stand)
+        agent_stand = AgentStand(tmp_path / "agents", history.history())
         layers = AgentSettingsLayers(table, specs)
         launcher = AgentLauncher(
-            agent_stand.config(), layers, relays.keys, relay, "0.0"
+            agent_stand.config(), history.postgres(), layers, relays.keys, relay, "0.0"
         )
         tab = TabSession()
         tab.password_sign_in(frozenset({"dev"}))
@@ -544,15 +545,15 @@ class TestForkCut:
         relays = RelayStand(NoConnectionStore(), lambda: credentials, CallContexts())
         servers = McpServers(McpServersConfig(servers={}))
         relay = relays.relay(servers)
-        agent_stand = AgentStand(
-            tmp_path / "agents", AgentHistoryStand(stand).history()
-        )
+        history = AgentHistoryStand(stand)
+        agent_stand = AgentStand(tmp_path / "agents", history.history())
         config = agent_stand.config()
         foreign = config.process.model_copy(
             update={"command": sys.executable, "args": [str(self.FOREIGN)]}
         )
         launcher = AgentLauncher(
             config.model_copy(update={"process": foreign}),
+            history.postgres(),
             AgentSettingsLayers(table, specs),
             relays.keys,
             relay,

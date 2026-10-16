@@ -34,8 +34,8 @@ from fastmcp.client.transports import StreamableHttpTransport
 from key_value.aio.stores.memory import MemoryStore
 from playwright.sync_api import Browser, Page, expect
 
+from boba.db.postgres.connection import PostgresConfig
 from boba.stand.database import TestDatabase
-from boba.stand.site import ServiceRuntime
 from boba.stand.ui.database import run_blocking
 from boba.stand.ui.stand import (
     REPO_ROOT,
@@ -216,9 +216,9 @@ class LoginPage:
 
 
 def _service(
-    workdir: Path, runtime: ServiceRuntime, generation: str, ttl_sec: int
+    workdir: Path, postgres: PostgresConfig, generation: str, ttl_sec: int
 ) -> Iterator[StandProcess[ServiceStand]]:
-    db_name = run_blocking(TestDatabase.ensure(runtime.data_layer.postgres))
+    db_name = run_blocking(TestDatabase.ensure(postgres))
 
     config = ServiceStand(
         workdir=workdir,
@@ -238,20 +238,20 @@ def _service(
 
 @pytest.fixture(scope="module")
 def service(
-    tmp_path_factory: pytest.TempPathFactory, service_runtime: ServiceRuntime
+    tmp_path_factory: pytest.TempPathFactory, stand_postgres: PostgresConfig
 ) -> Iterator[StandProcess[ServiceStand]]:
     """Сервис со случайным поколением сессий: рестарт снимает все входы."""
-    yield from _service(tmp_path_factory.mktemp("sign-in"), service_runtime, "", 300)
+    yield from _service(tmp_path_factory.mktemp("sign-in"), stand_postgres, "", 300)
 
 
 @pytest.fixture(scope="module")
 def lasting(
-    tmp_path_factory: pytest.TempPathFactory, service_runtime: ServiceRuntime
+    tmp_path_factory: pytest.TempPathFactory, stand_postgres: PostgresConfig
 ) -> Iterator[StandProcess[ServiceStand]]:
     """Сервис с заданным поколением сессий и коротким токеном доступа: вход
     переживает рестарт, а токен приходится продлевать."""
     yield from _service(
-        tmp_path_factory.mktemp("sign-in-lasting"), service_runtime, "stand", 4
+        tmp_path_factory.mktemp("sign-in-lasting"), stand_postgres, "stand", 4
     )
 
 

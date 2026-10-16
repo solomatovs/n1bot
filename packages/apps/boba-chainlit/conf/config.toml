@@ -4,6 +4,8 @@
     ccache_dir = "${env.data}/krb/cache"
 
 [app]
+    schema          = "aid"
+    postgres        = "${postgres}"
     krb             = "${krb}"
     chainlit        = "${chainlit}"
     session         = "${session}"
@@ -11,7 +13,6 @@
     messaging       = "${messaging}"
     profiles        = "${profiles}"
     roles           = "${roles}"
-    data_layer      = "${data_layer}"
     agent           = "${agent}"
     stream_journal  = "${stream_journal}"
     mcp             = "${mcp}"
@@ -116,11 +117,6 @@
         reconnect_timeout = 300
         num_workers       = 3
 
-# схема chainlit data layer — квалифицируется в SQL явно
-[data_layer]
-    postgres = "${postgres}"
-    schema   = "aid"
-
 [agent]
     public_url = "http://127.0.0.1:${env.port}${env.url_prefix}"
     [agent.process]
@@ -131,9 +127,8 @@
         start_timeout_sec = 30
         stop_timeout_sec  = 10
     [agent.history]
-        kind     = "postgres"
-        postgres = "${postgres}"
-        schema   = "boba"
+        kind   = "postgres"
+        schema = "boba"
     [agent.chat_mcp]
         enable              = true
         name                = "chat"
@@ -147,9 +142,6 @@
 # конфигурация для chainlit
 ## соединения в базе: профили postgres/web со скрытыми секретами
 [connections]
-    enable         = true
-    connection     = "${postgres}"
-    db_schema      = "aid"
     ## 32 байта в base64; смена ключа делает сохранённые секреты нечитаемыми
     encryption_key = "${site.database_encryption_key}"
 
@@ -278,8 +270,6 @@
 
 [messaging]
     provider = "${env.messaging_provider}"
-    postgres = "${postgres}"
-    schema   = "aid"
 
 [stream_groups]
     open_sec       = 60

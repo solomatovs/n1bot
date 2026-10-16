@@ -34,7 +34,6 @@ from boba.chainlit.infra.session import (
 from boba.chainlit.infra.socket_events import SocketEvents
 from boba.chainlit.infra.stale_action import StaleActionMiddleware
 from boba.connections.sealed import SealKeys
-from boba.db.postgres import AsyncPostgresPool
 from boba.identity.context import CallContexts
 from boba.identity.run import Runs
 from boba.runtime import providers as runtime
@@ -134,7 +133,6 @@ async def _run_container(app: FastAPI) -> AsyncGenerator[None, None]:
             await SessionContainers.close_all()
             Container.set_root(None)
             await container.aclose()
-            await AsyncPostgresPool.close_all()
 
 
 async def _use_agent_tools(container: Container, stack: AsyncExitStack) -> None:
@@ -345,6 +343,7 @@ def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
     container.provide(runtime.connection_types, runtime.connection_types())
     container.provide(runtime.seal_keys, SealKeys())
     container.eager(providers.get_app_config)
+    container.eager(runtime.postgres_pool)
     container.eager(runtime.users_table)
     container.eager(runtime.auth_service)
     container.eager(runtime.credential_source)

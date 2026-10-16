@@ -18,7 +18,7 @@ def _config() -> IngestToolConfig:
                 "dbname": "d",
                 "auth": {"method": "trust", "user": "u"},
             },
-            "tables": {"sources_table": "kb_sources"},
+            "tables": {"pg_schema": "kb", "sources_table": "kb_sources"},
             "embedding": {
                 "provider": {"kind": "fastembed", "cache_dir": "/var/cache/fastembed"},
                 "model": "intfloat/e5",

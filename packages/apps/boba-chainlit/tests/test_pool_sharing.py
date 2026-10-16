@@ -1,9 +1,8 @@
-"""Пулы postgres процесса chainlit: системные компоненты живут на одном пуле.
+"""Пул postgres процесса chainlit: все таблицы живут на одном пуле, который
+открывает провайдер postgres_pool в корне процесса.
 
 Контейнер собирается как в bootstrap, но на тестовой базе, и тест считает пулы
-процесса. Свой пул положен только checkpointer'у: AsyncPostgresSaver пишет имена
-таблиц без схемы и ходит по search_path. Остальные ставят схему в запрос, и
-общего пула им достаточно.
+процесса: таблицы ставят схему в запрос, своих пулов у них нет.
 """
 
 from __future__ import annotations
@@ -79,11 +78,8 @@ def app_container(
     return container
 
 
-async def test_chainlit_components_share_one_pool(
-    app_container: Container,
-    stand_config: AppConfig,
-) -> None:
-    """Шина, блокировки, соединения, workflow и слой данных — на общем пуле."""
+async def test_chainlit_components_share_one_pool(app_container: Container) -> None:
+    """Шина, блокировки, соединения и слой данных — на пуле процесса."""
     Container.set_root(app_container)
 
     try:
@@ -93,34 +89,30 @@ async def test_chainlit_components_share_one_pool(
         if not isinstance(layer, PostgresDataLayer):
             raise AssertionError(f"data layer provider gives a layer: {layer!r}")
 
-        # история диалога живёт у агента: своего пула checkpointer у чата больше нет
-        schemas = sorted(pool.search_path for pool in AsyncPostgresPool.opened())
-        if schemas != [""]:
-            raise AssertionError(
-                f"chainlit opens one shared pool, got pools on schemas {schemas}"
-            )
+        opened = AsyncPostgresPool.opened()
+        pool = app_container.resolved(runtime.postgres_pool)
+        if len(opened) != 1:
+            raise AssertionError(f"chainlit opens one pool, got {len(opened)} pools")
+
+        if opened[0] is not pool:
+            raise AssertionError("the open pool is not the pool of postgres_pool")
     finally:
         Container.set_root(None)
         await app_container.aclose()
 
 
-async def test_close_all_closes_pools_of_the_app(app_container: Container) -> None:
-    """Остановка приложения снимает все пулы процесса, а не только кэшированные."""
+async def test_container_close_closes_the_pool(app_container: Container) -> None:
+    """Закрытие контейнера приложения снимает пул процесса."""
     Container.set_root(app_container)
 
     try:
         await app_container.start()
         if not AsyncPostgresPool.opened():
-            raise AssertionError("the container opens at least one pool")
-
-        await AsyncPostgresPool.close_all()
-
-        left = AsyncPostgresPool.opened()
-        if left:
-            schemas = sorted(pool.search_path for pool in left)
-            raise AssertionError(
-                f"close_all leaves no pool of the app open, got {schemas}"
-            )
+            raise AssertionError("the container opens the pool of the process")
     finally:
         Container.set_root(None)
         await app_container.aclose()
+
+    left = AsyncPostgresPool.opened()
+    if left:
+        raise AssertionError(f"closing the container leaves {len(left)} pools open")

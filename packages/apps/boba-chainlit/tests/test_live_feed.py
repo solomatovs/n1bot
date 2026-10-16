@@ -66,8 +66,8 @@ class Node:
 async def _node(
     app_config: AppConfig, test_database: str, pool: AsyncPostgresPool, name: str
 ) -> Node:
-    cfg = app_config.data_layer.postgres.model_copy(update={"dbname": test_database})
-    schema = app_config.data_layer.db_schema
+    cfg = app_config.postgres.model_copy(update={"dbname": test_database})
+    schema = app_config.db_schema
     bus = PgMessageBus(cfg, schema, name, AppName.CHAINLIT, app_config.cluster)
     bus._pool_ref = pool
     await bus.setup()

@@ -37,8 +37,8 @@ pytestmark = pytest.mark.anyio
 async def test_setup_is_idempotent(
     app_config: AppConfig, pool: AsyncPostgresPool, layer: PostgresDataLayer
 ):
-    schema = app_config.data_layer.db_schema
-    await ChatTables.of(app_config.data_layer.postgres, schema, pool).setup()
+    schema = app_config.db_schema
+    await ChatTables.of(app_config.postgres, schema, pool).setup()
 
 
 async def test_create_and_get_user(layer: PostgresDataLayer):
@@ -175,9 +175,7 @@ async def test_update_thread_leaves_the_agent_session_to_the_agent(
     chainlit на отключении вкладки не возвращает тред на прежнюю сессию и не
     стирает указатель."""
     layer = seeded.layer
-    threads = ThreadsTable(
-        app_config.data_layer.postgres, app_config.data_layer.db_schema, pool
-    )
+    threads = ThreadsTable(app_config.postgres, app_config.db_schema, pool)
     await threads.upsert(
         ThreadUpsert(
             id=UUID(seeded.thread_id),
@@ -338,9 +336,7 @@ async def test_delete_thread_of_a_user_without_file_storage(
 ):
     """Профиль пользователя не называет MCP-серверов — хранилища файлов у него
     нет: удаление треда не падает, удалять из хранилища нечего."""
-    tables = ChatTables.of(
-        app_config.data_layer.postgres, app_config.data_layer.db_schema, pool
-    )
+    tables = ChatTables.of(app_config.postgres, app_config.db_schema, pool)
     profiles = ChatProfiles(
         {"bare": ChatProfileConfig.model_construct(mcp=[], roles=["*"], default=True)}
     )

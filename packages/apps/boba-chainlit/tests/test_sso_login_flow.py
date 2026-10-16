@@ -76,8 +76,7 @@ def krb5_env() -> Iterator[None]:
 @pytest.fixture
 async def users(runtime_config: RuntimeConfig, pool: AsyncPostgresPool) -> UsersTable:
     """Таблица users в базе набора: тест создаёт её сам, не полагаясь на соседей."""
-    data_layer = runtime_config.data_layer
-    table = UsersTable(data_layer.postgres, data_layer.db_schema, pool)
+    table = UsersTable(runtime_config.postgres, runtime_config.db_schema, pool)
     await table.setup()
 
     return table

@@ -25,7 +25,7 @@ async def tables(
         await conn.execute(
             sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(SCHEMA))
         )
-    postgres = runtime_config.data_layer.postgres
+    postgres = runtime_config.postgres
     cfg = postgres.model_copy(update={"dbname": test_database})
     built = ChatTables.of(cfg, SCHEMA, pool)
     await built.setup()

@@ -7,7 +7,6 @@
 
 from __future__ import annotations
 
-import base64
 import secrets as std_secrets
 from pathlib import Path
 from typing import Annotated, Any
@@ -26,9 +25,10 @@ from boba.auth.credentials import KerberosCredentialSource
 from boba.chainlit.auth.kerberos import KerberosAuth
 from boba.chainlit.data.data_layer import PostgresDataLayer
 from boba.config import bind
-from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
+from boba.connection_broker.store import ConnectionStore
 from boba.connections.manifest import ConnectionTypes
 from boba.connections.marks import ConnectionRefusal
+from boba.connections.secrets import SecretCipher
 from boba.connections.stored import GrantTarget
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PasswordAuth, PostgresConfig
@@ -72,24 +72,23 @@ THREAD = "44444444-4444-4444-4444-444444444444"
 PROFILE = "test"
 
 
-def _key() -> SecretStr:
-    return SecretStr(base64.b64encode(std_secrets.token_bytes(32)).decode())
+def _cipher() -> SecretCipher:
+    return SecretCipher(std_secrets.token_bytes(32))
 
 
 @pytest.fixture
-def key() -> SecretStr:
-    return _key()
+def cipher() -> SecretCipher:
+    return _cipher()
 
 
 @pytest.fixture
-async def store(pool: AsyncPostgresPool, key: SecretStr) -> ConnectionStore:
+async def store(pool: AsyncPostgresPool, cipher: SecretCipher) -> ConnectionStore:
     async with pool.connection() as conn:
         await conn.execute(
             sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(SCHEMA))
         )
 
-    cfg = ConnectionsConfig(enable=True, db_schema=SCHEMA, encryption_key=key)
-    built = ConnectionStore(cfg, ConnectionTypes.discover(), pool)
+    built = ConnectionStore(pool, SCHEMA, cipher, ConnectionTypes.discover())
     await built.setup()
     await built.sync_roles([ROLE])
     return built
@@ -642,18 +641,17 @@ class TestNoConnections:
         layer,
         app_config,
         test_database,
-        key: SecretStr,
+        cipher: SecretCipher,
     ) -> None:
         user = await Session.user(layer, "f-store-down", Session.local())
         chat_session.sign_in(user, Session.local(), THREAD, PROFILE)
 
         closed = AsyncPostgresPool(
-            app_config.data_layer.postgres.model_copy(update={"dbname": test_database})
+            app_config.postgres.model_copy(update={"dbname": test_database})
         )
         await closed.open()
         await closed.close()
-        cfg = ConnectionsConfig(enable=True, db_schema=SCHEMA, encryption_key=key)
-        broken = ConnectionStore(cfg, ConnectionTypes.discover(), closed)
+        broken = ConnectionStore(closed, SCHEMA, cipher, ConnectionTypes.discover())
 
         result = await Guarded.failure(
             Guarded(call_stand, broken).pg(None), connection="main"
@@ -709,8 +707,7 @@ class TestNoConnections:
         await store.grant(connection_id, GrantTarget.user(UUID(user.id)))
         chat_session.sign_in(user, Session.local(), THREAD, PROFILE)
 
-        cfg = ConnectionsConfig(enable=True, db_schema=SCHEMA, encryption_key=_key())
-        foreign = ConnectionStore(cfg, ConnectionTypes.discover(), pool)
+        foreign = ConnectionStore(pool, SCHEMA, _cipher(), ConnectionTypes.discover())
 
         result = await Guarded.failure(
             Guarded(call_stand, foreign).pg(None), connection="main"

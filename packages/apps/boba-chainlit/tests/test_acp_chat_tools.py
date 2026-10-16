@@ -143,7 +143,6 @@ def app(
     llm_port: int,
     fake_llm: None,
     db_name: str,
-    stand: Stand,
 ) -> Iterator[StandProcess]:
     workdir = tmp_path_factory.mktemp("acp-tools-stand")
     config = StandConfig(
@@ -152,7 +151,6 @@ def app(
         app_port=free_port(),
         llm_port=llm_port,
         db_name=db_name,
-        agent_history=AgentHistoryStand(stand).document(),
         agent_chat_mcp=True,
         service_plugins=SERVICE_PLUGINS,
     )
@@ -586,7 +584,6 @@ def local_app(
     llm_port: int,
     fake_llm: None,
     db_name: str,
-    stand: Stand,
 ) -> Iterator[StandProcess]:
     """Второй стенд чата над той же базой: на сервис он и его агент входят
     учёткой агента (local), а токен сервиса живёт несколько секунд."""
@@ -597,7 +594,6 @@ def local_app(
         app_port=free_port(),
         llm_port=llm_port,
         db_name=db_name,
-        agent_history=AgentHistoryStand(stand).document(),
         agent_chat_mcp=True,
         service_plugins=SERVICE_PLUGINS,
         agent_auth=StandAgentAuth.LOCAL,

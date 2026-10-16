@@ -653,12 +653,12 @@ async def layer(
     data_bus: MemoryMessageBus,
     runtime_stand: StandRefs,
 ) -> PostgresDataLayer:
-    schema = app_config.data_layer.db_schema
+    schema = app_config.db_schema
     async with pool.connection() as conn:
         await conn.execute(
             sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(sql.Identifier(schema))
         )
-    tables = ChatTables.of(app_config.data_layer.postgres, schema, pool)
+    tables = ChatTables.of(app_config.postgres, schema, pool)
     await tables.setup()
     data_layer = PostgresDataLayer(
         users=tables.users,
