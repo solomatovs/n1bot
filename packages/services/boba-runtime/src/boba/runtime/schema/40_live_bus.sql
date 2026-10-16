@@ -1,6 +1,6 @@
 create unlogged table if not exists {schema}.live_instances (
     instance_id  text primary key,
-    app          text not null check (app in ('chainlit')),
+    app          text not null check (app in ('aid')),
     host         text not null,
     started_at   timestamptz not null default now(),
     heartbeat_at timestamptz not null default now()
