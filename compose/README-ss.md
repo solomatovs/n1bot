@@ -5,6 +5,36 @@
 [docs/admin-guide.md](../docs/admin-guide.md); здесь только местные значения и
 отличия, со ссылками на его разделы.
 
+## Две версии рядом
+
+На машине живут две версии boba, и запускаются они по очереди.
+
+Старая версия — ветка `dev`: чат chainlit, который сам исполняет инструменты, и
+приложение studio. Её деревья — `compose/chainlit`, `compose/studio`,
+`debug/chainlit` и `debug/studio`, базы PostgreSQL — `boba` у compose и
+`boba_debug` у отладки.
+
+Новая версия — ветка `refactoring/chainlit_agent` и её потомки: чат aid с
+процессом-агентом и сервис инструментов boba-mcp; studio в неё не входит. Её
+деревья — `compose/aid`, `compose/mcp`, `debug/aid` и `debug/mcp`, базы — `aid` у
+compose и `aid_debug` у отладки. В VS Code новую версию запускают цели
+`launch.json` «Aid: agent» (чат), «MCP: tools service» (boba-mcp), «Aid: aid +
+mcp» (оба процесса сразу), «tool (aid)» и «pytest (aid): …».
+
+Базу каждая версия выбирает сама. В site.toml есть оба ключа: `pg_database`
+(`boba` или `boba_debug`) читает общий конфиг dev, `aid_database` (`aid` или
+`aid_debug`) — общий конфиг новой версии. Поэтому один и тот же site.toml годится
+чату обеих версий, и деревьям чата новой версии (`compose/aid`, `debug/aid`)
+достаточно своего каталога `conf` с копией site.toml соответствующего дерева dev
+(`compose/chainlit`, `debug/chainlit`). У `compose/mcp` и `debug/mcp` свой
+site.toml. Перенос данных из базы dev в базу новой версии
+описан в `build/scripts/migrations/2026-10-16-chat-agent-cutover/README.md`.
+
+Одновременно обе версии не запускаются. Контейнер чата новой версии называется
+так же, как у dev, — `chainlit` (второй узел `chainlit2`), и получает тот же
+адрес: на это имя рассчитана карта доступа к PostgreSQL (раздел «Сеть»). Отладка
+чата обеих версий слушает порт 8601, потому что порт задаёт тот же site.toml.
+
 ## Пользователь и демон
 
 Репозиторий — `/mnt/store/ss/docker/compose/boba`, владелец `ss` (uid 10003).
@@ -23,7 +53,7 @@
 пространства имён демона, где `ss` — это root:
 
     nsenter -U --preserve-credentials -t $(cat $XDG_RUNTIME_DIR/dockerd-rootless/child_pid) \
-        chown -R 1000:0 /mnt/store/ss/docker/compose/boba/compose/studio/app_root
+        chown -R 1000:0 /mnt/store/ss/docker/compose/boba/compose/mcp/data
 
 ## Сеть
 
@@ -38,19 +68,21 @@
 
 | Контейнер | `BOBA_ADDRESS` | Второй узел, `BOBA_ADDRESS_2` |
 |---|---|---|
-| `chainlit` | 10.118.0.6 | 10.118.0.36 (`chainlit2`) |
-| `boba-mcp` | 10.118.0.30 | 10.118.0.31 (`boba-mcp2`) |
-| `studio` | 10.118.0.12 | — |
+| `chainlit` (чат dev или aid) | 10.118.0.6 | 10.118.0.36 (`chainlit2`) |
+| `boba-mcp` (только новая версия) | 10.118.0.30 | 10.118.0.31 (`boba-mcp2`) |
+| `studio` (только dev) | 10.118.0.12 | — |
 
 Адреса закреплены, потому что на них ссылается карта доступа между сетями
 (`/mnt/store/ss/docker/compose/network-map.conf`, её применяют юниты
 `docker-netmap-*`). Карта пускает к PostgreSQL только контейнеры с именами
 `chainlit`, `studio` и `boba-mcp`: контейнер с другим именем или адресом до
 базы не дойдёт и остановится с `PostgresError: ... couldn't get a connection`
-(руководство, раздел 12). Вторые узлы обычно не запущены.
+(руководство, раздел 12). Поэтому контейнер чата новой версии сохраняет имя
+`chainlit`, а версии в compose идут по очереди. Вторые узлы обычно не запущены.
 
-Снаружи приложения отдаёт контейнер `nginx`: `https://loshara.com/boba/`,
-`/boba-mcp/health`, `/boba-studio/api/openapi.json`. Его конфигурация —
+Снаружи приложения отдаёт контейнер `nginx`: `https://loshara.com/boba/` — чат
+той версии, что запущена, `/boba-mcp/health` — boba-mcp новой версии,
+`/boba-studio/` — studio версии dev. Его конфигурация —
 `/mnt/store/ss/docker/compose/nginx/conf/conf.d/locations/boba.conf`
 (руководство, раздел 13).
 
@@ -59,10 +91,11 @@
 старте контейнера означает, что лимит исчерпан: остановить ненужные контейнеры
 либо поднять лимит.
 
-Dev-сервер фронта (руководство, раздел 8, «Фронт») по той же причине
-подключается к сети `ss` под именем `boba-web-dev`; это записано в
-`build/conf/local.mk`, а в site.toml отладки studio стоит
-`workflow_page = "http://boba-web-dev:5173"`.
+Dev-сервер страницы workflow есть только у версии dev (`make -C build/studio
+web-dev` в её дереве). По той же причине он подключается к сети `ss` под именем
+`boba-web-dev`; это записано в `build/conf/local.mk`, а в site.toml отладки
+studio стоит `workflow_page = "http://boba-web-dev:5173"`. Сборка новой версии
+этих переменных не читает.
 
 ## Cgroup
 
@@ -70,9 +103,10 @@ Dev-сервер фронта (руководство, раздел 8, «Фро�
 `/usr/local/bin/boba-cgroup-setup.sh`, его запускает системный юнит
 `boba-cgroup.service` при загрузке.
 
-Юниты песочницы: `boba-sandbox@mcp`, `boba-sandbox@studio` — для контейнеров,
-`boba-sandbox@debug` — для отладки. Перезапускать их под работающим
-приложением нельзя (руководство, раздел 9).
+Юниты песочницы: `boba-sandbox@mcp` — для контейнера boba-mcp,
+`boba-sandbox@debug` — для отладки; `boba-sandbox@studio` нужен только studio
+версии dev. Перезапускать их под работающим приложением нельзя (руководство,
+раздел 9).
 
 В логе boba-mcp на каждом вызове есть строка `clone3 into cgroup refused ...
 Function not implemented, falling back to fork`. Это не ошибка: seccomp-профиль
@@ -86,9 +120,10 @@ Function not implemented, falling back to fork`. Это не ошибка: secco
 
 ## Сборка
 
-Базовые образы `dmp/python:3.11-dist`, `dmp/glibc:2.28`, `dmp/gcc:8.5.0`,
-`dmp/nodejs:20`, `dmp/nodejs:22` загружены в демон `ss`. Машина общая: сборку
-запускают по одной, с `JOBS` не больше 12.
+Базовые образы `dmp/python:3.11-dist`, `dmp/glibc:2.28`, `dmp/gcc:8.5.0` и
+`dmp/nodejs:20` загружены в демон `ss`; `dmp/nodejs:22` там же нужен только
+сборке studio версии dev. Машина общая: сборку запускают по одной, с `JOBS` не
+больше 12.
 
 Система машины — Arch Linux, в ней нет библиотек базового образа
 (`libssl.so.1.1`, `libffi.so.6`), поэтому дерево релиза для запуска юнитами
@@ -96,7 +131,9 @@ Function not implemented, falling back to fork`. Это не ошибка: secco
 
 ## Отладка
 
-Порты отладки: чат 8601, studio 8602, boba-mcp 8651. Соседний пользователь
+Порты отладки: чат 8601 (у обеих версий: порт задаёт site.toml, одинаковый у
+`debug/chainlit` и `debug/aid`), boba-mcp 8651, studio версии dev 8602. База отладки
+новой версии — `aid_debug`, версии dev — `boba_debug`. Соседний пользователь
 машины отлаживает свой чат на 8611. Keytab сервиса отладка читает из
 `compose/<приложение>/conf/krb`: владелец файла — 625287, группа `ss`, режим
 `0440`.
