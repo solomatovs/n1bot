@@ -44,7 +44,7 @@ class Repository:
     def __init__(self, root: Path) -> None:
         self._projects = list(self._load(root))
         if not self._projects:
-            raise SystemExit(f"no pyproject.toml under {root}")
+            raise SystemExit(f"version.py: в {root} нет ни одного pyproject.toml")
 
     def _load(self, root: Path) -> Iterator[Project]:
         for path in sorted(root.rglob("pyproject.toml")):
@@ -64,7 +64,10 @@ class Repository:
     def version(self) -> str:
         versions = sorted({project.version for project in self._projects})
         if len(versions) != 1:
-            raise SystemExit(f"package versions diverged: {', '.join(versions)}")
+            raise SystemExit(
+                f"version.py: версии пакетов разошлись: {', '.join(versions)} — "
+                "сведи их: make version-set VER=X.Y.Z"
+            )
 
         return versions[0]
 
@@ -72,7 +75,7 @@ class Repository:
     def requires_python(self) -> str:
         found = re.match(r">=([0-9]+\.[0-9]+)", self._projects[0].requires_python)
         if found is None:
-            msg = f"requires-python is not '>=X.Y' in {self._projects[0].path}"
+            msg = f"{self._projects[0].path}: requires-python не вида '>=X.Y'"
             raise SystemExit(msg)
 
         return found.group(1)
@@ -82,16 +85,16 @@ class Repository:
         given = self._parse_python(candidate)
         if given < required:
             raise SystemExit(
-                f"python {candidate} is older than requires-python "
-                f">={self.requires_python}"
+                f"python {candidate} ниже, чем требует requires-python "
+                f">={self.requires_python}: задай PYTHON_VERSION"
             )
 
-        return f"python-check: {candidate} >= {self.requires_python} - ok"
+        return f"python-check: {candidate} >= {self.requires_python} — в порядке"
 
     def _parse_python(self, text: str) -> tuple[int, int]:
         found = re.fullmatch(r"([0-9]+)\.([0-9]+)", text)
         if found is None:
-            raise SystemExit(f"python version must be X.Y, not '{text}'")
+            raise SystemExit(f"версия python ждётся вида X.Y, получено '{text}'")
 
         return int(found.group(1)), int(found.group(2))
 
@@ -100,10 +103,13 @@ class Repository:
         for project in self._projects:
             for pin in project.pins:
                 if pin != version:
-                    msg = f"{project.path}: boba-* pinned to {pin}, expected {version}"
+                    msg = (
+                        f"{project.path}: пин boba-* {pin}, ждётся {version} — "
+                        "make version-set"
+                    )
                     raise SystemExit(msg)
 
-        return f"version-check: {version}, {len(self._projects)} packages - ok"
+        return f"version-check: {version}, пакетов {len(self._projects)} — в порядке"
 
     def set(self, new: str) -> str:
         """Одна версия и пины во всех пакетах; разошедшиеся версии тоже сводит."""
@@ -119,7 +125,7 @@ class Repository:
 
             project.path.write_text(text, encoding="utf-8")
 
-        return f">>> {', '.join(old)} -> {new} in {len(self._projects)} packages"
+        return f">>> {', '.join(old)} -> {new}, пакетов {len(self._projects)}"
 
 
 def main(argv: list[str]) -> int:
@@ -143,7 +149,7 @@ def main(argv: list[str]) -> int:
         return 0
 
     if len(argv) < 4:
-        raise SystemExit(f"usage: version.py {command} <packages root> <argument>")
+        raise SystemExit(f"вызов: version.py {command} <каталог packages> <аргумент>")
 
     if command is Command.PYTHON_CHECK:
         print(repository.python_check(argv[3]))

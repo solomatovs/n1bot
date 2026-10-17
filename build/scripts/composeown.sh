@@ -23,10 +23,6 @@ unshare --user --map-root-user --map-auto /bin/bash -euc '
     find "$tree/conf" -uid 0 -exec chgrp "$gid" {} +
     find "$tree/conf" -uid 0 -type d -exec chmod g+rxs,o-rwx {} +
     find "$tree/conf" -uid 0 -type f -exec chmod g+r,o-rwx {} +
-    for dir in "$tree/data" "$tree/app_root"; do
-        if [ -d "$dir" ]; then
-            find "$dir" -maxdepth 1 -uid 0 -type d -exec chown "$uid:0" {} + -exec chmod g+rwxs {} +
-        fi
-    done
+    find "$tree/data" -maxdepth 1 -uid 0 -type d -exec chown "$uid:0" {} + -exec chmod g+rwxs {} +
 ' composeown "$tree" "$uid" "$gid"
 echo "    владельцы: $tree/conf читает группа $gid контейнера, в $tree/data пишет его пользователь $uid"

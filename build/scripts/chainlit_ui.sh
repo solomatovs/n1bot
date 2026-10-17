@@ -3,7 +3,7 @@
 # workspace — react-client, app (фронт) и copilot (виджет), как pnpm build у upstream.
 # custom_build в chainlit заменяет весь UI: и фронт, и copilot ищутся в одном каталоге.
 # Зависимости pnpm ставит из реестра npm образа nodejs (в закрытом контуре — nexus);
-# store лежит в $WORK/store: стадия Dockerfile держит $WORK cache mount'ом между сборками.
+# store лежит в $WORK/store и живёт один запуск: стадия Dockerfile удаляет его тем же шагом.
 #   chainlit_ui.sh <src.tar.gz> <overlay> <out>
 # Запускается в образе nodejs (node + pnpm), как стадией Dockerfile, так и целью make.
 set -eu
@@ -13,7 +13,7 @@ PNPM_OPTS="--frozen-lockfile --config.package-manager-strict=false --filter @cha
 WORK="${UI_WORK:-/tmp/chainlit-ui}"
 
 if [ $# -ne 3 ]; then
-    echo "usage: chainlit_ui.sh <src.tar.gz> <overlay> <out>" >&2
+    echo "вызов: chainlit_ui.sh <src.tar.gz> <overlay> <out>" >&2
     exit 2
 fi
 
@@ -43,7 +43,7 @@ patch_index() {
 check_ui() {
     for name in index.html index.js; do
         if [ ! -f "$1/$name" ]; then
-            echo "chainlit_ui.sh: $1/$name is missing — the ui build is incomplete" >&2
+            echo "chainlit_ui.sh: нет $1/$name — сборка UI неполная, смотри вывод pnpm выше" >&2
             exit 1
         fi
     done

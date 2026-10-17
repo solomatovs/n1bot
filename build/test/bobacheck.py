@@ -1,372 +1,592 @@
-#!/usr/local/bin/python3
-"""Проверка работоспособности собранного портативного каталога boba:
-интерпретатор, установленные пакеты (boba-* и внешние),
-консольные точки входа, OCR-модели и внешние инструменты (magick, soffice, gs).
+"""Проверка собранного образа приложения boba (make test): интерпретатор, пакеты boba-*,
+консольные точки входа; у приложения с песочницей — образы корней плагинов и модели
+рядом с релизом, у чата — ход агента boba с моделью проверки.
 
-Запускается с окружением установки (make test):
-  set -a; . conf/boba.env; set +a
-  python3 test/bobacheck.py --names <файл со списком имён пакетов boba>
-
-Список имён пакетов берётся из образа (app/packages.txt); если его нет —
-сканируются исходники (--packages).
+Скрипт идёт на stdin интерпретатора образа с окружением conf/boba.env, без сети:
+  python3 - --app aid|mcp --base /app/boba --names <app/packages.txt> \
+    [--sandbox --ocr <модель>...]
+Последняя строка вывода — RESULT: ALL OK либо RESULT: FAIL со списком проваленных
+проверок.
 """
 
+from __future__ import annotations
+
 import argparse
+import functools
+import glob
+import importlib
+import importlib.metadata
 import importlib.util
+import itertools
 import json
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
-
-# chainlit на импорте создаёт .chainlit/.files в cwd — уводим в /tmp
-os.environ.setdefault("CHAINLIT_APP_ROOT", "/tmp")
-
-parser = argparse.ArgumentParser()
-parser.add_argument(
-    "--names", default=None, help="файл со списком имён пакетов boba (строка = имя)"
-)
-parser.add_argument(
-    "--packages",
-    default="/app/packages",
-    help="каталог с исходниками boba (если нет --names)",
-)
-parser.add_argument("--app", required=True, help="приложение: aid или mcp")
-parser.add_argument(
-    "--sandbox",
-    action="store_true",
-    help="приложение исполняет инструменты: проверять образы плагинов и их модели",
-)
-args = parser.parse_args()
-
-APP = args.app
-SANDBOX = args.sandbox
-PACKAGES_DIR = args.packages
-NAMES_FILE = args.names
-# каталог установки: в контейнере его несёт ENV образа BOBA_DIR
-BASE_DIR: str = os.environ.get("BOBA_BASE") or os.environ["BOBA_DIR"]
-
-failures = []
+import threading
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from dataclasses import dataclass
+from enum import StrEnum
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from typing import Any, ClassVar
 
 
-def check(name, fn):
-    try:
-        fn()
-        print(f"  OK   {name}")
-    except Exception as e:  # тест, ловим всё намеренно
-        print(f"  FAIL {name}: {e!r}")
-        failures.append(name)
+class ImageCheckError(Exception):
+    """Отказ одной проверки образа: текст уходит в строку FAIL отчёта."""
 
 
-def warn(name, fn):
-    try:
-        fn()
-        print(f"  OK   {name}")
-    except Exception as e:
-        print(f"  WARN {name}: {e!r}")
+class App(StrEnum):
+    """Приложение образа: от него зависят сторонние пакеты и проверка агента."""
+
+    AID = "aid"
+    MCP = "mcp"
+
+    @property
+    def third_party(self) -> tuple[str, ...]:
+        if self is App.AID:
+            return ("pydantic", "fastapi", "chainlit")
+        return ("pydantic", "fastmcp")
 
 
-def run(*argv):
-    out = subprocess.run(argv, capture_output=True, text=True, timeout=90)
-    if out.returncode != 0:
-        raise RuntimeError((out.stderr or out.stdout).strip().splitlines()[-1:])
-    return (out.stdout or out.stderr).strip().splitlines()[0]
+class SandboxOnly(StrEnum):
+    """Модули разбора и эмбеддинга, которым место в песочнице, а не у приложения."""
+
+    PYPDFIUM2 = "pypdfium2"
+    RAPIDOCR = "rapidocr"
+    MARKDOWNIFY = "markdownify"
+    BS4 = "bs4"
+    FASTEMBED = "fastembed"
+    ONNXRUNTIME = "onnxruntime"
+    PANDAS = "pandas"
+    OPENPYXL = "openpyxl"
 
 
-print("== interpreter ==")
-print(f"  python     : {sys.version.split()[0]}")
-print(f"  executable : {sys.executable}")
+class BareEnv(StrEnum):
+    """Переменные окружения, которые SDK ACP оставляет процессу агента."""
 
-# 2) внешние зависимости, поставленные offline из wheelhouse
-print("== third-party imports ==")
-import glob
-import importlib
-
-THIRD_PARTY = {
-    "aid": ["pydantic", "fastapi", "chainlit"],
-    "mcp": ["pydantic", "fastmcp"],
-}
-for m in THIRD_PARTY[APP]:
-    check(f"import {m}", lambda m=m: importlib.import_module(m))
-
-# 3) все пакеты boba установлены (без импорта кода — только метаданные).
-# Список имён берём из стадии deps (names.txt) либо из исходников — не хардкодим.
-print("== boba distributions installed ==")
-import importlib.metadata as md
-import tomllib
+    HOME = "HOME"
+    LOGNAME = "LOGNAME"
+    PATH = "PATH"
+    SHELL = "SHELL"
+    TERM = "TERM"
+    USER = "USER"
 
 
-def package_names():
-    if NAMES_FILE and os.path.isfile(NAMES_FILE):
-        with open(NAMES_FILE, encoding="utf-8") as f:
-            return sorted(line.strip() for line in f if line.strip())
-    names = []
-    for root, _dirs, files in os.walk(PACKAGES_DIR):
-        if "pyproject.toml" not in files:
-            continue
-        with open(os.path.join(root, "pyproject.toml"), "rb") as f:
-            names.append(tomllib.load(f)["project"]["name"])
-    return sorted(names)
+@dataclass(frozen=True)
+class Options:
+    """Разобранный вызов проверки: приложение, корень релиза в образе, список пакетов
+    boba из образа, файлы моделей OCR и команда агента (только у чата)."""
+
+    app: App
+    base: Path
+    names: Sequence[str]
+    sandbox: bool
+    ocr: Sequence[str]
+    agent: str
 
 
-required = package_names()
-installed = {d.metadata["Name"].lower() for d in md.distributions()}
-source = NAMES_FILE or PACKAGES_DIR
-print(
-    f"  пакетов boba: {len(required)}, "
-    f"установлено boba-*: {sum(1 for n in installed if n.startswith('boba-'))}"
-)
-check(
-    f"список пакетов из {source}",
-    lambda: (
-        (_ for _ in ()).throw(RuntimeError("список пуст")) if not required else None
-    ),
-)
-for dist in required:
-    check(f"dist {dist}", lambda dist=dist: md.version(dist))
+class OptionsParser:
+    """Разбор аргументов и окружения проверки в Options: список пакетов читается здесь
+    же, команду агента чата называет BOBA_AGENT_COMMAND из conf/boba.env."""
 
-# 4) консольные точки входа — список берём из метаданных пакетов, не хардкодим
-print("== console scripts ==")
-scripts = sorted(
-    ep.name
-    for dist in md.distributions()
-    if dist.metadata["Name"].lower().startswith("boba-")
-    for ep in dist.entry_points
-    if ep.group == "console_scripts"
-)
-print(f"  объявлено в пакетах: {len(scripts)}")
-for script in scripts:
-    check(
-        f"which {script}",
-        lambda script=script: (
-            (_ for _ in ()).throw(RuntimeError("not found"))
-            if shutil.which(script) is None
-            else None
-        ),
-    )
+    AGENT_VAR: ClassVar[str] = "BOBA_AGENT_COMMAND"
 
-# 5) парсеры в окружении приложения: разбор идёт в песочнице, приложению
-# они не нужны. Пока app-site и sandbox-site ставят один список пакетов,
-# payload-зависимости tool-пакетов лежат и в venv приложения — поэтому
-# предупреждение, а не отказ
-print("== parsers stay in sandbox ==")
+    def __init__(self) -> None:
+        self._parser = argparse.ArgumentParser(prog="bobacheck")
+        self._parser.add_argument("--app", required=True, choices=list(App))
+        self._parser.add_argument("--base", required=True, type=Path)
+        self._parser.add_argument("--names", required=True, type=Path)
+        self._parser.add_argument("--sandbox", action="store_true")
+        self._parser.add_argument("--ocr", nargs="+", default=[])
 
+    def parse(self, argv: Sequence[str]) -> Options:
+        args = self._parser.parse_args(argv)
+        app = App(args.app)
+        names_file: Path = args.names
 
-def t_absent(module):
-    if importlib.util.find_spec(module) is not None:
-        raise RuntimeError(f"{module} в окружении приложения (его тянут tool-пакеты)")
+        if not names_file.is_file():
+            self._parser.error(
+                f"нет списка пакетов {names_file}: его пишет стадия app-site"
+            )
 
+        agent = ""
+        if app is App.AID:
+            agent = os.environ.get(self.AGENT_VAR, "")
+        if app is App.AID and not agent:
+            self._parser.error(
+                f"у чата нет {self.AGENT_VAR} в окружении: проверь conf/boba.env"
+            )
 
-for module in [
-    "pypdfium2",
-    "rapidocr",
-    "markdownify",
-    "bs4",
-    "fastembed",
-    "onnxruntime",
-    "pandas",
-    "openpyxl",
-]:
-    warn(f"нет {module} в приложении", lambda m=module: t_absent(m))
+        return Options(
+            app=app,
+            base=args.base,
+            names=self._names(names_file),
+            sandbox=args.sandbox,
+            ocr=tuple(args.ocr),
+            agent=agent,
+        )
 
-# 6) локальные модели onnxruntime-genai (только чат): лежат в релизе и грузятся без сети
-MODELS_DIR = os.path.join(BASE_DIR, "models", "onnx-genai")
+    def _names(self, path: Path) -> tuple[str, ...]:
+        lines = path.read_text(encoding="utf-8").splitlines()
+        names = sorted(self._stripped(lines))
+        return tuple(names)
+
+    def _stripped(self, lines: Sequence[str]) -> Iterator[str]:
+        for line in lines:
+            name = line.strip()
+            if not name:
+                continue
+            yield name
 
 
-def t_models_present():
-    if not os.path.isdir(MODELS_DIR):
-        raise RuntimeError(f"нет каталога {MODELS_DIR}")
+class Report:
+    """Отчёт проверки: строка на проверку; проваленные копятся до строки RESULT."""
 
-    names = sorted(os.listdir(MODELS_DIR))
-    if not names:
-        raise RuntimeError(f"пусто: {MODELS_DIR}")
+    def __init__(self) -> None:
+        self._failures: list[str] = []
 
-    for name in names:
-        config = os.path.join(MODELS_DIR, name, "genai_config.json")
-        if not os.path.isfile(config):
-            raise RuntimeError(f"нет {config}")
+    def section(self, title: str) -> None:
+        print(f"== {title} ==", flush=True)
 
+    def note(self, label: str, value: object) -> None:
+        print(f"  {label:<11}: {value}", flush=True)
 
-def t_model_loads_offline():
-    os.environ["HF_HUB_OFFLINE"] = "1"
-    # библиотека без аннотаций: берём модуль динамически, как boba.llm.local
-    og = importlib.import_module("onnxruntime_genai")
+    def check(self, name: str, probe: Callable[[], str]) -> None:
+        # граница проверки: любой отказ становится строкой FAIL с причиной, а не обрывом
+        try:
+            detail = probe()
+        except Exception as exc:
+            print(f"  FAIL {name}: {exc}", flush=True)
+            self._failures.append(name)
+            return
 
-    name = sorted(os.listdir(MODELS_DIR))[0]
-    model = og.Model(og.Config(os.path.join(MODELS_DIR, name)))
-    tokenizer = og.Tokenizer(model)
-    # encode отдаёт numpy-массив: истинность массива не определена, считаем длину
-    encoded = tokenizer.encode("offline check")
-    if len(encoded) == 0:
-        raise RuntimeError(f"{name}: токенайзер не кодирует")
+        print(f"  OK   {name}{self._suffix(detail)}", flush=True)
 
+    def warn(self, name: str, probe: Callable[[], str]) -> None:
+        try:
+            detail = probe()
+        except Exception as exc:
+            print(f"  WARN {name}: {exc}", flush=True)
+            return
 
-if APP == "aid":
-    print("== local onnx-genai models ==")
-    check("models present with genai_config.json", t_models_present)
-    check("smallest model loads offline", t_model_loads_offline)
+        print(f"  OK   {name}{self._suffix(detail)}", flush=True)
 
-# 7) образы корня плагинов: по одному rootfs.ext4 на пакет с entry point boba.tools;
-# они, веса эмбеддера и модели OCR есть только у приложения, исполняющего инструменты
-PLUGINS_DIR = os.path.join(BASE_DIR, "sandbox", "plugins")
+    def result(self) -> int:
+        print()
+        if self._failures:
+            print(f"RESULT: FAIL ({len(self._failures)}): {', '.join(self._failures)}")
+            return 1
 
+        print("RESULT: ALL OK")
+        return 0
 
-def t_plugin_images_present():
-    if not os.path.isdir(PLUGINS_DIR):
-        raise RuntimeError(f"нет каталога {PLUGINS_DIR}")
-
-    images = []
-    for name in sorted(os.listdir(PLUGINS_DIR)):
-        if os.path.isfile(os.path.join(PLUGINS_DIR, name, "rootfs.ext4")):
-            images.append(name)
-
-    if not images:
-        raise RuntimeError(f"нет ни одного rootfs.ext4 в {PLUGINS_DIR}")
-
-    print(f"  образов плагинов: {len(images)}")
+    def _suffix(self, detail: str) -> str:
+        if not detail:
+            return ""
+        return f" — {detail}"
 
 
-if SANDBOX:
-    print("== plugin rootfs images ==")
-    check("plugin images present", t_plugin_images_present)
+class CheckModel(BaseHTTPRequestHandler):
+    """Модель проверки: на любой POST отвечает OpenAI-совместимым потоком SSE из одной
+    реплики ANSWER и конца хода. Её поднимает AgentTurn на 127.0.0.1 в своём процессе:
+    сети у контейнера проверки нет."""
 
-# 8) веса эмбеддера: лежат в релизе рядом с моделями и едут биндом в песочницы,
-# где считается эмбеддинг: поиск kb и индексация confluence
-EMBED_DIR = os.path.join(BASE_DIR, "models", "fastembed")
-EMBED_PACKAGES = ("boba-tool-knowledge", "boba-tool-confluence")
+    ANSWER: ClassVar[str] = "pong from the check model"
 
+    def do_POST(self) -> None:
+        self.rfile.read(int(self.headers["Content-Length"]))
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
+        for chunk in self._chunks():
+            self.wfile.write(f"data: {json.dumps(chunk)}\n\n".encode())
 
-def t_embed_weights_shipped():
-    if not os.path.isdir(EMBED_DIR):
-        raise RuntimeError(f"нет каталога {EMBED_DIR}")
+        self.wfile.write(b"data: [DONE]\n\n")
+        self.wfile.flush()
 
-    pattern = os.path.join(EMBED_DIR, "models--*", "**", "*.onnx")
-    weights = glob.glob(pattern, recursive=True)
-    if not weights:
-        raise RuntimeError(f"нет весов *.onnx в {EMBED_DIR}")
+    def log_message(self, format: str, *args: Any) -> None:  # noqa: A002 — сигнатура http.server
+        return
 
-    for package in EMBED_PACKAGES:
-        image = os.path.join(PLUGINS_DIR, package, "rootfs.ext4")
-        if not os.path.isfile(image):
-            raise RuntimeError(f"нет образа {image}")
-
-    print(f"  файлов весов: {len(weights)}")
-
-
-if SANDBOX:
-    print("== fastembed weights shipped next to the models ==")
-    check("weights shipped", t_embed_weights_shipped)
-
-# 9) модели OCR: детектор, классификатор и распознаватель по языку лежат в релизе
-# и едут биндом в песочницы чтения документов и confluence
-OCR_DIR = os.path.join(BASE_DIR, "models", "rapidocr")
-OCR_MODELS = (
-    "ch_PP-OCRv5_det_mobile.onnx",
-    "ch_ppocr_mobile_v2.0_cls_mobile.onnx",
-    "eslav_PP-OCRv5_rec_mobile.onnx",
-)
-OCR_PACKAGES = ("boba-tool-doc", "boba-tool-confluence")
+    def _chunks(self) -> Iterator[Mapping[str, object]]:
+        delta = {"role": "assistant", "content": self.ANSWER}
+        yield {"choices": [{"index": 0, "delta": delta, "finish_reason": None}]}
+        usage = {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+        end = {"index": 0, "delta": {"content": ""}, "finish_reason": "stop"}
+        yield {"choices": [end], "usage": usage}
 
 
-def t_ocr_models_shipped():
-    if not os.path.isdir(OCR_DIR):
-        raise RuntimeError(f"нет каталога {OCR_DIR}")
+@dataclass(frozen=True)
+class TurnOutcome:
+    """Итог хода агента: кто ответил (имя и версия из initialize), что сказал и чем
+    кончил ход (stopReason последнего state_update idle)."""
 
-    for name in OCR_MODELS:
-        if not os.path.isfile(os.path.join(OCR_DIR, name)):
-            raise RuntimeError(f"нет модели {name} в {OCR_DIR}")
-
-    for package in OCR_PACKAGES:
-        image = os.path.join(PLUGINS_DIR, package, "rootfs.ext4")
-        if not os.path.isfile(image):
-            raise RuntimeError(f"нет образа {image}")
-
-    print(f"  моделей: {len(OCR_MODELS)}")
+    agent: str
+    answer: str
+    stop_reason: str
 
 
-if SANDBOX:
-    print("== rapidocr models shipped next to the models ==")
-    check("ocr models shipped", t_ocr_models_shipped)
+class AgentTurn:
+    """Ход агента чата так, как его запускает чат: команда из BOBA_AGENT_COMMAND в
+    окружении BareEnv, ACP v2 по stdio — initialize, session/new, session/prompt и поток
+    session/update до state_update idle. Модель — CheckModel в потоке этого процесса;
+    уведомления, пришедшие раньше ответа на запрос, ждут разбора в очереди."""
 
-# 10) агент чата: бинарник из BOBA_AGENT_COMMAND стартует в окружении, которое
-# SDK ACP оставляет ребёнку, и проходит рукопожатие initialize версии 2
-AGENT_ENV = ("HOME", "LOGNAME", "PATH", "SHELL", "TERM", "USER")
-AGENT_PROTOCOL = 2
-AGENT_SETTINGS = {
-    "model": "check",
-    "models": {
-        "check": {
-            "provider": {"kind": "openai", "baseUrl": "http://127.0.0.1:9/v1"},
-            "model": "check",
-            "contextWindow": 8000,
+    PROTOCOL: ClassVar[int] = 2
+    DEADLINE_SEC: ClassVar[float] = 120.0
+    LOG_TAIL: ClassVar[int] = 1500
+
+    def __init__(self, command: str) -> None:
+        self._command = command
+        self._ids = itertools.count(1)
+        self._backlog: list[Mapping[str, Any]] = []
+
+    def run(self, workdir: Path) -> TurnOutcome:
+        server = ThreadingHTTPServer(("127.0.0.1", 0), CheckModel)
+        serving = threading.Thread(target=server.serve_forever, daemon=True)
+        serving.start()
+        try:
+            settings = self._settings(workdir, server.server_port)
+            return self._talk(workdir, settings)
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def _settings(self, workdir: Path, port: int) -> Path:
+        provider = {
+            "kind": "openai",
+            "baseUrl": f"http://127.0.0.1:{port}/v1",
+            "apiKey": "check",
+        }
+        model = {
+            "provider": provider,
+            "model": "check-model",
+            "contextWindow": 32000,
             "maxOutputTokens": 512,
         }
-    },
-    "history": {"kind": "memory"},
-}
-AGENT_INITIALIZE = {
-    "jsonrpc": "2.0",
-    "id": 1,
-    "method": "initialize",
-    "params": {
-        "protocolVersion": AGENT_PROTOCOL,
-        "info": {"name": "bobacheck", "version": "0"},
-        "capabilities": {},
-    },
-}
-
-
-def t_agent_handshake():
-    command = os.environ["BOBA_AGENT_COMMAND"]
-    bare = {name: os.environ[name] for name in AGENT_ENV if name in os.environ}
-    with tempfile.TemporaryDirectory() as workdir:
-        settings = os.path.join(workdir, "settings.json")
-        descriptor = os.open(settings, os.O_WRONLY | os.O_CREAT, 0o600)
+        document = {
+            "model": "check",
+            "models": {"check": model},
+            "history": {"kind": "memory"},
+            "permissions": {"defaultMode": "bypassPermissions", "allowBypass": True},
+        }
+        path = workdir / "settings.json"
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            json.dump(AGENT_SETTINGS, handle)
+            json.dump(document, handle)
 
-        agent = subprocess.Popen(
-            [command, "acp", "--setting-sources", "", "--settings", settings],
-            env=bare,
-            cwd=workdir,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
+        return path
+
+    def _talk(self, workdir: Path, settings: Path) -> TurnOutcome:
+        log_path = workdir / "agent.log"
+        argv = [
+            self._command,
+            "acp",
+            "--setting-sources",
+            "",
+            "--settings",
+            str(settings),
+        ]
+        with (
+            log_path.open("w", encoding="utf-8") as log,
+            subprocess.Popen(
+                argv,
+                env=self._bare_env(),
+                cwd=workdir,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=log,
+                text=True,
+            ) as agent,
+        ):
+            watchdog = threading.Timer(self.DEADLINE_SEC, agent.kill)
+            watchdog.start()
+            try:
+                return self._converse(agent, workdir)
+            except ImageCheckError as exc:
+                agent.kill()
+                agent.wait()
+                tail = log_path.read_text(encoding="utf-8")[-self.LOG_TAIL :]
+                raise ImageCheckError(f"{exc}; журнал агента: {tail}") from exc
+            finally:
+                watchdog.cancel()
+
+    def _bare_env(self) -> dict[str, str]:
+        env: dict[str, str] = {}
+        for name in BareEnv:
+            if name in os.environ:
+                env[name] = os.environ[name]
+
+        return env
+
+    def _converse(self, agent: subprocess.Popen[str], workdir: Path) -> TurnOutcome:
+        info = {"name": "bobacheck", "version": "0"}
+        init_params = {
+            "protocolVersion": self.PROTOCOL,
+            "info": info,
+            "capabilities": {},
+        }
+        init = self._call(agent, "initialize", init_params)
+        if init["protocolVersion"] != self.PROTOCOL:
+            raise ImageCheckError(f"{self._command}: initialize ответил {init}")
+
+        name = f"{init['info']['name']} {init['info']['version']}"
+        opened = self._call(
+            agent, "session/new", {"cwd": str(workdir), "mcpServers": []}
         )
+        session = opened["sessionId"]
+        prompt = [{"type": "text", "text": "ping"}]
+        self._call(agent, "session/prompt", {"sessionId": session, "prompt": prompt})
+
+        texts: list[str] = []
+        for update in self._updates(agent):
+            texts.extend(self._texts(update))
+            if update.get("sessionUpdate") != "state_update":
+                continue
+            if update.get("state") != "idle":
+                continue
+            return TurnOutcome(
+                agent=name, answer="".join(texts), stop_reason=update["stopReason"]
+            )
+
+        raise ImageCheckError(f"{self._command}: ход кончился без state_update idle")
+
+    def _call(
+        self, agent: subprocess.Popen[str], method: str, params: Mapping[str, object]
+    ) -> Mapping[str, Any]:
+        ident = next(self._ids)
+        request = {"jsonrpc": "2.0", "id": ident, "method": method, "params": params}
+        self._send(agent, request)
+        while True:
+            message = self._read(agent)
+            if "method" in message:
+                self._backlog.append(message)
+                continue
+            if message.get("id") != ident:
+                continue
+            if "error" in message:
+                raise ImageCheckError(
+                    f"{method}: агент ответил ошибкой {message['error']}"
+                )
+            return message["result"]
+
+    def _updates(self, agent: subprocess.Popen[str]) -> Iterator[Mapping[str, Any]]:
+        while True:
+            message = self._next(agent)
+            if message.get("method") != "session/update":
+                continue
+            yield message["params"]["update"]
+
+    def _next(self, agent: subprocess.Popen[str]) -> Mapping[str, Any]:
+        if self._backlog:
+            return self._backlog.pop(0)
+        return self._read(agent)
+
+    def _texts(self, update: Mapping[str, Any]) -> Iterator[str]:
+        if update.get("sessionUpdate") not in ("agent_message_chunk", "agent_message"):
+            return
+        content = update.get("content")
+        if isinstance(content, dict):
+            yield str(content.get("text", ""))
+        if isinstance(content, list):
+            for block in content:
+                yield str(block.get("text", ""))
+
+    def _send(
+        self, agent: subprocess.Popen[str], message: Mapping[str, object]
+    ) -> None:
         stdin = agent.stdin
+        if stdin is None:
+            raise ImageCheckError(f"{self._command}: процесс агента без stdin")
+        stdin.write(json.dumps(message) + "\n")
+        stdin.flush()
+
+    def _read(self, agent: subprocess.Popen[str]) -> Mapping[str, Any]:
         stdout = agent.stdout
-        stderr = agent.stderr
-        if stdin is None or stdout is None or stderr is None:
-            raise RuntimeError(f"{command}: started without pipes")
-
-        try:
-            stdin.write(json.dumps(AGENT_INITIALIZE) + "\n")
-            stdin.flush()
-            line = stdout.readline()
-        finally:
-            stdin.close()
-            agent.wait(timeout=60)
-
-        err = stderr.read()
-
-    if not line:
-        raise RuntimeError(f"{command}: no answer to initialize: {err[-600:]}")
-
-    result = json.loads(line)["result"]
-    if result["protocolVersion"] != AGENT_PROTOCOL:
-        raise RuntimeError(f"{command}: answered protocol version {result}")
-
-    print(f"  agent      : {result['info']['name']} {result['info']['version']}")
+        if stdout is None:
+            raise ImageCheckError(f"{self._command}: процесс агента без stdout")
+        line = stdout.readline()
+        if not line:
+            raise ImageCheckError(
+                f"{self._command}: агент закрыл вывод, код {agent.poll()}"
+            )
+        return json.loads(line)
 
 
-if APP == "aid":
-    print("== agent binary in the bare ACP environment ==")
-    check("agent initialize", t_agent_handshake)
+class ImageCheck:
+    """Проверка образа приложения по разделам: каждый пишет строки в Report, итог —
+    код выхода make test. Ход агента ведёт AgentTurn, только у чата."""
 
-print()
-if failures:
-    print(f"RESULT: FAIL ({len(failures)}): {', '.join(failures)}")
-    sys.exit(1)
-print("RESULT: ALL OK")
+    TOOLS_GROUP: ClassVar[str] = "boba.tools"
+    END_TURN: ClassVar[str] = "end_turn"
+
+    def __init__(self, options: Options) -> None:
+        self._options = options
+        self._report = Report()
+        self._turn = AgentTurn(options.agent)
+        self._plugins_dir = options.base / "sandbox" / "plugins"
+        self._models_dir = options.base / "models"
+
+    def run(self) -> int:
+        self._interpreter()
+        self._third_party()
+        self._distributions()
+        self._console_scripts()
+        self._parsers()
+        if self._options.sandbox:
+            self._sandbox()
+        if self._options.app is App.AID:
+            self._agent()
+        return self._report.result()
+
+    def _interpreter(self) -> None:
+        self._report.section("интерпретатор")
+        self._report.note("python", sys.version.split()[0])
+        self._report.note("executable", sys.executable)
+
+    def _third_party(self) -> None:
+        self._report.section("сторонние пакеты")
+        for module in self._options.app.third_party:
+            self._report.check(
+                f"import {module}", functools.partial(self._import, module)
+            )
+
+    def _distributions(self) -> None:
+        self._report.section("пакеты boba")
+        self._report.check(f"список {len(self._options.names)} пакетов", self._listed)
+        for name in self._options.names:
+            self._report.check(
+                f"пакет {name}", functools.partial(importlib.metadata.version, name)
+            )
+
+    def _console_scripts(self) -> None:
+        self._report.section("консольные точки входа")
+        scripts = sorted(set(self._script_names()))
+        self._report.note("объявлено", len(scripts))
+        for script in scripts:
+            self._report.check(
+                f"which {script}", functools.partial(self._on_path, script)
+            )
+
+    def _parsers(self) -> None:
+        # у mcp их тянут пакеты плагинов: предупреждение, а не отказ
+        self._report.section("парсеры остаются в песочнице")
+        for module in SandboxOnly:
+            self._report.warn(
+                f"нет {module} у приложения", functools.partial(self._absent, module)
+            )
+
+    def _sandbox(self) -> None:
+        self._report.section(
+            "песочница: образы корней плагинов и модели рядом с релизом"
+        )
+        self._report.check("образы корней плагинов", self._plugin_images)
+        self._report.check("веса эмбеддера fastembed", self._embed_weights)
+        self._report.check("модели OCR", self._ocr_models)
+
+    def _agent(self) -> None:
+        self._report.section("ход агента чата в окружении SDK ACP")
+        self._report.check(f"ход агента {self._options.agent}", self._agent_turn)
+
+    def _import(self, module: str) -> str:
+        importlib.import_module(module)
+        return ""
+
+    def _listed(self) -> str:
+        if not self._options.names:
+            raise ImageCheckError(
+                "список пакетов пуст: стадия app-site не нашла пакетов boba"
+            )
+        return ""
+
+    def _script_names(self) -> Iterator[str]:
+        for dist in importlib.metadata.distributions():
+            if not dist.metadata["Name"].lower().startswith("boba-"):
+                continue
+            for entry in dist.entry_points:
+                if entry.group != "console_scripts":
+                    continue
+                yield entry.name
+
+    def _on_path(self, script: str) -> str:
+        found = shutil.which(script)
+        if found is None:
+            raise ImageCheckError(f"{script} нет в PATH")
+        return found
+
+    def _absent(self, module: str) -> str:
+        if importlib.util.find_spec(module) is not None:
+            raise ImageCheckError(f"{module} в окружении приложения")
+        return ""
+
+    def _plugin_names(self) -> Iterator[str]:
+        for dist in importlib.metadata.distributions():
+            groups = {entry.group for entry in dist.entry_points}
+            if self.TOOLS_GROUP not in groups:
+                continue
+            yield dist.metadata["Name"]
+
+    def _missing_images(self, names: Sequence[str]) -> Iterator[str]:
+        for name in names:
+            if (self._plugins_dir / name / "rootfs.ext4").is_file():
+                continue
+            yield name
+
+    def _plugin_images(self) -> str:
+        names = sorted(set(self._plugin_names()))
+        if not names:
+            raise ImageCheckError(
+                f"у приложения нет пакетов с entry points {self.TOOLS_GROUP}"
+            )
+
+        missing = list(self._missing_images(names))
+        if missing:
+            raise ImageCheckError(
+                f"нет rootfs.ext4 в {self._plugins_dir}: {', '.join(missing)}"
+            )
+
+        return f"образов: {len(names)}"
+
+    def _embed_weights(self) -> str:
+        root = self._models_dir / "fastembed"
+        pattern = str(root / "models--*" / "**" / "*.onnx")
+        weights = glob.glob(pattern, recursive=True)
+        if not weights:
+            raise ImageCheckError(f"нет весов *.onnx в {root}")
+        return f"файлов весов: {len(weights)}"
+
+    def _ocr_models(self) -> str:
+        root = self._models_dir / "rapidocr"
+        if not self._options.ocr:
+            raise ImageCheckError(
+                "модели OCR не названы: make test передаёт их аргументом --ocr"
+            )
+
+        for name in self._options.ocr:
+            if not (root / name).is_file():
+                raise ImageCheckError(f"нет модели {name} в {root}")
+
+        return f"моделей: {len(self._options.ocr)}"
+
+    def _agent_turn(self) -> str:
+        with tempfile.TemporaryDirectory() as workdir:
+            outcome = self._turn.run(Path(workdir))
+
+        if CheckModel.ANSWER not in outcome.answer:
+            raise ImageCheckError(
+                f"{outcome.agent}: в ответе нет реплики модели: {outcome.answer!r}"
+            )
+        if outcome.stop_reason != self.END_TURN:
+            raise ImageCheckError(
+                f"{outcome.agent}: ход кончился {outcome.stop_reason}, "
+                f"а не {self.END_TURN}"
+            )
+
+        return f"{outcome.agent} ответил {outcome.answer!r}"
+
+
+if __name__ == "__main__":
+    # chainlit на импорте создаёт .chainlit/.files в cwd: уводим в /tmp
+    os.environ["CHAINLIT_APP_ROOT"] = "/tmp"
+    sys.exit(ImageCheck(OptionsParser().parse(sys.argv[1:])).run())

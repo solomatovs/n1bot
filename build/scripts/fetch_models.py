@@ -24,7 +24,7 @@ def fetch_fastembed(model: str, cache_dir: str) -> None:
     embedding = TextEmbedding(model_name=model, cache_dir=cache_dir)
     list(embedding.embed(["probe"]))
     replaced = replace_links(pathlib.Path(cache_dir))
-    print(f">>> fastembed: {model} -> {cache_dir}, links replaced: {replaced}")
+    print(f">>> fastembed: {model} -> {cache_dir}, ссылок заменено: {replaced}")
 
 
 def replace_links(cache_dir: pathlib.Path) -> int:
@@ -62,7 +62,7 @@ def main(argv: list[str]) -> int:
 
     kind = Kind(argv[1])
     if kind is Kind.LINKS:
-        print(f">>> links replaced: {replace_links(pathlib.Path(argv[2]))}")
+        print(f">>> ссылок заменено: {replace_links(pathlib.Path(argv[2]))}")
         return 0
 
     if kind is Kind.FASTEMBED:
