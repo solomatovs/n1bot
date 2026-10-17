@@ -113,7 +113,7 @@ class ToolRefusalError(Exception, ReportedError):
         super().__init__(message)
         self.kind = kind
 
-    def failure(self) -> FailureResult:
+    def failure(self) -> ErrorResult:
         return ErrorResult(message=str(self), error_kind=self.kind)
 
 

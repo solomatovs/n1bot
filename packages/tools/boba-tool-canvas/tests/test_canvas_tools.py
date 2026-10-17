@@ -7,11 +7,10 @@ from uuid import uuid4
 
 import pytest
 
-from boba.canvas.diagram import DiagramErrorKind
+from boba.canvas.canvas import CanvasErrorKind
 from boba.canvas.keys import WorkspaceRoot
 from boba.identity.context import Scope, ScopeKind, Subject
 from boba.tool.canvas.tools import (
-    CanvasErrorKind,
     CanvasToolConfig,
     canvas_open,
     diagram_save,
@@ -185,7 +184,7 @@ class TestDiagramSave:
         if not isinstance(result, ErrorResult):
             raise AssertionError(result)
 
-        if result.error_kind != DiagramErrorKind.INVALID_SPEC:
+        if result.error_kind != CanvasErrorKind.INVALID_SPEC:
             raise AssertionError(result)
 
     async def test_spec_over_the_limit_is_refused(self, workspace: Workspace) -> None:
