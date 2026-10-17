@@ -517,8 +517,9 @@ ARG CHAINLIT_VERSION
 COPY build/scripts/chainlit_ui.sh                   /tmp/chainlit_ui.sh
 COPY build/src/chainlit-${CHAINLIT_VERSION}.tar.gz  /tmp/chainlit.tar.gz
 COPY packages/apps/boba-aid/web/chainlit-ui/overlay/  /tmp/overlay/
+COPY packages/apps/boba-aid/assets/public/elements/   /tmp/elements/
 
-RUN sh /tmp/chainlit_ui.sh /tmp/chainlit.tar.gz /tmp/overlay /out/ui \
+RUN sh /tmp/chainlit_ui.sh /tmp/chainlit.tar.gz /tmp/overlay /tmp/elements /out/ui \
     && rm -rf /tmp/chainlit-ui
 
 
