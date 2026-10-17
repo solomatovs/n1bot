@@ -358,6 +358,7 @@ class AssembledObserver(ObservedSession):
         session_id: SessionId,
         cwd: Path,
         tools: ToolServer | None,
+        instructions: Sequence[str],
         sink: EventSink,
         conversation: Sequence[ChainRecord],
     ) -> None:
@@ -365,6 +366,7 @@ class AssembledObserver(ObservedSession):
         self._session_id = session_id
         self._cwd = cwd
         self._tools = tools
+        self._instructions = list(instructions)
         self._sink = sink
         self._conversation = list(conversation)
 
@@ -384,7 +386,12 @@ class AssembledObserver(ObservedSession):
 
     async def claim(self) -> OpenedSession:
         agent = await self._assembly.attach_agent(
-            self._session_id, self._cwd, self._tools, self._sink, resume=True
+            self._session_id,
+            self._cwd,
+            self._tools,
+            self._instructions,
+            self._sink,
+            resume=True,
         )
 
         return self._assembly.assembled(agent)
@@ -430,15 +437,18 @@ class AgentAssembly(SessionAssembly):
         )
         self._digests = SessionDigests(store)
 
-    async def open(
+    async def open(  # noqa: PLR0913 — сессия собирается всеми частями запроса
         self,
         session_id: SessionId,
         cwd: Path,
         tools: ToolServer | None,
+        instructions: Sequence[str],
         sink: EventSink,
         resume: bool,
     ) -> OpenedSession:
-        agent = await self.attach_agent(session_id, cwd, tools, sink, resume)
+        agent = await self.attach_agent(
+            session_id, cwd, tools, instructions, sink, resume
+        )
 
         return self.assembled(agent)
 
@@ -454,11 +464,14 @@ class AgentAssembly(SessionAssembly):
         session_id: SessionId,
         cwd: Path,
         tools: ToolServer | None,
+        instructions: Sequence[str],
         sink: EventSink,
     ) -> ObservedSession:
         conversation = await self._conversation(session_id)
 
-        return AssembledObserver(self, session_id, cwd, tools, sink, conversation)
+        return AssembledObserver(
+            self, session_id, cwd, tools, instructions, sink, conversation
+        )
 
     async def sessions(self, cursor: str | None) -> SessionPage:
         page = await self._store.list(cursor, self.PAGE_SIZE)
@@ -488,11 +501,12 @@ class AgentAssembly(SessionAssembly):
     ) -> int:
         return await self._store.copy(source, target, up_to)
 
-    async def attach_agent(
+    async def attach_agent(  # noqa: PLR0913 — агент собирается всеми частями сессии
         self,
         session_id: SessionId,
         cwd: Path,
         tools: ToolServer | None,
+        instructions: Sequence[str],
         sink: EventSink,
         resume: bool,
     ) -> Agent:
@@ -508,7 +522,7 @@ class AgentAssembly(SessionAssembly):
         if self._stateless:
             resume = False
 
-        agent = Agent(self._parts(cwd, tools, sink))
+        agent = Agent(self._parts(cwd, tools, instructions, sink))
         try:
             await agent.open(session_id, resume=resume)
         except (SessionHeldError, SessionNotFoundError):
@@ -545,15 +559,22 @@ class AgentAssembly(SessionAssembly):
         return session.conversation()
 
     def _parts(
-        self, cwd: Path, tools: ToolServer | None, sink: EventSink
+        self,
+        cwd: Path,
+        tools: ToolServer | None,
+        instructions: Sequence[str],
+        sink: EventSink,
     ) -> AgentParts:
+        """Части агента сессии: системный промпт — промпт настроек и разделы
+        серверов MCP сессии instructions."""
         settings = self._settings
+        system_prompt = [*settings.system_prompt, *instructions]
 
         return AgentParts(
             profile=self._catalog.profile(settings.model),
             limits=settings.limits,
             compaction=settings.compaction,
-            system_prompt=settings.system_prompt,
+            system_prompt=system_prompt,
             store=self._store,
             model=self._catalog.model(settings.model),
             sink=sink,

@@ -82,7 +82,13 @@ from boba.agent.records import (
 )
 from boba.agent.session import Session, SessionState
 from boba.agent.template import AgentTemplate, AgentTemplateFile
-from boba.agent.tools import BatchOutcome, CallResult, PlannedCall, ToolRunner
+from boba.agent.tools import (
+    AgentTools,
+    BatchOutcome,
+    CallResult,
+    PlannedCall,
+    ToolRunner,
+)
 from boba.agent.writer import HistoryWriter, RecordKeeper, RequestRecorder
 from boba.cancellation import RunCancellation, StopReason
 from boba.llm.chat import ChatModel, ChatReply, ChatRequest, ChatUsage
@@ -154,7 +160,7 @@ class TurnLoop:
         sink: EventSink,
         writer: HistoryWriter,
         system_prompt: Sequence[str],
-        snapshot_tools: Sequence[SnapshotTool],
+        catalog: AgentTools,
         skills: Sequence[SnapshotSkill],
         environment: EnvironmentSnapshot | None,
         agent_name: str,
@@ -177,7 +183,7 @@ class TurnLoop:
         self._sink = sink
         self._writer = writer
         self._system_prompt = list(system_prompt)
-        self._snapshot_tools = list(snapshot_tools)
+        self._catalog = catalog
         self._skills = list(skills)
         self._environment = environment
         self._agent = agent_name
@@ -603,7 +609,7 @@ class TurnLoop:
             return
 
         current: dict[str, SnapshotTool] = {}
-        for tool in self._snapshot_tools:
+        for tool in self._catalog.snapshot():
             current[tool.name] = tool
 
         added: list[SnapshotTool] = []
@@ -647,7 +653,7 @@ class TurnLoop:
     def _fresh_snapshot(self) -> PromptSnapshot:
         return PromptSnapshot(
             system_prompt=self._system_prompt,
-            tools=self._snapshot_tools,
+            tools=self._catalog.snapshot(),
             skills=self._skills,
             model=self._profile.model_id,
             system_turns=self._profile.system_turns,

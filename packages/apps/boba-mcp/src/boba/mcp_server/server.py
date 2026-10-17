@@ -12,9 +12,12 @@ McpReplies — стандартными полями результата MCP (R
 
 Во время вызова сервер пересылает клиенту отчёты тела о ходе работы
 уведомлениями notifications/progress (CallProgress); каналы журнала вызова
-— ресурсы сервера, итог несёт ссылки на них (JournalUris). Окна журнала
-читает операция stream_read (StreamReadTool), адрес загрузки файла отдаёт
-операция file_upload (FileUploadTool); обе видны только интерфейсу клиента.
+— ресурсы сервера: журналы идущих вызовов перечисляет resources/list, окна
+читает resources/read, итог несёт ссылки на каналы (JournalUris). Адрес
+загрузки файла отдаёт операция file_upload (FileUploadTool), видная только
+интерфейсу клиента. Возможности сервер объявляет в server/discover такими,
+какие у него есть (McpServer.discover): инструменты без смены списка,
+ресурсы журналов с подпиской и сменой списка, без промптов и логов.
 
 Ошибки:
 наружу уходит только итог вызова — сбой любого вида возвращается
@@ -44,13 +47,13 @@ from fastmcp.server.auth import AuthProvider
 from fastmcp.server.dependencies import get_context
 from fastmcp.server.http import StarletteWithLifespan
 from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
+from fastmcp.server.providers import Provider
 from fastmcp.tools import Tool
 from fastmcp.tools.base import ToolResult
-from mcp.server.subscriptions import (
-    InMemorySubscriptionBus,
-    ResourceUpdated,
-    SubscriptionBus,
-)
+from mcp.server.apps import EXTENSION_ID as APPS_EXTENSION
+from mcp.server.context import ServerRequestContext
+from mcp.server.subscriptions import ResourceUpdated, SubscriptionBus
+from mcp_types.version import MODERN_PROTOCOL_VERSIONS
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError
 from starlette.applications import Starlette
 from starlette.requests import Request
@@ -93,8 +96,12 @@ from boba.mcp_server.auth import (
     TokenSubjects,
 )
 from boba.mcp_server.files import (
+    CallerBus,
     FileRoutes,
+    JournalListing,
     JournalRoutes,
+    OpenJournal,
+    OpenJournals,
     RouteCallers,
     ServerRefusal,
 )
@@ -104,7 +111,13 @@ from boba.toolkit.dag import CallDag, DagNode, ToolServer
 from boba.toolkit.failure import ValidationText
 from boba.toolkit.ports import ProgressReport
 from boba.toolkit.result import ContentMime, ErrorResult
-from boba.toolkit.wire import FilesFeature, JournalFeature, JournalRead, McpContent
+from boba.toolkit.wire import (
+    FilesFeature,
+    JournalFeature,
+    JournalOrigin,
+    JournalRead,
+    McpContent,
+)
 from boba.toolrun.call_id import CallFields
 from boba.toolrun.hosted import DirectCalls
 from boba.toolrun.registry import ToolRegistry
@@ -129,7 +142,6 @@ __all__ = [
     "RoleToolServers",
     "RunLimitMiddleware",
     "RunLimits",
-    "StreamReadTool",
 ]
 
 logger = logging.getLogger(__name__)
@@ -256,13 +268,9 @@ class ProgressShape(Protocol):
         запроса token; None — отчёт не уходит."""
 
     @abstractmethod
-    def journal(
-        self, call_id: str, links: Sequence[str], token: mt.ProgressToken
-    ) -> mt.ProgressNotificationParams | None:
-        """Уведомление «журнал вызова call_id открыт» под токеном token:
-        ссылки links на его каналы — в _meta под ключом расширения журнала
-        (JournalFeature.ID), без текста и итога; None — уведомление не
-        уходит."""
+    def origin(self, call_id: str, token: mt.ProgressToken) -> JournalOrigin | None:
+        """Чей запрос под токеном token открыл журнал вызова call_id — ресурс
+        журнала в resources/list несёт это в _meta; None — вызов не назван."""
 
 
 class OwnProgress(ProgressShape):
@@ -272,8 +280,8 @@ class OwnProgress(ProgressShape):
 
     def __init__(self) -> None:
         self._sent = -1.0
-        """Последнее ушедшее значение; -1 — отчётов ещё не было, его же
-        занимает уведомление о журнале."""
+        """Последнее ушедшее значение; -1 — отчётов ещё не было: первым
+        уходит и отчёт с done = 0."""
 
     def shaped(
         self, call_id: str, report: ProgressReport, token: mt.ProgressToken
@@ -290,21 +298,8 @@ class OwnProgress(ProgressShape):
             message=report.message,
         )
 
-    def journal(
-        self, call_id: str, links: Sequence[str], token: mt.ProgressToken
-    ) -> mt.ProgressNotificationParams | None:
-        """Журнал вызова открывается до первого отчёта тела: уведомление
-        занимает значение ниже любого отчёта (отчёт тела — done ≥ 0), и
-        ни один отчёт тела, в том числе первый с done = 0, им не теряется;
-        после отчётов значение уже не вырастет, и уведомление не уходит."""
-        if self._sent >= 0:
-            return None
-
-        return mt.ProgressNotificationParams(
-            progress_token=token,
-            progress=self._sent,
-            _meta={JournalFeature.ID: list(links)},
-        )
+    def origin(self, call_id: str, token: mt.ProgressToken) -> JournalOrigin | None:
+        return JournalOrigin(request=token)
 
 
 class NodeProgress(ProgressShape):
@@ -347,9 +342,7 @@ class NodeProgress(ProgressShape):
             _meta={self._feature.progress_key: title},
         )
 
-    def journal(
-        self, call_id: str, links: Sequence[str], token: mt.ProgressToken
-    ) -> mt.ProgressNotificationParams | None:
+    def origin(self, call_id: str, token: mt.ProgressToken) -> JournalOrigin | None:
         title = self._dags.title_of(self._call, call_id)
         if title is None:
             logger.warning(
@@ -357,12 +350,7 @@ class NodeProgress(ProgressShape):
             )
             return None
 
-        self._count += 1
-        meta = {JournalFeature.ID: list(links), self._feature.progress_key: title}
-
-        return mt.ProgressNotificationParams(
-            progress_token=token, progress=self._count, _meta=meta
-        )
+        return JournalOrigin(request=token, node=title)
 
 
 class CallProgress(StreamFeed):
@@ -372,11 +360,14 @@ class CallProgress(StreamFeed):
 
     Создаётся CallContextMiddleware на каждый вызов инструмента и следит за
     журналами запуска (CallJournals.following зовёт opened). Открытый журнал
-    вызова сразу называется клиенту уведомлением со ссылками на его каналы
-    (JournalUris) в _meta: по ним клиент читает журнал, пока вызов идёт.
-    Рост видимого канала уходит событием ResourceUpdated по uri канала в
-    шину подписок сервера (bus): его получают потоки subscriptions/listen
-    этого uri. Тело пишет отчёты о ходе работы в канал ToolChannel.PROGRESS;
+    вызова сразу становится ресурсом resources/list вызывающего (OpenJournals
+    шлёт его потокам subscriptions/listen смену списка) с токеном прогресса
+    запроса и ключом узла связки (ProgressShape.origin): по ним клиент
+    находит свой вызов и читает журнал, пока вызов идёт; close() снимает
+    журналы запуска со списка. Рост видимого канала уходит событием
+    ResourceUpdated по uri канала в шину подписок сервера (bus): его
+    получают потоки subscriptions/listen этого uri. Тело пишет отчёты о
+    ходе работы в канал ToolChannel.PROGRESS;
     отсюда они уходят клиенту стандартным прогрессом запроса: числа done и
     total и текст отчёта. token — токен прогресса из _meta запроса; None —
     клиент о ходе вызова не просил, и уведомлений нет. Уведомления ждут в
@@ -395,6 +386,7 @@ class CallProgress(StreamFeed):
         shape: ProgressShape,
         uris: JournalUris,
         bus: SubscriptionBus,
+        listed: OpenJournals,
         token: mt.ProgressToken | None,
     ) -> None:
         self._context = context
@@ -404,6 +396,7 @@ class CallProgress(StreamFeed):
         self._shape = shape
         self._uris = uris
         self._bus = bus
+        self._listed = listed
         self._token = token
         self._queue: asyncio.Queue[mt.ProgressNotificationParams | None]
         self._queue = asyncio.Queue()
@@ -422,21 +415,18 @@ class CallProgress(StreamFeed):
 
     def opened(self, call_id: str, stream: ToolStream) -> None:
         """Наблюдатель CallJournals: журнал вызова открыт — вызов попадает в
-        список журналов запуска, за журналом следит насос; если клиент
-        просил о ходе вызова, ему уходят ссылки на каналы журнала."""
+        список журналов запуска, за журналом следит насос, журнал становится
+        ресурсом resources/list вызывающего; токен прогресса запроса — в
+        его _meta, если клиент его назвал."""
         self._journaled.append(call_id)
         self._pumps.opened(call_id, stream)
+        origin: JournalOrigin | None = None
         token = self._token
-        if token is None:
-            return
+        if token is not None:
+            origin = self._shape.origin(call_id, token)
 
-        links: list[str] = []
-        for channel in JournalChannels.VISIBLE:
-            read = JournalRead(run=self._run, node=call_id, channel=channel)
-            links.append(self._uris.uri(read))
-
-        if shaped := self._shape.journal(call_id, links, token):
-            self._queue.put_nowait(shaped)
+        journal = OpenJournal(run=self._run, node=call_id, origin=origin)
+        self._listed.opened(self._user, journal)
 
     def journaled(self) -> Sequence[str]:
         """Вызовы запуска с журналом в порядке их открытия."""
@@ -462,8 +452,10 @@ class CallProgress(StreamFeed):
 
     async def close(self) -> None:
         """Дожидается насосов и отправки всех отчётов: после ответа на вызов
-        уведомления теряются без ошибки."""
+        уведомления теряются без ошибки; журналы запуска уходят из списка
+        ресурсов."""
         await self._pumps.close()
+        self._listed.closed(self._user, self._run)
 
         sender = self._sender
         if sender is None:
@@ -513,58 +505,6 @@ class CallProgress(StreamFeed):
             await self._context.session.send_notification(
                 notification, related_request_id=self._context.request_id
             )
-
-
-class StreamReadTool(Tool):
-    """Операция сервиса stream_read: кусок журнала вызова по границам строк.
-
-    Создаётся сборкой сервера над адресами журнала endpoint'а
-    (JournalRoutes): окно и проверки доступа — их window, тот же путь, что у
-    resources/read канала. Итог — текст окна и его координаты (StreamSlice)
-    в structuredContent;
-    по ним клиент стыкует следующее окно. Запуск области операция не
-    открывает и в предел запусков не входит.
-    """
-
-    NAME: ClassVar[str] = "stream_read"
-
-    DESCRIPTION: ClassVar[str] = (
-        "Read a window of the output journal of a tool call:\n"
-        "   - run — run id from the result of the call\n"
-        "   - node — id of the call\n"
-        "   - channel — journal channel\n"
-        "   - offset — window from this byte, or before — window ending at this byte"
-    )
-
-    _routes: JournalRoutes = PrivateAttr()
-    _replies: McpReplies = PrivateAttr()
-
-    def __init__(self, routes: JournalRoutes) -> None:
-        super().__init__(
-            name=self.NAME,
-            description=self.DESCRIPTION,
-            parameters=JournalRead.model_json_schema(),
-            meta=dict(McpEndpoints.OPERATION_META),
-        )
-        self._routes = routes
-        self._replies = McpReplies()
-
-    async def run(self, arguments: dict[str, object]) -> ToolResult:
-        try:
-            request = JournalRead.model_validate(arguments)
-        except ValidationError as exc:
-            failure = ErrorResult(
-                message=f"stream_read: the arguments are invalid: {exc}",
-                error_kind=ServerRefusal.INVALID_REQUEST,
-            )
-
-            return self._replies.refused(self.NAME, failure)
-
-        window = self._routes.window(request)
-        if isinstance(window, ErrorResult):
-            return self._replies.refused(self.NAME, window)
-
-        return self._replies.answered(window.text, window)
 
 
 class FileUploadRequest(BaseModel):
@@ -679,21 +619,23 @@ class CallContextMiddleware(Middleware):
     (operations) проходят мимо: запуска у них нет.
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 — middleware собирается всеми входами endpoint'а
         self,
         runs: Runs,
         journals: CallJournals,
         subjects: TokenSubjects,
         operations: frozenset[str],
         bus: SubscriptionBus,
+        listed: OpenJournals,
     ) -> None:
         self._runs = runs
         self._journals = journals
         self._subjects = subjects
         self._operations = operations
         self._bus = bus
+        self._listed = listed
         self._replies = McpReplies()
-        self._uris = JournalUris(JournalRoutes.RESOURCE)
+        self._uris = JournalUris(JournalRoutes.TEMPLATE)
         self._scopes = CallScopes()
         self._meta = SentMeta()
 
@@ -753,6 +695,7 @@ class CallContextMiddleware(Middleware):
             shape,
             self._uris,
             self._bus,
+            self._listed,
             fields.progress_token,
         )
         progress.start()
@@ -874,7 +817,13 @@ class McpServer:
     из реестра инструментов, реестра запусков, журналов, проверяющего
     токены, имени профиля и общего на процесс предела запусков. Инструменты
     endpoint'а — те, что профиль и роли вошедшего разрешают; mcp() отдаёт
-    готовый сервер fastmcp.
+    готовый сервер fastmcp. При активных журналах каналы журнала — ресурсы
+    сервера: шаблон и окна (JournalRoutes), журналы идущих вызовов
+    вызывающего (JournalListing над OpenJournals), рост и смена списка —
+    потоками subscriptions/listen над шиной CallerBus. discover() объявляет
+    ровно это: список инструментов не меняется (он зависит только от ролей
+    токена, а реестр собран на старте), промптов, логов и подсказок нет.
+    close() штатно закрывает потоки подписки при остановке процесса.
     """
 
     NAME: ClassVar[str] = "boba-mcp"
@@ -898,33 +847,30 @@ class McpServer:
         self._subjects = TokenSubjects(profile)
         self._limits = limits
         callers = RouteCallers(self._subjects, profile)
-        bus = InMemorySubscriptionBus()
+        bus = CallerBus(self._subjects)
+        listed = OpenJournals(bus)
         self._files = FileRoutes(
             StorageFactory.create(storage), callers, path, published
         )
         self._journal_files = JournalRoutes(
             journals, callers, self._subjects, storage, path, published, bus
         )
+        self._listing = JournalListing(listed, self._subjects)
         upload = FileUploadTool(self._files, self._subjects)
-        operations: list[Tool] = [upload]
         self._features = self._features_of(registry)
         self._features[FilesFeature.ID] = self._files.feature(upload.name).settings()
         self._journaled = journals.active()
         if self._journaled:
-            stream_read = StreamReadTool(self._journal_files)
-            operations.append(stream_read)
             journal = JournalFeature(
-                read=stream_read.name,
-                path=self._journal_files.path(),
-                resource=JournalRoutes.RESOURCE,
+                path=self._journal_files.path(), resource=JournalRoutes.TEMPLATE
             )
             self._features[JournalFeature.ID] = journal.settings()
 
         self._provider = McpToolProvider(
-            RoleToolServers(registry, self._subjects, endpoint, params), operations
+            RoleToolServers(registry, self._subjects, endpoint, params), [upload]
         )
         self._contexts = CallContextMiddleware(
-            runs, journals, self._subjects, McpEndpoints.OPERATIONS, bus
+            runs, journals, self._subjects, McpEndpoints.OPERATIONS, bus, listed
         )
 
     @staticmethod
@@ -940,10 +886,14 @@ class McpServer:
         return declared
 
     def mcp(self) -> FastMCP:
+        providers: list[Provider] = [self._provider]
+        if self._journaled:
+            providers.append(self._listing)
+
         server = FastMCP(
             self._name,
             auth=self._auth,
-            providers=[self._provider],
+            providers=providers,
             middleware=[self._limits, self._contexts],
             dereference_schemas=False,
         )
@@ -952,11 +902,47 @@ class McpServer:
         for identifier, settings in self._features.items():
             server.add_extension(FeatureExtension(identifier, settings))
 
+        # закрытое имя fastmcp: спец-методы MCP в ServerExtension запрещены
+        lowlevel = server._mcp_server
+        lowlevel.add_request_handler("server/discover", mt.RequestParams, self.discover)
         self._files.install(server)
         if self._journaled:
-            self._journal_files.install(server)
+            self._journal_files.install(server, lowlevel)
 
         return server
+
+    async def discover(
+        self, ctx: ServerRequestContext[Any, Any], params: mt.RequestParams
+    ) -> mt.DiscoverResult:
+        """server/discover: возможности, которые сервер действительно даёт.
+
+        SDK выводит смену списков из одного того, что поток
+        subscriptions/listen обслуживается, а fastmcp регистрирует промпты и
+        уровень логов всегда; здесь объявляются только инструменты без смены
+        списка, ресурсы журналов (подписка и смена списка) и расширения:
+        расширения boba и MCP Apps, по которому операции сервиса видны только
+        интерфейсу клиента.
+        """
+        resources: mt.ResourcesCapability | None = None
+        if self._journaled:
+            resources = mt.ResourcesCapability(subscribe=True, list_changed=True)
+
+        extensions: dict[str, dict[str, Any]] = {APPS_EXTENSION: {}}
+        extensions.update(self._features)
+        capabilities = mt.ServerCapabilities(
+            tools=mt.ToolsCapability(list_changed=False),
+            resources=resources,
+            extensions=extensions,
+        )
+
+        return mt.DiscoverResult(
+            supported_versions=list(MODERN_PROTOCOL_VERSIONS),
+            capabilities=capabilities,
+        )
+
+    def close(self) -> None:
+        """Штатный конец потоков subscriptions/listen endpoint'а."""
+        self._journal_files.close()
 
 
 class EndpointApp:
@@ -1024,9 +1010,7 @@ class McpEndpoints:
     HEALTH: ClassVar[str] = "/health"
     """Путь пробы готовности: без входа, отдаёт пути endpoint'ов."""
 
-    OPERATIONS: ClassVar[frozenset[str]] = frozenset(
-        {StreamReadTool.NAME, FileUploadTool.NAME}
-    )
+    OPERATIONS: ClassVar[frozenset[str]] = frozenset({FileUploadTool.NAME})
     """Операции сервиса: запуска не открывают и в предел запусков не входят."""
 
     OPERATION_META: ClassVar[Mapping[str, Any]] = {
@@ -1050,6 +1034,7 @@ class McpEndpoints:
         # маршруты входа стоят в корне: сервер авторизации — вне endpoint'ов
         self._routes: list[BaseRoute] = list(auth.routes())
         self._endpoints: list[EndpointApp] = []
+        self._servers: list[McpServer] = []
         slots = RunLimitMiddleware(limits, self.OPERATIONS)
         for profile in sorted(registry.access.profiles()):
             path = f"{base_path}/{profile}"
@@ -1068,9 +1053,16 @@ class McpEndpoints:
                 auth.published(),
             )
             served = server.mcp().http_app(path=path, stateless_http=True)
+            self._servers.append(server)
             self._endpoints.append(EndpointApp(path, served, served))
             # метаданные ресурса клиент ищет от корня хоста, а не под endpoint'ом
             self._routes.extend(provider.get_well_known_routes(path))
+
+    def end_subscriptions(self) -> None:
+        """Штатный конец потоков subscriptions/listen всех endpoint'ов: при
+        остановке процесса клиенты получают итог подписки, а не обрыв."""
+        for server in self._servers:
+            server.close()
 
     def paths(self) -> Sequence[str]:
         paths: list[str] = []

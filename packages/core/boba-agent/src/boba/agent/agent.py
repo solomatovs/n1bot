@@ -292,7 +292,7 @@ class Agent:
             parts.sink,
             writer,
             parts.system_prompt,
-            tools.snapshot(),
+            tools,
             self._skill_cards(),
             parts.environment,
             parts.agent_name,

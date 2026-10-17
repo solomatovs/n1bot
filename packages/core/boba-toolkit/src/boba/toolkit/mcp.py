@@ -241,7 +241,8 @@ class McpToolStubs:
 
 
 class McpResults:
-    """Текст для модели из ответа сервера MCP на tools/call.
+    """Текст для модели из ответа сервера MCP на tools/call и из сообщений
+    промпта на prompts/get.
 
     Модель получает блоки, адресованные ей (без audience либо с assistant в
     ней): текстовый блок — своим текстом, любой другой — пометкой
@@ -292,6 +293,23 @@ class McpResults:
             message = f"{message}\n{JsonBlock.pretty(error.data)}"
 
         return ErrorResult(message=message, error_kind=McpFailure.TOOL_ERROR)
+
+    def prompt(self, reply: mt.GetPromptResult) -> str:
+        """Текст для модели из сообщений промпта сервера (prompts/get): блок
+        каждого сообщения — тем же правилом, что блоки итога вызова;
+        сообщение ассистента помечено ролью."""
+        parts: list[str] = []
+        if reply.description:
+            parts.append(reply.description)
+
+        for message in reply.messages:
+            text = self._block_text(message.content)
+            if message.role == "assistant":
+                text = f"[assistant] {text}"
+
+            parts.append(text)
+
+        return "\n\n".join(parts)
 
     def _text(self, reply: mt.CallToolResult) -> str:
         addressed = filter(self._for_model, reply.content)

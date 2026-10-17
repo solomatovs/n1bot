@@ -533,6 +533,8 @@ class TestToolApps:
 
         inner.locator("#send-context").click()
         inner.locator("#answer").get_by_text("answer:").wait_for(timeout=30_000)
+        # вопрос приложения ждёт свой ход: в журнале не остаётся конца хода board
+        chat.log.clear()
         inner.locator("#send-message").click()
         chat.page.get_by_text("the board asks to go on").first.wait_for(timeout=60_000)
         chat.await_idle(timeout_sec=120.0)

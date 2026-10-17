@@ -300,7 +300,7 @@ class Agents:
         credentials = KerberosCredentialSource(None, NoRefresh())
         relay = RelayStand(NoConnectionStore(), lambda: credentials, CallContexts())
         self.registrations = relay.registrations
-        self._relay = relay.relay(self._servers)
+        self.relay = relay.relay(self._servers)
         self.started: list[AgentProcess] = []
         self.questions: dict[AgentProcess, AskedQuestions] = {}
 
@@ -319,7 +319,7 @@ class Agents:
             self._stand.command(),
             workdir,
             AgentClient(questions),
-            self._relay,
+            self.relay,
             servers,
             "0.0",
         )
