@@ -26,6 +26,7 @@ import time
 from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any, ClassVar
+from urllib.parse import urlencode
 
 import httpx
 import pytest
@@ -750,9 +751,9 @@ async def test_switching_file_does_not_reopen_the_panel(panel: Any) -> None:
     )
 
     await page.evaluate(
-        """path => window.dispatchEvent(
-            new CustomEvent('boba:canvas', {detail: {path}}))""",
-        other,
+        """([path, mime]) => window.dispatchEvent(
+            new CustomEvent('boba:canvas', {detail: {path, mime}}))""",
+        [other, ContentMime.of_name(other)],
     )
     await page.wait_for_timeout(2500)
 
@@ -927,9 +928,9 @@ async def test_panel_switches_after_a_render_error(panel: Any) -> None:
         raise AssertionError('"not rendered" in await side.inner_text()')
 
     await page.evaluate(
-        """path => window.dispatchEvent(
-            new CustomEvent('boba:canvas', {detail: {path}}))""",
-        _tool_view(thread, "flow.mmd"),
+        """([path, mime]) => window.dispatchEvent(
+            new CustomEvent('boba:canvas', {detail: {path, mime}}))""",
+        [_tool_view(thread, "flow.mmd"), ContentMime.MERMAID.value],
     )
     await page.wait_for_timeout(3000)
 
@@ -1885,7 +1886,8 @@ async def test_canvas_route_downloads_what_the_browser_would_run(panel: Any) -> 
         "clip.wav": "inline",
     }
     for name, kind in expected.items():
-        url = f"{BASE}/canvas/{thread}/upload/{name}"
+        query = urlencode({"mime": ContentMime.of_name(name)})
+        url = f"{BASE}/canvas/{thread}/upload/{name}?{query}"
         response = await page.request.get(url, headers={"cookie": cookie})
         if response.status != 200:
             raise AssertionError(f"GET {url}: expected 200, got {response.status}")
