@@ -32,7 +32,6 @@ from boba.canvas.storage import StorageNotFoundError
 from boba.config import bind
 from boba.connections.sealed import ConnectionSeal, SealedConnection, SealFeature
 from boba.db.postgres.connection import PostgresConfig
-from boba.mcp_adapter import JournalUris
 from boba.mcp_client.client import (
     BearerAuth,
     HttpEndpoint,
@@ -843,9 +842,11 @@ class TestSignInAsTheUser:
                     raise AssertionError(f"the links are a list: {meta}")
 
                 uri = str(links[0])
-                read = JournalUris(feature.resource).address(uri)
-                if read is None:
+                params = UriTemplate.parse(feature.resource).match(uri)
+                if params is None:
                     raise AssertionError(f"{uri} names a journal channel")
+
+                read = JournalRead.model_validate(params)
 
                 # канал появляется с первой записью: так панель и подписывается
                 while await port.journal(read) is None:
