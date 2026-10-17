@@ -47,7 +47,7 @@ ZYGOTE = ZygotePolicy(
 
 
 class ToolSetup:
-    """Сборка инструмента из конфига приложения для прогона вне chainlit."""
+    """Сборка инструмента из конфига приложения для прогона вне чата aid."""
 
     @staticmethod
     def config(raw: Any, section: str, model: type) -> Any:

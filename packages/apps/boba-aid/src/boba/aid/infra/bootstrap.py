@@ -1,4 +1,4 @@
-"""Сборка FastAPI-приложения chainlit: авторизация, DI и отдача файлов.
+"""Сборка приложения aid поверх FastAPI chainlit: авторизация, DI и отдача файлов.
 
 Ошибки:
 ConfigError — серверу с приложениями MCP Apps разрешён CORS-доступ к чату.
@@ -25,8 +25,8 @@ from boba.aid.auth.installer import ChainlitAuthInstaller
 from boba.aid.domain.keys import AppPrefix
 from boba.aid.infra import providers
 from boba.aid.infra.config import (
+    AidSection,
     AppConfig,
-    ChainlitExtendConfig,
 )
 from boba.aid.infra.log_context import RequestUserMiddleware, UserLogContext
 from boba.aid.infra.session import (
@@ -61,11 +61,11 @@ def run_app(files: ConfigFiles):
     UserLogContext.install()
     logging.config.dictConfig(c.logger)
     # ссылки на файлы и потоки строятся с префиксом приложения из конфига
-    AppPrefix.install(c.chainlit.url_prefix)
+    AppPrefix.install(c.aid.url_prefix)
 
     app = FastAPI(lifespan=_run_container)
 
-    _use_chainlit_middleware(app, c.chainlit)
+    _use_chainlit_middleware(app, c.aid)
 
     storage = providers.storage_provider(
         c, providers.file_owners(providers.chat_profiles_registry(c))
@@ -93,28 +93,28 @@ def run_app(files: ConfigFiles):
         # 0 отключает ws-пинг uvicorn: тогда живость сокета держит только
         # heartbeat engine.io, у которого свои интервалы
         ws_ping_interval = None
-        if c.chainlit.ws_ping_interval:
-            ws_ping_interval = c.chainlit.ws_ping_interval
+        if c.aid.ws_ping_interval:
+            ws_ping_interval = c.aid.ws_ping_interval
 
         ws_ping_timeout = None
-        if c.chainlit.ws_ping_timeout:
-            ws_ping_timeout = c.chainlit.ws_ping_timeout
+        if c.aid.ws_ping_timeout:
+            ws_ping_timeout = c.aid.ws_ping_timeout
 
         uv_config = uvicorn.Config(
             app,
-            host=c.chainlit.host,
-            port=c.chainlit.port,
-            ws=c.chainlit.ws_protocol,
+            host=c.aid.host,
+            port=c.aid.port,
+            ws=c.aid.ws_protocol,
             log_config=None,
             log_level=None,
             access_log=True,
             ws_ping_interval=ws_ping_interval,
             ws_ping_timeout=ws_ping_timeout,
-            ws_per_message_deflate=c.chainlit.ws_per_message_deflate,
-            ssl_keyfile=c.chainlit.ssl_key,
-            ssl_certfile=c.chainlit.ssl_cert,
-            ssl_ca_certs=c.chainlit.ssl_ca_certs,
-            timeout_graceful_shutdown=c.chainlit.shutdown_timeout_sec,
+            ws_per_message_deflate=c.aid.ws_per_message_deflate,
+            ssl_keyfile=c.aid.ssl_key,
+            ssl_certfile=c.aid.ssl_cert,
+            ssl_ca_certs=c.aid.ssl_ca_certs,
+            timeout_graceful_shutdown=c.aid.shutdown_timeout_sec,
         )
         server = SignalledServer(uv_config, ProcessStop())
         await server.serve_until_stopped()
@@ -203,7 +203,7 @@ def _use_domain_error(app: FastAPI):
     chainlit_app.add_middleware(StaleActionMiddleware)
 
 
-def _use_chainlit_middleware(app: FastAPI, config: ChainlitExtendConfig):
+def _use_chainlit_middleware(app: FastAPI, config: AidSection):
     from chainlit.markdown import init_markdown  # noqa: PLC0415
     from chainlit.server import app as chainlit_app  # noqa: PLC0415
     from chainlit.server import sio  # noqa: PLC0415
@@ -219,7 +219,9 @@ def _use_chainlit_middleware(app: FastAPI, config: ChainlitExtendConfig):
 
     init_markdown(config.root)
 
-    class ChainlitMiddleware(BaseHTTPMiddleware):
+    class AppPrefixMiddleware(BaseHTTPMiddleware):
+        """Отвечает 404 на пути вне префикса приложения [aid].url_prefix."""
+
         async def dispatch(self, request: Request, call_next):
             if not request.url.path.startswith(config.url_prefix):
                 detail = (
@@ -240,7 +242,7 @@ def _use_chainlit_middleware(app: FastAPI, config: ChainlitExtendConfig):
                 response.headers["Cache-Control"] = "no-cache"
             return response
 
-    chainlit_app.add_middleware(ChainlitMiddleware)
+    chainlit_app.add_middleware(AppPrefixMiddleware)
     chainlit_app.add_middleware(ElementsNoCacheMiddleware)
 
     app.mount(config.url_prefix, chainlit_app)
@@ -321,13 +323,13 @@ def _use_auth(container: Container) -> None:
         sso_path = config.sso_path()
 
     installer = ChainlitAuthInstaller(
-        config.chainlit.url_prefix,
+        config.aid.url_prefix,
         sso_path,
         config.proxy(),
         auth,
         config.session.session_ttl_sec,
         sessions,
-        Path(config.chainlit.root).resolve(),
+        Path(config.aid.root).resolve(),
     )
     installer.install(chainlit_app)
 

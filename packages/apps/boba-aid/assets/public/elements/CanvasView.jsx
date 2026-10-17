@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Markdown } from "@/components/markdown";
 import { Button } from "@/components/ui/button";
+import { PDFViewer } from "@/components/elements/pdf";
 import {
   ArrowDownToLine,
   ArrowUpToLine,
@@ -565,8 +566,8 @@ function ScrollStage({
   );
 }
 
-// Родное содержимое (pdf/видео/аудио) со своими контролами: над ним только
-// общая шапка с «на весь экран» / «закрыть».
+// Содержимое со своими контролами — видео и звук браузера, pdf в pdf.js со
+// своей панелью: над ним только общая шапка с «на весь экран» / «закрыть».
 function NativeStage({ preview, children }) {
   return (
     <Stage preview={preview} bar={null}>
@@ -1201,11 +1202,14 @@ function Body({ content, signal, preview, onContent }) {
     case "pdf":
       return (
         <NativeStage preview={preview}>
-          <iframe
-            src={revisedUrl(content.url, signal)}
-            title={content.label}
-            className="flex-1 min-h-0 w-full border-0"
-          />
+          {/* у PDFViewer нижняя граница высоты 50vh: ниже неё листается сцена */}
+          <div className="flex-1 min-h-0 flex flex-col overflow-auto">
+            <PDFViewer
+              url={revisedUrl(content.url, signal)}
+              persistentToolbar
+              className="flex-1 w-full rounded-none border-none"
+            />
+          </div>
         </NativeStage>
       );
     case "video":

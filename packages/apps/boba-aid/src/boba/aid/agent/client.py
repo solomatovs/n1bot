@@ -1,4 +1,4 @@
-"""ACP-клиент chainlit на v2: процесс агента, соединение ClientConnection по
+"""ACP-клиент чата aid на v2: процесс агента, соединение ClientConnection по
 его stdio, методы сессии; уведомления и вопросы агента уходят приёмнику с
 явным интерфейсом SessionUpdates, который заменяет рендерер ленты, а запросы
 mcp/message — ретранслятору (McpRelay).
@@ -116,7 +116,7 @@ class SessionUpdates(Protocol):
 
 
 class AgentClient(Client):
-    """Реализация Client SDK v2 для chainlit: уведомления и вопросы
+    """Реализация Client SDK v2 для чата aid: уведомления и вопросы
     разрешений — приёмнику; остальные методы протокола клиент не обслуживает,
     и SDK сам отвечает на них method_not_found."""
 

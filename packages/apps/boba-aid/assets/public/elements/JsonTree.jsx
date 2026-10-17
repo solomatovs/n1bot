@@ -66,11 +66,12 @@ function Node({ name, value, open }) {
   const entries = entriesOf(value, kind);
 
   let brackets = ["{", "}"];
-  let unit = "keys";
+  let unit = "key";
   if (kind === "array") {
     brackets = ["[", "]"];
-    unit = "items";
+    unit = "item";
   }
+  if (entries.length !== 1) unit = `${unit}s`;
 
   let chevron = <ChevronRight className="h-3 w-3 shrink-0" />;
   if (expanded) chevron = <ChevronDown className="h-3 w-3 shrink-0" />;

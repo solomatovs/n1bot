@@ -98,9 +98,11 @@ class FastembedEmbeddingModel(EmbeddingModel):
                 "ignore", message=f".*{self.POOLING_WARNING}.*", category=UserWarning
             )
             try:
+                # промах кэша иначе докачивается из сети и раскладывается ссылками
                 self._model = TextEmbedding(
                     model_name=cfg.model,
                     cache_dir=provider.cache_dir,
+                    local_files_only=True,
                 )
             except Exception as exc:
                 msg = (

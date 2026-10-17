@@ -19,7 +19,7 @@ async def show_error(
     fail_on_persist_error: bool = False,
 ) -> None:
     """Сбой в чат сообщением: raise из фоновых тасок chainlit не доходит до UI."""
-    logger = logging.getLogger("chainlit_handler")
+    logger = logging.getLogger(__name__)
     logger.error("%s", LogLine.safe(content))
     message = cl.ErrorMessage(
         author=author,
@@ -38,7 +38,7 @@ async def show_error(
 
 def chainlit_error_ctx_handler(fn: Callable) -> Callable:
 
-    logger = logging.getLogger("chainlit_handler")
+    logger = logging.getLogger(__name__)
 
     @staticmethod
     async def handle(e: BaseError):

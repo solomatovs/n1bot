@@ -1,5 +1,5 @@
-"""Секция [agent] конфига chainlit: команда запуска агента ACP, хранилище его
-истории и адрес chainlit глазами агента.
+"""Секция [agent] конфига aid: команда запуска агента ACP, хранилище его
+истории и адрес чата aid глазами агента.
 
 Ошибки: своих не выпускает; разбор — pydantic при загрузке AppConfig.
 """
@@ -229,7 +229,7 @@ class AgentModelConfig(BaseModel):
 
 
 class AgentConfig(BaseModel):
-    """Секция [agent]: всё, что chainlit знает об агенте и о себе для него."""
+    """Секция [agent]: всё, что чат aid знает об агенте и о себе для него."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -238,7 +238,7 @@ class AgentConfig(BaseModel):
     public_url: str = Field(
         min_length=1,
         description=(
-            "Адрес chainlit: схема, хост, порт и префикс приложения. По нему "
+            "Адрес чата aid: схема, хост, порт и префикс приложения. По нему "
             "агент берёт вложения сообщений пользователя."
         ),
     )
