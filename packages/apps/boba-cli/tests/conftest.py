@@ -1,6 +1,7 @@
 """Фикстуры стенда `boba acp`, общие для тестов команды, бинарника и
 истории в Postgres: фейковая модель и регистрация MCP-over-ACP клиента; опция
-`--acp-tck` — путь к исполняемому файлу acp-tck для test_cli_tck.py."""
+`--acp-tck` — путь к исполняемому файлу acp-tck для test_cli_tck.py, опция
+`--boba-bin` — каталог bin собранного выпуска для test_cli_binary.py."""
 
 from __future__ import annotations
 
@@ -20,6 +21,16 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         default=None,
         metavar="PATH",
         help="acp-tck executable; without it test_cli_tck.py fails",
+    )
+    parser.addoption(
+        "--boba-bin",
+        action="store",
+        default=None,
+        metavar="DIR",
+        help=(
+            "bin directory of the built release for the binary tests; "
+            "default: release/<version>/bin of the main tree"
+        ),
     )
 
 
