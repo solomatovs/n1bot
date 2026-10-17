@@ -7,8 +7,13 @@
 воспроизводится уведомлениями до ответа), `session/list` страницами с
 курсором, `session/close`, `session/delete`, `session/fork`. Сессию открывает
 сборка (SessionAssembly): агент ядра над инструментами серверов, которые
-клиент объявил записями `type: "acp"`; инструменты агент читает и зовёт
-запросами MCP внутри `mcp/message` (AcpToolServer). События ядра приёмник
+клиент объявил записями `type: "acp"`; с серверами агент говорит запросами
+MCP внутри `mcp/message` (AcpToolServer, SessionMcp): server/discover —
+инструкции серверов в системном промпте, инструменты, ресурсы — его
+инструментами list_mcp_resources и read_mcp_resource, промпты — командами
+сессии (`available_commands_update` с подсказками значений аргументов по
+completion/complete, вопрос `/<команда> <аргументы>`), смена списков —
+потоком subscriptions/listen. События ядра приёмник
 SessionRelay переводит в уведомления по таблице AcpMapping.
 
 Ход по v2: ответ на `session/prompt` — `messageId` вставленного вопроса (он же
@@ -49,21 +54,23 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import shlex
 import time
 from abc import abstractmethod
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
+from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, ClassVar, Protocol, TypeAlias
+from typing import Any, ClassVar, Protocol, TypeAlias, TypeVar
 
 import mcp_types as mt
 from acp.exceptions import RequestError
 from acp.experimental.v2 import Agent as AcpAgentProtocol
 from acp.experimental.v2 import AgentSideConnection, schema
 from mcp_types.methods import parse_server_notification, parse_server_result
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 from boba.agent.agent import Agent
 from boba.agent.control import (
@@ -114,6 +121,7 @@ from boba.agent.settings import (
 )
 from boba.agent.turn import ContextUsage
 from boba.cancellation import StopReason as CoreStopReason
+from boba.toolkit.calls import ToolIntent
 from boba.toolkit.dag import (
     DagNode,
     NodeOutcome,
@@ -125,6 +133,7 @@ from boba.toolkit.dag import (
     ToolServersError,
     ToolUseResults,
 )
+from boba.toolkit.failure import InvokeErrorKind, ValidationText
 from boba.toolkit.mcp import (
     McpFailure,
     McpResults,
@@ -136,6 +145,7 @@ from boba.toolkit.result import (
     BlockAudience,
     ErrorResult,
     FailureResult,
+    MarkdownResult,
     ToolResultBase,
 )
 from boba.transport.acp.protocol import (
@@ -183,6 +193,9 @@ __all__ = [
     "ToolKindName",
 ]
 
+ReplyT = TypeVar("ReplyT", bound=BaseModel)
+"""Модель ответа сервера MCP на запрос агента."""
+
 ContentBlock: TypeAlias = (
     schema.TextContentBlock
     | schema.ImageContentBlock
@@ -216,6 +229,7 @@ Update: TypeAlias = (
     | schema.SessionNotice
     | schema.RunningSessionStateUpdate
     | schema.IdleSessionStateUpdate
+    | schema.AvailableCommandsUpdate
 )
 
 
@@ -980,131 +994,477 @@ class CallProgressRelay:
         )
 
 
+class McpRequestError(Exception):
+    """Запрос MCP к серверу регистрации через mcp/message не дал результата:
+    ошибка ACP, ошибка MCP, срок или ответ не по схеме."""
+
+
+class ListChange(StrEnum):
+    """Какой список сервера сменился по потоку subscriptions/listen."""
+
+    TOOLS = "tools"
+    PROMPTS = "prompts"
+
+
 class AcpToolServer(ToolServer):
     """Реализация ToolServer над одной регистрацией MCP-over-ACP: запись
-    `type: "acp"` сессии. Инструменты — все страницы `tools/list`, вызов —
-    `tools/call` запросом mcp/message через AgentSide; текст для модели
-    собирает McpResults, ответ сервера как пришёл ложится в NodeOutcome.reply,
-    ход вызова идёт в приёмник сессии через CallProgressRelay. Создаёт AcpAgent
-    на каждую запись сессии и собирает их ToolServers."""
+    `type: "acp"` сессии.
 
-    def __init__(
+    Создаёт AcpAgent на каждую запись сессии и отдаёт SessionMcp. open()
+    согласует сервер (server/discover: возможности и инструкции), читает все
+    страницы `tools/list` и, если сервер их объявил, промпты; если сервер
+    обещал смену списков инструментов или промптов, держит поток
+    subscriptions/listen и на каждую смену перечитывает список. Вызов —
+    `tools/call` запросом mcp/message через AgentSide; текст для модели
+    собирает McpResults, ответ сервера как пришёл ложится в
+    NodeOutcome.reply, ход вызова идёт в приёмник сессии через
+    CallProgressRelay. ask() — любой другой запрос MCP (ресурсы, промпты).
+    Каждый запрос несёт в _meta версию протокола, clientInfo агента и его
+    clientCapabilities.
+    """
+
+    def __init__(  # noqa: PLR0913 — сервер собирается всеми частями сессии
         self,
         side: AgentSide,
         server: schema.AcpMcpServer,
         sink: EventSink,
         limits: McpClientJson,
+        client: mt.Implementation,
+        prompted: Callable[[], Awaitable[None]],
     ) -> None:
         self._side = side
         self._server = server
         self._sink = sink
         self._limits = limits
+        self._prompted = prompted
         self._ids = IdMint()
         self._stubs = McpToolStubs()
         self._results = McpResults()
         self._names = McpToolNames()
         self._outcomes = NodeOutcomes()
         self._cards: list[ToolCard] = []
+        self._prompts: list[mt.Prompt] = []
+        self._for_model = False
+        """Сервер при открытии отдал модели ресурсы или шаблоны."""
+        self._discovered: mt.DiscoverResult | None = None
+        self._changes: asyncio.Queue[ListChange] = asyncio.Queue()
+        self._tasks: list[asyncio.Task[None]] = []
         self._meta: mt.RequestParamsMeta = {
             mt.PROTOCOL_VERSION_META_KEY: McpVersion.V2026_07_28.value,
+            mt.CLIENT_INFO_META_KEY: client.model_dump(
+                mode="json", by_alias=True, exclude_none=True
+            ),
             mt.CLIENT_CAPABILITIES_META_KEY: {},
         }
+        self._label = f"MCP server '{server.name}' (serverId '{server.server_id}')"
+
+    @property
+    def name(self) -> str:
+        """Имя сервера в сессии: часть полных имён его инструментов."""
+        return self._server.name
 
     async def open(self) -> None:
-        """Карточки по всем страницам `tools/list`.
+        """Согласование, инструменты, промпты и поток смены списков.
 
         Ошибки:
         SessionOpenError — клиент ответил ошибкой ACP, ошибкой MCP, не уложился
-            в срок или ответил не списком инструментов.
+            в срок или ответил не по схеме, либо сервер назвал инструмент,
+            имя которого не годится для полного имени.
         """
-        cursor: str | None = None
-        while True:
-            page = await self._page(cursor)
-            for tool in page.tools:
-                try:
-                    card = self._stubs.card(self._server.name, tool)
-                except McpToolNameError as exc:
-                    msg = (
-                        f"MCP server '{self._server.name}' (serverId "
-                        f"'{self._server.server_id}') lists a tool that is "
-                        f"refused: {exc}"
-                    )
-                    raise SessionOpenError(msg) from exc
+        try:
+            discovered = await self.ask(
+                mt.DiscoverRequest(params=mt.RequestParams()), mt.DiscoverResult
+            )
+            self._discovered = discovered
+            self._cards = await self._listed_cards()
+            self._prompts = await self._listed_prompts()
+            self._for_model = await self._offers_model_resources()
+        except McpRequestError as exc:
+            raise SessionOpenError(str(exc)) from exc
 
-                self._cards.append(card)
-
-            cursor = page.next_cursor
-            if cursor is None:
-                break
-
+        self._follow(discovered.capabilities)
         logger.info(
-            "mcp: server %s (%s) offers %d tool(s)",
+            "mcp: server %s (%s) offers %d tool(s), %d prompt(s)",
             self._server.name,
             self._server.server_id,
             len(self._cards),
+            len(self._prompts),
         )
 
-    async def _page(self, cursor: str | None) -> mt.ListToolsResult:
-        """Ошибки:
-        SessionOpenError — страница не получена или не разобрана.
+    async def close(self) -> None:
+        """Поток смены списков и его разбор закрываются."""
+        tasks = list(self._tasks)
+        self._tasks.clear()
+        for task in tasks:
+            task.cancel()
+
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    def capabilities(self) -> mt.ServerCapabilities:
+        return self._known().capabilities
+
+    def instructions(self) -> str | None:
+        """Инструкции сервера из server/discover; None — сервер их не дал."""
+        return self._known().instructions
+
+    def prompts(self) -> Sequence[mt.Prompt]:
+        return self._prompts
+
+    def for_model(self) -> bool:
+        """Сервер отдаёт модели ресурсы или шаблоны ресурсов (по разбору
+        при открытии)."""
+        return self._for_model
+
+    async def model_resources(self) -> list[mt.Resource]:
+        """Ресурсы сервера для модели по всем страницам resources/list:
+        без audience либо с assistant в ней; сервер без ресурсов — пусто.
+
+        Ошибки:
+        McpRequestError — страница не получена либо не разобрана.
         """
-        params = mt.PaginatedRequestParams(cursor=cursor, _meta=self._meta)
-        request = mt.ListToolsRequest(params=params)
-        message = McpMessage(
-            server_id=self._server.server_id,
-            request_id=self._ids.request_id(),
-            **request.model_dump(mode="json", by_alias=True, exclude_none=True),
-        )
-        what = (
-            f"listing the tools of MCP server '{self._server.name}' "
-            f"(serverId '{self._server.server_id}', cursor {cursor!r})"
-        )
-        try:
-            async with asyncio.timeout(self._limits.list_timeout_sec):
-                outcome = await self._side.request(message, None)
-        except TimeoutError as exc:
-            msg = (
-                f"{what} expected an answer within "
-                f"{self._limits.list_timeout_sec} s, got none"
-            )
-            raise SessionOpenError(msg) from exc
-        except RequestError as exc:
-            msg = (
-                f"{what} expected a tools/list result, got ACP error {exc.code} "
-                f"{exc}: {exc.data!r}"
-            )
-            raise SessionOpenError(msg) from exc
-        except AcpTransportError as exc:
-            msg = f"{what} expected a tools/list result, got no answer: {exc}"
-            raise SessionOpenError(msg) from exc
+        if self._known().capabilities.resources is None:
+            return []
 
-        if isinstance(outcome, McpErrorOutcome):
-            msg = (
-                f"{what} expected a tools/list result, got MCP error "
-                f"{outcome.error.code}: {outcome.error.message}"
+        offered: list[mt.Resource] = []
+        cursor: str | None = None
+        while True:
+            params = mt.PaginatedRequestParams(cursor=cursor)
+            page = await self.ask(
+                mt.ListResourcesRequest(params=params), mt.ListResourcesResult
             )
-            raise SessionOpenError(msg)
+            for resource in page.resources:
+                if self._for_assistant(resource.annotations):
+                    offered.append(resource)
 
-        try:
-            parsed = parse_server_result(
-                request.method, McpVersion.V2026_07_28, outcome.result
-            )
-        except (ValidationError, KeyError, ValueError, TypeError) as exc:
-            shown = repr(outcome.result)[:200]
-            msg = f"{what} expected a tools/list result, got {shown}: {exc}"
-            raise SessionOpenError(msg) from exc
+            cursor = page.next_cursor
+            if cursor is None:
+                return offered
 
-        if not isinstance(parsed, mt.ListToolsResult):
-            msg = f"{what} expected a tools/list result, got {type(parsed).__name__}"
-            raise SessionOpenError(msg)
+    async def model_templates(self) -> list[mt.ResourceTemplate]:
+        """Шаблоны ресурсов сервера для модели по всем страницам
+        resources/templates/list; сервер без ресурсов — пусто.
 
-        return parsed
+        Ошибки:
+        McpRequestError — страница не получена либо не разобрана.
+        """
+        if self._known().capabilities.resources is None:
+            return []
+
+        offered: list[mt.ResourceTemplate] = []
+        cursor: str | None = None
+        while True:
+            params = mt.PaginatedRequestParams(cursor=cursor)
+            request = mt.ListResourceTemplatesRequest(params=params)
+            page = await self.ask(request, mt.ListResourceTemplatesResult)
+            for template in page.resource_templates:
+                if self._for_assistant(template.annotations):
+                    offered.append(template)
+
+            cursor = page.next_cursor
+            if cursor is None:
+                return offered
+
+    async def _offers_model_resources(self) -> bool:
+        """Ошибки:
+        McpRequestError — список не получен либо не разобран.
+        """
+        if await self.model_resources():
+            return True
+
+        templates = await self.model_templates()
+
+        return len(templates) > 0
+
+    @staticmethod
+    def _for_assistant(annotations: mt.Annotations | None) -> bool:
+        """Ресурс адресован модели: audience не задана либо называет
+        assistant; журнал вызова и иное «для человека» модели не идёт."""
+        if annotations is None:
+            return True
+
+        return BlockAudience.MODEL.reads(annotations.audience)
 
     def tools(self) -> Sequence[ToolCard]:
         return self._cards
 
     def features(self) -> Mapping[str, Mapping[str, object]]:
         return {}
+
+    async def ask(
+        self,
+        request: mt.ClientRequest,
+        result: type[ReplyT] | TypeAdapter[ReplyT],
+    ) -> ReplyT:
+        """Запрос MCP серверу через mcp/message со сроком списка и ответ
+        моделью result.
+
+        Ошибки:
+        McpRequestError — клиент ответил ошибкой ACP, сервер — ошибкой MCP
+            (код — в ошибке), ответа нет в срок либо он не по схеме.
+        """
+        params = request.params
+        meta = self._meta.copy()
+        if params is not None and params.meta is not None:
+            meta.update(params.meta)
+
+        sent = request.model_copy(update={"params": self._with_meta(params, meta)})
+        message = McpMessage(
+            server_id=self._server.server_id,
+            request_id=self._ids.request_id(),
+            **sent.model_dump(mode="json", by_alias=True, exclude_none=True),
+        )
+        what = f"{request.method} to {self._label}"
+        limit = self._limits.list_timeout_sec
+        try:
+            async with asyncio.timeout(limit):
+                outcome = await self._side.request(message, None)
+        except TimeoutError as exc:
+            msg = f"{what} expected an answer within {limit} s, got none"
+            raise McpRequestError(msg) from exc
+        except RequestError as exc:
+            msg = (
+                f"{what} expected a result, got ACP error {exc.code} {exc}: "
+                f"{exc.data!r}"
+            )
+            raise McpRequestError(msg) from exc
+        except AcpTransportError as exc:
+            msg = f"{what} expected a result, got no answer: {exc}"
+            raise McpRequestError(msg) from exc
+
+        if isinstance(outcome, McpErrorOutcome):
+            msg = (
+                f"{what} expected a result, got MCP error {outcome.error.code}: "
+                f"{outcome.error.message}"
+            )
+            raise McpRequestError(msg)
+
+        try:
+            if isinstance(result, TypeAdapter):
+                return result.validate_python(outcome.result)
+
+            return result.model_validate(outcome.result)
+        except ValidationError as exc:
+            shown = repr(outcome.result)[:200]
+            msg = f"{what} expected a result by the schema, got {shown}: {exc}"
+            raise McpRequestError(msg) from exc
+
+    @staticmethod
+    def _with_meta(
+        params: mt.RequestParams | None, meta: mt.RequestParamsMeta
+    ) -> mt.RequestParams:
+        if params is None:
+            return mt.RequestParams(_meta=meta)
+
+        return params.model_copy(update={"meta": meta})
+
+    def _known(self) -> mt.DiscoverResult:
+        discovered = self._discovered
+        if discovered is None:
+            msg = f"{self._label}: it is asked before open(), it is not discovered"
+            raise McpRequestError(msg)
+
+        return discovered
+
+    async def _listed_cards(self) -> list[ToolCard]:
+        """Карточки по всем страницам `tools/list`.
+
+        Ошибки:
+        McpRequestError — страница не получена, не разобрана либо инструмент
+            назван не по форме полных имён.
+        """
+        cards: list[ToolCard] = []
+        cursor: str | None = None
+        while True:
+            params = mt.PaginatedRequestParams(cursor=cursor)
+            page = await self.ask(
+                mt.ListToolsRequest(params=params), mt.ListToolsResult
+            )
+            for tool in page.tools:
+                try:
+                    card = self._stubs.card(self._server.name, tool)
+                except McpToolNameError as exc:
+                    msg = f"{self._label} lists a tool that is refused: {exc}"
+                    raise McpRequestError(msg) from exc
+
+                cards.append(card)
+
+            cursor = page.next_cursor
+            if cursor is None:
+                return cards
+
+    async def _listed_prompts(self) -> list[mt.Prompt]:
+        """Промпты по всем страницам `prompts/list`; сервер без промптов — пусто.
+
+        Ошибки:
+        McpRequestError — страница не получена либо не разобрана.
+        """
+        if self._known().capabilities.prompts is None:
+            return []
+
+        prompts: list[mt.Prompt] = []
+        cursor: str | None = None
+        while True:
+            params = mt.PaginatedRequestParams(cursor=cursor)
+            request = mt.ListPromptsRequest(params=params)
+            page = await self.ask(request, mt.ListPromptsResult)
+            prompts.extend(page.prompts)
+            cursor = page.next_cursor
+            if cursor is None:
+                return prompts
+
+    def _follow(self, capabilities: mt.ServerCapabilities) -> None:
+        """Поток subscriptions/listen на смену списков, которую сервер
+        обещал; без обещаний потока нет."""
+        tools = capabilities.tools
+        prompts = capabilities.prompts
+        tools_changed: bool | None = None
+        if tools is not None and tools.list_changed:
+            tools_changed = True
+
+        prompts_changed: bool | None = None
+        if prompts is not None and prompts.list_changed:
+            prompts_changed = True
+
+        if tools_changed is None and prompts_changed is None:
+            return
+
+        notifications = mt.SubscriptionFilter(
+            tools_list_changed=tools_changed, prompts_list_changed=prompts_changed
+        )
+        listen = mt.SubscriptionsListenRequest(
+            params=mt.SubscriptionsListenRequestParams(
+                notifications=notifications, _meta=self._meta
+            )
+        )
+        message = McpMessage(
+            server_id=self._server.server_id,
+            request_id=self._ids.request_id(),
+            **listen.model_dump(mode="json", by_alias=True, exclude_none=True),
+        )
+        name = self._server.name
+        self._tasks.append(
+            asyncio.create_task(self._listen(message), name=f"mcp-listen-{name}")
+        )
+        self._tasks.append(
+            asyncio.create_task(self._applied(), name=f"mcp-changes-{name}")
+        )
+
+    async def _listen(self, message: McpMessage) -> None:
+        """Поток живёт, пока его не закроет сервер или сессия; конец потока —
+        в лог: списки остаются последними прочитанными."""
+        try:
+            outcome = await self._side.request(message, self._heard)
+        except (RequestError, AcpTransportError) as exc:
+            logger.warning(
+                "mcp: %s: the listen stream for list changes ended: %s",
+                self._label,
+                exc,
+            )
+            return
+
+        if isinstance(outcome, McpErrorOutcome):
+            logger.warning(
+                "mcp: %s refused the listen stream: MCP error %s: %s",
+                self._label,
+                outcome.error.code,
+                outcome.error.message,
+            )
+            return
+
+        logger.info("mcp: %s closed the listen stream", self._label)
+
+    async def _heard(self, message: McpMessage) -> None:
+        """Уведомление потока подписки: смена списка — в очередь разбора, без
+        запросов из обработчика уведомления.
+
+        Ошибки:
+        RequestError — уведомление не разбирается как уведомление сервера MCP
+            (-32602).
+        """
+        params: Mapping[str, Any] = {}
+        if message.params is not None:
+            params = message.params
+
+        try:
+            notification = parse_server_notification(
+                message.method, McpVersion.V2026_07_28, params
+            )
+        except (KeyError, ValidationError) as exc:
+            details = (
+                f"{self._label}: listen notification {message.method!r} expected "
+                f"an MCP server notification, got {repr(params)[:200]}: {exc}"
+            )
+            raise RequestError.invalid_params(
+                {ErrorDataKey.DETAILS.value: details}
+            ) from exc
+
+        match notification:
+            case mt.SubscriptionsAcknowledgedNotification():
+                logger.info(
+                    "mcp: %s acknowledged list changes %s",
+                    self._label,
+                    notification.params.notifications,
+                )
+            case mt.ToolListChangedNotification():
+                self._changes.put_nowait(ListChange.TOOLS)
+            case mt.PromptListChangedNotification():
+                self._changes.put_nowait(ListChange.PROMPTS)
+            case _:
+                logger.info(
+                    "mcp: %s sent %s on the listen stream; not followed",
+                    self._label,
+                    message.method,
+                )
+
+    async def _applied(self) -> None:
+        """Смена списка — список перечитывается; сбой чтения — в лог,
+        остаётся прежний список."""
+        while True:
+            change = await self._changes.get()
+            try:
+                if change is ListChange.TOOLS:
+                    self._cards = await self._listed_cards()
+                    logger.info(
+                        "mcp: %s re-listed %d tool(s)", self._label, len(self._cards)
+                    )
+                    continue
+
+                self._prompts = await self._listed_prompts()
+            except McpRequestError as exc:
+                logger.warning(
+                    "mcp: %s changed a list, re-reading it failed: %s",
+                    self._label,
+                    exc,
+                )
+                continue
+
+            await self._prompted()
+
+    async def completed(self, prompt: str, argument: str) -> Sequence[str]:
+        """Значения аргумента argument промпта prompt, которые подсказывает
+        сервер (completion/complete с пустым началом); сервер без подсказок —
+        пусто. Отказ сервера — в лог: подсказка останется без значений.
+        """
+        if self.capabilities().completions is None:
+            return ()
+
+        params = mt.CompleteRequestParams(
+            ref=mt.PromptReference(name=prompt),
+            argument=mt.CompletionArgument(name=argument, value=""),
+        )
+        try:
+            reply = await self.ask(mt.CompleteRequest(params=params), mt.CompleteResult)
+        except McpRequestError as exc:
+            logger.warning(
+                "mcp: %s gave no values for argument %s of prompt %s: %s",
+                self._label,
+                argument,
+                prompt,
+                exc,
+            )
+            return ()
+
+        return reply.completion.values
 
     async def submit(
         self, calls: Sequence[DagNode]
@@ -1196,6 +1556,491 @@ class AcpToolServer(ToolServer):
             built = self._outcomes.of(node, family, False)
 
         return built.model_copy(update={"reply": outcome.result})
+
+
+class ResourceToolName(StrEnum):
+    """Собственные инструменты агента над ресурсами серверов MCP сессии."""
+
+    LIST = "list_mcp_resources"
+    READ = "read_mcp_resource"
+
+
+class ResourceListArgs(BaseModel):
+    """Аргументы list_mcp_resources: подпись вызова (ToolIntent) и сервер;
+    пусто — все серверы с ресурсами."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    intent: str = Field(description=ToolIntent.DESCRIPTION)
+    server: str = Field(
+        default="",
+        description="Name of the MCP server; empty lists every server with resources.",
+    )
+
+
+class ResourceReadArgs(BaseModel):
+    """Аргументы read_mcp_resource: подпись вызова (ToolIntent), сервер и
+    uri ресурса или раскрытого шаблона."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    intent: str = Field(description=ToolIntent.DESCRIPTION)
+    server: str = Field(min_length=1, description="Name of the MCP server.")
+    uri: str = Field(
+        min_length=1,
+        description="URI of a listed resource or of an expanded resource template.",
+    )
+
+
+class McpResourceTools(ToolServer):
+    """Реализация ToolServer: ресурсы серверов MCP сессии собственными
+    инструментами агента для модели.
+
+    Создаётся SessionMcp, когда хоть один сервер сессии отдаёт модели
+    ресурсы (audience без assistant — для человека, как журнал вызова,
+    модели не идёт). list_mcp_resources отдаёт модели ресурсы и шаблоны
+    ресурсов серверов (resources/list, resources/templates/list всеми
+    страницами),
+    read_mcp_resource читает ресурс по uri (resources/read): текст — как
+    есть, двоичное содержимое — пометкой с типом и размером. Сервер,
+    которого нет в сессии или у которого нет ресурсов, и ошибка сервера —
+    отказ вызову с причиной для модели.
+    """
+
+    def __init__(self, servers: Sequence[AcpToolServer]) -> None:
+        self._servers: dict[str, AcpToolServer] = {}
+        for server in servers:
+            self._servers[server.name] = server
+
+        self._outcomes = NodeOutcomes()
+        self._results = McpResults()
+        hints = ToolHints(read_only=True, destructive=False)
+        self._cards = (
+            ToolCard(
+                name=ResourceToolName.LIST.value,
+                description=(
+                    "List the resources and resource templates of the MCP servers "
+                    "of the session:\n"
+                    "   - server — name of one server; empty lists all servers"
+                ),
+                parameters=ResourceListArgs.model_json_schema(),
+                views=None,
+                output=None,
+                hints=hints,
+            ),
+            ToolCard(
+                name=ResourceToolName.READ.value,
+                description=(
+                    "Read a resource of an MCP server of the session:\n"
+                    "   - server — name of the server\n"
+                    "   - uri — URI of a listed resource or of an expanded template"
+                ),
+                parameters=ResourceReadArgs.model_json_schema(),
+                views=None,
+                output=None,
+                hints=hints,
+            ),
+        )
+
+    def tools(self) -> Sequence[ToolCard]:
+        return self._cards
+
+    def features(self) -> Mapping[str, Mapping[str, object]]:
+        return {}
+
+    async def submit(
+        self, calls: Sequence[DagNode]
+    ) -> Sequence[asyncio.Future[NodeOutcome]]:
+        pending: list[asyncio.Future[NodeOutcome]] = []
+        for call in calls:
+            pending.append(asyncio.ensure_future(self._call(call)))
+
+        return pending
+
+    async def _call(self, node: DagNode) -> NodeOutcome:
+        """Один вызов; наружу идёт только отмена (контракт NodeBody)."""
+        try:
+            if node.tool == ResourceToolName.LIST.value:
+                listed = ResourceListArgs.model_validate(node.args)
+                text = await self._listed(listed)
+            else:
+                read = ResourceReadArgs.model_validate(node.args)
+                text = await self._read(read)
+        except ValidationError as exc:
+            failure = ErrorResult(
+                message=(
+                    f"{node.tool}: the arguments are invalid: {ValidationText.of(exc)}"
+                ),
+                error_kind=InvokeErrorKind.INVALID_REQUEST,
+            )
+            return self._outcomes.refused(node, failure)
+        except McpRequestError as exc:
+            failure = ErrorResult(
+                message=f"{node.tool}: {exc}", error_kind=McpFailure.TRANSPORT
+            )
+            return self._outcomes.refused(node, failure)
+
+        return self._outcomes.of(node, MarkdownResult(text=text), False)
+
+    async def _listed(self, args: ResourceListArgs) -> str:
+        """Ресурсы и шаблоны серверов для модели строками.
+
+        Ошибки:
+        McpRequestError — сервера нет в сессии, ресурсов для модели у него нет
+            либо он не ответил.
+        """
+        servers = list(self._servers.values())
+        if args.server:
+            servers = [self._server(args.server)]
+
+        lines: list[str] = []
+        for server in servers:
+            for resource in await server.model_resources():
+                lines.append(self._line(server.name, resource))
+
+            for template in await server.model_templates():
+                lines.append(self._template_line(server.name, template))
+
+        if not lines:
+            return "The MCP servers of the session list no resources."
+
+        return "\n".join(lines)
+
+    async def _read(self, args: ResourceReadArgs) -> str:
+        """Содержимое ресурса текстом для модели.
+
+        Ошибки:
+        McpRequestError — сервера нет в сессии, у него нет ресурсов, он
+            ответил ошибкой либо попросил ввода.
+        """
+        server = self._server(args.server)
+        params = mt.ReadResourceRequestParams(uri=args.uri)
+        request = mt.ReadResourceRequest(params=params)
+        read = await server.ask(request, InputReplies.READ)
+        if isinstance(read, mt.InputRequiredResult):
+            msg = (
+                f"resources/read {args.uri} on server {args.server!r}: the server "
+                "asked for more input, and this tool cannot answer such requests"
+            )
+            raise McpRequestError(msg)
+
+        parts: list[str] = []
+        for content in read.contents:
+            if isinstance(content, mt.TextResourceContents):
+                parts.append(content.text)
+                continue
+
+            parts.append(
+                f"[blob {content.uri} {content.mime_type}, "
+                f"{len(content.blob)} base64 characters]"
+            )
+
+        return "\n".join(parts)
+
+    def _server(self, name: str) -> AcpToolServer:
+        """Ошибки:
+        McpRequestError — сервера нет в сессии либо ресурсов у него нет.
+        """
+        server = self._servers.get(name)
+        if server is None:
+            msg = (
+                f"server {name!r} is not an MCP server of the session; expected one "
+                f"of {sorted(self._servers)}"
+            )
+            raise McpRequestError(msg)
+
+        if not server.for_model():
+            msg = f"MCP server {name!r} offers no resources to the model"
+            raise McpRequestError(msg)
+
+        return server
+
+    @staticmethod
+    def _line(server: str, resource: mt.Resource) -> str:
+        words = [f"{server}: {resource.uri}", resource.name]
+        if resource.mime_type:
+            words.append(resource.mime_type)
+
+        if resource.description:
+            words.append(f"— {resource.description}")
+
+        return " ".join(words)
+
+    @staticmethod
+    def _template_line(server: str, template: mt.ResourceTemplate) -> str:
+        words = [f"{server}: template {template.uri_template}", template.name]
+        if template.description:
+            words.append(f"— {template.description}")
+
+        return " ".join(words)
+
+
+class InputReplies:
+    """Модели ответов MCP с просьбой о вводе: агент принимает их в ask() и
+    решает сам, что делать с input_required."""
+
+    READ: ClassVar[TypeAdapter[mt.ReadResourceResult | mt.InputRequiredResult]] = (
+        TypeAdapter(mt.ReadResourceResult | mt.InputRequiredResult)
+    )
+    PROMPT: ClassVar[TypeAdapter[mt.GetPromptResult | mt.InputRequiredResult]] = (
+        TypeAdapter(mt.GetPromptResult | mt.InputRequiredResult)
+    )
+
+
+class SessionMcp:
+    """MCP-серверы одной сессии ACP: регистрации `type: "acp"` клиента.
+
+    Создаётся AcpAgent на `session/new|resume|fork` до сборки агента и живёт
+    с сессией. Отдаёт сборке инструменты для модели (tools: серверы и, если
+    хоть один объявил ресурсы, McpResourceTools) и раздел системного промпта
+    с инструкциями серверов из server/discover. Промпты серверов — команды
+    сессии: их список уходит клиенту `available_commands_update` при
+    открытии и при смене списка промптов, а вопрос `/<команда> <аргументы>`
+    раскрывается prompts/get в служебный контекст вопроса. Закрытие сессии
+    закрывает потоки подписки серверов.
+    """
+
+    COMMAND_PREFIX: ClassVar[str] = "/"
+    INSTRUCTIONS: ClassVar[str] = (
+        "# MCP Server Instructions\n\n"
+        "The following MCP servers have provided instructions for how to use "
+        "their tools and resources:"
+    )
+    """Заголовок раздела системного промпта с инструкциями серверов."""
+
+    def __init__(self, relay: SessionRelay) -> None:
+        self._relay = relay
+        self._servers: list[AcpToolServer] = []
+        self._names = McpToolNames()
+        self._results = McpResults()
+        self._announcing: asyncio.Task[None] | None = None
+
+    def add(self, server: AcpToolServer) -> None:
+        self._servers.append(server)
+
+    def tools(self) -> ToolServer | None:
+        """Инструменты для модели; без серверов — None.
+
+        Ошибки:
+        ToolServersError — два сервера назвали одно имя.
+        """
+        if not self._servers:
+            return None
+
+        offered: list[ToolServer] = list(self._servers)
+        if self._with_resources():
+            offered.append(McpResourceTools(self._servers))
+
+        return ToolServers(offered)
+
+    def instructions(self) -> Sequence[str]:
+        """Раздел системного промпта с инструкциями серверов; без инструкций
+        — пусто."""
+        notes: list[str] = []
+        for server in self._servers:
+            instructions = server.instructions()
+            if not instructions:
+                continue
+
+            notes.append(f"## {server.name}\n{instructions}")
+
+        if not notes:
+            return ()
+
+        sections = [self.INSTRUCTIONS, *notes]
+
+        return ("\n\n".join(sections),)
+
+    def announce_later(self) -> None:
+        """Команды сессии клиенту отдельной задачей, после ответа на запрос
+        сессии: о сессии, которую клиент ещё не знает, он уведомлений не
+        ждёт. Без промптов у серверов — ничего."""
+        prompted = False
+        for server in self._servers:
+            if server.prompts():
+                prompted = True
+
+        if not prompted:
+            return
+
+        self._announcing = asyncio.create_task(
+            self.announce_commands(), name="mcp-commands"
+        )
+
+    async def announce_commands(self) -> None:
+        """Промпты серверов командами сессии: `available_commands_update`.
+        Подсказка ввода называет аргументы по порядку, а у аргумента, чьи
+        значения сервер подсказывает (completion/complete), — и сами
+        значения."""
+        commands: list[schema.AvailableCommand] = []
+        for server in self._servers:
+            for prompt in server.prompts():
+                hint = await self._hint(server, prompt)
+                commands.append(self._command(server.name, prompt, hint))
+
+        update = schema.AvailableCommandsUpdate(available_commands=commands)
+        await self._relay.notify(update)
+
+    async def expanded(self, asked: QueueEntry) -> QueueEntry:
+        """Вопрос `/<команда> <аргументы>` промпта сервера — тот же вопрос с
+        сообщениями промпта (prompts/get) в служебном контексте; прочий
+        вопрос — как есть.
+
+        Ошибки:
+        RequestError — аргументов не хватает или они не разбираются
+            (-32602), сервер не отдал промпт (-32603).
+        """
+        command, _, rest = asked.text.strip().partition(" ")
+        if not command.startswith(self.COMMAND_PREFIX):
+            return asked
+
+        found = self._prompt_of(command.removeprefix(self.COMMAND_PREFIX))
+        if found is None:
+            return asked
+
+        server, prompt = found
+        arguments = self._arguments(command, prompt, rest)
+        params = mt.GetPromptRequestParams(name=prompt.name, arguments=arguments)
+        request = mt.GetPromptRequest(params=params)
+        try:
+            reply = await server.ask(request, InputReplies.PROMPT)
+        except McpRequestError as exc:
+            details = f"command {command}: prompts/get failed: {exc}"
+            raise RequestError.internal_error(
+                {ErrorDataKey.DETAILS.value: details}
+            ) from exc
+
+        if isinstance(reply, mt.InputRequiredResult):
+            details = (
+                f"command {command}: the server asked for more input to give the "
+                "prompt, and this agent cannot answer such requests"
+            )
+            raise RequestError.internal_error({ErrorDataKey.DETAILS.value: details})
+
+        context = [*asked.context, self._results.prompt(reply)]
+
+        return asked.model_copy(update={"context": context})
+
+    async def close(self) -> None:
+        announcing = self._announcing
+        self._announcing = None
+        if announcing is not None:
+            announcing.cancel()
+            await asyncio.gather(announcing, return_exceptions=True)
+
+        for server in self._servers:
+            await server.close()
+
+    def _with_resources(self) -> bool:
+        """Хоть один сервер отдаёт модели ресурсы: только тогда у модели
+        есть инструменты ресурсов."""
+        offering = list(self._offering())
+
+        return len(offering) > 0
+
+    def _offering(self) -> Iterator[AcpToolServer]:
+        """Серверы, отдающие модели ресурсы."""
+        for server in self._servers:
+            if server.for_model():
+                yield server
+
+    async def _hint(self, server: AcpToolServer, prompt: mt.Prompt) -> str:
+        """Подсказка ввода команды промпта: аргументы по порядку, у аргумента
+        с подсказками сервера — их значения через «|»."""
+        parts: list[str] = []
+        for argument in self._declared(prompt):
+            values = await server.completed(prompt.name, argument.name)
+            if not values:
+                parts.append(argument.name)
+                continue
+
+            listed = "|".join(values)
+            parts.append(f"{argument.name} ({listed})")
+
+        return " ".join(parts)
+
+    def _command(
+        self, server: str, prompt: mt.Prompt, hint: str
+    ) -> schema.AvailableCommand:
+        description = prompt.description
+        if not description:
+            description = prompt.name
+
+        command_input: schema.TextAvailableCommandInput | None = None
+        if hint:
+            command_input = schema.TextAvailableCommandInput(hint=hint)
+
+        return schema.AvailableCommand(
+            name=self._names.full(server, prompt.name),
+            description=description,
+            input=command_input,
+        )
+
+    def _prompt_of(self, name: str) -> tuple[AcpToolServer, mt.Prompt] | None:
+        for server in self._servers:
+            for prompt in server.prompts():
+                if self._names.full(server.name, prompt.name) == name:
+                    return server, prompt
+
+        return None
+
+    @staticmethod
+    def _declared(prompt: mt.Prompt) -> Sequence[mt.PromptArgument]:
+        """Аргументы промпта по порядку; промпт без аргументов — пусто."""
+        declared = prompt.arguments
+        if declared is None:
+            return ()
+
+        return declared
+
+    @staticmethod
+    def _arguments(command: str, prompt: mt.Prompt, rest: str) -> dict[str, str]:
+        """Слова после команды — аргументы промпта по порядку; лишние слова —
+        последнему аргументу.
+
+        Ошибки:
+        RequestError — кавычки не закрыты или обязательного аргумента нет
+            (-32602).
+        """
+        try:
+            words = shlex.split(rest)
+        except ValueError as exc:
+            details = f"command {command}: the arguments do not parse: {exc}"
+            raise RequestError.invalid_params(
+                {ErrorDataKey.DETAILS.value: details}
+            ) from exc
+
+        declared = list(SessionMcp._declared(prompt))
+        arguments: dict[str, str] = {}
+        for position, argument in enumerate(declared):
+            if position >= len(words):
+                break
+
+            last = position == len(declared) - 1
+            if last:
+                arguments[argument.name] = " ".join(words[position:])
+                break
+
+            arguments[argument.name] = words[position]
+
+        for argument in declared:
+            if not argument.required:
+                continue
+
+            if argument.name in arguments:
+                continue
+
+            order: list[str] = []
+            for item in declared:
+                order.append(item.name)
+
+            details = (
+                f"command {command}: argument {argument.name!r} is required; "
+                f"give the arguments in order: {order}"
+            )
+            raise RequestError.invalid_params({ErrorDataKey.DETAILS.value: details})
+
+        return arguments
 
 
 class SessionRelay(EventSink):
@@ -1522,15 +2367,19 @@ class SessionAssembly(Protocol):
     """
 
     @abstractmethod
-    async def open(
+    async def open(  # noqa: PLR0913 — сессия собирается всеми частями запроса
         self,
         session_id: SessionId,
         cwd: Path,
         tools: ToolServer | None,
+        instructions: Sequence[str],
         sink: EventSink,
         resume: bool,
     ) -> OpenedSession:
-        """Ошибки:
+        """instructions — разделы системного промпта от серверов MCP
+        сессии сверх промпта настроек.
+
+        Ошибки:
         SessionOpenError — сессию открыть не удалось.
         SessionHeldError — при возобновлении: сессию держит другой процесс.
         SessionNotFoundError — при возобновлении: записей сессии нет.
@@ -1542,6 +2391,7 @@ class SessionAssembly(Protocol):
         session_id: SessionId,
         cwd: Path,
         tools: ToolServer | None,
+        instructions: Sequence[str],
         sink: EventSink,
     ) -> ObservedSession:
         """Ошибки:
@@ -1581,7 +2431,9 @@ class SessionAssembly(Protocol):
 
 
 class AcpSession:
-    """Одна сессия ACP: открытый агент, его обслуживание очереди и приёмник."""
+    """Одна сессия ACP: открытый агент, его обслуживание очереди, приёмник и
+    серверы MCP сессии (SessionMcp): вопрос-команда промпта сервера
+    раскрывается ими, закрытие сессии закрывает их потоки."""
 
     def __init__(
         self,
@@ -1589,11 +2441,13 @@ class AcpSession:
         opened: OpenedSession,
         relay: SessionRelay,
         mapping: AcpMapping,
+        mcp: SessionMcp,
     ) -> None:
         self._session_id = session_id
         self._opened = opened
         self._relay = relay
         self._mapping = mapping
+        self._mcp = mcp
         self._reports: list[asyncio.Task[None]] = []
         self._serving = asyncio.create_task(
             opened.agent.serve(), name=f"acp-serve-{session_id}"
@@ -1678,12 +2532,15 @@ class AcpSession:
 
     async def prompt(self, asked: QueueEntry) -> schema.PromptResponse:
         """Ставит вопрос в очередь ядра; `messageId` ответа — uuid записи
-        `user`, которую напишет его ход.
+        `user`, которую напишет его ход. Вопрос-команду промпта сервера
+        раскрывает SessionMcp.
 
         Ошибки:
-        RequestError — очередь не приняла элемент (-32602), обслуживание
-            сессии остановилось (-32603).
+        RequestError — очередь не приняла элемент или аргументы команды не
+            годятся (-32602), обслуживание сессии остановилось либо сервер не
+            отдал промпт (-32603).
         """
+        asked = await self._mcp.expanded(asked)
         if self._serving.done():
             details = (
                 f"session {self._session_id} no longer serves prompts: its agent "
@@ -1723,6 +2580,7 @@ class AcpSession:
 
     async def close(self) -> None:
         self._relay.withdraw_all()
+        await self._mcp.close()
         await self._opened.close()
         try:
             await self._serving
@@ -1748,11 +2606,13 @@ class ObserverSession:
         observed: ObservedSession,
         relay: SessionRelay,
         mapping: AcpMapping,
+        mcp: SessionMcp,
     ) -> None:
         self._session_id = session_id
         self._observed = observed
         self._relay = relay
         self._mapping = mapping
+        self._mcp = mcp
 
     @property
     def relay(self) -> SessionRelay:
@@ -1774,10 +2634,13 @@ class ObserverSession:
         opened = await self._observed.claim()
         self._relay.attach(opened.agent)
 
-        return AcpSession(self._session_id, opened, self._relay, self._mapping)
+        return AcpSession(
+            self._session_id, opened, self._relay, self._mapping, self._mcp
+        )
 
     async def close(self) -> None:
-        """Наблюдатель ничего не держит: закрывать нечего."""
+        """Наблюдатель держит только серверы MCP сессии."""
+        await self._mcp.close()
 
 
 HeldSession: TypeAlias = AcpSession | ObserverSession
@@ -1886,23 +2749,33 @@ class AcpAgent(AcpAgentProtocol):
         servers = self._specs.servers(self._blocks(mcp_servers))
         session_id = self._ids.uuid()
         relay = SessionRelay(session_id, self._linked(), self._mapping)
-        tools = await self._tool_servers(servers, relay)
-        try:
-            opened = await self._assembly.open(
-                SessionId(value=session_id), directory, tools, relay, resume=False
-            )
-        except SessionRefusedError as exc:
-            raise RequestError.invalid_params(
-                {ErrorDataKey.DETAILS.value: str(exc)}
-            ) from exc
-        except (SessionOpenError, HistoryError) as exc:
-            raise RequestError.internal_error(
-                {ErrorDataKey.DETAILS.value: str(exc)}
-            ) from exc
+        async with AsyncExitStack() as owned:
+            mcp = await self._mcp(servers, relay)
+            owned.push_async_callback(mcp.close)
+            try:
+                opened = await self._assembly.open(
+                    SessionId(value=session_id),
+                    directory,
+                    mcp.tools(),
+                    mcp.instructions(),
+                    relay,
+                    resume=False,
+                )
+            except SessionRefusedError as exc:
+                raise RequestError.invalid_params(
+                    {ErrorDataKey.DETAILS.value: str(exc)}
+                ) from exc
+            except (SessionOpenError, HistoryError) as exc:
+                raise RequestError.internal_error(
+                    {ErrorDataKey.DETAILS.value: str(exc)}
+                ) from exc
+
+            owned.pop_all()
 
         relay.attach(opened.agent)
-        session = AcpSession(session_id, opened, relay, self._mapping)
+        session = AcpSession(session_id, opened, relay, self._mapping, mcp)
         self._sessions[session_id] = session
+        mcp.announce_later()
         logger.info(
             "session %s: new, cwd %s, %d MCP server(s)", session_id, cwd, len(servers)
         )
@@ -1912,37 +2785,43 @@ class AcpAgent(AcpAgentProtocol):
             config_options=self._options.config_options(self._settings(session)),
         )
 
-    async def _tool_servers(
+    async def _mcp(
         self, servers: Sequence[schema.AcpMcpServer], relay: SessionRelay
-    ) -> ToolServers | None:
-        """Инструменты серверов сессии: каждый отдаёт список до ответа на
-        запрос; без серверов — None.
+    ) -> SessionMcp:
+        """Серверы MCP сессии: каждый согласован и отдал списки до ответа на
+        запрос; сервер, открытый до сбоя другого, закрывается.
 
         Ошибки:
-        RequestError — сервер не отдал список инструментов (-32603).
+        RequestError — сервер не открылся либо имена инструментов серверов
+            совпали (-32603).
         """
-        if not servers:
-            return None
-
         side = self._linked().side
-        opened: list[ToolServer] = []
-        for server in servers:
-            tool_server = AcpToolServer(side, server, relay, self._limits)
+        client = mt.Implementation(name=self._info.name, version=self._info.version)
+        mcp = SessionMcp(relay)
+        async with AsyncExitStack() as owned:
+            owned.push_async_callback(mcp.close)
+            for server in servers:
+                tool_server = AcpToolServer(
+                    side, server, relay, self._limits, client, mcp.announce_commands
+                )
+                mcp.add(tool_server)
+                try:
+                    await tool_server.open()
+                except SessionOpenError as exc:
+                    raise RequestError.internal_error(
+                        {ErrorDataKey.DETAILS.value: str(exc)}
+                    ) from exc
+
             try:
-                await tool_server.open()
-            except SessionOpenError as exc:
+                mcp.tools()
+            except ToolServersError as exc:
                 raise RequestError.internal_error(
                     {ErrorDataKey.DETAILS.value: str(exc)}
                 ) from exc
 
-            opened.append(tool_server)
+            owned.pop_all()
 
-        try:
-            return ToolServers(opened)
-        except ToolServersError as exc:
-            raise RequestError.internal_error(
-                {ErrorDataKey.DETAILS.value: str(exc)}
-            ) from exc
+        return mcp
 
     def _settings(self, session: AcpSession) -> SessionSettings:
         agent = session.agent
@@ -2154,21 +3033,26 @@ class AcpAgent(AcpAgentProtocol):
 
         stored = self._stored_id(session_id)
         relay = SessionRelay(session_id, self._linked(), self._mapping)
-        tools = await self._tool_servers(servers, relay)
-        try:
-            held = await self._held(stored, directory, tools, relay)
-        except SessionNotFoundError as exc:
-            raise self._unknown(session_id) from exc
-        except SessionRefusedError as exc:
-            raise RequestError.invalid_params(
-                {ErrorDataKey.DETAILS.value: str(exc)}
-            ) from exc
-        except (SessionOpenError, HistoryError) as exc:
-            raise RequestError.internal_error(
-                {ErrorDataKey.DETAILS.value: str(exc)}
-            ) from exc
+        async with AsyncExitStack() as owned:
+            mcp = await self._mcp(servers, relay)
+            owned.push_async_callback(mcp.close)
+            try:
+                held = await self._held(stored, directory, mcp, relay)
+            except SessionNotFoundError as exc:
+                raise self._unknown(session_id) from exc
+            except SessionRefusedError as exc:
+                raise RequestError.invalid_params(
+                    {ErrorDataKey.DETAILS.value: str(exc)}
+                ) from exc
+            except (SessionOpenError, HistoryError) as exc:
+                raise RequestError.internal_error(
+                    {ErrorDataKey.DETAILS.value: str(exc)}
+                ) from exc
+
+            owned.pop_all()
 
         self._sessions[session_id] = held
+        mcp.announce_later()
 
         return held
 
@@ -2176,16 +3060,18 @@ class AcpAgent(AcpAgentProtocol):
         self,
         stored: SessionId,
         directory: Path,
-        tools: ToolServer | None,
+        mcp: SessionMcp,
         relay: SessionRelay,
     ) -> HeldSession:
         """Ошибки:
         SessionNotFoundError, SessionRefusedError, SessionOpenError,
         HistoryError — от сборки.
         """
+        tools = mcp.tools()
+        instructions = mcp.instructions()
         try:
             opened = await self._assembly.open(
-                stored, directory, tools, relay, resume=True
+                stored, directory, tools, instructions, relay, resume=True
             )
         except SessionHeldError as exc:
             logger.info(
@@ -2193,13 +3079,15 @@ class AcpAgent(AcpAgentProtocol):
                 stored.value,
                 exc,
             )
-            observed = await self._assembly.observe(stored, directory, tools, relay)
+            observed = await self._assembly.observe(
+                stored, directory, tools, instructions, relay
+            )
 
-            return ObserverSession(stored.value, observed, relay, self._mapping)
+            return ObserverSession(stored.value, observed, relay, self._mapping, mcp)
 
         relay.attach(opened.agent)
 
-        return AcpSession(stored.value, opened, relay, self._mapping)
+        return AcpSession(stored.value, opened, relay, self._mapping, mcp)
 
     async def list_sessions(
         self, cwd: str | None = None, cursor: str | None = None, **kwargs: Any
@@ -2423,13 +3311,17 @@ class AcpAgent(AcpAgentProtocol):
         source = self._stored_id(session_id)
         target = SessionId(value=self._ids.uuid())
         relay = SessionRelay(target.value, self._linked(), self._mapping)
-        tools = await self._tool_servers(servers, relay)
-
-        await self._flushed(session_id)
         up_to = meta.up_to_message_id
-        copied = await self._copied(session_id, source, target, up_to)
-        session = await self._opened_fork(target, directory, tools, relay, copied > 0)
+        async with AsyncExitStack() as owned:
+            mcp = await self._mcp(servers, relay)
+            owned.push_async_callback(mcp.close)
+            await self._flushed(session_id)
+            copied = await self._copied(session_id, source, target, up_to)
+            session = await self._opened_fork(target, directory, mcp, relay, copied > 0)
+            owned.pop_all()
+
         self._sessions[target.value] = session
+        mcp.announce_later()
         logger.info(
             "session %s: forked from %s, %d record(s) copied, cut at %s",
             target.value,
@@ -2502,7 +3394,7 @@ class AcpAgent(AcpAgentProtocol):
         self,
         target: SessionId,
         directory: Path,
-        tools: ToolServer | None,
+        mcp: SessionMcp,
         relay: SessionRelay,
         resume: bool,
     ) -> AcpSession:
@@ -2516,7 +3408,12 @@ class AcpAgent(AcpAgentProtocol):
         """
         try:
             opened = await self._assembly.open(
-                target, directory, tools, relay, resume=resume
+                target,
+                directory,
+                mcp.tools(),
+                mcp.instructions(),
+                relay,
+                resume=resume,
             )
         except SessionRefusedError as exc:
             await self._dropped_fork(target, exc)
@@ -2531,7 +3428,7 @@ class AcpAgent(AcpAgentProtocol):
 
         relay.attach(opened.agent)
 
-        return AcpSession(target.value, opened, relay, self._mapping)
+        return AcpSession(target.value, opened, relay, self._mapping, mcp)
 
     async def _dropped_fork(self, target: SessionId, cause: Exception) -> None:
         """Ошибки:

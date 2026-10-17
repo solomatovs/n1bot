@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import base64
 import json
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar, cast
 from urllib.parse import urlsplit
@@ -36,6 +36,7 @@ from boba.aid.canvas.panel import ImageViewer
 from boba.aid.canvas.remote import RemoteJournals
 from boba.aid.chat.feed import QuestionBody, TurnFeed
 from boba.aid.chat.panel_text import PanelText
+from boba.aid.chat.ui_text import UiText
 from boba.aid.domain.fields import StepField
 from boba.aid.domain.keys import CanvasFileUrl
 from boba.aid.rendering.acp_view import (
@@ -57,8 +58,9 @@ from boba.canvas.keys import ObjectKey, ThreadDir
 from boba.chat.profiles import ChatProfileConfig, UserSetting
 from boba.identity.context import Scope
 from boba.mcp_adapter import JournalUris
-from boba.mcp_client.client import McpServerApps
+from boba.mcp_client.client import JournalLinks, McpServerApps
 from boba.messaging import (
+    JournalOpened,
     LockToken,
     MemoryMessageBus,
     MemoryPayloadStore,
@@ -88,6 +90,12 @@ from boba.toolkit.result import (
 from boba.toolkit.wire import JournalFeature, JournalRead, McpContent, ResultWire
 from boba.transport.acp.protocol import IdleErrorUpdate
 
+APP_ROOT = Path(__file__).resolve().parents[1] / "assets"
+"""Корень приложения пакета: его переводы chainlit несут подписи ленты и панели."""
+
+TEXTS = UiText(APP_ROOT, UiText.DEFAULT_LANGUAGE)
+"""Подписи ленты из переводов приложения пакета на языке по умолчанию."""
+
 THREAD = "11111111-1111-1111-1111-111111111111"
 QUESTION = "22222222-2222-2222-2222-222222222222"
 MESSAGE = "msg_a"
@@ -96,9 +104,8 @@ CALL = "call_1"
 SECOND_CALL = "call_2"
 RUN = "run-7"
 JOURNAL = JournalFeature(
-    read="stream_read",
     path="/journals",
-    resource="boba-journal://{run}/{node}/{channel}",
+    resource="boba-journal://{run}/{node}/{channel}{?offset,before}",
 )
 """Журнал вызовов сервера boba стенда ленты."""
 
@@ -284,17 +291,10 @@ def _result(artifact: ToolResultBase, journaled: Sequence[str] = ()) -> dict[str
     return reply.model_dump(mode="json", by_alias=True, exclude_none=True)
 
 
-def _journal_opened(call_id: str, node: str, meta: Mapping[str, Any]) -> SessionUpdate:
-    """Уведомление о ходе вызова call_id без текста: сервер назвал ссылку на
-    stdout журнала своего вызова node, как только журнал открылся."""
-    read = JournalRead(run=RUN, node=node, channel=ToolChannel.STDOUT)
-    link = JournalUris(JOURNAL.resource).uri(read)
-
-    return schema.SessionToolCallUpdate(
-        tool_call_id=call_id,
-        status="in_progress",
-        field_meta={**meta, JournalFeature.ID: [link]},
-    )
+def _journal_opened(call_id: str, call: str, node: str | None) -> JournalOpened:
+    """Сообщение ретранслятора: сервер boba открыл журнал call вызова
+    call_id агента (у связки — журнал узла node), едва журнал открылся."""
+    return JournalOpened(call_id=call_id, node=node, server="boba", run=RUN, call=call)
 
 
 def _buttons(recorded: FakeEmitter) -> list[tuple[str, str]]:
@@ -356,9 +356,9 @@ def _replayed_updates() -> list[SessionUpdate]:
 def _view(
     runtime_stand: StandRefs, storage: LocalStorageClient, journals: RemoteJournals
 ) -> UpdateView:
-    view = ChatView(THREAD, LiveSink(), "u-1", storage, user_name="alice")
+    view = ChatView(THREAD, LiveSink(), "u-1", storage, TEXTS, user_name="alice")
     media = ToolMedia()
-    media.shown("boba", [], None, JOURNAL, None)
+    media.shown("boba", [], None, JournalLinks(JOURNAL.resource), None)
 
     return UpdateView(view, THREAD, journals, media)
 
@@ -386,7 +386,8 @@ class TestUpdateViewIds:
 
         thinking = _id(MESSAGE, StepRole.THINKING)
         assert steps[thinking].get(StepField.OUTPUT) == "let me think"
-        assert steps[thinking].get(StepField.NAME) == "✔ thinking"
+        thinking_name = TEXTS.text(StepText.THINKING.value)
+        assert steps[thinking].get(StepField.NAME) == f"✔ {thinking_name}"
 
         tool = _id(CALL, StepRole.TOOL)
         assert "one row" in str(steps[tool].get(StepField.OUTPUT))
@@ -402,7 +403,8 @@ class TestUpdateViewIds:
         container = _id(QUESTION, StepRole.PROCESS)
         assert steps[tool].get(StepField.PARENT_ID) == container
         assert steps[thinking].get(StepField.PARENT_ID) == container
-        assert steps[container].get(StepField.NAME) == StepText.CONTAINER.value
+        done = TEXTS.text(StepText.DONE_STEPS.value, count=2)
+        assert steps[container].get(StepField.NAME) == done
 
     @pytest.mark.anyio
     async def test_journal_address_is_remembered_from_raw_output(
@@ -430,25 +432,25 @@ class TestUpdateViewIds:
         assert step.get(StepField.OUTPUT) == "ok", "a journal link is not drawn"
 
     @pytest.mark.anyio
-    async def test_journal_notification_gives_the_running_step_its_button(
+    async def test_opened_journal_gives_the_running_step_its_button(
         self,
         runtime_stand: StandRefs,
         storage: LocalStorageClient,
         recorded: FakeEmitter,
     ) -> None:
-        """Сервер называет журнал, едва он открыт: адрес известен и кнопка
-        журнала стоит на шаге, пока вызов идёт."""
+        """Ретранслятор называет журнал, едва сервер его открыл (JournalOpened):
+        адрес известен и кнопка журнала стоит на шаге, пока вызов идёт."""
         journals = RemoteJournals()
         updates = _view(runtime_stand, storage, journals)
         updates.begin_turn(QUESTION)
 
         await updates.apply(_call(CALL, "mcp__boba__bash", {"cmd": "ls"}))
-        await updates.apply(_journal_opened(CALL, "srv-call", {}))
+        await updates.journal_opened(_journal_opened(CALL, "srv-call", None))
 
         address = JournalAddress(server="boba", run=RUN, call="srv-call")
         assert await journals.address(THREAD, CALL) == address
         step = recorded.last()[_id(CALL, StepRole.TOOL)]
-        assert step.get(StepField.OUTPUT) == StepText.RUNNING.value, step
+        assert step.get(StepField.OUTPUT) == TEXTS.text(StepText.RUNNING.value), step
         buttons = _buttons(recorded)
         assert buttons == [(CALL, _id(CALL, StepRole.TOOL))], buttons
 
@@ -511,6 +513,7 @@ class TestUpdateViewIds:
             LiveSink(),
             "u-1",
             storage,
+            TEXTS,
             user_name="alice",
         )
         updates = UpdateView(view, THREAD, RemoteJournals(), media)
@@ -577,7 +580,7 @@ class TestToolApps:
     ) -> None:
         media = ToolMedia()
         media.shown("standard", [self.BOARD], None, None, apps)
-        view = ChatView(THREAD, LiveSink(), "u-1", storage, user_name="a")
+        view = ChatView(THREAD, LiveSink(), "u-1", storage, TEXTS, user_name="a")
         updates = UpdateView(view, THREAD, RemoteJournals(), media)
         updates.begin_turn(QUESTION)
 
@@ -654,12 +657,13 @@ class TestNestedCallSteps:
         if nested:
             declared = CallDag().feature()
 
-        media.shown("boba", [], declared, JOURNAL, None)
+        media.shown("boba", [], declared, JournalLinks(JOURNAL.resource), None)
         view = ChatView(
             THREAD,
             LiveSink(),
             "u-1",
             storage,
+            TEXTS,
             user_name="alice",
         )
 
@@ -754,8 +758,8 @@ class TestNestedCallSteps:
         updates.begin_turn(QUESTION)
         await updates.apply(_call(CALL, "mcp__boba__workflow", {"nodes": self.NODES}))
 
-        opened = _journal_opened(CALL, "srv-call_1", {CallDag.PROGRESS_NODE: "sink"})
-        await updates.apply(opened)
+        opened = _journal_opened(CALL, "srv-call_1", "sink")
+        await updates.journal_opened(opened)
 
         address = JournalAddress(server="boba", run=RUN, call="srv-call_1")
         assert await journals.address(THREAD, f"{CALL}_1") == address
@@ -1051,7 +1055,7 @@ class TestResultsFromRawOutput:
             bus = MemoryMessageBus("test-aid")
             payloads = MemoryPayloadStore()
             scope = Scope.chat(thread_id)
-            view = ChatView(thread_id, LiveSink(), seeded.user.id, storage)
+            view = ChatView(thread_id, LiveSink(), seeded.user.id, storage, TEXTS)
             renderer = ChatRenderer(
                 thread_id,
                 UpdateView(view, thread_id, RemoteJournals(), ToolMedia()),
@@ -1075,7 +1079,7 @@ class TestResultsFromRawOutput:
         replay_context = FakeContext(thread_id)
         token = context_var.set(cast("ChainlitContext", replay_context))
         try:
-            view = ChatView(thread_id, LiveSink(), seeded.user.id, storage)
+            view = ChatView(thread_id, LiveSink(), seeded.user.id, storage, TEXTS)
             replay = UpdateView(view, thread_id, RemoteJournals(), ToolMedia())
             await replay.apply(_question())
             for update in self._updates(thread_id):
@@ -1173,7 +1177,7 @@ class TestElementIdsWithoutKey:
         storage: LocalStorageClient,
         recorded: FakeEmitter,
     ) -> None:
-        view = ChatView(THREAD, LiveSink(), "u-1", storage)
+        view = ChatView(THREAD, LiveSink(), "u-1", storage, TEXTS)
         link = schema.ResourceContentBlock(
             name="note.txt",
             uri=AnyUrl(f"http://agent-side:1/boba-test/canvas/{THREAD}/upload/n.txt"),
@@ -1321,7 +1325,7 @@ class TestAgentPanel:
     def test_tabs_show_user_layer_and_session_options(self) -> None:
         user = UserAgentSettings(base_url="http://llm:1/v1", api_key=SecretStr("k"))
         panel = AgentPanel(
-            _profile(["*"]), user, None, _options(), PanelText("", "en-US")
+            _profile(["*"]), user, None, _options(), PanelText(str(APP_ROOT), "en-US")
         )
 
         tabs = {tab.id: tab for tab in panel.tabs()}
@@ -1348,7 +1352,7 @@ class TestAgentPanel:
             UserAgentSettings(),
             _chat(PermissionMode.DEFAULT),
             _options(),
-            PanelText("", "en-US"),
+            PanelText(str(APP_ROOT), "en-US"),
         )
 
         tabs = {tab.id: tab for tab in panel.tabs()}
@@ -1362,7 +1366,7 @@ class TestAgentPanel:
             UserAgentSettings(),
             None,
             SessionOptions(),
-            PanelText("", "en-US"),
+            PanelText(str(APP_ROOT), "en-US"),
         )
 
         assert panel.tabs() == []
@@ -1374,7 +1378,7 @@ class TestAgentPanel:
     def test_parse_keeps_the_secret_and_reads_the_session_choice(self) -> None:
         saved = UserAgentSettings(api_key=SecretStr("old"), model="m1")
         panel = AgentPanel(
-            _profile(["*"]), saved, None, _options(), PanelText("", "en-US")
+            _profile(["*"]), saved, None, _options(), PanelText(str(APP_ROOT), "en-US")
         )
 
         change = panel.parse(
@@ -1400,7 +1404,7 @@ class TestAgentPanel:
             UserAgentSettings(),
             None,
             SessionOptions(),
-            PanelText("", "en-US"),
+            PanelText(str(APP_ROOT), "en-US"),
         )
 
         change = panel.parse({UserSetting.AGENT_MODEL.value: "picked"})
@@ -1415,7 +1419,7 @@ class TestAgentPanel:
             UserAgentSettings(),
             None,
             _options(),
-            PanelText("", "en-US"),
+            PanelText(str(APP_ROOT), "en-US"),
         )
 
         with pytest.raises(AgentSettingsError, match="no-such-mode"):
@@ -1516,7 +1520,7 @@ class TestBlockDrawings:
         raw: Any,
         name: str = "mcp__boba__probe",
     ) -> None:
-        view = ChatView(THREAD, LiveSink(), "u-1", storage)
+        view = ChatView(THREAD, LiveSink(), "u-1", storage, TEXTS)
         updates = UpdateView(view, THREAD, RemoteJournals(), ToolMedia())
         await updates.apply(_question())
         await updates.apply(_call(CALL, name, {}))

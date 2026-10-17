@@ -29,10 +29,11 @@ from typing import Any, ClassVar
 
 import httpx
 import pytest
-from aid_stand import FakeUrl
+from aid_stand import AppLanguage, FakeUrl
 from playwright.async_api import TimeoutError as PlaywrightTimeout
 from playwright.async_api import async_playwright
 
+from boba.aid.canvas.panel import CanvasNote
 from boba.runtime.config import ConfigFiles, ConfigLayoutError, EnvOverride
 from boba.stand.names import StandNames
 from boba.stand.ui.database import StandDatabase
@@ -44,6 +45,16 @@ REPO = Path(__file__).resolve().parents[4]
 LAUNCHER = REPO / ".venv/bin/python"
 ENTRY = REPO / "packages/apps/boba-aid/src/boba/aid/main.py"
 MCP_MODULE = "boba.mcp_server"
+
+
+class E2eTexts:
+    """Подписи панели на языке приложения: текст до первой подстановки."""
+
+    DIAGRAM_FAILED: ClassVar[str] = "aid.canvas.diagramFailed"
+    PLACEHOLDER: ClassVar[str] = "{{"
+
+    def head(self, key: str) -> str:
+        return AppLanguage().texts().text(key).split(self.PLACEHOLDER)[0]
 
 
 class E2eStand:
@@ -661,8 +672,8 @@ async def test_unsupported_format_is_explained(panel: Any) -> None:
     side = await show("data.bin")
     text = await side.inner_text()
 
-    if "cannot display" not in text:
-        raise AssertionError('"cannot display" in text')
+    if E2eTexts().head(CanvasNote.UNSUPPORTED.value) not in text:
+        raise AssertionError(f"the unsupported format is not explained: {text!r}")
 
 
 async def test_broken_spec_verdict_reaches_server(panel: Any) -> None:
@@ -672,8 +683,8 @@ async def test_broken_spec_verdict_reaches_server(panel: Any) -> None:
     side = await show("broken.mmd")
     text = await side.inner_text()
 
-    if "not rendered" not in text:
-        raise AssertionError('"not rendered" in text')
+    if E2eTexts().head(E2eTexts.DIAGRAM_FAILED) not in text:
+        raise AssertionError(f"the diagram failure is not shown: {text!r}")
     if "Parse error" not in text:
         raise AssertionError('"Parse error" in text')
 
@@ -785,11 +796,11 @@ async def test_controls_share_one_alignment(panel: Any) -> None:
               .closest('.bg-card').getBoundingClientRect();
             const back = document.querySelector('#side-view-title');
             const buttons = [...document.querySelectorAll(
-              '#side-view-content button[aria-label]'
+              '#side-view-content button[data-canvas-action]'
             )].map(b => {
               const r = b.getBoundingClientRect();
               return {
-                label: b.getAttribute('aria-label'),
+                label: b.getAttribute('data-canvas-action'),
                 top: Math.round(r.top - panel.top),
                 right: Math.round(panel.right - r.right),
                 size: Math.round(r.width),
@@ -814,8 +825,8 @@ async def test_controls_share_one_alignment(panel: Any) -> None:
             raise AssertionError('entry["size"] == 36')
 
     last = geometry["buttons"][-1]
-    if last["label"] != "Close":
-        raise AssertionError('last["label"] == "Close"')
+    if last["label"] != "close":
+        raise AssertionError('last["label"] == "close"')
     if abs(last["right"] - 25) > 4:
         raise AssertionError('abs(last["right"] - 25) <= 4')
 
@@ -830,7 +841,7 @@ async def test_fullscreen_controls_are_on_the_close_line(panel: Any) -> None:
     side = await show("flow.mmd")
     page = side.page
 
-    await side.locator('button[aria-label="Fullscreen"]').click()
+    await side.locator('button[data-canvas-action="fullscreen"]').click()
     await page.wait_for_timeout(500)
 
     rows = await page.evaluate(
@@ -866,18 +877,18 @@ async def test_broken_diagram_keeps_the_control_row(panel: Any) -> None:
 
     labels = await side.page.evaluate(
         """() => [...document.querySelectorAll(
-            '#side-view-content button[aria-label]'
-        )].map(b => b.getAttribute('aria-label'))"""
+            '#side-view-content button[data-canvas-action]'
+        )].map(b => b.getAttribute('data-canvas-action'))"""
     )
 
-    if labels[-2:] != ["Fullscreen", "Close"]:
-        raise AssertionError('labels[-2:] == ["Fullscreen", "Close"]')
-    if "Zoom in" not in labels:
-        raise AssertionError('"Zoom in" in labels')
-    if "Zoom out" not in labels:
-        raise AssertionError('"Zoom out" in labels')
-    if "Reset view" not in labels:
-        raise AssertionError('"Reset view" in labels')
+    if labels[-2:] != ["fullscreen", "close"]:
+        raise AssertionError('labels[-2:] == ["fullscreen", "close"]')
+    if "zoom-in" not in labels:
+        raise AssertionError('"zoom-in" in labels')
+    if "zoom-out" not in labels:
+        raise AssertionError('"zoom-out" in labels')
+    if "reset-view" not in labels:
+        raise AssertionError('"reset-view" in labels')
 
 
 async def test_unsupported_format_keeps_the_control_row(panel: Any) -> None:
@@ -887,12 +898,12 @@ async def test_unsupported_format_keeps_the_control_row(panel: Any) -> None:
 
     labels = await side.page.evaluate(
         """() => [...document.querySelectorAll(
-            '#side-view-content button[aria-label]'
-        )].map(b => b.getAttribute('aria-label'))"""
+            '#side-view-content button[data-canvas-action]'
+        )].map(b => b.getAttribute('data-canvas-action'))"""
     )
 
-    if labels[-2:] != ["Fullscreen", "Close"]:
-        raise AssertionError('labels[-2:] == ["Fullscreen", "Close"]')
+    if labels[-2:] != ["fullscreen", "close"]:
+        raise AssertionError('labels[-2:] == ["fullscreen", "close"]')
 
 
 async def test_file_link_does_not_depend_on_the_session(panel: Any) -> None:
@@ -920,8 +931,9 @@ async def test_panel_switches_after_a_render_error(panel: Any) -> None:
     side = await show("broken.mmd")
     page = side.page
 
-    if "not rendered" not in await side.inner_text():
-        raise AssertionError('"not rendered" in await side.inner_text()')
+    shown = await side.inner_text()
+    if E2eTexts().head(E2eTexts.DIAGRAM_FAILED) not in shown:
+        raise AssertionError(f"the diagram failure is not shown: {shown!r}")
 
     await page.evaluate(
         """path => window.dispatchEvent(
@@ -933,8 +945,8 @@ async def test_panel_switches_after_a_render_error(panel: Any) -> None:
     text = await side.inner_text()
     if "Доход" not in text:
         raise AssertionError('"Доход" in text')
-    if "not rendered" in text:
-        raise AssertionError('"not rendered" not in text')
+    if E2eTexts().head(E2eTexts.DIAGRAM_FAILED) in text:
+        raise AssertionError(f"the diagram is shown as failed: {text!r}")
 
 
 async def test_stream_channel_delivers_to_the_panel(panel: Any) -> None:
@@ -948,8 +960,9 @@ async def test_stream_channel_delivers_to_the_panel(panel: Any) -> None:
     _show, _, _thread, act = panel
     side = await act("canvas_stream", {"call_id": "e2e-нет-такого-вызова"})
 
-    if "unavailable" not in await side.inner_text():
-        raise AssertionError('"unavailable" in await side.inner_text()')
+    shown = await side.inner_text()
+    if E2eTexts().head(CanvasNote.GONE.value) not in shown:
+        raise AssertionError(f"the missing journal is not explained: {shown!r}")
 
 
 async def test_panel_close_button_closes_the_panel(panel: Any) -> None:
@@ -958,7 +971,7 @@ async def test_panel_close_button_closes_the_panel(panel: Any) -> None:
     side = await show("report.md")
     page = side.page
 
-    await side.locator('button[aria-label="Close"]').click()
+    await side.locator('button[data-canvas-action="close"]').click()
     await page.wait_for_timeout(1500)
 
     if await page.locator("#side-view-content").count() != 0:
@@ -974,7 +987,7 @@ async def test_bar_survives_scrolling(panel: Any, name: str) -> None:
 
     before = await page.evaluate(
         """() => document.querySelector(
-            '#side-view-content button[aria-label]'
+            '#side-view-content button[data-canvas-action]'
         ).getBoundingClientRect().top"""
     )
 
@@ -992,7 +1005,7 @@ async def test_bar_survives_scrolling(panel: Any, name: str) -> None:
     after = await page.evaluate(
         """() => {
             const button = document.querySelector(
-              '#side-view-content button[aria-label]'
+              '#side-view-content button[data-canvas-action]'
             );
             const r = button.getBoundingClientRect();
             return { top: r.top, height: r.height };
@@ -1067,9 +1080,9 @@ async def test_zoom_buttons_scale_the_diagram(panel: Any) -> None:
     )
 
     base = await page.evaluate(read)
-    await side.locator('button[aria-label="Zoom in"]').click()
+    await side.locator('button[data-canvas-action="zoom-in"]').click()
     zoomed = await page.evaluate(read)
-    await side.locator('button[aria-label="Reset view"]').click()
+    await side.locator('button[data-canvas-action="reset-view"]').click()
     reset = await page.evaluate(read)
 
     if "scale(1)" not in base:
@@ -1107,7 +1120,7 @@ FULL_GEOMETRY = """() => {
 
 async def _expand(side: Any) -> Any:
     """Развернуть панель на весь экран и вернуть геометрию сцены."""
-    await side.locator('button[aria-label="Fullscreen"]').first.click()
+    await side.locator('button[data-canvas-action="fullscreen"]').first.click()
     await side.page.wait_for_timeout(400)
     return await side.page.evaluate(FULL_GEOMETRY)
 
@@ -1209,7 +1222,7 @@ async def test_zoom_survives_expanding(panel: Any) -> None:
         "'[data-canvas-stage] div[style*=\"transform-origin\"]').style.transform"
     )
 
-    await side.locator('button[aria-label="Zoom in"]').first.click()
+    await side.locator('button[data-canvas-action="zoom-in"]').first.click()
     before = await page.evaluate(read)
 
     await _expand(side)
@@ -1445,11 +1458,11 @@ async def test_workspace_log_walks_by_windows(panel: Any) -> None:
 
     head = await side.inner_text()
 
-    await side.locator('button[aria-label*="Go to the file end"]').first.click()
+    await side.locator('button[data-canvas-action="to-end"]').first.click()
     await _await_text(page, "N119999,row")
     tail = await side.inner_text()
 
-    await side.locator('button[aria-label="Go to the file start"]').first.click()
+    await side.locator('button[data-canvas-action="to-start"]').first.click()
     await _await_text(page, "N000000,row")
     back = await side.inner_text()
 
@@ -1469,7 +1482,7 @@ async def test_scrolling_up_loads_previous_window(panel: Any) -> None:
     side = await show("notes.log")
     page = side.page
 
-    await side.locator('button[aria-label*="Go to the file end"]').first.click()
+    await side.locator('button[data-canvas-action="to-end"]').first.click()
     await _await_text(page, "N119999,row")
 
     before = await page.evaluate(
@@ -1509,8 +1522,8 @@ async def test_font_size_survives_expanding(panel: Any) -> None:
 
     read = "() => document.querySelector('[data-canvas-stage] pre').style.fontSize"
 
-    await page.locator('button[aria-label="Larger"]').first.click()
-    await page.locator('button[aria-label="Larger"]').first.click()
+    await page.locator('button[data-canvas-action="larger"]').first.click()
+    await page.locator('button[data-canvas-action="larger"]').first.click()
     before = await page.evaluate(read)
 
     await _expand(side)
@@ -1580,7 +1593,7 @@ async def test_wheel_zooms_in_fullscreen(panel: Any) -> None:
     after = await page.evaluate(read)
 
     # в полном экране сцена живёт в body: кнопки ищем на странице, не в панели
-    await page.locator('button[aria-label="Reset view"]').first.click()
+    await page.locator('button[data-canvas-action="reset-view"]').first.click()
     await _collapse(page)
 
     if after == before:
@@ -1612,7 +1625,7 @@ async def test_diagram_pans_by_dragging(panel: Any) -> None:
     await page.wait_for_timeout(300)
 
     after = await page.evaluate(read)
-    await side.locator('button[aria-label="Reset view"]').first.click()
+    await side.locator('button[data-canvas-action="reset-view"]').first.click()
 
     if after == before:
         raise AssertionError("перетаскивание не сдвинуло диаграмму")
@@ -1624,7 +1637,7 @@ async def test_panel_reopens_after_closing(panel: Any) -> None:
     side = await show("report.md")
     page = side.page
 
-    await side.locator('button[aria-label="Close"]').first.click()
+    await side.locator('button[data-canvas-action="close"]').first.click()
     await page.wait_for_timeout(1500)
     if await page.locator("#side-view-content").count() != 0:
         raise AssertionError("панель не закрылась")
@@ -1696,19 +1709,19 @@ async def test_buttons_work_in_fullscreen(panel: Any) -> None:
     before = await page.evaluate(read)
 
     await page.locator(
-        '[data-canvas-panel][data-full="true"] button[aria-label="Zoom in"]'
+        '[data-canvas-panel][data-full="true"] button[data-canvas-action="zoom-in"]'
     ).click()
     await page.wait_for_timeout(300)
     zoomed = await page.evaluate(read)
 
     await page.locator(
-        '[data-canvas-panel][data-full="true"] button[aria-label="Reset view"]'
+        '[data-canvas-panel][data-full="true"] button[data-canvas-action="reset-view"]'
     ).click()
     await page.wait_for_timeout(300)
     reset = await page.evaluate(read)
 
     await page.locator(
-        '[data-canvas-panel][data-full="true"] button[aria-label="Close"]'
+        '[data-canvas-panel][data-full="true"] button[data-canvas-action="close"]'
     ).click()
     await page.wait_for_timeout(400)
     collapsed = await page.evaluate(
@@ -1745,7 +1758,7 @@ async def test_every_viewer_offers_download(panel: Any) -> None:
 
     for name in DOWNLOADABLE:
         side = await show(name)
-        found = await side.locator('button[aria-label="Download file"]').count()
+        found = await side.locator('button[data-canvas-action="download"]').count()
 
         if found != 1:
             raise AssertionError(f"{name}: кнопки скачивания нет (найдено {found})")
@@ -1759,7 +1772,7 @@ async def test_download_saves_the_shown_file(panel: Any) -> None:
         side = await show(name)
 
         async with side.page.expect_download() as pending:
-            await side.locator('button[aria-label="Download file"]').click()
+            await side.locator('button[data-canvas-action="download"]').click()
 
         saved = await pending.value
         if saved.suggested_filename != name:
@@ -1775,7 +1788,7 @@ async def test_download_works_in_fullscreen(panel: Any) -> None:
     await _expand(side)
     async with page.expect_download() as pending:
         await page.locator(
-            '[data-canvas-stage] button[aria-label="Download file"]'
+            '[data-canvas-stage] button[data-canvas-action="download"]'
         ).click()
     saved = await pending.value
     await _collapse(page)
@@ -1791,7 +1804,7 @@ async def test_preview_card_has_no_download_button(panel: Any) -> None:
 
     in_feed = await side.page.evaluate(
         """() => document.querySelectorAll(
-            '.message-content button[aria-label="Download file"]').length"""
+            '.message-content button[data-canvas-action="download"]').length"""
     )
 
     if in_feed:

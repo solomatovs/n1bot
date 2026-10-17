@@ -45,6 +45,7 @@ from boba.aid.agent.chat import (
 )
 from boba.aid.canvas.remote import RemoteJournals
 from boba.aid.chat.feed import TurnFeed
+from boba.aid.chat.ui_text import UiText
 from boba.aid.data.data_layer import FeedRows
 from boba.aid.domain.fields import StepField
 from boba.aid.rendering.acp_view import SessionUpdate, ToolMedia, UpdateView
@@ -175,6 +176,9 @@ class AgentFeed(TurnRenderer):
     )
     """Уведомления сессии, которых в ленте нет: заголовок, план, команды,
     сжатие и состояние хода (его конец приходит turn_finished)."""
+
+    ABANDONED: ClassVar[str] = "turn failed"
+    """Причина в итоге хода, сорвавшегося без ответа агента."""
 
     def __init__(  # noqa: PLR0913 — приёмник собирается всеми своими входами
         self,
@@ -389,7 +393,7 @@ class AgentFeed(TurnRenderer):
                 return
 
             if stop_reason == StopReason.CANCELLED:
-                note = StepText.STOPPED.value
+                note = self._replay.view.label(StepText.STOPPED)
                 await turn.feed.answer_interrupted(turn.key, note)
                 await turn.feed.finished(TurnOutcome.STOPPED, note)
                 return
@@ -416,7 +420,7 @@ class AgentFeed(TurnRenderer):
                 return
 
             try:
-                await turn.feed.finished(TurnOutcome.FAILED, StepText.TURN_FAILED.value)
+                await turn.feed.finished(TurnOutcome.FAILED, self.ABANDONED)
             finally:
                 await self._release(turn)
 
@@ -483,8 +487,10 @@ class AgentFeeds(TurnRenderers):
         rows: FeedRows,
         surfaces: TabSurfaces,
         storage: StorageClient,
+        texts: UiText,
     ) -> None:
         self._parts = parts
+        self._texts = texts
         self._journals = journals
         self._media = media
         self._servers = servers
@@ -506,7 +512,7 @@ class AgentFeeds(TurnRenderers):
                 name,
                 port.tools(),
                 port.nested_calls(),
-                port.journal_feature(),
+                port.journal_links(),
                 port.apps(),
             )
 
@@ -516,6 +522,7 @@ class AgentFeeds(TurnRenderers):
             LiveSink(),
             str(identity.user_id),
             self._storage,
+            self._texts,
             user_name=identity.login,
         )
         replay = UpdateView(view, identity.thread_id, self._journals, self._media)

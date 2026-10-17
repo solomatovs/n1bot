@@ -24,6 +24,7 @@ __all__ = [
     "Command",
     "CommandKind",
     "FeedbackChanged",
+    "JournalOpened",
     "LockLost",
     "Message",
     "MessageKind",
@@ -59,6 +60,7 @@ class MessageKind(StrEnum):
     RUN_STATE_CHANGED = "run_state_changed"
     RUN_FINISHED = "run_finished"
     CANVAS_CHANGED = "canvas_changed"
+    JOURNAL_OPENED = "journal_opened"
     SIGNIN_REFRESH_REQUESTED = "signin_refresh_requested"
     NOTICE = "notice"
     LOCK_LOST = "lock_lost"
@@ -222,6 +224,22 @@ class CanvasChanged(Message):
     note: str = ""
 
 
+class JournalOpened(Message):
+    """Сервер MCP server открыл журнал идущего вызова call_id агента: запуск
+    run и вызов call на сервере — адрес журнала; node — ключ узла от автора
+    связки, когда журнал принадлежит узлу вызова со вложенными вызовами,
+    None — журнал самого вызова. По нему лента ставит шагу кнопку журнала,
+    пока вызов идёт.
+    """
+
+    kind: Literal[MessageKind.JOURNAL_OPENED] = MessageKind.JOURNAL_OPENED
+    call_id: str = Field(min_length=1)
+    node: str | None = None
+    server: str = Field(min_length=1)
+    run: str = Field(min_length=1)
+    call: str = Field(min_length=1)
+
+
 class SignInRefreshRequested(Message):
     """Билет пользователя principal истекает: странице пора обновить вход."""
 
@@ -341,6 +359,7 @@ AnyMessage = Annotated[
     | RunStateChanged
     | RunFinished
     | CanvasChanged
+    | JournalOpened
     | SignInRefreshRequested
     | Notice
     | LockLost

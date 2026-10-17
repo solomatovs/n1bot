@@ -8,6 +8,7 @@ import socket
 import subprocess
 import sys
 import time
+import tomllib
 from collections.abc import (
     AsyncIterator,
     Iterator,
@@ -38,6 +39,7 @@ from boba.aid.agent.relay import (
 )
 from boba.aid.canvas.remote import RemoteJournals, RemoteStreams
 from boba.aid.canvas.tools import CanvasOpener
+from boba.aid.chat.ui_text import UiText
 from boba.aid.data.data_layer import PostgresDataLayer
 from boba.aid.domain.keys import AppPrefix
 from boba.aid.infra.config import AppConfig
@@ -308,6 +310,8 @@ class RelayStand:
 
     SEAL_TTL: ClassVar[timedelta] = timedelta(minutes=2)
     ROLE: ClassVar[str] = "dev"
+    VERSION: ClassVar[str] = "0.0"
+    """Версия чата стенда в serverInfo ретранслятора и сервера chat."""
 
     def __init__(
         self, store: StoreRef, credentials: CredentialsRef, contexts: CallContexts
@@ -320,17 +324,26 @@ class RelayStand:
         tools = refs.tool_stand(())
         tools.adopt(ConnectionTools(store, contexts).build())
         registry = tools.registry(tools.access(self.ROLE, SignInStand.PROFILE), ())
-        self.chat = ChatTools(registry, refs.runs)
+        self.chat = ChatTools(registry, refs.runs, self.VERSION)
         self.canvas = CanvasOpener(ThreadSurfaces())
+        self.bus = MemoryMessageBus("relay-stand")
 
     def relay(self, servers: McpServers) -> McpRelay:
+        return self.relay_with(servers, self.chat, self.canvas)
+
+    def relay_with(
+        self, servers: McpServers, chat: ChatTools, canvas: CanvasOpener
+    ) -> McpRelay:
+        """Ретранслятор стенда со своими инструментами chat и панелью."""
         return McpRelay(
             self.registrations,
             servers,
             self.sealing,
             self._contexts,
-            self.chat,
-            self.canvas,
+            chat,
+            canvas,
+            self.bus,
+            self.VERSION,
         )
 
 
@@ -632,6 +645,28 @@ class Seed:
 def workspace_mount() -> None:
     """Точку рабочего каталога в приложении ставит загрузчик из профиля."""
     WorkspaceMount.configure("/workspace")
+
+
+class AppLanguage:
+    """Язык интерфейса приложения пакета — [UI].language конфига chainlit в
+    assets: на нём говорит стенд aid, запущенный отдельным процессом."""
+
+    ASSETS: ClassVar[Path] = Path(__file__).resolve().parents[1] / "assets"
+    CONFIG: ClassVar[tuple[str, str]] = (".chainlit", "config.toml")
+
+    def language(self) -> str:
+        config = self.ASSETS.joinpath(*self.CONFIG)
+        doc = tomllib.loads(config.read_text(encoding="utf-8"))
+        return str(doc["UI"]["language"])
+
+    def texts(self) -> UiText:
+        return UiText(self.ASSETS, self.language())
+
+
+@pytest.fixture(scope="session")
+def app_texts() -> UiText:
+    """Подписи интерфейса стенда aid на его языке."""
+    return AppLanguage().texts()
 
 
 @pytest.fixture(scope="session")
@@ -943,6 +978,7 @@ def di_root(
     """
     from boba.aid.agent.chat import ThreadAgentsIndex
     from boba.aid.infra.providers import (
+        feed_text,
         remote_journals,
         session_source,
         storage_provider,
@@ -968,6 +1004,7 @@ def di_root(
     root.provide(tool_media, ToolMedia())
     root.provide(storage_provider, storage)
     root.provide(thread_agents_index, ThreadAgentsIndex())
+    root.provide(feed_text, UiText(AppLanguage.ASSETS, UiText.DEFAULT_LANGUAGE))
     Container.set_root(root)
     try:
         yield

@@ -291,7 +291,8 @@ class ChatRoomSurface(RenderSurface):
 
         journals = root.resolved(providers.remote_journals)
         storage = root.resolved(providers.storage_provider)
-        view = ChatView(thread_id, LiveSink(), str(owner), storage)
+        texts = root.resolved(providers.feed_text)
+        view = ChatView(thread_id, LiveSink(), str(owner), storage, texts)
 
         return ChatRenderers.ensure(
             thread_id,
