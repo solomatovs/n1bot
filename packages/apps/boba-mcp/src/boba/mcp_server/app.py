@@ -121,6 +121,24 @@ class StoppedRuns:
         )
 
 
+class EndedSubscriptions:
+    """Действие остановки процесса сервиса: штатно кончает потоки
+    subscriptions/listen.
+
+    Создаётся сборкой процесса (McpHost) над endpoint'ами и отдаётся
+    остановке процесса (ProcessStop.on_stop). Каждый поток досылает события
+    и отвечает на свой запрос итогом: клиент видит конец подписки, а не
+    обрыв, и серверу не приходится ждать долгие потоки весь срок остановки.
+    """
+
+    def __init__(self, endpoints: McpEndpoints) -> None:
+        self._endpoints = endpoints
+
+    def __call__(self, received: signal.Signals) -> None:
+        self._endpoints.end_subscriptions()
+        logger.info("stop signal %s: listen streams are ended", received.name)
+
+
 class McpHost:
     """Сборка процесса сервиса: контейнер общих сервисов и MCP-сервер над
     реестром инструментов. Создаётся входом процесса из конфига."""
@@ -172,6 +190,7 @@ class McpHost:
             )
             stop = ProcessStop()
             stop.on_stop(StoppedRuns(self._container.resolved(providers.runs)))
+            stop.on_stop(EndedSubscriptions(endpoints))
             listener = SignalledServer(
                 uvicorn.Config(
                     endpoints.app(),

@@ -267,6 +267,14 @@ class StandRegistration:
         request = parse_client_request(
             message.method, McpVersion.V2026_07_28, message.params
         )
+        if isinstance(request, mt.DiscoverRequest):
+            capabilities = mt.ServerCapabilities(tools=mt.ToolsCapability())
+            discovered = mt.DiscoverResult(
+                supported_versions=[McpVersion.V2026_07_28.value],
+                capabilities=capabilities,
+            )
+            return McpResultOutcome(result=discovered.model_dump(**self.WIRE))
+
         if isinstance(request, mt.ListToolsRequest):
             start = 0
             if request.params is not None and request.params.cursor is not None:
@@ -1435,17 +1443,20 @@ class TestMcpOverAcp:
             await boba.close_stdin()
 
         assert await boba.wait() == 0
+        methods: list[str] = []
         cursors: list[object] = []
         for message in registration.received:
-            assert message.method == "tools/list"
+            methods.append(message.method)
             assert message.server_id == StandRegistration.STAND.server_id
             assert message.params is not None
-            assert message.params["_meta"] == {
-                mt.PROTOCOL_VERSION_META_KEY: McpVersion.V2026_07_28,
-                mt.CLIENT_CAPABILITIES_META_KEY: {},
-            }
-            cursors.append(message.params.get("cursor"))
+            meta = message.params["_meta"]
+            assert meta[mt.PROTOCOL_VERSION_META_KEY] == McpVersion.V2026_07_28
+            assert meta[mt.CLIENT_CAPABILITIES_META_KEY] == {}
+            assert meta[mt.CLIENT_INFO_META_KEY]["name"] == "boba"
+            if message.method == "tools/list":
+                cursors.append(message.params.get("cursor"))
 
+        assert methods == ["server/discover"] + ["tools/list"] * 4
         assert cursors == [None, "3", "6", "9"]
 
         answered_at = boba.frames.position_of_response(
@@ -1458,7 +1469,7 @@ class TestMcpOverAcp:
             if incoming and message.get("method") == "mcp/message":
                 asked_at.append(position)
 
-        assert len(asked_at) == 4
+        assert len(asked_at) == 5
         assert max(asked_at) < answered_at
 
         offered: list[str] = []

@@ -38,7 +38,7 @@ from boba.connections.sealed import ConnectionOffer, SealedParamSchema, SealFeat
 from boba.connections.secrets import SecretCipher
 from boba.db.postgres import AsyncPostgresPool, PostgresSchema
 from boba.db.postgres.connection import PostgresConfig
-from boba.identity.context import DelegatedTicket, NoUserCredential
+from boba.identity.context import DelegatedTicket, NoUserCredential, Scope
 from boba.identity.errors import AuthenticationError, RefusalError
 from boba.mcp_client.client import (
     McpServerApps,
@@ -46,6 +46,7 @@ from boba.mcp_client.client import (
     McpServers,
     McpServersConfig,
 )
+from boba.messaging import Envelope, JournalOpened
 from boba.stand.refs import StandRefs
 from boba.stand.signin import SignInStand
 from boba.stand.toolstand import ProbeTools
@@ -187,9 +188,12 @@ class TestMcpRelay:
         assert isinstance(outdated, McpErrorOutcome), outdated
         assert outdated.error.code == mt.UNSUPPORTED_PROTOCOL_VERSION
 
-    async def test_sdk_answers_discover_ping_and_unknown_methods(
+    async def test_discover_is_the_server_behind_the_registration(
         self, relay: McpRelay, relay_stand: RelayStand, tab: TabSession
     ) -> None:
+        """server/discover отдаёт возможности, инструкции и serverInfo
+        сервера за регистрацией; ping и методы вне редакции SDK отвечает
+        -32601."""
         server_id = self._server_id(relay_stand, tab)
 
         discovered, _ = await self._answer(
@@ -197,12 +201,17 @@ class TestMcpRelay:
         )
         pinged, _ = await self._answer(relay, self._message(server_id, "ping", {}))
         unknown, _ = await self._answer(
-            relay, self._message(server_id, "resources/list", {})
+            relay, self._message(server_id, "logging/setLevel", {"level": "info"})
         )
 
         assert isinstance(discovered, McpResultOutcome), discovered
         result = mt.DiscoverResult.model_validate(discovered.result)
         assert McpVersion.V2026_07_28.value in result.supported_versions
+        assert result.instructions, result
+        assert result.meta is not None
+        assert result.meta[mt.SERVER_INFO_META_KEY]["name"] == "standard"
+        assert result.capabilities.prompts == mt.PromptsCapability(list_changed=True)
+        assert result.capabilities.logging is None
         # ping в редакции 2026-07-28 не определён: SDK отвечает -32601
         assert isinstance(pinged, McpErrorOutcome), pinged
         assert pinged.error.code == mt.METHOD_NOT_FOUND
@@ -289,14 +298,7 @@ class TestMcpRelay:
         агент получает isError с причиной в том же вызове."""
         servers = McpServers(McpServersConfig(servers={"standard": standard}))
         canvas = CanvasOpener(HolderSurface(context_var.get()))
-        relay = McpRelay(
-            relay_stand.registrations,
-            servers,
-            relay_stand.sealing,
-            call_stand.contexts,
-            relay_stand.chat,
-            canvas,
-        )
+        relay = relay_stand.relay_with(servers, relay_stand.chat, canvas)
         registration = tab.registration(uuid4(), SignInStand.PROFILE)
         server_id = relay_stand.registrations.register(registration, ["standard"])[
             0
@@ -811,6 +813,112 @@ class TestRelaySealing:
 
 
 @pytest.mark.integration
+class TestRelayJournals:
+    """Журнал, который вызов агента открыл на сервере boba-mcp, ретранслятор
+    узнаёт из resources/list по смене списка ресурсов (поток
+    subscriptions/listen) и называет ленте треда сообщением JournalOpened
+    под идентификатором вызова агента — его токеном прогресса; у связки —
+    с ключом узла от автора."""
+
+    ENVELOPE: ClassVar[dict[str, Any]] = TestMcpRelay.ENVELOPE
+
+    @pytest.mark.parametrize(
+        ("name", "arguments", "node"),
+        [
+            ("fake_progress", {"steps": 3, "pause": 0.5}, None),
+            (
+                "workflow",
+                {
+                    "nodes": [
+                        {
+                            "key": "slow",
+                            "tool": "fake_progress",
+                            "args": {"steps": 3, "pause": 0.5},
+                        }
+                    ]
+                },
+                "slow",
+            ),
+        ],
+        ids=["call", "node"],
+    )
+    async def test_running_call_journal_is_named_to_the_thread(  # noqa: PLR0913 — случай собирается фикстурами стендов
+        self,
+        service_process: ServiceProcess,
+        call_stand: CallStand,
+        tab: TabSession,
+        name: str,
+        arguments: dict[str, Any],
+        node: str | None,
+    ) -> None:
+        credentials = KerberosCredentialSource(None, NoRefresh())
+        stand = RelayStand(
+            NoConnectionStore(), lambda: credentials, call_stand.contexts
+        )
+        servers = McpServers(service_process.servers())
+        relay = stand.relay(servers)
+        registration = tab.registration(uuid4(), SignInStand.PROFILE)
+        server_id = stand.registrations.register(registration, ["boba"])[0].server_id
+        opened: list[JournalOpened] = []
+
+        async def heard(envelope: Envelope) -> None:
+            if isinstance(envelope.message, JournalOpened):
+                opened.append(envelope.message)
+
+        stand.bus.subscribe(Scope.chat(registration.thread_id), heard)
+        notes: asyncio.Queue[McpMessage] = asyncio.Queue()
+        meta = {**self.ENVELOPE, "progressToken": "agent-call-7"}
+        try:
+            for _ in range(150):
+                try:
+                    await relay.answer(
+                        McpMessage(
+                            server_id=server_id,
+                            request_id=f"mcp:{uuid4().hex}",
+                            method="tools/list",
+                            params={"_meta": self.ENVELOPE},
+                        ),
+                        notes.put,
+                    )
+                except RequestError:
+                    await asyncio.sleep(0.2)
+                    continue
+
+                break
+
+            called = await relay.answer(
+                McpMessage(
+                    server_id=server_id,
+                    request_id="mcp:call",
+                    method="tools/call",
+                    params={"name": name, "arguments": arguments, "_meta": meta},
+                ),
+                notes.put,
+            )
+        finally:
+            await servers.stop()
+
+        assert isinstance(called, McpResultOutcome), called
+        answer = mt.CallToolResult.model_validate(called.result)
+        assert not answer.is_error, answer
+        assert len(opened) == 1, opened
+        journal = opened[0]
+        assert journal.call_id == "agent-call-7"
+        assert journal.server == "boba"
+        assert journal.node == node
+        address = f"//{journal.run}/{journal.call}/"
+        linked: list[str] = []
+        for block in answer.content:
+            if not isinstance(block, mt.ResourceLink):
+                continue
+
+            if address in str(block.uri):
+                linked.append(str(block.uri))
+
+        assert linked, (answer.content, journal)
+
+
+@pytest.mark.integration
 class TestChatServer:
     """Сервер chat в процессе чата через ретранслятор: собственные
     инструменты чата по ролям вкладки, connection_list отдаёт соединения,
@@ -892,20 +1000,15 @@ class TestChatServer:
         )
         streaming = StreamSpecs({DevNullTool.NAME: drain.spec()})
         own = frozenset({WorkflowTool.NAME})
-        chat = ChatTools(replace(registry, own=own, specs=streaming), refs.runs)
+        chat = ChatTools(
+            replace(registry, own=own, specs=streaming), refs.runs, RelayStand.VERSION
+        )
         credentials = KerberosCredentialSource(None, NoRefresh())
         stand = RelayStand(
             NoConnectionStore(), lambda: credentials, call_stand.contexts
         )
         servers = McpServers(McpServersConfig(servers={}))
-        relay = McpRelay(
-            stand.registrations,
-            servers,
-            stand.sealing,
-            call_stand.contexts,
-            chat,
-            stand.canvas,
-        )
+        relay = stand.relay_with(servers, chat, stand.canvas)
         registration = tab.registration(uuid4(), SignInStand.PROFILE)
         server_id = stand.registrations.register(registration, [ChatTools.NAME])[
             0

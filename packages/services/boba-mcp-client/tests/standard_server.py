@@ -3,15 +3,21 @@
 Запускается субпроцессом из тестов клиента: `python standard_server.py stdio`
 либо `python standard_server.py streamable-http <port>`; транспорт
 `stdio-extended` — тот же сервер, объявляющий расширения с настройками не
-по моделям клиента (DeclaredExtension). Кроме четырёх
-обычных инструментов держит отказы стенда: задержку, большой результат,
-обрыв посреди вызова, смену списка инструментов с уведомлением и отчёты о
-ходе вызова, — ответ из блоков разных видов и адресатов, файл, который
-клиенту стоит показать сразу (priority 1), просьбу о вводе
-(input_required) — пустую и с формой вопроса пользователю (load_rows) — и
-отказ ошибкой MCP. Расширение MCP Apps даёт приложение
-доски (board.html): инструмент board рисует разметку, которую пишет модель,
-app_only зовёт только приложение, model_only — только модель.
+по моделям клиента (DeclaredExtension). На нём есть каждый запрос и каждое
+уведомление редакции 2026-07-28, кроме устаревших (sampling, roots,
+logging), чтобы клиент проверялся на всём: server/discover с инструкциями;
+инструменты — обычные, отказы стенда (задержка, большой результат, обрыв
+посреди вызова), ход вызова, ответ из блоков разных видов и адресатов,
+файл, который клиенту стоит показать сразу (priority 1), просьба о вводе
+(input_required) — пустая и с формой вопроса пользователю (load_rows) — и
+отказ ошибкой MCP; ресурсы — текст, двоичный, шаблон с
+подсказками значений и шаблон, просящий ввода; промпты — с аргументами,
+сообщениями обеих ролей и просящий ввода; completion/complete для
+аргументов промпта и шаблона; потоки subscriptions/listen со сменой списков
+инструментов (toggle_extra), ресурсов (grow_resources), промптов
+(toggle_prompt) и ростом ресурса (bump). Расширение MCP Apps даёт
+приложение доски (board.html): инструмент board рисует разметку, которую
+пишет модель, app_only зовёт только приложение, model_only — только модель.
 """
 
 import asyncio
@@ -25,17 +31,24 @@ from mcp.server.apps import Apps, ResourceCsp, client_supports_apps
 from mcp.server.extension import Extension
 from mcp.server.mcpserver import Context, Image, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
+from mcp.server.mcpserver.prompts.base import AssistantMessage, Message, UserMessage
+from mcp.server.mcpserver.resources.types import TextResource
 from mcp.shared.exceptions import MCPError
 from mcp.types import (
     INVALID_PARAMS,
     Annotations,
     CallToolResult,
+    Completion,
+    CompletionArgument,
+    CompletionContext,
     ElicitRequest,
     ElicitRequestFormParams,
     ElicitResult,
     EmbeddedResource,
     InputRequiredResult,
+    PromptReference,
     ResourceLink,
+    ResourceTemplateReference,
     TextContent,
     TextResourceContents,
     ToolAnnotations,
@@ -59,6 +72,14 @@ class StandardServer:
 
     PNG: bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
     EXTRA: ClassVar[str] = "extra"
+    EXTRA_PROMPT: ClassVar[str] = "extra_prompt"
+    INSTRUCTIONS: ClassVar[str] = "Call add for sums; read standard://notes first."
+    NOTES: ClassVar[str] = "standard://notes"
+    NOTES_TEXT: ClassVar[str] = "the notes of the standard server"
+    LOGO: ClassVar[str] = "standard://logo.png"
+    COUNTER: ClassVar[str] = "standard://counter"
+    ITEMS: ClassVar[tuple[str, ...]] = ("apple", "apricot", "banana")
+    STYLES: ClassVar[tuple[str, ...]] = ("plain", "poem", "pirate")
     LARGE_LINE: ClassVar[str] = "0123456789"
     ASKED: ClassVar[str] = "asked once"
     TARGET: ClassVar[str] = "target"
@@ -116,9 +137,17 @@ class StandardServer:
         if extended:
             extensions = (apps, *self.EXTENSIONS)
 
-        self._mcp = MCPServer("standard", extensions=extensions)
+        self._mcp = MCPServer(
+            "standard",
+            instructions=self.INSTRUCTIONS,
+            version="1.0",
+            extensions=extensions,
+        )
         self._port = port
         self._extra_on = False
+        self._extra_prompt_on = False
+        self._grown = 0
+        self._count = 0
         self._mcp.tool(annotations=ToolAnnotations(read_only_hint=True))(self.add)
         self._mcp.tool(
             annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False)
@@ -134,6 +163,20 @@ class StandardServer:
         self._mcp.tool(annotations=ToolAnnotations(read_only_hint=True))(self.progress)
         self._mcp.tool()(self.ask)
         self._mcp.tool()(self.load_rows)
+        self._mcp.tool()(self.client)
+        self._mcp.tool()(self.toggle_prompt)
+        self._mcp.tool()(self.grow_resources)
+        self._mcp.tool()(self.bump)
+        self._mcp.resource(self.NOTES, mime_type="text/plain")(self.notes)
+        self._mcp.resource(self.LOGO, mime_type="image/png")(self.logo)
+        self._mcp.resource(self.COUNTER, mime_type="text/plain")(self.counter)
+        self._mcp.resource("standard://items/{item}", mime_type="text/plain")(self.item)
+        self._mcp.resource("standard://ask/{topic}", mime_type="text/plain")(
+            self.ask_resource
+        )
+        self._mcp.prompt()(self.greet)
+        self._mcp.prompt()(self.ask_prompt)
+        self._mcp.completion()(self.complete)
 
     def add(self, a: int, b: int) -> int:
         """Adds two numbers."""
@@ -271,6 +314,108 @@ class StandardServer:
             raise ToolError(msg)
 
         return f"loaded {rows} rows into {answer.content['table']}"
+
+    def client(self, ctx: Context) -> str:
+        """Returns the clientInfo and clientCapabilities of the request as JSON."""
+        info: dict[str, Any] | None = None
+        params = ctx.session.client_params
+        if params is not None:
+            info = params.client_info.model_dump(mode="json", exclude_none=True)
+
+        capabilities: dict[str, Any] | None = None
+        declared = ctx.client_capabilities
+        if declared is not None:
+            capabilities = declared.model_dump(
+                mode="json", by_alias=True, exclude_none=True
+            )
+
+        return json.dumps({"info": info, "capabilities": capabilities})
+
+    async def toggle_prompt(self, ctx: Context) -> str:
+        """Adds or removes the prompt `extra_prompt` and notifies the client."""
+        if self._extra_prompt_on:
+            self._mcp.remove_prompt(self.EXTRA_PROMPT)
+            self._extra_prompt_on = False
+        else:
+            self._mcp.prompt(name=self.EXTRA_PROMPT)(self.extra_prompt)
+            self._extra_prompt_on = True
+
+        await ctx.notify_prompts_changed()
+        return f"extra prompt on: {self._extra_prompt_on}"
+
+    def extra_prompt(self) -> str:
+        """Appears only after toggle_prompt."""
+        return "the extra prompt"
+
+    async def grow_resources(self, ctx: Context) -> str:
+        """Adds one more text resource and notifies the client."""
+        self._grown += 1
+        uri = f"standard://grown/{self._grown}"
+        self._mcp.add_resource(
+            TextResource(uri=uri, name=f"grown {self._grown}", text=uri)
+        )
+        await ctx.notify_resources_changed()
+        return uri
+
+    async def bump(self, ctx: Context) -> str:
+        """Bumps the counter resource and notifies its subscribers."""
+        self._count += 1
+        await ctx.notify_resource_updated(self.COUNTER)
+        return f"counter {self._count}"
+
+    def notes(self) -> str:
+        """Notes of the standard server."""
+        return self.NOTES_TEXT
+
+    def logo(self) -> bytes:
+        """A tiny PNG logo."""
+        return self.PNG
+
+    def counter(self) -> str:
+        """The value bump raises."""
+        return str(self._count)
+
+    def item(self, item: str) -> str:
+        """An item of the shop by name."""
+        return f"item {item}"
+
+    def ask_resource(self, topic: str) -> InputRequiredResult:
+        """Asks the client for more input instead of the resource."""
+        return InputRequiredResult(request_state=f"{self.ASKED} {topic}")
+
+    def greet(self, name: str, style: str = "plain") -> list[Message]:
+        """Greets a person in the given style."""
+        return [
+            UserMessage(f"Greet {name} in the {style} style."),
+            AssistantMessage(f"Hello, {name}!"),
+        ]
+
+    def ask_prompt(self) -> InputRequiredResult:
+        """Asks the client for more input instead of the messages."""
+        return InputRequiredResult(request_state=self.ASKED)
+
+    async def complete(
+        self,
+        ref: PromptReference | ResourceTemplateReference,
+        argument: CompletionArgument,
+        context: CompletionContext | None,
+    ) -> Completion | None:
+        """Values of the style of greet and the item of the item template
+        that start with what is typed."""
+        wanted = (ref.type, argument.name)
+        known: tuple[str, ...] = ()
+        if wanted == ("ref/prompt", "style"):
+            known = self.STYLES
+
+        if wanted == ("ref/resource", "item"):
+            known = self.ITEMS
+
+        values: list[str] = []
+        for value in known:
+            if value.startswith(argument.value):
+                values.append(value)
+
+        return Completion(values=values, total=len(values), has_more=False)
 
     def board(self, ctx: Context, markup: str) -> str:
         """Draws the given HTML markup on a board."""

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import base64
 import json
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar, cast
 from urllib.parse import urlsplit
@@ -57,8 +57,9 @@ from boba.canvas.keys import ObjectKey, ThreadDir
 from boba.chat.profiles import ChatProfileConfig, UserSetting
 from boba.identity.context import Scope
 from boba.mcp_adapter import JournalUris
-from boba.mcp_client.client import McpServerApps
+from boba.mcp_client.client import JournalLinks, McpServerApps
 from boba.messaging import (
+    JournalOpened,
     LockToken,
     MemoryMessageBus,
     MemoryPayloadStore,
@@ -96,9 +97,8 @@ CALL = "call_1"
 SECOND_CALL = "call_2"
 RUN = "run-7"
 JOURNAL = JournalFeature(
-    read="stream_read",
     path="/journals",
-    resource="boba-journal://{run}/{node}/{channel}",
+    resource="boba-journal://{run}/{node}/{channel}{?offset,before}",
 )
 """Журнал вызовов сервера boba стенда ленты."""
 
@@ -284,17 +284,10 @@ def _result(artifact: ToolResultBase, journaled: Sequence[str] = ()) -> dict[str
     return reply.model_dump(mode="json", by_alias=True, exclude_none=True)
 
 
-def _journal_opened(call_id: str, node: str, meta: Mapping[str, Any]) -> SessionUpdate:
-    """Уведомление о ходе вызова call_id без текста: сервер назвал ссылку на
-    stdout журнала своего вызова node, как только журнал открылся."""
-    read = JournalRead(run=RUN, node=node, channel=ToolChannel.STDOUT)
-    link = JournalUris(JOURNAL.resource).uri(read)
-
-    return schema.SessionToolCallUpdate(
-        tool_call_id=call_id,
-        status="in_progress",
-        field_meta={**meta, JournalFeature.ID: [link]},
-    )
+def _journal_opened(call_id: str, call: str, node: str | None) -> JournalOpened:
+    """Сообщение ретранслятора: сервер boba открыл журнал call вызова
+    call_id агента (у связки — журнал узла node), едва журнал открылся."""
+    return JournalOpened(call_id=call_id, node=node, server="boba", run=RUN, call=call)
 
 
 def _buttons(recorded: FakeEmitter) -> list[tuple[str, str]]:
@@ -358,7 +351,7 @@ def _view(
 ) -> UpdateView:
     view = ChatView(THREAD, LiveSink(), "u-1", storage, user_name="alice")
     media = ToolMedia()
-    media.shown("boba", [], None, JOURNAL, None)
+    media.shown("boba", [], None, JournalLinks(JOURNAL.resource), None)
 
     return UpdateView(view, THREAD, journals, media)
 
@@ -430,20 +423,20 @@ class TestUpdateViewIds:
         assert step.get(StepField.OUTPUT) == "ok", "a journal link is not drawn"
 
     @pytest.mark.anyio
-    async def test_journal_notification_gives_the_running_step_its_button(
+    async def test_opened_journal_gives_the_running_step_its_button(
         self,
         runtime_stand: StandRefs,
         storage: LocalStorageClient,
         recorded: FakeEmitter,
     ) -> None:
-        """Сервер называет журнал, едва он открыт: адрес известен и кнопка
-        журнала стоит на шаге, пока вызов идёт."""
+        """Ретранслятор называет журнал, едва сервер его открыл (JournalOpened):
+        адрес известен и кнопка журнала стоит на шаге, пока вызов идёт."""
         journals = RemoteJournals()
         updates = _view(runtime_stand, storage, journals)
         updates.begin_turn(QUESTION)
 
         await updates.apply(_call(CALL, "mcp__boba__bash", {"cmd": "ls"}))
-        await updates.apply(_journal_opened(CALL, "srv-call", {}))
+        await updates.journal_opened(_journal_opened(CALL, "srv-call", None))
 
         address = JournalAddress(server="boba", run=RUN, call="srv-call")
         assert await journals.address(THREAD, CALL) == address
@@ -879,7 +872,7 @@ class TestNestedCallSteps:
         if nested:
             declared = CallDag().feature()
 
-        media.shown("boba", [], declared, JOURNAL, None)
+        media.shown("boba", [], declared, JournalLinks(JOURNAL.resource), None)
         view = ChatView(
             THREAD,
             LiveSink(),
@@ -979,8 +972,8 @@ class TestNestedCallSteps:
         updates.begin_turn(QUESTION)
         await updates.apply(_call(CALL, "mcp__boba__workflow", {"nodes": self.NODES}))
 
-        opened = _journal_opened(CALL, "srv-call_1", {CallDag.PROGRESS_NODE: "sink"})
-        await updates.apply(opened)
+        opened = _journal_opened(CALL, "srv-call_1", "sink")
+        await updates.journal_opened(opened)
 
         address = JournalAddress(server="boba", run=RUN, call="srv-call_1")
         assert await journals.address(THREAD, f"{CALL}_1") == address

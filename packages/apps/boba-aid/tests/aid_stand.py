@@ -308,6 +308,8 @@ class RelayStand:
 
     SEAL_TTL: ClassVar[timedelta] = timedelta(minutes=2)
     ROLE: ClassVar[str] = "dev"
+    VERSION: ClassVar[str] = "0.0"
+    """Версия чата стенда в serverInfo ретранслятора и сервера chat."""
 
     def __init__(
         self, store: StoreRef, credentials: CredentialsRef, contexts: CallContexts
@@ -320,17 +322,26 @@ class RelayStand:
         tools = refs.tool_stand(())
         tools.adopt(ConnectionTools(store, contexts).build())
         registry = tools.registry(tools.access(self.ROLE, SignInStand.PROFILE), ())
-        self.chat = ChatTools(registry, refs.runs)
+        self.chat = ChatTools(registry, refs.runs, self.VERSION)
         self.canvas = CanvasOpener(ThreadSurfaces())
+        self.bus = MemoryMessageBus("relay-stand")
 
     def relay(self, servers: McpServers) -> McpRelay:
+        return self.relay_with(servers, self.chat, self.canvas)
+
+    def relay_with(
+        self, servers: McpServers, chat: ChatTools, canvas: CanvasOpener
+    ) -> McpRelay:
+        """Ретранслятор стенда со своими инструментами chat и панелью."""
         return McpRelay(
             self.registrations,
             servers,
             self.sealing,
             self._contexts,
-            self.chat,
-            self.canvas,
+            chat,
+            canvas,
+            self.bus,
+            self.VERSION,
         )
 
 

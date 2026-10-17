@@ -64,7 +64,7 @@ from boba.agent.tags import AgentTag
 from boba.agent.template import AgentTemplate, AgentTemplateFile
 from boba.agent.writer import RecordKeeper
 from boba.cancellation import RunCancellation, StopReason, ToolStopped
-from boba.toolkit.dag import DagNode, NodeOutcome, ToolHints, ToolServer
+from boba.toolkit.dag import DagNode, NodeOutcome, ToolCard, ToolHints, ToolServer
 from boba.toolkit.failure import ValidationText
 
 logger = logging.getLogger(__name__)
@@ -513,9 +513,11 @@ class AskUserQuestionTool(OwnTool):
 class AgentTools:
     """Инструменты, которые видит модель: сервера и собственные, по имени.
 
-    Создаёт агент при открытии сессии. Карточки для снимка — отсюда;
-    пометки — у живого сервера или собственного инструмента; собственный
-    инструмент, одноимённый с инструментом сервера, — ошибка на старте.
+    Создаёт агент при открытии сессии. Карточки инструментов сервера
+    берутся у живого сервера при каждом снимке: сервер MCP может сменить
+    список посреди сессии, и ход объявит разницу модели. Собственный
+    инструмент, одноимённый с инструментом сервера, — ошибка на старте и в
+    любом снимке после смены списка.
     """
 
     def __init__(self, server: ToolServer | None, own: Sequence[OwnTool]) -> None:
@@ -524,32 +526,28 @@ class AgentTools:
         for tool in own:
             self._own[tool.name] = tool
 
-        self._server_hints: dict[str, ToolHints] = {}
-        self._server_cards: dict[str, SnapshotTool] = {}
-        if server is not None:
-            for card in server.tools():
-                if card.name in self._own:
-                    msg = (
-                        f"The tool server offers a tool named '{card.name}', which is "
-                        "also the name of the agent's own tool. Rename or drop the "
-                        "server tool: the agent cannot route calls between the two."
-                    )
-                    raise ToolsError(msg)
-
-                self._server_hints[card.name] = card.hints
-                self._server_cards[card.name] = SnapshotTool(
-                    name=card.name,
-                    description=card.description,
-                    schema=dict(card.parameters),
-                )
+        self._server_cards()
 
     @property
     def server(self) -> ToolServer | None:
         return self._server
 
     def snapshot(self) -> Sequence[SnapshotTool]:
-        """Карточки для снимка промпта: сервера, затем собственные."""
-        cards = list(self._server_cards.values())
+        """Карточки для снимка промпта: сервера, затем собственные.
+
+        Ошибки:
+        ToolsError — сервер предложил инструмент с именем собственного.
+        """
+        cards: list[SnapshotTool] = []
+        for card in self._server_cards().values():
+            cards.append(
+                SnapshotTool(
+                    name=card.name,
+                    description=card.description,
+                    schema=dict(card.parameters),
+                )
+            )
+
         for tool in self._own.values():
             cards.append(tool.card())
 
@@ -561,10 +559,37 @@ class AgentTools:
         if own is not None:
             return own.hints
 
-        return self._server_hints.get(name)
+        card = self._server_cards().get(name)
+        if card is None:
+            return None
+
+        return card.hints
 
     def own(self, name: str) -> OwnTool | None:
         return self._own.get(name)
+
+    def _server_cards(self) -> dict[str, ToolCard]:
+        """Карточки сервера сейчас по именам.
+
+        Ошибки:
+        ToolsError — инструмент сервера назван как собственный.
+        """
+        if self._server is None:
+            return {}
+
+        cards: dict[str, ToolCard] = {}
+        for card in self._server.tools():
+            if card.name in self._own:
+                msg = (
+                    f"The tool server offers a tool named '{card.name}', which is "
+                    "also the name of the agent's own tool. Rename or drop the "
+                    "server tool: the agent cannot route calls between the two."
+                )
+                raise ToolsError(msg)
+
+            cards[card.name] = card
+
+        return cards
 
 
 class ToolTexts:

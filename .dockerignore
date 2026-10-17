@@ -7,12 +7,6 @@
 
 build/src/*
 !build/src/uv
-!runtime
-runtime/*
-!runtime/sandbox
-runtime/sandbox/*
-!runtime/sandbox/plugins
-!runtime/sandbox/workspace.ext4
 !build/src/webassets
 !build/src/*.tar.xz
 !build/src/chainlit-[0-9]*.tar.gz
@@ -21,6 +15,9 @@ build/test
 **/__pycache__
 packages/**/*.egg-info
 packages/**/node_modules
+packages/**/tests
+packages/**/conftest.py
+packages/**/.pytest_cache
 
 packages/apps/boba-studio
 packages/services/boba-catalog-service
