@@ -254,6 +254,49 @@ class TestMcpToolInTheFeed:
         if "```notes.txt\nnotes\n```" not in output:
             raise AssertionError(f"the text resource is a code block: {output!r}")
 
+    def test_json_of_a_tool_is_a_tree_under_the_step(
+        self, mcp_stand: StandProcess, open_chat: OpenChat
+    ) -> None:
+        """Look-тест дерева JSON: корень раскрыт, вложенное свёрнуто и
+        раскрывается кликом; строка с разметкой видна текстом и ничего не
+        исполняет."""
+        chat = open_chat(mcp_stand, "")
+        page = chat.page
+
+        _ask(chat, "mcp__standard__blocks", {"empty": False})
+        step = chat.expand_last_tool()
+
+        tree = step.locator("[data-json-tree]").last
+        tree.wait_for(state="visible", timeout=30_000)
+        rows = tree.locator("[data-json-node] [data-json-node]").first
+
+        folded = tree.inner_text()
+        if '"total": 1' not in folded:
+            raise AssertionError(f"the root is expanded: {folded!r}")
+        if "1 items" not in folded:
+            raise AssertionError(f"the nested array is folded: {folded!r}")
+        if "<script>" in folded:
+            raise AssertionError(f"the nested string is folded away: {folded!r}")
+
+        rows.locator("summary").first.click()
+        row = rows.locator("[data-json-node]").first
+        row.locator("summary").first.click()
+
+        script = '"<script>window.__boba_pwned=1</script>"'
+        tree.get_by_text(script).wait_for(state="visible", timeout=10_000)
+        unfolded = tree.inner_text()
+        if script not in unfolded:
+            raise AssertionError(f"the string is shown as text: {unfolded!r}")
+        if tree.locator("script").count():
+            raise AssertionError("the string became markup in the page")
+        if page.evaluate("() => window.__boba_pwned") is not None:
+            raise AssertionError("the string ran as a script")
+
+        rows.locator("summary").first.click()
+        tree.get_by_text("1 items").wait_for(state="visible", timeout=10_000)
+        if "1 items" not in tree.inner_text():
+            raise AssertionError(f"the array folds back: {tree.inner_text()!r}")
+
 
 class TestOwnServerInTheFeed:
     def test_tool_of_boba_mcp_is_drawn_with_its_result(

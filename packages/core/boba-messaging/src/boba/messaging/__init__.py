@@ -13,7 +13,6 @@ from boba.messaging.bus import (
     MessageBus,
     MessageBusError,
     MessageTooLargeError,
-    StreamFeed,
     Unsubscribe,
 )
 from boba.messaging.memory import MemoryMessageBus
@@ -38,7 +37,6 @@ from boba.messaging.messages import (
     RunStateChanged,
     SignInRefreshRequested,
     StopRequested,
-    StreamAppended,
     ThreadChanged,
     ThreadRewound,
     TurnFinished,
@@ -92,8 +90,6 @@ __all__ = [
     "RunStateChanged",
     "SignInRefreshRequested",
     "StopRequested",
-    "StreamAppended",
-    "StreamFeed",
     "ThreadChanged",
     "ThreadRewound",
     "TurnFinished",

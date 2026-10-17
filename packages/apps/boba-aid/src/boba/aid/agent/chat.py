@@ -60,6 +60,7 @@ from boba.chat.threads import DataLayerError, ThreadUpsert
 from boba.db.postgres.connection import PostgresConfig
 from boba.identity.errors import InternalServiceError
 from boba.runtime.threads import ThreadsTable
+from boba.toolkit.result import ContentMime
 from boba.transport.acp.protocol import AcpErrorCode, MetaKey
 
 __all__ = [
@@ -126,13 +127,15 @@ class Question(BaseModel):
             key = ObjectKey.build(
                 identity.user_id, identity.thread_id, element.name, element.id
             )
-            path = CanvasFileUrl.path(key)
+            mime = element.mime
+            if not mime:
+                mime = ContentMime.of_name(element.name)
+
+            path = CanvasFileUrl.path(key, mime)
             address = urljoin(public_url, path)
             uri = AnyUrl(address)
             links.append(
-                schema.ResourceContentBlock(
-                    name=element.name, uri=uri, mime_type=element.mime
-                )
+                schema.ResourceContentBlock(name=element.name, uri=uri, mime_type=mime)
             )
 
         return cls(key=msg.id, text=msg.content, links=tuple(links))

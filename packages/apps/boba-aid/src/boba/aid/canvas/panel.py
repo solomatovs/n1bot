@@ -33,11 +33,13 @@ from boba.aid.data.data_layer import AttachmentDataLayer
 from boba.aid.domain.keys import CanvasFileUrl, StreamUrl
 from boba.canvas.canvas import (
     CanvasContent,
+    CanvasElement,
     CanvasError,
     CanvasErrorKind,
     CanvasKind,
     CanvasPush,
     CanvasRegistry,
+    CanvasScope,
     CanvasViewer,
     CanvasWatch,
     OpenedCanvas,
@@ -245,19 +247,17 @@ class FileViewer(CanvasViewer):
     содержимое по той же ссылке.
     """
 
-    LINK_ELEMENT: ClassVar[str] = "CanvasLink"
-    """Имя jsx-компонента ссылки: public/elements/CanvasLink.jsx."""
-
     kind: ClassVar[CanvasKind] = CanvasKind.NOTICE
-    suffixes: ClassVar[frozenset[str]] = frozenset()
+    mimes: ClassVar[frozenset[str]] = frozenset()
 
-    def handles(self, name: str) -> bool:
-        lowered = name.lower()
+    def handles(self, mime: str) -> bool:
+        known = tuple(self.mimes)
 
-        return any(lowered.endswith(suffix) for suffix in self.suffixes)
+        return mime.lower().startswith(known)
 
-    def describe(self, key: ObjectKey, **extra: Any) -> CanvasContent:
-        """Описание файла: путь, подпись, ссылка на файл и метка показа.
+    def describe(self, key: ObjectKey, mime: str, **extra: Any) -> CanvasContent:
+        """Описание файла key вида mime: путь, подпись, ссылка на файл и
+        метка показа.
 
         Единственное место, где содержимое панели получает ссылку, — поэтому
         файл, показанный любым наследником, всегда можно скачать. Наследник
@@ -267,93 +267,86 @@ class FileViewer(CanvasViewer):
             kind=self.kind,
             path=key.in_workspace(),
             label=key.name,
-            url=self._serve(key),
-            mime=ContentMime.of_name(key.name),
+            url=self._serve(key, mime),
+            mime=mime,
             nonce=str(uuid.uuid4()),
             **extra,
         )
 
-    async def content(self, key: ObjectKey) -> CanvasContent:
-        return self.describe(key)
+    async def content(self, key: ObjectKey, mime: str) -> CanvasContent:
+        return self.describe(key, mime)
 
-    async def link(self, key: ObjectKey) -> VisualResult:
+    async def link(self, key: ObjectKey, mime: str) -> VisualResult:
         return VisualResult(
-            element=self.LINK_ELEMENT,
-            props={"path": key.in_workspace(), "label": key.name},
+            element=CanvasElement.LINK,
+            props={"path": key.in_workspace(), "label": key.name, "mime": mime},
             title=key.name,
         )
 
-    async def open(self, key: ObjectKey, push: CanvasPush) -> OpenedCanvas:
-        described = await self.content(key)
+    async def open(self, key: ObjectKey, mime: str, push: CanvasPush) -> OpenedCanvas:
+        described = await self.content(key, mime)
         await push(described)
 
         return OpenedCanvas(
-            label=key.name,
-            path=key.in_workspace(),
-            nonce=described.nonce,
-            link=await self.link(key),
+            label=key.name, path=key.in_workspace(), nonce=described.nonce
         )
 
     def watch_source(self, key: ObjectKey) -> WatchSource | None:
         return StorageStatSource(PanelStorage.client(), key.render())
 
     @staticmethod
-    def _serve(key: ObjectKey) -> str:
+    def _serve(key: ObjectKey, mime: str) -> str:
         """Ссылка на файл панели: тред, каталог и имя; пользователь — из токена.
 
         Сессионная ссылка тут не годится: панель рассылается во все вкладки
         треда и переживает переподключение, а запись файла в памяти сессии —
         нет, и картинка ломалась бы молча.
         """
-        return CanvasFileUrl.path(key)
+        return CanvasFileUrl.path(key, mime)
 
 
 class ImageViewer(FileViewer):
     """Картинки: главный формат графиков, которые рисуют bash/python-тулы."""
 
     kind: ClassVar[CanvasKind] = CanvasKind.IMAGE
-    suffixes: ClassVar[frozenset[str]] = frozenset(
-        {".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp"}
-    )
+    mimes: ClassVar[frozenset[str]] = frozenset({"image/"})
 
 
 class PdfViewer(FileViewer):
     """PDF: встроенный просмотрщик браузера."""
 
     kind: ClassVar[CanvasKind] = CanvasKind.PDF
-    suffixes: ClassVar[frozenset[str]] = frozenset({".pdf"})
+    mimes: ClassVar[frozenset[str]] = frozenset({"application/pdf"})
 
 
 class VideoViewer(FileViewer):
     """Видео: плеер браузера."""
 
     kind: ClassVar[CanvasKind] = CanvasKind.VIDEO
-    suffixes: ClassVar[frozenset[str]] = frozenset({".mp4", ".webm", ".mov"})
+    mimes: ClassVar[frozenset[str]] = frozenset({"video/"})
 
 
 class AudioViewer(FileViewer):
     """Аудио: плеер браузера."""
 
     kind: ClassVar[CanvasKind] = CanvasKind.AUDIO
-    suffixes: ClassVar[frozenset[str]] = frozenset(
-        {".mp3", ".wav", ".ogg", ".m4a", ".flac"}
-    )
+    mimes: ClassVar[frozenset[str]] = frozenset({"audio/"})
 
 
 class MarkdownViewer(FileViewer):
     """Markdown: формат требует документ целиком, фронт читает его по ссылке."""
 
     kind: ClassVar[CanvasKind] = CanvasKind.TEXT
-    suffixes: ClassVar[frozenset[str]] = frozenset({".md"})
+    mimes: ClassVar[frozenset[str]] = frozenset({"text/markdown"})
 
 
 class LogViewer(FileViewer):
     """Логи и плоский текст: окна по смещению, файл целиком не читается."""
 
     kind: ClassVar[CanvasKind] = CanvasKind.STREAM
-    suffixes: ClassVar[frozenset[str]] = frozenset({".txt", ".log"})
+    mimes: ClassVar[frozenset[str]] = frozenset({ContentMime.PLAIN})
 
-    async def content(self, key: ObjectKey) -> CanvasContent:
+    async def content(self, key: ObjectKey, mime: str) -> CanvasContent:
         windows = StorageWindows(PanelStorage.client(), key.render())
 
         try:
@@ -371,6 +364,7 @@ class LogViewer(FileViewer):
 
         return self.describe(
             key,
+            mime,
             text=piece.text,
             note=StreamNote.status_of(piece),
             stream=StreamPos(
@@ -397,23 +391,21 @@ class CanvasPanel:
     """Один id на слот содержимого: React обновляет элемент, а не пересоздаёт —
     панель не мигает при смене файла, а вьюверы не теряют своё состояние."""
 
-    VIEW_ELEMENT: ClassVar[str] = "CanvasView"
-    """Единственный компонент панели: рисует любое содержимое по его kind.
-
-    Один компонент на все типы позволяет менять файл, не подменяя элемент:
-    фронт сам забирает следующее содержимое, и панель не открывается заново.
-    """
-
     @classmethod
-    async def open(cls, key: ObjectKey) -> OpenedCanvas:
-        viewer = CanvasRegistry.viewer_for(key.name)
+    async def open(cls, key: ObjectKey, mime: str) -> OpenedCanvas:
+        """Показ файла key вьювером его MIME mime; MIME без вьювера — отказ
+        и объяснение в панели."""
+        viewer = CanvasRegistry.viewer_for(mime)
         if viewer is None:
-            await cls._explain(key)
-            hint = CanvasRegistry.suffixes_hint()
-            msg = f"no canvas viewer for {key.in_workspace()}; supported: {hint}"
+            await cls._explain(key, mime)
+            hint = CanvasRegistry.mimes_hint()
+            msg = (
+                f"no canvas viewer for {key.in_workspace()} of type {mime}; "
+                f"supported: {hint}"
+            )
             raise CanvasError(CanvasErrorKind.NO_VIEWER, msg)
 
-        opened = await viewer.open(key, cls._push)
+        opened = await viewer.open(key, mime, cls._push)
         cls.watch_file(key, viewer, opened.nonce)
 
         return opened
@@ -436,8 +428,8 @@ class CanvasPanel:
         await cls._push(content)
 
     @classmethod
-    def notice(cls, key: ObjectKey) -> CanvasContent:
-        """Объяснение вместо содержимого: файл показать некому.
+    def notice(cls, key: ObjectKey, mime: str) -> CanvasContent:
+        """Объяснение вместо содержимого: файл вида mime показать некому.
 
         Ссылка на файл остаётся: показать формат панель не умеет, а отдать
         его пользователю на скачивание — вполне.
@@ -446,17 +438,18 @@ class CanvasPanel:
             kind=CanvasKind.NOTICE,
             path=key.in_workspace(),
             label=key.name,
-            url=CanvasFileUrl.path(key),
+            url=CanvasFileUrl.path(key, mime),
+            mime=mime,
             note=(
                 "The panel cannot display this file format. Supported: "
-                f"{CanvasRegistry.suffixes_hint()}"
+                f"{CanvasRegistry.mimes_hint()}"
             ),
         )
 
     @classmethod
-    async def _explain(cls, key: ObjectKey) -> None:
+    async def _explain(cls, key: ObjectKey, mime: str) -> None:
         """Файл некому показать: в панели остаётся объяснение, а не прошлый файл."""
-        await cls._push(cls.notice(key))
+        await cls._push(cls.notice(key, mime))
 
     @classmethod
     async def _push(cls, content: CanvasContent) -> None:
@@ -470,7 +463,7 @@ class CanvasPanel:
         включает полноэкранный canvas-режим панели.
         """
         element = cl.CustomElement(
-            name=cls.VIEW_ELEMENT, props=content.props(), display="side"
+            name=CanvasElement.VIEW, props=content.props(), display="side"
         )
         element.id = cls.CONTENT_ID
         await element.send(for_id="")
@@ -531,7 +524,7 @@ class StreamActions:
         if not request.inline:
             await CanvasPanel.show(content)
 
-        source = remote.watch_source(thread_id, request.call_id, request.channel)
+        source = await remote.watch_source(thread_id, request.call_id, request.channel)
         seen = f"{piece.size}:{int(piece.closed)}"
         CanvasWatch.show(thread_id, content.path, content.nonce, source, seen)
 
@@ -606,8 +599,8 @@ class StreamActions:
         user_id: str, thread_id: str, request: StreamWindowRequest
     ) -> dict[str, Any]:
         try:
-            key = ObjectKey.from_workspace(user_id, thread_id, request.path)
-        except ValueError as exc:
+            key = CanvasScope(user_id=user_id, thread_id=thread_id).key(request.path)
+        except CanvasError as exc:
             logger.warning("stream window: bad path %s: %s", request.path, exc)
             return {}
 
@@ -631,7 +624,7 @@ class StreamActions:
             kind=CanvasKind.STREAM,
             path=key.in_workspace(),
             label=key.name,
-            url=CanvasFileUrl.path(key),
+            url=CanvasFileUrl.path(key, ContentMime.of_name(key.name)),
             text=piece.text,
             note=StreamNote.status_of(piece),
             stream=StreamActions._pos(piece),

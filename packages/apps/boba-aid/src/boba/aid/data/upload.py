@@ -18,7 +18,6 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
-import mimetypes
 import time
 import unicodedata
 import uuid
@@ -38,6 +37,7 @@ from boba.aid.canvas.remote import RemoteJournals
 from boba.aid.domain.fields import FileField
 from boba.aid.domain.keys import AppPrefix
 from boba.aid.infra.session import ChainlitSession, session_source_ref
+from boba.canvas.canvas import CanvasRegistry
 from boba.canvas.keys import ObjectKey, ThreadDir
 from boba.canvas.storage import (
     StorageError,
@@ -45,7 +45,6 @@ from boba.canvas.storage import (
     StorageNotFoundError,
 )
 from boba.canvas.transfer import (
-    ContentDisposition,
     FileHeader,
     TransferFormat,
     UploadPolicy,
@@ -239,7 +238,7 @@ class SessionFiles:
     ) -> str:
         """Регистрирует объект хранилища как файл сессии; отдаёт его id."""
         file_id = str(uuid.uuid4())
-        suffix = mimetypes.guess_extension(mime) or ""
+        suffix = ContentMime.suffix_of(mime)
         session.files[file_id] = {
             "id": file_id,
             # копии на диске нет: путь остаётся лишь именем для потребителей chainlit
@@ -361,16 +360,20 @@ class UploadRoute:
             raise HTTPException(status_code=404, detail=msg)
 
         name = str(record[FileField.NAME])
+        mime = str(record[FileField.TYPE])
         logger.info(
             "upload: serving %s from storage (%s)",
             name,
             record[SessionFiles.OBJECT_KEY],
         )
+
+        disposition = CanvasRegistry.disposition(mime)
+
         return await self._files.respond(
             str(record[SessionFiles.OBJECT_KEY]),
-            mime=str(record[FileField.TYPE]),
+            mime=mime,
             range_header=request.headers.get(FileHeader.RANGE, ""),
-            content_disposition=ContentDisposition.inline(name),
+            content_disposition=disposition.header(name),
         )
 
     async def _store(self, key: ObjectKey, part: MultipartFile) -> int:
@@ -511,14 +514,17 @@ class CanvasServing:
     def __init__(self, storage: StorageClient, policy: UploadPolicy) -> None:
         self._files = StreamedFile(storage, policy)
 
-    async def serve(
+    async def serve(  # noqa: PLR0913 — маршрут: путь файла, вид и вошедший
         self,
         request: Request,
         thread_id: str,
         dir: ThreadDir,  # noqa: A002
         name: str,
         current_user: Annotated[User | PersistedUser | None, Depends(get_current_user)],
+        mime: str = "",
     ) -> Response:
+        """Файл панели вида mime — каким его назвала ссылка; без него
+        (ссылки старой истории) — вид по имени файла."""
         if not isinstance(current_user, PersistedUser):
             got = type(current_user).__name__
             msg = f"sign-in required: expected a persisted user, got {got}"
@@ -538,11 +544,16 @@ class CanvasServing:
             )
             raise HTTPException(status_code=404, detail=msg) from e
 
+        if not mime:
+            mime = ContentMime.of_name(key.name)
+
+        disposition = CanvasRegistry.disposition(mime)
+
         return await self._files.respond(
             key.render(),
-            mime=ContentMime.of_name(key.name),
+            mime=mime,
             range_header=request.headers.get(FileHeader.RANGE, ""),
-            content_disposition="",
+            content_disposition=disposition.header(key.name),
         )
 
 

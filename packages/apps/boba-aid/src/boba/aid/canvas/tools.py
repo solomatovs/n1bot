@@ -1,5 +1,5 @@
-"""Панель канваса со стороны чата: вьюверы, разбор пути сессии и
-обработчики действий фронта (клик по ссылке, смена файла).
+"""Панель канваса со стороны чата: вьюверы и показ файлов — по клику и
+по ответу tools/call.
 
 Ошибки:
 CanvasError — путь вне каталогов треда, файл некому показать, не
@@ -9,10 +9,11 @@ CanvasError — путь вне каталогов треда, файл неко
 from __future__ import annotations
 
 import logging
-from typing import Any
+from collections.abc import Iterator
+from urllib.parse import unquote, urlsplit
 
-import chainlit as cl
-from pydantic import BaseModel, ConfigDict
+import mcp_types as mt
+from chainlit.context import context_var
 
 from boba.aid.canvas.diagram import DiagramFiles, MermaidViewer
 from boba.aid.canvas.panel import (
@@ -24,22 +25,20 @@ from boba.aid.canvas.panel import (
     PdfViewer,
     VideoViewer,
 )
-from boba.aid.infra.thread_room import ChatNotices
+from boba.aid.rendering.chat_view import ChatView
+from boba.aid.rendering.renderer import TabSurfaces
 from boba.canvas.canvas import (
-    CanvasAction,
     CanvasContent,
     CanvasError,
-    CanvasErrorKind,
     CanvasRegistry,
+    CanvasScope,
     OpenedCanvas,
 )
-from boba.canvas.keys import ObjectKey
-from boba.identity.errors import RefusalError
+from boba.toolkit.result import BlockAudience, ContentMime
+from boba.toolkit.wire import McpContent
 
 __all__ = [
-    "CanvasActions",
     "CanvasOpener",
-    "CanvasScope",
     "CanvasViewers",
 ]
 
@@ -61,95 +60,119 @@ class CanvasViewers:
         CanvasRegistry.register(MermaidViewer(DiagramFiles()))
 
 
-class CanvasScope(BaseModel):
-    """Чьи файлы показывает панель: пользователь и тред из сессии чата —
-    у клика по панели контекста вызова нет."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    user_id: str
-    thread_id: str
-
-
 class CanvasOpener:
-    """Показ панели по клику: файл в панель и описание для смены файла."""
+    """Показ панели: по клику — файл в панель и описание для смены файла; по
+    ответу tools/call — файлы, которые сервер просит показать сразу.
 
-    async def show(self, path: str, scope: CanvasScope) -> OpenedCanvas:
-        """Панель с содержимым одного файла; слежение ставит CanvasPanel."""
-        key = self._key(path, scope)
+    Ответ показывает ретранслятор chainlit, прежде чем отдать его агенту:
+    панель открывается во вкладках треда этого инстанса, у диаграммы
+    вьювер ждёт вердикт браузера, и отказ показа модель видит в том же
+    вызове. Создаётся провайдером canvas_opener; поверхность живой вкладки
+    треда даёт TabSurfaces.
+    """
 
-        return await CanvasPanel.open(key)
+    def __init__(self, surfaces: TabSurfaces) -> None:
+        self._surfaces = surfaces
+
+    async def show(self, path: str, mime: str, scope: CanvasScope) -> OpenedCanvas:
+        """Панель с содержимым одного файла вида mime — того, каким его
+        назвала ссылка; пусто — вид по имени файла (ссылки старой истории).
+        Слежение ставит CanvasPanel."""
+        key = scope.key(path)
+
+        if not mime:
+            mime = ContentMime.of_name(key.name)
+
+        return await CanvasPanel.open(key, mime)
 
     async def content(
-        self, path: str, watch: bool, scope: CanvasScope
+        self, path: str, mime: str, watch: bool, scope: CanvasScope
     ) -> CanvasContent:
-        """Описание файла для уже открытой панели: элемент не подменяется.
+        """Описание файла вида mime для уже открытой панели: элемент не
+        подменяется; пусто — вид по имени файла.
 
         watch — слежение переезжает на новый файл вместе с показом; без него
         описание отдаётся как есть (перечитывание уже показанного файла).
         """
-        key = self._key(path, scope)
+        key = scope.key(path)
 
-        viewer = CanvasRegistry.viewer_for(key.name)
+        if not mime:
+            mime = ContentMime.of_name(key.name)
+
+        viewer = CanvasRegistry.viewer_for(mime)
         if viewer is None:
-            return CanvasPanel.notice(key)
+            return CanvasPanel.notice(key, mime)
 
-        described = await viewer.content(key)
+        described = await viewer.content(key, mime)
         if watch:
             CanvasPanel.watch_file(key, viewer, described.nonce)
 
         return described
 
-    @staticmethod
-    def _key(path: str, scope: CanvasScope) -> ObjectKey:
-        """Ключ файла в области показа; путь вне каталогов треда — отказ."""
-        try:
-            return ObjectKey.from_workspace(scope.user_id, scope.thread_id, path)
-        except ValueError as e:
-            raise CanvasError(CanvasErrorKind.BAD_PATH, str(e)) from e
+    async def reply(
+        self, scope: CanvasScope, reply: mt.CallToolResult
+    ) -> mt.CallToolResult:
+        """Ответ tools/call после показа его файлов в панели треда scope.
 
-
-class CanvasActions:
-    """Обработчики действий фронта над файлами панели.
-
-    Действие приходит из уже открытой панели; чьи файлы показывать, говорит
-    колбэк по сессии чата — контекста вызова у клика нет.
-    """
-
-    @classmethod
-    async def open(cls, action: cl.Action, scope: CanvasScope) -> None:
-        """Клик по файлу в списке или по ссылке в ленте: сфокусировать файл."""
-        path = action.payload.get(CanvasAction.PATH.value)
-        if not path:
-            logger.warning("canvas action without path: %s", action.payload)
-            return
-
-        try:
-            await CanvasOpener().show(str(path), scope)
-        except RefusalError as e:
-            await ChatNotices.error(f"Failed to open the canvas: {e}")
-
-    @classmethod
-    async def content(cls, action: cl.Action, scope: CanvasScope) -> dict[str, Any]:
-        """Смена файла в открытой панели: фронт берёт описание и рисует сам.
-
-        Панель здесь не трогается — иначе chainlit пересоздал бы её и проиграл
-        анимацию открытия заново. refresh — перечитывание уже показанного
-        файла по сигналу слежения: слежение не перерегистрируется.
+        Ссылка file:// человеку с annotations.priority McpContent.SHOWN_PRIORITY
+        открывает панель; отказ показа (диаграмма не отрисовалась, вьювера
+        нет, файл не читается) превращает ответ в isError с причиной. Без
+        живых вкладок треда на этом инстансе и при молчании браузера ответ
+        уходит как есть.
         """
-        path = action.payload.get(CanvasAction.PATH.value)
-        if not path:
-            logger.warning("canvas content action without path: %s", action.payload)
-            return {}
+        shown = list(self._shown(reply))
+        if not shown:
+            return reply
 
-        refresh = bool(action.payload.get("refresh"))
+        context = self._surfaces.live(scope.thread_id).context()
+        if context is None:
+            return reply
 
+        refusals: list[mt.ContentBlock] = []
+        token = context_var.set(context)
         try:
-            described = await CanvasOpener().content(
-                str(path), watch=not refresh, scope=scope
-            )
-        except RefusalError as e:
-            await ChatNotices.error(f"Failed to open the canvas: {e}")
-            return {}
+            for path, mime in shown:
+                try:
+                    await CanvasPanel.open(scope.key(path), mime)
+                except CanvasError as exc:
+                    note = f"{path} is not shown in the canvas: {exc}"
+                    refusals.append(mt.TextContent(text=note))
+        finally:
+            context_var.reset(token)
 
-        return described.props()
+        if not refusals:
+            return reply
+
+        content = [*reply.content, *refusals]
+
+        return reply.model_copy(update={"content": content, "is_error": True})
+
+    @staticmethod
+    def _shown(reply: mt.CallToolResult) -> Iterator[tuple[str, str]]:
+        """Путь в workspace и MIME файлов ответа, которые сервер просит
+        показать человеку сразу."""
+        for block in reply.content:
+            if not isinstance(block, mt.ResourceLink):
+                continue
+
+            annotations = block.annotations
+            if annotations is None:
+                continue
+
+            if not BlockAudience.USER.reads(annotations.audience):
+                continue
+
+            if annotations.priority != McpContent.SHOWN_PRIORITY:
+                continue
+
+            address = urlsplit(str(block.uri))
+            if address.scheme != ChatView.FILE_SCHEME:
+                continue
+
+            path = unquote(address.path)
+
+            mime = block.mime_type
+            if mime is None:
+                mime = ContentMime.of_name(path)
+
+            yield path, mime

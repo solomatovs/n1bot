@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 from typing import ClassVar
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 from boba.canvas.keys import (
     ObjectKey,
@@ -50,7 +50,9 @@ class AppPrefix:
 class CanvasFileUrl:
     """Адрес файла панели: тред, каталог и имя; пользователь — из токена.
 
-    Содержимое панели живёт дольше сокет-сессии: оно рассылается во все
+    Вид файла едет запросом (MIME): сервер мог назвать его не так, как
+    подсказывает суффикс имени. Содержимое панели живёт дольше сокет-сессии:
+    оно рассылается во все
     вкладки треда и переживает переподключение. Поэтому ссылка адресует файл
     самим его местом в workspace, а не записью в памяти сессии.
     """
@@ -58,16 +60,21 @@ class CanvasFileUrl:
     ROUTE: ClassVar[str] = "/canvas/{thread_id}/{dir}/{name}"
     """Общий шаблон route и ссылки."""
 
+    MIME: ClassVar[str] = "mime"
+    """Параметр запроса ссылки: вид файла, каким его назвал сервер; по нему
+    маршрут отдаёт Content-Type и решает, показать файл или скачать."""
+
     @classmethod
-    def path(cls, key: ObjectKey) -> str:
+    def path(cls, key: ObjectKey, mime: str) -> str:
         name = quote(key.name, safe="")
         route = cls.ROUTE.format(
             thread_id=key.thread_id,
             dir=key.dir.value,
             name=name,
         )
+        query = urlencode({cls.MIME: mime})
 
-        return AppPrefix.render() + route
+        return f"{AppPrefix.render()}{route}?{query}"
 
 
 class StreamUrl:

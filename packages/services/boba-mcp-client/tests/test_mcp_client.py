@@ -158,13 +158,19 @@ async def http(http_port: int) -> AsyncIterator[McpToolServer]:
 
 class HeardCall:
     """Обработчик прогресса вызова в тесте: копит уведомления сервера о
-    ходе одного вызова в порядке прихода — числа, текст и _meta."""
+    ходе одного вызова в порядке прихода — числа, текст и _meta отчётов;
+    уведомления без текста (журнал вызова открыт) — отдельно, их _meta."""
 
     def __init__(self) -> None:
         self.reports: list[tuple[float, float | None, str | None]] = []
         self.metas: list[dict[str, object] | None] = []
+        self.journals: list[dict[str, object] | None] = []
 
     async def __call__(self, params: mt.ProgressNotificationParams) -> None:
+        if params.message is None:
+            self.journals.append(params.meta)
+            return
+
         self.reports.append((params.progress, params.total, params.message))
         self.metas.append(params.meta)
 
@@ -709,6 +715,8 @@ class TestBobaMcpJournal:
 
         if heard.reports:
             raise AssertionError(f"a silent tool sends no progress: {heard.reports}")
+        if len(heard.journals) != 1:
+            raise AssertionError(f"the journal is named once: {heard.journals}")
         if window is None or "echo progress: hi" not in window.text:
             raise AssertionError(f"the journal is read from the server: {window}")
         if not window.closed:
@@ -800,6 +808,87 @@ class TestSignInAsTheUser:
                 await asyncio.sleep(0.2)
 
         return await servers.port(name, caller)
+
+    async def test_journal_growth_is_heard_only_by_its_caller(  # noqa: PLR0912, PLR0915 — один идущий вызов на все подписки
+        self, boba_mcp_stand: BobaMcpStand
+    ) -> None:
+        """Ссылку на канал журнала сервер называет, пока вызов идёт;
+        subscriptions/listen по ней отдаёт события роста канала тому, кто
+        вызывал. Чужому пользователю, подписке на канал без записи и на uri
+        не журнала сервер отказывает до подтверждения."""
+        servers = self._servers(boba_mcp_stand, self.SECRET)
+        owner = McpCaller(login="ivanov", roles=frozenset({"dev"}))
+        stranger = McpCaller(login="petrov", roles=frozenset({"dev"}))
+        heard = HeardCall()
+        events: list[str] = []
+        try:
+            port = await self._port(servers, owner, "boba")
+            other = await self._port(servers, stranger, "boba")
+            feature = port.journal_feature()
+            if feature is None:
+                raise AssertionError("the server declares its journal")
+
+            slow = _call("fake_progress", steps=8, pause=0.5)
+            running = asyncio.create_task(port.call(slow, heard))
+            async with asyncio.timeout(30):
+                while not heard.journals:
+                    await asyncio.sleep(0.05)
+
+                meta = heard.journals[0]
+                if meta is None:
+                    raise AssertionError("the journal names its links in _meta")
+
+                links = meta[JournalFeature.ID]
+                if not isinstance(links, list):
+                    raise AssertionError(f"the links are a list: {meta}")
+
+                uri = str(links[0])
+                template = UriTemplate.parse(feature.resource)
+                params = template.match(uri)
+                if params is None:
+                    raise AssertionError(f"{uri} names a journal channel")
+
+                read = JournalRead.model_validate(params)
+
+                # канал появляется с первой записью: так панель и подписывается
+                while await port.journal(read) is None:
+                    await asyncio.sleep(0.05)
+
+            with pytest.raises(McpClientError) as refused:
+                async with other.listen([uri]):
+                    pass
+
+            # у запуска нет такого вызова: журнала нет, подписка на него — отказ
+            absent = template.expand({**params, "node": "no-such-call"})
+            with pytest.raises(McpClientError) as missing:
+                async with port.listen([absent]):
+                    pass
+
+            with pytest.raises(McpClientError) as alien:
+                async with port.listen(["file:///x"]):
+                    pass
+
+            async with asyncio.timeout(30), port.listen([uri]) as subscription:
+                async for event in subscription:
+                    events.append(getattr(event, "uri", ""))
+                    window = await port.journal(read)
+                    if window is not None and window.closed:
+                        break
+
+            await running
+        finally:
+            await servers.stop()
+
+        if "another user" not in str(refused.value):
+            raise AssertionError(f"a foreign run is refused: {refused.value}")
+        if "no journal on channel" not in str(missing.value):
+            raise AssertionError(f"a missing channel is refused: {missing.value}")
+        if "expected a journal channel resource" not in str(alien.value):
+            raise AssertionError(f"a uri off the journal is refused: {alien.value}")
+        if not events:
+            raise AssertionError("the growth of the channel is heard")
+        if set(events) != {uri}:
+            raise AssertionError(f"events name the channel: {events}")
 
     async def test_body_runs_as_the_user_of_the_client(
         self, boba_mcp_stand: BobaMcpStand
@@ -1203,6 +1292,7 @@ class TestFailureStand:
         "picture",
         "progress",
         "shout",
+        "show",
         "sleep_for",
         "toggle_extra",
     ]

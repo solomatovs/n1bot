@@ -19,6 +19,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any, ClassVar, Protocol
 
 from chainlit.context import ChainlitContext, context_var
+from chainlit.session import WebsocketSession
 from chainlit.step import StepDict
 from chainlit.types import ThreadDict
 from pydantic import BaseModel, ConfigDict
@@ -54,6 +55,7 @@ __all__ = [
     "ChatRenderers",
     "NoSurface",
     "RenderSurface",
+    "TabSurfaces",
     "ThreadRewinds",
 ]
 
@@ -92,6 +94,30 @@ class RenderSurface(Protocol):
     @abstractmethod
     async def task_end(self) -> None:
         """Гасит индикатор хода во всех вкладках треда."""
+
+
+class TabSurfaces(Protocol):
+    """Откуда у приёмника вкладка и поверхность рассылки треда: сокет текущего
+    обработчика и контекст с эмиттером по всем вкладкам треда, а для показа
+    вне обработчика (ответ tools/call в ретрансляторе) — поверхность любой
+    живой вкладки треда. Реализует ThreadSurfaces (infra.thread_room)."""
+
+    @abstractmethod
+    def anchor(self) -> WebsocketSession:
+        """Сокет текущего обработчика chainlit.
+
+        Ошибки:
+        InternalServiceError — у текущей сессии нет сокета.
+        """
+
+    @abstractmethod
+    def thread(self, anchor: WebsocketSession, thread_id: str) -> RenderSurface:
+        """Поверхность рассылки по всем вкладкам треда с якорной сессией."""
+
+    @abstractmethod
+    def live(self, thread_id: str) -> RenderSurface:
+        """Поверхность рассылки треда с якорем в любой его живой вкладке;
+        без живых вкладок на этом инстансе — NoSurface."""
 
 
 class ThreadRewinds(Protocol):

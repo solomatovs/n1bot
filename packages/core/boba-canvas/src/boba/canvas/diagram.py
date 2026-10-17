@@ -45,11 +45,10 @@ class MermaidToken(StrEnum):
 
 
 class DiagramMarker(StrEnum):
-    """Служебные имена: кодировка спеки, fallback-имя, суффикс файла."""
+    """Служебные имена: кодировка спеки и fallback-имя."""
 
     ENCODING = "utf-8"
     FALLBACK_NAME = "diagram.mmd"
-    SUFFIX = ".mmd"
 
 
 class DiagramPrompt(StrEnum):

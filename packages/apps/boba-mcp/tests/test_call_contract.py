@@ -24,10 +24,11 @@ from service_stand import PROFILE, ServiceStand
 from boba.connections.sealed import SealFeature
 from boba.mcp_adapter import JournalUris
 from boba.mcp_server.files import JournalRoutes
-from boba.mcp_server.server import RunLimits, StreamReadTool
+from boba.mcp_server.server import OwnProgress, RunLimits, StreamReadTool
 from boba.toolkit.calls import SchemaMark
 from boba.toolkit.channels import ToolChannel
 from boba.toolkit.mcp import McpResults
+from boba.toolkit.ports import ProgressReport
 from boba.toolkit.wire import JournalRead
 from boba.toolrun.call_id import CallFields
 
@@ -301,3 +302,22 @@ class TestCallIdInJournal:
             raise AssertionError(f"the journal is read by the call id: {window}")
         if "echo progress: hi" not in piece["text"]:
             raise AssertionError(f"the journal holds the output of the body: {piece}")
+
+
+class TestJournalProgress:
+    """Уведомление о журнале не отнимает у тела ни одного отчёта о ходе."""
+
+    def test_first_report_with_nothing_done_follows_the_journal(self) -> None:
+        shape = OwnProgress()
+
+        journal = shape.journal("call", ["boba-journal://run/call/tool_stdout"], "t")
+        first = shape.shaped(
+            "call", ProgressReport(done=0, total=10, message="0 pages"), "t"
+        )
+
+        if journal is None or first is None:
+            raise AssertionError(f"both are sent: {journal} {first}")
+        if first.progress <= journal.progress:
+            raise AssertionError(f"the progress grows: {journal} {first}")
+        if first.message != "0 pages":
+            raise AssertionError(f"the first report arrives as made: {first}")

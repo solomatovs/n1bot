@@ -21,7 +21,7 @@ from boba.aid.agent.chat import (
     ThreadDeleter,
 )
 from boba.aid.agent.config import AgentConfig
-from boba.aid.agent.feed import AgentFeeds, BusParts, TabSurfaces
+from boba.aid.agent.feed import AgentFeeds, BusParts
 from boba.aid.agent.relay import ChatTools, McpRegistrations, McpRelay
 from boba.aid.agent.settings import (
     AgentSettingsLayers,
@@ -29,6 +29,7 @@ from boba.aid.agent.settings import (
     ProfileModelSpecs,
 )
 from boba.aid.canvas.remote import RemoteJournals
+from boba.aid.canvas.tools import CanvasOpener
 from boba.aid.data import PostgresDataLayer
 from boba.aid.data.remote_storage import FileOwners, RemoteStorageClient
 from boba.aid.infra.config import AppConfig
@@ -38,6 +39,7 @@ from boba.aid.infra.session import (
     session_source_ref,
 )
 from boba.aid.rendering.acp_view import ToolMedia
+from boba.aid.rendering.renderer import TabSurfaces
 from boba.auth import JwtTokens
 from boba.chat.profiles import ChatProfiles, SelectedProfile
 from boba.connection_broker.sealing import CallSealing
@@ -254,6 +256,13 @@ def call_sealing(
     return CallSealing(connections, ttl)
 
 
+def canvas_opener(
+    surfaces: Annotated[TabSurfaces, Depends(thread_surfaces)],
+) -> CanvasOpener:
+    """Показ файлов в панели канваса: по клику и по ответу tools/call."""
+    return CanvasOpener(surfaces)
+
+
 def mcp_relay(  # noqa: PLR0913 — ретранслятор собирается всеми входами процесса
     registrations: Annotated[McpRegistrations, Depends(mcp_registrations)],
     servers: Annotated[McpServers, Depends(mcp_servers)],
@@ -261,12 +270,14 @@ def mcp_relay(  # noqa: PLR0913 — ретранслятор собираетс�
     contexts: Annotated[CallContexts, Depends(runtime.call_contexts)],
     registry: Annotated[ToolRegistry, Depends(runtime.tool_registry)],
     runs: Annotated[Runs, Depends(runtime.runs)],
+    canvas: Annotated[CanvasOpener, Depends(canvas_opener)],
 ) -> McpRelay:
     """Ретранслятор mcp/message процессов агента: один на инстанс; сервер
-    chat — собственные инструменты чата из реестра."""
+    chat — собственные инструменты чата из реестра; файлы ответа, которые
+    сервер просит показать, открывает панель канваса."""
     chat = ChatTools(registry, runs)
 
-    return McpRelay(registrations, servers, sealing, contexts, chat)
+    return McpRelay(registrations, servers, sealing, contexts, chat, canvas)
 
 
 def agent_launcher(

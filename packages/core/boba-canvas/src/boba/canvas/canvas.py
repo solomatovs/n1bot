@@ -23,6 +23,7 @@ from pydantic import (
 )
 
 from boba.canvas.keys import ObjectKey
+from boba.canvas.transfer import ContentDisposition
 from boba.identity.errors import RefusalError
 from boba.toolkit.channels import JournalChannel, JournalChannels, ToolChannel
 from boba.toolkit.result import VisualResult
@@ -36,6 +37,7 @@ __all__ = [
     "CanvasKind",
     "CanvasPush",
     "CanvasRegistry",
+    "CanvasScope",
     "CanvasSignal",
     "CanvasViewer",
     "CanvasWatch",
@@ -72,6 +74,28 @@ class CanvasError(RefusalError):
     """Панель не показала файл; kind — код причины, текст готов для LLM."""
 
 
+@dataclass(frozen=True, slots=True)
+class CanvasScope:
+    """Чьи файлы показывает панель: пользователь и тред. Строят его лента
+    (ChatView), обработчики действий панели по сессии чата и ретранслятор по
+    регистрации сервера; key переводит путь workspace в ключ файла этой
+    области."""
+
+    user_id: str
+    thread_id: str
+
+    def key(self, path: str) -> ObjectKey:
+        """Ключ файла по пути в workspace треда.
+
+        Ошибки:
+        CanvasError — путь вне каталогов треда (BAD_PATH).
+        """
+        try:
+            return ObjectKey.from_workspace(self.user_id, self.thread_id, path)
+        except ValueError as exc:
+            raise CanvasError(CanvasErrorKind.BAD_PATH, str(exc)) from exc
+
+
 class CanvasAction(StrEnum):
     """Действия фронта для канваса и поля их payload."""
 
@@ -82,16 +106,27 @@ class CanvasAction(StrEnum):
     WINDOW = "canvas_stream_window"
     LEAVE = "canvas_leave"
     PATH = "path"
+    MIME = "mime"
     NONCE = "nonce"
     CALL_ID = "call_id"
     OFFSET = "offset"
 
 
 class CanvasElement(StrEnum):
-    """Имена элементов ленты, которые рисует фронт канваса."""
+    """Имена элементов ленты и канваса: jsx-компоненты public/elements."""
 
     STREAM = "CanvasStream"
     """Кнопка журнала вызова; идентификатор вызова — в props (CALL_ID)."""
+    LINK = "CanvasLink"
+    """Ссылка на файл workspace в ленте: клик открывает его в панели."""
+    VIEW = "CanvasView"
+    """Единственный компонент панели: рисует любое содержимое по его kind.
+
+    Один компонент на все типы позволяет менять файл, не подменяя элемент:
+    фронт сам забирает следующее содержимое, и панель не открывается заново.
+    """
+    JSON_TREE = "JsonTree"
+    """Дерево JSON ответа инструмента; значение — в props (value)."""
 
 
 class RenderStatus(StrEnum):
@@ -187,6 +222,18 @@ class CanvasKind(StrEnum):
     NOTICE = "notice"
     """Формат показать некому: панель объясняет это вместо содержимого."""
 
+    @property
+    def disposition(self) -> ContentDisposition:
+        """Как отдавать файл вида ссылкой: открыть в браузере можно только
+        то, что он показывает сам и без скриптов страницы (pdf, видео, звук);
+        прочее — html, svg, текст — скачивается, чтобы не исполниться в
+        origin чата."""
+        match self:
+            case CanvasKind.PDF | CanvasKind.VIDEO | CanvasKind.AUDIO:
+                return ContentDisposition.INLINE
+            case _:
+                return ContentDisposition.ATTACHMENT
+
 
 class StreamPos(BaseModel):
     """Координаты окна потока в файле: где стоим и сколько всего."""
@@ -231,12 +278,11 @@ class CanvasContent(BaseModel):
 
 @dataclass(frozen=True, slots=True)
 class OpenedCanvas:
-    """Открытый в панели файл: подпись, путь, метка показа и элемент ленты."""
+    """Открытый в панели файл: подпись, путь и метка показа."""
 
     label: str
     path: str
     nonce: str
-    link: VisualResult
 
 
 class CanvasPush(Protocol):
@@ -280,30 +326,36 @@ class WatchSource(Protocol):
 
 
 class CanvasViewer(Protocol):
-    """Файлы одного вида: какие расширения умеет и чем их описать."""
+    """Файлы одного вида: какие MIME умеет и чем их описать."""
 
-    suffixes: ClassVar[frozenset[str]]
-    """Расширения вьювера: панель перечисляет их, когда файл показать некому."""
+    kind: ClassVar[CanvasKind]
+    """Чем фронт рисует файлы вьювера."""
+
+    mimes: ClassVar[frozenset[str]]
+    """MIME вьювера: точный тип или семейство с '/' на конце ('image/');
+    панель перечисляет их, когда файл показать некому."""
 
     @abstractmethod
-    def handles(self, name: str) -> bool:
-        """Берётся ли вьювер за файл с таким именем."""
+    def handles(self, mime: str) -> bool:
+        """Берётся ли вьювер за файл с таким MIME."""
         ...
 
     @abstractmethod
-    async def open(self, key: ObjectKey, push: CanvasPush) -> OpenedCanvas:
-        """Показать файл через push; вернуть подпись, путь и элемент для ленты."""
+    async def open(self, key: ObjectKey, mime: str, push: CanvasPush) -> OpenedCanvas:
+        """Показать файл key вида mime через push; вернуть подпись, путь и
+        метку показа."""
         ...
 
     @abstractmethod
-    async def link(self, key: ObjectKey) -> VisualResult:
-        """Ссылка на файл в ленте, без показа в панели: её рисует итог вызова
-        и вживую, и при воспроизведении истории."""
+    async def link(self, key: ObjectKey, mime: str) -> VisualResult:
+        """Ссылка на файл вида mime в ленте, без показа в панели: её рисует
+        итог вызова и вживую, и при воспроизведении истории; клик по ней
+        открывает файл с тем же mime."""
         ...
 
     @abstractmethod
-    async def content(self, key: ObjectKey) -> CanvasContent:
-        """Описание файла для панели; панель его только доставляет."""
+    async def content(self, key: ObjectKey, mime: str) -> CanvasContent:
+        """Описание файла вида mime для панели; панель его только доставляет."""
         ...
 
     @abstractmethod
@@ -313,7 +365,8 @@ class CanvasViewer(Protocol):
 
 
 class CanvasRegistry:
-    """Вьюверы канваса: файл -> кто его рисует; порядок регистрации решает спор."""
+    """Вьюверы канваса: MIME файла -> кто его рисует; порядок регистрации
+    решает спор."""
 
     _VIEWERS: ClassVar[list[CanvasViewer]] = []
 
@@ -335,30 +388,29 @@ class CanvasRegistry:
         cls._VIEWERS.clear()
 
     @classmethod
-    def viewer_for(cls, name: str) -> CanvasViewer | None:
+    def viewer_for(cls, mime: str) -> CanvasViewer | None:
+        """Вьювер файла с MIME mime; None — показать его некому."""
         for viewer in cls._VIEWERS:
-            if viewer.handles(name):
+            if viewer.handles(mime):
                 return viewer
         return None
 
     @classmethod
-    def viewers_hint(cls) -> str:
-        """Какие вьюверы зарегистрированы — для логов и диагностики."""
-        if not cls._VIEWERS:
-            return "none registered"
+    def disposition(cls, mime: str) -> ContentDisposition:
+        """Как отдавать по ссылке файл вида mime: показ браузером — только
+        если его вьювер рисует средствами браузера, иначе скачивание."""
+        viewer = cls.viewer_for(mime)
+        if viewer is None:
+            return ContentDisposition.ATTACHMENT
 
-        names: list[str] = []
-        for viewer in cls._VIEWERS:
-            names.append(type(viewer).__name__)
-
-        return ", ".join(sorted(names))
+        return viewer.kind.disposition
 
     @classmethod
-    def suffixes_hint(cls) -> str:
-        """Какие расширения панель показывает — для пользователя и LLM."""
+    def mimes_hint(cls) -> str:
+        """Какие MIME панель показывает — для пользователя и LLM."""
         known: set[str] = set()
         for viewer in cls._VIEWERS:
-            known.update(viewer.suffixes)
+            known.update(viewer.mimes)
 
         if not known:
             return "no viewers registered"

@@ -5,10 +5,8 @@
 from __future__ import annotations
 
 import asyncio
-import time
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator
 from importlib.resources import files
-from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
@@ -30,22 +28,17 @@ from boba.messaging import (
     LockToken,
     Notice,
     NoticeLevel,
-    StreamAppended,
     TurnFinished,
     TurnOutcome,
 )
 from boba.runtime.bus import PgMessageBus
 from boba.runtime.config import AppName
-from boba.runtime.journal import DirVault, StreamJournal
 from boba.runtime.locks import PgLiveLocks
 from boba.runtime.payloads import PgPayloadStore
 from boba.runtime.storage import LocalStorageClient
 from boba.runtime.turns import StaleTurnCloser
 from boba.stand.refs import StandRefs
-from boba.stand_core.context import CallStand
-from boba.toolkit.channels import CallOutcome, ToolChannel
 from boba.toolkit.result import MarkdownResult
-from boba.toolrun.streams import CallJournals, StreamPump, StreamPumps, ToolStream
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -120,9 +113,7 @@ def _renderer(
     runtime_stand: StandRefs, storage: LocalStorageClient, thread_id: str, node: Node
 ) -> tuple[ChatRenderer, RecordingSink]:
     sink = RecordingSink()
-    view = ChatView(
-        thread_id, sink, runtime_stand.journals, "u-1", storage, user_name="tester"
-    )
+    view = ChatView(thread_id, sink, "u-1", storage, user_name="tester")
     updates = UpdateView(view, thread_id, RemoteJournals(), ToolMedia())
     renderer = ChatRenderer(
         thread_id, updates, node.payloads, NoSurface(), RecordingRewinds()
@@ -142,15 +133,6 @@ async def _until(condition, what: str) -> None:
 
 def _outputs(sink: RecordingSink) -> list[str]:
     return [str(step.get(StepField.OUTPUT)) for step in sink.steps]
-
-
-def _stream_messages(seen: Iterator[Envelope]) -> Iterator[StreamAppended]:
-    for envelope in seen:
-        message = envelope.message
-        if not isinstance(message, StreamAppended):
-            continue
-
-        yield message
 
 
 async def test_turn_on_one_instance_is_rendered_on_another(
@@ -331,77 +313,6 @@ async def test_queue_usage_stays_low_under_load(nodes: tuple[Node, Node]) -> Non
     assert await first.bus.queue_usage() < 0.05
 
 
-async def test_stream_growth_is_published_through_the_pump(
-    runtime_stand: StandRefs,
-    call_stand: CallStand,
-    nodes: tuple[Node, Node],
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Инструмент пишет журнал в своём потоке на инстансе A; насос хода публикует
-    StreamAppended, и инстанс B видит рост канала и его закрытие с итогом.
-    """
-    holder, viewer = nodes
-    thread_id = str(uuid4())
-    scope = Scope.chat(thread_id)
-    store = StreamJournal(DirVault(str(tmp_path / "journal")), reserve_bytes=0)
-    journals = CallJournals(store, runtime_stand.runs)
-    journals.mark_streamable(["shell"])
-    monkeypatch.setattr(StreamPump, "COALESCE_SEC", 0.02)
-
-    seen: list[Envelope] = []
-
-    async def collect(envelope: Envelope) -> None:
-        seen.append(envelope)
-
-    leave = viewer.bus.subscribe(scope, collect)
-    lock = await holder.locks.acquire(
-        scope, LockMode.EXCLUSIVE, LockPurpose.TURN, UUID(int=1)
-    )
-    feed = TurnFeed(holder.bus, holder.payloads, scope, TURN, lock.token)
-    pumps = StreamPumps(feed)
-    line = b"line 00\n"
-    lines = 20
-
-    def write_all(stream: ToolStream) -> None:
-        sink = stream.sink_of(ToolChannel.STDOUT)
-        for index in range(lines):
-            sink.feed(b"line %02d\n" % index)
-            time.sleep(0.01)
-
-        stream.close(str(CallOutcome.FINISHED))
-
-    try:
-        with (
-            runtime_stand.runs.open(call_stand.context(thread_id)) as run,
-            journals.following(run, pumps.opened),
-        ):
-            stream = journals.begin("7", thread_id, CALL, "shell")
-            assert stream is not None
-            await asyncio.to_thread(write_all, stream)
-
-        await pumps.close()
-
-        def closed() -> bool:
-            flags = [message.closed for message in _stream_messages(iter(seen))]
-            return any(flags)
-
-        await _until(closed, f"viewer saw the closed stream: {seen}")
-
-        messages = list(_stream_messages(iter(seen)))
-        sizes = [message.size for message in messages]
-        assert sizes == sorted(sizes)
-        assert sizes[-1] == lines * len(line)
-        assert len(sizes) >= 2, "growth is reported before the close"
-        assert messages[-1].closed
-        assert messages[-1].note == str(CallOutcome.FINISHED)
-        assert messages[-1].channel == ToolChannel.STDOUT.value
-        assert all(message.call_id == CALL for message in messages)
-    finally:
-        leave()
-        await holder.locks.release(lock.token)
-
-
 class RecordingRewinds(ThreadRewinds):
     """Реализация ThreadRewinds в тестах: копит срезы истории тредов."""
 
@@ -441,7 +352,6 @@ async def test_feedback_reaches_the_viewer_instance(
     view = ChatView(
         thread_id,
         RecordingSink(),
-        runtime_stand.journals,
         "u-1",
         storage,
         user_name="tester",
@@ -474,7 +384,6 @@ async def test_rewound_history_reaches_the_tabs_of_the_viewer_instance(
     view = ChatView(
         thread_id,
         RecordingSink(),
-        runtime_stand.journals,
         "u-1",
         storage,
         user_name="tester",

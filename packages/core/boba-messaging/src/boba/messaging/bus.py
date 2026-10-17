@@ -22,7 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from boba.identity.context import Scope
 from boba.identity.locks import LockLostError, LockToken
-from boba.messaging.messages import AnyCommand, AnyMessage, Message, StreamAppended
+from boba.messaging.messages import AnyCommand, AnyMessage, Message
 
 __all__ = [
     "BusLimit",
@@ -44,7 +44,6 @@ __all__ = [
     "MessageBus",
     "MessageBusError",
     "MessageTooLargeError",
-    "StreamFeed",
     "Unsubscribe",
 ]
 
@@ -207,16 +206,6 @@ class ListenerState(StrEnum):
     CONNECTING = "connecting"
     LISTENING = "listening"
     FAILED = "failed"
-
-
-class StreamFeed(Protocol):
-    """Приёмник сообщений о росте журнала вызова: запуск отдаёт их владельцу,
-    который публикует их в свою область от имени держателя.
-    """
-
-    @abstractmethod
-    async def stream_appended(self, message: StreamAppended) -> None:
-        """Сообщает получателям, что канал журнала вызова дорос до size байт."""
 
 
 class MessageBus(Protocol):
