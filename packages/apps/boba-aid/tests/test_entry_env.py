@@ -49,9 +49,10 @@ CONFIG = """
     session_max_sec = 86400
 
 [aid]
-    root        = "<root>"
-    files_dir   = "<files_dir>"
-    url_prefix  = "/boba"
+    root                 = "<root>"
+    files_dir            = "<files_dir>"
+    url_prefix           = "/boba"
+    shutdown_timeout_sec = 10
 """
 
 ASSETS = Path(__file__).resolve().parents[1] / "assets"

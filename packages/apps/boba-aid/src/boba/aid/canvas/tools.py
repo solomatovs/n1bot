@@ -33,7 +33,7 @@ from boba.canvas.canvas import (
     CanvasScope,
     OpenedCanvas,
 )
-from boba.toolkit.result import BlockAudience
+from boba.toolkit.result import BlockAudience, ContentMime
 from boba.toolkit.wire import McpContent
 
 __all__ = [
@@ -76,21 +76,23 @@ class CanvasOpener:
 
     async def show(self, path: str, mime: str, scope: CanvasScope) -> OpenedCanvas:
         """Панель с содержимым одного файла вида mime — того, каким его
-        назвала ссылка. Слежение ставит CanvasPanel."""
+        назвала ссылка; действие без вида — вид по имени файла. Слежение
+        ставит CanvasPanel."""
         key = scope.key(path)
 
-        return await CanvasPanel.open(key, mime)
+        return await CanvasPanel.open(key, ContentMime.named(mime, key.name))
 
     async def content(
         self, path: str, mime: str, watch: bool, scope: CanvasScope
     ) -> CanvasContent:
         """Описание файла вида mime для уже открытой панели: элемент не
-        подменяется.
+        подменяется; пусто — вид по имени файла.
 
         watch — слежение переезжает на новый файл вместе с показом; без него
         описание отдаётся как есть (перечитывание уже показанного файла).
         """
         key = scope.key(path)
+        mime = ContentMime.named(mime, key.name)
 
         viewer = CanvasRegistry.viewer_for(mime)
         if viewer is None:
