@@ -15,6 +15,8 @@ HTTPException 416 — диапазон начинается за концом ф
 HTTPException 507 — в workspace не осталось места.
 ResourceError — resources/read канала журнала: канал не читается либо
     журнала вызова у вызывающего нет.
+MCPError — subscriptions/listen на uri, который не называет канал журнала,
+    либо на журнал, которого у вызывающего нет (чужой запуск, нет канала).
 """
 
 from __future__ import annotations
@@ -22,13 +24,17 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator
 from enum import StrEnum
-from typing import ClassVar
+from typing import Any, ClassVar
 from urllib.parse import urlsplit
 
+import mcp_types as mt
 from fastmcp import FastMCP
 from fastmcp.exceptions import ResourceError
 from fastmcp.server.auth import AccessToken
 from mcp.server.auth.middleware.bearer_auth import AuthenticatedUser
+from mcp.server.context import ServerRequestContext
+from mcp.server.subscriptions import ListenHandler, SubscriptionBus
+from mcp.shared.exceptions import MCPError
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from starlette.exceptions import HTTPException
 from starlette.requests import Request
@@ -37,8 +43,9 @@ from starlette.responses import JSONResponse, Response
 from boba.canvas.journal import StreamJournalError, StreamKey, StreamSlice
 from boba.canvas.keys import ObjectKey, ThreadDir, WorkspaceMount
 from boba.canvas.storage import StorageFullError, StorageNotFoundError
-from boba.canvas.transfer import FileHeader, UploadPolicy
+from boba.canvas.transfer import ContentDisposition, FileHeader, UploadPolicy
 from boba.identity.context import Scope, Subject
+from boba.mcp_adapter import JournalUris
 from boba.mcp_server.auth import TokenSubjects
 from boba.runtime.served import StreamedFile
 from boba.runtime.storage import (
@@ -142,8 +149,11 @@ class JournalRoutes:
     resources/read; скачать канал целиком — маршрут
     `{base}/journals/{run}/{node}/{channel}`, потоком и с Range. Канал —
     ресурс по шаблону RESOURCE: на него ведут ссылки итога вызова, а
-    resources/read отдаёт первое окно канала. Журнал отдаётся только тому,
-    кто вызывал инструмент: чужой запуск — 404.
+    resources/read отдаёт первое окно канала. О росте канала сервер сообщает
+    потокам subscriptions/listen (listen поверх ListenHandler SDK и шины
+    подписок сервера, в которую публикует ход вызова CallProgress). Журнал
+    отдаётся и слушается только тем, кто вызывал инструмент: чужой запуск —
+    отказ.
     """
 
     MIME: ClassVar[str] = "text/plain; charset=utf-8"
@@ -158,6 +168,7 @@ class JournalRoutes:
         config: LocalStorageConfig,
         base: str,
         published: str,
+        bus: SubscriptionBus,
     ) -> None:
         self._journals = journals
         self._callers = callers
@@ -167,6 +178,8 @@ class JournalRoutes:
         self._published = f"{published}{self._base}"
         self._policy = UploadPolicy()
         self._files: dict[str, StreamedFile] = {}
+        self._uris = JournalUris(self.RESOURCE)
+        self._listener = ListenHandler(bus)
 
     def path(self) -> str:
         """Путь маршрута журналов, каким его видит клиент (за прокси — с
@@ -179,6 +192,43 @@ class JournalRoutes:
         path = f"{self._base}/{resource.netloc}{resource.path}"
         server.custom_route(path, methods=["GET"])(self.get)
         server.resource(self.RESOURCE, mime_type=ContentMime.PLAIN.value)(self.read)
+        # закрытое имя fastmcp: спец-методы MCP в ServerExtension запрещены
+        server._mcp_server.add_request_handler(
+            "subscriptions/listen", mt.SubscriptionsListenRequestParams, self.listen
+        )
+
+    async def listen(
+        self,
+        ctx: ServerRequestContext[Any, Any],
+        params: mt.SubscriptionsListenRequestParams,
+    ) -> mt.SubscriptionsListenResult:
+        """subscriptions/listen: поток событий роста каналов журнала. Каждый
+        uri подписки проверяется тем же путём, что resources/read (window):
+        не канал журнала, чужой запуск или канала ещё нет — отказ до
+        подтверждения; флаги смены списков проходят без проверки.
+
+        Ошибки:
+        MCPError — uri подписки не называет доступный вызывающему канал.
+        """
+        uris = params.notifications.resource_subscriptions
+        if uris is None:
+            uris = []
+
+        for uri in uris:
+            read = self._uris.address(uri)
+            if read is None:
+                msg = (
+                    f"subscriptions/listen {uri}: expected a journal channel "
+                    f"resource {self.RESOURCE}, got another uri"
+                )
+                raise MCPError(mt.INVALID_PARAMS, msg)
+
+            window = self.window(read)
+            if isinstance(window, ErrorResult):
+                msg = f"subscriptions/listen {uri}: {window.message}"
+                raise MCPError(mt.INVALID_PARAMS, msg)
+
+        return await self._listener(ctx, params)
 
     async def read(self, run: str, node: str, channel: str) -> str:
         """resources/read канала журнала: его первое окно, как stream_read
@@ -288,7 +338,8 @@ class JournalRoutes:
             )
             raise HTTPException(status_code=404, detail=msg)
 
-        disposition = f'attachment; filename="{key.call_id}.{channel}.log"'
+        name = f"{key.call_id}.{channel.value}.log"
+        disposition = ContentDisposition.ATTACHMENT.header(name)
 
         return await self._files_for(root).respond(
             rel_log,

@@ -47,7 +47,7 @@ from boba.aid.agent.settings import (
 )
 from boba.aid.canvas.panel import StreamActions
 from boba.aid.canvas.remote import RemoteStreams
-from boba.aid.canvas.tools import CanvasActions, CanvasScope
+from boba.aid.canvas.tools import CanvasOpener
 from boba.aid.chat.panel_text import PanelText
 from boba.aid.domain.fields import ThreadField, ThreadMetaField
 from boba.aid.infra import providers
@@ -56,6 +56,7 @@ from boba.aid.infra.providers import (
     agent_config,
     agent_settings_changes,
     agent_settings_table,
+    canvas_opener,
     chainlit_data_layer,
     chat_profiles_registry,
     get_app_config,
@@ -71,6 +72,7 @@ from boba.aid.infra.session import (
 )
 from boba.aid.infra.socket_events import SocketEvents
 from boba.aid.infra.thread_room import (
+    ChatNotices,
     ChatRoomSurface,
     ThreadLive,
     ThreadRoom,
@@ -78,7 +80,7 @@ from boba.aid.infra.thread_room import (
 )
 from boba.aid.rendering.errors import chainlit_error_ctx_handler
 from boba.cancellation import StopReason
-from boba.canvas.canvas import CanvasAction, RenderVerdicts
+from boba.canvas.canvas import CanvasAction, CanvasScope, RenderVerdicts
 from boba.chat.profiles import ChatProfileConfig, ChatProfiles, SelectedProfile
 from boba.chat.threads import DataLayerError
 from boba.identity.context import Scope
@@ -291,6 +293,7 @@ def _root_remote_streams() -> RemoteStreams:
         root.resolved(providers.remote_journals),
         root.resolved(providers.mcp_servers),
         caller,
+        root.resolved(providers.tool_media),
     )
 
 
@@ -695,25 +698,65 @@ def _session_canvas_scope() -> CanvasScope | None:
 
 @cl.action_callback(CanvasAction.OPEN)
 @chainlit_error_ctx_handler
-async def on_canvas_open(action: cl.Action) -> None:
-    """Клик по ссылке в переписке открывает панель без участия агента."""
+@di_inject
+async def on_canvas_open(
+    action: cl.Action,
+    canvas: Annotated[CanvasOpener, Depends(canvas_opener)],
+) -> None:
+    """Клик по файлу в списке или по ссылке в переписке открывает панель без
+    участия агента."""
     scope = _session_canvas_scope()
     if scope is None:
         logger.warning("canvas open without a thread session: %s", action.payload)
         return
 
-    await CanvasActions.open(action, scope)
+    path = action.payload.get(CanvasAction.PATH.value)
+    if not path:
+        logger.warning("canvas action without path: %s", action.payload)
+        return
+
+    mime = str(action.payload.get(CanvasAction.MIME.value, ""))
+
+    try:
+        await canvas.show(str(path), mime, scope)
+    except RefusalError as exc:
+        await ChatNotices.error(f"Failed to open the canvas: {exc}")
 
 
 @cl.action_callback(CanvasAction.CONTENT)
 @chainlit_error_ctx_handler
-async def on_canvas_content(action: cl.Action) -> dict[str, Any]:
-    """Панель уже открыта: отдаём описание файла, не подменяя элемент."""
+@di_inject
+async def on_canvas_content(
+    action: cl.Action,
+    canvas: Annotated[CanvasOpener, Depends(canvas_opener)],
+) -> dict[str, Any]:
+    """Панель уже открыта: отдаём описание файла, не подменяя элемент.
+
+    Панель здесь не трогается — иначе chainlit пересоздал бы её и проиграл
+    анимацию открытия заново. refresh — перечитывание уже показанного файла
+    по сигналу слежения: слежение не перерегистрируется.
+    """
     scope = _session_canvas_scope()
     if scope is None:
         return {}
 
-    return await CanvasActions.content(action, scope)
+    path = action.payload.get(CanvasAction.PATH.value)
+    if not path:
+        logger.warning("canvas content action without path: %s", action.payload)
+        return {}
+
+    refresh = bool(action.payload.get("refresh"))
+    mime = str(action.payload.get(CanvasAction.MIME.value, ""))
+
+    try:
+        described = await canvas.content(
+            str(path), mime, watch=not refresh, scope=scope
+        )
+    except RefusalError as exc:
+        await ChatNotices.error(f"Failed to open the canvas: {exc}")
+        return {}
+
+    return described.props()
 
 
 @cl.action_callback(CanvasAction.SHOW)

@@ -27,7 +27,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterator, Mapping, Sequence
 from enum import StrEnum, nonmember
 from pathlib import PurePosixPath
-from types import UnionType
+from types import MappingProxyType, UnionType
 from typing import (
     Annotated,
     Any,
@@ -216,8 +216,9 @@ class ContentMime(StrEnum):
 
     Член называет язык блока кода ленты своим именем в нижнем регистре:
     язык показа результата и аргумента переводится в MIME одним of_language,
-    обратно — свойством language. of_name — MIME файла по имени: stdlib
-    mimetypes, а .mmd, которого stdlib не знает, — mermaid.
+    обратно — свойством language. of_name — MIME файла по имени, suffix_of —
+    суффикс имени по MIME: сначала своя таблица SUFFIXES тех суффиксов,
+    которых stdlib mimetypes не знает, потом mimetypes.
     """
 
     CSV = "text/csv"
@@ -229,7 +230,20 @@ class ContentMime(StrEnum):
     PLAIN = "text/plain"
     OCTET = "application/octet-stream"
 
-    MERMAID_SUFFIX = nonmember(".mmd")
+    SUFFIXES = nonmember(
+        MappingProxyType(
+            {
+                ".mmd": "text/vnd.mermaid",
+                ".md": "text/markdown",
+                ".log": "text/plain",
+                ".webp": "image/webp",
+                ".ogg": "audio/ogg",
+                ".wav": "audio/wav",
+                ".m4a": "audio/mp4",
+                ".flac": "audio/flac",
+            }
+        )
+    )
 
     @property
     def language(self) -> str:
@@ -247,12 +261,26 @@ class ContentMime(StrEnum):
     @classmethod
     def of_name(cls, name: str) -> str:
         """MIME файла по имени; неизвестное — application/octet-stream."""
-        if PurePosixPath(name).suffix == cls.MERMAID_SUFFIX:
-            return cls.MERMAID.value
+        suffix = PurePosixPath(name).suffix.lower()
+        if known := cls.SUFFIXES.get(suffix):
+            return known
 
         guessed, _ = mimetypes.guess_type(name)
         if guessed is None:
             return cls.OCTET.value
+
+        return guessed
+
+    @classmethod
+    def suffix_of(cls, mime: str) -> str:
+        """Суффикс имени файла с MIME mime; неизвестный MIME — без суффикса."""
+        for suffix, known in cls.SUFFIXES.items():
+            if known == mime:
+                return suffix
+
+        guessed = mimetypes.guess_extension(mime)
+        if guessed is None:
+            return ""
 
         return guessed
 
@@ -294,8 +322,10 @@ class ContentOut(Protocol):
         (язык ограды, поток вывода, заголовок графика)."""
 
     @abstractmethod
-    def link(self, uri: str, name: str, mime: str) -> None:
-        """Ссылка человеку на файл uri с именем name и видом mime."""
+    def link(self, uri: str, name: str, mime: str, shown: bool) -> None:
+        """Ссылка человеку на файл uri с именем name и видом mime; shown —
+        клиенту стоит показать файл сразу (панелью канваса), а не только
+        ссылкой."""
 
     @abstractmethod
     def __len__(self) -> int:
@@ -1065,7 +1095,7 @@ class FileResult(ToolResultBase):
         return f"file attached to the chat: {self.name}"
 
     def shown(self, out: ContentOut) -> None:
-        out.link(PurePosixPath(self.path).as_uri(), self.name, self.mime)
+        out.link(PurePosixPath(self.path).as_uri(), self.name, self.mime, False)
 
     def sent(self, out: ContentOut) -> dict[str, JsonValue] | None:
         """Текст модели и человеку один, под ним ссылка на файл."""
@@ -1099,7 +1129,7 @@ class CanvasResult(ToolResultBase):
 
     def shown(self, out: ContentOut) -> None:
         mime = ContentMime.of_name(self.path)
-        out.link(PurePosixPath(self.path).as_uri(), self.label, mime)
+        out.link(PurePosixPath(self.path).as_uri(), self.label, mime, True)
 
     def sent(self, out: ContentOut) -> dict[str, JsonValue] | None:
         """Текст модели и человеку один, под ним ссылка на файл."""

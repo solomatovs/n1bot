@@ -9,7 +9,6 @@ import csv
 import io
 import json
 import logging
-import mimetypes
 from abc import ABC, abstractmethod
 from collections import deque
 from collections.abc import (
@@ -44,8 +43,8 @@ from boba.canvas.canvas import (
     CanvasAction,
     CanvasElement,
     CanvasError,
-    CanvasErrorKind,
     CanvasRegistry,
+    CanvasScope,
 )
 from boba.canvas.keys import ObjectKey
 from boba.canvas.storage import StorageError, StorageNotFoundError
@@ -58,6 +57,7 @@ from boba.toolkit.result import (
     Fence,
     JsonBlock,
     TableText,
+    VisualResult,
 )
 from boba.transport.http.connection import UrlScheme
 
@@ -533,25 +533,16 @@ class ProgressText:
         return self.BREAK.join(self._lines)
 
 
-class StreamableTools(Protocol):
-    """Инструменты, у шага которых есть живой вывод: по нему лента решает,
-    рисовать ли у шага кнопку журнала. Реализует RemoteJournals."""
-
-    @abstractmethod
-    def streamable(self, tool_name: str) -> bool:
-        """Ведёт ли сервер журнал вызовов этого инструмента; имя — то, под
-        которым инструмент видит модель (у сервера MCP — полное)."""
-
-
 BlockDrawing: TypeAlias = Callable[
     [mt.ContentBlock, Step, str | None, int], Awaitable[str]
 ]
 """Отрисовщик блока ответа: блок, шаг вызова, ключ вызова и номер блока-не-
 текста; итог — markdown для выхода шага (пусто — блок стал элементом)."""
 
-ResourceDrawing: TypeAlias = Callable[[str, str, str | None], Awaitable[str]]
+ResourceDrawing: TypeAlias = Callable[[str, str, Step, str | None, int], Awaitable[str]]
 """Отрисовщик текстового встроенного ресурса по его MIME: текст ресурса, его
-имя (последний сегмент uri) и ключ вызова."""
+имя (последний сегмент uri), шаг вызова, ключ вызова и номер блока-не-текста;
+итог — markdown для выхода шага (пусто — ресурс стал элементом)."""
 
 
 class ChatView:
@@ -579,6 +570,8 @@ class ChatView:
     """Схема ссылки на файл workspace сервера."""
     TEXT_FAMILY: ClassVar[str] = "text/"
     """Начало MIME текстовых ресурсов: неизвестный текст рисуется блоком кода."""
+    TREE_BYTES: ClassVar[int] = 1 << 20
+    """Предел JSON для дерева: больший документ рисуется блоком кода."""
     BASE64_SLICE: ClassVar[int] = 64 * 1024
     """Срез base64 картинки и звука при записи в хранилище: кратен 4,
     поэтому каждый срез декодируется сам по себе."""
@@ -587,11 +580,10 @@ class ChatView:
     AVATAR_NAME_KEY: ClassVar[str] = "avatarName"
     """Ключ metadata шага, по которому фронт chainlit выбирает аватар вместо имени."""
 
-    def __init__(  # noqa: PLR0913 — лента собирается всеми входами вкладки
+    def __init__(
         self,
         thread_id: str,
         sink: ChatSink,
-        journals: StreamableTools,
         user_key: str,
         storage: StorageClient,
         *,
@@ -599,8 +591,8 @@ class ChatView:
     ) -> None:
         self._thread_id = thread_id
         self._user_key = user_key
+        self._scope = CanvasScope(user_id=user_key, thread_id=thread_id)
         self._storage = storage
-        self._journals = journals
         self._batch = StreamBatch()
         self._sink = BatchedSink(sink, self._batch)
         display_name = user_name
@@ -610,7 +602,6 @@ class ChatView:
         self._assistant_name = chainlit_config.ui.name
         self._turn = TurnDraft()
         self._tool_names: dict[str, str] = {}
-        self._journal_buttons: dict[str, CustomElement] = {}
         self._progress: dict[str, ProgressText] = {}
         self._call_views = CallViews()
         self._names = McpToolNames()
@@ -627,7 +618,7 @@ class ChatView:
             ContentMime.CSV: self._table,
             ContentMime.PLOTLY: self._chart,
             ContentMime.SQL: self._fenced,
-            ContentMime.JSON: self._fenced,
+            ContentMime.JSON: self._tree,
         }
         """Отрисовка встроенного ресурса по MIME; прочий text/* — блоком кода."""
         self._pulse = self._new_pulse(None)
@@ -928,11 +919,6 @@ class ChatView:
         step.output = StepText.RUNNING
         step.start = utc_now()
 
-        # журнал читается по адресу из итога вызова: кнопка встаёт в шаг,
-        # когда вызов закончился
-        if button := self._stream_button(name, key):
-            self._journal_buttons[step.id] = button
-
         await self._sink.put(step)
         return step
 
@@ -944,27 +930,31 @@ class ChatView:
 
         return self._call_views.call_of(name, media, args)
 
-    def _journaled(self, step: Step) -> None:
-        """Закончившемуся вызову — кнопка его журнала."""
-        if button := self._journal_buttons.pop(step.id, None):
-            step.elements = [button]
-
-    def drop_journal(self, step: Step) -> None:
-        """У итога вызова нет адреса журнала: кнопка журнала шагу не ставится."""
-        self._journal_buttons.pop(step.id, None)
-
-    def _stream_button(self, name: str, key: str | None) -> CustomElement | None:
-        """Кнопка журнала вызова: только live-лента и только потоковые тулы.
-        Журнал ищется по имени у модели, подпись кнопки — имя без сервера."""
+    async def tool_journaled(self, step: Step, name: str, key: str) -> None:
+        """Кнопка журнала вызова инструмента name с ключом key у шага step:
+        вживую — с первым уведомлением о журнале, у итога и при
+        воспроизведении — по ссылке журнала из ответа. Повторный вызов
+        кнопку не дублирует; шаг уходит в ленту, только если кнопка
+        добавилась."""
         if not self._sink.emits_elements:
-            return None
+            return
 
-        if not key:
-            return None
+        button = self._stream_button(name, key)
 
-        if not self._journals.streamable(name):
-            return None
+        elements: list[Element] = []
+        if step.elements:
+            elements = list(step.elements)
 
+        for element in elements:
+            if element.id == button.id:
+                return
+
+        elements.append(button)
+        step.elements = elements
+        await self._sink.put(step)
+
+    def _stream_button(self, name: str, key: str) -> CustomElement:
+        """Кнопка журнала вызова; подпись — имя инструмента без сервера."""
         element = CustomElement(
             name=CanvasElement.STREAM.value,
             props={
@@ -1007,7 +997,6 @@ class ChatView:
         step.start = ended
         step.end = ended
         self._progress.pop(step.id, None)
-        self._journaled(step)
         label = self._tool_names.get(step.id, step.name)
         if not isinstance(reply, mt.CallToolResult):
             step.output = self._raw_output(reply)
@@ -1086,19 +1075,25 @@ class ChatView:
         segment = PurePosixPath(urlsplit(str(resource.uri)).path).name
         name = unquote(segment)
 
-        return await drawing(resource.text, name, key)
+        return await drawing(resource.text, name, step, key, number)
 
-    async def _table(self, text: str, name: str, key: str | None) -> str:
+    async def _table(
+        self, text: str, name: str, step: Step, key: str | None, number: int
+    ) -> str:
         """text/csv — таблица markdown, как у таблиц семейства."""
         rows = list(csv.DictReader(io.StringIO(text)))
 
         return TableText.render(rows)
 
-    async def _fenced(self, text: str, name: str, key: str | None) -> str:
+    async def _fenced(
+        self, text: str, name: str, step: Step, key: str | None, number: int
+    ) -> str:
         """Текст блоком кода; подпись ограды — имя ресурса."""
         return Fence.around(text, name)
 
-    async def _chart(self, text: str, name: str, key: str | None) -> str:
+    async def _chart(
+        self, text: str, name: str, step: Step, key: str | None, number: int
+    ) -> str:
         """Фигура plotly — график шагом рядом с вызовом; заголовок — имя
         ресурса. Фигура не JSON — текстом."""
         try:
@@ -1110,9 +1105,47 @@ class ChatView:
                 key,
                 exc,
             )
-            return await self._fenced(text, name, key)
+            return await self._fenced(text, name, step, key, number)
 
         await self._element(figure, name, key)
+
+        return ""
+
+    async def _tree(
+        self, text: str, name: str, step: Step, key: str | None, number: int
+    ) -> str:
+        """application/json — дерево JSON элементом шага вызова под его
+        выходом; больше TREE_BYTES или не JSON — блоком кода."""
+        if len(text.encode()) > self.TREE_BYTES:
+            return await self._fenced(text, name, step, key, number)
+
+        try:
+            value = json.loads(text)
+        except ValueError as exc:
+            logger.info(
+                "thread %s: JSON resource %r of call %s is not JSON, shown as text: %s",
+                self._thread_id,
+                name,
+                key,
+                exc,
+            )
+            return await self._fenced(text, name, step, key, number)
+
+        if not self._sink.emits_elements:
+            return ""
+
+        tree = VisualResult(
+            element=CanvasElement.JSON_TREE, props={"value": value}, title=name
+        )
+        element = self._elements.of_result(tree)
+        self._numbered(element, key, number)
+
+        elements: list[Element] = []
+        if step.elements:
+            elements = list(step.elements)
+
+        elements.append(element)
+        step.elements = elements
 
         return ""
 
@@ -1143,9 +1176,7 @@ class ChatView:
         if not self._sink.emits_elements:
             return ""
 
-        suffix = mimetypes.guess_extension(block.mime_type)
-        if suffix is None:
-            suffix = ""
+        suffix = ContentMime.suffix_of(block.mime_type)
 
         stem = uuid5(self.NAMESPACE, f"{step.id}:{number}")
         file_key = ObjectKey(
@@ -1219,17 +1250,6 @@ class ChatView:
 
         return Fence.around(JsonBlock.pretty(shown), StepLanguage.JSON.value)
 
-    def key_of(self, path: str) -> ObjectKey:
-        """Ключ файла итога в области треда пользователя ленты.
-
-        Ошибки:
-        CanvasError — путь вне каталогов треда (BAD_PATH).
-        """
-        try:
-            return ObjectKey.from_workspace(self._user_key, self._thread_id, path)
-        except ValueError as exc:
-            raise CanvasError(CanvasErrorKind.BAD_PATH, str(exc)) from exc
-
     async def _mounted(
         self, path: str, name: str, mime: str | None, key: str | None, number: int
     ) -> str:
@@ -1245,18 +1265,21 @@ class ChatView:
             return ""
 
         try:
-            file_key = self.key_of(path)
+            file_key = self._scope.key(path)
         except CanvasError as exc:
             return f"{path} is not shown: {exc}"
 
+        if mime is None:
+            mime = ContentMime.of_name(file_key.name)
+
         element: Element
-        viewer = CanvasRegistry.viewer_for(file_key.name)
+        viewer = CanvasRegistry.viewer_for(mime)
         if viewer is None:
-            url = CanvasFileUrl.path(file_key)
+            url = CanvasFileUrl.path(file_key, mime)
             element = self._file(name, url, mime, key, number)
         else:
             try:
-                card = await viewer.link(file_key)
+                card = await viewer.link(file_key, mime)
             except CanvasError as exc:
                 return f"{file_key.in_workspace()} is not shown: {exc}"
 
@@ -1293,7 +1316,6 @@ class ChatView:
 
     async def tool_stopped(self, step: Step, note: str) -> None:
         """Инструмент не доработал: ход остановлен."""
-        self._journal_buttons.pop(step.id, None)
         self._progress.pop(step.id, None)
         step.name = StepStatus.FAILED.title(self._tool_names.get(step.id, step.name))
         step.output = note
@@ -1327,7 +1349,6 @@ class ChatView:
 
     async def tool_failed(self, step: Step, markdown: str) -> None:
         """Провал инструмента мимо результата: markdown результата-ошибки."""
-        self._journaled(step)
         step.is_error = True
         step.name = StepStatus.FAILED.title(self._tool_names.get(step.id, step.name))
         step.output = markdown

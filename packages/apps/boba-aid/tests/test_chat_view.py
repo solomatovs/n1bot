@@ -59,7 +59,6 @@ class TestAnswerOrder:
         view = ChatView(
             THREAD,
             RecordingSink(),
-            runtime_stand.journals,
             "u-1",
             storage,
             user_name="Пользователь",
@@ -91,7 +90,6 @@ class TestAnswerOrder:
         view = ChatView(
             THREAD,
             RecordingSink(),
-            runtime_stand.journals,
             "u-1",
             storage,
             user_name="Пользователь",
@@ -143,7 +141,6 @@ class TestTurnPulse:
         view = ChatView(
             THREAD,
             sink,
-            runtime_stand.journals,
             "u-1",
             storage,
             user_name="Пользователь",
@@ -169,7 +166,6 @@ class TestTurnPulse:
         view = ChatView(
             THREAD,
             sink,
-            runtime_stand.journals,
             "u-1",
             storage,
             user_name="Пользователь",
@@ -191,7 +187,6 @@ class TestTurnPulse:
         view = ChatView(
             THREAD,
             sink,
-            runtime_stand.journals,
             "u-1",
             storage,
             user_name="Пользователь",
@@ -216,7 +211,6 @@ class TestTurnPulse:
         view = ChatView(
             THREAD,
             sink,
-            runtime_stand.journals,
             "u-1",
             storage,
             user_name="Пользователь",
@@ -326,7 +320,6 @@ class TestLivePulseFrames:
             view = ChatView(
                 THREAD,
                 LiveSink(),
-                runtime_stand.journals,
                 "u-1",
                 storage,
                 user_name="Пользователь",
@@ -447,7 +440,6 @@ class TestToolStepDuration:
         view = ChatView(
             THREAD,
             RecordingSink(),
-            runtime_stand.journals,
             "u-1",
             storage,
             user_name="Пользователь",
@@ -472,7 +464,6 @@ class TestToolStepDuration:
         view = ChatView(
             THREAD,
             RecordingSink(),
-            runtime_stand.journals,
             "u-1",
             storage,
             user_name="Пользователь",
@@ -498,7 +489,6 @@ class TestToolIntent:
         view = ChatView(
             THREAD,
             RecordingSink(),
-            runtime_stand.journals,
             "u-1",
             storage,
             user_name="Пользователь",
@@ -521,7 +511,6 @@ class TestToolIntent:
         view = ChatView(
             THREAD,
             RecordingSink(),
-            runtime_stand.journals,
             "u-1",
             storage,
             user_name="Пользователь",
@@ -548,7 +537,6 @@ class TestToolIntent:
         view = ChatView(
             THREAD,
             RecordingSink(),
-            runtime_stand.journals,
             "u-1",
             storage,
             user_name="Пользователь",
@@ -570,7 +558,6 @@ class TestToolIntent:
         view = ChatView(
             THREAD,
             RecordingSink(),
-            runtime_stand.journals,
             "u-1",
             storage,
             user_name="Пользователь",
@@ -608,7 +595,6 @@ class TestContainerAvatar:
         view = ChatView(
             THREAD,
             sink,
-            runtime_stand.journals,
             "u-1",
             storage,
             user_name="Пользователь",
@@ -643,7 +629,7 @@ class TestCallViewOfACard:
     async def test_step_input_follows_the_content_types_of_the_arguments(
         self, runtime_stand: StandRefs, storage: LocalStorageClient, http_context: None
     ) -> None:
-        view = ChatView(THREAD, RecordingSink(), runtime_stand.journals, "u-1", storage)
+        view = ChatView(THREAD, RecordingSink(), "u-1", storage)
         view.begin_turn(TURN)
 
         step = await view.tool_started(
@@ -664,7 +650,7 @@ class TestCallViewOfACard:
     async def test_call_without_types_and_model_shows_the_arguments_as_json(
         self, runtime_stand: StandRefs, storage: LocalStorageClient, http_context: None
     ) -> None:
-        view = ChatView(THREAD, RecordingSink(), runtime_stand.journals, "u-1", storage)
+        view = ChatView(THREAD, RecordingSink(), "u-1", storage)
         view.begin_turn(TURN)
 
         step = await view.tool_started("plain_probe", self.ARGS, "call-card-2", None)

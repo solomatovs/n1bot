@@ -613,7 +613,7 @@ function Diagram({ content, signal, preview }) {
     let cancelled = false;
     callAction({
       name: "canvas_content",
-      payload: { path: content.path, refresh: true },
+      payload: { path: content.path, mime: content.mime, refresh: true },
     }).then((answer) => {
       const next = answer && answer.response;
       if (cancelled || !next || typeof next.text !== "string") return;
@@ -1319,12 +1319,17 @@ export default function CanvasView() {
   const openInCanvas = () => {
     if (browser.byId("side-view-content")) {
       browser.emit(
-        new CustomEvent(SWITCH_EVENT, { detail: { path: content.path } })
+        new CustomEvent(SWITCH_EVENT, {
+          detail: { path: content.path, mime: content.mime },
+        })
       );
       return;
     }
 
-    callAction({ name: "canvas_open", payload: { path: content.path } });
+    callAction({
+      name: "canvas_open",
+      payload: { path: content.path, mime: content.mime },
+    });
   };
 
   // смена файла в открытой панели: описание берётся действием, элемент
@@ -1336,7 +1341,8 @@ export default function CanvasView() {
       const path = event.detail && event.detail.path;
       if (!path || path === contentRef.current.path) return;
 
-      callAction({ name: "canvas_content", payload: { path } }).then((answer) => {
+      const mime = event.detail.mime;
+      callAction({ name: "canvas_content", payload: { path, mime } }).then((answer) => {
         const next = answer && answer.response;
         if (next && next.kind) {
           setSignal(null);
