@@ -29,7 +29,7 @@ from boba.stand.sandbox import section_profile
 from boba.stand.shell import ShellRun
 from boba.stand.site import Stand
 from boba.stand.toolsetup import Call, ToolSetup
-from boba.stand.zygote import SandboxCgroup, ZygoteStand
+from boba.stand.zygote import ROOTFS_IMAGE, SandboxCgroup, ZygoteStand
 from boba.tool.confluence.ingest_base import ConfluenceIngestConfig
 from boba.tool.kb.kb import KbToolConfig
 from boba.tool.kb.search import ConfluenceCollection
@@ -47,10 +47,6 @@ from boba.toolkit.result import (
 )
 from boba.toolrun.injected import InjectedConfig, StaticConfig
 from boba.transport.http.connection import HttpConnection
-
-_REPO = Path(__file__).resolve().parents[4]
-_SANDBOX_STAGING = _REPO / "runtime" / "sandbox"
-_ROOTFS_IMAGE = _SANDBOX_STAGING / "plugins" / "boba-tool-shell" / "rootfs.ext4"
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -88,9 +84,9 @@ def sandbox_ready() -> None:
             "in PATH (make fetch sandbox)"
         )
 
-    if not _ROOTFS_IMAGE.exists():
+    if not ROOTFS_IMAGE.exists():
         raise AssertionError(
-            f"sandbox image {_ROOTFS_IMAGE} is missing (make fetch sandbox)"
+            f"sandbox image {ROOTFS_IMAGE} is missing (make fetch sandbox)"
         )
 
     missing = SandboxCgroup().missing()

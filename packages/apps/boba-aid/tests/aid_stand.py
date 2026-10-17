@@ -92,14 +92,8 @@ from boba.stand.refs import StandRefs
 from boba.stand.service_signin import ServiceSignIn
 from boba.stand.signin import SignInStand
 from boba.stand.storage import StorageSeed
-from boba.stand.ui.stand import (
-    REPO_ROOT,
-    ServiceStand,
-    StandApp,
-    StandProcess,
-    free_port,
-)
-from boba.stand.zygote import SandboxCgroup
+from boba.stand.ui.stand import ServiceStand, StandProcess, free_port
+from boba.stand.zygote import ROOTFS_IMAGE, SandboxCgroup
 from boba.stand_core.context import CallStand, StandIdentity
 from boba.stand_core.context import FakeTurn as FakeTurn
 from boba.stand_core.fakes import FakeSecret as FakeSecret
@@ -259,7 +253,6 @@ class ToolService:
 
     ENDPOINT: ClassVar[str] = "general"
     BOOT_TIMEOUT_SEC: ClassVar[float] = 300.0
-    ROOTFS: ClassVar[str] = "plugins/boba-tool-shell/rootfs.ext4"
 
     def __init__(self, workdir: Path, db_name: str) -> None:
         self._config = ServiceStand(
@@ -273,13 +266,11 @@ class ToolService:
     def missing(cls) -> str:
         """Чего сервису не хватает для песочницы на этом хосте; пустая
         строка — всё на месте."""
-        app = StandApp.MCP
         if shutil.which("bwrap") is None:
             return "bwrap is not on PATH (build: make fetch sandbox)"
 
-        rootfs = app.sandbox.under(REPO_ROOT) / cls.ROOTFS
-        if not rootfs.exists():
-            return f"plugin rootfs {rootfs} is not built (make plugin-rootfs-all)"
+        if not ROOTFS_IMAGE.exists():
+            return f"plugin rootfs {ROOTFS_IMAGE} is not built (make plugin-rootfs-all)"
 
         return SandboxCgroup().missing()
 

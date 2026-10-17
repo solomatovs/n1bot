@@ -3,7 +3,8 @@
 уводятся на тестовые.
 
 Ошибки:
-StandError — стенд не поднялся или не ответил в отведённое время.
+StandError — стенд не поднялся, не ответил в отведённое время или site.toml
+    отладки сервиса не называет каталоги сборки runtime.
 """
 
 from __future__ import annotations
@@ -23,9 +24,12 @@ from pathlib import Path
 from typing import Any, ClassVar, Generic, Protocol
 
 import httpx
+from pydantic import ValidationError
 from typing_extensions import TypeVar
 
-from boba.runtime.config import ConfigFiles
+from boba.config import bind
+from boba.runtime.config import AppLayers, ConfigFiles
+from boba.runtime.launchers import EnvPaths
 from boba.stand.ui.toml_text import TomlText
 from boba.toolkit.mcp import McpToolNames
 
@@ -36,6 +40,7 @@ __all__ = [
     "StandError",
     "StandPaths",
     "StandProcess",
+    "StandRuntime",
     "StandServerName",
     "StandToolNames",
     "free_port",
@@ -51,14 +56,12 @@ class StandError(Exception):
 class StandPaths(StrEnum):
     """Пути репозитория, которые стенд подставляет вместо рантайма релиза:
     общие конфиги приложений — в их пакетах, базы и site.toml — деревья отладки
-    debug/<приложение>, зависимости — общий каталог runtime."""
+    debug/<приложение>. Каталоги сборки runtime называет конфиг (StandRuntime)."""
 
     AID_CONF = "packages/apps/boba-aid/conf"
     MCP_CONF = "packages/apps/boba-mcp/conf"
     AID_BASE = "debug/aid"
     MCP_BASE = "debug/mcp"
-    SANDBOX = "runtime/sandbox"
-    MODELS = "runtime/models"
     PACKAGES = "packages"
 
     def under(self, root: Path) -> Path:
@@ -227,14 +230,73 @@ class StandApp(StrEnum):
         return doc
 
     @property
-    def sandbox(self) -> StandPaths:
-        """Артефакты песочницы из сборки: общие у всех приложений."""
-        return StandPaths.SANDBOX
-
-    @property
     def ready_path(self) -> str:
         """Путь готовности под префиксом приложения."""
         return self.traits().ready_path
+
+
+class RuntimeLayout(StrEnum):
+    """Раскладка каталогов сборки runtime: образы плагинов песочницы и
+    бинарники развёртывания."""
+
+    PLUGINS = "plugins"
+    ROOTFS = "rootfs.ext4"
+    SHELL_PLUGIN = "boba-tool-shell"
+    BIN = "bin"
+
+
+class StandRuntime:
+    """Каталоги сборки runtime на стенде: образы песочницы, бинарники third и
+    модели плагинов.
+
+    Их называет секция [env] site.toml отладки сервиса (debug/mcp/conf) — те же
+    ключи sandbox, third и models, по которым сервис собирает профили
+    песочницы, поэтому от положения дерева исходников они не зависят. Создают
+    стенды песочницы и зигот (boba.stand.zygote); тесты берут готовый объект
+    оттуда.
+    """
+
+    def __init__(self) -> None:
+        files = StandApp.MCP.files()
+        raw = AppLayers.compose(files)
+        try:
+            self._paths = bind(raw, path="env", model=EnvPaths)
+        except ValidationError as exc:
+            msg = (
+                f"stand runtime: [env] of {files.site} expects the sandbox, "
+                f"third and models directories of the build, got: {exc}"
+            )
+            raise StandError(msg) from exc
+
+    @property
+    def sandbox(self) -> Path:
+        """Артефакты песочницы: образы плагинов и workspace.ext4."""
+        return Path(self._paths.sandbox)
+
+    @property
+    def third(self) -> Path:
+        """Сторонние зависимости развёртывания: bin и lib."""
+        return Path(self._paths.third)
+
+    @property
+    def third_bin(self) -> Path:
+        """Бинарники развёртывания: bwrap и fuse2fs из make sandbox."""
+        return self.third / RuntimeLayout.BIN
+
+    @property
+    def models(self) -> Path:
+        """Модели плагинов: fastembed, rapidocr и прочие."""
+        return Path(self._paths.models)
+
+    def plugin_rootfs(self, package: str) -> Path:
+        """Образ корня пакета: make plugin-rootfs PLUGIN=<пакет>."""
+        return self.sandbox / RuntimeLayout.PLUGINS / package / RuntimeLayout.ROOTFS
+
+    @property
+    def shell_rootfs(self) -> Path:
+        """Базовый корень стендов: образ shell-плагина, bash и python без
+        payload'ов."""
+        return self.plugin_rootfs(RuntimeLayout.SHELL_PLUGIN)
 
 
 class StandService(Protocol):
@@ -456,9 +518,7 @@ class ServiceStand(StandService):
         journal_dir.mkdir(parents=True, exist_ok=True)
         doc["stream_journal"]["dir"] = str(journal_dir)
 
-        if self.sandbox:
-            doc["env"]["sandbox"] = str(self.app.sandbox.under(REPO_ROOT))
-        else:
+        if not self.sandbox:
             files_dir = self.workdir / "files"
             files_dir.mkdir(parents=True, exist_ok=True)
             doc["storage"]["kind"] = "local"
@@ -730,7 +790,6 @@ class StandConfig(StandService):
         self._use_local_storage(doc)
         self._without_mcp_servers(doc)
         self._use_local_auth(doc)
-        self._use_sandbox_artifacts(doc)
         self._use_agent(doc)
         self._shrink_pools(doc)
         doc["session"]["generation"] = self.generation
@@ -961,14 +1020,6 @@ class StandConfig(StandService):
             }
 
         doc["app"]["auth"] = providers
-
-    def _use_sandbox_artifacts(self, doc: MutableMapping[str, Any]) -> None:
-        """Стенд с песочницей берёт rootfs плагинов и workspace.ext4 из сборки."""
-        if not self.sandbox:
-            return
-
-        env = doc["env"]
-        env["sandbox"] = str(self.app.sandbox.under(REPO_ROOT))
 
 
 ConfigT = TypeVar("ConfigT", bound=StandService, default=StandConfig)

@@ -17,7 +17,6 @@ import secrets as std_secrets
 import shutil
 from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 from importlib.resources import files
-from pathlib import Path
 from typing import Any, ClassVar
 from uuid import UUID
 
@@ -46,7 +45,7 @@ from boba.stand.connections import StandUserConnections
 from boba.stand.refs import StandRefs
 from boba.stand.sealing import SealingStand
 from boba.stand.site import Stand
-from boba.stand.zygote import SandboxCgroup
+from boba.stand.zygote import ROOTFS_IMAGE, SandboxCgroup
 from boba.stand_core.context import CallStand
 from boba.tool.describer.address import Addresses, EntityAddress
 from boba.tool.describer.edges import EdgeKind, EdgeListColumn
@@ -61,15 +60,11 @@ from boba.toolkit.result import (
 )
 from boba.toolrun.hosted import DirectCalls
 
-_REPO = Path(__file__).resolve().parents[4]
-_SANDBOX_STAGING = _REPO / "runtime" / "sandbox"
-_ROOTFS_IMAGE = _SANDBOX_STAGING / "plugins" / "boba-tool-shell" / "rootfs.ext4"
-
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.anyio,
     pytest.mark.failif(
-        shutil.which("bwrap") is None or not _ROOTFS_IMAGE.exists(),
+        shutil.which("bwrap") is None or not ROOTFS_IMAGE.exists(),
         reason="нет bwrap или артефактов песочницы (собрать: make fetch sandbox)",
     ),
     SandboxCgroup().required(),
