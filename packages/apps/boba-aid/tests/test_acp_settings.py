@@ -85,7 +85,6 @@ from boba.db.postgres.connection.auth import CertificateAuth
 from boba.identity.context import CallContexts
 from boba.kerberos import KeytabAuth
 from boba.krb.credentials import KerberosEnv
-from boba.llm.http.openai import OpenAiProvider
 from boba.llm.onnx import OnnxProvider
 from boba.mcp_client.client import McpServerConfig, McpServers, McpServersConfig
 from boba.runtime.threads import ThreadsTable
@@ -101,7 +100,6 @@ from boba.transport.acp.protocol import (
     McpVersion,
 )
 from boba.transport.http import HttpTransportConfig
-from boba.transport.http.connection import HttpConnection
 
 pytestmark = pytest.mark.anyio
 
@@ -811,29 +809,31 @@ class TestLaunchConfig:
 
     def _profile(
         self,
-        connection: HttpConnection,
+        connection: dict[str, Any],
         transport: HttpTransportConfig,
         mcp: tuple[str, ...] = (),
     ) -> ChatProfileConfig:
-        provider = OpenAiProvider(
-            kind="openai", connection=connection, transport=transport
+        provider = {
+            "kind": "openai",
+            "connection": connection,
+            "transport": transport.model_dump(mode="json"),
+        }
+        base = SignInStand.profile().model_dump(mode="json")
+
+        return ChatProfileConfig.model_validate(
+            {**base, "provider": provider, "model": "fake-model", "mcp": list(mcp)}
         )
 
-        return SignInStand.profile().model_copy(
-            update={"provider": provider, "model": "fake-model", "mcp": mcp}
-        )
-
-    def _connection(self, model: FakeModel, **fields: Any) -> HttpConnection:
-        return HttpConnection.model_validate(
-            {
-                "scheme": "http",
-                "host": "127.0.0.1",
-                "port": model.port,
-                "path": "/v1",
-                "auth": {"method": "bearer", "token": API_KEY},
-                **fields,
-            }
-        )
+    def _connection(self, model: FakeModel, **fields: Any) -> dict[str, Any]:
+        """Секция connection провайдера профиля: адрес фейковой модели."""
+        return {
+            "scheme": "http",
+            "host": "127.0.0.1",
+            "port": model.port,
+            "path": "/v1",
+            "auth": {"method": "bearer", "token": API_KEY},
+            **fields,
+        }
 
     def _failure(self, updates: RecordingUpdates) -> str:
         assert updates.finished, updates.updates

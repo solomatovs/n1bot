@@ -442,6 +442,53 @@ RUN chmod -R go-w ${BOBA_DIR}/third/bin ${BOBA_DIR}/sandbox \
     && ${BOBA_DIR}/third/bin/fuse2fs -V
 
 
+# --- boba: агент одним файлом -------------------------------------------------------
+# make boba-bin: boba-cli из колёс репозитория, Nuitka и patchelf из индекса pypi образа;
+# бинарник самодостаточен — gssapi (через транспорт http), данные пакетов и, по флагу
+# BIN_ONNX, рантайм onnxruntime-genai входят целиком; libpython линкуется статически.
+# onnxruntime_genai находит onnxruntime через find_spec, не импортом, поэтому пакет
+# onnxruntime с его библиотеками включается явно
+# Локальные модели внутрь не попадают: веса лежат в каталоге models/ релиза
+FROM base AS boba-bin
+
+ARG NUITKA_VERSION
+ARG PATCHELF_VERSION
+ARG ZSTANDARD_VERSION
+ARG ORDERED_SET_VERSION
+ARG BIN_ONNX
+
+COPY --from=boba-wheels /tmp/wheels/  /tmp/wheels/
+COPY build/conf/nuitka-boba.yml       /tmp/nuitka-boba.yml
+
+RUN uv pip install --python "$(command -v python3)" --target /opt/bin-site \
+        --constraint /tmp/wheels/constraints.txt --find-links=/tmp/wheels \
+        --override /tmp/wheels/overrides.txt \
+        boba-cli $( [ -n "${BIN_ONNX}" ] && echo "boba-llm-onnx[generation]" )
+RUN uv pip install --python "$(command -v python3)" --target /opt/bin-tools \
+        "nuitka==${NUITKA_VERSION}" "patchelf==${PATCHELF_VERSION}" \
+        "zstandard==${ZSTANDARD_VERSION}" "ordered-set==${ORDERED_SET_VERSION}"
+
+ENV PYTHONPATH=/opt/bin-site:/opt/bin-tools PATH=/opt/bin-tools/bin:${PATH}
+RUN onnx=""; \
+    if [ -n "${BIN_ONNX}" ]; then \
+        onnx="--include-package=onnxruntime_genai --include-package-data=onnxruntime_genai \
+              --include-package=onnxruntime"; \
+    fi; \
+    python3 -m nuitka --onefile --static-libpython=yes --output-filename=boba \
+        --output-dir=/out --jobs=${JOBS} \
+        --user-package-configuration-file=/tmp/nuitka-boba.yml \
+        --include-package=gssapi --include-distribution-metadata=boba-cli \
+        --include-package-data=boba.agent ${onnx} \
+        /opt/bin-site/boba/cli/app.py \
+    && /out/boba --help > /dev/null
+
+
+# бинарник для make boba-bin: make забирает /boba через docker cp
+FROM scratch AS boba-bin-out
+
+COPY --from=boba-bin /out/boba /boba
+
+
 # образ чата: общий конфиг, ассеты chainlit, vendor-шрифты и стили формул вместо CDN,
 # агент одним файлом из стадии boba-bin (его путь — BOBA_AGENT_COMMAND в boba.env).
 # Вложения сессий приложение держит в данных ([chainlit].files_dir), app_root не пишется
@@ -497,50 +544,3 @@ COPY packages/apps/boba-mcp/conf/  ${BOBA_DIR}/conf/
 EXPOSE 8650
 USER ${BOBA_UID}:${BOBA_GID}
 CMD ["-m", "boba.mcp_server", "--config", "/app/boba/conf/config.toml", "--site", "/app/boba/conf/site.toml"]
-
-
-# --- boba: агент одним файлом -------------------------------------------------------
-# make boba-bin: boba-cli из колёс репозитория, Nuitka и patchelf из индекса pypi образа;
-# бинарник самодостаточен — gssapi (через транспорт http), данные пакетов и, по флагу
-# BIN_ONNX, рантайм onnxruntime-genai входят целиком; libpython линкуется статически.
-# onnxruntime_genai находит onnxruntime через find_spec, не импортом, поэтому пакет
-# onnxruntime с его библиотеками включается явно
-# Локальные модели внутрь не попадают: веса лежат в каталоге models/ релиза
-FROM base AS boba-bin
-
-ARG NUITKA_VERSION
-ARG PATCHELF_VERSION
-ARG ZSTANDARD_VERSION
-ARG ORDERED_SET_VERSION
-ARG BIN_ONNX
-
-COPY --from=boba-wheels /tmp/wheels/  /tmp/wheels/
-COPY build/conf/nuitka-boba.yml       /tmp/nuitka-boba.yml
-
-RUN uv pip install --python "$(command -v python3)" --target /opt/bin-site \
-        --constraint /tmp/wheels/constraints.txt --find-links=/tmp/wheels \
-        --override /tmp/wheels/overrides.txt \
-        boba-cli $( [ -n "${BIN_ONNX}" ] && echo "boba-llm-onnx[generation]" )
-RUN uv pip install --python "$(command -v python3)" --target /opt/bin-tools \
-        "nuitka==${NUITKA_VERSION}" "patchelf==${PATCHELF_VERSION}" \
-        "zstandard==${ZSTANDARD_VERSION}" "ordered-set==${ORDERED_SET_VERSION}"
-
-ENV PYTHONPATH=/opt/bin-site:/opt/bin-tools PATH=/opt/bin-tools/bin:${PATH}
-RUN onnx=""; \
-    if [ -n "${BIN_ONNX}" ]; then \
-        onnx="--include-package=onnxruntime_genai --include-package-data=onnxruntime_genai \
-              --include-package=onnxruntime"; \
-    fi; \
-    python3 -m nuitka --onefile --static-libpython=yes --output-filename=boba \
-        --output-dir=/out --jobs=${JOBS} \
-        --user-package-configuration-file=/tmp/nuitka-boba.yml \
-        --include-package=gssapi --include-distribution-metadata=boba-cli \
-        --include-package-data=boba.agent ${onnx} \
-        /opt/bin-site/boba/cli/app.py \
-    && /out/boba --help > /dev/null
-
-
-# бинарник для make boba-bin: make забирает /boba через docker cp
-FROM scratch AS boba-bin-out
-
-COPY --from=boba-bin /out/boba /boba

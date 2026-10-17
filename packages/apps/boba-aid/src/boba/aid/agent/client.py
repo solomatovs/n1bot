@@ -214,10 +214,18 @@ class AgentProcess:
         return self._require_process().pid
 
     def alive(self) -> bool:
+        """Процесс не вышел и его вывод не кончился: агент, закрывший stdout,
+        ответить уже не сможет, хотя процесс ещё жив."""
         if self._process is None:
             return False
 
-        return self._process.returncode is None
+        if self._process.returncode is not None:
+            return False
+
+        if self._connection is None:
+            return False
+
+        return self._connection.connected()
 
     async def exited(self) -> int:
         """Код выхода процесса, когда он завершится."""
