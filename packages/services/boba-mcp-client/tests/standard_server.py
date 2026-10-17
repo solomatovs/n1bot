@@ -8,7 +8,8 @@
 обрыв посреди вызова, смену списка инструментов с уведомлением и отчёты о
 ходе вызова, — ответ из блоков разных видов и адресатов, файл, который
 клиенту стоит показать сразу (priority 1), просьбу о вводе
-(input_required) и отказ ошибкой MCP. Расширение MCP Apps даёт приложение
+(input_required) — пустую и с формой вопроса пользователю (load_rows) — и
+отказ ошибкой MCP. Расширение MCP Apps даёт приложение
 доски (board.html): инструмент board рисует разметку, которую пишет модель,
 app_only зовёт только приложение, model_only — только модель.
 """
@@ -29,6 +30,9 @@ from mcp.types import (
     INVALID_PARAMS,
     Annotations,
     CallToolResult,
+    ElicitRequest,
+    ElicitRequestFormParams,
+    ElicitResult,
     EmbeddedResource,
     InputRequiredResult,
     ResourceLink,
@@ -57,6 +61,27 @@ class StandardServer:
     EXTRA: ClassVar[str] = "extra"
     LARGE_LINE: ClassVar[str] = "0123456789"
     ASKED: ClassVar[str] = "asked once"
+    TARGET: ClassVar[str] = "target"
+    TARGET_STATE: ClassVar[str] = "load_rows asked for the target"
+    TARGET_MESSAGE: ClassVar[str] = (
+        "load_rows needs the target table before it can start the copy."
+    )
+    TARGET_FORM: ClassVar[dict[str, Any]] = {
+        "type": "object",
+        "properties": {
+            "table": {
+                "type": "string",
+                "title": "Target",
+                "description": "Which table should receive the rows?",
+                "oneOf": [
+                    {"const": "sales.orders", "title": "sales.orders"},
+                    {"const": "sales.orders_stage", "title": "sales.orders_stage"},
+                    {"const": "tmp.orders_copy", "title": "tmp.orders_copy"},
+                ],
+            }
+        },
+        "required": ["table"],
+    }
     REFUSAL: ClassVar[dict[str, str]] = {"reason": "the stand refuses"}
     BOARD: ClassVar[str] = "ui://standard/board.html"
     BOARD_CSP: ClassVar[ResourceCsp] = ResourceCsp(
@@ -108,6 +133,7 @@ class StandardServer:
         self._mcp.tool()(self.toggle_extra)
         self._mcp.tool(annotations=ToolAnnotations(read_only_hint=True))(self.progress)
         self._mcp.tool()(self.ask)
+        self._mcp.tool()(self.load_rows)
 
     def add(self, a: int, b: int) -> int:
         """Adds two numbers."""
@@ -217,6 +243,34 @@ class StandardServer:
             raise MCPError(code=INVALID_PARAMS, message=msg, data=self.REFUSAL)
 
         return InputRequiredResult(request_state=self.ASKED)
+
+    def load_rows(self, ctx: Context, rows: int) -> str | InputRequiredResult:
+        """Loads the rows into a table the user chooses."""
+        responses = ctx.input_responses
+        if not responses:
+            form = ElicitRequestFormParams(
+                message=self.TARGET_MESSAGE,
+                requested_schema=self.TARGET_FORM,
+            )
+            return InputRequiredResult(
+                input_requests={self.TARGET: ElicitRequest(params=form)},
+                request_state=self.TARGET_STATE,
+            )
+
+        if ctx.request_state != self.TARGET_STATE:
+            msg = f"load_rows got request state {ctx.request_state!r}"
+            raise ToolError(msg)
+
+        answer = responses.get(self.TARGET)
+        if not isinstance(answer, ElicitResult):
+            msg = f"load_rows expected an elicitation answer, got {answer!r}"
+            raise ToolError(msg)
+
+        if answer.action != "accept" or answer.content is None:
+            msg = f"the user answered {answer.action}"
+            raise ToolError(msg)
+
+        return f"loaded {rows} rows into {answer.content['table']}"
 
     def board(self, ctx: Context, markup: str) -> str:
         """Draws the given HTML markup on a board."""

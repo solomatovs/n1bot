@@ -779,3 +779,97 @@ class TestSandboxPage:
 
         assert connect is not None, srcdoc
         assert connect.group(1).split() == ["'self'", "https://cdn.example.com"]
+
+
+class TestServerQuestion:
+    """Вопрос сервера MCP (input_required с формой): агент задаёт его чату
+    формой `elicitation/create`, чат — панелью вместо поля ввода с именем
+    сервера и его сообщением; ответ уходит серверу повтором вызова, запись
+    ответа встаёт в шаг вызова."""
+
+    PANEL: str = "#question-dock [data-question-panel]"
+    REQUEST: str = json.dumps(
+        {"name": "mcp__standard__load_rows", "arguments": {"rows": 10}}
+    )
+
+    def _finished(self, chat: ChatPage) -> dict[str, Any]:
+        deadline = time.monotonic() + 120.0
+        while time.monotonic() < deadline:
+            chat.page.wait_for_timeout(100)
+            step = chat.log.last_step(StepKind.TOOL.value)
+            if step is None:
+                continue
+
+            if str(step.get(StepField.NAME.value)).startswith(RUNNING):
+                continue
+
+            return step
+
+        raise AssertionError(f"no finished tool step\n{chat.log.describe()}")
+
+    def test_server_question_is_answered_in_the_panel(
+        self, mcp_stand: StandProcess, open_chat: OpenChat, stand_workdir: Path
+    ) -> None:
+        chat = open_chat(mcp_stand, "")
+        chat.ask(f"{ScenarioName.CALL.value} {self.REQUEST}")
+        panel = chat.page.locator(self.PANEL)
+        panel.wait_for(state="visible", timeout=60_000)
+
+        source = panel.locator(".q-source").inner_text()
+        if source != (
+            "standard · load_rows needs the target table before it can start the copy."
+        ):
+            raise AssertionError(
+                f"the panel names the server and its message: {source}"
+            )
+
+        if panel.locator(".navTab").all_inner_texts() != ["Target"]:
+            raise AssertionError("the tab is the title of the field")
+
+        labels = panel.locator(".optionLabel").all_inner_texts()
+        if labels != ["sales.orders", "sales.orders_stage", "tmp.orders_copy"]:
+            raise AssertionError(f"the options of a server form, no Other: {labels}")
+
+        look = stand_workdir / "question-look"
+        look.mkdir(parents=True, exist_ok=True)
+        for dark, theme in ((False, "light"), (True, "dark")):
+            chat.page.evaluate(
+                "(dark) => document.documentElement.classList.toggle('dark', dark)",
+                dark,
+            )
+            chat.page.wait_for_timeout(150)
+            path = look / f"09-mcp-elicitation-extension-{theme}.png"
+            chat.page.screenshot(path=str(path))
+
+        chat.page.evaluate("() => document.documentElement.classList.remove('dark')")
+        chat.page.wait_for_timeout(600)
+        panel.locator('[role="radio"]').filter(has_text="sales.orders_stage").click()
+        panel.locator("[data-submit]").click()
+
+        step = self._finished(chat)
+        output = str(step.get(StepField.OUTPUT.value))
+        if "loaded 10 rows into sales.orders_stage" not in output:
+            raise AssertionError(f"the server got the answer: {step}")
+
+        # запись встаёт в шаг вызова; раскрывать ход — после его конца
+        chat.page.get_by_text("the tool has answered").last.wait_for(timeout=60_000)
+        tool = chat.expand_last_tool()
+        record = tool.locator('[data-question-review="accept"]')
+        record.wait_for(state="visible", timeout=30_000)
+        checked = record.locator('[aria-checked="true"]').inner_text()
+        if "sales.orders_stage" not in checked:
+            raise AssertionError(f"the record checks the answer: {checked}")
+
+    def test_declined_server_question_reaches_the_server(
+        self, mcp_stand: StandProcess, open_chat: OpenChat
+    ) -> None:
+        chat = open_chat(mcp_stand, "")
+        chat.ask(f"{ScenarioName.CALL.value} {self.REQUEST}")
+        panel = chat.page.locator(self.PANEL)
+        panel.wait_for(state="visible", timeout=60_000)
+        chat.page.wait_for_timeout(600)
+        chat.page.keyboard.press("Escape")
+
+        step = self._finished(chat)
+        if "the user answered decline" not in str(step.get(StepField.OUTPUT.value)):
+            raise AssertionError(f"the server got the refusal: {step}")

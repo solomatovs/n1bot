@@ -304,6 +304,32 @@ class TestStandardServerOverStdio:
         if not reply.request_state:
             raise AssertionError(f"the state of the server is kept: {reply}")
 
+    async def test_answered_input_request_finishes_the_call(
+        self, stdio: McpToolServer
+    ) -> None:
+        """Форма сервера и повтор вызова с ответом и тем же requestState."""
+        asked = await stdio.call(_call("load_rows", rows=10), None)
+        if not isinstance(asked, mt.InputRequiredResult):
+            raise AssertionError(f"the server asks for the target first: {asked}")
+
+        requests = asked.input_requests or {}
+        form = requests["target"]
+        if not isinstance(form, mt.ElicitRequest):
+            raise AssertionError(f"the input request is a form: {form}")
+
+        answer = mt.ElicitResult(action="accept", content={"table": "sales.orders"})
+        again = _call("load_rows", rows=10).model_copy(
+            update={
+                "input_responses": {"target": answer},
+                "request_state": asked.request_state,
+            }
+        )
+        reply = await stdio.call(again, None)
+        text = McpResults().result("load_rows", "c1", reply).llm_view()
+
+        if text != "loaded 10 rows into sales.orders":
+            raise AssertionError(f"the answer reaches the server: {text}")
+
     async def test_server_error_goes_up_as_is(self, stdio: McpToolServer) -> None:
         with pytest.raises(MCPError) as refused:
             await stdio.call(_call("ask", refuse=True), None)
@@ -1424,6 +1450,7 @@ class TestFailureStand:
         "broken",
         "die",
         "large",
+        "load_rows",
         "model_only",
         "picture",
         "progress",
