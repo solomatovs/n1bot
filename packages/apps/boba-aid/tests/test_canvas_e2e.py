@@ -37,6 +37,7 @@ from boba.runtime.config import ConfigFiles, ConfigLayoutError, EnvOverride
 from boba.stand.names import StandNames
 from boba.stand.ui.database import StandDatabase
 from boba.stand.ui.stand import StandApp, StandFiles, free_port
+from boba.toolkit.result import ContentMime
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -570,8 +571,10 @@ async def panel(app_server: None) -> AsyncIterator[Any]:
             return page.locator("#side-view-content")
 
         async def show(name: str) -> Any:
+            """Клик по ссылке на файл: ссылка называет и путь, и вид файла."""
             path = _tool_view(session["thread"], name)
-            return await act("canvas_open", {"path": path})
+            mime = ContentMime.of_name(name)
+            return await act("canvas_open", {"path": path, "mime": mime})
 
         yield show, probe, session["thread"], act
 
@@ -1637,7 +1640,8 @@ async def test_panel_reopens_after_closing(panel: Any) -> None:
 async def test_missing_file_is_explained(panel: Any) -> None:
     """Пропавший файл объясняется в панели, а не роняет её молча."""
     _show, _, thread, act = panel
-    side = await act("canvas_open", {"path": _tool_view(thread, "нет-такого.md")})
+    missing = {"path": _tool_view(thread, "нет-такого.md"), "mime": "text/markdown"}
+    side = await act("canvas_open", missing)
 
     text = await side.inner_text()
     if not text.strip():

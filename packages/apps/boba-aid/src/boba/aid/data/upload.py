@@ -26,7 +26,7 @@ from typing import Annotated, Any, ClassVar, Literal
 
 from chainlit.auth import get_current_user
 from chainlit.user import PersistedUser, User
-from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.datastructures import UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import ValidationError
@@ -528,10 +528,9 @@ class CanvasServing:
         dir: ThreadDir,  # noqa: A002
         name: str,
         current_user: Annotated[PersistedUser, Depends(PersistedSignIn())],
-        mime: str = "",
+        mime: Annotated[str, Query(min_length=1)],
     ) -> Response:
-        """Файл панели вида mime — каким его назвала ссылка; без него (ссылки
-        вопросов, перенесённые с dev миграцией) — вид по имени файла."""
+        """Файл панели вида mime — каким его назвала ссылка."""
         try:
             key = ObjectKey(
                 user_id=str(current_user.id),
@@ -545,8 +544,6 @@ class CanvasServing:
                 f"name {name!r}: {ValidationText.of(e)}"
             )
             raise HTTPException(status_code=404, detail=msg) from e
-
-        mime = ContentMime.named(mime, key.name)
 
         disposition = CanvasRegistry.disposition(mime)
 

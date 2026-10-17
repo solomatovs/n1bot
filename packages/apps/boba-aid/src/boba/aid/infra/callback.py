@@ -88,7 +88,7 @@ from boba.aid.infra.thread_room import (
 from boba.aid.rendering.acp_view import ToolMedia
 from boba.aid.rendering.errors import chainlit_error_ctx_handler
 from boba.cancellation import StopReason
-from boba.canvas.canvas import CanvasAction, RenderVerdicts
+from boba.canvas.canvas import CanvasAction, CanvasFileRequest, RenderVerdicts
 from boba.chat.profiles import ChatProfileConfig, ChatProfiles, SelectedProfile
 from boba.chat.threads import DataLayerError
 from boba.identity.context import Scope
@@ -675,20 +675,14 @@ async def on_canvas_open(
 ) -> None:
     """Клик по файлу в списке или по ссылке в переписке открывает панель без
     участия агента."""
+    request = CanvasFileRequest.model_validate(action.payload)
     scope = current_session().canvas_scope()
     if scope is None:
         logger.warning("canvas open without a thread session: %s", action.payload)
         return
 
-    path = action.payload.get(CanvasAction.PATH.value)
-    if not path:
-        logger.warning("canvas action without path: %s", action.payload)
-        return
-
-    mime = str(action.payload.get(CanvasAction.MIME.value, ""))
-
     try:
-        await canvas.show(str(path), mime, scope)
+        await canvas.show(request.path, request.mime, scope)
     except RefusalError as exc:
         await ChatNotices.error(f"Failed to open the canvas: {exc}")
 
@@ -706,21 +700,14 @@ async def on_canvas_content(
     анимацию открытия заново. refresh — перечитывание уже показанного файла
     по сигналу слежения: слежение не перерегистрируется.
     """
+    request = CanvasFileRequest.model_validate(action.payload)
     scope = current_session().canvas_scope()
     if scope is None:
         return {}
 
-    path = action.payload.get(CanvasAction.PATH.value)
-    if not path:
-        logger.warning("canvas content action without path: %s", action.payload)
-        return {}
-
-    refresh = bool(action.payload.get("refresh"))
-    mime = str(action.payload.get(CanvasAction.MIME.value, ""))
-
     try:
         described = await canvas.content(
-            str(path), mime, watch=not refresh, scope=scope
+            request.path, request.mime, watch=not request.refresh, scope=scope
         )
     except RefusalError as exc:
         await ChatNotices.error(f"Failed to open the canvas: {exc}")

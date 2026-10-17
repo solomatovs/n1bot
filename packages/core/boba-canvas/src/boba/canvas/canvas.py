@@ -18,6 +18,7 @@ from typing import Any, ClassVar, Protocol, Self
 from pydantic import (
     BaseModel,
     ConfigDict,
+    Field,
     model_validator,
 )
 
@@ -37,6 +38,7 @@ __all__ = [
     "CanvasElement",
     "CanvasError",
     "CanvasErrorKind",
+    "CanvasFileRequest",
     "CanvasKind",
     "CanvasPush",
     "CanvasRegistry",
@@ -109,8 +111,6 @@ class CanvasAction(StrEnum):
     SHOW = "canvas_stream"
     WINDOW = "canvas_stream_window"
     LEAVE = "canvas_leave"
-    PATH = "path"
-    MIME = "mime"
     CALL_ID = "call_id"
 
 
@@ -666,6 +666,18 @@ class StreamPath(BaseModel):
             return None
 
         return cls(call_id=call_id, channel=channel)
+
+
+class CanvasFileRequest(BaseModel):
+    """Payload действий canvas_open и canvas_content: файл workspace и его вид
+    так, как их назвала ссылка; refresh — перечитать уже показанный файл, не
+    перенося слежение."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    path: str = Field(min_length=1)
+    mime: str = Field(min_length=1)
+    refresh: bool = False
 
 
 class StreamShowRequest(BaseModel):
