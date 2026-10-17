@@ -19,8 +19,8 @@ from typing import Annotated, ClassVar, Final
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from boba.canvas.canvas import CanvasError, CanvasErrorKind, CanvasScope
 from boba.canvas.diagram import (
-    DiagramErrorKind,
     DiagramMarker,
     DiagramPrompt,
     DiagramSpecError,
@@ -40,7 +40,6 @@ from boba.toolkit.result import (
 
 __all__ = [
     "TOOLS",
-    "CanvasErrorKind",
     "CanvasPrompt",
     "CanvasToolConfig",
     "canvas_open",
@@ -57,13 +56,6 @@ class CanvasToolConfig(BaseModel):
     SECTION: ClassVar[str] = "tool.canvas"
 
     max_chars: int = Field(ge=1, description="Потолок длины спеки mermaid.")
-
-
-class CanvasErrorKind(StrEnum):
-    """Коды отказов тулов канваса: уезжают в ErrorResult.error_kind."""
-
-    BAD_PATH = "bad_path"
-    FILE_NOT_FOUND = "file_not_found"
 
 
 class CanvasPrompt(StrEnum):
@@ -89,69 +81,38 @@ class CanvasPrompt(StrEnum):
     )
 
 
-class CanvasRefusedError(Exception):
-    """Тул отработать не может; kind и текст причины готовы для ErrorResult."""
-
-    def __init__(self, kind: str, message: str) -> None:
-        super().__init__(message)
-        self.kind = kind
-
-    def result(self) -> ErrorResult:
-        return ErrorResult(message=str(self), error_kind=self.kind)
-
-
 class ThreadFiles:
-    """Файлы треда в смонтированном workspace: ключ по пути и проверка наличия."""
+    """Файлы треда в смонтированном workspace для тел канваса: ключ по пути
+    аргумента в области CanvasScope и проверка, что файл лежит на диске."""
 
     def __init__(self, subject: Subject, scope: Scope, root: WorkspaceRoot) -> None:
         root.apply()
-        self._user_id = subject.user_key
-        self._thread_id = scope.id
+        self._scope = CanvasScope(user_id=subject.user_key, thread_id=scope.id)
 
     def existing(self, path: str) -> ObjectKey:
-        """Ключ файла по пути из аргумента; вне каталогов треда или без
-        файла на диске — отказ."""
-        key = self.key(path)
+        """Ключ файла по пути из аргумента.
+
+        Ошибки:
+        CanvasError — путь вне каталогов треда (BAD_PATH) или файла нет на
+            диске (FILE_NOT_FOUND).
+        """
+        key = self._scope.key(path)
         if not Path(key.in_workspace()).is_file():
-            raise CanvasRefusedError(
+            raise CanvasError(
                 CanvasErrorKind.FILE_NOT_FOUND, f"file not found: {key.in_workspace()}"
             )
 
         return key
 
-    def key(self, path: str) -> ObjectKey:
-        try:
-            return ObjectKey.from_workspace(self._user_id, self._thread_id, path)
-        except ValueError as e:
-            raise CanvasRefusedError(CanvasErrorKind.BAD_PATH, str(e)) from e
-
     def diagram(self, name: str) -> ObjectKey:
         """Ключ спеки в каталоге mermaid/ треда; имя приводится к безопасному."""
         return ObjectKey.build(
-            self._user_id,
-            self._thread_id,
+            self._scope.user_id,
+            self._scope.thread_id,
             name,
             DiagramMarker.FALLBACK_NAME,
             dir_thread=ThreadDir.MERMAID,
         )
-
-
-class DiagramSpec:
-    """Спека mermaid из аргумента: предел длины и разбор."""
-
-    @staticmethod
-    def parse(spec: str, max_chars: int) -> MermaidSpec:
-        if len(spec) > max_chars:
-            msg = (
-                f"the spec is longer than the {max_chars} character limit: "
-                f"got {len(spec)} characters"
-            )
-            raise CanvasRefusedError(DiagramErrorKind.INVALID_SPEC, msg)
-
-        try:
-            return MermaidSpec.parse(spec)
-        except DiagramSpecError as e:
-            raise CanvasRefusedError(DiagramErrorKind.INVALID_SPEC, str(e)) from e
 
 
 @tool(destructive=False)
@@ -165,8 +126,8 @@ async def canvas_open(
     панели справа от чата и оставить ссылку на него в переписке."""
     try:
         key = ThreadFiles(subject, scope, root).existing(path)
-    except CanvasRefusedError as e:
-        return e.result()
+    except CanvasError as e:
+        return e.failure()
 
     return CanvasResult(
         path=key.in_workspace(), label=key.name, note=CanvasPrompt.OPENED_NOTE
@@ -183,8 +144,8 @@ async def send_file(
     """Отправить пользователю файл из workspace вложением в чат."""
     try:
         key = ThreadFiles(subject, scope, root).existing(path)
-    except CanvasRefusedError as e:
-        return e.result()
+    except CanvasError as e:
+        return e.failure()
 
     return FileResult(
         path=key.in_workspace(), name=key.name, mime=ContentMime.of_name(key.name)
@@ -211,10 +172,17 @@ async def diagram_save(  # noqa: PLR0913 — контекст вызова и к
     и есть проверка: его вердикт возвращается как ошибка инструмента, и
     тогда спеку правят следующим вызовом.
     """
+    if len(spec) > cfg.max_chars:
+        msg = (
+            f"the spec is longer than the {cfg.max_chars} character limit: "
+            f"got {len(spec)} characters"
+        )
+        return ErrorResult(message=msg, error_kind=CanvasErrorKind.INVALID_SPEC)
+
     try:
-        parsed = DiagramSpec.parse(spec, cfg.max_chars)
-    except CanvasRefusedError as e:
-        return e.result()
+        parsed = MermaidSpec.parse(spec)
+    except DiagramSpecError as e:
+        return ErrorResult(message=str(e), error_kind=CanvasErrorKind.INVALID_SPEC)
 
     key = ThreadFiles(subject, scope, root).diagram(name)
     target = Path(key.in_workspace())

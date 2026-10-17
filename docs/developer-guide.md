@@ -194,14 +194,14 @@ async def send_file(
     """Отправить пользователю файл из workspace вложением в чат."""
     try:
         key = ThreadFiles(subject, scope, root).existing(path)
-    except CanvasRefusedError as e:
-        return e.result()
+    except CanvasError as e:
+        return e.failure()
 
-    return FileResult(path=key.in_workspace(), name=key.name, mime=ThreadFiles.mime_of(key))
+    return FileResult(path=key.in_workspace(), name=key.name, mime=ContentMime.of_name(key.name))
 ```
 
-`ThreadFiles` зовёт `root.apply()`, и после этого `ObjectKey.from_workspace`
-принимает только пути своего треда: `/workspace/<thread_id>/upload/...` в
+`ThreadFiles` зовёт `root.apply()` и строит ключ через `CanvasScope.key` из
+`boba-canvas`, а тот принимает только пути своего треда: `/workspace/<thread_id>/upload/...` в
 песочнице, `<workdir>/<thread_id>/upload/...` в режиме `process`. Всё, что
 тело делает с чатом, умещается в возврате `FileResult`: хост отдаёт его
 ссылкой на файл, а чат показывает её вложением к шагу.

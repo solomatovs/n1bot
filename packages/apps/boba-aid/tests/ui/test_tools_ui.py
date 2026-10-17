@@ -31,6 +31,7 @@ import pytest
 from chat_ui import ChatOpener
 from pydantic import BaseModel, ConfigDict
 
+from boba.canvas.canvas import CanvasErrorKind
 from boba.canvas.diagram import DiagramPrompt
 from boba.config import bind
 from boba.confluence.html import MarkdownRender, SectionsRender
@@ -2445,7 +2446,7 @@ class TestCanvasTools:
             f"file is outside the thread attachments dir: {outside!r}; "
             f"expected {expected!r}"
         )
-        result = ErrorResult(message=message, error_kind="bad_path")
+        result = ErrorResult(message=message, error_kind=CanvasErrorKind.BAD_PATH)
         canvas_feed.call(
             call,
             ToolExpect.of(result, dom=["outside the thread attachments dir"]),

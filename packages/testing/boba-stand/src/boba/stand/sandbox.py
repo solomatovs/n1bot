@@ -17,21 +17,10 @@ from omegaconf import DictConfig
 from boba.runtime.launchers import ZygoteLaunchers
 from boba.runtime.plugins import EntryPointPlugins
 from boba.sandbox import SandboxProfile
-from boba.stand.ui.stand import StandPaths
+from boba.stand.zygote import ROOTFS_IMAGE, RUNTIME
 from boba.toolkit.manifest import LaunchSpec
 
 REPO = Path(__file__).resolve().parents[6]
-SANDBOX = REPO / "runtime" / "sandbox"
-PLUGIN_IMAGES = SANDBOX / "plugins"
-ROOTFS_IMAGE = PLUGIN_IMAGES / "boba-tool-shell" / "rootfs.ext4"
-"""Базовый корень стендов: образ shell-плагина, bash и python без payload'ов."""
-
-
-def plugin_rootfs(package: str) -> Path:
-    """Образ корня пакета: make plugin-rootfs PLUGIN=<пакет>."""
-    return PLUGIN_IMAGES / package / "rootfs.ext4"
-
-
 """Код пакетов монтируется одним каталогом: точку /usr/src несёт rootfs."""
 
 ADDRESS_SPACE = 16 * 1024 * 1024 * 1024
@@ -99,7 +88,7 @@ class SandboxLayout:
         """Код репозитория поверх кода образа плюс данные моделей пакета."""
         binds = [f"{REPO / 'packages'}:/usr/src"]
 
-        models = SandboxLayout.models_dir()
+        models = RUNTIME.models
         for name, guest in SandboxLayout.DATA_BINDS.get(package, ()):
             binds.append(f"{models / name}:{guest}")
 
@@ -107,11 +96,6 @@ class SandboxLayout:
             binds.append(f"{docs_dir}:/workspace")
 
         return binds
-
-    @staticmethod
-    def models_dir() -> Path:
-        """Модели плагинов — общие runtime-зависимости репозитория."""
-        return StandPaths.MODELS.under(REPO)
 
     @staticmethod
     def python_path() -> str:
@@ -189,7 +173,7 @@ def sandbox_profile(
             "kill_grace_sec": 5,
             "cgroup_base": "",
         },
-        "rootfs": str(plugin_rootfs(package)),
+        "rootfs": str(RUNTIME.plugin_rootfs(package)),
         "mounts": {
             "ro": tuple(SandboxLayout.ro_binds(docs_dir, package)),
             "rw": (),

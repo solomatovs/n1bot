@@ -40,7 +40,14 @@ from boba.sandbox.zygote import (
     ZygoteToolCaller,
 )
 from boba.stand.shell import ShellRun
-from boba.stand.zygote import ProfileFields, SandboxCgroup, SandboxStand, ZygoteStand
+from boba.stand.zygote import (
+    ROOTFS_IMAGE,
+    RUNTIME,
+    ProfileFields,
+    SandboxCgroup,
+    SandboxStand,
+    ZygoteStand,
+)
 from boba.toolkit.chain import CallAmbient, ChannelFanOut, PipeTee
 from boba.toolkit.channels import JournalChannel, ToolChannel
 from boba.toolkit.entry import ToolAddress, ToolArgv, ToolMain
@@ -54,8 +61,7 @@ from boba.toolkit.stream import (
 )
 
 REPO = Path(__file__).resolve().parents[5]
-SANDBOX = REPO / "runtime" / "sandbox"
-ROOTFS_IMAGE = SANDBOX / "plugins" / "boba-tool-shell" / "rootfs.ext4"
+SANDBOX = RUNTIME.sandbox
 
 needs_sandbox = pytest.mark.failif(
     shutil.which("bwrap") is None or not ROOTFS_IMAGE.exists(),

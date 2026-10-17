@@ -50,6 +50,7 @@ from boba.mcp_client.client import (
 from boba.runtime.config import AppLayers, ConfigLayoutError, EnvOverride
 from boba.stand.service_signin import ServiceSignIn
 from boba.stand.ui.stand import StandApp, StandFiles
+from boba.stand.zygote import RUNTIME
 from boba.toolkit.calls import CallViews
 from boba.toolkit.channels import ToolChannel
 from boba.toolkit.dag import (
@@ -871,19 +872,24 @@ class TestSignInAsTheUser:
     имени."""
 
     SECRET: SecretStr = SecretStr("stand-proxy-secret")
+    CLIENT_SECRET: SecretStr = SecretStr("stand-client-secret")
 
-    def _auth(self, process: BobaMcpStand, secret: SecretStr) -> ProxyAuth:
+    def _auth(
+        self, process: BobaMcpStand, secret: SecretStr, client_secret: SecretStr
+    ) -> ProxyAuth:
         return ProxyAuth(
             issuer=HttpLocation(
                 scheme="http", host="127.0.0.1", port=process.port, path="/"
             ),
             client_id="stand-chat",
-            client_secret=SecretStr("stand-client-secret"),
+            client_secret=client_secret,
             secret=secret,
         )
 
-    def _servers(self, process: BobaMcpStand, secret: SecretStr) -> McpServers:
-        auth = self._auth(process, secret)
+    def _servers(
+        self, process: BobaMcpStand, secret: SecretStr, client_secret: SecretStr
+    ) -> McpServers:
+        auth = self._auth(process, secret, client_secret)
         wide = process.endpoint().model_copy(update={"auth": auth})
         narrow = wide.model_copy(update={"path": "/mcp/narrow"})
         config = McpServersConfig(
@@ -910,7 +916,7 @@ class TestSignInAsTheUser:
         subscriptions/listen по ней отдаёт события роста канала тому, кто
         вызывал. Чужому пользователю, подписке на канал без записи и на uri
         не журнала сервер отказывает до подтверждения."""
-        servers = self._servers(boba_mcp_stand, self.SECRET)
+        servers = self._servers(boba_mcp_stand, self.SECRET, self.CLIENT_SECRET)
         owner = McpCaller(login="ivanov", roles=frozenset({"dev"}))
         stranger = McpCaller(login="petrov", roles=frozenset({"dev"}))
         heard = HeardCall()
@@ -987,7 +993,7 @@ class TestSignInAsTheUser:
     async def test_body_runs_as_the_user_of_the_client(
         self, boba_mcp_stand: BobaMcpStand
     ) -> None:
-        servers = self._servers(boba_mcp_stand, self.SECRET)
+        servers = self._servers(boba_mcp_stand, self.SECRET, self.CLIENT_SECRET)
         caller = McpCaller(login="ivanov", roles=frozenset({"dev"}))
         try:
             port = await self._port(servers, caller, "boba")
@@ -1002,7 +1008,7 @@ class TestSignInAsTheUser:
     async def test_endpoint_gives_the_tools_of_its_profile(
         self, boba_mcp_stand: BobaMcpStand
     ) -> None:
-        servers = self._servers(boba_mcp_stand, self.SECRET)
+        servers = self._servers(boba_mcp_stand, self.SECRET, self.CLIENT_SECRET)
         caller = McpCaller(login="ivanov", roles=frozenset({"dev"}))
         try:
             await self._port(servers, caller, "boba")
@@ -1017,7 +1023,7 @@ class TestSignInAsTheUser:
     async def test_endpoint_outside_the_roles_refuses_the_port(
         self, boba_mcp_stand: BobaMcpStand
     ) -> None:
-        servers = self._servers(boba_mcp_stand, self.SECRET)
+        servers = self._servers(boba_mcp_stand, self.SECRET, self.CLIENT_SECRET)
         weak = McpCaller(login="petrov", roles=frozenset({"weak"}))
         try:
             await self._port(servers, weak, "boba")
@@ -1029,16 +1035,50 @@ class TestSignInAsTheUser:
     async def test_forged_signature_is_refused(
         self, boba_mcp_stand: BobaMcpStand
     ) -> None:
-        honest = self._servers(boba_mcp_stand, self.SECRET)
-        forged = self._servers(boba_mcp_stand, SecretStr("forged"))
+        """proxy_secret обязан совпадать у клиента и сервера: чужой ключ
+        утверждения сервер отвергает и называет секрет, который не сошёлся."""
+        honest = self._servers(boba_mcp_stand, self.SECRET, self.CLIENT_SECRET)
+        forged = self._servers(boba_mcp_stand, SecretStr("forged"), self.CLIENT_SECRET)
         caller = McpCaller(login="ivanov", roles=frozenset({"dev"}))
         try:
             await self._port(honest, caller, "boba")
-            with pytest.raises(McpClientError, match=r"'boba'.*invalid_grant"):
+            with pytest.raises(McpClientError) as refused:
                 await forged.port("boba", caller)
         finally:
             await honest.stop()
             await forged.stop()
+
+        reason = str(refused.value)
+        if "invalid_grant" not in reason:
+            raise AssertionError(f"a forged assertion is invalid_grant: {reason}")
+
+        if "[auth.proxy].secret" not in reason:
+            raise AssertionError(f"the refusal names the proxy secret: {reason}")
+
+    async def test_foreign_client_secret_is_refused(
+        self, boba_mcp_stand: BobaMcpStand
+    ) -> None:
+        """Секрет клиента обязан совпадать с [mcp.clients.<id>].secret
+        сервера: с чужим обмен утверждения отвергается как invalid_client."""
+        honest = self._servers(boba_mcp_stand, self.SECRET, self.CLIENT_SECRET)
+        foreign = self._servers(
+            boba_mcp_stand, self.SECRET, SecretStr("not-the-client-secret")
+        )
+        caller = McpCaller(login="ivanov", roles=frozenset({"dev"}))
+        try:
+            await self._port(honest, caller, "boba")
+            with pytest.raises(McpClientError) as refused:
+                await foreign.port("boba", caller)
+        finally:
+            await honest.stop()
+            await foreign.stop()
+
+        reason = str(refused.value)
+        if "invalid_client" not in reason:
+            raise AssertionError(f"a foreign client secret is invalid_client: {reason}")
+
+        if "client_secret" not in reason:
+            raise AssertionError(f"the refusal names the client secret: {reason}")
 
 
 @pytest.mark.integration
@@ -1227,7 +1267,7 @@ class BobaMcpService:
     и адрес ресурса обязаны совпадать с тем, как клиент называет сервис."""
     PROFILE: str = "general"
     CLIENT: str = "boba-chat"
-    THIRD: Path = BobaMcpStand.REPO / "runtime" / "third"
+    THIRD: Path = RUNTIME.third
 
     def __init__(self, workdir: Path, database: str) -> None:
         with socket.socket() as probe:

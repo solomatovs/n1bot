@@ -16,7 +16,6 @@ from boba.canvas.keys import ObjectKey
 
 __all__ = [
     "DiagramEntry",
-    "DiagramErrorKind",
     "DiagramMarker",
     "DiagramPrompt",
     "DiagramSpecError",
@@ -27,12 +26,6 @@ __all__ = [
 
 class DiagramSpecError(ValueError):
     """Спека пуста или не начинается с известного типа диаграммы mermaid."""
-
-
-class DiagramErrorKind(StrEnum):
-    """Коды отказов тула диаграмм: уезжают в ErrorResult.error_kind."""
-
-    INVALID_SPEC = "invalid_diagram_spec"
 
 
 class MermaidToken(StrEnum):

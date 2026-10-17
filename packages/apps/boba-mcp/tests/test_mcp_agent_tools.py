@@ -20,7 +20,7 @@ from boba.sandbox.profile import (
 )
 from boba.sandbox.zygote import ZygotePolicy, ZygoteToolCaller
 from boba.stand.shell import ShellRun
-from boba.stand.zygote import SandboxStand, ZygoteStand
+from boba.stand.zygote import ROOTFS_IMAGE, RUNTIME, SandboxStand, ZygoteStand
 from boba.tool.shell.tools import BashToolConfig
 from boba.toolkit.chain import CallAmbient
 from boba.toolkit.dag import DagNode
@@ -51,8 +51,7 @@ _WORKSPACE = "/workspace"
 _ROOT = "/tmp/boba-rootfs"  # noqa: S108
 """Точка, куда цепочка лаунчера смонтировала корень: её получает билдер argv."""
 
-_SANDBOX = Path(__file__).resolve().parents[4] / "runtime" / "sandbox"
-_ROOTFS_IMAGE = _SANDBOX / "plugins" / "boba-tool-shell" / "rootfs.ext4"
+_SANDBOX = RUNTIME.sandbox
 
 _PROFILE_BASE: dict[str, object] = {
     "host": {
@@ -70,7 +69,7 @@ _PROFILE_BASE: dict[str, object] = {
         "kill_grace_sec": 5,
         "cgroup_base": "",
     },
-    "rootfs": str(_ROOTFS_IMAGE),
+    "rootfs": str(ROOTFS_IMAGE),
     "mounts": {
         "ro": (),
         "rw": (),

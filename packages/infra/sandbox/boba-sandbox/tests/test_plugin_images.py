@@ -16,16 +16,16 @@ from typing import ClassVar
 
 import pytest
 
-from boba.stand.sandbox import SandboxLayout, plugin_rootfs
+from boba.stand.sandbox import SandboxLayout
+from boba.stand.zygote import RUNTIME, SandboxStand
 
-REPO = Path(__file__).resolve().parents[5]
-FUSE2FS = REPO / "runtime" / "third" / "bin" / "fuse2fs"
+FUSE2FS = SandboxStand.FUSE2FS
 
 PACKAGES = sorted(SandboxLayout.DATA_BINDS)
 
 needs_images = pytest.mark.failif(
     not FUSE2FS.exists()
-    or not all(plugin_rootfs(package).exists() for package in PACKAGES),
+    or not all(RUNTIME.plugin_rootfs(package).exists() for package in PACKAGES),
     reason=(
         "нет артефактов песочницы (собрать: make -C build sandbox plugin-rootfs-all)"
     ),
@@ -68,7 +68,9 @@ class TestPluginDataMountpoints:
     def test_declared_data_paths_exist_in_the_image(
         self, package: str, tmp_path_factory: pytest.TempPathFactory
     ) -> None:
-        image = MountedImage(plugin_rootfs(package), tmp_path_factory.mktemp("rootfs"))
+        image = MountedImage(
+            RUNTIME.plugin_rootfs(package), tmp_path_factory.mktemp("rootfs")
+        )
 
         missing: list[str] = []
         with image.opened() as root:

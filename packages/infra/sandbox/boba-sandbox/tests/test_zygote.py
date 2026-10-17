@@ -32,15 +32,13 @@ from boba.sandbox.zygote import (
     ZygoteSupervisor,
     ZygoteUnavailableError,
 )
-from boba.stand.zygote import SandboxStand
+from boba.stand.zygote import ROOTFS_IMAGE, SandboxStand
 from boba.toolkit.channels import ToolChannel
 from boba.toolkit.protocol import REPLY, ReplyOk
 from boba.toolkit.stream import Chunk
 
 REPO = Path(__file__).resolve().parents[5]
-SANDBOX = REPO / "runtime" / "sandbox"
-ROOTFS_IMAGE = SANDBOX / "plugins" / "boba-tool-shell" / "rootfs.ext4"
-FUSE2FS = REPO / "runtime" / "third" / "bin" / "fuse2fs"
+FUSE2FS = SandboxStand.FUSE2FS
 
 TESTS_DIR = str(Path(__file__).resolve().parent)
 
