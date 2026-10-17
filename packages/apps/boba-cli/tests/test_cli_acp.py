@@ -154,6 +154,10 @@ class StandRegistration:
         name="stand", server_id="stand:3f9c2a"
     )
     PAGE: ClassVar[int] = 3
+    JOURNAL: ClassVar[dict[str, Any]] = {
+        "com.boba/journal": ["boba-journal://run/call/stdout"]
+    }
+    """_meta уведомления SLOW о журнале вызова: агент передаёт его как есть."""
     TOOLS: ClassVar[Sequence[mt.Tool]] = (
         mt.Tool(
             name=RegisteredTool.ADD,
@@ -325,7 +329,9 @@ class StandRegistration:
         request: mt.CallToolRequest,
         arguments: Mapping[str, Any],
     ) -> mt.CallToolResult:
-        """SLOW: ход `notifications/progress` по шагу и пауза; отмену запоминает."""
+        """SLOW: уведомление о журнале вызова (без текста и итога, ссылка в
+        `_meta`), затем ход `notifications/progress` по шагу и пауза; отмену
+        запоминает."""
         steps = int(arguments["steps"])
         pause = float(arguments["seconds"]) / steps
         meta = request.params.meta
@@ -334,6 +340,18 @@ class StandRegistration:
         assert token is not None
         connection = self.connection
         assert connection is not None
+        journal = mt.ProgressNotification(
+            params=mt.ProgressNotificationParams(
+                progress_token=token, progress=0, _meta=self.JOURNAL
+            )
+        )
+        await connection.notify(
+            McpMessage(
+                server_id=message.server_id,
+                request_id=message.request_id,
+                **journal.model_dump(**self.WIRE),
+            )
+        )
         try:
             for step in range(1, steps + 1):
                 progress = mt.ProgressNotification(
@@ -1113,14 +1131,20 @@ class TestConversation:
             assert idle.stop_reason == StopReason.END_TURN
             start = client.of(schema.SessionToolCallUpdate)[0]
             reports: list[str] = []
+            bare: list[schema.SessionToolCallUpdate] = []
             for update in client.calls_of(start.tool_call_id):
                 if update.status != ToolStatus.IN_PROGRESS:
                     continue
 
                 if update.content is None:
+                    if update.field_meta is not None:
+                        bare.append(update)
                     continue
 
                 reports.append(result_text(update))
+
+            # уведомление без текста и итога — только _meta, без строки «0»
+            assert [update.field_meta for update in bare] == [StandRegistration.JOURNAL]
 
             assert reports == [
                 "step 1 of 3 — 1 of 3",

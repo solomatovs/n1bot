@@ -1075,60 +1075,69 @@ class ElementSink(ChatSink):
 
 
 class TestStreamButton:
-    """Кнопка журнала встаёт на шаг потокового тула, когда вызов закончился,
-    и адресуется по call_id."""
+    """Кнопка журнала встаёт на шаг вызова, едва адрес журнала известен —
+    пока вызов идёт, — и адресуется по call_id."""
 
     async def _running_step(
-        self,
-        journals: CallJournals,
-        storage: LocalStorageClient,
-        sink: ChatSink,
-        name: str,
+        self, storage: LocalStorageClient, sink: ChatSink, name: str
     ) -> tuple[ChatView, Step]:
-        view = ChatView(THREAD, sink, journals, "u-1", storage, user_name="tester")
+        view = ChatView(THREAD, sink, "u-1", storage, user_name="tester")
         view.begin_turn("turn-1")
         step = await view.tool_started(name, {"command": "ls"}, CALL_ID, None, None)
 
         return view, step
 
-    async def _tool_step(
-        self,
-        journals: CallJournals,
-        storage: LocalStorageClient,
-        sink: ChatSink,
-        name: str,
+    async def _journaled_step(
+        self, storage: LocalStorageClient, sink: ChatSink
     ) -> Step:
-        view, step = await self._running_step(journals, storage, sink, name)
+        view, step = await self._running_step(storage, sink, TOOL_NAME)
+        await view.tool_journaled(step, TOOL_NAME, CALL_ID)
+        await view.tool_journaled(step, TOOL_NAME, CALL_ID)
         await view.tool_finished(step, "done", CALL_ID, 0)
 
         return step
 
-    def test_running_call_has_no_button_yet(
-        self,
-        journals: CallJournals,
-        runtime_stand: StandRefs,
-        storage: LocalStorageClient,
+    def test_running_call_gets_the_button(
+        self, runtime_stand: StandRefs, storage: LocalStorageClient
     ) -> None:
-        journals.mark_streamable([TOOL_NAME])
+        sink = ElementSink()
 
-        _, step = run(self._running_step(journals, storage, ElementSink(), TOOL_NAME))
+        async def journaled() -> Step:
+            view, step = await self._running_step(storage, sink, TOOL_NAME)
+            await view.tool_journaled(step, TOOL_NAME, CALL_ID)
 
-        if step.elements:
-            raise AssertionError(f"the journal opens after the call: {step.elements}")
+            return step
+
+        step = run(journaled())
+
+        elements = step.elements or []
+        if len(elements) != 1:
+            raise AssertionError(f"one journal button: {elements}")
+        element = elements[0]
+        if element.name != "CanvasStream":
+            raise AssertionError(f"the button is CanvasStream: {element.name}")
+        if getattr(element, "props", {}).get("call_id") != CALL_ID:
+            raise AssertionError(f"the button names the call: {element}")
+        if element.id != ChatView.derive_id(THREAD, CALL_ID, StepRole.STREAM):
+            raise AssertionError(f"the button id is derived from the call: {element}")
+        if step.end is not None:
+            raise AssertionError("the call is still running")
+        sent: list[Step] = []
+        for put in sink.steps:
+            if put.id == step.id:
+                sent.append(put)
+
+        if len(sent) != 2:
+            raise AssertionError(f"the step is sent again with the button: {sent}")
 
     def test_progress_block_keeps_the_last_ten_messages(
-        self,
-        journals: CallJournals,
-        runtime_stand: StandRefs,
-        storage: LocalStorageClient,
+        self, runtime_stand: StandRefs, storage: LocalStorageClient
     ) -> None:
         """Сообщения инструмента текут: блок шага показывает последние десять,
         старые уходят, а с итогом вызова блок сменяется результатом."""
 
         async def flowed() -> tuple[str, str]:
-            view, step = await self._running_step(
-                journals, storage, ElementSink(), TOOL_NAME
-            )
+            view, step = await self._running_step(storage, ElementSink(), TOOL_NAME)
             for number in range(1, 26):
                 await view.tool_progressed(step, f"message {number}")
 
@@ -1146,80 +1155,44 @@ class TestStreamButton:
         if "message 25" in finished:
             raise AssertionError(f"the result replaces the progress: {finished}")
 
-    def test_streamable_tool_gets_the_button(
-        self,
-        journals: CallJournals,
-        runtime_stand: StandRefs,
-        storage: LocalStorageClient,
+    def test_button_is_not_doubled(
+        self, runtime_stand: StandRefs, storage: LocalStorageClient
     ) -> None:
-        journals.mark_streamable([TOOL_NAME])
-        sink = ElementSink()
-
-        step = run(self._tool_step(journals, storage, sink, TOOL_NAME))
+        """Адрес приходит и вживую, и с итогом: кнопка у шага одна."""
+        step = run(self._journaled_step(storage, ElementSink()))
 
         elements = step.elements or []
         if len(elements) != 1:
-            raise AssertionError("len(elements) == 1")
-        element = elements[0]
-        if element.name != "CanvasStream":
-            raise AssertionError('element.name == "CanvasStream"')
-        if getattr(element, "props", {}).get("call_id") != CALL_ID:
-            raise AssertionError('getattr(element, "props", {}).get("call_id") == CAL…')
-        if element.id != ChatView.derive_id(THREAD, CALL_ID, StepRole.STREAM):
-            raise AssertionError("element.id == ChatView.derive_id(THREAD, CALL_ID, S…")
+            raise AssertionError(f"one journal button: {elements}")
 
-    def test_no_journal_means_no_button(
+    def test_call_without_journal_has_no_button(
         self, runtime_stand: StandRefs, storage: LocalStorageClient
     ) -> None:
-        silent = CallJournals(None, runtime_stand.runs)
-        silent.mark_streamable([TOOL_NAME])
+        async def finished() -> Step:
+            view, step = await self._running_step(storage, ElementSink(), TOOL_NAME)
+            await view.tool_finished(step, "done", CALL_ID, 0)
 
-        step = run(self._tool_step(silent, storage, ElementSink(), TOOL_NAME))
+            return step
 
-        if step.elements:
-            raise AssertionError("not step.elements")
-
-    def test_other_tools_stay_clean(
-        self,
-        journals: CallJournals,
-        runtime_stand: StandRefs,
-        storage: LocalStorageClient,
-    ) -> None:
-        sink = ElementSink()
-
-        step = run(self._tool_step(journals, storage, sink, "diagram_save"))
+        step = run(finished())
 
         if step.elements:
-            raise AssertionError("not step.elements")
+            raise AssertionError(f"no button without a journal: {step.elements}")
 
     def test_replay_sink_never_emits_the_button(
-        self,
-        journals: CallJournals,
-        runtime_stand: StandRefs,
-        storage: LocalStorageClient,
+        self, runtime_stand: StandRefs, storage: LocalStorageClient
     ) -> None:
-        journals.mark_streamable([TOOL_NAME])
-
-        step = run(self._tool_step(journals, storage, RecordingSink(), TOOL_NAME))
+        step = run(self._journaled_step(storage, RecordingSink()))
 
         if step.elements:
             raise AssertionError("not step.elements")
 
     def test_replayed_step_dict_matches_live(
-        self,
-        journals: CallJournals,
-        runtime_stand: StandRefs,
-        storage: LocalStorageClient,
+        self, runtime_stand: StandRefs, storage: LocalStorageClient
     ) -> None:
         """Кнопка не должна ломать контракт шагов: сравниваются StepDict."""
-        journals.mark_streamable([TOOL_NAME])
-
-        live = run(
-            self._tool_step(journals, storage, ElementSink(), TOOL_NAME)
-        ).to_dict()
-        replay = run(
-            self._tool_step(journals, storage, RecordingSink(), TOOL_NAME)
-        ).to_dict()
+        live = run(self._journaled_step(storage, ElementSink())).to_dict()
+        replay = run(self._journaled_step(storage, RecordingSink())).to_dict()
 
         if live["id"] != replay["id"]:
             raise AssertionError('live["id"] == replay["id"]')

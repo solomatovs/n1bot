@@ -151,10 +151,19 @@ class ProbeText(StrEnum):
 
 
 class ProbeDiagram(StrEnum):
-    """Диаграмма стенда: имя файла и спека."""
+    """Диаграмма стенда: имя файла и спека; BROKEN — спека, которую mermaid
+    не принимает (пробелы внутри скобок подграфа)."""
 
     NAME = "orders.mmd"
     SPEC = "erDiagram\n    USER ||--o{ ORDER : places"
+    BROKEN_NAME = "broken.mmd"
+    BROKEN = (
+        "flowchart LR\n"
+        '    A["Доход"] --> B["Вычеты"]\n'
+        '    subgraph VYCHE[ "Структура вычетов" ]\n'
+        '        B1["Стандартный"]\n'
+        "    end\n"
+    )
 
 
 class ProbeSql(StrEnum):
@@ -2397,6 +2406,31 @@ class TestCanvasTools:
         # журнал вкладки хранит только этот ход: ask его очищает
         if not canvas_feed.chat.log.elements_named(CANVAS_ELEMENT):
             raise AssertionError(f"element {CANVAS_ELEMENT} is not shown by the turn")
+
+    def test_broken_diagram_fails_the_call_with_the_mermaid_error(
+        self, canvas_feed: ToolFeed, saved_diagram: DiagramProbe
+    ) -> None:
+        """diagram_save просит показать файл: ретранслятор открывает панель
+        вкладки и ждёт вердикт браузера; битая спека — ✖ шага, и модель
+        получает текст ошибки mermaid в том же вызове (8.2)."""
+        call = ToolCall(
+            tool="diagram_save",
+            arguments={
+                "name": ProbeDiagram.BROKEN_NAME.value,
+                "spec": ProbeDiagram.BROKEN.value,
+            },
+            code="spec",
+            language="mermaid",
+        )
+        refused = "is not shown in the canvas: the diagram does not render"
+        expect = ToolExpect(
+            mark=StepMark.FAILED,
+            patterns=[re.escape(refused)],
+            dom=[refused],
+            log_errors=True,
+        )
+
+        canvas_feed.call(call, expect)
 
     def test_canvas_open_outside_thread_is_refused(
         self, canvas_feed: ToolFeed, saved_diagram: DiagramProbe

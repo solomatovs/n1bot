@@ -135,8 +135,28 @@ BROKEN_MMD = (
 )
 """Пробелы внутри скобок подграфа — mermaid такое не принимает (реальный случай)."""
 
+HOSTILE_MMD = (
+    "flowchart LR\n"
+    '    A["<img src=x onerror=window.__boba_pwned=1>Start"] --> B[End]\n'
+    "    click A call window.__boba_click()\n"
+    '    click B "javascript:window.__boba_pwned=2"\n'
+)
+"""Спека чужого сервера: HTML в подписи и click — strict обязан их обезвредить."""
+HOSTILE_SVG = (
+    b'<svg xmlns="http://www.w3.org/2000/svg" width="120" height="40" '
+    b'onload="window.__boba_pwned=3"><script>window.__boba_pwned=4</script>'
+    b'<rect width="120" height="40" fill="#4c7cf0"/></svg>'
+)
+HOSTILE_HTML = b"<html><body><script>window.__boba_pwned=5</script></body></html>"
+PDF = b"%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n"
+
 FILES: dict[str, bytes] = {
     "chart.png": PNG,
+    "hostile.mmd": HOSTILE_MMD.encode(),
+    "hostile.svg": HOSTILE_SVG,
+    "page.html": HOSTILE_HTML,
+    "report.pdf": PDF,
+    "report": PDF,
     "chart.svg": SVG,
     "flow.mmd": "flowchart LR\n    A[Доход] --> B[Налог]\n".encode(),
     "report.md": "# Отчёт\n\n- доход: 4 786 066\n".encode(),
@@ -442,7 +462,6 @@ async def panel(app_server: None) -> AsyncIterator[Any]:
 
         probe = _SessionProbe()
         session = probe.session
-        reports = probe.reports
         probe.watch(page)
 
         await page.goto(BASE + "/login")
@@ -494,7 +513,7 @@ async def panel(app_server: None) -> AsyncIterator[Any]:
             path = _tool_view(session["thread"], name)
             return await act("canvas_open", {"path": path})
 
-        yield show, reports, session["thread"], act
+        yield show, probe, session["thread"], act
 
         await browser.close()
 
@@ -588,7 +607,8 @@ async def test_unsupported_format_is_explained(panel: Any) -> None:
 
 async def test_broken_spec_verdict_reaches_server(panel: Any) -> None:
     """Ошибку синтаксиса видит только браузер: плашка в панели, вердикт — серверу."""
-    show, reports, _thread, _act = panel
+    show, probe, _thread, _act = panel
+    reports = probe.reports
     side = await show("broken.mmd")
     text = await side.inner_text()
 
@@ -1708,3 +1728,161 @@ async def test_preview_card_has_no_download_button(panel: Any) -> None:
 
     if in_feed:
         raise AssertionError("в карточке ленты не должно быть кнопки скачивания")
+
+
+async def test_hostile_diagram_runs_no_script(panel: Any) -> None:
+    """HTML в подписи и click в спеке mermaid не исполняются (7.6)."""
+    show, _, _thread, _act = panel
+    side = await show("hostile.mmd")
+    page = side.page
+
+    svg = side.locator('div[style*="transform-origin"] svg')
+    if await svg.count() <= 0:
+        raise AssertionError("the hostile diagram is not drawn")
+
+    # ловушка для click A call: strict обязан не привязать вызов к узлу
+    await page.evaluate(
+        "() => { window.__boba_click = () => { window.__boba_pwned = 'click'; }; }"
+    )
+    for node in await svg.first.locator("g.node").all():
+        await node.click(force=True)
+    await page.wait_for_timeout(500)
+
+    handlers = await page.evaluate(
+        """() => {
+            const svg = document.querySelector(
+                '#side-view-content div[style*="transform-origin"] svg');
+            const found = [];
+            for (const el of svg.querySelectorAll('*')) {
+                for (const attr of el.attributes) {
+                    const name = attr.name.toLowerCase();
+                    const value = attr.value.toLowerCase();
+                    if (name.startsWith('on') || value.startsWith('javascript:')) {
+                        found.push(`${el.tagName}.${attr.name}`);
+                    }
+                }
+            }
+            return found;
+        }"""
+    )
+
+    if handlers:
+        raise AssertionError(f"script hooks left in the diagram svg: {handlers}")
+
+    pwned = await page.evaluate("() => window.__boba_pwned")
+    if pwned is not None:
+        raise AssertionError(f"the diagram ran a script: {pwned!r}")
+
+
+async def test_hostile_svg_runs_no_script(panel: Any) -> None:
+    """SVG со <script> и onload показывается картинкой, скрипт не исполняется."""
+    show, _, _thread, _act = panel
+    side = await show("hostile.svg")
+    page = side.page
+
+    await page.wait_for_function(
+        """() => {
+            const img = document.querySelector('#side-view-content img');
+            return !!img && img.complete && img.naturalWidth > 0;
+        }""",
+        timeout=15000,
+    )
+
+    if await side.locator("svg script").count():
+        raise AssertionError("the svg got into the page instead of an <img>")
+
+    pwned = await page.evaluate("() => window.__boba_pwned")
+    if pwned is not None:
+        raise AssertionError(f"the svg ran a script: {pwned!r}")
+
+
+async def test_canvas_route_downloads_what_the_browser_would_run(panel: Any) -> None:
+    """Ссылка канваса открывает в браузере только pdf, видео и звук; html и
+    svg скачиваются и в origin чата не исполняются (7.6)."""
+    show, _, thread, _act = panel
+    side = await show("chart.png")
+    page = side.page
+    cookie = await _cookie_header(page.context)
+
+    expected = {
+        "page.html": "attachment",
+        "hostile.svg": "attachment",
+        "data.bin": "attachment",
+        "report.pdf": "inline",
+    }
+    for name, kind in expected.items():
+        url = f"{BASE}/canvas/{thread}/upload/{name}"
+        response = await page.request.get(url, headers={"cookie": cookie})
+        if response.status != 200:
+            raise AssertionError(f"GET {url}: expected 200, got {response.status}")
+
+        disposition = response.headers.get("content-disposition", "")
+        if not disposition.startswith(f"{kind};"):
+            raise AssertionError(f"{name}: expected {kind}, got {disposition!r}")
+
+
+async def test_uploaded_html_is_downloaded(panel: Any) -> None:
+    """Вложение пользователя без вьювера отдаётся скачиванием, pdf — показом."""
+    show, probe, _thread, _act = panel
+    side = await show("chart.png")
+    page = side.page
+    session_id = probe.session["id"]
+    cookie = await _cookie_header(page.context)
+
+    expected = {
+        ("page.html", "text/html"): ("attachment", HOSTILE_HTML),
+        ("report.pdf", "application/pdf"): ("inline", PDF),
+    }
+    for (name, mime), (kind, blob) in expected.items():
+        uploaded = await page.request.post(
+            f"{BASE}/project/file?session_id={session_id}",
+            multipart={"file": {"name": name, "mimeType": mime, "buffer": blob}},
+            headers={"cookie": cookie},
+        )
+        if uploaded.status != 200:
+            body = await uploaded.text()
+            raise AssertionError(f"upload {name}: {uploaded.status} {body}")
+
+        file_id = (await uploaded.json())["id"]
+        url = f"{BASE}/project/file/{file_id}?session_id={session_id}"
+        response = await page.request.get(url, headers={"cookie": cookie})
+        if response.status != 200:
+            raise AssertionError(f"GET {url}: expected 200, got {response.status}")
+
+        downloaded = await response.body()
+        if downloaded != blob:
+            raise AssertionError(f"{name}: the download differs from the upload")
+
+        disposition = response.headers.get("content-disposition", "")
+        if not disposition.startswith(f"{kind};"):
+            raise AssertionError(f"{name}: expected {kind}, got {disposition!r}")
+
+
+async def test_link_mime_wins_over_the_file_name(panel: Any) -> None:
+    """Ссылка называет вид файла сама: pdf без суффикса показывается вьювером
+    pdf, а маршрут отдаёт его как pdf для показа, а не на скачивание."""
+    _show, _, thread, act = panel
+    path = _tool_view(thread, "report")
+    side = await act("canvas_open", {"path": path, "mime": "application/pdf"})
+    page = side.page
+
+    frame = side.locator("iframe")
+    if not await frame.count():
+        raise AssertionError(
+            f"the pdf viewer shows the file: {await side.inner_html()}"
+        )
+
+    url = str(await frame.first.evaluate("el => el.src"))
+    if "mime=application%2Fpdf" not in url:
+        raise AssertionError(f"the link names the type of the file: {url}")
+
+    cookie = await _cookie_header(page.context)
+    response = await page.request.get(url, headers={"cookie": cookie})
+    if response.status != 200:
+        raise AssertionError(f"GET {url}: expected 200, got {response.status}")
+
+    disposition = response.headers.get("content-disposition", "")
+    if response.headers.get("content-type") != "application/pdf":
+        raise AssertionError(f"the route serves a pdf: {response.headers}")
+    if not disposition.startswith("inline;"):
+        raise AssertionError(f"the pdf is shown, not downloaded: {disposition!r}")

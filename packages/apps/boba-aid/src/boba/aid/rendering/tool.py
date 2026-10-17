@@ -1,5 +1,6 @@
 """Элементы ленты, которым нужен объект chainlit: график plotly из фигуры
-блока ответа, карточка вьювера канваса и приложение MCP Apps у шага вызова.
+блока ответа, карточка вьювера канваса и приложение MCP Apps у шага вызова,
+а также разбор настроек MCP Apps инструмента из его _meta.ui.
 
 Ошибки: своих не выпускает.
 """
@@ -10,11 +11,42 @@ from collections.abc import Mapping
 from typing import Any, ClassVar
 
 import chainlit as cl
+import mcp_types as mt
+from fastmcp.apps.config import AppConfig
 from pydantic import BaseModel, ConfigDict
 
 from boba.toolkit.result import VisualResult
 
-__all__ = ["ChatElements", "ToolAppView"]
+__all__ = ["AppMeta", "ChatElements", "ToolAppView"]
+
+
+class AppMeta:
+    """Настройки MCP Apps инструмента из его _meta.ui (AppConfig fastmcp):
+    адрес приложения и кому инструмент виден.
+
+    Держат полем ретранслятор (видимость инструментов модели и приложению)
+    и показ ленты (адрес приложения у шага). Что делать с _meta.ui не по
+    форме, решает владелец.
+    """
+
+    UI_META: ClassVar[str] = "ui"
+    """Ключ _meta инструмента с настройками MCP Apps."""
+
+    def of(self, tool: mt.Tool) -> AppConfig | None:
+        """Настройки инструмента; None — у него нет _meta.ui.
+
+        Ошибки:
+        ValidationError — _meta.ui не по форме настроек MCP Apps.
+        """
+        meta = tool.meta
+        if meta is None:
+            return None
+
+        ui = meta.get(self.UI_META)
+        if ui is None:
+            return None
+
+        return AppConfig.model_validate(ui)
 
 
 class ToolAppView(BaseModel):

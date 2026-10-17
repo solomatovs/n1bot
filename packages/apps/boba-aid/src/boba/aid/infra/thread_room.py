@@ -16,14 +16,19 @@ from chainlit.server import sio
 from chainlit.session import WebsocketSession
 from chainlit.types import ThreadDict
 
-from boba.aid.agent.feed import TabSurfaces
 from boba.aid.chat.feed import TextClip
 from boba.aid.domain.fields import StepField, ThreadField
 from boba.aid.infra import providers
 from boba.aid.infra.session import current_session, session_source_ref
 from boba.aid.rendering.acp_view import UpdateView
 from boba.aid.rendering.chat_view import ChatView, LiveSink
-from boba.aid.rendering.renderer import ChatRenderers, RenderSurface, SignalType
+from boba.aid.rendering.renderer import (
+    ChatRenderers,
+    NoSurface,
+    RenderSurface,
+    SignalType,
+    TabSurfaces,
+)
 from boba.canvas.canvas import CanvasSignal, SignalTransport
 from boba.identity.context import Scope
 from boba.identity.errors import InternalServiceError
@@ -161,13 +166,21 @@ class ThreadRoom:
 
 class ThreadSurfaces(TabSurfaces):
     """Реализация TabSurfaces: сокет текущего обработчика и поверхность
-    рассылки треда (ChatRoomSurface) для приёмников потока агента."""
+    рассылки треда (ChatRoomSurface) для приёмников потока агента, а вне
+    обработчика — поверхность с якорем в первой живой вкладке треда."""
 
     def anchor(self) -> WebsocketSession:
         return ThreadRoom.websocket()
 
     def thread(self, anchor: WebsocketSession, thread_id: str) -> RenderSurface:
         return ChatRoomSurface(anchor, thread_id)
+
+    def live(self, thread_id: str) -> RenderSurface:
+        sessions = ThreadRoom.sessions(thread_id)
+        if not sessions:
+            return NoSurface()
+
+        return ChatRoomSurface(sessions[0], thread_id)
 
 
 class ChatRoomSurface(RenderSurface):
@@ -278,7 +291,7 @@ class ChatRoomSurface(RenderSurface):
 
         journals = root.resolved(providers.remote_journals)
         storage = root.resolved(providers.storage_provider)
-        view = ChatView(thread_id, LiveSink(), journals, str(owner), storage)
+        view = ChatView(thread_id, LiveSink(), str(owner), storage)
 
         return ChatRenderers.ensure(
             thread_id,

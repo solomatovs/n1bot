@@ -14,8 +14,7 @@ from typing import ClassVar
 from acp.experimental.v2 import schema
 from pydantic import BaseModel, ConfigDict
 
-from boba.aid.agent.client import SessionUpdate
-from boba.aid.rendering.acp_view import SessionUpdateCodec
+from boba.aid.rendering.acp_view import SessionUpdate, SessionUpdateCodec
 from boba.identity.context import Scope
 from boba.messaging import (
     AgentUpdate,
@@ -26,8 +25,6 @@ from boba.messaging import (
     Notice,
     NoticeLevel,
     PayloadStore,
-    StreamAppended,
-    StreamFeed,
     ThreadRewound,
     TurnFinished,
     TurnOutcome,
@@ -68,7 +65,7 @@ class QuestionBody(BaseModel):
     author: str = ""
 
 
-class TurnFeed(StreamFeed):
+class TurnFeed:
     """Публикует сообщения одного хода в область его треда от имени держателя хода."""
 
     def __init__(
@@ -123,9 +120,6 @@ class TurnFeed(StreamFeed):
         await self._publish(
             AnswerInterrupted(turn_id=self._turn_id, key=key, note=note)
         )
-
-    async def stream_appended(self, message: StreamAppended) -> None:
-        await self._publish(message)
 
     async def notice(self, level: NoticeLevel, text: str) -> None:
         await self._publish(Notice(level=level, text=TextClip.fit(text)))
