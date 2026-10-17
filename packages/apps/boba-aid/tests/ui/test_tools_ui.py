@@ -28,9 +28,17 @@ from urllib.parse import unquote, urlsplit
 import httpx
 import mcp_types as mt
 import pytest
+from aid_stand import AppLanguage
 from chat_ui import ChatOpener
 from pydantic import BaseModel, ConfigDict
 
+from boba.aid.chat.ui_text import UiText
+from boba.aid.rendering.chat_view import (
+    StepElapsed,
+    StepStatus,
+    StepText,
+    ToolStepLabel,
+)
 from boba.canvas.canvas import CanvasErrorKind
 from boba.canvas.diagram import DiagramPrompt
 from boba.config import bind
@@ -78,6 +86,7 @@ from boba.toolkit.result import (
     FieldLines,
     FileResult,
     MarkdownResult,
+    NoteLine,
     SqlResult,
     SqlStatement,
     TableResult,
@@ -112,20 +121,6 @@ OPENED_NOTE = (
 """Имя элемента карточки диаграммы в ленте."""
 
 """Имя элемента ссылки на страницу каталога в ленте."""
-
-
-class StepMark(StrEnum):
-    """Статусный кружок в названии шага: им лента показывает исход вызова."""
-
-    DONE = "✔"
-    FAILED = "✖"
-
-    @classmethod
-    def of(cls, ok: bool) -> StepMark:
-        if ok:
-            return cls.DONE
-
-        return cls.FAILED
 
 
 class ProbeFile(StrEnum):
@@ -389,7 +384,7 @@ MAIN_CONNECTION = "main"
 class ToolExpect:
     """Что обязано быть в шаге после хода."""
 
-    mark: StepMark = StepMark.DONE
+    mark: StepStatus = StepStatus.DONE
     output: str | None = None
     """Точный markdown результата; None — сверка по patterns."""
     patterns: Sequence[str] = ()
@@ -403,22 +398,24 @@ class ToolExpect:
     def of(cls, result: ToolResult, dom: Sequence[str] = ()) -> ToolExpect:
         """Ожидание из модели результата: выход шага — блоки ответа для
         человека по таблице 7.3 (ShownBlocks)."""
-        return cls(
-            mark=StepMark.of(result.ok),
-            output=ShownBlocks().markdown(result),
-            dom=dom,
-        )
+        mark = StepStatus.DONE
+        if not result.ok:
+            mark = StepStatus.FAILED
+
+        return cls(mark=mark, output=ShownBlocks().markdown(result), dom=dom)
 
 
 class ShownBlocks:
     """Выход шага по блокам ответа сервера на результат, как его задаёт
     таблица 7.3: текст как есть, text/csv — таблица, прочий текстовый
-    ресурс — блок кода с именем ресурса; ссылки и графики — элементы рядом
-    с шагом, в выход не попадают; блок только для модели не показывается."""
+    ресурс — блок кода с именем ресурса (пустая таблица — подпись ленты на
+    языке стенда); ссылки и графики — элементы рядом с шагом, в выход не
+    попадают; блок только для модели не показывается."""
 
     def __init__(self) -> None:
         self._wire = ResultWire()
         self._outcomes = NodeOutcomes()
+        self._texts = AppLanguage().texts()
 
     def markdown(self, result: ToolResult) -> str:
         call = DagNode(key="call", tool="probe")
@@ -431,8 +428,7 @@ class ShownBlocks:
 
         return "\n\n".join(pieces)
 
-    @staticmethod
-    def _piece(block: mt.ContentBlock) -> str:
+    def _piece(self, block: mt.ContentBlock) -> str:
         annotations = block.annotations
         if annotations is None:
             annotations = mt.Annotations()
@@ -450,12 +446,14 @@ class ShownBlocks:
         if not isinstance(resource, mt.TextResourceContents):
             return ""
 
-        return ShownBlocks._resource(resource)
+        return self._resource(resource)
 
-    @staticmethod
-    def _resource(resource: mt.TextResourceContents) -> str:
+    def _resource(self, resource: mt.TextResourceContents) -> str:
         if resource.mime_type == ContentMime.CSV:
             rows = list(csv.DictReader(io.StringIO(resource.text)))
+            if not rows:
+                return NoteLine.render(self._texts.text(StepText.NO_ROWS.value))
+
             return TableText.render(rows)
 
         if resource.mime_type == ContentMime.PLOTLY:
@@ -495,8 +493,8 @@ class ToolStep:
 class StepCheck:
     """Сверка шага с ожиданием: имя, вход, результат, DOM."""
 
-    ELAPSED: ClassVar[str] = r"(?: · (?:\d+ ms|\d+\.\d s|\d+ m \d+ s))?"
-    """Хвост имени с длительностью вызова: у сорвавшегося шага его нет."""
+    ELAPSED: ClassVar[StepElapsed] = StepElapsed(AppLanguage().texts())
+    """Разбор длительности в названии шага единицами языка стенда."""
 
     def __init__(self, step: ToolStep, call: ToolCall, expect: ToolExpect) -> None:
         self._step = step
@@ -510,15 +508,22 @@ class StepCheck:
         self._check_dom()
         self._check_divider()
 
+    def _title(self) -> str:
+        """Название шага без длительности — тем же правилом, что у ленты."""
+        label = ToolStepLabel.of(self._call.tool, self._call.intent)
+        return self._expect.mark.title(label)
+
     def _check_name(self) -> None:
-        label = f"{self._expect.mark.value} {self._call.tool} · {self._call.intent}"
-        pattern = f"^{re.escape(label)}{self.ELAPSED}$"
-        if re.fullmatch(pattern, self._step.name):
+        """Успешный вызов сервер измеряет: длительность обязательна, но любая
+        величина; у провала её может не быть."""
+        title = self._title()
+        timed = self._expect.mark is StepStatus.DONE
+        if re.fullmatch(self.ELAPSED.titled(title, timed), self._step.name):
             return
 
         self._fail(
-            f"step name {self._step.name!r} is not {label!r}; output:\n"
-            f"{self._step.output}"
+            f"step name {self._step.name!r} is not {title!r} with a duration; "
+            f"output:\n{self._step.output}"
         )
 
     def _check_input(self) -> None:
@@ -547,8 +552,7 @@ class StepCheck:
             self._fail(f"pattern {pattern!r} not in output:\n{self._step.output}")
 
     def _check_dom(self) -> None:
-        title = f"{self._expect.mark.value} {self._call.tool} · {self._call.intent}"
-        fragments = [title, *self._expect.dom]
+        fragments = [self._title(), *self._expect.dom]
         for fragment in fragments:
             if fragment in self._step.dom_text:
                 continue
@@ -1345,7 +1349,7 @@ class TestBash:
             language="bash",
         )
         expect = ToolExpect(
-            mark=StepMark.FAILED,
+            mark=StepStatus.FAILED,
             output=f"```stderr\n{ProbeText.BASH_STDERR.value}\n```\n\n_exit code: 3_",
             dom=[ProbeText.BASH_STDERR.value, "exit code: 3"],
         )
@@ -1630,7 +1634,7 @@ class TestIngestTools:
         url = confluence_site.url_of(str(path))
         failure = f"GET {url}: expected 2xx, got 404"
         expect = ToolExpect(
-            mark=StepMark.FAILED,
+            mark=StepStatus.FAILED,
             patterns=[
                 re.escape(failure),
                 re.escape(f"No space found with key : {ProbeText.NO_SPACE.value}"),
@@ -1711,13 +1715,14 @@ class TestKbTools:
         )
         feed.call(call, expect)
 
-    def test_fts_nothing_found(self, feed: ToolFeed) -> None:
+    def test_fts_nothing_found(self, feed: ToolFeed, app_texts: UiText) -> None:
         call = ToolCall(
             tool="kb_fts_search",
             arguments={"query": ProbeText.NOTHING.value, "top_k": 1},
         )
         result = TableResult(rows=[], note="nothing found")
-        feed.call(call, ToolExpect.of(result, dom=["(no rows)", "nothing found"]))
+        no_rows = app_texts.text(StepText.NO_ROWS.value)
+        feed.call(call, ToolExpect.of(result, dom=[no_rows, "nothing found"]))
 
 
 class TestKbIxTools:
@@ -2254,7 +2259,7 @@ class TestAddressTools:
         """У ClickHouse стенда в профиле нет базы: отказ приходит текстом тела."""
         call = ToolCall(tool="ch_address", arguments={"connection": "main"})
         expect = ToolExpect(
-            mark=StepMark.FAILED,
+            mark=StepStatus.FAILED,
             patterns=[re.escape("no default database in the connection")],
             dom=["AddressError"],
             log_errors=True,
@@ -2430,7 +2435,7 @@ class TestCanvasTools:
         # итог связный: оговорка сохранения не утверждает показ, отказ — следом
         saved = DiagramPrompt.SAVED_NOTE.value
         expect = ToolExpect(
-            mark=StepMark.FAILED,
+            mark=StepStatus.FAILED,
             patterns=[rf"{re.escape(saved)}\s+\S+ {re.escape(refused)}"],
             dom=[saved, refused],
             log_errors=True,

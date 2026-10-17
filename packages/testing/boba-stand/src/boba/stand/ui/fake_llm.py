@@ -13,8 +13,15 @@
 последнем сообщении и отвечает по маркеру `summary:*`; учёт токенов либо
 постоянный, либо считается по размеру запроса и ответа.
 
-Ошибки: ScenarioError — в запросе нет сценария с таким именем или сценарий
-собран неверно.
+Книга ответов (ReplyBook) — ответы, которые тест заранее положил под точным
+текстом вопроса пользователя (`PUT /replies`): вопрос в ленте остаётся
+обычным текстом, а ход книги умеет встать на паузу посреди потока до
+`POST /replies/release`. Вопрос, которого нет в книге, идёт по маркерам; без
+маркера стенд отказывает 400 и называет ближайшие вопросы книги.
+
+Ошибки:
+ScenarioError — в запросе нет сценария с таким именем или сценарий собран неверно.
+ReplyConflictError — один вопрос пришёл в книгу с разными ответами.
 """
 
 from __future__ import annotations
@@ -22,15 +29,21 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
+import time
+import unicodedata
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
-from typing import Any, ClassVar, TypeAlias
+from typing import Any, ClassVar, Literal, TypeAlias
 
+import httpx
 import uvicorn
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, RootModel, ValidationError
 
+from boba.agent.tags import AgentTag
 from boba.toolkit.mcp import McpToolNames
 
 __all__ = [
@@ -39,6 +52,11 @@ __all__ = [
     "FakePage",
     "FakeRoute",
     "Played",
+    "Reply",
+    "ReplyBookClient",
+    "ReplyCall",
+    "ReplyConflictError",
+    "ReplyTurn",
     "Scenario",
     "ScenarioError",
     "ScenarioName",
@@ -53,6 +71,10 @@ class ScenarioError(Exception):
     """Запрошен сценарий, которого нет, либо сценарий собран неверно."""
 
 
+class ReplyConflictError(ScenarioError):
+    """Один и тот же вопрос пришёл в книгу ответов с разными ответами."""
+
+
 class FakeRoute(StrEnum):
     """Маршруты фейкового сервера: провайдеры модели и страницы для web-тулов."""
 
@@ -61,8 +83,9 @@ class FakeRoute(StrEnum):
     LINES = "/lines"
     RESET = "/reset"
     REQUESTS = "/requests"
-    HOLD = "/hold"
-    RELEASE = "/release"
+    REPLIES = "/replies"
+    RELEASE = "/replies/release"
+    HELD = "/replies/held"
     COMPLETIONS = "/v1/chat/completions"
     OLLAMA_CHAT = "/api/chat"
 
@@ -139,9 +162,11 @@ class FailureName(StrEnum):
     """Отказы сервера, которые стенд разыгрывает поверх сценария.
 
     Маркер отказа стоит в том же сообщении пользователя, что и маркер
-    сценария; без сценария отказ накладывается на `scenario:answer`.
+    сценария; без сценария отказ накладывается на `scenario:answer`. NONE —
+    ход без отказа: им отвечает поиск без маркера и его держит ход книги.
     """
 
+    NONE = "failure:none"
     CUT = "failure:cut"
     """Поток обрывается посреди текста: без финального чанка и без [DONE];
     ответ без потока приходит половиной тела."""
@@ -174,15 +199,18 @@ class FailureName(StrEnum):
     """Рассуждения внутри текста тегами <think>, отдельного поля нет."""
 
     @classmethod
-    def find(cls, text: str) -> FailureName | None:
-        """Маркер отказа в сообщении; None — отказа не заказано. Длинный
+    def find(cls, text: str) -> FailureName:
+        """Маркер отказа в сообщении; NONE — отказа не заказано. Длинный
         маркер побеждает: 'failure:length' — префикс 'failure:length-arguments'."""
         ordered = sorted(cls, key=lambda name: len(name.value), reverse=True)
         for name in ordered:
+            if name is cls.NONE:
+                continue
+
             if name.value in text:
                 return name
 
-        return None
+        return cls.NONE
 
     @property
     def answers_with_status(self) -> bool:
@@ -359,7 +387,7 @@ class Played:
 
     script: TurnScript
     finish: FinishReason
-    failure: FailureName | None
+    failure: FailureName
 
     def has(self, failure: FailureName) -> bool:
         return self.failure is failure
@@ -511,32 +539,37 @@ class SummaryBook:
     def played(self, payload: Mapping[str, Any], name: SummaryName) -> Played:
         if name is SummaryName.TOOL_CALL:
             call = ToolCallSpec("call_summary_tool", self.TOOL, "{}")
-            return Played(TurnScript(tool_calls=[call]), FinishReason.TOOL_CALLS, None)
+            return Played(
+                TurnScript(tool_calls=[call]), FinishReason.TOOL_CALLS, FailureName.NONE
+            )
 
         if name is SummaryName.NO_BLOCK:
             script = TurnScript(
                 content="<analysis>only analysis</analysis> and no summary block"
             )
-            return Played(script, FinishReason.STOP, None)
+            return Played(script, FinishReason.STOP, FailureName.NONE)
 
         if name is SummaryName.EMPTY:
-            return Played(TurnScript(), FinishReason.STOP, None)
+            return Played(TurnScript(), FinishReason.STOP, FailureName.NONE)
 
         if name is SummaryName.LONG:
             script = TurnScript(content=f"<summary>{'x' * self.LONG_CHARS}</summary>")
-            return Played(script, FinishReason.STOP, None)
+            return Played(script, FinishReason.STOP, FailureName.NONE)
 
         finish = FinishReason.STOP
         if name is SummaryName.LENGTH:
             finish = FinishReason.LENGTH
 
-        return Played(TurnScript(content=self._ok_text(payload)), finish, None)
+        return Played(
+            TurnScript(content=self._ok_text(payload)), finish, FailureName.NONE
+        )
 
     def _ok_text(self, payload: Mapping[str, Any]) -> str:
         lines: list[str] = []
         for text in self._user_texts(payload):
             for line in text.splitlines():
-                if ScenarioName.find(line) is None and FailureName.find(line) is None:
+                unmarked = FailureName.find(line) is FailureName.NONE
+                if ScenarioName.find(line) is None and unmarked:
                     if SummaryName.find(line) is None:
                         continue
 
@@ -887,9 +920,9 @@ class FailureBook:
         "<think>I reason inside the text</think>the answer after thinking"
     )
 
-    def apply(self, script: TurnScript, failure: FailureName | None) -> Played:
-        if failure is None:
-            return Played(script, FinishReason(script.finish_reason()), None)
+    def apply(self, script: TurnScript, failure: FailureName) -> Played:
+        if failure is FailureName.NONE:
+            return Played(script, FinishReason(script.finish_reason()), failure)
 
         builder = self._content_failures().get(failure)
         if builder is None:
@@ -973,40 +1006,15 @@ class TokenSplit:
         yield from tokens[:keep]
 
 
-class StreamGate:
-    """Удержание потоков ответа провайдера по команде теста.
-
-    Ход, который должен застать что-то идущим (вкладку-наблюдателя второго
-    инстанса), тест держит маршрутом hold и отпускает маршрутом release:
-    удержанный поток отдаёт свой первый кадр и ждёт. Без удержания поток идёт
-    с обычной паузой между кадрами. Один на приложение; его делят оба
-    протокола (OpenAiWire, OllamaWire).
-    """
-
-    def __init__(self) -> None:
-        self._open = asyncio.Event()
-        self._open.set()
-
-    def hold(self) -> None:
-        self._open.clear()
-
-    def release(self) -> None:
-        self._open.set()
-
-    async def passed(self) -> None:
-        await self._open.wait()
-
-
 class OpenAiWire:
     """Ответы протокола /v1/chat/completions: тело целиком и SSE-поток."""
 
     MEDIA_STREAM: ClassVar[str] = "text/event-stream"
     MEDIA_JSON: ClassVar[str] = "application/json"
+    REJECTED_CODE: ClassVar[str] = "no_reply"
 
-    def __init__(self, model: str, token_delay_sec: float, gate: StreamGate) -> None:
+    def __init__(self, model: str) -> None:
         self._model = model
-        self._delay = token_delay_sec
-        self._gate = gate
         self._split = TokenSplit()
 
     def error(self, failure: FailureName) -> Response:
@@ -1020,6 +1028,18 @@ class OpenAiWire:
 
         return JSONResponse(body, status_code=failure.http_status)
 
+    def rejected(self, message: str) -> Response:
+        """Отказ 400: на вопрос у стенда нет ни ответа книги, ни маркера."""
+        body = {
+            "error": {
+                "message": message,
+                "type": "invalid_request_error",
+                "code": self.REJECTED_CODE,
+            }
+        }
+
+        return JSONResponse(body, status_code=httpx.codes.BAD_REQUEST)
+
     def completion(self, played: Played, usage: UsageCounts) -> Response:
         """Ответ без стрима: текст, рассуждения и вызовы приходят разом."""
         body = json.dumps(self._completion(played, usage), ensure_ascii=False).encode()
@@ -1028,9 +1048,9 @@ class OpenAiWire:
 
         return Response(body, media_type=self.MEDIA_JSON)
 
-    def stream(self, played: Played, usage: UsageCounts) -> Response:
+    def stream(self, played: Played, usage: UsageCounts, pace: StreamPace) -> Response:
         return StreamingResponse(
-            self._stream(played, usage), media_type=self.MEDIA_STREAM
+            self._stream(played, usage, pace), media_type=self.MEDIA_STREAM
         )
 
     def _completion(self, played: Played, usage: UsageCounts) -> dict[str, Any]:
@@ -1059,11 +1079,13 @@ class OpenAiWire:
 
         return body
 
-    async def _stream(self, played: Played, usage: UsageCounts) -> AsyncIterator[bytes]:
-        for chunk in self._chunks(played, usage):
+    async def _stream(
+        self, played: Played, usage: UsageCounts, pace: StreamPace
+    ) -> AsyncIterator[bytes]:
+        for index, chunk in enumerate(self._chunks(played, usage)):
+            await pace.before(index)
             yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n".encode()
-            await self._gate.passed()
-            await asyncio.sleep(self._delay)
+            await asyncio.sleep(pace.delay_sec)
 
         if played.has(FailureName.CUT):
             return
@@ -1135,16 +1157,18 @@ class OllamaWire:
     MEDIA_JSON: ClassVar[str] = "application/json"
     CREATED_AT: ClassVar[str] = "2026-01-01T00:00:00Z"
 
-    def __init__(self, model: str, token_delay_sec: float, gate: StreamGate) -> None:
+    def __init__(self, model: str) -> None:
         self._model = model
-        self._delay = token_delay_sec
-        self._gate = gate
         self._split = TokenSplit()
 
     def error(self, failure: FailureName) -> Response:
         return JSONResponse(
             {"error": failure.error_text}, status_code=failure.http_status
         )
+
+    def rejected(self, message: str) -> Response:
+        """Отказ 400: на вопрос у стенда нет ни ответа книги, ни маркера."""
+        return JSONResponse({"error": message}, status_code=httpx.codes.BAD_REQUEST)
 
     def completion(self, played: Played, usage: UsageCounts) -> Response:
         script = played.script
@@ -1160,16 +1184,18 @@ class OllamaWire:
 
         return Response(body, media_type=self.MEDIA_JSON)
 
-    def stream(self, played: Played, usage: UsageCounts) -> Response:
+    def stream(self, played: Played, usage: UsageCounts, pace: StreamPace) -> Response:
         return StreamingResponse(
-            self._stream(played, usage), media_type=self.MEDIA_STREAM
+            self._stream(played, usage, pace), media_type=self.MEDIA_STREAM
         )
 
-    async def _stream(self, played: Played, usage: UsageCounts) -> AsyncIterator[bytes]:
-        for chunk in self._chunks(played, usage):
+    async def _stream(
+        self, played: Played, usage: UsageCounts, pace: StreamPace
+    ) -> AsyncIterator[bytes]:
+        for index, chunk in enumerate(self._chunks(played, usage)):
+            await pace.before(index)
             yield (json.dumps(chunk, ensure_ascii=False) + "\n").encode()
-            await self._gate.passed()
-            await asyncio.sleep(self._delay)
+            await asyncio.sleep(pace.delay_sec)
 
     def _chunks(self, played: Played, usage: UsageCounts) -> Iterator[dict[str, Any]]:
         script = played.script
@@ -1231,10 +1257,367 @@ class OllamaWire:
         return {"prompt_eval_count": usage.prompt, "eval_count": usage.completion}
 
 
+class ReplyCall(BaseModel):
+    """Вызов инструмента в ходе книги ответов: имя, каким его видит модель
+    (`diagram_save` или полное `mcp__standard__blocks`), аргументы и подпись
+    вызова — она обязательна, как у настоящей модели."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    tool: str = Field(min_length=1)
+    arguments: Mapping[str, JsonValue]
+    intent: str = Field(min_length=1)
+
+
+class ReplyTurn(BaseModel):
+    """Один ответ модели в ходе книги: рассуждение, текст, вызовы и отказ.
+
+    hold ставит поток на паузу после hold_after_tokens токенов (сначала
+    рассуждения, затем текст; 0 — ни одного) до `POST /replies/release`:
+    тест снимает кадр «поток идёт» ровно с этим числом токенов.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    reasoning: str = ""
+    content: str = ""
+    calls: Sequence[ReplyCall] = ()
+    failure: FailureName = FailureName.NONE
+    hold: bool = False
+    hold_after_tokens: int = Field(default=0, ge=0)
+
+
+class Reply(BaseModel):
+    """Ответ книги на один вопрос: ходы модели по порядку и темп потока.
+
+    Какой ход отвечать, стенд выводит из самого запроса — по вызовам, уже
+    сыгранным после вопроса, как у сценариев по маркеру.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    question: str = Field(min_length=1)
+    turns: Sequence[ReplyTurn] = Field(min_length=1)
+    token_delay_sec: float = Field(default=0.0, ge=0)
+
+
+class ReplyList(RootModel[Sequence[Reply]]):
+    """Тело `PUT /replies`: книга целиком, заменяет прежнюю."""
+
+
+class ReplyRelease(BaseModel):
+    """Тело `POST /replies/release`: вопрос, чей поток отпустить."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    question: str = Field(min_length=1)
+
+
+class ReplyHeld(BaseModel):
+    """Ответ `GET /replies/held`: вопросы, чьи потоки сейчас стоят на паузе."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    held: Sequence[str]
+
+
+class ReplyQuestions:
+    """Вопрос пользователя в запросе модели — ключ книги ответов.
+
+    Берётся последнее сообщение пользователя с текстом; у сообщения частями —
+    текст частей `text`. Агент дописывает в то же сообщение свои служебные
+    блоки `<system-reminder>`, поэтому ключ — только набранное
+    пользователем: блоки вырезаются, остаток проходит strip и NFC. Тем же
+    правилом приводится вопрос, который кладёт в книгу тест.
+    """
+
+    FORM: ClassVar[Literal["NFC"]] = "NFC"
+    TEXT_PART: ClassVar[str] = "text"
+    PART_JOIN: ClassVar[str] = "\n\n"
+
+    def normal(self, text: str) -> str:
+        return unicodedata.normalize(self.FORM, text.strip())
+
+    def of(self, payload: Mapping[str, Any]) -> str:
+        """Вопрос последнего сообщения пользователя с текстом; пусто — его нет."""
+        messages = payload.get("messages")
+        if not messages:
+            return ""
+
+        for message in reversed(messages):
+            if message.get("role") != "user":
+                continue
+
+            typed = self._typed(self._text(message.get("content")))
+            question = self.normal(typed)
+            if question:
+                return question
+
+        return ""
+
+    def _text(self, content: object) -> str:
+        if isinstance(content, str):
+            return content
+
+        if not isinstance(content, list):
+            return ""
+
+        return self.PART_JOIN.join(self._text_parts(content))
+
+    def _text_parts(self, parts: Sequence[object]) -> Iterator[str]:
+        for part in parts:
+            if not isinstance(part, dict):
+                continue
+
+            if part.get("type") != self.TEXT_PART:
+                continue
+
+            text = part.get(self.TEXT_PART)
+            if isinstance(text, str):
+                yield text
+
+    def _typed(self, text: str) -> str:
+        """Текст без служебных блоков агента; незакрытый блок срезает хвост."""
+        tag = AgentTag.SYSTEM_REMINDER
+        kept: list[str] = []
+        rest = text
+        while (start := rest.find(tag.open)) >= 0:
+            kept.append(rest[:start])
+            end = rest.find(tag.close, start)
+            if end < 0:
+                rest = ""
+                break
+
+            rest = rest[end + len(tag.close) :]
+
+        kept.append(rest)
+        return "".join(kept)
+
+
+class ReplyBook:
+    """Книга ответов стенда: точный текст вопроса → ответ.
+
+    Тест кладёт книгу целиком (`PUT /replies`) и пишет в чат обычный вопрос;
+    FakeLlmApp ищет вопрос запроса здесь точно, без нечёткого совпадения. Ход
+    книги превращается в сценарий тем же путём, что и маркер `scenario:call`:
+    id вызова — хеш вопроса и номер, имя инструмента подставляют
+    предложенные модели (OfferedTools).
+    """
+
+    NEAREST: ClassVar[int] = 3
+    DIGEST_CHARS: ClassVar[int] = 8
+
+    def __init__(self, questions: ReplyQuestions) -> None:
+        self._questions = questions
+        self._replies: dict[str, Reply] = {}
+
+    def replace(self, replies: Sequence[Reply]) -> None:
+        """Ошибки:
+        ReplyConflictError — один вопрос пришёл с разными ответами.
+        """
+        book: dict[str, Reply] = {}
+        for reply in replies:
+            key = self._questions.normal(reply.question)
+            known = book.get(key)
+            if known is not None and self._body(known) != self._body(reply):
+                msg = (
+                    f"fake llm: question {key!r} comes to the book twice with "
+                    f"different replies: {self._body(known)} and {self._body(reply)}"
+                )
+                raise ReplyConflictError(msg)
+
+            book[key] = reply
+
+        self._replies = book
+
+    def has(self, question: str) -> bool:
+        return question in self._replies
+
+    def reply(self, question: str) -> Reply:
+        return self._replies[question]
+
+    def turn(self, question: str, index: int) -> ReplyTurn:
+        """Ход ответа по номеру; после последнего повторяется последний."""
+        turns = self._replies[question].turns
+        last = len(turns) - 1
+        if index > last:
+            return turns[last]
+
+        return turns[index]
+
+    def scenario(self, question: str) -> Scenario:
+        digest = hashlib.sha256(question.encode("utf-8")).hexdigest()
+        stem = f"call_{digest[: self.DIGEST_CHARS]}"
+        turns: list[TurnScript] = []
+        for number, turn in enumerate(self._replies[question].turns):
+            calls: list[ToolCallSpec] = []
+            for index, call in enumerate(turn.calls):
+                arguments = {**call.arguments, ToolCallSpec.INTENT_FIELD: call.intent}
+                calls.append(
+                    ToolCallSpec(
+                        call_id=f"{stem}_{number}_{index}",
+                        name=call.tool,
+                        arguments=json.dumps(arguments, ensure_ascii=False),
+                    )
+                )
+
+            turns.append(
+                TurnScript(
+                    reasoning=turn.reasoning, content=turn.content, tool_calls=calls
+                )
+            )
+
+        return Scenario(turns=turns)
+
+    def missing(self, question: str) -> str:
+        """Текст отказа на вопрос, которого нет в книге и у которого нет маркера."""
+        nearest = self._nearest(question)
+        return (
+            f"fake llm: no reply for question {question!r}; the book has "
+            f"{len(self._replies)} questions, the nearest are {nearest}"
+        )
+
+    def _nearest(self, question: str) -> list[str]:
+        """Ближайшие по общему началу: только для текста отказа."""
+
+        def shared(known: str) -> int:
+            return len(os.path.commonprefix([known, question]))
+
+        ranked = sorted(self._replies, key=shared, reverse=True)
+        return ranked[: self.NEAREST]
+
+    @staticmethod
+    def _body(reply: Reply) -> str:
+        return json.dumps(
+            reply.model_dump(mode="json", exclude={"question"}), ensure_ascii=False
+        )
+
+
+class ReplyHolds:
+    """Паузы потоков книги: какой вопрос держится и его отпускание.
+
+    Отпущенный вопрос дальше не держится: отпускание до паузы снимает её
+    заранее, без гонки с потоком. Новая книга сбрасывает отпускания.
+    """
+
+    def __init__(self) -> None:
+        self._released: dict[str, asyncio.Event] = {}
+        self._held: set[str] = set()
+
+    def reset(self) -> None:
+        for event in self._released.values():
+            event.set()
+
+        self._released = {}
+
+    def release(self, question: str) -> None:
+        self._event(question).set()
+
+    def held(self) -> list[str]:
+        return sorted(self._held)
+
+    async def wait(self, question: str) -> None:
+        event = self._event(question)
+        if event.is_set():
+            return
+
+        self._held.add(question)
+        try:
+            await event.wait()
+        finally:
+            self._held.discard(question)
+
+    def _event(self, question: str) -> asyncio.Event:
+        event = self._released.get(question)
+        if event is None:
+            event = asyncio.Event()
+            self._released[question] = event
+
+        return event
+
+
+@dataclass(frozen=True)
+class StreamPace:
+    """Темп потока ответа: задержка между кадрами и пауза хода книги.
+
+    Пауза встаёт перед кадром номер hold_at: кадры потока начинаются
+    токенами рассуждения и текста, поэтому до паузы уходит ровно hold_at
+    токенов.
+    """
+
+    delay_sec: float
+    hold: bool
+    hold_at: int
+    question: str
+    holds: ReplyHolds
+
+    async def before(self, index: int) -> None:
+        if not self.hold:
+            return
+
+        if index != self.hold_at:
+            return
+
+        await self.holds.wait(self.question)
+
+
+class ReplyBookClient:
+    """Книга ответов со стороны теста: кладёт книгу, ждёт паузы потока
+    вопроса и отпускает её. base_url — адрес запущенного FakeLlmApp."""
+
+    TIMEOUT_SEC: ClassVar[float] = 10.0
+    POLL_SEC: ClassVar[float] = 0.05
+
+    def __init__(self, base_url: str) -> None:
+        self._base_url = base_url
+
+    def register(self, replies: Sequence[Reply]) -> None:
+        url = f"{self._base_url}{FakeRoute.REPLIES.value}"
+        body = ReplyList(replies).model_dump(mode="json")
+        response = httpx.put(url, json=body, timeout=self.TIMEOUT_SEC)
+        self._expect_ok(f"PUT {url}", response)
+
+    def release(self, question: str) -> None:
+        url = f"{self._base_url}{FakeRoute.RELEASE.value}"
+        body = ReplyRelease(question=question).model_dump(mode="json")
+        response = httpx.post(url, json=body, timeout=self.TIMEOUT_SEC)
+        self._expect_ok(f"POST {url}", response)
+
+    def held(self) -> Sequence[str]:
+        url = f"{self._base_url}{FakeRoute.HELD.value}"
+        response = httpx.get(url, timeout=self.TIMEOUT_SEC)
+        self._expect_ok(f"GET {url}", response)
+        return ReplyHeld.model_validate(response.json()).held
+
+    def await_held(self, question: str, timeout_sec: float) -> None:
+        """Ждёт, пока поток вопроса встанет на паузу."""
+        deadline = time.monotonic() + timeout_sec
+        while time.monotonic() < deadline:
+            if question in self.held():
+                return
+
+            time.sleep(self.POLL_SEC)
+
+        msg = (
+            f"fake llm: the stream of question {question!r} is not held within "
+            f"{timeout_sec}s, held are {list(self.held())}"
+        )
+        raise ScenarioError(msg)
+
+    @staticmethod
+    def _expect_ok(action: str, response: httpx.Response) -> None:
+        if response.status_code == httpx.codes.OK:
+            return
+
+        got = f"{response.status_code}: {response.text[:500]}"
+        msg = f"{action}: expected 200, got {got}"
+        raise ScenarioError(msg)
+
+
 @dataclass
 class FakeLlmApp:
-    """ASGI-приложение провайдера: сценарии по маркеру, отказы по маркеру,
-    журнал принятых запросов обоих протоколов."""
+    """ASGI-приложение провайдера: ответы книги по тексту вопроса, сценарии
+    и отказы по маркеру, журнал принятых запросов обоих протоколов."""
 
     token_delay_sec: float = 0.02
     model: str = "fake-model"
@@ -1246,22 +1629,26 @@ class FakeLlmApp:
     """Сценарий для сообщения без маркера; None — такое сообщение отвергается."""
 
     requests: list[dict[str, Any]] = field(default_factory=list)
-    _gate: StreamGate = field(init=False, repr=False)
     _openai: OpenAiWire = field(init=False, repr=False)
     _ollama: OllamaWire = field(init=False, repr=False)
     _failures: FailureBook = field(init=False, repr=False)
     _summaries: SummaryBook = field(init=False, repr=False)
     _usage: UsageBook = field(init=False, repr=False)
     _names: McpToolNames = field(init=False, repr=False)
+    _questions: ReplyQuestions = field(init=False, repr=False)
+    _book: ReplyBook = field(init=False, repr=False)
+    _holds: ReplyHolds = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         self._names = McpToolNames()
-        self._gate = StreamGate()
-        self._openai = OpenAiWire(self.model, self.token_delay_sec, self._gate)
-        self._ollama = OllamaWire(self.model, self.token_delay_sec, self._gate)
+        self._openai = OpenAiWire(self.model)
+        self._ollama = OllamaWire(self.model)
         self._failures = FailureBook()
         self._summaries = SummaryBook()
         self._usage = UsageBook(self.estimate_usage)
+        self._questions = ReplyQuestions()
+        self._book = ReplyBook(self._questions)
+        self._holds = ReplyHolds()
 
     def asgi(self) -> FastAPI:
         app = FastAPI()
@@ -1286,22 +1673,12 @@ class FakeLlmApp:
             self.requests.clear()
             return {"status": "ok"}
 
-        @app.post(FakeRoute.HOLD.value)
-        async def hold() -> dict[str, str]:
-            """Удержание потоков: каждый следующий отдаёт первый кадр и ждёт."""
-            self._gate.hold()
-            return {"status": "ok"}
-
-        @app.post(FakeRoute.RELEASE.value)
-        async def release() -> dict[str, str]:
-            """Удержанные потоки идут дальше."""
-            self._gate.release()
-            return {"status": "ok"}
-
         @app.get(FakeRoute.REQUESTS.value)
         async def recorded() -> JSONResponse:
             """Журнал полных запросов провайдеру: тест сверяет параметры модели."""
             return JSONResponse({"requests": self.requests})
+
+        self._reply_routes(app)
 
         @app.post(FakeRoute.COMPLETIONS.value)
         async def completions(request: Request) -> Response:
@@ -1313,26 +1690,140 @@ class FakeLlmApp:
 
         return app
 
+    def _reply_routes(self, app: FastAPI) -> None:
+        """Маршруты книги ответов: книга целиком, отпускание паузы, паузы."""
+
+        @app.put(FakeRoute.REPLIES.value)
+        async def replies(request: Request) -> Response:
+            """Книга ответов целиком: прежняя книга и её отпускания сбрасываются."""
+            return self._replace_book(await request.json())
+
+        @app.post(FakeRoute.RELEASE.value)
+        async def release(request: Request) -> Response:
+            """Отпускает поток хода книги, стоящий на паузе (hold)."""
+            return self._release(await request.json())
+
+        @app.get(FakeRoute.HELD.value)
+        async def held() -> JSONResponse:
+            """Вопросы, чьи потоки сейчас стоят на паузе."""
+            body = ReplyHeld(held=self._holds.held()).model_dump(mode="json")
+            return JSONResponse(body)
+
+    def _replace_book(self, raw: object) -> Response:
+        try:
+            replies = ReplyList.model_validate(raw).root
+        except ValidationError as exc:
+            route = FakeRoute.REPLIES.value
+            msg = f"fake llm: PUT {route} expects a list of replies: {exc}"
+            return JSONResponse(
+                {"detail": msg}, status_code=httpx.codes.UNPROCESSABLE_ENTITY
+            )
+
+        try:
+            self._book.replace(replies)
+        except ReplyConflictError as exc:
+            return JSONResponse({"detail": str(exc)}, status_code=httpx.codes.CONFLICT)
+
+        self._holds.reset()
+        return JSONResponse({"status": "ok", "questions": len(replies)})
+
+    def _release(self, raw: object) -> Response:
+        try:
+            question = self._questions.normal(ReplyRelease.model_validate(raw).question)
+        except ValidationError as exc:
+            msg = f"fake llm: POST {FakeRoute.RELEASE.value} expects a question: {exc}"
+            return JSONResponse(
+                {"detail": msg}, status_code=httpx.codes.UNPROCESSABLE_ENTITY
+            )
+
+        if not self._book.has(question):
+            msg = f"fake llm: release of question {question!r} that is not in the book"
+            return JSONResponse({"detail": msg}, status_code=httpx.codes.NOT_FOUND)
+
+        self._holds.release(question)
+        return JSONResponse({"status": "ok"})
+
     async def _play(self, request: Request, wire: OpenAiWire | OllamaWire) -> Response:
-        """Общий ход обоих протоколов: сценарий и отказ по последнему
-        сообщению пользователя, ответ — в формате протокола."""
+        """Общий ход обоих протоколов: ответ книги по вопросу, иначе сценарий
+        и отказ по маркеру последнего сообщения пользователя; ответ — в
+        формате протокола."""
         payload = await request.json()
         self.requests.append(payload)
 
         if self._summaries.is_summary_request(payload):
             return await self._play_summary(payload, wire)
 
+        question = self._questions.of(payload)
+        if self._book.has(question):
+            return await self._play_reply(payload, wire, question)
+
         text = self._last_user_text(payload)
         failure = FailureName.find(text)
-        played = self._played(payload, text, failure)
+        if self._unanswered(text, failure):
+            return wire.rejected(self._book.missing(question))
 
-        if failure is not None and failure.answers_with_status:
+        played = self._played(payload, text, failure)
+        if failure.answers_with_status:
             return wire.error(failure)
 
         if failure is FailureName.HANG:
             await asyncio.sleep(self.hang_sec)
 
-        return self._answer(wire, payload, played)
+        pace = StreamPace(
+            delay_sec=self.token_delay_sec,
+            hold=False,
+            hold_at=0,
+            question=question,
+            holds=self._holds,
+        )
+        return self._answer(wire, payload, played, pace)
+
+    async def _play_reply(
+        self, payload: Mapping[str, Any], wire: OpenAiWire | OllamaWire, question: str
+    ) -> Response:
+        """Ход книги: номер хода — по вызовам, сыгранным после вопроса."""
+        offered = OfferedTools(payload, self._names)
+        scenario = offered.scenario(self._book.scenario(question))
+        index = scenario.answered(self._called_names(payload))
+        turn = self._book.turn(question, index)
+        script = scenario.turn(index)
+        played = offered.played(self._failures.apply(script, turn.failure))
+
+        if turn.failure.answers_with_status:
+            return wire.error(turn.failure)
+
+        if turn.failure is FailureName.HANG:
+            await asyncio.sleep(self.hang_sec)
+
+        tokens = self._tokens(played.script)
+        hold_at = min(turn.hold_after_tokens, tokens)
+
+        pace = StreamPace(
+            delay_sec=self._book.reply(question).token_delay_sec,
+            hold=turn.hold,
+            hold_at=hold_at,
+            question=question,
+            holds=self._holds,
+        )
+        return self._answer(wire, payload, played, pace)
+
+    @staticmethod
+    def _tokens(script: TurnScript) -> int:
+        """Сколько кадров-токенов идёт в потоке до вызовов и финального кадра."""
+        split = TokenSplit()
+        reasoning = len(list(split.tokens(script.reasoning)))
+        content = len(list(split.tokens(script.content)))
+        return reasoning + content
+
+    def _unanswered(self, text: str, failure: FailureName) -> bool:
+        """Вопрос без ответа книги, без маркеров и без назначенного сценария."""
+        if self.unmarked is not None:
+            return False
+
+        if failure is not FailureName.NONE:
+            return False
+
+        return ScenarioName.find(text) is None
 
     async def _play_summary(
         self, payload: Mapping[str, Any], wire: OpenAiWire | OllamaWire
@@ -1347,20 +1838,31 @@ class FakeLlmApp:
 
         played = self._summaries.played(payload, name)
         offered = OfferedTools(payload, self._names)
+        pace = StreamPace(
+            delay_sec=self.token_delay_sec,
+            hold=False,
+            hold_at=0,
+            question="",
+            holds=self._holds,
+        )
 
-        return self._answer(wire, payload, offered.played(played))
+        return self._answer(wire, payload, offered.played(played), pace)
 
     def _answer(
-        self, wire: OpenAiWire | OllamaWire, payload: Mapping[str, Any], played: Played
+        self,
+        wire: OpenAiWire | OllamaWire,
+        payload: Mapping[str, Any],
+        played: Played,
+        pace: StreamPace,
     ) -> Response:
         usage = self._usage.of(payload, played.script)
         if not payload.get("stream"):
             return wire.completion(played, usage)
 
-        return wire.stream(played, usage)
+        return wire.stream(played, usage, pace)
 
     def _played(
-        self, payload: Mapping[str, Any], text: str, failure: FailureName | None
+        self, payload: Mapping[str, Any], text: str, failure: FailureName
     ) -> Played:
         name = ScenarioName.find(text)
         if name is None:
@@ -1372,15 +1874,13 @@ class FakeLlmApp:
 
         return offered.played(self._failures.apply(script, failure))
 
-    def _unmarked_scenario(
-        self, text: str, failure: FailureName | None
-    ) -> ScenarioName:
+    def _unmarked_scenario(self, text: str, failure: FailureName) -> ScenarioName:
         """Сценарий сообщения без маркера: назначенный `unmarked`, при одном
         маркере отказа — ответ; без того и другого — ошибка стенда."""
         if self.unmarked is not None:
             return self.unmarked
 
-        if failure is not None:
+        if failure is not FailureName.NONE:
             return ScenarioName.ANSWER
 
         return ScenarioName.of(text)
@@ -1441,7 +1941,7 @@ class FakeLlmApp:
             texts.append(content)
             for line in reversed(content.splitlines()):
                 marked = ScenarioName.find(line) is not None
-                failed = FailureName.find(line) is not None
+                failed = FailureName.find(line) is not FailureName.NONE
                 if marked or failed:
                     return line
 

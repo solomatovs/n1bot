@@ -1,7 +1,7 @@
 // Скрипт страницы chainlit: кнопка SSO (если сервер отдал её адрес), placeholder
 // пароля и молчаливое обновление входа по сигналу сервера; отказ обновления значит,
 // что сессию не продлить, — страница уходит на логин. Адреса и заголовок
-// подставляет сервер в плейсхолдеры.
+// подставляет сервер в плейсхолдеры, подписи берутся из переводов chainlit.
 
 const SSO_URL = "__SSO_URL__";
 const REFRESH_URL = "__REFRESH_URL__";
@@ -20,6 +20,7 @@ const BTN_CLASS = [
 ].join(" ");
 const PASSWORD_ID = "password";
 const PASSWORD_PLACEHOLDER_PATH = ["translation", "auth", "login", "form", "password", "placeholder"];
+const SSO_LABEL_PATH = ["translation", "auth", "login", "form", "actions", "sso"];
 
 type Signal = { type?: unknown };
 
@@ -76,9 +77,11 @@ function pick(value: unknown, path: readonly string[]): string {
   return current;
 }
 
-// фронт chainlit ставит placeholder только полю логина: у пароля берём его из переводов сами
+// фронт chainlit ставит placeholder только полю логина: у пароля берём его из переводов
+// сами, как и подпись кнопки SSO — кнопка встаёт, когда подпись известна
 let passwordPlaceholder = "";
-let placeholderRequested = false;
+let ssoLabel = "";
+let textsRequested = false;
 
 function injectPlaceholder(): void {
   if (passwordPlaceholder === "") return;
@@ -88,9 +91,9 @@ function injectPlaceholder(): void {
   field.placeholder = passwordPlaceholder;
 }
 
-function loadPlaceholder(): void {
-  if (placeholderRequested) return;
-  placeholderRequested = true;
+function loadTexts(): void {
+  if (textsRequested) return;
+  textsRequested = true;
 
   const win = browser.win;
   if (win === null) return;
@@ -104,7 +107,8 @@ function loadPlaceholder(): void {
     .then((body) => {
       if (body === null) return;
       passwordPlaceholder = pick(body, PASSWORD_PLACEHOLDER_PATH);
-      injectPlaceholder();
+      ssoLabel = pick(body, SSO_LABEL_PATH);
+      inject();
     })
     .catch(() => undefined);
 }
@@ -117,7 +121,7 @@ function build(doc: Document): HTMLButtonElement {
   btn.id = BTN_ID;
   btn.type = "button";
   btn.className = BTN_CLASS;
-  btn.textContent = "Войти через SSO";
+  btn.textContent = ssoLabel;
   btn.addEventListener("click", (event) => {
     event.preventDefault();
     // навигация, а не fetch: Negotiate браузер делает при переходе по адресу
@@ -133,10 +137,11 @@ function inject(): void {
     return;
   }
 
-  loadPlaceholder();
+  loadTexts();
   injectPlaceholder();
 
   if (SSO_URL.length === 0) return;
+  if (ssoLabel === "") return;
   if (browser.byId(BTN_ID) !== null) return;
 
   const doc = browser.doc;

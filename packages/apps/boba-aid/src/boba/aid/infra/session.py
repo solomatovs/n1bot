@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 from abc import abstractmethod
 from collections.abc import Awaitable, Mapping, Sequence
+from enum import StrEnum
 from pathlib import Path
 from typing import Any, ClassVar, Protocol, cast
 from uuid import UUID
@@ -26,6 +27,7 @@ from chainlit.config import config as chainlit_config
 from chainlit.context import ChainlitContextException
 from chainlit.session import WebsocketSession, ws_sessions_id
 
+from boba.aid.chat.ui_text import UiText
 from boba.aid.domain.context import ChatCallContext
 from boba.cancellation import RunCancellation
 from boba.identity.context import (
@@ -35,7 +37,11 @@ from boba.identity.context import (
     Scope,
     Subject,
 )
-from boba.identity.errors import AuthenticationError, InternalServiceError
+from boba.identity.errors import (
+    AuthenticationError,
+    InternalServiceError,
+    ViewErrorMessage,
+)
 from boba.identity.session import Login, Session, SessionSource
 from boba.identity.signin import SignInMetadata
 from boba.identity.token import (
@@ -57,6 +63,33 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
+
+
+class SessionSignIn(StrEnum):
+    """Почему вход сессии больше не годен — ключи переводов chainlit."""
+
+    MISSING = "auth.session.errors.missing"
+    EXPIRED = "auth.session.errors.expired"
+    REJECTED = "auth.session.errors.rejected"
+
+
+class SessionSignInError(AuthenticationError):
+    """Вход сессии больше не годен: токена нет, срок истёк или токен отвергнут.
+
+    Причина целиком — в журнал; пользователю в чат — строка переводов по коду
+    на языке сессии из переводов корня приложения chainlit. Строка берётся,
+    только когда отказ показывают: отказ, который ловит вызывающий, переводы
+    не читает. Бросает ChainlitSession.signed_in.
+    """
+
+    def __init__(self, code: SessionSignIn, message: str, language: str) -> None:
+        super().__init__(message)
+        self._code = code
+        self._language = language
+
+    def view_message(self) -> ViewErrorMessage | None:
+        texts = UiText(Path(chainlit_config.root), self._language)
+        return ViewErrorMessage(content=texts.text(self._code.value))
 
 
 class LiveSignIn(Protocol):
@@ -231,20 +264,24 @@ class ChainlitSession(Session, LiveSignIn):
         token = self.token
         if not token:
             msg = "this session carries no sign-in token: reload the page to sign in"
-            raise AuthenticationError(msg)
+            raise SessionSignInError(SessionSignIn.MISSING, msg, self.language)
 
         try:
             return self._tokens.read(token)
         except TokenRejectedError as exc:
             if exc.reason is TokenRejection.EXPIRED:
                 msg = "your sign-in has expired: reload the page to sign in again"
-                raise AuthenticationError(msg) from exc
+                raise SessionSignInError(
+                    SessionSignIn.EXPIRED, msg, self.language
+                ) from exc
 
             msg = (
                 f"sign-in token rejected ({exc.reason}): "
                 "reload the page to sign in again"
             )
-            raise AuthenticationError(msg) from exc
+            raise SessionSignInError(
+                SessionSignIn.REJECTED, msg, self.language
+            ) from exc
 
     async def emit(self, event: str, payload: Mapping[str, Any]) -> bool:
         """Шлёт событие в сокет сессии; False — слушать некому."""

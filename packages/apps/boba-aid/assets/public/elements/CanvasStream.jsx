@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { useTranslation } from "@/components/i18n";
 
 // Иконка scroll-text из lucide: раннер кастом-элементов не отдаёт react-dom,
 // портала нет — кнопка вставляется в заголовок шага готовым DOM-узлом.
@@ -78,6 +79,7 @@ const browser = {
 // сворачивании размонтируется — кнопка живёт, пока шаг раскрыт.
 export default function CanvasStream() {
   const hostRef = useRef(null);
+  const { t } = useTranslation();
 
   useEffect(() => {
     const host = hostRef.current;
@@ -93,9 +95,14 @@ export default function CanvasStream() {
     button.className =
       "inline-flex items-center justify-center h-6 w-6 rounded-md " +
       "opacity-50 hover:opacity-100 hover:bg-accent cursor-pointer";
-    button.title = `Live output: ${props.label || props.call_id}`;
+    // текст подставляется в DOM как текст: экранировать его нечего
+    button.title = t("aid.stream.liveOutput", {
+      label: props.label || props.call_id,
+      interpolation: { escapeValue: false },
+    });
     button.setAttribute("role", "button");
-    button.setAttribute("aria-label", "Show tool output");
+    button.setAttribute("aria-label", t("aid.stream.showOutput"));
+    button.setAttribute("data-canvas-stream", props.call_id);
     button.innerHTML = ICON;
 
     const open = (event) => {

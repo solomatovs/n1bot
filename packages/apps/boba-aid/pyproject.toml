@@ -62,6 +62,7 @@ dev = [
     "boba-confluence[html]==0.0.26.dev4",
     "gssapi>=1.9,<2",
     "krb5>=0.7,<1",
+    "pillow>=10",
     "playwright>=1.47,<2",
     "pytest>=9.1,<10",
     "pyjwt>=2.8,<3",
@@ -78,7 +79,6 @@ boba-db-oracle = "entry points boba.connections и boba.addresses: тип сое
 
 [tool.setuptools.package-data]
 "boba.aid.agent" = ["schema/*.sql"]
-"boba.aid.chat" = ["translations/*.json"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -37,7 +37,9 @@ from acp_stand import ProcFiles
 from psycopg import sql
 
 from boba.aid.agent.settings import WorkdirFile
+from boba.aid.chat.ui_text import UiText
 from boba.aid.domain.fields import ThreadMetaField
+from boba.aid.rendering.chat_view import StepText
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
 from boba.runtime.config import RuntimeConfig
@@ -45,7 +47,13 @@ from boba.stand.database import TestDatabase
 from boba.stand.names import StandNames
 from boba.stand.site import Stand
 from boba.stand.ui.database import StandDatabase
-from boba.stand.ui.fake_llm import FakeRoute, ScenarioName, serve
+from boba.stand.ui.fake_llm import (
+    Reply,
+    ReplyBookClient,
+    ReplyTurn,
+    ScenarioName,
+    serve,
+)
 from boba.stand.ui.stand import (
     StandApp,
     StandConfig,
@@ -772,7 +780,7 @@ class TestConversation:
         assert not complaints, complaints
 
     async def test_stop_cancels_the_turn(
-        self, app: StandProcess, tab: ChatSocket
+        self, app: StandProcess, tab: ChatSocket, app_texts: UiText
     ) -> None:
         await tab.send(f"go {ScenarioName.LONG.value}")
         await tab.wait_event("stream_token")
@@ -780,9 +788,8 @@ class TestConversation:
         await tab.wait_task_end()
 
         assert not tab.errors(), (tab.errors(), app.tail(80))
-        notes = [
-            m for m in tab.messages() if "stopped by the user" in str(m.get("output"))
-        ]
+        stopped = app_texts.text(StepText.STOPPED.value)
+        notes = [m for m in tab.messages() if stopped in str(m.get("output"))]
         assert notes, tab.names()
 
     async def test_exited_agent_is_replaced_for_the_next_question(
@@ -1597,22 +1604,42 @@ class TestFeed:
         finally:
             await again.end_session()
 
+    FOLLOWED: ClassVar[str] = "Follow this turn from the second instance"
+    FOLLOWED_REASONING: ClassVar[str] = (
+        "the holder streams a few words while the observer joins the thread"
+    )
+    FOLLOWED_ANSWER: ClassVar[str] = (
+        "Result. The observer joined a live turn and saw its tokens and its end."
+    )
+
     async def test_second_instance_follows_a_live_turn(
         self, app: StandProcess, second: StandProcess, cookie: str, llm_port: int
     ) -> None:
-        holder = ChatSocket(app, cookie, str(uuid4()))
-        await holder.open()
         # ход держится живым, пока наблюдатель не подключится: иначе под
         # нагрузкой он кончается раньше, чем второй инстанс подхватит тред
-        httpx.post(StandUrl.of(llm_port, FakeRoute.HOLD.value), timeout=5.0)
+        book = ReplyBookClient(StandUrl.of(llm_port))
+        turn = ReplyTurn(
+            reasoning=self.FOLLOWED_REASONING,
+            content=self.FOLLOWED_ANSWER,
+            hold=True,
+            hold_after_tokens=1,
+        )
+        followed = Reply(
+            question=self.FOLLOWED, turns=[turn], token_delay_sec=TOKEN_DELAY_SEC
+        )
+        book.register([followed])
+
+        holder = ChatSocket(app, cookie, str(uuid4()))
+        await holder.open()
         observer = ChatSocket(second, cookie, holder.thread_id)
         try:
-            await holder.send(f"follow {ScenarioName.LONG.value}")
-            # удержанный поток отдал первый кадр: шаг открыт с ним, токенов нет
+            await holder.send(self.FOLLOWED)
+            await asyncio.to_thread(book.await_held, self.FOLLOWED, TURN_TIMEOUT_SEC)
+            # удержанный поток отдал первый токен: шаг открыт им, токенов нет
             await holder.wait_event("stream_start")
 
             await observer.open(resumed=True)
-            httpx.post(StandUrl.of(llm_port, FakeRoute.RELEASE.value), timeout=5.0)
+            book.release(self.FOLLOWED)
             await observer.wait_event("stream_token", timeout_sec=60.0)
             await observer.wait_task_end()
             await holder.wait_task_end()
@@ -1626,7 +1653,7 @@ class TestFeed:
                 <= (observer.step_ids()["assistant_message"])
             ), (holder.step_ids(), observer.step_ids())
         finally:
-            httpx.post(StandUrl.of(llm_port, FakeRoute.RELEASE.value), timeout=5.0)
+            book.release(self.FOLLOWED)
             await observer.end_session()
             await holder.end_session()
 
@@ -1716,7 +1743,7 @@ class TestSettingsRestart:
         "stream_start",
         "stream_token",
     )
-    DEFERRED_TEXT: ClassVar[str] = "will apply after the current answer"
+    DEFERRED: ClassVar[str] = "aid.notice.settingsDeferred"
 
     @pytest.fixture(autouse=True)
     async def _own_user_layer(self, rows: ChatRows) -> AsyncIterator[None]:
@@ -1832,8 +1859,14 @@ class TestSettingsRestart:
             await tab.end_session()
 
     async def test_settings_changed_during_a_turn_apply_after_it(
-        self, app: StandProcess, cookie: str, rows: ChatRows, llm_port: int
+        self,
+        app: StandProcess,
+        cookie: str,
+        rows: ChatRows,
+        llm_port: int,
+        app_texts: UiText,
     ) -> None:
+        deferred = app_texts.text(self.DEFERRED)
         agents = AgentProcesses(app)
         tab = ChatSocket(app, cookie, str(uuid4()))
         await tab.open()
@@ -1845,16 +1878,12 @@ class TestSettingsRestart:
             await tab.settings(self._form("fake-model-deferred"))
             deadline = time.monotonic() + 30
             while time.monotonic() < deadline:
-                if any(
-                    self.DEFERRED_TEXT in str(m.get("output")) for m in tab.messages()
-                ):
+                if any(deferred in str(m.get("output")) for m in tab.messages()):
                     break
 
                 await asyncio.sleep(0.2)
 
-            notes = [
-                m for m in tab.messages() if self.DEFERRED_TEXT in str(m.get("output"))
-            ]
+            notes = [m for m in tab.messages() if deferred in str(m.get("output"))]
             assert notes, tab.trace()
             assert set(agents.of_thread(tab.thread_id)) == {old_pid}
 

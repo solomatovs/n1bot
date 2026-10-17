@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Markdown } from "@/components/markdown";
 import { Button } from "@/components/ui/button";
 import { PDFViewer } from "@/components/elements/pdf";
+import { useTranslation } from "@/components/i18n";
 import {
   ArrowDownToLine,
   ArrowUpToLine,
@@ -282,7 +283,9 @@ function carryScroll(node, move) {
 // показ — один и тот же DOM-узел, поэтому приход данных и смена содержимого
 // не сворачивают полный экран и не сбрасывают состояние вьювера.
 
-function ToolButton({ onClick, title, children }) {
+// action — имя кнопки, не зависящее от языка интерфейса: по нему кнопку
+// находят тесты, подпись title переводится
+function ToolButton({ action, onClick, title, children }) {
   return (
     <Button
       variant="ghost"
@@ -290,6 +293,7 @@ function ToolButton({ onClick, title, children }) {
       onClick={onClick}
       title={title}
       aria-label={title}
+      data-canvas-action={action}
     >
       {children}
     </Button>
@@ -300,6 +304,7 @@ function ToolButton({ onClick, title, children }) {
 // «на весь экран» и закрытие панели; на весь экран закрытие сворачивает
 // панель обратно. Клики по шапке не всплывают в карточку.
 function StageBar({ preview, status, children }) {
+  const { t } = useTranslation();
   const [full, setFull] = usePanelMode();
   const file = usePanelFile();
   const stop = (event) => event.stopPropagation();
@@ -325,7 +330,11 @@ function StageBar({ preview, status, children }) {
   let save = null;
   if (!preview && file) {
     save = (
-      <ToolButton onClick={download} title="Download file">
+      <ToolButton
+        action="download"
+        onClick={download}
+        title={t("aid.canvas.download")}
+      >
         <Download />
       </ToolButton>
     );
@@ -334,7 +343,11 @@ function StageBar({ preview, status, children }) {
   let trail = null;
   if (!preview && full) {
     trail = (
-      <ToolButton onClick={() => setFull(false)} title="Close">
+      <ToolButton
+        action="close"
+        onClick={() => setFull(false)}
+        title={t("aid.canvas.close")}
+      >
         <X />
       </ToolButton>
     );
@@ -342,10 +355,18 @@ function StageBar({ preview, status, children }) {
   if (!preview && !full) {
     trail = (
       <>
-        <ToolButton onClick={() => setFull(true)} title="Fullscreen">
+        <ToolButton
+          action="fullscreen"
+          onClick={() => setFull(true)}
+          title={t("aid.canvas.fullscreen")}
+        >
           <Maximize2 />
         </ToolButton>
-        <ToolButton onClick={closePanel} title="Close">
+        <ToolButton
+          action="close"
+          onClick={closePanel}
+          title={t("aid.canvas.close")}
+        >
           <X />
         </ToolButton>
       </>
@@ -396,6 +417,7 @@ function Stage({ status, bar, preview, children }) {
 // Пан/зум-сцена для визуального содержимого (svg диаграммы, картинка).
 // В панели колесо листает страницу, на весь экран — зумит.
 function ZoomStage({ controls, status, preview, children }) {
+  const { t } = useTranslation();
   const [view, setView] = useState({ k: 1, x: 0, y: 0 });
   const [dragging, setDragging] = useState(false);
   const fullRef = useRef(false);
@@ -445,13 +467,25 @@ function ZoomStage({ controls, status, preview, children }) {
 
   const bar = (
     <>
-      <ToolButton onClick={zoomIn} title="Zoom in">
+      <ToolButton
+        action="zoom-in"
+        onClick={zoomIn}
+        title={t("aid.canvas.zoomIn")}
+      >
         <Plus />
       </ToolButton>
-      <ToolButton onClick={zoomOut} title="Zoom out">
+      <ToolButton
+        action="zoom-out"
+        onClick={zoomOut}
+        title={t("aid.canvas.zoomOut")}
+      >
         <Minus />
       </ToolButton>
-      <ToolButton onClick={reset} title="Reset view">
+      <ToolButton
+        action="reset-view"
+        onClick={reset}
+        title={t("aid.canvas.resetView")}
+      >
         <RotateCcw />
       </ToolButton>
       {controls}
@@ -502,6 +536,7 @@ function ScrollStage({
   boxRef: outerBoxRef,
   onEdge,
 }) {
+  const { t } = useTranslation();
   const localBoxRef = useRef(null);
   const boxRef = outerBoxRef || localBoxRef;
   const stickRef = useRef(true);
@@ -537,13 +572,25 @@ function ScrollStage({
 
   const bar = (
     <>
-      <ToolButton onClick={bigger} title="Larger">
+      <ToolButton
+        action="larger"
+        onClick={bigger}
+        title={t("aid.canvas.larger")}
+      >
         <Plus />
       </ToolButton>
-      <ToolButton onClick={smaller} title="Smaller">
+      <ToolButton
+        action="smaller"
+        onClick={smaller}
+        title={t("aid.canvas.smaller")}
+      >
         <Minus />
       </ToolButton>
-      <ToolButton onClick={reset} title="Reset size">
+      <ToolButton
+        action="reset-size"
+        onClick={reset}
+        title={t("aid.canvas.resetSize")}
+      >
         <RotateCcw />
       </ToolButton>
       {controls}
@@ -577,6 +624,7 @@ function NativeStage({ preview, children }) {
 }
 
 function Diagram({ content, signal, preview }) {
+  const { t } = useTranslation();
   const [spec, setSpec] = useState(content.text || "");
   const [svg, setSvg] = useState("");
   const [error, setError] = useState(null);
@@ -687,7 +735,10 @@ function Diagram({ content, signal, preview }) {
     body = (
       <div className="px-2 py-1 flex flex-col gap-2 overflow-auto h-full">
         <div className="text-xs text-muted-foreground">
-          diagram not rendered: {error}
+          {t("aid.canvas.diagramFailed", {
+            error,
+            interpolation: { escapeValue: false },
+          })}
         </div>
         <pre className="overflow-auto text-xs font-mono">{spec}</pre>
       </div>
@@ -695,7 +746,7 @@ function Diagram({ content, signal, preview }) {
   } else if (!svg) {
     body = (
       <div className="px-2 py-1 text-xs text-muted-foreground">
-        rendering the diagram…
+        {t("aid.canvas.diagramRendering")}
       </div>
     );
   }
@@ -774,6 +825,7 @@ const CHANNEL_LABEL = {
 // сервера перемонтировал бы боковую панель целиком — с анимацией открытия и
 // потерей состояния вьювера.
 function ChannelTabs({ content, onContent }) {
+  const { t } = useTranslation();
   const channels = content.channels || [];
   if (channels.length < 2) return null;
 
@@ -806,7 +858,10 @@ function ChannelTabs({ content, onContent }) {
         className="h-6 px-2 text-[11px]"
         onClick={() => show(channel)}
         title={channel}
-        aria-label={`Channel ${label}`}
+        aria-label={t("aid.canvas.channel", {
+          label,
+          interpolation: { escapeValue: false },
+        })}
         aria-pressed={active}
         data-canvas-channel={channel}
         data-active={active ? "true" : "false"}
@@ -825,6 +880,7 @@ function ChannelTabs({ content, onContent }) {
 // стоит на конце файла (follow): сигнал слежения тогда доливает хвост; при
 // прокрутке вверх сигналы обновляют лишь строку статуса, не трогая DOM окна.
 function WindowedText({ content, signal, preview, onContent }) {
+  const { t } = useTranslation();
   const pos0 = content.stream || {
     offset: 0, end: 0, size: 0, window: 65536, closed: true,
   };
@@ -1058,10 +1114,18 @@ function WindowedText({ content, signal, preview, onContent }) {
   const controls = (
     <>
       <ChannelTabs content={content} onContent={onContent} />
-      <ToolButton onClick={toStart} title="Go to the file start">
+      <ToolButton
+        action="to-start"
+        onClick={toStart}
+        title={t("aid.canvas.toStart")}
+      >
         <ArrowUpToLine />
       </ToolButton>
-      <ToolButton onClick={toEnd} title="Go to the file end and follow output">
+      <ToolButton
+        action="to-end"
+        onClick={toEnd}
+        title={t("aid.canvas.toEnd")}
+      >
         <ArrowDownToLine />
       </ToolButton>
     </>
@@ -1070,7 +1134,7 @@ function WindowedText({ content, signal, preview, onContent }) {
   const text = doc.segments.map((segment) => segment.text).join("");
 
   let state = doc.note;
-  if (!doc.closed && !state) state = "running…";
+  if (!doc.closed && !state) state = t("aid.canvas.running");
   const status = `${first.offset}–${last.end} / ${doc.size} ${state}`.trim();
 
   // прилипание к низу: окно у конца файла и пользователь его не покидал
@@ -1100,6 +1164,7 @@ function WindowedText({ content, signal, preview, onContent }) {
 // Markdown: формат требует документ целиком — файл читается по ссылке заново
 // при каждом сигнале слежения, но сама панель не пересоздаётся.
 function MarkdownFile({ content, signal, preview }) {
+  const { t } = useTranslation();
   const [text, setText] = useState("");
   const [failed, setFailed] = useState(false);
   const url = revisedUrl(content.url, signal);
@@ -1126,7 +1191,10 @@ function MarkdownFile({ content, signal, preview }) {
   if (failed) {
     return (
       <div className="p-3 text-xs text-muted-foreground">
-        file is not readable: {content.label}
+        {t("aid.canvas.notReadable", {
+          name: content.label,
+          interpolation: { escapeValue: false },
+        })}
       </div>
     );
   }
@@ -1149,6 +1217,7 @@ function MarkdownFile({ content, signal, preview }) {
 // Имя файла ссылкой: у диаграммы исходник лежит в самой карточке, у прочих
 // файлов — по ссылке на storage.
 function SourceLink({ content }) {
+  const { t } = useTranslation();
   const name = content.path.split("/").pop() || content.label;
   const [href, setHref] = useState(content.url || "");
 
@@ -1170,7 +1239,10 @@ function SourceLink({ content }) {
       download={name}
       onClick={(event) => event.stopPropagation()}
       className="text-xs text-muted-foreground hover:text-foreground underline underline-offset-2 truncate w-fit max-w-full"
-      title={`Download ${name}`}
+      title={t("aid.canvas.downloadNamed", {
+        name,
+        interpolation: { escapeValue: false },
+      })}
     >
       {name}
     </a>
@@ -1178,14 +1250,21 @@ function SourceLink({ content }) {
 }
 
 // Объяснение вместо содержимого — в той же сцене: ряд кнопок панели
-// (полный экран, закрытие) не пропадает и здесь.
+// (полный экран, закрытие) не пропадает и здесь. Текст объяснения — ключ
+// переводов, который прислал сервер (CanvasNote).
 function Notice({ content, preview }) {
+  const { t } = useTranslation();
+  const note = t(content.note, {
+    mime: content.mime,
+    interpolation: { escapeValue: false },
+  });
+
   return (
     <Stage preview={preview} bar={null}>
       {() => (
         <div className="flex-1 min-h-0 flex items-center justify-center p-6">
           <div className="max-w-md text-center text-sm text-muted-foreground">
-            {content.note}
+            {note}
           </div>
         </div>
       )}
@@ -1257,6 +1336,7 @@ function Body({ content, signal, preview, onContent }) {
 // сигналами слежения (window_message), и компонент сам тянет нужное окно
 // или файл, поэтому панель не переоткрывается и DOM не пересоздаётся.
 export default function CanvasView() {
+  const { t } = useTranslation();
   const [content, setContent] = useState(props);
   const [signal, setSignal] = useState(null);
   const [full, setFull] = usePanelMode();
@@ -1369,7 +1449,7 @@ export default function CanvasView() {
           className="border border-border rounded-lg bg-card overflow-hidden w-full cursor-pointer flex flex-col"
           role="button"
           tabIndex={0}
-          aria-label="Show in the canvas"
+          aria-label={t("aid.canvas.showInCanvas")}
           title={content.path}
           onClick={openInCanvas}
           onKeyDown={(event) => {
