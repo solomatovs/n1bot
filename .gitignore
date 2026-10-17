@@ -9,6 +9,7 @@ __pycache__
 /docs/*
 !/docs/adding-connections-and-tools.md
 !/docs/admin-guide.md
+!/docs/developer-guide.md
 !/docs/knowledge-graph-plan.md
 !/docs/knowledge-schema.sql
 !/docs/psql-queries/
