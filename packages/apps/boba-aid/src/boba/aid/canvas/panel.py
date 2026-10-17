@@ -255,8 +255,9 @@ class FileViewer(CanvasViewer):
 
         return mime.lower().startswith(known)
 
-    def describe(self, key: ObjectKey, **extra: Any) -> CanvasContent:
-        """Описание файла: путь, подпись, ссылка на файл и метка показа.
+    def describe(self, key: ObjectKey, mime: str, **extra: Any) -> CanvasContent:
+        """Описание файла key вида mime: путь, подпись, ссылка на файл и
+        метка показа.
 
         Единственное место, где содержимое панели получает ссылку, — поэтому
         файл, показанный любым наследником, всегда можно скачать. Наследник
@@ -266,24 +267,24 @@ class FileViewer(CanvasViewer):
             kind=self.kind,
             path=key.in_workspace(),
             label=key.name,
-            url=self._serve(key),
-            mime=ContentMime.of_name(key.name),
+            url=self._serve(key, mime),
+            mime=mime,
             nonce=str(uuid.uuid4()),
             **extra,
         )
 
-    async def content(self, key: ObjectKey) -> CanvasContent:
-        return self.describe(key)
+    async def content(self, key: ObjectKey, mime: str) -> CanvasContent:
+        return self.describe(key, mime)
 
-    async def link(self, key: ObjectKey) -> VisualResult:
+    async def link(self, key: ObjectKey, mime: str) -> VisualResult:
         return VisualResult(
             element=CanvasElement.LINK,
-            props={"path": key.in_workspace(), "label": key.name},
+            props={"path": key.in_workspace(), "label": key.name, "mime": mime},
             title=key.name,
         )
 
-    async def open(self, key: ObjectKey, push: CanvasPush) -> OpenedCanvas:
-        described = await self.content(key)
+    async def open(self, key: ObjectKey, mime: str, push: CanvasPush) -> OpenedCanvas:
+        described = await self.content(key, mime)
         await push(described)
 
         return OpenedCanvas(
@@ -294,14 +295,14 @@ class FileViewer(CanvasViewer):
         return StorageStatSource(PanelStorage.client(), key.render())
 
     @staticmethod
-    def _serve(key: ObjectKey) -> str:
+    def _serve(key: ObjectKey, mime: str) -> str:
         """Ссылка на файл панели: тред, каталог и имя; пользователь — из токена.
 
         Сессионная ссылка тут не годится: панель рассылается во все вкладки
         треда и переживает переподключение, а запись файла в памяти сессии —
         нет, и картинка ломалась бы молча.
         """
-        return CanvasFileUrl.path(key)
+        return CanvasFileUrl.path(key, mime)
 
 
 class ImageViewer(FileViewer):
@@ -345,7 +346,7 @@ class LogViewer(FileViewer):
     kind: ClassVar[CanvasKind] = CanvasKind.STREAM
     mimes: ClassVar[frozenset[str]] = frozenset({ContentMime.PLAIN})
 
-    async def content(self, key: ObjectKey) -> CanvasContent:
+    async def content(self, key: ObjectKey, mime: str) -> CanvasContent:
         windows = StorageWindows(PanelStorage.client(), key.render())
 
         try:
@@ -363,6 +364,7 @@ class LogViewer(FileViewer):
 
         return self.describe(
             key,
+            mime,
             text=piece.text,
             note=StreamNote.status_of(piece),
             stream=StreamPos(
@@ -395,7 +397,7 @@ class CanvasPanel:
         и объяснение в панели."""
         viewer = CanvasRegistry.viewer_for(mime)
         if viewer is None:
-            await cls._explain(key)
+            await cls._explain(key, mime)
             hint = CanvasRegistry.mimes_hint()
             msg = (
                 f"no canvas viewer for {key.in_workspace()} of type {mime}; "
@@ -403,7 +405,7 @@ class CanvasPanel:
             )
             raise CanvasError(CanvasErrorKind.NO_VIEWER, msg)
 
-        opened = await viewer.open(key, cls._push)
+        opened = await viewer.open(key, mime, cls._push)
         cls.watch_file(key, viewer, opened.nonce)
 
         return opened
@@ -426,8 +428,8 @@ class CanvasPanel:
         await cls._push(content)
 
     @classmethod
-    def notice(cls, key: ObjectKey) -> CanvasContent:
-        """Объяснение вместо содержимого: файл показать некому.
+    def notice(cls, key: ObjectKey, mime: str) -> CanvasContent:
+        """Объяснение вместо содержимого: файл вида mime показать некому.
 
         Ссылка на файл остаётся: показать формат панель не умеет, а отдать
         его пользователю на скачивание — вполне.
@@ -436,7 +438,8 @@ class CanvasPanel:
             kind=CanvasKind.NOTICE,
             path=key.in_workspace(),
             label=key.name,
-            url=CanvasFileUrl.path(key),
+            url=CanvasFileUrl.path(key, mime),
+            mime=mime,
             note=(
                 "The panel cannot display this file format. Supported: "
                 f"{CanvasRegistry.mimes_hint()}"
@@ -444,9 +447,9 @@ class CanvasPanel:
         )
 
     @classmethod
-    async def _explain(cls, key: ObjectKey) -> None:
+    async def _explain(cls, key: ObjectKey, mime: str) -> None:
         """Файл некому показать: в панели остаётся объяснение, а не прошлый файл."""
-        await cls._push(cls.notice(key))
+        await cls._push(cls.notice(key, mime))
 
     @classmethod
     async def _push(cls, content: CanvasContent) -> None:
@@ -621,7 +624,7 @@ class StreamActions:
             kind=CanvasKind.STREAM,
             path=key.in_workspace(),
             label=key.name,
-            url=CanvasFileUrl.path(key),
+            url=CanvasFileUrl.path(key, ContentMime.of_name(key.name)),
             text=piece.text,
             note=StreamNote.status_of(piece),
             stream=StreamActions._pos(piece),

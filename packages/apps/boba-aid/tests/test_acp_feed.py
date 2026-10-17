@@ -1656,7 +1656,7 @@ class TestBlockDrawings:
         audio = ObjectKey(user_id="u-1", thread_id=THREAD, name=name)
         assert attached == (
             name,
-            CanvasFileUrl.path(audio),
+            CanvasFileUrl.path(audio, "audio/mpeg"),
             _id(f"{CALL}/1", StepRole.ELEMENT),
             answer,
         ), attached

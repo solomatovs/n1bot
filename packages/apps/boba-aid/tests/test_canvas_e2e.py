@@ -156,6 +156,7 @@ FILES: dict[str, bytes] = {
     "hostile.svg": HOSTILE_SVG,
     "page.html": HOSTILE_HTML,
     "report.pdf": PDF,
+    "report": PDF,
     "chart.svg": SVG,
     "flow.mmd": "flowchart LR\n    A[Доход] --> B[Налог]\n".encode(),
     "report.md": "# Отчёт\n\n- доход: 4 786 066\n".encode(),
@@ -1739,6 +1740,10 @@ async def test_hostile_diagram_runs_no_script(panel: Any) -> None:
     if await svg.count() <= 0:
         raise AssertionError("the hostile diagram is not drawn")
 
+    # ловушка для click A call: strict обязан не привязать вызов к узлу
+    await page.evaluate(
+        "() => { window.__boba_click = () => { window.__boba_pwned = 'click'; }; }"
+    )
     for node in await svg.first.locator("g.node").all():
         await node.click(force=True)
     await page.wait_for_timeout(500)
@@ -1851,3 +1856,33 @@ async def test_uploaded_html_is_downloaded(panel: Any) -> None:
         disposition = response.headers.get("content-disposition", "")
         if not disposition.startswith(f"{kind};"):
             raise AssertionError(f"{name}: expected {kind}, got {disposition!r}")
+
+
+async def test_link_mime_wins_over_the_file_name(panel: Any) -> None:
+    """Ссылка называет вид файла сама: pdf без суффикса показывается вьювером
+    pdf, а маршрут отдаёт его как pdf для показа, а не на скачивание."""
+    _show, _, thread, act = panel
+    path = _tool_view(thread, "report")
+    side = await act("canvas_open", {"path": path, "mime": "application/pdf"})
+    page = side.page
+
+    frame = side.locator("iframe")
+    if not await frame.count():
+        raise AssertionError(
+            f"the pdf viewer shows the file: {await side.inner_html()}"
+        )
+
+    url = str(await frame.first.evaluate("el => el.src"))
+    if "mime=application%2Fpdf" not in url:
+        raise AssertionError(f"the link names the type of the file: {url}")
+
+    cookie = await _cookie_header(page.context)
+    response = await page.request.get(url, headers={"cookie": cookie})
+    if response.status != 200:
+        raise AssertionError(f"GET {url}: expected 200, got {response.status}")
+
+    disposition = response.headers.get("content-disposition", "")
+    if response.headers.get("content-type") != "application/pdf":
+        raise AssertionError(f"the route serves a pdf: {response.headers}")
+    if not disposition.startswith("inline;"):
+        raise AssertionError(f"the pdf is shown, not downloaded: {disposition!r}")

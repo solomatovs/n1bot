@@ -21,6 +21,7 @@ from boba.canvas.canvas import (
 from boba.canvas.diagram import DiagramEntry, DiagramSpecError, MermaidSpec
 from boba.canvas.keys import ObjectKey, ThreadDir
 from boba.runtime.storage import LocalStorageClient, LocalStorageConfig
+from boba.toolkit.result import ContentMime
 from boba.workspace.binaries import TrustedBinaries
 from boba.workspace.launcher import MountingConfig
 
@@ -170,7 +171,7 @@ class TestSaveAndView:
         key = ObjectKey.build(
             str(UUID(int=7)), THREAD, "orders.mmd", "el-1", dir_thread=ThreadDir.MERMAID
         )
-        opened = await MermaidViewer(files).open(key, push)
+        opened = await MermaidViewer(files).open(key, ContentMime.MERMAID, push)
 
         if opened.label != "orders.mmd":
             raise AssertionError('opened.label == "orders.mmd"')
@@ -199,7 +200,7 @@ class TestSaveAndView:
         key = ObjectKey.build(
             str(UUID(int=7)), THREAD, "mine.mmd", "el-1", dir_thread=ThreadDir.UPLOAD
         )
-        await MermaidViewer(files).open(key, push)
+        await MermaidViewer(files).open(key, ContentMime.MERMAID, push)
 
         if shown[0].text != ER_SPEC:
             raise AssertionError("shown[0].text == ER_SPEC")
@@ -412,7 +413,9 @@ class TestViewerVerdict:
         async def push(content: Any) -> None:
             shown.append(content)
 
-        opening = asyncio.ensure_future(MermaidViewer(files).open(key, push))
+        opening = asyncio.ensure_future(
+            MermaidViewer(files).open(key, ContentMime.MERMAID, push)
+        )
 
         while not shown:
             await asyncio.sleep(0.01)

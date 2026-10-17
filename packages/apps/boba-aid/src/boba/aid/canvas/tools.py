@@ -74,27 +74,36 @@ class CanvasOpener:
     def __init__(self, surfaces: TabSurfaces) -> None:
         self._surfaces = surfaces
 
-    async def show(self, path: str, scope: CanvasScope) -> OpenedCanvas:
-        """Панель с содержимым одного файла; слежение ставит CanvasPanel."""
+    async def show(self, path: str, mime: str, scope: CanvasScope) -> OpenedCanvas:
+        """Панель с содержимым одного файла вида mime — того, каким его
+        назвала ссылка; пусто — вид по имени файла (ссылки старой истории).
+        Слежение ставит CanvasPanel."""
         key = scope.key(path)
 
-        return await CanvasPanel.open(key, ContentMime.of_name(key.name))
+        if not mime:
+            mime = ContentMime.of_name(key.name)
+
+        return await CanvasPanel.open(key, mime)
 
     async def content(
-        self, path: str, watch: bool, scope: CanvasScope
+        self, path: str, mime: str, watch: bool, scope: CanvasScope
     ) -> CanvasContent:
-        """Описание файла для уже открытой панели: элемент не подменяется.
+        """Описание файла вида mime для уже открытой панели: элемент не
+        подменяется; пусто — вид по имени файла.
 
         watch — слежение переезжает на новый файл вместе с показом; без него
         описание отдаётся как есть (перечитывание уже показанного файла).
         """
         key = scope.key(path)
 
-        viewer = CanvasRegistry.viewer_for(ContentMime.of_name(key.name))
-        if viewer is None:
-            return CanvasPanel.notice(key)
+        if not mime:
+            mime = ContentMime.of_name(key.name)
 
-        described = await viewer.content(key)
+        viewer = CanvasRegistry.viewer_for(mime)
+        if viewer is None:
+            return CanvasPanel.notice(key, mime)
+
+        described = await viewer.content(key, mime)
         if watch:
             CanvasPanel.watch_file(key, viewer, described.nonce)
 

@@ -109,15 +109,15 @@ class MermaidViewer(FileViewer):
     def __init__(self, files: DiagramFiles) -> None:
         self._files = files
 
-    async def content(self, key: ObjectKey) -> CanvasContent:
-        return self._content(key, await self._read(key), str(uuid.uuid4()))
+    async def content(self, key: ObjectKey, mime: str) -> CanvasContent:
+        return self._content(key, mime, await self._read(key), str(uuid.uuid4()))
 
-    async def open(self, key: ObjectKey, push: CanvasPush) -> OpenedCanvas:
+    async def open(self, key: ObjectKey, mime: str, push: CanvasPush) -> OpenedCanvas:
         text = await self._read(key)
         nonce = str(uuid.uuid4())
 
         RenderVerdicts.expect(nonce)
-        await push(self._content(key, text, nonce))
+        await push(self._content(key, mime, text, nonce))
 
         verdict = await RenderVerdicts.wait(nonce, self.VERDICT_TIMEOUT_SEC)
         if verdict.status is RenderStatus.FAILED:
@@ -130,7 +130,7 @@ class MermaidViewer(FileViewer):
 
         return OpenedCanvas(label=entry.label, path=entry.path, nonce=nonce)
 
-    async def link(self, key: ObjectKey) -> VisualResult:
+    async def link(self, key: ObjectKey, mime: str) -> VisualResult:
         """Карточка диаграммы читает спеку: подпись берётся из её заголовка."""
         return DiagramCard.link(DiagramEntry.of(key, await self._read(key)))
 
@@ -145,11 +145,13 @@ class MermaidViewer(FileViewer):
     async def _read(self, key: ObjectKey) -> str:
         return await self._files.read(key)
 
-    def _content(self, key: ObjectKey, text: str, nonce: str) -> CanvasContent:
+    def _content(
+        self, key: ObjectKey, mime: str, text: str, nonce: str
+    ) -> CanvasContent:
         """Спека поверх описания базы: подпись берётся из заголовка диаграммы."""
         entry = DiagramEntry.of(key, text)
 
-        described = self.describe(key, text=entry.spec)
+        described = self.describe(key, mime, text=entry.spec)
         return described.model_copy(update={"label": entry.label, "nonce": nonce})
 
 
@@ -179,6 +181,7 @@ class DiagramCard:
             path=entry.path,
             label=entry.label,
             text=entry.spec,
+            mime=ContentMime.MERMAID,
         )
 
         return {**content.props(), "preview": True}

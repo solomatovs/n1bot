@@ -75,14 +75,19 @@ export default function CanvasLink() {
     // пересоздал бы её и снова проиграл анимацию открытия
     if (browser.byId("side-view-content")) {
       browser.emit(
-        new CustomEvent("boba:canvas", { detail: { path: props.path } })
+        new CustomEvent("boba:canvas", {
+          detail: { path: props.path, mime: props.mime },
+        })
       );
       return;
     }
 
     setBusy(true);
     try {
-      await callAction({ name: "canvas_open", payload: { path: props.path } });
+      await callAction({
+        name: "canvas_open",
+        payload: { path: props.path, mime: props.mime },
+      });
     } finally {
       setBusy(false);
     }

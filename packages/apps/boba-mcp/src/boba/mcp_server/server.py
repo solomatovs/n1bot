@@ -272,6 +272,8 @@ class OwnProgress(ProgressShape):
 
     def __init__(self) -> None:
         self._sent = -1.0
+        """Последнее ушедшее значение; -1 — отчётов ещё не было, его же
+        занимает уведомление о журнале."""
 
     def shaped(
         self, call_id: str, report: ProgressReport, token: mt.ProgressToken
@@ -291,15 +293,17 @@ class OwnProgress(ProgressShape):
     def journal(
         self, call_id: str, links: Sequence[str], token: mt.ProgressToken
     ) -> mt.ProgressNotificationParams | None:
-        """Журнал открывается до первого отчёта тела: уведомление занимает
-        значение прогресса 0; после отчётов значение уже не вырастет."""
+        """Журнал вызова открывается до первого отчёта тела: уведомление
+        занимает значение ниже любого отчёта (отчёт тела — done ≥ 0), и
+        ни один отчёт тела, в том числе первый с done = 0, им не теряется;
+        после отчётов значение уже не вырастет, и уведомление не уходит."""
         if self._sent >= 0:
             return None
 
-        self._sent = 0.0
-
         return mt.ProgressNotificationParams(
-            progress_token=token, progress=0.0, _meta={JournalFeature.ID: list(links)}
+            progress_token=token,
+            progress=self._sent,
+            _meta={JournalFeature.ID: list(links)},
         )
 
 

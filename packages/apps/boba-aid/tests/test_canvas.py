@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, ClassVar
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 from uuid import UUID
 
 import chainlit as cl
@@ -70,7 +70,7 @@ class FakeViewer(CanvasViewer):
     def handles(self, mime: str) -> bool:
         return mime == self._mime
 
-    async def content(self, key: ObjectKey) -> CanvasContent:
+    async def content(self, key: ObjectKey, mime: str) -> CanvasContent:
         return CanvasContent(
             kind=CanvasKind.MERMAID,
             path=key.in_workspace(),
@@ -78,16 +78,16 @@ class FakeViewer(CanvasViewer):
             text="erDiagram",
         )
 
-    async def link(self, key: ObjectKey) -> VisualResult:
+    async def link(self, key: ObjectKey, mime: str) -> VisualResult:
         return VisualResult(
             element="CanvasLink",
             props={"path": key.in_workspace(), "label": key.name},
             title=key.name,
         )
 
-    async def open(self, key: ObjectKey, push: CanvasPush) -> OpenedCanvas:
+    async def open(self, key: ObjectKey, mime: str, push: CanvasPush) -> OpenedCanvas:
         self.opened.append(key)
-        await push(await self.content(key))
+        await push(await self.content(key, mime))
 
         return OpenedCanvas(label=key.name, path=key.in_workspace(), nonce="n-1")
 
@@ -202,7 +202,7 @@ class TestRefusal:
         scope = CanvasScope(user_id=USER, thread_id=THREAD)
 
         with pytest.raises(CanvasError) as failure:
-            await CanvasOpener(ThreadSurfaces()).show("/etc/passwd", scope)
+            await CanvasOpener(ThreadSurfaces()).show("/etc/passwd", "", scope)
 
         if failure.value.kind != CanvasErrorKind.BAD_PATH:
             raise AssertionError(failure.value.kind)
@@ -255,6 +255,7 @@ class TestShow:
 
         opened = await CanvasOpener(ThreadSurfaces()).show(
             f"/workspace/{THREAD}/mermaid/a.mmd",
+            "",
             CanvasScope(user_id=USER, thread_id=THREAD),
         )
 
@@ -296,10 +297,12 @@ class TestShow:
 
         await CanvasOpener(ThreadSurfaces()).show(
             f"/workspace/{THREAD}/upload/a.png",
+            "",
             CanvasScope(user_id=USER, thread_id=THREAD),
         )
         await CanvasOpener(ThreadSurfaces()).show(
             f"/workspace/{THREAD}/upload/b.png",
+            "",
             CanvasScope(user_id=USER, thread_id=THREAD),
         )
 
@@ -341,7 +344,7 @@ class TestFileViewers:
         key = ObjectKey.build(USER, THREAD, "график.png", "el-1")
 
         sink = ElementSink()
-        opened = await ImageViewer().open(key, sink.push)
+        opened = await ImageViewer().open(key, "image/png", sink.push)
 
         if opened.label != "график.png":
             raise AssertionError('opened.label == "график.png"')
@@ -369,12 +372,12 @@ class TestFileViewers:
         key = ObjectKey.build(USER, THREAD, "график.png", "el-1")
 
         sink = ElementSink()
-        await ImageViewer().open(key, sink.push)
+        await ImageViewer().open(key, "image/png", sink.push)
 
         url = sink.shown[0].url
         if "session_id" in url:
             raise AssertionError('"session_id" not in url')
-        if not (url.endswith(quote(key.name, safe=""))):
+        if not (urlsplit(url).path.endswith(quote(key.name, safe=""))):
             raise AssertionError('url.endswith(quote(key.name, safe=""))')
         if list(cl.context.session.files.values()):
             raise AssertionError("not list(cl.context.session.files.values())")
@@ -402,6 +405,7 @@ class TestFileViewers:
 
         opened = await CanvasOpener(ThreadSurfaces()).show(
             f"/workspace/{THREAD}/upload/график.png",
+            "",
             CanvasScope(user_id=USER, thread_id=THREAD),
         )
 
@@ -514,7 +518,7 @@ class TestLogViewer:
         await put_bytes(storage, f"{USER}/{THREAD}/upload/run.log", body)
         key = ObjectKey.build(USER, THREAD, "run.log", "el-1")
 
-        content = await rendering_canvas.LogViewer().content(key)
+        content = await rendering_canvas.LogViewer().content(key, ContentMime.PLAIN)
 
         if content.kind is not CanvasKind.STREAM:
             raise AssertionError("content.kind is CanvasKind.STREAM")
@@ -536,7 +540,7 @@ class TestLogViewer:
         key = ObjectKey.build(USER, THREAD, "absent.log", "el-1")
 
         with pytest.raises(CanvasError) as failure:
-            await rendering_canvas.LogViewer().content(key)
+            await rendering_canvas.LogViewer().content(key, ContentMime.PLAIN)
 
         if failure.value.kind != CanvasErrorKind.FILE_NOT_FOUND:
             raise AssertionError("failure.value.kind == CanvasErrorKind.FILE_NOT_FOUND")
@@ -625,7 +629,7 @@ class TestActionsWithoutCallContext:
 
         path = str(action.payload[CanvasAction.PATH.value])
         content = await CanvasOpener(ThreadSurfaces()).content(
-            path, watch=True, scope=CanvasScope(user_id=USER, thread_id=THREAD)
+            path, "", watch=True, scope=CanvasScope(user_id=USER, thread_id=THREAD)
         )
         described = content.props()
 
