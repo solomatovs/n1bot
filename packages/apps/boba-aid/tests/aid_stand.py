@@ -26,6 +26,7 @@ import mcp_types as mt
 import pytest
 from chainlit.context import ChainlitContext
 from chainlit.session import WebsocketSession
+from chainlit.step import Step, StepDict
 from chainlit.user import PersistedUser
 from chainlit.user import User as ChainlitUser
 from psycopg import sql
@@ -49,9 +50,10 @@ from boba.aid.infra.session import (
 )
 from boba.aid.infra.thread_room import ThreadSurfaces
 from boba.aid.rendering.acp_view import ToolMedia
-from boba.aid.rendering.chat_view import ChatView, StepRole
+from boba.aid.rendering.chat_view import ChatSink, ChatView, StepRole
 from boba.aid.rendering.renderer import NoSurface, RenderSurface, TabSurfaces
 from boba.auth import JwtTokens
+from boba.cancellation import RunCancellation
 from boba.canvas.journal import StreamSlice
 from boba.canvas.keys import WorkspaceMount
 from boba.config import bind
@@ -65,6 +67,9 @@ from boba.identity.api import StoredUser, UserRows
 from boba.identity.context import (
     CallContext,
     CallContexts,
+    ChatInitiator,
+    Scope,
+    Subject,
 )
 from boba.identity.errors import InternalServiceError
 from boba.identity.locks import MemoryLiveLocks
@@ -878,7 +883,7 @@ class ChatSessionStand:
         self._monkeypatch.setattr(ChainlitSessions, "current", lambda self: session)
 
         if user_id is not None and thread_id is not None:
-            self._calls.use(session.call_context(StandIdentity.TURN, profile))
+            self._calls.use(self._context(session, profile))
 
         return session
 
@@ -889,9 +894,33 @@ class ChatSessionStand:
         их через init_http_context(user=..., thread_id=...) и chat_profile
         либо зовёт sign_in().
         """
-        context = current_session().call_context(StandIdentity.TURN, profile)
+        context = self._context(current_session(), profile)
 
         return self._calls.use(context)
+
+    @staticmethod
+    def _context(session: ChainlitSession, profile: str) -> CallContext:
+        """Контекст хода из сессии: пользователь строки users, тред сессии и
+        ссылка на делегированный билет из JWT её входа."""
+        thread_id = session.thread_id
+        if not thread_id:
+            raise AssertionError(f"stand session {session.id!r} has no thread")
+
+        user_id = session.user_id
+        if not user_id:
+            raise AssertionError(f"stand session {session.id!r} has no users row")
+
+        subject = Subject.of_user(UUID(user_id), session.label, session.roles, profile)
+        credential = session.signed_in().sign_in().credential()
+
+        return CallContext(
+            subject=subject,
+            scope=Scope.chat(thread_id),
+            run_id=thread_id,
+            initiator=ChatInitiator(thread_id=thread_id, turn_id=StandIdentity.TURN),
+            credential=credential,
+            cancellation=RunCancellation(),
+        )
 
     def sign_in(
         self,
@@ -1025,3 +1054,24 @@ async def get_bytes(storage: StorageClient, object_key: str) -> bytes:
             parts.append(chunk)
 
     return b"".join(parts)
+
+
+class RecordingSink(ChatSink):
+    """Приёмник ленты стенда: копит шаги как StepDict, тесты сверяют по ним
+    отрисованное ChatView."""
+
+    def __init__(self) -> None:
+        self._steps: dict[str, StepDict] = {}
+
+    async def put(self, step: Step) -> None:
+        self._steps[step.id] = step.to_dict()
+
+    async def drop(self, step: Step) -> None:
+        self._steps.pop(step.id, None)
+
+    def rebuilt(self) -> None:
+        self._steps.clear()
+
+    @property
+    def steps(self) -> list[StepDict]:
+        return list(self._steps.values())

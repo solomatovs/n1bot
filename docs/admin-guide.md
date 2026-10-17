@@ -445,9 +445,9 @@ python -m boba.mcp_server --config <общий конфиг> --site <специ�
 5. переменные окружения `BOBA_<КЛЮЧ>` — они переопределяют отдельные ключи
    секции `[env]`: `BOBA_BASE`, `BOBA_DATA`, `BOBA_PORT`, `BOBA_HOST`,
    `BOBA_URL_PREFIX`, `BOBA_INSTANCE_ID`, `BOBA_APP_ROOT`, `BOBA_CGROUP_BASE`,
-   `BOBA_TOOL_LAUNCHER`, `BOBA_MESSAGING`, `BOBA_WORKFLOW_PAGE`,
-   `BOBA_PUBLIC_URL`, `BOBA_MCP_SCHEME`, `BOBA_MCP_HOST`, `BOBA_MCP_PORT`,
-   `BOBA_MCP_PREFIX`. Других переменных загрузчик не читает.
+   `BOBA_TOOL_LAUNCHER`, `BOBA_MESSAGING`, `BOBA_PUBLIC_URL`, `BOBA_MCP_SCHEME`,
+   `BOBA_MCP_HOST`, `BOBA_MCP_PORT`, `BOBA_MCP_PREFIX`. Других переменных
+   загрузчик не читает.
 
 Ссылки `${секция.ключ}` разрешаются по собранному целому, поэтому значение из
 site.toml может ссылаться на `${env.base}`, а общий конфиг — на любое значение

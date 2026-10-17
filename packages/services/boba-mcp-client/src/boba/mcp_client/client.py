@@ -1073,14 +1073,20 @@ class McpFiles:
         return True
 
     async def delete_scope(self, scope_id: str) -> None:
-        """Все файлы каталогов области scope_id: сервер удаляет их одной
-        операцией, область без файлов — успех."""
-        url = "/".join((self._root.url(), quote(scope_id, safe="")))
+        """Область scope_id целиком — файлы её каталогов и журналы вызовов
+        её запусков: сервер удаляет их одной операцией, пустая область —
+        успех."""
+        area = FilesFeature.AREA.format(scope=quote(scope_id, safe=""))
+        url = "/".join((self._root.url(), area))
         reply = await self._http.delete(url)
         self._check("DELETE", url, reply)
 
     def _url(self, key: ObjectKey) -> str:
-        return "/".join((self._root.url(), quote(key.in_thread())))
+        route = FilesFeature.ROUTE.format(
+            scope=key.thread_id, dir=key.dir.value, name=key.name
+        )
+
+        return "/".join((self._root.url(), quote(route)))
 
     def _check(self, method: str, url: str, reply: httpx2.Response) -> None:
         if reply.status_code < self.FIRST_REFUSAL:

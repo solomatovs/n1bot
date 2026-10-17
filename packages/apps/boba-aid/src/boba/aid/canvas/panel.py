@@ -316,7 +316,7 @@ class PdfViewer(FileViewer):
     """PDF: встроенный просмотрщик браузера."""
 
     kind: ClassVar[CanvasKind] = CanvasKind.PDF
-    mimes: ClassVar[frozenset[str]] = frozenset({"application/pdf"})
+    mimes: ClassVar[frozenset[str]] = frozenset({ContentMime.PDF.value})
 
 
 class VideoViewer(FileViewer):
@@ -337,7 +337,7 @@ class MarkdownViewer(FileViewer):
     """Markdown: формат требует документ целиком, фронт читает его по ссылке."""
 
     kind: ClassVar[CanvasKind] = CanvasKind.TEXT
-    mimes: ClassVar[frozenset[str]] = frozenset({"text/markdown"})
+    mimes: ClassVar[frozenset[str]] = frozenset({ContentMime.MARKDOWN.value})
 
 
 class LogViewer(FileViewer):

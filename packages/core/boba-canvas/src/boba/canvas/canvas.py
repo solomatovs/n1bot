@@ -18,14 +18,17 @@ from typing import Any, ClassVar, Protocol, Self
 from pydantic import (
     BaseModel,
     ConfigDict,
-    field_validator,
     model_validator,
 )
 
 from boba.canvas.keys import ObjectKey
 from boba.canvas.transfer import ContentDisposition
 from boba.identity.errors import RefusalError
-from boba.toolkit.channels import JournalChannel, JournalChannels, ToolChannel
+from boba.toolkit.channels import (
+    JournalChannels,
+    ReadableChannel,
+    ToolChannel,
+)
 from boba.toolkit.result import VisualResult
 
 __all__ = [
@@ -108,9 +111,7 @@ class CanvasAction(StrEnum):
     LEAVE = "canvas_leave"
     PATH = "path"
     MIME = "mime"
-    NONCE = "nonce"
     CALL_ID = "call_id"
-    OFFSET = "offset"
 
 
 class CanvasElement(StrEnum):
@@ -640,20 +641,7 @@ class StreamPath(BaseModel):
     SCHEME: ClassVar[str] = "stream://"
 
     call_id: str
-    channel: JournalChannel
-
-    @field_validator("channel")
-    @classmethod
-    def _readable(cls, value: JournalChannel) -> JournalChannel:
-        if not JournalChannels.visible(value):
-            readable = [channel.value for channel in JournalChannels.VISIBLE]
-            msg = (
-                f"stream path: channel {value.value!r} is not readable, "
-                f"expected one of {readable}"
-            )
-            raise ValueError(msg)
-
-        return value
+    channel: ReadableChannel
 
     def render(self) -> str:
         return f"{self.SCHEME}{self.call_id}/{self.channel.value}"
@@ -686,21 +674,8 @@ class StreamShowRequest(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     call_id: str
-    channel: JournalChannel = ToolChannel.STDOUT
+    channel: ReadableChannel = ToolChannel.STDOUT
     inline: bool = False
-
-    @field_validator("channel")
-    @classmethod
-    def _readable(cls, value: JournalChannel) -> JournalChannel:
-        if not JournalChannels.visible(value):
-            readable = [channel.value for channel in JournalChannels.VISIBLE]
-            msg = (
-                f"canvas_stream: channel {value.value!r} is not readable, "
-                f"expected one of {readable}"
-            )
-            raise ValueError(msg)
-
-        return value
 
 
 class StreamWindowRequest(BaseModel):

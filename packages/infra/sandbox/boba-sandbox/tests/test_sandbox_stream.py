@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import shutil
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import Any
 
 import pytest
@@ -13,11 +13,7 @@ from boba.stand.shell import ShellRun
 from boba.stand.zygote import SandboxStand, ZygoteStand
 from boba.toolkit.chain import CallAmbient
 from boba.toolkit.channels import JournalChannel, ToolChannel, WrapChannel
-from boba.toolkit.stream import (
-    ChannelSinks,
-    StreamSink,
-    ToolStreamBuffer,
-)
+from boba.toolkit.stream import ChannelSinks, Chunk, StreamSink
 
 _PROFILE_OVERRIDES: dict[str, Any] = {
     "timeout_sec": 30,
@@ -26,31 +22,50 @@ _PROFILE_OVERRIDES: dict[str, Any] = {
 }
 
 
-class Windows(ChannelSinks):
-    """Журнал каналов вызова в памяти: окно на канал, заводится по обращению."""
+class ChannelText(StreamSink):
+    """Приёмник одного канала в памяти: копит текст, после каждой порции
+    зовёт on_data."""
 
-    def __init__(self, window_bytes: int = 64 * 1024) -> None:
-        self._window_bytes = window_bytes
-        self._buffers: dict[str, ToolStreamBuffer] = {}
+    def __init__(self, on_data: Callable[[], None]) -> None:
+        self._parts: list[str] = []
+        self._on_data = on_data
+
+    def feed(self, data: Chunk) -> None:
+        self.feed_text(bytes(data).decode("utf-8", errors="replace"))
+
+    def feed_text(self, text: str) -> None:
+        self._parts.append(text)
+        self._on_data()
+
+    def text(self) -> str:
+        return "".join(self._parts)
+
+
+class Windows(ChannelSinks):
+    """Журнал каналов вызова в памяти: приёмник на канал, заводится по
+    обращению; размеры stdout на каждом пробуждении копятся в wake_sizes."""
+
+    def __init__(self) -> None:
+        self._sinks: dict[str, ChannelText] = {}
         self.wake_sizes: list[int] = []
 
     def sink_of(self, channel: JournalChannel) -> StreamSink:
-        return self.buffer_of(channel)
+        return self._sink(channel)
 
-    def buffer_of(self, channel: JournalChannel) -> ToolStreamBuffer:
-        buffer = self._buffers.get(channel.value)
-        if buffer is not None:
-            return buffer
+    def text_of(self, channel: JournalChannel) -> str:
+        return self._sink(channel).text()
+
+    def _sink(self, channel: JournalChannel) -> ChannelText:
+        sink = self._sinks.get(channel.value)
+        if sink is not None:
+            return sink
 
         def wake() -> None:
             self._on_wake(channel)
 
-        buffer = ToolStreamBuffer(self._window_bytes, wake)
-        self._buffers[channel.value] = buffer
-        return buffer
-
-    def text_of(self, channel: JournalChannel) -> str:
-        return self.buffer_of(channel).snapshot().text
+        sink = ChannelText(wake)
+        self._sinks[channel.value] = sink
+        return sink
 
     def _on_wake(self, channel: JournalChannel) -> None:
         if channel is not ToolChannel.STDOUT:
@@ -117,35 +132,6 @@ class TestCallTextTap:
 
         if "одинокий" not in outcome.stdout:
             raise AssertionError('"одинокий" in outcome.stdout')
-
-    def test_window_stays_bounded_on_huge_output(
-        self, zygote_stand: ZygoteStand, call_ambient: CallAmbient
-    ) -> None:
-        """Мегабайты вывода не оседают в окне: оно держит только хвост.
-
-        Результат отдаётся целиком, а окно продолжает ехать до конца
-        процесса — в нём последние строки.
-        """
-        window_bytes = 64 * 1024
-        windows = Windows(window_bytes)
-        call_ambient.set_sinks(windows)
-
-        # ~1.6 МБ: 200000 строк по 8 байт
-        outcome = ShellRun.call_text(
-            self._caller(zygote_stand, call_ambient), "seq -w 1 200000"
-        )
-
-        window = windows.buffer_of(ToolChannel.STDOUT).snapshot()
-        if len(window.text.encode()) > window_bytes:
-            raise AssertionError("len(window.text.encode()) <= window_bytes")
-        if window.dropped_bytes <= 1_000_000:
-            raise AssertionError("window.dropped_bytes > 1_000_000")
-        if "200000" not in window.text:
-            raise AssertionError('"200000" in window.text')
-        if "\n000002\n" in window.text:
-            raise AssertionError('"\\n000002\\n" not in window.text')
-        if not (outcome.stdout.startswith("000001\n")):
-            raise AssertionError('outcome.stdout.startswith("000001\\n")')
 
     def test_window_fills_while_the_process_runs(
         self, zygote_stand: ZygoteStand, call_ambient: CallAmbient

@@ -10,6 +10,7 @@ from typing import Any, cast
 
 import mcp_types as mt
 import pytest
+from aid_stand import RecordingSink
 from chainlit.config import config as chainlit_config
 from chainlit.context import ChainlitContext, context_var
 from chainlit.step import StepDict
@@ -18,7 +19,6 @@ from boba.aid.domain.fields import StepField
 from boba.aid.rendering.chat_view import (
     ChatView,
     LiveSink,
-    RecordingSink,
     StepElapsed,
     StepRole,
     StepStatus,

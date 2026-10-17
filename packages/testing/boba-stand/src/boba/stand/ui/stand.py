@@ -958,9 +958,10 @@ class StandConfig(StandService):
             storage["kind"] = "local"
             storage["files_dir"] = str(files_dir)
 
-        journal_dir = self.workdir / "tool-logs"
-        journal_dir.mkdir(parents=True, exist_ok=True)
-        doc["stream_journal"]["dir"] = str(journal_dir)
+        if journal := doc.get("stream_journal"):
+            journal_dir = self.workdir / "tool-logs"
+            journal_dir.mkdir(parents=True, exist_ok=True)
+            journal["dir"] = str(journal_dir)
 
     def _without_mcp_servers(self, doc: MutableMapping[str, Any]) -> None:
         """Внешние MCP-серверы рабочего конфига стенду не нужны: набор

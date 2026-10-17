@@ -19,7 +19,7 @@ from typing import Any, ClassVar, cast
 from uuid import UUID
 
 import pytest
-from aid_stand import FakeTurn, RemoteStand, ServiceProcess
+from aid_stand import FakeTurn, RecordingSink, RemoteStand, ServiceProcess
 from chainlit.context import ChainlitContext, context_var
 from chainlit.step import Step
 from pydantic import ValidationError
@@ -29,7 +29,6 @@ from boba.aid.rendering.chat_view import (
     ChatSink,
     ChatView,
     ProgressText,
-    RecordingSink,
     StepRole,
 )
 from boba.canvas.canvas import (

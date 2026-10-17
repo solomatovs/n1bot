@@ -11,13 +11,14 @@ from uuid import UUID, uuid4
 
 import pytest
 from acp.experimental.v2 import schema
+from aid_stand import RecordingSink
 
 from boba.aid.canvas.remote import RemoteJournals
 from boba.aid.chat.feed import QuestionBody, TurnFeed
 from boba.aid.domain.fields import StepField
 from boba.aid.infra.config import AppConfig
 from boba.aid.rendering.acp_view import ToolMedia, UpdateView
-from boba.aid.rendering.chat_view import ChatView, RecordingSink, StepRole
+from boba.aid.rendering.chat_view import ChatView, StepRole
 from boba.aid.rendering.renderer import ChatRenderer, NoSurface, ThreadRewinds
 from boba.db.postgres import AsyncPostgresPool, PostgresSchema
 from boba.identity.context import Scope

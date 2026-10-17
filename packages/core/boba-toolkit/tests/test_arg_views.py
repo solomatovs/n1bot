@@ -204,7 +204,7 @@ class TestViewsTravelWithTheSchema:
         expected = {
             "sql": FieldView(
                 placement=FieldPlacement.BODY,
-                display=MarkdownResult(language="sql").model_dump(mode="json"),
+                display=MarkdownResult(language="sql"),
             ),
             "intent": FieldView(placement=FieldPlacement.HEADER, display=None),
             "cfg": FieldView(placement=FieldPlacement.HIDDEN, display=None),

@@ -108,8 +108,6 @@ class AcpErrorCode(IntEnum):
     METHOD_NOT_FOUND = -32601
     INTERNAL_ERROR = -32603
     RESOURCE_NOT_FOUND = -32002
-    REQUEST_CANCELLED = -32800
-    BINDING_LIMIT = -33000
     UNKNOWN_SERVER = -33001
     BACKEND_FAILED = -33002
 
@@ -144,7 +142,6 @@ class ErrorDataKey(StrEnum):
     """Ключи `data` ошибки JSON-RPC, которые пишет агент и читает клиент."""
 
     KIND = "kind"
-    MESSAGE = "message"
     DETAILS = "details"
     SESSION_ID = "sessionId"
     UP_TO_MESSAGE_ID = "upToMessageId"

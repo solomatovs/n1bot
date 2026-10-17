@@ -39,7 +39,7 @@ SOURCE_SNIPPETS = (
 
 def binary() -> Path:
     if not BINARY.is_file():
-        pytest.skip(f"no binary at {BINARY}; run: make -C build boba-bin")
+        pytest.fail(f"no binary at {BINARY}; run: make -C build boba-bin")
 
     return BINARY
 

@@ -559,16 +559,6 @@ class NodeOutcome(BaseModel):
 
         return self.artifact.ok
 
-    def error_text(self) -> str:
-        """Текст отказа для журнала; пустой — вызов удался."""
-        if self.errored:
-            return self.content
-
-        if not self.artifact.ok:
-            return self.artifact.llm_view()
-
-        return ""
-
     def use_result(self) -> ToolUseResult:
         """Итог в форме записи истории: ответ сервера MCP как пришёл, а без
         него — результат семейства."""

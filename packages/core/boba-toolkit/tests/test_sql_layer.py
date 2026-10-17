@@ -14,7 +14,6 @@ from boba.toolkit.result import (
     Fact,
     SqlResult,
     SqlStatement,
-    ToolArtifact,
     ToolResultBase,
 )
 from boba.toolkit.sql import SqlLimits
@@ -149,15 +148,6 @@ class TestSqlResult:
         if not markdown.endswith("\n\n_UPDATE 5_"):
             raise AssertionError(f"status statement last: {markdown!r}")
 
-    def test_artifact_survives_serialization(self) -> None:
-        result = SqlResult(
-            engine="postgres",
-            statements=[SqlStatement(affected_rows=1, status="UPDATE 1")],
-        )
-        revived = ToolArtifact.revive(result.model_dump(mode="json"))
-        if revived != result:
-            raise AssertionError("revived == result")
-
 
 class TestPumpStatement:
     """Команда насоса отчитывается целиком: текст, подпись, контракт, сервер."""
@@ -203,11 +193,3 @@ class TestPumpStatement:
         server = text.index("server: backend pid 776600, version 170010")
         if server > text.index('"column": "id"'):
             raise AssertionError(f"facts go before the rows: {text}")
-
-    def test_revives_from_history(self) -> None:
-        result = self.result()
-
-        revived = ToolArtifact.revive(result.model_dump(mode="json"))
-
-        if revived != result:
-            raise AssertionError(f"revived: {revived!r}")

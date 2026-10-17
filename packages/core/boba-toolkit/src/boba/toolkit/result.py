@@ -49,7 +49,6 @@ from pydantic import (
     GetJsonSchemaHandler,
     JsonValue,
     SerializeAsAny,
-    TypeAdapter,
     ValidatorFunctionWrapHandler,
     model_validator,
 )
@@ -89,7 +88,6 @@ __all__ = [
     "SqlStatement",
     "TableResult",
     "TableText",
-    "ToolArtifact",
     "ToolResult",
     "ToolResultBase",
     "VisualResult",
@@ -98,10 +96,6 @@ __all__ = [
 
 class ResultTooLargeError(Exception):
     """Выдача больше потолка; сообщение готово для пользователя и LLM."""
-
-    @classmethod
-    def bytes_limit(cls, max_bytes: int) -> ResultTooLargeError:
-        return cls(f"result exceeded {max_bytes} bytes; add LIMIT to the query")
 
     @classmethod
     def chars_limit(cls, max_chars: int) -> ResultTooLargeError:
@@ -216,9 +210,10 @@ class ContentMime(StrEnum):
 
     Член называет язык блока кода ленты своим именем в нижнем регистре:
     язык показа результата и аргумента переводится в MIME одним of_language,
-    обратно — свойством language. of_name — MIME файла по имени, suffix_of —
-    суффикс имени по MIME: сначала своя таблица SUFFIXES тех суффиксов,
-    которых stdlib mimetypes не знает, потом mimetypes.
+    обратно — свойством language. of_name — MIME файла по имени, named —
+    MIME ссылки, а без него — по имени, suffix_of — суффикс имени по MIME:
+    сначала своя таблица SUFFIXES тех суффиксов, которых stdlib mimetypes не
+    знает, потом mimetypes.
     """
 
     CSV = "text/csv"
@@ -229,13 +224,15 @@ class ContentMime(StrEnum):
     PLOTLY = "application/vnd.plotly.v1+json"
     PLAIN = "text/plain"
     OCTET = "application/octet-stream"
+    PDF = "application/pdf"
+    MARKDOWN = "text/markdown"
 
     SUFFIXES = nonmember(
         MappingProxyType(
             {
-                ".mmd": "text/vnd.mermaid",
-                ".md": "text/markdown",
-                ".log": "text/plain",
+                ".mmd": MERMAID,
+                ".md": MARKDOWN,
+                ".log": PLAIN,
                 ".webp": "image/webp",
                 ".ogg": "audio/ogg",
                 ".wav": "audio/wav",
@@ -270,6 +267,14 @@ class ContentMime(StrEnum):
             return cls.OCTET.value
 
         return guessed
+
+    @classmethod
+    def named(cls, mime: str | None, name: str) -> str:
+        """MIME, которым файл назвала ссылка; без него — по имени файла."""
+        if mime:
+            return mime
+
+        return cls.of_name(name)
 
     @classmethod
     def suffix_of(cls, mime: str) -> str:
@@ -1508,47 +1513,3 @@ class SqlFailureResult(FailureResult):
 
         for statement in self.statements:
             statement.shown(out, True)
-
-
-class ToolArtifact:
-    """Поднимает artifact в модель: история хранит его обычным dict.
-
-    Чужое значение — строка старой истории, словарь без известного kind —
-    даёт None: лента показывает его сырым текстом. Словарь известного kind
-    с битыми полями — ValidationError: это дефект, а не чужое значение.
-    История переживает версии результата: поля, которых у класса больше
-    нет, отбрасываются, а не роняют загрузку треда.
-    """
-
-    _ADAPTER: ClassVar[TypeAdapter[ToolResultBase]] = TypeAdapter(ToolResult)
-
-    @classmethod
-    def revive(cls, artifact: Any) -> ToolResultBase | None:
-        """Ошибки:
-        ValidationError — kind известен, а поля модели не проходят.
-        """
-        if isinstance(artifact, ToolResultBase):
-            return artifact
-
-        if not isinstance(artifact, Mapping):
-            return None
-
-        model = ResultKinds.of(str(artifact.get("kind")))
-        if model is None:
-            return None
-
-        return cls._ADAPTER.validate_python(cls._known_fields(model, artifact))
-
-    @staticmethod
-    def _known_fields(
-        model: type[ToolResultBase], artifact: Mapping[str, Any]
-    ) -> dict[str, Any]:
-        """Поля артефакта, известные текущей модели вида."""
-        kept: dict[str, Any] = {}
-        for name, value in artifact.items():
-            if name not in model.model_fields:
-                continue
-
-            kept[name] = value
-
-        return kept

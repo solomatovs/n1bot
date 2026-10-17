@@ -2,23 +2,21 @@
 
 Здесь единственное место, знающее, как chainlit хранит сессию: контекст
 вызова, реестр сокетов, user_session и JWT входа. Логика приложения
-работает с протоколом Session, инфраструктура — с этим классом; контекст
-вызова для хода чата собирается тоже здесь.
+работает с протоколом Session, инфраструктура — с этим классом.
 
 Ошибки:
 AuthenticationError — у сессии нет токена входа либо он не принят (истёк,
     чужая подпись, порча): ход отказывается, пользователю нужен новый вход.
-InternalServiceError — контекст вызова не собрать: у сессии нет треда,
-    сохранённого пользователя или выбранного профиля.
 """
 
 from __future__ import annotations
 
+import inspect
 import logging
 from abc import abstractmethod
-from collections.abc import Awaitable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any, ClassVar, Protocol, cast
+from typing import Any, ClassVar, Protocol
 from uuid import UUID
 
 import chainlit as cl
@@ -26,14 +24,9 @@ from chainlit.config import config as chainlit_config
 from chainlit.context import ChainlitContextException
 from chainlit.session import WebsocketSession, ws_sessions_id
 
-from boba.aid.domain.context import ChatCallContext
-from boba.cancellation import RunCancellation
+from boba.canvas.canvas import CanvasScope
 from boba.identity.context import (
-    ChatInitiator,
-    Credential,
     DelegatedTicket,
-    Scope,
-    Subject,
 )
 from boba.identity.errors import AuthenticationError, InternalServiceError
 from boba.identity.session import Login, Session, SessionSource
@@ -79,6 +72,31 @@ class LiveSignIn(Protocol):
         """
 
 
+class SocketSend:
+    """Отправка события в сокет вкладки chainlit.
+
+    chainlit объявляет emit сессии синхронным, а возвращает корутину; здесь
+    это проверяется, а не приводится. Держат его в поле сессия чата
+    (ChainlitSession) и рассылки по вкладкам треда и пользователя.
+    """
+
+    async def emit(self, socket: WebsocketSession, event: str, data: Any) -> None:
+        """Ошибки:
+        InternalServiceError — emit chainlit вернул не корутину.
+        """
+        sent: object = socket.emit(event, data)
+        if not inspect.isawaitable(sent):
+            raise InternalServiceError(
+                internal_detail=(
+                    f"emit of {event!r} to socket session {socket.id!r}: expected "
+                    f"chainlit to return an awaitable, got {type(sent).__name__}"
+                ),
+                user_detail=None,
+            )
+
+        await sent
+
+
 class ChainlitSession(Session, LiveSignIn):
     """Сессия chainlit: доменный контракт плюс то, что нужно инфраструктуре.
 
@@ -91,6 +109,7 @@ class ChainlitSession(Session, LiveSignIn):
     def __init__(self, session: Any | None, tokens: TokenReader) -> None:
         self._session = session
         self._tokens = tokens
+        self._send = SocketSend()
 
     @property
     def present(self) -> bool:
@@ -252,65 +271,21 @@ class ChainlitSession(Session, LiveSignIn):
         if socket is None:
             return False
 
-        await cast("Awaitable[None]", socket.emit(event, dict(payload)))
+        await self._send.emit(socket, event, dict(payload))
         return True
 
-    def call_context(self, turn_id: str, profile: str) -> ChatCallContext:
-        """Контекст хода чата из сессии; чего не хватает — InternalServiceError.
-
-        profile — имя профиля, по которому собран агент сессии: реестр
-        профилей резолвит его по ролям, сессия хранит лишь сырой выбор.
-        """
+    def canvas_scope(self) -> CanvasScope | None:
+        """Чьи файлы и журналы показывает панель этой вкладке; None — у
+        сессии нет треда или сохранённого пользователя."""
         thread_id = self.thread_id
-        if not thread_id:
-            raise InternalServiceError(
-                internal_detail=(
-                    f"call context for turn {turn_id!r}: chainlit session "
-                    f"{self.id!r} has no thread_id"
-                ),
-                user_detail=None,
-            )
+        if thread_id is None:
+            return None
 
-        subject = self._subject(profile)
-
-        return ChatCallContext(
-            subject=subject,
-            scope=Scope.chat(thread_id),
-            run_id=thread_id,
-            initiator=ChatInitiator(thread_id=thread_id, turn_id=turn_id),
-            credential=self._credential(),
-            cancellation=RunCancellation(),
-            surface=self,
-        )
-
-    def _subject(self, profile: str) -> Subject:
-        """Субъект по строке users; без сохранённой строки контекста нет."""
         user_id = self.user_id
-        if not user_id:
-            raise InternalServiceError(
-                internal_detail=(
-                    f"call context needs a persisted user: sign-in {self.label!r} "
-                    "has no users row"
-                ),
-                user_detail=None,
-            )
+        if user_id is None:
+            return None
 
-        try:
-            parsed = UUID(user_id)
-        except ValueError as exc:
-            raise InternalServiceError(
-                internal_detail=(
-                    f"user id {user_id!r} of sign-in {self.label!r} is not the "
-                    f"users.id uuid: {exc}"
-                ),
-                user_detail=None,
-            ) from exc
-
-        return Subject.of_user(parsed, self.label, self.roles, profile)
-
-    def _credential(self) -> Credential:
-        """Ссылка на делегированный билет входа по JWT сессии; иначе — причина."""
-        return self.signed_in().sign_in().credential()
+        return CanvasScope(user_id=str(user_id), thread_id=thread_id)
 
     @staticmethod
     def metadata_of(user: cl.User | cl.PersistedUser | None) -> Mapping[str, object]:

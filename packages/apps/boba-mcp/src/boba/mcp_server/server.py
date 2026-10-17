@@ -34,7 +34,7 @@ from abc import abstractmethod
 from collections.abc import AsyncGenerator, Iterator, Mapping, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
 from enum import StrEnum
-from typing import Any, ClassVar, Protocol
+from typing import Any, ClassVar, Final, Protocol
 from uuid import uuid4
 
 import mcp_types as mt
@@ -88,7 +88,6 @@ from boba.mcp_adapter import (
 from boba.mcp_server.auth import (
     CallScopeError,
     CallScopes,
-    SentMeta,
     ServiceAuth,
     TokenSubjects,
 )
@@ -679,6 +678,9 @@ class CallContextMiddleware(Middleware):
     (operations) проходят мимо: запуска у них нет.
     """
 
+    PROGRESS_TOKEN: Final = "progress_token"  # noqa: S105 — ключ _meta, не секрет
+    """Ключ токена прогресса в _meta запроса (RequestParamsMeta SDK)."""
+
     def __init__(
         self,
         runs: Runs,
@@ -695,7 +697,6 @@ class CallContextMiddleware(Middleware):
         self._replies = McpReplies()
         self._uris = JournalUris(JournalRoutes.RESOURCE)
         self._scopes = CallScopes()
-        self._meta = SentMeta()
 
     async def on_call_tool(
         self,
@@ -706,14 +707,6 @@ class CallContextMiddleware(Middleware):
             return await call_next(context)
 
         subject = self._subjects.current()
-        try:
-            fields = self._meta.sent()
-        except CallScopeError as exc:
-            failure = ErrorResult(
-                message=str(exc), error_kind=ServerRefusal.INVALID_REQUEST
-            )
-
-            return self._replies.refused(context.message.name, failure)
 
         arguments: Mapping[str, Any] = {}
         if sent := context.message.arguments:
@@ -753,7 +746,7 @@ class CallContextMiddleware(Middleware):
             shape,
             self._uris,
             self._bus,
-            fields.progress_token,
+            self._progress_token(),
         )
         progress.start()
         try:
@@ -787,6 +780,19 @@ class CallContextMiddleware(Middleware):
             links.link(uri, address.channel.value, ContentMime.PLAIN, False)
 
         return self._replies.journaled(result, links.blocks())
+
+    @staticmethod
+    def _progress_token() -> mt.ProgressToken | None:
+        """Токен прогресса из _meta запроса, разобранного SDK; None — клиент
+        о ходе вызова не просил."""
+        request = get_context().request_context
+        if request is None:
+            return None
+
+        if meta := request.meta:
+            return meta.get(CallContextMiddleware.PROGRESS_TOKEN)
+
+        return None
 
     def _recorded(
         self, progress: CallProgress, user: str, run_id: str
@@ -900,7 +906,7 @@ class McpServer:
         callers = RouteCallers(self._subjects, profile)
         bus = InMemorySubscriptionBus()
         self._files = FileRoutes(
-            StorageFactory.create(storage), callers, path, published
+            StorageFactory.create(storage), journals, callers, path, published
         )
         self._journal_files = JournalRoutes(
             journals, callers, self._subjects, storage, path, published, bus

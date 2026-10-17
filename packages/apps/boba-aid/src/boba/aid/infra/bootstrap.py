@@ -51,6 +51,7 @@ from boba.runtime.http import (
     StaleSessionMiddleware,
 )
 from boba.runtime.storage import StorageClient
+from boba.toolrun.streams import CallJournals
 
 
 def run_app(files: ConfigFiles):
@@ -208,8 +209,9 @@ def _use_chainlit_middleware(app: FastAPI, config: AidSection):
     from chainlit.server import app as chainlit_app  # noqa: PLC0415
     from chainlit.server import sio  # noqa: PLC0415
 
-    import boba.aid.infra.callback  # type: ignore # noqa: F401, PLC0415
+    from boba.aid.infra.callback import ChatCallbacks  # noqa: PLC0415
 
+    ChatCallbacks().install()
     sio.eio.ping_interval = config.ping_interval
     sio.eio.ping_timeout = config.ping_timeout
     Payload.max_decode_packets = config.max_decode_packets
@@ -354,6 +356,8 @@ def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
     container.provide(runtime.plugin_table, plugins.table)
     container.provide(runtime.call_contexts, contexts)
     container.provide(runtime.runs, runs)
+    # журналов у чата нет, но реестр собственных инструментов читает их держатель
+    container.provide(runtime.call_journals, CallJournals(None, runs))
     container.provide(
         runtime.own_tools, plugins.own_tools(runtime.connection_store_ref)
     )
@@ -381,14 +385,20 @@ def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
     container.eager(runtime.message_bus)
     container.eager(runtime.payload_store)
     container.eager(runtime.call_ambient)
-    # своих журналов у чата нет, но реестр инструментов читает их держатель
-    container.eager(runtime.call_journals)
     container.eager(runtime.connection_store)
     # инструменты собираются на старте: конфиг плагинов проверяется до сессий
     container.eager(runtime.tool_launchers)
     container.eager(runtime.tool_registry)
-    # запуск агента — после реестра: ретранслятор отдаёт его инструменты сервером chat
-    _eager_agent(container)
+    # запуск агента — после реестра: ретранслятор отдаёт его инструменты сервером
+    # chat; слои настроек и запуск процессов поднимаются на старте, первая вкладка
+    # не ждёт DDL; индекс агентов рендереры тредов читают синхронно
+    container.eager(
+        providers.agent_settings_table,
+        providers.agent_launcher,
+        providers.thread_deleter,
+        providers.thread_agents_index,
+        providers.tool_media,
+    )
     container.eager(providers.remote_journals)
     container.eager(providers.mcp_servers)
     container.eager(providers.agent_feeds)
@@ -400,17 +410,6 @@ def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
     Container.set_root(container)
     Container.set_session_hook(_session_container)
     return container
-
-
-def _eager_agent(container: Container) -> None:
-    """Слои настроек агента и запуск процессов поднимаются на старте:
-    первая вкладка не ждёт DDL."""
-    container.eager(providers.agent_settings_table)
-    container.eager(providers.agent_launcher)
-    container.eager(providers.thread_deleter)
-    # рендереры тредов читают его синхронно: срез истории перерисовывает вкладки
-    container.eager(providers.thread_agents_index)
-    container.eager(providers.tool_media)
 
 
 def _session_container() -> Container | None:

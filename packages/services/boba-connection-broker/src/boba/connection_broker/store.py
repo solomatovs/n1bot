@@ -158,43 +158,6 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
 
         return UUID(str(row[ConnectionsColumn.ID.value]))
 
-    async def add_owned(
-        self, name: str, connection: ConnectionBase, user_id: UUID
-    ) -> UUID:
-        """Строка и личный грант одной транзакцией: личный грант и есть владение."""
-        payload = self._cipher.encrypt(connection)
-        insert_row = (
-            self._query()
-            .add(
-                """
-                insert into {schema}.connections (
-                    name,
-                    data
-                )
-                values (
-                    %(name)s,
-                    %(data)s
-                )
-                returning
-                    id
-                """,
-                name=name,
-                data=Jsonb(payload),
-            )
-            .build()
-        )
-
-        async with self._transaction("add_owned") as cur:
-            await cur.execute(insert_row.text, insert_row.params)
-            row = self._returning(
-                await cur.fetchone(), f"insert of row {name!r} into connections"
-            )
-            connection_id = UUID(str(row[ConnectionsColumn.ID.value]))
-            insert_grant = self._grant_insert(connection_id, GrantTarget.user(user_id))
-            await cur.execute(insert_grant.text, insert_grant.params)
-
-        return connection_id
-
     async def update(
         self, connection_id: UUID, name: str, connection: ConnectionBase
     ) -> bool:

@@ -19,17 +19,17 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         action="store",
         default=None,
         metavar="PATH",
-        help="acp-tck executable; without it test_cli_tck.py is skipped",
+        help="acp-tck executable; without it test_cli_tck.py fails",
     )
 
 
 @pytest.fixture
 def tck_executable(request: pytest.FixtureRequest) -> Path:
-    """Исполняемый файл acp-tck из `--acp-tck`; без опции тест пропускается,
-    несуществующий путь — ошибка прогона."""
+    """Исполняемый файл acp-tck из `--acp-tck`; без опции или с
+    несуществующим путём тест падает."""
     given = request.config.getoption("acp_tck", default=None)
     if given is None:
-        pytest.skip("acp-tck is not configured: pass --acp-tck <path to acp-tck>")
+        pytest.fail("acp-tck is not configured: pass --acp-tck <path to acp-tck>")
 
     path = Path(str(given))
     if not path.is_file():

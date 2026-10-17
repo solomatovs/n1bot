@@ -23,8 +23,8 @@ endpoint'ами, выданными ролям вошедшего, — и рес
 
 Ошибки:
 TokenClaimsError — токен принят, но логина и ролей вызывающего в нём нет.
-CallScopeError — служебные поля запроса в _meta не проходят модель либо
-    тред вызова (аргумент thread_id) не строка или не годится сегментом пути.
+CallScopeError — тред вызова (аргумент thread_id) не строка или не годится
+    сегментом пути.
 AuthorizeError — запрос авторизации не принят (по контракту OAuthProvider).
 TokenError — код авторизации или утверждение не приняты (по контракту
     OAuthProvider).
@@ -55,7 +55,7 @@ from fastmcp.server.auth import (
 )
 from fastmcp.server.auth.auth import TokenHandler
 from fastmcp.server.auth.jwt_issuer import JWTIssuer, derive_jwt_key
-from fastmcp.server.dependencies import get_access_token, get_context
+from fastmcp.server.dependencies import get_access_token
 from joserfc.errors import JoseError
 from mcp.server.auth.handlers.metadata import MetadataHandler
 from mcp.server.auth.middleware.client_auth import ClientAuthenticator
@@ -95,7 +95,6 @@ from boba.identity.errors import AuthenticationError, AuthorizationError
 from boba.identity.signin import ProxyRequest, SignedIn, SignInMetadata
 from boba.identity.sso import SsoChallenge
 from boba.runtime.http import SsoRequests, SsoResponses
-from boba.toolkit.wire import RequestFields
 from boba.toolrun.call_id import CallFields
 
 __all__ = [
@@ -107,7 +106,6 @@ __all__ = [
     "McpClient",
     "RegisteredClients",
     "SealedValues",
-    "SentMeta",
     "ServiceAuth",
     "ServiceTokens",
     "TokenClaim",
@@ -209,40 +207,7 @@ class TokenSubjects:
 
 class CallScopeError(Exception):
     """Клиент прислал вызов, который не принять: тред не годится сегментом
-    пути либо служебные поля запроса не проходят свою модель."""
-
-
-class SentMeta:
-    """Служебные поля текущего запроса tools/call — единственный читатель
-    _meta запроса.
-
-    Создаётся теми, кто читает поля запроса: CallContextMiddleware и
-    FileUploadTool. Читает _meta запроса из контекста fastmcp и разбирает
-    его моделью RequestFields.
-    """
-
-    def sent(self) -> RequestFields:
-        """Поля запроса; запрос без _meta — пустые поля.
-
-        Ошибки:
-        CallScopeError — поля клиента не проходят модель RequestFields.
-        """
-        request = get_context().request_context
-        if request is None:
-            return RequestFields()
-
-        meta = request.meta
-        if meta is None:
-            return RequestFields()
-
-        try:
-            return RequestFields.model_validate(meta)
-        except ValidationError as exc:
-            msg = (
-                f"reading _meta of the call: expected progressToken as a string "
-                f"or an integer, got {dict(meta)!r}: {exc}"
-            )
-            raise CallScopeError(msg) from exc
+    пути."""
 
 
 class CallScopes:

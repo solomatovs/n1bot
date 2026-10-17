@@ -26,7 +26,6 @@ OVERRIDABLE = [
     "url_prefix",
     "cgroup_base",
     "app_root",
-    "workflow_page",
     "messaging_provider",
     "tool_launcher",
     "mcp_host",

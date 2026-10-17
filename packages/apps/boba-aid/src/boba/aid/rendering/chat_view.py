@@ -22,7 +22,7 @@ from collections.abc import (
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import PurePosixPath
-from typing import Any, ClassVar, Protocol, TypeAlias, cast
+from typing import Any, ClassVar, Protocol, TypeAlias, get_args
 from urllib.parse import unquote, urlsplit, urlunsplit
 from uuid import UUID, uuid5
 
@@ -32,13 +32,12 @@ from chainlit.config import config as chainlit_config
 from chainlit.context import context
 from chainlit.element import CustomElement, Element, File
 from chainlit.message import Message
-from chainlit.step import Step, StepDict
+from chainlit.step import Step
 from chainlit.utils import utc_now
 from literalai.observability.step import TrueStepType
 
 from boba.aid.domain.keys import CanvasFileUrl
 from boba.aid.rendering.tool import ChatElements, ToolAppView
-from boba.cancellation import StopReason
 from boba.canvas.canvas import (
     CanvasAction,
     CanvasElement,
@@ -65,7 +64,6 @@ __all__ = [
     "ChatSink",
     "ChatView",
     "LiveSink",
-    "RecordingSink",
     "StepKind",
     "StepRole",
     "StepStatus",
@@ -74,6 +72,8 @@ __all__ = [
     "ToolStepLabel",
     "TurnDraft",
     "TurnPulse",
+    "WorkspaceFile",
+    "WorkspaceLinks",
 ]
 
 logger = logging.getLogger(__name__)
@@ -90,25 +90,8 @@ class StepText(StrEnum):
     THINKING = "thinking"
     TOOL = "tool"
     STOPPED = "stopped by the user"
-    ABORTED = "stopped"
-    LOCK_LOST = "stopped: the thread was taken over by another process"
-    SHUTDOWN = "stopped: the server is restarting"
     FINISHED = "finished"
     TURN_FAILED = "turn failed"
-
-    @classmethod
-    def for_stop(cls, reason: StopReason | None) -> StepText:
-        """Формулировка остановки: кнопка пользователя или снятая снаружи задача."""
-        if reason is StopReason.USER_STOP:
-            return cls.STOPPED
-
-        if reason is StopReason.LOCK_LOST:
-            return cls.LOCK_LOST
-
-        if reason is StopReason.SHUTDOWN:
-            return cls.SHUTDOWN
-
-        return cls.ABORTED
 
 
 class StepKind(StrEnum):
@@ -122,7 +105,13 @@ class StepKind(StrEnum):
 
     @property
     def step_type(self) -> TrueStepType:
-        return cast("TrueStepType", self.value)
+        """Тип шага chainlit; значение, которого chainlit не знает, — ошибка."""
+        for known in get_args(TrueStepType):
+            if known == self.value:
+                return known
+
+        msg = f"step kind {self.value!r} is not a chainlit step type"
+        raise ValueError(msg)
 
 
 class StepLanguage(StrEnum):
@@ -234,12 +223,6 @@ class TurnDraft:
 
         return f"{turn_key}#{self.answers}"
 
-    def next_answer_key(self) -> str | None:
-        """Ключ очередного ответа хода: следующий вызов даст уже новый."""
-        key = self.answer_key()
-        self.answers += 1
-        return key
-
     def seal_answer(self) -> Message | None:
         """Снимает открытый ответ; None — открывать было нечего."""
         message = self.answer
@@ -312,26 +295,6 @@ class LiveSink(ChatSink):
         # снятый шаг уходит заново отправкой, а chainlit шлёт её лишь однажды
         step.persisted = False
         await context.emitter.delete_step(step.to_dict())
-
-
-class RecordingSink(ChatSink):
-    """Копит шаги как StepDict — для отдачи истории треда."""
-
-    def __init__(self) -> None:
-        self._steps: dict[str, StepDict] = {}
-
-    async def put(self, step: Step) -> None:
-        self._steps[step.id] = step.to_dict()
-
-    async def drop(self, step: Step) -> None:
-        self._steps.pop(step.id, None)
-
-    def rebuilt(self) -> None:
-        self._steps.clear()
-
-    @property
-    def steps(self) -> list[StepDict]:
-        return list(self._steps.values())
 
 
 class Streamable(Protocol):
@@ -546,6 +509,35 @@ ResourceDrawing: TypeAlias = Callable[[str, str, Step, str | None, int], Awaitab
 итог — markdown для выхода шага (пусто — ресурс стал элементом)."""
 
 
+@dataclass(frozen=True)
+class WorkspaceFile:
+    """Файл workspace сервера, на который ведёт ссылка resource_link со
+    схемой file://: путь в workspace и MIME — названный ссылкой, а без него
+    по имени файла. Строит его WorkspaceLinks."""
+
+    path: str
+    mime: str
+
+
+class WorkspaceLinks:
+    """Разбор ссылок resource_link на файлы workspace сервера: одно правило
+    для ленты (ChatView) и для показа панели по ответу tools/call
+    (CanvasOpener), которые держат его в поле."""
+
+    FILE_SCHEME: ClassVar[str] = "file"
+    """Схема ссылки на файл workspace сервера."""
+
+    def file_of(self, block: mt.ResourceLink) -> WorkspaceFile | None:
+        """Файл ссылки; None — ссылка другой схемы, не в workspace."""
+        address = urlsplit(str(block.uri))
+        if address.scheme != self.FILE_SCHEME:
+            return None
+
+        path = unquote(address.path)
+
+        return WorkspaceFile(path=path, mime=ContentMime.named(block.mime_type, path))
+
+
 class ChatView:
     """Строит step-иерархию хода диалога и пишет её в sink.
 
@@ -567,8 +559,6 @@ class ChatView:
     """
 
     NAMESPACE: ClassVar[UUID] = UUID("6f9b1f4e-2f1a-4c1a-9a2f-1d3b5c7e9a11")
-    FILE_SCHEME: ClassVar[str] = "file"
-    """Схема ссылки на файл workspace сервера."""
     TEXT_FAMILY: ClassVar[str] = "text/"
     """Начало MIME текстовых ресурсов: неизвестный текст рисуется блоком кода."""
     TREE_BYTES: ClassVar[int] = 1 << 20
@@ -593,6 +583,7 @@ class ChatView:
         self._thread_id = thread_id
         self._user_key = user_key
         self._scope = CanvasScope(user_id=user_key, thread_id=thread_id)
+        self._links = WorkspaceLinks()
         self._storage = storage
         self._batch = StreamBatch()
         self._sink = BatchedSink(sink, self._batch)
@@ -1264,9 +1255,9 @@ class ChatView:
             except StorageError as exc:
                 return f"{file_key.in_workspace()} is not shown: {exc}"
 
-        return await self._mounted(
-            file_key.in_workspace(), file_key.name, block.mime_type, key, number
-        )
+        mounted = WorkspaceFile(path=file_key.in_workspace(), mime=block.mime_type)
+
+        return await self._mounted(mounted, file_key.name, key, number)
 
     async def _decoded(self, data: str) -> AsyncIterator[bytes]:
         """Байты base64 срезами BASE64_SLICE: в памяти — один срез.
@@ -1286,11 +1277,10 @@ class ChatView:
         if not isinstance(block, mt.ResourceLink):
             return await self._unknown(block, step, key, number)
 
-        address = urlsplit(str(block.uri))
-        if address.scheme == self.FILE_SCHEME:
-            path = unquote(address.path)
-            return await self._mounted(path, block.name, block.mime_type, key, number)
+        if mounted := self._links.file_of(block):
+            return await self._mounted(mounted, block.name, key, number)
 
+        address = urlsplit(str(block.uri))
         if address.scheme not in set(UrlScheme):
             return await self._unknown(block, step, key, number)
 
@@ -1317,7 +1307,7 @@ class ChatView:
         return Fence.around(JsonBlock.pretty(shown), StepLanguage.JSON.value)
 
     async def _mounted(
-        self, path: str, name: str, mime: str | None, key: str | None, number: int
+        self, mounted: WorkspaceFile, name: str, key: str | None, number: int
     ) -> str:
         """Файл workspace по ссылке — элемент у ответа хода, одинаково вживую
         и при воспроизведении: файл с вьювером канваса — его карточкой,
@@ -1331,13 +1321,11 @@ class ChatView:
             return ""
 
         try:
-            file_key = self._scope.key(path)
+            file_key = self._scope.key(mounted.path)
         except CanvasError as exc:
-            return f"{path} is not shown: {exc}"
+            return f"{mounted.path} is not shown: {exc}"
 
-        if mime is None:
-            mime = ContentMime.of_name(file_key.name)
-
+        mime = mounted.mime
         element: Element
         viewer = CanvasRegistry.viewer_for(mime)
         if viewer is None:

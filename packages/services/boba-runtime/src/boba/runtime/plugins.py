@@ -24,7 +24,7 @@ from typing import Any
 from omegaconf import DictConfig, OmegaConf
 from pydantic import BaseModel, ConfigDict
 
-from boba.access import GrantCheck, ToolAccess, ToolGrants, ToolSurfaces
+from boba.access import GrantCheck, ToolAccess, ToolGrants
 from boba.chat.profiles import ProfilesSection, RolesSection
 from boba.config import bind
 from boba.connection_broker.tickets import ServiceTickets
@@ -87,9 +87,6 @@ class PluginMeta(BaseModel):
 
     enable: bool = False
     tools: StringList = []
-    headless: StringList = []
-    """Инструменты из tools, которые модели в чате не отдаются: их зовут
-    страница, REST и workflow (снятие снимка каталога и подобные задачи)."""
     connections: dict[str, StringList] = {}
     """Списки заданных соединений сервера у инструментов плагина: имя
     инструмента → имена из [connections]."""
@@ -148,7 +145,6 @@ class ToolLoader:
 
         tools: list[HostedTool] = []
         specs = StreamSpecs({})
-        headless_only: set[str] = set()
         for name, plugin in self._plugins.items():
             section = OmegaConf.select(self._raw, f"tool.{name}")
             if section is None:
@@ -167,7 +163,6 @@ class ToolLoader:
             built = plugged.tools
             tools.extend(built)
             specs = specs.merged(plugged.specs)
-            headless_only.update(self._listed(name, "headless", meta.headless, built))
             self._listed(name, "connections", meta.connections, built)
 
             # живой вывод есть у отдельных процессов: кнопка потока
@@ -186,7 +181,7 @@ class ToolLoader:
             tools.append(tool)
             own.append(tool.name)
 
-        access = self._access_of(tools, headless_only)
+        access = self._access_of(tools)
         self._chain.seal(tools, access, specs)
         return ToolRegistry(
             tools=tools,
@@ -290,17 +285,12 @@ class ToolLoader:
 
         return set(listed)
 
-    def _access_of(
-        self,
-        tools: Sequence[HostedTool],
-        headless_only: Iterable[str],
-    ) -> ToolAccess:
+    def _access_of(self, tools: Sequence[HostedTool]) -> ToolAccess:
         """Права по грантам процесса; опечатка в имени инструмента — отказ."""
         known = frozenset(tool.name for tool in tools)
         grants = self._grants
 
-        surfaces = ToolSurfaces(headless_only=frozenset(headless_only))
-        return ToolAccess(known, grants.roles, grants.profiles, surfaces, grants.check)
+        return ToolAccess(known, grants.roles, grants.profiles, grants.check)
 
 
 class ConfigGrants:

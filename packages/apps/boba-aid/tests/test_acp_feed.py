@@ -9,7 +9,7 @@ from __future__ import annotations
 import base64
 import json
 from collections.abc import AsyncIterator, Mapping, Sequence
-from pathlib import Path, PurePosixPath
+from pathlib import PurePosixPath
 from typing import Any, ClassVar, cast
 from urllib.parse import urlsplit
 
@@ -67,6 +67,7 @@ from boba.messaging import (
 from boba.runtime.storage import LocalStorageClient
 from boba.stand.refs import StandRefs
 from boba.stand.storage import StorageSeed
+from boba.toolkit.chain import GroupCall, GroupFailureResult
 from boba.toolkit.channels import ToolChannel
 from boba.toolkit.dag import (
     CallDag,
@@ -80,10 +81,18 @@ from boba.toolkit.result import (
     CanvasResult,
     ContentMime,
     ErrorResult,
+    ExceptionResult,
+    Fact,
+    FailureCause,
     FileResult,
     MarkdownResult,
-    ToolArtifact,
+    ShellResult,
+    SqlFailureResult,
+    SqlResult,
+    SqlStatement,
+    TableResult,
     ToolResultBase,
+    VisualResult,
 )
 from boba.toolkit.wire import JournalFeature, JournalRead, McpContent, ResultWire
 from boba.transport.acp.protocol import IdleErrorUpdate
@@ -992,27 +1001,23 @@ class TestLiveEqualsReplay:
 
 class TestResultsFromRawOutput:
     """Файлы итогов и ссылки панели рисует лента из `rawOutput`: живой ход
-    (шина) и воспроизведение дают один и тот же элемент у ответа хода, и
-    так же рисуются итоги старых тредов (снапшоты истории boba-toolkit) —
-    канвас снапшота показывает спеку mermaid, её ссылку карточка строит по
-    тексту из хранилища."""
+    (шина) и воспроизведение дают один и тот же элемент у ответа хода;
+    канвас показывает спеку mermaid, её ссылку карточка строит по тексту из
+    хранилища."""
 
-    SNAPSHOTS: ClassVar[Path] = (
-        Path(__file__).resolve().parents[3] / "core/boba-toolkit/tests/history"
-    )
     SPEC: ClassVar[str] = "graph TD; A-->B"
 
-    def _snapshot(self, name: str, thread_id: str) -> str:
-        raw = (self.SNAPSHOTS / name).read_text(encoding="utf-8")
-
-        return raw.replace("/workspace/t/", f"/workspace/{thread_id}/")
-
     def _updates(self, thread_id: str) -> list[SessionUpdate]:
-        attached = FileResult.model_validate_json(
-            self._snapshot("file.json", thread_id)
+        attached = FileResult(
+            path=f"/workspace/{thread_id}/upload/a.pdf",
+            name="a.pdf",
+            mime="application/pdf",
         )
-        shown = CanvasResult.model_validate_json(
-            self._snapshot("canvas.json", thread_id)
+        shown = CanvasResult(
+            path=f"/workspace/{thread_id}/mermaid/a.mmd",
+            label="a.mmd",
+            summary="s",
+            note="n",
         )
 
         return [
@@ -1042,7 +1047,7 @@ class TestResultsFromRawOutput:
     async def _drawn(
         self, runtime_stand: StandRefs, storage: LocalStorageClient, seeded: Seed
     ) -> tuple[FakeContext, FakeContext]:
-        """Ход со снапшотами итогов вживую через шину и при воспроизведении."""
+        """Ход с итогами вживую через шину и при воспроизведении."""
         thread_id = seeded.thread_id
         live_context = FakeContext(thread_id)
         token = context_var.set(cast("ChainlitContext", live_context))
@@ -1201,30 +1206,6 @@ class TestElementIdsWithoutKey:
 
         assert len(ids) == 4, recorded.elements
         assert len(set(ids)) == 4, ids
-
-
-class TestOldThreads:
-    """Треды прежних выпусков: вопрос со ссылкой, склеенной в текст, рисуется
-    текстом как есть и без элементов — вложений у него в истории нет."""
-
-    @pytest.mark.anyio
-    async def test_old_question_with_a_glued_link_is_drawn_as_text(
-        self,
-        runtime_stand: StandRefs,
-        storage: LocalStorageClient,
-        recorded: FakeEmitter,
-    ) -> None:
-        text = f"look[@note.txt](/boba-test/workspace/attachment/{THREAD}/upload/e)"
-        replay = _view(runtime_stand, storage, RemoteJournals())
-        await replay.apply(
-            schema.UserMessageUpdate(
-                message_id=QUESTION, content=[schema.TextContentBlock(text=text)]
-            )
-        )
-        await replay.finish_turn()
-
-        assert recorded.last()[QUESTION].get(StepField.OUTPUT) == text
-        assert recorded.elements == []
 
 
 class TestCodecAndResults:
@@ -1427,9 +1408,97 @@ class TestBlockDrawings:
     (7.4) выглядит как до перехода на стандартные блоки (без ведущего
     перевода строки у таблиц — markdown его не показывает)."""
 
-    SNAPSHOTS: ClassVar[Path] = (
-        Path(__file__).resolve().parents[3] / "core/boba-toolkit/tests/history"
+    CAUSE: ClassVar[str] = (
+        "Code: 36. DB::Exception: Macro 'uuid' in engine arguments is only "
+        "supported when the UUID is explicitly specified. (BAD_ARGUMENTS)"
     )
+    CRASH: ClassVar[ExceptionResult] = ExceptionResult(
+        error_kind="ClickHouseQueryError",
+        message=f"clickhouse statement failed: {CAUSE}",
+        causes=[FailureCause(error_type="DatabaseError", message=CAUSE)],
+        raised_at="boba/tool/ch/tools.py:812 in ch_stream_in",
+        traceback="Traceback (most recent call last):\n  ch_stream_in",
+    )
+    RESULTS: ClassVar[dict[str, ToolResultBase]] = {
+        "error": ErrorResult(message="boom", error_kind="e"),
+        "exception": CRASH,
+        "markdown": MarkdownResult(text="x", language="sql", note="n"),
+        "shell": ShellResult(
+            exit_code=0,
+            stdout="hi",
+            stdout_bytes=2,
+            stdout_truncated=False,
+            stderr="",
+            stderr_bytes=0,
+            stderr_truncated=False,
+            duration_ms=1,
+            timed_out=False,
+        ),
+        "sql": SqlResult(
+            engine="postgres",
+            statements=[SqlStatement(rows=[{"a": 1}], status="SELECT 1")],
+        ),
+        "sql_failure": SqlFailureResult(
+            error_kind="ClickHouseQueryError",
+            cause=ExceptionResult(
+                error_kind="ClickHouseQueryError",
+                message=(
+                    "clickhouse statement failed: Code: 44. DB::Exception: "
+                    "Sorting key contains nullable columns (ILLEGAL_COLUMN)"
+                ),
+                raised_at="boba/db/clickhouse/transfer.py:175 in command",
+            ),
+            columns=[
+                {
+                    "column": "id",
+                    "stream field": "id",
+                    "type": "Nullable(Int32)",
+                    "nullable": "nullable",
+                    "source type": "integer",
+                    "note": "",
+                }
+            ],
+            statements=[
+                SqlStatement(
+                    text="drop table if exists `default`.`people_src__ex`",
+                    status="done",
+                ),
+                SqlStatement(
+                    text=(
+                        "create table `default`.`people_src` (`id` Nullable(Int32)) "
+                        "engine = MergeTree order by id"
+                    ),
+                    status="failed: ClickHouseQueryError",
+                ),
+            ],
+        ),
+        "sql_pump": SqlResult(
+            engine="postgres",
+            statements=[
+                SqlStatement(text="set work_mem = '64MB'", status="SET"),
+                SqlStatement(
+                    text="copy (select id from t) to stdout (format csv)",
+                    rows=[{"column": "id", "type": "integer", "not null": "✓"}],
+                    status="streamed out copy csv from postgres 17.10, 1 columns",
+                    facts=[Fact(key="server", value="backend pid 1, version 170010")],
+                ),
+            ],
+        ),
+        "stream_group_failure": GroupFailureResult(
+            error_kind="stream_group_failed",
+            cause=CRASH,
+            origin=GroupCall(tool="ch_stream_in", call_id="call_01"),
+            calls=[
+                GroupCall(tool="pg_stream_out", call_id="call_00"),
+                GroupCall(tool="ch_stream_in", call_id="call_01"),
+            ],
+        ),
+        "table": TableResult(rows=[{"a": 1}], note="n"),
+        "visual": VisualResult(
+            element="plotly", props={"spec": {"data": []}}, title="t"
+        ),
+    }
+    """Каждый вид результата boba-mcp, каким его отдаёт инструмент."""
 
     LOOKS: ClassVar[dict[str, str]] = {
         "error": ("**boom**"),
@@ -1536,9 +1605,7 @@ class TestBlockDrawings:
         recorded: FakeEmitter,
         kind: str,
     ) -> None:
-        raw = (self.SNAPSHOTS / f"{kind}.json").read_text(encoding="utf-8")
-        artifact = ToolArtifact.revive(json.loads(raw))
-        assert artifact is not None
+        artifact = self.RESULTS[kind]
 
         await self._drawn(runtime_stand, storage, _result(artifact))
 

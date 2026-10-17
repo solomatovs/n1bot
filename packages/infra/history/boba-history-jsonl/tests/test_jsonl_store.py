@@ -230,15 +230,13 @@ class TestRead:
         assert isinstance(lines[1], StoredLine)
         assert len(lines) == 2
 
+    @pytest.mark.failif(os.geteuid() == 0, reason="root reads any file")
     async def test_unreadable_journal_is_an_error(self, tmp_path: Path) -> None:
         path = tmp_path / "abc-123.jsonl"
         path.write_text("{}\n", encoding="utf-8")
         path.chmod(0o000)
         store = JsonlHistoryStore(tmp_path)
         try:
-            if os.geteuid() == 0:
-                pytest.skip("root reads any file")
-
             with pytest.raises(HistoryError, match="Could not read the journal"):
                 _ = [line async for line in store.read(SESSION)]
         finally:

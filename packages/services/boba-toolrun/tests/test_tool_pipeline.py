@@ -19,7 +19,7 @@ from boba.toolkit.calls import ToolIntent
 from boba.toolkit.chain import CallAmbient
 from boba.toolkit.dag import DagNode
 from boba.toolkit.facade import Injected, tool
-from boba.toolkit.result import MarkdownResult, ToolArtifact
+from boba.toolkit.result import MarkdownResult
 from boba.toolrun.call_id import CallFields
 from boba.toolrun.hosted import HostedTool, ToolHosting, ToolSchema
 from boba.toolrun.injected import InjectedConfig, StaticConfig
@@ -110,36 +110,17 @@ class TestPipeline:
 
 
 class TestArtifactRendering:
-    """2c: артефакт нового пути оживает и рендерится существующим механизмом."""
+    """2c: артефакт нового пути — результат семейства, рендерится существующим
+    механизмом."""
 
-    def test_artifact_from_pipeline_revives_and_renders(self) -> None:
+    def test_artifact_from_pipeline_renders(self) -> None:
         pipe_echo = build_pipeline()
 
         message = asyncio.run(pipe_echo.call(call_envelope("hi")))
 
-        revived = ToolArtifact.revive(message.artifact)
-        if not (isinstance(revived, MarkdownResult)):
-            raise AssertionError("isinstance(revived, MarkdownResult)")
+        artifact = message.artifact
+        if not isinstance(artifact, MarkdownResult):
+            raise AssertionError(f"pipeline artifact is markdown, got {artifact!r}")
 
-        if "hi|p1p3" not in revived.text:
-            raise AssertionError('"hi|p1p3" in revived.text')
-
-    def test_serialized_artifact_revives_from_history(self) -> None:
-        """История хранит артефакт сериализованным dict'ом."""
-        pipe_echo = build_pipeline()
-
-        message = asyncio.run(pipe_echo.call(call_envelope("hi")))
-        stored = message.artifact.model_dump(mode="json")
-
-        revived = ToolArtifact.revive(stored)
-        if not (isinstance(revived, MarkdownResult)):
-            raise AssertionError("isinstance(revived, MarkdownResult)")
-        if "hi|p1p3" not in revived.text:
-            raise AssertionError('"hi|p1p3" in revived.text')
-
-    def test_retired_kind_is_not_revived(self) -> None:
-        """Вариант pg_copy_text удалён без совместимости: ревив отдаёт None."""
-        legacy = {"kind": "pg_copy_text", "ok": True, "text": "n\n1\n"}
-
-        if ToolArtifact.revive(legacy) is not None:
-            raise AssertionError("ToolArtifact.revive(legacy) is None")
+        if "hi|p1p3" not in artifact.text:
+            raise AssertionError(f"pipeline artifact text: {artifact.text!r}")

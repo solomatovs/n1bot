@@ -102,12 +102,20 @@ class TestToolProgress:
         if late != [ProgressReport(done=50, total=50, message="step 50")]:
             raise AssertionError(f"последний отчёт дослан: {late}")
 
-    def test_detached_progress_writes_nothing(self) -> None:
-        """Запуск человеком: канала отчётов нет, тело работает как обычно."""
+    def test_detached_progress_writes_nothing(
+        self, capfd: pytest.CaptureFixture[str]
+    ) -> None:
+        """Запуск человеком: канала отчётов нет, тело работает как обычно, а
+        отчёты не утекают ни в stdout, ни в stderr."""
         progress = ToolProgress(-1)
 
-        progress.report(1, None, "nobody listens")
+        progress.announce(1, None, "nobody listens")
+        progress.report(2, None, "nobody listens")
         progress.close()
+
+        written = capfd.readouterr()
+        if written.out or written.err:
+            raise AssertionError(f"a detached progress writes nothing, got {written}")
 
     def test_long_message_is_clipped_to_one_atomic_line(
         self, pipe: ProgressPipe, unthrottled: None

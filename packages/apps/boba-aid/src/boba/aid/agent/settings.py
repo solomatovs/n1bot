@@ -235,13 +235,6 @@ class ProfileModelSpecs:
         )
 
 
-class SettingsTable(StrEnum):
-    """Таблицы слоёв настроек агента в схеме чата."""
-
-    USERS = "agent_user_settings"
-    CHATS = "agent_chat_settings"
-
-
 class SettingsColumn(StrEnum):
     """Колонки таблиц настроек."""
 

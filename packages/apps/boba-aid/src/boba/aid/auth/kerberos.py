@@ -12,7 +12,6 @@ import logging
 import os
 from typing import ClassVar
 
-import chainlit as cl
 from fastapi import FastAPI
 from starlette.requests import Request
 from starlette.responses import RedirectResponse, Response
@@ -25,7 +24,6 @@ from boba.identity.errors import (
     FailureReport,
 )
 from boba.identity.session import LogLine
-from boba.identity.signin import SignedIn
 from boba.identity.sso import (
     SsoChallenge,
     SsoErrorCode,
@@ -58,14 +56,6 @@ class KerberosAuth:
         os.environ[self.CUSTOM_AUTH_ENV] = "1"
 
         SessionRefresh.prepend_route(chainlit_app, self._sso_path, self.auth_sso)
-
-    @staticmethod
-    def user_of(signed: SignedIn) -> cl.User:
-        return cl.User(
-            identifier=signed.identifier,
-            display_name=signed.display_name,
-            metadata=signed.sign_in.render(),
-        )
 
     def _login_redirect(self, exc: BaseError) -> RedirectResponse:
         """Исход SSO кодом на страницу логина: браузер пришёл навигацией, не fetch."""

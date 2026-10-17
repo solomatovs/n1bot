@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable, Mapping
-from typing import Any, ClassVar, cast
+from typing import Any, ClassVar
 from uuid import UUID
 
 from chainlit.context import ChainlitContext, context_var
@@ -19,7 +19,7 @@ from chainlit.types import ThreadDict
 from boba.aid.chat.feed import TextClip
 from boba.aid.domain.fields import StepField, ThreadField
 from boba.aid.infra import providers
-from boba.aid.infra.session import current_session, session_source_ref
+from boba.aid.infra.session import SocketSend, current_session, session_source_ref
 from boba.aid.rendering.acp_view import UpdateView
 from boba.aid.rendering.chat_view import ChatView, LiveSink
 from boba.aid.rendering.renderer import (
@@ -51,7 +51,6 @@ __all__ = [
     "CanvasRoomTransport",
     "ChatNotices",
     "ChatRoomSurface",
-    "StickyLoadingEmitter",
     "ThreadEmitter",
     "ThreadLive",
     "ThreadRoom",
@@ -59,15 +58,6 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
-
-
-class StickyLoadingEmitter(ChainlitEmitter):
-    """Эмиттер обработчика восстановления треда: глушит task_end обёртки chainlit,
-    чтобы индикатор живого хода не гас у новой вкладки.
-    """
-
-    async def task_end(self) -> None:
-        return None
 
 
 class ThreadEmitter(ChainlitEmitter):
@@ -78,6 +68,7 @@ class ThreadEmitter(ChainlitEmitter):
     def __init__(self, session: WebsocketSession, thread_id: str) -> None:
         super().__init__(session)
         self._thread_id = thread_id
+        self._send = SocketSend()
 
     @property
     def emit(self) -> Callable[[str, Any], Awaitable[None]]:
@@ -85,7 +76,7 @@ class ThreadEmitter(ChainlitEmitter):
             for session in ThreadRoom.sessions(self._thread_id):
                 # одна битая сессия не должна ронять весь ход
                 try:
-                    await cast("Awaitable[None]", session.emit(event, data))
+                    await self._send.emit(session, event, data)
                 except Exception as exc:
                     logger.warning(
                         "emit %s failed for session %s of thread %s: %s",
@@ -138,14 +129,6 @@ class ThreadRoom:
         logger.info("broadcast on thread %s: session=%s", thread_id, session.id)
 
     @staticmethod
-    def keep_loading() -> None:
-        """Подменяет эмиттер текущего обработчика на StickyLoadingEmitter, чтобы обёртка
-        chainlit не погасила индикатор хода.
-        """
-        session = ThreadRoom.websocket()
-        context_var.set(ChainlitContext(session, StickyLoadingEmitter(session)))
-
-    @staticmethod
     def websocket() -> WebsocketSession:
         """Возвращает сокетную сессию текущего вызова; без неё рассылать события некуда,
         и это внутренняя ошибка.
@@ -193,6 +176,7 @@ class ChatRoomSurface(RenderSurface):
     def __init__(self, anchor: WebsocketSession, thread_id: str) -> None:
         self._anchor = anchor
         self._thread_id = thread_id
+        self._send = SocketSend()
 
     def context(self) -> ChainlitContext | None:
         return ChainlitContext(
@@ -204,7 +188,7 @@ class ChatRoomSurface(RenderSurface):
         for session in ThreadRoom.sessions(self._thread_id):
             # одна битая сессия не должна глушить сигнал остальным
             try:
-                await cast("Awaitable[None]", session.emit(self.EVENT, dict(payload)))
+                await self._send.emit(session, self.EVENT, dict(payload))
             except Exception as exc:
                 failed.append(f"{session.id}: {exc}")
 
@@ -317,6 +301,7 @@ class UserRoom:
     INTERACTION: ClassVar[str] = "boba:thread-list:{seq}"
     _JOINED: ClassVar[dict[UUID, Unsubscribe]] = {}
     _SETTINGS: ClassVar[SettingsRefresher | None] = None
+    _SEND: ClassVar[SocketSend] = SocketSend()
 
     @classmethod
     def on_settings(cls, refresher: SettingsRefresher) -> None:
@@ -398,7 +383,7 @@ class UserRoom:
             payload = {"interaction": interaction, "thread_id": socket.thread_id}
             # одна битая вкладка не должна оставить без обновления остальные
             try:
-                await cast("Awaitable[None]", socket.emit(cls.EVENT, payload))
+                await cls._SEND.emit(socket, cls.EVENT, payload)
                 sent += 1
             except Exception as exc:
                 logger.warning(
