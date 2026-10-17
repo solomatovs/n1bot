@@ -809,12 +809,13 @@ class TestSignInAsTheUser:
 
         return await servers.port(name, caller)
 
-    async def test_journal_growth_is_heard_only_by_its_caller(
+    async def test_journal_growth_is_heard_only_by_its_caller(  # noqa: PLR0912, PLR0915 — один идущий вызов на все подписки
         self, boba_mcp_stand: BobaMcpStand
     ) -> None:
         """Ссылку на канал журнала сервер называет, пока вызов идёт;
         subscriptions/listen по ней отдаёт события роста канала тому, кто
-        вызывал, а чужому пользователю отказывает до подтверждения."""
+        вызывал. Чужому пользователю, подписке на канал без записи и на uri
+        не журнала сервер отказывает до подтверждения."""
         servers = self._servers(boba_mcp_stand, self.SECRET)
         owner = McpCaller(login="ivanov", roles=frozenset({"dev"}))
         stranger = McpCaller(login="petrov", roles=frozenset({"dev"}))
@@ -842,7 +843,8 @@ class TestSignInAsTheUser:
                     raise AssertionError(f"the links are a list: {meta}")
 
                 uri = str(links[0])
-                params = UriTemplate.parse(feature.resource).match(uri)
+                template = UriTemplate.parse(feature.resource)
+                params = template.match(uri)
                 if params is None:
                     raise AssertionError(f"{uri} names a journal channel")
 
@@ -854,6 +856,16 @@ class TestSignInAsTheUser:
 
             with pytest.raises(McpClientError) as refused:
                 async with other.listen([uri]):
+                    pass
+
+            # у запуска нет такого вызова: журнала нет, подписка на него — отказ
+            absent = template.expand({**params, "node": "no-such-call"})
+            with pytest.raises(McpClientError) as missing:
+                async with port.listen([absent]):
+                    pass
+
+            with pytest.raises(McpClientError) as alien:
+                async with port.listen(["file:///x"]):
                     pass
 
             async with asyncio.timeout(30), port.listen([uri]) as subscription:
@@ -869,6 +881,10 @@ class TestSignInAsTheUser:
 
         if "another user" not in str(refused.value):
             raise AssertionError(f"a foreign run is refused: {refused.value}")
+        if "no journal on channel" not in str(missing.value):
+            raise AssertionError(f"a missing channel is refused: {missing.value}")
+        if "expected a journal channel resource" not in str(alien.value):
+            raise AssertionError(f"a uri off the journal is refused: {alien.value}")
         if not events:
             raise AssertionError("the growth of the channel is heard")
         if set(events) != {uri}:

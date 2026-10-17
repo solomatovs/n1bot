@@ -278,12 +278,13 @@ class TestMcpToolInTheFeed:
         if "<script>" in folded:
             raise AssertionError(f"the nested string is folded away: {folded!r}")
 
-        rows.locator("button").first.click()
+        rows.locator("summary").first.click()
         row = rows.locator("[data-json-node]").first
-        row.locator("button").first.click()
-        unfolded = tree.inner_text()
+        row.locator("summary").first.click()
 
         script = '"<script>window.__boba_pwned=1</script>"'
+        tree.get_by_text(script).wait_for(state="visible", timeout=10_000)
+        unfolded = tree.inner_text()
         if script not in unfolded:
             raise AssertionError(f"the string is shown as text: {unfolded!r}")
         if tree.locator("script").count():
@@ -291,7 +292,8 @@ class TestMcpToolInTheFeed:
         if page.evaluate("() => window.__boba_pwned") is not None:
             raise AssertionError("the string ran as a script")
 
-        rows.locator("button").first.click()
+        rows.locator("summary").first.click()
+        tree.get_by_text("1 items").wait_for(state="visible", timeout=10_000)
         if "1 items" not in tree.inner_text():
             raise AssertionError(f"the array folds back: {tree.inner_text()!r}")
 

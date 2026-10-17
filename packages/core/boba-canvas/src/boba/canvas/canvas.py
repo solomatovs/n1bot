@@ -106,6 +106,7 @@ class CanvasAction(StrEnum):
     WINDOW = "canvas_stream_window"
     LEAVE = "canvas_leave"
     PATH = "path"
+    MIME = "mime"
     NONCE = "nonce"
     CALL_ID = "call_id"
     OFFSET = "offset"
@@ -340,19 +341,21 @@ class CanvasViewer(Protocol):
         ...
 
     @abstractmethod
-    async def open(self, key: ObjectKey, push: CanvasPush) -> OpenedCanvas:
-        """Показать файл через push; вернуть подпись, путь и метку показа."""
+    async def open(self, key: ObjectKey, mime: str, push: CanvasPush) -> OpenedCanvas:
+        """Показать файл key вида mime через push; вернуть подпись, путь и
+        метку показа."""
         ...
 
     @abstractmethod
-    async def link(self, key: ObjectKey) -> VisualResult:
-        """Ссылка на файл в ленте, без показа в панели: её рисует итог вызова
-        и вживую, и при воспроизведении истории."""
+    async def link(self, key: ObjectKey, mime: str) -> VisualResult:
+        """Ссылка на файл вида mime в ленте, без показа в панели: её рисует
+        итог вызова и вживую, и при воспроизведении истории; клик по ней
+        открывает файл с тем же mime."""
         ...
 
     @abstractmethod
-    async def content(self, key: ObjectKey) -> CanvasContent:
-        """Описание файла для панели; панель его только доставляет."""
+    async def content(self, key: ObjectKey, mime: str) -> CanvasContent:
+        """Описание файла вида mime для панели; панель его только доставляет."""
         ...
 
     @abstractmethod
@@ -391,6 +394,16 @@ class CanvasRegistry:
             if viewer.handles(mime):
                 return viewer
         return None
+
+    @classmethod
+    def disposition(cls, mime: str) -> ContentDisposition:
+        """Как отдавать по ссылке файл вида mime: показ браузером — только
+        если его вьювер рисует средствами браузера, иначе скачивание."""
+        viewer = cls.viewer_for(mime)
+        if viewer is None:
+            return ContentDisposition.ATTACHMENT
+
+        return viewer.kind.disposition
 
     @classmethod
     def mimes_hint(cls) -> str:

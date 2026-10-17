@@ -194,10 +194,13 @@ class McpContent(ContentOut):
         return list(self._blocks)
 
     def _for(self, audience: BlockAudience, priority: float | None) -> mt.Annotations:
-        """Кому блок и насколько он важен; priority None — без пометки."""
-        return mt.Annotations.model_validate(
-            {"audience": [audience.value], "priority": priority}
-        )
+        """Кому блок — модели или человеку (общий блок annotations не
+        получает) — и насколько он важен; priority None — без пометки."""
+        role: mt.Role = "user"
+        if audience is BlockAudience.MODEL:
+            role = "assistant"
+
+        return mt.Annotations(audience=[role], priority=priority)
 
 
 class ResultWire:

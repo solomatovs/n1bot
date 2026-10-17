@@ -636,8 +636,8 @@ class TestProgress:
         note = heard.notes[0]
         if note.message is not None or note.total is not None:
             raise AssertionError(f"the notification carries no report: {note}")
-        if note.progress != 0:
-            raise AssertionError(f"the journal takes the first progress value: {note}")
+        if note.progress >= 0:
+            raise AssertionError(f"the journal stays below any report: {note}")
         if note.meta is None:
             raise AssertionError(f"the links ride in _meta: {note}")
 

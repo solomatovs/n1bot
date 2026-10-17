@@ -79,11 +79,13 @@ def _button_appears(chat: ChatPage, within_sec: float) -> bool:
 
 
 def test_journal_grows_in_the_panel_while_the_call_runs(
-    sandbox_chat: ChatPage,
+    sandbox_chat: ChatPage, sandbox_stand: StandProcess
 ) -> None:
     """Адрес журнала сервер называет, едва журнал открыт: кнопка журнала
     стоит на бегущем шаге, а текст журнала в панели растёт, пока вызов
-    идёт."""
+    идёт, — по событиям подписки subscriptions/listen, а не запасным
+    опросом."""
+    mark = sandbox_stand.log_lines()
     lines = " ".join(str(number) for number in range(1, LINES + 1))
     command = f"for i in {lines}; do echo {PROBE}-$i; sleep 1; done"
     sandbox_chat.ask(_bash_call(command))
@@ -119,3 +121,13 @@ def test_journal_grows_in_the_panel_while_the_call_runs(
         )
 
     sandbox_chat.await_idle(timeout_sec=TURN_TIMEOUT_SEC)
+
+    log = sandbox_stand.log_path.read_text(encoding="utf-8", errors="replace")
+    lines = log.splitlines()[mark:]
+    listened = [line for line in lines if "journal watch:" in line]
+    if not any("listens on" in line for line in listened):
+        raise AssertionError(f"the panel watch listens on the journal: {listened}")
+    if any("polled" in line or "falls back to polling" in line for line in listened):
+        raise AssertionError(
+            f"the panel watch did not fall back to polling: {listened}"
+        )

@@ -1275,11 +1275,11 @@ class ChatView:
         element: Element
         viewer = CanvasRegistry.viewer_for(mime)
         if viewer is None:
-            url = CanvasFileUrl.path(file_key)
+            url = CanvasFileUrl.path(file_key, mime)
             element = self._file(name, url, mime, key, number)
         else:
             try:
-                card = await viewer.link(file_key)
+                card = await viewer.link(file_key, mime)
             except CanvasError as exc:
                 return f"{file_key.in_workspace()} is not shown: {exc}"
 

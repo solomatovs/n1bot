@@ -45,7 +45,6 @@ from boba.canvas.storage import (
     StorageNotFoundError,
 )
 from boba.canvas.transfer import (
-    ContentDisposition,
     FileHeader,
     TransferFormat,
     UploadPolicy,
@@ -368,9 +367,7 @@ class UploadRoute:
             record[SessionFiles.OBJECT_KEY],
         )
 
-        disposition = ContentDisposition.ATTACHMENT
-        if viewer := CanvasRegistry.viewer_for(mime):
-            disposition = viewer.kind.disposition
+        disposition = CanvasRegistry.disposition(mime)
 
         return await self._files.respond(
             str(record[SessionFiles.OBJECT_KEY]),
@@ -517,14 +514,17 @@ class CanvasServing:
     def __init__(self, storage: StorageClient, policy: UploadPolicy) -> None:
         self._files = StreamedFile(storage, policy)
 
-    async def serve(
+    async def serve(  # noqa: PLR0913 — маршрут: путь файла, вид и вошедший
         self,
         request: Request,
         thread_id: str,
         dir: ThreadDir,  # noqa: A002
         name: str,
         current_user: Annotated[User | PersistedUser | None, Depends(get_current_user)],
+        mime: str = "",
     ) -> Response:
+        """Файл панели вида mime — каким его назвала ссылка; без него
+        (ссылки старой истории) — вид по имени файла."""
         if not isinstance(current_user, PersistedUser):
             got = type(current_user).__name__
             msg = f"sign-in required: expected a persisted user, got {got}"
@@ -544,11 +544,10 @@ class CanvasServing:
             )
             raise HTTPException(status_code=404, detail=msg) from e
 
-        mime = ContentMime.of_name(key.name)
+        if not mime:
+            mime = ContentMime.of_name(key.name)
 
-        disposition = ContentDisposition.ATTACHMENT
-        if viewer := CanvasRegistry.viewer_for(mime):
-            disposition = viewer.kind.disposition
+        disposition = CanvasRegistry.disposition(mime)
 
         return await self._files.respond(
             key.render(),

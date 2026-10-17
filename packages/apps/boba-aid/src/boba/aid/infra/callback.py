@@ -715,8 +715,10 @@ async def on_canvas_open(
         logger.warning("canvas action without path: %s", action.payload)
         return
 
+    mime = str(action.payload.get(CanvasAction.MIME.value, ""))
+
     try:
-        await canvas.show(str(path), scope)
+        await canvas.show(str(path), mime, scope)
     except RefusalError as exc:
         await ChatNotices.error(f"Failed to open the canvas: {exc}")
 
@@ -744,9 +746,12 @@ async def on_canvas_content(
         return {}
 
     refresh = bool(action.payload.get("refresh"))
+    mime = str(action.payload.get(CanvasAction.MIME.value, ""))
 
     try:
-        described = await canvas.content(str(path), watch=not refresh, scope=scope)
+        described = await canvas.content(
+            str(path), mime, watch=not refresh, scope=scope
+        )
     except RefusalError as exc:
         await ChatNotices.error(f"Failed to open the canvas: {exc}")
         return {}

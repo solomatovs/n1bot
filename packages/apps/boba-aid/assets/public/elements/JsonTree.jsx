@@ -2,8 +2,8 @@ import { useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 
 // Дерево JSON ответа инструмента (resource application/json) под выходом
-// шага: корень раскрыт, вложенное свёрнуто, длинные массивы и объекты
-// раскрываются порциями. Ключи и значения — только текстом React: разметки
+// шага: узлы сворачивает нативный <details>, корень раскрыт, вложенное
+// свёрнуто, длинные массивы и объекты раскрываются порциями. Ключи и значения — только текстом React: разметки
 // и ссылок из данных сервера в странице нет.
 const PAGE = 100;
 
@@ -78,13 +78,13 @@ function Node({ name, value, open }) {
   const rest = entries.length - shown;
 
   return (
-    <div className="pl-4" data-json-node>
-      <button
-        type="button"
-        className="inline-flex items-center gap-1 text-left"
-        aria-expanded={expanded}
-        onClick={() => setExpanded(!expanded)}
-      >
+    <details
+      className="pl-4"
+      data-json-node
+      open={open}
+      onToggle={(event) => setExpanded(event.currentTarget.open)}
+    >
+      <summary className="inline-flex cursor-pointer list-none items-center gap-1">
         {chevron}
         <Key name={name} />
         <span>{brackets[0]}</span>
@@ -94,7 +94,7 @@ function Node({ name, value, open }) {
             {brackets[1]}
           </span>
         )}
-      </button>
+      </summary>
       {expanded &&
         entries
           .slice(0, shown)
@@ -111,7 +111,7 @@ function Node({ name, value, open }) {
         </button>
       )}
       {expanded && <div>{brackets[1]}</div>}
-    </div>
+    </details>
   );
 }
 
