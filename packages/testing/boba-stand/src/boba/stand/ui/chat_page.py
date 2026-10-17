@@ -78,17 +78,19 @@ class ChatPage:
     def _await_chat_start(self, timeout_sec: float = 30.0) -> None:
         """Свой ход chainlit рисует на старте сессии: тест ждёт его окончания.
 
-        Иначе ожидание конца хода срабатывает на чужой паре task_start/task_end.
+        Иначе ожидание конца хода срабатывает на чужой паре task_start/task_end:
+        вопрос, заданный посреди on_chat_start, открывает свою задачу, а
+        закрывает её task_end обработчика старта.
         """
         deadline = time.monotonic() + timeout_sec
         while time.monotonic() < deadline:
-            if self.log.has_step_named(self.ON_CHAT_START):
+            if self.log.task_done(self.ON_CHAT_START):
                 return
 
             self.page.wait_for_timeout(100)
 
         msg = (
-            f"chat page: no {self.ON_CHAT_START!r} step in the socket log within "
+            f"chat page: the {self.ON_CHAT_START!r} task did not end within "
             f"{timeout_sec}s\n{self.log.describe()}"
         )
         raise ChatPageError(msg)
