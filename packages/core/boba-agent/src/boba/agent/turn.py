@@ -247,7 +247,9 @@ class TurnLoop:
 
         return ContextUsage(used=fill.tokens, size=self._profile.effective_window())
 
-    async def run(self, taken: Taken, cancellation: RunCancellation) -> TurnOutcome:
+    async def run(self, taken: Taken, cancellation: RunCancellation) -> ResultEvent:
+        """Ход по взятому из очереди; итог отдаётся, а не объявляется: конец хода
+        объявляет агент, когда записи сброшены и сессия уже свободна."""
         started = time.monotonic()
         self._failures = 0
         progress = Progress()
@@ -275,20 +277,17 @@ class TurnLoop:
         if outcome.is_failure:
             error = self._last_failure
 
-        await self._sink.emit(
-            ResultEvent(
-                outcome=outcome,
-                session_id=self._session.id.value,
-                usage=progress.usage,
-                num_turns=progress.steps,
-                duration_ms=duration,
-                prompt_ids=prompt_ids,
-                error=error,
-            )
-        )
         await self._writer.flush()
 
-        return outcome
+        return ResultEvent(
+            outcome=outcome,
+            session_id=self._session.id.value,
+            usage=progress.usage,
+            num_turns=progress.steps,
+            duration_ms=duration,
+            prompt_ids=prompt_ids,
+            error=error,
+        )
 
     async def _step(
         self, progress: Progress, cancellation: RunCancellation
