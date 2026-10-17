@@ -50,8 +50,7 @@ __all__ = [
 class SessionCookie:
     """Cookie входа в ответе HTTP: атрибуты из CookieSpec, чанки — CookieJar.
 
-    Одна реализация на оба приложения: chainlit читает её своим кодом cookie,
-    что проверяет test_session_cookie_shared.
+    Cookie ставят маршруты входа чата aid, а читает её код cookie chainlit.
     """
 
     def __init__(self, spec: CookieSpec) -> None:

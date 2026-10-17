@@ -11,8 +11,8 @@ services:
     pids_limit: 512
     restart: unless-stopped
     image: boba-aid:0.0.26.dev4
-    hostname: chainlit
-    container_name: chainlit
+    hostname: aid
+    container_name: aid
     networks:
       default:
         ipv4_address: ${BOBA_ADDRESS}
@@ -44,8 +44,8 @@ services:
     pids_limit: 512
     restart: unless-stopped
     image: boba-aid:0.0.26.dev4
-    hostname: chainlit2
-    container_name: chainlit2
+    hostname: aid2
+    container_name: aid2
     networks:
       default:
         ipv4_address: ${BOBA_ADDRESS_2}

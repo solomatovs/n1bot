@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import sys
 import types
+from pathlib import Path
 from typing import Any, ClassVar
 
 import pytest
 
+from boba.llm.chat import LlmError
 from boba.llm.fastembed import FastembedBackend, FastembedProvider
 from boba.llm.providers import EmbeddingModelConfig
 
@@ -30,9 +32,10 @@ class FakeTextEmbedding:
 
     calls: ClassVar[list[dict[str, Any]]] = []
 
-    def __init__(self, model_name: str, cache_dir: str) -> None:
+    def __init__(self, model_name: str, cache_dir: str, local_files_only: bool) -> None:
         self.model_name = model_name
         self.cache_dir = cache_dir
+        self.local_files_only = local_files_only
 
     def passage_embed(self, texts, **kwargs):
         FakeTextEmbedding.calls.append({"method": "passage", **kwargs})
@@ -114,3 +117,24 @@ class TestWarmModels:
             raise AssertionError("одинаковый конфиг — один экземпляр")
         if other is first:
             raise AssertionError("другой батч — другая модель")
+
+
+class TestCacheOnly:
+    """Модель берётся только из кэша: промах — ошибка, а не загрузка из сети."""
+
+    def test_missing_model_fails_without_download(self, tmp_path: Path) -> None:
+        provider = FastembedProvider(kind="fastembed", cache_dir=str(tmp_path))
+        config = EmbeddingModelConfig(
+            provider=provider,
+            model="intfloat/multilingual-e5-large",
+            dim=1024,
+            batch_size=8,
+            progress_every=1,
+        )
+
+        with pytest.raises(LlmError, match="Could not load model"):
+            FastembedBackend(provider).embedding(config)
+
+        fetched = sorted(str(path) for path in tmp_path.rglob("*") if not path.is_dir())
+        if fetched:
+            raise AssertionError(f"a cache miss fetched files: {fetched}")

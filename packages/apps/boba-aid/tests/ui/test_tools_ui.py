@@ -2427,10 +2427,12 @@ class TestCanvasTools:
             language="mermaid",
         )
         refused = "is not shown in the canvas: the diagram does not render"
+        # итог связный: оговорка сохранения не утверждает показ, отказ — следом
+        saved = DiagramPrompt.SAVED_NOTE.value
         expect = ToolExpect(
             mark=StepMark.FAILED,
-            patterns=[re.escape(refused)],
-            dom=[refused],
+            patterns=[rf"{re.escape(saved)}\s+\S+ {re.escape(refused)}"],
+            dom=[saved, refused],
             log_errors=True,
         )
 

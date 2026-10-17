@@ -1,4 +1,4 @@
-"""Общие фикстуры тестов chainlit: слой данных, сессии, стенды сервиса инструментов."""
+"""Общие фикстуры тестов aid: слой данных, сессии, стенды сервиса инструментов."""
 
 import asyncio
 import json
@@ -643,7 +643,7 @@ def app_config() -> AppConfig:
 @pytest.fixture(scope="session", autouse=True)
 def app_prefix(app_config: AppConfig) -> None:
     """Как bootstrap: ссылки на файлы и потоки строятся с префиксом приложения."""
-    AppPrefix.install(app_config.chainlit.url_prefix)
+    AppPrefix.install(app_config.aid.url_prefix)
 
 
 @pytest.fixture
@@ -766,7 +766,7 @@ class StandTokens(TokenReader):
     """
 
     TTL_SEC: ClassVar[int] = 3600
-    FALLBACK_SECRET: ClassVar[str] = "chainlit-stand-secret"
+    FALLBACK_SECRET: ClassVar[str] = "aid-stand-secret"
     GENERATION: ClassVar[str] = "stand-generation"
 
     @classmethod

@@ -148,7 +148,65 @@ HOSTILE_SVG = (
     b'<rect width="120" height="40" fill="#4c7cf0"/></svg>'
 )
 HOSTILE_HTML = b"<html><body><script>window.__boba_pwned=5</script></body></html>"
-PDF = b"%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n"
+PDF = (
+    b"%PDF-1.4\n"
+    b"1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
+    b"2 0 obj<</Type/Pages/Kids[3 0 R 6 0 R]/Count 2>>endobj\n"
+    b"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 300 300]/Contents 4 0 R"
+    b"/Resources<</Font<</F1 5 0 R>>>>>>endobj\n"
+    b"4 0 obj<</Length 45>>stream\n"
+    b"BT /F1 20 Tf 20 200 Td (Alpha page one) Tj ET\n"
+    b"endstream endobj\n"
+    b"5 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj\n"
+    b"6 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 300 300]/Contents 7 0 R"
+    b"/Resources<</Font<</F1 5 0 R>>>>>>endobj\n"
+    b"7 0 obj<</Length 44>>stream\n"
+    b"BT /F1 20 Tf 20 200 Td (Beta page two) Tj ET\n"
+    b"endstream endobj\n"
+    b"trailer<</Root 1 0 R/Size 8>>\n%%EOF\n"
+)
+"""Две страницы с текстом: pdf.js восстанавливает таблицу xref сам."""
+PDF_REVISED = (
+    b"%PDF-1.4\n"
+    b"1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
+    b"2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n"
+    b"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 300 300]/Contents 4 0 R"
+    b"/Resources<</Font<</F1 5 0 R>>>>>>endobj\n"
+    b"4 0 obj<</Length 44>>stream\n"
+    b"BT /F1 20 Tf 20 200 Td (Gamma revised) Tj ET\n"
+    b"endstream endobj\n"
+    b"5 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj\n"
+    b"trailer<</Root 1 0 R/Size 6>>\n%%EOF\n"
+)
+HOSTILE_PDF = (
+    b"%PDF-1.4\n"
+    b"1 0 obj<</Type/Catalog/Pages 2 0 R/OpenAction 10 0 R"
+    b"/AcroForm<</Fields[9 0 R]/CO[9 0 R]>>>>endobj\n"
+    b"2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n"
+    b"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 300 300]/Contents 4 0 R"
+    b"/Resources<</Font<</F1 5 0 R>>>>/Annots[6 0 R 7 0 R 8 0 R 9 0 R]>>endobj\n"
+    b"4 0 obj<</Length 43>>stream\n"
+    b"BT /F1 16 Tf 20 260 Td (Hostile page) Tj ET\n"
+    b"endstream endobj\n"
+    b"5 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj\n"
+    b"6 0 obj<</Type/Annot/Subtype/Link/Rect[20 200 280 230]/Border[0 0 0]"
+    b"/A<</S/JavaScript/JS(window.__boba_pwned=7)>>>>endobj\n"
+    b"7 0 obj<</Type/Annot/Subtype/Link/Rect[20 160 280 190]/Border[0 0 0]"
+    b"/A<</S/URI/URI(javascript:window.__boba_pwned=6)>>>>endobj\n"
+    b"8 0 obj<</Type/Annot/Subtype/Link/Rect[20 120 280 150]/Border[0 0 0]"
+    b"/A<</S/URI/URI(https://example.invalid/boba)>>>>endobj\n"
+    b"9 0 obj<</Type/Annot/Subtype/Widget/FT/Tx/T(total)/V(1)/F 4/P 3 0 R"
+    b"/Rect[20 60 280 90]/AA<</C<</S/JavaScript/JS(window.__boba_pwned=9)>>"
+    b"/K<</S/JavaScript/JS(window.__boba_pwned=10)>>>>>>endobj\n"
+    b"10 0 obj<</S/JavaScript/JS(app.alert(1);window.__boba_pwned=8)>>endobj\n"
+    b"trailer<</Root 1 0 R/Size 11>>\n%%EOF\n"
+)
+"""Документ чужого сервера: JavaScript при открытии, у ссылки и у поля с
+вычислением, ссылка javascript: и внешняя http-ссылка."""
+WAV = bytes.fromhex(
+    "524946462400000057415645666d74201000000001000100401f0000401f0000"
+    "010008006461746100000000"
+)
 
 FILES: dict[str, bytes] = {
     "chart.png": PNG,
@@ -157,6 +215,8 @@ FILES: dict[str, bytes] = {
     "page.html": HOSTILE_HTML,
     "report.pdf": PDF,
     "report": PDF,
+    "hostile.pdf": HOSTILE_PDF,
+    "clip.wav": WAV,
     "chart.svg": SVG,
     "flow.mmd": "flowchart LR\n    A[Доход] --> B[Налог]\n".encode(),
     "report.md": "# Отчёт\n\n- доход: 4 786 066\n".encode(),
@@ -905,10 +965,11 @@ async def test_panel_close_button_closes_the_panel(panel: Any) -> None:
         raise AssertionError('await page.locator("#side-view-content").count() == 0')
 
 
-async def test_bar_survives_scrolling(panel: Any) -> None:
+@pytest.mark.parametrize("name", ["report.md", "report.pdf"])
+async def test_bar_survives_scrolling(panel: Any, name: str) -> None:
     """Прокрутка содержимого не уводит шапку: кнопки доступны всегда."""
     show, _, _thread, _act = panel
-    side = await show("report.md")
+    side = await show(name)
     page = side.page
 
     before = await page.evaluate(
@@ -1098,7 +1159,7 @@ async def test_fullscreen_covers_the_window_for_every_viewer(panel: Any) -> None
     """Каждый вьювер разворачивается на всё окно: рамка одна на все типы."""
     show, _, _thread, _act = panel
 
-    for name in ("chart.png", "report.md", "data.bin", "notes.log"):
+    for name in ("chart.png", "report.md", "data.bin", "notes.log", "report.pdf"):
         side = await show(name)
         geometry = await _expand(side)
         await _collapse(side.page)
@@ -1168,7 +1229,7 @@ async def test_panel_never_scrolls_horizontally(panel: Any) -> None:
     """Содержимое не выталкивает панель вбок: горизонтальной прокрутки нет."""
     show, _, _thread, _act = panel
 
-    for name in ("flow.mmd", "report.md", "chart.png"):
+    for name in ("flow.mmd", "report.md", "chart.png", "report.pdf"):
         side = await show(name)
         overflow = await side.page.evaluate(
             """() => {
@@ -1663,8 +1724,15 @@ async def test_buttons_work_in_fullscreen(panel: Any) -> None:
         raise AssertionError("кнопка закрытия не сворачивает полный экран")
 
 
-DOWNLOADABLE = ("chart.png", "report.md", "flow.mmd", "notes.log", "data.bin")
-"""Все типы показа: картинка, markdown, диаграмма, лог и формат без вьювера."""
+DOWNLOADABLE = (
+    "chart.png",
+    "report.md",
+    "flow.mmd",
+    "notes.log",
+    "data.bin",
+    "report.pdf",
+)
+"""Все типы показа: картинка, markdown, диаграмма, лог, pdf и формат без вьювера."""
 
 
 async def test_every_viewer_offers_download(panel: Any) -> None:
@@ -1797,8 +1865,9 @@ async def test_hostile_svg_runs_no_script(panel: Any) -> None:
 
 
 async def test_canvas_route_downloads_what_the_browser_would_run(panel: Any) -> None:
-    """Ссылка канваса открывает в браузере только pdf, видео и звук; html и
-    svg скачиваются и в origin чата не исполняются (7.6)."""
+    """Ссылка канваса открывает в браузере только видео и звук; html, svg и
+    pdf скачиваются: первые не исполняются в origin чата (7.6), pdf рисует
+    pdf.js на странице чата."""
     show, _, thread, _act = panel
     side = await show("chart.png")
     page = side.page
@@ -1808,7 +1877,8 @@ async def test_canvas_route_downloads_what_the_browser_would_run(panel: Any) -> 
         "page.html": "attachment",
         "hostile.svg": "attachment",
         "data.bin": "attachment",
-        "report.pdf": "inline",
+        "report.pdf": "attachment",
+        "clip.wav": "inline",
     }
     for name, kind in expected.items():
         url = f"{BASE}/canvas/{thread}/upload/{name}"
@@ -1822,7 +1892,8 @@ async def test_canvas_route_downloads_what_the_browser_would_run(panel: Any) -> 
 
 
 async def test_uploaded_html_is_downloaded(panel: Any) -> None:
-    """Вложение пользователя без вьювера отдаётся скачиванием, pdf — показом."""
+    """Вложение пользователя с html и pdf отдаётся скачиванием, тело — как
+    загружено."""
     show, probe, _thread, _act = panel
     side = await show("chart.png")
     page = side.page
@@ -1831,7 +1902,7 @@ async def test_uploaded_html_is_downloaded(panel: Any) -> None:
 
     expected = {
         ("page.html", "text/html"): ("attachment", HOSTILE_HTML),
-        ("report.pdf", "application/pdf"): ("inline", PDF),
+        ("report.pdf", "application/pdf"): ("attachment", PDF),
     }
     for (name, mime), (kind, blob) in expected.items():
         uploaded = await page.request.post(
@@ -1859,20 +1930,30 @@ async def test_uploaded_html_is_downloaded(panel: Any) -> None:
 
 
 async def test_link_mime_wins_over_the_file_name(panel: Any) -> None:
-    """Ссылка называет вид файла сама: pdf без суффикса показывается вьювером
-    pdf, а маршрут отдаёт его как pdf для показа, а не на скачивание."""
-    _show, _, thread, act = panel
-    path = _tool_view(thread, "report")
-    side = await act("canvas_open", {"path": path, "mime": "application/pdf"})
-    page = side.page
+    """Ссылка называет вид файла сама: pdf без суффикса рисует вьювер pdf,
+    документ он запрашивает ссылкой с этим видом, а маршрут отдаёт его как
+    pdf на скачивание."""
+    show, _, thread, act = panel
+    page = (await show("chart.png")).page
+    asked: list[str] = []
 
-    frame = side.locator("iframe")
-    if not await frame.count():
-        raise AssertionError(
-            f"the pdf viewer shows the file: {await side.inner_html()}"
-        )
+    def remember(request: Any) -> None:
+        if "/upload/report?" in request.url:
+            asked.append(request.url)
 
-    url = str(await frame.first.evaluate("el => el.src"))
+    page.on("request", remember)
+    try:
+        path = _tool_view(thread, "report")
+        side = await act("canvas_open", {"path": path, "mime": "application/pdf"})
+        await _await_text(page, "Alpha page one")
+    finally:
+        page.remove_listener("request", remember)
+
+    if not asked:
+        shown = await side.inner_html()
+        raise AssertionError(f"pdf.js asked nothing for the file: {shown}")
+
+    url = asked[0]
     if "mime=application%2Fpdf" not in url:
         raise AssertionError(f"the link names the type of the file: {url}")
 
@@ -1884,5 +1965,252 @@ async def test_link_mime_wins_over_the_file_name(panel: Any) -> None:
     disposition = response.headers.get("content-disposition", "")
     if response.headers.get("content-type") != "application/pdf":
         raise AssertionError(f"the route serves a pdf: {response.headers}")
-    if not disposition.startswith("inline;"):
-        raise AssertionError(f"the pdf is shown, not downloaded: {disposition!r}")
+    if not disposition.startswith("attachment;"):
+        raise AssertionError(f"the pdf is downloaded, not shown: {disposition!r}")
+
+
+# ——— PDF: pdf.js из сборки chainlit ———
+
+PDF_TOOLBAR = (
+    "() => {"
+    " const page = document.querySelector('#side-view-content .react-pdf__Page');"
+    " const bar = document.querySelector("
+    "   '#side-view-content [data-canvas-stage] .sticky');"
+    " const canvas = document.querySelector("
+    "   '#side-view-content .react-pdf__Page__canvas');"
+    " const box = canvas.getBoundingClientRect();"
+    " return {"
+    "  bar: bar.innerText.replace(/\\s+/g, ' ').trim(),"
+    "  opacity: getComputedStyle(bar).opacity,"
+    "  width: box.width, height: box.height,"
+    "  text: page.querySelector('.textLayer').innerText,"
+    " };"
+    "}"
+)
+"""Панель pdf.js в сцене: счётчики, видимость, размер холста, текстовый слой."""
+
+
+async def _pdf_state(side: Any) -> Any:
+    return await side.page.evaluate(PDF_TOOLBAR)
+
+
+async def _pdf_click(side: Any, icon: str) -> None:
+    """Кнопка панели pdf.js по её значку lucide; ждёт перерисовку страницы."""
+    await side.locator(f"[data-canvas-stage] button:has(svg.lucide-{icon})").click()
+    await side.page.wait_for_timeout(600)
+
+
+async def test_pdf_is_drawn_by_pdfjs(panel: Any) -> None:
+    """PDF рисует pdf.js на странице чата: без рамки встроенного вьювера,
+    холст страницы и текстовый слой, счётчик страниц и панель кнопок видна
+    без наведения; в узком окне панель не уходит вбок."""
+    show, _, _thread, _act = panel
+    side = await show("report.pdf")
+    page = side.page
+    await _await_text(page, "Alpha page one")
+
+    if await side.locator("iframe").count():
+        raise AssertionError("the pdf is drawn in a frame of the browser viewer")
+
+    state = await _pdf_state(side)
+    if state["width"] <= 0 or state["height"] <= 0:
+        raise AssertionError(f"the page canvas has no size: {state}")
+    if "Alpha page one" not in state["text"]:
+        raise AssertionError(f"the text layer carries the page text: {state}")
+    if "1 / 2" not in state["bar"] or "100%" not in state["bar"]:
+        raise AssertionError(f"the toolbar shows the page and the zoom: {state}")
+    if state["opacity"] != "1":
+        raise AssertionError(f"the toolbar is shown without hovering: {state}")
+
+    size = page.viewport_size
+    await page.set_viewport_size({"width": 420, "height": 800})
+    try:
+        await page.wait_for_timeout(600)
+        overflow = await page.evaluate(
+            """() => {
+                const panel = document.querySelector('#side-view-content');
+                return panel.scrollWidth - panel.clientWidth;
+            }"""
+        )
+    finally:
+        await page.set_viewport_size(size)
+
+    if overflow > 2:
+        raise AssertionError(f"a narrow window scrolls the pdf sideways: {overflow}px")
+
+
+async def test_pdf_turns_pages_and_zooms(panel: Any) -> None:
+    """Листание и масштаб: «›» ведёт на вторую страницу и упирается в
+    последнюю, «‹» заперта на первой; масштаб шагами по 25 % от 50 % до
+    300 %, холст растёт вместе с ним."""
+    show, _, _thread, _act = panel
+    side = await show("report.pdf")
+    page = side.page
+    await _await_text(page, "Alpha page one")
+
+    previous = side.locator("[data-canvas-stage] button:has(svg.lucide-chevron-left)")
+    following = side.locator("[data-canvas-stage] button:has(svg.lucide-chevron-right)")
+    if not await previous.is_disabled():
+        raise AssertionError("the first page cannot go back")
+
+    await _pdf_click(side, "chevron-right")
+    await _await_text(page, "Beta page two")
+    turned = await _pdf_state(side)
+    if "2 / 2" not in turned["bar"]:
+        raise AssertionError(f"the counter follows the page: {turned}")
+    if not await following.is_disabled():
+        raise AssertionError("the last page cannot go further")
+
+    await _pdf_click(side, "chevron-left")
+    await _await_text(page, "Alpha page one")
+
+    before = await _pdf_state(side)
+    await _pdf_click(side, "zoom-in")
+    zoomed = await _pdf_state(side)
+    if "125%" not in zoomed["bar"]:
+        raise AssertionError(f"one step up is 125%: {zoomed}")
+    if zoomed["width"] <= before["width"] * 1.1:
+        raise AssertionError(f"the canvas grows with the zoom: {before} -> {zoomed}")
+
+    zoom_in = side.locator("[data-canvas-stage] button:has(svg.lucide-zoom-in)")
+    for _ in range(10):
+        if await zoom_in.is_disabled():
+            break
+        await _pdf_click(side, "zoom-in")
+    if "300%" not in (await _pdf_state(side))["bar"]:
+        raise AssertionError("zooming in stops at 300%")
+
+    zoom_out = side.locator("[data-canvas-stage] button:has(svg.lucide-zoom-out)")
+    for _ in range(12):
+        if await zoom_out.is_disabled():
+            break
+        await _pdf_click(side, "zoom-out")
+    smallest = (await _pdf_state(side))["bar"]
+    if not re.search(r"(^|\s)50%", smallest):
+        raise AssertionError(f"the zoom stops at 50%: {smallest!r}")
+
+
+async def test_pdf_reloads_when_the_file_changes(panel: Any) -> None:
+    """Перезаписанный pdf перечитывается в той же панели по сигналу слежения."""
+    show, _, thread, _act = panel
+    await _rewrite(thread, "revised.pdf", PDF)
+    side = await show("revised.pdf")
+    page = side.page
+    await _await_text(page, "Alpha page one")
+
+    stage = await side.locator("[data-canvas-stage]").element_handle()
+    await _rewrite(thread, "revised.pdf", PDF_REVISED)
+    await _await_text(page, "Gamma revised")
+
+    same = await page.evaluate("(stage) => stage.isConnected", stage)
+    if same is not True:
+        raise AssertionError("the panel is rebuilt instead of reloading the document")
+
+
+async def test_pdf_worker_loads_under_the_prefix(panel: Any) -> None:
+    """Воркер pdf.js берётся из сборки под префиксом чата: запасной
+    «fake worker» в главном потоке не поднимается."""
+    show, _, _thread, _act = panel
+    page = (await show("chart.png")).page
+    workers: list[str] = []
+    console: list[str] = []
+
+    def on_worker(worker: Any) -> None:
+        workers.append(worker.url)
+
+    def on_console(message: Any) -> None:
+        console.append(message.text)
+
+    page.on("worker", on_worker)
+    page.on("console", on_console)
+    try:
+        await show("report.pdf")
+        await _await_text(page, "Alpha page one")
+    finally:
+        page.remove_listener("worker", on_worker)
+        page.remove_listener("console", on_console)
+
+    loaded: list[str] = []
+    for url in workers:
+        if url.startswith(f"{BASE}/assets/pdf.worker"):
+            loaded.append(url)
+
+    if not loaded:
+        raise AssertionError(f"no pdf.js worker under {BASE}/assets: {workers}")
+
+    response = await page.request.get(loaded[0])
+    if response.status != 200:
+        raise AssertionError(f"GET {loaded[0]}: expected 200, got {response.status}")
+
+    faked: list[str] = []
+    for text in console:
+        if "fake worker" in text.lower():
+            faked.append(text)
+
+    if faked:
+        raise AssertionError(f"pdf.js fell back to a fake worker: {faked}")
+
+
+async def test_hostile_pdf_runs_no_script(panel: Any) -> None:
+    """JavaScript документа не исполняется: ни при открытии, ни по ссылке,
+    ни у поля с вычислением; ссылка javascript: не становится адресом,
+    диалогов нет, вкладка чата остаётся на месте, а внешняя ссылка
+    открывается новой вкладкой."""
+    show, _, _thread, _act = panel
+    page = (await show("chart.png")).page
+    dialogs: list[str] = []
+    sandboxes: list[str] = []
+
+    def on_dialog(dialog: Any) -> None:
+        dialogs.append(dialog.message)
+
+    def on_request(request: Any) -> None:
+        if "pdf.sandbox" in request.url:
+            sandboxes.append(request.url)
+
+    page.on("dialog", on_dialog)
+    page.on("request", on_request)
+    try:
+        side = await show("hostile.pdf")
+        await _await_text(page, "Hostile page")
+        address = page.url
+
+        links = side.locator(".annotationLayer a")
+        hrefs: list[str] = []
+        for index in range(await links.count()):
+            hrefs.append(str(await links.nth(index).get_attribute("href")))
+
+        for index in range(await links.count()):
+            link = links.nth(index)
+            href = str(await link.get_attribute("href"))
+            if href.startswith("https://"):
+                continue
+            await link.click(force=True)
+
+        external = side.locator('.annotationLayer a[href^="https://example.invalid"]')
+        async with page.context.expect_page() as opened:
+            await external.click(force=True)
+        popup = await opened.value
+        await popup.close()
+        await page.wait_for_timeout(500)
+    finally:
+        page.remove_listener("dialog", on_dialog)
+        page.remove_listener("request", on_request)
+
+    scripted: list[str] = []
+    for href in hrefs:
+        if href.lower().startswith("javascript:"):
+            scripted.append(href)
+
+    if scripted:
+        raise AssertionError(f"javascript: links reached the page: {scripted}")
+    if dialogs:
+        raise AssertionError(f"the document opened dialogs: {dialogs}")
+    if sandboxes:
+        raise AssertionError(f"the pdf.js scripting sandbox was loaded: {sandboxes}")
+    if page.url != address:
+        raise AssertionError(f"a link led the chat away: {address} -> {page.url}")
+
+    pwned = await page.evaluate("() => window.__boba_pwned")
+    if pwned is not None:
+        raise AssertionError(f"the pdf ran a script: {pwned!r}")

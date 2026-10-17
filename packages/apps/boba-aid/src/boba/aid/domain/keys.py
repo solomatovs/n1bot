@@ -25,7 +25,7 @@ __all__ = [
 class AppPrefix:
     """Префикс подмонтированного приложения; ссылка без него уйдёт в корень домена.
 
-    Значение ставит bootstrap из [chainlit].url_prefix конфига один раз на
+    Значение ставит bootstrap из [aid].url_prefix конфига один раз на
     процесс; строители ссылок читают его отсюда, окружения не знают.
     """
 
@@ -40,7 +40,7 @@ class AppPrefix:
         if cls._prefix is None:
             msg = (
                 "app prefix is not installed: bootstrap must call "
-                "AppPrefix.install([chainlit].url_prefix) before links are built"
+                "AppPrefix.install([aid].url_prefix) before links are built"
             )
             raise RuntimeError(msg)
 

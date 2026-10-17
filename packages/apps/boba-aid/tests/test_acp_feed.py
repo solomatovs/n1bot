@@ -386,6 +386,7 @@ class TestUpdateViewIds:
 
         thinking = _id(MESSAGE, StepRole.THINKING)
         assert steps[thinking].get(StepField.OUTPUT) == "let me think"
+        assert steps[thinking].get(StepField.NAME) == "✔ thinking"
 
         tool = _id(CALL, StepRole.TOOL)
         assert "one row" in str(steps[tool].get(StepField.OUTPUT))
