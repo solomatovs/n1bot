@@ -26,29 +26,6 @@
             "subProcess": true
         },
         {
-            "name": "Studio: api + workflow & catalog page",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "boba.studio",
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}/debug/studio",
-            "python": "${workspaceFolder}/.vscode/python-debug-slice.sh",
-            "args": [
-                "--config",
-                "${workspaceFolder}/packages/apps/boba-studio/conf/config.toml",
-                "--site",
-                "${workspaceFolder}/debug/studio/conf/site.toml"
-            ],
-            "env": {
-                "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/runtime/third/bin:${env:PATH}",
-                "LD_LIBRARY_PATH": "${workspaceFolder}/runtime/third/lib"
-            },
-            "preLaunchTask": "web: dev server",
-            "justMyCode": false,
-            "stopOnEntry": false,
-            "subProcess": true
-        },
-        {
             "name": "MCP: tools service",
             "type": "debugpy",
             "request": "launch",
@@ -275,8 +252,8 @@
     ],
     "compounds": [
         {
-            "name": "Boba: aid + studio",
-            "configurations": ["Aid: agent", "Studio: api + workflow & catalog page"],
+            "name": "Aid: aid + mcp",
+            "configurations": ["Aid: agent", "MCP: tools service"],
             "stopAll": true
         }
     ]
