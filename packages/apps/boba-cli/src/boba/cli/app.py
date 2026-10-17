@@ -360,6 +360,7 @@ class AssembledObserver(ObservedSession):
         tools: ToolServer | None,
         sink: EventSink,
         conversation: Sequence[ChainRecord],
+        questions: bool,
     ) -> None:
         self._assembly = assembly
         self._session_id = session_id
@@ -367,6 +368,7 @@ class AssembledObserver(ObservedSession):
         self._tools = tools
         self._sink = sink
         self._conversation = list(conversation)
+        self._questions = questions
 
     def conversation(self) -> Sequence[ChainRecord]:
         return self._conversation
@@ -384,7 +386,12 @@ class AssembledObserver(ObservedSession):
 
     async def claim(self) -> OpenedSession:
         agent = await self._assembly.attach_agent(
-            self._session_id, self._cwd, self._tools, self._sink, resume=True
+            self._session_id,
+            self._cwd,
+            self._tools,
+            self._sink,
+            resume=True,
+            questions=self._questions,
         )
 
         return self._assembly.assembled(agent)
@@ -397,12 +404,12 @@ class AgentAssembly(SessionAssembly):
     всех сессий; сессия открывается на профиле `model` настроек и может
     переключиться на любой другой из каталога. На сессию собираются снимок
     окружения с `cwd` сессии и агент ядра над инструментами от входа.
-    Собственный инструмент «вопрос пользователю» в ACP не предлагается: формы
-    вопроса у клиента нет. С хранилищем `memory` возобновление сессии даёт
-    пустую историю: возобновлять нечего, сессия открывается заново под тем же
-    идентификатором, а ветвить нечего. В списке сессий рабочий каталог
-    берётся из снимка окружения в записях, а у сессии без него — каталог
-    самого процесса.
+    Собственный инструмент «вопрос пользователю» предлагается, только если
+    клиент объявил формы `elicitation.form`. С хранилищем `memory`
+    возобновление сессии даёт пустую историю: возобновлять нечего, сессия
+    открывается заново под тем же идентификатором, а ветвить нечего. В
+    списке сессий рабочий каталог берётся из снимка окружения в записях, а у
+    сессии без него — каталог самого процесса.
     """
 
     PAGE_SIZE: ClassVar[int] = 50
@@ -430,15 +437,18 @@ class AgentAssembly(SessionAssembly):
         )
         self._digests = SessionDigests(store)
 
-    async def open(
+    async def open(  # noqa: PLR0913 — сессию открывают все её части разом
         self,
         session_id: SessionId,
         cwd: Path,
         tools: ToolServer | None,
         sink: EventSink,
         resume: bool,
+        questions: bool,
     ) -> OpenedSession:
-        agent = await self.attach_agent(session_id, cwd, tools, sink, resume)
+        agent = await self.attach_agent(
+            session_id, cwd, tools, sink, resume=resume, questions=questions
+        )
 
         return self.assembled(agent)
 
@@ -455,10 +465,13 @@ class AgentAssembly(SessionAssembly):
         cwd: Path,
         tools: ToolServer | None,
         sink: EventSink,
+        questions: bool,
     ) -> ObservedSession:
         conversation = await self._conversation(session_id)
 
-        return AssembledObserver(self, session_id, cwd, tools, sink, conversation)
+        return AssembledObserver(
+            self, session_id, cwd, tools, sink, conversation, questions
+        )
 
     async def sessions(self, cursor: str | None) -> SessionPage:
         page = await self._store.list(cursor, self.PAGE_SIZE)
@@ -488,13 +501,14 @@ class AgentAssembly(SessionAssembly):
     ) -> int:
         return await self._store.copy(source, target, up_to)
 
-    async def attach_agent(
+    async def attach_agent(  # noqa: PLR0913 — агента собирают все части сессии
         self,
         session_id: SessionId,
         cwd: Path,
         tools: ToolServer | None,
         sink: EventSink,
         resume: bool,
+        questions: bool,
     ) -> Agent:
         """Агент ядра над инструментами сессии; с хранилищем `memory`
         возобновление становится открытием заново.
@@ -508,7 +522,7 @@ class AgentAssembly(SessionAssembly):
         if self._stateless:
             resume = False
 
-        agent = Agent(self._parts(cwd, tools, sink))
+        agent = Agent(self._parts(cwd, tools, sink, questions))
         try:
             await agent.open(session_id, resume=resume)
         except (SessionHeldError, SessionNotFoundError):
@@ -545,7 +559,7 @@ class AgentAssembly(SessionAssembly):
         return session.conversation()
 
     def _parts(
-        self, cwd: Path, tools: ToolServer | None, sink: EventSink
+        self, cwd: Path, tools: ToolServer | None, sink: EventSink, questions: bool
     ) -> AgentParts:
         settings = self._settings
 
@@ -567,7 +581,7 @@ class AgentAssembly(SessionAssembly):
             allowed_tools=settings.permissions.allow,
             denied_tools=settings.permissions.deny,
             record_requests=settings.record_requests,
-            question_tool=False,
+            question_tool=questions,
         )
 
 

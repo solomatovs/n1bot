@@ -43,6 +43,7 @@ from acp.exceptions import RequestError
 from acp.experimental.v2 import Client, schema
 from mcp_types.jsonrpc import ErrorData
 from mcp_types.methods import parse_client_request
+from pydantic import AnyUrl, BaseModel, ConfigDict
 
 from boba.cli.acp_server import ConfigOptionId, PermissionChoice, ToolKindName
 from boba.stand.acp_frames import Frames
@@ -135,6 +136,7 @@ class RegisteredTool(StrEnum):
     GONE = "gone"
     RETIRED = "retired"
     ASKING = "asking"
+    CHOOSING = "choosing"
     MIXED = "blocks"
     LARGE = "large"
 
@@ -209,6 +211,11 @@ class StandRegistration:
             input_schema={"type": "object"},
         ),
         mt.Tool(
+            name=RegisteredTool.CHOOSING,
+            description="Asks the user for the target table, then answers.",
+            input_schema={"type": "object"},
+        ),
+        mt.Tool(
             name=RegisteredTool.MIXED,
             description="Answers with blocks for the user and the model.",
             input_schema={"type": "object"},
@@ -225,6 +232,20 @@ class StandRegistration:
         ),
     )
     FAILURE: ClassVar[str] = "no such table: orders"
+    CHOOSE_STATE: ClassVar[str] = "choosing-round-1"
+    CHOOSE_FORM: ClassVar[dict[str, Any]] = {
+        "type": "object",
+        "properties": {
+            "table": {
+                "type": "string",
+                "title": "Target",
+                "description": "Which table should receive the rows?",
+                "enum": ["sales.orders", "sales.orders_stage"],
+                "enumNames": ["Orders", "Orders stage"],
+            }
+        },
+        "required": ["table"],
+    }
     WIRE: ClassVar[Mapping[str, Any]] = {
         "mode": "json",
         "by_alias": True,
@@ -293,6 +314,8 @@ class StandRegistration:
                 raise RequestError(AcpErrorCode.BACKEND_FAILED, gone)
             case RegisteredTool.ASKING:
                 reply = mt.InputRequiredResult(request_state="opaque")
+            case RegisteredTool.CHOOSING:
+                reply = self._choose(request.params)
             case RegisteredTool.MIXED:
                 reply = mt.CallToolResult(
                     content=[
@@ -322,6 +345,35 @@ class StandRegistration:
                 return McpErrorOutcome(error=unknown)
 
         return McpResultOutcome(result=reply.model_dump(**self.WIRE))
+
+    def _choose(
+        self, params: mt.CallToolRequestParams
+    ) -> mt.CallToolResult | mt.InputRequiredResult:
+        """CHOOSING: первый запрос — форма выбора таблицы (с устаревшими
+        enumNames), повтор с ответом и тем же requestState — выбранная таблица
+        либо отказ пользователя."""
+        responses = params.input_responses
+        if responses is None:
+            form = mt.ElicitRequestFormParams(
+                message="choosing needs the target table before it can start",
+                requested_schema=self.CHOOSE_FORM,
+            )
+            return mt.InputRequiredResult(
+                input_requests={"target": mt.ElicitRequest(params=form)},
+                request_state=self.CHOOSE_STATE,
+            )
+
+        assert params.request_state == self.CHOOSE_STATE
+        answer = responses["target"]
+        assert isinstance(answer, mt.ElicitResult)
+        if answer.action != "accept":
+            told = mt.TextContent(text=f"the user answered {answer.action}")
+            return mt.CallToolResult(content=[told], is_error=True)
+
+        assert answer.content is not None
+        chosen = mt.TextContent(text=f"rows go to {answer.content['table']}")
+
+        return mt.CallToolResult(content=[chosen])
 
     async def _progress(
         self,
@@ -379,10 +431,24 @@ class StandRegistration:
         return mt.CallToolResult(content=[mt.TextContent(text=done)])
 
 
+class AskedForm(BaseModel):
+    """Запрос `elicitation/create`, каким его получил клиент."""
+
+    model_config = ConfigDict(frozen=True)
+
+    message: str
+    session_id: str | None
+    tool_call_id: str | None
+    requested: schema.ElicitationSchema
+    meta: Mapping[str, Any]
+
+
 class AcpClient(Client):
     """Тестовый клиент ACP v2 в роли чата aid: копит уведомления по сессиям
     (в том числе idle с ошибкой), отвечает на запрос разрешения выбранным
-    вариантом либо отменой; `hold` задерживает ответ."""
+    вариантом либо отменой; `hold` задерживает ответ. Форму
+    `elicitation/create` запоминает и отвечает `reply`; `hold_form`
+    задерживает ответ, снятый запрос считается в `withdrawn`."""
 
     def __init__(self) -> None:
         self.updates: list[tuple[str, Any]] = []
@@ -390,6 +456,14 @@ class AcpClient(Client):
         self.options: list[Sequence[schema.PermissionOption]] = []
         self.choice: PermissionChoice | None = PermissionChoice.ALLOW_ONCE
         self.hold: asyncio.Event | None = None
+        self.forms: list[AskedForm] = []
+        self.replies: list[
+            schema.AcceptElicitationResponse
+            | schema.DeclineElicitationResponse
+            | schema.CancelElicitationResponse
+        ] = []
+        self.hold_form: asyncio.Event | None = None
+        self.withdrawn = 0
         self._changed = asyncio.Event()
         self._idles: dict[str, int] = {}
 
@@ -425,13 +499,57 @@ class AcpClient(Client):
             outcome=schema.SelectedPermissionOutcomeVariant(option_id=self.choice.value)
         )
 
+    async def create_elicitation(  # noqa: PLR0913 — сигнатура протокола SDK
+        self,
+        message: str,
+        mode: str,
+        *,
+        session_id: str | None = None,
+        request_id: int | str | None = None,
+        tool_call_id: str | None = None,
+        requested_schema: schema.ElicitationSchema | None = None,
+        elicitation_id: str | None = None,
+        url: str | AnyUrl | None = None,
+        **kwargs: Any,
+    ) -> (
+        schema.AcceptElicitationResponse
+        | schema.DeclineElicitationResponse
+        | schema.CancelElicitationResponse
+    ):
+        assert mode == "form"
+        assert requested_schema is not None
+        self.forms.append(
+            AskedForm(
+                message=message,
+                session_id=session_id,
+                tool_call_id=tool_call_id,
+                requested=requested_schema,
+                meta=kwargs,
+            )
+        )
+        self._changed.set()
+        try:
+            if self.hold_form is not None:
+                await self.hold_form.wait()
+        except asyncio.CancelledError:
+            self.withdrawn += 1
+            raise
+
+        return self.replies.pop(0)
+
     # SDK считает метод протокола неподдержанным
     connect_mcp = Client.connect_mcp
     mcp_message = Client.mcp_message
     notify_mcp = Client.notify_mcp
     disconnect_mcp = Client.disconnect_mcp
-    create_elicitation = Client.create_elicitation
     complete_elicitation = Client.complete_elicitation
+
+    async def next_form(self, seen: int) -> AskedForm:
+        while len(self.forms) <= seen:
+            self._changed.clear()
+            await asyncio.wait_for(self._changed.wait(), READ_TIMEOUT_SEC)
+
+        return self.forms[seen]
 
     async def next_permission(self, seen: int) -> schema.ToolCallUpdate:
         while len(self.permissions) <= seen:
@@ -832,10 +950,21 @@ async def boba(model: FakeModel, tmp_path: Path) -> AsyncIterator[AcpProcess]:
         await process.kill()
 
 
-async def handshake(conn: ClientConnection) -> schema.InitializeResponse:
+async def handshake(
+    conn: ClientConnection, forms: bool = False
+) -> schema.InitializeResponse:
+    """Рукопожатие; forms — клиент объявляет формы `elicitation.form`."""
+    capabilities = schema.ClientCapabilities()
+    if forms:
+        elicitation = schema.ElicitationCapabilities(
+            form=schema.ElicitationFormCapabilities()
+        )
+        capabilities = schema.ClientCapabilities(elicitation=elicitation)
+
     return await conn.initialize(
         protocol_version=AcpVersion.V2,
         info=schema.Implementation(name="boba-tests", version="0"),
+        capabilities=capabilities,
     )
 
 
@@ -1389,7 +1518,7 @@ class TestMcpOverAcp:
 
         assert await boba.wait() == 0
 
-    async def test_input_required_is_an_error_for_the_model(
+    async def test_input_required_without_questions_has_a_round_limit(
         self, boba: AcpProcess, registration: StandRegistration, tmp_path: Path
     ) -> None:
         client = AcpClient()
@@ -1405,11 +1534,18 @@ class TestMcpOverAcp:
 
             done = client.of(schema.SessionToolCallUpdate)[-1]
             assert done.status == ToolStatus.FAILED
-            assert "input_required" in result_text(done)
-            assert done.raw_output == {
-                "resultType": "input_required",
-                "requestState": "opaque",
-            }
+            assert "asked for user input more than 3 times" in result_text(done)
+            sent: list[McpMessage] = []
+            for message in registration.received:
+                if message.method == "tools/call":
+                    sent.append(message)
+
+            assert len(sent) == 4
+            assert sent[0].params is not None
+            assert "requestState" not in sent[0].params
+            assert sent[-1].params is not None
+            assert sent[-1].params["requestState"] == "opaque"
+            assert sent[-1].params["inputResponses"] == {}
         finally:
             await conn.close()
             await boba.close_stdin()
@@ -1770,6 +1906,415 @@ class TestRefusals:
             await boba.close_stdin()
 
         assert await boba.wait() == 0
+
+
+class TestQuestions:
+    """Вопрос AskUserQuestion — форма `elicitation/create` клиенту с
+    toolCallId вызова; ответ формы — ответы вопроса для модели."""
+
+    ASKED: ClassVar[dict[str, Any]] = {
+        "questions": [
+            {
+                "question": "Which layout should the report page use?",
+                "header": "Layout",
+                "options": [
+                    {
+                        "label": "Single column",
+                        "description": "Filters above the table.",
+                        "preview": "| Filters |\n| Table |",
+                    },
+                    {"label": "Two columns", "description": "Filters on the side."},
+                ],
+            },
+            {
+                "question": "Which checks should run?",
+                "header": "Checks",
+                "options": [
+                    {"label": "Unit tests", "description": "Fast."},
+                    {"label": "UI tests", "description": "Slow."},
+                ],
+                "multiSelect": True,
+            },
+        ]
+    }
+
+    async def _asked(
+        self,
+        boba: AcpProcess,
+        client: AcpClient,
+        registration: StandRegistration,
+        tmp_path: Path,
+        forms: bool,
+    ) -> tuple[str, schema.IdleSessionStateUpdate | IdleErrorUpdate]:
+        """Ход с вызовом AskUserQuestion: id сессии и idle хода."""
+        conn = await boba.start(client, registration)
+        try:
+            await handshake(conn, forms=forms)
+            session = await conn.new_session(cwd=str(tmp_path), mcp_servers=[])
+            _, idle = await boba.turn(
+                client,
+                session.session_id,
+                call({"name": "AskUserQuestion", "arguments": self.ASKED}),
+            )
+        finally:
+            await conn.close()
+            await boba.close_stdin()
+
+        assert await boba.wait() == 0
+
+        return session.session_id, idle
+
+    async def test_question_is_a_form_and_its_answer_reaches_the_model(
+        self,
+        boba: AcpProcess,
+        registration: StandRegistration,
+        model: FakeModel,
+        tmp_path: Path,
+    ) -> None:
+        """Поле на вопрос с вариантами и их описаниями, предпросмотр и пара
+        «Other» в `_meta`; сессия в requires_action, пока вопрос открыт;
+        ответ формы со своим текстом даёт модели второй текст ответов."""
+        client = AcpClient()
+        client.replies.append(
+            schema.AcceptElicitationResponse(
+                content={
+                    "q1": "Single column",
+                    "q2": ["UI tests", "Unit tests"],
+                    "q2.other": "smoke test",
+                }
+            )
+        )
+
+        session_id, idle = await self._asked(
+            boba, client, registration, tmp_path, forms=True
+        )
+
+        assert idle.stop_reason == StopReason.END_TURN
+        assert client.permissions == []
+        names: list[str] = []
+        for tool in model.app.requests[0]["tools"]:
+            names.append(tool["function"]["name"])
+
+        assert "AskUserQuestion" in names
+        (form,) = client.forms
+        call_update = client.of(schema.SessionToolCallUpdate)[0]
+        assert call_update.name == "AskUserQuestion"
+        assert form.session_id == session_id
+        assert form.tool_call_id == call_update.tool_call_id
+        assert form.meta == {}
+        assert form.message == (
+            "Which layout should the report page use?\nWhich checks should run?"
+        )
+        requested = form.requested.model_dump(
+            mode="json", by_alias=True, exclude_none=True
+        )
+        assert requested == {
+            "type": "object",
+            "properties": {
+                "q1": {
+                    "type": "string",
+                    "title": "Layout",
+                    "description": "Which layout should the report page use?",
+                    "oneOf": [
+                        {
+                            "const": "Single column",
+                            "title": "Single column",
+                            "description": "Filters above the table.",
+                            "_meta": {"boba/preview": "| Filters |\n| Table |"},
+                        },
+                        {
+                            "const": "Two columns",
+                            "title": "Two columns",
+                            "description": "Filters on the side.",
+                        },
+                    ],
+                    "_meta": {"boba/other": "q1.other"},
+                },
+                "q1.other": {"type": "string", "title": "Other"},
+                "q2": {
+                    "type": "array",
+                    "title": "Checks",
+                    "description": "Which checks should run?",
+                    "items": {
+                        "anyOf": [
+                            {
+                                "const": "Unit tests",
+                                "title": "Unit tests",
+                                "description": "Fast.",
+                            },
+                            {
+                                "const": "UI tests",
+                                "title": "UI tests",
+                                "description": "Slow.",
+                            },
+                        ]
+                    },
+                    "_meta": {"boba/other": "q2.other"},
+                },
+                "q2.other": {"type": "string", "title": "Other"},
+            },
+        }
+
+        states: list[str] = []
+        for update in client.updates_of(session_id):
+            if isinstance(
+                update,
+                schema.RequiresActionSessionStateUpdate
+                | schema.RunningSessionStateUpdate,
+            ):
+                states.append(update.state)
+
+        assert states == ["running", "requires_action", "running"]
+
+        done = client.calls_of(call_update.tool_call_id)[-1]
+        assert done.status == ToolStatus.COMPLETED
+        assert done.raw_output == {
+            "questions": self.ASKED["questions"],
+            "answers": {
+                "Which layout should the report page use?": "Single column",
+                "Which checks should run?": "UI tests, Unit tests, smoke test",
+            },
+            "picks": {
+                "Which layout should the report page use?": {
+                    "labels": ["Single column"]
+                },
+                "Which checks should run?": {
+                    "labels": ["UI tests", "Unit tests"],
+                    "other": "smoke test",
+                },
+            },
+            "outcome": "accept",
+        }
+        returned = model.app.requests[-1]["messages"][-1]
+        assert returned["role"] == "tool"
+        assert returned["content"].startswith(
+            'The user answered: "Which layout should the report page use?"='
+            '"Single column", "Which checks should run?"="UI tests, Unit tests, '
+            'smoke test".'
+        )
+
+    async def test_declined_question_is_a_rejection(
+        self,
+        boba: AcpProcess,
+        registration: StandRegistration,
+        model: FakeModel,
+        tmp_path: Path,
+    ) -> None:
+        client = AcpClient()
+        client.replies.append(schema.DeclineElicitationResponse())
+
+        _, idle = await self._asked(boba, client, registration, tmp_path, forms=True)
+
+        assert idle.stop_reason == StopReason.END_TURN
+        call_update = client.of(schema.SessionToolCallUpdate)[0]
+        done = client.calls_of(call_update.tool_call_id)[-1]
+        assert done.status == ToolStatus.FAILED
+        assert done.raw_output == {
+            "questions": self.ASKED["questions"],
+            "outcome": "decline",
+        }
+        returned = model.app.requests[-1]["messages"][-1]
+        assert (
+            "The user doesn't want to proceed with this tool use."
+            in (returned["content"])
+        )
+
+    async def test_client_without_forms_gets_no_question_tool(
+        self,
+        boba: AcpProcess,
+        registration: StandRegistration,
+        model: FakeModel,
+        tmp_path: Path,
+    ) -> None:
+        """Клиент без форм: модель не видит инструмента вопроса, и вызов его —
+        «нет такого инструмента», ни формы, ни запроса разрешения."""
+        client = AcpClient()
+
+        _, idle = await self._asked(boba, client, registration, tmp_path, forms=False)
+
+        assert idle.stop_reason == StopReason.END_TURN
+        assert client.forms == []
+        assert client.permissions == []
+        names: list[str] = []
+        for tool in model.app.requests[0].get("tools", []):
+            names.append(tool["function"]["name"])
+
+        assert "AskUserQuestion" not in names
+        returned = model.app.requests[-1]["messages"][-1]
+        assert "No such tool available: AskUserQuestion" in returned["content"]
+
+    async def _server_asked(
+        self,
+        boba: AcpProcess,
+        client: AcpClient,
+        registration: StandRegistration,
+        tmp_path: Path,
+        forms: bool,
+    ) -> tuple[schema.SessionToolCallUpdate, list[McpMessage]]:
+        """Ход с вызовом инструмента стенда, который просит ввод: итог вызова
+        и запросы tools/call, дошедшие до сервера."""
+        conn = await boba.start(client, registration)
+        try:
+            await handshake(conn, forms=forms)
+            session = await conn.new_session(
+                cwd=str(tmp_path), mcp_servers=[StandRegistration.STAND]
+            )
+            _, idle = await boba.turn(
+                client, session.session_id, call({"name": "mcp__stand__choosing"})
+            )
+        finally:
+            await conn.close()
+            await boba.close_stdin()
+
+        assert await boba.wait() == 0
+        assert idle.stop_reason == StopReason.END_TURN
+        sent: list[McpMessage] = []
+        for message in registration.received:
+            if message.method == "tools/call":
+                sent.append(message)
+
+        return client.of(schema.SessionToolCallUpdate)[-1], sent
+
+    async def test_server_question_is_a_form_and_the_call_is_repeated(
+        self,
+        boba: AcpProcess,
+        registration: StandRegistration,
+        model: FakeModel,
+        tmp_path: Path,
+    ) -> None:
+        """input_required сервера: форма клиенту с toolCallId вызова, именем
+        сервера и инструмента в `_meta` (enumNames — вариантами oneOf), повтор
+        вызова с ответом и тем же requestState; раунд — в `_meta` результата,
+        модель получает ответ сервера после повтора."""
+        client = AcpClient()
+        client.replies.append(
+            schema.AcceptElicitationResponse(content={"table": "sales.orders_stage"})
+        )
+
+        done, sent = await self._server_asked(
+            boba, client, registration, tmp_path, forms=True
+        )
+
+        (form,) = client.forms
+        assert form.tool_call_id == done.tool_call_id
+        assert form.message == "choosing needs the target table before it can start"
+        assert form.meta == {"boba/server": "stand", "boba/tool": "choosing"}
+        requested = form.requested.model_dump(
+            mode="json", by_alias=True, exclude_none=True
+        )
+        assert requested == {
+            "type": "object",
+            "properties": {
+                "table": {
+                    "type": "string",
+                    "title": "Target",
+                    "description": "Which table should receive the rows?",
+                    "oneOf": [
+                        {"const": "sales.orders", "title": "Orders"},
+                        {"const": "sales.orders_stage", "title": "Orders stage"},
+                    ],
+                }
+            },
+            "required": ["table"],
+        }
+
+        first, second = sent
+        assert first.params is not None
+        assert first.params["_meta"][mt.CLIENT_CAPABILITIES_META_KEY] == {
+            "elicitation": {"form": {}}
+        }
+        assert second.params is not None
+        assert second.params["requestState"] == StandRegistration.CHOOSE_STATE
+        assert second.params["inputResponses"] == {
+            "target": {"action": "accept", "content": {"table": "sales.orders_stage"}}
+        }
+
+        assert done.status == ToolStatus.COMPLETED
+        assert result_text(done) == "rows go to sales.orders_stage"
+        assert isinstance(done.raw_output, dict)
+        rounds = done.raw_output["_meta"]["boba/elicitations"]
+        assert rounds == [
+            {
+                "server": "stand",
+                "tool": "choosing",
+                "message": "choosing needs the target table before it can start",
+                "requested": requested,
+                "action": "accept",
+                "content": {"table": "sales.orders_stage"},
+            }
+        ]
+        returned = model.app.requests[-1]["messages"][-1]
+        assert "rows go to sales.orders_stage" in returned["content"]
+
+    async def test_declined_server_question_goes_back_to_the_server(
+        self, boba: AcpProcess, registration: StandRegistration, tmp_path: Path
+    ) -> None:
+        client = AcpClient()
+        client.replies.append(schema.DeclineElicitationResponse())
+
+        done, sent = await self._server_asked(
+            boba, client, registration, tmp_path, forms=True
+        )
+
+        assert len(sent) == 2
+        assert sent[1].params is not None
+        assert sent[1].params["inputResponses"] == {"target": {"action": "decline"}}
+        assert done.status == ToolStatus.FAILED
+        assert result_text(done) == "the user answered decline"
+        assert isinstance(done.raw_output, dict)
+        (asked,) = done.raw_output["_meta"]["boba/elicitations"]
+        assert asked["action"] == "decline"
+        assert "content" not in asked or asked["content"] == {}
+
+    async def test_client_without_forms_is_not_asked_by_a_server(
+        self, boba: AcpProcess, registration: StandRegistration, tmp_path: Path
+    ) -> None:
+        """Клиент без форм: агент не объявляет серверу elicitation, а
+        просьбу сервера о вводе снимает сам (cancel), не спрашивая клиента."""
+        client = AcpClient()
+
+        done, sent = await self._server_asked(
+            boba, client, registration, tmp_path, forms=False
+        )
+
+        assert client.forms == []
+        assert sent[0].params is not None
+        assert sent[0].params["_meta"][mt.CLIENT_CAPABILITIES_META_KEY] == {}
+        assert sent[1].params is not None
+        assert sent[1].params["inputResponses"] == {"target": {"action": "cancel"}}
+        assert result_text(done) == "the user answered cancel"
+
+    async def test_cancel_withdraws_the_form(
+        self, boba: AcpProcess, registration: StandRegistration, tmp_path: Path
+    ) -> None:
+        """`session/cancel`, пока форма открыта: запрос снят у клиента, ход
+        кончается cancelled."""
+        client = AcpClient()
+        client.hold_form = asyncio.Event()
+        conn = await boba.start(client, registration)
+        try:
+            await handshake(conn, forms=True)
+            session = await conn.new_session(cwd=str(tmp_path), mcp_servers=[])
+            await conn.prompt(
+                session_id=session.session_id,
+                prompt=[*call({"name": "AskUserQuestion", "arguments": self.ASKED})],
+            )
+            await client.next_form(0)
+            await conn.cancel_session(session_id=session.session_id)
+            idle = await client.idle(session.session_id)
+            for _ in range(50):
+                if client.withdrawn:
+                    break
+
+                await asyncio.sleep(0.05)
+        finally:
+            client.hold_form.set()
+            await conn.close()
+            await boba.close_stdin()
+
+        assert await boba.wait() == 0
+        assert idle.stop_reason == StopReason.CANCELLED
+        assert client.withdrawn == 1
 
 
 class TestLifecycle:
