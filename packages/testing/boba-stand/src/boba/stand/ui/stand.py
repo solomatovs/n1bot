@@ -352,6 +352,10 @@ class ServiceStand(StandService):
     PROXY_SECRET: ClassVar[str] = "stand-proxy-secret"  # noqa: S105 — ключ стенда
     """Ключ утверждений входа proxy: его знают сервис и чат стенда."""
 
+    SESSION_SECRET: ClassVar[str] = "stand-service-session-secret"  # noqa: S105 — ключ стенда
+    """auth_secret сервиса: свой, не равный auth_secret чата из site.toml
+    отладки, — так весь путь чат → сервис стенда идёт с разными секретами."""
+
     LOCAL_LOGIN: ClassVar[str] = "carol"
     LOCAL_PASSWORD: ClassVar[str] = "carol-pw"  # noqa: S105 — учётка стенда
     """Человек стенда для входа формой (local): роль ADM."""
@@ -498,6 +502,7 @@ class ServiceStand(StandService):
             },
         }
         doc["app"]["auth"] = ["${auth.local}", "${auth.proxy}"]
+        doc["site"]["auth_secret"] = self.SESSION_SECRET
         doc["session"]["generation"] = self.generation
         doc["session"]["session_ttl_sec"] = self.session_ttl_sec
 

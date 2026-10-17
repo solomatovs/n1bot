@@ -328,6 +328,23 @@ class ChatSocket:
 
         return str(response.json()["id"])
 
+    def action(self, name: str, payload: dict[str, Any]) -> Any:
+        """Действие chainlit в сессии вкладки, как его шлёт интерфейс; итог —
+        ответ обработчика действия."""
+        body = {
+            "sessionId": self.session_id,
+            "action": {"name": name, "payload": payload, "id": str(uuid4())},
+        }
+        response = httpx.post(
+            f"{self._app.config.base_url}/project/action",
+            json=body,
+            headers={"Cookie": self._cookie},
+            timeout=60.0,
+        )
+        assert response.status_code == 200, response.text[:300]
+
+        return response.json()["response"]
+
     async def edit(self, message_id: str, text: str) -> None:
         """Правка вопроса: тот же id, новый текст — как делает интерфейс."""
         await self._sio.emit(
