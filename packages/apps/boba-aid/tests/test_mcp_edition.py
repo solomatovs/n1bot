@@ -227,6 +227,20 @@ class TestAgentThroughRelay:
         assert "item apple" in item, item
         assert "the notes of the standard server" in notes, notes
 
+    async def test_resource_asking_for_input_is_an_error_for_the_model(
+        self, agents: Agents, model: FakeModel
+    ) -> None:
+        """resources/read с просьбой о вводе (input_required) доходит до
+        агента как есть; повтора с ответами агент не делает, модель получает
+        отказ с причиной."""
+        process, _, session_id = await self._session(agents, "resource-asks")
+        args = {"server": SERVER, "uri": "standard://ask/weather"}
+
+        await agents.turn(process, session_id, self._call("read_mcp_resource", args))
+
+        read = ModelRequests(model).read()
+        assert "the server asked for more input" in read, read
+
     async def test_prompt_of_the_server_is_a_command_of_the_session(
         self, agents: Agents, model: FakeModel
     ) -> None:
