@@ -47,7 +47,7 @@ from mcp_types.methods import parse_client_request
 from boba.cli.acp_server import ConfigOptionId, PermissionChoice, ToolKindName
 from boba.stand.acp_frames import Frames
 from boba.stand.ui.fake_llm import FailureName, FakeLlmApp, ScenarioName
-from boba.stand.ui.stand import free_port
+from boba.stand.ui.stand import StandPorts
 from boba.transport.acp.protocol import (
     AcpErrorCode,
     AcpVersion,
@@ -98,7 +98,7 @@ class FakeModel:
             estimate_usage=estimate_usage,
             unmarked=unmarked,
         )
-        self.port = free_port()
+        self.port = StandPorts().free()
         self._server = uvicorn.Server(
             uvicorn.Config(
                 self.app.asgi(),

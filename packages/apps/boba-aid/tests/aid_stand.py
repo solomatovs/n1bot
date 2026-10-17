@@ -96,8 +96,8 @@ from boba.stand.ui.stand import (
     REPO_ROOT,
     ServiceStand,
     StandApp,
+    StandPorts,
     StandProcess,
-    free_port,
 )
 from boba.stand.zygote import SandboxCgroup
 from boba.stand_core.context import CallStand, StandIdentity
@@ -263,7 +263,7 @@ class ToolService:
 
     def __init__(self, workdir: Path, db_name: str) -> None:
         self._config = ServiceStand(
-            workdir=workdir, app_port=free_port(), db_name=db_name, sandbox=True
+            workdir=workdir, app_port=StandPorts().free(), db_name=db_name, sandbox=True
         )
         self._process = StandProcess[ServiceStand](
             config=self._config, log_path=workdir / "mcp.log"

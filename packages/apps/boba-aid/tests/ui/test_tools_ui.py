@@ -61,10 +61,10 @@ from boba.stand.ui.socket_log import ChatEvent, StepField
 from boba.stand.ui.stand import (
     StandApp,
     StandConfig,
+    StandPorts,
     StandProcess,
     StandToolNames,
     StandUrl,
-    free_port,
 )
 from boba.text.grep import GrepLimits, TextGrep
 from boba.toolkit.calls import ToolIntent
@@ -1052,7 +1052,7 @@ def sandbox_stand(
     config = StandConfig(
         workdir=stand_workdir / "sandbox",
         app=StandApp.AID,
-        app_port=free_port(),
+        app_port=StandPorts().free(),
         llm_port=llm_port,
         db_name=stand_database,
         url_prefix="/boba-sandbox",

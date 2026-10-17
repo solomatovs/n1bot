@@ -48,9 +48,9 @@ from boba.stand.ui.stand import (
     StandAgentAuth,
     StandApp,
     StandConfig,
+    StandPorts,
     StandProcess,
     StandUrl,
-    free_port,
 )
 from boba.toolkit.mcp import McpToolNames
 
@@ -83,7 +83,7 @@ def db_name(stand_database: StandDatabase) -> str:
 
 @pytest.fixture(scope="module")
 def llm_port() -> int:
-    return free_port()
+    return StandPorts().free()
 
 
 class FakeLlmProcess:
@@ -142,7 +142,7 @@ def app(
     config = StandConfig(
         workdir=workdir,
         app=StandApp.AID,
-        app_port=free_port(),
+        app_port=StandPorts().free(),
         llm_port=llm_port,
         db_name=db_name,
         service_plugins=SERVICE_PLUGINS,
@@ -432,7 +432,7 @@ def local_app(
     config = StandConfig(
         workdir=workdir,
         app=StandApp.AID,
-        app_port=free_port(),
+        app_port=StandPorts().free(),
         llm_port=llm_port,
         db_name=db_name,
         service_plugins=SERVICE_PLUGINS,

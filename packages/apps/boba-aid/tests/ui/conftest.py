@@ -28,7 +28,13 @@ from boba.stand.ui.chat_page import ChatPage
 from boba.stand.ui.database import StandDatabase
 from boba.stand.ui.fake_llm import FakeRoute, serve
 from boba.stand.ui.socket_log import SocketLog
-from boba.stand.ui.stand import StandApp, StandConfig, StandProcess, StandUrl, free_port
+from boba.stand.ui.stand import (
+    StandApp,
+    StandConfig,
+    StandPorts,
+    StandProcess,
+    StandUrl,
+)
 
 DB_NAME = "boba_ui_test"
 TOKEN_DELAY_SEC = 0.03
@@ -66,7 +72,7 @@ def stand_workdir(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 @pytest.fixture(scope="session")
 def llm_port() -> int:
-    return free_port()
+    return StandPorts().free()
 
 
 @pytest.fixture(scope="session")
@@ -106,7 +112,7 @@ def stand(
     config = StandConfig(
         workdir=stand_workdir,
         app=StandApp.AID,
-        app_port=free_port(),
+        app_port=StandPorts().free(),
         llm_port=llm_port,
         db_name=stand_database,
     )
@@ -131,7 +137,7 @@ def solo_stand(
     config = StandConfig(
         workdir=stand_workdir / "solo",
         app=StandApp.AID,
-        app_port=free_port(),
+        app_port=StandPorts().free(),
         llm_port=llm_port,
         db_name=stand_database,
         url_prefix="/boba-solo",

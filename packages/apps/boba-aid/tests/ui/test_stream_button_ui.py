@@ -20,9 +20,9 @@ from boba.stand.ui.fake_llm import ScenarioName
 from boba.stand.ui.stand import (
     StandApp,
     StandConfig,
+    StandPorts,
     StandProcess,
     StandToolNames,
-    free_port,
 )
 
 pytestmark = pytest.mark.ui
@@ -42,7 +42,7 @@ def sandbox_stand(
     config = StandConfig(
         workdir=stand_workdir / "sandbox-stream",
         app=StandApp.AID,
-        app_port=free_port(),
+        app_port=StandPorts().free(),
         llm_port=llm_port,
         db_name=stand_database,
         url_prefix="/boba-stream",

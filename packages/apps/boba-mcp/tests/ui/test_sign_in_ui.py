@@ -41,8 +41,8 @@ from boba.stand.ui.stand import (
     REPO_ROOT,
     ServiceStand,
     StandApp,
+    StandPorts,
     StandProcess,
-    free_port,
 )
 
 pytestmark = pytest.mark.ui
@@ -222,7 +222,7 @@ def _service(
 
     config = ServiceStand(
         workdir=workdir,
-        app_port=free_port(),
+        app_port=StandPorts().free(),
         db_name=db_name,
         sandbox=False,
         generation=generation,
@@ -302,7 +302,7 @@ def _signed_in(
     login_page: LoginPage,
 ) -> Sequence[str]:
     """Подключение клиента с входом человека формой; итог — инструменты."""
-    session = SignInSession(_endpoint(process), storage, free_port())
+    session = SignInSession(_endpoint(process), storage, StandPorts().free())
     session.start()
     login_page.open(opened.next())
     login_page.shows_the_form()
@@ -316,7 +316,7 @@ def _connected(
     process: StandProcess[ServiceStand], storage: MemoryStore
 ) -> Sequence[str]:
     """Подключение клиента, которому браузер не понадобится."""
-    session = SignInSession(_endpoint(process), storage, free_port())
+    session = SignInSession(_endpoint(process), storage, StandPorts().free())
     session.start()
 
     return session.tools()
@@ -331,7 +331,7 @@ class TestBrowserSignIn:
         opened: OpenedLinks,
         login_page: LoginPage,
     ) -> None:
-        session = SignInSession(_endpoint(service), MemoryStore(), free_port())
+        session = SignInSession(_endpoint(service), MemoryStore(), StandPorts().free())
         session.start()
 
         address = opened.next()
@@ -360,7 +360,7 @@ class TestBrowserSignIn:
         opened: OpenedLinks,
         login_page: LoginPage,
     ) -> None:
-        session = SignInSession(_endpoint(service), MemoryStore(), free_port())
+        session = SignInSession(_endpoint(service), MemoryStore(), StandPorts().free())
         session.start()
         login_page.open(opened.next())
 
@@ -403,7 +403,7 @@ class TestRestarts:
 
         _restart(service)
 
-        session = SignInSession(_endpoint(service), storage, free_port())
+        session = SignInSession(_endpoint(service), storage, StandPorts().free())
         session.start()
         address = opened.next()
         login_page.open(address)
@@ -419,7 +419,7 @@ class TestRestarts:
         opened: OpenedLinks,
         login_page: LoginPage,
     ) -> None:
-        session = SignInSession(_endpoint(service), MemoryStore(), free_port())
+        session = SignInSession(_endpoint(service), MemoryStore(), StandPorts().free())
         session.start()
         login_page.open(opened.next())
         login_page.shows_the_form()
@@ -576,7 +576,7 @@ class TestDeployedService:
             common = tomllib.load(handle)
 
         url = f"{public}{common['mcp']['path']}/{ENDPOINT}"
-        session = SignInSession(url, MemoryStore(), free_port())
+        session = SignInSession(url, MemoryStore(), StandPorts().free())
         session.start()
         address = opened.next()
         if not address.startswith(f"{public}/authorize?"):

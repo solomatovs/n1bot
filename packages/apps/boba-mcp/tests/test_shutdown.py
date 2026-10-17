@@ -28,7 +28,7 @@ from boba.auth.proxy import ProxyAssertions
 from boba.db.postgres.connection import PostgresConfig
 from boba.stand.database import TestDatabase
 from boba.stand.ui.database import run_blocking
-from boba.stand.ui.stand import ServiceStand, StandProcess, free_port
+from boba.stand.ui.stand import ServiceStand, StandPorts, StandProcess
 
 pytestmark = pytest.mark.integration
 
@@ -94,7 +94,7 @@ def service(
     db_name = run_blocking(TestDatabase.ensure(stand_postgres))
 
     config = ServiceStand(
-        workdir=tmp_path, app_port=free_port(), db_name=db_name, sandbox=True
+        workdir=tmp_path, app_port=StandPorts().free(), db_name=db_name, sandbox=True
     )
     process = StandProcess[ServiceStand](config=config, log_path=tmp_path / "mcp.log")
     process.start(BOOT_SEC)
