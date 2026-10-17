@@ -61,6 +61,8 @@ class FakeRoute(StrEnum):
     LINES = "/lines"
     RESET = "/reset"
     REQUESTS = "/requests"
+    HOLD = "/hold"
+    RELEASE = "/release"
     COMPLETIONS = "/v1/chat/completions"
     OLLAMA_CHAT = "/api/chat"
 
@@ -971,15 +973,40 @@ class TokenSplit:
         yield from tokens[:keep]
 
 
+class StreamGate:
+    """Удержание потоков ответа провайдера по команде теста.
+
+    Ход, который должен застать что-то идущим (вкладку-наблюдателя второго
+    инстанса), тест держит маршрутом hold и отпускает маршрутом release:
+    удержанный поток отдаёт свой первый кадр и ждёт. Без удержания поток идёт
+    с обычной паузой между кадрами. Один на приложение; его делят оба
+    протокола (OpenAiWire, OllamaWire).
+    """
+
+    def __init__(self) -> None:
+        self._open = asyncio.Event()
+        self._open.set()
+
+    def hold(self) -> None:
+        self._open.clear()
+
+    def release(self) -> None:
+        self._open.set()
+
+    async def passed(self) -> None:
+        await self._open.wait()
+
+
 class OpenAiWire:
     """Ответы протокола /v1/chat/completions: тело целиком и SSE-поток."""
 
     MEDIA_STREAM: ClassVar[str] = "text/event-stream"
     MEDIA_JSON: ClassVar[str] = "application/json"
 
-    def __init__(self, model: str, token_delay_sec: float) -> None:
+    def __init__(self, model: str, token_delay_sec: float, gate: StreamGate) -> None:
         self._model = model
         self._delay = token_delay_sec
+        self._gate = gate
         self._split = TokenSplit()
 
     def error(self, failure: FailureName) -> Response:
@@ -1035,6 +1062,7 @@ class OpenAiWire:
     async def _stream(self, played: Played, usage: UsageCounts) -> AsyncIterator[bytes]:
         for chunk in self._chunks(played, usage):
             yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n".encode()
+            await self._gate.passed()
             await asyncio.sleep(self._delay)
 
         if played.has(FailureName.CUT):
@@ -1107,9 +1135,10 @@ class OllamaWire:
     MEDIA_JSON: ClassVar[str] = "application/json"
     CREATED_AT: ClassVar[str] = "2026-01-01T00:00:00Z"
 
-    def __init__(self, model: str, token_delay_sec: float) -> None:
+    def __init__(self, model: str, token_delay_sec: float, gate: StreamGate) -> None:
         self._model = model
         self._delay = token_delay_sec
+        self._gate = gate
         self._split = TokenSplit()
 
     def error(self, failure: FailureName) -> Response:
@@ -1139,6 +1168,7 @@ class OllamaWire:
     async def _stream(self, played: Played, usage: UsageCounts) -> AsyncIterator[bytes]:
         for chunk in self._chunks(played, usage):
             yield (json.dumps(chunk, ensure_ascii=False) + "\n").encode()
+            await self._gate.passed()
             await asyncio.sleep(self._delay)
 
     def _chunks(self, played: Played, usage: UsageCounts) -> Iterator[dict[str, Any]]:
@@ -1216,6 +1246,7 @@ class FakeLlmApp:
     """Сценарий для сообщения без маркера; None — такое сообщение отвергается."""
 
     requests: list[dict[str, Any]] = field(default_factory=list)
+    _gate: StreamGate = field(init=False, repr=False)
     _openai: OpenAiWire = field(init=False, repr=False)
     _ollama: OllamaWire = field(init=False, repr=False)
     _failures: FailureBook = field(init=False, repr=False)
@@ -1225,8 +1256,9 @@ class FakeLlmApp:
 
     def __post_init__(self) -> None:
         self._names = McpToolNames()
-        self._openai = OpenAiWire(self.model, self.token_delay_sec)
-        self._ollama = OllamaWire(self.model, self.token_delay_sec)
+        self._gate = StreamGate()
+        self._openai = OpenAiWire(self.model, self.token_delay_sec, self._gate)
+        self._ollama = OllamaWire(self.model, self.token_delay_sec, self._gate)
         self._failures = FailureBook()
         self._summaries = SummaryBook()
         self._usage = UsageBook(self.estimate_usage)
@@ -1252,6 +1284,18 @@ class FakeLlmApp:
         async def reset() -> dict[str, str]:
             """Сброс журнала запросов: тест начинает с чистого листа."""
             self.requests.clear()
+            return {"status": "ok"}
+
+        @app.post(FakeRoute.HOLD.value)
+        async def hold() -> dict[str, str]:
+            """Удержание потоков: каждый следующий отдаёт первый кадр и ждёт."""
+            self._gate.hold()
+            return {"status": "ok"}
+
+        @app.post(FakeRoute.RELEASE.value)
+        async def release() -> dict[str, str]:
+            """Удержанные потоки идут дальше."""
+            self._gate.release()
             return {"status": "ok"}
 
         @app.get(FakeRoute.REQUESTS.value)

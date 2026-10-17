@@ -43,14 +43,14 @@ from boba.stand.database import TestDatabase
 from boba.stand.names import StandNames
 from boba.stand.site import Stand
 from boba.stand.ui.database import StandDatabase
-from boba.stand.ui.fake_llm import ScenarioName, serve
+from boba.stand.ui.fake_llm import FakeRoute, ScenarioName, serve
 from boba.stand.ui.stand import (
     StandApp,
     StandConfig,
+    StandPorts,
     StandProcess,
     StandToolNames,
     StandUrl,
-    free_port,
 )
 
 pytestmark = pytest.mark.anyio
@@ -82,7 +82,7 @@ def stand_database() -> str:
 
 @pytest.fixture(scope="module")
 def llm_port() -> int:
-    return free_port()
+    return StandPorts().free()
 
 
 @pytest.fixture(scope="module")
@@ -126,7 +126,7 @@ def app(
     config = StandConfig(
         workdir=workdir,
         app=StandApp.AID,
-        app_port=free_port(),
+        app_port=StandPorts().free(),
         llm_port=llm_port,
         db_name=stand_database,
         generation=GENERATION,
@@ -153,7 +153,7 @@ def second(
     config = StandConfig(
         workdir=workdir,
         app=StandApp.AID,
-        app_port=free_port(),
+        app_port=StandPorts().free(),
         llm_port=llm_port,
         db_name=stand_database,
         generation=GENERATION,
@@ -181,7 +181,7 @@ def foreign_app(
     config = StandConfig(
         workdir=workdir,
         app=StandApp.AID,
-        app_port=free_port(),
+        app_port=StandPorts().free(),
         llm_port=llm_port,
         db_name=stand_database,
         generation=GENERATION,
@@ -209,7 +209,7 @@ def sandboxed(
     config = StandConfig(
         workdir=workdir,
         app=StandApp.AID,
-        app_port=free_port(),
+        app_port=StandPorts().free(),
         llm_port=llm_port,
         db_name=stand_database,
         generation=GENERATION,
@@ -1497,16 +1497,21 @@ class TestFeed:
             await again.end_session()
 
     async def test_second_instance_follows_a_live_turn(
-        self, app: StandProcess, second: StandProcess, cookie: str
+        self, app: StandProcess, second: StandProcess, cookie: str, llm_port: int
     ) -> None:
         holder = ChatSocket(app, cookie, str(uuid4()))
         await holder.open()
-        await holder.send(f"follow {ScenarioName.LONG.value}")
-        await holder.wait_event("stream_token")
-
+        # ход держится живым, пока наблюдатель не подключится: иначе под
+        # нагрузкой он кончается раньше, чем второй инстанс подхватит тред
+        httpx.post(StandUrl.of(llm_port, FakeRoute.HOLD.value), timeout=5.0)
         observer = ChatSocket(second, cookie, holder.thread_id)
         try:
+            await holder.send(f"follow {ScenarioName.LONG.value}")
+            # удержанный поток отдал первый кадр: шаг открыт с ним, токенов нет
+            await holder.wait_event("stream_start")
+
             await observer.open(resumed=True)
+            httpx.post(StandUrl.of(llm_port, FakeRoute.RELEASE.value), timeout=5.0)
             await observer.wait_event("stream_token", timeout_sec=60.0)
             await observer.wait_task_end()
             await holder.wait_task_end()
@@ -1520,6 +1525,7 @@ class TestFeed:
                 <= (observer.step_ids()["assistant_message"])
             ), (holder.step_ids(), observer.step_ids())
         finally:
+            httpx.post(StandUrl.of(llm_port, FakeRoute.RELEASE.value), timeout=5.0)
             await observer.end_session()
             await holder.end_session()
 
