@@ -33,15 +33,15 @@ APPS            := aid mcp
 APP             ?=
 
 # чат инструментов не исполняет: песочницы, cgroup и моделей плагинов у него нет
-PACKAGES_aid      = boba-aid boba-llm-http boba-llm-onnx[generation]
-IMPORTS_aid      := boba.aid onnxruntime_genai
+PACKAGES_aid      = boba-aid boba-llm-http
+IMPORTS_aid      := boba.aid
 MODULE_aid       := boba.aid.main
 STAGE_aid        := runtime-aid
 HEALTH_aid       := /
 PORT_aid         := 8501
 PREFIX_aid       := /boba
 SANDBOX_aid      :=
-MODELS_aid       := onnx-genai
+MODELS_aid       :=
 PARTS_aid        := app_root/public app_root/public/page.js app_root/public/vendor \
                     app_root/ui/index.html app_root/ui/index.js app_root/mcp-apps/sandbox.html
 
@@ -167,7 +167,7 @@ FETCH_CONSTRAINTS := $(DEPS_DIR)/constraints.txt
 EMBED_MODELS    ?= intfloat/multilingual-e5-large
 FASTEMBED_STAMPS := $(foreach m,$(EMBED_MODELS),$(MODELS_DIR)/fastembed/.$(subst /,--,$(m)))
 
-# модели переформулировщика: onnxruntime-genai держит каждую каталогом
+# локальные модели агента (boba-bin с BIN_ONNX): onnxruntime-genai держит каждую каталогом
 # genai_config.json + веса + токенайзер; какую берёт профиль, решает config.toml
 ONNX_HUB_URL    ?= https://huggingface.co
 ONNX_MODELS     ?= qwen3-0.6b-int4 qwen3-1.7b-int4 qwen3-4b-int4

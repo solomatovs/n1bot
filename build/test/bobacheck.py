@@ -168,43 +168,6 @@ for module in [
 ]:
     warn(f"нет {module} в приложении", lambda m=module: t_absent(m))
 
-# 6) локальные модели onnxruntime-genai (только чат): лежат в релизе и грузятся без сети
-MODELS_DIR = os.path.join(BASE_DIR, "models", "onnx-genai")
-
-
-def t_models_present():
-    if not os.path.isdir(MODELS_DIR):
-        raise RuntimeError(f"нет каталога {MODELS_DIR}")
-
-    names = sorted(os.listdir(MODELS_DIR))
-    if not names:
-        raise RuntimeError(f"пусто: {MODELS_DIR}")
-
-    for name in names:
-        config = os.path.join(MODELS_DIR, name, "genai_config.json")
-        if not os.path.isfile(config):
-            raise RuntimeError(f"нет {config}")
-
-
-def t_model_loads_offline():
-    os.environ["HF_HUB_OFFLINE"] = "1"
-    # библиотека без аннотаций: берём модуль динамически, как boba.llm.local
-    og = importlib.import_module("onnxruntime_genai")
-
-    name = sorted(os.listdir(MODELS_DIR))[0]
-    model = og.Model(og.Config(os.path.join(MODELS_DIR, name)))
-    tokenizer = og.Tokenizer(model)
-    # encode отдаёт numpy-массив: истинность массива не определена, считаем длину
-    encoded = tokenizer.encode("offline check")
-    if len(encoded) == 0:
-        raise RuntimeError(f"{name}: токенайзер не кодирует")
-
-
-if APP == "aid":
-    print("== local onnx-genai models ==")
-    check("models present with genai_config.json", t_models_present)
-    check("smallest model loads offline", t_model_loads_offline)
-
 # 7) образы корня плагинов: по одному rootfs.ext4 на пакет с entry point boba.tools;
 # они, веса эмбеддера и модели OCR есть только у приложения, исполняющего инструменты
 PLUGINS_DIR = os.path.join(BASE_DIR, "sandbox", "plugins")

@@ -29,7 +29,6 @@ services:
       - ./conf/krb:/app/boba/conf/krb:ro
       - ./conf/krb/krb5.conf:/etc/krb5.conf:ro
       - ./data:/app/boba/data:rw
-      - ../../runtime/models:/app/boba/models:ro
     ports:
       - "8501"
   aid2:
@@ -64,7 +63,6 @@ services:
       - ./conf2/krb:/app/boba/conf/krb:ro
       - ./conf2/krb/krb5.conf:/etc/krb5.conf:ro
       - ./data:/app/boba/data:rw
-      - ../../runtime/models:/app/boba/models:ro
     ports:
       - "8501"
 
