@@ -77,6 +77,13 @@ class TestThinkingStep:
         if "reason" not in step.inner_text().lower():
             raise AssertionError(step.inner_text())
 
+        # кружок «идёт» снимается с концом рассуждений, а не висит после хода
+        shown = step.inner_text()
+        if "✔ thinking" not in shown:
+            raise AssertionError(f"the finished thinking is marked done: {shown!r}")
+        if "○" in shown:
+            raise AssertionError(f"the finished thinking keeps the circle: {shown!r}")
+
 
 class TestAnswerStep:
     """Ответ ассистента: сообщение ленты верхнего уровня."""

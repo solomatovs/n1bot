@@ -59,7 +59,7 @@ from boba.stand.site import Stand
 from boba.stand.ui.fake_llm import FakeLlmApp
 from boba.stand.ui.stand import REPO_ROOT, free_port
 
-API_KEY = "sk-chainlit-acp-test-secret"
+API_KEY = "sk-aid-acp-test-secret"
 MODEL_NAME = "stand-model"
 AGENT_MODULE = "boba.cli.app"
 

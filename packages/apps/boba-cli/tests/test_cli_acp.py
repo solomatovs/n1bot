@@ -140,7 +140,7 @@ class RegisteredTool(StrEnum):
 
 
 class StandRegistration:
-    """Регистрация серверов на стороне тестового клиента в роли chainlit:
+    """Регистрация серверов на стороне тестового клиента в роли чата aid:
     отвечает на mcp/message сама моделями mcp_types. `tools/list` отдаёт
     страницами по PAGE, `tools/call` ведёт себя по RegisteredTool: ADD
     складывает, SHOUT кричит, SLOW шлёт ход `notifications/progress` через
@@ -380,7 +380,7 @@ class StandRegistration:
 
 
 class AcpClient(Client):
-    """Тестовый клиент ACP v2 в роли chainlit: копит уведомления по сессиям
+    """Тестовый клиент ACP v2 в роли чата aid: копит уведомления по сессиям
     (в том числе idle с ошибкой), отвечает на запрос разрешения выбранным
     вариантом либо отменой; `hold` задерживает ответ."""
 

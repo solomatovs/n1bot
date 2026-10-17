@@ -1,4 +1,4 @@
-"""Провайдеры chainlit-процесса: конфиг чата, data layer, клиент MCP чата
+"""Провайдеры процесса aid: конфиг чата, data layer, клиент MCP чата
 (файлы, журналы, карточки инструментов), процессы агента ACP и приёмники
 его потока.
 
@@ -64,7 +64,7 @@ from boba.toolrun.registry import ToolRegistry
 
 
 def get_app_config() -> AppConfig:
-    """Конфиг chainlit-процесса; значение кладёт bootstrap после AppConfig.load."""
+    """Конфиг процесса aid; значение кладёт bootstrap после AppConfig.load."""
     msg = (
         "get_app_config: the app config is set by bootstrap as a container "
         "override, the provider itself produces nothing"
@@ -107,7 +107,7 @@ def storage_provider(
 ) -> StorageClient:
     """Хранилище вложений чата: файлы лежат в workspace пользователя на
     MCP-сервере его профиля."""
-    return RemoteStorageClient(app_config.chainlit.url_prefix, owners, mcp_servers_ref)
+    return RemoteStorageClient(app_config.aid.url_prefix, owners, mcp_servers_ref)
 
 
 def session_profile(

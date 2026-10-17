@@ -64,11 +64,14 @@ if ! ls "$ORACLEDB_WHEELS"/oracledb-*.whl > /dev/null 2>&1; then
   fi
 fi
 
+# venv без ссылок: интерпретатор копией, lib64 -> lib не нужен (sys.platlibdir = lib),
+# пакеты uv кладёт копиями
 if [ ! -d "$DIR/.venv" ]; then
-  (cd "$DIR" && uv venv --python 3.11 --clear --no-managed-python)
+  python3.11 -m venv --copies --without-pip "$DIR/.venv"
+  rm "$DIR/.venv/lib64"
 fi
 
-(cd "$DIR" && uv sync -v --system-certs --all-packages --all-extras)
+(cd "$DIR" && UV_LINK_MODE=copy uv sync -v --system-certs --all-packages --all-extras)
 OK=$?
 
 if [ $OK -eq 0 ]; then

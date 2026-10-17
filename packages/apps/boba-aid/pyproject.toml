@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "boba-aid"
 version = "0.0.26.dev4"
-description = "Chainlit2 web UI app for the Boba agent."
+description = "Aid: the chat web UI of the Boba agent."
 requires-python = ">=3.11,<4"
 dependencies = [
     "boba-auth==0.0.26.dev4",

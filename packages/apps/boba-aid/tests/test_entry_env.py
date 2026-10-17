@@ -39,7 +39,7 @@ def keep_environ() -> Iterator[None]:
 
 CONFIG = """
 [app]
-    chainlit = "${chainlit}"
+    aid = "${aid}"
 
 [session]
     auth_secret     = "<auth_secret>"
@@ -48,7 +48,7 @@ CONFIG = """
     session_ttl_sec = 3600
     session_max_sec = 86400
 
-[chainlit]
+[aid]
     root        = "<root>"
     files_dir   = "<files_dir>"
     url_prefix  = "/boba"
@@ -159,7 +159,7 @@ class TestEntryPointsFreeOfChainlit:
 
 
 class TestChainlitFilesOutsideAppRoot:
-    """chainlit пишет вложения в [chainlit].files_dir, а app_root не трогает.
+    """chainlit пишет вложения в [aid].files_dir, а app_root не трогает.
 
     Проверка идёт в подпроцессе: путь chainlit фиксирует на импорте. Упадёт,
     если после обновления chainlit запись снова пойдёт в APP_ROOT.

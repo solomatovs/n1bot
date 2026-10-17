@@ -1,4 +1,4 @@
-"""Фикстуры тестов chainlit: определены в aid_stand и acp_stand, здесь
+"""Фикстуры тестов aid: определены в aid_stand и acp_stand, здесь
 регистрация, метка набора в именах стенда и группы pytest-xdist."""
 
 from enum import StrEnum
@@ -23,19 +23,19 @@ def pytest_configure(config: pytest.Config) -> None:
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     """Группы ставятся раньше хука xdist: он читает их в том же событии. Хук
     получает тесты всего прогона, группы набора идут только его тестам."""
-    groups = ChainlitGroups()
+    groups = AidGroups()
     for item in SuiteItems(Path(__file__)).own(items):
         item.add_marker(pytest.mark.xdist_group(groups.of(item)))
 
 
-class ChainlitGroup(StrEnum):
+class AidGroup(StrEnum):
     """Группы xdist, общие для нескольких модулей."""
 
     E2E = "e2e"
 
 
-class ChainlitGroups:
-    """Группа xdist теста chainlit: модуль целиком, чтобы модульные фикстуры
+class AidGroups:
+    """Группа xdist теста aid: модуль целиком, чтобы модульные фикстуры
     поднимались один раз. e2e-модули запускают настоящее приложение с общим
     BOBA_INSTANCE_ID и портом BOBA_E2E_PORT и идут одним процессом по очереди."""
 
@@ -44,6 +44,6 @@ class ChainlitGroups:
 
     def of(self, item: pytest.Item) -> str:
         if item.path.name in self.E2E_MODULES:
-            return ChainlitGroup.E2E.value
+            return AidGroup.E2E.value
 
         return item.nodeid.split(self.SEPARATOR, 1)[0]

@@ -347,7 +347,7 @@ class TestMcpToolInTheFeed:
         folded = tree.inner_text()
         if '"total": 1' not in folded:
             raise AssertionError(f"the root is expanded: {folded!r}")
-        if "1 items" not in folded:
+        if "1 item ]" not in folded:
             raise AssertionError(f"the nested array is folded: {folded!r}")
         if "<script>" in folded:
             raise AssertionError(f"the nested string is folded away: {folded!r}")
@@ -367,8 +367,9 @@ class TestMcpToolInTheFeed:
             raise AssertionError("the string ran as a script")
 
         rows.locator("summary").first.click()
-        tree.get_by_text("1 items").wait_for(state="visible", timeout=10_000)
-        if "1 items" not in tree.inner_text():
+        folded_back = tree.get_by_text(re.compile(r"\b1 item\b"))
+        folded_back.wait_for(state="visible", timeout=10_000)
+        if "1 item ]" not in tree.inner_text():
             raise AssertionError(f"the array folds back: {tree.inner_text()!r}")
 
 
@@ -645,6 +646,46 @@ class TestToolAppLook:
         scroll = chat.page.evaluate(f"[{width}, {shown}]")
         if scroll[0] > scroll[1]:
             raise AssertionError(f"no horizontal scroll in a narrow window: {scroll}")
+
+        # текст приложения берёт тему хоста: светлый на тёмном и наоборот
+        light = inner.locator("#board").evaluate(
+            "el => { const [r, g, b] = getComputedStyle(el).color"
+            ".match(/\\d+/g).map(Number); return (r + g + b) / 3 > 128; }"
+        )
+        if light is not dark:
+            raise AssertionError(
+                f"the text of the app follows the {theme} theme of the host"
+            )
+
+    def test_frame_grows_with_the_app(
+        self, mcp_stand: StandProcess, open_chat: OpenChat
+    ) -> None:
+        """Приложение дописало строку ответа — рамка выросла по его
+        size-changed, нижняя строка не обрезана."""
+        chat = open_chat(mcp_stand, "")
+        tool, inner = _app(chat)
+        outer = tool.locator("iframe").first
+        before = outer.bounding_box()
+
+        inner.locator("#call-app").click()
+        answer = inner.locator("#answer")
+        answer.get_by_text("answer: app_only answered").wait_for(timeout=30_000)
+
+        clipped = "b => b.scrollHeight - window.innerHeight"
+        rest = inner.locator("body").evaluate(clipped)
+        for _ in range(20):
+            if rest <= 1:
+                break
+            chat.page.wait_for_timeout(250)
+            rest = inner.locator("body").evaluate(clipped)
+
+        after = outer.bounding_box()
+        if rest > 1:
+            raise AssertionError(f"the app is clipped by {rest}px: {before} -> {after}")
+        if before is None or after is None:
+            raise AssertionError("the frame of the app is laid out on the page")
+        if after["height"] <= before["height"]:
+            raise AssertionError(f"the frame grows with the app: {before} -> {after}")
 
 
 class TestSandboxPage:

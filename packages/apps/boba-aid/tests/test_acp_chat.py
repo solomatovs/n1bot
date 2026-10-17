@@ -1,4 +1,4 @@
-"""Стенд chainlit ведёт разговор через `boba acp`: приложение и его сервис
+"""Стенд aid ведёт разговор через `boba acp`: приложение и его сервис
 boba-mcp отдельными процессами, фейковая модель, вкладка — headless-клиент
 socket.io тем же протоколом, что и браузер. Проверяется ход с потоком токенов
 в ленту, остановка кнопкой Stop, sessionId агента в threads.meta, процесс
@@ -150,7 +150,7 @@ def second(
     stand_database: str,
     app: StandProcess,
 ) -> Iterator[StandProcess]:
-    """Второй инстанс chainlit над той же базой: наблюдатель чужих ходов."""
+    """Второй инстанс aid над той же базой: наблюдатель чужих ходов."""
     workdir = tmp_path_factory.mktemp("acp-chat-second")
     config = StandConfig(
         workdir=workdir,
@@ -177,7 +177,7 @@ def foreign_app(
     stand_database: str,
     app: StandProcess,
 ) -> Iterator[StandProcess]:
-    """Инстанс chainlit над той же базой, у которого агент вкладки — чужой
+    """Инстанс aid над той же базой, у которого агент вкладки — чужой
     агент ACP без объявленного среза ветки."""
     workdir = tmp_path_factory.mktemp("acp-chat-foreign")
     config = StandConfig(
@@ -205,7 +205,7 @@ def sandboxed(
     stand_database: str,
     app: StandProcess,
 ) -> Iterator[StandProcess]:
-    """Инстанс chainlit над той же базой с песочницей, как в бою: файлы
+    """Инстанс aid над той же базой с песочницей, как в бою: файлы
     вложений и инструментов — один workspace пользователя."""
     workdir = tmp_path_factory.mktemp("acp-chat-sandbox")
     config = StandConfig(

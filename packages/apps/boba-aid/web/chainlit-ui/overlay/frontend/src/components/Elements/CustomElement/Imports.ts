@@ -8,6 +8,7 @@ import * as Zod from 'zod';
 import * as ChainlitReactClient from '@chainlit/react-client';
 import * as McpUiClient from '@mcp-ui/client';
 
+import * as PdfComponents from '@/components/Elements/PDF';
 import * as Markdown from '@/components/Markdown';
 import * as AccordionComponents from '@/components/ui/accordion';
 import * as AspectRatioComponents from '@/components/ui/aspect-ratio';
@@ -46,6 +47,7 @@ const Imports = {
   '@chainlit/react-client': ChainlitReactClient,
   '@mcp-ui/client': McpUiClient,
   '@/components/markdown': Markdown,
+  '@/components/elements/pdf': PdfComponents,
   'react-hook-form': ReactHookForm,
   'lucide-react': LucideIcons,
   '@/components/ui/tabs': TabsComponents,
