@@ -9,6 +9,7 @@ import * as ChainlitReactClient from '@chainlit/react-client';
 import * as McpUiClient from '@mcp-ui/client';
 
 import * as PdfComponents from '@/components/Elements/PDF';
+import * as I18nComponents from '@/components/i18n/Translator';
 import * as Markdown from '@/components/Markdown';
 import * as AccordionComponents from '@/components/ui/accordion';
 import * as AspectRatioComponents from '@/components/ui/aspect-ratio';
@@ -48,6 +49,7 @@ const Imports = {
   '@mcp-ui/client': McpUiClient,
   '@/components/markdown': Markdown,
   '@/components/elements/pdf': PdfComponents,
+  '@/components/i18n': I18nComponents,
   'react-hook-form': ReactHookForm,
   'lucide-react': LucideIcons,
   '@/components/ui/tabs': TabsComponents,

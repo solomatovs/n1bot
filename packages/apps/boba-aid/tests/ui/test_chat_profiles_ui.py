@@ -18,6 +18,7 @@ import pytest
 from chat_ui import OpenChat
 from playwright.sync_api import expect
 
+from boba.aid.chat.ui_text import UiText
 from boba.stand.ui.chat_page import ChatPage, Selector, StepKind
 from boba.stand.ui.database import StandDatabase
 from boba.stand.ui.fake_llm import ScenarioName
@@ -395,10 +396,8 @@ class TestRetiredThreadProfile:
 
     TOAST: ClassVar[str] = "[data-sonner-toast]"
     THREAD_HISTORY: ClassVar[str] = "#thread-history"
-    NOTICE: ClassVar[str] = (
-        f'Chat profile "{RetiredThreads.PROFILE}" is no longer available: '
-        'this chat continues with "General"'
-    )
+    NOTICE: ClassVar[str] = "aid.notice.profileRetired"
+    FALLBACK: ClassVar[str] = "General"
     SETTLE_MS: ClassVar[int] = 3000
     WAIT_MS: ClassVar[int] = 15000
 
@@ -407,6 +406,7 @@ class TestRetiredThreadProfile:
         open_chat: OpenChat,
         stand: StandProcess,
         retired_threads: RetiredThreads,
+        app_texts: UiText,
     ) -> None:
         chat = open_chat(stand, ADMIN_LOGIN)
         thread = retired_threads.made_in(chat)
@@ -416,7 +416,10 @@ class TestRetiredThreadProfile:
             wait_until="domcontentloaded",
         )
 
-        toast = chat.page.locator(self.TOAST).filter(has_text=self.NOTICE)
+        notice = app_texts.text(
+            self.NOTICE, retired=RetiredThreads.PROFILE, profile=self.FALLBACK
+        )
+        toast = chat.page.locator(self.TOAST).filter(has_text=notice)
         expect(toast).to_be_visible(timeout=self.WAIT_MS)
 
         self._check_opened(chat, thread)

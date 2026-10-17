@@ -32,6 +32,7 @@ import pytest
 from chat_ui import BOOT_TIMEOUT_SEC, OpenChat
 from playwright.sync_api import Browser, FrameLocator, Locator, Page
 
+from boba.aid.chat.ui_text import UiText
 from boba.mcp_client.client import McpServerConfig
 from boba.stand.ui.chat_page import ChatPage, Selector, StepKind
 from boba.stand.ui.fake_llm import ScenarioName
@@ -329,7 +330,7 @@ class TestMcpToolInTheFeed:
             raise AssertionError(f"the text resource is a code block: {output!r}")
 
     def test_json_of_a_tool_is_a_tree_under_the_step(
-        self, mcp_stand: StandProcess, open_chat: OpenChat
+        self, mcp_stand: StandProcess, open_chat: OpenChat, app_texts: UiText
     ) -> None:
         """Look-тест дерева JSON: корень раскрыт, вложенное свёрнуто и
         раскрывается кликом; строка с разметкой видна текстом и ничего не
@@ -344,10 +345,11 @@ class TestMcpToolInTheFeed:
         tree.wait_for(state="visible", timeout=30_000)
         rows = tree.locator("[data-json-node] [data-json-node]").first
 
+        one_item = app_texts.text("aid.json.item_one", count=1)
         folded = tree.inner_text()
         if '"total": 1' not in folded:
             raise AssertionError(f"the root is expanded: {folded!r}")
-        if "1 item ]" not in folded:
+        if f"{one_item} ]" not in folded:
             raise AssertionError(f"the nested array is folded: {folded!r}")
         if "<script>" in folded:
             raise AssertionError(f"the nested string is folded away: {folded!r}")
@@ -367,9 +369,9 @@ class TestMcpToolInTheFeed:
             raise AssertionError("the string ran as a script")
 
         rows.locator("summary").first.click()
-        folded_back = tree.get_by_text(re.compile(r"\b1 item\b"))
+        folded_back = tree.get_by_text(re.compile(re.escape(one_item)))
         folded_back.wait_for(state="visible", timeout=10_000)
-        if "1 item ]" not in tree.inner_text():
+        if f"{one_item} ]" not in tree.inner_text():
             raise AssertionError(f"the array folds back: {tree.inner_text()!r}")
 
 
@@ -475,7 +477,7 @@ class TestOwnServerInTheFeed:
         _ask(chat, "mcp__boba__fake_echo", {"text": "journal", "repeat": 1})
 
         tool = chat.expand_last_tool()
-        tool.locator('[aria-label="Show tool output"]').click()
+        tool.locator("[data-canvas-stream]").click()
 
         side = chat.page.locator("#side-view-content")
         side.get_by_text("echo progress: journal").first.wait_for(timeout=30_000)

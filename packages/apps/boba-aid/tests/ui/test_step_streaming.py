@@ -11,6 +11,7 @@ from typing import ClassVar
 
 import pytest
 
+from boba.aid.chat.ui_text import UiText
 from boba.aid.rendering.chat_view import StepText
 from boba.stand.ui.chat_page import ChatPage, Selector, StepKind
 from boba.stand.ui.fake_llm import ScenarioName
@@ -68,7 +69,7 @@ class TestThinkingStep:
 
         _assert_streamed(chat.log, StepKind.LLM.value)
 
-    def test_is_shown_in_dom(self, chat: ChatPage) -> None:
+    def test_is_shown_in_dom(self, chat: ChatPage, app_texts: UiText) -> None:
         chat.ask(f"{ScenarioName.THINKING_ANSWER.value} please")
         chat.await_idle()
         chat.expand_process()
@@ -79,7 +80,7 @@ class TestThinkingStep:
 
         # кружок «идёт» снимается с концом рассуждений, а не висит после хода
         shown = step.inner_text()
-        if "✔ thinking" not in shown:
+        if f"✔ {app_texts.text(StepText.THINKING.value)}" not in shown:
             raise AssertionError(f"the finished thinking is marked done: {shown!r}")
         if "○" in shown:
             raise AssertionError(f"the finished thinking keeps the circle: {shown!r}")
@@ -124,7 +125,9 @@ class TestToolStep:
                 f"tool step was not updated after it appeared\n{chat.log.describe()}"
             )
 
-    def test_running_state_precedes_the_result(self, chat: ChatPage) -> None:
+    def test_running_state_precedes_the_result(
+        self, chat: ChatPage, app_texts: UiText
+    ) -> None:
         """Первым приходит открытый шаг с подписью вызова, а не готовый вывод.
 
         Состояние «идёт» показывает открытый шаг (кружок ○, нет end, маркер
@@ -145,7 +148,7 @@ class TestToolStep:
 
         # секцию output фронт рисует только непустой: под ней живёт кнопка
         # живого вывода, поэтому идущий шаг несёт маркер, а не результат
-        if first.get("output") != StepText.RUNNING.value:
+        if first.get("output") != app_texts.text(StepText.RUNNING.value):
             raise AssertionError(first)
 
         last = steps[-1]

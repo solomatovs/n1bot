@@ -32,7 +32,6 @@ __all__ = [
     "StreamJournalError",
     "StreamKey",
     "StreamMeta",
-    "StreamNote",
     "StreamRecorderPort",
     "StreamSlice",
     "StreamStat",
@@ -233,24 +232,6 @@ class StreamSlice(BaseModel):
     window: int
     closed: bool
     note: str
-
-
-class StreamNote(StrEnum):
-    """Экранные тексты статусной строки окна потока.
-
-    Исходы закрытого вызова приходят из журнала словами CallOutcome —
-    их пишет обвязка вызова, панель показывает как есть.
-    """
-
-    RUNNING = "running…"
-    GONE = "The log of this call is unavailable: journaling was not active."
-
-    @classmethod
-    def status_of(cls, piece: StreamSlice) -> str:
-        if not piece.closed:
-            return str(cls.RUNNING)
-
-        return piece.note
 
 
 class ChannelProbe(BaseModel):

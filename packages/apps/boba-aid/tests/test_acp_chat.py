@@ -37,7 +37,9 @@ from acp_stand import ProcFiles
 from psycopg import sql
 
 from boba.aid.agent.settings import WorkdirFile
+from boba.aid.chat.ui_text import UiText
 from boba.aid.domain.fields import ThreadMetaField
+from boba.aid.rendering.chat_view import StepText
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
 from boba.runtime.config import RuntimeConfig
@@ -765,7 +767,7 @@ class TestConversation:
         assert not complaints, complaints
 
     async def test_stop_cancels_the_turn(
-        self, app: StandProcess, tab: ChatSocket
+        self, app: StandProcess, tab: ChatSocket, app_texts: UiText
     ) -> None:
         await tab.send(f"go {ScenarioName.LONG.value}")
         await tab.wait_event("stream_token")
@@ -773,9 +775,8 @@ class TestConversation:
         await tab.wait_task_end()
 
         assert not tab.errors(), (tab.errors(), app.tail(80))
-        notes = [
-            m for m in tab.messages() if "stopped by the user" in str(m.get("output"))
-        ]
+        stopped = app_texts.text(StepText.STOPPED.value)
+        notes = [m for m in tab.messages() if stopped in str(m.get("output"))]
         assert notes, tab.names()
 
     async def test_exited_agent_is_replaced_for_the_next_question(
@@ -1703,7 +1704,7 @@ class TestSettingsRestart:
         "stream_start",
         "stream_token",
     )
-    DEFERRED_TEXT: ClassVar[str] = "will apply after the current answer"
+    DEFERRED: ClassVar[str] = "aid.notice.settingsDeferred"
 
     @pytest.fixture(autouse=True)
     async def _own_user_layer(self, rows: ChatRows) -> AsyncIterator[None]:
@@ -1819,8 +1820,14 @@ class TestSettingsRestart:
             await tab.end_session()
 
     async def test_settings_changed_during_a_turn_apply_after_it(
-        self, app: StandProcess, cookie: str, rows: ChatRows, llm_port: int
+        self,
+        app: StandProcess,
+        cookie: str,
+        rows: ChatRows,
+        llm_port: int,
+        app_texts: UiText,
     ) -> None:
+        deferred = app_texts.text(self.DEFERRED)
         agents = AgentProcesses(app)
         tab = ChatSocket(app, cookie, str(uuid4()))
         await tab.open()
@@ -1832,16 +1839,12 @@ class TestSettingsRestart:
             await tab.settings(self._form("fake-model-deferred"))
             deadline = time.monotonic() + 30
             while time.monotonic() < deadline:
-                if any(
-                    self.DEFERRED_TEXT in str(m.get("output")) for m in tab.messages()
-                ):
+                if any(deferred in str(m.get("output")) for m in tab.messages()):
                     break
 
                 await asyncio.sleep(0.2)
 
-            notes = [
-                m for m in tab.messages() if self.DEFERRED_TEXT in str(m.get("output"))
-            ]
+            notes = [m for m in tab.messages() if deferred in str(m.get("output"))]
             assert notes, tab.trace()
             assert set(agents.of_thread(tab.thread_id)) == {old_pid}
 

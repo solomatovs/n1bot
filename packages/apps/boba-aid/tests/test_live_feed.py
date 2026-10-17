@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from importlib.resources import files
+from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
@@ -14,6 +15,7 @@ from acp.experimental.v2 import schema
 
 from boba.aid.canvas.remote import RemoteJournals
 from boba.aid.chat.feed import QuestionBody, TurnFeed
+from boba.aid.chat.ui_text import UiText
 from boba.aid.domain.fields import StepField
 from boba.aid.infra.config import AppConfig
 from boba.aid.rendering.acp_view import ToolMedia, UpdateView
@@ -39,6 +41,9 @@ from boba.runtime.storage import LocalStorageClient
 from boba.runtime.turns import StaleTurnCloser
 from boba.stand.refs import StandRefs
 from boba.toolkit.result import MarkdownResult
+
+TEXTS = UiText(Path(__file__).resolve().parents[1] / "assets", UiText.DEFAULT_LANGUAGE)
+"""Подписи ленты из переводов приложения пакета на языке по умолчанию."""
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -113,7 +118,7 @@ def _renderer(
     runtime_stand: StandRefs, storage: LocalStorageClient, thread_id: str, node: Node
 ) -> tuple[ChatRenderer, RecordingSink]:
     sink = RecordingSink()
-    view = ChatView(thread_id, sink, "u-1", storage, user_name="tester")
+    view = ChatView(thread_id, sink, "u-1", storage, TEXTS, user_name="tester")
     updates = UpdateView(view, thread_id, RemoteJournals(), ToolMedia())
     renderer = ChatRenderer(
         thread_id, updates, node.payloads, NoSurface(), RecordingRewinds()
@@ -354,6 +359,7 @@ async def test_feedback_reaches_the_viewer_instance(
         RecordingSink(),
         "u-1",
         storage,
+        TEXTS,
         user_name="tester",
     )
     updates = UpdateView(view, thread_id, RemoteJournals(), ToolMedia())
@@ -386,6 +392,7 @@ async def test_rewound_history_reaches_the_tabs_of_the_viewer_instance(
         RecordingSink(),
         "u-1",
         storage,
+        TEXTS,
         user_name="tester",
     )
     updates = UpdateView(view, thread_id, RemoteJournals(), ToolMedia())

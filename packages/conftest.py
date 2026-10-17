@@ -6,6 +6,7 @@ import atexit
 import os
 import shutil
 import tempfile
+from enum import StrEnum
 from typing import ClassVar
 
 import pytest
@@ -41,6 +42,40 @@ class ChainlitTestRoot:
 
 
 ChainlitTestRoot().install()
+
+
+class LookOption(StrEnum):
+    """Опции тестов вида aid (packages/apps/boba-aid/tests/look): переснять
+    эталоны и каталог отчёта. Объявлены здесь, чтобы прогон любого корня
+    тестов их знал."""
+
+    UPDATE = "--look-update"
+    OUT = "--look-out"
+
+    @property
+    def dest(self) -> str:
+        return self.value.removeprefix("--").replace("-", "_")
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    group = parser.getgroup("look", "тесты вида aid")
+    group.addoption(
+        LookOption.UPDATE.value,
+        dest=LookOption.UPDATE.dest,
+        nargs="?",
+        const="*",
+        default="",
+        help=(
+            "переснять эталоны тестов вида, имя которых подходит под маску "
+            "(без маски — все); прогон всё равно падает, эталоны принимаются git"
+        ),
+    )
+    group.addoption(
+        LookOption.OUT.value,
+        dest=LookOption.OUT.dest,
+        default="",
+        help="каталог отчёта тестов вида; по умолчанию debug/look-out корня",
+    )
 
 
 @pytest.hookimpl(tryfirst=True)
