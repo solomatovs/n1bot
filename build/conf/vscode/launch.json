@@ -53,7 +53,7 @@
             "request": "launch",
             "module": "boba.runtime.toolcli",
             "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}/debug/aid",
+            "cwd": "${workspaceFolder}/debug/mcp",
             "python": "${workspaceFolder}/.venv/bin/python",
             "env": {
                 "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/runtime/third/bin:${env:PATH}",
@@ -62,12 +62,18 @@
             },
             "justMyCode": false,
             "args": [
-                "boba.tool.connections.tools",
-                "connection_list",
+                "boba.tool.pg.tools",
+                "pg_query",
+                "--sql",
+                "select 1",
+                "--offset",
+                "0",
+                "--limit",
+                "10",
                 "--config",
-                "${workspaceFolder}/packages/apps/boba-aid/conf/config.toml",
+                "${workspaceFolder}/packages/apps/boba-mcp/conf/config.toml",
                 "--site",
-                "${workspaceFolder}/debug/aid/conf/site.toml",
+                "${workspaceFolder}/debug/mcp/conf/site.toml",
                 "--injected",
                 "${workspaceFolder}/.vscode/injected/pg.json"
             ]

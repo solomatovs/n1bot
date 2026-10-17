@@ -490,6 +490,14 @@ class ClientConnection(ClientSideConnection):
         )
         return None
 
+    def connected(self) -> bool:
+        """Соединение живо: SDK не видел конца потока агента и его не закрывали."""
+        connection = self._conn
+        if connection._disconnected:
+            return False
+
+        return not connection._closed
+
     async def notify(self, message: McpMessage) -> None:
         """Уведомление mcp/message агенту по его активному запросу."""
         try:

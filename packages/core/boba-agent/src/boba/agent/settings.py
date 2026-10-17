@@ -79,7 +79,12 @@ class SettingsModel(SecretRevealing):
 
 class ProviderSettings(SettingsModel):
     """Провайдер модели: вид, адрес, ключ значением либо именем переменной,
-    для локальной модели — каталог весов."""
+    для локальной модели — каталог весов; у удалённого — поведение запросов:
+    срок, проверка TLS, повторы и таблица транспорта процесса.
+
+    Таблица `transport` лежит как есть, ключами HttpTransportConfig
+    (snake_case): её проверяет модель провайдера при сборке профиля, как и
+    `sampling` уходит в запрос без разбора здесь."""
 
     kind: ProviderKind
     base_url: str | None = None
@@ -87,7 +92,12 @@ class ProviderSettings(SettingsModel):
     api_key_env: str | None = Field(default=None, min_length=1)
     model_dir: str | None = None
     timeout_sec: float = Field(default=120.0, gt=0)
-    retry_attempts: int = Field(default=1, ge=0)
+    ssl_verify: bool = True
+    retry_attempts: int = Field(default=1, ge=1)
+    retry_backoff_sec: float = Field(default=1.0, ge=0)
+    retry_statuses: Mapping[int, int] = Field(default_factory=dict)
+    retry_after_max_sec: float = Field(default=60.0, ge=0)
+    transport: Mapping[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _one_key_source(self) -> ProviderSettings:

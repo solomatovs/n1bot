@@ -95,7 +95,7 @@
         reasoning_effort = "low"
 
 [http]
-    dump                      = { enable = true, path = "${env.data}/dump" }
+    dump                      = { enable = false, path = "${env.data}/dump" }
     trust_env                 = true
     proxy                     = ""
     http2                     = false
@@ -137,18 +137,19 @@
     public_url   = "http://127.0.0.1:${env.port}${env.url_prefix}"
     seal_ttl_sec = 600
     [agent.process]
-        command           = "boba"
-        args              = ["acp", "--setting-sources", ""]
-        env               = {}
-        private_dir       = "${env.data}/agents"
-        start_timeout_sec = 30
-        stop_timeout_sec  = 10
+        command             = "${env.agent_command}"
+        args                = ["acp", "--setting-sources", ""]
+        private_dir         = "${env.data}/agents"
+        start_timeout_sec   = 30
+        request_timeout_sec = 120
+        stop_timeout_sec    = 10
     [agent.history]
         kind   = "postgres"
         schema = "boba"
-    [agent.limits]
+    [agent.model]
         context_window    = 128000
         max_output_tokens = 8192
+        reasoning_return  = "turn"
 
 # хранилище вложений (upload файлов)
 [mcp.servers.boba_base]

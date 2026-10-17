@@ -441,61 +441,6 @@ RUN chmod -R go-w ${BOBA_DIR}/third/bin ${BOBA_DIR}/sandbox \
     && ${BOBA_DIR}/third/bin/fuse2fs -V
 
 
-# образ чата: общий конфиг, ассеты chainlit, vendor-шрифты и стили формул вместо CDN.
-# Вложения сессий приложение держит в данных ([aid].files_dir), app_root не пишется
-FROM runtime-base AS runtime-aid
-
-ARG BOBA_DIR=/app/boba
-ARG BOBA_UID=1000
-ARG BOBA_GID=1000
-
-COPY --chown=${BOBA_UID}:${BOBA_GID} packages/apps/boba-aid/assets/.chainlit/config.toml   ${BOBA_DIR}/app_root/.chainlit/
-COPY --chown=${BOBA_UID}:${BOBA_GID} packages/apps/boba-aid/assets/.chainlit/translations/ ${BOBA_DIR}/app_root/.chainlit/translations/
-COPY --chown=${BOBA_UID}:${BOBA_GID} packages/apps/boba-aid/assets/chainlit.md             ${BOBA_DIR}/app_root/
-COPY --chown=${BOBA_UID}:${BOBA_GID} packages/apps/boba-aid/assets/public/                 ${BOBA_DIR}/app_root/public/
-COPY --chown=${BOBA_UID}:${BOBA_GID} packages/apps/boba-aid/assets/mcp-apps/               ${BOBA_DIR}/app_root/mcp-apps/
-COPY --chown=${BOBA_UID}:${BOBA_GID} --from=aid-page-build /src/assets/public/page.js                  ${BOBA_DIR}/app_root/public/page.js
-COPY --chown=${BOBA_UID}:${BOBA_GID} --from=chainlit-ui-build /out/ui/                            ${BOBA_DIR}/app_root/ui/
-COPY --chown=${BOBA_UID}:${BOBA_GID} build/src/webassets/                                ${BOBA_DIR}/app_root/public/vendor/
-
-COPY packages/apps/boba-aid/conf/  ${BOBA_DIR}/conf/
-
-# файлы уже принадлежат пользователю, каталогам владелец ставится без рекурсии
-RUN chown ${BOBA_UID}:${BOBA_GID} ${BOBA_DIR}/app_root \
-       ${BOBA_DIR}/app_root/.chainlit ${BOBA_DIR}/app_root/public
-
-EXPOSE 8501
-USER ${BOBA_UID}:${BOBA_GID}
-CMD ["-m", "boba.aid.main", "--config", "/app/boba/conf/config.toml", "--site", "/app/boba/conf/site.toml"]
-
-
-# --- boba-mcp: MCP-сервер с инструментами boba -------------------------------------
-
-# образы корней плагинов и шаблон workspace внутри образа: снаружи приложению нужны
-# только конфиг и данные, и пересборка плагинов не меняет файлы под живым контейнером.
-# Собирает их make plugin-rootfs-all и make sandbox до этой стадии
-FROM runtime-sandbox AS runtime-plugins
-
-ARG BOBA_DIR=/app/boba
-
-COPY --chown=root:root --chmod=0644 runtime/sandbox/workspace.ext4  ${BOBA_DIR}/sandbox/workspace.ext4
-COPY --chown=root:root runtime/sandbox/plugins/                     ${BOBA_DIR}/sandbox/plugins/
-
-
-# образ сервиса: общий конфиг внутри, снаружи приходят site.toml и данные деревом compose/mcp
-FROM runtime-plugins AS runtime-mcp
-
-ARG BOBA_DIR=/app/boba
-ARG BOBA_UID=1000
-ARG BOBA_GID=1000
-
-COPY packages/apps/boba-mcp/conf/  ${BOBA_DIR}/conf/
-
-EXPOSE 8650
-USER ${BOBA_UID}:${BOBA_GID}
-CMD ["-m", "boba.mcp_server", "--config", "/app/boba/conf/config.toml", "--site", "/app/boba/conf/site.toml"]
-
-
 # --- boba: агент одним файлом -------------------------------------------------------
 # make boba-bin: boba-cli из колёс репозитория, Nuitka и patchelf из индекса pypi образа;
 # бинарник самодостаточен — gssapi (через транспорт http), данные пакетов и, по флагу
@@ -541,3 +486,60 @@ RUN onnx=""; \
 FROM scratch AS boba-bin-out
 
 COPY --from=boba-bin /out/boba /boba
+
+
+# образ чата: общий конфиг, ассеты chainlit, vendor-шрифты и стили формул вместо CDN,
+# агент одним файлом из стадии boba-bin (его путь — BOBA_AGENT_COMMAND в boba.env).
+# Вложения сессий приложение держит в данных ([aid].files_dir), app_root не пишется
+FROM runtime-base AS runtime-aid
+
+ARG BOBA_DIR=/app/boba
+ARG BOBA_UID=1000
+ARG BOBA_GID=1000
+
+COPY --chown=${BOBA_UID}:${BOBA_GID} packages/apps/boba-aid/assets/.chainlit/config.toml   ${BOBA_DIR}/app_root/.chainlit/
+COPY --chown=${BOBA_UID}:${BOBA_GID} packages/apps/boba-aid/assets/.chainlit/translations/ ${BOBA_DIR}/app_root/.chainlit/translations/
+COPY --chown=${BOBA_UID}:${BOBA_GID} packages/apps/boba-aid/assets/chainlit.md             ${BOBA_DIR}/app_root/
+COPY --chown=${BOBA_UID}:${BOBA_GID} packages/apps/boba-aid/assets/public/                 ${BOBA_DIR}/app_root/public/
+COPY --chown=${BOBA_UID}:${BOBA_GID} packages/apps/boba-aid/assets/mcp-apps/               ${BOBA_DIR}/app_root/mcp-apps/
+COPY --chown=${BOBA_UID}:${BOBA_GID} --from=aid-page-build /src/assets/public/page.js                  ${BOBA_DIR}/app_root/public/page.js
+COPY --chown=${BOBA_UID}:${BOBA_GID} --from=chainlit-ui-build /out/ui/                            ${BOBA_DIR}/app_root/ui/
+COPY --chown=${BOBA_UID}:${BOBA_GID} build/src/webassets/                                ${BOBA_DIR}/app_root/public/vendor/
+
+COPY packages/apps/boba-aid/conf/  ${BOBA_DIR}/conf/
+COPY --from=boba-bin /out/boba     ${BOBA_DIR}/bin/boba
+
+# файлы уже принадлежат пользователю, каталогам владелец ставится без рекурсии
+RUN chown ${BOBA_UID}:${BOBA_GID} ${BOBA_DIR}/app_root \
+       ${BOBA_DIR}/app_root/.chainlit ${BOBA_DIR}/app_root/public
+
+EXPOSE 8501
+USER ${BOBA_UID}:${BOBA_GID}
+CMD ["-m", "boba.aid.main", "--config", "/app/boba/conf/config.toml", "--site", "/app/boba/conf/site.toml"]
+
+
+# --- boba-mcp: MCP-сервер с инструментами boba -------------------------------------
+
+# образы корней плагинов и шаблон workspace внутри образа: снаружи приложению нужны
+# только конфиг и данные, и пересборка плагинов не меняет файлы под живым контейнером.
+# Собирает их make plugin-rootfs-all и make sandbox до этой стадии
+FROM runtime-sandbox AS runtime-plugins
+
+ARG BOBA_DIR=/app/boba
+
+COPY --chown=root:root --chmod=0644 runtime/sandbox/workspace.ext4  ${BOBA_DIR}/sandbox/workspace.ext4
+COPY --chown=root:root runtime/sandbox/plugins/                     ${BOBA_DIR}/sandbox/plugins/
+
+
+# образ сервиса: общий конфиг внутри, снаружи приходят site.toml и данные деревом compose/mcp
+FROM runtime-plugins AS runtime-mcp
+
+ARG BOBA_DIR=/app/boba
+ARG BOBA_UID=1000
+ARG BOBA_GID=1000
+
+COPY packages/apps/boba-mcp/conf/  ${BOBA_DIR}/conf/
+
+EXPOSE 8650
+USER ${BOBA_UID}:${BOBA_GID}
+CMD ["-m", "boba.mcp_server", "--config", "/app/boba/conf/config.toml", "--site", "/app/boba/conf/site.toml"]

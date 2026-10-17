@@ -1,16 +1,21 @@
 """Чужой агент ACP v2 для тестов чата: о boba не знает.
 
 Запускается субпроцессом из тестов агента вкладки:
-`python foreign_agent.py --settings <путь>` (файл настроек чата не читает).
-Принимает серверы чата записями type "acp", открывает сессии и отвечает на
-вопрос сразу пустым ходом — эхо вопроса `user_message` и idle; ветку
-session/fork держит, но среза по messageId вопроса в
-`capabilities.session.fork._meta` не объявляет.
+`python foreign_agent.py [--silent-sessions] --settings <путь>` (файл
+настроек чата не читает). Принимает серверы чата записями type "acp",
+открывает сессии и отвечает на вопрос сразу пустым ходом — эхо вопроса
+`user_message` и idle; вопрос с маркером `notice:` перед idle присылает
+пометку `notice` с текстом после маркера, вопрос с маркером `detach`
+закрывает свой вывод и ход не кончает. Ветку session/fork держит, но среза по
+messageId вопроса в `capabilities.session.fork._meta` не объявляет; с
+`--silent-sessions` на session/new не отвечает вовсе.
 """
 
 from __future__ import annotations
 
 import asyncio
+import os
+import sys
 from typing import Any
 from uuid import uuid4
 
@@ -23,6 +28,9 @@ class ForeignAgent(Agent):
     сразу idle."""
 
     PROTOCOL_VERSION: int = 2
+    SILENT: str = "--silent-sessions"
+    NOTICE: str = "notice:"
+    DETACH: str = "detach"
 
     # SDK считает метод протокола неподдержанным
     login = Agent.login
@@ -75,6 +83,9 @@ class ForeignAgent(Agent):
         )
 
     async def new_session(self, **kwargs: Any) -> schema.NewSessionResponse:
+        if self.SILENT in sys.argv:
+            await asyncio.Event().wait()
+
         return schema.NewSessionResponse(session_id=str(uuid4()))
 
     async def close_session(
@@ -103,8 +114,27 @@ class ForeignAgent(Agent):
         await asyncio.sleep(0.05)
         echo = schema.UserMessageUpdate(message_id=message_id, content=prompt)
         await connection.session_update(session_id=session_id, update=echo)
+        text = self._text(prompt)
+        if self.DETACH in text:
+            os.close(sys.stdout.fileno())
+            await asyncio.Event().wait()
+
+        _, marked, notice = text.partition(self.NOTICE)
+        if marked:
+            update = schema.SessionNotice(severity="error", title=notice.strip())
+            await connection.session_update(session_id=session_id, update=update)
+
         idle = schema.IdleSessionStateUpdate(stop_reason="end_turn")
         await connection.session_update(session_id=session_id, update=idle)
+
+    @staticmethod
+    def _text(prompt: list[Any]) -> str:
+        texts: list[str] = []
+        for block in prompt:
+            if isinstance(block, schema.TextContentBlock):
+                texts.append(block.text)
+
+        return " ".join(texts)
 
 
 if __name__ == "__main__":

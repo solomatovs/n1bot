@@ -626,13 +626,15 @@ class AgentProcess:
     async def run(self) -> None:
         """Всё проверяется до чтения ввода: настройки, профиль, хранилище,
         скиллы; затем вход обслуживает соединение до конца ввода или сигнала,
-        после чего сессии закрываются.
+        после чего сессии закрываются. Переменные ключа `env` настроек
+        процесс ставит себе до сборки частей: их читают сами libpq и libkrb5.
 
         Ошибки:
         SystemExit — запуск не состоялся; текст называет причину.
         """
         try:
             settings = self._settings.effective()
+            os.environ.update(settings.env)
             assembly = self._assembly(settings)
         except SettingsError as exc:
             raise SystemExit(str(exc)) from exc

@@ -6,8 +6,10 @@
 from __future__ import annotations
 
 import asyncio
+import shlex
 import sys
 from collections.abc import AsyncIterator, Coroutine, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -17,6 +19,7 @@ from acp.experimental.v2 import schema
 from aid_stand import NoConnectionStore, RelayStand
 from pydantic import SecretStr
 
+from boba.agent.profile import ReasoningReturn
 from boba.agent.settings import ModelSettings, ProviderKind, ProviderSettings
 from boba.aid.agent.chat import (
     AskedQuestions,
@@ -32,7 +35,7 @@ from boba.aid.agent.client import (
 from boba.aid.agent.config import (
     AgentCommandConfig,
     AgentConfig,
-    ModelLimitsConfig,
+    AgentModelConfig,
     PostgresAgentHistory,
 )
 from boba.aid.agent.settings import (
@@ -61,12 +64,28 @@ MODEL_NAME = "stand-model"
 AGENT_MODULE = "boba.cli.app"
 
 
-class FakeModel:
-    """FakeLlmApp под uvicorn в цикле теста."""
+@dataclass(frozen=True)
+class TlsFiles:
+    """Ключ и сертификат PEM, которыми фейковая модель отвечает по https."""
 
-    def __init__(self) -> None:
+    key: Path
+    certificate: Path
+
+
+class FakeModel:
+    """FakeLlmApp под uvicorn в цикле теста; с tls — по https."""
+
+    def __init__(self, tls: TlsFiles | None = None) -> None:
         self.app = FakeLlmApp(token_delay_sec=0.0)
         self.port = StandPorts().free()
+        self._scheme = "http"
+        keyfile: str | None = None
+        certfile: str | None = None
+        if tls is not None:
+            self._scheme = "https"
+            keyfile = str(tls.key)
+            certfile = str(tls.certificate)
+
         self._server = uvicorn.Server(
             uvicorn.Config(
                 self.app.asgi(),
@@ -74,6 +93,8 @@ class FakeModel:
                 port=self.port,
                 log_level="warning",
                 timeout_graceful_shutdown=1,
+                ssl_keyfile=keyfile,
+                ssl_certfile=certfile,
             )
         )
         self._task: asyncio.Task[None] | None = None
@@ -89,7 +110,7 @@ class FakeModel:
             await self._task
 
     def base_url(self) -> str:
-        return f"http://127.0.0.1:{self.port}/v1"
+        return f"{self._scheme}://127.0.0.1:{self.port}/v1"
 
     def chat_settings(
         self, system_prompt: str = "You are the stand agent"
@@ -162,25 +183,29 @@ class AgentStand:
         return AgentCommand(
             executable=sys.executable,
             args=("-m", AGENT_MODULE, "acp", "--setting-sources", ""),
-            env={},
             start_timeout_sec=60.0,
+            request_timeout_sec=60.0,
             stop_timeout_sec=10.0,
         )
 
     def config(self, public_url: str = "http://127.0.0.1:1/chat") -> AgentConfig:
         return AgentConfig(
             process=AgentCommandConfig(
-                command=sys.executable,
-                args=["-m", AGENT_MODULE, "acp", "--setting-sources", ""],
-                env={},
+                command=shlex.join([sys.executable, "-m", AGENT_MODULE]),
+                args=["acp", "--setting-sources", ""],
                 private_dir=str(self._private_dir),
                 start_timeout_sec=60.0,
+                request_timeout_sec=60.0,
                 stop_timeout_sec=10.0,
             ),
             history=self._history,
             public_url=public_url,
             seal_ttl_sec=600,
-            limits=ModelLimitsConfig(context_window=32000, max_output_tokens=4096),
+            model=AgentModelConfig(
+                context_window=32000,
+                max_output_tokens=4096,
+                reasoning_return=ReasoningReturn.NEVER,
+            ),
         )
 
 
@@ -268,7 +293,9 @@ class Agents:
         self._model = model
         history = AgentHistoryStand(stand)
         self._stand = AgentStand(root, history.history())
-        self._builder = SettingsFileBuilder(self._stand.config(), history.postgres())
+        self._builder = SettingsFileBuilder(
+            self._stand.config(), history.postgres(), servers
+        )
         self._servers = McpServers(servers)
         credentials = KerberosCredentialSource(None, NoRefresh())
         relay = RelayStand(NoConnectionStore(), lambda: credentials, CallContexts())
@@ -286,7 +313,7 @@ class Agents:
         """Процесс агента с объявлениями servers в каждой сессии."""
         chat = self._model.chat_settings()
         workdir = AgentWorkdirs(self._root).create(thread)
-        workdir.write(self._builder.build(chat), chat.system_prompt)
+        workdir.write(self._builder.build(chat, None, {}), chat.system_prompt)
         questions = AskedQuestions(updates)
         process = AgentProcess(
             self._stand.command(),

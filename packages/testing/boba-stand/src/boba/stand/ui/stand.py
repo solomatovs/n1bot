@@ -12,6 +12,7 @@ from __future__ import annotations
 import fcntl
 import os
 import secrets
+import shlex
 import socket
 import subprocess
 import sys
@@ -743,12 +744,13 @@ class StandConfig(StandService):
 
     agent_process: dict[str, Any] = field(
         default_factory=lambda: {
-            "command": sys.executable,
-            "args": ["-m", StandConfig.AGENT_MODULE, "acp", "--setting-sources", ""],
+            "command": shlex.join([sys.executable, "-m", StandConfig.AGENT_MODULE]),
+            "args": ["acp", "--setting-sources", ""],
         }
     )
-    """Команда и аргументы секции [agent.process] чата: по умолчанию агент
-    boba.cli.app интерпретатором прогона; тест чужого агента ставит свою."""
+    """Команда строкой оболочки и аргументы секции [agent.process] чата: по
+    умолчанию агент boba.cli.app интерпретатором прогона; тест чужого агента
+    ставит свою."""
 
     generation: str = ""
     """Поколение сессий: пустое — случайное на каждый старт процесса; общее у
@@ -869,13 +871,17 @@ class StandConfig(StandService):
             "process": {
                 "command": self.agent_process["command"],
                 "args": self.agent_process["args"],
-                "env": {},
                 "private_dir": str(private_dir),
                 "start_timeout_sec": 60,
+                "request_timeout_sec": 60,
                 "stop_timeout_sec": 10,
             },
             "history": dict(self.agent_history),
-            "limits": {"context_window": 200000, "max_output_tokens": 4096},
+            "model": {
+                "context_window": 200000,
+                "max_output_tokens": 4096,
+                "reasoning_return": "turn",
+            },
         }
 
     @staticmethod
