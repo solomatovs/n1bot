@@ -92,19 +92,20 @@ class JournalRead(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     run: str = Field(
-        min_length=1, description="Run id: the `run` of the call result or signal."
+        min_length=1, description="id запуска: поле run итога вызова или сигнала."
     )
-    node: str = Field(min_length=1, description="Call id of the tool call (node).")
-    channel: JournalChannel = Field(description="Journal channel of the call.")
+    node: str = Field(min_length=1, description="id вызова инструмента (узла).")
+    channel: JournalChannel = Field(description="Канал журнала вызова.")
     offset: int | None = Field(
         default=None,
         description=(
-            "Read the window starting at this byte; a negative value reads the "
-            "last window of the journal."
+            "Начало окна:\n"
+            "   - байт — окно, которое начинается с этого байта\n"
+            "   - отрицательное число — последнее окно журнала\n"
         ),
     )
     before: int | None = Field(
-        default=None, ge=0, description="Read the window ending before this byte."
+        default=None, ge=0, description="Окно, которое кончается перед этим байтом."
     )
 
     def route(self) -> str:

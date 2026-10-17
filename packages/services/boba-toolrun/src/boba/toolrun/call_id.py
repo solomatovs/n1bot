@@ -38,9 +38,10 @@ class CallFields:
     THREAD: ClassVar[str] = "thread_id"
 
     THREAD_DESCRIPTION: ClassVar[str] = (
-        "Identifier of the current chat thread. Calls with the same thread_id "
-        "share files in the workspace, so use one value for all calls of a "
-        "thread. Omit it to work in your personal workspace."
+        "Идентификатор текущего треда чата:\n"
+        "   - id треда — вызовы с одним thread_id видят файлы друг друга в "
+        "workspace, бери одно значение для всех вызовов треда\n"
+        "   - пусто — работа в личном workspace пользователя\n"
     )
 
     def __init__(self) -> None:

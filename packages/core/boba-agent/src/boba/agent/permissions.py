@@ -296,7 +296,7 @@ class AutoClassifier:
         self._templates = templates
         self._schema = ToolSpec(
             name=self.SCHEMA_NAME,
-            description="Decide whether the tool call may run.",
+            description="Решить, можно ли выполнить вызов инструмента.",
             parameters=ClassifierReply.model_json_schema(),
         )
 

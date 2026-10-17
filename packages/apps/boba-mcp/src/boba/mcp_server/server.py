@@ -529,11 +529,12 @@ class StreamReadTool(Tool):
     NAME: ClassVar[str] = "stream_read"
 
     DESCRIPTION: ClassVar[str] = (
-        "Read a window of the output journal of a tool call:\n"
-        "   - run — run id from the result of the call\n"
-        "   - node — id of the call\n"
-        "   - channel — journal channel\n"
-        "   - offset — window from this byte, or before — window ending at this byte"
+        "Окно журнала вывода вызова инструмента:\n"
+        "   - run — id запуска из итога вызова\n"
+        "   - node — id вызова\n"
+        "   - channel — канал журнала\n"
+        "   - offset — окно от этого байта, либо before — окно, которое "
+        "кончается на этом байте\n"
     )
 
     _routes: JournalRoutes = PrivateAttr()
@@ -576,7 +577,7 @@ class FileUploadRequest(BaseModel):
 
     name: str = Field(
         min_length=1,
-        description="File name as it should appear in the workspace upload dir.",
+        description="Имя файла, под которым он ляжет в каталог вложений workspace.",
     )
 
 
@@ -603,11 +604,11 @@ class FileUploadTool(Tool):
     NAME: ClassVar[str] = "file_upload"
 
     DESCRIPTION: ClassVar[str] = (
-        "Get the address to upload a file into the workspace:\n"
-        "   - name — file name in the upload dir of the workspace\n"
-        "The file body is sent by the client with HTTP PUT to the returned "
-        "path of this server using the same bearer token; tools then read the "
-        "file at the returned workspace path"
+        "Адрес для загрузки файла в workspace:\n"
+        "   - name — имя файла в каталоге вложений workspace\n"
+        "Тело файла клиент шлёт HTTP PUT на полученный путь этого сервера тем "
+        "же bearer-токеном; инструменты затем читают файл по полученному пути "
+        "в workspace.\n"
     )
 
     _request: type[BaseModel] = PrivateAttr()
