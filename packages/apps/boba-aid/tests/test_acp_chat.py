@@ -455,8 +455,15 @@ class ChatSocket:
         return "\n".join(lines)
 
     def tokens(self) -> str:
+        """Текст, пришедший стримом: chainlit открывает стрим шага кадром
+        stream_start с первой пачкой в output, остальные пачки идут
+        stream_token. Лента склеивает токены в пачки по окну, и короткий
+        ответ может целиком прийти одним stream_start."""
         found: list[str] = []
         for event, payload in self.events:
+            if event == "stream_start":
+                found.append(str(payload.get("output", "")))
+
             if event == "stream_token":
                 found.append(str(payload.get("token", "")))
 
