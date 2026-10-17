@@ -879,7 +879,8 @@ class ThreadAgent:
         await self._finish(session_id, idle)
 
     def _exited(self) -> bool:
-        """Процесс вкладки был запущен и уже вышел: упал сам или посреди хода."""
+        """Процесс вкладки был запущен и больше не отвечает: вышел (упал сам или
+        посреди хода) либо закрыл свой вывод."""
         launched = self._launched
         if launched is None:
             return False
