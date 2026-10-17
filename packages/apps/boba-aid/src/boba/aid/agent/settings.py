@@ -23,6 +23,7 @@ import json
 import os
 import shutil
 import tempfile
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import IntEnum, StrEnum
 from pathlib import Path
@@ -41,6 +42,7 @@ from pydantic import (
 from boba.agent.records import PermissionMode
 from boba.agent.settings import (
     HistoryKind,
+    McpClientJson,
     MemoryHistorySettings,
     ModelSettings,
     PermissionSettings,
@@ -52,6 +54,7 @@ from boba.agent.settings import (
 from boba.aid.agent.config import (
     AgentConfig,
     AgentHistoryConfig,
+    AgentModelConfig,
     LibpqConnection,
     MemoryAgentHistory,
     PostgresAgentHistory,
@@ -62,7 +65,9 @@ from boba.db.postgres import PostgresPool
 from boba.db.postgres.connection import PostgresConfig
 from boba.krb import KerberosWorkspace
 from boba.krb.credentials import ClientCredentials, KerberosEnv
+from boba.mcp_client.client import McpServersConfig
 from boba.runtime.table import PgTable
+from boba.transport.http import HttpTransportConfig
 from boba.transport.http.connection import BearerAuth, HttpConnection
 
 __all__ = [
@@ -167,21 +172,25 @@ class ChatAgentSettings(BaseModel):
 
 
 class RemoteProviderView(BaseModel):
-    """Удалённый провайдер профиля чата глазами агента: вид и соединение."""
+    """Удалённый провайдер профиля чата глазами агента: вид, соединение и
+    транспорт процесса."""
 
     model_config = ConfigDict(extra="ignore")
 
     kind: ProviderKind
     connection: HttpConnection
+    transport: HttpTransportConfig
 
 
 class ProfileModelSpecs:
-    """Профиль модели агента из профиля чата: адрес и ключ — из соединения
-    провайдера, пределы — из конфига [agent.limits]."""
+    """Профиль модели агента из профиля чата: адрес, ключ, срок, TLS и
+    повторы — из соединения провайдера, транспорт — из его секции [http],
+    окно, потолок ответа и возврат рассуждений — из [agent.model].
 
-    def __init__(self, context_window: int, max_output_tokens: int) -> None:
-        self._context_window = context_window
-        self._max_output_tokens = max_output_tokens
+    Создаётся провайдером процесса; зовут слои настроек (AgentSettingsLayers)."""
+
+    def __init__(self, model: AgentModelConfig) -> None:
+        self._model = model
 
     def chat_settings(self, name: str, profile: ChatProfileConfig) -> ChatAgentSettings:
         """Ошибки:
@@ -224,15 +233,50 @@ class ProfileModelSpecs:
         if isinstance(view.connection.auth, BearerAuth):
             api_key = view.connection.auth.token
 
-        provider = ProviderSettings(kind=view.kind, base_url=base_url, api_key=api_key)
+        connection = view.connection
+        provider = ProviderSettings(
+            kind=view.kind,
+            base_url=base_url,
+            api_key=api_key,
+            timeout_sec=connection.timeout_sec,
+            ssl_verify=connection.ssl_verify,
+            retry_attempts=connection.retry_attempts,
+            retry_backoff_sec=connection.retry_backoff_sec,
+            retry_statuses=connection.retry_statuses.root,
+            retry_after_max_sec=connection.retry_after_max_sec,
+            transport=view.transport.model_dump(mode="json"),
+        )
 
         return ModelSettings(
             provider=provider,
             model=profile.model,
             sampling=dict(profile.sampling),
-            context_window=self._context_window,
-            max_output_tokens=self._max_output_tokens,
+            context_window=self._model.context_window,
+            max_output_tokens=self._model.max_output_tokens,
+            reasoning_return=self._model.reasoning_return,
         )
+
+    def current(
+        self, chat: ChatAgentSettings, name: str, profile: ChatProfileConfig
+    ) -> ChatAgentSettings:
+        """Слой чата с тем, что задаёт конфиг, по его нынешнему виду: из
+        сохранённого слоя берутся только поля, которые вправе переопределить
+        пользователь (UserAgentSettings: адрес, ключ, модель).
+
+        Ошибки:
+        AgentSettingsError — провайдер профиля не удалённый или без адреса.
+        """
+        saved = chat.model
+        fresh = self.model(name, profile)
+        provider = fresh.provider.model_copy(
+            update={
+                "base_url": saved.provider.base_url,
+                "api_key": saved.provider.api_key,
+            }
+        )
+        model = fresh.model_copy(update={"provider": provider, "model": saved.model})
+
+        return chat.model_copy(update={"model": model})
 
 
 class SettingsTable(StrEnum):
@@ -402,14 +446,15 @@ class AgentSettingsLayers:
     async def chat_layer(
         self, thread_id: UUID, user_id: UUID, name: str, profile: ChatProfileConfig
     ) -> ChatAgentSettings:
-        """Слой чата треда; у нового треда он копируется из пользовательского.
+        """Слой чата треда; у нового треда он копируется из пользовательского,
+        у сохранённого поля конфига берутся по нынешнему профилю.
 
         Ошибки:
         AgentSettingsError — провайдер профиля не годится агенту.
         """
         existing = await self._table.chat_layer(thread_id)
         if existing is not None:
-            return existing
+            return self._specs.current(existing, name, profile)
 
         copied = await self.user_layer(user_id, name, profile)
         await self._table.save_chat_layer(thread_id, user_id, name, copied)
@@ -446,16 +491,28 @@ class AgentSettingsLayers:
 
 
 class SettingsFileBuilder:
-    """Слой файла настроек агента из слоя чата и конфига [agent]: история и
-    режим разрешений добавляются к профилю модели чата; строка подключения
-    истории — подключение процесса [postgres]."""
+    """Слой файла настроек агента из слоя чата и конфига: история и режим
+    разрешений добавляются к профилю модели чата, срок вызова инструментов —
+    наибольший `call_timeout_sec` серверов профиля [mcp.servers.*], окружение
+    libkrb5 истории — ключом `env`. Строка подключения истории — подключение
+    процесса [postgres]. Файл — единственный канал настроек агента: argv
+    называет только его, окружение ребёнка — минимальный набор SDK."""
 
-    def __init__(self, config: AgentConfig, postgres: PostgresConfig) -> None:
+    def __init__(
+        self, config: AgentConfig, postgres: PostgresConfig, servers: McpServersConfig
+    ) -> None:
         self._config = config
+        self._servers = servers
         self._libpq = LibpqConnection(postgres)
 
-    def build(self, chat: ChatAgentSettings) -> SettingsLayer:
-        """Слой файла процесса агента по слою чата."""
+    def build(
+        self,
+        chat: ChatAgentSettings,
+        mcp: McpClientJson | None,
+        env: Mapping[str, str],
+    ) -> SettingsLayer:
+        """Слой файла процесса агента по слою чата; mcp None — процесс не
+        зовёт инструментов серверов (короткий процесс удаления сессии)."""
         permissions = PermissionSettings(default_mode=chat.mode, allow_bypass=True)
         model = chat.model.revealed()
 
@@ -464,8 +521,36 @@ class SettingsFileBuilder:
             models={chat.model_name: model},
             permissions=permissions,
             history=self._history(),
+            mcp=mcp,
+            env=env,
             system_prompt_file=WorkdirFile.SYSTEM_PROMPT.value,
         )
+
+    def mcp(self, names: Sequence[str]) -> McpClientJson | None:
+        """Сроки серверов MCP агента: вызов не обрывается раньше, чем его
+        оборвал бы ретранслятор чата у самого терпеливого сервера профиля;
+        None — у профиля нет серверов [mcp.servers.*].
+
+        Ошибки:
+        AgentSettingsError — профиль называет сервер, которого нет в [mcp.servers].
+        """
+        limits: list[float] = []
+        for name in names:
+            server = self._servers.servers.get(name)
+            if server is None:
+                msg = (
+                    f"MCP server {name!r} of the profile has no section "
+                    f"[mcp.servers.{name}], expected one of "
+                    f"{sorted(self._servers.servers)}"
+                )
+                raise AgentSettingsError(msg)
+
+            limits.append(server.call_timeout_sec)
+
+        if not limits:
+            return None
+
+        return McpClientJson(call_timeout_sec=max(limits))
 
     def _history(self) -> PostgresHistorySettings | MemoryHistorySettings:
         history = self._config.history
@@ -487,9 +572,9 @@ class HistoryEnvironment:
     """Окружение libkrb5 для процесса агента с kerberos-ролью истории: путь к
     кэшу билета и к krb5.conf рабочего каталога chainlit; билет в кэше
     обновляется по keytab до запуска. У парольной роли окружение пустое.
-
-    Исключение §17: libpq читает KRB5CCNAME/KRB5_CONFIG из окружения сам;
-    это пути к файлам того же пользователя, не секреты.
+    Едет ключом `env` файла настроек: агент ставит его себе на старте, потому
+    что libpq читает KRB5CCNAME/KRB5_CONFIG из окружения сам; это пути к
+    файлам того же пользователя, не секреты.
     """
 
     def __init__(self, history: AgentHistoryConfig, postgres: PostgresConfig) -> None:

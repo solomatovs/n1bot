@@ -43,7 +43,11 @@ PREFIX_aid       := /boba
 SANDBOX_aid      :=
 MODELS_aid       := onnx-genai
 PARTS_aid        := app_root/public app_root/public/page.js app_root/public/vendor \
-                    app_root/ui/index.html app_root/ui/index.js app_root/mcp-apps/sandbox.html
+                    app_root/ui/index.html app_root/ui/index.js app_root/mcp-apps/sandbox.html \
+                    bin/boba
+# агент чата — бинарник boba-bin в bin/boba; локальную модель чат агенту не отдаёт,
+# поэтому рантайм onnxruntime-genai в него не входит
+BUILD_ARGS_aid    = $(BIN_TOOL_ARGS) --build-arg BIN_ONNX=
 
 # boba-mcp — MCP-сервер с инструментами boba; фронта у него нет
 PACKAGES_mcp      = boba-mcp $(PLUGIN_PACKAGES) boba-llm-fastembed
@@ -58,6 +62,7 @@ SANDBOX_mcp      := yes
 EMBED_mcp        := yes
 MODELS_mcp       := fastembed rapidocr
 PARTS_mcp        :=
+BUILD_ARGS_mcp    =
 
 # лимиты пользовательского юнита установки без Docker: те же, что у контейнера compose
 UNIT_LIMITS_aid      := 4G 400% 512
@@ -73,6 +78,7 @@ APP_PREFIX        = $(PREFIX_$(APP))
 APP_SANDBOX       = $(SANDBOX_$(APP))
 APP_EMBED         = $(EMBED_$(APP))
 APP_MODELS        = $(MODELS_$(APP))
+APP_BUILD_ARGS    = $(BUILD_ARGS_$(APP))
 # общий конфиг приложения и его плагины: в пакете приложения, в git
 APP_CONF          = $(SRC_DIR)/packages/apps/boba-$(APP)/conf
 
@@ -300,7 +306,8 @@ APP_ARGS         = --build-arg APP=$(APP)                           \
     --build-arg APP_PACKAGES="$(APP_PACKAGES)"                      \
     --build-arg APP_IMPORTS="$(APP_IMPORTS)"                        \
     --build-arg HEALTH_PATH="$(APP_HEALTH)"                         \
-    --build-arg BOBA_DIR="$(DEST_DIR)" --build-arg BOBA_VERSION="$(VERSION)"
+    --build-arg BOBA_DIR="$(DEST_DIR)" --build-arg BOBA_VERSION="$(VERSION)" \
+    $(APP_BUILD_ARGS)
 
 # аргументы стадий образа корня плагина: образ один на все приложения
 PLUGIN_ARGS      = --build-arg SANDBOX_DEV_KRB="$(SANDBOX_DEV_KRB)" \
@@ -397,7 +404,8 @@ define HELP
   plugin-rootfs         rootfs.ext4 одного плагина: PLUGIN=<пакет>
   plugin-rootfs-all     rootfs.ext4 всех плагинов с entry points boba.tools
   boba-bin              агент одним файлом (Nuitka в образе base) -> $(RELEASE_DIR)/$(VERSION)/bin/boba;
-                        BIN_ONNX= — без рантайма onnxruntime-genai
+                        BIN_ONNX= — без рантайма onnxruntime-genai; в образ aid та же стадия
+                        без onnxruntime-genai уезжает в bin/boba
   web-aid               page.js и UI chainlit (фронт + copilot); chainlit-ui — UI заново
 
 По приложению: APP=<$(APPS)> либо <цель>-<приложение>; без APP — все приложения
@@ -618,11 +626,11 @@ NUITKA_VERSION     ?= 4.3
 PATCHELF_VERSION   ?= 0.19.1.0
 ZSTANDARD_VERSION  ?= 0.25.0
 ORDERED_SET_VERSION ?= 4.1.0
-BIN_ARGS            = --build-arg NUITKA_VERSION=$(NUITKA_VERSION)           \
+BIN_TOOL_ARGS       = --build-arg NUITKA_VERSION=$(NUITKA_VERSION)           \
     --build-arg PATCHELF_VERSION=$(PATCHELF_VERSION)                     \
     --build-arg ZSTANDARD_VERSION=$(ZSTANDARD_VERSION)                   \
-    --build-arg ORDERED_SET_VERSION=$(ORDERED_SET_VERSION)                 \
-    --build-arg BIN_ONNX=$(BIN_ONNX)
+    --build-arg ORDERED_SET_VERSION=$(ORDERED_SET_VERSION)
+BIN_ARGS            = $(BIN_TOOL_ARGS) --build-arg BIN_ONNX=$(BIN_ONNX)
 
 # агент одним файлом: стадия boba-bin компилирует boba-cli Nuitka внутри образа base
 .PHONY: boba-bin

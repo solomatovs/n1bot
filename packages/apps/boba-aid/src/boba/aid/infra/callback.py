@@ -649,6 +649,7 @@ def _session_cookie() -> SessionCookie:
 
 
 @cl.on_stop
+@chainlit_error_ctx_handler
 @di_inject
 async def on_stop(
     bus: Annotated[MessageBus, Depends(runtime.message_bus)],

@@ -12,7 +12,10 @@ import json
 import os
 import stat
 import sys
+from collections.abc import AsyncIterator
+from datetime import UTC, datetime, timedelta
 from importlib.resources import files
+from ipaddress import ip_address
 from pathlib import Path
 from typing import Any, ClassVar
 from uuid import uuid4
@@ -20,6 +23,7 @@ from uuid import uuid4
 import mcp_types as mt
 import pytest
 from acp.exceptions import RequestError
+from acp.experimental.v2 import schema
 from acp_stand import (
     API_KEY,
     AgentHistoryStand,
@@ -27,12 +31,18 @@ from acp_stand import (
     FakeModel,
     ProcFiles,
     RecordingUpdates,
+    TlsFiles,
 )
 from aid_stand import NoConnectionStore, RelayStand, TabSession
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.x509.oid import NameOID
 from psycopg import sql
 from psycopg.types.json import Jsonb
 from pydantic import SecretStr
 
+from boba.agent.profile import ReasoningReturn
 from boba.agent.records import PermissionMode
 from boba.agent.settings import PermissionSettings
 from boba.aid.agent.chat import (
@@ -43,8 +53,18 @@ from boba.aid.agent.chat import (
     ThreadAgent,
     ThreadIdentity,
 )
-from boba.aid.agent.client import AcpClientError, AgentClient, AgentProcess
-from boba.aid.agent.config import LibpqConnection, PostgresAgentHistory
+from boba.aid.agent.client import (
+    AcpClientError,
+    AgentClient,
+    AgentCommand,
+    AgentProcess,
+    AgentProcessError,
+)
+from boba.aid.agent.config import (
+    AgentModelConfig,
+    LibpqConnection,
+    PostgresAgentHistory,
+)
 from boba.aid.agent.settings import (
     AgentSettingsChange,
     AgentSettingsError,
@@ -65,17 +85,28 @@ from boba.db.postgres.connection.auth import CertificateAuth
 from boba.identity.context import CallContexts
 from boba.kerberos import KeytabAuth
 from boba.krb.credentials import KerberosEnv
+from boba.llm.http.openai import OpenAiProvider
 from boba.llm.onnx import OnnxProvider
-from boba.mcp_client.client import McpServers, McpServersConfig
+from boba.mcp_client.client import McpServerConfig, McpServers, McpServersConfig
 from boba.runtime.threads import ThreadsTable
 from boba.stand.names import StandNames
 from boba.stand.signin import SignInStand
 from boba.stand.site import Stand
-from boba.transport.acp.protocol import AcpErrorCode, McpMessage, McpVersion
+from boba.stand.ui.fake_llm import FailureName, ScenarioName
+from boba.toolkit.mcp import McpToolNames
+from boba.transport.acp.protocol import (
+    AcpErrorCode,
+    IdleErrorUpdate,
+    McpMessage,
+    McpVersion,
+)
+from boba.transport.http import HttpTransportConfig
+from boba.transport.http.connection import HttpConnection
 
 pytestmark = pytest.mark.anyio
 
 SCHEMA = StandNames().of("acp_settings")
+NO_SERVERS = McpServersConfig(servers={})
 CIPHER_KEY = b"0123456789abcdef0123456789abcdef"
 
 
@@ -102,7 +133,13 @@ async def table(
 
 @pytest.fixture
 def specs() -> ProfileModelSpecs:
-    return ProfileModelSpecs(context_window=32000, max_output_tokens=4096)
+    model = AgentModelConfig(
+        context_window=32000,
+        max_output_tokens=4096,
+        reasoning_return=ReasoningReturn.NEVER,
+    )
+
+    return ProfileModelSpecs(model)
 
 
 class TestLayers:
@@ -341,10 +378,10 @@ class TestSettingsFile:
         config = AgentStand(tmp_path / "agents", history).config(
             "http://127.0.0.1:8000/boba"
         )
-        builder = SettingsFileBuilder(config, history_stand.postgres())
+        builder = SettingsFileBuilder(config, history_stand.postgres(), NO_SERVERS)
         chat = model.chat_settings("Answer briefly")
 
-        document = builder.build(chat)
+        document = builder.build(chat, None, {})
         workdir = AgentWorkdirs(tmp_path / "agents").create("thread-1")
         workdir.write(document, chat.system_prompt)
 
@@ -381,7 +418,8 @@ class TestSettingsFile:
         config = AgentStand(tmp_path, history.history()).config()
         chat = FakeModel().chat_settings().with_session(PermissionMode.PLAN, None)
 
-        layer = SettingsFileBuilder(config, history.postgres()).build(chat)
+        builder = SettingsFileBuilder(config, history.postgres(), NO_SERVERS)
+        layer = builder.build(chat, None, {})
 
         assert layer.permissions == PermissionSettings(
             default_mode=PermissionMode.PLAN, allow_bypass=True
@@ -397,8 +435,10 @@ class TestAgentHandshake:
         history = AgentHistoryStand(stand)
         agent_stand = AgentStand(tmp_path / "agents", history.history())
         chat = model.chat_settings()
-        builder = SettingsFileBuilder(agent_stand.config(), history.postgres())
-        document = builder.build(chat)
+        builder = SettingsFileBuilder(
+            agent_stand.config(), history.postgres(), NO_SERVERS
+        )
+        document = builder.build(chat, None, {})
         workdir = AgentWorkdirs(tmp_path / "agents").create("thread-2")
         workdir.write(document, chat.system_prompt)
 
@@ -458,10 +498,12 @@ class TestRetiredServers:
         specs: ProfileModelSpecs,
         test_postgres: PostgresConfig,
         auth_token: str,
+        standard: McpServerConfig,
     ) -> None:
         credentials = KerberosCredentialSource(None, NoRefresh())
         relays = RelayStand(NoConnectionStore(), lambda: credentials, CallContexts())
-        servers = McpServers(McpServersConfig(servers={}))
+        servers_config = McpServersConfig(servers={"standard": standard})
+        servers = McpServers(servers_config)
         relay = relays.relay(servers)
         history = AgentHistoryStand(stand)
         agent_stand = AgentStand(tmp_path / "agents", history.history())
@@ -469,6 +511,7 @@ class TestRetiredServers:
         launcher = AgentLauncher(
             agent_stand.config(),
             history.postgres(),
+            servers_config,
             layers,
             relays.registrations,
             relay,
@@ -564,6 +607,7 @@ class TestForkCut:
         launcher = AgentLauncher(
             config.model_copy(update={"process": foreign}),
             history.postgres(),
+            NO_SERVERS,
             AgentSettingsLayers(table, specs),
             relays.registrations,
             relay,
@@ -611,6 +655,431 @@ class TestForkCut:
 
         assert "cannot branch the conversation" in str(refused.value)
         assert "boba/upToMessageId" in str(refused.value)
+
+
+class ChatLaunch:
+    """Чат теста ниже обработчиков chainlit: слои настроек в Postgres стенда,
+    запуск агента AgentLauncher по профилю чата и [agent], агент вкладки
+    ThreadAgent, ретранслятор стенда. Файл настроек строится по серверам
+    filed, ретранслятор ходит к серверам relayed: так видно, чьим сроком
+    обрывается вызов."""
+
+    def __init__(
+        self,
+        root: Path,
+        stand: Stand,
+        table: AgentSettingsTable,
+        threads: ThreadsTable,
+    ) -> None:
+        self._root = root
+        self._history = AgentHistoryStand(stand)
+        self._table = table
+        self._threads = threads
+        credentials = KerberosCredentialSource(None, NoRefresh())
+        self._relays = RelayStand(
+            NoConnectionStore(), lambda: credentials, CallContexts()
+        )
+        self._servers: list[McpServers] = []
+        self._agents: list[ThreadAgent] = []
+
+    def agent(
+        self,
+        profile: ChatProfileConfig,
+        model: AgentModelConfig,
+        filed: McpServersConfig,
+        relayed: McpServersConfig,
+        updates: RecordingUpdates,
+    ) -> ThreadAgent:
+        servers = McpServers(relayed)
+        self._servers.append(servers)
+        config = AgentStand(self._root / "agents", self._history.history()).config()
+        launcher = AgentLauncher(
+            config,
+            self._history.postgres(),
+            filed,
+            AgentSettingsLayers(self._table, ProfileModelSpecs(model)),
+            self._relays.registrations,
+            self._relays.relay(servers),
+            "0.0",
+        )
+        tab = TabSession()
+        tab.password_sign_in(frozenset({"dev"}))
+        identity = ThreadIdentity(
+            thread_id=str(uuid4()),
+            user_id=uuid4(),
+            login=TabSession.LOGIN,
+            roles=frozenset({"dev"}),
+            session=tab.live,
+            profile=SelectedProfile(name=SignInStand.PROFILE, config=profile),
+        )
+        agent = ThreadAgent(
+            identity,
+            launcher,
+            AgentSessionMeta(self._threads),
+            updates,
+            SessionOptions(),
+        )
+        self._agents.append(agent)
+
+        return agent
+
+    async def close(self) -> None:
+        for agent in self._agents:
+            await agent.close()
+
+        for servers in self._servers:
+            await servers.stop()
+
+
+@pytest.fixture
+async def threads(
+    pool: AsyncPostgresPool, test_postgres: PostgresConfig
+) -> ThreadsTable:
+    """Таблица тредов в схеме теста: в threads.meta агент вкладки помнит сессию."""
+    runtime_schema = files("boba.runtime") / "schema"
+    async with pool.connection() as conn:
+        await PostgresSchema(SCHEMA).apply_files(conn, runtime_schema, {})
+
+    return ThreadsTable(test_postgres, SCHEMA)
+
+
+@pytest.fixture
+async def chat_launch(
+    tmp_path: Path,
+    stand: Stand,
+    table: AgentSettingsTable,
+    threads: ThreadsTable,
+    auth_token: str,
+) -> AsyncIterator[ChatLaunch]:
+    launch = ChatLaunch(tmp_path, stand, table, threads)
+    try:
+        yield launch
+    finally:
+        await launch.close()
+
+
+@pytest.fixture
+async def tls_model(tmp_path: Path) -> AsyncIterator[FakeModel]:
+    """Фейковая модель по https с самоподписанным сертификатом 127.0.0.1."""
+    key = ec.generate_private_key(ec.SECP256R1())
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "127.0.0.1")])
+    now = datetime.now(UTC)
+    certificate = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(minutes=5))
+        .not_valid_after(now + timedelta(hours=1))
+        .add_extension(
+            x509.SubjectAlternativeName([x509.IPAddress(ip_address("127.0.0.1"))]),
+            critical=False,
+        )
+        .sign(key, hashes.SHA256())
+    )
+    key_path = tmp_path / "llm.key"
+    cert_path = tmp_path / "llm.crt"
+    key_path.write_bytes(
+        key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+    )
+    cert_path.write_bytes(certificate.public_bytes(serialization.Encoding.PEM))
+
+    fake = FakeModel(TlsFiles(key=key_path, certificate=cert_path))
+    await fake.start()
+    try:
+        yield fake
+    finally:
+        await fake.stop()
+
+
+class TestLaunchConfig:
+    """Конфиг запуска — единственный канал настроек чата для агента: профиль
+    чата и [agent] доходят до настоящего `boba acp` файлом настроек и
+    действуют на его запросы к модели и серверам."""
+
+    MODEL: ClassVar[AgentModelConfig] = AgentModelConfig(
+        context_window=32000,
+        max_output_tokens=4096,
+        reasoning_return=ReasoningReturn.NEVER,
+    )
+    NO_SERVERS: ClassVar[McpServersConfig] = McpServersConfig(servers={})
+
+    def _profile(
+        self,
+        connection: HttpConnection,
+        transport: HttpTransportConfig,
+        mcp: tuple[str, ...] = (),
+    ) -> ChatProfileConfig:
+        provider = OpenAiProvider(
+            kind="openai", connection=connection, transport=transport
+        )
+
+        return SignInStand.profile().model_copy(
+            update={"provider": provider, "model": "fake-model", "mcp": mcp}
+        )
+
+    def _connection(self, model: FakeModel, **fields: Any) -> HttpConnection:
+        return HttpConnection.model_validate(
+            {
+                "scheme": "http",
+                "host": "127.0.0.1",
+                "port": model.port,
+                "path": "/v1",
+                "auth": {"method": "bearer", "token": API_KEY},
+                **fields,
+            }
+        )
+
+    def _failure(self, updates: RecordingUpdates) -> str:
+        assert updates.finished, updates.updates
+        _, idle = updates.finished[-1]
+        assert isinstance(idle, IdleErrorUpdate), idle
+        assert idle.error is not None, idle
+
+        return idle.error.message
+
+    async def test_request_timeout_and_retries_of_the_provider_act(
+        self, chat_launch: ChatLaunch, model: FakeModel
+    ) -> None:
+        connection = self._connection(
+            model, timeout_sec=0.5, retry_attempts=2, retry_backoff_sec=0.0
+        )
+        profile = self._profile(connection, HttpTransportConfig())
+        updates = RecordingUpdates()
+        agent = chat_launch.agent(
+            profile, self.MODEL, self.NO_SERVERS, self.NO_SERVERS, updates
+        )
+        await agent.start()
+
+        await agent.ask(Question(key="draft", text=FailureName.HANG.value))
+
+        failure = self._failure(updates)
+        assert "timed out" in failure.lower() or "timeout" in failure.lower(), failure
+        requests = len(model.app.requests)
+        assert requests % 2 == 0, requests
+        assert requests >= 2, requests
+
+    async def test_tls_check_follows_ssl_verify(
+        self, chat_launch: ChatLaunch, tls_model: FakeModel
+    ) -> None:
+        text = ScenarioName.ANSWER.value
+        trusting = self._connection(tls_model, scheme="https", ssl_verify=False)
+        accepted = RecordingUpdates()
+        agent = chat_launch.agent(
+            self._profile(trusting, HttpTransportConfig()),
+            self.MODEL,
+            self.NO_SERVERS,
+            self.NO_SERVERS,
+            accepted,
+        )
+        await agent.start()
+        await agent.ask(Question(key="trusting", text=text))
+
+        _, idle = accepted.finished[-1]
+        assert idle.stop_reason == "end_turn", idle
+        assert "plain streamed answer" in "".join(accepted.texts())
+
+        checking = self._connection(
+            tls_model, scheme="https", ssl_verify=True, retry_attempts=1
+        )
+        refused = RecordingUpdates()
+        agent = chat_launch.agent(
+            self._profile(checking, HttpTransportConfig()),
+            self.MODEL,
+            self.NO_SERVERS,
+            self.NO_SERVERS,
+            refused,
+        )
+        await agent.start()
+        await agent.ask(Question(key="checking", text=text))
+
+        assert "certificate" in self._failure(refused).lower()
+
+    async def test_transport_section_of_the_provider_acts(
+        self, chat_launch: ChatLaunch, model: FakeModel, tmp_path: Path
+    ) -> None:
+        dumps = tmp_path / "dump"
+        transport = HttpTransportConfig.model_validate(
+            {"dump": {"enable": True, "path": str(dumps)}}
+        )
+        updates = RecordingUpdates()
+        agent = chat_launch.agent(
+            self._profile(self._connection(model), transport),
+            self.MODEL,
+            self.NO_SERVERS,
+            self.NO_SERVERS,
+            updates,
+        )
+        await agent.start()
+
+        await agent.ask(Question(key="draft", text=ScenarioName.ANSWER.value))
+
+        _, idle = updates.finished[-1]
+        assert idle.stop_reason == "end_turn", idle
+        written = list(dumps.rglob("*"))
+        assert any(path.is_file() for path in written), written
+
+    @pytest.mark.parametrize(
+        ("policy", "returned"),
+        [(ReasoningReturn.NEVER, False), (ReasoningReturn.TURN, True)],
+    )
+    async def test_reasoning_goes_back_within_the_turn_by_the_model_config(
+        self,
+        chat_launch: ChatLaunch,
+        model: FakeModel,
+        policy: ReasoningReturn,
+        returned: bool,
+    ) -> None:
+        spec = {"name": "no_such_tool", "arguments": {}}
+        updates = RecordingUpdates()
+        agent = chat_launch.agent(
+            self._profile(self._connection(model), HttpTransportConfig()),
+            self.MODEL.model_copy(update={"reasoning_return": policy}),
+            self.NO_SERVERS,
+            self.NO_SERVERS,
+            updates,
+        )
+        await agent.start()
+
+        await agent.ask(
+            Question(key="draft", text=f"{ScenarioName.CALL.value} {json.dumps(spec)}")
+        )
+
+        assert len(model.app.requests) == 2, model.app.requests
+        assistant: list[dict[str, Any]] = []
+        for message in model.app.requests[1]["messages"]:
+            if message["role"] == "assistant":
+                assistant.append(message)
+
+        assert len(assistant) == 1, assistant
+        reasoning = assistant[0].get("reasoning_content")
+        assert (reasoning == "I will call no_such_tool") is returned, assistant
+
+    async def test_tool_call_is_cut_by_the_deadline_of_the_profile_servers(
+        self, chat_launch: ChatLaunch, model: FakeModel, standard: McpServerConfig
+    ) -> None:
+        brief = standard.model_copy(update={"call_timeout_sec": 1.0})
+        filed = McpServersConfig(servers={"standard": brief})
+        relayed = McpServersConfig(servers={"standard": standard})
+        name = McpToolNames().full("standard", "sleep_for")
+        spec = {"name": name, "arguments": {"seconds": 5}}
+        updates = RecordingUpdates()
+        agent = chat_launch.agent(
+            self._profile(
+                self._connection(model), HttpTransportConfig(), ("standard",)
+            ),
+            self.MODEL,
+            filed,
+            relayed,
+            updates,
+        )
+        await agent.start()
+
+        await agent.ask(
+            Question(key="draft", text=f"{ScenarioName.CALL.value} {json.dumps(spec)}")
+        )
+
+        texts: list[str] = []
+        for _, update in updates.updates:
+            if not isinstance(update, schema.SessionToolCallUpdate):
+                continue
+
+            for item in update.content or ():
+                if isinstance(item, schema.ContentToolCallContent):
+                    block = item.content
+                    if isinstance(block, schema.TextContentBlock):
+                        texts.append(block.text)
+
+        joined = " ".join(texts)
+        assert "within 1.0 s" in joined, joined
+
+
+class TestFailedLaunch:
+    """Несостоявшийся запуск агента не оставляет файла настроек с секретами,
+    а агент, который молчит на метод сессии, обрывается сроком из конфига."""
+
+    async def test_missing_program_leaves_no_private_dir(
+        self,
+        tmp_path: Path,
+        stand: Stand,
+        table: AgentSettingsTable,
+        specs: ProfileModelSpecs,
+    ) -> None:
+        history = AgentHistoryStand(stand)
+        config = AgentStand(tmp_path / "agents", history.history()).config()
+        missing = config.process.model_copy(
+            update={"command": str(tmp_path / "no-such-agent")}
+        )
+        credentials = KerberosCredentialSource(None, NoRefresh())
+        relays = RelayStand(NoConnectionStore(), lambda: credentials, CallContexts())
+        servers = McpServers(NO_SERVERS)
+        launcher = AgentLauncher(
+            config.model_copy(update={"process": missing}),
+            history.postgres(),
+            NO_SERVERS,
+            AgentSettingsLayers(table, specs),
+            relays.registrations,
+            relays.relay(servers),
+            "0.0",
+        )
+        chat = FakeModel().chat_settings()
+        try:
+            with pytest.raises(AgentProcessError) as refused:
+                await launcher.launch_settings(
+                    "thread-missing", chat, None, (), AgentClient(RecordingUpdates())
+                )
+        finally:
+            await servers.stop()
+
+        assert "did not start" in str(refused.value)
+        assert "agent_command" in str(refused.value)
+        assert list((tmp_path / "agents").iterdir()) == []
+
+    async def test_silent_session_request_is_cut_by_request_timeout(
+        self, tmp_path: Path, stand: Stand
+    ) -> None:
+        history = AgentHistoryStand(stand)
+        agent_stand = AgentStand(tmp_path / "agents", history.history())
+        command = AgentCommand(
+            executable=sys.executable,
+            args=(str(TestForkCut.FOREIGN), "--silent-sessions"),
+            start_timeout_sec=30.0,
+            request_timeout_sec=1.0,
+            stop_timeout_sec=5.0,
+        )
+        builder = SettingsFileBuilder(
+            agent_stand.config(), history.postgres(), NO_SERVERS
+        )
+        chat = FakeModel().chat_settings()
+        workdir = AgentWorkdirs(tmp_path / "agents").create("thread-silent")
+        workdir.write(builder.build(chat, None, {}), chat.system_prompt)
+        credentials = KerberosCredentialSource(None, NoRefresh())
+        relays = RelayStand(NoConnectionStore(), lambda: credentials, CallContexts())
+        servers = McpServers(NO_SERVERS)
+        process = AgentProcess(
+            command,
+            workdir,
+            AgentClient(RecordingUpdates()),
+            relays.relay(servers),
+            (),
+            "0.0",
+        )
+        try:
+            await process.start()
+            with pytest.raises(AgentProcessError) as cut:
+                await process.open_session()
+        finally:
+            await process.close()
+            await servers.stop()
+
+        assert "session/new" in str(cut.value)
+        assert "within 1.0s" in str(cut.value)
+        assert "request_timeout_sec" in str(cut.value)
 
 
 def _is_zombie(pid: int) -> bool:
