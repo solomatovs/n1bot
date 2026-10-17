@@ -1446,7 +1446,7 @@ class TestMcpOverAcp:
             }
             cursors.append(message.params.get("cursor"))
 
-        assert cursors == [None, "3", "6"]
+        assert cursors == [None, "3", "6", "9"]
 
         answered_at = boba.frames.position_of_response(
             boba.frames.request_id("session/new")
@@ -1458,7 +1458,7 @@ class TestMcpOverAcp:
             if incoming and message.get("method") == "mcp/message":
                 asked_at.append(position)
 
-        assert len(asked_at) == 3
+        assert len(asked_at) == 4
         assert max(asked_at) < answered_at
 
         offered: list[str] = []
