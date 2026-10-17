@@ -506,7 +506,7 @@ class AgentFeeds(TurnRenderers):
                 name,
                 port.tools(),
                 port.nested_calls(),
-                port.journal_feature(),
+                port.journal_links(),
                 port.apps(),
             )
 

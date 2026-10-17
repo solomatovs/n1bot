@@ -267,13 +267,16 @@ def mcp_relay(  # noqa: PLR0913 — ретранслятор собираетс�
     registry: Annotated[ToolRegistry, Depends(runtime.tool_registry)],
     runs: Annotated[Runs, Depends(runtime.runs)],
     canvas: Annotated[CanvasOpener, Depends(canvas_opener)],
+    bus: Annotated[MessageBus, Depends(runtime.message_bus)],
 ) -> McpRelay:
     """Ретранслятор mcp/message процессов агента: один на инстанс; сервер
     chat — собственные инструменты чата из реестра; файлы ответа, которые
-    сервер просит показать, открывает панель канваса."""
-    chat = ChatTools(registry, runs)
+    сервер просит показать, открывает панель канваса, журналы идущих вызовов
+    называет ленте шина."""
+    own = version("boba-aid")
+    chat = ChatTools(registry, runs, own)
 
-    return McpRelay(registrations, servers, sealing, contexts, chat, canvas)
+    return McpRelay(registrations, servers, sealing, contexts, chat, canvas, bus, own)
 
 
 def agent_launcher(

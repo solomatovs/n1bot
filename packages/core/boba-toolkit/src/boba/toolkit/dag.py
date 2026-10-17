@@ -990,19 +990,19 @@ class ToolServers(ToolServer):
 
     Клиент видит один порт: инструменты и возможности всех серверов вместе,
     вызов уходит тому серверу, чей это инструмент. Маршрут — имя
-    инструмента; вызовы пакета к одному серверу идут ему одним пакетом.
+    инструмента по нынешним спискам серверов: сервер может сменить список
+    посреди работы. Вызовы пакета к одному серверу идут ему одним пакетом.
     Выдуманное имя получает отказ со списком всех инструментов. Собирает
-    его реестр инструментов (ToolRegistry.server).
+    его реестр инструментов (ToolRegistry.server) и клиент MCP агента.
+
+    Ошибки:
+    ToolServersError — два сервера предлагают одно имя: при сборке и при
+        вызове после смены списков.
     """
 
     def __init__(self, servers: Sequence[ToolServer]) -> None:
         self._servers = tuple(servers)
-        self._owner: dict[str, int] = {}
-        for index, server in enumerate(self._servers):
-            for card in server.tools():
-                self._claim(card.name, index)
-
-        self._unknown = UnknownTool(frozenset(self._owner))
+        self._owners()
         self._outcomes = NodeOutcomes()
 
     def tools(self) -> Sequence[ToolCard]:
@@ -1022,12 +1022,14 @@ class ToolServers(ToolServer):
     async def submit(
         self, calls: Sequence[DagNode]
     ) -> Sequence[asyncio.Future[NodeOutcome]]:
+        owners = self._owners()
+        unknown = UnknownTool(frozenset(owners))
         routed: dict[int, list[int]] = {}
         pending: dict[int, asyncio.Future[NodeOutcome]] = {}
         for position, call in enumerate(calls):
-            owner = self._owner.get(call.tool)
+            owner = owners.get(call.tool)
             if owner is None:
-                refusal = self._unknown.refusal(call.tool)
+                refusal = unknown.refusal(call.tool)
                 refused = self._outcomes.refused(call, refusal)
                 pending[position] = self._outcomes.settled(refused)
                 continue
@@ -1049,13 +1051,23 @@ class ToolServers(ToolServer):
 
         return ordered
 
-    def _claim(self, name: str, index: int) -> None:
-        if name in self._owner:
-            msg = (
-                f"tool servers: tool {name!r} is offered by two servers "
-                f"(#{self._owner[name]} and #{index}); a tool name routes to "
-                "exactly one server"
-            )
-            raise ToolServersError(msg)
+    def _owners(self) -> dict[str, int]:
+        """Сервер каждого имени инструмента по нынешним спискам.
 
-        self._owner[name] = index
+        Ошибки:
+        ToolServersError — имя предлагают два сервера.
+        """
+        owners: dict[str, int] = {}
+        for index, server in enumerate(self._servers):
+            for card in server.tools():
+                if card.name in owners:
+                    msg = (
+                        f"tool servers: tool {card.name!r} is offered by two "
+                        f"servers (#{owners[card.name]} and #{index}); a tool name "
+                        "routes to exactly one server"
+                    )
+                    raise ToolServersError(msg)
+
+                owners[card.name] = index
+
+        return owners

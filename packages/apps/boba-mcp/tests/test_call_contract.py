@@ -24,7 +24,7 @@ from service_stand import PROFILE, ServiceStand
 from boba.connections.sealed import SealFeature
 from boba.mcp_adapter import JournalUris
 from boba.mcp_server.files import JournalRoutes
-from boba.mcp_server.server import OwnProgress, RunLimits, StreamReadTool
+from boba.mcp_server.server import OwnProgress, RunLimits
 from boba.toolkit.calls import SchemaMark
 from boba.toolkit.channels import ToolChannel
 from boba.toolkit.mcp import McpResults
@@ -275,10 +275,10 @@ class TestCallIdInJournal:
         self, client: Client[Any]
     ) -> None:
         """Сервер называет вызов сам и ссылается в итоге на каналы его
-        журнала: по адресу из ссылки журнал читается окнами."""
+        журнала: ссылка — ресурс, resources/read читает окно канала."""
         result = await client.call_tool_mcp("fake_echo", {"text": "hi", "repeat": 1})
 
-        uris = JournalUris(JournalRoutes.RESOURCE)
+        uris = JournalUris(JournalRoutes.TEMPLATE)
         found: list[JournalRead] = []
         for block in result.content:
             if not isinstance(block, mt.ResourceLink):
@@ -295,29 +295,31 @@ class TestCallIdInJournal:
         if len(stdout) != 1:
             raise AssertionError(f"the result links the journal channels: {found}")
 
-        address = stdout[0].model_dump(mode="json", exclude_none=True)
-        window = await client.call_tool_mcp(StreamReadTool.NAME, address)
-        piece = window.structured_content
-        if window.is_error or piece is None:
-            raise AssertionError(f"the journal is read by the call id: {window}")
-        if "echo progress: hi" not in piece["text"]:
-            raise AssertionError(f"the journal holds the output of the body: {piece}")
+        contents = await client.read_resource(uris.uri(stdout[0]))
+        texts: list[str] = []
+        for content in contents:
+            if isinstance(content, mt.TextResourceContents):
+                texts.append(content.text)
+
+        if "echo progress: hi" not in "".join(texts):
+            raise AssertionError(f"the journal holds the output of the body: {texts}")
 
 
 class TestJournalProgress:
-    """Уведомление о журнале не отнимает у тела ни одного отчёта о ходе."""
+    """Ход вызова — только отчёты тела: ни один отчёт, в том числе первый с
+    done = 0, не теряется, значение только растёт."""
 
-    def test_first_report_with_nothing_done_follows_the_journal(self) -> None:
+    def test_first_report_with_nothing_done_is_sent(self) -> None:
         shape = OwnProgress()
 
-        journal = shape.journal("call", ["boba-journal://run/call/tool_stdout"], "t")
         first = shape.shaped(
             "call", ProgressReport(done=0, total=10, message="0 pages"), "t"
         )
+        second = shape.shaped(
+            "call", ProgressReport(done=0, total=10, message="still 0"), "t"
+        )
 
-        if journal is None or first is None:
-            raise AssertionError(f"both are sent: {journal} {first}")
-        if first.progress <= journal.progress:
-            raise AssertionError(f"the progress grows: {journal} {first}")
-        if first.message != "0 pages":
+        if first is None or first.message != "0 pages":
             raise AssertionError(f"the first report arrives as made: {first}")
+        if second is not None:
+            raise AssertionError(f"a report that does not grow is held: {second}")

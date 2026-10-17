@@ -6,8 +6,9 @@
 по outputSchema инструмента. Перевод описан в одном месте — ResultWire.
 
 Здесь же модели границы клиент—сервер: служебные поля запроса
-(RequestFields), аргументы чтения журнала (JournalRead) и настройки
-расширений сервера (JournalFeature, FilesFeature).
+(RequestFields), адрес окна журнала (JournalRead), чей запрос открыл
+журнал (JournalOrigin) и настройки расширений сервера (JournalFeature,
+FilesFeature).
 
 Ошибки:
 ValidationError — служебные поля запроса либо настройки расширения не
@@ -31,6 +32,7 @@ from boba.toolkit.result import BlockAudience, ContentOut
 __all__ = [
     "FilesFeature",
     "JournalFeature",
+    "JournalOrigin",
     "JournalRead",
     "RequestFields",
     "ResultWire",
@@ -57,19 +59,37 @@ class JournalFeature(ServerFeature):
     """Настройки расширения сервера «журнал вызовов».
 
     Сервер объявляет их клиенту при подключении словарём settings(); клиент
-    разбирает объявление этой же моделью один раз, в open(). read — имя
-    инструмента, читающего журнал окнами. path — путь маршрута, по которому
-    канал журнала скачивается целиком: `{path}/{run}/{node}/{channel}` (GET,
-    потоком, с Range). resource — шаблон uri (RFC 6570) ресурса канала
-    журнала с переменными run, node и channel: итог вызова несёт ссылки
-    resource_link на каналы его журнала по этому шаблону.
+    разбирает объявление этой же моделью один раз, в open(). path — путь
+    маршрута, по которому канал журнала скачивается целиком:
+    `{path}/{run}/{node}/{channel}` (GET, потоком, с Range). resource —
+    шаблон uri (RFC 6570) ресурса канала журнала с переменными run, node и
+    channel и запросом offset, before: resources/read по нему отдаёт окно
+    канала, координаты окна — в _meta содержимого под ключом ID. Итог
+    вызова несёт ссылки resource_link на каналы его журнала по этому
+    шаблону, а журналы идущих вызовов вызывающего — ресурсы resources/list
+    с JournalOrigin в _meta под тем же ключом.
     """
 
     ID: ClassVar[str] = "com.boba/journal"
 
-    read: str = Field(min_length=1)
     path: str = Field(min_length=1)
     resource: str = Field(min_length=1)
+
+
+class JournalOrigin(BaseModel):
+    """Чей запрос открыл журнал идущего вызова: ресурс канала журнала в
+    resources/list несёт его в _meta под ключом JournalFeature.ID.
+
+    request — токен прогресса запроса tools/call, открывшего журнал: по нему
+    клиент находит свой вызов. node — ключ узла от автора связки, когда
+    журнал принадлежит узлу вызова со вложенными вызовами; у вызова одного
+    инструмента его нет.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    request: mt.ProgressToken
+    node: str | None = None
 
 
 class FilesFeature(ServerFeature):
@@ -93,10 +113,12 @@ class FilesFeature(ServerFeature):
 
 
 class JournalRead(BaseModel):
-    """Аргументы чтения журнала вызова: окно от offset либо перед before.
+    """Адрес окна журнала вызова: окно от offset либо перед before; без
+    обоих — канал целиком от начала, как его называют ссылки.
 
     Адрес журнала — запуск run и идентификатор вызова на сервере node: оба
-    приходят ссылкой resource_link на канал журнала в итоге вызова.
+    приходят ссылкой resource_link на канал журнала в итоге вызова либо
+    ресурсом открытого журнала в resources/list.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
