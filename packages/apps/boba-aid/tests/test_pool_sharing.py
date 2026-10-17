@@ -1,4 +1,4 @@
-"""Пул postgres процесса chainlit: все таблицы живут на одном пуле, который
+"""Пул postgres процесса aid: все таблицы живут на одном пуле, который
 открывает провайдер postgres_pool в корне процесса.
 
 Контейнер собирается как в bootstrap, но на тестовой базе, и тест считает пулы
@@ -57,7 +57,7 @@ def app_container(
     stand_config: AppConfig,
     storage: object,
 ) -> Container:
-    """Провайдеры chainlit, которым нужен postgres; тяжёлое подставлено готовым."""
+    """Провайдеры aid, которым нужен postgres; тяжёлое подставлено готовым."""
     container = Container(level="app")
     container.provide(providers.get_app_config, stand_config)
     container.provide(runtime.get_runtime_config, stand_config)
@@ -79,7 +79,7 @@ def app_container(
     return container
 
 
-async def test_chainlit_components_share_one_pool(app_container: Container) -> None:
+async def test_aid_components_share_one_pool(app_container: Container) -> None:
     """Шина, блокировки, соединения и слой данных — на пуле процесса."""
     Container.set_root(app_container)
 
@@ -93,7 +93,7 @@ async def test_chainlit_components_share_one_pool(app_container: Container) -> N
         opened = AsyncPostgresPool.opened()
         pool = app_container.resolved(runtime.postgres_pool)
         if len(opened) != 1:
-            raise AssertionError(f"chainlit opens one pool, got {len(opened)} pools")
+            raise AssertionError(f"aid opens one pool, got {len(opened)} pools")
 
         if opened[0] is not pool:
             raise AssertionError("the open pool is not the pool of postgres_pool")

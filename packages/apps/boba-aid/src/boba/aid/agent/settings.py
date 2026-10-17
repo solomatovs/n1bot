@@ -485,7 +485,7 @@ class SettingsFileBuilder:
 
 class HistoryEnvironment:
     """Окружение libkrb5 для процесса агента с kerberos-ролью истории: путь к
-    кэшу билета и к krb5.conf рабочего каталога chainlit; билет в кэше
+    кэшу билета и к krb5.conf рабочего каталога процесса aid; билет в кэше
     обновляется по keytab до запуска. У парольной роли окружение пустое.
 
     Исключение §17: libpq читает KRB5CCNAME/KRB5_CONFIG из окружения сам;

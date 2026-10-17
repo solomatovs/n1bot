@@ -1,7 +1,7 @@
 """Точка входа: env chainlit выставляется до первого импорта его модулей.
 
 Ошибки:
-ValueError — в конфиге нет секции [chainlit] либо пусты root или files_dir.
+ValueError — в конфиге нет секции [aid] либо пусты root или files_dir.
 """
 
 import argparse
@@ -44,7 +44,7 @@ class ChainlitFiles:
     приложения (в отладке — ассеты пакета, в образе — слой только для чтения), и
     писать в него нельзя. Поэтому первый импорт chainlit.config идёт здесь: создание
     <APP_ROOT>/.files пропускается, а FILES_DIRECTORY подменяется каталогом из
-    [chainlit].files_dir раньше, чем его прочтут сессии и chainlit.server.
+    [aid].files_dir раньше, чем его прочтут сессии и chainlit.server.
     """
 
     NAME: ClassVar[str] = ".files"
@@ -90,7 +90,7 @@ class ChainlitFiles:
 class AppEntry:
     """Конфиг -> env chainlit -> каталог вложений -> запуск приложения."""
 
-    SECTION: ClassVar[str] = "app.chainlit"
+    SECTION: ClassVar[str] = "app.aid"
 
     SESSION_SECTION: ClassVar[str] = "session"
 
@@ -110,14 +110,14 @@ class AppEntry:
         """Пути общего конфига и site-файла — обязательные аргументы запуска."""
         parser = argparse.ArgumentParser(
             prog="boba.aid",
-            description="Chainlit application of boba",
+            description="Aid: the chat web application of boba",
         )
 
         return ConfigArguments(parser).files()
 
     @classmethod
     def attachments(cls, files: ConfigFiles) -> ChainlitFiles:
-        """Каталог вложений из [chainlit].files_dir; пустое значение отвергается."""
+        """Каталог вложений из [aid].files_dir; пустое значение отвергается."""
         raw = AppLayers.compose(files)
         section = OmegaConf.select(raw, cls.SECTION)
         if section is None:
@@ -139,7 +139,7 @@ class AppEntry:
 
     @classmethod
     def export_env(cls, files: ConfigFiles) -> None:
-        """Секции [chainlit] и [session] -> переменные окружения chainlit."""
+        """Секции [aid] и [session] -> переменные окружения chainlit."""
         raw = AppLayers.compose(files)
         section = OmegaConf.select(raw, cls.SECTION)
         if section is None:

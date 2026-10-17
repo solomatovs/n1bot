@@ -443,7 +443,7 @@ RUN chmod -R go-w ${BOBA_DIR}/third/bin ${BOBA_DIR}/sandbox \
 
 
 # образ чата: общий конфиг, ассеты chainlit, vendor-шрифты и стили формул вместо CDN.
-# Вложения сессий приложение держит в данных ([chainlit].files_dir), app_root не пишется
+# Вложения сессий приложение держит в данных ([aid].files_dir), app_root не пишется
 FROM runtime-base AS runtime-aid
 
 ARG BOBA_DIR=/app/boba

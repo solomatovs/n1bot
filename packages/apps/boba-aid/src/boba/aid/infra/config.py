@@ -1,6 +1,5 @@
 """Схема конфигурации приложения: pydantic-модели секций toml-конфига.
 
-Ошибки:
 Ошибки: своих не выпускает; выбор профиля — boba.chat.profiles.
 """
 
@@ -70,7 +69,12 @@ LOGGING_CONFIG: dict[str, Any] = {
 }
 
 
-class ChainlitExtendConfig(BaseModel):
+class AidSection(BaseModel):
+    """Секция [aid]: HTTP-сервер чата — адрес, TLS, префикс приложения,
+    каталоги статики и вложений, пульс сокетов и остановка uvicorn. Модель
+    собирает AppConfig; bootstrap поднимает по ней uvicorn и ставит префикс,
+    AppEntry передаёт root и files_dir библиотеке chainlit."""
+
     host: str = Field(default="127.0.0.1")
     port: int = Field(default=8501)
     ssl_cert: str | None = Field(default=None)
@@ -81,7 +85,7 @@ class ChainlitExtendConfig(BaseModel):
     files_dir: str = Field(
         default="",
         description=(
-            "Каталог вложений сессий chainlit вместо <root>/.files: root — "
+            "Каталог вложений сессий чата вместо <root>/.files: root — "
             "статика, писать в него приложение не должно. Пустое значение "
             "точка входа отвергает."
         ),
@@ -159,7 +163,7 @@ class ChainlitExtendConfig(BaseModel):
 
 
 class AppConfig(RuntimeConfig):
-    """Секции chainlit-процесса поверх общих: server, профили, агент."""
+    """Секции процесса aid поверх общих: [aid], профили, MCP-серверы, агент."""
 
     model_config = ConfigDict(extra="ignore")
 
@@ -167,11 +171,9 @@ class AppConfig(RuntimeConfig):
         KerberosWorkspaceConfig,
         Field(description="Секция [krb]: krb5.conf и каталог кэшей билетов."),
     ]
-    chainlit: Annotated[
-        ChainlitExtendConfig,
-        Field(
-            description=("Chainlit config; ${chainlit.<name>}."),
-        ),
+    aid: Annotated[
+        AidSection,
+        Field(description="Секция [aid]: HTTP-сервер чата; ${aid.<name>}."),
     ]
 
     profiles: Annotated[
