@@ -10,7 +10,10 @@ from datetime import timedelta
 from enum import StrEnum
 from importlib.metadata import version
 from importlib.resources import files
+from pathlib import Path
 from typing import Annotated
+
+from chainlit.config import config as chainlit_config
 
 from boba.aid.agent.chat import (
     AgentLauncher,
@@ -30,6 +33,7 @@ from boba.aid.agent.settings import (
 )
 from boba.aid.canvas.remote import RemoteJournals
 from boba.aid.canvas.tools import CanvasOpener
+from boba.aid.chat.ui_text import UiText
 from boba.aid.data import PostgresDataLayer
 from boba.aid.data.remote_storage import FileOwners, RemoteStorageClient
 from boba.aid.infra.config import AppConfig
@@ -138,6 +142,19 @@ def thread_surfaces() -> TabSurfaces:
         "override, the provider itself produces nothing"
     )
     raise RuntimeError(msg)
+
+
+def feed_text(
+    app_config: Annotated[AppConfig, Depends(get_app_config)],
+) -> UiText:
+    """Подписи ленты: лента треда одна на все его вкладки, поэтому её язык —
+    язык интерфейса развёртывания ([UI].language chainlit), без него — язык
+    по умолчанию."""
+    language = ""
+    if forced := chainlit_config.ui.language:
+        language = forced
+
+    return UiText(Path(app_config.aid.root), language)
 
 
 def remote_journals() -> RemoteJournals:
@@ -333,6 +350,7 @@ def agent_feeds(  # noqa: PLR0913 — фабрика собирается все
     data_layer: Annotated[PostgresDataLayer, Depends(chainlit_data_layer)],
     surfaces: Annotated[TabSurfaces, Depends(thread_surfaces)],
     storage: Annotated[StorageClient, Depends(storage_provider)],
+    texts: Annotated[UiText, Depends(feed_text)],
 ) -> AgentFeeds:
     """Приёмники потока агентов: ход в шину под замком треда, история — в
     вкладку, оценки шагов — из слоя данных."""
@@ -343,7 +361,9 @@ def agent_feeds(  # noqa: PLR0913 — фабрика собирается все
         heartbeat_sec=float(config.cluster.heartbeat_sec),
     )
 
-    return AgentFeeds(parts, journals, media, servers, data_layer, surfaces, storage)
+    return AgentFeeds(
+        parts, journals, media, servers, data_layer, surfaces, storage, texts
+    )
 
 
 async def thread_agents(

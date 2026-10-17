@@ -31,6 +31,8 @@ import pytest
 from chat_ui import ChatOpener
 from pydantic import BaseModel, ConfigDict
 
+from boba.aid.chat.ui_text import UiText
+from boba.aid.rendering.chat_view import StepText
 from boba.canvas.canvas import CanvasErrorKind
 from boba.canvas.diagram import DiagramPrompt
 from boba.config import bind
@@ -1708,13 +1710,14 @@ class TestKbTools:
         )
         feed.call(call, expect)
 
-    def test_fts_nothing_found(self, feed: ToolFeed) -> None:
+    def test_fts_nothing_found(self, feed: ToolFeed, app_texts: UiText) -> None:
         call = ToolCall(
             tool="kb_fts_search",
             arguments={"query": ProbeText.NOTHING.value, "top_k": 1},
         )
         result = TableResult(rows=[], note="nothing found")
-        feed.call(call, ToolExpect.of(result, dom=["(no rows)", "nothing found"]))
+        no_rows = app_texts.text(StepText.NO_ROWS.value)
+        feed.call(call, ToolExpect.of(result, dom=[no_rows, "nothing found"]))
 
 
 class TestKbIxTools:

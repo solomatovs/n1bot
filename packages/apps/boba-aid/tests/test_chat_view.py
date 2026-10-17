@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from enum import StrEnum
+from pathlib import Path
 from typing import Any, cast
 
 import mcp_types as mt
@@ -14,6 +15,7 @@ from chainlit.config import config as chainlit_config
 from chainlit.context import ChainlitContext, context_var
 from chainlit.step import StepDict
 
+from boba.aid.chat.ui_text import UiText
 from boba.aid.domain.fields import StepField
 from boba.aid.rendering.chat_view import (
     ChatView,
@@ -28,6 +30,12 @@ from boba.aid.rendering.chat_view import (
 from boba.runtime.storage import LocalStorageClient
 from boba.stand.refs import StandRefs
 from boba.toolkit.result import FieldLines
+
+APP_ROOT = Path(__file__).resolve().parents[1] / "assets"
+"""Корень приложения пакета: его переводы chainlit несут подписи ленты."""
+
+TEXTS = UiText(APP_ROOT, UiText.DEFAULT_LANGUAGE)
+"""Подписи ленты из переводов приложения пакета на языке по умолчанию."""
 
 THREAD = "11111111-1111-1111-1111-111111111111"
 TURN = "22222222-2222-2222-2222-222222222222"
@@ -61,6 +69,7 @@ class TestAnswerOrder:
             RecordingSink(),
             "u-1",
             storage,
+            TEXTS,
             user_name="Пользователь",
         )
         view.begin_turn(TURN)
@@ -92,6 +101,7 @@ class TestAnswerOrder:
             RecordingSink(),
             "u-1",
             storage,
+            TEXTS,
             user_name="Пользователь",
         )
         view.begin_turn(TURN)
@@ -143,6 +153,7 @@ class TestTurnPulse:
             sink,
             "u-1",
             storage,
+            TEXTS,
             user_name="Пользователь",
         )
         view.begin_turn(TURN)
@@ -168,6 +179,7 @@ class TestTurnPulse:
             sink,
             "u-1",
             storage,
+            TEXTS,
             user_name="Пользователь",
         )
         view.begin_turn(TURN)
@@ -189,6 +201,7 @@ class TestTurnPulse:
             sink,
             "u-1",
             storage,
+            TEXTS,
             user_name="Пользователь",
         )
         view.begin_turn(TURN)
@@ -213,6 +226,7 @@ class TestTurnPulse:
             sink,
             "u-1",
             storage,
+            TEXTS,
             user_name="Пользователь",
         )
         view.begin_turn(TURN)
@@ -322,6 +336,7 @@ class TestLivePulseFrames:
                 LiveSink(),
                 "u-1",
                 storage,
+                TEXTS,
                 user_name="Пользователь",
             )
             view.begin_turn(TURN)
@@ -403,31 +418,40 @@ class TestLivePulseFrames:
 
 
 class TestStepElapsed:
-    """Подпись длительности вызова в названии шага."""
+    """Подпись длительности вызова в названии шага, единицами языка."""
+
+    ELAPSED = StepElapsed(TEXTS)
+    RUSSIAN = StepElapsed(UiText(APP_ROOT, "ru-RU"))
 
     def test_milliseconds(self) -> None:
-        if StepElapsed.of(340) != "340 ms":
-            raise AssertionError(StepElapsed.of(340))
+        if self.ELAPSED.of(340) != "340 ms":
+            raise AssertionError(self.ELAPSED.of(340))
 
     def test_seconds(self) -> None:
-        if StepElapsed.of(1250) != "1.2 s":
-            raise AssertionError(StepElapsed.of(1250))
+        if self.ELAPSED.of(1250) != "1.2 s":
+            raise AssertionError(self.ELAPSED.of(1250))
 
     def test_minutes(self) -> None:
-        if StepElapsed.of(95_000) != "1 m 35 s":
-            raise AssertionError(StepElapsed.of(95_000))
+        if self.ELAPSED.of(95_000) != "1 m 35 s":
+            raise AssertionError(self.ELAPSED.of(95_000))
+
+    def test_units_follow_the_language(self) -> None:
+        if self.RUSSIAN.of(95_000) != "1 мин 35 с":
+            raise AssertionError(self.RUSSIAN.of(95_000))
 
     def test_unmeasured_is_silent(self) -> None:
         """Ноль означает, что время не измеряли: в названии его быть не должно."""
-        if StepElapsed.of(0) != "":
-            raise AssertionError(StepElapsed.of(0))
+        if self.ELAPSED.of(0) != "":
+            raise AssertionError(self.ELAPSED.of(0))
 
-        if StepStatus.DONE.timed("bash", 0) != StepStatus.DONE.title("bash"):
-            raise AssertionError(StepStatus.DONE.timed("bash", 0))
+        unmeasured = StepStatus.DONE.timed("bash", self.ELAPSED.of(0))
+        if unmeasured != StepStatus.DONE.title("bash"):
+            raise AssertionError(unmeasured)
 
     def test_title_keeps_status(self) -> None:
-        if StepStatus.FAILED.timed("bash", 2000) != "✖ bash · 2.0 s":
-            raise AssertionError(StepStatus.FAILED.timed("bash", 2000))
+        failed = StepStatus.FAILED.timed("bash", self.ELAPSED.of(2000))
+        if failed != "✖ bash · 2.0 s":
+            raise AssertionError(failed)
 
 
 class TestToolStepDuration:
@@ -442,6 +466,7 @@ class TestToolStepDuration:
             RecordingSink(),
             "u-1",
             storage,
+            TEXTS,
             user_name="Пользователь",
         )
         view.begin_turn(TURN)
@@ -468,6 +493,7 @@ class TestToolStepDuration:
             RecordingSink(),
             "u-1",
             storage,
+            TEXTS,
             user_name="Пользователь",
         )
         view.begin_turn(TURN)
@@ -495,6 +521,7 @@ class TestToolIntent:
             RecordingSink(),
             "u-1",
             storage,
+            TEXTS,
             user_name="Пользователь",
         )
         view.begin_turn(TURN)
@@ -505,7 +532,7 @@ class TestToolIntent:
         if step.name != "○ bash · смотрю содержимое каталога":
             raise AssertionError(step.name)
         # без output фронт не рисует секцию шага и не монтирует кнопку потока
-        if step.output != StepText.RUNNING:
+        if step.output != TEXTS.text(StepText.RUNNING.value):
             raise AssertionError(f"running обязан быть под подписью: {step.output!r}")
 
     @pytest.mark.anyio
@@ -517,6 +544,7 @@ class TestToolIntent:
             RecordingSink(),
             "u-1",
             storage,
+            TEXTS,
             user_name="Пользователь",
         )
         view.begin_turn(TURN)
@@ -543,6 +571,7 @@ class TestToolIntent:
             RecordingSink(),
             "u-1",
             storage,
+            TEXTS,
             user_name="Пользователь",
         )
         view.begin_turn(TURN)
@@ -564,6 +593,7 @@ class TestToolIntent:
             RecordingSink(),
             "u-1",
             storage,
+            TEXTS,
             user_name="Пользователь",
         )
         view.begin_turn(TURN)
@@ -574,7 +604,7 @@ class TestToolIntent:
 
         if step.name != "○ kb_fts_search":
             raise AssertionError(step.name)
-        if step.output != "running":
+        if step.output != TEXTS.text(StepText.RUNNING.value):
             raise AssertionError(f"без подписи шаг остаётся running: {step.output!r}")
 
 
@@ -601,6 +631,7 @@ class TestContainerAvatar:
             sink,
             "u-1",
             storage,
+            TEXTS,
             user_name="Пользователь",
         )
         view.begin_turn(TURN)
@@ -610,7 +641,7 @@ class TestContainerAvatar:
         containers = [
             step
             for step in sink.steps
-            if str(step.get(StepField.NAME, "")).startswith(StepText.CONTAINER)
+            if step.get(StepField.NAME) == TEXTS.text(StepText.CONTAINER.value)
         ]
         if not containers:
             raise AssertionError("контейнер хода не отправлен")
@@ -633,7 +664,7 @@ class TestCallViewOfACard:
     async def test_step_input_follows_the_content_types_of_the_arguments(
         self, runtime_stand: StandRefs, storage: LocalStorageClient, http_context: None
     ) -> None:
-        view = ChatView(THREAD, RecordingSink(), "u-1", storage)
+        view = ChatView(THREAD, RecordingSink(), "u-1", storage, TEXTS)
         view.begin_turn(TURN)
 
         step = await view.tool_started(
@@ -654,7 +685,7 @@ class TestCallViewOfACard:
     async def test_call_without_types_and_model_shows_the_arguments_as_json(
         self, runtime_stand: StandRefs, storage: LocalStorageClient, http_context: None
     ) -> None:
-        view = ChatView(THREAD, RecordingSink(), "u-1", storage)
+        view = ChatView(THREAD, RecordingSink(), "u-1", storage, TEXTS)
         view.begin_turn(TURN)
 
         step = await view.tool_started(

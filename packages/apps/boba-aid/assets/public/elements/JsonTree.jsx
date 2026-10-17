@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
+import { useTranslation } from "@/components/i18n";
 
 // Дерево JSON ответа инструмента (resource application/json) под выходом
 // шага: узлы сворачивает нативный <details>, корень раскрыт, вложенное
@@ -50,6 +51,7 @@ function Scalar({ value }) {
 }
 
 function Node({ name, value, open }) {
+  const { t } = useTranslation();
   const [expanded, setExpanded] = useState(open);
   const [shown, setShown] = useState(PAGE);
   const kind = kindOf(value);
@@ -65,13 +67,15 @@ function Node({ name, value, open }) {
 
   const entries = entriesOf(value, kind);
 
+  // число ключей и элементов — словом языка интерфейса, с его формой
+  // множественного числа
   let brackets = ["{", "}"];
-  let unit = "key";
+  let unit = "aid.json.key";
   if (kind === "array") {
     brackets = ["[", "]"];
-    unit = "item";
+    unit = "aid.json.item";
   }
-  if (entries.length !== 1) unit = `${unit}s`;
+  const counted = t(unit, { count: entries.length });
 
   let chevron = <ChevronRight className="h-3 w-3 shrink-0" />;
   if (expanded) chevron = <ChevronDown className="h-3 w-3 shrink-0" />;
@@ -91,7 +95,7 @@ function Node({ name, value, open }) {
         <span>{brackets[0]}</span>
         {!expanded && (
           <span className="text-muted-foreground">
-            {` ${entries.length} ${unit} `}
+            {` ${counted} `}
             {brackets[1]}
           </span>
         )}
@@ -108,7 +112,7 @@ function Node({ name, value, open }) {
           className="pl-4 text-muted-foreground underline"
           onClick={() => setShown(shown + PAGE)}
         >
-          {`show ${Math.min(PAGE, rest)} more of ${rest}`}
+          {t("aid.json.showMore", { count: Math.min(PAGE, rest), rest })}
         </button>
       )}
       {expanded && <div>{brackets[1]}</div>}
