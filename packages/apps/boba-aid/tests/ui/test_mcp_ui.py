@@ -369,7 +369,7 @@ class TestMcpToolInTheFeed:
             raise AssertionError("the string ran as a script")
 
         rows.locator("summary").first.click()
-        folded_back = tree.get_by_text(re.compile(rf"\b{re.escape(one_item)}\b"))
+        folded_back = tree.get_by_text(re.compile(re.escape(one_item)))
         folded_back.wait_for(state="visible", timeout=10_000)
         if f"{one_item} ]" not in tree.inner_text():
             raise AssertionError(f"the array folds back: {tree.inner_text()!r}")

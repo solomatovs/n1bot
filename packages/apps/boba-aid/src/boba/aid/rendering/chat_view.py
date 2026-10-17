@@ -9,6 +9,7 @@ import csv
 import io
 import json
 import logging
+import re
 from abc import ABC, abstractmethod
 from collections import deque
 from collections.abc import (
@@ -150,7 +151,7 @@ class StepStatus(StrEnum):
         if not elapsed:
             return self.title(name)
 
-        return f"{self.title(name)} · {elapsed}"
+        return f"{self.title(name)}{ToolStepLabel.SEPARATOR}{elapsed}"
 
 
 class ElapsedText(StrEnum):
@@ -162,13 +163,18 @@ class ElapsedText(StrEnum):
 
 
 class StepElapsed:
-    """Длительность вызова в названии шага, единицами языка интерфейса.
+    """Длительность вызова в названии шага, единицами языка интерфейса: и
+    подпись, и её разбор — регулярное выражение по тем же переводам.
 
-    Создаётся лентой (ChatView) из её подписей.
+    Создаётся лентой (ChatView) из её подписей; разбором пользуются тесты,
+    сверяющие название шага с длительностью любой величины.
     """
 
     SECOND_MS: ClassVar[int] = 1000
     MINUTE_MS: ClassVar[int] = 60 * SECOND_MS
+    INTEGER: ClassVar[str] = r"\d+"
+    DECIMAL: ClassVar[str] = r"\d+\.\d"
+    MARK: ClassVar[str] = "\x00"
 
     def __init__(self, texts: UiText) -> None:
         self._texts = texts
@@ -188,6 +194,33 @@ class StepElapsed:
         minutes = elapsed_ms // self.MINUTE_MS
         rest = f"{(elapsed_ms % self.MINUTE_MS) / self.SECOND_MS:.0f}"
         return self._texts.text(ElapsedText.MINUTES.value, min=minutes, sec=rest)
+
+    def titled(self, title: str, timed: bool) -> str:
+        """Регулярное выражение названия шага title с длительностью: timed —
+        длительность обязательна, иначе может не быть."""
+        shapes = "|".join(self._shapes())
+        tail = f"(?:{re.escape(ToolStepLabel.SEPARATOR)}(?:{shapes}))"
+        if not timed:
+            tail = f"{tail}?"
+
+        return f"^{re.escape(title)}{tail}$"
+
+    def _shapes(self) -> Iterator[str]:
+        yield self._shape(ElapsedText.MILLISECONDS, ms=self.INTEGER)
+        yield self._shape(ElapsedText.SECONDS, sec=self.DECIMAL)
+        yield self._shape(ElapsedText.MINUTES, min=self.INTEGER, sec=self.INTEGER)
+
+    def _shape(self, key: ElapsedText, **numbers: str) -> str:
+        """Подпись с метками вместо чисел, экранированная, с числами-шаблонами."""
+        marks: dict[str, str] = {}
+        for name in numbers:
+            marks[name] = f"{self.MARK}{name}{self.MARK}"
+
+        shape = re.escape(self._texts.text(key.value, **marks))
+        for name, number in numbers.items():
+            shape = shape.replace(re.escape(marks[name]), number)
+
+        return shape
 
 
 class ToolStepLabel:

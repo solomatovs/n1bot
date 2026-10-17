@@ -29,7 +29,7 @@ pytestmark = pytest.mark.ui
 
 BOOT_TIMEOUT_SEC = 300.0
 TURN_TIMEOUT_SEC = 120.0
-BUTTON = '[aria-label="Show tool output"]'
+BUTTON = "[data-canvas-stream]"
 POLL_SEC = 15.0
 PROBE = "stream-line"
 LINES = 8

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from enum import StrEnum
@@ -447,6 +448,24 @@ class TestStepElapsed:
         unmeasured = StepStatus.DONE.timed("bash", self.ELAPSED.of(0))
         if unmeasured != StepStatus.DONE.title("bash"):
             raise AssertionError(unmeasured)
+
+    def test_title_is_parsed_by_the_same_units(self) -> None:
+        """Разбор названия шага знает единицы своего языка и любую величину."""
+        for elapsed, ms in ((self.ELAPSED, 340), (self.RUSSIAN, 95_000)):
+            title = StepStatus.DONE.title("bash")
+            named = StepStatus.DONE.timed("bash", elapsed.of(ms))
+            if not re.fullmatch(elapsed.titled(title, timed=True), named):
+                raise AssertionError(f"{named!r} is not parsed")
+
+            if re.fullmatch(elapsed.titled(title, timed=True), title):
+                raise AssertionError(f"{title!r} has no duration but is parsed")
+
+            if not re.fullmatch(elapsed.titled(title, timed=False), title):
+                raise AssertionError(f"{title!r} without duration is not parsed")
+
+        mixed = "✔ bash · 1.2 с"
+        if re.fullmatch(self.ELAPSED.titled("✔ bash", timed=True), mixed):
+            raise AssertionError(f"{mixed!r} has foreign units but is parsed")
 
     def test_title_keeps_status(self) -> None:
         failed = StepStatus.FAILED.timed("bash", self.ELAPSED.of(2000))
