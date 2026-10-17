@@ -1,10 +1,12 @@
 """Журналы вызовов, исполненных MCP-серверами: адреса и окна.
 
-Вызов исполняет сервер, журнал лежит у него. Адрес журнала чат узнаёт по
-ссылке на канал журнала: пока вызов идёт — из `_meta` уведомления о ходе
-вызова, у итога — по ссылке resource_link в `rawOutput` уведомления агента;
-лента запоминает его здесь и при живом ходе, и при воспроизведении
-истории; текст читает окнами через клиента MCP.
+Вызов исполняет сервер, журнал лежит у него. Адрес журнала чат узнаёт у
+сервера: пока вызов идёт — ресурсом списка resources/list (ретранслятор
+называет его ленте сообщением JournalOpened), у итога — по ссылке
+resource_link в `rawOutput` уведомления агента; лента запоминает его здесь и
+при живом ходе, и при воспроизведении истории; текст читает окнами
+resources/read через клиента MCP, рост канала слушает потоком
+subscriptions/listen.
 
 Ошибки:
 McpClientError — сервер недоступен или ответил не окном журнала.
@@ -16,6 +18,9 @@ import asyncio
 import logging
 from collections import OrderedDict
 from typing import ClassVar
+
+import mcp_types as mt
+from mcp.shared.exceptions import MCPError
 
 from boba.aid.rendering.acp_view import JournalRegistry, ToolMedia
 from boba.canvas.canvas import WatchProbe, WatchSource
@@ -72,11 +77,11 @@ class RemoteStreams:
     """Чтение журналов вызовов MCP-серверов для панели живого вывода.
 
     Создаётся обработчиком действия панели из реестра журналов, клиента MCP,
-    пользователя сессии и знаний ленты о серверах (ToolMedia: шаблон
-    ресурсов журнала для подписки): сервер отдаёт журнал только тому, кто
+    пользователя сессии и знаний ленты о серверах (ToolMedia: адреса
+    каналов журнала для подписки): сервер отдаёт журнал только тому, кто
     вызывал.
     Панель зовёт его, когда своего журнала у вызова нет: окно читает
-    операция сервера, адрес журнала даёт реестр RemoteJournals.
+    resources/read канала, адрес журнала даёт реестр RemoteJournals.
     """
 
     def __init__(
@@ -250,10 +255,24 @@ class ListenedChannelWatch(WatchSource):
     async def _listen(
         self, port: McpToolServer, uri: str, waker: asyncio.Event
     ) -> None:
-        """Подписка на рост канала: событие — признак и будильник; потеря
-        подписки — в лог, источник возвращается к опросу."""
+        """Подписка на рост канала: событие — признак и будильник; сервер не
+        подтвердил uri канала или подписка потеряна — в лог, источник
+        возвращается к опросу."""
+        notifications = mt.SubscriptionFilter(resource_subscriptions=[uri])
         try:
-            async with port.listen([uri]) as subscription:
+            async with port.listen(notifications) as subscription:
+                honored = subscription.honored.resource_subscriptions
+                if honored is None or uri not in honored:
+                    logger.warning(
+                        "journal watch: call %s of thread %s falls back to "
+                        "polling, the server acknowledged %s instead of %s",
+                        self._call_id,
+                        self._thread_id,
+                        honored,
+                        uri,
+                    )
+                    return
+
                 self._listening = True
                 self._changed = True
                 logger.info(
@@ -265,7 +284,7 @@ class ListenedChannelWatch(WatchSource):
                 async for _ in subscription:
                     self._changed = True
                     waker.set()
-        except McpClientError as exc:
+        except (McpClientError, MCPError) as exc:
             logger.warning(
                 "journal watch: call %s of thread %s falls back to polling, "
                 "listening on %s failed: %s",

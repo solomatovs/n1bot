@@ -16,6 +16,7 @@ import secrets
 import socket
 import time
 from collections.abc import AsyncIterator
+from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, ClassVar
@@ -28,8 +29,10 @@ from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
 from mcp.client.extension import advertise
 from mcp.client.session import IncomingMessage
+from mcp.client.subscriptions import listen
 from mcp.server.auth.provider import IdentityAssertionParams, TokenError
 from mcp.shared.auth import JWT_BEARER_GRANT_TYPE, OAuthClientInformationFull
+from mcp.shared.exceptions import MCPError
 from pydantic import AnyUrl
 from service_stand import (
     CLIENT_ID,
@@ -44,6 +47,7 @@ from service_stand import (
 
 from boba.auth import SignIns
 from boba.auth.proxy import ProxyAssertions
+from boba.canvas.journal import StreamSlice
 from boba.connections.sealed import (
     ConnectionOffer,
     ConnectionSeal,
@@ -65,7 +69,6 @@ from boba.mcp_server.files import JournalRoutes
 from boba.mcp_server.server import (
     FileUploadTool,
     RunLimits,
-    StreamReadTool,
 )
 from boba.toolkit.calls import CallViews, SchemaMark
 from boba.toolkit.channels import JournalChannels, ToolChannel
@@ -128,6 +131,25 @@ def _shown(result: mt.CallToolResult) -> dict[str, Any] | None:
     return result.structured_content
 
 
+async def _window(client: Client[Any], read: JournalRead) -> StreamSlice:
+    """Окно канала журнала resources/read по шаблону ресурса журнала: текст
+    и координаты окна из _meta содержимого."""
+    uri = JournalUris(JournalRoutes.TEMPLATE).uri(read)
+    contents = await client.read_resource(uri)
+    if len(contents) != 1:
+        raise AssertionError(f"a window is one text content: {contents}")
+
+    (content,) = contents
+    if not isinstance(content, mt.TextResourceContents):
+        raise AssertionError(f"a window is text: {content}")
+
+    meta = content.meta
+    if meta is None:
+        raise AssertionError(f"the window names its place in _meta: {content}")
+
+    return StreamSlice.model_validate({**meta[JournalFeature.ID], "text": content.text})
+
+
 def _text(result: mt.CallToolResult) -> str:
     """Текст итога инструмента, каким его получает модель клиента."""
     return McpResults().result("probe", "call", result).llm_view()
@@ -135,7 +157,7 @@ def _text(result: mt.CallToolResult) -> str:
 
 def _journal(result: mt.CallToolResult) -> JournalRead:
     """Адрес канала stdout журнала вызова по ссылке в итоге."""
-    uris = JournalUris(JournalRoutes.RESOURCE)
+    uris = JournalUris(JournalRoutes.TEMPLATE)
     for block in result.content:
         if not isinstance(block, mt.ResourceLink):
             continue
@@ -169,7 +191,6 @@ class TestToolList:
             "fake_sleep",
             "fake_whoami",
             FileUploadTool.NAME,
-            StreamReadTool.NAME,
             WorkflowTool.NAME,
         ]
         if names != sorted(expected):
@@ -195,8 +216,7 @@ class TestToolList:
         self, stand: ServiceStand, url: str, dev_token: str
     ) -> None:
         """Инструменты, которые работают в workspace, и связка несут
-        необязательный thread_id с пометкой x-boba-thread; операция чтения
-        журнала области не открывает и параметра не несёт."""
+        необязательный thread_id с пометкой x-boba-thread."""
         async with _client(url, dev_token) as client:
             listed = await client.list_tools()
 
@@ -209,10 +229,6 @@ class TestToolList:
             if CallFields.THREAD in schemas[name].get("required", []):
                 raise AssertionError(f"the thread of {name} is optional")
 
-        journal = SchemaMark.THREAD.params(schemas[StreamReadTool.NAME])
-        if journal:
-            raise AssertionError(f"the journal read has no thread: {journal}")
-
     async def test_weaker_role_sees_fewer_tools(
         self, stand: ServiceStand, url: str, weak_token: str
     ) -> None:
@@ -220,7 +236,7 @@ class TestToolList:
             listed = await client.list_tools()
 
         names = [tool.name for tool in listed]
-        if names != ["fake_echo", FileUploadTool.NAME, StreamReadTool.NAME]:
+        if names != ["fake_echo", FileUploadTool.NAME]:
             raise AssertionError(f"role weak is granted one tool: {names}")
 
 
@@ -486,9 +502,8 @@ class TestCall:
 
 class Heard:
     """Уведомления прогресса одного вызова, какими их получил клиент: числа
-    и текст отчётов тела — через обработчик прогресса (уведомление о журнале
-    без текста отчётом не считается), уведомление целиком с _meta — через
-    обработчик сообщений сессии (notified)."""
+    и текст отчётов тела — через обработчик прогресса, уведомление целиком с
+    _meta — через обработчик сообщений сессии (notified)."""
 
     def __init__(self) -> None:
         self.reports: list[tuple[float, float | None, str | None]] = []
@@ -586,15 +601,13 @@ class TestProgress:
 
         key = CallDag().feature().progress_key
         by_node: dict[str, list[str]] = {}
-        journals: dict[str, list[str]] = {}
         for note in heard.notes:
             meta = note.meta
             if meta is None:
                 raise AssertionError(f"every report names its node in _meta: {note}")
 
             if note.message is None:
-                journals[meta[key]] = meta[JournalFeature.ID]
-                continue
+                raise AssertionError(f"every notification is a report: {note}")
 
             by_node.setdefault(meta[key], []).append(str(note.message))
 
@@ -609,54 +622,89 @@ class TestProgress:
         if by_node != expected:
             raise AssertionError(f"the reports of the nodes: {by_node}")
 
-        if sorted(journals) != ["left", "right"]:
-            raise AssertionError(f"every node names its journal: {journals}")
-
         values = [report[0] for report in heard.reports]
         if values != sorted(set(values)):
             raise AssertionError(f"the progress of the request only grows: {values}")
 
-    async def test_opened_journal_is_named_while_the_call_runs(
+    async def test_running_call_journals_are_listed_with_their_request(
         self, stand: ServiceStand, url: str, dev_token: str
     ) -> None:
-        """Журнал вызова называется клиенту, едва открыт: уведомление без
-        текста и итога, ссылки на видимые каналы журнала — в _meta под
-        ключом расширения журнала; те же адреса, что в итоге вызова."""
-        heard = Heard()
-        client = Client(
-            StreamableHttpTransport(url, auth=dev_token),
-            message_handler=heard.notified,
-        )
-        async with client:
-            result = await client.call_tool_mcp(
-                "fake_echo", {"text": "hi", "repeat": 2}, progress_handler=heard
-            )
+        """Журнал идущего вызова — ресурсы resources/list вызывающего по
+        видимым каналам с токеном прогресса запроса в _meta; поток
+        subscriptions/listen узнаёт об открытии и о конце смены списка;
+        вызов кончился — журналов в списке нет, а адрес тот же, что у
+        ссылок итога."""
+        async with _client(url, dev_token) as client:
+            async with listen(client.session, resources_list_changed=True) as stream:
+                running = asyncio.create_task(
+                    client.call_tool_mcp("fake_progress", {"steps": 4, "pause": 0.5})
+                )
+                async with asyncio.timeout(30):
+                    changed = await anext(stream)
+                    listed = await client.list_resources_mcp()
 
-        if len(heard.notes) != 1:
-            raise AssertionError(f"one notification about the journal: {heard.notes}")
+                result = await running
+                async with asyncio.timeout(30):
+                    ended = await anext(stream)
 
-        note = heard.notes[0]
-        if note.message is not None or note.total is not None:
-            raise AssertionError(f"the notification carries no report: {note}")
-        if note.progress >= 0:
-            raise AssertionError(f"the journal stays below any report: {note}")
-        if note.meta is None:
-            raise AssertionError(f"the links ride in _meta: {note}")
+            after = await client.list_resources_mcp()
 
-        uris = JournalUris(JournalRoutes.RESOURCE)
-        named: list[JournalRead] = []
-        for link in note.meta[JournalFeature.ID]:
-            read = uris.address(link)
+        uris = JournalUris(JournalRoutes.TEMPLATE)
+        addresses: list[JournalRead] = []
+        origins: list[object] = []
+        for resource in listed.resources:
+            read = uris.address(str(resource.uri))
             if read is None:
-                raise AssertionError(f"{link} is a link to a journal channel")
-            named.append(read)
+                raise AssertionError(f"{resource.uri} is a journal channel")
 
-        stdout = _journal(result)
-        channels = [read.channel for read in named]
+            addresses.append(read)
+            meta = resource.meta
+            if meta is None:
+                raise AssertionError(f"the resource names its request: {resource}")
+
+            origins.append(meta[JournalFeature.ID])
+
+        if type(changed).__name__ != "ResourcesListChanged":
+            raise AssertionError(f"the open journal changes the list: {changed}")
+        if type(ended).__name__ != "ResourcesListChanged":
+            raise AssertionError(f"the end of the call changes the list: {ended}")
+        channels = [read.channel for read in addresses]
         if channels != list(JournalChannels.VISIBLE):
-            raise AssertionError(f"every visible channel is named: {channels}")
-        if named[0].model_copy(update={"channel": stdout.channel}) != stdout:
-            raise AssertionError(f"the address of the result: {named[0]} {stdout}")
+            raise AssertionError(f"every visible channel is listed: {channels}")
+        first = origins[0]
+        if not isinstance(first, dict) or sorted(first) != ["request"]:
+            raise AssertionError(f"the journal names its request only: {origins}")
+        if origins != [first, first]:
+            raise AssertionError(f"both channels name one request: {origins}")
+        stdout = _journal(result)
+        if addresses[0].model_copy(update={"channel": stdout.channel}) != stdout:
+            raise AssertionError(f"the address of the result: {addresses} {stdout}")
+        if after.resources:
+            raise AssertionError(f"a finished call lists no journal: {after}")
+
+    async def test_journal_list_change_reaches_only_its_caller(
+        self, stand: ServiceStand, url: str, dev_token: str, weak_token: str
+    ) -> None:
+        """Смена списка журналов — событие потоков того же пользователя:
+        поток другого пользователя её не слышит."""
+        async with (
+            _client(url, dev_token) as owner,
+            _client(url, weak_token) as stranger,
+            listen(stranger.session, resources_list_changed=True) as foreign,
+            listen(owner.session, resources_list_changed=True) as own,
+        ):
+            await owner.call_tool_mcp("fake_echo", {"text": "hi", "repeat": 1})
+            async with asyncio.timeout(30):
+                await anext(own)
+
+            heard_foreign = False
+            with suppress(TimeoutError):
+                async with asyncio.timeout(1.5):
+                    await anext(foreign)
+                    heard_foreign = True
+
+        if heard_foreign:
+            raise AssertionError("another user does not hear the journals")
 
     async def test_silent_tool_sends_no_progress(
         self, stand: ServiceStand, url: str, dev_token: str
@@ -685,35 +733,32 @@ class TestProgress:
 
 
 class TestJournal:
-    """Каналы журнала вызова — ресурсы сервера, итог ссылается на них;
-    окна читает операция stream_read, видимая только интерфейсу клиента."""
+    """Каналы журнала вызова — ресурсы сервера: итог ссылается на них,
+    окна читает resources/read по шаблону с offset и before, координаты
+    окна — в _meta содержимого; журнал читает только тот, кто вызывал."""
 
-    async def _echoed(self, client: Client[Any]) -> dict[str, str]:
+    async def _echoed(self, client: Client[Any]) -> JournalRead:
         """Адрес журнала закончившегося вызова."""
         result = await client.call_tool_mcp("fake_echo", {"text": "hi", "repeat": 2})
-        return _journal(result).model_dump(mode="json", exclude_none=True)
+        return _journal(result)
 
     async def test_windows_of_the_journal_join_at_line_borders(
         self, stand: ServiceStand, url: str, dev_token: str
     ) -> None:
         async with _client(url, dev_token) as client:
             address = await self._echoed(client)
-            whole = await client.call_tool_mcp(StreamReadTool.NAME, address)
-            tail = await client.call_tool_mcp(
-                StreamReadTool.NAME, {**address, "offset": 1}
-            )
+            whole = await _window(client, address)
+            tail = await _window(client, address.model_copy(update={"offset": 1}))
+            last = await _window(client, address.model_copy(update={"before": 5}))
 
-        piece = _shown(whole)
-        if whole.is_error or piece is None:
-            raise AssertionError(f"the journal is readable after the call: {whole}")
-        if "echo progress: hi" not in piece["text"] or not piece["closed"]:
-            raise AssertionError(f"the window carries the output of the body: {piece}")
-        if piece["offset"] != 0 or piece["end"] != piece["size"]:
-            raise AssertionError(f"the window names its place in the file: {piece}")
-
-        rest = _shown(tail)
-        if rest is None or not piece["text"].endswith(rest["text"]):
-            raise AssertionError(f"a window from the middle starts at a line: {rest}")
+        if "echo progress: hi" not in whole.text or not whole.closed:
+            raise AssertionError(f"the window carries the output of the body: {whole}")
+        if whole.offset != 0 or whole.end != whole.size:
+            raise AssertionError(f"the window names its place in the file: {whole}")
+        if not whole.text.endswith(tail.text):
+            raise AssertionError(f"a window from the middle starts at a line: {tail}")
+        if last.end > 5:
+            raise AssertionError(f"a window before an offset ends there: {last}")
 
     async def test_channel_link_is_a_readable_resource(
         self, stand: ServiceStand, url: str, dev_token: str
@@ -742,6 +787,31 @@ class TestJournal:
         if "echo progress: hi" not in "".join(texts):
             raise AssertionError(f"the resource reads the channel window: {read}")
 
+    async def test_journal_template_is_listed(
+        self, stand: ServiceStand, url: str, dev_token: str
+    ) -> None:
+        async with _client(url, dev_token) as client:
+            templates = await client.list_resource_templates()
+
+        patterns = [template.uri_template for template in templates]
+        if patterns != [JournalRoutes.TEMPLATE]:
+            raise AssertionError(f"the journal template is listed: {patterns}")
+
+    async def test_missing_journal_is_invalid_params(
+        self, stand: ServiceStand, url: str, dev_token: str
+    ) -> None:
+        """Ресурса нет — -32602, как требует спецификация, с причиной."""
+        missing = JournalRead(run="nope", node="nope", channel=ToolChannel.STDOUT)
+        uri = JournalUris(JournalRoutes.TEMPLATE).uri(missing)
+        async with _client(url, dev_token) as client:
+            with pytest.raises(MCPError) as refused:
+                await client.read_resource(uri)
+
+        if refused.value.error.code != mt.INVALID_PARAMS:
+            raise AssertionError(f"a missing journal is invalid params: {refused}")
+        if "no journal on channel" not in refused.value.error.message:
+            raise AssertionError(f"the refusal names its reason: {refused}")
+
     async def test_operations_are_visible_to_the_app_only(
         self, stand: ServiceStand, url: str, dev_token: str
     ) -> None:
@@ -750,7 +820,7 @@ class TestJournal:
 
         hidden: dict[str, object] = {}
         for tool in listed:
-            if tool.name not in {StreamReadTool.NAME, FileUploadTool.NAME}:
+            if tool.name != FileUploadTool.NAME:
                 continue
 
             meta = tool.meta
@@ -760,7 +830,7 @@ class TestJournal:
             hidden[tool.name] = meta.get("ui")
 
         expected = {"visibility": ["app"]}
-        if hidden != {StreamReadTool.NAME: expected, FileUploadTool.NAME: expected}:
+        if hidden != {FileUploadTool.NAME: expected}:
             raise AssertionError(f"operations are hidden from the model: {hidden}")
 
     async def test_journal_of_another_caller_is_not_readable(
@@ -770,15 +840,75 @@ class TestJournal:
             address = await self._echoed(client)
 
         async with _client(url, weak_token) as client:
-            foreign = await client.call_tool_mcp(StreamReadTool.NAME, address)
+            with pytest.raises(MCPError) as foreign:
+                await _window(client, address)
 
-        if not foreign.is_error:
-            raise AssertionError(f"a journal is read only by its caller: {foreign}")
+        if foreign.value.error.code != mt.INVALID_PARAMS:
+            raise AssertionError(f"a foreign journal is not found: {foreign}")
+        if "belongs to another user" not in foreign.value.error.message:
+            raise AssertionError(f"a foreign journal is refused: {foreign}")
 
-        if "belongs to another user" not in _text(foreign):
-            raise AssertionError(
-                f"a foreign journal is refused as forbidden: {foreign}"
-            )
+
+class TestDiscovery:
+    """server/discover объявляет то, что сервер действительно даёт, а поток
+    subscriptions/listen подтверждает только события, которые он шлёт, и
+    штатно кончается при остановке."""
+
+    async def test_capabilities_are_the_real_ones(
+        self, stand: ServiceStand, url: str, dev_token: str
+    ) -> None:
+        async with _client(url, dev_token) as client:
+            capabilities = client.server_capabilities
+            prompts = await client.list_prompts()
+
+        if capabilities is None:
+            raise AssertionError("the protocol is negotiated on connect")
+        if capabilities.tools != mt.ToolsCapability(list_changed=False):
+            raise AssertionError(f"the tool list never changes: {capabilities}")
+        expected = mt.ResourcesCapability(subscribe=True, list_changed=True)
+        if capabilities.resources != expected:
+            raise AssertionError(f"journals are resources: {capabilities}")
+        if capabilities.prompts is not None or capabilities.logging is not None:
+            raise AssertionError(f"no prompts and no logs: {capabilities}")
+        if capabilities.completions is not None:
+            raise AssertionError(f"no completions: {capabilities}")
+        if prompts:
+            raise AssertionError(f"the server has no prompts: {prompts}")
+
+    async def test_listen_acknowledges_only_what_the_server_sends(
+        self, stand: ServiceStand, url: str, dev_token: str
+    ) -> None:
+        async with (
+            _client(url, dev_token) as client,
+            listen(
+                client.session,
+                tools_list_changed=True,
+                prompts_list_changed=True,
+                resources_list_changed=True,
+            ) as stream,
+        ):
+            honored = stream.honored
+
+        if honored != mt.SubscriptionFilter(resources_list_changed=True):
+            raise AssertionError(f"only the journal list is honored: {honored}")
+
+    async def test_stop_ends_listen_streams_gracefully(
+        self, stand: ServiceStand, url: str, dev_token: str
+    ) -> None:
+        """Остановка процесса кончает поток итогом подписки: клиент видит
+        штатный конец, а не обрыв."""
+        events: list[object] = []
+        async with (
+            _client(url, dev_token) as client,
+            listen(client.session, resources_list_changed=True) as stream,
+        ):
+            stand.endpoints.end_subscriptions()
+            async with asyncio.timeout(30):
+                async for event in stream:
+                    events.append(event)
+
+        if events:
+            raise AssertionError(f"the stream ends without events: {events}")
 
 
 class TestFailures:
@@ -944,7 +1074,7 @@ class TestEndpoints:
             listed = await client.list_tools()
 
         names = sorted(tool.name for tool in listed)
-        if names != ["fake_echo", FileUploadTool.NAME, StreamReadTool.NAME]:
+        if names != ["fake_echo", FileUploadTool.NAME]:
             raise AssertionError(f"the endpoint offers its own tools: {names}")
 
     async def test_endpoint_outside_the_roles_is_forbidden(
