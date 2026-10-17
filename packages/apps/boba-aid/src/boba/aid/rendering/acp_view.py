@@ -15,10 +15,11 @@
 записи списка узлов в structuredContent (NestedCallsOutput). У инструмента
 с приложением MCP Apps (секция apps сервера и _meta.ui.resourceUri) шаг
 получает элемент приложения с аргументами и итогом вызова. Вызов
-собственного инструмента агента AskUserQuestion — шаг «Question(s)» с
-записью ответа (элемент Question) по вводу и итогу вызова; вопросы сервера
-MCP, заданные в вызове (раунды в `_meta` результата), — такими же записями
-в шаге вызова.
+собственного инструмента агента AskUserQuestion — своё сообщение основной
+ленты с элементом Question: пока вопрос ждёт ответа — строка «Question(s)» с
+мигающей точкой, после итога — запись ответа той же панелью только для
+чтения; вопросы сервера MCP, заданные в вызове (раунды в `_meta`
+результата), — такими же записями рядом с итогом вызова.
 
 Ошибки:
 ValidationError — тело уведомления из шины не по схеме ACP v2.
@@ -348,8 +349,8 @@ class UpdateView:
                 await self._view.tool_stopped(step, StepText.FINISHED.value)
                 continue
 
-            card = self._cards.asked(asked, None)
-            await self._view.question_finished(step, card, key, False)
+            card = self._cards.asked(asked, None, True)
+            await self._view.question_finished(step, card, key)
 
         self._steps.clear()
         self._groups.clear()
@@ -481,8 +482,8 @@ class UpdateView:
             self._asked[call_id] = args
             await self._close_thinking()
             self._answer_id = None
-            title = self._cards.title(args)
-            self._steps[call_id] = await self._view.question_started(title, call_id)
+            card = self._cards.asking(args)
+            self._steps[call_id] = await self._view.question_asked(card, call_id)
             return None
 
         group = self._nodes_of(name, call_id, args)
@@ -511,11 +512,9 @@ class UpdateView:
         call_id = update.tool_call_id
         self._called.pop(call_id, None)
         self._asked.pop(call_id)
-        card = self._cards.asked(asked, update.raw_output)
-        done = status is ToolStatus.COMPLETED
-        await self._view.question_finished(
-            self._steps.pop(call_id), card, call_id, done
-        )
+        failed = status is not ToolStatus.COMPLETED
+        card = self._cards.asked(asked, update.raw_output, failed)
+        await self._view.question_finished(self._steps.pop(call_id), card, call_id)
 
     async def _step_of(self, name: str, args: Mapping[str, Any], key: str) -> Step:
         """Шаг нового вызова инструмента name с аргументами args под ключом key."""
@@ -719,11 +718,11 @@ class UpdateView:
             if len(journals) == 1:
                 (journal,) = journals.values()
 
-            if cards := self._rounds(reply, call_id):
-                self._view.tool_asked(step, cards, call_id)
-
             elapsed = self._elapsed(reply)
             await self._finished(step, name, call_id, journal, shown, elapsed)
+            if cards := self._rounds(reply, call_id):
+                await self._view.questions_answered(cards, call_id)
+
             return
 
         if status is not ToolStatus.COMPLETED:

@@ -7,8 +7,9 @@ Question вместо поля ввода. Проверяется то, что �
 по каждому состоянию макета в обеих темах (цвета по токенам темы, кегль,
 геометрия), клавиатура, ответ, отказ, отмена остановкой хода, придержанная
 панель, пока пользователь печатает, повторный показ после перезагрузки
-страницы и запись ответа в ленте и в истории. Снимки состояний — в рабочий
-каталог стенда (question-look), их сверяют с макетом глазами.
+страницы и запись ответа в основной ленте (без раскрытия шагов) и в
+истории. Снимки состояний — в рабочий каталог стенда (question-look), их
+сверяют с макетом глазами.
 
 Ошибки: своих не выпускает; расхождение — падение теста.
 """
@@ -37,6 +38,10 @@ SUBMIT = "[data-submit]"
 HELD = "[data-question-held]"
 ROWS = '[role="radio"], [role="checkbox"]'
 ANSWER_AFTER_TOOL = "the tool has answered"
+WAITING = "[data-question-waiting]"
+MESSAGE_OF = "xpath=ancestor::*[@data-step-type][1]"
+SUCCESS_DOT = "rgb(116, 201, 145)"
+FAILURE_DOT = "rgb(199, 78, 57)"
 OTHER = "Other"
 LOCK_MS = 600
 
@@ -196,16 +201,62 @@ class QuestionPage:
         self.page.locator(PANEL).locator(SUBMIT).click()
 
     def record(self, state: str, answered: bool = True) -> Locator:
-        """Запись ответа в шаге вопроса после конца хода; answered — ход
-        дошёл до ответа модели после инструмента."""
+        """Запись ответа в основной ленте — видна сразу, без раскрытия
+        контейнера хода и шагов; answered — ход дошёл до ответа модели после
+        инструмента."""
         if answered:
             self.await_answer()
 
-        self.chat.expand_last_run()
         record = self.page.locator(f'[data-question-review="{state}"]').last
         record.wait_for(state="visible", timeout=30_000)
+        message = record.locator(MESSAGE_OF)
+        assert message.get_attribute("data-step-type") == "assistant_message"
 
         return record
+
+    def reload(self) -> None:
+        """Перезагрузка треда: лента — история агента после ответа модели."""
+        self.page.goto(self.thread_url(), wait_until="domcontentloaded")
+        self.await_answer()
+
+    def asked_while_typing(self, text: str) -> None:
+        """Вопрос приходит, пока пользователь печатает: ход с вопросом и
+        набор text в поле ввода сразу за ним. Вопрос, обогнавший первую букву
+        (стенд под нагрузкой), отклоняется и задаётся снова."""
+        request = json.dumps(
+            {"name": "AskUserQuestion", "arguments": {"questions": [DB]}}
+        )
+        held = self.page.locator(HELD)
+        for _ in range(3):
+            self.chat.ask(f"{ScenarioName.CALL.value} {request}")
+            self.page.locator("#chat-input").focus()
+            if self._typed(text, held):
+                return
+
+            self.panel()
+            self.press("Escape")
+            self.record("decline")
+
+        msg = "the question came before the first letter three times in a row"
+        raise AssertionError(msg)
+
+    def _typed(self, text: str, held: Locator) -> bool:
+        """Набор text по букве; False — панель встала раньше подсказки."""
+        seen = False
+        for char in text:
+            if not seen and self.page.locator(PANEL).count():
+                return False
+
+            self.page.keyboard.type(char)
+            self.page.wait_for_timeout(120)
+            if not held.count():
+                continue
+
+            seen = True
+            assert self.page.locator(COMPOSER).is_visible()
+            assert self.page.locator(PANEL).count() == 0
+
+        return seen
 
     def thread_url(self) -> str:
         return f"{self.chat.base_url}/thread/{self.chat.log.thread_id()}"
@@ -484,13 +535,9 @@ class TestHistory:
         asked.row("Unit tests").click()
         asked.submit()
         asked.record("accept")
-        thread_url = asked.thread_url()
 
-        asked.page.goto(thread_url, wait_until="domcontentloaded")
-        asked.page.get_by_text(ANSWER_AFTER_TOOL).last.wait_for(timeout=60_000)
-        asked.chat.expand_last_run()
-        record = asked.page.locator('[data-question-review="accept"]').last
-        record.wait_for(state="visible", timeout=30_000)
+        asked.reload()
+        record = asked.record("accept")
 
         assert (
             record.locator(".statusLine")
@@ -502,8 +549,8 @@ class TestHistory:
             checked.append(row.inner_text())
 
         assert checked == ["PostgreSQL", "Unit tests"]
-        step = asked.page.locator('[data-step-type="tool"]').last
-        assert "Questions" in step.locator('button[id^="step-"]').first.inner_text()
+        assert record.locator(".toolNameText").inner_text() == "Questions"
+        assert css(record.locator(".q-dot"), "backgroundColor") == SUCCESS_DOT
 
 
 class TestHeldWhileTyping:
@@ -515,24 +562,7 @@ class TestHeldWhileTyping:
         # ленту пустой, и поле ввода не пересоздаётся посреди набора
         asked.chat.ask(ScenarioName.ANSWER.value)
         asked.chat.await_idle()
-        request = json.dumps(
-            {"name": "AskUserQuestion", "arguments": {"questions": [DB]}}
-        )
-        asked.chat.ask(f"{ScenarioName.CALL.value} {request}")
-        asked.page.locator("#chat-input").click()
-        held = asked.page.locator(HELD)
-        seen = False
-        for char in "Actually, use the existing cluster":
-            asked.page.keyboard.type(char)
-            asked.page.wait_for_timeout(120)
-            if not held.count():
-                continue
-
-            seen = True
-            assert asked.page.locator(COMPOSER).is_visible()
-            assert asked.page.locator(PANEL).count() == 0
-
-        assert seen, "the hint shows while the user types"
+        asked.asked_while_typing("Actually, use the existing cluster")
         quiet_at = time.monotonic()
         asked.page.locator(PANEL).wait_for(state="visible", timeout=10_000)
         waited = time.monotonic() - quiet_at
@@ -583,6 +613,12 @@ class TestLook:
         assert submit.inner_text().replace("\n", " ").startswith("1 Submit answers")
         # 13px панели × 1.1 содержимого × 0.9 метки
         assert css(panel.locator(".optionLabel").first, "fontSize") == "12.87px"
+        waiting = asked.page.locator(WAITING)
+        assert waiting.count() == 1
+        assert waiting.locator(".toolNameText").inner_text() == "Question"
+        assert css(waiting.locator(".q-dot"), "animationName") == "q-blink"
+        message = waiting.locator(MESSAGE_OF)
+        assert message.get_attribute("data-step-type") == "assistant_message"
 
         asked.shoot(look_dir, "01-single-3-options")
 
@@ -703,7 +739,12 @@ class TestLook:
         asked.submit()
         record = asked.record("accept")
 
+        assert asked.page.locator(WAITING).count() == 0
         assert css(record, "fontSize") == "13px"
+        assert record.locator(".toolNameText").inner_text() == "Questions"
+        dot = record.locator(".q-dot")
+        assert css(dot, "backgroundColor") == SUCCESS_DOT
+        assert css(dot, "animationName") == "none"
         body = record.locator(".toolBody")
         assert css(body, "borderTopColor") == asked.color(
             "hsl(var(--muted-foreground) / 0.45)"
@@ -723,6 +764,14 @@ class TestLook:
         record.locator(".secondaryLine").click()
         assert record.locator(".toolBody").count() == 0
 
+        asked.reload()
+        record = asked.record("accept")
+        assert record.locator(".optionDimmed").count() == 4
+        assert record.locator(".typedAnswer").inner_text() == "smoke test on the stand"
+        record.scroll_into_view_if_needed()
+
+        asked.shoot(look_dir, "07-answered-feed-history-reload")
+
     def test_08_declined_record(self, asked: QuestionPage, look_dir: Path) -> None:
         asked.ask(DB)
         asked.page.locator(PANEL).locator("[data-close]").click()
@@ -730,27 +779,25 @@ class TestLook:
 
         assert record.locator(".optionDimmed").count() == 0
         assert record.locator(".radioChecked").count() == 0
-        step = asked.page.locator('[data-step-type="tool"]').last
-        title = step.locator('button[id^="step-"]').first.inner_text()
-        assert title.startswith("✖ Question"), title
+        assert record.locator(".toolNameText").inner_text() == "Question"
+        assert css(record.locator(".q-dot"), "backgroundColor") == FAILURE_DOT
+        assert record.locator(".statusLine").inner_text().startswith("Declined")
         record.scroll_into_view_if_needed()
 
         asked.shoot(look_dir, "08-declined")
 
-    def test_10_held_while_typing(self, asked: QuestionPage, look_dir: Path) -> None:
-        request = json.dumps(
-            {"name": "AskUserQuestion", "arguments": {"questions": [DB]}}
-        )
-        asked.chat.ask(f"{ScenarioName.CALL.value} {request}")
-        asked.page.locator("#chat-input").click()
-        held = asked.page.locator(HELD)
-        for char in "Actually, use the existing clu":
-            asked.page.keyboard.type(char)
-            asked.page.wait_for_timeout(100)
-            if held.count():
-                break
+        asked.reload()
+        record = asked.record("decline")
+        assert css(record.locator(".q-dot"), "backgroundColor") == FAILURE_DOT
+        record.scroll_into_view_if_needed()
 
-        held.wait_for(state="visible", timeout=5_000)
+        asked.shoot(look_dir, "08-declined-reload")
+
+    def test_10_held_while_typing(self, asked: QuestionPage, look_dir: Path) -> None:
+        asked.chat.ask(ScenarioName.ANSWER.value)
+        asked.chat.await_idle()
+        asked.asked_while_typing("Actually, use the existing clu")
+        held = asked.page.locator(HELD)
         hint = held.locator(".q-hint")
         assert hint.inner_text() == "Waiting for permission…"
         assert css(hint, "color") == asked.color("hsl(var(--muted-foreground))")

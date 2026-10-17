@@ -1,8 +1,9 @@
 """Карточка вопроса агента пользователю — свойства элемента Question.
 
-Висящий вопрос строится по форме `elicitation/create` агента, запись ответа
-в ленте — по итогу собственного инструмента агента AskUserQuestion и по
-раундам вопросов сервера MCP в результате вызова (ElicitationRound). Поле
+Панель висящего вопроса строится по форме `elicitation/create` агента,
+сообщение вопроса в ленте — по вводу собственного инструмента агента
+AskUserQuestion (пока ждёт ответа) и по итогу вызова, запись вопросов
+сервера MCP — по раундам в результате вызова (ElicitationRound). Поле
 формы — вопрос: варианты одиночного и множественного выбора, логическое поле
 вариантами Yes/No, строка и число — полем своего ответа; парное поле «Other»
 своего вопроса агента вопросом не считается, его ключ — у поля вопроса.
@@ -36,7 +37,6 @@ __all__ = [
     "QuestionCards",
     "QuestionKind",
     "QuestionState",
-    "QuestionTitle",
 ]
 
 logger = logging.getLogger(__name__)
@@ -70,13 +70,6 @@ class QuestionKind(StrEnum):
     TEXT = "text"
     NUMBER = "number"
     INTEGER = "integer"
-
-
-class QuestionTitle(StrEnum):
-    """Название шага вопроса в ленте по числу вопросов."""
-
-    ONE = "Question"
-    MANY = "Questions"
 
 
 class CardOption(BaseModel):
@@ -129,7 +122,8 @@ class CardSource(BaseModel):
 
 class QuestionCard(BaseModel):
     """Свойства элемента Question: состояние, вопросы, источник (у вопроса
-    сервера MCP) и ответы записи по ключам вопросов."""
+    сервера MCP), ответы записи по ключам вопросов и признак неудачи вызова
+    (точка записи красная)."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -137,6 +131,7 @@ class QuestionCard(BaseModel):
     items: Sequence[CardItem]
     source: CardSource | None = None
     answers: Mapping[str, CardAnswer] = Field(default_factory=dict)
+    failed: bool = False
 
     def props(self) -> dict[str, Any]:
         return self.model_dump(mode="json")
@@ -151,18 +146,6 @@ class QuestionCards:
         CardOption(value="true", label="Yes"),
         CardOption(value="false", label="No"),
     )
-
-    def title(self, raw_input: Any) -> QuestionTitle:
-        """Название шага AskUserQuestion по числу вопросов вызова."""
-        try:
-            asked = AskUserQuestionInput.model_validate(raw_input)
-        except ValidationError:
-            return QuestionTitle.ONE
-
-        if len(asked.questions) == 1:
-            return QuestionTitle.ONE
-
-        return QuestionTitle.MANY
 
     def pending(
         self, request: schema.CreateFormSessionElicitationRequest
@@ -182,32 +165,44 @@ class QuestionCards:
 
         return QuestionCard(state=QuestionState.PENDING, items=items, source=source)
 
-    def asked(self, raw_input: Any, raw_output: Any) -> QuestionCard:
+    def asking(self, raw_input: Any) -> QuestionCard:
+        """Вопрос AskUserQuestion, который ждёт ответа: вопросы — из ввода
+        вызова."""
+        return QuestionCard(
+            state=QuestionState.PENDING, items=list(self._asked_items(raw_input))
+        )
+
+    def asked(self, raw_input: Any, raw_output: Any, failed: bool) -> QuestionCard:
         """Запись ответа на AskUserQuestion: вопросы — из ввода вызова,
         исход и выбор — из итога; итог не AskUserQuestionOutput (вызов
-        оборван) — вопрос без ответа."""
-        try:
-            asked = AskUserQuestionInput.model_validate(raw_input)
-        except ValidationError as exc:
-            logger.warning("AskUserQuestion input is drawn without questions: %s", exc)
-            return QuestionCard(state=QuestionState.CANCEL, items=[])
-
-        items: list[CardItem] = []
-        for question in asked.questions:
-            items.append(self._asked_item(question))
-
+        оборван) — вопрос без ответа; failed — вызов кончился неудачей."""
+        items = list(self._asked_items(raw_input))
         try:
             output = AskUserQuestionOutput.model_validate(raw_output)
         except ValidationError:
-            return QuestionCard(state=QuestionState.CANCEL, items=items)
+            return QuestionCard(state=QuestionState.CANCEL, items=items, failed=failed)
 
         answers: dict[str, CardAnswer] = {}
         for text, pick in output.picks.items():
             answers[text] = CardAnswer(picked=pick.labels, typed=pick.other)
 
         return QuestionCard(
-            state=QuestionState(output.outcome.value), items=items, answers=answers
+            state=QuestionState(output.outcome.value),
+            items=items,
+            answers=answers,
+            failed=failed,
         )
+
+    def _asked_items(self, raw_input: Any) -> Iterator[CardItem]:
+        """Вопросы ввода AskUserQuestion; ввод не по схеме — без вопросов."""
+        try:
+            asked = AskUserQuestionInput.model_validate(raw_input)
+        except ValidationError as exc:
+            logger.warning("AskUserQuestion input is drawn without questions: %s", exc)
+            return
+
+        for question in asked.questions:
+            yield self._asked_item(question)
 
     def round(self, asked: ElicitationRound) -> QuestionCard:
         """Запись ответа на вопрос сервера MCP по раунду вызова."""
@@ -227,6 +222,7 @@ class QuestionCards:
             items=items,
             source=source,
             answers=answers,
+            failed=asked.action != QuestionState.ACCEPT.value,
         )
 
     def _asked_item(self, question: AskQuestion) -> CardItem:

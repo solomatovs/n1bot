@@ -625,10 +625,11 @@ class TestToolApps:
 
 
 class TestQuestionRecords:
-    """Вопрос агента пользователю в ленте: шаг AskUserQuestion называется
-    Question(s) и после итога несёт запись ответа элементом Question по вводу
-    и итогу вызова; вопросы сервера MCP в вызове — такими же записями по
-    раундам из `_meta` результата. Живой ход и воспроизведение рисуют её
+    """Вопрос агента пользователю в ленте: вызов AskUserQuestion — своё
+    сообщение основной ленты (не шаг контейнера хода) с элементом Question:
+    пока ждёт — висящий вопрос по вводу, после итога — запись ответа тем же
+    элементом; вопросы сервера MCP в вызове — такими же сообщениями по
+    раундам из `_meta` результата. Живой ход и воспроизведение рисуют их
     одним кодом (UpdateView)."""
 
     ASKED: ClassVar[dict[str, Any]] = {
@@ -681,13 +682,11 @@ class TestQuestionRecords:
 
         return updates
 
-    def _question(self, recorded: FakeEmitter) -> dict[str, Any]:
-        (element,) = [e for e in recorded.elements if e.get("name") == "Question"]
-
-        return element
+    def _questions(self, recorded: FakeEmitter) -> list[dict[str, Any]]:
+        return [e for e in recorded.elements if e.get("name") == "Question"]
 
     @pytest.mark.anyio
-    async def test_answered_question_is_an_open_step_with_its_record(
+    async def test_answered_question_is_a_feed_message_with_its_record(
         self,
         runtime_stand: StandRefs,
         storage: LocalStorageClient,
@@ -704,27 +703,37 @@ class TestQuestionRecords:
         }
 
         await updates.apply(_call(CALL, "AskUserQuestion", self.ASKED))
-        pending = recorded.last()[_id(CALL, StepRole.TOOL)]
+        pending = recorded.last()[_id(CALL, StepRole.QUESTION)]
         await updates.apply(_done(CALL, "answered", output))
-        step = recorded.last()[_id(CALL, StepRole.TOOL)]
+        message = recorded.last()[_id(CALL, StepRole.QUESTION)]
 
-        assert pending.get(StepField.NAME) == "○ Question"
-        assert pending.get(StepField.OUTPUT) == ""
-        assert step.get(StepField.NAME) == "✔ Question"
-        assert step.get(StepField.OUTPUT) == " "
-        assert step.get("defaultOpen") is True
-        assert step.get("autoCollapse") is False
-        assert step.get(StepField.IS_ERROR) is False
-        element = self._question(recorded)
-        assert element["id"] == _id(CALL, StepRole.QUESTION)
-        assert element["display"] == "inline"
-        assert element["props"] == {
+        assert _id(CALL, StepRole.TOOL) not in recorded.last()
+        for step in (pending, message):
+            assert step.get(StepField.TYPE) == "assistant_message"
+            assert step.get(StepField.PARENT_ID) is None
+            assert step.get(StepField.OUTPUT) == ""
+            assert step.get(StepField.IS_ERROR) is False
+
+        asking, record = self._questions(recorded)
+        assert asking["id"] == _id(CALL, StepRole.QUESTION_CARD)
+        assert asking["forId"] == _id(CALL, StepRole.QUESTION)
+        assert asking["display"] == "inline"
+        assert asking["props"] == {
+            "state": "pending",
+            "items": [self.ITEM],
+            "source": None,
+            "answers": {},
+            "failed": False,
+        }
+        assert record["id"] == asking["id"]
+        assert record["props"] == {
             "state": "accept",
             "items": [self.ITEM],
             "source": None,
             "answers": {
                 "Which checks should run?": {"picked": ["UI tests"], "typed": "smoke"}
             },
+            "failed": False,
         }
 
     @pytest.mark.anyio
@@ -734,8 +743,8 @@ class TestQuestionRecords:
         storage: LocalStorageClient,
         recorded: FakeEmitter,
     ) -> None:
-        """Отказ — ✖ и запись decline без ответов; вызов, оборванный концом
-        хода, — ✖ и запись без ответа."""
+        """Отказ — запись decline без ответов, вызов неудачен; вызов,
+        оборванный концом хода, — запись без ответа, тоже неудачен."""
         updates = self._updates(storage)
         declined = {"questions": self.ASKED["questions"], "outcome": "decline"}
         failed = schema.SessionToolCallUpdate(
@@ -753,27 +762,30 @@ class TestQuestionRecords:
         await updates.apply(_call(SECOND_CALL, "AskUserQuestion", self.ASKED))
         await updates.finish_turn()
 
-        first = recorded.last()[_id(CALL, StepRole.TOOL)]
-        second = recorded.last()[_id(SECOND_CALL, StepRole.TOOL)]
-        assert first.get(StepField.NAME) == "✖ Question"
-        assert second.get(StepField.NAME) == "✖ Question"
-        states: list[str] = []
-        for element in recorded.elements:
-            if element.get("name") == "Question":
-                states.append(element["props"]["state"])
-                assert element["props"]["answers"] == {}
+        assert _id(CALL, StepRole.QUESTION) in recorded.last()
+        assert _id(SECOND_CALL, StepRole.QUESTION) in recorded.last()
+        outcomes: list[tuple[str, bool]] = []
+        for element in self._questions(recorded):
+            props = element["props"]
+            outcomes.append((props["state"], props["failed"]))
+            assert props["answers"] == {}
 
-        assert states == ["decline", "cancel"]
+        assert outcomes == [
+            ("pending", False),
+            ("decline", True),
+            ("pending", False),
+            ("cancel", True),
+        ]
 
     @pytest.mark.anyio
-    async def test_server_questions_are_records_of_the_call_step(
+    async def test_server_questions_are_feed_messages_after_the_call(
         self,
         runtime_stand: StandRefs,
         storage: LocalStorageClient,
         recorded: FakeEmitter,
     ) -> None:
-        """Раунд вопроса сервера MCP в `_meta` результата — запись в шаге
-        вызова рядом с его итогом, источник — сервер и его сообщение."""
+        """Раунд вопроса сервера MCP в `_meta` результата — сообщение ленты
+        с записью после итога вызова, источник — сервер и его сообщение."""
         updates = self._updates(storage)
         requested = {
             "type": "object",
@@ -813,10 +825,14 @@ class TestQuestionRecords:
 
         step = recorded.last()[_id(CALL, StepRole.TOOL)]
         assert step.get(StepField.OUTPUT) == "copied"
-        element = self._question(recorded)
-        assert element["id"] == _id(f"{CALL}#0", StepRole.QUESTION)
+        message = recorded.last()[_id(f"{CALL}#0", StepRole.QUESTION)]
+        assert message.get(StepField.PARENT_ID) is None
+        (element,) = self._questions(recorded)
+        assert element["id"] == _id(f"{CALL}#0", StepRole.QUESTION_CARD)
+        assert element["forId"] == _id(f"{CALL}#0", StepRole.QUESTION)
         props = element["props"]
         assert props["state"] == "accept"
+        assert props["failed"] is False
         assert props["source"] == {
             "server": "boba",
             "message": "pg_copy_in needs the target table",

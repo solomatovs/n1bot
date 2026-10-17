@@ -2,16 +2,17 @@ import { useEffect, useRef, useState } from "react";
 import { Markdown } from "@/components/markdown";
 
 // Вопрос агента пользователю. Висящий вопрос (state "pending") рисуется
-// только панелью у поля ввода (docked — её ставит Footer), копия в шаге
-// ленты пуста. Ответ — submitElement({action, content}) в ask chainlit.
-// Записанный ответ (accept, decline, cancel) — строка статуса и вопросы с
-// выбором только для чтения.
+// панелью у поля ввода (docked — её ставит Footer), а в ленте — строкой
+// «Question» с мигающей точкой. Ответ — submitElement({action, content}) в
+// ask chainlit. Записанный ответ (accept, decline, cancel) — та же строка с
+// точкой исхода, строка статуса и вопросы с выбором только для чтения.
 const OTHER = "Other";
 const OTHER_PICK = "\u0000other";
 const LOCK_MS = 500;
 const CONFIRM_MS = 300;
 const HOVER_MS = 150;
 const STATUS = { accept: "Answered", decline: "Declined", cancel: "No answer" };
+const TITLE = { one: "Question", many: "Questions" };
 const CHOICES = ["choice", "multi", "boolean"];
 const NUMBERS = ["number", "integer"];
 
@@ -693,6 +694,25 @@ function ReviewRows({ item, answer, state }) {
   return <div className="optionsContainer">{rows}</div>;
 }
 
+function Heading({ card, tone }) {
+  let title = TITLE.many;
+  if (card.items.length === 1) title = TITLE.one;
+  return (
+    <div className="q-heading" data-question-heading={tone}>
+      <span className={cls("q-dot", { [`q-dot-${tone}`]: true })} aria-hidden="true" />
+      <span className="toolNameText">{title}</span>
+    </div>
+  );
+}
+
+function Waiting({ card }) {
+  return (
+    <div className="q-root q-record" data-question-waiting="">
+      <Heading card={card} tone="progress" />
+    </div>
+  );
+}
+
 function Review({ card }) {
   const [open, setOpen] = useState(true);
   const count = card.items.length;
@@ -700,7 +720,18 @@ function Review({ card }) {
   if (count === 1) noun = "question";
   let status = STATUS.cancel;
   if (card.state in STATUS) status = STATUS[card.state];
+  let tone = "success";
+  if (card.failed) tone = "failure";
   const toggle = () => setOpen(!open);
+
+  let source = null;
+  if (card.source) {
+    source = (
+      <div className="q-source">
+        <b>{card.source.server}</b> · {card.source.message}
+      </div>
+    );
+  }
 
   let chevron = <ChevronDown />;
   let body = null;
@@ -709,6 +740,7 @@ function Review({ card }) {
     body = (
       <div className="toolBody">
         <div className="reviewBody">
+          {source}
           {card.items.map((item) => (
             <div className="questionBlock" key={item.key}>
               <div className="questionHeader">
@@ -723,7 +755,8 @@ function Review({ card }) {
   }
 
   return (
-    <div className="q-root q-review" data-question-review={card.state}>
+    <div className="q-root q-record q-review" data-question-review={card.state}>
+      <Heading card={card} tone={tone} />
       <div
         className="secondaryLine"
         role="button"
@@ -751,7 +784,7 @@ function Review({ card }) {
 export default function Question() {
   const card = props;
   if (card.state === "pending") {
-    if (!card.docked) return null;
+    if (!card.docked) return <Waiting card={card} />;
     return <Panel card={card} />;
   }
   return <Review card={card} />;

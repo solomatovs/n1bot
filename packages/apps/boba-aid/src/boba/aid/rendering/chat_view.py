@@ -203,6 +203,7 @@ class StepRole(StrEnum):
     STREAM = "stream"
     APP = "app"
     QUESTION = "question"
+    QUESTION_CARD = "question-card"
 
 
 @dataclass
@@ -582,8 +583,6 @@ class ChatView:
     """Поля байтов base64, которых JSON неизвестного блока не раскрывает."""
     AVATAR_NAME_KEY: ClassVar[str] = "avatarName"
     """Ключ metadata шага, по которому фронт chainlit выбирает аватар вместо имени."""
-    QUESTION_OUTPUT: ClassVar[str] = " "
-    """Выход шага записи вопроса: сама запись — элемент шага."""
 
     def __init__(
         self,
@@ -997,63 +996,60 @@ class ChatView:
 
         return element
 
-    async def question_started(self, title: str, key: str | None) -> Step:
-        """Шаг вопроса агента пользователю: пока вопрос ждёт ответа — только
-        название (панель вопроса — у поля ввода вкладки), запись ответа
-        встанет в шаг раскрытой."""
+    async def question_asked(self, card: QuestionCard, key: str) -> Step:
+        """Вопрос агента пользователю — своим сообщением основной ленты на
+        месте хода: пока вопрос ждёт ответа, элемент Question рисует строку
+        с мигающей точкой (сама панель — у поля ввода вкладки), кружок
+        ожидания хода на это время снят. Запись ответа встаёт в то же
+        сообщение (question_finished)."""
         await self.seal_answer()
-        step = await self._child(
-            StepStatus.IDLE.title(title), StepKind.TOOL, key, StepRole.TOOL
-        )
-        self._tool_names[step.id] = title
-        step.default_open = True
-        step.auto_collapse = False
-        step.output = ""
-        step.start = utc_now()
-        await self._sink.put(step)
-
-        return step
-
-    async def question_finished(
-        self, step: Step, card: QuestionCard, key: str, done: bool
-    ) -> None:
-        """Запись ответа на вопрос элементом Question в шаге: ✔ у
-        завершённого вызова, ✖ у отказа и у сорванного. Шаг ошибкой не
-        помечается — исход виден в записи."""
-        ended = utc_now()
-        step.start = ended
-        step.end = ended
-        status = StepStatus.FAILED
-        if done:
-            status = StepStatus.DONE
-
-        step.name = status.title(self._tool_names.get(step.id, step.name))
-        # секция output с элементами рисуется только при непустом output шага
-        step.output = self.QUESTION_OUTPUT
+        step = self._question_step(key)
         if self._sink.emits_elements:
             step.elements = [self._question(card, key)]
 
         await self._sink.put(step)
+        await self._pulse.hold()
 
-    def tool_asked(self, step: Step, cards: Sequence[QuestionCard], key: str) -> None:
-        """Записи ответов на вопросы сервера MCP в вызове — элементами шага
-        рядом с его итогом; шаг уходит в ленту вместе с итогом."""
-        if not self._sink.emits_elements:
-            return
+        return step
 
-        elements: list[Element] = []
-        if step.elements:
-            elements = list(step.elements)
+    async def question_finished(self, step: Step, card: QuestionCard, key: str) -> None:
+        """Запись ответа на вопрос в его сообщении: та же панель только для
+        чтения с выбранными вариантами; кружок ожидания хода возвращается."""
+        if self._sink.emits_elements:
+            step.elements = [self._question(card, key)]
 
+        await self._sink.put(step)
+        await self._pulse.resume()
+
+    async def questions_answered(self, cards: Sequence[QuestionCard], key: str) -> None:
+        """Записи ответов на вопросы сервера MCP, заданные в вызове key, —
+        сообщениями основной ленты рядом с итогом вызова."""
+        await self.seal_answer()
         for number, card in enumerate(cards):
-            elements.append(self._question(card, f"{key}#{number}"))
+            asked = f"{key}#{number}"
+            step = self._question_step(asked)
+            if self._sink.emits_elements:
+                step.elements = [self._question(card, asked)]
 
-        step.elements = elements
+            await self._sink.put(step)
+
+        await self._pulse.bump()
+
+    def _question_step(self, key: str) -> Step:
+        step = self._step(
+            self._assistant_name,
+            StepKind.ASSISTANT,
+            parent_id=None,
+            step_id=self.derive_id(self._thread_id, key, StepRole.QUESTION),
+        )
+        step.output = ""
+
+        return step
 
     def _question(self, card: QuestionCard, key: str) -> CustomElement:
         element = self._elements.question(card.props())
         element.thread_id = self._thread_id
-        element_id = self.derive_id(self._thread_id, key, StepRole.QUESTION)
+        element_id = self.derive_id(self._thread_id, key, StepRole.QUESTION_CARD)
         if element_id:
             element.id = element_id
 

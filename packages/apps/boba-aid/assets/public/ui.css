@@ -38,8 +38,8 @@ button[id^='step-'] {
 
 /* Вопрос агента пользователю (элемент Question).
 
-   Панель висящего вопроса встаёт вместо поля ввода (Footer), запись ответа —
-   в шаг ленты. Переменные --app-* — роли цветов панели на токенах темы
+   Панель висящего вопроса встаёт вместо поля ввода (Footer), в ленте —
+   сообщение вопроса: строка с точкой (мигает, пока ждёт), потом запись ответа. Переменные --app-* — роли цветов панели на токенах темы
    chainlit; кегль панели 13px. Правила скоупятся .q-root: preflight tailwind
    иначе даёт кнопкам высоту строки 1.5, а svg — display: block. */
 .q-root {
@@ -154,5 +154,13 @@ button[id^='step-'] {
 .q-root .toolBody{border:.5px solid var(--app-input-border);background:var(--app-tool-background);border-radius:5px;align-items:start;max-width:100%;margin:8px 0;font-size:1em}
 
 .q-root .q-source{color:var(--app-secondary-foreground);font-size:.85em;margin:0 0 8px;line-height:1.4}
+.q-root.q-review .q-source{margin:0}
+.q-root .q-heading{display:flex;align-items:center;gap:8px;line-height:1.5}
+.q-root .q-dot{flex-shrink:0;width:7px;height:7px;border-radius:50%;background-color:var(--app-secondary-foreground)}
+.q-root .q-dot-success{background-color:#74c991}
+.q-root .q-dot-failure{background-color:#c74e39}
+.q-root .q-dot-progress{animation:q-blink 1s linear infinite}
+.q-root .toolNameText{margin-right:4px;font-weight:700}
+@keyframes q-blink{0%,100%{opacity:1}50%{opacity:.2}}
 .q-root .q-source b{color:var(--app-primary-foreground);font-weight:500}
 .q-root .q-hint{color:var(--app-secondary-foreground);margin-bottom:6px}

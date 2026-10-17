@@ -785,7 +785,7 @@ class TestServerQuestion:
     """Вопрос сервера MCP (input_required с формой): агент задаёт его чату
     формой `elicitation/create`, чат — панелью вместо поля ввода с именем
     сервера и его сообщением; ответ уходит серверу повтором вызова, запись
-    ответа встаёт в шаг вызова."""
+    ответа встаёт сообщением основной ленты после итога вызова."""
 
     PANEL: str = "#question-dock [data-question-panel]"
     REQUEST: str = json.dumps(
@@ -851,14 +851,21 @@ class TestServerQuestion:
         if "loaded 10 rows into sales.orders_stage" not in output:
             raise AssertionError(f"the server got the answer: {step}")
 
-        # запись встаёт в шаг вызова; раскрывать ход — после его конца
+        # запись видна в основной ленте без раскрытия хода и шага вызова
         chat.page.get_by_text("the tool has answered").last.wait_for(timeout=60_000)
-        tool = chat.expand_last_tool()
-        record = tool.locator('[data-question-review="accept"]')
+        record = chat.page.locator('[data-question-review="accept"]').last
         record.wait_for(state="visible", timeout=30_000)
+        message = record.locator("xpath=ancestor::*[@data-step-type][1]")
+        if message.get_attribute("data-step-type") != "assistant_message":
+            raise AssertionError("the record is a message of the main feed")
+
         checked = record.locator('[aria-checked="true"]').inner_text()
         if "sales.orders_stage" not in checked:
             raise AssertionError(f"the record checks the answer: {checked}")
+
+        source = record.locator(".q-source").inner_text()
+        if not source.startswith("standard · "):
+            raise AssertionError(f"the record names the server: {source}")
 
     def test_declined_server_question_reaches_the_server(
         self, mcp_stand: StandProcess, open_chat: OpenChat

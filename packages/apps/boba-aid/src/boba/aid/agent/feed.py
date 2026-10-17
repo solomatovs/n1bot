@@ -70,7 +70,6 @@ from boba.aid.rendering.acp_view import SessionUpdate, ToolMedia, UpdateView
 from boba.aid.rendering.chat_view import (
     ChatView,
     LiveSink,
-    StepRole,
     StepText,
 )
 from boba.aid.rendering.errors import show_error
@@ -419,7 +418,9 @@ class AgentFeed(TurnRenderer):
             return schema.CancelElicitationResponse()
 
         card = self._cards.pending(request)
-        step_id = self._question_step(request.tool_call_id)
+        # панель живёт только у поля ввода: шаг ask не совпадает ни с одним
+        # сообщением ленты, иначе элемент встал бы в него второй строкой
+        step_id = str(uuid4())
         element = self._elements.question(card.props())
         element.id = str(uuid4())
         element.thread_id = self.thread_id
@@ -457,15 +458,6 @@ class AgentFeed(TurnRenderer):
             return schema.CancelElicitationResponse()
 
         return reply.response()
-
-    def _question_step(self, tool_call_id: str | None) -> str:
-        """Шаг, к которому привязан вопрос: шаг вызова; вопрос вне вызова —
-        свой id."""
-        step_id = ChatView.derive_id(self.thread_id, tool_call_id, StepRole.TOOL)
-        if step_id is None:
-            return str(uuid4())
-
-        return step_id
 
     async def turn_started(
         self, question: Question, start: Coroutine[Any, Any, StartedTurn]
