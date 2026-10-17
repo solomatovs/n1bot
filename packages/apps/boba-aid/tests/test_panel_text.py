@@ -12,12 +12,13 @@ from typing import Any, ClassVar
 import pytest
 
 from boba.aid.agent.panel import AgentPanelTab
-from boba.aid.chat.panel_text import PanelText, PanelTextError
+from boba.aid.chat.panel_text import PanelText
+from boba.aid.chat.ui_text import UiTextError
 from boba.aid.infra.session import current_session
 from boba.chat.profiles import UserSetting
 
-NO_OVERRIDES = ""
-"""Пустой app_root: строки берутся из пакета, как в чистом развёртывании."""
+APP_ROOT = str(Path(__file__).resolve().parents[1] / "assets")
+"""Корень приложения пакета: его переводы chainlit несут и строки панели."""
 
 SESSION_FIELDS = ("session_mode", "session_model")
 """Виджеты вкладки «Сессия»: категории настроек агента с префиксом."""
@@ -30,7 +31,7 @@ def chainlit_context() -> None:
 
 class TestPanelText:
     def test_russian_strings_are_translated(self) -> None:
-        text = PanelText(NO_OVERRIDES, "ru-RU")
+        text = PanelText(APP_ROOT, "ru-RU")
 
         label = text.field_label(UserSetting.AGENT_MODEL.value)
         if label != "Модель":
@@ -39,7 +40,7 @@ class TestPanelText:
             raise AssertionError(f"tab: {text.tab(AgentPanelTab.AGENT.value)!r}")
 
     def test_unknown_language_falls_back_to_default(self) -> None:
-        text = PanelText(NO_OVERRIDES, "de-DE")
+        text = PanelText(APP_ROOT, "de-DE")
 
         label = text.field_label(UserSetting.AGENT_BASE_URL.value)
         if label != "Provider URL":
@@ -49,7 +50,7 @@ class TestPanelText:
         fields = [setting.value for setting in UserSetting]
         fields.extend(SESSION_FIELDS)
         for language in ("en-US", "ru-RU"):
-            text = PanelText(NO_OVERRIDES, language)
+            text = PanelText(APP_ROOT, language)
 
             for field in fields:
                 if not text.field_label(field):
@@ -62,12 +63,12 @@ class TestPanelText:
                     raise AssertionError(f"{language}: no label for tab {tab.value}")
 
     def test_retired_prompt_strings_are_gone(self) -> None:
-        text = PanelText(NO_OVERRIDES, PanelText.DEFAULT_LANGUAGE)
+        text = PanelText(APP_ROOT, PanelText.DEFAULT_LANGUAGE)
 
-        with pytest.raises(PanelTextError, match="no translation"):
+        with pytest.raises(UiTextError, match="no translation"):
             text.field_label("user_prompt")
 
-        with pytest.raises(PanelTextError, match="no translation"):
+        with pytest.raises(UiTextError, match="no translation"):
             text.tab("prompt_tab")
 
 
@@ -95,7 +96,7 @@ class TestPanelLanguage:
 
 
 class TestQuestionLabels:
-    """Каждый ключ components.Question, который берут элемент Question и
+    """Каждый ключ aid.question, который берут элемент Question и
     overlay Footer, есть в переводах chainlit en-US и ru-RU; у счётчика
     вопросов — формы единственного и множественного числа."""
 
@@ -114,7 +115,7 @@ class TestQuestionLabels:
         / "Footer.tsx",
     )
     USED: ClassVar[re.Pattern[str]] = re.compile(
-        r"(?:\$\{TEXT\}|components\.Question)\.([A-Za-z]+(?:\.[A-Za-z]+)*)"
+        r"(?:\$\{TEXT\}|aid\.question)\.([A-Za-z]+(?:\.[A-Za-z]+)*)"
     )
     STATUSES: ClassVar[tuple[str, ...]] = (
         "status.accept",
@@ -136,7 +137,7 @@ class TestQuestionLabels:
 
     def _labels(self, language: str) -> dict[str, Any]:
         path = self.TRANSLATIONS / f"{language}.json"
-        return json.loads(path.read_text(encoding="utf-8"))["components"]["Question"]
+        return json.loads(path.read_text(encoding="utf-8"))["aid"]["question"]
 
     @pytest.mark.parametrize("language", ["en-US", "ru-RU"])
     def test_every_used_label_is_translated(self, language: str) -> None:

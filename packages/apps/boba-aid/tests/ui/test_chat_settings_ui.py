@@ -11,13 +11,12 @@
 
 from __future__ import annotations
 
-import tomllib
 from enum import StrEnum
-from pathlib import Path as FilePath
 from typing import Any
 
 import httpx
 import pytest
+from aid_stand import AppLanguage
 from chat_ui import UserLayerReader
 from playwright.sync_api import expect
 
@@ -39,31 +38,12 @@ SESSION_MODE = "session_mode"
 SESSION_MODEL = "session_model"
 BYPASS_MODE = "Bypass permissions"
 DEFAULT_MODE = "Default"
-KEPT_HINT = "(kept)"
 ENCRYPTED_PREFIX = "enc:v1:"
 
 
-def _app_language() -> str:
-    """Язык интерфейса: его навязывает секция [UI] конфига chainlit.
-
-    Подписи панели тест ищет на этом языке; иначе он ждёт английские названия
-    вкладок, а панель нарисована на языке развёртывания.
-    """
-    assets = FilePath(__file__).resolve().parents[2] / "assets"
-    config = assets / ".chainlit" / "config.toml"
-    if not config.is_file():
-        return PanelText.DEFAULT_LANGUAGE
-
-    doc = tomllib.loads(config.read_text(encoding="utf-8"))
-    language = doc.get("UI", {}).get("language")
-    if not language:
-        return PanelText.DEFAULT_LANGUAGE
-
-    return str(language)
-
-
-TEXT = PanelText("", _app_language())
+TEXT = PanelText(str(AppLanguage.ASSETS), AppLanguage().language())
 """Подписи панели на языке приложения."""
+
 
 class PanelSelector(StrEnum):
     """Селекторы модала настроек chainlit."""
@@ -232,7 +212,7 @@ class TestAgentFields:
         )
         if field.input_value() != "":
             raise AssertionError("the saved api key is shown in the panel")
-        if field.get_attribute("placeholder") != KEPT_HINT:
+        if field.get_attribute("placeholder") != TEXT.kept_hint():
             raise AssertionError(f"placeholder: {field.get_attribute('placeholder')!r}")
 
         # пустое поле оставляет сохранённый ключ

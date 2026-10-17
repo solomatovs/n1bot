@@ -270,7 +270,8 @@ PAGE_SRCS       := $(shell find $(WEB_PROJECT)/src -type f) \
                    $(wildcard $(WEB_PROJECT)/*.json $(WEB_PROJECT)/*.ts $(WEB_PROJECT)/*.js)
 # UI chainlit (фронт + copilot) с overlay: в образ его собирает стадия chainlit-ui-build
 UI_DIST         := $(ASSETS_DIR)/ui
-UI_SRCS         := $(shell find $(UI_DIR) -type f) $(SCRIPTS_DIR)/chainlit_ui.sh
+UI_ELEMENTS     := $(ASSETS_DIR)/public/elements
+UI_SRCS         := $(shell find $(UI_DIR) $(UI_ELEMENTS) -type f) $(SCRIPTS_DIR)/chainlit_ui.sh
 
 # --- что кладут sandbox и release ------------------------------------------------
 
@@ -1058,8 +1059,8 @@ $(UI_DIST)/index.html: $(UI_SRCS) $(CHAINLIT_TARBALL)
 	mkdir -p "$(UI_DIST)"
 	docker run --rm --entrypoint /bin/sh -u "$(RUN_OWNER)" \
 	    -v "$(DEPS_DIR):/deps:ro" -v "$(SCRIPTS_DIR):/scripts:ro" -v "$(UI_DIR):/ui:ro" \
-	    -v "$(UI_DIST):/out" $(NODE_IMAGE) \
-	    /scripts/chainlit_ui.sh "/deps/$(notdir $(CHAINLIT_TARBALL))" /ui/overlay /out
+	    -v "$(UI_ELEMENTS):/elements:ro" -v "$(UI_DIST):/out" $(NODE_IMAGE) \
+	    /scripts/chainlit_ui.sh "/deps/$(notdir $(CHAINLIT_TARBALL))" /ui/overlay /elements /out
 	touch "$@"
 	ls -la "$(UI_DIST)/assets" | head -5
 

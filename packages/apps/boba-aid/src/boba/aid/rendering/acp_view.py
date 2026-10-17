@@ -32,7 +32,7 @@ from __future__ import annotations
 import logging
 from abc import abstractmethod
 from collections.abc import Iterable, Mapping, Sequence
-from typing import Any, ClassVar, Protocol, TypeAlias
+from typing import Any, Protocol, TypeAlias
 
 import mcp_types as mt
 from acp.experimental.v2 import schema
@@ -247,8 +247,6 @@ class UpdateView:
     `tool_call_update`.
     """
 
-    STEP_FALLBACK_NAME: ClassVar[str] = StepText.TOOL.value
-
     def __init__(
         self,
         view: ChatView,
@@ -348,7 +346,7 @@ class UpdateView:
         for key, step in list(self._steps.items()):
             asked = self._asked.pop(key, None)
             if asked is None:
-                await self._view.tool_stopped(step, StepText.FINISHED.value)
+                await self._view.tool_stopped(step)
                 continue
 
             card = self._cards.asked(asked, None, True)
@@ -868,7 +866,7 @@ class UpdateView:
         if update.title:
             return update.title
 
-        return self.STEP_FALLBACK_NAME
+        return self._view.label(StepText.TOOL)
 
     @staticmethod
     def _args(raw_input: Any) -> Mapping[str, Any]:

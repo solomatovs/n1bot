@@ -7,9 +7,9 @@ import { useTranslation } from "@/components/i18n";
 // «Question» с мигающей точкой. Ответ — submitElement({action, content}) в
 // ask chainlit. Записанный ответ (accept, decline, cancel) — та же строка с
 // точкой исхода, строка статуса и вопросы с выбором только для чтения.
-// Подписи — из переводов chainlit (components.Question), тексты вопросов и
+// Подписи — из переводов chainlit (aid.question), тексты вопросов и
 // вариантов — как пришли.
-const TEXT = "components.Question";
+const TEXT = "aid.question";
 const OTHER_PICK = "\u0000other";
 const LOCK_MS = 500;
 const CONFIRM_MS = 300;

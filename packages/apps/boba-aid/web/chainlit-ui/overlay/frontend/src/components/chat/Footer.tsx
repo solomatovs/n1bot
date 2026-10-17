@@ -110,7 +110,7 @@ export default function ChatFooter({ showIfEmptyThread, ...props }: Props) {
   if (held) {
     hint = (
       <div className="q-root w-full" data-question-held>
-        <div className="q-hint">{t('components.Question.held')}</div>
+        <div className="q-hint">{t('aid.question.held')}</div>
       </div>
     );
   }

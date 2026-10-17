@@ -171,7 +171,7 @@ NAME: dict[str, Any] = {
 
 @dataclass(frozen=True)
 class QuestionLabels:
-    """Подписи панели и записи вопроса (components.Question) из переводов,
+    """Подписи панели и записи вопроса (aid.question) из переводов,
     которые отдаёт сам сервер чата на языке его настроек."""
 
     texts: Mapping[str, Any]
@@ -230,7 +230,7 @@ class QuestionPage:
         self._llm_port = llm_port
         reply = httpx.get(f"{chat.base_url}/project/translations", timeout=10.0)
         reply.raise_for_status()
-        texts = reply.json()["translation"]["components"]["Question"]
+        texts = reply.json()["translation"]["aid"]["question"]
         self.labels = QuestionLabels(texts)
 
     def ask(self, *questions: Mapping[str, Any]) -> Locator:

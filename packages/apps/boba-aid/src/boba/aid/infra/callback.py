@@ -9,6 +9,8 @@
 
 import logging
 from collections.abc import Awaitable, Callable
+from enum import StrEnum
+from pathlib import Path
 from typing import Annotated, Any, ClassVar
 from uuid import UUID
 
@@ -53,6 +55,7 @@ from boba.aid.canvas.panel import StreamActions
 from boba.aid.canvas.remote import RemoteStreams
 from boba.aid.canvas.tools import CanvasOpener
 from boba.aid.chat.panel_text import PanelText
+from boba.aid.chat.ui_text import UiText
 from boba.aid.domain.fields import ThreadField, ThreadMetaField
 from boba.aid.infra import providers
 from boba.aid.infra.config import AppConfig
@@ -115,12 +118,18 @@ class AgentAuthor:
     NAME: ClassVar[str] = "Agent"
 
 
-class SettingsNotice:
-    """Пометка в ленте о сохранённых настройках, которые ждут конца хода."""
+class TabText(StrEnum):
+    """Ключи пометок вкладке в переводах chainlit: строки — на языке вкладки."""
 
-    DEFERRED: ClassVar[str] = (
-        "Settings are saved and will apply after the current answer."
-    )
+    SETTINGS_DEFERRED = "aid.notice.settingsDeferred"
+    """Настройки сохранены и вступят после идущего хода."""
+
+    PROFILE_RETIRED = "aid.notice.profileRetired"
+    """Профиль треда больше не выдан: тред продолжается профилем по умолчанию."""
+
+    def of(self, app_config: AppConfig, **values: object) -> str:
+        texts = UiText(Path(app_config.aid.root), current_session().language)
+        return texts.text(self.value, **values)
 
 
 AGENT_FAILURES = (
@@ -622,9 +631,8 @@ async def on_settings_update(  # noqa: PLR0913 — зависимости обр
         return
 
     if outcome is SettingsOutcome.DEFERRED:
-        await cl.Message(
-            content=SettingsNotice.DEFERRED, author=AgentAuthor.NAME
-        ).send()
+        notice = TabText.SETTINGS_DEFERRED.of(app_config)
+        await cl.Message(content=notice, author=AgentAuthor.NAME).send()
 
     # панель показывает сохранённое; после перезапуска — с настройками сессии
     await _send_settings(app_config, registry, table, agent)
@@ -928,6 +936,7 @@ async def on_app_context(
 @di_inject
 async def on_chat_resume(
     thread_dict: ThreadDict,
+    app_config: Annotated[AppConfig, Depends(get_app_config)],
     registry: Annotated[ChatProfiles, Depends(chat_profiles_registry)],
 ):
     """Вкладка вернулась к треду.
@@ -958,9 +967,8 @@ async def on_chat_resume(
             stored,
             fallback.name,
         )
-        notice = (
-            f'Chat profile "{stored}" is no longer available: '
-            f'this chat continues with "{fallback.config.display_name}"'
+        notice = TabText.PROFILE_RETIRED.of(
+            app_config, retired=stored, profile=fallback.config.display_name
         )
         await context.emitter.send_toast(notice, "warning")
 
