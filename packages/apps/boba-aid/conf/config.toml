@@ -136,6 +136,7 @@
 [agent]
     public_url   = "http://127.0.0.1:${env.port}${env.url_prefix}"
     seal_ttl_sec = 600
+    question_timeout_sec = 3600
     [agent.process]
         command             = "${env.agent_command}"
         args                = ["acp", "--setting-sources", ""]

@@ -37,6 +37,7 @@ from chainlit.utils import utc_now
 from literalai.observability.step import TrueStepType
 
 from boba.aid.domain.keys import CanvasFileUrl
+from boba.aid.rendering.question import QuestionCard
 from boba.aid.rendering.tool import ChatElements, ToolAppView
 from boba.cancellation import StopReason
 from boba.canvas.canvas import (
@@ -201,6 +202,7 @@ class StepRole(StrEnum):
     ELEMENT = "element"
     STREAM = "stream"
     APP = "app"
+    QUESTION = "question"
 
 
 @dataclass
@@ -580,6 +582,8 @@ class ChatView:
     """Поля байтов base64, которых JSON неизвестного блока не раскрывает."""
     AVATAR_NAME_KEY: ClassVar[str] = "avatarName"
     """Ключ metadata шага, по которому фронт chainlit выбирает аватар вместо имени."""
+    QUESTION_OUTPUT: ClassVar[str] = " "
+    """Выход шага записи вопроса: сама запись — элемент шага."""
 
     def __init__(
         self,
@@ -988,6 +992,68 @@ class ChatView:
         element = self._elements.app(app, key, arguments)
         element.thread_id = self._thread_id
         element_id = self.derive_id(self._thread_id, key, StepRole.APP)
+        if element_id:
+            element.id = element_id
+
+        return element
+
+    async def question_started(self, title: str, key: str | None) -> Step:
+        """Шаг вопроса агента пользователю: пока вопрос ждёт ответа — только
+        название (панель вопроса — у поля ввода вкладки), запись ответа
+        встанет в шаг раскрытой."""
+        await self.seal_answer()
+        step = await self._child(
+            StepStatus.IDLE.title(title), StepKind.TOOL, key, StepRole.TOOL
+        )
+        self._tool_names[step.id] = title
+        step.default_open = True
+        step.auto_collapse = False
+        step.output = ""
+        step.start = utc_now()
+        await self._sink.put(step)
+
+        return step
+
+    async def question_finished(
+        self, step: Step, card: QuestionCard, key: str, done: bool
+    ) -> None:
+        """Запись ответа на вопрос элементом Question в шаге: ✔ у
+        завершённого вызова, ✖ у отказа и у сорванного. Шаг ошибкой не
+        помечается — исход виден в записи."""
+        ended = utc_now()
+        step.start = ended
+        step.end = ended
+        status = StepStatus.FAILED
+        if done:
+            status = StepStatus.DONE
+
+        step.name = status.title(self._tool_names.get(step.id, step.name))
+        # секция output с элементами рисуется только при непустом output шага
+        step.output = self.QUESTION_OUTPUT
+        if self._sink.emits_elements:
+            step.elements = [self._question(card, key)]
+
+        await self._sink.put(step)
+
+    def tool_asked(self, step: Step, cards: Sequence[QuestionCard], key: str) -> None:
+        """Записи ответов на вопросы сервера MCP в вызове — элементами шага
+        рядом с его итогом; шаг уходит в ленту вместе с итогом."""
+        if not self._sink.emits_elements:
+            return
+
+        elements: list[Element] = []
+        if step.elements:
+            elements = list(step.elements)
+
+        for number, card in enumerate(cards):
+            elements.append(self._question(card, f"{key}#{number}"))
+
+        step.elements = elements
+
+    def _question(self, card: QuestionCard, key: str) -> CustomElement:
+        element = self._elements.question(card.props())
+        element.thread_id = self._thread_id
+        element_id = self.derive_id(self._thread_id, key, StepRole.QUESTION)
         if element_id:
             element.id = element_id
 

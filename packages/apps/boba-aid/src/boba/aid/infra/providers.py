@@ -333,9 +333,11 @@ def agent_feeds(  # noqa: PLR0913 — фабрика собирается все
     data_layer: Annotated[PostgresDataLayer, Depends(chainlit_data_layer)],
     surfaces: Annotated[TabSurfaces, Depends(thread_surfaces)],
     storage: Annotated[StorageClient, Depends(storage_provider)],
+    agent: Annotated[AgentConfig, Depends(agent_config)],
 ) -> AgentFeeds:
     """Приёмники потока агентов: ход в шину под замком треда, история — в
-    вкладку, оценки шагов — из слоя данных."""
+    вкладку, оценки шагов — из слоя данных, вопросы агента — панелью вкладки
+    со сроком [agent].question_timeout_sec."""
     parts = BusParts(
         bus=bus,
         payloads=payloads,
@@ -343,7 +345,16 @@ def agent_feeds(  # noqa: PLR0913 — фабрика собирается все
         heartbeat_sec=float(config.cluster.heartbeat_sec),
     )
 
-    return AgentFeeds(parts, journals, media, servers, data_layer, surfaces, storage)
+    return AgentFeeds(
+        parts,
+        journals,
+        media,
+        servers,
+        data_layer,
+        surfaces,
+        storage,
+        float(agent.question_timeout_sec),
+    )
 
 
 async def thread_agents(

@@ -1,9 +1,11 @@
 """Обёртки socket.io-хендлеров chainlit: журнал связи, loading, кнопка Stop и
 конец сессии.
 
-chainlit на каждый connection_successful шлёт task_end, а «тихий» реконнект того
-же сокета не идёт через on_chat_resume — индикатор хода гаснет, пока ход жив.
-Обёртка возвращает task_start треду с живым ходом; connect, disconnect с причиной
+chainlit на каждый connection_successful шлёт task_end и clear_ask, а «тихий»
+реконнект того же сокета не идёт через on_chat_resume — индикатор хода гаснет,
+панель вопроса агента пропадает, пока ход жив. Обёртка возвращает task_start
+треду с живым ходом и показывает вкладке висящий вопрос агента заново (его
+показывает обработчик обвязки чата, on_ready); connect, disconnect с причиной
 engine.io и восстановление сессии пишутся в журнал.
 
 Конец сессии — удаление WebsocketSession, а не обрыв сокета: on_chat_end chainlit
@@ -54,6 +56,9 @@ logger = logging.getLogger(__name__)
 
 QuestionEditor = Callable[[Question], Awaitable[None]]
 """Ведёт ход по правленому вопросу вкладки."""
+
+QuestionShower = Callable[[ChainlitSession], Awaitable[None]]
+"""Показывает подключившейся вкладке висящий вопрос агента её треда."""
 
 
 class SocketEvent(StrEnum):
@@ -129,10 +134,17 @@ class SocketEvents:
 
     _EDITOR: ClassVar[QuestionEditor | None] = None
 
+    _SHOWER: ClassVar[QuestionShower | None] = None
+
     @classmethod
     def on_edit(cls, editor: QuestionEditor) -> None:
         """Кто ведёт ход по правке вопроса: ставит обвязка чата."""
         cls._EDITOR = editor
+
+    @classmethod
+    def on_ready(cls, shower: QuestionShower) -> None:
+        """Кто показывает вкладке висящий вопрос агента: ставит обвязка чата."""
+        cls._SHOWER = shower
 
     @classmethod
     def install(cls) -> None:
@@ -329,6 +341,16 @@ class SocketEvents:
         await emit(SocketEvent.TASK_START.value, {})
 
         logger.info("socket ready, loading restored: %s", facts.line())
+
+        shower = cls._SHOWER
+        if shower is None:
+            raise InternalServiceError(
+                f"socket ready on {facts.line()}: no question shower is installed, "
+                "the chat callbacks are not loaded",
+                None,
+            )
+
+        await shower(session)
 
     @classmethod
     def _origin(

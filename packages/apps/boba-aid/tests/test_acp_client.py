@@ -86,6 +86,51 @@ class TestTurn:
         assert any(call.status == "failed" for call in calls)
         assert not updates.permissions, "bypassPermissions must not ask"
 
+    async def test_question_of_the_agent_reaches_the_chat_as_a_form(
+        self, agents: Agents
+    ) -> None:
+        """Чат объявляет формы: AskUserQuestion агента приходит формой
+        `elicitation/create` с toolCallId вызова, ответ формы — итог вызова."""
+        updates = RecordingUpdates()
+        updates.replies.append(schema.AcceptElicitationResponse(content={"q1": "B"}))
+        process = await agents.start(updates)
+        opened = await process.open_session()
+        asked = {
+            "questions": [
+                {
+                    "question": "Which one?",
+                    "header": "Pick",
+                    "options": [
+                        {"label": "A", "description": "first"},
+                        {"label": "B", "description": "second"},
+                    ],
+                }
+            ]
+        }
+        spec = {"name": "AskUserQuestion", "arguments": asked}
+        text = f"{ScenarioName.CALL.value} {json.dumps(spec)}"
+
+        _, idle = await agents.turn(process, opened.session_id, text)
+
+        assert idle.stop_reason == "end_turn"
+        (form,) = updates.forms
+        calls: list[schema.SessionToolCallUpdate] = []
+        for _, update in updates.updates:
+            if isinstance(update, schema.SessionToolCallUpdate):
+                calls.append(update)
+
+        assert form.session_id == opened.session_id
+        assert form.tool_call_id == calls[0].tool_call_id
+        properties = form.requested_schema.properties
+        assert properties is not None
+        assert sorted(properties) == ["q1", "q1.other"]
+        assert calls[-1].raw_output == {
+            "questions": asked["questions"],
+            "answers": {"Which one?": "B"},
+            "picks": {"Which one?": {"labels": ["B"]}},
+            "outcome": "accept",
+        }
+
     async def test_cancel_stops_the_turn_with_cancelled(self, agents: Agents) -> None:
         updates = RecordingUpdates()
         process = await agents.start(updates)

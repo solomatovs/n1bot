@@ -810,6 +810,7 @@ class StandConfig(StandService):
         doc["agent"] = {
             "public_url": self.base_url,
             "seal_ttl_sec": 600,
+            "question_timeout_sec": 600,
             "process": {
                 "command": self.agent_process["command"],
                 "args": self.agent_process["args"],
