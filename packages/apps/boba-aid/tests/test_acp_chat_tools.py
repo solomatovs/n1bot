@@ -406,7 +406,8 @@ class TestNoTokenExchangeInTheChat:
         self, app: StandProcess, tab: ChatSocket, session_jwt: str
     ) -> None:
         """Серверы агент получает объявлениями сессии, токенов ему не выдают:
-        в файле настроек их нет, ход идёт без выдачи токенов."""
+        в файле настроек их нет, ход идёт без выдачи токенов; от серверов
+        профиля в файле только срок вызова — call_timeout_sec их секций."""
         since = app.log_lines()
         await tab.send(f"answer-{uuid4().hex} {ScenarioName.ANSWER.value}")
         await tab.wait_task_end()
@@ -417,7 +418,7 @@ class TestNoTokenExchangeInTheChat:
         assert session_jwt not in text
         assert "mcpServers" not in document, document
         assert "hooks" not in document, document
-        assert document["mcp"] is None, document
+        assert document["mcp"]["call_timeout_sec"] == 120.0, document
 
         log = "\n".join(_lines_since(app, since))
         assert "mcp token issued" not in log, log[-2000:]

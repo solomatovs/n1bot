@@ -5,7 +5,8 @@ mcp/message — ретранслятору (McpRelay).
 
 Ошибки:
 AgentProcessError — процесс не запустился, не прошёл рукопожатие (чужая
-    версия ACP, нет серверов type "acp"), умер или соединение с ним закрыто.
+    версия ACP, нет серверов type "acp"), не ответил на метод сессии в срок,
+    умер или соединение с ним закрыто.
 AgentRequestError — агент ответил ошибкой JSON-RPC: метод, код, текст, data.
 """
 
@@ -152,32 +153,20 @@ class AgentClient(Client):
 
 @dataclass(frozen=True)
 class AgentCommand:
-    """Команда запуска агента: исполняемый файл, аргументы до `--settings`,
-    нечувствительные переменные окружения поверх минимального набора SDK."""
+    """Команда запуска агента: исполняемый файл и аргументы до `--settings`,
+    сроки рукопожатия, ответа на метод сессии и выхода. Окружение ребёнка —
+    минимальный набор SDK: настройки агенту несёт только файл."""
 
     executable: str
     args: Sequence[str]
-    env: Mapping[str, str]
     start_timeout_sec: float
+    request_timeout_sec: float
     stop_timeout_sec: float
 
     SETTINGS_FLAG: ClassVar[str] = "--settings"
 
     def argv(self, settings_path: Path) -> list[str]:
         return [*self.args, self.SETTINGS_FLAG, str(settings_path)]
-
-    def with_env(self, extra: Mapping[str, str]) -> AgentCommand:
-        """Команда с добавленными переменными запуска (пути libkrb5 истории)."""
-        merged = dict(self.env)
-        merged.update(extra)
-
-        return AgentCommand(
-            executable=self.executable,
-            args=self.args,
-            env=merged,
-            start_timeout_sec=self.start_timeout_sec,
-            stop_timeout_sec=self.stop_timeout_sec,
-        )
 
 
 class AgentProcess:
@@ -225,10 +214,18 @@ class AgentProcess:
         return self._require_process().pid
 
     def alive(self) -> bool:
+        """Процесс не вышел и его вывод не кончился: агент, закрывший stdout,
+        ответить уже не сможет, хотя процесс ещё жив."""
         if self._process is None:
             return False
 
-        return self._process.returncode is None
+        if self._process.returncode is not None:
+            return False
+
+        if self._connection is None:
+            return False
+
+        return self._connection.connected()
 
     async def exited(self) -> int:
         """Код выхода процесса, когда он завершится."""
@@ -246,6 +243,7 @@ class AgentProcess:
         try:
             stderr = stderr_path.open("ab")
         except OSError as exc:
+            self._workdir.remove()
             msg = (
                 f"agent process {executable!r}: opening its stderr log "
                 f"{stderr_path} failed: {exc}"
@@ -258,7 +256,6 @@ class AgentProcess:
                     spawn_stdio_transport(
                         executable,
                         *self._command.argv(self._workdir.settings_path),
-                        env=self._command.env,
                         cwd=self._workdir.path,
                         stderr=stderr.fileno(),
                         limit=self.LINE_LIMIT,
@@ -266,7 +263,11 @@ class AgentProcess:
                     )
                 )
             except OSError as exc:
-                msg = f"agent process {executable!r} did not start: {exc}"
+                self._workdir.remove()
+                msg = (
+                    f"agent process {executable!r} did not start from "
+                    f"{self._workdir.path}: {exc}; check [env].agent_command"
+                )
                 raise AgentProcessError(msg) from exc
 
         self._process = process
@@ -483,7 +484,7 @@ class AgentProcess:
         connection = self._require_connection()
         info = schema.Implementation(name=ClientName.NAME.value, version=self._version)
 
-        return await self._request(
+        return await self._answer_of(
             "initialize",
             connection.initialize(
                 protocol_version=AcpVersion.V2.value,
@@ -493,7 +494,27 @@ class AgentProcess:
         )
 
     async def _request(self, method: str, call: Awaitable[ModelT]) -> ModelT:
-        """Ответ агента на метод method.
+        """Ответ агента на метод сессии method в срок request_timeout_sec.
+
+        Ошибки:
+        AgentRequestError — ответ-ошибка JSON-RPC.
+        AgentProcessError — агент не ответил в срок, соединение закрыто или
+            ответ не по схеме.
+        """
+        limit = self._command.request_timeout_sec
+        try:
+            async with asyncio.timeout(limit):
+                return await self._answer_of(method, call)
+        except TimeoutError as exc:
+            msg = (
+                f"{method}: expected the agent to answer within {limit}s "
+                f"([agent.process].request_timeout_sec), got no answer: "
+                f"{self.log_tail()}"
+            )
+            raise AgentProcessError(msg) from exc
+
+    async def _answer_of(self, method: str, call: Awaitable[ModelT]) -> ModelT:
+        """Ответ агента на метод method без своего срока.
 
         Ошибки:
         AgentRequestError — ответ-ошибка JSON-RPC.

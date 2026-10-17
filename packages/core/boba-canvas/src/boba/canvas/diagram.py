@@ -62,8 +62,9 @@ class DiagramPrompt(StrEnum):
         "подписей бери другой тип (flowchart, xychart-beta)."
     )
     SAVED_NOTE = (
-        "the diagram is rendered in the canvas panel and its card is shown "
-        "in the chat. A render failure comes back to you as a tool error."
+        "the canvas panel shows it once the browser renders it; if mermaid "
+        "rejects the spec, its error follows here and the call fails, so fix "
+        "the spec and save the diagram again."
     )
 
 

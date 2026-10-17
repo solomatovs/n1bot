@@ -227,11 +227,11 @@ class CanvasKind(StrEnum):
     @property
     def disposition(self) -> ContentDisposition:
         """Как отдавать файл вида ссылкой: открыть в браузере можно только
-        то, что он показывает сам и без скриптов страницы (pdf, видео, звук);
-        прочее — html, svg, текст — скачивается, чтобы не исполниться в
-        origin чата."""
+        видео и звук — их браузер показывает сам и без скриптов; pdf рисует
+        pdf.js на странице чата, а прочее — html, svg, текст — скачивается,
+        чтобы не исполниться в origin чата."""
         match self:
-            case CanvasKind.PDF | CanvasKind.VIDEO | CanvasKind.AUDIO:
+            case CanvasKind.VIDEO | CanvasKind.AUDIO:
                 return ContentDisposition.INLINE
             case _:
                 return ContentDisposition.ATTACHMENT

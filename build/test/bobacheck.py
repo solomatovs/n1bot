@@ -13,10 +13,12 @@
 
 import argparse
 import importlib.util
+import json
 import os
 import shutil
 import subprocess
 import sys
+import tempfile
 
 # chainlit на импорте создаёт .chainlit/.files в cwd — уводим в /tmp
 os.environ.setdefault("CHAINLIT_APP_ROOT", "/tmp")
@@ -286,6 +288,82 @@ def t_ocr_models_shipped():
 if SANDBOX:
     print("== rapidocr models shipped next to the models ==")
     check("ocr models shipped", t_ocr_models_shipped)
+
+# 10) агент чата: бинарник из BOBA_AGENT_COMMAND стартует в окружении, которое
+# SDK ACP оставляет ребёнку, и проходит рукопожатие initialize версии 2
+AGENT_ENV = ("HOME", "LOGNAME", "PATH", "SHELL", "TERM", "USER")
+AGENT_PROTOCOL = 2
+AGENT_SETTINGS = {
+    "model": "check",
+    "models": {
+        "check": {
+            "provider": {"kind": "openai", "baseUrl": "http://127.0.0.1:9/v1"},
+            "model": "check",
+            "contextWindow": 8000,
+            "maxOutputTokens": 512,
+        }
+    },
+    "history": {"kind": "memory"},
+}
+AGENT_INITIALIZE = {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "initialize",
+    "params": {
+        "protocolVersion": AGENT_PROTOCOL,
+        "info": {"name": "bobacheck", "version": "0"},
+        "capabilities": {},
+    },
+}
+
+
+def t_agent_handshake():
+    command = os.environ["BOBA_AGENT_COMMAND"]
+    bare = {name: os.environ[name] for name in AGENT_ENV if name in os.environ}
+    with tempfile.TemporaryDirectory() as workdir:
+        settings = os.path.join(workdir, "settings.json")
+        descriptor = os.open(settings, os.O_WRONLY | os.O_CREAT, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(AGENT_SETTINGS, handle)
+
+        agent = subprocess.Popen(
+            [command, "acp", "--setting-sources", "", "--settings", settings],
+            env=bare,
+            cwd=workdir,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        stdin = agent.stdin
+        stdout = agent.stdout
+        stderr = agent.stderr
+        if stdin is None or stdout is None or stderr is None:
+            raise RuntimeError(f"{command}: started without pipes")
+
+        try:
+            stdin.write(json.dumps(AGENT_INITIALIZE) + "\n")
+            stdin.flush()
+            line = stdout.readline()
+        finally:
+            stdin.close()
+            agent.wait(timeout=60)
+
+        err = stderr.read()
+
+    if not line:
+        raise RuntimeError(f"{command}: no answer to initialize: {err[-600:]}")
+
+    result = json.loads(line)["result"]
+    if result["protocolVersion"] != AGENT_PROTOCOL:
+        raise RuntimeError(f"{command}: answered protocol version {result}")
+
+    print(f"  agent      : {result['info']['name']} {result['info']['version']}")
+
+
+if APP == "aid":
+    print("== agent binary in the bare ACP environment ==")
+    check("agent initialize", t_agent_handshake)
 
 print()
 if failures:

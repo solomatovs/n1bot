@@ -313,7 +313,7 @@ class ImageViewer(FileViewer):
 
 
 class PdfViewer(FileViewer):
-    """PDF: встроенный просмотрщик браузера."""
+    """PDF: pdf.js из сборки chainlit на странице чата, без скриптов документа."""
 
     kind: ClassVar[CanvasKind] = CanvasKind.PDF
     mimes: ClassVar[frozenset[str]] = frozenset({ContentMime.PDF.value})

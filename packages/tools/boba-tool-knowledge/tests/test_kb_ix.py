@@ -1,4 +1,4 @@
-"""Инструменты kb на живой схеме ix базы dev-стенда (pytest -m integration).
+"""Инструменты kb на живой схеме ix базы приложения (pytest -m integration).
 
 Тела зовутся напрямую с конфигом [tool.kb] приложения: подключение, схема и
 эмбеддер те же, что в чате. Заголовок для запросов берётся из самого индекса,
@@ -21,7 +21,6 @@ from boba.db.postgres import PayloadPostgres
 from boba.ix_core.indexes import IndexKind
 from boba.ix_core.registry import IxRegistry
 from boba.ix_core.search import IxSearchError
-from boba.stand.site import Stand
 from boba.tool.kb.kb import KbToolConfig
 from boba.tool.kb.tools import (
     kb_catalog2,
@@ -53,20 +52,13 @@ class Body:
 
 
 @pytest.fixture(scope="module")
-def kb_cfg(raw_config, stand: Stand) -> KbToolConfig:
-    """Конфиг с процессным запуском: кэш моделей эмбеддинга берётся с хоста.
-
-    Живой индекс ix лежит в базе dev-стенда site.pg_database, а приложение
-    смотрит в базу новой версии, поэтому подключение переводится на неё.
-    """
+def kb_cfg(raw_config) -> KbToolConfig:
+    """Конфиг с процессным запуском: кэш моделей эмбеддинга берётся с хоста,
+    живой индекс ix — из базы приложения."""
     copied = raw_config.copy()
     OmegaConf.update(copied, "env.tool_launcher", "process")
 
-    cfg = bind(copied, path="tool.kb", model=KbToolConfig)
-
-    dev = cfg.connection.model_copy(update={"dbname": stand.pg_database})
-
-    return cfg.model_copy(update={"connection": dev})
+    return bind(copied, path="tool.kb", model=KbToolConfig)
 
 
 @pytest.fixture(scope="module")

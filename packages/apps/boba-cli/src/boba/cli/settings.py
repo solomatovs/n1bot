@@ -389,7 +389,9 @@ class EffectiveSettings(BaseModel):
 
 class ProfileBuilder:
     """ModelProfile из настроек профиля: ключ провайдера — значением из файла
-    или из окружения по имени переменной, адрес — частями через httpx.URL."""
+    или из окружения по имени переменной, адрес — частями через httpx.URL,
+    срок, TLS, повторы и транспорт — как в файле; таблицы проверяет модель
+    провайдера."""
 
     def __init__(self, env: Mapping[str, str]) -> None:
         self._env = env
@@ -444,7 +446,7 @@ class ProfileBuilder:
         return {
             "kind": provider.kind.value,
             "connection": self._connection(name, provider),
-            "transport": {},
+            "transport": dict(provider.transport),
         }
 
     def _connection(self, name: str, provider: ProviderSettings) -> dict[str, Any]:
@@ -459,7 +461,11 @@ class ProfileBuilder:
             "path": url.path,
             "auth": auth,
             "timeout_sec": provider.timeout_sec,
+            "ssl_verify": provider.ssl_verify,
             "retry_attempts": provider.retry_attempts,
+            "retry_backoff_sec": provider.retry_backoff_sec,
+            "retry_statuses": dict(provider.retry_statuses),
+            "retry_after_max_sec": provider.retry_after_max_sec,
         }
         if url.port is not None:
             connection["port"] = url.port

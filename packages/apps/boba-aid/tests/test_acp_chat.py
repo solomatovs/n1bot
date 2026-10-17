@@ -19,6 +19,8 @@ from __future__ import annotations
 import asyncio
 import json
 import multiprocessing
+import os
+import signal
 import stat
 import sys
 import time
@@ -776,6 +778,35 @@ class TestConversation:
         ]
         assert notes, tab.names()
 
+    async def test_exited_agent_is_replaced_for_the_next_question(
+        self, app: StandProcess, tab: ChatSocket
+    ) -> None:
+        """Процесс агента вкладки упал: следующий вопрос поднимает новый
+        процесс на той же сессии и получает ответ."""
+        agents = AgentProcesses(app)
+        await tab.send(f"first {ScenarioName.ANSWER.value}")
+        await tab.wait_task_end()
+        assert not tab.errors(), (tab.errors(), app.tail(80))
+        pid = await agents.await_thread(tab.thread_id)
+
+        os.kill(pid, signal.SIGKILL)
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline and pid in agents.of_thread(tab.thread_id):
+            await asyncio.sleep(0.2)
+
+        mark = len(tab.events)
+        await tab.send(f"second {ScenarioName.ANSWER.value}")
+        await tab.wait_task_end()
+
+        assert not tab.errors(), (tab.errors(), app.tail(80))
+        replaced = await agents.await_thread(tab.thread_id, other_than=pid)
+        assert replaced != pid
+        answers = tab.messages(since=mark)
+        assert any("plain streamed answer" in str(m.get("output")) for m in answers), (
+            tab.trace()[mark:],
+            app.tail(60),
+        )
+
     async def test_closing_the_tab_ends_the_agent_and_removes_its_settings(
         self, app: StandProcess, cookie: str
     ) -> None:
@@ -1270,6 +1301,52 @@ class TestHistory:
             assert "boba/upToMessageId" in refusals[-1], refusals
             await tab.wait_event_index("resume_thread", since=mark)
             assert await rows.thread_meta(tab.thread_id) == before
+        finally:
+            await tab.end_session()
+
+    async def test_notice_of_the_agent_reaches_the_feed(
+        self, foreign_app: StandProcess, cookie: str
+    ) -> None:
+        """Пометка notice агента об ошибке видна во вкладке, а не теряется
+        среди служебных уведомлений."""
+        tab = ChatSocket(foreign_app, cookie, str(uuid4()))
+        await tab.open()
+        try:
+            await tab.send("notice: the history store is unreachable")
+            await tab.wait_task_end()
+
+            shown = tab.errors()
+            assert any("the history store is unreachable" in e for e in shown), (
+                tab.trace(),
+                foreign_app.tail(60),
+            )
+        finally:
+            await tab.end_session()
+
+    async def test_stop_on_a_lost_agent_connection_is_shown_in_the_feed(
+        self, foreign_app: StandProcess, cookie: str
+    ) -> None:
+        """Агент закрыл соединение посреди хода: кнопка Stop не может
+        отправить ему session/cancel, и отказ виден во вкладке, а не глохнет
+        в обработчике chainlit."""
+        tab = ChatSocket(foreign_app, cookie, str(uuid4()))
+        await tab.open()
+        try:
+            await tab.send("detach")
+            await tab.wait_event("new_message")
+            await asyncio.sleep(1.0)
+            mark = len(tab.events)
+            await tab.stop()
+
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline and not tab.errors():
+                await asyncio.sleep(0.2)
+
+            shown = tab.errors()
+            assert any("session/cancel" in e for e in shown), (
+                tab.trace()[mark:],
+                foreign_app.tail(60),
+            )
         finally:
             await tab.end_session()
 
