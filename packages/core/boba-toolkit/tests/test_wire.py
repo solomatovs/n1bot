@@ -39,7 +39,7 @@ from boba.toolkit.result import (
     ToolResultBase,
     VisualResult,
 )
-from boba.toolkit.wire import ResultWire, WireResult
+from boba.toolkit.wire import McpContent, ResultWire, WireResult
 
 SNAPSHOTS = HistorySnapshots(Path(__file__).parent / "history", "boba.toolkit")
 
@@ -384,6 +384,27 @@ class TestContentBlocks:
                 raise AssertionError(f"адрес — путь в workspace: {link.uri}")
             if link.mime_type != mime:
                 raise AssertionError(f"MIME файла: {link.mime_type}")
+
+    def test_only_the_canvas_asks_to_show_its_file(self) -> None:
+        """Панель открывает ссылка с priority показа: её ставит canvas, а не
+        вложение файла."""
+        attached = FileResult(
+            path="/workspace/t/upload/a.mmd", name="a.mmd", mime=ContentMime.MERMAID
+        )
+        shown = CanvasResult(path="/workspace/t/mermaid/a.mmd", label="a.mmd")
+
+        expected = ((attached, None), (shown, McpContent.SHOWN_PRIORITY))
+        for result, priority in expected:
+            wire = WIRE.packed(OUTCOMES.of(CALL, result, False))
+            link = wire.content[-1]
+            if not isinstance(link, mt.ResourceLink):
+                raise AssertionError(f"файл — ссылкой: {link!r}")
+            if link.annotations is None:
+                raise AssertionError("ссылка адресована человеку")
+            if link.annotations.priority != priority:
+                raise AssertionError(f"{result.kind}: {link.annotations.priority}")
+            if link.annotations.audience != ["user"]:
+                raise AssertionError(f"ссылка — человеку: {link.annotations}")
 
     def test_elapsed_rides_in_the_meta(self) -> None:
         table = TableResult(rows=[], elapsed_ms=42)

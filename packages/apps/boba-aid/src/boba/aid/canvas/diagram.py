@@ -12,10 +12,11 @@ import logging
 import uuid
 from typing import Any, ClassVar
 
-from boba.aid.canvas.panel import CanvasPanel, FileViewer, StorageHashSource
+from boba.aid.canvas.panel import FileViewer, StorageHashSource
 from boba.aid.data.data_layer import AttachmentDataLayer
 from boba.canvas.canvas import (
     CanvasContent,
+    CanvasElement,
     CanvasError,
     CanvasErrorKind,
     CanvasKind,
@@ -28,7 +29,7 @@ from boba.canvas.canvas import (
 from boba.canvas.diagram import DiagramEntry, DiagramMarker
 from boba.canvas.keys import ObjectKey
 from boba.canvas.storage import StorageError, StorageNotFoundError
-from boba.toolkit.result import VisualResult
+from boba.toolkit.result import ContentMime, VisualResult
 from boba.workspace.launcher import ReadWindow
 
 __all__ = [
@@ -101,22 +102,22 @@ class MermaidViewer(FileViewer):
     """
 
     kind: ClassVar[CanvasKind] = CanvasKind.MERMAID
-    suffixes: ClassVar[frozenset[str]] = frozenset({DiagramMarker.SUFFIX})
+    mimes: ClassVar[frozenset[str]] = frozenset({ContentMime.MERMAID})
 
     VERDICT_TIMEOUT_SEC: ClassVar[float] = 10.0
 
     def __init__(self, files: DiagramFiles) -> None:
         self._files = files
 
-    async def content(self, key: ObjectKey) -> CanvasContent:
-        return self._content(key, await self._read(key), str(uuid.uuid4()))
+    async def content(self, key: ObjectKey, mime: str) -> CanvasContent:
+        return self._content(key, mime, await self._read(key), str(uuid.uuid4()))
 
-    async def open(self, key: ObjectKey, push: CanvasPush) -> OpenedCanvas:
+    async def open(self, key: ObjectKey, mime: str, push: CanvasPush) -> OpenedCanvas:
         text = await self._read(key)
         nonce = str(uuid.uuid4())
 
         RenderVerdicts.expect(nonce)
-        await push(self._content(key, text, nonce))
+        await push(self._content(key, mime, text, nonce))
 
         verdict = await RenderVerdicts.wait(nonce, self.VERDICT_TIMEOUT_SEC)
         if verdict.status is RenderStatus.FAILED:
@@ -127,16 +128,11 @@ class MermaidViewer(FileViewer):
 
         entry = DiagramEntry.of(key, text)
 
-        return OpenedCanvas(
-            label=entry.label, path=entry.path, nonce=nonce, link=self._link(key, text)
-        )
+        return OpenedCanvas(label=entry.label, path=entry.path, nonce=nonce)
 
-    async def link(self, key: ObjectKey) -> VisualResult:
+    async def link(self, key: ObjectKey, mime: str) -> VisualResult:
         """Карточка диаграммы читает спеку: подпись берётся из её заголовка."""
-        return self._link(key, await self._read(key))
-
-    def _link(self, key: ObjectKey, text: str) -> VisualResult:
-        return DiagramCard.link(DiagramEntry.of(key, text))
+        return DiagramCard.link(DiagramEntry.of(key, await self._read(key)))
 
     def watch_source(self, key: ObjectKey) -> WatchSource | None:
         """Слежение по содержимому: спека мала, а размер может не меняться."""
@@ -149,11 +145,13 @@ class MermaidViewer(FileViewer):
     async def _read(self, key: ObjectKey) -> str:
         return await self._files.read(key)
 
-    def _content(self, key: ObjectKey, text: str, nonce: str) -> CanvasContent:
+    def _content(
+        self, key: ObjectKey, mime: str, text: str, nonce: str
+    ) -> CanvasContent:
         """Спека поверх описания базы: подпись берётся из заголовка диаграммы."""
         entry = DiagramEntry.of(key, text)
 
-        described = self.describe(key, text=entry.spec)
+        described = self.describe(key, mime, text=entry.spec)
         return described.model_copy(update={"label": entry.label, "nonce": nonce})
 
 
@@ -170,7 +168,7 @@ class DiagramCard:
     def link(cls, entry: DiagramEntry) -> VisualResult:
         """Карточка как результат инструмента: ссылка на файл в ленте."""
         return VisualResult(
-            element=CanvasPanel.VIEW_ELEMENT,
+            element=CanvasElement.VIEW,
             props=cls.props_of(entry),
             title=entry.label,
         )
@@ -183,6 +181,7 @@ class DiagramCard:
             path=entry.path,
             label=entry.label,
             text=entry.spec,
+            mime=ContentMime.MERMAID,
         )
 
         return {**content.props(), "preview": True}

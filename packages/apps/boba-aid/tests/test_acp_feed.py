@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import base64
 import json
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar, cast
 from urllib.parse import urlsplit
@@ -25,7 +25,6 @@ from pydantic import AnyUrl, SecretStr
 from boba.agent.records import PermissionMode
 from boba.agent.settings import ModelSettings, ProviderKind, ProviderSettings
 from boba.aid.agent.chat import SessionOptions, ThreadAgentsIndex
-from boba.aid.agent.client import SessionUpdate
 from boba.aid.agent.panel import AgentPanel
 from boba.aid.agent.settings import (
     AgentSettingsError,
@@ -33,13 +32,14 @@ from boba.aid.agent.settings import (
     UserAgentSettings,
 )
 from boba.aid.canvas.diagram import DiagramFiles, MermaidViewer
-from boba.aid.canvas.panel import CanvasPanel, ImageViewer
+from boba.aid.canvas.panel import ImageViewer
 from boba.aid.canvas.remote import RemoteJournals
 from boba.aid.chat.feed import QuestionBody, TurnFeed
 from boba.aid.chat.panel_text import PanelText
 from boba.aid.domain.fields import StepField
 from boba.aid.domain.keys import CanvasFileUrl
 from boba.aid.rendering.acp_view import (
+    SessionUpdate,
     SessionUpdateCodec,
     ToolMedia,
     UpdateView,
@@ -52,7 +52,7 @@ from boba.aid.rendering.chat_view import (
     StepText,
 )
 from boba.aid.rendering.renderer import ChatRenderer, NoSurface
-from boba.canvas.canvas import CanvasRegistry
+from boba.canvas.canvas import CanvasAction, CanvasElement, CanvasRegistry
 from boba.canvas.keys import ObjectKey, ThreadDir
 from boba.chat.profiles import ChatProfileConfig, UserSetting
 from boba.identity.context import Scope
@@ -268,7 +268,9 @@ def _result(artifact: ToolResultBase, journaled: Sequence[str] = ()) -> dict[str
     links = McpContent(RUN)
     for node in journaled:
         address = JournalRead(run=RUN, node=node, channel=ToolChannel.STDOUT)
-        links.link(uris.uri(address), ToolChannel.STDOUT.value, ContentMime.PLAIN)
+        links.link(
+            uris.uri(address), ToolChannel.STDOUT.value, ContentMime.PLAIN, False
+        )
 
     content = [*wire.content, *links.blocks()]
 
@@ -280,6 +282,33 @@ def _result(artifact: ToolResultBase, journaled: Sequence[str] = ()) -> dict[str
     )
 
     return reply.model_dump(mode="json", by_alias=True, exclude_none=True)
+
+
+def _journal_opened(call_id: str, node: str, meta: Mapping[str, Any]) -> SessionUpdate:
+    """Уведомление о ходе вызова call_id без текста: сервер назвал ссылку на
+    stdout журнала своего вызова node, как только журнал открылся."""
+    read = JournalRead(run=RUN, node=node, channel=ToolChannel.STDOUT)
+    link = JournalUris(JOURNAL.resource).uri(read)
+
+    return schema.SessionToolCallUpdate(
+        tool_call_id=call_id,
+        status="in_progress",
+        field_meta={**meta, JournalFeature.ID: [link]},
+    )
+
+
+def _buttons(recorded: FakeEmitter) -> list[tuple[str, str]]:
+    """Вызов и шаг каждой кнопки журнала в ленте: кнопка с тем же id —
+    одна, сколько бы раз шаг её ни переотправил."""
+    found: dict[str, tuple[str, str]] = {}
+    for element in recorded.elements:
+        if element.get("name") != CanvasElement.STREAM:
+            continue
+
+        props = element["props"]
+        found[element["id"]] = (props[CanvasAction.CALL_ID], element["forId"])
+
+    return list(found.values())
 
 
 def _question() -> SessionUpdate:
@@ -327,9 +356,7 @@ def _replayed_updates() -> list[SessionUpdate]:
 def _view(
     runtime_stand: StandRefs, storage: LocalStorageClient, journals: RemoteJournals
 ) -> UpdateView:
-    view = ChatView(
-        THREAD, LiveSink(), runtime_stand.journals, "u-1", storage, user_name="alice"
-    )
+    view = ChatView(THREAD, LiveSink(), "u-1", storage, user_name="alice")
     media = ToolMedia()
     media.shown("boba", [], None, JOURNAL, None)
 
@@ -402,6 +429,39 @@ class TestUpdateViewIds:
         assert step.get(StepField.OUTPUT) == "ok", "a journal link is not drawn"
 
     @pytest.mark.anyio
+    async def test_journal_notification_gives_the_running_step_its_button(
+        self,
+        runtime_stand: StandRefs,
+        storage: LocalStorageClient,
+        recorded: FakeEmitter,
+    ) -> None:
+        """Сервер называет журнал, едва он открыт: адрес известен и кнопка
+        журнала стоит на шаге, пока вызов идёт."""
+        journals = RemoteJournals()
+        updates = _view(runtime_stand, storage, journals)
+        updates.begin_turn(QUESTION)
+
+        await updates.apply(_call(CALL, "mcp__boba__bash", {"cmd": "ls"}))
+        await updates.apply(_journal_opened(CALL, "srv-call", {}))
+
+        address = JournalAddress(server="boba", run=RUN, call="srv-call")
+        assert await journals.address(THREAD, CALL) == address
+        step = recorded.last()[_id(CALL, StepRole.TOOL)]
+        assert step.get(StepField.OUTPUT) == StepText.RUNNING.value, step
+        buttons = _buttons(recorded)
+        assert buttons == [(CALL, _id(CALL, StepRole.TOOL))], buttons
+
+        await updates.apply(
+            _done(
+                CALL,
+                "ok",
+                _result(MarkdownResult(text="ok", elapsed_ms=12), ["srv-call"]),
+            )
+        )
+
+        assert _buttons(recorded) == buttons, "the result does not add a second one"
+
+    @pytest.mark.anyio
     async def test_failed_call_without_artifact_is_an_error_step(
         self,
         runtime_stand: StandRefs,
@@ -448,7 +508,6 @@ class TestUpdateViewIds:
         view = ChatView(
             THREAD,
             LiveSink(),
-            runtime_stand.journals,
             "u-1",
             storage,
             user_name="alice",
@@ -517,9 +576,7 @@ class TestToolApps:
     ) -> None:
         media = ToolMedia()
         media.shown("standard", [self.BOARD], None, None, apps)
-        view = ChatView(
-            THREAD, LiveSink(), runtime_stand.journals, "u-1", storage, user_name="a"
-        )
+        view = ChatView(THREAD, LiveSink(), "u-1", storage, user_name="a")
         updates = UpdateView(view, THREAD, RemoteJournals(), media)
         updates.begin_turn(QUESTION)
 
@@ -600,7 +657,6 @@ class TestNestedCallSteps:
         view = ChatView(
             THREAD,
             LiveSink(),
-            runtime_stand.journals,
             "u-1",
             storage,
             user_name="alice",
@@ -684,6 +740,26 @@ class TestNestedCallSteps:
         sink = steps[_id(f"{CALL}_1", StepRole.TOOL)]
         assert "connecting to clickhouse" in str(sink.get(StepField.OUTPUT))
         assert "connecting to clickhouse" not in str(source.get(StepField.OUTPUT))
+
+    @pytest.mark.anyio
+    async def test_journal_of_a_node_gives_its_step_the_button(
+        self,
+        runtime_stand: StandRefs,
+        storage: LocalStorageClient,
+        recorded: FakeEmitter,
+    ) -> None:
+        journals = RemoteJournals()
+        updates = self._updates(runtime_stand, storage, journals, True)
+        updates.begin_turn(QUESTION)
+        await updates.apply(_call(CALL, "mcp__boba__workflow", {"nodes": self.NODES}))
+
+        opened = _journal_opened(CALL, "srv-call_1", {CallDag.PROGRESS_NODE: "sink"})
+        await updates.apply(opened)
+
+        address = JournalAddress(server="boba", run=RUN, call="srv-call_1")
+        assert await journals.address(THREAD, f"{CALL}_1") == address
+        sink = _id(f"{CALL}_1", StepRole.TOOL)
+        assert _buttons(recorded) == [(f"{CALL}_1", sink)]
 
     @pytest.mark.anyio
     async def test_each_node_ends_with_its_own_result_and_journal(
@@ -914,17 +990,6 @@ class TestLiveEqualsReplay:
         assert rows.strip() in str(step.get(StepField.OUTPUT))
 
 
-class HolderSurface(NoSurface):
-    """Поверхность держателя хода в тесте: контекст chainlit HTTP-сессии
-    пользователя треда, в котором открывается панель и пишутся элементы."""
-
-    def __init__(self, context: ChainlitContext) -> None:
-        self._context = context
-
-    def context(self) -> ChainlitContext | None:
-        return self._context
-
-
 class TestResultsFromRawOutput:
     """Файлы итогов и ссылки панели рисует лента из `rawOutput`: живой ход
     (шина) и воспроизведение дают один и тот же элемент у ответа хода, и
@@ -985,9 +1050,7 @@ class TestResultsFromRawOutput:
             bus = MemoryMessageBus("test-aid")
             payloads = MemoryPayloadStore()
             scope = Scope.chat(thread_id)
-            view = ChatView(
-                thread_id, LiveSink(), runtime_stand.journals, seeded.user.id, storage
-            )
+            view = ChatView(thread_id, LiveSink(), seeded.user.id, storage)
             renderer = ChatRenderer(
                 thread_id,
                 UpdateView(view, thread_id, RemoteJournals(), ToolMedia()),
@@ -1011,9 +1074,7 @@ class TestResultsFromRawOutput:
         replay_context = FakeContext(thread_id)
         token = context_var.set(cast("ChainlitContext", replay_context))
         try:
-            view = ChatView(
-                thread_id, LiveSink(), runtime_stand.journals, seeded.user.id, storage
-            )
+            view = ChatView(thread_id, LiveSink(), seeded.user.id, storage)
             replay = UpdateView(view, thread_id, RemoteJournals(), ToolMedia())
             await replay.apply(_question())
             for update in self._updates(thread_id):
@@ -1060,11 +1121,11 @@ class TestResultsFromRawOutput:
         answer = ChatView.derive_id(thread_id, QUESTION, StepRole.ANSWER)
         attached = ChatView.derive_id(thread_id, f"{CALL}/0", StepRole.ELEMENT)
         card = ChatView.derive_id(thread_id, f"{SECOND_CALL}/0", StepRole.ELEMENT)
-        assert sorted(drawn) == sorted(["a.pdf", CanvasPanel.VIEW_ELEMENT])
+        assert sorted(drawn) == sorted(["a.pdf", CanvasElement.VIEW])
         assert drawn["a.pdf"][:2] == (attached, answer), live
         assert f"/canvas/{thread_id}/upload/a.pdf" in drawn["a.pdf"][2], live
-        assert drawn[CanvasPanel.VIEW_ELEMENT][:2] == (card, answer), live
-        assert spec.in_workspace() in drawn[CanvasPanel.VIEW_ELEMENT][2], live
+        assert drawn[CanvasElement.VIEW][:2] == (card, answer), live
+        assert spec.in_workspace() in drawn[CanvasElement.VIEW][2], live
 
     @pytest.mark.anyio
     async def test_missing_spec_is_noted_the_same_live_and_in_the_replay(
@@ -1111,7 +1172,7 @@ class TestElementIdsWithoutKey:
         storage: LocalStorageClient,
         recorded: FakeEmitter,
     ) -> None:
-        view = ChatView(THREAD, LiveSink(), runtime_stand.journals, "u-1", storage)
+        view = ChatView(THREAD, LiveSink(), "u-1", storage)
         link = schema.ResourceContentBlock(
             name="note.txt",
             uri=AnyUrl(f"http://agent-side:1/boba-test/canvas/{THREAD}/upload/n.txt"),
@@ -1454,7 +1515,7 @@ class TestBlockDrawings:
         raw: Any,
         name: str = "mcp__boba__probe",
     ) -> None:
-        view = ChatView(THREAD, LiveSink(), runtime_stand.journals, "u-1", storage)
+        view = ChatView(THREAD, LiveSink(), "u-1", storage)
         updates = UpdateView(view, THREAD, RemoteJournals(), ToolMedia())
         await updates.apply(_question())
         await updates.apply(_call(CALL, name, {}))
@@ -1536,7 +1597,7 @@ class TestBlockDrawings:
     ) -> None:
         reply = self._reply(
             self._resource("application/sql", "select 1", "sql"),
-            self._resource("application/json", '{"a": 1}', "json"),
+            self._resource("application/json", '{"a": 1', "json"),
             self._resource("text/plain", "line", "stdout"),
             self._resource("text/x-unknown", "<b>raw</b>", "notes"),
             self._resource("text/html", "<script>x()</script>", "page"),
@@ -1546,11 +1607,57 @@ class TestBlockDrawings:
 
         assert self._output(recorded) == (
             "```sql\nselect 1\n```\n\n"
-            '```json\n{"a": 1}\n```\n\n'
+            '```json\n{"a": 1\n```\n\n'
             "```stdout\nline\n```\n\n"
             "```notes\n<b>raw</b>\n```\n\n"
             "```page\n<script>x()</script>\n```"
         )
+
+    @pytest.mark.anyio
+    async def test_json_is_a_tree_under_the_step_output(
+        self,
+        runtime_stand: StandRefs,
+        storage: LocalStorageClient,
+        recorded: FakeEmitter,
+    ) -> None:
+        """JSON рисуется деревом элементом шага вызова под его выходом; текст
+        вокруг остаётся выходом шага, а не JSON-строкой."""
+        document = {"rows": [1, 2], "note": "<script>x()</script>"}
+        reply = self._reply(
+            mt.TextContent(text="before"),
+            self._resource("application/json", json.dumps(document), "answer"),
+        )
+
+        await self._drawn(runtime_stand, storage, reply)
+
+        assert self._output(recorded) == "before"
+        trees: list[Any] = []
+        for element in recorded.elements:
+            if element.get("name") != CanvasElement.JSON_TREE:
+                continue
+            trees.append(element)
+
+        assert len(trees) == 1, recorded.elements
+        tree = trees[0]
+        assert tree["props"] == {"value": document}, tree
+        assert tree["forId"] == _id(CALL, StepRole.TOOL), tree
+        assert tree["id"] == _id(f"{CALL}/0", StepRole.ELEMENT), tree
+
+    @pytest.mark.anyio
+    async def test_too_large_json_is_fenced(
+        self,
+        runtime_stand: StandRefs,
+        storage: LocalStorageClient,
+        recorded: FakeEmitter,
+    ) -> None:
+        text = json.dumps({"blob": "x" * ChatView.TREE_BYTES})
+        reply = self._reply(self._resource("application/json", text, "big"))
+
+        await self._drawn(runtime_stand, storage, reply)
+
+        assert self._output(recorded) == f"```big\n{text}\n```"
+        for element in recorded.elements:
+            assert element.get("name") != CanvasElement.JSON_TREE, element
 
     @pytest.mark.anyio
     async def test_plotly_figure_is_a_chart_next_to_the_step(
@@ -1617,7 +1724,7 @@ class TestBlockDrawings:
         assert shown[:2] == shown[2:], "a replay draws the same files"
         card, attached = shown[:2]
         answer = _id(QUESTION, StepRole.ANSWER)
-        assert card[0] == ImageViewer.LINK_ELEMENT, card
+        assert card[0] == CanvasElement.LINK, card
         assert card[2:] == (_id(f"{CALL}/0", StepRole.ELEMENT), answer), card
         image = ObjectKey.from_workspace("u-1", THREAD, card[1])
         assert image.name.endswith(".png"), image
@@ -1627,7 +1734,7 @@ class TestBlockDrawings:
         audio = ObjectKey(user_id="u-1", thread_id=THREAD, name=name)
         assert attached == (
             name,
-            CanvasFileUrl.path(audio),
+            CanvasFileUrl.path(audio, "audio/mpeg"),
             _id(f"{CALL}/1", StepRole.ELEMENT),
             answer,
         ), attached

@@ -6,16 +6,18 @@
 по моделям клиента (DeclaredExtension). Кроме четырёх
 обычных инструментов держит отказы стенда: задержку, большой результат,
 обрыв посреди вызова, смену списка инструментов с уведомлением и отчёты о
-ходе вызова, — ответ из блоков разных видов и адресатов, просьбу о вводе
+ходе вызова, — ответ из блоков разных видов и адресатов, файл, который
+клиенту стоит показать сразу (priority 1), просьбу о вводе
 (input_required) и отказ ошибкой MCP. Расширение MCP Apps даёт приложение
 доски (board.html): инструмент board рисует разметку, которую пишет модель,
 app_only зовёт только приложение, model_only — только модель.
 """
 
 import asyncio
+import json
 import os
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar
 
 from mcp.server.apps import Apps, ResourceCsp, client_supports_apps
@@ -60,6 +62,11 @@ class StandardServer:
     BOARD_CSP: ClassVar[ResourceCsp] = ResourceCsp(
         resource_domains=["https://cdn.example.com"]
     )
+    DOCUMENT: ClassVar[dict[str, Any]] = {
+        "rows": [{"id": 1, "name": "<script>window.__boba_pwned=1</script>"}],
+        "total": 1,
+    }
+    """JSON ответа blocks человеку: дерево в ленте, строка со скриптом — текстом."""
     EXTENSIONS: ClassVar[tuple[Extension, ...]] = (
         DeclaredExtension(
             "com.boba/journal",
@@ -94,6 +101,7 @@ class StandardServer:
         self._mcp.tool()(self.broken)
         self._mcp.tool()(self.picture)
         self._mcp.tool()(self.blocks)
+        self._mcp.tool()(self.show)
         self._mcp.tool()(self.sleep_for)
         self._mcp.tool()(self.large)
         self._mcp.tool()(self.die)
@@ -141,8 +149,27 @@ class StandardServer:
                         uri="file:///notes.txt", mime_type="text/plain", text="notes"
                     )
                 ),
+                EmbeddedResource(
+                    resource=TextResourceContents(
+                        uri="file:///answer.json",
+                        mime_type="application/json",
+                        text=json.dumps(self.DOCUMENT),
+                    ),
+                    annotations=Annotations(audience=["user"]),
+                ),
             ]
         )
+
+    def show(self, path: str, mime: str) -> CallToolResult:
+        """Answers with a workspace file the client should show right away."""
+        link = ResourceLink(
+            name=PurePosixPath(path).name,
+            uri=PurePosixPath(path).as_uri(),
+            mime_type=mime,
+            annotations=Annotations(audience=["user"], priority=1.0),
+        )
+
+        return CallToolResult(content=[TextContent(text="shown"), link])
 
     async def sleep_for(self, seconds: float) -> str:
         """Answers after the given delay."""

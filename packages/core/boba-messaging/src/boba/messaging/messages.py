@@ -34,7 +34,6 @@ __all__ = [
     "RunStateChanged",
     "SignInRefreshRequested",
     "StopRequested",
-    "StreamAppended",
     "ThreadChanged",
     "ThreadRewound",
     "TurnFinished",
@@ -59,7 +58,6 @@ class MessageKind(StrEnum):
     AGENT_UPDATE = "agent_update"
     RUN_STATE_CHANGED = "run_state_changed"
     RUN_FINISHED = "run_finished"
-    STREAM_APPENDED = "stream_appended"
     CANVAS_CHANGED = "canvas_changed"
     SIGNIN_REFRESH_REQUESTED = "signin_refresh_requested"
     NOTICE = "notice"
@@ -81,7 +79,6 @@ _HOLDER_ONLY: frozenset[MessageKind] = frozenset(
         MessageKind.AGENT_UPDATE,
         MessageKind.RUN_STATE_CHANGED,
         MessageKind.RUN_FINISHED,
-        MessageKind.STREAM_APPENDED,
         MessageKind.THREAD_REWOUND,
     }
 )
@@ -211,19 +208,6 @@ class RunFinished(Message):
     kind: Literal[MessageKind.RUN_FINISHED] = MessageKind.RUN_FINISHED
     run_id: UUID
     status: str = Field(min_length=1)
-
-
-class StreamAppended(Message):
-    """Журнал канала channel вызова call_id дорос до size байт; сам текст лежит в файле
-    журнала.
-    """
-
-    kind: Literal[MessageKind.STREAM_APPENDED] = MessageKind.STREAM_APPENDED
-    call_id: str = Field(min_length=1)
-    channel: str = Field(min_length=1)
-    size: int = Field(ge=0)
-    closed: bool
-    note: str = ""
 
 
 class CanvasChanged(Message):
@@ -356,7 +340,6 @@ AnyMessage = Annotated[
     | AgentUpdate
     | RunStateChanged
     | RunFinished
-    | StreamAppended
     | CanvasChanged
     | SignInRefreshRequested
     | Notice

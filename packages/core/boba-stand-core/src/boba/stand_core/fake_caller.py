@@ -3,7 +3,8 @@
 Запускается настоящим subprocess'ом, как fake_toolmod. Тело получает
 субъекта вызова injected-параметром и возвращает, кого увидело: тесты
 проверяют, что контекст, поставленный входом (ход чата, запрос сервиса),
-доезжает до тела. fake_progress делает шаги и сообщает о ходе работы.
+доезжает до тела. fake_progress делает шаги, сообщает о ходе работы и
+пишет строку шага в журнал вывода.
 fake_sleep называет свой pid файлом и спит — им тесты проверяют отмену
 вызова и предел одновременных запусков.
 """
@@ -11,6 +12,7 @@ fake_sleep называет свой pid файлом и спит — им те�
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import sys
 from pathlib import Path
@@ -52,6 +54,7 @@ async def fake_progress(
     """Делает шаги с паузой и сообщает о ходе работы после каждого."""
     for step in range(1, steps + 1):
         progress.report(step, steps, f"step {step} of {steps}")
+        logging.getLogger("fake.tool").info("step %d of %d", step, steps)
         await asyncio.sleep(pause)
 
     return MarkdownResult(text=f"{steps} steps done")

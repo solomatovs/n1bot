@@ -11,10 +11,12 @@ import asyncio
 import contextlib
 import logging
 import threading
+from abc import abstractmethod
 from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
 from contextlib import contextmanager
+from dataclasses import dataclass
 from functools import partial
-from typing import ClassVar
+from typing import ClassVar, Protocol
 
 from pydantic import ValidationError
 
@@ -32,7 +34,6 @@ from boba.canvas.journal import (
     StreamStorePort,
 )
 from boba.identity.run import Run, Runs
-from boba.messaging import StreamAppended, StreamFeed
 from boba.toolkit.channels import (
     CallOutcome,
     JournalChannel,
@@ -51,6 +52,8 @@ __all__ = [
     "CallJournals",
     "FrameHeadsSink",
     "JournalWatchSource",
+    "StreamAppended",
+    "StreamFeed",
     "StreamPump",
     "StreamPumps",
     "ToolStream",
@@ -234,9 +237,32 @@ class FrameHeadsSink(StreamSink):
         return f"{header} +{len(frame.body)}b\n"
 
 
+@dataclass(frozen=True, slots=True)
+class StreamAppended:
+    """Канал channel журнала вызова call_id дорос до size байт; сам текст
+    лежит в файле журнала. Значение насоса StreamPump для StreamFeed."""
+
+    call_id: str
+    channel: JournalChannel
+    size: int
+    closed: bool
+    note: str
+
+
+class StreamFeed(Protocol):
+    """Приёмник сообщений насоса о росте журнала вызова. Реализует ход вызова
+    сервера (CallProgress): отчёты тела — прогрессом запроса, рост видимых
+    каналов — событиями подписки на ресурсы журнала."""
+
+    @abstractmethod
+    async def stream_appended(self, message: StreamAppended) -> None:
+        """Канал журнала вызова дорос до message.size байт."""
+
+
 class StreamPump:
-    """Следит за живым журналом одного вызова из loop'а запуска и сообщает ленте о
-    каждом росте видимого канала; частые записи склеиваются в одно сообщение.
+    """Следит за живым журналом одного вызова из loop'а запуска и сообщает
+    приёмнику о каждом росте любого канала; частые записи склеиваются в одно
+    сообщение, какие каналы показывать — решает приёмник.
     """
 
     COALESCE_SEC: ClassVar[float] = 0.25
@@ -265,16 +291,13 @@ class StreamPump:
 
     async def _report(self) -> None:
         for item in self._stream.probes():
-            if not JournalChannels.visible(item.channel):
-                continue
-
             if self._seen.get(item.channel) == item.probe.revision:
                 continue
 
             self._seen[item.channel] = item.probe.revision
             message = StreamAppended(
                 call_id=self._stream.key.call_id,
-                channel=item.channel.value,
+                channel=item.channel,
                 size=item.probe.size,
                 closed=item.probe.closed,
                 note=item.probe.note,
