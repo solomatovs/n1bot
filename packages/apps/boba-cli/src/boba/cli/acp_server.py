@@ -1044,6 +1044,8 @@ class AcpToolServer(ToolServer):
         self._outcomes = NodeOutcomes()
         self._cards: list[ToolCard] = []
         self._prompts: list[mt.Prompt] = []
+        self._for_model = False
+        """Сервер при открытии отдал модели ресурсы или шаблоны."""
         self._discovered: mt.DiscoverResult | None = None
         self._changes: asyncio.Queue[ListChange] = asyncio.Queue()
         self._tasks: list[asyncio.Task[None]] = []
@@ -1076,6 +1078,7 @@ class AcpToolServer(ToolServer):
             self._discovered = discovered
             self._cards = await self._listed_cards()
             self._prompts = await self._listed_prompts()
+            self._for_model = await self._offers_model_resources()
         except McpRequestError as exc:
             raise SessionOpenError(str(exc)) from exc
 
@@ -1106,6 +1109,80 @@ class AcpToolServer(ToolServer):
 
     def prompts(self) -> Sequence[mt.Prompt]:
         return self._prompts
+
+    def for_model(self) -> bool:
+        """Сервер отдаёт модели ресурсы или шаблоны ресурсов (по разбору
+        при открытии)."""
+        return self._for_model
+
+    async def model_resources(self) -> list[mt.Resource]:
+        """Ресурсы сервера для модели по всем страницам resources/list:
+        без audience либо с assistant в ней; сервер без ресурсов — пусто.
+
+        Ошибки:
+        McpRequestError — страница не получена либо не разобрана.
+        """
+        if self._known().capabilities.resources is None:
+            return []
+
+        offered: list[mt.Resource] = []
+        cursor: str | None = None
+        while True:
+            params = mt.PaginatedRequestParams(cursor=cursor)
+            page = await self.ask(
+                mt.ListResourcesRequest(params=params), mt.ListResourcesResult
+            )
+            for resource in page.resources:
+                if self._for_assistant(resource.annotations):
+                    offered.append(resource)
+
+            cursor = page.next_cursor
+            if cursor is None:
+                return offered
+
+    async def model_templates(self) -> list[mt.ResourceTemplate]:
+        """Шаблоны ресурсов сервера для модели по всем страницам
+        resources/templates/list; сервер без ресурсов — пусто.
+
+        Ошибки:
+        McpRequestError — страница не получена либо не разобрана.
+        """
+        if self._known().capabilities.resources is None:
+            return []
+
+        offered: list[mt.ResourceTemplate] = []
+        cursor: str | None = None
+        while True:
+            params = mt.PaginatedRequestParams(cursor=cursor)
+            request = mt.ListResourceTemplatesRequest(params=params)
+            page = await self.ask(request, mt.ListResourceTemplatesResult)
+            for template in page.resource_templates:
+                if self._for_assistant(template.annotations):
+                    offered.append(template)
+
+            cursor = page.next_cursor
+            if cursor is None:
+                return offered
+
+    async def _offers_model_resources(self) -> bool:
+        """Ошибки:
+        McpRequestError — список не получен либо не разобран.
+        """
+        if await self.model_resources():
+            return True
+
+        templates = await self.model_templates()
+
+        return len(templates) > 0
+
+    @staticmethod
+    def _for_assistant(annotations: mt.Annotations | None) -> bool:
+        """Ресурс адресован модели: audience не задана либо называет
+        assistant; журнал вызова и иное «для человека» модели не идёт."""
+        if annotations is None:
+            return True
+
+        return BlockAudience.MODEL.reads(annotations.audience)
 
     def tools(self) -> Sequence[ToolCard]:
         return self._cards
@@ -1519,9 +1596,11 @@ class McpResourceTools(ToolServer):
     """Реализация ToolServer: ресурсы серверов MCP сессии собственными
     инструментами агента для модели.
 
-    Создаётся SessionMcp, когда хоть один сервер сессии объявил ресурсы.
-    list_mcp_resources отдаёт модели ресурсы и шаблоны ресурсов серверов
-    (resources/list, resources/templates/list всеми страницами),
+    Создаётся SessionMcp, когда хоть один сервер сессии отдаёт модели
+    ресурсы (audience без assistant — для человека, как журнал вызова,
+    модели не идёт). list_mcp_resources отдаёт модели ресурсы и шаблоны
+    ресурсов серверов (resources/list, resources/templates/list всеми
+    страницами),
     read_mcp_resource читает ресурс по uri (resources/read): текст — как
     есть, двоичное содержимое — пометкой с типом и размером. Сервер,
     которого нет в сессии или у которого нет ресурсов, и ошибка сервера —
@@ -1604,11 +1683,11 @@ class McpResourceTools(ToolServer):
         return self._outcomes.of(node, MarkdownResult(text=text), False)
 
     async def _listed(self, args: ResourceListArgs) -> str:
-        """Ресурсы и шаблоны серверов строками для модели.
+        """Ресурсы и шаблоны серверов для модели строками.
 
         Ошибки:
-        McpRequestError — сервера нет в сессии, у него нет ресурсов либо он
-            не ответил.
+        McpRequestError — сервера нет в сессии, ресурсов для модели у него нет
+            либо он не ответил.
         """
         servers = list(self._servers.values())
         if args.server:
@@ -1616,41 +1695,16 @@ class McpResourceTools(ToolServer):
 
         lines: list[str] = []
         for server in servers:
-            if server.capabilities().resources is None:
-                continue
+            for resource in await server.model_resources():
+                lines.append(self._line(server.name, resource))
 
-            lines.extend(await self._server_lines(server))
+            for template in await server.model_templates():
+                lines.append(self._template_line(server.name, template))
 
         if not lines:
             return "The MCP servers of the session list no resources."
 
         return "\n".join(lines)
-
-    async def _server_lines(self, server: AcpToolServer) -> list[str]:
-        lines: list[str] = []
-        cursor: str | None = None
-        while True:
-            params = mt.PaginatedRequestParams(cursor=cursor)
-            request = mt.ListResourcesRequest(params=params)
-            page = await server.ask(request, mt.ListResourcesResult)
-            for resource in page.resources:
-                lines.append(self._line(server.name, resource))
-
-            cursor = page.next_cursor
-            if cursor is None:
-                break
-
-        cursor = None
-        while True:
-            params = mt.PaginatedRequestParams(cursor=cursor)
-            templates = mt.ListResourceTemplatesRequest(params=params)
-            listed = await server.ask(templates, mt.ListResourceTemplatesResult)
-            for template in listed.resource_templates:
-                lines.append(self._template_line(server.name, template))
-
-            cursor = listed.next_cursor
-            if cursor is None:
-                return lines
 
     async def _read(self, args: ResourceReadArgs) -> str:
         """Содержимое ресурса текстом для модели.
@@ -1695,8 +1749,8 @@ class McpResourceTools(ToolServer):
             )
             raise McpRequestError(msg)
 
-        if server.capabilities().resources is None:
-            msg = f"MCP server {name!r} declares no resources"
+        if not server.for_model():
+            msg = f"MCP server {name!r} offers no resources to the model"
             raise McpRequestError(msg)
 
         return server
@@ -1878,11 +1932,17 @@ class SessionMcp:
             await server.close()
 
     def _with_resources(self) -> bool:
-        for server in self._servers:
-            if server.capabilities().resources is not None:
-                return True
+        """Хоть один сервер отдаёт модели ресурсы: только тогда у модели
+        есть инструменты ресурсов."""
+        offering = list(self._offering())
 
-        return False
+        return len(offering) > 0
+
+    def _offering(self) -> Iterator[AcpToolServer]:
+        """Серверы, отдающие модели ресурсы."""
+        for server in self._servers:
+            if server.for_model():
+                yield server
 
     async def _hint(self, server: AcpToolServer, prompt: mt.Prompt) -> str:
         """Подсказка ввода команды промпта: аргументы по порядку, у аргумента

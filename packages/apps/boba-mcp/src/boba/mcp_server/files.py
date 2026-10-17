@@ -26,6 +26,7 @@ MCPError — subscriptions/listen на uri, который не называет
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass
@@ -33,7 +34,6 @@ from enum import StrEnum
 from typing import Any, ClassVar
 from urllib.parse import urlsplit
 
-import anyio.lowlevel
 import mcp_types as mt
 from fastmcp import FastMCP
 from fastmcp.exceptions import ValidationError as InvalidResourceError
@@ -186,7 +186,9 @@ class CallerBus(SubscriptionBus):
         for _user, listener in list(self._listeners.values()):
             listener(event)
 
-        await anyio.lowlevel.checkpoint()
+        # уступить ход: потоки подписки успевают отправить событие между
+        # публикациями одной задачи
+        await asyncio.sleep(0)
 
     def subscribe(self, listener: Callable[[ServerEvent], None]) -> Callable[[], None]:
         user = self._subjects.current().user_key
@@ -266,7 +268,8 @@ class JournalListing(Provider):
     ресурсы resources/list.
 
     Создаётся сервером endpoint'а над OpenJournals. Каждый видимый канал
-    открытого журнала — ресурс по шаблону канала с JournalOrigin в _meta:
+    открытого журнала — ресурс для человека (audience user) по шаблону
+    канала с JournalOrigin в _meta:
     по нему клиент находит свой вызов. Читаются ресурсы шаблоном журнала
     (JournalRoutes.read), поэтому найти ресурс по uri провайдер не берётся;
     канал, в который тело ещё не писало, читается отказом «ресурса нет».
@@ -306,6 +309,7 @@ class JournalListing(Provider):
                     name=f"{journal.node}.{channel.value}.log",
                     title=f"{channel.value} of call {journal.node}",
                     mime_type=ContentMime.PLAIN.value,
+                    annotations=JournalRoutes.FOR_USER,
                     meta=meta,
                 )
 
@@ -334,6 +338,9 @@ class JournalRoutes:
     """Адрес канала журнала: по нему же стоит маршрут скачивания."""
     TEMPLATE: ClassVar[str] = f"{RESOURCE}{{?offset,before}}"
     """Шаблон uri ресурса канала журнала с окном (JournalFeature.resource)."""
+    FOR_USER: ClassVar[mt.Annotations] = mt.Annotations(audience=["user"])
+    """Журнал — для человека (панель вызова), а не для модели: так же
+    помечены ссылки на каналы в итоге вызова."""
 
     def __init__(  # noqa: PLR0913 — маршрут собирается всеми входами endpoint'а
         self,
@@ -366,7 +373,9 @@ class JournalRoutes:
         resource = urlsplit(self.RESOURCE)
         path = f"{self._base}/{resource.netloc}{resource.path}"
         server.custom_route(path, methods=["GET"])(self.get)
-        server.resource(self.TEMPLATE, mime_type=ContentMime.PLAIN.value)(self.read)
+        server.resource(
+            self.TEMPLATE, mime_type=ContentMime.PLAIN.value, annotations=self.FOR_USER
+        )(self.read)
         lowlevel.add_request_handler(
             "subscriptions/listen", mt.SubscriptionsListenRequestParams, self.listen
         )

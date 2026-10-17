@@ -668,6 +668,10 @@ class TestProgress:
             raise AssertionError(f"the open journal changes the list: {changed}")
         if type(ended).__name__ != "ResourcesListChanged":
             raise AssertionError(f"the end of the call changes the list: {ended}")
+        for resource in listed.resources:
+            if resource.annotations != mt.Annotations(audience=["user"]):
+                raise AssertionError(f"a journal is for the user: {resource}")
+
         channels = [read.channel for read in addresses]
         if channels != list(JournalChannels.VISIBLE):
             raise AssertionError(f"every visible channel is listed: {channels}")
@@ -796,6 +800,8 @@ class TestJournal:
         patterns = [template.uri_template for template in templates]
         if patterns != [JournalRoutes.TEMPLATE]:
             raise AssertionError(f"the journal template is listed: {patterns}")
+        if templates[0].annotations != mt.Annotations(audience=["user"]):
+            raise AssertionError(f"a journal is for the user: {templates[0]}")
 
     async def test_missing_journal_is_invalid_params(
         self, stand: ServiceStand, url: str, dev_token: str

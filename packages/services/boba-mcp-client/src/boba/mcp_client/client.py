@@ -1368,7 +1368,9 @@ class JournalOpenings:
     Сервер с расширением журнала перечисляет журналы идущих вызовов
     вызывающего ресурсами resources/list с JournalOrigin в _meta и сообщает
     о смене списка потоком subscriptions/listen. Создаётся портом
-    McpToolServer, когда сервер объявил журнал и смену списка ресурсов. Вызов
+    McpToolServer над отдельным соединением с сервером, когда сервер объявил
+    журнал и смену списка ресурсов: запросы основного соединения ждут
+    ответа идущего вызова под замком входа OAuth. Вызов
     порта ждёт журналов своего токена прогресса (expecting): первый такой
     вызов поднимает поток подписки в своей задаче и дожидается его
     подтверждения, на каждую смену списка список перечитывается, и новые
@@ -1378,13 +1380,10 @@ class JournalOpenings:
     """
 
     def __init__(
-        self,
-        label: str,
-        session: Callable[[], Awaitable[ClientSession]],
-        links: JournalLinks,
+        self, label: str, connection: McpConnection, links: JournalLinks
     ) -> None:
         self._label = label
-        self._session = session
+        self._connection = connection
         self._links = links
         self._expected: dict[mt.ProgressToken, JournalHeard] = {}
         self._reported: dict[mt.ProgressToken, set[tuple[str, str]]] = {}
@@ -1434,7 +1433,7 @@ class JournalOpenings:
 
     async def _listen(self, ready: asyncio.Future[bool]) -> None:
         try:
-            session = await self._session()
+            session = await self._connection.open()
             async with listen(session, resources_list_changed=True) as subscription:
                 honored = subscription.honored.resources_list_changed
                 if not honored:
@@ -1571,10 +1570,13 @@ class McpToolServer(McpToolPort):
         if config.apps is not None:
             extensions[EXTENSION_ID] = config.apps.settings()
 
+        speaking = identity.with_extensions(extensions)
         self._connection = McpConnection(
-            config.endpoint,
-            config.connect_timeout_sec,
-            identity.with_extensions(extensions),
+            config.endpoint, config.connect_timeout_sec, speaking
+        )
+        # замок входа OAuth ждёт ответа вызова: журналы — своим соединением
+        self._watching = McpConnection(
+            config.endpoint, config.connect_timeout_sec, speaking
         )
         self._label = f"mcp server {name!r} ({config.endpoint.label()})"
         self._causes = ErrorCauses()
@@ -1746,12 +1748,14 @@ class McpToolServer(McpToolPort):
         if not resources.list_changed:
             return
 
-        self._openings = JournalOpenings(self._label, self._session, links)
+        self._openings = JournalOpenings(self._label, self._watching, links)
 
     async def close(self) -> None:
         if self._openings is not None:
             await self._openings.close()
             self._openings = None
+
+        await self._watching.close()
 
         if self._files is not None:
             await self._files.close()
