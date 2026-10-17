@@ -60,7 +60,7 @@ logger = logging.getLogger(__name__)
 
 
 class CanvasErrorKind(StrEnum):
-    """Коды отказов панели: уезжают в ErrorResult.error_kind."""
+    """Коды отказов панели и тулов канваса: уезжают в ErrorResult.error_kind."""
 
     BAD_PATH = "bad_path"
     NO_VIEWER = "no_canvas_viewer"
@@ -68,6 +68,7 @@ class CanvasErrorKind(StrEnum):
     BAD_FILE = "bad_file"
     TOO_LARGE = "file_too_large"
     RENDER_FAILED = "render_failed"
+    INVALID_SPEC = "invalid_diagram_spec"
 
 
 class CanvasError(RefusalError):
