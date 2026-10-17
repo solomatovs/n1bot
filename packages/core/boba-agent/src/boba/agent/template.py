@@ -65,6 +65,7 @@ class AgentTemplateFile(StrEnum):
     NO_OUTPUT = "tools/no_output.txt"
     TRUNCATED = "tools/truncated.txt"
     ANSWERS = "tools/answers.txt"
+    ANSWERS_TYPED = "tools/answers_typed.txt"
     NO_ANSWERS = "tools/no_answers.txt"
     ASK_USER_QUESTION = "tools/ask_user_question.txt"
     SKILL = "tools/skill.txt"

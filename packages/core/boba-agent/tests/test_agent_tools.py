@@ -605,6 +605,19 @@ class TestAskUserQuestion:
             }
         ]
     }
+    MULTI: ClassVar[dict[str, object]] = {
+        "questions": [
+            {
+                "question": "Which ones?",
+                "header": "Days",
+                "options": [
+                    {"label": "A", "description": "first"},
+                    {"label": "B", "description": "second"},
+                ],
+                "multiSelect": True,
+            }
+        ]
+    }
 
     async def test_answers_become_the_tool_result(
         self, server: FakeServer, agents: StandAgents
@@ -638,12 +651,124 @@ class TestAskUserQuestion:
         assert record.tool_use_result == {
             "questions": self.QUESTION["questions"],
             "answers": {"Which one?": "A"},
+            "picks": {"Which one?": {"labels": ["A"]}},
+            "outcome": "accept",
         }
         tools = server.requests()[0]["tools"]
         assert isinstance(tools, list)
         names = [t["function"]["name"] for t in tools]
         assert "AskUserQuestion" in names
         assert sorted(names) == names
+
+    async def test_typed_answer_is_read_carefully(self, agents: StandAgents) -> None:
+        """Свой текст вместо варианта: модель получает второй текст, выбор
+        разбирается в метки и свой текст."""
+        sink = Collected()
+        served = Served(
+            agents.agent(agents.profile(Protocol.OPENAI), sink, tools=StandTools())
+        )
+        session = await served.open(SESSION, resume=False)
+
+        served.agent.queue.enqueue(
+            prompt(call({"name": AskUserQuestionTool.NAME, "arguments": self.MULTI}))
+        )
+        question = await sink.next_question(0)
+        served.agent.answer(
+            question.request_id,
+            AllowAnswer(
+                updated_input={"answers": {"Which ones?": "A, only on Monday"}}
+            ),
+        )
+        await served.agent.settled()
+        await served.close()
+
+        record = result_records(session.records())[0]
+        assert record.message.tool_results()[0].text() == (
+            'The user answered: "Which ones?"="A, only on Monday". Read the answers '
+            "carefully — they may request clarification, changes, or that you not "
+            "proceed — and follow what they actually say."
+        )
+        assert record.tool_use_result["picks"] == {
+            "Which ones?": {"labels": ["A"], "other": "only on Monday"}
+        }
+
+    async def test_declined_and_unanswered_questions_keep_their_outcome(
+        self, agents: StandAgents
+    ) -> None:
+        """Отказ — текст отклонения и исход decline; ответ без ответов —
+        «не ответил» и исход cancel; вопросы остаются в итоге."""
+        sink = Collected()
+        served = Served(
+            agents.agent(agents.profile(Protocol.OPENAI), sink, tools=StandTools())
+        )
+        session = await served.open(SESSION, resume=False)
+
+        served.agent.queue.enqueue(
+            prompt(call({"name": AskUserQuestionTool.NAME, "arguments": self.QUESTION}))
+        )
+        declined = await sink.next_question(0)
+        served.agent.answer(declined.request_id, DenyAnswer())
+        await served.agent.settled()
+        served.agent.queue.enqueue(
+            prompt(call({"name": AskUserQuestionTool.NAME, "arguments": self.MULTI}))
+        )
+        unanswered = await sink.next_question(1)
+        served.agent.answer(unanswered.request_id, AllowAnswer())
+        await served.agent.settled()
+        await served.close()
+
+        first, second = result_records(session.records())
+        assert first.message.tool_results()[0].is_error is True
+        assert (
+            first.message.tool_results()[0]
+            .text()
+            .startswith("The user doesn't want to proceed")
+        )
+        assert first.tool_use_result == {
+            "questions": self.QUESTION["questions"],
+            "outcome": "decline",
+        }
+        assert second.message.tool_results()[0].text() == (
+            "The user did not answer the questions."
+        )
+        assert second.tool_use_result == {
+            "questions": self.MULTI["questions"],
+            "outcome": "cancel",
+        }
+
+    async def test_arguments_off_the_schema_are_not_asked(
+        self, agents: StandAgents
+    ) -> None:
+        """Одинаковые метки у вопроса: пользователя не спрашивают, модель
+        получает ошибку с причиной."""
+        sink = Collected()
+        served = Served(
+            agents.agent(agents.profile(Protocol.OPENAI), sink, tools=StandTools())
+        )
+        session = await served.open(SESSION, resume=False)
+        twice = {
+            "questions": [
+                {
+                    "question": "Which one?",
+                    "header": "Pick",
+                    "options": [
+                        {"label": "A", "description": "first"},
+                        {"label": "A", "description": "again"},
+                    ],
+                }
+            ]
+        }
+
+        served.agent.queue.enqueue(
+            prompt(call({"name": AskUserQuestionTool.NAME, "arguments": twice}))
+        )
+        await served.agent.settled()
+        await served.close()
+
+        found = results(session.records())[0]
+        assert found.is_error is True
+        assert "option labels must be unique" in found.text()
+        assert not sink.questions()
 
     async def test_question_is_allowed_in_plan_mode(self, agents: StandAgents) -> None:
         sink = Collected()
