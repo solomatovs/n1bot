@@ -242,8 +242,10 @@ class TestAgentThroughRelay:
         )
 
         commands = self._commands(updates)
+        hints = self._hints(updates)
         read = ModelRequests(model).read()
         assert "mcp__standard__greet" in commands[-1], commands
+        assert hints["mcp__standard__greet"] == "name style (plain|poem|pirate)", hints
         assert "Greet Bob in the poem" in read, read
         assert "[assistant] Hello, Bob!" in read, read
 
@@ -276,6 +278,22 @@ class TestAgentThroughRelay:
 
         with pytest.raises(AgentRequestError, match="argument 'name' is required"):
             await process.prompt(session_id, [block])
+
+    @staticmethod
+    def _hints(updates: RecordingUpdates) -> dict[str, str]:
+        """Подсказки ввода команд из последнего объявления: completion/complete
+        сервера дал значения аргументов."""
+        hints: dict[str, str] = {}
+        for _, update in updates.updates:
+            if not isinstance(update, schema.AvailableCommandsUpdate):
+                continue
+
+            hints = {}
+            for command in update.available_commands:
+                if isinstance(command.input, schema.TextAvailableCommandInput):
+                    hints[command.name] = command.input.hint
+
+        return hints
 
     @staticmethod
     def _commands(updates: RecordingUpdates) -> list[str]:

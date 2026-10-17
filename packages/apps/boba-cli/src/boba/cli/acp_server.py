@@ -11,8 +11,9 @@
 MCP внутри `mcp/message` (AcpToolServer, SessionMcp): server/discover —
 инструкции серверов в системном промпте, инструменты, ресурсы — его
 инструментами list_mcp_resources и read_mcp_resource, промпты — командами
-сессии (`available_commands_update`, вопрос `/<команда> <аргументы>`),
-смена списков — потоком subscriptions/listen. События ядра приёмник
+сессии (`available_commands_update` с подсказками значений аргументов по
+completion/complete, вопрос `/<команда> <аргументы>`), смена списков —
+потоком subscriptions/listen. События ядра приёмник
 SessionRelay переводит в уведомления по таблице AcpMapping.
 
 Ход по v2: ответ на `session/prompt` — `messageId` вставленного вопроса (он же
@@ -1362,6 +1363,32 @@ class AcpToolServer(ToolServer):
 
             await self._prompted()
 
+    async def completed(self, prompt: str, argument: str) -> Sequence[str]:
+        """Значения аргумента argument промпта prompt, которые подсказывает
+        сервер (completion/complete с пустым началом); сервер без подсказок —
+        пусто. Отказ сервера — в лог: подсказка останется без значений.
+        """
+        if self.capabilities().completions is None:
+            return ()
+
+        params = mt.CompleteRequestParams(
+            ref=mt.PromptReference(name=prompt),
+            argument=mt.CompletionArgument(name=argument, value=""),
+        )
+        try:
+            reply = await self.ask(mt.CompleteRequest(params=params), mt.CompleteResult)
+        except McpRequestError as exc:
+            logger.warning(
+                "mcp: %s gave no values for argument %s of prompt %s: %s",
+                self._label,
+                argument,
+                prompt,
+                exc,
+            )
+            return ()
+
+        return reply.completion.values
+
     async def submit(
         self, calls: Sequence[DagNode]
     ) -> Sequence[asyncio.Future[NodeOutcome]]:
@@ -1787,11 +1814,15 @@ class SessionMcp:
         )
 
     async def announce_commands(self) -> None:
-        """Промпты серверов командами сессии: `available_commands_update`."""
+        """Промпты серверов командами сессии: `available_commands_update`.
+        Подсказка ввода называет аргументы по порядку, а у аргумента, чьи
+        значения сервер подсказывает (completion/complete), — и сами
+        значения."""
         commands: list[schema.AvailableCommand] = []
         for server in self._servers:
             for prompt in server.prompts():
-                commands.append(self._command(server.name, prompt))
+                hint = await self._hint(server, prompt)
+                commands.append(self._command(server.name, prompt, hint))
 
         update = schema.AvailableCommandsUpdate(available_commands=commands)
         await self._relay.notify(update)
@@ -1853,18 +1884,31 @@ class SessionMcp:
 
         return False
 
-    def _command(self, server: str, prompt: mt.Prompt) -> schema.AvailableCommand:
-        names: list[str] = []
+    async def _hint(self, server: AcpToolServer, prompt: mt.Prompt) -> str:
+        """Подсказка ввода команды промпта: аргументы по порядку, у аргумента
+        с подсказками сервера — их значения через «|»."""
+        parts: list[str] = []
         for argument in self._declared(prompt):
-            names.append(argument.name)
+            values = await server.completed(prompt.name, argument.name)
+            if not values:
+                parts.append(argument.name)
+                continue
 
+            listed = "|".join(values)
+            parts.append(f"{argument.name} ({listed})")
+
+        return " ".join(parts)
+
+    def _command(
+        self, server: str, prompt: mt.Prompt, hint: str
+    ) -> schema.AvailableCommand:
         description = prompt.description
         if not description:
             description = prompt.name
 
         command_input: schema.TextAvailableCommandInput | None = None
-        if names:
-            command_input = schema.TextAvailableCommandInput(hint=" ".join(names))
+        if hint:
+            command_input = schema.TextAvailableCommandInput(hint=hint)
 
         return schema.AvailableCommand(
             name=self._names.full(server, prompt.name),
