@@ -1,18 +1,20 @@
 import { useEffect, useRef, useState } from "react";
 import { Markdown } from "@/components/markdown";
+import { useTranslation } from "@/components/i18n";
 
 // Вопрос агента пользователю. Висящий вопрос (state "pending") рисуется
 // панелью у поля ввода (docked — её ставит Footer), а в ленте — строкой
 // «Question» с мигающей точкой. Ответ — submitElement({action, content}) в
 // ask chainlit. Записанный ответ (accept, decline, cancel) — та же строка с
 // точкой исхода, строка статуса и вопросы с выбором только для чтения.
-const OTHER = "Other";
+// Подписи — из переводов chainlit (components.Question), тексты вопросов и
+// вариантов — как пришли.
+const TEXT = "components.Question";
 const OTHER_PICK = "\u0000other";
 const LOCK_MS = 500;
 const CONFIRM_MS = 300;
 const HOVER_MS = 150;
-const STATUS = { accept: "Answered", decline: "Declined", cancel: "No answer" };
-const TITLE = { one: "Question", many: "Questions" };
+const STATES = ["accept", "decline", "cancel"];
 const CHOICES = ["choice", "multi", "boolean"];
 const NUMBERS = ["number", "integer"];
 
@@ -72,12 +74,49 @@ function cls(base, flags) {
   return names.join(" ");
 }
 
-function rowsOf(item) {
+// Подписи панели и записи на языке переводов chainlit.
+function useLabels() {
+  const { t } = useTranslation();
+  const plain = { interpolation: { escapeValue: false } };
+  return {
+    other: t(`${TEXT}.other`),
+    yes: t(`${TEXT}.yes`),
+    no: t(`${TEXT}.no`),
+    typed: t(`${TEXT}.typed`),
+    submit: t(`${TEXT}.submit`),
+    cancelHint: t(`${TEXT}.cancelHint`),
+    noPreview: t(`${TEXT}.noPreview`),
+    collapse: t(`${TEXT}.collapse`),
+    expand: t(`${TEXT}.expand`),
+    close: t(`${TEXT}.close`),
+    preview: (caption) => t(`${TEXT}.preview`, { ...plain, caption }),
+    title: (count) => {
+      if (count === 1) return t(`${TEXT}.title.one`);
+      return t(`${TEXT}.title.many`);
+    },
+    status: (state) => {
+      if (STATES.includes(state)) return t(`${TEXT}.status.${state}`);
+      return t(`${TEXT}.status.cancel`);
+    },
+    count: (count) => t(`${TEXT}.questions`, { count }),
+  };
+}
+
+// Варианты вопроса: логическое поле — да/нет из переводов.
+function optionsOf(item, labels) {
+  if (item.kind !== "boolean") return item.options || [];
+  return [
+    { value: "true", label: labels.yes, description: "", preview: "" },
+    { value: "false", label: labels.no, description: "", preview: "" },
+  ];
+}
+
+function rowsOf(item, labels) {
   const rows = [];
-  for (const option of item.options || []) {
+  for (const option of optionsOf(item, labels)) {
     rows.push({ value: option.value, label: option.label, description: option.description, preview: option.preview });
   }
-  if (item.other) rows.push({ value: OTHER_PICK, label: OTHER, description: "", preview: "" });
+  if (item.other) rows.push({ value: OTHER_PICK, label: labels.other, description: "", preview: "" });
   return rows;
 }
 
@@ -183,11 +222,11 @@ function OptionRow({ row, index, multi, selected, readOnly, dimmed, highlighted,
   );
 }
 
-function TypedBox({ value, onChange, onKey, inputRef }) {
+function TypedBox({ value, onChange, onKey, inputRef, labels }) {
   const [focused, setFocused] = useState(false);
   let placeholder = (
     <div className="q-placeholder" aria-hidden="true">
-      Type your answer…
+      {labels.typed}
     </div>
   );
   if (value) placeholder = null;
@@ -203,7 +242,7 @@ function TypedBox({ value, onChange, onKey, inputRef }) {
         contentEditable="plaintext-only"
         role="textbox"
         aria-multiline="true"
-        aria-label="Type your answer…"
+        aria-label={labels.typed}
         spellCheck={false}
         suppressContentEditableWarning
         onInput={(event) => onChange(event.currentTarget.textContent || "")}
@@ -215,11 +254,11 @@ function TypedBox({ value, onChange, onKey, inputRef }) {
   );
 }
 
-function PreviewPane({ item, row }) {
+function PreviewPane({ item, row, labels }) {
   const option = (item.options || [])[row];
-  let caption = OTHER;
+  let caption = labels.other;
   if (option) caption = option.label;
-  let body = <div className="previewEmpty">No preview for this option</div>;
+  let body = <div className="previewEmpty">{labels.noPreview}</div>;
   if (option && option.preview && option.preview.trim() !== "") {
     const text = option.preview.replace(/\n+$/, "");
     body = (
@@ -241,7 +280,7 @@ function PreviewPane({ item, row }) {
     <div
       className="previewPane"
       role="region"
-      aria-label={"Preview: " + caption}
+      aria-label={labels.preview(caption)}
       tabIndex={-1}
       style={{ "--preview-lines": previewLines(item) }}
     >
@@ -254,6 +293,7 @@ function PreviewPane({ item, row }) {
 }
 
 function Panel({ card }) {
+  const labels = useLabels();
   const items = card.items;
   const [active, setActive] = useState(0);
   const [picked, setPicked] = useState({});
@@ -274,7 +314,7 @@ function Panel({ card }) {
   const doneRef = useRef(false);
 
   const item = items[active];
-  const rows = rowsOf(item);
+  const rows = rowsOf(item, labels);
   const picks = picked[item.key] || [];
   const text = typed[item.key] || "";
   const preview = withPreview(item) && !folded;
@@ -515,7 +555,7 @@ function Panel({ card }) {
   });
 
   const typedBox = (
-    <TypedBox value={text} onChange={onTyped} onKey={onTypedKey} inputRef={typedRef} />
+    <TypedBox value={text} onChange={onTyped} onKey={onTypedKey} inputRef={typedRef} labels={labels} />
   );
 
   const optionRows = rows.map((row, index) => {
@@ -561,14 +601,14 @@ function Panel({ card }) {
     );
   }
 
-  let fold = { label: "Collapse", icon: <ChevronDown /> };
-  if (folded) fold = { label: "Expand", icon: <ChevronUp /> };
+  let fold = { label: labels.collapse, icon: <ChevronDown /> };
+  if (folded) fold = { label: labels.expand, icon: <ChevronUp /> };
 
   let answers = <div className="optionsContainer">{typedBox}</div>;
   if (CHOICES.includes(item.kind)) answers = <div className="optionsContainer">{optionRows}</div>;
 
   let pane = null;
-  if (preview) pane = <PreviewPane item={item} row={highlighted} />;
+  if (preview) pane = <PreviewPane item={item} row={highlighted} labels={labels} />;
 
   return (
     <div className="q-root q-dock" data-question-panel>
@@ -600,7 +640,7 @@ function Panel({ card }) {
               >
                 {fold.icon}
               </button>
-              <button type="button" className="iconButton iconButton20" data-close aria-label="Close" onClick={decline}>
+              <button type="button" className="iconButton iconButton20" data-close aria-label={labels.close} onClick={decline}>
                 <Cross />
               </button>
             </div>
@@ -624,16 +664,16 @@ function Panel({ card }) {
             disabled={locked || !allSettled}
             onClick={() => submit()}
           >
-            <span className="shortcutNum">1</span> Submit answers
+            <span className="shortcutNum">1</span> {labels.submit}
           </button>
         </div>
-        <div className="keyboardHints">Esc to cancel</div>
+        <div className="keyboardHints">{labels.cancelHint}</div>
       </div>
     </div>
   );
 }
 
-function ReviewRows({ item, answer, state }) {
+function ReviewRows({ item, answer, state, labels }) {
   let picks = [];
   let typedText = null;
   if (answer) {
@@ -649,7 +689,7 @@ function ReviewRows({ item, answer, state }) {
     return <div className="optionDescription typedAnswer q-typedOnly">{typedText}</div>;
   }
 
-  const rows = (item.options || []).map((option, index) => {
+  const rows = optionsOf(item, labels).map((option, index) => {
     const selected = picks.includes(option.value);
     return (
       <OptionRow
@@ -675,7 +715,7 @@ function ReviewRows({ item, answer, state }) {
     rows.push(
       <OptionRow
         key={OTHER_PICK}
-        row={{ value: OTHER_PICK, label: OTHER, description: "" }}
+        row={{ value: OTHER_PICK, label: labels.other, description: "" }}
         index={rows.length}
         multi={item.kind === "multi"}
         selected
@@ -695,12 +735,11 @@ function ReviewRows({ item, answer, state }) {
 }
 
 function Heading({ card, tone }) {
-  let title = TITLE.many;
-  if (card.items.length === 1) title = TITLE.one;
+  const labels = useLabels();
   return (
     <div className="q-heading" data-question-heading={tone}>
       <span className={cls("q-dot", { [`q-dot-${tone}`]: true })} aria-hidden="true" />
-      <span className="toolNameText">{title}</span>
+      <span className="toolNameText">{labels.title(card.items.length)}</span>
     </div>
   );
 }
@@ -714,12 +753,8 @@ function Waiting({ card }) {
 }
 
 function Review({ card }) {
+  const labels = useLabels();
   const [open, setOpen] = useState(true);
-  const count = card.items.length;
-  let noun = "questions";
-  if (count === 1) noun = "question";
-  let status = STATUS.cancel;
-  if (card.state in STATUS) status = STATUS[card.state];
   let tone = "success";
   if (card.failed) tone = "failure";
   const toggle = () => setOpen(!open);
@@ -746,7 +781,7 @@ function Review({ card }) {
               <div className="questionHeader">
                 <span className="questionTextLarge">{item.text}</span>
               </div>
-              <ReviewRows item={item} answer={card.answers[item.key]} state={card.state} />
+              <ReviewRows item={item} answer={card.answers[item.key]} state={card.state} labels={labels} />
             </div>
           ))}
         </div>
@@ -771,7 +806,7 @@ function Review({ card }) {
       >
         <span className="q-content">
           <span className="statusLine">
-            {status} · {count} {noun}
+            {labels.status(card.state)} · {labels.count(card.items.length)}
             {chevron}
           </span>
         </span>

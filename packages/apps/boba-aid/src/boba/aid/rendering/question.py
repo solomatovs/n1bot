@@ -5,7 +5,8 @@
 AskUserQuestion (пока ждёт ответа) и по итогу вызова, запись вопросов
 сервера MCP — по раундам в результате вызова (ElicitationRound). Поле
 формы — вопрос: варианты одиночного и множественного выбора, логическое поле
-вариантами Yes/No, строка и число — полем своего ответа; парное поле «Other»
+(варианты «да»/«нет» подписывает элемент по переводам), строка и число —
+полем своего ответа; парное поле «Other»
 своего вопроса агента вопросом не считается, его ключ — у поля вопроса.
 
 Ошибки: своих не выпускает; ввод и итог не по схеме дают запись без выбора.
@@ -16,7 +17,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterator, Mapping, Sequence
 from enum import StrEnum
-from typing import Any, ClassVar, TypeAlias
+from typing import Any, TypeAlias
 
 from acp.experimental.v2 import schema
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -141,11 +142,6 @@ class QuestionCards:
     """Строит карточки вопроса: висящий вопрос по форме агента (AgentFeed),
     запись ответа по итогу AskUserQuestion и по раундам вопросов сервера MCP
     (UpdateView)."""
-
-    BOOLEAN_OPTIONS: ClassVar[tuple[CardOption, ...]] = (
-        CardOption(value="true", label="Yes"),
-        CardOption(value="false", label="No"),
-    )
 
     def pending(
         self, request: schema.CreateFormSessionElicitationRequest
@@ -306,9 +302,7 @@ class QuestionCards:
             return self._multi(base, field)
 
         if isinstance(field, schema.ElicitationBooleanPropertySchema):
-            return base.model_copy(
-                update={"kind": QuestionKind.BOOLEAN, "options": self.BOOLEAN_OPTIONS}
-            )
+            return base.model_copy(update={"kind": QuestionKind.BOOLEAN})
 
         if isinstance(field, schema.ElicitationNumberPropertySchema):
             return base.model_copy(
@@ -410,7 +404,8 @@ class QuestionCards:
     @staticmethod
     def _answer(item: CardItem, value: FormValue) -> CardAnswer:
         """Ответ записи по значению поля: варианты — выбранными значениями,
-        логическое — вариантом Yes/No, строка и число — своим текстом."""
+        логическое — значением "true"/"false", строка и число — своим
+        текстом."""
         if isinstance(value, list):
             return CardAnswer(picked=value)
 

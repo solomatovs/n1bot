@@ -18,6 +18,7 @@ import {
 
 import CustomElement from '@/components/Elements/CustomElement';
 import WaterMark from '@/components/WaterMark';
+import { useTranslation } from '@/components/i18n/Translator';
 
 import MessageComposer from './MessageComposer';
 
@@ -45,6 +46,7 @@ const isQuestion = (
 export default function ChatFooter({ showIfEmptyThread, ...props }: Props) {
   const { messages } = useChatMessages();
   const { askUser, elements } = useChatData();
+  const { t } = useTranslation();
   const [typedAt, setTypedAt] = useState(0);
   const [drafted, setDrafted] = useState(false);
   const [now, setNow] = useState(() => Date.now());
@@ -108,7 +110,7 @@ export default function ChatFooter({ showIfEmptyThread, ...props }: Props) {
   if (held) {
     hint = (
       <div className="q-root w-full" data-question-held>
-        <div className="q-hint">Waiting for permission…</div>
+        <div className="q-hint">{t('components.Question.held')}</div>
       </div>
     );
   }

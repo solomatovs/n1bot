@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -42,7 +43,6 @@ WAITING = "[data-question-waiting]"
 MESSAGE_OF = "xpath=ancestor::*[@data-step-type][1]"
 SUCCESS_DOT = "rgb(116, 201, 145)"
 FAILURE_DOT = "rgb(199, 78, 57)"
-OTHER = "Other"
 LOCK_MS = 600
 
 DB: dict[str, Any] = {
@@ -169,6 +169,57 @@ NAME: dict[str, Any] = {
 }
 
 
+@dataclass(frozen=True)
+class QuestionLabels:
+    """Подписи панели и записи вопроса (components.Question) из переводов,
+    которые отдаёт сам сервер чата на языке его настроек."""
+
+    texts: Mapping[str, Any]
+
+    @property
+    def other(self) -> str:
+        return str(self.texts["other"])
+
+    @property
+    def submit(self) -> str:
+        return str(self.texts["submit"])
+
+    @property
+    def cancel_hint(self) -> str:
+        return str(self.texts["cancelHint"])
+
+    @property
+    def held(self) -> str:
+        return str(self.texts["held"])
+
+    def status(self, state: str) -> str:
+        return str(self.texts["status"][state])
+
+    def title(self, count: int) -> str:
+        if count == 1:
+            return str(self.texts["title"]["one"])
+
+        return str(self.texts["title"]["many"])
+
+    def summary(self, state: str, count: int) -> str:
+        """Строка статуса записи для одного или двух вопросов: форма
+        множественного числа «few» есть не во всех языках."""
+        forms = ["questions_other"]
+        if count == 1:
+            forms = ["questions_one"]
+
+        if count == 2:
+            forms = ["questions_few", "questions_other"]
+
+        for form in forms:
+            if form in self.texts:
+                counted = str(self.texts[form]).replace("{{count}}", str(count))
+                return f"{self.status(state)} · {counted}"
+
+        msg = f"the translations carry none of {forms}: {self.texts}"
+        raise AssertionError(msg)
+
+
 class QuestionPage:
     """Вкладка чата с вопросом агента: вопрос моделью, панель, запись ответа
     и то, что модель получила в ответ."""
@@ -177,6 +228,10 @@ class QuestionPage:
         self.chat = chat
         self.page: Page = chat.page
         self._llm_port = llm_port
+        reply = httpx.get(f"{chat.base_url}/project/translations", timeout=10.0)
+        reply.raise_for_status()
+        texts = reply.json()["translation"]["components"]["Question"]
+        self.labels = QuestionLabels(texts)
 
     def ask(self, *questions: Mapping[str, Any]) -> Locator:
         """Ход, в котором модель зовёт AskUserQuestion; итог — панель."""
@@ -362,7 +417,7 @@ class TestAnswer:
             raise AssertionError("the composer is back after the answer")
 
         status = record.locator(".statusLine").inner_text()
-        if not status.startswith("Answered · 1 question"):
+        if not status.startswith(asked.labels.summary("accept", 1)):
             raise AssertionError(f"the record status: {status!r}")
 
         checked = record.locator('[aria-checked="true"]').inner_text()
@@ -382,7 +437,7 @@ class TestAnswer:
 
         asked.row("Unit tests").click()
         asked.row("Security scan").click()
-        asked.row(OTHER).click()
+        asked.row(asked.labels.other).click()
         asked.page.keyboard.type("smoke test on the stand")
         asked.submit()
         record = asked.record("accept")
@@ -391,7 +446,7 @@ class TestAnswer:
         for row in record.locator('[aria-checked="true"] .optionLabel').all():
             checked.append(row.inner_text())
 
-        assert checked == ["Unit tests", "Security scan", OTHER]
+        assert checked == ["Unit tests", "Security scan", asked.labels.other]
         assert "smoke test on the stand" in record.locator(".typedAnswer").inner_text()
         dimmed = record.locator(".optionDimmed").count()
         assert dimmed == 2, dimmed
@@ -414,7 +469,7 @@ class TestKeyboard:
         assert asked.focused_label() == "ClickHouse"
         asked.press("ArrowUp")
         asked.press("ArrowUp")
-        assert asked.focused_label() == OTHER
+        assert asked.focused_label() == asked.labels.other
 
         asked.press("ArrowDown")
         asked.press("ArrowDown")
@@ -468,7 +523,8 @@ class TestKeyboard:
         asked.press("Escape")
         record = asked.record("decline")
 
-        assert record.locator(".statusLine").inner_text().startswith("Declined")
+        status = record.locator(".statusLine").inner_text()
+        assert status.startswith(asked.labels.status("decline")), status
         assert record.locator('[aria-checked="true"]').count() == 0
         assert record.locator(".optionDimmed").count() == 0
         assert "The user doesn't want to proceed" in asked.tool_result()
@@ -477,7 +533,7 @@ class TestKeyboard:
         """В поле «Other» Esc и цифры — текст, а не команды панели."""
         asked.ask(NAME)
 
-        asked.row(OTHER).click()
+        asked.row(asked.labels.other).click()
         asked.page.keyboard.type("v1")
         asked.press("Escape")
         assert asked.page.locator(PANEL).is_visible()
@@ -510,7 +566,8 @@ class TestWithoutTheUser:
         finally:
             second.close()
 
-        assert record.locator(".statusLine").inner_text().startswith("No answer")
+        status = record.locator(".statusLine").inner_text()
+        assert status.startswith(asked.labels.status("cancel")), status
         assert asked.page.locator(COMPOSER).is_visible()
 
     def test_reload_shows_the_question_again(self, asked: QuestionPage) -> None:
@@ -542,14 +599,14 @@ class TestHistory:
         assert (
             record.locator(".statusLine")
             .inner_text()
-            .startswith("Answered · 2 questions")
+            .startswith(asked.labels.summary("accept", 2))
         )
         checked: list[str] = []
         for row in record.locator('[aria-checked="true"] .optionLabel').all():
             checked.append(row.inner_text())
 
         assert checked == ["PostgreSQL", "Unit tests"]
-        assert record.locator(".toolNameText").inner_text() == "Questions"
+        assert record.locator(".toolNameText").inner_text() == asked.labels.title(2)
         assert css(record.locator(".q-dot"), "backgroundColor") == SUCCESS_DOT
 
 
@@ -609,13 +666,15 @@ class TestLook:
         assert submit.is_disabled()
         assert css(submit, "opacity") == "0.5"
         assert panel.locator(".navTab").all_inner_texts() == ["Database"]
-        assert panel.locator(".keyboardHints").inner_text() == "Esc to cancel"
-        assert submit.inner_text().replace("\n", " ").startswith("1 Submit answers")
+        hints = panel.locator(".keyboardHints").inner_text()
+        assert hints == asked.labels.cancel_hint, hints
+        label = submit.inner_text().replace("\n", " ")
+        assert label.startswith(f"1 {asked.labels.submit}"), label
         # 13px панели × 1.1 содержимого × 0.9 метки
         assert css(panel.locator(".optionLabel").first, "fontSize") == "12.87px"
         waiting = asked.page.locator(WAITING)
         assert waiting.count() == 1
-        assert waiting.locator(".toolNameText").inner_text() == "Question"
+        assert waiting.locator(".toolNameText").inner_text() == asked.labels.title(1)
         assert css(waiting.locator(".q-dot"), "animationName") == "q-blink"
         message = waiting.locator(MESSAGE_OF)
         assert message.get_attribute("data-step-type") == "assistant_message"
@@ -717,7 +776,7 @@ class TestLook:
 
     def test_06_other_with_free_text(self, asked: QuestionPage, look_dir: Path) -> None:
         panel = asked.ask(NAME)
-        asked.row(OTHER).click()
+        asked.row(asked.labels.other).click()
         asked.page.keyboard.type("sales_mart")
 
         box = panel.locator(".otherInput")
@@ -734,14 +793,14 @@ class TestLook:
         asked.page.wait_for_timeout(450)
         asked.row("Unit tests").click()
         asked.row("Security scan").click()
-        asked.row(OTHER).click()
+        asked.row(asked.labels.other).click()
         asked.page.keyboard.type("smoke test on the stand")
         asked.submit()
         record = asked.record("accept")
 
         assert asked.page.locator(WAITING).count() == 0
         assert css(record, "fontSize") == "13px"
-        assert record.locator(".toolNameText").inner_text() == "Questions"
+        assert record.locator(".toolNameText").inner_text() == asked.labels.title(2)
         dot = record.locator(".q-dot")
         assert css(dot, "backgroundColor") == SUCCESS_DOT
         assert css(dot, "animationName") == "none"
@@ -755,7 +814,7 @@ class TestLook:
         assert (
             record.locator(".statusLine")
             .inner_text()
-            .startswith("Answered · 2 questions")
+            .startswith(asked.labels.summary("accept", 2))
         )
         record.scroll_into_view_if_needed()
 
@@ -779,9 +838,10 @@ class TestLook:
 
         assert record.locator(".optionDimmed").count() == 0
         assert record.locator(".radioChecked").count() == 0
-        assert record.locator(".toolNameText").inner_text() == "Question"
+        assert record.locator(".toolNameText").inner_text() == asked.labels.title(1)
         assert css(record.locator(".q-dot"), "backgroundColor") == FAILURE_DOT
-        assert record.locator(".statusLine").inner_text().startswith("Declined")
+        status = record.locator(".statusLine").inner_text()
+        assert status.startswith(asked.labels.status("decline")), status
         record.scroll_into_view_if_needed()
 
         asked.shoot(look_dir, "08-declined")
@@ -799,7 +859,7 @@ class TestLook:
         asked.asked_while_typing("Actually, use the existing clu")
         held = asked.page.locator(HELD)
         hint = held.locator(".q-hint")
-        assert hint.inner_text() == "Waiting for permission…"
+        assert hint.inner_text() == asked.labels.held
         assert css(hint, "color") == asked.color("hsl(var(--muted-foreground))")
         for dark, theme in ((False, "light"), (True, "dark")):
             asked.theme(dark)

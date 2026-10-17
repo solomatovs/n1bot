@@ -269,6 +269,33 @@
                 "single": "Выберите дату",
                 "range": "Выберите диапазон дат"
             }
+        },
+        "Question": {
+            "title": {
+                "one": "Вопрос",
+                "many": "Вопросы"
+            },
+            "status": {
+                "accept": "Отвечено",
+                "decline": "Отклонено",
+                "cancel": "Без ответа"
+            },
+            "questions_one": "{{count}} вопрос",
+            "questions_few": "{{count}} вопроса",
+            "questions_many": "{{count}} вопросов",
+            "questions_other": "{{count}} вопроса",
+            "other": "Другое",
+            "typed": "Введите свой ответ…",
+            "yes": "Да",
+            "no": "Нет",
+            "submit": "Отправить ответы",
+            "cancelHint": "Esc — отмена",
+            "held": "Ожидание разрешения…",
+            "noPreview": "У этого варианта нет предпросмотра",
+            "preview": "Предпросмотр: {{caption}}",
+            "collapse": "Свернуть",
+            "expand": "Развернуть",
+            "close": "Закрыть"
         }
     }
 }

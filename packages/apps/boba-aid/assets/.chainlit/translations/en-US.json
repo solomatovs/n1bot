@@ -258,6 +258,31 @@
                 "single": "Pick a date",
                 "range": "Pick a date range"
             }
+        },
+        "Question": {
+            "title": {
+                "one": "Question",
+                "many": "Questions"
+            },
+            "status": {
+                "accept": "Answered",
+                "decline": "Declined",
+                "cancel": "No answer"
+            },
+            "questions_one": "{{count}} question",
+            "questions_other": "{{count}} questions",
+            "other": "Other",
+            "typed": "Type your answer…",
+            "yes": "Yes",
+            "no": "No",
+            "submit": "Submit answers",
+            "cancelHint": "Esc to cancel",
+            "held": "Waiting for permission…",
+            "noPreview": "No preview for this option",
+            "preview": "Preview: {{caption}}",
+            "collapse": "Collapse",
+            "expand": "Expand",
+            "close": "Close"
         }
     }
 }
