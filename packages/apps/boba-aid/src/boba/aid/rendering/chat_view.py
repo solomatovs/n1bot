@@ -863,11 +863,13 @@ class ChatView:
         await self._batch.push(self._turn.thinking, token)
 
     async def close_thinking(self) -> None:
-        """Закрывает шаг рассуждений; без открытого шага закрывать нечего."""
+        """Закрывает шаг рассуждений: кружок «идёт» в названии сменяется
+        отметкой готовности; без открытого шага закрывать нечего."""
         step = self._turn.seal_thinking()
         if step is None:
             return
 
+        step.name = StepStatus.DONE.title(StepText.THINKING)
         step.end = utc_now()
         await self._sink.put(step)
 

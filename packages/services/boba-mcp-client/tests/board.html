@@ -4,6 +4,8 @@
 <meta charset="utf-8">
 <title>board</title>
 <style>
+  :root { color-scheme: light; color: #1f1f1f; }
+  :root[data-theme="dark"] { color-scheme: dark; color: #e8e8e8; }
   body { margin: 0; padding: 8px; font-family: sans-serif; }
   #board { border: 1px solid #888; min-height: 40px; padding: 4px; }
 </style>
@@ -44,12 +46,19 @@
     );
   }
 
-  function resized() {
+  function themed(theme) {
+    document.documentElement.dataset.theme = theme;
+    document.getElementById("theme").textContent = "theme: " + theme;
+  }
+
+  // ширину задаёт хост, приложение сообщает только свою высоту — при любом
+  // росте содержимого, а не только по уведомлениям хоста
+  const sizes = new ResizeObserver(() => {
     send({
       method: "ui/notifications/size-changed",
-      params: { width: document.body.scrollWidth, height: document.body.scrollHeight },
+      params: { height: document.body.scrollHeight },
     });
-  }
+  });
 
   window.addEventListener("message", (event) => {
     const data = event.data;
@@ -70,16 +79,14 @@
 
     if (data.method === "ui/notifications/tool-input") {
       document.getElementById("board").innerHTML = data.params.arguments.markup;
-      resized();
     }
 
     if (data.method === "ui/notifications/host-context-changed" && data.params.theme) {
-      document.getElementById("theme").textContent = "theme: " + data.params.theme;
+      themed(data.params.theme);
     }
 
     if (data.method === "ui/notifications/tool-result") {
       document.getElementById("result").textContent = "result: " + text(data.params);
-      resized();
     }
   });
 
@@ -121,9 +128,9 @@
     appInfo: { name: "board", version: "1" },
     appCapabilities: {},
   }).then((result) => {
-    document.getElementById("theme").textContent = "theme: " + result.hostContext.theme;
+    themed(result.hostContext.theme);
     send({ method: "ui/notifications/initialized", params: {} });
-    resized();
+    sizes.observe(document.body);
   });
 </script>
 </body>
