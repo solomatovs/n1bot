@@ -1,8 +1,9 @@
 """Бинарник `release/<версия>/bin/boba` (pytest -m integration): сценарий ACP
 через него — рукопожатие, сессия с регистрацией MCP-over-ACP, ход с инструментом,
-разрешение; время старта и размер, отсутствие исходного текста внутри,
-локальная модель onnx внутри файла. Без собранного бинарника тесты
-пропускаются: `make -C build boba-bin`."""
+разрешение; время старта и размер, отсутствие исходного текста внутри. Локальную
+модель onnx проверяет `bin/boba-onnx` — сборка с рантаймом onnxruntime-genai.
+Без собранного бинарника тесты пропускаются: `make -C build boba-bin`, для
+локальной модели — `make -C build boba-bin BIN_ONNX=1`."""
 
 from __future__ import annotations
 
@@ -28,7 +29,9 @@ from boba.transport.acp.protocol import StopReason
 pytestmark = [pytest.mark.anyio, pytest.mark.integration]
 
 REPO = Path(__file__).resolve().parents[4]
-BINARY = REPO / "release" / version("boba-cli") / "bin" / "boba"
+RELEASE_BIN = REPO / "release" / version("boba-cli") / "bin"
+BINARY = RELEASE_BIN / "boba"
+ONNX_BINARY = RELEASE_BIN / "boba-onnx"
 HELP_CEILING_SEC = 10.0
 SOURCE_SNIPPETS = (
     b"async def _guard_context",
@@ -37,16 +40,16 @@ SOURCE_SNIPPETS = (
 )
 
 
-def binary() -> Path:
-    if not BINARY.is_file():
-        pytest.fail(f"no binary at {BINARY}; run: make -C build boba-bin")
+def binary(path: Path, build: str) -> Path:
+    if not path.is_file():
+        pytest.fail(f"no binary at {path}; run: {build}")
 
-    return BINARY
+    return path
 
 
 class TestBinary:
     def test_help_starts_fast_and_holds_no_source_text(self) -> None:
-        path = binary()
+        path = binary(BINARY, "make -C build boba-bin")
         started = time.monotonic()
         completed = subprocess.run(
             [str(path), "acp", "--help"], check=True, capture_output=True, timeout=60
@@ -65,7 +68,9 @@ class TestBinary:
     async def test_acp_scenario_runs_through_the_binary(
         self, model: FakeModel, registration: StandRegistration, tmp_path: Path
     ) -> None:
-        boba = AcpProcess(tmp_path, model, [str(binary())])
+        boba = AcpProcess(
+            tmp_path, model, [str(binary(BINARY, "make -C build boba-bin"))]
+        )
         client = AcpClient()
         conn = await boba.start(client, registration, None, "--record-requests")
         try:
@@ -96,7 +101,8 @@ class TestBinary:
         проходит, веса лежат снаружи и называются профилем."""
         model_dir = str(raw_config["agent_stand"]["model_dir"])
         fake = FakeModel()
-        boba = AcpProcess(tmp_path, fake, [str(binary())])
+        onnx = binary(ONNX_BINARY, "make -C build boba-bin BIN_ONNX=1")
+        boba = AcpProcess(tmp_path, fake, [str(onnx)])
         document = boba.settings_document()
         document["model"] = "local"
         document["models"] = {

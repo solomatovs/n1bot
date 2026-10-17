@@ -123,7 +123,7 @@ class Commands:
 
     def __init__(self, projects: Projects, package: str) -> None:
         if not projects.known(package):
-            msg = f"package {package!r} is not in the repository"
+            msg = f"plugin_rootfs.py: пакета {package!r} в репозитории нет"
             raise SystemExit(msg)
 
         self._projects = projects
@@ -257,7 +257,7 @@ def main(argv: list[str]) -> int:
         commands = Commands(projects, argv[3])
         handler = getattr(commands, command, None)
         if handler is None:
-            print(f"unknown command {command!r}", file=sys.stderr)
+            print(f"plugin_rootfs.py: неизвестная команда {command!r}", file=sys.stderr)
             return 2
 
         lines = handler()

@@ -24,6 +24,7 @@ from boba.mcp_client.client import (
     McpCaller,
     McpClientError,
     McpServerConfig,
+    McpServers,
     McpToolServer,
     NoAuth,
     ProxyAuth,
@@ -66,12 +67,12 @@ class AuthStand(FakeServiceProcess):
             endpoint=endpoint, connect_timeout_sec=20.0, call_timeout_sec=60.0
         )
 
-        return McpToolServer("boba", config)
+        return McpToolServer("boba", config, McpServers.OWN)
 
     async def whoami(self, server: McpToolServer) -> str:
         """Текст для модели из ответа fake_whoami: логин, роли и токен."""
         params = mt.CallToolRequestParams(name="fake_whoami", arguments={})
-        reply = await server.call(params, None)
+        reply = await server.call(params, None, None)
 
         return McpResults().result(params.name, "call-whoami", reply).llm_view()
 

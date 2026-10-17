@@ -2,9 +2,10 @@
 треда, владеет переводчиком уведомлений агента (UpdateView над ChatView) и
 превращает каждое сообщение в шаг ленты: вопрос и итог хода — по TurnStarted и
 TurnFinished держателя, сами шаги — по уведомлениям `session/update`, которые
-держатель пересылает как есть (AgentUpdate). Срез истории правкой вопроса
-(ThreadRewound) рендерер передаёт порту ThreadRewinds: вкладки треда
-перечитывают ленту из истории своих агентов.
+держатель пересылает как есть (AgentUpdate), кнопка журнала идущего вызова —
+по JournalOpened ретранслятора. Срез истории правкой вопроса (ThreadRewound)
+рендерер передаёт порту ThreadRewinds: вкладки треда перечитывают ленту из
+истории своих агентов.
 
 Ошибки:
 Сбой отрисовки одного сообщения показывается в чат и журналируется; когда показать
@@ -36,6 +37,7 @@ from boba.messaging import (
     CanvasChanged,
     Envelope,
     FeedbackChanged,
+    JournalOpened,
     MessageBus,
     MessageKind,
     Notice,
@@ -250,6 +252,7 @@ class ChatRenderer:
             MessageKind.TURN_FINISHED: self._on_turn_finished,
             MessageKind.NOTICE: self._on_notice,
             MessageKind.CANVAS_CHANGED: self._on_canvas_changed,
+            MessageKind.JOURNAL_OPENED: self._on_journal_opened,
             MessageKind.THREAD_REWOUND: self._on_thread_rewound,
             MessageKind.FEEDBACK_CHANGED: self._on_feedback_changed,
         }
@@ -301,6 +304,9 @@ class ChatRenderer:
             note=message.note,
         )
         await self._surface.window_message(signal.payload())
+
+    async def _on_journal_opened(self, message: JournalOpened) -> None:
+        await self._updates.journal_opened(message)
 
     async def _on_thread_rewound(self, message: ThreadRewound) -> None:
         await self._rewinds.rewound(self._thread_id, message.session_id)

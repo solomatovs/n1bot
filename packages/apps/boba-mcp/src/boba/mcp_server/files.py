@@ -1,4 +1,5 @@
-"""Файлы workspace пользователя на сервисе: потоковая запись и чтение по HTTP.
+"""Файлы workspace пользователя и журналы вызовов на сервисе: потоковая
+запись и чтение по HTTP, журналы — ещё и ресурсами MCP.
 
 Байты файла идут отдельным маршрутом endpoint'а, а не вызовом MCP: тело
 запроса читается чанками и сразу пишется в хранилище workspace, чтение
@@ -6,7 +7,9 @@
 Адрес файла — область (scope), каталог области и имя; владелец — вошедший
 по токену, чужой workspace по адресу недостижим. DELETE по адресу самой
 области удаляет область целиком — файлы её каталогов и журналы вызовов её
-запусков: так чат удаляет тред.
+запусков: так чат удаляет тред. Каналы журнала вызова — ресурсы MCP: окна
+читает resources/read, журналы идущих вызовов перечисляет resources/list,
+рост и смену списка сообщают потоки subscriptions/listen.
 
 Ошибки:
 HTTPException 400 — адрес не называет файл каталога области или область.
@@ -15,28 +18,41 @@ HTTPException 404 — файла нет в workspace.
 HTTPException 416 — диапазон начинается за концом файла.
 HTTPException 500 — журналы вызовов удаляемой области не удалились.
 HTTPException 507 — в workspace не осталось места.
-ResourceError — resources/read канала журнала: канал не читается либо
-    журнала вызова у вызывающего нет.
+InvalidResourceError (ValidationError fastmcp) — resources/read канала
+    журнала: адрес не канал, канал не читается либо журнала вызова у
+    вызывающего нет; fastmcp отвечает -32602 «ресурса нет».
 MCPError — subscriptions/listen на uri, который не называет канал журнала,
     либо на журнал, которого у вызывающего нет (чужой запуск, нет канала).
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Sequence
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, ClassVar
 
 import mcp_types as mt
 from fastmcp import FastMCP
-from fastmcp.exceptions import ResourceError
+from fastmcp.exceptions import ValidationError as InvalidResourceError
+from fastmcp.resources import Resource, ResourceContent, ResourceResult
 from fastmcp.server.auth import AccessToken
+from fastmcp.server.providers import Provider
+from fastmcp.utilities.components import FastMCPComponent
+from fastmcp.utilities.versions import VersionSpec
 from mcp.server.auth.middleware.bearer_auth import AuthenticatedUser
 from mcp.server.context import ServerRequestContext
-from mcp.server.subscriptions import ListenHandler, SubscriptionBus
+from mcp.server.lowlevel import Server
+from mcp.server.subscriptions import (
+    ListenHandler,
+    ResourcesListChanged,
+    ServerEvent,
+    SubscriptionBus,
+)
 from mcp.shared.exceptions import MCPError
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import AnyUrl, BaseModel, ConfigDict, Field, ValidationError
 from starlette.exceptions import HTTPException
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
@@ -56,11 +72,20 @@ from boba.runtime.storage import (
 )
 from boba.toolkit.channels import JournalChannels
 from boba.toolkit.failure import ValidationText
-from boba.toolkit.result import ContentMime, ErrorResult
-from boba.toolkit.wire import FilesFeature, JournalFeature, JournalRead
+from boba.toolkit.result import ContentMime
+from boba.toolkit.wire import FilesFeature, JournalFeature, JournalOrigin, JournalRead
 from boba.toolrun.streams import CallJournals
 
-__all__ = ["FileRoutes", "JournalRoutes", "RouteCallers", "ServerRefusal"]
+__all__ = [
+    "CallerBus",
+    "FileRoutes",
+    "JournalListing",
+    "JournalRoutes",
+    "OpenJournal",
+    "OpenJournals",
+    "RouteCallers",
+    "ServerRefusal",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -141,25 +166,181 @@ class RouteCallers:
         return self._subjects.of(access)
 
 
+class CallerBus(SubscriptionBus):
+    """Реализация SubscriptionBus SDK mcp с адресатом-пользователем: шина
+    подписок одного endpoint'а.
+
+    Создаётся сервером endpoint'а; поток subscriptions/listen (ListenHandler
+    SDK) подписывается на неё из своего запроса, и шина запоминает, чей это
+    поток (TokenSubjects). Рост канала журнала (ResourceUpdated) уходит всем
+    потокам: каждый уже отфильтрован своими проверенными uri. Смена списка
+    ресурсов касается одного пользователя — его журналов идущих вызовов, —
+    поэтому notify() доставляет её только потокам этого пользователя.
+    """
+
+    def __init__(self, subjects: TokenSubjects) -> None:
+        self._subjects = subjects
+        self._listeners: dict[object, tuple[str, Callable[[ServerEvent], None]]] = {}
+
+    async def publish(self, event: ServerEvent) -> None:
+        for _user, listener in list(self._listeners.values()):
+            listener(event)
+
+        # уступить ход: потоки подписки успевают отправить событие между
+        # публикациями одной задачи
+        await asyncio.sleep(0)
+
+    def subscribe(self, listener: Callable[[ServerEvent], None]) -> Callable[[], None]:
+        user = self._subjects.current().user_key
+        token = object()
+        self._listeners[token] = (user, listener)
+
+        def unsubscribe() -> None:
+            self._listeners.pop(token, None)
+
+        return unsubscribe
+
+    def notify(self, user: str, event: ServerEvent) -> None:
+        """Событие потокам пользователя user."""
+        for owner, listener in list(self._listeners.values()):
+            if owner != user:
+                continue
+
+            listener(event)
+
+
+@dataclass(frozen=True)
+class OpenJournal:
+    """Журнал идущего вызова: запуск, идентификатор вызова на сервере и чей
+    запрос его открыл; origin None — запрос не назвал токена прогресса."""
+
+    run: str
+    node: str
+    origin: JournalOrigin | None
+
+
+class OpenJournals:
+    """Журналы идущих вызовов endpoint'а по пользователям: то, что
+    resources/list отдаёт вызывающему (JournalListing).
+
+    Создаётся сервером endpoint'а. Ход вызова (CallProgress) называет здесь
+    каждый журнал, едва тот открыт, и снимает журналы запуска, когда вызов
+    кончился; каждая перемена — событие ResourcesListChanged потокам
+    subscriptions/listen того же пользователя (CallerBus.notify).
+    """
+
+    def __init__(self, bus: CallerBus) -> None:
+        self._bus = bus
+        self._open: dict[str, list[OpenJournal]] = {}
+
+    def opened(self, user: str, journal: OpenJournal) -> None:
+        self._open.setdefault(user, []).append(journal)
+        self._bus.notify(user, ResourcesListChanged())
+
+    def closed(self, user: str, run: str) -> None:
+        """Журналы запуска run больше не идут; запуск без журналов — ничего."""
+        held = self._open.get(user, [])
+        kept = list(self._kept(held, run))
+        if len(kept) == len(held):
+            return
+
+        if kept:
+            self._open[user] = kept
+        else:
+            self._open.pop(user, None)
+
+        self._bus.notify(user, ResourcesListChanged())
+
+    def of(self, user: str) -> Sequence[OpenJournal]:
+        return tuple(self._open.get(user, ()))
+
+    @staticmethod
+    def _kept(held: Iterable[OpenJournal], run: str) -> Iterator[OpenJournal]:
+        for journal in held:
+            if journal.run == run:
+                continue
+
+            yield journal
+
+
+class JournalListing(Provider):
+    """Провайдер fastmcp: каналы журналов идущих вызовов вызывающего —
+    ресурсы resources/list.
+
+    Создаётся сервером endpoint'а над OpenJournals. Каждый видимый канал
+    открытого журнала — ресурс для человека (audience user) по шаблону
+    канала с JournalOrigin в _meta:
+    по нему клиент находит свой вызов. Читаются ресурсы шаблоном журнала
+    (JournalRoutes.read), поэтому найти ресурс по uri провайдер не берётся;
+    канал, в который тело ещё не писало, читается отказом «ресурса нет».
+    """
+
+    def __init__(self, journals: OpenJournals, subjects: TokenSubjects) -> None:
+        super().__init__()
+        self._journals = journals
+        self._subjects = subjects
+        self._uris = JournalUris(JournalRoutes.TEMPLATE)
+
+    async def _list_resources(self) -> Sequence[Resource]:
+        user = self._subjects.current().user_key
+
+        return list(self._listed(self._journals.of(user)))
+
+    async def _get_resource(
+        self, uri: str, version: VersionSpec | None = None
+    ) -> Resource | None:
+        return None
+
+    async def get_tasks(self) -> Sequence[FastMCPComponent]:
+        """Фоновых задач у журналов нет."""
+        return []
+
+    def _listed(self, journals: Iterable[OpenJournal]) -> Iterator[Resource]:
+        for journal in journals:
+            meta: dict[str, Any] | None = None
+            if journal.origin is not None:
+                origin = journal.origin.model_dump(mode="json", exclude_none=True)
+                meta = {JournalFeature.ID: origin}
+
+            for channel in JournalChannels.VISIBLE:
+                read = JournalRead(run=journal.run, node=journal.node, channel=channel)
+                yield Resource(
+                    uri=AnyUrl(self._uris.uri(read)),
+                    name=f"{journal.node}.{channel.value}.log",
+                    title=f"{channel.value} of call {journal.node}",
+                    mime_type=ContentMime.PLAIN.value,
+                    annotations=JournalRoutes.FOR_USER,
+                    meta=meta,
+                )
+
+
 class JournalRoutes:
     """Адреса журнала вызова на endpoint'е: канал целым файлом по маршруту
     и ресурсом MCP.
 
     Создаётся сервером endpoint'а из журналов процесса. Окно канала с
-    проверкой доступа (window) — общий путь операции stream_read и
-    resources/read; скачать канал целиком — маршрут
-    `{base}/journals/{run}/{node}/{channel}`, потоком и с Range. Канал —
-    ресурс по шаблону RESOURCE: на него ведут ссылки итога вызова, а
-    resources/read отдаёт первое окно канала. О росте канала сервер сообщает
-    потокам subscriptions/listen (listen поверх ListenHandler SDK и шины
-    подписок сервера, в которую публикует ход вызова CallProgress). Журнал
-    отдаётся и слушается только тем, кто вызывал инструмент: чужой запуск —
-    отказ.
+    проверкой доступа (window) — общий путь resources/read и подписки;
+    скачать канал целиком — маршрут `{base}/journals/{run}/{node}/{channel}`,
+    потоком и с Range. Канал — ресурс по шаблону TEMPLATE: на него ведут
+    ссылки итога вызова (без запроса), resources/read отдаёт окно канала от
+    offset или перед before, координаты окна — в _meta содержимого под
+    ключом JournalFeature.ID. О росте канала сервер сообщает потокам
+    subscriptions/listen (listen поверх ListenHandler SDK и шины подписок
+    endpoint'а, куда публикует ход вызова CallProgress), о смене списка
+    журналов идущих вызовов — событием ResourcesListChanged. Других событий
+    сервер не шлёт, и подтверждение потока их не называет. Журнал отдаётся и
+    слушается только тем, кто вызывал инструмент: чужой запуск — «ресурса
+    нет».
     """
 
     MIME: ClassVar[str] = "text/plain; charset=utf-8"
     RESOURCE: ClassVar[str] = f"boba-journal://{JournalFeature.ROUTE}"
-    """Шаблон uri ресурса канала журнала (JournalFeature.resource)."""
+    """Адрес канала журнала: по нему же стоит маршрут скачивания."""
+    TEMPLATE: ClassVar[str] = f"{RESOURCE}{{?offset,before}}"
+    """Шаблон uri ресурса канала журнала с окном (JournalFeature.resource)."""
+    FOR_USER: ClassVar[mt.Annotations] = mt.Annotations(audience=["user"])
+    """Журнал — для человека (панель вызова), а не для модели: так же
+    помечены ссылки на каналы в итоге вызова."""
 
     def __init__(  # noqa: PLR0913 — маршрут собирается всеми входами endpoint'а
         self,
@@ -179,7 +360,7 @@ class JournalRoutes:
         self._published = f"{published}{self._base}"
         self._policy = UploadPolicy()
         self._files: dict[str, StreamedFile] = {}
-        self._uris = JournalUris(self.RESOURCE)
+        self._uris = JournalUris(self.TEMPLATE)
         self._listener = ListenHandler(bus)
 
     def path(self) -> str:
@@ -187,29 +368,37 @@ class JournalRoutes:
         префиксом публикации): настройка расширения журнала."""
         return self._published
 
-    def install(self, server: FastMCP) -> None:
+    def install(self, server: FastMCP, lowlevel: Server[Any]) -> None:
         path = f"{self._base}/{JournalFeature.ROUTE}"
         server.custom_route(path, methods=["GET"])(self.get)
-        server.resource(self.RESOURCE, mime_type=ContentMime.PLAIN.value)(self.read)
-        # закрытое имя fastmcp: спец-методы MCP в ServerExtension запрещены
-        server._mcp_server.add_request_handler(
+        server.resource(
+            self.TEMPLATE, mime_type=ContentMime.PLAIN.value, annotations=self.FOR_USER
+        )(self.read)
+        lowlevel.add_request_handler(
             "subscriptions/listen", mt.SubscriptionsListenRequestParams, self.listen
         )
+
+    def close(self) -> None:
+        """Штатный конец потоков subscriptions/listen: каждый поток досылает
+        события и отвечает на свой запрос итогом."""
+        self._listener.close()
 
     async def listen(
         self,
         ctx: ServerRequestContext[Any, Any],
         params: mt.SubscriptionsListenRequestParams,
     ) -> mt.SubscriptionsListenResult:
-        """subscriptions/listen: поток событий роста каналов журнала. Каждый
-        uri подписки проверяется тем же путём, что resources/read (window):
-        не канал журнала, чужой запуск или канала ещё нет — отказ до
-        подтверждения; флаги смены списков проходят без проверки.
+        """subscriptions/listen: поток событий роста каналов журнала и смены
+        списка журналов идущих вызовов. Каждый uri подписки проверяется тем
+        же путём, что resources/read (window): не канал журнала, чужой запуск
+        или канала ещё нет — отказ до подтверждения. Смен списков инструментов
+        и промптов сервер не шлёт: в подтверждение они не входят.
 
         Ошибки:
         MCPError — uri подписки не называет доступный вызывающему канал.
         """
-        uris = params.notifications.resource_subscriptions
+        asked = params.notifications
+        uris = asked.resource_subscriptions
         if uris is None:
             uris = []
 
@@ -220,74 +409,97 @@ class JournalRoutes:
                     f"subscriptions/listen {uri}: expected a journal channel "
                     f"resource {self.RESOURCE}, got another uri"
                 )
-                raise MCPError(mt.INVALID_PARAMS, msg)
+                raise MCPError(mt.INVALID_PARAMS, msg, {"uri": uri})
 
-            window = self.window(read)
-            if isinstance(window, ErrorResult):
-                msg = f"subscriptions/listen {uri}: {window.message}"
-                raise MCPError(mt.INVALID_PARAMS, msg)
+            try:
+                self.window(read)
+            except InvalidResourceError as exc:
+                msg = f"subscriptions/listen {uri}: {exc}"
+                raise MCPError(mt.INVALID_PARAMS, msg, {"uri": uri}) from exc
 
-        return await self._listener(ctx, params)
+        honored = mt.SubscriptionFilter(
+            resources_list_changed=asked.resources_list_changed,
+            resource_subscriptions=asked.resource_subscriptions,
+        )
+        supported = params.model_copy(update={"notifications": honored})
 
-    async def read(self, run: str, node: str, channel: str) -> str:
-        """resources/read канала журнала: его первое окно, как stream_read
-        от начала; канал целиком отдаёт маршрут журналов.
+        return await self._listener(ctx, supported)
+
+    async def read(
+        self,
+        run: str,
+        node: str,
+        channel: str,
+        offset: int | None = None,
+        before: int | None = None,
+    ) -> ResourceResult:
+        """resources/read канала журнала: окно от offset или перед before,
+        без обоих — первое окно; канал целиком отдаёт маршрут журналов.
 
         Ошибки:
-        ResourceError — адрес канала негоден, канал не читается либо журнала
-            нет у вызывающего.
+        InvalidResourceError — адрес канала негоден, канал не читается либо
+            журнала нет у вызывающего: fastmcp отвечает -32602.
         """
+        address = {
+            "run": run,
+            "node": node,
+            "channel": channel,
+            "offset": offset,
+            "before": before,
+        }
         try:
-            request = JournalRead.model_validate(
-                {"run": run, "node": node, "channel": channel}
-            )
+            request = JournalRead.model_validate(address)
         except ValidationError as exc:
             msg = (
                 f"resources/read {run}/{node}/{channel}: expected a journal "
                 f"channel address, got {ValidationText.of(exc)}"
             )
-            raise ResourceError(msg) from exc
+            raise self._absent(msg) from exc
 
         window = self.window(request)
-        if isinstance(window, ErrorResult):
-            msg = f"resources/read {run}/{node}/{channel}: {window.message}"
-            raise ResourceError(msg)
+        place = window.model_dump(mode="json", exclude={"text"})
+        content = ResourceContent(
+            window.text,
+            mime_type=ContentMime.PLAIN.value,
+            meta={JournalFeature.ID: place},
+        )
 
-        return window.text
+        return ResourceResult([content])
 
-    def window(self, request: JournalRead) -> StreamSlice | ErrorResult:
+    def window(self, request: JournalRead) -> StreamSlice:
         """Окно канала журнала для вызывающего: от offset (без него — от
-        начала) либо перед before. Отказ — ErrorResult вида ServerRefusal:
-        канал не читается, запуск чужой, журнала нет."""
+        начала) либо перед before.
+
+        Ошибки:
+        InvalidResourceError — канал не читается, запуск чужой либо журнала
+            нет.
+        """
         address = f"journal of call {request.node!r} in run {request.run!r}"
         if not JournalChannels.visible(request.channel):
-            return ErrorResult(
-                message=(
-                    f"{address}: channel {request.channel.value!r} is not "
-                    "readable, expected one of the visible journal channels"
-                ),
-                error_kind=ServerRefusal.INVALID_REQUEST,
+            msg = (
+                f"{address}: channel {request.channel.value!r} is not readable, "
+                "expected one of the visible journal channels"
             )
+            raise self._absent(msg)
 
         user = self._subjects.current().user_key
         owner = self._journals.owner_of(request.run)
         if owner not in (None, user):
-            return ErrorResult(
-                message=(
-                    f"{address}: the run belongs to another user; expected a "
-                    "run of the caller"
-                ),
-                error_kind=ServerRefusal.FORBIDDEN,
-            )
+            msg = f"{address}: the run belongs to another user"
+            raise self._absent(msg)
 
         piece = self._slice(request, user)
         if piece is None:
-            return ErrorResult(
-                message=f"{address}: no journal on channel {request.channel.value!r}",
-                error_kind=ServerRefusal.NOT_FOUND,
-            )
+            msg = f"{address}: no journal on channel {request.channel.value!r}"
+            raise self._absent(msg)
 
         return piece
+
+    @staticmethod
+    def _absent(message: str) -> InvalidResourceError:
+        """Отказ «ресурса нет»: fastmcp отвечает на него -32602, как требует
+        спецификация, а трассу пишет только в отладочный лог."""
+        return InvalidResourceError(message, log_level=logging.DEBUG)
 
     def _slice(self, request: JournalRead, user: str) -> StreamSlice | None:
         if request.before is not None:

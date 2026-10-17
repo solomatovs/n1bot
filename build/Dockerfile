@@ -3,6 +3,16 @@ ARG GLIBC_IMAGE=dmp/glibc:2.28
 ARG GCC_IMAGE=dmp/gcc:8.5.0
 ARG PYTHON_IMAGE=dmp/python:${PYTHON_VERSION}-dist
 ARG NODE_IMAGE=dmp/nodejs:20
+# основа образа mcp: runtime-sandbox с образами корней плагинов и workspace, их make build
+# кладёт отдельной сборкой build/sandbox.Dockerfile в контексте runtime/sandbox
+ARG SANDBOX_IMAGE=runtime-sandbox
+
+# Собирает make классическим сборщиком (DOCKER_BUILDKIT=0): он проходит все стадии до
+# --target по порядку файла. Поэтому стадии идут по целям make — base, oracledb-wheel,
+# sandbox-out, plugin-site-out и plugin-root, boba-bin-out, runtime-sandbox и runtime-mcp,
+# runtime-aid, — а стадия, которой нужны аргументы одной цели, без них пуста
+# (plugin-site без PLUGIN, bin-site и boba-bin без NUITKA_VERSION).
+# Синтаксис только классический: без RUN --mount, COPY --chmod/--link и heredoc
 
 FROM ${PYTHON_IMAGE} AS python-dist
 
@@ -201,7 +211,9 @@ RUN python3 -c "import tomllib, pathlib; uv = tomllib.loads(pathlib.Path('pyproj
 
 # --- образ корня одного плагина: make plugin-rootfs PLUGIN=<пакет> ---------------
 
-# site-packages плагина: закрытие payload одного пакета и его сборочные декларации
+# site-packages плагина: закрытие payload одного пакета и его сборочные декларации.
+# Без PLUGIN (стадию проходят цели ниже) стадия отдаёт пустые заготовки, которые ждут
+# plugin-root и plugin-site-out, а шаги плагина пропускаются
 FROM base AS plugin-site
 
 ARG PLUGIN
@@ -210,9 +222,6 @@ COPY --from=boba-wheels /tmp/wheels/          /tmp/wheels/
 COPY --from=boba-wheels /tmp/boba/packages/   /tmp/packages/
 COPY build/scripts/plugin_rootfs.py  /tmp/plugin_rootfs.py
 
-# классический builder проходит все стадии до --target, и make build приходит сюда
-# с пустым PLUGIN. Тогда стадия отдаёт пустые заготовки, которые ждут plugin-root и
-# plugin-site-out, а шаги плагина пропускаются. make plugin-rootfs без PLUGIN не стартует
 RUN mkdir -p /opt/site /opt/code-sandbox /opt/plugin-root /opt/plugin-setup.d \
     && : > /opt/plugin-apt.txt && : > /opt/plugin-data.txt
 
@@ -250,8 +259,7 @@ RUN [ -z "${PLUGIN}" ] || PYTHONPATH=/opt/code-sandbox:/opt/site python3 -c "imp
 
 # site-packages и код плагина по путям корня: make plugin-rootfs забирает /usr этой
 # стадии docker cp и стримит в mke2fs вторым tar'ом после plugin-root.
-# Стадия стоит сразу за plugin-site: классический builder собирает все стадии до
-# --target, и sandbox-base с plugin-root ради неё не пересобираются
+# Стадия стоит сразу за plugin-site: sandbox-base и plugin-root ради неё не собираются
 FROM scratch AS plugin-site-out
 
 ARG PYTHON_VERSION=3.11
@@ -326,40 +334,83 @@ RUN for path in $(cat /tmp/plugin-data.txt); do mkdir -p "$path"; done \
 RUN mkdir -p "${BOBA_DIR}/conf/krb" ${SANDBOX_DEV_KRB}
 
 
-# --- фронт: стадии node, на хосте node не нужен -----------------------------------
+# --- boba: агент одним файлом (make boba-bin и образ aid) ---------------------------
 
-# UI chainlit (фронт + copilot) из исходников тега с overlay web/chainlit-ui поверх;
-# зависимости pnpm берёт из реестра npm образа nodejs
-FROM ${NODE_IMAGE} AS chainlit-ui-build
+# boba-cli из колёс репозитория — вход компиляции: правка пакетов вне его закрытия даёт
+# то же дерево, и шаг Nuitka берётся из кэша. Для этого дерево зависит только от
+# содержимого колёс: нативные пакеты из sdist (gssapi, krb5) — без отладочной информации
+# с путями временных каталогов, метки времени uv (uv_cache.json) — вон.
+# BIN_ONNX — с рантаймом onnxruntime-genai. Без NUITKA_VERSION (стадию проходят цели
+# ниже) стадия пуста
+FROM base AS bin-site
 
-ARG CHAINLIT_VERSION
+ARG NUITKA_VERSION
+ARG BIN_ONNX
 
-COPY build/scripts/chainlit_ui.sh                   /tmp/chainlit_ui.sh
-COPY build/src/chainlit-${CHAINLIT_VERSION}.tar.gz  /tmp/chainlit.tar.gz
-COPY packages/apps/boba-aid/web/chainlit-ui/overlay/  /tmp/overlay/
+COPY --from=boba-wheels /tmp/wheels/  /tmp/wheels/
 
-# без cache mount (его нет у классического builder'а): store pnpm живёт только
-# в этом шаге и удаляется, в слой попадает лишь /out/ui
-RUN sh /tmp/chainlit_ui.sh /tmp/chainlit.tar.gz /tmp/overlay /out/ui \
-    && rm -rf /tmp/chainlit-ui
+RUN mkdir -p /opt/bin-site && { [ -z "${NUITKA_VERSION}" ] || { \
+        CFLAGS="-g0" uv pip install --python "$(command -v python3)" --target /opt/bin-site \
+            --constraint /tmp/wheels/constraints.txt --find-links=/tmp/wheels \
+            --override /tmp/wheels/overrides.txt \
+            boba-cli $( [ -n "${BIN_ONNX}" ] && echo "boba-llm-onnx[generation]" ) \
+        && find /opt/bin-site -name uv_cache.json -delete \
+        && sed -i '/uv_cache\.json,/d' /opt/bin-site/*.dist-info/RECORD; }; }
 
 
-# скрипт страницы chainlit (web/page, TypeScript)
-FROM ${NODE_IMAGE} AS aid-page-build
+# boba одним файлом: Nuitka и patchelf из индекса pypi образа; бинарник самодостаточен —
+# gssapi (через транспорт http), данные пакетов и, по флагу BIN_ONNX, рантайм
+# onnxruntime-genai входят целиком; libpython линкуется статически. onnxruntime_genai
+# находит onnxruntime через find_spec, не импортом, поэтому пакет onnxruntime с его
+# библиотеками включается явно. Локальные модели внутрь не попадают: веса лежат в
+# каталоге models/ релиза. Без NUITKA_VERSION стадия отдаёт пустой /out
+FROM base AS boba-bin
 
-COPY packages/apps/boba-aid/web/page/  /src/web/page/
+ARG NUITKA_VERSION
+ARG PATCHELF_VERSION
+ARG ZSTANDARD_VERSION
+ARG ORDERED_SET_VERSION
+ARG BIN_ONNX
 
-WORKDIR /src/web/page
-RUN npm ci --no-audit --no-fund && npm run check && npm run build
+RUN mkdir -p /out /opt/bin-tools && { [ -z "${NUITKA_VERSION}" ] || \
+        uv pip install --python "$(command -v python3)" --target /opt/bin-tools \
+            "nuitka==${NUITKA_VERSION}" "patchelf==${PATCHELF_VERSION}" \
+            "zstandard==${ZSTANDARD_VERSION}" "ordered-set==${ORDERED_SET_VERSION}"; }
 
+COPY build/conf/nuitka-boba.yml       /tmp/nuitka-boba.yml
+COPY --from=bin-site /opt/bin-site/   /opt/bin-site/
+
+ENV PYTHONPATH=/opt/bin-site:/opt/bin-tools PATH=/opt/bin-tools/bin:${PATH}
+# сборочные каталоги Nuitka остаются в /tmp и уходят тем же шагом: в /out — только бинарник
+RUN [ -z "${NUITKA_VERSION}" ] || { onnx=""; \
+    if [ -n "${BIN_ONNX}" ]; then \
+        onnx="--include-package=onnxruntime_genai --include-package-data=onnxruntime_genai \
+              --include-package=onnxruntime"; \
+    fi; \
+    python3 -m nuitka --onefile --static-libpython=yes --output-filename=boba \
+        --output-dir=/tmp/nuitka --jobs=${JOBS} \
+        --user-package-configuration-file=/tmp/nuitka-boba.yml \
+        --include-package=gssapi --include-distribution-metadata=boba-cli \
+        --include-package-data=boba.agent ${onnx} \
+        /opt/bin-site/boba/cli/app.py \
+    && install -m 0755 /tmp/nuitka/boba /out/boba \
+    && rm -rf /tmp/nuitka \
+    && /out/boba --help > /dev/null; }
+
+
+# бинарник для make boba-bin: make забирает /boba через docker cp
+FROM scratch AS boba-bin-out
+
+COPY --from=boba-bin /out/  /
+
+
+# --- образы приложений -----------------------------------------------------------------
 
 # site-packages приложения: ставится по своему графу зависимостей, парсеры и
-# эмбеддер сюда не попадают — они объявлены как extra payload у tool-пакетов
-# стоит после стадий плагинов: классический builder проходит все стадии до --target,
-# и make plugin-rootfs не должен ради корня плагина ставить всё приложение
+# эмбеддер сюда не попадают — они объявлены как extra payload у tool-пакетов.
+# Состав задаёт make build: APP_PACKAGES и APP_IMPORTS
 FROM base AS app-site
 
-# состав приложения задаёт сборка: APP_PACKAGES и APP_IMPORTS приходят из Makefile
 ARG APP_PACKAGES
 ARG APP_IMPORTS
 
@@ -375,8 +426,8 @@ RUN for name in ${APP_IMPORTS}; do python3 -c "import $name; print('$name ok')";
 RUN pip3 list --path /opt/app-site --format=freeze | grep '^boba-' | cut -d= -f1 > /opt/app-packages.txt
 
 
-# общая основа образов приложений: python и библиотеки; код приложения кладёт стадия
-# runtime-base, бинарники песочницы — runtime-sandbox
+# общая основа образов приложений: python и библиотеки. Код приложения стадии образов
+# кладут последним слоем — его правка не трогает слои ниже
 FROM ${GLIBC_IMAGE} AS runtime-os
 
 ARG PYTHON_VERSION=3.11
@@ -412,20 +463,12 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
 ENTRYPOINT ["python3"]
 
 
-FROM runtime-os AS runtime-base
+# --- boba-mcp: MCP-сервер с инструментами boba -------------------------------------
 
-ARG BOBA_DIR=/app/boba
-
-COPY --from=app-site /opt/app-site          ${BOBA_DIR}/app/
-COPY --from=app-site /opt/app-packages.txt  ${BOBA_DIR}/app/packages.txt
-
-# шебанги стадии сборки ведут на /usr/local/bin/python3, которого здесь нет
-RUN sed -i "1s|^#!.*python3.*|#!${BOBA_DIR}/third/bin/python3|" ${BOBA_DIR}/app/bin/*
-
-
-# основа приложений, которые исполняют инструменты в песочнице (mcp): bwrap,
-# fuse2fs и каталог образов корней плагинов и workspace
-FROM runtime-base AS runtime-sandbox
+# основа приложений, которые исполняют инструменты в песочнице (mcp): bwrap, fuse2fs
+# и каталог образов корней плагинов и workspace. Образы кладёт поверх неё
+# build/sandbox.Dockerfile — это и есть SANDBOX_IMAGE стадии runtime-mcp
+FROM runtime-os AS runtime-sandbox
 
 ARG BOBA_DIR=/app/boba
 
@@ -441,57 +484,57 @@ RUN chmod -R go-w ${BOBA_DIR}/third/bin ${BOBA_DIR}/sandbox \
     && ${BOBA_DIR}/third/bin/fuse2fs -V
 
 
-# --- boba: агент одним файлом -------------------------------------------------------
-# make boba-bin: boba-cli из колёс репозитория, Nuitka и patchelf из индекса pypi образа;
-# бинарник самодостаточен — gssapi (через транспорт http), данные пакетов и, по флагу
-# BIN_ONNX, рантайм onnxruntime-genai входят целиком; libpython линкуется статически.
-# onnxruntime_genai находит onnxruntime через find_spec, не импортом, поэтому пакет
-# onnxruntime с его библиотеками включается явно
-# Локальные модели внутрь не попадают: веса лежат в каталоге models/ релиза
-FROM base AS boba-bin
+# образ сервиса: образы корней плагинов и шаблон workspace внутри (снаружи приложению
+# нужны только конфиг и данные, и пересборка плагинов не меняет файлы под живым
+# контейнером), общий конфиг внутри, site.toml и данные приходят деревом compose/mcp
+FROM ${SANDBOX_IMAGE} AS runtime-mcp
 
-ARG NUITKA_VERSION
-ARG PATCHELF_VERSION
-ARG ZSTANDARD_VERSION
-ARG ORDERED_SET_VERSION
-ARG BIN_ONNX
+ARG BOBA_DIR=/app/boba
+ARG BOBA_UID=1000
+ARG BOBA_GID=1000
 
-COPY --from=boba-wheels /tmp/wheels/  /tmp/wheels/
-COPY build/conf/nuitka-boba.yml       /tmp/nuitka-boba.yml
+COPY packages/apps/boba-mcp/conf/  ${BOBA_DIR}/conf/
 
-RUN uv pip install --python "$(command -v python3)" --target /opt/bin-site \
-        --constraint /tmp/wheels/constraints.txt --find-links=/tmp/wheels \
-        --override /tmp/wheels/overrides.txt \
-        boba-cli $( [ -n "${BIN_ONNX}" ] && echo "boba-llm-onnx[generation]" )
-RUN uv pip install --python "$(command -v python3)" --target /opt/bin-tools \
-        "nuitka==${NUITKA_VERSION}" "patchelf==${PATCHELF_VERSION}" \
-        "zstandard==${ZSTANDARD_VERSION}" "ordered-set==${ORDERED_SET_VERSION}"
+COPY --from=app-site /opt/app-site          ${BOBA_DIR}/app/
+COPY --from=app-site /opt/app-packages.txt  ${BOBA_DIR}/app/packages.txt
+# шебанги стадии сборки ведут на /usr/local/bin/python3, которого здесь нет
+RUN sed -i "1s|^#!.*python3.*|#!${BOBA_DIR}/third/bin/python3|" ${BOBA_DIR}/app/bin/*
 
-ENV PYTHONPATH=/opt/bin-site:/opt/bin-tools PATH=/opt/bin-tools/bin:${PATH}
-RUN onnx=""; \
-    if [ -n "${BIN_ONNX}" ]; then \
-        onnx="--include-package=onnxruntime_genai --include-package-data=onnxruntime_genai \
-              --include-package=onnxruntime"; \
-    fi; \
-    python3 -m nuitka --onefile --static-libpython=yes --output-filename=boba \
-        --output-dir=/out --jobs=${JOBS} \
-        --user-package-configuration-file=/tmp/nuitka-boba.yml \
-        --include-package=gssapi --include-distribution-metadata=boba-cli \
-        --include-package-data=boba.agent ${onnx} \
-        /opt/bin-site/boba/cli/app.py \
-    && /out/boba --help > /dev/null
+EXPOSE 8650
+USER ${BOBA_UID}:${BOBA_GID}
+CMD ["-m", "boba.mcp_server", "--config", "/app/boba/conf/config.toml", "--site", "/app/boba/conf/site.toml"]
 
 
-# бинарник для make boba-bin: make забирает /boba через docker cp
-FROM scratch AS boba-bin-out
+# --- boba-aid: чат -------------------------------------------------------------------
 
-COPY --from=boba-bin /out/boba /boba
+# UI chainlit (фронт + copilot) из исходников тега с overlay web/chainlit-ui поверх;
+# зависимости pnpm берёт из реестра npm образа nodejs. Store pnpm живёт только в этом
+# шаге и удаляется, в слой попадает лишь /out/ui
+FROM ${NODE_IMAGE} AS chainlit-ui-build
+
+ARG CHAINLIT_VERSION
+
+COPY build/scripts/chainlit_ui.sh                   /tmp/chainlit_ui.sh
+COPY build/src/chainlit-${CHAINLIT_VERSION}.tar.gz  /tmp/chainlit.tar.gz
+COPY packages/apps/boba-aid/web/chainlit-ui/overlay/  /tmp/overlay/
+
+RUN sh /tmp/chainlit_ui.sh /tmp/chainlit.tar.gz /tmp/overlay /out/ui \
+    && rm -rf /tmp/chainlit-ui
+
+
+# скрипт страницы chainlit (web/page, TypeScript)
+FROM ${NODE_IMAGE} AS aid-page-build
+
+COPY packages/apps/boba-aid/web/page/  /src/web/page/
+
+WORKDIR /src/web/page
+RUN npm ci --no-audit --no-fund && npm run check && npm run build
 
 
 # образ чата: общий конфиг, ассеты chainlit, vendor-шрифты и стили формул вместо CDN,
 # агент одним файлом из стадии boba-bin (его путь — BOBA_AGENT_COMMAND в boba.env).
 # Вложения сессий приложение держит в данных ([aid].files_dir), app_root не пишется
-FROM runtime-base AS runtime-aid
+FROM runtime-os AS runtime-aid
 
 ARG BOBA_DIR=/app/boba
 ARG BOBA_UID=1000
@@ -506,40 +549,18 @@ COPY --chown=${BOBA_UID}:${BOBA_GID} --from=aid-page-build /src/assets/public/pa
 COPY --chown=${BOBA_UID}:${BOBA_GID} --from=chainlit-ui-build /out/ui/                            ${BOBA_DIR}/app_root/ui/
 COPY --chown=${BOBA_UID}:${BOBA_GID} build/src/webassets/                                ${BOBA_DIR}/app_root/public/vendor/
 
-COPY packages/apps/boba-aid/conf/  ${BOBA_DIR}/conf/
-COPY --from=boba-bin /out/boba     ${BOBA_DIR}/bin/boba
-
 # файлы уже принадлежат пользователю, каталогам владелец ставится без рекурсии
 RUN chown ${BOBA_UID}:${BOBA_GID} ${BOBA_DIR}/app_root \
        ${BOBA_DIR}/app_root/.chainlit ${BOBA_DIR}/app_root/public
 
+COPY packages/apps/boba-aid/conf/  ${BOBA_DIR}/conf/
+COPY --from=boba-bin /out/         ${BOBA_DIR}/bin/
+
+COPY --from=app-site /opt/app-site          ${BOBA_DIR}/app/
+COPY --from=app-site /opt/app-packages.txt  ${BOBA_DIR}/app/packages.txt
+# шебанги стадии сборки ведут на /usr/local/bin/python3, которого здесь нет
+RUN sed -i "1s|^#!.*python3.*|#!${BOBA_DIR}/third/bin/python3|" ${BOBA_DIR}/app/bin/*
+
 EXPOSE 8501
 USER ${BOBA_UID}:${BOBA_GID}
 CMD ["-m", "boba.aid.main", "--config", "/app/boba/conf/config.toml", "--site", "/app/boba/conf/site.toml"]
-
-
-# --- boba-mcp: MCP-сервер с инструментами boba -------------------------------------
-
-# образы корней плагинов и шаблон workspace внутри образа: снаружи приложению нужны
-# только конфиг и данные, и пересборка плагинов не меняет файлы под живым контейнером.
-# Собирает их make plugin-rootfs-all и make sandbox до этой стадии
-FROM runtime-sandbox AS runtime-plugins
-
-ARG BOBA_DIR=/app/boba
-
-COPY --chown=root:root --chmod=0644 runtime/sandbox/workspace.ext4  ${BOBA_DIR}/sandbox/workspace.ext4
-COPY --chown=root:root runtime/sandbox/plugins/                     ${BOBA_DIR}/sandbox/plugins/
-
-
-# образ сервиса: общий конфиг внутри, снаружи приходят site.toml и данные деревом compose/mcp
-FROM runtime-plugins AS runtime-mcp
-
-ARG BOBA_DIR=/app/boba
-ARG BOBA_UID=1000
-ARG BOBA_GID=1000
-
-COPY packages/apps/boba-mcp/conf/  ${BOBA_DIR}/conf/
-
-EXPOSE 8650
-USER ${BOBA_UID}:${BOBA_GID}
-CMD ["-m", "boba.mcp_server", "--config", "/app/boba/conf/config.toml", "--site", "/app/boba/conf/site.toml"]
