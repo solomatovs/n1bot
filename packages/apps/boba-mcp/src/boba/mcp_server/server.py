@@ -34,7 +34,7 @@ from abc import abstractmethod
 from collections.abc import AsyncGenerator, Iterator, Mapping, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
 from enum import StrEnum
-from typing import Any, ClassVar, Final, Protocol
+from typing import Any, ClassVar, Protocol
 from uuid import uuid4
 
 import mcp_types as mt
@@ -51,6 +51,7 @@ from mcp.server.subscriptions import (
     ResourceUpdated,
     SubscriptionBus,
 )
+from mcp.shared.jsonrpc_dispatcher import progress_token_from_params
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError
 from starlette.applications import Starlette
 from starlette.requests import Request
@@ -678,8 +679,9 @@ class CallContextMiddleware(Middleware):
     (operations) проходят мимо: запуска у них нет.
     """
 
-    PROGRESS_TOKEN: Final = "progress_token"  # noqa: S105 — ключ _meta, не секрет
-    """Ключ токена прогресса в _meta запроса (RequestParamsMeta SDK)."""
+    PARAMS_META: ClassVar[str] = "_meta"
+    """Ключ блока _meta в параметрах запроса: fastmcp отдаёт сам блок, а
+    разбор токена прогресса SDK ждёт параметры целиком."""
 
     def __init__(
         self,
@@ -781,18 +783,14 @@ class CallContextMiddleware(Middleware):
 
         return self._replies.journaled(result, links.blocks())
 
-    @staticmethod
-    def _progress_token() -> mt.ProgressToken | None:
-        """Токен прогресса из _meta запроса, разобранного SDK; None — клиент
-        о ходе вызова не просил."""
+    def _progress_token(self) -> mt.ProgressToken | None:
+        """Токен прогресса из _meta запроса разбором SDK; None — клиент о
+        ходе вызова не просил."""
         request = get_context().request_context
         if request is None:
             return None
 
-        if meta := request.meta:
-            return meta.get(CallContextMiddleware.PROGRESS_TOKEN)
-
-        return None
+        return progress_token_from_params({self.PARAMS_META: request.meta})
 
     def _recorded(
         self, progress: CallProgress, user: str, run_id: str

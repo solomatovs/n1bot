@@ -22,7 +22,7 @@ from collections.abc import (
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import PurePosixPath
-from typing import Any, ClassVar, Protocol, TypeAlias, get_args
+from typing import Any, ClassVar, Protocol, TypeAlias, cast
 from urllib.parse import unquote, urlsplit, urlunsplit
 from uuid import UUID, uuid5
 
@@ -105,13 +105,9 @@ class StepKind(StrEnum):
 
     @property
     def step_type(self) -> TrueStepType:
-        """Тип шага chainlit; значение, которого chainlit не знает, — ошибка."""
-        for known in get_args(TrueStepType):
-            if known == self.value:
-                return known
-
-        msg = f"step kind {self.value!r} is not a chainlit step type"
-        raise ValueError(msg)
+        # chainlit объявляет тип шага без сообщений (user/assistant_message), хотя
+        # сам создаёт такие шаги: тип библиотеки уже, чем её значения
+        return cast("TrueStepType", self.value)
 
 
 class StepLanguage(StrEnum):
