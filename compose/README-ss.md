@@ -30,6 +30,12 @@ mcp» (оба процесса сразу), «tool (aid)» и «pytest (aid): �
 site.toml. Перенос данных из базы dev в базу новой версии
 описан в `build/scripts/migrations/2026-10-16-chat-agent-cutover/README.md`.
 
+Индексаторы и скраперы ix (`compose/ix-*`, `compose/cfl-indexer`,
+`compose/*-meta-scraper`) пишут в схему `ix` базы `aid`; схему они создают сами
+командой `upgrade`, ядро `ix-core` — первым, `cfl-indexer` — после `ix-fts`.
+Модель эмбеддингов `ix-vector` и `ix-search-lab` берут из `runtime/models/fastembed`.
+Тесты новой версии читают индекс из `aid_debug`.
+
 Контейнер чата новой версии называется `aid` (второй узел `aid2`): на это имя
 рассчитаны карта доступа к PostgreSQL и прокси (раздел «Сеть»). Отладка чата
 обеих версий слушает порт 8601, потому что порт задаёт тот же site.toml.

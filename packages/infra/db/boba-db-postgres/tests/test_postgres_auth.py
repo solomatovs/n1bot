@@ -47,7 +47,7 @@ def _profile(auth: Any) -> PostgresConfig:
             "host": STAND.pg_host,
             "hostaddr": STAND.pg_addr,
             "port": STAND.pg_port,
-            "dbname": STAND.pg_database,
+            "dbname": STAND.aid_database,
             "sslmode": "disable",
             "connect_timeout": 10,
             "application_name": "boba-auth-test",
