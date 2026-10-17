@@ -98,7 +98,7 @@ class Stand(BaseModel):
     pg_host: str
     pg_addr: str
     pg_port: int
-    pg_database: str
+    aid_database: str
     pg_krbsrvname: str
     pg_probe_user: str = Field(
         default="",
