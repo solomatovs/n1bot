@@ -643,7 +643,7 @@ class TestRelayAcceptance:
         process, updates, session_id = await self._session(
             agents, frozenset({"dev"}), "app-only"
         )
-        text = self._call("mcp__standard__panel_refresh", {})
+        text = self._call("mcp__standard__app_only", {})
 
         _, idle = await agents.turn(process, session_id, text)
 
@@ -655,6 +655,6 @@ class TestRelayAcceptance:
 
         assert idle.stop_reason == "end_turn"
         assert offered.named("add") == "mcp__standard__add"
-        assert offered.named("panel_refresh") == "panel_refresh"
+        assert offered.named("app_only") == "app_only"
         assert any(call.status == "failed" for call in calls), calls
         assert not any(call.status == "completed" for call in calls), calls

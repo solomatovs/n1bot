@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>MCP Apps sandbox</title>
+<style>
+  html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; }
+  iframe { border: none; width: 100%; height: 100%; display: block; }
+</style>
+</head>
+<body>
+<script>
+  // Страница-прокси песочницы MCP Apps (раздел Sandbox proxy спецификации):
+  // лежит на источнике сервера приложения, получает от чата HTML приложения и
+  // грузит его во внутренний iframe без allow-same-origin с CSP по _meta.ui.csp
+  // ресурса без доменов, которые накрывают источник чата; сообщения чата и
+  // приложения пересылает как есть, кроме своих ui/notifications/sandbox-*.
+  const PREFIX = "ui/notifications/sandbox-";
+  const READY = "ui/notifications/sandbox-proxy-ready";
+  const RESOURCE = "ui/notifications/sandbox-resource-ready";
+  const DOCTYPE = /^\s*<!doctype[^>]*>/i;
+  // схема://хост[:порт][/путь]; хост — имя, * или *.суффикс
+  const SOURCE = /^[a-z][a-z0-9+.-]*:\/\/(\*|(?:\*\.)?[a-z0-9.-]+)(?::(\d+|\*))?(?:\/[^\s;,'"]*)?$/i;
+  const PERMISSIONS = {
+    camera: "camera",
+    microphone: "microphone",
+    geolocation: "geolocation",
+    clipboardWrite: "clipboard-write",
+  };
+
+  let inner = null;
+  let host = null;
+
+  // домен CSP, под который подпадает источник чата, открыл бы скрипту
+  // приложения API чата с куками пользователя
+  function opensChat(name, port) {
+    const chat = new URL(host);
+    if (name === "*") {
+      return true;
+    }
+    if (name.startsWith("*.")) {
+      if (!chat.hostname.endsWith(name.slice(1))) {
+        return false;
+      }
+    } else if (name !== chat.hostname) {
+      return false;
+    }
+    if (!port || port === "*" || !chat.port) {
+      return true;
+    }
+    return port === chat.port;
+  }
+
+  function sources(domains) {
+    if (!Array.isArray(domains)) {
+      return "";
+    }
+    const kept = [];
+    for (const domain of domains) {
+      const source = SOURCE.exec(String(domain));
+      if (!source) {
+        continue;
+      }
+      if (opensChat(source[1].toLowerCase(), source[2])) {
+        continue;
+      }
+      kept.push(domain);
+    }
+    return kept.join(" ");
+  }
+
+  function policy(csp) {
+    if (!csp) {
+      return [
+        "default-src 'none'",
+        "script-src 'self' 'unsafe-inline'",
+        "style-src 'self' 'unsafe-inline'",
+        "img-src 'self' data:",
+        "media-src 'self' data:",
+        "connect-src 'none'",
+        "frame-src 'none'",
+        "object-src 'none'",
+        "base-uri 'self'",
+      ].join("; ");
+    }
+
+    const resources = sources(csp.resourceDomains);
+    let frames = sources(csp.frameDomains);
+    if (!frames) {
+      frames = "'none'";
+    }
+    let bases = sources(csp.baseUriDomains);
+    if (!bases) {
+      bases = "'self'";
+    }
+    return [
+      "default-src 'none'",
+      `script-src 'self' 'unsafe-inline' ${resources}`,
+      `style-src 'self' 'unsafe-inline' ${resources}`,
+      `connect-src 'self' ${sources(csp.connectDomains)}`,
+      `img-src 'self' data: ${resources}`,
+      `font-src 'self' ${resources}`,
+      `media-src 'self' data: ${resources}`,
+      `frame-src ${frames}`,
+      "object-src 'none'",
+      `base-uri ${bases}`,
+    ].join("; ");
+  }
+
+  function allowed(permissions) {
+    const features = [];
+    for (const [key, feature] of Object.entries(PERMISSIONS)) {
+      if (permissions && permissions[key]) {
+        features.push(feature);
+      }
+    }
+    return features.join("; ");
+  }
+
+  // meta CSP — первым узлом документа, сразу за ведущим <!DOCTYPE>: парсер
+  // кладёт её в head раньше любой разметки и скрипта приложения
+  function guarded(html, csp) {
+    const meta = `<meta http-equiv="Content-Security-Policy" content="${policy(csp)}">`;
+    const doctype = DOCTYPE.exec(html);
+    if (doctype) {
+      return doctype[0] + meta + html.slice(doctype[0].length);
+    }
+    return meta + html;
+  }
+
+  function load(params) {
+    if (inner) {
+      inner.remove();
+    }
+    inner = document.createElement("iframe");
+    inner.setAttribute("sandbox", "allow-scripts allow-forms");
+    const allow = allowed(params.permissions);
+    if (allow) {
+      inner.setAttribute("allow", allow);
+    }
+    inner.srcdoc = guarded(String(params.html), params.csp);
+    document.body.appendChild(inner);
+  }
+
+  window.addEventListener("message", (event) => {
+    const data = event.data;
+    if (!data || typeof data !== "object") {
+      return;
+    }
+
+    if (event.source === window.parent) {
+      if (data.method === RESOURCE) {
+        host = event.origin;
+        load(data.params || {});
+        return;
+      }
+      if (typeof data.method === "string" && data.method.startsWith(PREFIX)) {
+        return;
+      }
+      if (inner) {
+        inner.contentWindow.postMessage(data, "*");
+      }
+      return;
+    }
+
+    if (inner && event.source === inner.contentWindow && host) {
+      if (typeof data.method === "string" && data.method.startsWith(PREFIX)) {
+        return;
+      }
+      window.parent.postMessage(data, host);
+    }
+  });
+
+  window.parent.postMessage({ jsonrpc: "2.0", method: READY, params: {} }, "*");
+</script>
+</body>
+</html>

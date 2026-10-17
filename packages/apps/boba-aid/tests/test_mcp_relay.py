@@ -1,8 +1,8 @@
 """Ретранслятор mcp/message без агента: запросы MCP по serverId регистрации
 исполняют настоящие серверы — обычный сервер на SDK mcp по stdio и стенд
 boba-mcp со входом proxy. Проверяются строки таблицы ошибок MCP-over-ACP,
-встроенные методы SDK, видимость инструментов для модели, ход вызова и
-запечатывание соединений пользователя."""
+встроенные методы SDK, видимость инструментов для модели и приложения MCP
+Apps, ход вызова и запечатывание соединений пользователя."""
 
 from __future__ import annotations
 
@@ -25,8 +25,10 @@ from aid_stand import (
     TabSession,
 )
 from chainlit.context import context_var
+from mcp.server.apps import APP_MIME_TYPE
+from mcp.shared.exceptions import MCPError
 
-from boba.aid.agent.relay import ChatTools, McpRegistrations, McpRelay
+from boba.aid.agent.relay import ChatTools, McpRegistration, McpRegistrations, McpRelay
 from boba.aid.canvas.tools import CanvasOpener
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.connection_broker.sealing import McpServerInfo
@@ -38,7 +40,12 @@ from boba.db.postgres import AsyncPostgresPool, PostgresSchema
 from boba.db.postgres.connection import PostgresConfig
 from boba.identity.context import DelegatedTicket, NoUserCredential
 from boba.identity.errors import AuthenticationError, RefusalError
-from boba.mcp_client.client import McpServerConfig, McpServers, McpServersConfig
+from boba.mcp_client.client import (
+    McpServerApps,
+    McpServerConfig,
+    McpServers,
+    McpServersConfig,
+)
 from boba.stand.refs import StandRefs
 from boba.stand.signin import SignInStand
 from boba.stand.toolstand import ProbeTools
@@ -206,7 +213,7 @@ class TestMcpRelay:
         self, relay: McpRelay, relay_stand: RelayStand, tab: TabSession
     ) -> None:
         server_id = self._server_id(relay_stand, tab)
-        call = {"name": "panel_refresh", "arguments": {}}
+        call = {"name": "app_only", "arguments": {}}
 
         listed, _ = await self._answer(
             relay, self._message(server_id, "tools/list", {})
@@ -220,10 +227,12 @@ class TestMcpRelay:
             tool.name for tool in mt.ListToolsResult.model_validate(listed.result).tools
         ]
         assert "add" in names, names
-        assert "panel_refresh" not in names, names
+        assert "board" in names, names
+        assert "model_only" in names, names
+        assert "app_only" not in names, names
         assert isinstance(called, McpErrorOutcome), called
         assert called.error.code == mt.INVALID_PARAMS
-        assert "'panel_refresh'" in called.error.message
+        assert "'app_only'" in called.error.message
 
     async def test_progress_reaches_the_agent_under_its_token(
         self, relay: McpRelay, relay_stand: RelayStand, tab: TabSession
@@ -380,6 +389,118 @@ class TestMcpRelay:
         assert sent == {"connection": "dwh"}, sent
 
 
+class TestAppRequests:
+    """Запросы приложения MCP Apps: инструменты только своего сервера с "app"
+    в visibility, ресурсы своего сервера; сервер без секции apps и сервер
+    chat приложению отказывают, отказ уходит приложению ошибкой JSON-RPC."""
+
+    SANDBOX: ClassVar[McpServerApps] = McpServerApps.model_validate(
+        {"sandbox_url": "http://localhost:8123/mcp-apps/sandbox.html"}
+    )
+
+    @pytest.fixture
+    async def relay(
+        self, relay_stand: RelayStand, standard: McpServerConfig
+    ) -> AsyncIterator[McpRelay]:
+        drawn = standard.model_copy(update={"apps": self.SANDBOX})
+        config = McpServersConfig(servers={"apps": drawn, "standard": standard})
+        servers = McpServers(config)
+        try:
+            yield relay_stand.relay(servers)
+        finally:
+            await servers.stop()
+
+    PROFILE_SERVERS: ClassVar[frozenset[str]] = frozenset({"apps", "standard"})
+    """Серверы профиля треда регистрации приложения."""
+
+    @staticmethod
+    def _of(tab: TabSession, server: str, servers: frozenset[str]) -> McpRegistration:
+        registration = tab.registration(uuid4(), SignInStand.PROFILE)
+
+        return replace(registration, server=server, servers=servers)
+
+    async def test_app_calls_the_tools_for_the_app(
+        self, relay: McpRelay, tab: TabSession
+    ) -> None:
+        registration = self._of(tab, "apps", self.PROFILE_SERVERS)
+        app_only = mt.CallToolRequestParams(name="app_only", arguments={})
+        board = mt.CallToolRequestParams(name="board", arguments={"markup": "<i/>"})
+
+        refreshed = await relay.app_call(registration, app_only)
+        drawn = await relay.app_call(registration, board)
+
+        assert not refreshed.is_error, refreshed
+        assert refreshed.content == [mt.TextContent(text="app_only answered")]
+        assert drawn.content == [mt.TextContent(text="the board is drawn by its app")]
+
+    async def test_tool_for_the_model_is_refused_to_the_app(
+        self, relay: McpRelay, tab: TabSession
+    ) -> None:
+        registration = self._of(tab, "apps", self.PROFILE_SERVERS)
+        model_only = mt.CallToolRequestParams(name="model_only", arguments={})
+
+        with pytest.raises(MCPError) as refused:
+            await relay.app_call(registration, model_only)
+
+        answered = await relay.app_answer(relay.app_call(registration, model_only))
+
+        assert refused.value.error.code == mt.INVALID_PARAMS
+        assert "offers the app no tool 'model_only'" in refused.value.error.message
+        assert answered["error"]["code"] == mt.INVALID_PARAMS
+        assert "'model_only'" in answered["error"]["message"]
+
+    @pytest.mark.parametrize("server", ["standard", ChatTools.NAME])
+    async def test_server_without_apps_refuses_the_app(
+        self, relay: McpRelay, tab: TabSession, server: str
+    ) -> None:
+        registration = self._of(tab, server, self.PROFILE_SERVERS)
+        board = mt.CallToolRequestParams(name="board", arguments={"markup": "<i/>"})
+        read = mt.ReadResourceRequestParams(uri="ui://standard/board.html")
+
+        with pytest.raises(MCPError) as called:
+            await relay.app_call(registration, board)
+
+        with pytest.raises(MCPError) as reading:
+            await relay.app_read(registration, read)
+
+        assert called.value.error.code == mt.INVALID_PARAMS
+        assert f"{server!r}" in called.value.error.message
+        assert reading.value.error.code == mt.INVALID_PARAMS
+
+    async def test_server_outside_the_profile_of_the_thread_refuses_the_app(
+        self, relay: McpRelay, tab: TabSession
+    ) -> None:
+        """Сервер с секцией apps, которого профиль треда не даёт: приложение
+        и любой код вкладки его не зовут и не читают."""
+        registration = self._of(tab, "apps", frozenset({"standard"}))
+        board = mt.CallToolRequestParams(name="board", arguments={"markup": "<i/>"})
+        read = mt.ReadResourceRequestParams(uri="ui://standard/board.html")
+
+        with pytest.raises(MCPError) as called:
+            await relay.app_call(registration, board)
+
+        with pytest.raises(MCPError) as reading:
+            await relay.app_read(registration, read)
+
+        assert called.value.error.code == mt.INVALID_PARAMS
+        assert "is not a server of profile" in called.value.error.message
+        assert reading.value.error.code == mt.INVALID_PARAMS
+
+    async def test_app_reads_the_resources_of_its_server(
+        self, relay: McpRelay, tab: TabSession
+    ) -> None:
+        registration = self._of(tab, "apps", self.PROFILE_SERVERS)
+        read = mt.ReadResourceRequestParams(uri="ui://standard/board.html")
+
+        answered = await relay.app_answer(relay.app_read(registration, read))
+
+        resource = mt.ReadResourceResult.model_validate(answered).contents[0]
+        assert resource.mime_type == APP_MIME_TYPE
+        assert answered["contents"][0]["_meta"]["ui"]["csp"] == {
+            "resourceDomains": ["https://cdn.example.com"]
+        }
+
+
 @pytest.fixture
 async def store(pool: AsyncPostgresPool) -> ConnectionStore:
     """Хранилище соединений пользователей стенда ретранслятора."""
@@ -469,7 +590,10 @@ class TestRelaySealing:
                     "nodes": [{"key": "n0", "tool": "no_such_tool", "args": {}}]
                 },
                 errored=True,
-                expected=["node 'n0'", "offers the model no tool 'no_such_tool'"],
+                expected=[
+                    "node 'n0'",
+                    "offers the caller of the call no tool 'no_such_tool'",
+                ],
             ),
             RelayCall(
                 name="workflow",

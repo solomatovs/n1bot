@@ -37,7 +37,7 @@ from chainlit.utils import utc_now
 from literalai.observability.step import TrueStepType
 
 from boba.aid.domain.keys import CanvasFileUrl
-from boba.aid.rendering.tool import ChatElements
+from boba.aid.rendering.tool import ChatElements, ToolAppView
 from boba.cancellation import StopReason
 from boba.canvas.canvas import (
     CanvasAction,
@@ -200,6 +200,7 @@ class StepRole(StrEnum):
     CHART = "chart"
     ELEMENT = "element"
     STREAM = "stream"
+    APP = "app"
 
 
 @dataclass
@@ -602,6 +603,9 @@ class ChatView:
         self._assistant_name = chainlit_config.ui.name
         self._turn = TurnDraft()
         self._tool_names: dict[str, str] = {}
+        self._awaiting: dict[str, CustomElement] = {}
+        """Приложение MCP Apps идущего вызова по id шага: встаёт в шаг с
+        итогом вызова."""
         self._progress: dict[str, ProgressText] = {}
         self._call_views = CallViews()
         self._names = McpToolNames()
@@ -885,13 +889,15 @@ class ChatView:
         args: Mapping[str, Any] | None,
         key: str | None,
         media: Mapping[str, str] | None,
+        app: ToolAppView | None,
     ) -> Step:
         """Шаг начатого вызова. name — имя инструмента у модели: у
         инструмента сервера MCP оно полное, а шаг подписан именем без
         сервера. media — типы содержимого аргументов инструмента сервера
         (имя → contentMediaType): по ним рисуется вход шага; None —
         инструмент свой либо запись истории их не несёт, и вход рисует
-        модель вызова инструмента, а без неё — json-текст."""
+        модель вызова инструмента, а без неё — json-текст. app — приложение
+        MCP Apps инструмента; None — итог рисуется только блоками."""
         await self.seal_answer()
         shown = self._names.tool_of(name)
 
@@ -919,6 +925,11 @@ class ChatView:
         step.output = StepText.RUNNING
         step.start = utc_now()
 
+        # приложение рисует итог вызова: элемент встаёт в шаг, когда вызов
+        # закончился
+        if element := self._app_element(args, key, app):
+            self._awaiting[step.id] = element
+
         await self._sink.put(step)
         return step
 
@@ -929,6 +940,56 @@ class ChatView:
             return ToolCallModels.call_of(name, args)
 
         return self._call_views.call_of(name, media, args)
+
+    def _awaited(self, step: Step, result: mt.CallToolResult | None) -> None:
+        """Закончившемуся вызову — его приложение с итогом result рядом с
+        прочими элементами шага; без итога tools/call приложению рисовать
+        нечего, и оно не ставится."""
+        element = self._awaiting.pop(step.id, None)
+        if element is None:
+            return
+
+        if result is None:
+            return
+
+        element.props["result"] = result.model_dump(
+            mode="json", by_alias=True, exclude_none=True
+        )
+        elements: list[Element] = []
+        if step.elements:
+            elements = list(step.elements)
+
+        elements.append(element)
+        step.elements = elements
+
+    def _app_element(
+        self,
+        args: Mapping[str, Any] | None,
+        key: str | None,
+        app: ToolAppView | None,
+    ) -> CustomElement | None:
+        """Элемент приложения MCP Apps вызова с ключом key и аргументами args —
+        только live-лента; None — у инструмента приложения нет."""
+        if app is None:
+            return None
+
+        if not self._sink.emits_elements:
+            return None
+
+        if not key:
+            return None
+
+        arguments: Mapping[str, Any] = {}
+        if args:
+            arguments = args
+
+        element = self._elements.app(app, key, arguments)
+        element.thread_id = self._thread_id
+        element_id = self.derive_id(self._thread_id, key, StepRole.APP)
+        if element_id:
+            element.id = element_id
+
+        return element
 
     async def tool_journaled(self, step: Step, name: str, key: str) -> None:
         """Кнопка журнала вызова инструмента name с ключом key у шага step:
@@ -997,6 +1058,11 @@ class ChatView:
         step.start = ended
         step.end = ended
         self._progress.pop(step.id, None)
+        result: mt.CallToolResult | None = None
+        if isinstance(reply, mt.CallToolResult):
+            result = reply
+
+        self._awaited(step, result)
         label = self._tool_names.get(step.id, step.name)
         if not isinstance(reply, mt.CallToolResult):
             step.output = self._raw_output(reply)
@@ -1316,6 +1382,7 @@ class ChatView:
 
     async def tool_stopped(self, step: Step, note: str) -> None:
         """Инструмент не доработал: ход остановлен."""
+        self._awaiting.pop(step.id, None)
         self._progress.pop(step.id, None)
         step.name = StepStatus.FAILED.title(self._tool_names.get(step.id, step.name))
         step.output = note
@@ -1349,6 +1416,7 @@ class ChatView:
 
     async def tool_failed(self, step: Step, markdown: str) -> None:
         """Провал инструмента мимо результата: markdown результата-ошибки."""
+        self._awaiting.pop(step.id, None)
         step.is_error = True
         step.name = StepStatus.FAILED.title(self._tool_names.get(step.id, step.name))
         step.output = markdown

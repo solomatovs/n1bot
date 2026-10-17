@@ -22,7 +22,7 @@ from boba.aid.agent.config import (
 from boba.auth.config import AuthConfig
 from boba.chat.profiles import ChatProfileConfig
 from boba.krb import KerberosWorkspaceConfig
-from boba.mcp_client.client import McpServersConfig
+from boba.mcp_client.client import McpServerApps, McpServersConfig
 from boba.runtime.config import RuntimeConfig
 
 LOGGING_CONFIG: dict[str, Any] = {
@@ -213,6 +213,31 @@ class AppConfig(RuntimeConfig):
                     f"declared in [mcp.servers], declared: {declared}"
                 )
                 raise ValueError(msg)
+
+        return self
+
+    @model_validator(mode="after")
+    def _sandboxes_off_the_chat(self) -> Self:
+        """Песочница приложений сервера не на источнике чата: иначе скрипт
+        приложения видит куки входа и страницу чата. Источник адреса чата
+        (agent.public_url) считается тем же правилом, что источник
+        песочницы."""
+        chat = McpServerApps.model_validate({"sandbox_url": self.agent.public_url})
+        for name, server in self.mcp.servers.items():
+            apps = server.apps
+            if apps is None:
+                continue
+
+            if apps.origin() != chat.origin():
+                continue
+
+            msg = (
+                f"[mcp.servers.{name}.apps] sandbox_url {apps.sandbox_url} is on "
+                f"origin {apps.origin()} of the chat itself ([agent].public_url "
+                f"{self.agent.public_url}); serve the sandbox page from another "
+                "host name or port, so that the apps cannot reach the chat"
+            )
+            raise ValueError(msg)
 
         return self
 

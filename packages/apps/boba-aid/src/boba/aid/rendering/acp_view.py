@@ -12,7 +12,9 @@
 сервера) дают адрес журнала вызова. Вызов инструмента, который сервер
 объявил несущим вложенные вызовы (NestedCallsFeature), рисуется шагами его
 узлов: ход узла приходит с ключом узла в `_meta`, итог узла — его блоки по
-записи списка узлов в structuredContent (NestedCallsOutput).
+записи списка узлов в structuredContent (NestedCallsOutput). У инструмента
+с приложением MCP Apps (секция apps сервера и _meta.ui.resourceUri) шаг
+получает элемент приложения с аргументами и итогом вызова.
 
 Ошибки:
 ValidationError — тело уведомления из шины не по схеме ACP v2.
@@ -31,7 +33,9 @@ from chainlit.step import Step
 from pydantic import TypeAdapter, ValidationError
 
 from boba.aid.rendering.chat_view import ChatView, StepText
+from boba.aid.rendering.tool import AppMeta, ToolAppView
 from boba.mcp_adapter import JournalUris
+from boba.mcp_client.client import McpServerApps
 from boba.toolkit.calls import CallViews
 from boba.toolkit.chain import StreamPlanError
 from boba.toolkit.dag import (
@@ -110,16 +114,19 @@ class ToolMedia:
     """Что лента знает об инструментах серверов профиля по полным именам:
     типы содержимого аргументов (по ним рисуется вход шага: sql, bash, json),
     вложенные вызовы, которые объявил сервер (по ним вызов рисуется шагами
-    узлов), и ссылки на журнал вызовов сервера (по ним у шага кнопка
-    журнала). Один объект на процесс; инструменты называет сборка приёмника
-    по портам серверов профиля."""
+    узлов), ссылки на журнал вызовов сервера (по ним у шага кнопка
+    журнала) и приложения MCP Apps инструментов сервера с секцией apps (по
+    ним у шага приложение). Один объект на процесс; инструменты называет
+    сборка приёмника по портам серверов профиля."""
 
     def __init__(self) -> None:
         self._views = CallViews()
         self._names = McpToolNames()
+        self._app_meta = AppMeta()
         self._media: dict[str, Mapping[str, str]] = {}
         self._nested: dict[str, NestedCallsFeature] = {}
         self._journals: dict[str, JournalUris] = {}
+        self._apps: dict[str, ToolAppView] = {}
 
     def shown(
         self,
@@ -127,13 +134,42 @@ class ToolMedia:
         tools: Iterable[mt.Tool],
         nested: NestedCallsFeature | None,
         journal: JournalFeature | None,
+        apps: McpServerApps | None,
     ) -> None:
         """Типы аргументов инструментов tools сервера server под полными
-        именами, вложенные вызовы и журнал вызовов, объявленные сервером;
-        None — сервер их не объявил."""
+        именами, вложенные вызовы и журнал вызовов, объявленные сервером, и
+        приложения его инструментов по секции apps; None — сервер их не
+        объявил либо секции apps у него нет."""
         for tool in tools:
             name = self._names.full(server, tool.name)
             self._media[name] = self._views.media_of(tool.input_schema)
+            if apps is None:
+                continue
+
+            try:
+                config = self._app_meta.of(tool)
+            except ValidationError as exc:
+                logger.warning(
+                    "mcp server %s: tool %s carries _meta.ui that is not an MCP "
+                    "Apps tool config, its calls are drawn without the app: %s",
+                    server,
+                    tool.name,
+                    exc,
+                )
+                continue
+
+            if config is None:
+                continue
+
+            if config.resource_uri is None:
+                continue
+
+            self._apps[name] = ToolAppView(
+                server=server,
+                tool=tool.name,
+                resource_uri=config.resource_uri,
+                sandbox_url=str(apps.sandbox_url),
+            )
 
         if journal is not None:
             self._journals[server] = JournalUris(journal.resource)
@@ -164,6 +200,11 @@ class ToolMedia:
     def of(self, name: str) -> Mapping[str, str] | None:
         """Типы аргументов инструмента; None — инструмент серверам неизвестен."""
         return self._media.get(name)
+
+    def app(self, name: str) -> ToolAppView | None:
+        """Приложение MCP Apps инструмента name; None — у сервера нет секции
+        apps либо у инструмента нет _meta.ui.resourceUri."""
+        return self._apps.get(name)
 
     def nested(self, name: str) -> NestedCallsFeature | None:
         """Объявление вложенных вызовов для вызова инструмента name; None —
@@ -413,7 +454,9 @@ class UpdateView:
         """Шаг нового вызова инструмента name с аргументами args под ключом key."""
         await self._close_thinking()
         self._answer_id = None
-        step = await self._view.tool_started(name, args, key, self._media.of(name))
+        step = await self._view.tool_started(
+            name, args, key, self._media.of(name), self._media.app(name)
+        )
         self._steps[key] = step
 
         return step

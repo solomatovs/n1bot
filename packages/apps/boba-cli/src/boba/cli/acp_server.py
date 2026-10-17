@@ -132,7 +132,12 @@ from boba.toolkit.mcp import (
     McpToolNames,
     McpToolStubs,
 )
-from boba.toolkit.result import ErrorResult, FailureResult, ToolResultBase
+from boba.toolkit.result import (
+    BlockAudience,
+    ErrorResult,
+    FailureResult,
+    ToolResultBase,
+)
 from boba.transport.acp.protocol import (
     AcpErrorCode,
     AcpTransportError,
@@ -805,8 +810,9 @@ class AcpMapping:
 
 class PromptText:
     """Вопрос из блоков `session/prompt` элементом очереди: текст как есть,
-    ссылки на ресурсы — блоками resource_link записи `user`; прочие блоки
-    агент не объявлял."""
+    ссылки на ресурсы — блоками resource_link записи `user`, текст только
+    для модели (annotations.audience без "user") — служебным контекстом
+    вопроса, а не его словами; прочие блоки агент не объявлял."""
 
     def render(self, blocks: Sequence[ContentBlock]) -> QueueEntry:
         """Ошибки:
@@ -814,13 +820,26 @@ class PromptText:
         """
         parts: list[str] = []
         links: list[mt.ResourceLink] = []
+        context: list[str] = []
         for block in blocks:
             if isinstance(block, schema.ResourceContentBlock):
                 dumped = block.model_dump(mode="json", by_alias=True, exclude_none=True)
                 links.append(mt.ResourceLink.model_validate(dumped))
                 continue
 
-            parts.append(self._part(block))
+            if not isinstance(block, schema.TextContentBlock):
+                parts.append(self._part(block))
+                continue
+
+            audience = None
+            if block.annotations is not None:
+                audience = block.annotations.audience
+
+            if BlockAudience.USER.reads(audience):
+                parts.append(block.text)
+                continue
+
+            context.append(block.text)
 
         text = "".join(parts)
         empty = not text.strip()
@@ -828,7 +847,9 @@ class PromptText:
             data = {ErrorDataKey.DETAILS.value: "the prompt has no text to send"}
             raise RequestError.invalid_params(data)
 
-        return QueueEntry(kind=QueueKind.PROMPT, text=text, links=links)
+        return QueueEntry(
+            kind=QueueKind.PROMPT, text=text, links=links, context=context
+        )
 
     def _part(self, block: ContentBlock) -> str:
         if isinstance(block, schema.TextContentBlock):

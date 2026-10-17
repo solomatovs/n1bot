@@ -8,17 +8,19 @@
 обрыв посреди вызова, смену списка инструментов с уведомлением и отчёты о
 ходе вызова, — ответ из блоков разных видов и адресатов, файл, который
 клиенту стоит показать сразу (priority 1), просьбу о вводе
-(input_required), отказ ошибкой MCP и инструмент только для интерфейса
-(visibility ["app"]).
+(input_required) и отказ ошибкой MCP. Расширение MCP Apps даёт приложение
+доски (board.html): инструмент board рисует разметку, которую пишет модель,
+app_only зовёт только приложение, model_only — только модель.
 """
 
 import asyncio
 import json
 import os
 import sys
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar
 
+from mcp.server.apps import Apps, ResourceCsp, client_supports_apps
 from mcp.server.extension import Extension
 from mcp.server.mcpserver import Context, Image, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
@@ -48,19 +50,24 @@ class DeclaredExtension(Extension):
 
 
 class StandardServer:
-    """Сервер с инструментами: число, текст, сбой, картинка и отказы стенда."""
+    """Сервер с инструментами: число, текст, сбой, картинка, отказы стенда и
+    приложение доски."""
 
     PNG: bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
     EXTRA: ClassVar[str] = "extra"
     LARGE_LINE: ClassVar[str] = "0123456789"
     ASKED: ClassVar[str] = "asked once"
     REFUSAL: ClassVar[dict[str, str]] = {"reason": "the stand refuses"}
+    BOARD: ClassVar[str] = "ui://standard/board.html"
+    BOARD_CSP: ClassVar[ResourceCsp] = ResourceCsp(
+        resource_domains=["https://cdn.example.com"]
+    )
     DOCUMENT: ClassVar[dict[str, Any]] = {
         "rows": [{"id": 1, "name": "<script>window.__boba_pwned=1</script>"}],
         "total": 1,
     }
     """JSON ответа blocks человеку: дерево в ленте, строка со скриптом — текстом."""
-    EXTENSIONS: ClassVar[tuple[DeclaredExtension, ...]] = (
+    EXTENSIONS: ClassVar[tuple[Extension, ...]] = (
         DeclaredExtension(
             "com.boba/journal",
             {
@@ -74,9 +81,15 @@ class StandardServer:
     )
 
     def __init__(self, port: int, extended: bool) -> None:
-        extensions: tuple[DeclaredExtension, ...] = ()
+        apps = Apps()
+        apps.tool(resource_uri=self.BOARD)(self.board)
+        apps.tool(resource_uri=self.BOARD, visibility=["app"])(self.app_only)
+        apps.tool(resource_uri=self.BOARD, visibility=["model"])(self.model_only)
+        html = Path(__file__).with_name("board.html").read_text()
+        apps.add_html_resource(self.BOARD, html, csp=self.BOARD_CSP)
+        extensions: tuple[Extension, ...] = (apps,)
         if extended:
-            extensions = self.EXTENSIONS
+            extensions = (apps, *self.EXTENSIONS)
 
         self._mcp = MCPServer("standard", extensions=extensions)
         self._port = port
@@ -95,7 +108,6 @@ class StandardServer:
         self._mcp.tool()(self.toggle_extra)
         self._mcp.tool(annotations=ToolAnnotations(read_only_hint=True))(self.progress)
         self._mcp.tool()(self.ask)
-        self._mcp.tool(meta={"ui": {"visibility": ["app"]}})(self.panel_refresh)
 
     def add(self, a: int, b: int) -> int:
         """Adds two numbers."""
@@ -206,9 +218,20 @@ class StandardServer:
 
         return InputRequiredResult(request_state=self.ASKED)
 
-    def panel_refresh(self) -> str:
-        """Refreshes the panel of the app; the model does not call it."""
-        return "panel refreshed"
+    def board(self, ctx: Context, markup: str) -> str:
+        """Draws the given HTML markup on a board."""
+        if client_supports_apps(ctx):
+            return "the board is drawn by its app"
+
+        return f"board markup: {markup}"
+
+    def app_only(self) -> str:
+        """Refreshes the board; only its app calls it."""
+        return "app_only answered"
+
+    def model_only(self) -> str:
+        """Clears the board; only the model calls it."""
+        return "model_only answered"
 
     def run(self, transport: str) -> None:
         if transport.startswith("stdio"):

@@ -96,13 +96,17 @@ class QueueSource(StrEnum):
 
 class QueueEntry(BaseModel):
     """Что ставят в очередь: вид, текст, ссылки на вложения вопроса,
-    приоритет и источник."""
+    служебный контекст к нему, приоритет и источник."""
 
     model_config = ConfigDict(frozen=True)
 
     kind: QueueKind
     text: str
     links: Sequence[mt.ResourceLink] = ()
+    context: Sequence[str] = ()
+    """Тексты для модели помимо слов пользователя (контекст приложения
+    клиента): ход пишет их служебными записями после вопроса, в сам вопрос
+    они не входят."""
     priority: QueuePriority | None = None
     source: QueueSource = QueueSource.HUMAN
     is_meta: bool = False
@@ -122,6 +126,7 @@ class QueueItem(BaseModel):
     kind: QueueKind
     text: str
     links: Sequence[mt.ResourceLink] = ()
+    context: Sequence[str] = ()
     priority: QueuePriority
     enqueued_at: str
     source: QueueSource
@@ -223,6 +228,7 @@ class InputQueue:
             kind=kind,
             text=self._bounded(kind, entry.text),
             links=entry.links,
+            context=entry.context,
             priority=priority,
             enqueued_at=self._clock.now(),
             source=entry.source,
