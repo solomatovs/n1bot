@@ -49,6 +49,7 @@ from boba.aid.data.data_layer import FeedRows
 from boba.aid.domain.fields import StepField
 from boba.aid.rendering.acp_view import SessionUpdate, ToolMedia, UpdateView
 from boba.aid.rendering.chat_view import ChatView, LiveSink, StepText
+from boba.aid.rendering.errors import show_error
 from boba.aid.rendering.renderer import RenderSurface, TabSurfaces
 from boba.cancellation import RunCancellation
 from boba.identity.context import Scope
@@ -168,13 +169,12 @@ class AgentFeed(TurnRenderer):
         schema.AvailableCommandsUpdate,
         schema.SessionCompactionUpdate,
         schema.SessionCompactionSummaryChunk,
-        schema.SessionNotice,
         schema.RunningSessionStateUpdate,
         schema.RequiresActionSessionStateUpdate,
         schema.IdleSessionStateUpdate,
     )
     """Уведомления сессии, которых в ленте нет: заголовок, план, команды,
-    сжатие, пометки и состояние хода (его конец приходит turn_finished)."""
+    сжатие и состояние хода (его конец приходит turn_finished)."""
 
     def __init__(  # noqa: PLR0913 — приёмник собирается всеми своими входами
         self,
@@ -299,6 +299,10 @@ class AgentFeed(TurnRenderer):
             )
             return
 
+        if isinstance(update, schema.SessionNotice):
+            await self._notice(update)
+            return
+
         if isinstance(update, self._SERVICE_UPDATES):
             return
 
@@ -310,6 +314,36 @@ class AgentFeed(TurnRenderer):
             return
 
         await turn.feed.agent_update(update)
+
+    async def _notice(self, notice: schema.SessionNotice) -> None:
+        """Пометка агента: в идущем ходе — уведомлением ленты хода, вне хода
+        ошибка — сообщением вкладке, остальное — в журнал процесса."""
+        text = notice.title
+        if notice.description:
+            text = f"{notice.title}: {notice.description}"
+
+        level = self._level(notice.severity)
+        turn = self._turn
+        if turn is not None:
+            await turn.feed.notice(level, text)
+            return
+
+        if level is not NoticeLevel.ERROR:
+            logger.info("thread %s: agent notice: %s", self.thread_id, text)
+            return
+
+        with self._tab.entered():
+            await show_error(f"agent of thread {self.thread_id}: {text}", "Agent")
+
+    @staticmethod
+    def _level(severity: str) -> NoticeLevel:
+        """Важность пометки: severity ACP — открытый набор, незнакомое значение
+        показывается как сведение."""
+        for level in NoticeLevel:
+            if level.value == severity:
+                return level
+
+        return NoticeLevel.INFO
 
     async def permission(
         self, session_id: str, title: str, options: Sequence[schema.PermissionOption]

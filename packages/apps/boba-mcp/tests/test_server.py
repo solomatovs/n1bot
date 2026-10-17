@@ -28,7 +28,7 @@ from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
 from mcp.client.extension import advertise
 from mcp.client.session import IncomingMessage
-from mcp.server.auth.provider import TokenError
+from mcp.server.auth.provider import IdentityAssertionParams, TokenError
 from mcp.shared.auth import JWT_BEARER_GRANT_TYPE, OAuthClientInformationFull
 from pydantic import AnyUrl
 from service_stand import (
@@ -42,6 +42,7 @@ from service_stand import (
     ServiceStand,
 )
 
+from boba.auth import SignIns
 from boba.auth.proxy import ProxyAssertions
 from boba.connections.sealed import (
     ConnectionOffer,
@@ -54,6 +55,7 @@ from boba.identity.session import SignInProvider
 from boba.identity.signin import SignInMetadata
 from boba.mcp_adapter import JournalUris
 from boba.mcp_server.auth import (
+    AuthServer,
     RegisteredClients,
     SealedValues,
     ServiceTokens,
@@ -1078,6 +1080,40 @@ class TestProxySignIn:
 
         if reply.status_code != httpx.codes.UNAUTHORIZED:
             raise AssertionError(f"a sign-in without roles is refused: {reply.text}")
+
+    async def test_undecided_roles_are_an_oauth_refusal(self) -> None:
+        """Сервис не смог решить роли пользователя утверждения (в [auth] нет
+        провайдера proxy): обмен отвечает ошибкой OAuth с причиной, а не
+        внутренней ошибкой без тела."""
+        public = "http://127.0.0.1:1"
+        resource = f"{public}/mcp/{PROFILE}"
+        sealed = SealedValues("stand-session-secret")
+        server = AuthServer(
+            public,
+            SignIns(None, None, None),
+            ServiceTokens(public, "stand-session-secret", 300, 3600, "stand"),
+            ProxyAssertions(PROXY_SECRET, 60),
+            RegisteredClients(sealed, {}),
+            sealed,
+            [resource],
+        )
+        assertion = ProxyAssertions(PROXY_SECRET, 0).issue(
+            CLIENT_ID, "ivanov", "dev", public, resource
+        )
+        client = OAuthClientInformationFull(
+            client_id=CLIENT_ID, redirect_uris=[AnyUrl(f"{public}/callback")]
+        )
+        params = IdentityAssertionParams(assertion=assertion, resource=resource)
+
+        with pytest.raises(TokenError) as refused:
+            await server.exchange_identity_assertion(client, params)
+
+        if refused.value.error != "invalid_grant":
+            raise AssertionError(f"the refusal is an OAuth grant error: {refused}")
+
+        described = refused.value.error_description or ""
+        if "could not decide the roles" not in described:
+            raise AssertionError(f"the refusal names the cause: {described}")
 
 
 class TestHumanSignIn:

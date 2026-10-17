@@ -442,7 +442,8 @@ RUN chmod -R go-w ${BOBA_DIR}/third/bin ${BOBA_DIR}/sandbox \
     && ${BOBA_DIR}/third/bin/fuse2fs -V
 
 
-# образ чата: общий конфиг, ассеты chainlit, vendor-шрифты и стили формул вместо CDN.
+# образ чата: общий конфиг, ассеты chainlit, vendor-шрифты и стили формул вместо CDN,
+# агент одним файлом из стадии boba-bin (его путь — BOBA_AGENT_COMMAND в boba.env).
 # Вложения сессий приложение держит в данных ([chainlit].files_dir), app_root не пишется
 FROM runtime-base AS runtime-aid
 
@@ -460,6 +461,7 @@ COPY --chown=${BOBA_UID}:${BOBA_GID} --from=chainlit-ui-build /out/ui/          
 COPY --chown=${BOBA_UID}:${BOBA_GID} build/src/webassets/                                ${BOBA_DIR}/app_root/public/vendor/
 
 COPY packages/apps/boba-aid/conf/  ${BOBA_DIR}/conf/
+COPY --from=boba-bin /out/boba     ${BOBA_DIR}/bin/boba
 
 # файлы уже принадлежат пользователю, каталогам владелец ставится без рекурсии
 RUN chown ${BOBA_UID}:${BOBA_GID} ${BOBA_DIR}/app_root \

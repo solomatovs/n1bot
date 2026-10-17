@@ -230,11 +230,7 @@ def agent_settings_layers(
     table: Annotated[AgentSettingsTable, Depends(agent_settings_table)],
     config: Annotated[AgentConfig, Depends(agent_config)],
 ) -> AgentSettingsLayers:
-    specs = ProfileModelSpecs(
-        config.limits.context_window, config.limits.max_output_tokens
-    )
-
-    return AgentSettingsLayers(table, specs)
+    return AgentSettingsLayers(table, ProfileModelSpecs(config.model))
 
 
 def mcp_registrations() -> McpRegistrations:
@@ -290,7 +286,13 @@ def agent_launcher(
     """Запуск процессов агента: регистрации серверов профиля и чата, файл
     настроек, рукопожатие; mcp/message процессов отвечает ретранслятор."""
     return AgentLauncher(
-        config, app_config.postgres, layers, registrations, relay, version("boba-aid")
+        config,
+        app_config.postgres,
+        app_config.mcp,
+        layers,
+        registrations,
+        relay,
+        version("boba-aid"),
     )
 
 

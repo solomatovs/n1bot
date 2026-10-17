@@ -6,7 +6,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+import shlex
+from collections.abc import Sequence
 from enum import StrEnum
 from typing import Annotated, Any, Literal
 
@@ -16,8 +17,10 @@ from pydantic import (
     ConfigDict,
     Field,
     SecretStr,
+    field_validator,
 )
 
+from boba.agent.profile import ReasoningReturn
 from boba.agent.settings import HistoryKind
 from boba.db.postgres.connection import PostgresConfig
 from boba.db.postgres.connection.auth import PasswordAuth, PostgresKerberos, TrustAuth
@@ -27,31 +30,30 @@ __all__ = [
     "AgentCommandConfig",
     "AgentConfig",
     "AgentHistoryConfig",
+    "AgentModelConfig",
     "DsnKey",
     "LibpqConnection",
     "MemoryAgentHistory",
-    "ModelLimitsConfig",
     "PostgresAgentHistory",
 ]
 
 
 class AgentCommandConfig(BaseModel):
-    """Как запускать агента: исполняемый файл, аргументы до `--settings`,
-    нечувствительные переменные окружения и корень приватных каталогов."""
+    """Как запускать агента: программа строкой оболочки, аргументы до
+    `--settings`, сроки и корень приватных каталогов. Всё, что агент знает о
+    работе, ему несёт файл настроек; окружение ребёнка — минимальный набор SDK."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     command: str = Field(
-        min_length=1, description="Исполняемый файл агента: `boba` или python."
+        min_length=1,
+        description=(
+            "Программа агента строкой оболочки (разбор shlex): бинарник `boba` "
+            "или интерпретатор с модулем `python -m boba.cli.app`."
+        ),
     )
     args: Sequence[str] = Field(
         description="Аргументы до `--settings <файл>`: подкомандa acp и её ключи."
-    )
-    env: Mapping[str, str] = Field(
-        description=(
-            "Переменные окружения ребёнка поверх минимального набора; секретов "
-            "здесь не бывает — они едут файлом настроек."
-        )
     )
     private_dir: str = Field(
         min_length=1,
@@ -63,9 +65,37 @@ class AgentCommandConfig(BaseModel):
     start_timeout_sec: float = Field(
         gt=0, description="Сколько ждать рукопожатия initialize после запуска."
     )
+    request_timeout_sec: float = Field(
+        gt=0,
+        description=(
+            "Сколько ждать ответа агента на метод сессии (new, resume, fork, "
+            "prompt, close, delete); ход ответа не ждёт — его конец приходит idle."
+        ),
+    )
     stop_timeout_sec: float = Field(
         gt=0, description="Сколько ждать выхода процесса после конца ввода."
     )
+
+    @field_validator("command")
+    @classmethod
+    def _parsed(cls, value: str) -> str:
+        try:
+            parts = shlex.split(value)
+        except ValueError as exc:
+            msg = (
+                f"[agent.process] command {value!r} is not a shell command line: {exc}"
+            )
+            raise ValueError(msg) from exc
+
+        if not parts:
+            msg = f"[agent.process] command {value!r} names no program"
+            raise ValueError(msg)
+
+        return value
+
+    def program(self) -> tuple[str, ...]:
+        """Программа агента словами: исполняемый файл и его первые аргументы."""
+        return tuple(shlex.split(self.command))
 
 
 class DsnKey(StrEnum):
@@ -181,13 +211,21 @@ AgentHistoryConfig = Annotated[
 ]
 
 
-class ModelLimitsConfig(BaseModel):
-    """Пределы профиля модели, которых нет в профиле чата."""
+class AgentModelConfig(BaseModel):
+    """Секция [agent.model]: что агент знает о модели профилей сверх профиля
+    чата — окно, потолок ответа и возврат рассуждений."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     context_window: int = Field(gt=0, description="Окно контекста модели, токены.")
     max_output_tokens: int = Field(gt=0, description="Потолок ответа модели.")
+    reasoning_return: ReasoningReturn = Field(
+        description=(
+            "Возвращать ли модели её рассуждения прошлых ответов: never, turn "
+            "(в пределах хода — так требуют thinking-модели вроде deepseek при "
+            "вызове инструмента), always."
+        )
+    )
 
 
 class AgentConfig(BaseModel):
@@ -211,4 +249,4 @@ class AgentConfig(BaseModel):
             "инструментов, в секундах: сервер отвергает значение старше срока."
         ),
     )
-    limits: ModelLimitsConfig
+    model: AgentModelConfig

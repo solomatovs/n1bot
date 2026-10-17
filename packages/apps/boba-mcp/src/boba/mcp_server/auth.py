@@ -91,7 +91,11 @@ from boba.auth import SignIns
 from boba.auth.proxy import AssertionRejectedError, ProxyAssertions
 from boba.auth.signin import LoginField
 from boba.identity.context import Credential, Scope, Subject
-from boba.identity.errors import AuthenticationError, AuthorizationError
+from boba.identity.errors import (
+    AuthenticationError,
+    AuthorizationError,
+    ExternalServiceError,
+)
 from boba.identity.signin import ProxyRequest, SignedIn, SignInMetadata
 from boba.identity.sso import SsoChallenge
 from boba.runtime.http import SsoRequests, SsoResponses
@@ -843,6 +847,13 @@ class AuthServer(OAuthProvider):
         except (AuthenticationError, AuthorizationError) as exc:
             logger.warning("%s", exc)
             raise TokenError("invalid_grant", str(exc)) from exc
+        except ExternalServiceError as exc:
+            logger.error("%s", exc)
+            message = (
+                f"identity assertion of {claims.sub!r} from {client_id}: the "
+                f"service could not decide the roles of the user: {exc}"
+            )
+            raise TokenError("invalid_grant", message) from exc
 
         logger.info(
             "proxy sign-in [user=%s] [client=%s] [roles=%s]",
