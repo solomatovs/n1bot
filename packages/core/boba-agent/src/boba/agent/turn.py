@@ -253,6 +253,10 @@ class TurnLoop:
         progress = Progress()
 
         await self._write_prompt(taken)
+        for item in taken.items:
+            for text in item.context:
+                await self._write_meta(text)
+
         await self._absorb()
         await self._announce_input()
 

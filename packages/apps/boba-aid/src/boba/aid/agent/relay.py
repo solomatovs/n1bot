@@ -11,6 +11,8 @@ RequestError (acp.exceptions) — ошибка доставки MCP-over-ACP:
     BACKEND_FAILED — сервер за регистрацией недоступен, ответил не по схеме
     инструмента, имена инструментов сервера chat совпали либо вход
     пользователя вкладки больше не годен, исхода MCP нет.
+Запросы приложений MCP Apps (app_call, app_read) ошибок наружу не выпускают:
+app_answer отдаёт приложению ошибку JSON-RPC с причиной.
 """
 
 from __future__ import annotations
@@ -23,15 +25,15 @@ from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from functools import partial
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Generic, TypeVar
 from uuid import UUID, uuid4
 
 import anyio
 import mcp_types as mt
 from acp.exceptions import RequestError
 from acp.experimental.v2 import schema
-from fastmcp.apps.config import AppConfig
 from fastmcp.utilities.json_schema import compress_schema
+from mcp.server.apps import Visibility
 from mcp.server.connection import Connection, NotifyOnlyOutbound
 from mcp.server.context import ServerRequestContext
 from mcp.server.lowlevel import Server
@@ -43,10 +45,11 @@ from mcp.shared.jsonrpc_dispatcher import progress_token_from_params
 from mcp.shared.message import MessageMetadata
 from mcp.shared.transport_context import TransportContext
 from mcp_types.jsonrpc import ErrorData
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from boba.aid.canvas.tools import CanvasOpener
 from boba.aid.infra.session import LiveSignIn
+from boba.aid.rendering.tool import AppMeta
 from boba.cancellation import RunCancellation, StopReason
 from boba.canvas.canvas import CanvasScope
 from boba.connection_broker.sealing import CallSealing, McpServerInfo
@@ -67,6 +70,7 @@ from boba.mcp_client.client import (
     McpClientError,
     McpServers,
     McpToolPort,
+    McpToolServer,
 )
 from boba.toolkit.calls import SchemaMark
 from boba.toolkit.chain import StreamPlanError
@@ -85,6 +89,8 @@ from boba.transport.acp.protocol import (
 )
 
 __all__ = [
+    "AppAction",
+    "AppRequest",
     "ChatToolPort",
     "ChatTools",
     "ClientName",
@@ -95,6 +101,32 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
+
+ParamsT = TypeVar("ParamsT", bound=BaseModel)
+"""Параметры запроса приложения MCP Apps к чату."""
+
+
+class AppAction(StrEnum):
+    """Действия chainlit, которыми элемент приложения MCP Apps передаёт
+    запросы приложения серверной части чата."""
+
+    CALL = "mcp_app_call"
+    READ = "mcp_app_read"
+    CONTEXT = "mcp_app_context"
+
+
+class AppRequest(BaseModel, Generic[ParamsT]):
+    """Запрос приложения MCP Apps, пришедший действием chainlit: сервер
+    профиля, чьё это приложение, вызов инструмента, итог которого рисует
+    приложение, и параметры запроса по форме MCP (tools/call,
+    resources/read) или MCP Apps (ui/update-model-context). Разбирается в
+    обработчике действия, дальше идёт моделью."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    server: str
+    call_id: str
+    params: ParamsT
 
 
 class ClientName(StrEnum):
@@ -195,7 +227,8 @@ class McpRegistration:
     на каждый сервер, который процесс получает объявлением type "acp".
     profile — профиль треда: по нему сервер chat выбирает набор
     инструментов. session — живой вход пользователя вкладки. server — имя
-    сервера профиля либо ChatTools.NAME. Контекст вызова от агента
+    сервера профиля либо ChatTools.NAME; servers — серверы, которые профиль
+    даёт треду: приложение зовёт только их. Контекст вызова от агента
     ретранслятор строит из регистрации (context).
     """
 
@@ -205,6 +238,7 @@ class McpRegistration:
     profile: str
     session: LiveSignIn
     server: str
+    servers: frozenset[str]
 
     def context(self) -> CallContext:
         """Контекст вызова от агента пользователя: роли и секреты входа из
@@ -391,11 +425,11 @@ class McpRelay:
     (пометка SchemaMark.THREAD) агент в списке не видит: на вызове
     ретранслятор ставит в них тред регистрации. Инструменты только для
     интерфейса (_meta.ui.visibility без "model") агенту не видны и не
-    вызываются.
+    вызываются. Приложения MCP Apps серверов с секцией apps зовут
+    инструменты с "app" в visibility (app_call) и читают ресурсы сервера
+    (app_read) тем же путём от имени пользователя вкладки; их ответ
+    приложение получает как есть, файлы показа открывает только вызов модели.
     """
-
-    UI_META: ClassVar[str] = "ui"
-    """Ключ _meta инструмента с настройками MCP Apps (AppConfig)."""
 
     def __init__(  # noqa: PLR0913 — ретранслятор собирается всеми входами процесса
         self,
@@ -413,6 +447,7 @@ class McpRelay:
         self._chat = chat
         self._canvas = canvas
         self._names = McpToolNames()
+        self._apps = AppMeta()
         self._active: set[tuple[str, str]] = set()
         # состояние запроса (serverId) ретранслятор отдаёт serve_one сам:
         # lifespan сервера здесь не запускается и только задаёт его тип
@@ -501,7 +536,7 @@ class McpRelay:
         port = await self._port(registration, context)
 
         tools: list[mt.Tool] = []
-        for tool in self._model_tools(port, registration.server):
+        for tool in self._offered(port, registration.server, "model"):
             threads = list(SchemaMark.THREAD.params(tool.input_schema))
             schema = compress_schema(dict(tool.input_schema), prune_params=threads)
             tools.append(tool.model_copy(update={"input_schema": schema}))
@@ -511,9 +546,9 @@ class McpRelay:
     async def _call_tool(
         self, ctx: ServerRequestContext[str], params: mt.CallToolRequestParams
     ) -> mt.CallToolResult | mt.InputRequiredResult:
-        """Вызов инструмента для модели: соединения запечатаны, у вызова со
-        вложенными вызовами — и в узлах, тред регистрации — в параметрах с
-        пометкой SchemaMark.THREAD, отказ запечатывания — isError с причиной.
+        """Вызов инструмента для модели; ход вызова уходит агенту, файлы,
+        которые сервер просит показать сразу, открывает панель треда
+        (CanvasOpener.reply).
 
         Ошибки:
         MCPError — инструмента у сервера нет либо он не для модели.
@@ -523,14 +558,112 @@ class McpRelay:
         context = registration.context()
         port = await self._port(registration, context)
 
+        forwarded: Callable[[mt.ProgressNotificationParams], Awaitable[None]] | None
+        forwarded = None
+        token = progress_token_from_params(ctx.params)
+        if token is not None:
+            forwarded = partial(self._forwarded, ctx, token)
+
+        reply = await self._called(
+            registration, context, port, params, "model", forwarded
+        )
+        if not isinstance(reply, mt.CallToolResult):
+            return reply
+
+        scope = CanvasScope(
+            user_id=str(registration.user_id), thread_id=registration.thread_id
+        )
+
+        return await self._canvas.reply(scope, reply)
+
+    async def app_call(
+        self, registration: McpRegistration, params: mt.CallToolRequestParams
+    ) -> mt.CallToolResult:
+        """tools/call приложения MCP Apps: только инструменты своего сервера
+        с "app" в visibility. Просьба сервера о вводе приложению не отдаётся —
+        итог isError с причиной.
+
+        Ошибки:
+        MCPError — сервер не рисует приложений либо инструмента у него нет или
+            он не для приложения.
+        McpClientError — сервер недоступен.
+        AuthenticationError — вход пользователя вкладки больше не годен.
+        """
+        context = registration.context()
+        port = await self._app_server(registration, context)
+        result = await self._called(registration, context, port, params, "app", None)
+        if isinstance(result, mt.CallToolResult):
+            return result
+
+        full = self._names.full(registration.server, params.name)
+        reason = (
+            f"{full} asked the app for more input; an app call takes no input "
+            "requests, call the tool from the chat instead"
+        )
+
+        return mt.CallToolResult(content=[mt.TextContent(text=reason)], is_error=True)
+
+    async def app_read(
+        self, registration: McpRegistration, params: mt.ReadResourceRequestParams
+    ) -> mt.ReadResourceResult:
+        """resources/read приложения MCP Apps: ресурс своего сервера.
+
+        Ошибки:
+        MCPError — сервер не рисует приложений либо ответил ошибкой MCP.
+        McpClientError — сервер недоступен.
+        AuthenticationError — вход пользователя вкладки больше не годен.
+        """
+        context = registration.context()
+        port = await self._app_server(registration, context)
+
+        return await port.read(params.uri)
+
+    async def app_answer(self, request: Awaitable[BaseModel]) -> dict[str, Any]:
+        """Ответ приложению на его запрос: итог по форме MCP либо отказ
+        app_refusal с причиной — приложение получит ошибку JSON-RPC, а не
+        тишину."""
+        try:
+            result = await request
+        except MCPError as exc:
+            logger.warning("mcp app request refused: %s", exc.error.message)
+            return self.app_refusal(exc.error)
+        except (McpClientError, AuthenticationError) as exc:
+            logger.warning("mcp app request failed: %s", exc)
+            error = ErrorData(code=mt.INTERNAL_ERROR, message=str(exc))
+            return self.app_refusal(error)
+
+        return result.model_dump(mode="json", by_alias=True, exclude_none=True)
+
+    def app_refusal(self, error: ErrorData) -> dict[str, Any]:
+        """Отказ на запрос приложения в ответе действия: элемент приложения
+        отдаёт его мосту ошибкой JSON-RPC."""
+        return {"error": error.model_dump(mode="json", exclude_none=True)}
+
+    async def _called(  # noqa: PLR0913 — вызов собирается регистрацией, портом и стороной
+        self,
+        registration: McpRegistration,
+        context: CallContext,
+        port: McpToolPort,
+        params: mt.CallToolRequestParams,
+        audience: Visibility,
+        forwarded: Callable[[mt.ProgressNotificationParams], Awaitable[None]] | None,
+    ) -> mt.CallToolResult | mt.InputRequiredResult:
+        """Вызов инструмента, видимого стороне audience: соединения
+        запечатаны, у вызова со вложенными вызовами — и в узлах, тред
+        регистрации — в параметрах с пометкой SchemaMark.THREAD, отказ
+        запечатывания — isError с причиной.
+
+        Ошибки:
+        MCPError — инструмента у сервера нет либо он не для audience.
+        """
         offered: dict[str, mt.Tool] = {}
-        for tool in self._model_tools(port, registration.server):
+        for tool in self._offered(port, registration.server, audience):
             offered[tool.name] = tool
 
         tool = offered.get(params.name)
         if tool is None:
             msg = (
-                f"mcp server {registration.server!r} offers the model no tool "
+                f"mcp server {registration.server!r} offers the {audience} no tool "
                 f"{params.name!r}; expected one of {sorted(offered)}"
             )
             raise MCPError(code=mt.INVALID_PARAMS, message=msg)
@@ -562,21 +695,7 @@ class McpRelay:
 
         sent = params.model_copy(update={"arguments": arguments})
 
-        forwarded: Callable[[mt.ProgressNotificationParams], Awaitable[None]] | None
-        forwarded = None
-        token = progress_token_from_params(ctx.params)
-        if token is not None:
-            forwarded = partial(self._forwarded, ctx, token)
-
-        reply = await port.call(sent, forwarded)
-        if not isinstance(reply, mt.CallToolResult):
-            return reply
-
-        scope = CanvasScope(
-            user_id=str(registration.user_id), thread_id=registration.thread_id
-        )
-
-        return await self._canvas.reply(scope, reply)
+        return await port.call(sent, forwarded)
 
     async def _forwarded(
         self,
@@ -636,8 +755,8 @@ class McpRelay:
             if node_tool is None:
                 msg = (
                     f"node {call.key!r} ({node_full}): mcp server {server.name!r} "
-                    f"offers the model no tool {call.tool!r}; expected one of "
-                    f"{sorted(offered)}"
+                    f"offers the caller of the call no tool {call.tool!r}; "
+                    f"expected one of {sorted(offered)}"
                 )
                 raise RefusalError(InvokeErrorKind.UNKNOWN_TOOL, msg)
 
@@ -674,37 +793,74 @@ class McpRelay:
 
         return await self._servers.port(registration.server, user)
 
-    def _model_tools(self, port: McpToolPort, server: str) -> Iterator[mt.Tool]:
-        """Инструменты сервера server, видимые модели: без _meta.ui.visibility
-        либо с "model" в нём.
+    async def _app_server(
+        self, registration: McpRegistration, context: CallContext
+    ) -> McpToolServer:
+        """Порт сервера регистрации, чьи приложения рисует чат: сервер
+        профиля с секцией apps.
+
+        Ошибки:
+        MCPError — сервер chat, сервер не из профиля треда или сервер без
+            секции apps.
+        McpClientError — сервер недоступен.
+        """
+        if registration.server not in registration.servers:
+            msg = (
+                f"mcp server {registration.server!r} is not a server of profile "
+                f"{registration.profile!r} of the thread, its servers are "
+                f"{sorted(registration.servers)}; an app may call only the server "
+                "that gave it"
+            )
+            raise MCPError(code=mt.INVALID_PARAMS, message=msg)
+
+        if registration.server == ChatTools.NAME:
+            msg = (
+                f"server {ChatTools.NAME!r} is the chat itself and has no apps; "
+                "an app may call only the server that gave it"
+            )
+            raise MCPError(code=mt.INVALID_PARAMS, message=msg)
+
+        subject = context.subject
+        user = McpCaller(login=subject.login, roles=subject.roles)
+        port = await self._servers.port(registration.server, user)
+        if port.apps() is None:
+            msg = (
+                f"mcp server {registration.server!r} has no section "
+                f"[mcp.servers.{registration.server}.apps], so the chat draws no "
+                "apps of it and takes no app requests for it"
+            )
+            raise MCPError(code=mt.INVALID_PARAMS, message=msg)
+
+        return port
+
+    def _offered(
+        self, port: McpToolPort, server: str, audience: Visibility
+    ) -> Iterator[mt.Tool]:
+        """Инструменты сервера server, видимые стороне audience: без
+        _meta.ui.visibility — обеим, иначе — названной в нём.
 
         Ошибки:
         MCPError — _meta.ui инструмента не по форме MCP Apps: ошибка сервера.
         """
         for tool in port.tools():
-            meta = tool.meta
-            if meta is None:
-                yield tool
-                continue
-
-            ui = meta.get(self.UI_META)
-            if ui is None:
-                yield tool
-                continue
-
             try:
-                visibility = AppConfig.model_validate(ui).visibility
+                config = self._apps.of(tool)
             except ValidationError as exc:
                 msg = (
                     f"mcp server {server!r}: tool {tool.name!r} carries _meta.ui "
                     "that is not an MCP Apps tool config, so its visibility to "
-                    f"the model is unknown: {ValidationText.of(exc)}"
+                    f"the {audience} is unknown: {ValidationText.of(exc)}"
                 )
                 raise MCPError(code=mt.INTERNAL_ERROR, message=msg) from exc
 
+            if config is None:
+                yield tool
+                continue
+
+            visibility = config.visibility
             if visibility is None:
                 yield tool
                 continue
 
-            if "model" in visibility:
+            if audience in visibility:
                 yield tool

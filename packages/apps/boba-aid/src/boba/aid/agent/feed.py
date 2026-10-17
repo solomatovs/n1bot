@@ -469,7 +469,11 @@ class AgentFeeds(TurnRenderers):
         for name in identity.profile.config.mcp:
             port = await self._servers.port(name, caller)
             self._media.shown(
-                name, port.tools(), port.nested_calls(), port.journal_feature()
+                name,
+                port.tools(),
+                port.nested_calls(),
+                port.journal_feature(),
+                port.apps(),
             )
 
         anchor = self._surfaces.anchor()

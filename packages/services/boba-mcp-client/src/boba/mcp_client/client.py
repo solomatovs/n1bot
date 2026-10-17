@@ -13,7 +13,8 @@ McpClientError — сервер недоступен, не прошёл иниц
     отвечает на server/discover, не отдал список инструментов, отказал во
     входе, не ответил на вызов, ответил не по схеме инструмента либо порт
     позвали до open().
-MCPError (mcp.shared.exceptions) — сервер ответил на tools/call ошибкой MCP.
+MCPError (mcp.shared.exceptions) — сервер ответил на tools/call или
+    resources/read ошибкой MCP.
 """
 
 from __future__ import annotations
@@ -33,7 +34,7 @@ from collections.abc import (
 from contextlib import AbstractAsyncContextManager, asynccontextmanager, nullcontext
 from dataclasses import dataclass
 from typing import Annotated, Any, ClassVar, Literal, Protocol, Self, TypeVar
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit, urlunsplit
 from uuid import uuid4
 
 import httpx2
@@ -54,6 +55,7 @@ from mcp.client.subscriptions import (
     SubscriptionLost,
     listen,
 )
+from mcp.server.apps import APP_MIME_TYPE, EXTENSION_ID
 from mcp.shared._httpx_utils import create_mcp_http_client
 from mcp.shared._stream_protocols import ReadStream, WriteStream
 from mcp.shared.auth import (
@@ -70,6 +72,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    HttpUrl,
     SecretStr,
     ValidationError,
     field_validator,
@@ -102,6 +105,7 @@ __all__ = [
     "McpAuthEntry",
     "McpCaller",
     "McpClientError",
+    "McpServerApps",
     "McpServerConfig",
     "McpServers",
     "McpServersConfig",
@@ -653,12 +657,50 @@ McpEndpoint = Annotated[
 ]
 
 
+class McpServerApps(BaseModel):
+    """Секция [mcp.servers.<имя>.apps]: серверу разрешено показывать свой
+    интерфейс (MCP Apps) в браузере пользователя.
+
+    sandbox_url — страница-прокси песочницы на источнике, отдельном от чата
+    и от песочниц других серверов: в ней чат рисует приложения сервера.
+    Запись сервера с этой секцией объявляет серверу расширение
+    io.modelcontextprotocol/ui; источник адреса проверяют McpServersConfig и
+    конфиг хоста приложений.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    sandbox_url: HttpUrl
+
+    def origin(self) -> str:
+        """Источник страницы-прокси в форме браузера: схема, хост и порт,
+        если он не порт схемы по умолчанию; учётные данные адреса в
+        источник не входят."""
+        url = self.sandbox_url
+        host = url.host
+        if host is None:
+            msg = f"[apps] sandbox_url {url} expects a host, got none"
+            raise ValueError(msg)
+
+        bare = HttpUrl.build(scheme=url.scheme, host=host, port=url.port)
+        parts = urlsplit(str(bare))
+
+        return urlunsplit((parts.scheme, parts.netloc, "", "", ""))
+
+    def extension(self) -> ClientExtension:
+        """Объявление расширения MCP Apps серверу: клиент рисует ресурсы
+        приложений."""
+        return advertise(EXTENSION_ID, {"mimeTypes": [APP_MIME_TYPE]})
+
+
 class McpServerConfig(BaseModel):
     """Один MCP-сервер в конфиге клиента: секция [mcp.servers.<имя>].
 
     Адрес сервера (endpoint) и способ авторизации в нём. Сервер подключён
     тем сессиям, чей профиль клиента его называет; набор инструментов решает
     сам сервер. Сроки — на подключение с инициализацией и на один вызов.
+    Секция apps есть только у сервера, чьи приложения клиент рисует; без неё
+    сервер показывает итоги блоками content.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -666,6 +708,7 @@ class McpServerConfig(BaseModel):
     endpoint: McpEndpoint
     connect_timeout_sec: float = Field(gt=0)
     call_timeout_sec: float = Field(gt=0)
+    apps: McpServerApps | None = None
 
     def on_behalf_of(self, caller: McpCaller) -> McpServerConfig:
         """Та же запись со входом от имени пользователя клиента: способ
@@ -689,6 +732,34 @@ class McpServersConfig(BaseModel):
         names = McpToolNames()
         for name in value:
             names.checked_server(name)
+
+        return value
+
+    @field_validator("servers")
+    @classmethod
+    def _sandboxes_apart(
+        cls, value: Mapping[str, McpServerConfig]
+    ) -> Mapping[str, McpServerConfig]:
+        """У песочниц разных серверов разные источники: иначе приложения
+        одного сервера достают до приложений другого."""
+        held: dict[str, str] = {}
+        for name, server in value.items():
+            apps = server.apps
+            if apps is None:
+                continue
+
+            origin = apps.origin()
+            other = held.get(origin)
+            if other is not None:
+                msg = (
+                    f"[mcp.servers.{name}.apps] sandbox_url {apps.sandbox_url} is on "
+                    f"origin {origin}, which is already the sandbox origin of server "
+                    f"{other!r}; give every server with apps a sandbox on its own "
+                    "origin, so that the apps of one server cannot reach another"
+                )
+                raise ValueError(msg)
+
+            held[origin] = name
 
         return value
 
@@ -730,17 +801,19 @@ class McpConnection:
         advertise(JournalFeature.ID),
         advertise(SealFeature.ID),
     )
-    """Расширения, которые клиент объявляет серверу: журнал вызовов он
-    читает окнами и слушает сигналы его роста; соединения пользователя
+    """Расширения, которые клиент объявляет любому серверу: журнал вызовов
+    он читает окнами и слушает сигналы его роста; соединения пользователя
     запечатывает ключом сервера, и сервер по этому предлагает их."""
 
     def __init__(
         self,
         transport: Transport,
         connect_timeout_sec: float,
+        extensions: Sequence[ClientExtension],
     ) -> None:
         self._transport = transport
         self._connect_timeout_sec = connect_timeout_sec
+        self._extensions = extensions
         self._causes = ErrorCauses()
         self._task: asyncio.Task[None] | None = None
         self._stop = asyncio.Event()
@@ -817,7 +890,7 @@ class McpConnection:
             client = Client(
                 self._transport.opened(),
                 client_info=self.CLIENT,
-                extensions=self.EXTENSIONS,
+                extensions=self._extensions,
                 cache=None,
                 message_handler=self._heard,
             )
@@ -1148,7 +1221,13 @@ class McpToolServer(McpToolPort):
     def __init__(self, name: str, config: McpServerConfig) -> None:
         self._name = name
         self._config = config
-        self._connection = McpConnection(config.endpoint, config.connect_timeout_sec)
+        extensions = list(McpConnection.EXTENSIONS)
+        if config.apps is not None:
+            extensions.append(config.apps.extension())
+
+        self._connection = McpConnection(
+            config.endpoint, config.connect_timeout_sec, extensions
+        )
         self._causes = ErrorCauses()
         self._tools: list[mt.Tool] | None = None
         self._features: dict[str, Mapping[str, object]] = {}
@@ -1165,12 +1244,7 @@ class McpToolServer(McpToolPort):
         """Ошибки:
         McpClientError — сервер недоступен либо не отдал список инструментов.
         """
-        try:
-            session = await self._connection.open()
-        except McpClientError as exc:
-            msg = f"mcp server {self._name!r}: {exc}"
-            raise McpClientError(msg) from exc
-
+        session = await self._session()
         self._features = self._declared(session)
         self._journal = self._feature(JournalFeature)
         self._files_feature = self._feature(FilesFeature)
@@ -1229,6 +1303,11 @@ class McpToolServer(McpToolPort):
 
     def nested_calls(self) -> NestedCallsFeature | None:
         return self._nested
+
+    def apps(self) -> McpServerApps | None:
+        """Секция apps записи сервера; None — сервер показывает итоги
+        блоками, приложения его не рисуются."""
+        return self._config.apps
 
     def journal_feature(self) -> JournalFeature | None:
         """Настройки расширения журнала вызовов; None — сервер журнала не
@@ -1303,12 +1382,7 @@ class McpToolServer(McpToolPort):
         params: mt.CallToolRequestParams,
         progress: Callable[[mt.ProgressNotificationParams], Awaitable[None]] | None,
     ) -> mt.CallToolResult | mt.InputRequiredResult:
-        try:
-            session = await self._connection.open()
-        except McpClientError as exc:
-            msg = f"mcp server {self._name!r}: {exc}"
-            raise McpClientError(msg) from exc
-
+        session = await self._session()
         label = f"mcp server {self._name!r} ({self._config.endpoint.label()})"
         listened: AbstractAsyncContextManager[None] = nullcontext()
         meta = mt.RequestParamsMeta()
@@ -1329,18 +1403,8 @@ class McpToolServer(McpToolPort):
                     allow_input_required=True,
                 )
         except MCPError as exc:
-            closed = exc.error.code == mt.CONNECTION_CLOSED
-            expired = exc.error.code == mt.REQUEST_TIMEOUT
-            unanswered = closed or expired
-            if not unanswered:
-                raise
-
-            await self._connection.close()
-            msg = (
-                f"{label}: tools/call of {params.name!r} got no answer: "
-                f"{self._causes.text(exc)}"
-            )
-            raise McpClientError(msg) from exc
+            await self._unanswered(exc, f"tools/call of {params.name!r}")
+            raise
         except RuntimeError as exc:
             msg = (
                 f"{label}: tools/call of {params.name!r} was answered off the "
@@ -1348,6 +1412,54 @@ class McpToolServer(McpToolPort):
                 f"extension result the client did not ask for: {exc}"
             )
             raise McpClientError(msg) from exc
+
+    async def read(self, uri: str) -> mt.ReadResourceResult:
+        """resources/read ресурса uri; ответ сервера как есть.
+
+        Ошибки:
+        McpClientError — сервер недоступен, не ответил либо вместо ресурса
+            попросил ввода.
+        MCPError — сервер ответил ошибкой MCP.
+        """
+        session = await self._session()
+        try:
+            return await session.read_resource(uri)
+        except MCPError as exc:
+            await self._unanswered(exc, f"resources/read of {uri!r}")
+            raise
+        except RuntimeError as exc:
+            msg = (
+                f"mcp server {self._name!r} ({self._config.endpoint.label()}): "
+                f"resources/read of {uri!r} asked for more input instead of the "
+                f"resource; reading a resource for an app takes no input: {exc}"
+            )
+            raise McpClientError(msg) from exc
+
+    async def _session(self) -> ClientSession:
+        """Открытая сессия сервера; неудача подключения называет сервер."""
+        try:
+            return await self._connection.open()
+        except McpClientError as exc:
+            msg = f"mcp server {self._name!r}: {exc}"
+            raise McpClientError(msg) from exc
+
+    async def _unanswered(self, error: MCPError, action: str) -> None:
+        """Запрос action остался без ответа — оборвалась сессия или вышел
+        срок: соединение закрывается, следующий запрос подключится заново, а
+        наверх уходит McpClientError. Иную ошибку MCP вызывающий поднимает
+        как есть."""
+        closed = error.error.code == mt.CONNECTION_CLOSED
+        expired = error.error.code == mt.REQUEST_TIMEOUT
+        unanswered = closed or expired
+        if not unanswered:
+            return
+
+        await self._connection.close()
+        msg = (
+            f"mcp server {self._name!r} ({self._config.endpoint.label()}): "
+            f"{action} got no answer: {self._causes.text(error)}"
+        )
+        raise McpClientError(msg) from error
 
     @asynccontextmanager
     async def listen(self, uris: Sequence[str]) -> AsyncGenerator[Subscription, None]:

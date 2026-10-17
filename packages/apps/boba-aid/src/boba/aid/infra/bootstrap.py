@@ -1,13 +1,20 @@
-"""Сборка FastAPI-приложения chainlit: авторизация, DI и отдача файлов."""
+"""Сборка FastAPI-приложения chainlit: авторизация, DI и отдача файлов.
+
+Ошибки:
+ConfigError — серверу с приложениями MCP Apps разрешён CORS-доступ к чату.
+RuntimeError — провайдер контейнера отдал не тот компонент.
+"""
 
 import asyncio
 import logging
 import logging.config
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import ClassVar
 
 import uvicorn
+from chainlit.config import config as chainlit_config
 from engineio.payload import Payload
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -31,6 +38,7 @@ from boba.aid.infra.socket_events import SocketEvents
 from boba.aid.infra.stale_action import StaleActionMiddleware
 from boba.auth import AuthService
 from boba.cancellation import ProcessStop, StopReason
+from boba.config.section import ConfigError
 from boba.connections.sealed import SealKeys
 from boba.identity.context import CallContexts
 from boba.identity.run import Runs
@@ -48,6 +56,7 @@ from boba.runtime.storage import StorageClient
 def run_app(files: ConfigFiles):
     """Запуск приложения; env chainlit к этому моменту выставлен AppEntry."""
     c = AppConfig.load(files)
+    SandboxCors(chainlit_config.project.allow_origins).check(c)
 
     UserLogContext.install()
     logging.config.dictConfig(c.logger)
@@ -111,6 +120,44 @@ def run_app(files: ConfigFiles):
         await server.serve_until_stopped()
 
     asyncio.run(start())
+
+
+class SandboxCors:
+    """Проверка старта: CORS chainlit закрыт песочницам приложений MCP Apps.
+
+    Скрипт песочницы приложений сервера не должен ходить в API чата с куками
+    пользователя: при секции apps у любого сервера allow_origins chainlit не
+    содержит ни "*", ни источника песочницы. Создаёт run_app со списком
+    allow_origins, который chainlit разобрал из своего конфига.
+    """
+
+    ANY: ClassVar[str] = "*"
+
+    def __init__(self, allowed: Sequence[str]) -> None:
+        self._allowed = allowed
+
+    def check(self, config: AppConfig) -> None:
+        """Ошибки:
+        ConfigError — CORS chainlit открыт песочнице.
+        """
+        for name, server in config.mcp.servers.items():
+            apps = server.apps
+            if apps is None:
+                continue
+
+            origin = apps.origin()
+            for opened in (self.ANY, origin):
+                if opened not in self._allowed:
+                    continue
+
+                msg = (
+                    f"[mcp.servers.{name}.apps]: chainlit [project].allow_origins "
+                    f"{list(self._allowed)} lets {opened!r} call the chat API with "
+                    f"the cookies of the user, so the apps of the sandbox {origin} "
+                    "could act as the user; list in allow_origins only the origins "
+                    "that embed the chat, without '*' and without the sandbox origin"
+                )
+                raise ConfigError(msg)
 
 
 @asynccontextmanager
