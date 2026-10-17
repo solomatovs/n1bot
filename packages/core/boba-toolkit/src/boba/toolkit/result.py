@@ -929,8 +929,7 @@ class SqlStatement(BaseModel):
     facts: Sequence[Fact] = Field(default_factory=list)
     """Что сервер сообщил помимо строк: сессия, счётчики, notices."""
     note: str = ""
-    """Усечение или окно листания: 'truncated to max_rows (500)',
-    'rows 51-100; more rows available, next offset=100'."""
+    """Окно листания: 'rows 51-100; more rows available, next offset=100'."""
 
     def caption(self) -> str:
         """Подпись команды: статус сервера, иначе вывод из фактов."""

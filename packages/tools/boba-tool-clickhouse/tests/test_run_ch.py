@@ -48,6 +48,7 @@ async def test_run_ch_query(ch_cfg: ChToolConfig, connection: ClickHouseConfig) 
         connection=connection,
         offset=0,
         limit=50,
+        cfg=ch_cfg,
     )
 
     print(artifact.llm_view())

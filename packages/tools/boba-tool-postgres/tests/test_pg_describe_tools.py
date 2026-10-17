@@ -214,7 +214,7 @@ class TestDescribeTools:
         assert rows[0]["kind"] == "table"
 
     async def test_query_reports_every_statement(
-        self, connection: PostgresConfig
+        self, connection: PostgresConfig, raw_config: Any
     ) -> None:
         body = Cases._of(pg.pg_query).coroutine
         if body is None:
@@ -225,6 +225,7 @@ class TestDescribeTools:
             sql="select 1 as a; select 2 as b, 3 as c",
             offset=0,
             limit=10,
+            cfg=bind(raw_config, path=pg.PgToolConfig.SECTION, model=pg.PgToolConfig),
             progress=ToolProgress(-1),
         )
 

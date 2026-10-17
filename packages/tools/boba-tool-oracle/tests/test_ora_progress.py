@@ -13,7 +13,7 @@ from ora_tool_stand import IxStand
 
 from boba.db.oracle.connection import OracleConfig
 from boba.stand_core.progress import HeardProgress
-from boba.tool.ora.tools import ora_query
+from boba.tool.ora.tools import OraToolConfig, ora_query
 from boba.toolkit.entry import ToolMain
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
@@ -40,7 +40,12 @@ async def test_every_step_of_the_query_is_reported(
 
     sql = "select 7 as answer,\n       'x' as mark\n  from dual"
     result = await body(
-        connection=connection, sql=sql, offset=0, limit=10, progress=heard.progress
+        connection=connection,
+        sql=sql,
+        offset=0,
+        limit=10,
+        cfg=OraToolConfig.model_validate({"max_rows": 500, "max_bytes": 1_000_000}),
+        progress=heard.progress,
     )
     if not result.ok:
         raise AssertionError(f"the query succeeds: {result.llm_view()}")

@@ -47,6 +47,7 @@ async def test_run_pg_query(pg_cfg: PgToolConfig, connection: PostgresConfig) ->
         sql=RunArgs.SQL,
         offset=0,
         limit=50,
+        cfg=pg_cfg,
         progress=ToolProgress(-1),
     )
 
