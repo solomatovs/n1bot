@@ -516,7 +516,10 @@ class StepCheck:
         if re.fullmatch(pattern, self._step.name):
             return
 
-        self._fail(f"step name {self._step.name!r} is not {label!r}")
+        self._fail(
+            f"step name {self._step.name!r} is not {label!r}; output:\n"
+            f"{self._step.output}"
+        )
 
     def _check_input(self) -> None:
         expected = self._call.expected_input()
