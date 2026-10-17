@@ -93,8 +93,7 @@ class DataBrokenError(DataLayerError):
 
 
 class ChatTable(StrEnum):
-    """Таблицы схемы чата; users описана в boba.identity.api, остальные — здесь.
-    Таблица elements прежних выпусков в базе остаётся, код её не читает."""
+    """Таблицы схемы чата; users описана в boba.identity.api, остальные — здесь."""
 
     USERS = "users"
     THREADS = "threads"
