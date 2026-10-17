@@ -192,23 +192,25 @@ class AskOption(BaseModel):
 
     label: str = Field(
         description=(
-            "The display text for this option that the user will see and select. "
-            "Should be concise (1-5 words) and clearly describe the choice."
+            "Текст варианта, который пользователь видит и выбирает: 1–5 слов, "
+            "ясно называющих выбор."
         )
     )
     description: str = Field(
         description=(
-            "Explanation of what this option means or what will happen if chosen. "
-            "Useful for providing context about trade-offs or implications."
+            "Что значит вариант и что будет, если его выбрать: компромиссы и "
+            "последствия."
         )
     )
     preview: str = Field(
         default="",
         description=(
-            "Optional preview content rendered when this option is focused. Use "
-            "for mockups, code snippets, or visual comparisons that help users "
-            "compare options. See the tool description for the expected content "
-            "format."
+            "Предпросмотр варианта, который показывается, пока вариант в фокусе:\n"
+            "   - макет интерфейса, фрагмент кода, вариант схемы или конфигурации\n"
+            "       когда пользователю нужно сравнить варианты глазами\n"
+            "   - пусто — простой выбор, где хватает метки и описания\n"
+            "Только у вопроса с одиночным выбором; формат — в описании "
+            "инструмента."
         ),
     )
 
@@ -232,8 +234,7 @@ class AskPick(BaseModel):
 
 
 class AskQuestion(BaseModel):
-    """Вопрос инструмента «вопрос пользователю»; его ответ разбирается в
-    выбор (pick) по меткам вариантов."""
+    """Вопрос пользователю: текст, метка вкладки и варианты ответа."""
 
     model_config = ConfigDict(frozen=True, populate_by_name=True)
 
@@ -243,35 +244,35 @@ class AskQuestion(BaseModel):
 
     question: str = Field(
         description=(
-            "The complete question to ask the user. Should be clear, specific, and "
-            'end with a question mark. Example: "Which library should we use for '
-            'date formatting?" If multiSelect is true, phrase it accordingly, e.g. '
-            '"Which features do you want to enable?"'
+            "Полный текст вопроса: ясный, конкретный, с вопросительным знаком в "
+            "конце. Пример: «Какую библиотеку взять для форматирования дат?». "
+            "Вопрос с несколькими ответами формулируется под них: «Какие "
+            "возможности включить?»"
         )
     )
     header: str = Field(
         max_length=12,
         description=(
-            "Very short label displayed as a chip/tag (max 12 chars). Examples: "
-            '"Auth method", "Library", "Approach".'
+            "Короткая метка вопроса на его вкладке, не длиннее 12 знаков: "
+            "«Вход», «Библиотека», «Подход»."
         ),
     )
     options: Sequence[AskOption] = Field(
         min_length=2,
         max_length=4,
         description=(
-            "The available choices for this question. Must have 2-4 options. Each "
-            "option should be a distinct, mutually exclusive choice (unless "
-            "multiSelect is enabled). There should be no 'Other' option, that will "
-            "be provided automatically."
+            "Варианты ответа, от 2 до 4: каждый — отдельный выбор, при одиночном "
+            "выборе варианты исключают друг друга. Вариант «Other» со своим "
+            "текстом интерфейс добавляет сам — в список его не включай."
         ),
     )
     multi_select: bool = Field(
         default=False,
         alias="multiSelect",
         description=(
-            "Set to true to allow the user to select multiple options instead of "
-            "just one. Use when choices are not mutually exclusive."
+            "Сколько вариантов может выбрать пользователь:\n"
+            "   - false — один вариант\n"
+            "   - true — несколько, когда варианты не исключают друг друга\n"
         ),
     )
 
@@ -342,7 +343,7 @@ class AskUserQuestionInput(BaseModel):
     questions: Sequence[AskQuestion] = Field(
         min_length=1,
         max_length=4,
-        description="Questions to ask the user (1-4 questions)",
+        description="Вопросы пользователю, от 1 до 4.",
     )
 
     @model_validator(mode="after")
