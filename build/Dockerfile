@@ -276,12 +276,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends        \
         libkrb5-3 libgssapi-krb5-2 krb5-user                            \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=base /usr/lib/x86_64-linux-gnu/libstdc++.so.${LIBSTDCXX_VERSION}  /usr/lib/x86_64-linux-gnu/
+RUN rm -f /usr/lib/x86_64-linux-gnu/libstdc++.so.6 /usr/lib/x86_64-linux-gnu/libstdc++.so.${LIBSTDCXX_OLD}
+COPY --from=base /usr/lib/x86_64-linux-gnu/libstdc++.so.${LIBSTDCXX_VERSION}  /usr/lib/x86_64-linux-gnu/libstdc++.so.6
 COPY --from=base /usr/lib/x86_64-linux-gnu/libgcc_s.so.1                      /lib/x86_64-linux-gnu/
 COPY --from=python-slim /python/                                              /usr/local/
-RUN rm -f /usr/lib/x86_64-linux-gnu/libstdc++.so.${LIBSTDCXX_OLD} \
-    && ln -sf libstdc++.so.${LIBSTDCXX_VERSION} /usr/lib/x86_64-linux-gnu/libstdc++.so.6 \
-    && ldconfig
+RUN ldconfig
 
 RUN rm -rf /usr/share/man /usr/share/doc /usr/share/info /usr/share/locale \
            /usr/share/lintian /var/cache/* /var/log/*

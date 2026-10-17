@@ -57,8 +57,8 @@ embedding.py  AspectEmbedding: чанки, векторы и запись наб
 ## Воркер: worker.py
 
 Готовый цикл на Python поверх провайдера проекта `boba.llm.embedding` (fastembed, ONNX на
-CPU, модель `intfloat/multilingual-e5-large` из каталога `models/fastembed`, префикс
-`passage:` подставляет fastembed). Запуск из venv проекта:
+CPU, модель `intfloat/multilingual-e5-large` только из кэша `runtime/models/fastembed`,
+который кладёт `make fetch`, префикс `passage:` подставляет fastembed). Запуск из venv проекта:
 
 ```
 .venv/bin/boba-ix-vector --config ../../compose/ix-vector/conf.toml
