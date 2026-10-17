@@ -50,6 +50,7 @@ from boba.mcp_client.client import (
 from boba.runtime.config import AppLayers, ConfigLayoutError, EnvOverride
 from boba.stand.service_signin import ServiceSignIn
 from boba.stand.ui.stand import StandApp, StandFiles
+from boba.stand.zygote import RUNTIME
 from boba.toolkit.calls import CallViews
 from boba.toolkit.channels import ToolChannel
 from boba.toolkit.dag import (
@@ -1266,7 +1267,7 @@ class BobaMcpService:
     и адрес ресурса обязаны совпадать с тем, как клиент называет сервис."""
     PROFILE: str = "general"
     CLIENT: str = "boba-chat"
-    THIRD: Path = BobaMcpStand.REPO / "runtime" / "third"
+    THIRD: Path = RUNTIME.third
 
     def __init__(self, workdir: Path, database: str) -> None:
         with socket.socket() as probe:

@@ -26,13 +26,13 @@ from boba.sandbox.zygote import (
     ZygoteToolCaller,
 )
 from boba.stand.shell import ShellRun
+from boba.stand.ui.stand import StandRuntime
 from boba.toolkit.chain import CallAmbient
 
 REPO = Path(__file__).resolve().parents[6]
-SANDBOX = REPO / "runtime" / "sandbox"
-ROOTFS_IMAGE = SANDBOX / "plugins" / "boba-tool-shell" / "rootfs.ext4"
-DEPLOY_BIN = REPO / "runtime" / "third" / "bin"
-"""Бинарные артефакты сборки: bwrap и fuse2fs из make sandbox."""
+RUNTIME = StandRuntime()
+"""Каталоги сборки runtime: их называет [env] site.toml отладки сервиса."""
+ROOTFS_IMAGE = RUNTIME.shell_rootfs
 
 
 class CgroupFs(StrEnum):
@@ -193,7 +193,7 @@ class SandboxStand:
     )
     """Пакеты, чей код нужен зиготе стенда: их src уезжает в PYTHONPATH."""
 
-    FUSE2FS: ClassVar[Path] = DEPLOY_BIN / "fuse2fs"
+    FUSE2FS: ClassVar[Path] = RUNTIME.third_bin / "fuse2fs"
     """fuse2fs развёртывания: статический, работает и в корне образа, и на хосте."""
 
     @classmethod
@@ -221,8 +221,8 @@ class SandboxStand:
         их же приносят бинды, а хостовые копии внутри корня образа не работают.
         """
         dirs: list[str] = []
-        if DEPLOY_BIN.is_dir():
-            dirs.append(str(DEPLOY_BIN))
+        if RUNTIME.third_bin.is_dir():
+            dirs.append(str(RUNTIME.third_bin))
 
         for entry in os.environ.get("PATH", "").split(os.pathsep):
             if entry.startswith("/"):
