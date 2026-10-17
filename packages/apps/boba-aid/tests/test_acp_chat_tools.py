@@ -8,7 +8,9 @@
 Проверяется ход «connection_list на сервере chat → pg_query на boba-mcp с
 именем соединения»: имя подменяется запечатанным профилем, сервис открывает
 его и исполняет запрос, в ленте остаётся имя; файл настроек агента не несёт
-ни серверов, ни хуков, ни токенов.
+ни серверов, ни хуков, ни токенов. auth_secret у чата и сервиса стенда
+разные: ход с запечатанным соединением и журнал вызова (resources/read,
+subscriptions/listen) от этого не зависят.
 Приёмка ретранслятора — настоящий агент и стенд boba-mcp со входом proxy:
 инструмента чужой роли нет у агента, остановка отменяет вызов на сервере,
 инструмент только для интерфейса агенту не виден и не вызывается."""
@@ -19,7 +21,8 @@ import asyncio
 import json
 import multiprocessing
 import time
-from collections.abc import AsyncIterator, Iterator, Mapping
+import tomllib
+from collections.abc import AsyncIterator, Iterable, Iterator, Mapping
 from http import HTTPStatus
 from pathlib import Path
 from typing import Any, ClassVar
@@ -35,6 +38,7 @@ from test_acp_chat import BOOT_TIMEOUT_SEC, AgentProcesses, ChatSocket
 import boba.aid.agent
 from boba.aid.agent.client import AgentProcess
 from boba.aid.rendering.chat_view import StepStatus
+from boba.canvas.canvas import CanvasAction, CanvasElement, CanvasKind
 from boba.db.postgres.connection import PostgresConfig
 from boba.mcp_client.client import McpServerConfig, McpServersConfig
 from boba.runtime.config import RuntimeConfig
@@ -491,6 +495,147 @@ class SealedQueryTurn:
         assert not self._tab.errors(), self._tab.errors()
 
         return ToolSteps(self._tab).named("pg_query")[-1]
+
+
+class TestSeparateSessionSecrets:
+    """auth_secret чата и сервиса на стенде разные: вход, вызов с
+    запечатанным соединением и журнал вызова (resources/read и
+    subscriptions/listen) работают — чат не предъявляет сервису ничего,
+    подписанного своим auth_secret."""
+
+    SLEEP_SEC: ClassVar[int] = 6
+    """Сколько идёт вызов: панель успевает подписаться на открытый журнал."""
+
+    async def test_turn_and_its_journal_work_with_separate_secrets(
+        self, app: StandProcess, tab: ChatSocket, probe: PostgresConfig
+    ) -> None:
+        companion = app.companion
+        assert companion is not None
+
+        chat_site = SiteSecrets(app.config.files.site)
+        service_site = SiteSecrets(companion.config.files.site)
+        assert chat_site.auth_secret() != service_site.auth_secret(), (
+            "the stand gives the chat and the service the same auth_secret"
+        )
+
+        since = app.log_lines()
+        call = {
+            "name": "mcp__boba_general__pg_query",
+            "arguments": {
+                "connection": CONNECTION,
+                "sql": f"select pg_sleep({self.SLEEP_SEC}), 1 as one",
+                "offset": 0,
+                "limit": 10,
+            },
+        }
+        await tab.send(f"{ScenarioName.CALL.value} {json.dumps([call])}")
+
+        call_id = await JournalButtons(tab).call_of("pg_query")
+        live = tab.action(CanvasAction.SHOW.value, {"call_id": call_id, "inline": True})
+        assert live.get("kind") == CanvasKind.STREAM.value, (live, app.tail(60))
+
+        listened = await JournalWatch(app, since).listened()
+        assert listened, app.tail(60)
+
+        await tab.wait_task_end()
+        assert not tab.errors(), (tab.errors(), app.tail(60))
+
+        step = ToolSteps(tab).last("pg_query")
+        assert not step.get("isError"), (step, companion.tail(60))
+        assert "one" in str(step.get("output")), step
+
+        done = tab.action(CanvasAction.SHOW.value, {"call_id": call_id, "inline": True})
+        assert done.get("text"), (done, app.tail(60))
+
+
+class SiteSecrets:
+    """Секреты [site] site-файла приложения стенда."""
+
+    def __init__(self, site: Path) -> None:
+        with site.open("rb") as handle:
+            self._site: Mapping[str, Any] = tomllib.load(handle)["site"]
+
+    def auth_secret(self) -> str:
+        return str(self._site["auth_secret"])
+
+
+class JournalButtons:
+    """Кнопки журнала вызовов в ленте вкладки: элементы CanvasStream с
+    идентификатором вызова и подписью инструмента."""
+
+    WAIT_SEC: ClassVar[float] = 30.0
+
+    def __init__(self, tab: ChatSocket) -> None:
+        self._tab = tab
+
+    async def call_of(self, tool: str) -> str:
+        """Вызов последней кнопки журнала инструмента tool: ждёт, пока сервер
+        назовёт журнал."""
+        deadline = time.monotonic() + self.WAIT_SEC
+        while time.monotonic() < deadline:
+            found = list(self._calls(tool))
+            if found:
+                return found[-1]
+
+            await asyncio.sleep(0.1)
+
+        raise AssertionError(f"no journal button of {tool}: {self._tab.trace()}")
+
+    def _calls(self, tool: str) -> Iterator[str]:
+        for element in self._tab.elements():
+            if element.get("name") != CanvasElement.STREAM.value:
+                continue
+
+            props = element.get("props")
+            if not isinstance(props, dict):
+                continue
+
+            if props.get("label") != tool:
+                continue
+
+            yield str(props[CanvasAction.CALL_ID.value])
+
+
+class JournalWatch:
+    """Слежение панели за журналом по логу чата: подписка subscriptions/listen
+    на сервере журнала поднялась и не ушла в запасной опрос."""
+
+    WAIT_SEC: ClassVar[float] = 15.0
+    FALLBACKS: ClassVar[tuple[str, ...]] = ("falls back to polling", "is polled")
+
+    def __init__(self, app: StandProcess, since: int) -> None:
+        self._app = app
+        self._since = since
+
+    async def listened(self) -> list[str]:
+        deadline = time.monotonic() + self.WAIT_SEC
+        while time.monotonic() < deadline:
+            watched = list(self._watched())
+            fallen = list(self._fallen(watched))
+            assert not fallen, fallen
+
+            listening: list[str] = []
+            for line in watched:
+                if "listens on" in line:
+                    listening.append(line)
+
+            if listening:
+                return listening
+
+            await asyncio.sleep(0.2)
+
+        return []
+
+    def _watched(self) -> Iterator[str]:
+        for line in _lines_since(self._app, self._since):
+            if "journal watch:" in line:
+                yield line
+
+    def _fallen(self, watched: Iterable[str]) -> Iterator[str]:
+        for line in watched:
+            for fallback in self.FALLBACKS:
+                if fallback in line:
+                    yield line
 
 
 class TestSignInOfTheAgent:
