@@ -61,6 +61,16 @@ function Check() {
   );
 }
 
+// Классы узла: базовые и те, чей признак истинен.
+function cls(base, flags) {
+  const names = [];
+  if (base) names.push(base);
+  for (const [name, on] of Object.entries(flags)) {
+    if (on) names.push(name);
+  }
+  return names.join(" ");
+}
+
 function rowsOf(item) {
   const rows = [];
   for (const option of item.options || []) {
@@ -128,20 +138,29 @@ function previewLines(item) {
 }
 
 function OptionRow({ row, index, multi, selected, readOnly, dimmed, highlighted, confirming, onPick, onKey, onFocusRow, onHover, onLeave, children }) {
-  const classes = ["option"];
-  if (confirming) classes.push("optionConfirming");
-  if (readOnly) classes.push("optionReadOnly");
-  if (dimmed) classes.push("optionDimmed");
-  if (highlighted) classes.push("optionHighlighted");
+  const classes = cls("option", {
+    optionConfirming: confirming,
+    optionReadOnly: readOnly,
+    optionDimmed: dimmed,
+    optionHighlighted: highlighted,
+  });
 
-  let mark = (
-    <div className={selected ? "radio radioChecked" : "radio"}>{selected ? <div className="radioDot" /> : null}</div>
-  );
+  let dot = null;
+  if (selected) dot = <div className="radioDot" />;
+  let mark = <div className={cls("radio", { radioChecked: selected })}>{dot}</div>;
+  let role = "radio";
   if (multi) {
-    mark = <div className={selected ? "checkbox checkboxChecked" : "checkbox"}>{selected ? <Check /> : null}</div>;
+    let tick = null;
+    if (selected) tick = <Check />;
+    mark = <div className={cls("checkbox", { checkboxChecked: selected })}>{tick}</div>;
+    role = "checkbox";
   }
 
+  let description = null;
+  if (row.description) description = <div className="optionDescription">{row.description}</div>;
+
   const interactive = {};
+  if (readOnly) interactive["aria-disabled"] = "true";
   if (!readOnly) {
     interactive.tabIndex = 0;
     interactive.onClick = () => onPick(row.value);
@@ -152,18 +171,11 @@ function OptionRow({ row, index, multi, selected, readOnly, dimmed, highlighted,
   }
 
   return (
-    <div
-      className={classes.join(" ")}
-      role={multi ? "checkbox" : "radio"}
-      aria-checked={Boolean(selected)}
-      aria-disabled={readOnly ? "true" : undefined}
-      data-row={index}
-      {...interactive}
-    >
+    <div className={classes} role={role} aria-checked={Boolean(selected)} data-row={index} {...interactive}>
       <div className="optionCheckbox">{mark}</div>
       <div className="optionContent">
         <div className="optionLabel">{row.label}</div>
-        {row.description ? <div className="optionDescription">{row.description}</div> : null}
+        {description}
         {children}
       </div>
     </div>
@@ -172,16 +184,18 @@ function OptionRow({ row, index, multi, selected, readOnly, dimmed, highlighted,
 
 function TypedBox({ value, onChange, onKey, inputRef }) {
   const [focused, setFocused] = useState(false);
+  let placeholder = (
+    <div className="q-placeholder" aria-hidden="true">
+      Type your answer…
+    </div>
+  );
+  if (value) placeholder = null;
   return (
     <div
-      className={focused ? "q-wrapper otherInput is-focus-within" : "q-wrapper otherInput"}
+      className={cls("q-wrapper otherInput", { "is-focus-within": focused })}
       onClick={(event) => event.stopPropagation()}
     >
-      {value ? null : (
-        <div className="q-placeholder" aria-hidden="true">
-          Type your answer…
-        </div>
-      )}
+      {placeholder}
       <div
         ref={inputRef}
         className="q-input"
@@ -358,9 +372,8 @@ function Panel({ card }) {
     const multi = item.kind === "multi";
     const current = picked[item.key] || [];
     let next = [value];
-    if (multi) {
-      next = current.includes(value) ? current.filter((each) => each !== value) : [...current, value];
-    }
+    if (multi) next = [...current, value];
+    if (multi && current.includes(value)) next = current.filter((each) => each !== value);
     const nextPicked = { ...picked, [item.key]: next };
     setPicked(nextPicked);
 
@@ -436,8 +449,10 @@ function Panel({ card }) {
     const found = Array.from(rootRef.current.querySelectorAll('[role="radio"], [role="checkbox"]'));
     if (!found.length) return;
     const at = found.findIndex((row) => row === document.activeElement);
-    let next = at >= found.length - 1 ? 0 : at + 1;
-    if (event.key === "ArrowUp") next = at <= 0 ? found.length - 1 : at - 1;
+    let next = at + 1;
+    if (at >= found.length - 1) next = 0;
+    if (event.key === "ArrowUp") next = at - 1;
+    if (event.key === "ArrowUp" && at <= 0) next = found.length - 1;
     event.preventDefault();
     event.stopPropagation();
     setFocusTarget({ kind: "row", index: next });
@@ -526,20 +541,39 @@ function Panel({ card }) {
     );
   });
 
-  const questionClasses = ["questionsContainer"];
-  if (folded) questionClasses.push("questionsContainerFolded");
-  if (overflow.top) questionClasses.push("questionsContainerOverflowTop");
-  if (overflow.bottom) questionClasses.push("questionsContainerOverflowBottom");
+  const questionClasses = cls("questionsContainer", {
+    questionsContainerFolded: folded,
+    questionsContainerOverflowTop: overflow.top,
+    questionsContainerOverflowBottom: overflow.bottom,
+  });
+  const containerClasses = cls("permissionRequestContainer", {
+    folded,
+    "is-focus-within": focusWithin,
+  });
 
-  const containerClasses = ["permissionRequestContainer"];
-  if (folded) containerClasses.push("folded");
-  if (focusWithin) containerClasses.push("is-focus-within");
+  let source = null;
+  if (card.source) {
+    source = (
+      <div className="q-source">
+        <b>{card.source.server}</b> · {card.source.message}
+      </div>
+    );
+  }
+
+  let fold = { label: "Collapse", icon: <ChevronDown /> };
+  if (folded) fold = { label: "Expand", icon: <ChevronUp /> };
+
+  let answers = <div className="optionsContainer">{typedBox}</div>;
+  if (CHOICES.includes(item.kind)) answers = <div className="optionsContainer">{optionRows}</div>;
+
+  let pane = null;
+  if (preview) pane = <PreviewPane item={item} row={highlighted} />;
 
   return (
     <div className="q-root q-dock" data-question-panel>
       <div
         ref={rootRef}
-        className={containerClasses.join(" ")}
+        className={containerClasses}
         tabIndex={0}
         data-focused-index="0"
         onKeyDown={onContainerKey}
@@ -550,42 +584,34 @@ function Panel({ card }) {
       >
         <div className="permissionRequestContainerBackground" />
         <div className="permissionRequestContent">
-          {card.source ? (
-            <div className="q-source">
-              <b>{card.source.server}</b> · {card.source.message}
-            </div>
-          ) : null}
-          <div className={preview ? "withPreview" : ""} onKeyDown={onKeysDown}>
-            <div className={folded ? "navigationBar navigationBarFolded" : "navigationBar"}>
+          {source}
+          <div className={cls("", { withPreview: preview })} onKeyDown={onKeysDown}>
+            <div className={cls("navigationBar", { navigationBarFolded: folded })}>
               {tabs}
               <div className="navSpacer" />
               <button
                 type="button"
                 className="iconButton iconButton20"
                 data-fold
-                aria-label={folded ? "Expand" : "Collapse"}
+                aria-label={fold.label}
                 aria-expanded={!folded}
                 onClick={() => setFolded(!folded)}
               >
-                {folded ? <ChevronUp /> : <ChevronDown />}
+                {fold.icon}
               </button>
               <button type="button" className="iconButton iconButton20" data-close aria-label="Close" onClick={decline}>
                 <Cross />
               </button>
             </div>
-            <div ref={questionsRef} className={questionClasses.join(" ")}>
+            <div ref={questionsRef} className={questionClasses}>
               <div className="questionBlock">
                 <div className="questionHeader">
                   <span className="questionTextLarge">{item.text}</span>
                 </div>
-                {CHOICES.includes(item.kind) ? (
-                  <div className="optionsContainer">{optionRows}</div>
-                ) : (
-                  <div className="optionsContainer">{typedBox}</div>
-                )}
+                {answers}
               </div>
             </div>
-            {preview ? <PreviewPane item={item} row={highlighted} /> : null}
+            {pane}
           </div>
         </div>
         <div className="buttonContainer">
@@ -607,13 +633,18 @@ function Panel({ card }) {
 }
 
 function ReviewRows({ item, answer, state }) {
-  const picks = (answer && answer.picked) || [];
-  const typedText = answer ? answer.typed : null;
-  const any = picks.length > 0 || (typedText !== null && typedText !== undefined);
+  let picks = [];
+  let typedText = null;
+  if (answer) {
+    picks = answer.picked || [];
+    typedText = answer.typed;
+  }
+  const typed = typedText !== null && typedText !== undefined;
+  const any = picks.length > 0 || typed;
   const noop = () => undefined;
 
   if (!CHOICES.includes(item.kind)) {
-    if (typedText === null || typedText === undefined) return null;
+    if (!typed) return null;
     return <div className="optionDescription typedAnswer q-typedOnly">{typedText}</div>;
   }
 
@@ -637,7 +668,9 @@ function ReviewRows({ item, answer, state }) {
     );
   });
 
-  if (typedText !== null && typedText !== undefined) {
+  if (typed) {
+    let text = null;
+    if (typedText) text = <div className="optionDescription typedAnswer">{typedText}</div>;
     rows.push(
       <OptionRow
         key={OTHER_PICK}
@@ -652,7 +685,7 @@ function ReviewRows({ item, answer, state }) {
         onHover={noop}
         onLeave={noop}
       >
-        {typedText ? <div className="optionDescription typedAnswer">{typedText}</div> : null}
+        {text}
       </OptionRow>
     );
   }
@@ -663,9 +696,31 @@ function ReviewRows({ item, answer, state }) {
 function Review({ card }) {
   const [open, setOpen] = useState(true);
   const count = card.items.length;
-  const noun = count === 1 ? "question" : "questions";
-  const status = STATUS[card.state] || STATUS.cancel;
+  let noun = "questions";
+  if (count === 1) noun = "question";
+  let status = STATUS.cancel;
+  if (card.state in STATUS) status = STATUS[card.state];
   const toggle = () => setOpen(!open);
+
+  let chevron = <ChevronDown />;
+  let body = null;
+  if (open) {
+    chevron = <ChevronUp />;
+    body = (
+      <div className="toolBody">
+        <div className="reviewBody">
+          {card.items.map((item) => (
+            <div className="questionBlock" key={item.key}>
+              <div className="questionHeader">
+                <span className="questionTextLarge">{item.text}</span>
+              </div>
+              <ReviewRows item={item} answer={card.answers[item.key]} state={card.state} />
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="q-root q-review" data-question-review={card.state}>
@@ -684,24 +739,11 @@ function Review({ card }) {
         <span className="q-content">
           <span className="statusLine">
             {status} · {count} {noun}
-            {open ? <ChevronUp /> : <ChevronDown />}
+            {chevron}
           </span>
         </span>
       </div>
-      {open ? (
-        <div className="toolBody">
-          <div className="reviewBody">
-            {card.items.map((item) => (
-              <div className="questionBlock" key={item.key}>
-                <div className="questionHeader">
-                  <span className="questionTextLarge">{item.text}</span>
-                </div>
-                <ReviewRows item={item} answer={card.answers[item.key]} state={card.state} />
-              </div>
-            ))}
-          </div>
-        </div>
-      ) : null}
+      {body}
     </div>
   );
 }

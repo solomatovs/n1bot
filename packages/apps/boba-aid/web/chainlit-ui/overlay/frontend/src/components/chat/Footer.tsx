@@ -1,6 +1,12 @@
 import { cn, hasMessage } from '@/lib/utils';
 import { MessageContext, defaultMessageContext } from 'contexts/MessageContext';
-import { MutableRefObject, useEffect, useMemo, useState } from 'react';
+import {
+  CSSProperties,
+  MutableRefObject,
+  useEffect,
+  useMemo,
+  useState
+} from 'react';
 
 import {
   FileSpec,
@@ -98,27 +104,33 @@ export default function ChatFooter({ showIfEmptyThread, ...props }: Props) {
 
   if (!hasMessage(messages) && !showIfEmptyThread) return null;
 
-  const shown = Boolean(docked) && !held;
+  let hint = null;
+  if (held) {
+    hint = (
+      <div className="q-root w-full" data-question-held>
+        <div className="q-hint">Waiting for permission…</div>
+      </div>
+    );
+  }
+
+  let panel = null;
+  let composerStyle: CSSProperties | undefined = undefined;
+  if (docked && !held) {
+    panel = (
+      <MessageContext.Provider value={context}>
+        <div className="w-full" id="question-dock">
+          <CustomElement element={docked} />
+        </div>
+      </MessageContext.Provider>
+    );
+    composerStyle = { display: 'none' };
+  }
 
   return (
     <div className={cn('relative flex flex-col items-center gap-2 w-full')}>
-      {held ? (
-        <div className="q-root w-full" data-question-held>
-          <div className="q-hint">Waiting for permission…</div>
-        </div>
-      ) : null}
-      {shown && docked ? (
-        <MessageContext.Provider value={context}>
-          <div className="w-full" id="question-dock">
-            <CustomElement element={docked} />
-          </div>
-        </MessageContext.Provider>
-      ) : null}
-      <div
-        ref={setComposer}
-        className="w-full"
-        style={shown ? { display: 'none' } : undefined}
-      >
+      {hint}
+      {panel}
+      <div ref={setComposer} className="w-full" style={composerStyle}>
         <MessageComposer {...props} />
       </div>
       <WaterMark />

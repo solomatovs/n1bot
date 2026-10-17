@@ -511,6 +511,10 @@ class TestHeldWhileTyping:
         """Пока поле ввода с текстом правят чаще раза в 1,5 с, панель
         придержана и над полем подсказка; затихли — панель встаёт, черновик
         цел."""
+        # тред с прошлым ходом: перепривязка шага нового вопроса не оставляет
+        # ленту пустой, и поле ввода не пересоздаётся посреди набора
+        asked.chat.ask(ScenarioName.ANSWER.value)
+        asked.chat.await_idle()
         request = json.dumps(
             {"name": "AskUserQuestion", "arguments": {"questions": [DB]}}
         )
