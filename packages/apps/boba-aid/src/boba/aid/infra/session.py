@@ -77,16 +77,19 @@ class SessionSignInError(AuthenticationError):
     """Вход сессии больше не годен: токена нет, срок истёк или токен отвергнут.
 
     Причина целиком — в журнал; пользователю в чат — строка переводов по коду
-    на языке сессии. Бросает ChainlitSession.signed_in.
+    на языке сессии из переводов корня приложения chainlit. Строка берётся,
+    только когда отказ показывают: отказ, который ловит вызывающий, переводы
+    не читает. Бросает ChainlitSession.signed_in.
     """
 
     def __init__(self, code: SessionSignIn, message: str, language: str) -> None:
         super().__init__(message)
-        texts = UiText(Path(chainlit_config.root), language)
-        self._shown = texts.text(code.value)
+        self._code = code
+        self._language = language
 
     def view_message(self) -> ViewErrorMessage | None:
-        return ViewErrorMessage(content=self._shown)
+        texts = UiText(Path(chainlit_config.root), self._language)
+        return ViewErrorMessage(content=texts.text(self._code.value))
 
 
 class LiveSignIn(Protocol):
