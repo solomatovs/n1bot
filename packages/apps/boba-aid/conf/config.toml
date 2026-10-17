@@ -8,7 +8,7 @@
     postgres        = "${postgres}"
     keys            = "${keys}"
     krb             = "${krb}"
-    chainlit        = "${chainlit}"
+    aid             = "${aid}"
     session         = "${session}"
     cluster         = "${cluster}"
     messaging       = "${messaging}"
@@ -278,7 +278,7 @@
     session_max_sec = 604800
     generation      = ""
 
-[chainlit]
+[aid]
     host            = "${env.listen_host}"
     port            = "${env.port}"
     url_prefix      = "${env.url_prefix}"

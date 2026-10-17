@@ -203,7 +203,7 @@ class AuthService(Authenticator):
 
     async def sign_in(self, username: str, password: str) -> SignedIn:
         """Итог входа по паролю без строки users и токена: для хоста, который
-        заводит пользователя и выпускает сессию сам (chainlit). Вход уже помечен
+        заводит пользователя и выпускает сессию сам (чат aid). Вход уже помечен
         поколением сессий, чтобы токен хоста прошёл проверку.
         """
         signed = await self._sign_ins.by_password(username, password)

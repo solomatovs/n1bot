@@ -21,7 +21,7 @@ __all__ = [
 
 @dataclass
 class ViewErrorMessage:
-    "Сообщение которое увидит пользователь в chainlit ui"
+    "Сообщение, которое увидит пользователь в чате"
 
     content: str
     author: str = "Error"

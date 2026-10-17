@@ -448,7 +448,7 @@ async def _agent_panel(
         user,
         chat,
         options,
-        PanelText(app_config.chainlit.root, session.language),
+        PanelText(app_config.aid.root, session.language),
     )
 
 
