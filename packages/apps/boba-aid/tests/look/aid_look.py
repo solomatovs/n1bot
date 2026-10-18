@@ -29,10 +29,17 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from importlib.metadata import version
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from PIL import Image, ImageChops
-from playwright.sync_api import Browser, BrowserContext, Locator, Page, ViewportSize
+from playwright.sync_api import (
+    Browser,
+    BrowserContext,
+    Locator,
+    Page,
+    ViewportSize,
+    expect,
+)
 from pydantic import BaseModel, ConfigDict, TypeAdapter
 
 from boba.stand.ui.stand import (
@@ -56,6 +63,7 @@ __all__ = [
     "LookPaths",
     "LookReport",
     "LookSettings",
+    "LookSignIn",
     "LookSize",
     "LookStand",
     "LookState",
@@ -948,6 +956,34 @@ class LookPages:
         self._contexts.clear()
 
 
+class LookSignIn:
+    """Вход формой стенда пользователем admin: после него открыт пустой
+    тред с полем ввода и выбором профиля, сеть затихла. Им входят тесты вида
+    оболочки и ленты."""
+
+    LOGIN: ClassVar[str] = "#email"
+    PASSWORD: ClassVar[str] = "#password"
+    SUBMIT: ClassVar[str] = 'form button[type="submit"]'
+    INPUT: ClassVar[str] = "#chat-input"
+    PROFILE_SELECT: ClassVar[str] = "#chat-profiles"
+    LOGIN_USER: ClassVar[str] = "admin"
+
+    def __init__(self, page: Page, stand: StandProcess) -> None:
+        self._page = page
+        self._stand = stand
+
+    def sign_in(self) -> None:
+        credential = self._stand.config.credential(self.LOGIN_USER)
+        base = self._stand.config.base_url
+        self._page.goto(f"{base}/login", wait_until="domcontentloaded")
+        self._page.locator(self.LOGIN).fill(credential.login)
+        self._page.locator(self.PASSWORD).fill(credential.password)
+        self._page.locator(self.SUBMIT).click()
+        expect(self._page.locator(self.INPUT)).to_be_visible(timeout=60_000)
+        expect(self._page.locator(self.PROFILE_SELECT)).to_be_visible()
+        self._page.wait_for_load_state("networkidle")
+
+
 class LookLanguage(StrEnum):
     """Язык интерфейса стенда тестов вида: [UI].language конфига chainlit."""
 
@@ -1012,6 +1048,7 @@ class LookStand:
         self._database = database
         self._roots = LookAppRoots(workdir)
         self._running: dict[tuple[StandAuth, LookLanguage], StandProcess] = {}
+        self._served: dict[str, StandProcess] = {}
 
     def of(
         self, auth: StandAuth, language: LookLanguage = LookLanguage.RU
@@ -1035,8 +1072,38 @@ class LookStand:
         self._running[(auth, language)] = process
         return process
 
+    def served(
+        self, name: str, servers: Mapping[str, Mapping[str, object]]
+    ) -> StandProcess:
+        """Стенд name с серверами MCP servers (секции [mcp.servers.<имя>]):
+        вход local, язык конфига assets; поднят по первому запросу."""
+        if running := self._served.get(name):
+            return running
+
+        mcp_servers: dict[str, dict[str, Any]] = {}
+        for server, section in servers.items():
+            mcp_servers[server] = dict(section)
+
+        config = StandConfig(
+            workdir=self._workdir / name,
+            app=StandApp.AID,
+            app_port=free_port(),
+            llm_port=self._llm_port,
+            db_name=self._database,
+            url_prefix="/boba-look",
+            mcp_servers=mcp_servers,
+        )
+        process = StandProcess(config=config, log_path=self._workdir / f"{name}.log")
+        process.start(boot_timeout_sec=self.BOOT_TIMEOUT_SEC)
+        self._served[name] = process
+        return process
+
     def stop(self) -> None:
         for process in self._running.values():
             process.stop()
 
+        for process in self._served.values():
+            process.stop()
+
         self._running.clear()
+        self._served.clear()

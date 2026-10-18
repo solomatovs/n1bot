@@ -16,8 +16,9 @@ logging), чтобы клиент проверялся на всём: server/dis
 аргументов промпта и шаблона; потоки subscriptions/listen со сменой списков
 инструментов (toggle_extra), ресурсов (grow_resources), промптов
 (toggle_prompt) и ростом ресурса (bump). Расширение MCP Apps даёт
-приложение доски (board.html): инструмент board рисует разметку, которую
-пишет модель, app_only зовёт только приложение, model_only — только модель.
+приложение заказов (orders.html): инструмент orders показывает строки
+заказов, которые передаёт модель, refresh_orders зовёт только приложение,
+archive_orders — только модель.
 """
 
 import asyncio
@@ -53,6 +54,7 @@ from mcp.types import (
     TextResourceContents,
     ToolAnnotations,
 )
+from pydantic import BaseModel
 
 
 class DeclaredExtension(Extension):
@@ -66,9 +68,18 @@ class DeclaredExtension(Extension):
         return dict(self._settings)
 
 
+class OrderRow(BaseModel):
+    """Строка заказа, которую модель передаёт приложению заказов."""
+
+    id: int
+    customer: str
+    status: str
+    total: float
+
+
 class StandardServer:
     """Сервер с инструментами: число, текст, сбой, картинка, отказы стенда и
-    приложение доски."""
+    приложение заказов."""
 
     PNG: bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
     EXTRA: ClassVar[str] = "extra"
@@ -104,8 +115,8 @@ class StandardServer:
         "required": ["table"],
     }
     REFUSAL: ClassVar[dict[str, str]] = {"reason": "the stand refuses"}
-    BOARD: ClassVar[str] = "ui://standard/board.html"
-    BOARD_CSP: ClassVar[ResourceCsp] = ResourceCsp(
+    ORDERS: ClassVar[str] = "ui://standard/orders.html"
+    ORDERS_CSP: ClassVar[ResourceCsp] = ResourceCsp(
         resource_domains=["https://cdn.example.com"]
     )
     DOCUMENT: ClassVar[dict[str, Any]] = {
@@ -128,11 +139,11 @@ class StandardServer:
 
     def __init__(self, port: int, extended: bool) -> None:
         apps = Apps()
-        apps.tool(resource_uri=self.BOARD)(self.board)
-        apps.tool(resource_uri=self.BOARD, visibility=["app"])(self.app_only)
-        apps.tool(resource_uri=self.BOARD, visibility=["model"])(self.model_only)
-        html = Path(__file__).with_name("board.html").read_text()
-        apps.add_html_resource(self.BOARD, html, csp=self.BOARD_CSP)
+        apps.tool(resource_uri=self.ORDERS)(self.orders)
+        apps.tool(resource_uri=self.ORDERS, visibility=["app"])(self.refresh_orders)
+        apps.tool(resource_uri=self.ORDERS, visibility=["model"])(self.archive_orders)
+        html = Path(__file__).with_name("orders.html").read_text()
+        apps.add_html_resource(self.ORDERS, html, csp=self.ORDERS_CSP)
         extensions: tuple[Extension, ...] = (apps,)
         if extended:
             extensions = (apps, *self.EXTENSIONS)
@@ -417,20 +428,24 @@ class StandardServer:
 
         return Completion(values=values, total=len(values), has_more=False)
 
-    def board(self, ctx: Context, markup: str) -> str:
-        """Draws the given HTML markup on a board."""
+    def orders(self, ctx: Context, rows: list[OrderRow]) -> str:
+        """Shows the given orders in a table the user can filter."""
         if client_supports_apps(ctx):
-            return "the board is drawn by its app"
+            return f"{len(rows)} orders are shown by their app"
 
-        return f"board markup: {markup}"
+        lines = [f"{len(rows)} orders:"]
+        for row in rows:
+            lines.append(f"#{row.id} {row.customer} {row.status} {row.total:.2f}")
 
-    def app_only(self) -> str:
-        """Refreshes the board; only its app calls it."""
-        return "app_only answered"
+        return "\n".join(lines)
 
-    def model_only(self) -> str:
-        """Clears the board; only the model calls it."""
-        return "model_only answered"
+    def refresh_orders(self) -> str:
+        """Refreshes the orders; only their app calls it."""
+        return "orders refreshed"
+
+    def archive_orders(self) -> str:
+        """Archives the orders; only the model calls it."""
+        return "orders archived"
 
     def run(self, transport: str) -> None:
         if transport.startswith("stdio"):

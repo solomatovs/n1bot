@@ -12,7 +12,15 @@ from __future__ import annotations
 from typing import ClassVar
 
 import pytest
-from aid_look import LookCheck, LookPages, LookSize, LookStand, LookState, LookTheme
+from aid_look import (
+    LookCheck,
+    LookPages,
+    LookSignIn,
+    LookSize,
+    LookStand,
+    LookState,
+    LookTheme,
+)
 from playwright.sync_api import Locator, Page, expect
 
 from boba.stand.ui.stand import StandAuth, StandProcess
@@ -53,15 +61,11 @@ class ShellLook:
         GROUP, "sh7-user-menu", "Меню пользователя"
     )
 
-    LOGIN: ClassVar[str] = "#email"
-    PASSWORD: ClassVar[str] = "#password"
-    SUBMIT: ClassVar[str] = 'form button[type="submit"]'
-    INPUT: ClassVar[str] = "#chat-input"
     HEADER_BOX: ClassVar[str] = "#header"
     SIDEBAR_BOX: ClassVar[str] = '[data-sidebar="sidebar"]'
     SIDEBAR_TRIGGER: ClassVar[str] = "#sidebar-trigger-button"
     THEME: ClassVar[str] = "#theme-toggle"
-    PROFILE_SELECT: ClassVar[str] = "#chat-profiles"
+    PROFILE_SELECT: ClassVar[str] = LookSignIn.PROFILE_SELECT
     NEW_CHAT_BUTTON: ClassVar[str] = "#new-chat-button"
     NEW_CHAT_DIALOG: ClassVar[str] = "#new-chat-dialog"
     README_BUTTON: ClassVar[str] = "#readme-button"
@@ -69,7 +73,6 @@ class ShellLook:
     MENU: ClassVar[str] = '[role="menu"]'
     LISTBOX: ClassVar[str] = '[role="listbox"]'
     DIALOG: ClassVar[str] = '[role="dialog"]'
-    LOGIN_USER: ClassVar[str] = "admin"
     ASIDE_X: ClassVar[int] = 20
     ASIDE_Y: ClassVar[int] = 500
 
@@ -82,15 +85,7 @@ class ShellPage:
         self._stand = stand
 
     def sign_in(self) -> None:
-        credential = self._stand.config.credential(ShellLook.LOGIN_USER)
-        base = self._stand.config.base_url
-        self._page.goto(f"{base}/login", wait_until="domcontentloaded")
-        self._page.locator(ShellLook.LOGIN).fill(credential.login)
-        self._page.locator(ShellLook.PASSWORD).fill(credential.password)
-        self._page.locator(ShellLook.SUBMIT).click()
-        expect(self._page.locator(ShellLook.INPUT)).to_be_visible(timeout=60_000)
-        expect(self._page.locator(ShellLook.PROFILE_SELECT)).to_be_visible()
-        self._page.wait_for_load_state("networkidle")
+        LookSignIn(self._page, self._stand).sign_in()
 
     def opened(self, trigger: str, overlay: str) -> Locator:
         """Нажимает кнопку и отдаёт раскрытое ею меню или диалог."""
