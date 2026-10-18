@@ -42,7 +42,7 @@ from boba.canvas.canvas import (
     CanvasWatch,
     OpenedCanvas,
 )
-from boba.canvas.keys import ObjectKey
+from boba.canvas.keys import WorkspaceKey
 from boba.runtime.config import AppLayers
 from boba.runtime.storage import LocalStorageClient, LocalStorageConfig
 from boba.stand_core.context import CallStand
@@ -71,12 +71,12 @@ class FakeViewer(CanvasViewer):
 
     def __init__(self, mime: str) -> None:
         self._mime = mime
-        self.opened: list[ObjectKey] = []
+        self.opened: list[WorkspaceKey] = []
 
     def handles(self, mime: str) -> bool:
         return mime == self._mime
 
-    async def content(self, key: ObjectKey, mime: str) -> CanvasContent:
+    async def content(self, key: WorkspaceKey, mime: str) -> CanvasContent:
         return CanvasContent(
             kind=CanvasKind.MERMAID,
             path=key.in_workspace(),
@@ -84,20 +84,22 @@ class FakeViewer(CanvasViewer):
             text="erDiagram",
         )
 
-    async def link(self, key: ObjectKey, mime: str) -> VisualResult:
+    async def link(self, key: WorkspaceKey, mime: str) -> VisualResult:
         return VisualResult(
             element="CanvasLink",
             props={"path": key.in_workspace(), "label": key.name},
             title=key.name,
         )
 
-    async def open(self, key: ObjectKey, mime: str, push: CanvasPush) -> OpenedCanvas:
+    async def open(
+        self, key: WorkspaceKey, mime: str, push: CanvasPush
+    ) -> OpenedCanvas:
         self.opened.append(key)
         await push(await self.content(key, mime))
 
         return OpenedCanvas(label=key.name, path=key.in_workspace(), nonce="n-1")
 
-    def watch_source(self, key: ObjectKey) -> None:
+    def watch_source(self, key: WorkspaceKey) -> None:
         return None
 
 
@@ -116,7 +118,9 @@ class RewrittenAfterShow(ImageViewer):
         self._object_key = object_key
         self._revised = revised
 
-    async def open(self, key: ObjectKey, mime: str, push: CanvasPush) -> OpenedCanvas:
+    async def open(
+        self, key: WorkspaceKey, mime: str, push: CanvasPush
+    ) -> OpenedCanvas:
         opened = await super().open(key, mime, push)
         await put_bytes(self._storage, self._object_key, self._revised)
 
@@ -176,7 +180,9 @@ class TestRegistry:
 class TestPanel:
     @pytest.mark.anyio
     async def test_open_without_viewer_names_the_file(self, http_context: None) -> None:
-        key = ObjectKey.build(USER, THREAD, "notes.txt", "el-1")
+        key = CanvasScope(user_id=USER, thread_id=THREAD, workspace=MOUNT).file(
+            "notes.txt"
+        )
 
         with pytest.raises(CanvasError) as failure:
             await CanvasPanel.open(key, ContentMime.PLAIN)
@@ -488,7 +494,9 @@ class TestFileViewers:
     ) -> None:
         """Тело файла не поднимается в память: элемент несёт ссылку на роут."""
         await put_bytes(storage, f"{USER}/{THREAD}/upload/график.png", self.PNG)
-        key = ObjectKey.build(USER, THREAD, "график.png", "el-1")
+        key = CanvasScope(user_id=USER, thread_id=THREAD, workspace=MOUNT).file(
+            "график.png"
+        )
 
         sink = ElementSink()
         opened = await ImageViewer().open(key, "image/png", sink.push)
@@ -516,7 +524,9 @@ class TestFileViewers:
         молча превращалась в битый img.
         """
         await put_bytes(storage, f"{USER}/{THREAD}/upload/график.png", self.PNG)
-        key = ObjectKey.build(USER, THREAD, "график.png", "el-1")
+        key = CanvasScope(user_id=USER, thread_id=THREAD, workspace=MOUNT).file(
+            "график.png"
+        )
 
         sink = ElementSink()
         await ImageViewer().open(key, "image/png", sink.push)
@@ -663,7 +673,9 @@ class TestLogViewer:
     ) -> None:
         body = TestStorageWindows._body(TestStorageWindows.LINES)
         await put_bytes(storage, f"{USER}/{THREAD}/upload/run.log", body)
-        key = ObjectKey.build(USER, THREAD, "run.log", "el-1")
+        key = CanvasScope(user_id=USER, thread_id=THREAD, workspace=MOUNT).file(
+            "run.log"
+        )
 
         content = await rendering_canvas.LogViewer().content(key, ContentMime.PLAIN)
 
@@ -684,7 +696,9 @@ class TestLogViewer:
 
     @pytest.mark.anyio
     async def test_missing_file_is_refused(self, storage: LocalStorageClient) -> None:
-        key = ObjectKey.build(USER, THREAD, "absent.log", "el-1")
+        key = CanvasScope(user_id=USER, thread_id=THREAD, workspace=MOUNT).file(
+            "absent.log"
+        )
 
         with pytest.raises(CanvasError) as failure:
             await rendering_canvas.LogViewer().content(key, ContentMime.PLAIN)
@@ -696,7 +710,9 @@ class TestLogViewer:
     async def test_watch_source_sees_appends(self, storage: LocalStorageClient) -> None:
         object_key = f"{USER}/{THREAD}/upload/run.log"
         await put_bytes(storage, object_key, b"first\n")
-        key = ObjectKey.build(USER, THREAD, "run.log", "el-1")
+        key = CanvasScope(user_id=USER, thread_id=THREAD, workspace=MOUNT).file(
+            "run.log"
+        )
 
         source = rendering_canvas.LogViewer().watch_source(key)
         if source is None:
