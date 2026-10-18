@@ -63,6 +63,7 @@ from boba.agent.records import (
 from boba.agent.session import Session
 from boba.agent.tags import ReplyTag
 from boba.agent.template import AgentTemplate, AgentTemplateFile
+from boba.agent.tools import AgentTools
 from boba.agent.writer import RequestRecorder
 from boba.cancellation import RunCancellation, StopReason
 from boba.llm.chat import ChatReply
@@ -638,10 +639,10 @@ class Summarizer:
 
 class Compactor:
     """Пачка записей после сжатия (план, раздел 5.16): граница, дата,
-    пересказ, окружение, модель, список скиллов — в сессию разом, без
-    точек ожидания между ними, чтобы писатель положил их одним `append`.
-    Хвост не переписывается: граница называет его записи по uuid. Создаёт
-    цикл хода."""
+    пересказ, окружение, модель, инструкции серверов MCP, список скиллов —
+    в сессию разом, без точек ожидания между ними, чтобы писатель положил
+    их одним `append`. Хвост не переписывается: граница называет его записи
+    по uuid. Создаёт цикл хода."""
 
     def __init__(  # noqa: PLR0913 — пачка собирается из всех объявлений контекста
         self,
@@ -655,6 +656,7 @@ class Compactor:
         environment: EnvironmentSnapshot | None,
         skills: Sequence[SnapshotSkill],
         budget: SkillBudget,
+        catalog: AgentTools,
     ) -> None:
         self._attachments = attachments
         self._estimator = estimator
@@ -666,6 +668,7 @@ class Compactor:
         self._environment = environment
         self._skills = list(skills)
         self._budget = budget
+        self._catalog = catalog
 
     def records(
         self,
@@ -738,6 +741,13 @@ class Compactor:
 
         records.append(self._attachments.model(parent, self._profile))
         parent = records[-1].uuid
+
+        instructions = self._attachments.instructions(
+            parent, self._catalog.connected(), {}
+        )
+        if instructions is not None:
+            records.append(instructions)
+            parent = instructions.uuid
 
         if self._skills:
             records.append(
