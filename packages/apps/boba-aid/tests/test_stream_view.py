@@ -21,6 +21,7 @@ from uuid import UUID
 import pytest
 from aid_stand import (
     AppLanguage,
+    FakeTransport,
     FakeTurn,
     RecordingSink,
     RemoteStand,
@@ -43,7 +44,6 @@ from boba.canvas.canvas import (
     CanvasKind,
     CanvasSignal,
     CanvasWatch,
-    SignalTransport,
     StreamPath,
     WatchProbe,
     WatchSource,
@@ -448,20 +448,6 @@ class TestBegin:
             raise AssertionError("stream is None")
 
 
-class FakeTransport(SignalTransport):
-    """Транспорт в тестах: копит payload'ы сигналов вместо сокетов."""
-
-    def __init__(self) -> None:
-        self.sent: list[dict[str, Any]] = []
-        self.dead = False
-
-    def alive(self, thread_id: str) -> bool:
-        return not self.dead
-
-    async def send(self, thread_id: str, signal: CanvasSignal) -> None:
-        self.sent.append(signal.payload())
-
-
 def _speed_up_watch(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(CanvasWatch, "POLL_SEC", 0.05)
     monkeypatch.setattr(CanvasWatch, "COALESCE_SEC", 0.05)
@@ -591,7 +577,8 @@ class TestWatch:
     def test_leave_respects_the_nonce(
         self, journals: CallJournals, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Гонка переоткрытия: leave старого показа не снимает свежий вотчер."""
+        """Гонка переоткрытия: leave старого показа не снимает свежий вотчер,
+        и leave с пустой меткой тоже — у такого показа своего слежения нет."""
         _speed_up_watch(monkeypatch)
 
         async def scenario() -> tuple[str | None, str | None]:
@@ -605,6 +592,7 @@ class TestWatch:
             )
 
             CanvasWatch.leave(THREAD, "n-old")
+            CanvasWatch.leave(THREAD, "")
             after_foreign = CanvasWatch.watching(THREAD)
 
             CanvasWatch.leave(THREAD, "n-new")
