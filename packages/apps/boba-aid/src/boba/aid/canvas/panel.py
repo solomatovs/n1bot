@@ -655,13 +655,16 @@ class StreamActions:
     async def _file_window(
         user_id: str, thread_id: str, request: StreamWindowRequest
     ) -> dict[str, Any]:
+        storage = PanelStorage.client()
+        workspace = await storage.workspace(user_id, thread_id)
+        scope = CanvasScope(user_id=user_id, thread_id=thread_id, workspace=workspace)
         try:
-            key = CanvasScope(user_id=user_id, thread_id=thread_id).key(request.path)
+            key = scope.key(request.path)
         except CanvasError as exc:
             logger.warning("stream window: bad path %s: %s", request.path, exc)
             return {}
 
-        windows = StorageWindows(PanelStorage.client(), key.render())
+        windows = StorageWindows(storage, key.render())
 
         try:
             if request.before is not None:
@@ -735,7 +738,9 @@ class StreamActions:
         if StreamPath.is_stream(request.path):
             return None
 
-        key = CanvasScope(user_id=user_id, thread_id=thread_id).key(request.path)
+        workspace = await PanelStorage.client().workspace(user_id, thread_id)
+        scope = CanvasScope(user_id=user_id, thread_id=thread_id, workspace=workspace)
+        key = scope.key(request.path)
         viewer = CanvasRegistry.viewer_for(request.mime)
         if viewer is None:
             return None

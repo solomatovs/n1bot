@@ -1,9 +1,9 @@
 """Ретранслятор MCP-over-ACP: ответы чата aid на запросы mcp/message агента
 серверам, которые чат aid объявил ему записями type "acp", и реестр этих
 регистраций (serverId → пользователь, тред, сервер). Сервер профиля
-отвечает своим портом McpServers от личности агента (его clientInfo и
-clientCapabilities из _meta запроса), сервер chat — собственными
-инструментами чата прямо в процессе, без своего HTTP-входа.
+отвечает своим портом McpServers с личностью агента в каждом запросе (его
+clientInfo и clientCapabilities из _meta запроса), сервер chat —
+собственными инструментами чата прямо в процессе, без своего HTTP-входа.
 
 Ошибки:
 RequestError (acp.exceptions) — ошибка доставки MCP-over-ACP:
@@ -78,6 +78,7 @@ from boba.mcp_client.client import (
     McpCaller,
     McpClientError,
     McpClientIdentity,
+    McpDescription,
     McpServers,
     McpToolPort,
     McpToolServer,
@@ -86,7 +87,7 @@ from boba.mcp_client.client import (
 from boba.messaging import JournalOpened, LockToken, MessageBus, MessageBusError
 from boba.toolkit.calls import SchemaMark
 from boba.toolkit.chain import StreamPlanError
-from boba.toolkit.dag import DagNode, NestedCallsFeature, ToolServer, ToolServersError
+from boba.toolkit.dag import DagNode, ToolServer, ToolServersError
 from boba.toolkit.failure import InvokeErrorKind, ValidationText
 from boba.toolkit.mcp import McpToolNames
 from boba.toolrun.hosted import DirectCalls
@@ -369,37 +370,31 @@ class ChatToolPort(McpToolPort):
         self._runs = runs
         self._info = info
 
-    def discovered(self) -> mt.DiscoverResult:
+    async def described(self, client: McpClientIdentity) -> McpDescription:
         capabilities = mt.ServerCapabilities(
             tools=mt.ToolsCapability(list_changed=False)
         )
         info = self._info.model_dump(mode="json", by_alias=True, exclude_none=True)
-
-        return mt.DiscoverResult(
+        result = mt.DiscoverResult(
             supported_versions=list(MODERN_PROTOCOL_VERSIONS),
             capabilities=capabilities,
             _meta={mt.SERVER_INFO_META_KEY: info},
         )
 
-    def tools(self) -> Sequence[mt.Tool]:
+        return McpDescription(f"server {ChatTools.NAME!r} of the chat", result)
+
+    async def tools(self, client: McpClientIdentity) -> mt.ListToolsResult:
         listed: list[mt.Tool] = []
         for tool in self._tools.values():
             listed.append(tool.to_mcp_tool())
 
-        return listed
-
-    async def refreshed(self) -> Sequence[mt.Tool]:
-        return self.tools()
-
-    def features(self) -> Mapping[str, Mapping[str, object]]:
-        return {}
-
-    def nested_calls(self) -> NestedCallsFeature | None:
-        return None
+        return mt.ListToolsResult(tools=listed)
 
     async def call(
         self,
+        client: McpClientIdentity,
         params: mt.CallToolRequestParams,
+        card: mt.Tool | None,
         progress: ProgressHeard | None,
         journals: JournalHeard | None,
     ) -> mt.CallToolResult | mt.InputRequiredResult:
@@ -469,6 +464,9 @@ class McpRelay:
     регистрацию (пользователь, тред, имя сервера), а она — контекст вызова.
     Агенту ретранслятор — сервер редакции 2026-07-28, за ним — серверы
     профиля любой редакции: различие эпох поглощает клиент McpServers.
+    Состояния между запросами у ретранслятора нет: описание сервера и список
+    инструментов он берёт у порта через его кэш ответов и отдаёт агенту со
+    сроком свежести и областью кэша сервера.
     Конверт и версию запроса проверяет SDK mcp (classify_inbound_request),
     на initialize прежних редакций ретранслятор отвечает отказом с перечнем
     своих версий, неизвестные методы отвечает lowlevel Server SDK;
@@ -476,11 +474,9 @@ class McpRelay:
     server/discover отдаёт возможности, инструкции и serverInfo сервера за
     регистрацией;
     сервер профиля зовётся портом McpServers от имени пользователя вкладки
-    и от личности агента (RelayedRequest), сервер chat — собственными
+    с личностью агента (RelayedRequest), сервер chat — собственными
     инструментами чата в процессе (ChatTools) и знает только инструменты.
-    tools/list перечитывает список у сервера, вызов инструмента, которого
-    нет в прочитанном списке, перечитывает его ещё раз: новый инструмент
-    сервера не отвергается. Ресурсы, шаблоны, промпты, подсказки и потоки
+    Ресурсы, шаблоны, промпты, подсказки и потоки
     subscriptions/listen идут серверу профиля как есть, вместе с просьбами
     о вводе (input_required) в ответах; ход запроса уходит агенту
     уведомлением notifications/progress под его токеном. Логи сервера
@@ -682,10 +678,13 @@ class McpRelay:
         self, ctx: ServerRequestContext[RelayedRequest], params: mt.RequestParams
     ) -> mt.DiscoverResult:
         """server/discover сервера за регистрацией: его возможности,
-        расширения, инструкции и serverInfo; версии и logging — свои:
-        ретранслятор говорит на 2026-07-28 и логов сервера не несёт."""
-        port = await self._port_of(ctx.lifespan_context)
-        discovered = port.discovered()
+        расширения, инструкции, serverInfo, оставшийся срок свежести и
+        область кэша; версии и logging — свои: ретранслятор говорит на
+        2026-07-28 и логов сервера не несёт."""
+        request = ctx.lifespan_context
+        port = await self._port_of(request)
+        described = await port.described(request.client)
+        discovered = described.result
         capabilities = discovered.capabilities.model_copy(update={"logging": None})
 
         return discovered.model_copy(
@@ -700,21 +699,25 @@ class McpRelay:
         ctx: ServerRequestContext[RelayedRequest],
         params: mt.PaginatedRequestParams | None,
     ) -> mt.ListToolsResult:
-        """Инструменты сервера для модели, перечитанные у сервера; параметры
-        треда в схеме спрятаны."""
-        registration = self._registrations.of(ctx.lifespan_context.server_id)
-        port = await self._port_of(ctx.lifespan_context)
-        listed = await port.refreshed()
+        """Инструменты сервера для модели из списка порта со сроком
+        свежести и областью кэша сервера; параметры треда в схеме спрятаны."""
+        request = ctx.lifespan_context
+        registration = self._registrations.of(request.server_id)
+        port = await self._port_of(request)
+        listed = await port.tools(request.client)
 
         tools: list[mt.Tool] = []
-        for tool in self._offered(listed, registration.server, "model"):
+        for tool in self._offered(listed.tools, registration.server, "model"):
             threads = list(SchemaMark.THREAD.params(tool.input_schema))
             schema = compress_schema(dict(tool.input_schema), prune_params=threads)
             tools.append(tool.model_copy(update={"input_schema": schema}))
 
-        meta = port.discovered().meta
-
-        return mt.ListToolsResult(tools=tools, _meta=meta)
+        return mt.ListToolsResult(
+            tools=tools,
+            ttl_ms=listed.ttl_ms,
+            cache_scope=listed.cache_scope,
+            _meta=listed.meta,
+        )
 
     async def _call_tool(
         self,
@@ -731,7 +734,7 @@ class McpRelay:
         request = ctx.lifespan_context
         registration = self._registrations.of(request.server_id)
         context = registration.context()
-        port = await self._port(registration, context, request.client)
+        port = await self._port(registration, context)
 
         forwarded: ProgressHeard | None = None
         journals: JournalHeard | None = None
@@ -741,13 +744,31 @@ class McpRelay:
             journals = partial(self._journaled, registration, str(token))
 
         reply = await self._called(
-            registration, context, port, params, "model", forwarded, journals
+            registration,
+            context,
+            port,
+            request.client,
+            params,
+            "model",
+            forwarded,
+            journals,
         )
         if not isinstance(reply, mt.CallToolResult):
             return reply
 
+        if registration.server == ChatTools.NAME:
+            return reply
+
+        subject = context.subject
+        user = McpCaller(login=subject.login, roles=subject.roles)
+        workspace = await self._servers.workspace(registration.server, user)
+        if workspace is None:
+            return reply
+
         scope = CanvasScope(
-            user_id=str(registration.user_id), thread_id=registration.thread_id
+            user_id=str(registration.user_id),
+            thread_id=registration.thread_id,
+            workspace=workspace,
         )
 
         return await self._canvas.reply(scope, reply)
@@ -757,54 +778,62 @@ class McpRelay:
         ctx: ServerRequestContext[RelayedRequest],
         params: mt.PaginatedRequestParams | None,
     ) -> mt.ListResourcesResult:
-        server = await self._server_of(ctx.lifespan_context, "resources/list")
+        request = ctx.lifespan_context
+        server = await self._server_of(request, "resources/list")
 
-        return await server.list_resources(params)
+        return await server.list_resources(request.client, params)
 
     async def _list_resource_templates(
         self,
         ctx: ServerRequestContext[RelayedRequest],
         params: mt.PaginatedRequestParams | None,
     ) -> mt.ListResourceTemplatesResult:
-        server = await self._server_of(ctx.lifespan_context, "resources/templates/list")
+        request = ctx.lifespan_context
+        server = await self._server_of(request, "resources/templates/list")
 
-        return await server.list_resource_templates(params)
+        return await server.list_resource_templates(request.client, params)
 
     async def _read_resource(
         self,
         ctx: ServerRequestContext[RelayedRequest],
         params: mt.ReadResourceRequestParams,
     ) -> mt.ReadResourceResult | mt.InputRequiredResult:
-        server = await self._server_of(ctx.lifespan_context, "resources/read")
+        request = ctx.lifespan_context
+        server = await self._server_of(request, "resources/read")
 
-        return await server.read_resource(params, self._progress_of(ctx))
+        return await server.read_resource(
+            request.client, params, self._progress_of(ctx)
+        )
 
     async def _list_prompts(
         self,
         ctx: ServerRequestContext[RelayedRequest],
         params: mt.PaginatedRequestParams | None,
     ) -> mt.ListPromptsResult:
-        server = await self._server_of(ctx.lifespan_context, "prompts/list")
+        request = ctx.lifespan_context
+        server = await self._server_of(request, "prompts/list")
 
-        return await server.list_prompts(params)
+        return await server.list_prompts(request.client, params)
 
     async def _get_prompt(
         self,
         ctx: ServerRequestContext[RelayedRequest],
         params: mt.GetPromptRequestParams,
     ) -> mt.GetPromptResult | mt.InputRequiredResult:
-        server = await self._server_of(ctx.lifespan_context, "prompts/get")
+        request = ctx.lifespan_context
+        server = await self._server_of(request, "prompts/get")
 
-        return await server.get_prompt(params, self._progress_of(ctx))
+        return await server.get_prompt(request.client, params, self._progress_of(ctx))
 
     async def _complete(
         self,
         ctx: ServerRequestContext[RelayedRequest],
         params: mt.CompleteRequestParams,
     ) -> mt.CompleteResult:
-        server = await self._server_of(ctx.lifespan_context, "completion/complete")
+        request = ctx.lifespan_context
+        server = await self._server_of(request, "completion/complete")
 
-        return await server.complete(params)
+        return await server.complete(request.client, params)
 
     async def _listen(
         self,
@@ -822,9 +851,10 @@ class McpRelay:
             в подписке.
         McpClientError — сервер недоступен или оборвал поток.
         """
-        server = await self._server_of(ctx.lifespan_context, "subscriptions/listen")
+        request = ctx.lifespan_context
+        server = await self._server_of(request, "subscriptions/listen")
         meta: dict[str, Any] = {SUBSCRIPTION_ID_META_KEY: ctx.request_id}
-        async with server.listen(params.notifications) as subscription:
+        async with server.listen(request.client, params.notifications) as subscription:
             acknowledged = mt.SubscriptionsAcknowledgedNotificationParams(
                 notifications=subscription.honored, _meta=meta
             )
@@ -856,7 +886,7 @@ class McpRelay:
         context = registration.context()
         port = await self._app_server(registration, context)
         result = await self._called(
-            registration, context, port, params, "app", None, None
+            registration, context, port, McpServers.OWN, params, "app", None, None
         )
         if isinstance(result, mt.CallToolResult):
             return result
@@ -882,7 +912,7 @@ class McpRelay:
         """
         context = registration.context()
         port = await self._app_server(registration, context)
-        read = await port.read_resource(params, None)
+        read = await port.read_resource(McpServers.OWN, params, None)
         if isinstance(read, mt.ReadResourceResult):
             return read
 
@@ -918,29 +948,26 @@ class McpRelay:
         registration: McpRegistration,
         context: CallContext,
         port: McpToolPort,
+        client: McpClientIdentity,
         params: mt.CallToolRequestParams,
         audience: Visibility,
         forwarded: ProgressHeard | None,
         journals: JournalHeard | None,
     ) -> mt.CallToolResult | mt.InputRequiredResult:
-        """Вызов инструмента, видимого стороне audience: соединения
-        запечатаны, у вызова со вложенными вызовами — и в узлах, тред
-        регистрации — в параметрах с пометкой SchemaMark.THREAD, отказ
-        запечатывания — isError с причиной. Инструмента нет в прочитанном
-        списке — список перечитывается: сервер мог его добавить.
+        """Вызов инструмента клиента client, видимого стороне audience, по
+        списку и описанию сервера из кэша порта: соединения запечатаны, у
+        вызова со вложенными вызовами — и в узлах, тред регистрации — в
+        параметрах с пометкой SchemaMark.THREAD, отказ запечатывания —
+        isError с причиной.
 
         Ошибки:
         MCPError — инструмента у сервера нет либо он не для audience.
         """
+        listed = await port.tools(client)
         offered = self._named(
-            self._offered(port.tools(), registration.server, audience)
+            self._offered(listed.tools, registration.server, audience)
         )
         tool = offered.get(params.name)
-        if tool is None:
-            listed = await port.refreshed()
-            offered = self._named(self._offered(listed, registration.server, audience))
-            tool = offered.get(params.name)
-
         if tool is None:
             msg = (
                 f"mcp server {registration.server!r} offers the {audience} no tool "
@@ -956,10 +983,11 @@ class McpRelay:
             asked[name] = registration.thread_id
 
         full = self._names.full(registration.server, tool.name)
-        server = McpServerInfo(name=registration.server, features=port.features())
+        described = await port.described(client)
+        server = McpServerInfo(name=registration.server, features=described.features())
         try:
             with self._contexts.applied(context):
-                arguments = await self._sealed(port, tool, asked, offered, server)
+                arguments = await self._sealed(described, tool, asked, offered, server)
         except (RefusalError, ToolConfigError) as exc:
             reason = f"{full}: {exc}"
             logger.warning("mcp relay: sealing refused: %s", reason)
@@ -973,7 +1001,7 @@ class McpRelay:
 
         sent = params.model_copy(update={"arguments": arguments})
 
-        return await port.call(sent, forwarded, journals)
+        return await port.call(client, sent, tool, forwarded, journals)
 
     @staticmethod
     def _named(tools: Iterator[mt.Tool]) -> dict[str, mt.Tool]:
@@ -1041,7 +1069,7 @@ class McpRelay:
 
     async def _sealed(
         self,
-        port: McpToolPort,
+        described: McpDescription,
         tool: mt.Tool,
         asked: Mapping[str, Any],
         offered: Mapping[str, mt.Tool],
@@ -1063,7 +1091,7 @@ class McpRelay:
         full = self._names.full(server.name, tool.name)
         arguments = await self._sealing.seal(full, asked, tool.input_schema, server)
 
-        nested = port.nested_calls()
+        nested = described.nested_calls()
         if nested is None:
             return arguments
 
@@ -1104,7 +1132,7 @@ class McpRelay:
         return nested.replaced(arguments, sealed)
 
     async def _port_of(self, request: RelayedRequest) -> McpToolPort:
-        """Порт сервера регистрации запроса request от личности агента.
+        """Порт сервера регистрации запроса request.
 
         Ошибки:
         RequestError — serverId не выдан этим чатом либо снят.
@@ -1114,17 +1142,14 @@ class McpRelay:
         registration = self._registrations.of(request.server_id)
         context = registration.context()
 
-        return await self._port(registration, context, request.client)
+        return await self._port(registration, context)
 
     async def _port(
-        self,
-        registration: McpRegistration,
-        context: CallContext,
-        client: McpClientIdentity,
+        self, registration: McpRegistration, context: CallContext
     ) -> McpToolPort:
         """Порт сервера регистрации: сервер chat — собственные инструменты
         чата в процессе, сервер профиля — порт McpServers от имени
-        пользователя вкладки и от личности агента client.
+        пользователя вкладки.
 
         Ошибки:
         McpClientError — сервер профиля недоступен.
@@ -1135,7 +1160,7 @@ class McpRelay:
         subject = context.subject
         user = McpCaller(login=subject.login, roles=subject.roles)
 
-        return await self._servers.relayed(registration.server, user, client)
+        return await self._servers.port(registration.server, user)
 
     async def _server_of(self, request: RelayedRequest, method: str) -> McpToolServer:
         """Порт сервера профиля для запроса method, кроме инструментов: у
@@ -1158,13 +1183,14 @@ class McpRelay:
         subject = context.subject
         user = McpCaller(login=subject.login, roles=subject.roles)
 
-        return await self._servers.relayed(registration.server, user, request.client)
+        return await self._servers.port(registration.server, user)
 
     async def _app_server(
         self, registration: McpRegistration, context: CallContext
     ) -> McpToolServer:
         """Порт сервера регистрации, чьи приложения рисует чат: сервер
-        профиля с секцией apps, от личности самого чата.
+        профиля с секцией apps; приложения зовут его от личности самого
+        чата.
 
         Ошибки:
         MCPError — сервер chat, сервер не из профиля треда или сервер без
@@ -1190,7 +1216,7 @@ class McpRelay:
         subject = context.subject
         user = McpCaller(login=subject.login, roles=subject.roles)
         port = await self._servers.port(registration.server, user)
-        if port.apps() is None:
+        if self._servers.apps(registration.server) is None:
             msg = (
                 f"mcp server {registration.server!r} has no section "
                 f"[mcp.servers.{registration.server}.apps], so the chat draws no "

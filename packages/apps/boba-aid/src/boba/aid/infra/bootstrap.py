@@ -404,7 +404,6 @@ def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
         providers.agent_launcher,
         providers.thread_deleter,
         providers.thread_agents_index,
-        providers.tool_media,
     )
     container.eager(providers.remote_journals)
     container.eager(providers.mcp_servers)

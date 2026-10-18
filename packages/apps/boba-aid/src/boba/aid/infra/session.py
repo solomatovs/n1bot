@@ -45,6 +45,7 @@ from boba.identity.token import (
 )
 from boba.runtime.di import Container
 from boba.runtime.refresh import LiveSessions, LiveToken
+from boba.runtime.storage import StorageClient
 
 __all__ = [
     "ChainlitSession",
@@ -311,9 +312,9 @@ class ChainlitSession(Session, LiveSignIn):
         await self._send.emit(socket, event, dict(payload))
         return True
 
-    def canvas_scope(self) -> CanvasScope | None:
-        """Чьи файлы и журналы показывает панель этой вкладке; None — у
-        сессии нет треда или сохранённого пользователя."""
+    def canvas_owner(self) -> tuple[str, str] | None:
+        """Чьи файлы и журналы показывает панель этой вкладке: пользователь
+        и тред; None — у сессии нет треда или сохранённого пользователя."""
         thread_id = self.thread_id
         if thread_id is None:
             return None
@@ -322,7 +323,24 @@ class ChainlitSession(Session, LiveSignIn):
         if user_id is None:
             return None
 
-        return CanvasScope(user_id=str(user_id), thread_id=thread_id)
+        return str(user_id), thread_id
+
+    async def canvas_scope(self, storage: StorageClient) -> CanvasScope | None:
+        """Область панели этой вкладки: владелец (canvas_owner) и каталог
+        workspace, под которым файлы треда видит песочница, — его даёт
+        хранилище треда; None — владельца нет.
+
+        Ошибки:
+        StorageError — хранилище каталога не знает.
+        """
+        owner = self.canvas_owner()
+        if owner is None:
+            return None
+
+        user_id, thread_id = owner
+        workspace = await storage.workspace(user_id, thread_id)
+
+        return CanvasScope(user_id=user_id, thread_id=thread_id, workspace=workspace)
 
     @staticmethod
     def metadata_of(user: cl.User | cl.PersistedUser | None) -> Mapping[str, object]:

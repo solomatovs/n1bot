@@ -17,7 +17,7 @@ import chainlit.data as chainlit_data
 import mcp_types as mt
 import pytest
 from acp.experimental.v2 import schema
-from aid_stand import Seed, get_bytes
+from aid_stand import KnownCards, Seed, get_bytes
 from chainlit.context import ChainlitContext, context_var
 from chainlit.step import StepDict
 from pydantic import AnyUrl, SecretStr
@@ -56,11 +56,11 @@ from boba.aid.rendering.chat_view import (
 )
 from boba.aid.rendering.renderer import ChatRenderer, NoSurface
 from boba.canvas.canvas import CanvasAction, CanvasElement, CanvasRegistry
-from boba.canvas.keys import ObjectKey, ThreadDir
+from boba.canvas.keys import ObjectKey, ThreadDir, WorkspaceKey
 from boba.chat.profiles import ChatProfileConfig, UserSetting
 from boba.identity.context import Scope
 from boba.mcp_adapter import JournalUris
-from boba.mcp_client.client import JournalLinks, McpServerApps
+from boba.mcp_client.client import McpServerApps
 from boba.messaging import (
     JournalOpened,
     LockToken,
@@ -78,6 +78,7 @@ from boba.toolkit.dag import (
     DagNode,
     JournalAddress,
     NodeOutcomes,
+    ServerFeature,
     WorkflowNodeResult,
     WorkflowResult,
 )
@@ -364,12 +365,20 @@ def _replayed_updates() -> list[SessionUpdate]:
     ]
 
 
+def _declared(*features: ServerFeature) -> mt.ServerCapabilities:
+    """Возможности сервера стенда ленты с расширениями features."""
+    extensions: dict[str, dict[str, object]] = {}
+    for feature in features:
+        extensions[feature.ID] = feature.settings()
+
+    return mt.ServerCapabilities(extensions=extensions)
+
+
 def _view(
     runtime_stand: StandRefs, storage: LocalStorageClient, journals: RemoteJournals
 ) -> UpdateView:
     view = ChatView(THREAD, LiveSink(), "u-1", storage, TEXTS, user_name="alice")
-    media = ToolMedia()
-    media.shown("boba", [], None, JournalLinks(JOURNAL.resource), None)
+    media = ToolMedia(KnownCards({}, {"boba": _declared(JOURNAL)}, {}))
 
     return UpdateView(view, THREAD, journals, media)
 
@@ -515,10 +524,8 @@ class TestUpdateViewIds:
                 "sql": {"type": "string", "contentMediaType": "application/sql"}
             },
         }
-        media = ToolMedia()
-        media.shown(
-            "boba", [mt.Tool(name="pg_query", input_schema=arguments)], None, None, None
-        )
+        query = mt.Tool(name="pg_query", input_schema=arguments)
+        media = ToolMedia(KnownCards({"boba": [query]}, {}, {}))
         view = ChatView(
             THREAD,
             LiveSink(),
@@ -596,8 +603,11 @@ class TestToolApps:
         storage: LocalStorageClient,
         apps: McpServerApps | None,
     ) -> UpdateView:
-        media = ToolMedia()
-        media.shown("standard", [self.ORDERS], None, None, apps)
+        known: dict[str, McpServerApps] = {}
+        if apps is not None:
+            known["standard"] = apps
+
+        media = ToolMedia(KnownCards({"standard": [self.ORDERS]}, {}, known))
         view = ChatView(THREAD, LiveSink(), "u-1", storage, TEXTS, user_name="a")
         updates = UpdateView(view, THREAD, RemoteJournals(), media)
         updates.begin_turn(QUESTION)
@@ -745,7 +755,7 @@ class TestQuestionRecords:
         self, storage: LocalStorageClient, media: ToolMedia | None = None
     ) -> UpdateView:
         if media is None:
-            media = ToolMedia()
+            media = ToolMedia(KnownCards({}, {}, {}))
 
         view = ChatView(THREAD, LiveSink(), "u-1", storage, TEXTS, user_name="a")
         updates = UpdateView(view, THREAD, RemoteJournals(), media)
@@ -945,12 +955,11 @@ class TestNestedCallSteps:
         journals: RemoteJournals,
         nested: bool,
     ) -> UpdateView:
-        media = ToolMedia()
-        declared = None
+        features: list[ServerFeature] = [JOURNAL]
         if nested:
-            declared = CallDag().feature()
+            features.append(CallDag().feature())
 
-        media.shown("boba", [], declared, JournalLinks(JOURNAL.resource), None)
+        media = ToolMedia(KnownCards({}, {"boba": _declared(*features)}, {}))
         view = ChatView(
             THREAD,
             LiveSink(),
@@ -1347,7 +1356,9 @@ class TestResultsFromRawOutput:
             view = ChatView(thread_id, LiveSink(), seeded.user.id, storage, TEXTS)
             renderer = ChatRenderer(
                 thread_id,
-                UpdateView(view, thread_id, RemoteJournals(), ToolMedia()),
+                UpdateView(
+                    view, thread_id, RemoteJournals(), ToolMedia(KnownCards({}, {}, {}))
+                ),
                 payloads,
                 NoSurface(),
                 ThreadAgentsIndex(),
@@ -1369,7 +1380,9 @@ class TestResultsFromRawOutput:
         token = context_var.set(cast("ChainlitContext", replay_context))
         try:
             view = ChatView(thread_id, LiveSink(), seeded.user.id, storage, TEXTS)
-            replay = UpdateView(view, thread_id, RemoteJournals(), ToolMedia())
+            replay = UpdateView(
+                view, thread_id, RemoteJournals(), ToolMedia(KnownCards({}, {}, {}))
+            )
             await replay.apply(_question())
             for update in self._updates(thread_id):
                 await replay.apply(update)
@@ -1874,7 +1887,9 @@ class TestBlockDrawings:
         name: str = "mcp__boba__probe",
     ) -> None:
         view = ChatView(THREAD, LiveSink(), "u-1", storage, TEXTS)
-        updates = UpdateView(view, THREAD, RemoteJournals(), ToolMedia())
+        updates = UpdateView(
+            view, THREAD, RemoteJournals(), ToolMedia(KnownCards({}, {}, {}))
+        )
         await updates.apply(_question())
         await updates.apply(_call(CALL, name, {}))
         await updates.apply(_done(CALL, "text for the model", raw))
@@ -2082,7 +2097,7 @@ class TestBlockDrawings:
         answer = _id(QUESTION, StepRole.ANSWER)
         assert card[0] == CanvasElement.LINK, card
         assert card[2:] == (_id(f"{CALL}/0", StepRole.ELEMENT), answer), card
-        image = ObjectKey.from_workspace("u-1", THREAD, card[1])
+        image = WorkspaceKey.located("/workspace", "u-1", THREAD, card[1])
         assert image.name.endswith(".png"), image
         assert await get_bytes(storage, image.render()) == body
 

@@ -34,6 +34,8 @@ from boba.toolkit.mcp import McpResults
 
 pytestmark = pytest.mark.anyio
 
+OWN = McpServers.OWN
+
 
 class AuthStand(FakeServiceProcess):
     """Сервис стенда с записями способов входа клиента и портом к нему."""
@@ -67,12 +69,12 @@ class AuthStand(FakeServiceProcess):
             endpoint=endpoint, connect_timeout_sec=20.0, call_timeout_sec=60.0
         )
 
-        return McpToolServer("boba", config, McpServers.OWN)
+        return McpToolServer("boba", config)
 
     async def whoami(self, server: McpToolServer) -> str:
         """Текст для модели из ответа fake_whoami: логин, роли и токен."""
         params = mt.CallToolRequestParams(name="fake_whoami", arguments={})
-        reply = await server.call(params, None, None)
+        reply = await server.call(OWN, params, None, None, None)
 
         return McpResults().result(params.name, "call-whoami", reply).llm_view()
 
@@ -163,7 +165,7 @@ class TestLocalAuth:
         server = stand.server(stand.local(AuthStand.LOGIN, AuthStand.PASSWORD))
         opened.append(server)
 
-        await server.open()
+        await server.described(OWN)
         text = await stand.whoami(server)
 
         assert text.startswith("carol|dev|"), text
@@ -178,7 +180,7 @@ class TestLocalAuth:
         opened.append(server)
 
         with pytest.raises(McpClientError) as caught:
-            await server.open()
+            await server.described(OWN)
 
         text = str(caught.value)
         assert "mcp auth local" in text, text
@@ -196,7 +198,7 @@ class TestLocalAuth:
         opened.append(server)
 
         with pytest.raises(McpClientError) as caught:
-            await server.open()
+            await server.described(OWN)
 
         text = str(caught.value)
         assert "HTTP 403" in text, text
@@ -207,7 +209,7 @@ class TestLocalAuth:
     ) -> None:
         server = brief.server(brief.local(AuthStand.LOGIN, AuthStand.PASSWORD))
         opened.append(server)
-        await server.open()
+        await server.described(OWN)
         first = await brief.whoami(server)
         issued = requests.count("POST", "/token")
 
@@ -227,7 +229,7 @@ class TestProxyAuth:
         server = stand.server(stand.proxy("ivanov", ["dev"]))
         opened.append(server)
 
-        await server.open()
+        await server.described(OWN)
         text = await stand.whoami(server)
 
         assert text.startswith("ivanov|dev|"), text
@@ -240,7 +242,7 @@ class TestProxyAuth:
         server = stand.server(declared.on_behalf_of(caller))
         opened.append(server)
 
-        await server.open()
+        await server.described(OWN)
         text = await stand.whoami(server)
 
         assert text.startswith("petrov|ADM,dev|"), text
@@ -252,7 +254,7 @@ class TestProxyAuth:
         opened.append(server)
 
         with pytest.raises(McpClientError) as caught:
-            await server.open()
+            await server.described(OWN)
 
         assert "names no login" in str(caught.value), caught.value
 
@@ -261,7 +263,7 @@ class TestProxyAuth:
     ) -> None:
         server = brief.server(brief.proxy("ivanov", ["dev"]))
         opened.append(server)
-        await server.open()
+        await server.described(OWN)
         first = await brief.whoami(server)
         issued = requests.count("POST", "/token")
 

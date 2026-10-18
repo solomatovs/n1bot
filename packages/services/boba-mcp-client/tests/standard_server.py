@@ -3,7 +3,14 @@
 Запускается субпроцессом из тестов клиента: `python standard_server.py stdio`
 либо `python standard_server.py streamable-http <port>`; транспорт
 `stdio-extended` — тот же сервер, объявляющий расширения с настройками не
-по моделям клиента (DeclaredExtension). На нём есть каждый запрос и каждое
+по моделям клиента (DeclaredExtension). `--ttl-ms N` — подсказки кэша
+описания (public) и списка инструментов (private) со сроком N; `--retired
+version|session` — сервер по HTTP с первого запроса не говорит на
+2026-07-28 (ModernSwitch). Для проверок порта без состояния: pid — процесс
+сервера, region — параметр с x-mcp-header, retitle — смена инструкций,
+retire_modern — отказ от 2026-07-28 посреди жизни; `--workspace DIR` —
+расширение файлов workspace с каталогом DIR (пути файлов show). На нём есть
+каждый запрос и каждое
 уведомление редакции 2026-07-28, кроме устаревших (sampling, roots,
 logging), чтобы клиент проверялся на всём: server/discover с инструкциями;
 инструменты — обычные, отказы стенда (задержка, большой результат, обрыв
@@ -21,14 +28,16 @@ logging), чтобы клиент проверялся на всём: server/dis
 archive_orders — только модель.
 """
 
+import argparse
 import asyncio
 import json
 import os
-import sys
 from pathlib import Path, PurePosixPath
-from typing import Any, ClassVar
+from typing import Annotated, Any, ClassVar
 
+import uvicorn
 from mcp.server.apps import Apps, ResourceCsp, client_supports_apps
+from mcp.server.caching import CacheHint
 from mcp.server.extension import Extension
 from mcp.server.mcpserver import Context, Image, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
@@ -54,7 +63,9 @@ from mcp.types import (
     TextResourceContents,
     ToolAnnotations,
 )
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from starlette.types import ASGIApp, Receive, Scope, Send
+from starlette.types import Message as AsgiMessage
 
 
 class DeclaredExtension(Extension):
@@ -66,6 +77,96 @@ class DeclaredExtension(Extension):
 
     def settings(self) -> dict[str, Any]:
         return dict(self._settings)
+
+
+class ModernSwitch:
+    """ASGI-обёртка приложения сервера по HTTP. После retire_modern (или с
+    флагом --retired на старте) сервер перестаёт говорить на 2026-07-28 и
+    отвечает на запросы этой редакции отказом 400 — ошибкой версии -32022 с
+    одной 2025-11-25 в supported (mode "version") либо ошибкой сессии
+    сервера прежней редакции -32000 (mode "session"); рукопожатие initialize
+    и запросы его сессии идут серверу как прежде. Вызов инструмента lost в
+    сессии получает 404, как запрос сессии, которую сервер забыл, хотя
+    сессия жива: так проверяется, что отказ одного запроса не достаётся
+    соседнему."""
+
+    MODERN: ClassVar[bytes] = b"2026-07-28"
+    VERSION_HEADER: ClassVar[bytes] = b"mcp-protocol-version"
+    SESSION_HEADER: ClassVar[bytes] = b"mcp-session-id"
+    LOST: ClassVar[str] = "lost"
+
+    def __init__(self, app: ASGIApp, mode: str) -> None:
+        self._app = app
+        self.mode = mode
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http" or scope["method"] != "POST":
+            await self._app(scope, receive, send)
+            return
+
+        body = b""
+        more = True
+        while more:
+            message: AsgiMessage = await receive()
+            body += message.get("body", b"")
+            more = message.get("more_body", False)
+
+        headers = dict(scope["headers"])
+        request = json.loads(body)
+        if self._lost(headers, request):
+            await self._answer(send, 404, {})
+            return
+
+        modern = headers.get(self.VERSION_HEADER) == self.MODERN
+        if not self.mode or not modern:
+            await self._app(scope, self._replayed(body, receive), send)
+            return
+
+        error: dict[str, Any] = {
+            "code": -32000,
+            "message": "Bad Request: No valid session ID provided",
+        }
+        if self.mode == "version":
+            error = {
+                "code": -32022,
+                "message": "Unsupported protocol version",
+                "data": {"supported": ["2025-11-25"], "requested": "2026-07-28"},
+            }
+
+        payload = {"jsonrpc": "2.0", "id": request.get("id"), "error": error}
+        await self._answer(send, 400, payload)
+
+    def _lost(self, headers: dict[bytes, bytes], request: dict[str, Any]) -> bool:
+        if self.SESSION_HEADER not in headers:
+            return False
+
+        if request.get("method") != "tools/call":
+            return False
+
+        return request.get("params", {}).get("name") == self.LOST
+
+    def _replayed(self, body: bytes, later: Receive) -> Receive:
+        """Тело, прочитанное обёрткой, — приложению первым сообщением; дальше
+        — сообщения соединения как есть (конец соединения)."""
+        pending = [body]
+
+        async def receive() -> AsgiMessage:
+            if not pending:
+                return await later()
+
+            return {"type": "http.request", "body": pending.pop(), "more_body": False}
+
+        return receive
+
+    async def _answer(self, send: Send, status: int, payload: dict[str, Any]) -> None:
+        await send(
+            {
+                "type": "http.response.start",
+                "status": status,
+                "headers": [(b"content-type", b"application/json")],
+            }
+        )
+        await send({"type": "http.response.body", "body": json.dumps(payload).encode()})
 
 
 class OrderRow(BaseModel):
@@ -137,24 +238,32 @@ class StandardServer:
         DeclaredExtension("com.boba/nested-calls", {"tool": "workflow"}),
     )
 
-    def __init__(self, port: int, extended: bool) -> None:
+    def __init__(
+        self, port: int, extended: bool, ttl_ms: int, retired: str, workspace: str
+    ) -> None:
         apps = Apps()
         apps.tool(resource_uri=self.ORDERS)(self.orders)
         apps.tool(resource_uri=self.ORDERS, visibility=["app"])(self.refresh_orders)
         apps.tool(resource_uri=self.ORDERS, visibility=["model"])(self.archive_orders)
         html = Path(__file__).with_name("orders.html").read_text()
         apps.add_html_resource(self.ORDERS, html, csp=self.ORDERS_CSP)
-        extensions: tuple[Extension, ...] = (apps,)
-        if extended:
-            extensions = (apps, *self.EXTENSIONS)
+        extensions = self._extensions(apps, extended, workspace)
+
+        hints: dict[Any, CacheHint] = {}
+        if ttl_ms:
+            hints["server/discover"] = CacheHint(ttl_ms=ttl_ms, scope="public")
+            hints["tools/list"] = CacheHint(ttl_ms=ttl_ms, scope="private")
 
         self._mcp = MCPServer(
             "standard",
             instructions=self.INSTRUCTIONS,
             version="1.0",
             extensions=extensions,
+            cache_hints=hints,
         )
         self._port = port
+        self._retired = retired
+        self._switch: ModernSwitch | None = None
         self._extra_on = False
         self._extra_prompt_on = False
         self._grown = 0
@@ -178,6 +287,10 @@ class StandardServer:
         self._mcp.tool()(self.toggle_prompt)
         self._mcp.tool()(self.grow_resources)
         self._mcp.tool()(self.bump)
+        self._mcp.tool()(self.pid)
+        self._mcp.tool()(self.region)
+        self._mcp.tool()(self.retitle)
+        self._mcp.tool()(self.retire_modern)
         self._mcp.resource(self.NOTES, mime_type="text/plain")(self.notes)
         self._mcp.resource(self.LOGO, mime_type="image/png")(self.logo)
         self._mcp.resource(self.COUNTER, mime_type="text/plain")(self.counter)
@@ -188,6 +301,21 @@ class StandardServer:
         self._mcp.prompt()(self.greet)
         self._mcp.prompt()(self.ask_prompt)
         self._mcp.completion()(self.complete)
+
+    def _extensions(
+        self, apps: Apps, extended: bool, workspace: str
+    ) -> tuple[Extension, ...]:
+        """Расширения сервера: MCP Apps, с extended — объявленные не по
+        моделям клиента, с workspace — файлы workspace под этим каталогом."""
+        extensions: tuple[Extension, ...] = (apps,)
+        if extended:
+            extensions = (apps, *self.EXTENSIONS)
+
+        if workspace:
+            files = {"path": "/files", "upload": "show", "workspace": workspace}
+            extensions = (*extensions, DeclaredExtension("com.boba/files", files))
+
+        return extensions
 
     def add(self, a: int, b: int) -> int:
         """Adds two numbers."""
@@ -374,6 +502,32 @@ class StandardServer:
         await ctx.notify_resource_updated(self.COUNTER)
         return f"counter {self._count}"
 
+    def pid(self) -> int:
+        """The process id of the server."""
+        return os.getpid()
+
+    def region(
+        self,
+        region: Annotated[str, Field(json_schema_extra={"x-mcp-header": "Region"})],
+    ) -> str:
+        """Echoes the region the client mirrors into the Mcp-Param-Region header."""
+        return f"region {region}"
+
+    def retitle(self, text: str) -> str:
+        """Replaces the instructions server/discover gives."""
+        self._mcp._lowlevel_server.instructions = text
+        return f"instructions: {text}"
+
+    def retire_modern(self, mode: str) -> str:
+        """Stops speaking 2026-07-28 over HTTP: refuses its requests by mode."""
+        switch = self._switch
+        if switch is None:
+            msg = "retire_modern works only over streamable HTTP"
+            raise ToolError(msg)
+
+        switch.mode = mode
+        return f"modern requests are refused: {mode}"
+
     def notes(self) -> str:
         """Notes of the standard server."""
         return self.NOTES_TEXT
@@ -452,12 +606,23 @@ class StandardServer:
             self._mcp.run("stdio")
             return
 
-        self._mcp.run("streamable-http", host="127.0.0.1", port=self._port)
+        app = self._mcp.streamable_http_app(host="127.0.0.1")
+        self._switch = ModernSwitch(app, self._retired)
+        uvicorn.run(
+            self._switch, host="127.0.0.1", port=self._port, log_level="warning"
+        )
 
 
 if __name__ == "__main__":
-    port = 0
-    if len(sys.argv) > 2:
-        port = int(sys.argv[2])
+    parser = argparse.ArgumentParser()
+    parser.add_argument("transport")
+    parser.add_argument("port", nargs="?", type=int, default=0)
+    parser.add_argument("--ttl-ms", type=int, default=0)
+    parser.add_argument("--retired", default="")
+    parser.add_argument("--workspace", default="")
+    args = parser.parse_args()
 
-    StandardServer(port, sys.argv[1] == "stdio-extended").run(sys.argv[1])
+    extended = args.transport == "stdio-extended"
+    StandardServer(args.port, extended, args.ttl_ms, args.retired, args.workspace).run(
+        args.transport
+    )

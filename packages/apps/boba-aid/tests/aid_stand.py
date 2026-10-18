@@ -51,7 +51,7 @@ from boba.aid.infra.session import (
     current_session,
 )
 from boba.aid.infra.thread_room import ThreadSurfaces
-from boba.aid.rendering.acp_view import ToolMedia
+from boba.aid.rendering.acp_view import ToolCards
 from boba.aid.rendering.chat_view import ChatSink, ChatView, StepRole
 from boba.aid.rendering.renderer import NoSurface, RenderSurface, TabSurfaces
 from boba.auth import JwtTokens
@@ -83,6 +83,8 @@ from boba.kerberos import DelegationMode, SignInTicket
 from boba.krb.seal import SsoTickets, TicketSealer
 from boba.mcp_client.client import (
     McpCaller,
+    McpDescription,
+    McpServerApps,
     McpServers,
     McpServersConfig,
 )
@@ -558,6 +560,42 @@ class OwnerRows(UserRows):
         raise NotImplementedError
 
 
+class KnownCards(ToolCards):
+    """Реализация ToolCards тестов ленты: карточки, описания и секции apps
+    серверов заданы тестом; сервера без них лента не знает."""
+
+    def __init__(
+        self,
+        tools: Mapping[str, Sequence[mt.Tool]],
+        described: Mapping[str, mt.ServerCapabilities],
+        apps: Mapping[str, McpServerApps],
+    ) -> None:
+        self._tools = tools
+        self._described = described
+        self._apps = apps
+
+    async def card(self, server: str, tool: str) -> mt.Tool | None:
+        for known in self._tools.get(server, ()):
+            if known.name == tool:
+                return known
+
+        return None
+
+    async def described(self, server: str) -> McpDescription | None:
+        capabilities = self._described.get(server)
+        if capabilities is None:
+            return None
+
+        result = mt.DiscoverResult(
+            supported_versions=["2026-07-28"], capabilities=capabilities
+        )
+
+        return McpDescription(f"stand server {server!r}", result)
+
+    def apps(self, server: str) -> McpServerApps | None:
+        return self._apps.get(server)
+
+
 class PerCallStreams(RemoteStreams):
     """RemoteStreams тестов панели: на каждое чтение свой клиент MCP.
 
@@ -571,7 +609,7 @@ class PerCallStreams(RemoteStreams):
 
     def __init__(self, journals: RemoteJournals, caller: McpCaller) -> None:
         self._config = McpServersConfig(servers={})
-        super().__init__(journals, self._client(), caller, ToolMedia())
+        super().__init__(journals, self._client(), caller)
 
     def serve(self, config: McpServersConfig) -> None:
         """Серверы, с которых дальше читаются журналы."""
@@ -585,7 +623,7 @@ class PerCallStreams(RemoteStreams):
     ) -> StreamSlice | None:
         servers = self._client()
         try:
-            reading = RemoteStreams(self._journals, servers, self._caller, self._media)
+            reading = RemoteStreams(self._journals, servers, self._caller)
             return await reading.slice_at(thread_id, call_id, channel, offset)
         finally:
             await servers.stop()
@@ -595,7 +633,7 @@ class PerCallStreams(RemoteStreams):
     ) -> StreamSlice | None:
         servers = self._client()
         try:
-            reading = RemoteStreams(self._journals, servers, self._caller, self._media)
+            reading = RemoteStreams(self._journals, servers, self._caller)
             return await reading.slice_before(thread_id, call_id, channel, end)
         finally:
             await servers.stop()
@@ -1010,11 +1048,11 @@ def di_root(
     from boba.aid.agent.chat import ThreadAgentsIndex
     from boba.aid.infra.providers import (
         feed_text,
+        mcp_servers,
         remote_journals,
         session_source,
         storage_provider,
         thread_agents_index,
-        tool_media,
     )
     from boba.runtime import providers as runtime
     from boba.runtime.di import Container
@@ -1032,7 +1070,7 @@ def di_root(
     root.provide(runtime.runs, runtime_stand.runs)
     root.provide(runtime.call_journals, runtime_stand.journals)
     root.provide(remote_journals, RemoteJournals())
-    root.provide(tool_media, ToolMedia())
+    root.provide(mcp_servers, McpServers(McpServersConfig(servers={})))
     root.provide(storage_provider, storage)
     root.provide(thread_agents_index, ThreadAgentsIndex())
     root.provide(feed_text, UiText(AppLanguage.ASSETS, UiText.DEFAULT_LANGUAGE))

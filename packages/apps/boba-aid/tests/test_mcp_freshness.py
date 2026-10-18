@@ -81,6 +81,7 @@ class DriftingTexts:
         "mcp__drifting__die",
         "mcp__drifting__drift",
         "mcp__drifting__echo",
+        "mcp__drifting__instruct",
         "mcp__drifting__publish",
     )
 
@@ -124,8 +125,8 @@ class DriftingTexts:
     def server_tools_back(self) -> str:
         return (
             "<system-reminder>\n"
-            "4 tools are available again (MCP server reconnected — names announced "
-            "earlier in this conversation): mcp__drifting__* (4).\n"
+            "5 tools are available again (MCP server reconnected — names announced "
+            "earlier in this conversation): mcp__drifting__* (5).\n"
             "</system-reminder>"
         )
 
@@ -265,6 +266,26 @@ class TestFreshnessThroughRelay:
         assert tools_back, requests.read()
         assert requests.read().count("# MCP Server Instructions") == 2
         assert "mcp__drifting__echo" in back, back
+
+    async def test_instructions_changed_live_reach_the_next_turn(
+        self, agents: Agents, model: FakeModel
+    ) -> None:
+        """Сервер сменил инструкции посреди сессии и о том не сообщил:
+        ретранслятор перечитывает описание по сроку свежести, и следующий ход
+        объявляет модели новый текст вложением."""
+        process, session_id = await self._session(agents, "instruct")
+        requests = ModelRequests(model)
+        texts = DriftingTexts()
+        changed = {"text": self.SECOND}
+
+        await agents.turn(
+            process, session_id, self._call("mcp__drifting__instruct", changed)
+        )
+        await agents.turn(process, session_id, ScenarioName.ANSWER.value)
+
+        assert requests.saw(texts.instructions(self.FIRST)), requests.read()
+        assert requests.saw(texts.instructions(self.SECOND)), requests.read()
+        assert "# MCP Server Instructions" not in requests.system()
 
     async def test_changed_instructions_are_announced_when_the_chat_restarts(
         self,
