@@ -23,6 +23,7 @@ from boba.aid.rendering.chat_view import (
     ChatView,
     LiveSink,
     StepElapsed,
+    StepMeta,
     StepRole,
     StepStatus,
     StepText,
@@ -666,7 +667,7 @@ class TestContainerAvatar:
             raise AssertionError("контейнер хода не отправлен")
 
         avatars = {
-            str(step.get(StepField.METADATA, {}).get(ChatView.AVATAR_NAME_KEY))
+            str(step.get(StepField.METADATA, {}).get(StepMeta.AVATAR_NAME.value))
             for step in containers
         }
         if avatars != {chainlit_config.ui.name}:

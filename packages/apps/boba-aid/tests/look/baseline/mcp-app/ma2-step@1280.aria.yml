@@ -1,0 +1,39 @@
+- article: Покажи последние заказы магазина
+- img "Avatar for Ассистент-BOBA"
+- 'heading "Завершено · шагов: 1" [level=3]':
+  - 'button "Завершено · шагов: 1" [expanded]'
+- region:
+  - heading "✔ orders · Заказы магазина" [level=3]:
+    - button "✔ orders · Заказы магазина" [expanded]
+  - region:
+    - article: "rows:"
+    - table:
+      - rowgroup:
+        - row "id customer status total":
+          - columnheader "id"
+          - columnheader "customer"
+          - columnheader "status"
+          - columnheader "total"
+      - rowgroup:
+        - row "7 Acme new 120.5":
+          - cell "7"
+          - cell "Acme"
+          - cell "new"
+          - cell "120.5"
+        - row "8 Globex paid 89.9":
+          - cell "8"
+          - cell "Globex"
+          - cell "paid"
+          - cell "89.9"
+        - row "9 Initech shipped 42.0":
+          - cell "9"
+          - cell "Initech"
+          - cell "shipped"
+          - cell "42.0"
+    - article: 3 orders are shown by their app
+- text: apps · orders
+- button "На весь экран"
+- button "Свернуть"
+- iframe
+- img "Avatar for Ассистент-BOBA"
+- article: Три последних заказа магазина — в таблице выше.
