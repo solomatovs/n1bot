@@ -14,14 +14,16 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import socket
 import subprocess
 import sys
+from abc import abstractmethod
 from collections.abc import AsyncIterator, Iterator
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
-from typing import ClassVar
+from typing import ClassVar, Protocol
 from uuid import uuid4
 
 import httpx
@@ -45,7 +47,6 @@ from boba.mcp_client.client import (
     BearerAuth,
     HttpEndpoint,
     HttpLocation,
-    JournalOpening,
     McpCaller,
     McpClientError,
     McpClientIdentity,
@@ -77,7 +78,7 @@ from boba.toolkit.result import (
     MarkdownResult,
 )
 from boba.toolkit.types import SecretReveal
-from boba.toolkit.wire import JournalFeature, JournalRead
+from boba.toolkit.wire import JournalFeature, JournalNotice, JournalRead
 from boba.workspace.launcher import ReadWindow
 
 pytestmark = pytest.mark.anyio
@@ -239,14 +240,94 @@ class HeardCall:
 
 
 class HeardJournals:
-    """Слушатель журналов вызова в тесте: копит журналы, которые вызов
-    открыл на сервере, в порядке, в каком порт их узнал из списка ресурсов."""
+    """Слушатель журналов вызова в тесте: копит уведомления о журналах,
+    которые вызов открыл на сервере, в порядке прихода, и в момент первого
+    — число подключений клиента к серверу (peers)."""
 
-    def __init__(self) -> None:
-        self.opened: list[JournalOpening] = []
+    def __init__(self, peers: ServerPeers) -> None:
+        self.opened: list[JournalNotice] = []
+        self.peers: list[int] = []
+        self._peers = peers
 
-    async def __call__(self, opening: JournalOpening) -> None:
-        self.opened.append(opening)
+    async def __call__(self, notice: JournalNotice) -> None:
+        self.opened.append(notice)
+        self.peers.append(self._peers.count())
+
+
+class ServerPeers(Protocol):
+    """Сколько подключений тест держит к серверу прямо сейчас."""
+
+    @abstractmethod
+    def count(self) -> int: ...
+
+
+class TcpPeers(ServerPeers):
+    """Реализация ServerPeers по таблицам TCP ядра: установленные
+    соединения на порт сервера (/proc/net/tcp, tcp6 — удалённый порт
+    в шестнадцатеричном виде после двоеточия, состояние 01)."""
+
+    TABLES: ClassVar[tuple[Path, ...]] = (
+        Path("/proc/net/tcp"),
+        Path("/proc/net/tcp6"),
+    )
+    ESTABLISHED: ClassVar[str] = "01"
+
+    def __init__(self, port: int) -> None:
+        self._port = f"{port:04X}"
+
+    def count(self) -> int:
+        established = list(self._established())
+
+        return len(established)
+
+    def _established(self) -> Iterator[str]:
+        for table in self.TABLES:
+            with table.open() as rows:
+                next(rows)
+                for row in rows:
+                    fields = row.split()
+                    remote = fields[2].rsplit(":", 1)[1]
+                    if remote != self._port:
+                        continue
+
+                    if fields[3] != self.ESTABLISHED:
+                        continue
+
+                    yield fields[2]
+
+
+class ChildServers(ServerPeers):
+    """Реализация ServerPeers для сервера stdio: подключение — процесс
+    сервера script, запущенный самим тестом (/proc/<pid>/stat и cmdline)."""
+
+    def __init__(self, script: Path) -> None:
+        self._script = str(script).encode()
+        self._parent = str(os.getpid())
+
+    def count(self) -> int:
+        children = list(self._children())
+
+        return len(children)
+
+    def _children(self) -> Iterator[Path]:
+        for entry in Path("/proc").iterdir():
+            if not entry.name.isdigit():
+                continue
+
+            try:
+                stat = (entry / "stat").read_text()
+                cmdline = (entry / "cmdline").read_bytes()
+            except (FileNotFoundError, ProcessLookupError):
+                continue
+
+            parent = stat.rsplit(")", 1)[1].split()[1]
+            if parent != self._parent:
+                continue
+
+            if self._script not in cmdline:
+                continue
+
+            yield entry
 
 
 class TestStandardServer:
@@ -944,32 +1025,61 @@ class TestBobaMcpJournal:
         if heard.metas != expected:
             raise AssertionError(f"every report names its node: {heard.metas}")
 
-    async def test_journal_is_read_by_the_address_of_the_result(
-        self, dag: McpToolServer
+    async def test_journal_is_noticed_in_the_stream_of_its_call(
+        self, dag: McpToolServer, boba_mcp_stand: BobaMcpStand
     ) -> None:
-        """Журнал идущего вызова порт узнаёт из resources/list по смене
-        списка ресурсов: адрес тот же, что у ссылки в итоге, а окно журнала
-        читает resources/read."""
+        """Журнал идущего вызова порт узнаёт уведомлением расширения журнала
+        в потоке ответа самого вызова, под его токеном прогресса: адрес тот
+        же, что у ссылки в итоге, окно журнала читает resources/read, а
+        второго подключения к серверу у порта нет."""
         heard = HeardCall()
-        journals = HeardJournals()
+        journals = HeardJournals(TcpPeers(boba_mcp_stand.port))
         reply = await dag.call(
-            OWN, _call("fake_echo", text="hi", repeat=2), None, heard, journals
+            OWN,
+            _call("fake_progress", steps=3, pause=0.5),
+            None,
+            heard,
+            journals,
         )
-        if not isinstance(reply, mt.CallToolResult):
-            raise AssertionError(f"the call is answered: {reply}")
+        if not isinstance(reply, mt.CallToolResult) or reply.is_error:
+            raise AssertionError(f"the call succeeds: {reply}")
 
         stdout = await _stdout(dag, reply)
         window = await dag.journal(stdout)
 
-        if heard.reports:
-            raise AssertionError(f"a silent tool sends no progress: {heard.reports}")
-        expected = [JournalOpening(run=stdout.run, call=stdout.node, node=None)]
-        if journals.opened != expected:
+        if len(heard.reports) != 3:
+            raise AssertionError(f"the progress goes on: {heard.reports}")
+        if len(journals.opened) != 1:
             raise AssertionError(f"the journal is named once: {journals.opened}")
-        if window is None or "echo progress: hi" not in window.text:
+        notice = journals.opened[0]
+        if (notice.run, notice.node, notice.key) != (stdout.run, stdout.node, None):
+            raise AssertionError(f"the address of the result: {notice} {stdout}")
+        if stdout.channel not in notice.channels:
+            raise AssertionError(f"the channels of the journal: {notice}")
+        if journals.peers != [1]:
+            raise AssertionError(f"one connection serves the call: {journals.peers}")
+        if window is None or "step 3 of 3" not in window.text:
             raise AssertionError(f"the journal is read from the server: {window}")
         if not window.closed:
             raise AssertionError(f"the journal of a finished call is closed: {window}")
+
+    async def test_journal_of_a_workflow_node_names_its_key(
+        self, dag: McpToolServer, boba_mcp_stand: BobaMcpStand
+    ) -> None:
+        """Журнал узла связки уведомление называет ключом узла от автора."""
+        nodes = [
+            {"key": "slow", "tool": "fake_progress", "args": {"steps": 3, "pause": 0.5}}
+        ]
+        journals = HeardJournals(TcpPeers(boba_mcp_stand.port))
+        reply = await dag.call(
+            OWN, _call("workflow", nodes=nodes), None, None, journals
+        )
+
+        if not isinstance(reply, mt.CallToolResult) or reply.is_error:
+            raise AssertionError(f"the workflow succeeds: {reply}")
+        keys = [notice.key for notice in journals.opened]
+        if keys != ["slow"]:
+            raise AssertionError(f"the journal names its node: {journals.opened}")
 
     async def test_journal_channel_is_downloaded_whole_and_by_range(
         self, dag: McpToolServer
@@ -1019,6 +1129,27 @@ class TestBobaMcpJournal:
 
         if window is not None:
             raise AssertionError(f"a standard server keeps no journal: {window}")
+
+    async def test_call_of_a_server_without_notices_keeps_one_connection(
+        self, stdio: McpToolServer
+    ) -> None:
+        """Обычный сервер объявляет журнал, но уведомлений о нём не шлёт:
+        вызов со слушателем журналов идёт тем же подключением — процессом
+        сервера, итог приходит как есть, а слушатель ничего не слышит."""
+        processes = ChildServers(SERVER)
+        journals = HeardJournals(processes)
+        heard = HeardCall()
+
+        reply = await stdio.call(OWN, _call("progress", steps=2), None, heard, journals)
+
+        if not isinstance(reply, mt.CallToolResult) or reply.is_error:
+            raise AssertionError(f"the call succeeds: {reply}")
+        if len(heard.reports) != 2:
+            raise AssertionError(f"the progress arrives: {heard.reports}")
+        if journals.opened:
+            raise AssertionError(f"no journal is noticed: {journals.opened}")
+        if processes.count() != 1:
+            raise AssertionError(f"one server process: {processes.count()}")
 
 
 @pytest.mark.integration
@@ -1081,7 +1212,7 @@ class TestSignInAsTheUser:
         owner = McpCaller(login="ivanov", roles=frozenset({"dev"}))
         stranger = McpCaller(login="petrov", roles=frozenset({"dev"}))
         heard = HeardCall()
-        journals = HeardJournals()
+        journals = HeardJournals(TcpPeers(boba_mcp_stand.port))
         events: list[str] = []
         try:
             port = await self._port(servers, owner, "boba")
@@ -1098,7 +1229,7 @@ class TestSignInAsTheUser:
 
                 opened = journals.opened[0]
                 read = JournalRead(
-                    run=opened.run, node=opened.call, channel=ToolChannel.STDOUT
+                    run=opened.run, node=opened.node, channel=ToolChannel.STDOUT
                 )
                 uri = links.uri(read)
 
