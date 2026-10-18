@@ -7,7 +7,8 @@ app_root: файлы лежат ровно там, где их ищет chainlit
 - `.chainlit/config.toml` и `.chainlit/translations/*.json` (в том числе русский
   `ru-RU.json`) — настройки и переводы интерфейса;
 - `chainlit.md` — стартовая страница; в `.chainlit/` chainlit её не ищет;
-- `public/` — тема `theme.json`, логотипы, favicon, аватары;
+- `public/` — тема `theme.json`, стили `ui.css`, логотипы, favicon, аватар
+  ассистента `n1-avatar.svg`, элементы и скрипт страницы;
 - `mcp-apps/sandbox.html` — страница-прокси песочницы MCP Apps, в которой чат
   рисует приложения MCP-серверов. В поставке она лежит в
   `app_root/mcp-apps/` вместе со шрифтом чата `fonts/inter/files/` (его образ

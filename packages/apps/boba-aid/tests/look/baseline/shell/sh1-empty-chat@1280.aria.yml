@@ -1,0 +1,22 @@
+- button:
+  - img
+- button:
+  - img
+- button:
+  - img
+- list:
+  - img
+  - paragraph: Чаты не найдены
+- button "Toggle Sidebar"
+- main:
+  - combobox: Общий
+  - button "Описание"
+  - button "Toggle theme"
+  - button "D"
+  - img "logo"
+  - textbox "Введите сообщение здесь..."
+  - img
+  - button [disabled]:
+    - img
+  - button [disabled]:
+    - img

@@ -2,6 +2,7 @@
 ошибка входа — неверный пароль, нет ролей, отказы SSO — в обеих темах и обоих
 размерах окна. Ошибки снимаются на обоих языках интерфейса: их текст, и в
 баннере формы, и в уведомлении, берётся из переводов по коду отказа.
+Клавиатурный фокус поля и кнопки снимается на широком окне в обеих темах.
 
 Страница целиком — кадр: на ней ничего, кроме формы и уведомления, и
 раскладка формы меняется с шириной окна.
@@ -15,13 +16,17 @@ import pytest
 from aid_look import (
     LookAxes,
     LookCheck,
+    LookError,
+    LookFixes,
     LookLanguage,
     LookPages,
     LookPaths,
+    LookSize,
     LookStand,
     LookState,
+    LookTheme,
 )
-from playwright.sync_api import Page, expect
+from playwright.sync_api import Locator, Page, expect
 
 from boba.aid.auth.composite import SignInCode
 from boba.aid.chat.ui_text import UiText
@@ -39,12 +44,42 @@ class LoginLook:
         GROUP,
         "lg1-password-and-sso",
         "Вход по паролю и через SSO: поля логина и пароля, «Войти», «Войти через SSO»",
+        "одна колонка без картинки, логотип N1 по центру (в тёмной теме белый); "
+        "подсказки полей «Введите логин» и «Введите пароль»; обе кнопки высотой "
+        "40 px с углами 4 px, в светлой теме синий Consta; на узком окне форма "
+        "во всю ширину без прокрутки вбок",
+        (LookFixes.N3,),
     )
     SSO_ONLY: ClassVar[LookState] = LookState(
-        GROUP, "lg2-sso-only", "Вход только через SSO: кнопка без полей"
+        GROUP,
+        "lg2-sso-only",
+        "Вход только через SSO: кнопка без полей",
+        "та же одна колонка, что и с паролем: справа нет картинки, логотип по "
+        "центру, кнопка «Войти через SSO» того же размера, что «Войти» в lg1",
+        (LookFixes.N33,),
     )
     PASSWORD_ONLY: ClassVar[LookState] = LookState(
-        GROUP, "lg3-password-only", "Вход только по паролю: без кнопки SSO"
+        GROUP,
+        "lg3-password-only",
+        "Вход только по паролю: без кнопки SSO",
+        "как lg1, но без «Войти через SSO» и разделителя; подсказки полей по-русски",
+        (LookFixes.N3,),
+    )
+    FOCUS_FIELD: ClassVar[LookState] = LookState(
+        GROUP,
+        "lg1-focus-field",
+        "Tab с клавиатуры встал на поле логина",
+        "рамка поля логина цвета кольца темы (в светлой — синий Consta), "
+        "внешнего кольца у поля нет, остальные контролы без выделения",
+        (LookFixes.FOCUS,),
+    )
+    FOCUS_BUTTON: ClassVar[LookState] = LookState(
+        GROUP,
+        "lg1-focus-button",
+        "Tab с клавиатуры встал на кнопку «Войти»",
+        "вокруг «Войти» кольцо 2 px с зазором 2 px: в светлой теме синий Consta "
+        "на белом, в тёмной — голубое на тёмном, видно в обеих; поля без выделения",
+        (LookFixes.FOCUS,),
     )
 
     SSO_BUTTON: ClassVar[str] = "#sso-login-btn"
@@ -55,6 +90,8 @@ class LoginLook:
     WRONG: ClassVar[str] = "not-the-password"
     NO_ROLES: ClassVar[str] = "norole"
     ERRORS: ClassVar[str] = "auth.login.errors"
+    RING: ClassVar[str] = "solid 2px"
+    NO_RING: ClassVar[str] = "none"
 
     def error_key(self, code: str) -> str:
         return f"{self.ERRORS}.{code}"
@@ -70,12 +107,16 @@ class LoginErrors:
         return self._state(
             "lg4-wrong-password",
             "Неверный пароль: баннер над формой и уведомление, текст по коду",
+            "баннер над формой и уведомление внизу говорят одно и то же на языке "
+            "кадра, без «Unauthorized» и кода отказа; поля сохранили введённое",
         )
 
     def access_denied(self) -> LookState:
         return self._state(
             "lg4-access-denied",
             "Учётной записи не назначены роли: баннер и уведомление «доступ запрещён»",
+            "баннер и уведомление — «доступ запрещён» на языке кадра, а не "
+            "«неверный пароль»",
         )
 
     def sso(self, code: SsoErrorCode) -> LookState:
@@ -83,18 +124,25 @@ class LoginErrors:
             SsoErrorCode.TICKET: (
                 "lg5-sso-ticket",
                 "Отказ SSO: браузер не предъявил Kerberos-билет",
+                "баннер объясняет, что браузер не предъявил билет Kerberos; "
+                "форма и кнопка SSO на месте",
             ),
             SsoErrorCode.DENIED: (
                 "lg6-sso-denied",
                 "Отказ SSO: учётной записи не даны роли",
+                "баннер говорит, что учётной записи не назначены роли",
             ),
-            SsoErrorCode.FAILED: ("lg7-sso-failed", "Ошибка входа через SSO"),
+            SsoErrorCode.FAILED: (
+                "lg7-sso-failed",
+                "Ошибка входа через SSO",
+                "баннер общей ошибки SSO с советом обратиться в поддержку",
+            ),
         }
-        name, caption = captions[code]
-        return self._state(name, caption)
+        name, caption, check = captions[code]
+        return self._state(name, caption, check)
 
-    def _state(self, name: str, caption: str) -> LookState:
-        return LookState(LoginLook.GROUP, f"{name}-{self._suffix}", caption)
+    def _state(self, name: str, caption: str, check: str) -> LookState:
+        return LookState(LoginLook.GROUP, f"{name}-{self._suffix}", caption, check, ())
 
 
 class LoginPage:
@@ -126,6 +174,9 @@ class LoginPage:
 
     def banner(self, error: str) -> None:
         expect(self._page.get_by_text(error)).to_be_visible()
+
+    def submit(self) -> Locator:
+        return self._page.locator(LoginLook.SUBMIT)
 
 
 def test_login_with_password_and_sso(
@@ -215,5 +266,46 @@ def test_login_with_password_only(
         login.password_form()
         look_pages.settle(page)
         look.frame(page.locator("body"), LoginLook.PASSWORD_ONLY, theme, size)
+
+    look.verify()
+
+
+def test_login_keyboard_focus(
+    look: LookCheck, look_pages: LookPages, look_stands: LookStand
+) -> None:
+    """Tab рисует кольцо фокуса темы, клик мышью — нет."""
+    stand = look_stands.of(StandAuth.LOCAL_SSO)
+    for theme in LookTheme:
+        page = look_pages.open(theme, LookSize.WIDE)
+        login = LoginPage(page, stand)
+        body = page.locator("body")
+
+        login.open()
+        login.sso_button()
+        login.password_form()
+        look_pages.settle(page)
+        look_pages.tab_to(page, LoginLook.LOGIN)
+        look.frame(body, LoginLook.FOCUS_FIELD, theme, LookSize.WIDE)
+
+        look_pages.tab_to(page, LoginLook.SUBMIT)
+        keyboard = look_pages.outline(login.submit())
+        look.frame(body, LoginLook.FOCUS_BUTTON, theme, LookSize.WIDE)
+
+        look_pages.settle(page)
+        login.submit().click()
+        mouse = look_pages.outline(login.submit())
+        if keyboard != LoginLook.RING:
+            msg = (
+                f"{theme}: Tab on the sign-in button draws outline {keyboard!r}, "
+                f"expected the focus ring {LoginLook.RING!r}"
+            )
+            raise LookError(msg)
+
+        if mouse != LoginLook.NO_RING:
+            msg = (
+                f"{theme}: a mouse click on the sign-in button draws outline "
+                f"{mouse!r}, expected no ring {LoginLook.NO_RING!r}"
+            )
+            raise LookError(msg)
 
     look.verify()

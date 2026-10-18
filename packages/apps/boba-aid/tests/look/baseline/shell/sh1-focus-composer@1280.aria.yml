@@ -1,0 +1,7 @@
+- textbox "Введите сообщение здесь..."
+- button:
+  - img
+- button:
+  - img
+- button [disabled]:
+  - img

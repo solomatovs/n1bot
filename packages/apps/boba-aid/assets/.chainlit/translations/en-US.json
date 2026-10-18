@@ -22,13 +22,13 @@
             "form": {
                 "email": {
                     "label": "Login",
-                    "required": "email is a required field",
-                    "placeholder": "login"
+                    "required": "login is a required field",
+                    "placeholder": "Enter your login"
                 },
                 "password": {
                     "label": "Password",
                     "required": "password is a required field",
-                    "placeholder": "password"
+                    "placeholder": "Enter your password"
                 },
                 "actions": {
                     "signin": "Sign In",

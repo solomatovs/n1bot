@@ -1,0 +1,10 @@
+- button:
+  - img
+- button:
+  - img
+- button:
+  - img
+- list:
+  - img
+  - paragraph: Чаты не найдены
+- button "Toggle Sidebar"
