@@ -297,9 +297,11 @@ function useDark() {
   return dark;
 }
 
-// внутренний размер тела карточки: ширина места приложения, на весь экран — и высота
-function useBox(ref) {
-  const [size, setSize] = useState({ width: 0, height: 0 });
+// внутренний размер тела карточки: ширина места приложения, на весь экран — и
+// высота; mode — режим, в котором размер измерен: после смены режима прежний
+// размер устарел, пока тело не перемерено
+function useBox(ref, modeRef) {
+  const [size, setSize] = useState({ width: 0, height: 0, mode: INLINE });
   useEffect(() => {
     const node = ref.current;
     if (!node) return undefined;
@@ -309,10 +311,11 @@ function useBox(ref) {
       const down = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
       const width = Math.round(node.clientWidth - across);
       const height = Math.round(node.clientHeight - down);
+      const mode = modeRef.current;
       if (width <= 0) return;
       setSize((was) => {
-        if (was.width === width && was.height === height) return was;
-        return { width, height };
+        if (was.width === width && was.height === height && was.mode === mode) return was;
+        return { width, height, mode };
       });
     });
     observer.observe(node);
@@ -349,10 +352,12 @@ export default function ToolApp() {
   const isolated = originOf(props.sandbox_url) !== browser.origin();
   const dark = useDark();
   const bodyRef = useRef(null);
-  const size = useBox(bodyRef);
+  const [mode, setMode] = useState(INLINE);
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
+  const size = useBox(bodyRef, modeRef);
   const [app, setApp] = useState(null);
   const [error, setError] = useState(null);
-  const [mode, setMode] = useState(INLINE);
   const [modes, setModes] = useState(DISPLAY_MODES);
   const [collapsed, setCollapsed] = useState(false);
   const [initialized, setInitialized] = useState(false);
@@ -469,8 +474,10 @@ export default function ToolApp() {
     return made;
   }, [app, size.width > 0]);
 
+  // смена режима уходит приложению вместе с размерами тела в новом режиме
   useEffect(() => {
     if (!bridge || !initialized) return;
+    if (size.mode !== mode) return;
     bridge.setHostContext(hostContext);
   }, [bridge, initialized, hostContext]);
 
