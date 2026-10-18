@@ -15,9 +15,9 @@ McpReplies — стандартными полями результата MCP (R
 — ресурсы сервера: журналы идущих вызовов перечисляет resources/list, окна
 читает resources/read, итог несёт ссылки на каналы (JournalUris). Адрес
 загрузки файла отдаёт операция file_upload (FileUploadTool), видная только
-интерфейсу клиента. Возможности сервер объявляет в server/discover такими,
-какие у него есть (McpServer.discover): инструменты без смены списка,
-ресурсы журналов с подпиской и сменой списка, без промптов и логов.
+интерфейсу клиента. Клиентов сервер принимает обеих эпох — server/discover
+(2026-07-28) и initialize прежних редакций — и объявляет возможности такими,
+какие у него на их проводе есть (McpServer.on_discover, on_initialize).
 
 Ошибки:
 наружу уходит только итог вызова — сбой любого вида возвращается
@@ -51,7 +51,6 @@ from fastmcp.server.providers import Provider
 from fastmcp.tools import Tool
 from fastmcp.tools.base import ToolResult
 from mcp.server.apps import EXTENSION_ID as APPS_EXTENSION
-from mcp.server.context import ServerRequestContext
 from mcp.server.subscriptions import ResourceUpdated, SubscriptionBus
 from mcp.shared.jsonrpc_dispatcher import progress_token_from_params
 from mcp_types.version import MODERN_PROTOCOL_VERSIONS
@@ -82,7 +81,6 @@ from boba.identity.run import Runs
 from boba.identity.signin import ProfileCatalog
 from boba.mcp_adapter import (
     CallerServers,
-    FeatureExtension,
     JournalUris,
     McpReplies,
     McpTool,
@@ -814,8 +812,9 @@ class RunLimitMiddleware(Middleware):
         return self._replies.refused(tool, failure)
 
 
-class McpServer:
-    """Сборка MCP-сервера одного endpoint'а сервиса исполнения.
+class McpServer(Middleware):
+    """Сборка MCP-сервера одного endpoint'а сервиса исполнения и его
+    middleware fastmcp, отвечающий на согласование протокола.
 
     Создаётся сборкой endpoint'ов (McpEndpoints) на endpoint конфига сервиса:
     из реестра инструментов, реестра запусков, журналов, проверяющего
@@ -824,7 +823,8 @@ class McpServer:
     готовый сервер fastmcp. При активных журналах каналы журнала — ресурсы
     сервера: шаблон и окна (JournalRoutes), журналы идущих вызовов
     вызывающего (JournalListing над OpenJournals), рост и смена списка —
-    потоками subscriptions/listen над шиной CallerBus. discover() объявляет
+    потоками subscriptions/listen над шиной CallerBus. Ответы на
+    согласование (эпоху выбирает SDK тем, какой крючок зовёт) объявляют
     ровно это: список инструментов не меняется (он зависит только от ролей
     токена, а реестр собран на старте), промптов, логов и подсказок нет.
     close() штатно закрывает потоки подписки при остановке процесса.
@@ -898,50 +898,60 @@ class McpServer:
             self._name,
             auth=self._auth,
             providers=providers,
-            middleware=[self._limits, self._contexts],
+            middleware=[self, self._limits, self._contexts],
             dereference_schemas=False,
         )
         # сбой списка инструментов — ошибка, а не «у вызывающего нет инструментов»
         server.provider_error_strategy = "raise"
-        for identifier, settings in self._features.items():
-            server.add_extension(FeatureExtension(identifier, settings))
-
-        # закрытое имя fastmcp: спец-методы MCP в ServerExtension запрещены
-        lowlevel = server._mcp_server
-        lowlevel.add_request_handler("server/discover", mt.RequestParams, self.discover)
         self._files.install(server)
         if self._journaled:
-            self._journal_files.install(server, lowlevel)
+            # закрытое имя fastmcp: спец-методы MCP в ServerExtension запрещены
+            self._journal_files.install(server, server._mcp_server)
 
         return server
 
-    async def discover(
-        self, ctx: ServerRequestContext[Any, Any], params: mt.RequestParams
-    ) -> mt.DiscoverResult:
-        """server/discover: возможности, которые сервер действительно даёт.
-
-        SDK выводит смену списков из одного того, что поток
-        subscriptions/listen обслуживается, а fastmcp регистрирует промпты и
-        уровень логов всегда; здесь объявляются только инструменты без смены
-        списка, ресурсы журналов (подписка и смена списка) и расширения:
-        расширения boba и MCP Apps, по которому операции сервиса видны только
-        интерфейсу клиента.
-        """
-        resources: mt.ResourcesCapability | None = None
-        if self._journaled:
-            resources = mt.ResourcesCapability(subscribe=True, list_changed=True)
-
+    async def on_discover(
+        self,
+        context: MiddlewareContext[mt.DiscoverRequest],
+        call_next: CallNext[mt.DiscoverRequest, mt.DiscoverResult | dict[str, Any]],
+    ) -> mt.DiscoverResult | dict[str, Any]:
+        """Ресурсы журналов с подпиской и сменой списка, расширения boba и
+        MCP Apps, по которому операции сервиса видны только интерфейсу."""
         extensions: dict[str, dict[str, Any]] = {APPS_EXTENSION: {}}
         extensions.update(self._features)
-        capabilities = mt.ServerCapabilities(
-            tools=mt.ToolsCapability(list_changed=False),
-            resources=resources,
-            extensions=extensions,
-        )
+        capabilities = self._capabilities(listened=True)
 
         return mt.DiscoverResult(
             supported_versions=list(MODERN_PROTOCOL_VERSIONS),
-            capabilities=capabilities,
+            capabilities=capabilities.model_copy(update={"extensions": extensions}),
+        )
+
+    async def on_initialize(
+        self,
+        context: MiddlewareContext[mt.InitializeRequest],
+        call_next: CallNext[mt.InitializeRequest, mt.InitializeResult | None],
+    ) -> mt.InitializeResult | None:
+        """Прежние редакции — без сессии, уведомлениям идти некуда, а
+        расширений их провод не несёт."""
+        initialized = await call_next(context)
+        if initialized is None:
+            return None
+
+        capabilities = self._capabilities(listened=False)
+
+        return initialized.model_copy(update={"capabilities": capabilities})
+
+    def _capabilities(self, listened: bool) -> mt.ServerCapabilities:
+        """Инструменты без смены списка и ресурсы журналов; подписка и смена
+        списка — только с потоками subscriptions/listen (listened)."""
+        resources: mt.ResourcesCapability | None = None
+        if self._journaled:
+            resources = mt.ResourcesCapability(
+                subscribe=listened, list_changed=listened
+            )
+
+        return mt.ServerCapabilities(
+            tools=mt.ToolsCapability(list_changed=False), resources=resources
         )
 
     def close(self) -> None:

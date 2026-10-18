@@ -17,7 +17,6 @@ TurnStarted. Воспроизведение `session/resume` своего про
 Ошибки:
 LockBusyError — тред уже ведёт другой держатель: ход не начат.
 MessageBusError — шина не приняла сообщение держателя.
-McpClientError — серверы MCP профиля не открылись для вида аргументов.
 DataUnavailableError — тред или оценки не прочитаны слоем данных.
 InternalServiceError — треда нет в слое данных.
 AcpClientError — агент не принял вопрос.
@@ -81,7 +80,7 @@ from boba.cancellation import RunCancellation
 from boba.identity.context import Scope
 from boba.identity.errors import InternalServiceError
 from boba.identity.locks import LiveLocks, LockKeeper, LockMode, LockPurpose
-from boba.mcp_client.client import McpCaller, McpServers
+from boba.mcp_client.client import McpCaller, McpClientError, McpServers
 from boba.messaging import MessageBus, NoticeLevel, PayloadStore, TurnOutcome
 from boba.runtime.storage import StorageClient
 from boba.transport.acp.protocol import ErrorDataKey, IdleErrorUpdate, StopReason
@@ -733,8 +732,9 @@ class AgentFeeds(TurnRenderers):
     """Фабрика приёмников потока: на агента треда — переводчик воспроизведения
     во вкладке, поверхность рассылки треда и шина инстанса. Карточки
     инструментов серверов профиля (вид аргументов, журнал) узнаются здесь же
-    у клиента MCP чата; срок ответа на вопрос агента — из [agent]. Создаётся
-    провайдером процесса.
+    у клиента MCP чата; сервер, который не открылся, тред ведётся без него —
+    о нём пользователю сообщает агент. Срок ответа на вопрос агента — из
+    [agent]. Создаётся провайдером процесса.
     """
 
     def __init__(  # noqa: PLR0913 — фабрика собирается всеми входами процесса
@@ -763,12 +763,22 @@ class AgentFeeds(TurnRenderers):
         self, identity: ThreadIdentity, options: SessionOptions
     ) -> AgentFeed:
         """Ошибки:
-        McpClientError — сервер профиля не объявлен или не открылся.
         InternalServiceError — у текущей сессии chainlit нет сокета.
         """
         caller = McpCaller(login=identity.login, roles=identity.roles)
         for name in identity.profile.config.mcp:
-            port = await self._servers.port(name, caller)
+            try:
+                port = await self._servers.port(name, caller)
+            except McpClientError as exc:
+                logger.warning(
+                    "thread %s: mcp server %s did not open, the thread goes on "
+                    "without it: %s",
+                    identity.thread_id,
+                    name,
+                    exc,
+                )
+                continue
+
             self._media.shown(
                 name,
                 port.tools(),

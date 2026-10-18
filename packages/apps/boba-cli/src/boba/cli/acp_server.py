@@ -2233,8 +2233,9 @@ class SessionMcp:
     с инструкциями серверов из server/discover. Промпты серверов — команды
     сессии: их список уходит клиенту `available_commands_update` при
     открытии и при смене списка промптов, а вопрос `/<команда> <аргументы>`
-    раскрывается prompts/get в служебный контекст вопроса. Закрытие сессии
-    закрывает потоки подписки серверов.
+    раскрывается prompts/get в служебный контекст вопроса. Сервер, который
+    не открылся, в сессию не входит: клиент получает о нём пометку notice
+    вместе с командами. Закрытие сессии закрывает потоки подписки серверов.
     """
 
     COMMAND_PREFIX: ClassVar[str] = "/"
@@ -2251,9 +2252,20 @@ class SessionMcp:
         self._names = McpToolNames()
         self._results = McpResults()
         self._announcing: asyncio.Task[None] | None = None
+        self._notices: list[schema.SessionNotice] = []
 
     def add(self, server: AcpToolServer) -> None:
         self._servers.append(server)
+
+    def unavailable(self, server: str, reason: str) -> None:
+        """Сервер server не открылся: сессия идёт без него, клиенту — пометка."""
+        logger.warning("mcp: server %s is left out of the session: %s", server, reason)
+        notice = schema.SessionNotice(
+            severity="warning",
+            title=f"MCP server {server!r} is unavailable, its tools are left out",
+            description=f"{reason}; the session goes on without this server",
+        )
+        self._notices.append(notice)
 
     def tools(self) -> ToolServer | None:
         """Инструменты для модели; без серверов — None.
@@ -2289,20 +2301,29 @@ class SessionMcp:
         return ("\n\n".join(sections),)
 
     def announce_later(self) -> None:
-        """Команды сессии клиенту отдельной задачей, после ответа на запрос
-        сессии: о сессии, которую клиент ещё не знает, он уведомлений не
-        ждёт. Без промптов у серверов — ничего."""
+        """Пометки о серверах, которые не открылись, и команды сессии клиенту
+        отдельной задачей, после ответа на запрос сессии: о сессии, которую
+        клиент ещё не знает, он уведомлений не ждёт. Без пометок и промптов у
+        серверов — ничего."""
         prompted = False
         for server in self._servers:
             if server.prompts():
                 prompted = True
 
-        if not prompted:
+        noticed = len(self._notices) > 0
+        if not prompted and not noticed:
             return
 
         self._announcing = asyncio.create_task(
-            self.announce_commands(), name="mcp-commands"
+            self._announced(prompted), name="mcp-commands"
         )
+
+    async def _announced(self, prompted: bool) -> None:
+        for notice in self._notices:
+            await self._relay.notify(notice)
+
+        if prompted:
+            await self.announce_commands()
 
     async def announce_commands(self) -> None:
         """Промпты серверов командами сессии: `available_commands_update`.
@@ -3349,11 +3370,11 @@ class AcpAgent(AcpAgentProtocol):
         self, servers: Sequence[schema.AcpMcpServer], relay: SessionRelay
     ) -> SessionMcp:
         """Серверы MCP сессии: каждый согласован и отдал списки до ответа на
-        запрос; сервер, открытый до сбоя другого, закрывается.
+        запрос. Сервер, который не открылся, сессия не берёт: ход идёт без
+        его инструментов, клиент получает пометку (SessionMcp.unavailable).
 
         Ошибки:
-        RequestError — сервер не открылся либо имена инструментов серверов
-            совпали (-32603).
+        RequestError — имена инструментов серверов совпали (-32603).
         """
         side = self._linked().side
         client = mt.Implementation(name=self._info.name, version=self._info.version)
@@ -3370,13 +3391,14 @@ class AcpAgent(AcpAgentProtocol):
                     client,
                     mcp.announce_commands,
                 )
-                mcp.add(tool_server)
                 try:
                     await tool_server.open()
                 except SessionOpenError as exc:
-                    raise RequestError.internal_error(
-                        {ErrorDataKey.DETAILS.value: str(exc)}
-                    ) from exc
+                    await tool_server.close()
+                    mcp.unavailable(server.name, str(exc))
+                    continue
+
+                mcp.add(tool_server)
 
             try:
                 mcp.tools()
