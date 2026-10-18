@@ -225,6 +225,7 @@ WAV = bytes.fromhex(
 
 FILES: dict[str, bytes] = {
     "chart.png": PNG,
+    "after-notice.png": PNG,
     "hostile.mmd": HOSTILE_MMD.encode(),
     "hostile.svg": HOSTILE_SVG,
     "page.html": HOSTILE_HTML,
@@ -1584,13 +1585,15 @@ async def test_file_after_a_notice_follows_its_changes(panel: CanvasPage) -> Non
     """Файл, показанный после объяснения, панель продолжает отслеживать.
 
     Уход с объяснения не снимает слежение следующего показа: у объяснения
-    своя метка, и canvas_leave с ней чужое слежение не трогает.
+    своя метка, и canvas_leave с ней чужое слежение не трогает. Картинка своя
+    и залита на старте модуля: версия файла — размер и секунда записи, и
+    перезапись тем же PNG меняет её, только если прошлая запись была раньше.
     """
     await panel.show("data.bin")
-    side = await panel.show("chart.png")
+    side = await panel.show("after-notice.png")
     before = await side.locator("img").evaluate("img => img.src")
 
-    await panel.rewrite("chart.png", PNG)
+    await panel.rewrite("after-notice.png", PNG)
     await panel.until(
         PanelScript.IMAGE_REVISED, before, "the image link to get a new revision"
     )
