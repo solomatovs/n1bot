@@ -24,7 +24,7 @@ from pydantic import (
     model_validator,
 )
 
-from boba.canvas.keys import ObjectKey
+from boba.canvas.keys import ObjectKey, WorkspaceKey
 from boba.canvas.transfer import ContentDisposition
 from boba.identity.errors import RefusalError
 from boba.toolkit.channels import (
@@ -93,24 +93,38 @@ class WatchProbeError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class CanvasScope:
-    """Чьи файлы показывает панель: пользователь и тред. Строят его лента
+    """Чьи файлы показывает панель: пользователь, тред и каталог workspace,
+    под которым их видит песочница сервера файлов треда. Строят его лента
     (ChatView), обработчики действий панели по сессии чата и ретранслятор по
-    регистрации сервера; key переводит путь workspace в ключ файла этой
-    области."""
+    регистрации сервера — каталог каждый берёт у хранилища треда либо из
+    описания сервера; key переводит путь workspace в ключ файла этой
+    области, file — имя файла треда."""
 
     user_id: str
     thread_id: str
+    workspace: str
 
-    def key(self, path: str) -> ObjectKey:
+    def key(self, path: str) -> WorkspaceKey:
         """Ключ файла по пути в workspace треда.
 
         Ошибки:
         CanvasError — путь вне каталогов треда (BAD_PATH).
         """
         try:
-            return ObjectKey.from_workspace(self.user_id, self.thread_id, path)
+            return WorkspaceKey.located(
+                self.workspace, self.user_id, self.thread_id, path
+            )
         except ValueError as exc:
             raise CanvasError(CanvasErrorKind.BAD_PATH, str(exc)) from exc
+
+    def file(self, name: str) -> WorkspaceKey:
+        """Ключ вложения треда с именем name."""
+        return WorkspaceKey(
+            user_id=self.user_id,
+            thread_id=self.thread_id,
+            name=name,
+            workspace=self.workspace,
+        )
 
 
 class CanvasAction(StrEnum):

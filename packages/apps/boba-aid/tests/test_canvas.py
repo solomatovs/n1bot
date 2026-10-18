@@ -51,6 +51,7 @@ from boba.workspace.binaries import TrustedBinaries
 from boba.workspace.launcher import MountingConfig
 
 THREAD = "11111111-1111-1111-1111-111111111111"
+MOUNT = "/workspace"
 USER = str(UUID(int=7))
 
 NO_REMOTE = RemoteStand().streams
@@ -222,7 +223,7 @@ class TestRefusal:
 
     @pytest.mark.anyio
     async def test_path_outside_thread(self) -> None:
-        scope = CanvasScope(user_id=USER, thread_id=THREAD)
+        scope = CanvasScope(user_id=USER, thread_id=THREAD, workspace=MOUNT)
 
         with pytest.raises(CanvasError) as failure:
             await CanvasOpener(ThreadSurfaces()).show(
@@ -282,7 +283,7 @@ class TestShow:
         opened = await CanvasOpener(ThreadSurfaces()).show(
             f"/workspace/{THREAD}/mermaid/a.mmd",
             ContentMime.MERMAID.value,
-            CanvasScope(user_id=USER, thread_id=THREAD),
+            CanvasScope(user_id=USER, thread_id=THREAD, workspace=MOUNT),
         )
 
         if opened.label != "a.mmd":
@@ -324,12 +325,12 @@ class TestShow:
         await CanvasOpener(ThreadSurfaces()).show(
             f"/workspace/{THREAD}/upload/a.png",
             "image/png",
-            CanvasScope(user_id=USER, thread_id=THREAD),
+            CanvasScope(user_id=USER, thread_id=THREAD, workspace=MOUNT),
         )
         await CanvasOpener(ThreadSurfaces()).show(
             f"/workspace/{THREAD}/upload/b.png",
             "image/png",
-            CanvasScope(user_id=USER, thread_id=THREAD),
+            CanvasScope(user_id=USER, thread_id=THREAD, workspace=MOUNT),
         )
 
         if [e.props["label"] for e in shown] != ["a.png", "b.png"]:
@@ -371,7 +372,7 @@ class TestShow:
             await CanvasOpener(ThreadSurfaces()).show(
                 f"/workspace/{THREAD}/upload/a.png",
                 "image/png",
-                CanvasScope(user_id=USER, thread_id=THREAD),
+                CanvasScope(user_id=USER, thread_id=THREAD, workspace=MOUNT),
             )
             await transport.signaled(len(revised))
         finally:
@@ -405,7 +406,7 @@ class TestShow:
             await CanvasOpener(ThreadSurfaces()).show(
                 f"/workspace/{THREAD}/upload/a.png",
                 "image/png",
-                CanvasScope(user_id=USER, thread_id=THREAD),
+                CanvasScope(user_id=USER, thread_id=THREAD, workspace=MOUNT),
             )
             await storage.delete_file(object_key)
             while "probing failed" not in caplog.text:
@@ -552,7 +553,7 @@ class TestFileViewers:
         opened = await CanvasOpener(ThreadSurfaces()).show(
             f"/workspace/{THREAD}/upload/график.png",
             "image/png",
-            CanvasScope(user_id=USER, thread_id=THREAD),
+            CanvasScope(user_id=USER, thread_id=THREAD, workspace=MOUNT),
         )
 
         if opened.label != "график.png":
@@ -780,7 +781,7 @@ class TestActionsWithoutCallContext:
             request.path,
             request.mime,
             watch=True,
-            scope=CanvasScope(user_id=USER, thread_id=THREAD),
+            scope=CanvasScope(user_id=USER, thread_id=THREAD, workspace=MOUNT),
         )
         described = content.props()
 

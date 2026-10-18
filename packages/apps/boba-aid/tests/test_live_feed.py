@@ -12,7 +12,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from acp.experimental.v2 import schema
-from aid_stand import RecordingSink
+from aid_stand import KnownCards, RecordingSink
 
 from boba.aid.canvas.remote import RemoteJournals
 from boba.aid.chat.feed import QuestionBody, TurnFeed
@@ -120,7 +120,9 @@ def _renderer(
 ) -> tuple[ChatRenderer, RecordingSink]:
     sink = RecordingSink()
     view = ChatView(thread_id, sink, "u-1", storage, TEXTS, user_name="tester")
-    updates = UpdateView(view, thread_id, RemoteJournals(), ToolMedia())
+    updates = UpdateView(
+        view, thread_id, RemoteJournals(), ToolMedia(KnownCards({}, {}, {}))
+    )
     renderer = ChatRenderer(
         thread_id, updates, node.payloads, NoSurface(), RecordingRewinds()
     )
@@ -363,7 +365,9 @@ async def test_feedback_reaches_the_viewer_instance(
         TEXTS,
         user_name="tester",
     )
-    updates = UpdateView(view, thread_id, RemoteJournals(), ToolMedia())
+    updates = UpdateView(
+        view, thread_id, RemoteJournals(), ToolMedia(KnownCards({}, {}, {}))
+    )
     renderer = ChatRenderer(
         thread_id, updates, viewer.payloads, surface, RecordingRewinds()
     )
@@ -396,7 +400,9 @@ async def test_rewound_history_reaches_the_tabs_of_the_viewer_instance(
         TEXTS,
         user_name="tester",
     )
-    updates = UpdateView(view, thread_id, RemoteJournals(), ToolMedia())
+    updates = UpdateView(
+        view, thread_id, RemoteJournals(), ToolMedia(KnownCards({}, {}, {}))
+    )
     rewinds = RecordingRewinds()
     renderer = ChatRenderer(thread_id, updates, viewer.payloads, NoSurface(), rewinds)
     leave = viewer.bus.subscribe(scope, renderer.apply)

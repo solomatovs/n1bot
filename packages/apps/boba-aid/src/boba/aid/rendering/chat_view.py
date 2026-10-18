@@ -49,7 +49,6 @@ from boba.canvas.canvas import (
     CanvasRegistry,
     CanvasScope,
 )
-from boba.canvas.keys import ObjectKey
 from boba.canvas.storage import StorageError, StorageNotFoundError
 from boba.runtime.storage import StorageClient
 from boba.toolkit.calls import CallViews, ToolCallBase, ToolCallModels, ToolIntent
@@ -685,7 +684,6 @@ class ChatView:
         self._texts = texts
         self._elapsed = StepElapsed(texts)
         self._user_key = user_key
-        self._scope = CanvasScope(user_id=user_key, thread_id=thread_id)
         self._links = WorkspaceLinks()
         self._storage = storage
         self._batch = StreamBatch()
@@ -1436,28 +1434,34 @@ class ChatView:
         suffix = ContentMime.suffix_of(block.mime_type)
 
         stem = uuid5(self.NAMESPACE, f"{step.id}:{number}")
-        file_key = ObjectKey(
-            user_id=self._user_key, thread_id=self._thread_id, name=f"{stem}{suffix}"
-        )
-        target = file_key.render()
-        stored = True
         try:
-            await self._storage.stat(target)
-        except StorageNotFoundError:
-            stored = False
+            scope = await self._scope()
+        except StorageError as exc:
+            return f"{stem}{suffix} is not shown: {exc}"
+
+        file_key = scope.file(f"{stem}{suffix}")
+        try:
+            await self._kept(file_key.render(), block)
         except StorageError as exc:
             return f"{file_key.in_workspace()} is not shown: {exc}"
-
-        if not stored:
-            chunks = self._decoded(block.data)
-            try:
-                await self._storage.upload_stream(target, chunks, block.mime_type)
-            except StorageError as exc:
-                return f"{file_key.in_workspace()} is not shown: {exc}"
 
         mounted = WorkspaceFile(path=file_key.in_workspace(), mime=block.mime_type)
 
         return await self._mounted(mounted, file_key.name, key, number)
+
+    async def _kept(
+        self, target: str, block: mt.ImageContent | mt.AudioContent
+    ) -> None:
+        """Байты блока — в хранилище под ключом target, если их там ещё нет.
+
+        Ошибки:
+        StorageError — хранилище не прочитало или не записало файл.
+        """
+        try:
+            await self._storage.stat(target)
+        except StorageNotFoundError:
+            chunks = self._decoded(block.data)
+            await self._storage.upload_stream(target, chunks, block.mime_type)
 
     async def _decoded(self, data: str) -> AsyncIterator[bytes]:
         """Байты base64 срезами BASE64_SLICE: в памяти — один срез.
@@ -1506,6 +1510,19 @@ class ChatView:
 
         return Fence.around(JsonBlock.pretty(shown), StepLanguage.JSON.value)
 
+    async def _scope(self) -> CanvasScope:
+        """Файлы треда — в workspace сервера файлов треда: каталог даёт
+        хранилище.
+
+        Ошибки:
+        StorageError — хранилище каталога не знает.
+        """
+        workspace = await self._storage.workspace(self._user_key, self._thread_id)
+
+        return CanvasScope(
+            user_id=self._user_key, thread_id=self._thread_id, workspace=workspace
+        )
+
     async def _mounted(
         self, mounted: WorkspaceFile, name: str, key: str | None, number: int
     ) -> str:
@@ -1521,7 +1538,12 @@ class ChatView:
             return ""
 
         try:
-            file_key = self._scope.key(mounted.path)
+            scope = await self._scope()
+        except StorageError as exc:
+            return f"{mounted.path} is not shown: {exc}"
+
+        try:
+            file_key = scope.key(mounted.path)
         except CanvasError as exc:
             return f"{mounted.path} is not shown: {exc}"
 

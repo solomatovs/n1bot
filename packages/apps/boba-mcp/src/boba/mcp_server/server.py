@@ -51,6 +51,7 @@ from fastmcp.server.providers import Provider
 from fastmcp.tools import Tool
 from fastmcp.tools.base import ToolResult
 from mcp.server.apps import EXTENSION_ID as APPS_EXTENSION
+from mcp.server.caching import CacheHint
 from mcp.server.subscriptions import ResourceUpdated, SubscriptionBus
 from mcp.shared.jsonrpc_dispatcher import progress_token_from_params
 from mcp_types.version import MODERN_PROTOCOL_VERSIONS
@@ -827,10 +828,17 @@ class McpServer(Middleware):
     согласование (эпоху выбирает SDK тем, какой крючок зовёт) объявляют
     ровно это: список инструментов не меняется (он зависит только от ролей
     токена, а реестр собран на старте), промптов, логов и подсказок нет.
+    Подсказки кэша — по природе ответа: описание зависит только от конфига
+    (public), список инструментов — от ролей токена и объявленного клиентом
+    расширения (private), оба свежи HINT_TTL_MS; журналы идущих вызовов и их
+    окна меняются всё время и идут с умолчанием SDK — 0 и private.
     close() штатно закрывает потоки подписки при остановке процесса.
     """
 
     NAME: ClassVar[str] = "boba-mcp"
+    HINT_TTL_MS: ClassVar[int] = 300_000
+    """Срок свежести описания и списка инструментов: реестр собран на старте
+    процесса, и меняет их только перезапуск сервиса."""
 
     def __init__(  # noqa: PLR0913 — сервер собирается всеми своими входами
         self,
@@ -903,6 +911,10 @@ class McpServer(Middleware):
         )
         # сбой списка инструментов — ошибка, а не «у вызывающего нет инструментов»
         server.provider_error_strategy = "raise"
+        # подсказка fastmcp одна на все методы, а журналы свежими не бывают
+        server._mcp_server.cache_hints = {
+            "tools/list": CacheHint(ttl_ms=self.HINT_TTL_MS, scope="private")
+        }
         self._files.install(server)
         if self._journaled:
             # закрытое имя fastmcp: спец-методы MCP в ServerExtension запрещены
@@ -924,6 +936,8 @@ class McpServer(Middleware):
         return mt.DiscoverResult(
             supported_versions=list(MODERN_PROTOCOL_VERSIONS),
             capabilities=capabilities.model_copy(update={"extensions": extensions}),
+            ttl_ms=self.HINT_TTL_MS,
+            cache_scope="public",
         )
 
     async def on_initialize(
