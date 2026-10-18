@@ -15,6 +15,8 @@
   // грузит его во внутренний iframe без allow-same-origin с CSP по _meta.ui.csp
   // ресурса без доменов, которые накрывают источник чата; сообщения чата и
   // приложения пересылает как есть, кроме своих ui/notifications/sandbox-*.
+  // Шрифты приложению открыты с источника самой страницы: рядом с ней лежит
+  // шрифт чата (fonts/), его @font-face чат передаёт в styles.css.fonts.
   const PREFIX = "ui/notifications/sandbox-";
   const READY = "ui/notifications/sandbox-proxy-ready";
   const RESOURCE = "ui/notifications/sandbox-resource-ready";
@@ -76,6 +78,7 @@
         "script-src 'self' 'unsafe-inline'",
         "style-src 'self' 'unsafe-inline'",
         "img-src 'self' data:",
+        `font-src ${location.origin}`,
         "media-src 'self' data:",
         "connect-src 'none'",
         "frame-src 'none'",
@@ -99,7 +102,7 @@
       `style-src 'self' 'unsafe-inline' ${resources}`,
       `connect-src 'self' ${sources(csp.connectDomains)}`,
       `img-src 'self' data: ${resources}`,
-      `font-src 'self' ${resources}`,
+      `font-src 'self' ${location.origin} ${resources}`,
       `media-src 'self' data: ${resources}`,
       `frame-src ${frames}`,
       "object-src 'none'",

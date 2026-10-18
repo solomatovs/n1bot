@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>orders</title>
+<style>
+  :root { color-scheme: light; }
+  :root[data-theme="dark"] { color-scheme: dark; }
+  body {
+    margin: 0;
+    padding: 12px 16px;
+    font-family: var(--font-sans, system-ui, sans-serif);
+    font-size: var(--font-text-sm-size, 0.875rem);
+    line-height: var(--font-text-sm-line-height, 1.25rem);
+    color: var(--color-text-primary, #1f1f1f);
+    background: var(--color-background-primary, #ffffff);
+  }
+  :root[data-theme="dark"] body {
+    color: var(--color-text-primary, #e8e8e8);
+    background: var(--color-background-primary, #212121);
+  }
+  h1 {
+    margin: 0 0 8px;
+    font-size: var(--font-heading-sm-size, 1rem);
+    line-height: var(--font-heading-sm-line-height, 1.5rem);
+    font-weight: var(--font-weight-semibold, 600);
+  }
+  form, .actions { display: flex; flex-wrap: wrap; gap: 8px; }
+  form { margin-bottom: 8px; }
+  select, input, button {
+    font: inherit;
+    color: inherit;
+    padding: 4px 10px;
+    background: var(--color-background-secondary, #f1f5f9);
+    border: var(--border-width-regular, 1px) solid var(--color-border-primary, #e6e6e6);
+    border-radius: var(--border-radius-md, 6px);
+  }
+  button { cursor: pointer; }
+  table { width: 100%; border-collapse: collapse; margin-bottom: 12px; }
+  th, td {
+    padding: 6px 8px;
+    text-align: left;
+    border-bottom: 1px solid var(--color-border-tertiary, #eeeeee);
+  }
+  th { color: var(--color-text-secondary, #5c5c5c); font-weight: var(--font-weight-medium, 500); }
+  .total { text-align: right; font-variant-numeric: tabular-nums; }
+  .line { min-height: 20px; color: var(--color-text-secondary, #5c5c5c); }
+  footer {
+    margin-top: 8px;
+    font-size: var(--font-text-xs-size, 0.75rem);
+    line-height: var(--font-text-xs-line-height, 1rem);
+    color: var(--color-text-tertiary, #8a8a8a);
+  }
+</style>
+</head>
+<body>
+<h1>Orders</h1>
+<form id="filter">
+  <select id="status" aria-label="status">
+    <option value="">all statuses</option>
+  </select>
+  <input id="customer" aria-label="customer" placeholder="customer">
+</form>
+<table>
+  <thead><tr><th>#</th><th>customer</th><th>status</th><th class="total">total</th></tr></thead>
+  <tbody id="rows"></tbody>
+</table>
+<div class="actions">
+  <button id="refresh">refresh</button>
+  <button id="archive">archive</button>
+  <button id="ask">ask</button>
+  <button id="context">to context</button>
+  <button id="fullscreen">full screen</button>
+</div>
+<div id="count" class="line"></div>
+<div id="refreshed" class="line">refreshed: 0</div>
+<div id="answer" class="line"></div>
+<div id="result" class="line"></div>
+<div id="state" class="line"></div>
+<footer>
+  <div id="host"></div>
+  <div id="probe"></div>
+</footer>
+<script>
+  // Приложение заказов стандартного сервера: строки — аргумент вызова
+  // orders, фильтр по статусу и клиенту, кнопки — инструменты сервера
+  // (refresh_orders только для приложения, archive_orders только для модели),
+  // ui/message, ui/update-model-context и ui/request-display-mode. Тему,
+  // переменные стилей и шрифт берёт из контекста хоста.
+  const QUESTION = "Which orders are still new?";
+  let next = 1;
+  const waiting = new Map();
+  let rows = [];
+  let refreshed = 0;
+  let mode = "inline";
+  let context = {};
+
+  function send(message) {
+    window.parent.postMessage(Object.assign({ jsonrpc: "2.0" }, message), "*");
+  }
+
+  function request(method, params) {
+    const id = next++;
+    send({ id, method, params });
+    return new Promise((resolve, reject) => waiting.set(id, { resolve, reject }));
+  }
+
+  function text(result) {
+    return (result.content || []).map((block) => block.text || "").join(" ");
+  }
+
+  function show(id, line) {
+    document.getElementById(id).textContent = line;
+  }
+
+  // ответ хоста строкой answer; отказ — тоже строкой, итог тогда null
+  function answer(promise) {
+    return promise.then(
+      (result) => {
+        show("answer", "answer: " + text(result));
+        return result;
+      },
+      (error) => {
+        show("answer", "error: " + error.message);
+        return null;
+      },
+    );
+  }
+
+  function shown() {
+    const status = document.getElementById("status").value;
+    const customer = document.getElementById("customer").value.toLowerCase();
+    return rows.filter((row) => {
+      if (status && row.status !== status) return false;
+      return row.customer.toLowerCase().includes(customer);
+    });
+  }
+
+  function draw() {
+    const body = document.getElementById("rows");
+    body.replaceChildren();
+    for (const row of shown()) {
+      const line = document.createElement("tr");
+      for (const value of [row.id, row.customer, row.status, row.total.toFixed(2)]) {
+        const cell = document.createElement("td");
+        cell.textContent = String(value);
+        line.appendChild(cell);
+      }
+      line.lastChild.className = "total";
+      body.appendChild(line);
+    }
+    show("count", `${shown().length} of ${rows.length} orders`);
+  }
+
+  function statuses() {
+    const select = document.getElementById("status");
+    const known = new Set();
+    for (const row of rows) known.add(row.status);
+    for (const status of known) {
+      const option = document.createElement("option");
+      option.value = status;
+      option.textContent = status;
+      select.appendChild(option);
+    }
+  }
+
+  function applied(changed) {
+    context = Object.assign({}, context, changed);
+    const root = document.documentElement;
+    if (changed.theme) root.dataset.theme = changed.theme;
+    const styles = changed.styles || {};
+    for (const [name, value] of Object.entries(styles.variables || {})) {
+      root.style.setProperty(name, value);
+    }
+    if (styles.css && styles.css.fonts) {
+      let fonts = document.getElementById("host-fonts");
+      if (!fonts) {
+        fonts = document.createElement("style");
+        fonts.id = "host-fonts";
+        document.head.appendChild(fonts);
+      }
+      fonts.textContent = styles.css.fonts;
+    }
+    if (changed.displayMode) mode = changed.displayMode;
+    const box = context.containerDimensions || {};
+    show("host", `theme: ${context.theme}; mode: ${mode}; width: ${box.width}; height: ${box.height}`);
+  }
+
+  function requestMode(wanted) {
+    return answer(request("ui/request-display-mode", { mode: wanted })).then((result) => {
+      if (result) show("answer", "mode: " + result.mode);
+      return result;
+    });
+  }
+
+  // ширину задаёт хост, приложение сообщает только свою высоту — при любом
+  // росте содержимого, а не только по уведомлениям хоста
+  const sizes = new ResizeObserver(() => {
+    send({
+      method: "ui/notifications/size-changed",
+      params: { height: document.body.scrollHeight },
+    });
+  });
+
+  window.addEventListener("message", (event) => {
+    const data = event.data;
+    if (!data || data.jsonrpc !== "2.0") return;
+
+    if (data.method === undefined && waiting.has(data.id)) {
+      const pending = waiting.get(data.id);
+      waiting.delete(data.id);
+      if (data.error) {
+        pending.reject(new Error(data.error.message));
+      } else {
+        pending.resolve(data.result);
+      }
+      return;
+    }
+
+    if (data.id !== undefined && data.method) {
+      send({ id: data.id, result: {} });
+      if (data.method === "ui/resource-teardown") show("state", "torn down");
+      return;
+    }
+
+    const params = data.params || {};
+    if (data.method === "ui/notifications/tool-input") {
+      rows = params.arguments.rows || [];
+      statuses();
+      draw();
+    }
+    if (data.method === "ui/notifications/tool-result") {
+      show("result", "result: " + text(params));
+    }
+    if (data.method === "ui/notifications/tool-cancelled") {
+      show("state", "cancelled: " + (params.reason || ""));
+    }
+    if (data.method === "ui/notifications/host-context-changed") {
+      applied(params);
+    }
+  });
+
+  document.getElementById("filter").addEventListener("input", draw);
+  document.getElementById("filter").addEventListener("submit", (event) => event.preventDefault());
+  document.getElementById("refresh").onclick = () =>
+    answer(request("tools/call", { name: "refresh_orders", arguments: {} })).then((result) => {
+      if (!result) return;
+      refreshed += 1;
+      show("refreshed", "refreshed: " + refreshed);
+    });
+  document.getElementById("archive").onclick = () =>
+    answer(request("tools/call", { name: "archive_orders", arguments: {} }));
+  document.getElementById("ask").onclick = () =>
+    answer(request("ui/message", { role: "user", content: [{ type: "text", text: QUESTION }] }));
+  document.getElementById("context").onclick = () => {
+    const visible = shown();
+    const ids = visible.map((row) => "#" + row.id).join(", ");
+    answer(request("ui/update-model-context", {
+      content: [{ type: "text", text: `the user sees ${visible.length} orders: ${ids}` }],
+      structuredContent: { orders: visible.length },
+    }));
+  };
+  document.getElementById("fullscreen").onclick = () => {
+    if (mode === "fullscreen") {
+      requestMode("inline");
+      return;
+    }
+    requestMode("fullscreen");
+  };
+
+  let cookies = "none";
+  try {
+    if (document.cookie) cookies = document.cookie;
+  } catch (error) {
+    cookies = "none";
+  }
+
+  let page = "hidden";
+  try {
+    page = window.top.document.title;
+  } catch (error) {
+    page = "hidden";
+  }
+
+  show("probe", "cookies: " + cookies + "; chat page: " + page);
+
+  request("ui/initialize", {
+    protocolVersion: "2026-01-26",
+    appInfo: { name: "orders", version: "1" },
+    appCapabilities: { availableDisplayModes: ["inline", "fullscreen"] },
+  }).then((result) => {
+    applied(result.hostContext || {});
+    send({ method: "ui/notifications/initialized", params: {} });
+    sizes.observe(document.body);
+  });
+</script>
+</body>
+</html>

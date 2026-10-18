@@ -1,7 +1,7 @@
 """Элементы ленты, которым нужен объект chainlit: график plotly из фигуры
-блока ответа, карточка вьювера канваса, приложение MCP Apps у шага вызова и
-вопрос агента пользователю, а также разбор настроек MCP Apps инструмента из
-его _meta.ui.
+блока ответа, карточка вьювера канваса, карточка приложения MCP Apps в
+ленте и вопрос агента пользователю, а также разбор настроек MCP Apps
+инструмента из его _meta.ui.
 
 Ошибки: своих не выпускает.
 """
@@ -19,7 +19,7 @@ from pydantic import BaseModel, ConfigDict
 
 from boba.toolkit.result import VisualResult
 
-__all__ = ["AppMeta", "ChatElements", "ElementName", "ToolAppView"]
+__all__ = ["AppMeta", "AppProp", "ChatElements", "ElementName", "ToolAppView"]
 
 
 class AppMeta:
@@ -52,17 +52,29 @@ class AppMeta:
 
 
 class ToolAppView(BaseModel):
-    """Приложение MCP Apps инструмента: сервер профиля, инструмент на
-    сервере, адрес ui:// ресурса приложения и страница-прокси песочницы
-    сервера. Знает его показ ленты (ToolMedia) по секции apps сервера и
-    _meta.ui инструмента; элемент шага строит ChatElements.app."""
+    """Приложение MCP Apps инструмента: сервер профиля, описание
+    инструмента на сервере (имя — в шапке карточки, описание целиком —
+    toolInfo контекста хоста), адрес ui:// ресурса приложения и
+    страница-прокси песочницы сервера. Знает его показ ленты (ToolMedia) по
+    секции apps сервера и _meta.ui инструмента; элемент карточки строит
+    ChatElements.app."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     server: str
-    tool: str
+    tool: mt.Tool
     resource_uri: str
     sandbox_url: str
+
+
+class AppProp(StrEnum):
+    """Поля props элемента ToolApp сверх ToolAppView: вызов, его аргументы
+    и исход — итог tools/call либо причина, по которой итога не будет."""
+
+    CALL_ID = "call_id"
+    INPUT = "input"
+    RESULT = "result"
+    CANCELLED = "cancelled"
 
 
 class ElementName(StrEnum):
@@ -75,7 +87,7 @@ class ElementName(StrEnum):
 class ChatElements:
     """Элементы ленты: cl.Plotly по фигуре plotly, jsx-компонент
     public/elements/<имя>.jsx по карточке вьювера канваса (VisualResult),
-    приложение MCP Apps у шага вызова и вопрос агента пользователю
+    карточка приложения MCP Apps и вопрос агента пользователю
     (ElementName). Создаёт его лента (ChatView) и приёмник вкладки (вопрос,
     который ждёт ответа)."""
 
@@ -88,11 +100,14 @@ class ChatElements:
     def app(
         self, view: ToolAppView, call_id: str, arguments: Mapping[str, Any]
     ) -> cl.CustomElement:
-        """Приложение вызова call_id с его аргументами; итог вызова элемент
-        получает в props["result"], когда вызов закончится."""
-        props: dict[str, Any] = view.model_dump()
-        props["call_id"] = call_id
-        props["input"] = dict(arguments)
+        """Карточка приложения вызова call_id с его аргументами; итог вызова
+        (AppProp.RESULT) либо причину его отмены (AppProp.CANCELLED) элемент
+        получает, когда вызов закончится."""
+        props: dict[str, Any] = view.model_dump(
+            mode="json", by_alias=True, exclude_none=True
+        )
+        props[AppProp.CALL_ID.value] = call_id
+        props[AppProp.INPUT.value] = dict(arguments)
 
         return cl.CustomElement(
             name=ElementName.APP.value, props=props, display="inline"
