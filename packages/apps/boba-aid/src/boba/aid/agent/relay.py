@@ -58,7 +58,6 @@ from boba.aid.canvas.tools import CanvasOpener
 from boba.aid.infra.session import LiveSignIn
 from boba.aid.rendering.tool import AppMeta
 from boba.cancellation import RunCancellation, StopReason
-from boba.canvas.canvas import CanvasScope
 from boba.connection_broker.sealing import CallSealing, McpServerInfo
 from boba.connections.stored import ConnectionStoreError
 from boba.identity.context import (
@@ -756,22 +755,9 @@ class McpRelay:
         if not isinstance(reply, mt.CallToolResult):
             return reply
 
-        if registration.server == ChatTools.NAME:
-            return reply
-
-        subject = context.subject
-        user = McpCaller(login=subject.login, roles=subject.roles)
-        workspace = await self._servers.workspace(registration.server, user)
-        if workspace is None:
-            return reply
-
-        scope = CanvasScope(
-            user_id=str(registration.user_id),
-            thread_id=registration.thread_id,
-            workspace=workspace,
+        return await self._canvas.reply(
+            str(registration.user_id), registration.thread_id, reply
         )
-
-        return await self._canvas.reply(scope, reply)
 
     async def _list_resources(
         self,
