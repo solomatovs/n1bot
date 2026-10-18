@@ -565,7 +565,7 @@ define HELP
   plugin-rootfs-all     образы корней всех плагинов с entry points boba.tools, всегда заново
 
 Тестовые образы (не поставка):
-  testapps              boba-testapps:$(BOBA_TAG) и :latest — серверы MCP редакции 2025-11-25 для
+  testapps              boba-testapps:$(BOBA_TAG) и :latest — серверы MCP прежних редакций для
                         тестов клиента: примеры MCP Apps и свой сервер на TypeScript SDK 1.x
 
 Образы — APP=$(subst $(space),|,$(APPS)) либо <цель>-<приложение>, без APP — оба:
@@ -803,7 +803,7 @@ plugin-rootfs-all: version-check
 
 # --- тестовые образы -------------------------------------------------------------
 
-# серверы MCP редакции 2025-11-25 для тестов клиента; контекст — их каталог, пакеты npm ci
+# серверы MCP прежних редакций для тестов клиента; контекст — их каталог, пакеты npm ci
 # берёт из реестра образа nodejs
 TESTAPPS_DIR        := $(SRC_DIR)/tests/services/testapps
 TESTAPPS_NODE_IMAGE ?= dmp/nodejs:22

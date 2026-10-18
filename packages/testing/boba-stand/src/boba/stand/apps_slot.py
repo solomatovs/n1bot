@@ -18,13 +18,19 @@ from boba.stand.site import StandError
 
 
 class AppServer(IntEnum):
-    """Серверы MCP контейнера boba-testapps по портам: примеры MCP Apps из
-    npm (без сессий) и свой сервер на TypeScript SDK 1.x (с сессиями) —
-    все редакции 2025-11-25, на пути /mcp."""
+    """Серверы MCP контейнера boba-testapps по портам, на пути /mcp: примеры
+    MCP Apps из npm (2025-11-25, без сессий) и свой сервер на TypeScript SDK
+    1.x с сессиями в четырёх редакциях — LEGACY знает все версии
+    рукопожатия SDK, OLDER только 2025-06-18, DUAL — две эпохи более поздней
+    редакции (2027-01-01 с конвертом и рукопожатие 2025-06-18, 2025-03-26),
+    AHEAD — только 2027-01-01 без рукопожатия."""
 
     SEGMENTS = 3101
     DEBUG = 3105
     LEGACY = 3110
+    OLDER = 3111
+    DUAL = 3112
+    AHEAD = 3113
 
 
 class AppsDocker(StrEnum):
