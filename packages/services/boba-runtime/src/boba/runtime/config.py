@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import os
 import secrets
+import sys
 import tomllib
 from dataclasses import dataclass
 from enum import StrEnum
@@ -42,6 +43,7 @@ from boba.identity.token import CookieSpec, SessionRenewal
 from boba.krb import KerberosWorkspaceConfig
 from boba.krb.seal import SsoTickets, TicketSealer
 from boba.runtime.launchers import ToolLaunchers
+from boba.workspace.launcher import LauncherEnv, LauncherInterpreter
 
 __all__ = [
     "AppLayers",
@@ -185,8 +187,8 @@ class EnvOverride(StrEnum):
 
 
 class AppLayers:
-    """Слои конфига процесса: вычисленный base -> общий конфиг -> плагины ->
-    site-файл -> BOBA_-оверрайды.
+    """Слои конфига процесса: вычисленные base и [interpreter] -> общий конфиг
+    -> плагины -> site-файл -> BOBA_-оверрайды.
 
     Общий конфиг описывает устройство приложения и на [env] и [site] только
     ссылается; сами секции лежат в site-файле, и другой секции в нём быть не
@@ -194,6 +196,8 @@ class AppLayers:
     выводится из раскладки случая (site.toml лежит в ${base}/conf), файлы
     plugins/<id>.toml рядом с общим конфигом ложатся секциями tool.<id>, а
     окружение лишь переопределяет ключи [env] из реестра EnvOverride.
+    [interpreter] снимается с самого процесса: им цепочка лаунчера песочницы
+    запускает тот же python.
     """
 
     HOST_FALLBACK: ClassVar[str] = "HOSTNAME"
@@ -204,12 +208,29 @@ class AppLayers:
     def compose(cls, files: ConfigFiles) -> DictConfig:
         builder = ConfigBuilder()
         builder.add_dict({"env": {"base": str(files.base())}})
+        interpreter = cls.interpreter().model_dump(mode="json")
+        builder.add_dict({LauncherInterpreter.SECTION: interpreter})
         builder.add_dict(cls._common(files.config))
         builder.add_dict(cls._plugins(files.plugins_dir()))
         builder.add_dict(cls._site(files.site))
         builder.add_dict(cls._overrides())
 
         return builder.build()
+
+    @classmethod
+    def interpreter(cls) -> LauncherInterpreter:
+        """Интерпретатор процесса и его окружение для цепочки лаунчера."""
+        env: dict[LauncherEnv, str] = {}
+        for name in LauncherEnv:
+            value = os.environ.get(name.value)
+            if not value:
+                continue
+
+            env[name] = value
+
+        # запуск относительным путём оставляет в sys.executable `..`
+        executable = os.path.abspath(sys.executable)
+        return LauncherInterpreter(executable=executable, env=env)
 
     @classmethod
     def _common(cls, path: Path) -> dict[str, Any]:

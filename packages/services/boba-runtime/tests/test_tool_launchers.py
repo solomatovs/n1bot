@@ -8,6 +8,7 @@ import pytest
 from omegaconf import OmegaConf
 from pydantic import ValidationError
 
+from boba.runtime.config import AppLayers
 from boba.runtime.launchers import (
     NoLaunchers,
     ProcessLaunchers,
@@ -18,6 +19,7 @@ from boba.stand_core.context import CallStand
 from boba.toolkit.chain import CallAmbient
 from boba.toolkit.manifest import LaunchSpec
 from boba.toolrun.process import ProcessToolCaller
+from boba.workspace.launcher import LauncherInterpreter
 
 
 def _process_section(workdir: Path) -> dict[str, object]:
@@ -51,8 +53,18 @@ def test_process_without_the_section_launches_no_tool_sections(
         )
 
 
+def _sandbox_section() -> dict[str, object]:
+    """Способ запуска песочницей и интерпретатор процесса, как их кладёт AppLayers."""
+    interpreter = AppLayers.interpreter().model_dump(mode="json")
+
+    return {
+        "tool_launcher": {"provider": "sandbox"},
+        LauncherInterpreter.SECTION: interpreter,
+    }
+
+
 def test_sandbox_provider_builds_zygote_launchers() -> None:
-    raw = OmegaConf.create({"tool_launcher": {"provider": "sandbox"}})
+    raw = OmegaConf.create(_sandbox_section())
 
     launchers = ToolLaunchers(raw).build()
 
@@ -60,7 +72,7 @@ def test_sandbox_provider_builds_zygote_launchers() -> None:
 
 
 def test_sandbox_probe_requires_env_paths() -> None:
-    raw = OmegaConf.create({"tool_launcher": {"provider": "sandbox"}})
+    raw = OmegaConf.create(_sandbox_section())
 
     launchers = ToolLaunchers(raw).build()
 

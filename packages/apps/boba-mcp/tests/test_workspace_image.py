@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 
 from boba.canvas.storage import StorageError, StorageNotFoundError
+from boba.runtime.config import AppLayers
 from boba.runtime.storage import (
     ImageStorageClient,
     LocalStorageClient,
@@ -31,14 +32,13 @@ from boba.toolkit.result import ShellResult
 from boba.workspace.binaries import TrustedBinaries
 from boba.workspace.images import LauncherOptions
 from boba.workspace.launcher import (
-    FUSE_DEVICE,
+    LauncherChain,
+    LayerPath,
+    LayerSources,
     ReadWindow,
     ResourceLimits,
-    build_chain_argv,
     render_image_path,
 )
-
-HOST_RO_BINDS = ("/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc/alternatives")
 
 OUTPUT_LIMITS = BashToolConfig(max_output_bytes=4 * 1024 * 1024, timeout_sec=60.0)
 
@@ -82,6 +82,7 @@ def _storage_cfg(**kw: Any) -> LocalStorageConfig:
         },
         "mount_dir": "/tmp",  # noqa: S108
         "binaries": {"dirs": _bin_dirs()},
+        "interpreter": AppLayers.interpreter(),
     }
     fields.update(kw)
     return LocalStorageConfig.model_validate(fields)
@@ -91,7 +92,7 @@ needs_fuse = pytest.mark.failif(
     shutil.which("bwrap") is None
     or shutil.which("fuse2fs") is None
     or shutil.which("mkfs.ext4") is None
-    or not os.path.exists(FUSE_DEVICE),
+    or not os.path.exists(LayerPath.FUSE),
     reason="нужны bwrap, fuse2fs, mkfs.ext4 и /dev/fuse",
 )
 
@@ -312,55 +313,70 @@ class TestRelativePaths:
         if cfg.workspace.image_of("7") != "/data/ws/7.ext4":
             raise AssertionError(f"путь образа: {cfg.workspace.image_of('7')}")
 
-    def test_relative_image_bound_by_absolute_path(self) -> None:
-        argv = build_chain_argv(
+    def test_relative_image_bound_by_absolute_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        (tmp_path / "ws").mkdir()
+        (tmp_path / "shared").mkdir()
+        (tmp_path / "t.ext4").touch()
+        monkeypatch.chdir(tmp_path)
+
+        argv = _chain().argv(
             images=[("./ws/a.ext4", "./ws/a.ext4.mnt")],
+            ro_images=(),
             template="./t.ext4",
             op=["write", "upload/x"],
-            python_bin="/usr/bin/python3",
-            options=_launcher_options(),
             limits=ResourceLimits(),
-            binaries=_trusted(),
-            rw_paths=["./shared"],
+            pass_fds=(),
+            nested=LayerSources(ro=(), rw=("./shared",)),
+            network=False,
+            replace=False,
         )
-        binds = []
-        for i, arg in enumerate(argv):
-            if arg == "--bind":
-                binds.append(argv[i + 1])
-        if not (binds):
-            raise AssertionError("binds")
-        for path in binds:
-            if not (os.path.isabs(path)):
-                raise AssertionError(path)
+        binds = sorted(_binds(argv, "--bind"))
+        if binds != [str(tmp_path / "shared"), str(tmp_path / "ws")]:
+            raise AssertionError(f"rw-бинды цепочки: {binds}")
+
         if not (argv[argv.index("--image") + 1].startswith("/")):
             raise AssertionError('argv[argv.index("--image") + 1].startswith("/")')
 
 
+def _chain() -> LauncherChain:
+    return LauncherChain(AppLayers.interpreter(), _trusted(), _launcher_options())
+
+
+def _binds(argv: list[str], flag: str) -> list[str]:
+    """Источники биндов внешнего слоя с флагом flag, до команды лаунчера."""
+    found: list[str] = []
+    head = argv[: argv.index("--")]
+    for i, arg in enumerate(head):
+        if arg == flag:
+            found.append(head[i + 1])
+
+    return found
+
+
 class TestChainArgv:
     @staticmethod
-    def _argv(**kw) -> list[str]:
-        return build_chain_argv(
-            images=[("/ws/a.ext4", "/ws/a.ext4.mnt")],
-            template="/t.ext4",
-            op=["write", "upload/x"],
-            python_bin="/usr/bin/python3",
-            options=_launcher_options(),
-            limits=ResourceLimits(),
-            binaries=_trusted(),
-            **kw,
-        )
+    def _argv(tmp_path: Path, **kw: Any) -> list[str]:
+        (tmp_path / "ws").mkdir(exist_ok=True)
+        (tmp_path / "t.ext4").touch()
+        fields: dict[str, Any] = {
+            "images": [(str(tmp_path / "ws/a.ext4"), str(tmp_path / "ws/a.ext4.mnt"))],
+            "ro_images": (),
+            "template": str(tmp_path / "t.ext4"),
+            "op": ["write", "upload/x"],
+            "limits": ResourceLimits(),
+            "pass_fds": (),
+            "nested": LayerSources(ro=(), rw=()),
+            "network": False,
+            "replace": False,
+        }
+        fields.update(kw)
+        return _chain().argv(**fields)
 
-    def test_limits_rendered_as_flags(self) -> None:
+    def test_limits_rendered_as_flags(self, tmp_path: Path) -> None:
         limits = ResourceLimits(max_memory_bytes=64 * 1024 * 1024, max_cpu_sec=5)
-        argv = build_chain_argv(
-            images=[("/ws/a.ext4", "/ws/a.ext4.mnt")],
-            template="/t.ext4",
-            op=["write", "upload/x"],
-            python_bin="/usr/bin/python3",
-            options=_launcher_options(),
-            limits=limits,
-            binaries=_trusted(),
-        )
+        argv = self._argv(tmp_path, limits=limits)
         memory = argv[argv.index("--max-memory-bytes") + 1]
         cpu = argv[argv.index("--max-cpu-sec") + 1]
         if memory != str(64 * 1024 * 1024):
@@ -368,8 +384,8 @@ class TestChainArgv:
         if cpu != "5":
             raise AssertionError('cpu == "5"')
 
-    def test_outer_bwrap_is_root_in_userns(self) -> None:
-        argv = self._argv()
+    def test_outer_bwrap_is_root_in_userns(self, tmp_path: Path) -> None:
+        argv = self._argv(tmp_path)
         if not (argv[0].endswith("bwrap")):
             raise AssertionError('argv[0].endswith("bwrap")')
         if not (os.path.isabs(argv[0]) or shutil.which("bwrap") is None):
@@ -379,8 +395,8 @@ class TestChainArgv:
         if argv[argv.index("--uid") + 1] != "0":
             raise AssertionError('argv[argv.index("--uid") + 1] == "0"')
 
-    def test_namespaces_isolated_with_neutral_hostname(self) -> None:
-        argv = self._argv()
+    def test_namespaces_isolated_with_neutral_hostname(self, tmp_path: Path) -> None:
+        argv = self._argv(tmp_path)
         if "--unshare-pid" not in argv:
             raise AssertionError('"--unshare-pid" in argv')
         if "--unshare-ipc" not in argv:
@@ -390,52 +406,55 @@ class TestChainArgv:
         if argv[argv.index("--hostname") + 1] != "sandbox":
             raise AssertionError('argv[argv.index("--hostname") + 1] == "sandbox"')
 
-    def test_host_fs_readonly_except_image_dir(self) -> None:
-        argv = self._argv()
+    def test_host_fs_readonly_except_image_dir(self, tmp_path: Path) -> None:
+        argv = self._argv(tmp_path)
         i = argv.index("--ro-bind")
         if argv[i + 1 : i + 3] != ["/", "/"]:
             raise AssertionError('argv[i + 1 : i + 3] == ["/", "/"]')
-        b = argv.index("--bind")
-        if argv[b + 1 : b + 3] != ["/ws", "/ws"]:
-            raise AssertionError('argv[b + 1 : b + 3] == ["/ws", "/ws"]')
 
-    def test_rw_paths_bound_writable(self) -> None:
-        argv = self._argv(rw_paths=("/srv/data",))
-        if "/srv/data" not in argv:
-            raise AssertionError('"/srv/data" in argv')
+        if _binds(argv, "--bind") != [str(tmp_path / "ws")]:
+            raise AssertionError(f"rw-бинды: {_binds(argv, '--bind')}")
 
-    def test_only_fuse_device_exposed(self) -> None:
-        argv = self._argv()
+    def test_rw_paths_bound_writable(self, tmp_path: Path) -> None:
+        data = tmp_path / "srv-data"
+        data.mkdir()
+        argv = self._argv(tmp_path, nested=LayerSources(ro=(), rw=(str(data),)))
+        if str(data) not in _binds(argv, "--bind"):
+            raise AssertionError(f"rw-бинды: {_binds(argv, '--bind')}")
+
+    def test_only_fuse_device_exposed(self, tmp_path: Path) -> None:
+        argv = self._argv(tmp_path)
         if argv[argv.index("--dev") + 1] != "/dev":
             raise AssertionError('argv[argv.index("--dev") + 1] == "/dev"')
         if argv[argv.index("--dev-bind") + 1] != "/dev/fuse":
             raise AssertionError('argv[argv.index("--dev-bind") + 1] == "/dev/fuse"')
 
-    def test_env_cleared_to_path_only(self) -> None:
-        argv = self._argv()
+    def test_env_cleared_to_path_only(self, tmp_path: Path) -> None:
+        argv = self._argv(tmp_path)
         if "--clearenv" not in argv:
             raise AssertionError('"--clearenv" in argv')
         if argv[argv.index("--setenv") + 1] != "PATH":
             raise AssertionError('argv[argv.index("--setenv") + 1] == "PATH"')
 
-    def test_sys_admin_capability_added(self) -> None:
-        argv = self._argv()
+    def test_sys_admin_capability_added(self, tmp_path: Path) -> None:
+        argv = self._argv(tmp_path)
         if argv[argv.index("--cap-add") + 1] != "CAP_SYS_ADMIN":
             raise AssertionError('argv[argv.index("--cap-add") + 1] == "CAP_SYS_ADMIN"')
 
-    def test_network_isolated_by_default(self) -> None:
-        if "--unshare-net" not in self._argv():
+    def test_network_isolated_by_default(self, tmp_path: Path) -> None:
+        if "--unshare-net" not in self._argv(tmp_path):
             raise AssertionError('"--unshare-net" in self._argv()')
 
-    def test_network_enabled_on_demand(self) -> None:
-        if "--unshare-net" in self._argv(network=True):
+    def test_network_enabled_on_demand(self, tmp_path: Path) -> None:
+        if "--unshare-net" in self._argv(tmp_path, network=True):
             raise AssertionError('"--unshare-net" not in self._argv(network=True)')
 
-    def test_launcher_gets_image_and_op(self) -> None:
-        argv = self._argv()
+    def test_launcher_gets_image_and_op(self, tmp_path: Path) -> None:
+        argv = self._argv(tmp_path)
         i = argv.index("--image")
-        if argv[i + 1 : i + 3] != ["/ws/a.ext4", "/ws/a.ext4.mnt"]:
-            raise AssertionError('argv[i + 1 : i + 3] == ["/ws/a.ext4", "/ws/a.ext4.m…')
+        image = [str(tmp_path / "ws/a.ext4"), str(tmp_path / "ws/a.ext4.mnt")]
+        if argv[i + 1 : i + 3] != image:
+            raise AssertionError(f"образ лаунчера: {argv[i + 1 : i + 3]}")
         if argv[-2:] != ["write", "upload/x"]:
             raise AssertionError('argv[-2:] == ["write", "upload/x"]')
 

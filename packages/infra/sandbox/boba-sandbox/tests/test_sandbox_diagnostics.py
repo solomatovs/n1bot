@@ -17,7 +17,7 @@ from boba.stand.zygote import SandboxStand, ZygoteStand
 from boba.tool.shell.tools import BashToolConfig
 from boba.toolkit.launcher import LauncherError, RunResult
 from boba.toolkit.result import ShellResult
-from boba.workspace.launcher import FUSE_DEVICE
+from boba.workspace.launcher import LayerPath
 
 OUTPUT_LIMITS = BashToolConfig(max_output_bytes=4 * 1024 * 1024, timeout_sec=60.0)
 
@@ -25,7 +25,7 @@ needs_sandbox = pytest.mark.failif(
     shutil.which("bwrap") is None
     or shutil.which("fuse2fs") is None
     or shutil.which("mkfs.ext4") is None
-    or not os.path.exists(FUSE_DEVICE),
+    or not os.path.exists(LayerPath.FUSE),
     reason="нужны bwrap, fuse2fs, mkfs.ext4 и /dev/fuse",
 )
 

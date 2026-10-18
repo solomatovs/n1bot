@@ -17,7 +17,7 @@ from typing import Any, ClassVar
 
 import pytest
 
-from boba.runtime.config import EnvOverride
+from boba.runtime.config import AppLayers, EnvOverride
 from boba.sandbox import BindSpec, SandboxProfile
 from boba.sandbox.guest import WarmupCall
 from boba.sandbox.zygote import (
@@ -428,8 +428,10 @@ class ZygoteStand:
     """Вызывающие поверх зигот; имя секции — ключ реестра.
 
     Объект один на прогон тестов (фикстура zygote_stand), как способ
-    запуска в приложении один на процесс: зиготы секций живут в его реестре.
-    Гасит зиготы сам тест — stop(); остаток гасит конец прогона.
+    запуска в приложении один на процесс: зиготы секций живут в его реестре,
+    а интерпретатор цепочки лаунчера снимает та же граница конфига, что у
+    приложения (AppLayers). Гасит зиготы сам тест — stop(); остаток гасит
+    конец прогона.
     """
 
     POLICY: ClassVar[ZygotePolicy] = ZygotePolicy(
@@ -442,7 +444,7 @@ class ZygoteStand:
     )
 
     def __init__(self) -> None:
-        self._zygotes = ZygoteRegistry()
+        self._zygotes = ZygoteRegistry(AppLayers.interpreter())
 
     def registry(self) -> ZygoteRegistry:
         """Реестр зигот стенда для тестов, которым нужен сам супервизор."""

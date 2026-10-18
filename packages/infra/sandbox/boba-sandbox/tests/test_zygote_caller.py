@@ -30,6 +30,7 @@ from fake_channel_tool import (
 from pydantic import SecretStr
 
 from boba.cancellation import ToolStopped, run_cancellation
+from boba.runtime.config import AppLayers
 from boba.sandbox import SandboxProfile
 from boba.sandbox.guest import WarmupCall
 from boba.sandbox.zygote import (
@@ -229,7 +230,9 @@ def zygote(call_ambient: CallAmbient) -> Any:
     born: list[ZygoteSupervisor] = []
 
     def make(profile: SandboxProfile) -> ZygoteToolCaller:
-        spawner = ZygoteSpawner(profile, ["fake_channel_tool"], FAST)
+        spawner = ZygoteSpawner(
+            profile, ["fake_channel_tool"], FAST, AppLayers.interpreter()
+        )
         supervisor = ZygoteSupervisor(
             "fx",
             spawner.spawn,
@@ -357,7 +360,9 @@ class TestSpawner:
             rootfs=str(ROOTFS_IMAGE),
         )
 
-        spawner = ZygoteSpawner(profile, ["fake_channel_tool"], FAST)
+        spawner = ZygoteSpawner(
+            profile, ["fake_channel_tool"], FAST, AppLayers.interpreter()
+        )
 
         if spawner.root_label() != f"image {ROOTFS_IMAGE}":
             raise AssertionError(f"корень секции не образом: {spawner.root_label()!r}")
