@@ -67,11 +67,7 @@ from boba.aid.chat.ui_text import UiText
 from boba.aid.data.data_layer import FeedRows
 from boba.aid.domain.fields import StepField
 from boba.aid.rendering.acp_view import SessionUpdate, ToolMedia, UpdateView
-from boba.aid.rendering.chat_view import (
-    ChatView,
-    LiveSink,
-    StepText,
-)
+from boba.aid.rendering.chat_view import ChatView, LiveSink
 from boba.aid.rendering.errors import show_error
 from boba.aid.rendering.question import QuestionCards
 from boba.aid.rendering.renderer import RenderSurface, TabSurfaces
@@ -83,7 +79,7 @@ from boba.identity.locks import LiveLocks, LockKeeper, LockMode, LockPurpose
 from boba.mcp_client.client import McpCaller, McpClientError, McpServers
 from boba.messaging import MessageBus, NoticeLevel, PayloadStore, TurnOutcome
 from boba.runtime.storage import StorageClient
-from boba.transport.acp.protocol import ErrorDataKey, IdleErrorUpdate, StopReason
+from boba.transport.acp.protocol import ErrorDataKey
 
 __all__ = [
     "AgentFeed",
@@ -335,10 +331,9 @@ class AgentFeed(TurnRenderer):
         schema.SessionCompactionSummaryChunk,
         schema.RunningSessionStateUpdate,
         schema.RequiresActionSessionStateUpdate,
-        schema.IdleSessionStateUpdate,
     )
     """Уведомления сессии, которых в ленте нет: заголовок, план, команды,
-    сжатие и состояние хода (его конец приходит turn_finished)."""
+    сжатие и состояние идущего хода."""
 
     ABANDONED: ClassVar[str] = "turn failed"
     """Причина в итоге хода, сорвавшегося без ответа агента."""
@@ -574,6 +569,10 @@ class AgentFeed(TurnRenderer):
 
             return
 
+        # конец живого хода публикует turn_finished, после всех его уведомлений
+        if isinstance(update, schema.IdleSessionStateUpdate):
+            return
+
         await turn.feed.agent_update(update)
 
     async def _notice(self, notice: schema.SessionNotice) -> None:
@@ -630,8 +629,9 @@ class AgentFeed(TurnRenderer):
     async def turn_finished(
         self, session_id: str, idle: schema.IdleSessionStateUpdate
     ) -> None:
-        """Итог хода в шину: штатный конец, остановка с пометкой либо ранний
-        конец с текстом причины; замок области отпускается."""
+        """Конец хода в шину: idle — уведомлением хода, его ленты рисуют
+        пометку остановки или сбоя тем же переводчиком, что и историю; затем
+        итог хода с исходом по тому же idle; замок области отпускается."""
         self._stopping.discard(session_id)
         async with self._ordered:
             await self._finish(idle)
@@ -641,30 +641,10 @@ class AgentFeed(TurnRenderer):
         if turn is None:
             return
 
-        stop_reason = idle.stop_reason
+        ending = self._replay.ending(idle)
         try:
-            ended = stop_reason == StopReason.END_TURN
-            unexplained = stop_reason is None
-            if ended or unexplained:
-                await turn.feed.finished(TurnOutcome.OK, "")
-                return
-
-            if stop_reason == StopReason.CANCELLED:
-                note = self._replay.view.label(StepText.STOPPED)
-                await turn.feed.answer_interrupted(turn.key, note)
-                await turn.feed.finished(TurnOutcome.STOPPED, note)
-                return
-
-            note = f"the turn ended early: {stop_reason}"
-            failure = None
-            if isinstance(idle, IdleErrorUpdate):
-                failure = idle.error
-
-            if failure is not None:
-                note = f"the turn failed: {failure.message}"
-
-            await turn.feed.notice(NoticeLevel.ERROR, note)
-            await turn.feed.finished(TurnOutcome.FAILED, note)
+            await turn.feed.agent_update(idle)
+            await turn.feed.finished(ending.outcome, ending.note)
         finally:
             await self._release(turn)
 

@@ -1,18 +1,16 @@
 """Адресация файлов треда: ссылка на файл по его месту и её маршрут, ссылка на
 канал журнала.
 
-Ошибки: ValueError — сегмент ключа пуст, ведёт наружу каталога или называет
-неизвестный каталог треда.
+Ошибки: ValueError — сегмент ключа пуст, ведёт наружу каталога, называет
+неизвестный каталог треда, либо путь ссылки не маршрут файла панели.
 """
 
 from __future__ import annotations
 
 from typing import ClassVar
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, unquote, urlencode
 
-from boba.canvas.keys import (
-    ObjectKey,
-)
+from boba.canvas.keys import ObjectKey, ThreadDir
 from boba.toolkit.channels import JournalChannel
 
 __all__ = [
@@ -75,6 +73,31 @@ class CanvasFileUrl:
         query = urlencode({cls.MIME: mime})
 
         return f"{AppPrefix.render()}{route}?{query}"
+
+    @classmethod
+    def key(cls, user_id: str, path: str) -> ObjectKey:
+        """Ключ файла пользователя user_id по пути ссылки (без хоста и
+        запроса): хвост пути — маршрут с тредом, каталогом и именем.
+
+        Ошибки:
+        ValueError — путь не маршрут файла панели либо ключ не проходит
+            проверку сегментов.
+        """
+        route = cls.ROUTE.split("/")
+        expected = f"canvas file link {path!r}: expected a path ending with {cls.ROUTE}"
+        tail = path.split("/")[-len(route) :]
+        if len(tail) != len(route):
+            raise ValueError(expected)
+
+        if tail[1] != route[1]:
+            raise ValueError(expected)
+
+        return ObjectKey(
+            user_id=user_id,
+            thread_id=tail[2],
+            dir=ThreadDir(tail[3]),
+            name=unquote(tail[4]),
+        )
 
 
 class StreamUrl:
