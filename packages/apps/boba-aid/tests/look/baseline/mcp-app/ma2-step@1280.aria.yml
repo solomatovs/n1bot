@@ -1,5 +1,5 @@
 - article: Покажи последние заказы магазина
-- img "Avatar for Aссистент-BOBA"
+- img "Avatar for Ассистент-BOBA"
 - 'heading "Завершено · шагов: 1" [level=3]':
   - 'button "Завершено · шагов: 1" [expanded]'
 - region:
@@ -35,5 +35,5 @@
 - button "На весь экран"
 - button "Свернуть"
 - iframe
-- img "Avatar for Aссистент-BOBA"
+- img "Avatar for Ассистент-BOBA"
 - article: Три последних заказа магазина — в таблице выше.
