@@ -677,6 +677,12 @@ class ThreadAgent:
     выходом процесса. Процесс заменяется новым только через restart(): запуск,
     смена процесса и начало хода идут под одним замком вкладки, а перезапуск,
     пришедший во время хода, ждёт его конца флагом.
+
+    Сессия открыта у процесса только на время хода, воспроизведения и
+    перезапуска: потом процесс её закрывает и отпускает замок истории, а
+    следующий ход снова открывает её `session/resume` без ленты. Так вопрос
+    любой вкладки треда на любом инстансе ведёт её собственный процесс, а
+    ходы разводит замок области треда в приёмнике (TurnRenderer).
     """
 
     def __init__(
@@ -695,6 +701,8 @@ class ThreadAgent:
         self._questions = AskedQuestions(renderer)
         self._launched: LaunchedAgent | None = None
         self._session_id: str | None = None
+        self._open = False
+        """Сессия _session_id открыта у процесса и держит замок истории."""
         self._active: str | None = None
         self._gate = asyncio.Lock()
         self._restart_pending = False
@@ -770,7 +778,11 @@ class ThreadAgent:
         launch = await self._launcher.prepare(self._identity)
         await self._close_process()
         await self._launch(launch)
-        await self._resume(replay=False)
+        try:
+            await self._resume(replay=False)
+        finally:
+            await self._close_session(self.process)
+
         self._restart_pending = False
         self._restarts += 1
         logger.info(
@@ -798,7 +810,10 @@ class ThreadAgent:
             неизвестной сессии.
         """
         async with self._gate:
-            return await self._resume(replay=True)
+            try:
+                return await self._resume(replay=True)
+            finally:
+                await self._close_session(self.process)
 
     async def _resume(self, replay: bool) -> bool:
         """Сессия треда в процессе вкладки: с воспроизведением беседы — при
@@ -827,6 +842,7 @@ class ThreadAgent:
             return False
 
         self._session_id = known
+        self._open = True
         self._options.replace(response.config_options)
         if not replay:
             return True
@@ -851,7 +867,10 @@ class ThreadAgent:
             await self._close_session(self.process)
             self._session_id = None
             await self._renderer.cleared()
-            await self._resume(replay=True)
+            try:
+                await self._resume(replay=True)
+            finally:
+                await self._close_session(self.process)
 
     def edited(self, question: Question) -> Question:
         """Вопрос-правка с вложениями правленого вопроса из беседы, которую
@@ -918,7 +937,11 @@ class ThreadAgent:
             raise
         except Exception:
             self._active = None
-            await self._renderer.abandon(session_id)
+            try:
+                await self._released()
+            finally:
+                await self._renderer.abandon(session_id)
+
             raise
 
         await self._finish(session_id, idle)
@@ -938,7 +961,11 @@ class ThreadAgent:
         и вопрос агенту; ключ хода — messageId, который агент дал вопросу."""
         session_id = await self._session_for(question)
         ending = self._questions.ending(session_id)
-        key = await self.process.prompt(session_id, self._blocks(question))
+        try:
+            key = await self.process.prompt(session_id, self._blocks(question))
+        except AcpClientError:
+            await self._close_session(self.process)
+            raise
 
         return StartedTurn(session_id=session_id, ending=ending, key=key)
 
@@ -969,7 +996,13 @@ class ThreadAgent:
         self, session_id: str, idle: schema.IdleSessionStateUpdate
     ) -> None:
         self._active = None
-        await self._renderer.turn_finished(session_id, idle)
+        # замок истории отпущен раньше замка области: вопрос другой вкладки,
+        # пришедший сразу за концом хода, застаёт сессию свободной
+        try:
+            await self._released()
+        finally:
+            await self._renderer.turn_finished(session_id, idle)
+
         logger.info(
             "thread %s: turn of session %s finished with %s",
             self.thread_id,
@@ -977,6 +1010,16 @@ class ThreadAgent:
             idle.stop_reason,
         )
         await self._restart_deferred()
+
+    async def _released(self) -> None:
+        """Сессия хода закрыта у процесса под замком вкладки; процесс уже
+        закрыт вместе с вкладкой — закрывать нечего."""
+        async with self._gate:
+            launched = self._launched
+            if launched is None:
+                return
+
+            await self._close_session(launched.process)
 
     async def _restart_deferred(self) -> None:
         """Перезапуск, отложенный на время хода; без флага — ничего."""
@@ -1036,10 +1079,15 @@ class ThreadAgent:
                 self._launcher.retire(launched)
 
     async def _close_session(self, process: AgentProcess) -> None:
+        """Открытая сессия закрыта у процесса: замок истории отпущен."""
         session_id = self._session_id
         if session_id is None:
             return
 
+        if not self._open:
+            return
+
+        self._open = False
         if not process.alive():
             return
 
@@ -1047,22 +1095,34 @@ class ThreadAgent:
         logger.info("thread %s: agent session %s closed", self.thread_id, session_id)
 
     async def _session_for(self, question: Question) -> str:
-        """Сессия хода: открытая, ветвь до вопроса при его правке, иначе новая."""
+        """Сессия хода: ветвь до вопроса при его правке, сессия треда — уже
+        открытая или открытая заново без ленты; агент её не знает — новая."""
         current = self._session_id
         if current is None:
-            opened = await self.process.open_session()
-            created = opened.session_id
-            self._options.replace(opened.config_options)
-            await self._meta.remember(self.thread_id, created)
-            self._session_id = created
-            logger.info("thread %s: agent session %s created", self.thread_id, created)
+            return await self._created()
 
-            return created
+        if question.edited:
+            return await self._branch(question, current)
 
-        if not question.edited:
+        if self._open:
             return current
 
-        return await self._branch(question, current)
+        if await self._resume(replay=False):
+            return current
+
+        return await self._created()
+
+    async def _created(self) -> str:
+        """Новая сессия треда: её id запоминается в threads.meta."""
+        opened = await self.process.open_session()
+        created = opened.session_id
+        self._options.replace(opened.config_options)
+        await self._meta.remember(self.thread_id, created)
+        self._session_id = created
+        self._open = True
+        logger.info("thread %s: agent session %s created", self.thread_id, created)
+
+        return created
 
     async def _branch(self, question: Question, current: str) -> str:
         """Ветка беседы до правленого вопроса: `session/fork` с срезом по его
@@ -1106,14 +1166,15 @@ class ThreadAgent:
             msg = (
                 f"The question {question.key} of thread {self.thread_id} was not "
                 f"edited: the session {current} could not be deleted ({refused}), "
-                "so the conversation stays as it was; close the other tabs of "
-                "this chat and edit the question again."
+                "so the conversation stays as it was; edit the question again "
+                "when no other tab of this chat is answering or loading it."
             )
             raise AcpClientError(msg) from refused
 
         self._options.replace(branch.config_options)
         await self._meta.remember(self.thread_id, forked)
         self._session_id = forked
+        self._open = True
         logger.info(
             "thread %s: question %s edited, session %s forked into %s and deleted",
             self.thread_id,
