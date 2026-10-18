@@ -300,6 +300,7 @@ class RuntimeLayout(StrEnum):
 
     PLUGINS = "plugins"
     ROOTFS = "rootfs.ext4"
+    WORKSPACE = "workspace.ext4"
     SHELL_PLUGIN = "boba-tool-shell"
     BIN = "bin"
 
@@ -350,6 +351,11 @@ class StandRuntime:
     def plugin_rootfs(self, package: str) -> Path:
         """Образ корня пакета: make plugin-rootfs PLUGIN=<пакет>."""
         return self.sandbox / RuntimeLayout.PLUGINS / package / RuntimeLayout.ROOTFS
+
+    @property
+    def workspace_template(self) -> Path:
+        """Шаблон workspace сборки: make sandbox делает его mke2fs из tools."""
+        return self.sandbox / RuntimeLayout.WORKSPACE
 
     @property
     def shell_rootfs(self) -> Path:
