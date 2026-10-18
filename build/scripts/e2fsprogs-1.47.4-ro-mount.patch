@@ -1,0 +1,12 @@
+--- a/misc/fuse2fs.c
++++ b/misc/fuse2fs.c
+@@ -4767,6 +4767,9 @@
+ 
+ 	/* Start up the fs (while we still can use stdout) */
+ 	ret = 2;
++	/* A read-only mount must not open the image for writing */
++	if (fctx.ro)
++		flags &= ~EXT2_FLAG_RW;
+ 	char options[50];
+ 	sprintf(options, "offset=%lu", fctx.offset);
+ 	if (fctx.directio)
