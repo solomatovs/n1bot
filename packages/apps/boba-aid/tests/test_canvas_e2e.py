@@ -24,6 +24,7 @@ import socket
 import subprocess
 import time
 from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
+from enum import StrEnum
 from pathlib import Path
 from typing import Any, ClassVar
 from urllib.parse import urlencode
@@ -31,8 +32,8 @@ from urllib.parse import urlencode
 import httpx
 import pytest
 from aid_stand import AppLanguage, FakeUrl
+from playwright.async_api import Locator, Page, async_playwright
 from playwright.async_api import TimeoutError as PlaywrightTimeout
-from playwright.async_api import async_playwright
 
 from boba.aid.canvas.panel import CanvasNote
 from boba.runtime.config import ConfigFiles, ConfigLayoutError, EnvOverride
@@ -131,6 +132,7 @@ FILES_PROFILE = "general"
 """Профиль, в котором работает стенд: файлы лежат на его первом MCP-сервере."""
 LOGIN = ("admin", "myPassdfd3")
 
+FLOW_MMD = "flowchart LR\n    A[Доход] --> B[Налог]\n".encode()
 PNG = bytes.fromhex(
     "89504e470d0a1a0a0000000d494844520000000a0000000a0806000000"
     "8d32cfbd0000001a49444154789c63fcffff3f0324a6018a03a0d80751"
@@ -231,7 +233,8 @@ FILES: dict[str, bytes] = {
     "hostile.pdf": HOSTILE_PDF,
     "clip.wav": WAV,
     "chart.svg": SVG,
-    "flow.mmd": "flowchart LR\n    A[Доход] --> B[Налог]\n".encode(),
+    "flow.mmd": FLOW_MMD,
+    "flow-copy.mmd": FLOW_MMD,
     "report.md": "# Отчёт\n\n- доход: 4 786 066\n".encode(),
     "data.bin": b"\x00\x01\x02\x03unsupported",
     "broken.mmd": BROKEN_MMD.encode(),
@@ -396,11 +399,6 @@ async def _cookie_header(context: Any) -> str:
     return "; ".join(pairs)
 
 
-def _tool_view(thread_id: str, name: str) -> str:
-    """Путь файла глазами тела инструмента: workspace сервиса boba-mcp."""
-    return f"/workspace/{thread_id}/upload/{name}"
-
-
 def _app_config() -> Any:
     from boba.aid.infra.config import AppConfig
     from boba.config import bind
@@ -446,13 +444,6 @@ async def _user_row(config: Any, identifier: str) -> tuple[str, Mapping[str, Any
     return str(row[0]), dict(row[1])
 
 
-async def _user_id_of(config: Any, identifier: str) -> str:
-    """users.id пользователя стенда по логину: владелец тредов и журналов."""
-    user_id, _meta = await _user_row(config, identifier)
-
-    return user_id
-
-
 async def _store(thread_id: str, files: Mapping[str, bytes]) -> None:
     """Кладёт файлы в workspace пользователя стенда на сервисе boba-mcp тем
     же путём, каким их кладёт чат: клиентом MCP от имени пользователя."""
@@ -483,15 +474,34 @@ async def _upload(thread_id: str) -> None:
 
 
 class _SessionProbe:
-    """Слушатели страницы: sessionId и threadId из трафика, отчёты канваса."""
+    """Слушатели страницы: sessionId и threadId из трафика, вердикты рендера.
+
+    Сессию называет тело запроса socket.io, тред — кадр сокета после старта
+    чата; joined ждёт обоих. Вердикты — payload действий canvas_render_status,
+    которые браузер шлёт серверу после рендера диаграммы."""
+
+    JOIN_SEC: ClassVar[float] = 120.0
+    STATUS_ACTION: ClassVar[str] = "canvas_render_status"
 
     def __init__(self) -> None:
         self.session: dict[str, str] = {}
-        self.reports: list[str] = []
+        self.verdicts: list[Mapping[str, Any]] = []
+        self._joined = asyncio.Event()
 
-    def watch(self, page: Any) -> None:
+    def watch(self, page: Page) -> None:
         page.on("request", self._on_request)
         page.on("websocket", self._on_websocket)
+
+    async def joined(self) -> None:
+        try:
+            await asyncio.wait_for(self._joined.wait(), self.JOIN_SEC)
+        except TimeoutError as exc:
+            msg = (
+                "chat page after sign-in: expected a sessionId and a threadId in "
+                f"the socket traffic within {self.JOIN_SEC:.0f}s, got "
+                f"{sorted(self.session)}"
+            )
+            raise AssertionError(msg) from exc
 
     def _on_request(self, request: Any) -> None:
         if request.method != "POST":
@@ -502,8 +512,9 @@ class _SessionProbe:
             return
 
         if request.url.endswith("/project/action"):
-            if '"canvas_render_status"' in body:
-                self.reports.append(body)
+            action = json.loads(body)["action"]
+            if action["name"] == self.STATUS_ACTION:
+                self.verdicts.append(action["payload"])
             return
 
         if "socket.io" not in request.url:
@@ -512,6 +523,7 @@ class _SessionProbe:
         found = re.search(r'"sessionId"\s*:\s*"([^"]+)"', body)
         if found:
             self.session["id"] = found.group(1)
+            self._check()
 
     def _on_websocket(self, ws: Any) -> None:
         ws.on("framereceived", self._on_frame)
@@ -523,18 +535,328 @@ class _SessionProbe:
         found = re.search(r'"threadId"\s*:\s*"([0-9a-f-]{36})"', payload)
         if found:
             self.session.setdefault("thread", found.group(1))
+            self._check()
+
+    def _check(self) -> None:
+        if "id" not in self.session:
+            return
+
+        if "thread" not in self.session:
+            return
+
+        self._joined.set()
+
+
+class PanelScript(StrEnum):
+    """Скрипты страницы, по которым тест ждёт состояния панели канваса.
+
+    Узел панели (CanvasView) несёт вид и метку показа — data-canvas-kind и
+    data-canvas-nonce: по метке видно, что панель взялась за новый показ, по
+    виду — что значит «вьювер его дорисовал». Метка null в DRAWN — «любой
+    показ», и тогда ждётся только конец отрисовки."""
+
+    NONCE = """() => {
+        const panel = document.querySelector('[data-canvas-panel]');
+        if (!panel) return '';
+        return panel.dataset.canvasNonce;
+    }"""
+    DRAWN = """(previous) => {
+        const panel = document.querySelector('[data-canvas-panel]');
+        if (!panel) return false;
+        if (panel.dataset.canvasNonce === previous) return false;
+        const kind = panel.dataset.canvasKind;
+        if (kind === 'mermaid') {
+            return !!panel.querySelector(
+                'div[style*="transform-origin"] :is(svg, pre)');
+        }
+        if (kind === 'image') {
+            const img = panel.querySelector('img');
+            return !!img && img.complete && img.naturalWidth > 0;
+        }
+        if (kind === 'pdf') {
+            const layer = panel.querySelector('.react-pdf__Page .textLayer');
+            return !!layer && layer.innerText.trim() !== '';
+        }
+        if (kind === 'video' || kind === 'audio') {
+            return !!panel.querySelector('video, audio');
+        }
+        return panel.innerText.trim() !== '';
+    }"""
+    SHOWN = """() => {
+        const panel = document.querySelector('[data-canvas-panel]');
+        if (!panel) return 'no panel';
+        const text = panel.innerText.replace(/\\s+/g, ' ').trim().slice(0, 300);
+        return `${panel.dataset.canvasKind} show ${panel.dataset.canvasNonce}: ${text}`;
+    }"""
+    TEXT = """(text) => {
+        const view = document.querySelector('#side-view-content');
+        return !!view && view.innerText.includes(text);
+    }"""
+    IMAGE_LOADED = "(img) => img.complete && img.naturalWidth > 0"
+    IMAGE_REVISED = """(before) => {
+        const img = document.querySelector('#side-view-content img');
+        return !!img && img.src !== before;
+    }"""
+    SVG = """() => {
+        const svg = document.querySelector(
+            '#side-view-content div[style*="transform-origin"] svg');
+        if (!svg) return '';
+        return svg.innerHTML;
+    }"""
+    SVG_CHANGED = """(before) => {
+        const svg = document.querySelector(
+            '#side-view-content div[style*="transform-origin"] svg');
+        return !!svg && svg.innerHTML !== before;
+    }"""
+    SWITCH = """([path, mime]) => window.dispatchEvent(
+        new CustomEvent('boba:canvas', {detail: {path, mime}}))"""
+    EXPANDED = """() => {
+        const stage = document.querySelector('[data-canvas-panel][data-full="true"]');
+        if (!stage) return false;
+        return stage.parentElement === (
+            document.getElementById('root') || document.body);
+    }"""
+    COLLAPSED = """() => {
+        const stage = document.querySelector('[data-canvas-panel][data-full="false"]');
+        const side = document.querySelector('#side-view-content');
+        if (!stage || !side) return false;
+        return side.contains(stage);
+    }"""
+    CLOSED = "() => !document.querySelector('#side-view-content')"
+    GEOMETRY = """() => {
+        const stage = document.querySelector('[data-canvas-panel][data-full="true"]');
+        if (!stage) return null;
+        const box = stage.getBoundingClientRect();
+        return {
+            width: box.width,
+            height: box.height,
+            left: box.left,
+            top: box.top,
+            winWidth: window.innerWidth,
+            winHeight: window.innerHeight,
+            hosted: stage.parentElement === (
+                document.getElementById('root') || document.body),
+            transformed: (() => {
+                let node = stage.parentElement;
+                while (node && node !== document.documentElement) {
+                    if (getComputedStyle(node).transform !== 'none') return true;
+                    node = node.parentElement;
+                }
+                return false;
+            })(),
+        };
+    }"""
+    WHEEL_ARMED = """() => {
+        window.__bobaWheel = false;
+        window.addEventListener('wheel', () => { window.__bobaWheel = true; },
+            {once: true, passive: true});
+    }"""
+    WHEEL_SEEN = "() => window.__bobaWheel === true"
+    SETTLED = """() => new Promise((done) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => done(true))))"""
+    TRANSFORM = "(scene) => scene.style.transform"
+    TRANSFORMED = """([selector, before]) => {
+        const scene = document.querySelector(selector);
+        return !!scene && scene.style.transform !== before;
+    }"""
+    PDF_TOOLBAR = """() => {
+        const page = document.querySelector('#side-view-content .react-pdf__Page');
+        const bar = document.querySelector(
+            '#side-view-content [data-canvas-stage] .sticky');
+        const canvas = document.querySelector(
+            '#side-view-content .react-pdf__Page__canvas');
+        const box = canvas.getBoundingClientRect();
+        return {
+            bar: bar.innerText.replace(/\\s+/g, ' ').trim(),
+            opacity: getComputedStyle(bar).opacity,
+            width: box.width, height: box.height,
+            text: page.querySelector('.textLayer').innerText,
+        };
+    }"""
+    PDF_BAR_CHANGED = """(before) => {
+        const bar = document.querySelector(
+            '#side-view-content [data-canvas-stage] .sticky');
+        if (!bar) return false;
+        return bar.innerText.replace(/\\s+/g, ' ').trim() !== before;
+    }"""
+    PDF_WIDER = """(width) => {
+        const canvas = document.querySelector(
+            '#side-view-content .react-pdf__Page__canvas');
+        if (!canvas) return false;
+        return canvas.getBoundingClientRect().width > width;
+    }"""
+    PDF_FITS = """(width) => {
+        if (window.innerWidth !== width) return false;
+        const side = document.querySelector('#side-view-content');
+        if (!side) return false;
+        const layer = side.querySelector('.react-pdf__Page .textLayer');
+        if (!layer || layer.innerText.trim() === '') return false;
+        return side.scrollWidth - side.clientWidth <= 2;
+    }"""
+
+
+class CanvasPage:
+    """Страница чата с живым тредом: показ файлов в панели канваса и
+    ожидание состояния, которого добивается действие.
+
+    Создаётся фикстурой panel после входа и загрузки файлов треда; тесты
+    зовут его методы. Каждое действие ждёт состояния DOM, которое должно
+    дать: панель взялась за новый показ и вьювер его дорисовал, сцена
+    развернулась на весь экран или вернулась в панель, — а не фиксированной
+    паузы: под нагрузкой прогона отрисовка растягивается на секунды. Срок
+    ожидания ловит зависание, а не медленную отрисовку.
+    """
+
+    TIMEOUT_MS: ClassVar[float] = 60000.0
+    SIDE: ClassVar[str] = "#side-view-content"
+    ACTION_PATH: ClassVar[str] = "/project/action"
+
+    def __init__(self, page: Page, probe: _SessionProbe) -> None:
+        self.page = page
+        self.probe = probe
+        self.thread = probe.session["thread"]
+        self._session_id = probe.session["id"]
+
+    def tool_view(self, name: str) -> str:
+        """Путь файла глазами тела инструмента: workspace сервиса boba-mcp."""
+        return f"/workspace/{self.thread}/upload/{name}"
+
+    async def rewrite(self, name: str, blob: bytes) -> None:
+        """Переписать файл workspace: так его меняет инструмент между показами."""
+        await _store(self.thread, {name: blob})
+
+    async def show(self, name: str) -> Locator:
+        """Клик по ссылке на файл: ссылка называет и путь, и вид файла."""
+        payload = {"path": self.tool_view(name), "mime": ContentMime.of_name(name)}
+
+        return await self.act("canvas_open", payload)
+
+    async def act(self, name: str, payload: Mapping[str, str]) -> Locator:
+        """Действие панели от имени вкладки; возвращает панель, когда она
+        дорисовала показ, открытый действием."""
+        previous = await self.page.evaluate(PanelScript.NONCE)
+        body = {
+            "sessionId": self._session_id,
+            "action": {
+                "name": name,
+                "payload": dict(payload),
+                "label": "",
+                "tooltip": "",
+                "icon": None,
+                "forId": None,
+                "id": "e2e",
+            },
+        }
+        url = BASE + self.ACTION_PATH
+        # cookie входа может быть Secure (SameSite=None в конфиге): по http
+        # API-контекст Playwright её не отправит, поэтому заголовок явный
+        answer = await self.page.request.post(
+            url,
+            data=json.dumps(body),
+            headers={
+                "content-type": "application/json",
+                "cookie": await _cookie_header(self.page.context),
+            },
+        )
+        if not answer.ok:
+            text = await answer.text()
+            raise AssertionError(
+                f"POST {url} {name} {dict(payload)}: expected 200, got "
+                f"{answer.status}: {text[:200]}"
+            )
+
+        await self.until(PanelScript.DRAWN, previous, f"a new show drawn after {name}")
+        return self.page.locator(self.SIDE)
+
+    async def switch(self, name: str) -> None:
+        """Смена файла в открытой панели событием boba:canvas — так её меняет
+        ссылка в ленте: описание приходит ответом, элемент не подменяется."""
+        previous = await self.page.evaluate(PanelScript.NONCE)
+        path = self.tool_view(name)
+
+        await self.page.evaluate(PanelScript.SWITCH, [path, ContentMime.of_name(name)])
+        await self.until(PanelScript.DRAWN, previous, f"{path} drawn after a switch")
+
+    async def expand(self) -> Any:
+        """На весь экран кнопкой шапки; отдаёт геометрию развёрнутой сцены."""
+        button = self.page.locator('button[data-canvas-action="fullscreen"]')
+
+        await button.first.click()
+        await self.until(PanelScript.EXPANDED, None, "the scene expanded into the root")
+        return await self.page.evaluate(PanelScript.GEOMETRY)
+
+    async def collapse(self) -> None:
+        """Escape сворачивает полный экран: сцена возвращается в панель."""
+        await self.page.keyboard.press("Escape")
+        await self.until(PanelScript.COLLAPSED, None, "the scene back in the panel")
+
+    async def close(self) -> None:
+        """Кнопка закрытия в ряду шапки: панель уходит со страницы."""
+        button = self.page.locator(f'{self.SIDE} button[data-canvas-action="close"]')
+
+        await button.first.click()
+        await self.until(PanelScript.CLOSED, None, "the panel closed")
+
+    async def wheel(self, delta_y: float) -> None:
+        """Колесо под курсором; возвращается, когда событие дошло до окна и
+        страница отрисовала кадр после его обработчиков."""
+        await self.page.evaluate(PanelScript.WHEEL_ARMED)
+        await self.page.mouse.wheel(0, delta_y)
+        await self.until(PanelScript.WHEEL_SEEN, None, "the wheel event on the window")
+        await self.page.evaluate(PanelScript.SETTLED)
+
+    async def transformed(self, selector: str, before: str) -> None:
+        """Ждёт, пока сцена selector сменит transform с before."""
+        await self.until(
+            PanelScript.TRANSFORMED,
+            [selector, before],
+            f"the transform of {selector} to change from {before!r}",
+        )
+
+    async def await_text(self, text: str) -> None:
+        """Ждёт, пока панель покажет строку text."""
+        await self.until(PanelScript.TEXT, text, f"the text {text!r} in the panel")
+
+    async def pdf_state(self) -> Any:
+        """Панель pdf.js в сцене: счётчики, видимость, холст, текстовый слой."""
+        return await self.page.evaluate(PanelScript.PDF_TOOLBAR)
+
+    async def pdf_click(self, icon: str) -> None:
+        """Кнопка панели pdf.js по её значку lucide; возвращается, когда
+        панель pdf.js показала итог нажатия — другую страницу или масштаб."""
+        before = (await self.pdf_state())["bar"]
+        button = self.page.locator(
+            f"{self.SIDE} [data-canvas-stage] button:has(svg.lucide-{icon})"
+        )
+
+        await button.click()
+        await self.until(
+            PanelScript.PDF_BAR_CHANGED,
+            before,
+            f"the pdf toolbar to leave {before!r} after {icon}",
+        )
+
+    async def until(self, script: str, arg: object, what: str) -> None:
+        """Ждёт, пока предикат страницы script(arg) станет истинным."""
+        try:
+            await self.page.wait_for_function(script, arg=arg, timeout=self.TIMEOUT_MS)
+        except PlaywrightTimeout as exc:
+            shown = await self.page.evaluate(PanelScript.SHOWN)
+            raise AssertionError(
+                f"canvas panel: expected {what} within "
+                f"{self.TIMEOUT_MS / 1000:.0f}s, the panel shows {shown}"
+            ) from exc
 
 
 @pytest.fixture(scope="module")
-async def panel(app_server: None) -> AsyncIterator[Any]:
-    """Логин, живой тред и файлы в нём; отдаёт функцию показа файла в панели."""
+async def panel(app_server: None) -> AsyncIterator[CanvasPage]:
+    """Логин, живой тред и файлы в нём; отдаёт страницу с панелью канваса."""
     async with async_playwright() as pw:
         browser = await pw.chromium.launch()
         context = await browser.new_context(viewport={"width": 1600, "height": 900})
         page = await context.new_page()
 
         probe = _SessionProbe()
-        session = probe.session
         probe.watch(page)
 
         await page.goto(BASE + "/login")
@@ -544,90 +866,37 @@ async def panel(app_server: None) -> AsyncIterator[Any]:
         await inputs.nth(1).fill(LOGIN[1])
         await page.locator('form button[type="submit"]').first.click()
 
-        for _ in range(30):
-            if "id" in session and "thread" in session:
-                break
-            await page.wait_for_timeout(500)
+        await probe.joined()
+        await _upload(probe.session["thread"])
 
-        if "id" not in session:
-            raise AssertionError("не удалось получить sessionId")
-        if "thread" not in session:
-            raise AssertionError("не удалось получить threadId")
-
-        await _upload(session["thread"])
-
-        async def act(name: str, action_payload: dict[str, str]) -> Any:
-            payload = {
-                "sessionId": session["id"],
-                "action": {
-                    "name": name,
-                    "payload": action_payload,
-                    "label": "",
-                    "tooltip": "",
-                    "icon": None,
-                    "forId": None,
-                    "id": "e2e",
-                },
-            }
-            # cookie входа может быть Secure (SameSite=None в конфиге): по http
-            # API-контекст Playwright её не отправит, поэтому заголовок явный
-            await page.request.post(
-                BASE + "/project/action",
-                data=json.dumps(payload),
-                headers={
-                    "content-type": "application/json",
-                    "cookie": await _cookie_header(context),
-                },
-            )
-            await page.wait_for_timeout(3000)
-            return page.locator("#side-view-content")
-
-        async def show(name: str) -> Any:
-            """Клик по ссылке на файл: ссылка называет и путь, и вид файла."""
-            path = _tool_view(session["thread"], name)
-            mime = ContentMime.of_name(name)
-            return await act("canvas_open", {"path": path, "mime": mime})
-
-        yield show, probe, session["thread"], act
+        yield CanvasPage(page, probe)
 
         await browser.close()
 
 
-async def test_image_is_rendered(panel: Any) -> None:
-    """Картинка от bash/python-тула должна реально загрузиться, а не быть битой."""
-    show, _, _thread, _act = panel
-    side = await show("chart.png")
-    image = side.locator("img").first
+async def test_image_is_rendered(panel: CanvasPage) -> None:
+    """Картинка от bash/python-тула должна реально загрузиться, а не быть битой.
 
-    if not (await image.count()):
-        raise AssertionError("await image.count()")
-    # ждём саму загрузку: на холодном старте она приходит позже показа
-    await side.page.wait_for_function(
-        """() => {
-            const img = document.querySelector('#side-view-content img');
-            return !!img && img.complete && img.naturalWidth > 0;
-        }""",
-        timeout=15000,
-    )
+    Показ картинки дорисован, когда img загружен: show ждёт этого сам.
+    """
+    side = await panel.show("chart.png")
+
+    loaded = await side.locator("img").evaluate(PanelScript.IMAGE_LOADED)
+    if loaded is not True:
+        raise AssertionError("the image of the panel is broken")
 
 
-async def test_svg_is_rendered(panel: Any) -> None:
-    show, _, _thread, _act = panel
-    side = await show("chart.svg")
+async def test_svg_is_rendered(panel: CanvasPage) -> None:
+    side = await panel.show("chart.svg")
 
-    await side.page.wait_for_function(
-        """() => {
-            const img = document.querySelector('#side-view-content img');
-            return !!img && img.complete && img.naturalWidth > 0;
-        }""",
-        timeout=15000,
-    )
+    loaded = await side.locator("img").evaluate(PanelScript.IMAGE_LOADED)
+    if loaded is not True:
+        raise AssertionError("the svg of the panel is broken")
 
 
-async def test_diagram_is_drawn_not_shown_as_text(panel: Any) -> None:
+async def test_diagram_is_drawn_not_shown_as_text(panel: CanvasPage) -> None:
     """Спека mermaid превращается в svg, а не показывается текстом файла."""
-    show, _, _thread, _act = panel
-    side = await show("flow.mmd")
+    side = await panel.show("flow.mmd")
     text = await side.inner_text()
 
     if await side.locator('div[style*="transform-origin"] svg').count() <= 0:
@@ -641,11 +910,10 @@ async def test_diagram_is_drawn_not_shown_as_text(panel: Any) -> None:
         raise AssertionError('"flow.mmd" not in text')
 
 
-async def test_close_button_does_not_cover_the_diagram(panel: Any) -> None:
+async def test_close_button_does_not_cover_the_diagram(panel: CanvasPage) -> None:
     """В canvas-режиме chainlit красит кнопку закрытия в primary; css её гасит."""
-    show, _, _thread, _act = panel
-    side = await show("flow.mmd")
-    close = side.page.locator("#side-view-title button").first
+    await panel.show("flow.mmd")
+    close = panel.page.locator("#side-view-title button").first
 
     style = await close.evaluate(
         "el => { const s = getComputedStyle(el);"
@@ -658,53 +926,57 @@ async def test_close_button_does_not_cover_the_diagram(panel: Any) -> None:
         raise AssertionError('float(style["opacity"]) < 1')
 
 
-async def test_markdown_is_rendered(panel: Any) -> None:
-    show, _, _thread, _act = panel
-    side = await show("report.md")
+async def test_markdown_is_rendered(panel: CanvasPage) -> None:
+    side = await panel.show("report.md")
 
     if "Отчёт" not in await side.inner_text():
         raise AssertionError('"Отчёт" in await side.inner_text()')
 
 
-async def test_unsupported_format_is_explained(panel: Any) -> None:
+async def test_unsupported_format_is_explained(panel: CanvasPage) -> None:
     """Неподдерживаемый формат: панель объясняет, а не молчит и не врёт.
 
     Имени файла в панели нет намеренно: шапки у канваса убраны, объяснение
     живёт по центру пустой панели.
     """
-    show, _, _thread, _act = panel
-    side = await show("data.bin")
+    side = await panel.show("data.bin")
     text = await side.inner_text()
 
     if E2eTexts().head(CanvasNote.UNSUPPORTED.value) not in text:
         raise AssertionError(f"the unsupported format is not explained: {text!r}")
 
 
-async def test_broken_spec_verdict_reaches_server(panel: Any) -> None:
-    """Ошибку синтаксиса видит только браузер: плашка в панели, вердикт — серверу."""
-    show, probe, _thread, _act = panel
-    reports = probe.reports
-    side = await show("broken.mmd")
+async def test_broken_spec_verdict_reaches_server(panel: CanvasPage) -> None:
+    """Ошибку синтаксиса видит только браузер: плашка в панели, вердикт — серверу.
+
+    Вердикт берётся по метке именно этого показа: сервер ждёт его, прежде
+    чем ответить на действие, поэтому к концу show он уже отправлен.
+    """
+    side = await panel.show("broken.mmd")
     text = await side.inner_text()
+    nonce = await panel.page.evaluate(PanelScript.NONCE)
 
     if E2eTexts().head(E2eTexts.DIAGRAM_FAILED) not in text:
         raise AssertionError(f"the diagram failure is not shown: {text!r}")
     if "Parse error" not in text:
         raise AssertionError('"Parse error" in text')
 
-    failures = [
-        body for body in reports if '"ok": false' in body or '"ok":false' in body
-    ]
-    if not (failures):
-        raise AssertionError("браузер не отправил canvas_render_status с ошибкой")
-    if "Parse error" not in failures[-1]:
-        raise AssertionError('"Parse error" in failures[-1]')
+    verdicts: list[Mapping[str, Any]] = []
+    for verdict in panel.probe.verdicts:
+        if verdict["nonce"] == nonce:
+            verdicts.append(verdict)
+
+    if len(verdicts) != 1:
+        raise AssertionError(f"expected one render verdict of show {nonce}: {verdicts}")
+    if verdicts[0]["ok"] is not False:
+        raise AssertionError(f"the browser reported a broken spec as drawn: {verdicts}")
+    if "Parse error" not in verdicts[0]["error"]:
+        raise AssertionError(f"the verdict carries no mermaid error: {verdicts}")
 
 
-async def test_diagram_fills_the_panel(panel: Any) -> None:
+async def test_diagram_fills_the_panel(panel: CanvasPage) -> None:
     """Диаграмма занимает всю панель: mermaid отдаёт svg в своих пикселях."""
-    show, _, _thread, _act = panel
-    side = await show("flow.mmd")
+    side = await panel.show("flow.mmd")
 
     box = await side.bounding_box()
     svg = await side.locator('div[style*="transform-origin"] svg').first.bounding_box()
@@ -719,36 +991,29 @@ async def test_diagram_fills_the_panel(panel: Any) -> None:
         raise AssertionError('svg["height"] > box["height"] * 0.8')
 
 
-async def test_wheel_does_not_zoom_in_the_panel(panel: Any) -> None:
+async def test_wheel_does_not_zoom_in_the_panel(panel: CanvasPage) -> None:
     """Колесо в панели листает страницу; зум остаётся полноэкранному режиму."""
-    show, _, _thread, _act = panel
-    side = await show("flow.mmd")
-    read = (
-        "() => document.querySelector("
-        "'#side-view-content div[style*=\"transform-origin\"] svg')"
-        ".parentElement.style.transform"
-    )
-    page = side.page
+    side = await panel.show("flow.mmd")
+    scene = side.locator('div[style*="transform-origin"]')
+    page = panel.page
 
-    before = await page.evaluate(read)
+    before = await scene.evaluate(PanelScript.TRANSFORM)
     # наводим в центр: сверху висит кнопка закрытия панели
     box = await side.bounding_box()
     if not (box):
         raise AssertionError("box")
     await page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
-    await page.mouse.wheel(0, -400)
-    await page.wait_for_timeout(400)
+    await panel.wheel(-400)
 
-    if await page.evaluate(read) != before:
-        raise AssertionError("await page.evaluate(read) == before")
+    after = await scene.evaluate(PanelScript.TRANSFORM)
+    if after != before:
+        raise AssertionError(f"the wheel zoomed the panel: {before!r} -> {after!r}")
 
 
-async def test_switching_file_does_not_reopen_the_panel(panel: Any) -> None:
+async def test_switching_file_does_not_reopen_the_panel(panel: CanvasPage) -> None:
     """Открытая панель меняет содержимое сама: анимация открытия не повторяется."""
-    show, _, thread, _act = panel
-    other = _tool_view(thread, "report.md")
-    side = await show("flow.mmd")
-    page = side.page
+    side = await panel.show("flow.mmd")
+    page = panel.page
 
     await page.evaluate(
         """() => {
@@ -761,12 +1026,7 @@ async def test_switching_file_does_not_reopen_the_panel(panel: Any) -> None:
         }"""
     )
 
-    await page.evaluate(
-        """([path, mime]) => window.dispatchEvent(
-            new CustomEvent('boba:canvas', {detail: {path, mime}}))""",
-        [other, ContentMime.of_name(other)],
-    )
-    await page.wait_for_timeout(2500)
+    await panel.switch("report.md")
 
     if "Отчёт" not in await side.inner_text():
         raise AssertionError('"Отчёт" in await side.inner_text()')
@@ -784,17 +1044,15 @@ async def test_switching_file_does_not_reopen_the_panel(panel: Any) -> None:
         raise AssertionError('await page.evaluate("() => window.__reopens") == 0')
 
 
-async def test_controls_share_one_alignment(panel: Any) -> None:
+async def test_controls_share_one_alignment(panel: CanvasPage) -> None:
     """Кнопки шапки — один ряд по стандарту chainlit: 36px, закрытие справа.
 
     Родной «назад» панели спрятан: закрытие живёт последней кнопкой ряда,
     как в полноэкранном режиме.
     """
-    show, _, _thread, _act = panel
-    side = await show("flow.mmd")
-    page = side.page
+    await panel.show("flow.mmd")
 
-    geometry = await page.evaluate(
+    geometry = await panel.page.evaluate(
         """() => {
             const panel = document.querySelector('#side-view-content')
               .closest('.bg-card').getBoundingClientRect();
@@ -835,18 +1093,16 @@ async def test_controls_share_one_alignment(panel: Any) -> None:
         raise AssertionError('abs(last["right"] - 25) <= 4')
 
 
-async def test_fullscreen_controls_are_on_the_close_line(panel: Any) -> None:
+async def test_fullscreen_controls_are_on_the_close_line(panel: CanvasPage) -> None:
     """В полноэкранном режиме зум стоит на одной линии с кнопкой закрытия.
 
     Полный экран — CSS-оверлей той же сцены (data-full), а не отдельный
     диалог: DOM не пересоздаётся при разворачивании.
     """
-    show, _, _thread, _act = panel
-    side = await show("flow.mmd")
-    page = side.page
+    await panel.show("flow.mmd")
+    page = panel.page
 
-    await side.locator('button[data-canvas-action="fullscreen"]').click()
-    await page.wait_for_timeout(500)
+    await panel.expand()
 
     rows = await page.evaluate(
         """() => {
@@ -861,8 +1117,7 @@ async def test_fullscreen_controls_are_on_the_close_line(panel: Any) -> None:
               });
         }"""
     )
-    await page.keyboard.press("Escape")
-    await page.wait_for_timeout(300)
+    await panel.collapse()
 
     if not (rows):
         raise AssertionError("rows")
@@ -870,16 +1125,15 @@ async def test_fullscreen_controls_are_on_the_close_line(panel: Any) -> None:
         raise AssertionError("max(rows) - min(rows) <= 2")
 
 
-async def test_broken_diagram_keeps_the_control_row(panel: Any) -> None:
+async def test_broken_diagram_keeps_the_control_row(panel: CanvasPage) -> None:
     """Панель со сломанной диаграммой — та же панель: ряд кнопок обязан быть.
 
     Раньше аварийные ветки вьюверов рисовались мимо рамки, и пользователь
     оставался без зума, полноэкранного режима и закрытия.
     """
-    show, _, _thread, _act = panel
-    side = await show("broken.mmd")
+    await panel.show("broken.mmd")
 
-    labels = await side.page.evaluate(
+    labels = await panel.page.evaluate(
         """() => [...document.querySelectorAll(
             '#side-view-content button[data-canvas-action]'
         )].map(b => b.getAttribute('data-canvas-action'))"""
@@ -895,12 +1149,11 @@ async def test_broken_diagram_keeps_the_control_row(panel: Any) -> None:
         raise AssertionError('"reset-view" in labels')
 
 
-async def test_unsupported_format_keeps_the_control_row(panel: Any) -> None:
+async def test_unsupported_format_keeps_the_control_row(panel: CanvasPage) -> None:
     """Объяснение «формат не показать» тоже живёт в общей рамке."""
-    show, _, _thread, _act = panel
-    side = await show("data.bin")
+    await panel.show("data.bin")
 
-    labels = await side.page.evaluate(
+    labels = await panel.page.evaluate(
         """() => [...document.querySelectorAll(
             '#side-view-content button[data-canvas-action]'
         )].map(b => b.getAttribute('data-canvas-action'))"""
@@ -910,41 +1163,31 @@ async def test_unsupported_format_keeps_the_control_row(panel: Any) -> None:
         raise AssertionError('labels[-2:] == ["fullscreen", "close"]')
 
 
-async def test_file_link_does_not_depend_on_the_session(panel: Any) -> None:
+async def test_file_link_does_not_depend_on_the_session(panel: CanvasPage) -> None:
     """Ссылка панели адресует файл, а не запись в памяти сессии.
 
     Сессионная ссылка умирала вместе с сокетом (перезапуск приложения,
     переподключение вкладки), и картинка молча превращалась в битый img.
     """
-    show, _, thread, _act = panel
-    side = await show("chart.svg")
+    side = await panel.show("chart.svg")
 
-    src = await side.page.evaluate(
-        "() => document.querySelector('#side-view-content img').src"
-    )
+    src = await side.locator("img").evaluate("img => img.src")
 
     if "session_id" in src:
         raise AssertionError('"session_id" not in src')
-    if f"/canvas/{thread}/upload/chart.svg" not in src:
-        raise AssertionError('f"/canvas/{thread}/upload/chart.svg" in src')
+    if f"/canvas/{panel.thread}/upload/chart.svg" not in src:
+        raise AssertionError(f"the link does not address the file: {src}")
 
 
-async def test_panel_switches_after_a_render_error(panel: Any) -> None:
+async def test_panel_switches_after_a_render_error(panel: CanvasPage) -> None:
     """Сломанная диаграмма не должна запирать панель: следующий файл рисуется."""
-    show, _, thread, _act = panel
-    side = await show("broken.mmd")
-    page = side.page
+    side = await panel.show("broken.mmd")
 
     shown = await side.inner_text()
     if E2eTexts().head(E2eTexts.DIAGRAM_FAILED) not in shown:
         raise AssertionError(f"the diagram failure is not shown: {shown!r}")
 
-    await page.evaluate(
-        """([path, mime]) => window.dispatchEvent(
-            new CustomEvent('boba:canvas', {detail: {path, mime}}))""",
-        [_tool_view(thread, "flow.mmd"), ContentMime.MERMAID.value],
-    )
-    await page.wait_for_timeout(3000)
+    await panel.switch("flow.mmd")
 
     text = await side.inner_text()
     if "Доход" not in text:
@@ -953,7 +1196,18 @@ async def test_panel_switches_after_a_render_error(panel: Any) -> None:
         raise AssertionError(f"the diagram is shown as failed: {text!r}")
 
 
-async def test_stream_channel_delivers_to_the_panel(panel: Any) -> None:
+async def test_switch_to_the_same_spec_draws_it(panel: CanvasPage) -> None:
+    """Смена на диаграмму с той же спекой рисует её заново: у нового показа
+    свой вьювер, и svg прошлого показа не сбрасывается в вечное «рисуется»."""
+    side = await panel.show("flow.mmd")
+
+    await panel.switch("flow-copy.mmd")
+
+    if await side.locator('div[style*="transform-origin"] svg').count() != 1:
+        raise AssertionError("the copy of the diagram is not drawn into an svg")
+
+
+async def test_stream_channel_delivers_to_the_panel(panel: CanvasPage) -> None:
     """Канал живого вывода доезжает до DOM панели.
 
     Ход агента в e2e не гоняется, поэтому потока нет — но объяснение
@@ -961,33 +1215,26 @@ async def test_stream_channel_delivers_to_the_panel(panel: Any) -> None:
     снапшоты окна: доставка action -> канал -> сокет -> DOM проверяется
     без инструмента.
     """
-    _show, _, _thread, act = panel
-    side = await act("canvas_stream", {"call_id": "e2e-нет-такого-вызова"})
+    side = await panel.act("canvas_stream", {"call_id": "e2e-нет-такого-вызова"})
 
     shown = await side.inner_text()
     if E2eTexts().head(CanvasNote.GONE.value) not in shown:
         raise AssertionError(f"the missing journal is not explained: {shown!r}")
 
 
-async def test_panel_close_button_closes_the_panel(panel: Any) -> None:
-    """Закрытие в ряду кнопок реально закрывает панель канваса."""
-    show, _, _thread, _act = panel
-    side = await show("report.md")
-    page = side.page
+async def test_panel_close_button_closes_the_panel(panel: CanvasPage) -> None:
+    """Закрытие в ряду кнопок реально закрывает панель канваса: close ждёт,
+    пока панель уйдёт со страницы, и падает, если она осталась."""
+    await panel.show("report.md")
 
-    await side.locator('button[data-canvas-action="close"]').click()
-    await page.wait_for_timeout(1500)
-
-    if await page.locator("#side-view-content").count() != 0:
-        raise AssertionError('await page.locator("#side-view-content").count() == 0')
+    await panel.close()
 
 
 @pytest.mark.parametrize("name", ["report.md", "report.pdf"])
-async def test_bar_survives_scrolling(panel: Any, name: str) -> None:
+async def test_bar_survives_scrolling(panel: CanvasPage, name: str) -> None:
     """Прокрутка содержимого не уводит шапку: кнопки доступны всегда."""
-    show, _, _thread, _act = panel
-    side = await show(name)
-    page = side.page
+    await panel.show(name)
+    page = panel.page
 
     before = await page.evaluate(
         """() => document.querySelector(
@@ -1004,7 +1251,7 @@ async def test_bar_survives_scrolling(panel: Any, name: str) -> None:
             }
         }"""
     )
-    await page.wait_for_timeout(300)
+    await page.evaluate(PanelScript.SETTLED)
 
     after = await page.evaluate(
         """() => {
@@ -1022,21 +1269,17 @@ async def test_bar_survives_scrolling(panel: Any, name: str) -> None:
         raise AssertionError('abs(after["top"] - before) <= 2')
 
 
-async def _rewrite(thread_id: str, name: str, blob: bytes) -> None:
-    """Переписать файл workspace: так его меняет инструмент между показами."""
-    await _store(thread_id, {name: blob})
-
-
-async def test_diagram_redraws_in_place_when_the_file_changes(panel: Any) -> None:
+async def test_diagram_redraws_in_place_when_the_file_changes(
+    panel: CanvasPage,
+) -> None:
     """Файл спеки переписан — диаграмма перерисовалась на месте.
 
     Содержимое не едет пушем: слежение шлёт сигнал, фронт сам забирает
     свежую спеку и рендерит её в той же панели — штамп на DOM переживает
     обновление, панель не переоткрывается.
     """
-    show, _, thread, _act = panel
-    side = await show("flow.mmd")
-    page = side.page
+    side = await panel.show("flow.mmd")
+    page = panel.page
 
     if "Доход" not in await side.inner_text():
         raise AssertionError('"Доход" in await side.inner_text()')
@@ -1049,19 +1292,10 @@ async def test_diagram_redraws_in_place_when_the_file_changes(panel: Any) -> Non
         }"""
     )
 
-    await _rewrite(
-        thread, "flow.mmd", "flowchart LR\n    A[Доход] --> C[Прибыль]\n".encode()
+    await panel.rewrite(
+        "flow.mmd", "flowchart LR\n    A[Доход] --> C[Прибыль]\n".encode()
     )
-
-    redrawn = False
-    for _ in range(24):
-        if "Прибыль" in await side.inner_text():
-            redrawn = True
-            break
-        await page.wait_for_timeout(500)
-
-    if not redrawn:
-        raise AssertionError("диаграмма не перерисовалась по сигналу слежения")
+    await panel.await_text("Прибыль")
 
     stamp = await page.evaluate(
         """() => document.querySelector(
@@ -1072,22 +1306,20 @@ async def test_diagram_redraws_in_place_when_the_file_changes(panel: Any) -> Non
         raise AssertionError("панель пересоздалась при обновлении диаграммы")
 
 
-async def test_zoom_buttons_scale_the_diagram(panel: Any) -> None:
-    """Кнопки зума меняют масштаб сцены; сброс возвращает исходный вид."""
-    show, _, _thread, _act = panel
-    side = await show("flow.mmd")
-    page = side.page
+async def test_zoom_buttons_scale_the_diagram(panel: CanvasPage) -> None:
+    """Кнопки зума меняют масштаб сцены; сброс возвращает исходный вид.
 
-    read = (
-        "() => document.querySelector("
-        "'#side-view-content div[style*=\"transform-origin\"]').style.transform"
-    )
+    Клик — дискретное событие: React применяет его состояние до того, как
+    клик вернётся, поэтому масштаб читается сразу.
+    """
+    side = await panel.show("flow.mmd")
+    scene = side.locator('div[style*="transform-origin"]')
 
-    base = await page.evaluate(read)
+    base = await scene.evaluate(PanelScript.TRANSFORM)
     await side.locator('button[data-canvas-action="zoom-in"]').click()
-    zoomed = await page.evaluate(read)
+    zoomed = await scene.evaluate(PanelScript.TRANSFORM)
     await side.locator('button[data-canvas-action="reset-view"]').click()
-    reset = await page.evaluate(read)
+    reset = await scene.evaluate(PanelScript.TRANSFORM)
 
     if "scale(1)" not in base:
         raise AssertionError('"scale(1)" in base')
@@ -1095,43 +1327,6 @@ async def test_zoom_buttons_scale_the_diagram(panel: Any) -> None:
         raise AssertionError('"scale(1.25)" in zoomed')
     if "scale(1)" not in reset:
         raise AssertionError('"scale(1)" in reset')
-
-
-FULL_GEOMETRY = """() => {
-    const stage = document.querySelector('[data-canvas-panel][data-full="true"]');
-    if (!stage) return null;
-    const box = stage.getBoundingClientRect();
-    return {
-        width: box.width,
-        height: box.height,
-        left: box.left,
-        top: box.top,
-        winWidth: window.innerWidth,
-        winHeight: window.innerHeight,
-        hosted: stage.parentElement === (
-            document.getElementById('root') || document.body),
-        transformed: (() => {
-            let node = stage.parentElement;
-            while (node && node !== document.documentElement) {
-                if (getComputedStyle(node).transform !== 'none') return true;
-                node = node.parentElement;
-            }
-            return false;
-        })(),
-    };
-}"""
-
-
-async def _expand(side: Any) -> Any:
-    """Развернуть панель на весь экран и вернуть геометрию сцены."""
-    await side.locator('button[data-canvas-action="fullscreen"]').first.click()
-    await side.page.wait_for_timeout(400)
-    return await side.page.evaluate(FULL_GEOMETRY)
-
-
-async def _collapse(page: Any) -> None:
-    await page.keyboard.press("Escape")
-    await page.wait_for_timeout(400)
 
 
 def _assert_covers_window(geometry: Any, label: str) -> None:
@@ -1152,18 +1347,17 @@ def _assert_covers_window(geometry: Any, label: str) -> None:
         )
 
 
-async def test_fullscreen_covers_the_whole_window(panel: Any) -> None:
+async def test_fullscreen_covers_the_whole_window(panel: CanvasPage) -> None:
     """Полный экран занимает окно целиком, а не рамку панели.
 
     Панель chainlit анимируется трансформацией, а position:fixed внутри
     трансформированного предка меряется от него — поэтому сцена уезжает в
     body. Проверяем реальную геометрию, а не атрибут разворачивания.
     """
-    show, _, _thread, _act = panel
-    side = await show("flow.mmd")
+    await panel.show("flow.mmd")
 
-    geometry = await _expand(side)
-    await _collapse(side.page)
+    geometry = await panel.expand()
+    await panel.collapse()
 
     _assert_covers_window(geometry, "диаграмма")
     if geometry["hosted"] is not True:
@@ -1172,28 +1366,24 @@ async def test_fullscreen_covers_the_whole_window(panel: Any) -> None:
         raise AssertionError("у сцены остался трансформированный предок: fixed съедет")
 
 
-async def test_fullscreen_covers_the_window_for_every_viewer(panel: Any) -> None:
+async def test_fullscreen_covers_the_window_for_every_viewer(panel: CanvasPage) -> None:
     """Каждый вьювер разворачивается на всё окно: рамка одна на все типы."""
-    show, _, _thread, _act = panel
-
     for name in ("chart.png", "report.md", "data.bin", "notes.log", "report.pdf"):
-        side = await show(name)
-        geometry = await _expand(side)
-        await _collapse(side.page)
+        await panel.show(name)
+        geometry = await panel.expand()
+        await panel.collapse()
 
         _assert_covers_window(geometry, name)
 
 
-async def test_collapse_returns_the_scene_into_the_panel(panel: Any) -> None:
+async def test_collapse_returns_the_scene_into_the_panel(panel: CanvasPage) -> None:
     """Сворачивание возвращает узел в панель: содержимое снова внутри неё."""
-    show, _, _thread, _act = panel
-    side = await show("flow.mmd")
-    page = side.page
+    await panel.show("flow.mmd")
 
-    await _expand(side)
-    await _collapse(page)
+    await panel.expand()
+    await panel.collapse()
 
-    placement = await page.evaluate(
+    placement = await panel.page.evaluate(
         """() => {
             const stage = document.querySelector('[data-canvas-panel]');
             const panel = document.querySelector('#side-view-content');
@@ -1215,24 +1405,18 @@ async def test_collapse_returns_the_scene_into_the_panel(panel: Any) -> None:
         raise AssertionError("в корне остался осиротевший узел сцены")
 
 
-async def test_zoom_survives_expanding(panel: Any) -> None:
+async def test_zoom_survives_expanding(panel: CanvasPage) -> None:
     """Разворачивание не сбрасывает состояние вьювера: масштаб переживает его."""
-    show, _, _thread, _act = panel
-    side = await show("flow.mmd")
-    page = side.page
-
-    read = (
-        "() => document.querySelector("
-        "'[data-canvas-stage] div[style*=\"transform-origin\"]').style.transform"
-    )
+    side = await panel.show("flow.mmd")
+    scene = panel.page.locator('[data-canvas-stage] div[style*="transform-origin"]')
 
     await side.locator('button[data-canvas-action="zoom-in"]').first.click()
-    before = await page.evaluate(read)
+    before = await scene.evaluate(PanelScript.TRANSFORM)
 
-    await _expand(side)
-    expanded = await page.evaluate(read)
-    await _collapse(page)
-    collapsed = await page.evaluate(read)
+    await panel.expand()
+    expanded = await scene.evaluate(PanelScript.TRANSFORM)
+    await panel.collapse()
+    collapsed = await scene.evaluate(PanelScript.TRANSFORM)
 
     if "scale(1.25)" not in before:
         raise AssertionError('"scale(1.25)" in before')
@@ -1242,13 +1426,11 @@ async def test_zoom_survives_expanding(panel: Any) -> None:
         raise AssertionError("масштаб сбросился при сворачивании")
 
 
-async def test_panel_never_scrolls_horizontally(panel: Any) -> None:
+async def test_panel_never_scrolls_horizontally(panel: CanvasPage) -> None:
     """Содержимое не выталкивает панель вбок: горизонтальной прокрутки нет."""
-    show, _, _thread, _act = panel
-
     for name in ("flow.mmd", "report.md", "chart.png", "report.pdf"):
-        side = await show(name)
-        overflow = await side.page.evaluate(
+        await panel.show(name)
+        overflow = await panel.page.evaluate(
             """() => {
                 const panel = document.querySelector('#side-view-content');
                 return panel.scrollWidth - panel.clientWidth;
@@ -1262,14 +1444,12 @@ async def test_panel_never_scrolls_horizontally(panel: Any) -> None:
 # ——— Вид: слои, фон, раскладка ———
 
 
-async def test_fullscreen_covers_the_chat_underneath(panel: Any) -> None:
+async def test_fullscreen_covers_the_chat_underneath(panel: CanvasPage) -> None:
     """Полный экран перекрывает ленту: клик в центре попадает в сцену."""
-    show, _, _thread, _act = panel
-    side = await show("flow.mmd")
-    page = side.page
+    await panel.show("flow.mmd")
 
-    await _expand(side)
-    hit = await page.evaluate(
+    await panel.expand()
+    hit = await panel.page.evaluate(
         """() => {
             const stage = document.querySelector(
               '[data-canvas-panel][data-full="true"]');
@@ -1283,7 +1463,7 @@ async def test_fullscreen_covers_the_chat_underneath(panel: Any) -> None:
             };
         }"""
     )
-    await _collapse(page)
+    await panel.collapse()
 
     if hit["inside"] is not True:
         raise AssertionError("лента перекрывает полноэкранную сцену")
@@ -1293,14 +1473,12 @@ async def test_fullscreen_covers_the_chat_underneath(panel: Any) -> None:
         raise AssertionError(f"z-index сцены слишком мал: {hit['zIndex']}")
 
 
-async def test_fullscreen_body_fills_the_height(panel: Any) -> None:
+async def test_fullscreen_body_fills_the_height(panel: CanvasPage) -> None:
     """Тело занимает всё под шапкой: содержимое не жмётся в верхнюю полосу."""
-    show, _, _thread, _act = panel
-    side = await show("report.md")
-    page = side.page
+    await panel.show("report.md")
 
-    await _expand(side)
-    layout = await page.evaluate(
+    await panel.expand()
+    layout = await panel.page.evaluate(
         """() => {
             // шапку узнаём по строке статуса, тело — следующий за ней блок
             const status = document.querySelector(
@@ -1317,7 +1495,7 @@ async def test_fullscreen_body_fills_the_height(panel: Any) -> None:
             };
         }"""
     )
-    await _collapse(page)
+    await panel.collapse()
 
     if layout["barHeight"] <= 0:
         raise AssertionError("шапка не видна в полноэкранном режиме")
@@ -1328,12 +1506,11 @@ async def test_fullscreen_body_fills_the_height(panel: Any) -> None:
         raise AssertionError("тело не занимает высоту под шапкой")
 
 
-async def test_image_fits_without_overflow(panel: Any) -> None:
+async def test_image_fits_without_overflow(panel: CanvasPage) -> None:
     """Картинка вписана в панель, а не торчит за её границами."""
-    show, _, _thread, _act = panel
-    side = await show("chart.png")
+    await panel.show("chart.png")
 
-    fits = await side.page.evaluate(
+    fits = await panel.page.evaluate(
         """() => {
             const img = document.querySelector('#side-view-content img');
             const box = img.getBoundingClientRect();
@@ -1347,12 +1524,11 @@ async def test_image_fits_without_overflow(panel: Any) -> None:
         raise AssertionError("картинка выходит за границы панели")
 
 
-async def test_log_is_monospaced(panel: Any) -> None:
+async def test_log_is_monospaced(panel: CanvasPage) -> None:
     """Журнал показывается моноширинным: колонки лога не разъезжаются."""
-    show, _, _thread, _act = panel
-    side = await show("notes.log")
+    await panel.show("notes.log")
 
-    family = await side.page.evaluate(
+    family = await panel.page.evaluate(
         """() => getComputedStyle(
             document.querySelector('#side-view-content pre')).fontFamily"""
     )
@@ -1364,11 +1540,10 @@ async def test_log_is_monospaced(panel: Any) -> None:
 # ——— Поведение: обновление файлов по сигналу слежения ———
 
 
-async def test_markdown_reloads_when_the_file_changes(panel: Any) -> None:
+async def test_markdown_reloads_when_the_file_changes(panel: CanvasPage) -> None:
     """Переписанный markdown перечитывается панелью без её переоткрытия."""
-    show, _, thread, _act = panel
-    side = await show("report.md")
-    page = side.page
+    await panel.show("report.md")
+    page = panel.page
 
     await page.evaluate(
         """() => {
@@ -1377,97 +1552,69 @@ async def test_markdown_reloads_when_the_file_changes(panel: Any) -> None:
         }"""
     )
 
-    await _rewrite(thread, "report.md", "# Отчёт\n\n- прибыль: 1 234\n".encode())
-
-    updated = False
-    for _ in range(24):
-        if "прибыль" in await side.inner_text():
-            updated = True
-            break
-        await page.wait_for_timeout(500)
+    await panel.rewrite("report.md", "# Отчёт\n\n- прибыль: 1 234\n".encode())
+    await panel.await_text("прибыль")
 
     stamp = await page.evaluate(
         """() => document.querySelector(
             '#side-view-content [data-canvas-stage]').dataset.stamp || ''"""
     )
 
-    if not updated:
-        raise AssertionError("markdown не перечитался по сигналу слежения")
     if stamp != "alive":
         raise AssertionError("панель пересоздалась при обновлении markdown")
 
 
-async def test_image_reloads_when_the_file_changes(panel: Any) -> None:
+async def test_image_reloads_when_the_file_changes(panel: CanvasPage) -> None:
     """Перерисованная картинка подтягивается: ссылка получает метку ревизии."""
-    show, _, thread, _act = panel
-    side = await show("chart.png")
-    page = side.page
-
-    src_of = "() => document.querySelector('#side-view-content img').src"
-    before = await page.evaluate(src_of)
+    side = await panel.show("chart.png")
+    before = await side.locator("img").evaluate("img => img.src")
 
     # тот же валидный PNG: меняется только время записи, и этого довольно —
     # версия файла считается по размеру вместе с ним
-    await _rewrite(thread, "chart.png", PNG)
-
-    changed = False
-    for _ in range(24):
-        if await page.evaluate(src_of) != before:
-            changed = True
-            break
-        await page.wait_for_timeout(500)
-
-    if not changed:
-        raise AssertionError("ссылка картинки не обновилась по сигналу")
+    await panel.rewrite("chart.png", PNG)
+    await panel.until(
+        PanelScript.IMAGE_REVISED, before, "the image link to get a new revision"
+    )
 
     # смена src запускает загрузку заново: ждём её, а не спрашиваем мгновенно
-    await page.wait_for_function(
-        """() => {
-            const img = document.querySelector('#side-view-content img');
-            return !!img && img.complete && img.naturalWidth > 0;
-        }""",
-        timeout=15000,
+    await panel.until(PanelScript.DRAWN, None, "the revised image loaded")
+
+
+async def test_file_after_a_notice_follows_its_changes(panel: CanvasPage) -> None:
+    """Файл, показанный после объяснения, панель продолжает отслеживать.
+
+    Уход с объяснения не снимает слежение следующего показа: у объяснения
+    своя метка, и canvas_leave с ней чужое слежение не трогает.
+    """
+    await panel.show("data.bin")
+    side = await panel.show("chart.png")
+    before = await side.locator("img").evaluate("img => img.src")
+
+    await panel.rewrite("chart.png", PNG)
+    await panel.until(
+        PanelScript.IMAGE_REVISED, before, "the image link to get a new revision"
     )
 
 
 # ——— Поведение: окна текста в панели (файл workspace, не журнал) ———
 
-WINDOW_TIMEOUT_MS = 30000
-"""Окно текста приходит по сокету; под нагрузкой хоста — секунды."""
 
-
-async def _await_text(page: Any, text: str) -> None:
-    """Ждёт, пока окно панели покажет строку text."""
-    await page.wait_for_function(
-        """(text) => {
-            const view = document.querySelector('#side-view-content');
-            return !!view && view.innerText.includes(text);
-        }""",
-        arg=text,
-        polling=250,
-        timeout=WINDOW_TIMEOUT_MS,
-    )
-
-
-async def test_workspace_log_walks_by_windows(panel: Any) -> None:
+async def test_workspace_log_walks_by_windows(panel: CanvasPage) -> None:
     """Текстовый файл workspace листается окнами: «в конец» и «в начало»."""
-    show, _, thread, _act = panel
-    await _rewrite(
-        thread,
+    await panel.rewrite(
         "notes.log",
         "".join(f"N{index:06d},row\n" for index in range(120000)).encode(),
     )
-    side = await show("notes.log")
-    page = side.page
+    side = await panel.show("notes.log")
 
     head = await side.inner_text()
 
     await side.locator('button[data-canvas-action="to-end"]').first.click()
-    await _await_text(page, "N119999,row")
+    await panel.await_text("N119999,row")
     tail = await side.inner_text()
 
     await side.locator('button[data-canvas-action="to-start"]').first.click()
-    await _await_text(page, "N000000,row")
+    await panel.await_text("N000000,row")
     back = await side.inner_text()
 
     if "N000000,row" not in head:
@@ -1480,14 +1627,13 @@ async def test_workspace_log_walks_by_windows(panel: Any) -> None:
         raise AssertionError("«в начало» не вернуло к началу файла")
 
 
-async def test_scrolling_up_loads_previous_window(panel: Any) -> None:
+async def test_scrolling_up_loads_previous_window(panel: CanvasPage) -> None:
     """Прокрутка вверх подтягивает предыдущее окно и не дёргает позицию."""
-    show, _, _thread, _act = panel
-    side = await show("notes.log")
-    page = side.page
+    side = await panel.show("notes.log")
+    page = panel.page
 
     await side.locator('button[data-canvas-action="to-end"]').first.click()
-    await _await_text(page, "N119999,row")
+    await panel.await_text("N119999,row")
 
     before = await page.evaluate(
         """() => {
@@ -1512,17 +1658,16 @@ async def test_scrolling_up_loads_previous_window(panel: Any) -> None:
             }""",
             arg=before,
             polling=500,
-            timeout=WINDOW_TIMEOUT_MS,
+            timeout=CanvasPage.TIMEOUT_MS,
         )
     except PlaywrightTimeout as exc:
         raise AssertionError("прокрутка вверх не подтянула предыдущее окно") from exc
 
 
-async def test_font_size_survives_expanding(panel: Any) -> None:
+async def test_font_size_survives_expanding(panel: CanvasPage) -> None:
     """Размер шрифта переживает разворачивание: состояние сцены одно."""
-    show, _, _thread, _act = panel
-    side = await show("notes.log")
-    page = side.page
+    await panel.show("notes.log")
+    page = panel.page
 
     read = "() => document.querySelector('[data-canvas-stage] pre').style.fontSize"
 
@@ -1530,9 +1675,9 @@ async def test_font_size_survives_expanding(panel: Any) -> None:
     await page.locator('button[data-canvas-action="larger"]').first.click()
     before = await page.evaluate(read)
 
-    await _expand(side)
+    await panel.expand()
     expanded = await page.evaluate(read)
-    await _collapse(page)
+    await panel.collapse()
 
     if before != "16px":
         raise AssertionError(f'before == "16px", получено {before}')
@@ -1540,16 +1685,14 @@ async def test_font_size_survives_expanding(panel: Any) -> None:
         raise AssertionError("размер шрифта сбросился при разворачивании")
 
 
-async def test_scroll_position_survives_expanding(panel: Any) -> None:
+async def test_scroll_position_survives_expanding(panel: CanvasPage) -> None:
     """Прокрутка не прыгает при разворачивании: узел сцены тот же самый."""
-    show, _, thread, _act = panel
-    await _rewrite(
-        thread,
+    await panel.rewrite(
         "notes.log",
         "".join(f"S{index:06d},row\n" for index in range(20000)).encode(),
     )
-    side = await show("notes.log")
-    page = side.page
+    await panel.show("notes.log")
+    page = panel.page
 
     scrollable = await page.evaluate(
         """() => {
@@ -1561,14 +1704,14 @@ async def test_scroll_position_survives_expanding(panel: Any) -> None:
     )
     if scrollable is not True:
         raise AssertionError("содержимое короче окна: прокрутку не проверить")
-    await page.wait_for_timeout(400)
+    await page.evaluate(PanelScript.SETTLED)
 
-    await _expand(side)
+    await panel.expand()
     kept = await page.evaluate(
         """() => document.querySelector(
             '[data-canvas-panel][data-full="true"] [data-canvas-scroll]').scrollTop"""
     )
-    await _collapse(page)
+    await panel.collapse()
 
     if abs(kept - 400) > 4:
         raise AssertionError(f"прокрутка съехала при разворачивании: {kept}")
@@ -1577,44 +1720,34 @@ async def test_scroll_position_survives_expanding(panel: Any) -> None:
 # ——— Поведение: навигация и жизненный цикл панели ———
 
 
-async def test_wheel_zooms_in_fullscreen(panel: Any) -> None:
+async def test_wheel_zooms_in_fullscreen(panel: CanvasPage) -> None:
     """На весь экран колесо зумит — в отличие от панели, где оно листает."""
-    show, _, _thread, _act = panel
-    side = await show("flow.mmd")
-    page = side.page
+    await panel.show("flow.mmd")
+    page = panel.page
+    scene = '[data-canvas-stage] div[style*="transform-origin"]'
 
-    await _expand(side)
-    read = (
-        "() => document.querySelector("
-        "'[data-canvas-stage] div[style*=\"transform-origin\"]').style.transform"
-    )
-    before = await page.evaluate(read)
+    await panel.expand()
+    before = await page.locator(scene).evaluate(PanelScript.TRANSFORM)
 
     viewport = page.viewport_size
+    if viewport is None:
+        raise AssertionError("the page has no viewport size")
     await page.mouse.move(viewport["width"] / 2, viewport["height"] / 2)
     await page.mouse.wheel(0, -400)
-    await page.wait_for_timeout(400)
-    after = await page.evaluate(read)
+    await panel.transformed(scene, before)
 
     # в полном экране сцена живёт в body: кнопки ищем на странице, не в панели
     await page.locator('button[data-canvas-action="reset-view"]').first.click()
-    await _collapse(page)
-
-    if after == before:
-        raise AssertionError("колесо не зумит в полноэкранном режиме")
+    await panel.collapse()
 
 
-async def test_diagram_pans_by_dragging(panel: Any) -> None:
+async def test_diagram_pans_by_dragging(panel: CanvasPage) -> None:
     """Диаграмму можно таскать мышью: сцена сдвигается вслед за курсором."""
-    show, _, _thread, _act = panel
-    side = await show("flow.mmd")
-    page = side.page
+    side = await panel.show("flow.mmd")
+    page = panel.page
+    scene = '#side-view-content div[style*="transform-origin"]'
 
-    read = (
-        "() => document.querySelector("
-        "'#side-view-content div[style*=\"transform-origin\"]').style.transform"
-    )
-    before = await page.evaluate(read)
+    before = await page.locator(scene).evaluate(PanelScript.TRANSFORM)
 
     box = await side.bounding_box()
     if not box:
@@ -1626,120 +1759,79 @@ async def test_diagram_pans_by_dragging(panel: Any) -> None:
     await page.mouse.down()
     await page.mouse.move(start_x - 120, start_y - 60, steps=8)
     await page.mouse.up()
-    await page.wait_for_timeout(300)
+    await panel.transformed(scene, before)
 
-    after = await page.evaluate(read)
     await side.locator('button[data-canvas-action="reset-view"]').first.click()
 
-    if after == before:
-        raise AssertionError("перетаскивание не сдвинуло диаграмму")
 
-
-async def test_panel_reopens_after_closing(panel: Any) -> None:
+async def test_panel_reopens_after_closing(panel: CanvasPage) -> None:
     """Закрытую панель можно открыть снова тем же действием."""
-    show, _, _thread, _act = panel
-    side = await show("report.md")
-    page = side.page
+    await panel.show("report.md")
 
-    await side.locator('button[data-canvas-action="close"]').first.click()
-    await page.wait_for_timeout(1500)
-    if await page.locator("#side-view-content").count() != 0:
-        raise AssertionError("панель не закрылась")
+    await panel.close()
 
-    reopened = await show("flow.mmd")
+    reopened = await panel.show("flow.mmd")
     if "Доход" not in await reopened.inner_text():
         raise AssertionError("панель не открылась повторно")
 
 
-async def test_missing_file_is_explained(panel: Any) -> None:
+async def test_missing_file_is_explained(panel: CanvasPage) -> None:
     """Пропавший файл объясняется в панели, а не роняет её молча."""
-    _show, _, thread, act = panel
-    missing = {"path": _tool_view(thread, "нет-такого.md"), "mime": "text/markdown"}
-    side = await act("canvas_open", missing)
+    missing = {"path": panel.tool_view("нет-такого.md"), "mime": "text/markdown"}
+    side = await panel.act("canvas_open", missing)
 
     text = await side.inner_text()
     if not text.strip():
         raise AssertionError("панель промолчала о пропавшем файле")
 
 
-async def test_theme_change_redraws_the_diagram(panel: Any) -> None:
-    """Смена темы перерисовывает диаграмму: mermaid рисует свою палитру."""
-    show, _, _thread, _act = panel
-    side = await show("flow.mmd")
-    page = side.page
+async def test_theme_change_redraws_the_diagram(panel: CanvasPage) -> None:
+    """Смена темы перерисовывает диаграмму: mermaid рисует свою палитру, и
+    разметка svg меняется туда и обратно."""
+    await panel.show("flow.mmd")
+    page = panel.page
+    toggle = "() => document.documentElement.classList.toggle('dark')"
 
-    read = """() => {
-        const svg = document.querySelector(
-          '#side-view-content div[style*="transform-origin"] svg');
-        return svg ? svg.innerHTML.length : 0;
-    }"""
+    before = await page.evaluate(PanelScript.SVG)
+    await page.evaluate(toggle)
+    await panel.until(PanelScript.SVG_CHANGED, before, "the diagram in the other theme")
 
-    before = await page.evaluate(read)
-    was_dark = await page.evaluate(
-        "() => document.documentElement.classList.contains('dark')"
-    )
-
-    await page.evaluate("() => document.documentElement.classList.toggle('dark')")
-    await page.wait_for_timeout(2500)
-    after = await page.evaluate(read)
-
-    if was_dark != await page.evaluate(
-        "() => document.documentElement.classList.contains('dark')"
-    ):
-        await page.evaluate("() => document.documentElement.classList.toggle('dark')")
-        await page.wait_for_timeout(1500)
-
-    if before <= 0 or after <= 0:
-        raise AssertionError("диаграмма пропала при смене темы")
+    after = await page.evaluate(PanelScript.SVG)
+    await page.evaluate(toggle)
+    await panel.until(PanelScript.SVG_CHANGED, after, "the diagram in the first theme")
 
 
-async def test_buttons_work_in_fullscreen(panel: Any) -> None:
+async def test_buttons_work_in_fullscreen(panel: CanvasPage) -> None:
     """Кнопки в полном экране действительно работают, а не просто нарисованы.
 
     Сцена уезжает из панели, и если поднять её мимо корня React, клики
     перестают доходить до обработчиков — снаружи это выглядит как мёртвые
-    кнопки. Проверяем результат клика, а не его факт.
+    кнопки. Проверяем результат клика, а не его факт: клик — дискретное
+    событие, и React применяет его состояние до того, как клик вернётся.
     """
-    show, _, _thread, _act = panel
-    side = await show("flow.mmd")
-    page = side.page
+    await panel.show("flow.mmd")
+    page = panel.page
+    full = '[data-canvas-panel][data-full="true"]'
+    scene = page.locator(f'{full} div[style*="transform-origin"]')
 
-    await _expand(side)
+    await panel.expand()
+    before = await scene.evaluate(PanelScript.TRANSFORM)
 
-    read = (
-        "() => document.querySelector("
-        '\'[data-canvas-panel][data-full="true"] '
-        'div[style*="transform-origin"]\').style.transform'
-    )
-    before = await page.evaluate(read)
+    await page.locator(f'{full} button[data-canvas-action="zoom-in"]').click()
+    zoomed = await scene.evaluate(PanelScript.TRANSFORM)
 
-    await page.locator(
-        '[data-canvas-panel][data-full="true"] button[data-canvas-action="zoom-in"]'
-    ).click()
-    await page.wait_for_timeout(300)
-    zoomed = await page.evaluate(read)
-
-    await page.locator(
-        '[data-canvas-panel][data-full="true"] button[data-canvas-action="reset-view"]'
-    ).click()
-    await page.wait_for_timeout(300)
-    reset = await page.evaluate(read)
-
-    await page.locator(
-        '[data-canvas-panel][data-full="true"] button[data-canvas-action="close"]'
-    ).click()
-    await page.wait_for_timeout(400)
-    collapsed = await page.evaluate(
-        """() => document.querySelector(
-            '[data-canvas-panel]').getAttribute('data-full')"""
-    )
+    await page.locator(f'{full} button[data-canvas-action="reset-view"]').click()
+    reset = await scene.evaluate(PanelScript.TRANSFORM)
 
     if zoomed == before:
         raise AssertionError("кнопка зума не работает в полном экране")
     if reset != before:
         raise AssertionError("сброс вида не работает в полном экране")
-    if collapsed != "false":
-        raise AssertionError("кнопка закрытия не сворачивает полный экран")
+
+    await page.locator(f'{full} button[data-canvas-action="close"]').click()
+    await panel.until(
+        PanelScript.COLLAPSED, None, "the close button to collapse the full screen"
+    )
 
 
 DOWNLOADABLE = (
@@ -1753,30 +1845,29 @@ DOWNLOADABLE = (
 """Все типы показа: картинка, markdown, диаграмма, лог, pdf и формат без вьювера."""
 
 
-async def test_every_viewer_offers_download(panel: Any) -> None:
+async def test_every_viewer_offers_download(panel: CanvasPage) -> None:
     """Кнопка скачивания есть у любого показанного файла: панель всегда о файле.
 
     Ссылку проставляет база вьюверов, а рисует кнопку общая шапка сцены —
-    поэтому наследники получают её без собственного кода.
+    поэтому наследники получают её без собственного кода. Шапка узнаёт файл
+    показа после монтирования сцены, поэтому кнопку тест ждёт.
     """
-    show, _, _thread, _act = panel
-
     for name in DOWNLOADABLE:
-        side = await show(name)
-        found = await side.locator('button[data-canvas-action="download"]').count()
+        side = await panel.show(name)
+        button = side.locator('button[data-canvas-action="download"]')
 
+        await button.first.wait_for(timeout=CanvasPage.TIMEOUT_MS)
+        found = await button.count()
         if found != 1:
             raise AssertionError(f"{name}: кнопки скачивания нет (найдено {found})")
 
 
-async def test_download_saves_the_shown_file(panel: Any) -> None:
+async def test_download_saves_the_shown_file(panel: CanvasPage) -> None:
     """Кнопка отдаёт именно показанный файл под его собственным именем."""
-    show, _, _thread, _act = panel
-
     for name in ("chart.png", "flow.mmd", "report.md"):
-        side = await show(name)
+        side = await panel.show(name)
 
-        async with side.page.expect_download() as pending:
+        async with panel.page.expect_download() as pending:
             await side.locator('button[data-canvas-action="download"]').click()
 
         saved = await pending.value
@@ -1784,30 +1875,28 @@ async def test_download_saves_the_shown_file(panel: Any) -> None:
             raise AssertionError(f"{name}: скачался как {saved.suggested_filename}")
 
 
-async def test_download_works_in_fullscreen(panel: Any) -> None:
+async def test_download_works_in_fullscreen(panel: CanvasPage) -> None:
     """В полном экране кнопка та же и так же работает."""
-    show, _, _thread, _act = panel
-    side = await show("report.md")
-    page = side.page
+    await panel.show("report.md")
+    page = panel.page
 
-    await _expand(side)
+    await panel.expand()
     async with page.expect_download() as pending:
         await page.locator(
             '[data-canvas-stage] button[data-canvas-action="download"]'
         ).click()
     saved = await pending.value
-    await _collapse(page)
+    await panel.collapse()
 
     if saved.suggested_filename != "report.md":
         raise AssertionError(f"скачался {saved.suggested_filename}")
 
 
-async def test_preview_card_has_no_download_button(panel: Any) -> None:
+async def test_preview_card_has_no_download_button(panel: CanvasPage) -> None:
     """Карточка в ленте не панель: у неё своя ссылка на исходник, не кнопка."""
-    show, _, _thread, _act = panel
-    side = await show("flow.mmd")
+    await panel.show("flow.mmd")
 
-    in_feed = await side.page.evaluate(
+    in_feed = await panel.page.evaluate(
         """() => document.querySelectorAll(
             '.message-content button[data-canvas-action="download"]').length"""
     )
@@ -1816,11 +1905,14 @@ async def test_preview_card_has_no_download_button(panel: Any) -> None:
         raise AssertionError("в карточке ленты не должно быть кнопки скачивания")
 
 
-async def test_hostile_diagram_runs_no_script(panel: Any) -> None:
-    """HTML в подписи и click в спеке mermaid не исполняются (7.6)."""
-    show, _, _thread, _act = panel
-    side = await show("hostile.mmd")
-    page = side.page
+async def test_hostile_diagram_runs_no_script(panel: CanvasPage) -> None:
+    """HTML в подписи и click в спеке mermaid не исполняются (7.6).
+
+    Доказательство — атрибуты svg: без on* и javascript: скрипту не на чем
+    сработать; ловушка window.__boba_pwned лишь подтверждает это.
+    """
+    side = await panel.show("hostile.mmd")
+    page = panel.page
 
     svg = side.locator('div[style*="transform-origin"] svg')
     if await svg.count() <= 0:
@@ -1832,7 +1924,7 @@ async def test_hostile_diagram_runs_no_script(panel: Any) -> None:
     )
     for node in await svg.first.locator("g.node").all():
         await node.click(force=True)
-    await page.wait_for_timeout(500)
+    await page.evaluate(PanelScript.SETTLED)
 
     handlers = await page.evaluate(
         """() => {
@@ -1860,20 +1952,14 @@ async def test_hostile_diagram_runs_no_script(panel: Any) -> None:
         raise AssertionError(f"the diagram ran a script: {pwned!r}")
 
 
-async def test_hostile_svg_runs_no_script(panel: Any) -> None:
+async def test_hostile_svg_runs_no_script(panel: CanvasPage) -> None:
     """SVG со <script> и onload показывается картинкой, скрипт не исполняется."""
-    show, _, _thread, _act = panel
-    side = await show("hostile.svg")
-    page = side.page
+    side = await panel.show("hostile.svg")
+    page = panel.page
 
-    await page.wait_for_function(
-        """() => {
-            const img = document.querySelector('#side-view-content img');
-            return !!img && img.complete && img.naturalWidth > 0;
-        }""",
-        timeout=15000,
-    )
-
+    loaded = await side.locator("img").evaluate(PanelScript.IMAGE_LOADED)
+    if loaded is not True:
+        raise AssertionError("the hostile svg is not shown as a loaded image")
     if await side.locator("svg script").count():
         raise AssertionError("the svg got into the page instead of an <img>")
 
@@ -1882,13 +1968,14 @@ async def test_hostile_svg_runs_no_script(panel: Any) -> None:
         raise AssertionError(f"the svg ran a script: {pwned!r}")
 
 
-async def test_canvas_route_downloads_what_the_browser_would_run(panel: Any) -> None:
+async def test_canvas_route_downloads_what_the_browser_would_run(
+    panel: CanvasPage,
+) -> None:
     """Ссылка канваса открывает в браузере только видео и звук; html, svg и
     pdf скачиваются: первые не исполняются в origin чата (7.6), pdf рисует
     pdf.js на странице чата."""
-    show, _, thread, _act = panel
-    side = await show("chart.png")
-    page = side.page
+    await panel.show("chart.png")
+    page = panel.page
     cookie = await _cookie_header(page.context)
 
     expected = {
@@ -1900,7 +1987,7 @@ async def test_canvas_route_downloads_what_the_browser_would_run(panel: Any) -> 
     }
     for name, kind in expected.items():
         query = urlencode({"mime": ContentMime.of_name(name)})
-        url = f"{BASE}/canvas/{thread}/upload/{name}?{query}"
+        url = f"{BASE}/canvas/{panel.thread}/upload/{name}?{query}"
         response = await page.request.get(url, headers={"cookie": cookie})
         if response.status != 200:
             raise AssertionError(f"GET {url}: expected 200, got {response.status}")
@@ -1910,13 +1997,12 @@ async def test_canvas_route_downloads_what_the_browser_would_run(panel: Any) -> 
             raise AssertionError(f"{name}: expected {kind}, got {disposition!r}")
 
 
-async def test_uploaded_html_is_downloaded(panel: Any) -> None:
+async def test_uploaded_html_is_downloaded(panel: CanvasPage) -> None:
     """Вложение пользователя с html и pdf отдаётся скачиванием, тело — как
     загружено."""
-    show, probe, _thread, _act = panel
-    side = await show("chart.png")
-    page = side.page
-    session_id = probe.session["id"]
+    await panel.show("chart.png")
+    page = panel.page
+    session_id = panel.probe.session["id"]
     cookie = await _cookie_header(page.context)
 
     expected = {
@@ -1948,12 +2034,12 @@ async def test_uploaded_html_is_downloaded(panel: Any) -> None:
             raise AssertionError(f"{name}: expected {kind}, got {disposition!r}")
 
 
-async def test_link_mime_wins_over_the_file_name(panel: Any) -> None:
+async def test_link_mime_wins_over_the_file_name(panel: CanvasPage) -> None:
     """Ссылка называет вид файла сама: pdf без суффикса рисует вьювер pdf,
     документ он запрашивает ссылкой с этим видом, а маршрут отдаёт его как
     pdf на скачивание."""
-    show, _, thread, act = panel
-    page = (await show("chart.png")).page
+    await panel.show("chart.png")
+    page = panel.page
     asked: list[str] = []
 
     def remember(request: Any) -> None:
@@ -1962,9 +2048,9 @@ async def test_link_mime_wins_over_the_file_name(panel: Any) -> None:
 
     page.on("request", remember)
     try:
-        path = _tool_view(thread, "report")
-        side = await act("canvas_open", {"path": path, "mime": "application/pdf"})
-        await _await_text(page, "Alpha page one")
+        path = panel.tool_view("report")
+        side = await panel.act("canvas_open", {"path": path, "mime": "application/pdf"})
+        await panel.await_text("Alpha page one")
     finally:
         page.remove_listener("request", remember)
 
@@ -1990,48 +2076,19 @@ async def test_link_mime_wins_over_the_file_name(panel: Any) -> None:
 
 # ——— PDF: pdf.js из сборки chainlit ———
 
-PDF_TOOLBAR = (
-    "() => {"
-    " const page = document.querySelector('#side-view-content .react-pdf__Page');"
-    " const bar = document.querySelector("
-    "   '#side-view-content [data-canvas-stage] .sticky');"
-    " const canvas = document.querySelector("
-    "   '#side-view-content .react-pdf__Page__canvas');"
-    " const box = canvas.getBoundingClientRect();"
-    " return {"
-    "  bar: bar.innerText.replace(/\\s+/g, ' ').trim(),"
-    "  opacity: getComputedStyle(bar).opacity,"
-    "  width: box.width, height: box.height,"
-    "  text: page.querySelector('.textLayer').innerText,"
-    " };"
-    "}"
-)
-"""Панель pdf.js в сцене: счётчики, видимость, размер холста, текстовый слой."""
 
-
-async def _pdf_state(side: Any) -> Any:
-    return await side.page.evaluate(PDF_TOOLBAR)
-
-
-async def _pdf_click(side: Any, icon: str) -> None:
-    """Кнопка панели pdf.js по её значку lucide; ждёт перерисовку страницы."""
-    await side.locator(f"[data-canvas-stage] button:has(svg.lucide-{icon})").click()
-    await side.page.wait_for_timeout(600)
-
-
-async def test_pdf_is_drawn_by_pdfjs(panel: Any) -> None:
+async def test_pdf_is_drawn_by_pdfjs(panel: CanvasPage) -> None:
     """PDF рисует pdf.js на странице чата: без рамки встроенного вьювера,
     холст страницы и текстовый слой, счётчик страниц и панель кнопок видна
     без наведения; в узком окне панель не уходит вбок."""
-    show, _, _thread, _act = panel
-    side = await show("report.pdf")
-    page = side.page
-    await _await_text(page, "Alpha page one")
+    side = await panel.show("report.pdf")
+    page = panel.page
+    await panel.await_text("Alpha page one")
 
     if await side.locator("iframe").count():
         raise AssertionError("the pdf is drawn in a frame of the browser viewer")
 
-    state = await _pdf_state(side)
+    state = await panel.pdf_state()
     if state["width"] <= 0 or state["height"] <= 0:
         raise AssertionError(f"the page canvas has no size: {state}")
     if "Alpha page one" not in state["text"]:
@@ -2042,95 +2099,90 @@ async def test_pdf_is_drawn_by_pdfjs(panel: Any) -> None:
         raise AssertionError(f"the toolbar is shown without hovering: {state}")
 
     size = page.viewport_size
+    if size is None:
+        raise AssertionError("the page has no viewport size")
     await page.set_viewport_size({"width": 420, "height": 800})
     try:
-        await page.wait_for_timeout(600)
-        overflow = await page.evaluate(
-            """() => {
-                const panel = document.querySelector('#side-view-content');
-                return panel.scrollWidth - panel.clientWidth;
-            }"""
+        await panel.until(
+            PanelScript.PDF_FITS,
+            420,
+            "the pdf drawn in a narrow window without a sideways scroll",
         )
     finally:
         await page.set_viewport_size(size)
 
-    if overflow > 2:
-        raise AssertionError(f"a narrow window scrolls the pdf sideways: {overflow}px")
 
-
-async def test_pdf_turns_pages_and_zooms(panel: Any) -> None:
+async def test_pdf_turns_pages_and_zooms(panel: CanvasPage) -> None:
     """Листание и масштаб: «›» ведёт на вторую страницу и упирается в
     последнюю, «‹» заперта на первой; масштаб шагами по 25 % от 50 % до
     300 %, холст растёт вместе с ним."""
-    show, _, _thread, _act = panel
-    side = await show("report.pdf")
-    page = side.page
-    await _await_text(page, "Alpha page one")
+    side = await panel.show("report.pdf")
+    await panel.await_text("Alpha page one")
 
     previous = side.locator("[data-canvas-stage] button:has(svg.lucide-chevron-left)")
     following = side.locator("[data-canvas-stage] button:has(svg.lucide-chevron-right)")
     if not await previous.is_disabled():
         raise AssertionError("the first page cannot go back")
 
-    await _pdf_click(side, "chevron-right")
-    await _await_text(page, "Beta page two")
-    turned = await _pdf_state(side)
+    await panel.pdf_click("chevron-right")
+    await panel.await_text("Beta page two")
+    turned = await panel.pdf_state()
     if "2 / 2" not in turned["bar"]:
         raise AssertionError(f"the counter follows the page: {turned}")
     if not await following.is_disabled():
         raise AssertionError("the last page cannot go further")
 
-    await _pdf_click(side, "chevron-left")
-    await _await_text(page, "Alpha page one")
+    await panel.pdf_click("chevron-left")
+    await panel.await_text("Alpha page one")
 
-    before = await _pdf_state(side)
-    await _pdf_click(side, "zoom-in")
-    zoomed = await _pdf_state(side)
+    before = await panel.pdf_state()
+    await panel.pdf_click("zoom-in")
+    zoomed = await panel.pdf_state()
     if "125%" not in zoomed["bar"]:
         raise AssertionError(f"one step up is 125%: {zoomed}")
-    if zoomed["width"] <= before["width"] * 1.1:
-        raise AssertionError(f"the canvas grows with the zoom: {before} -> {zoomed}")
+    # холст pdf.js перерисовывает после смены масштаба сам: ждём его рост
+    await panel.until(
+        PanelScript.PDF_WIDER, before["width"] * 1.1, "the canvas to grow with the zoom"
+    )
 
     zoom_in = side.locator("[data-canvas-stage] button:has(svg.lucide-zoom-in)")
     for _ in range(10):
         if await zoom_in.is_disabled():
             break
-        await _pdf_click(side, "zoom-in")
-    if "300%" not in (await _pdf_state(side))["bar"]:
+        await panel.pdf_click("zoom-in")
+    if "300%" not in (await panel.pdf_state())["bar"]:
         raise AssertionError("zooming in stops at 300%")
 
     zoom_out = side.locator("[data-canvas-stage] button:has(svg.lucide-zoom-out)")
     for _ in range(12):
         if await zoom_out.is_disabled():
             break
-        await _pdf_click(side, "zoom-out")
-    smallest = (await _pdf_state(side))["bar"]
+        await panel.pdf_click("zoom-out")
+    smallest = (await panel.pdf_state())["bar"]
     if not re.search(r"(^|\s)50%", smallest):
         raise AssertionError(f"the zoom stops at 50%: {smallest!r}")
 
 
-async def test_pdf_reloads_when_the_file_changes(panel: Any) -> None:
+async def test_pdf_reloads_when_the_file_changes(panel: CanvasPage) -> None:
     """Перезаписанный pdf перечитывается в той же панели по сигналу слежения."""
-    show, _, thread, _act = panel
-    await _rewrite(thread, "revised.pdf", PDF)
-    side = await show("revised.pdf")
-    page = side.page
-    await _await_text(page, "Alpha page one")
+    await panel.rewrite("revised.pdf", PDF)
+    side = await panel.show("revised.pdf")
+    await panel.await_text("Alpha page one")
 
     stage = await side.locator("[data-canvas-stage]").element_handle()
-    await _rewrite(thread, "revised.pdf", PDF_REVISED)
-    await _await_text(page, "Gamma revised")
+    await panel.rewrite("revised.pdf", PDF_REVISED)
+    await panel.await_text("Gamma revised")
 
-    same = await page.evaluate("(stage) => stage.isConnected", stage)
+    same = await panel.page.evaluate("(stage) => stage.isConnected", stage)
     if same is not True:
         raise AssertionError("the panel is rebuilt instead of reloading the document")
 
 
-async def test_pdf_worker_loads_under_the_prefix(panel: Any) -> None:
+async def test_pdf_worker_loads_under_the_prefix(panel: CanvasPage) -> None:
     """Воркер pdf.js берётся из сборки под префиксом чата: запасной
     «fake worker» в главном потоке не поднимается."""
-    show, _, _thread, _act = panel
-    page = (await show("chart.png")).page
+    await panel.show("chart.png")
+    page = panel.page
     workers: list[str] = []
     console: list[str] = []
 
@@ -2143,8 +2195,8 @@ async def test_pdf_worker_loads_under_the_prefix(panel: Any) -> None:
     page.on("worker", on_worker)
     page.on("console", on_console)
     try:
-        await show("report.pdf")
-        await _await_text(page, "Alpha page one")
+        await panel.show("report.pdf")
+        await panel.await_text("Alpha page one")
     finally:
         page.remove_listener("worker", on_worker)
         page.remove_listener("console", on_console)
@@ -2170,28 +2222,57 @@ async def test_pdf_worker_loads_under_the_prefix(panel: Any) -> None:
         raise AssertionError(f"pdf.js fell back to a fake worker: {faked}")
 
 
-async def test_hostile_pdf_runs_no_script(panel: Any) -> None:
+class TabEvents:
+    """Что делает вкладка чата под чужим документом: диалоги, загрузка
+    песочницы скриптов pdf.js и навигация главного фрейма.
+
+    Навигация ловится запросом, который уходит в момент клика, — ждать,
+    пока сменится адрес вкладки, не нужно. Слушает страницу между attach и
+    detach; создаётся тестом враждебного pdf."""
+
+    SANDBOX: ClassVar[str] = "pdf.sandbox"
+
+    def __init__(self, page: Page) -> None:
+        self._page = page
+        self.dialogs: list[str] = []
+        self.sandboxes: list[str] = []
+        self.navigations: list[str] = []
+
+    def attach(self) -> None:
+        self._page.on("dialog", self._on_dialog)
+        self._page.on("request", self._on_request)
+
+    def detach(self) -> None:
+        self._page.remove_listener("dialog", self._on_dialog)
+        self._page.remove_listener("request", self._on_request)
+
+    def _on_dialog(self, dialog: Any) -> None:
+        self.dialogs.append(dialog.message)
+
+    def _on_request(self, request: Any) -> None:
+        if self.SANDBOX in request.url:
+            self.sandboxes.append(request.url)
+
+        if not request.is_navigation_request():
+            return
+
+        if request.frame == self._page.main_frame:
+            self.navigations.append(request.url)
+
+
+async def test_hostile_pdf_runs_no_script(panel: CanvasPage) -> None:
     """JavaScript документа не исполняется: ни при открытии, ни по ссылке,
     ни у поля с вычислением; ссылка javascript: не становится адресом,
     диалогов нет, вкладка чата остаётся на месте, а внешняя ссылка
     открывается новой вкладкой."""
-    show, _, _thread, _act = panel
-    page = (await show("chart.png")).page
-    dialogs: list[str] = []
-    sandboxes: list[str] = []
+    await panel.show("chart.png")
+    page = panel.page
+    events = TabEvents(page)
 
-    def on_dialog(dialog: Any) -> None:
-        dialogs.append(dialog.message)
-
-    def on_request(request: Any) -> None:
-        if "pdf.sandbox" in request.url:
-            sandboxes.append(request.url)
-
-    page.on("dialog", on_dialog)
-    page.on("request", on_request)
+    events.attach()
     try:
-        side = await show("hostile.pdf")
-        await _await_text(page, "Hostile page")
+        side = await panel.show("hostile.pdf")
+        await panel.await_text("Hostile page")
         address = page.url
 
         links = side.locator(".annotationLayer a")
@@ -2211,10 +2292,9 @@ async def test_hostile_pdf_runs_no_script(panel: Any) -> None:
             await external.click(force=True)
         popup = await opened.value
         await popup.close()
-        await page.wait_for_timeout(500)
+        await page.evaluate(PanelScript.SETTLED)
     finally:
-        page.remove_listener("dialog", on_dialog)
-        page.remove_listener("request", on_request)
+        events.detach()
 
     scripted: list[str] = []
     for href in hrefs:
@@ -2223,10 +2303,12 @@ async def test_hostile_pdf_runs_no_script(panel: Any) -> None:
 
     if scripted:
         raise AssertionError(f"javascript: links reached the page: {scripted}")
-    if dialogs:
-        raise AssertionError(f"the document opened dialogs: {dialogs}")
-    if sandboxes:
-        raise AssertionError(f"the pdf.js scripting sandbox was loaded: {sandboxes}")
+    if events.dialogs:
+        raise AssertionError(f"the document opened dialogs: {events.dialogs}")
+    if events.sandboxes:
+        raise AssertionError(f"the pdf.js sandbox was loaded: {events.sandboxes}")
+    if events.navigations:
+        raise AssertionError(f"a link navigated the chat tab: {events.navigations}")
     if page.url != address:
         raise AssertionError(f"a link led the chat away: {address} -> {page.url}")
 
