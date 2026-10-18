@@ -57,7 +57,7 @@
         auth              = { method = "bearer", token = "${site.llm_token}" }
 
 [profiles.general]
-    display_name            = "General"
+    display_name            = "Общий"
     description             = "Профиль общего назначения: доступны все инструменты"
     default                 = true
     roles                   = ["*"]
@@ -75,7 +75,7 @@
         reasoning_effort = "low"
 
 [profiles.search]
-    display_name          = "Confluence search"
+    display_name          = "Поиск по Confluence"
     description           = "Поиск по Confluence и базе знаний"
     default               = false
     roles                 = ["*"]
