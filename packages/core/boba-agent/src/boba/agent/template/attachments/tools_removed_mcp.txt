@@ -1,0 +1,2 @@
+The following tools are no longer available (their MCP server disconnected). Do not call them:
+{names}

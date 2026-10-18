@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import shlex
 import shutil
 import socket
@@ -14,7 +15,14 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import AsyncIterator, Collection, Coroutine, Sequence
+from collections.abc import (
+    AsyncIterator,
+    Collection,
+    Coroutine,
+    Iterator,
+    Mapping,
+    Sequence,
+)
 from dataclasses import dataclass
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -66,8 +74,15 @@ from boba.mcp_client.client import (
 )
 from boba.stand.names import StandNames
 from boba.stand.site import Stand
-from boba.stand.ui.fake_llm import FakeLlmApp, Reply, ReplyCall, ReplyTurn
+from boba.stand.ui.fake_llm import (
+    FakeLlmApp,
+    OfferedTools,
+    Reply,
+    ReplyCall,
+    ReplyTurn,
+)
 from boba.stand.ui.stand import REPO_ROOT, StandPorts
+from boba.toolkit.mcp import McpToolNames
 
 API_KEY = "sk-aid-acp-test-secret"
 MODEL_NAME = "stand-model"
@@ -303,6 +318,74 @@ class RecordingUpdates(TurnRenderer):
                     found.append(block.text)
 
         return found
+
+
+class ModelRequests:
+    """Запросы фейковой модели теста: системный промпт, предложенные
+    инструменты и всё, что модель прочитала в беседе."""
+
+    APART: ClassVar[str] = "\x00"
+    """Разделитель текстов сообщений: поиск не находит текст на их стыке."""
+
+    def __init__(self, model: FakeModel) -> None:
+        self._model = model
+
+    def last(self) -> Mapping[str, Any]:
+        return self._model.app.requests[-1]
+
+    def read(self) -> str:
+        """Беседа последнего запроса одной строкой: вопросы, служебный
+        контекст и итоги инструментов."""
+        return json.dumps(self.last()["messages"], ensure_ascii=False)
+
+    def saw(self, text: str) -> bool:
+        """Модель прочитала text в последнем запросе дословно: в одном из
+        текстов его сообщений."""
+        apart = self.APART.join(self._texts())
+
+        return text in apart
+
+    def tool_result(self) -> str:
+        """Итог последнего вызова инструмента, как его прочитала модель."""
+        for message in reversed(self.last()["messages"]):
+            if message["role"] == "tool":
+                return str(message["content"])
+
+        msg = f"the last model request carries no tool result: {self.last()}"
+        raise AssertionError(msg)
+
+    def system(self) -> str:
+        for message in self.last()["messages"]:
+            if message["role"] == "system":
+                return json.dumps(message["content"], ensure_ascii=False)
+
+        return ""
+
+    def offered(self) -> OfferedTools:
+        return OfferedTools(self.last(), McpToolNames())
+
+    def offered_names(self) -> list[str]:
+        """Имена инструментов, которые последний запрос предложил модели."""
+        names: list[str] = []
+        for tool in self.last()["tools"]:
+            names.append(tool["function"]["name"])
+
+        return names
+
+    def _texts(self) -> Iterator[str]:
+        """Тексты сообщений последнего запроса: строкой или частями text."""
+        for message in self.last()["messages"]:
+            content = message["content"]
+            if isinstance(content, str):
+                yield content
+                continue
+
+            if not isinstance(content, list):
+                continue
+
+            for part in content:
+                if part["type"] == "text":
+                    yield part["text"]
 
 
 class Agents:
