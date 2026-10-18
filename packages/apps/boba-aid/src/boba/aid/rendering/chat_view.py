@@ -840,7 +840,20 @@ class ChatView:
             return image
 
         try:
-            file_key = CanvasFileUrl.key(self._user_key, address.path)
+            scope = await self._scope()
+        except StorageError as exc:
+            logger.info(
+                "thread %s: attachment %s of question %s stays a download, the "
+                "workspace of the thread is unknown: %s",
+                self._thread_id,
+                link.uri,
+                step_id,
+                exc,
+            )
+            return self._file(link.name, url, mime, step_id, number)
+
+        try:
+            file_key = CanvasFileUrl.key(scope, address.path)
         except ValueError as exc:
             logger.info(
                 "thread %s: attachment %s of question %s is not a file of the "

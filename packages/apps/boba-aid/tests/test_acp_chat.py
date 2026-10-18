@@ -39,6 +39,7 @@ from boba.aid.agent.settings import WorkdirFile
 from boba.aid.chat.ui_text import UiText
 from boba.aid.domain.fields import ThreadMetaField
 from boba.aid.rendering.chat_view import StepText
+from boba.canvas.canvas import CanvasAction, CanvasElement, CanvasKind
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
 from boba.runtime.config import RuntimeConfig
@@ -62,6 +63,7 @@ from boba.stand.ui.stand import (
     StandToolNames,
     StandUrl,
 )
+from boba.toolkit.result import ContentMime
 
 pytestmark = pytest.mark.anyio
 
@@ -1776,6 +1778,65 @@ class TestFeed:
             "CanvasStream",
         ], live
         assert live == replayed, (live, replayed)
+
+    async def test_text_attachments_of_a_question_open_in_the_panel(
+        self, app: StandProcess, cookie: str
+    ) -> None:
+        """Вложения вопроса, которые показывает панель (текст и markdown):
+        ход не падает, у шага вопроса — карточки канваса с путями файлов в
+        workspace сервера, клик по карточке открывает панель с файлом."""
+        text = f"attach {ScenarioName.ANSWER.value}"
+        tab = ChatSocket(app, cookie, str(uuid4()))
+        await tab.open()
+        try:
+            note = tab.upload("note.txt", b"shown text", ContentMime.PLAIN.value)
+            readme = tab.upload("readme.md", b"# shown", ContentMime.MARKDOWN.value)
+            await tab.send(text, (note, readme))
+            await tab.wait_task_end()
+            assert not tab.errors(), (tab.errors(), app.tail(60))
+
+            asked = tab.messages("user_message")[-1]
+            assert asked.get("output") == text, asked
+            question = str(asked.get("id"))
+            assert question in tab.steps(), tab.trace()
+
+            cards: dict[str, dict[str, Any]] = {}
+            for element in tab.elements():
+                if element.get("forId") != question:
+                    continue
+
+                assert element.get("name") == CanvasElement.LINK.value, element
+                cards[str(element["props"]["label"])] = element["props"]
+
+            assert sorted(cards) == ["note.txt", "readme.md"], tab.trace()
+
+            shown = await self._panel(tab, cards["note.txt"])
+            assert shown.get("kind") == CanvasKind.STREAM.value, shown
+            assert shown.get("text") == "shown text", shown
+
+            shown = await self._panel(tab, cards["readme.md"])
+            assert shown.get("kind") == CanvasKind.TEXT.value, shown
+            assert not tab.errors(), (tab.errors(), app.tail(60))
+        finally:
+            await tab.end_session()
+
+    @staticmethod
+    async def _panel(tab: ChatSocket, card: dict[str, Any]) -> dict[str, Any]:
+        """Клик по карточке канваса, как его шлёт фронт: панель открывается
+        элементом CanvasView с файлом карточки, путь которого — под каталогом
+        треда в workspace; итог — содержимое панели."""
+        path = str(card["path"])
+        assert path.endswith(f"/{tab.thread_id}/upload/{card['label']}"), card
+
+        since = len(tab.events)
+        tab.action(CanvasAction.OPEN.value, {"path": path, "mime": str(card["mime"])})
+        at = await tab.wait_event_index("element", since=since)
+        shown = tab.events[at][1]
+        assert shown.get("name") == CanvasElement.VIEW.value, tab.trace()
+        assert shown.get("display") == "side", shown
+        assert shown["props"].get("path") == path, shown
+
+        return shown["props"]
 
     async def test_resumed_tab_draws_the_same_steps_as_the_live_turn(
         self, app: StandProcess, cookie: str

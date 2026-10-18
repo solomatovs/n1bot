@@ -24,7 +24,7 @@ from pydantic import (
     model_validator,
 )
 
-from boba.canvas.keys import ObjectKey, WorkspaceKey
+from boba.canvas.keys import WorkspaceKey
 from boba.canvas.transfer import ContentDisposition
 from boba.identity.errors import RefusalError
 from boba.toolkit.channels import (
@@ -377,25 +377,27 @@ class CanvasViewer(Protocol):
         ...
 
     @abstractmethod
-    async def open(self, key: ObjectKey, mime: str, push: CanvasPush) -> OpenedCanvas:
+    async def open(
+        self, key: WorkspaceKey, mime: str, push: CanvasPush
+    ) -> OpenedCanvas:
         """Показать файл key вида mime через push; вернуть подпись, путь и
         метку показа."""
         ...
 
     @abstractmethod
-    async def link(self, key: ObjectKey, mime: str) -> VisualResult:
+    async def link(self, key: WorkspaceKey, mime: str) -> VisualResult:
         """Ссылка на файл вида mime в ленте, без показа в панели: её рисует
         итог вызова и вживую, и при воспроизведении истории; клик по ней
         открывает файл с тем же mime."""
         ...
 
     @abstractmethod
-    async def content(self, key: ObjectKey, mime: str) -> CanvasContent:
+    async def content(self, key: WorkspaceKey, mime: str) -> CanvasContent:
         """Описание файла вида mime для панели; панель его только доставляет."""
         ...
 
     @abstractmethod
-    def watch_source(self, key: ObjectKey) -> WatchSource | None:
+    def watch_source(self, key: WorkspaceKey) -> WatchSource | None:
         """Источник слежения за файлом; None — за файлом не следят."""
         ...
 
