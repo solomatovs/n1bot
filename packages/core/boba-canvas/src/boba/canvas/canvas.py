@@ -527,12 +527,13 @@ class CanvasWatch:
 
     @classmethod
     def leave(cls, thread_id: str, nonce: str) -> None:
-        """Панель ушла с файла; чужой nonce слежение не трогает."""
+        """Панель ушла с показа nonce: слежение другого показа не трогается,
+        пустая метка тоже ничего не снимает."""
         watch = cls._WATCHES.get(thread_id)
         if watch is None:
             return
 
-        if nonce and watch._nonce != nonce:
+        if watch._nonce != nonce:
             return
 
         cls.drop(thread_id)

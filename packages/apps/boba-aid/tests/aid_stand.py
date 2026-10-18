@@ -56,6 +56,7 @@ from boba.aid.rendering.chat_view import ChatSink, ChatView, StepRole
 from boba.aid.rendering.renderer import NoSurface, RenderSurface, TabSurfaces
 from boba.auth import JwtTokens
 from boba.cancellation import RunCancellation
+from boba.canvas.canvas import CanvasSignal, SignalTransport
 from boba.canvas.journal import StreamSlice
 from boba.canvas.keys import WorkspaceMount
 from boba.config import bind
@@ -1080,6 +1081,21 @@ class SsoStand:
 async def put_bytes(storage: StorageClient, object_key: str, data: bytes | str) -> None:
     """Кладёт в хранилище готовые байты теста: запись у хранилища только потоком."""
     await StorageSeed().put(storage, object_key, data)
+
+
+class FakeTransport(SignalTransport):
+    """Транспорт сигналов слежения канваса в тестах: копит payload'ы сигналов
+    вместо сокетов; dead имитирует тред без живых вкладок."""
+
+    def __init__(self) -> None:
+        self.sent: list[dict[str, Any]] = []
+        self.dead = False
+
+    def alive(self, thread_id: str) -> bool:
+        return not self.dead
+
+    async def send(self, thread_id: str, signal: CanvasSignal) -> None:
+        self.sent.append(signal.payload())
 
 
 async def get_bytes(storage: StorageClient, object_key: str) -> bytes:
