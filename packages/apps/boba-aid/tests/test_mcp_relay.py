@@ -114,11 +114,34 @@ class TestMcpRelay:
         finally:
             await servers.stop()
 
+    ASKING: ClassVar[dict[str, Any]] = {
+        mt.CLIENT_CAPABILITIES_META_KEY: {"elicitation": {"form": {}}},
+    }
+    """_meta агента, который задаёт вопросы пользователю формами."""
+
     @pytest.fixture
     async def legacy_relay(
         self, relay_stand: RelayStand, apps_slot: AppsSlot
     ) -> AsyncIterator[McpRelay]:
         """Ретранслятор над своим сервером редакции 2025-11-25."""
+        servers = self._legacy(apps_slot, 60.0)
+        try:
+            yield relay_stand.relay(servers)
+        finally:
+            await servers.stop()
+
+    @pytest.fixture
+    async def brief_relay(
+        self, relay_stand: RelayStand, apps_slot: AppsSlot
+    ) -> AsyncIterator[McpRelay]:
+        """Ретранслятор над сервером редакции 2025-11-25 со сроком вызова 2 с."""
+        servers = self._legacy(apps_slot, 2.0)
+        try:
+            yield relay_stand.relay(servers)
+        finally:
+            await servers.stop()
+
+    def _legacy(self, apps_slot: AppsSlot, call_timeout_sec: float) -> McpServers:
         endpoint = HttpEndpoint(
             scheme="http",
             host=apps_slot.host,
@@ -126,13 +149,59 @@ class TestMcpRelay:
             path=apps_slot.PATH,
         )
         legacy = McpServerConfig(
-            endpoint=endpoint, connect_timeout_sec=20.0, call_timeout_sec=60.0
+            endpoint=endpoint,
+            connect_timeout_sec=20.0,
+            call_timeout_sec=call_timeout_sec,
         )
-        servers = McpServers(McpServersConfig(servers={"legacy": legacy}))
-        try:
-            yield relay_stand.relay(servers)
-        finally:
-            await servers.stop()
+
+        return McpServers(McpServersConfig(servers={"legacy": legacy}))
+
+    def _loading(self, rows: int, confirm: bool) -> dict[str, Any]:
+        return {
+            "name": "load_rows",
+            "arguments": {"rows": rows, "confirm": confirm},
+            "_meta": self.ASKING,
+        }
+
+    def _retried(
+        self,
+        call: dict[str, Any],
+        asked: mt.InputRequiredResult,
+        answer: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Повтор вызова call с ответом answer на единственный вопрос asked."""
+        assert asked.input_requests is not None, asked
+        [key] = asked.input_requests
+
+        return {
+            **call,
+            "inputResponses": {key: answer},
+            "requestState": asked.request_state,
+        }
+
+    async def _asked(
+        self, relay: McpRelay, server_id: str, call: dict[str, Any]
+    ) -> mt.InputRequiredResult:
+        outcome, _ = await self._answer(
+            relay, self._message(server_id, "tools/call", call)
+        )
+        assert isinstance(outcome, McpResultOutcome), outcome
+
+        return mt.InputRequiredResult.model_validate(outcome.result)
+
+    async def _answers(
+        self, relay: McpRelay, server_id: str, rows: int
+    ) -> list[dict[str, Any]]:
+        """Ответы, которые сервер получил на вопросы load_rows с rows строк."""
+        call = {"name": "answers", "arguments": {"rows": rows}}
+        outcome, _ = await self._answer(
+            relay, self._message(server_id, "tools/call", call)
+        )
+        assert isinstance(outcome, McpResultOutcome), outcome
+        block = mt.CallToolResult.model_validate(outcome.result).content[0]
+        assert isinstance(block, mt.TextContent), block
+
+        return json.loads(block.text)
 
     def _message(
         self, server_id: str, method: str, params: dict[str, Any]
@@ -347,6 +416,151 @@ class TestMcpRelay:
         seen = json.loads(block.text)
         assert sorted(seen["meta"]) == ["progressToken"], seen
         assert seen["info"] == McpServers.OWN.info.model_dump(exclude_none=True)
+
+    @pytest.mark.integration
+    async def test_two_questions_of_the_handshake_era_come_as_input_requests(
+        self, legacy_relay: McpRelay, relay_stand: RelayStand, tab: TabSession
+    ) -> None:
+        """Сервер 2025-11-25 спрашивает дважды посреди одного вызова: агент
+        получает каждый вопрос просьбой о вводе с requestState ретранслятора,
+        повторы с ответами доходят до открытого вызова, итог — по ответам."""
+        server_id = self._server_id(relay_stand, tab, "legacy")
+        call = self._loading(31, True)
+
+        target = await self._asked(legacy_relay, server_id, call)
+        chosen = {"action": "accept", "content": {"table": "sales.orders_stage"}}
+        confirm = await self._asked(
+            legacy_relay, server_id, self._retried(call, target, chosen)
+        )
+        go = {"action": "accept", "content": {"go": True}}
+        done, _ = await self._answer(
+            legacy_relay,
+            self._message(server_id, "tools/call", self._retried(call, confirm, go)),
+        )
+        answers = await self._answers(legacy_relay, server_id, 31)
+
+        assert target.request_state is not None
+        assert target.request_state.startswith(McpRelay.HELD), target
+        assert target.input_requests is not None
+        [asked] = target.input_requests.values()
+        assert isinstance(asked, mt.ElicitRequest), asked
+        assert isinstance(asked.params, mt.ElicitRequestFormParams), asked
+        assert asked.params.message == (
+            "load_rows needs the target table before it can start the copy."
+        )
+        assert confirm.request_state == target.request_state
+        assert confirm.input_requests is not None
+        [again] = confirm.input_requests.values()
+        assert isinstance(again, mt.ElicitRequest), again
+        assert again.params.message == (
+            "load_rows asks to start the copy of 31 rows into sales.orders_stage."
+        )
+        assert isinstance(done, McpResultOutcome), done
+        reply = mt.CallToolResult.model_validate(done.result)
+        assert not reply.is_error, reply
+        assert reply.content == [
+            mt.TextContent(text="loaded 31 rows into sales.orders_stage")
+        ]
+        assert answers == [
+            {
+                "rows": 31,
+                "step": "target",
+                "action": "accept",
+                "content": {"table": "sales.orders_stage"},
+            },
+            {
+                "rows": 31,
+                "step": "confirm",
+                "action": "accept",
+                "content": {"go": True},
+            },
+        ]
+
+    @pytest.mark.integration
+    async def test_declined_question_of_the_handshake_era_reaches_the_server(
+        self, legacy_relay: McpRelay, relay_stand: RelayStand, tab: TabSession
+    ) -> None:
+        server_id = self._server_id(relay_stand, tab, "legacy")
+        call = self._loading(32, False)
+
+        target = await self._asked(legacy_relay, server_id, call)
+        done, _ = await self._answer(
+            legacy_relay,
+            self._message(
+                server_id,
+                "tools/call",
+                self._retried(call, target, {"action": "decline"}),
+            ),
+        )
+        answers = await self._answers(legacy_relay, server_id, 32)
+
+        assert isinstance(done, McpResultOutcome), done
+        reply = mt.CallToolResult.model_validate(done.result)
+        assert reply.is_error, reply
+        assert reply.content == [mt.TextContent(text="the user answered decline")]
+        assert answers == [
+            {"rows": 32, "step": "target", "action": "decline", "content": None}
+        ]
+
+    @pytest.mark.integration
+    async def test_question_without_an_answer_in_time_is_cancelled(
+        self, brief_relay: McpRelay, relay_stand: RelayStand, tab: TabSession
+    ) -> None:
+        """Агент не ответил за срок вызова сервера: сервер получил cancel,
+        вызов убран, поздний повтор — ошибка с причиной."""
+        server_id = self._server_id(relay_stand, tab, "legacy")
+        call = self._loading(33, False)
+
+        target = await self._asked(brief_relay, server_id, call)
+        await asyncio.sleep(3.0)
+        late, _ = await self._answer(
+            brief_relay,
+            self._message(
+                server_id,
+                "tools/call",
+                self._retried(
+                    call, target, {"action": "accept", "content": {"table": "x"}}
+                ),
+            ),
+        )
+        answers = await self._answers(brief_relay, server_id, 33)
+
+        assert isinstance(late, McpErrorOutcome), late
+        assert late.error.code == mt.INVALID_PARAMS
+        assert "names no call the relay holds open" in late.error.message
+        assert "call_timeout_sec of [mcp.servers.legacy]" in late.error.message
+        assert answers == [
+            {"rows": 33, "step": "target", "action": "cancel", "content": None}
+        ]
+
+    @pytest.mark.integration
+    async def test_retry_of_another_registration_is_refused(
+        self, legacy_relay: McpRelay, relay_stand: RelayStand, tab: TabSession
+    ) -> None:
+        """requestState открытого вызова чужой регистрации не отдаёт ему
+        ответ; свой повтор после этого проходит."""
+        server_id = self._server_id(relay_stand, tab, "legacy")
+        other = self._server_id(relay_stand, tab, "legacy")
+        call = self._loading(34, False)
+        chosen = {"action": "accept", "content": {"table": "tmp.orders_copy"}}
+
+        target = await self._asked(legacy_relay, server_id, call)
+        stolen, _ = await self._answer(
+            legacy_relay,
+            self._message(other, "tools/call", self._retried(call, target, chosen)),
+        )
+        done, _ = await self._answer(
+            legacy_relay,
+            self._message(server_id, "tools/call", self._retried(call, target, chosen)),
+        )
+
+        assert isinstance(stolen, McpErrorOutcome), stolen
+        assert "another server registration" in stolen.error.message
+        assert isinstance(done, McpResultOutcome), done
+        reply = mt.CallToolResult.model_validate(done.result)
+        assert reply.content == [
+            mt.TextContent(text="loaded 34 rows into tmp.orders_copy")
+        ]
 
     async def test_tool_for_the_app_is_neither_listed_nor_called(
         self, relay: McpRelay, relay_stand: RelayStand, tab: TabSession

@@ -597,9 +597,19 @@ class AgentLauncher:
 
     def retire(self, launched: LaunchedAgent) -> None:
         """Снимает регистрации остановленного процесса: ретранслятор их больше
-        не принимает."""
+        не принимает, вызовы, открытые для вопросов, отменены."""
+        self.stopped(launched)
         for server in launched.servers:
             self._registrations.revoke(server.server_id)
+
+    def stopped(self, launched: LaunchedAgent) -> None:
+        """Ход процесса остановлен: вызовы серверов прежней редакции, которые
+        ретранслятор держит открытыми для вопросов пользователю, отменены."""
+        server_ids: list[str] = []
+        for server in launched.servers:
+            server_ids.append(server.server_id)
+
+        self._relay.stopped(server_ids)
 
     async def launch_settings(
         self,
@@ -900,6 +910,7 @@ class ThreadAgent:
         except asyncio.CancelledError:
             if not turn.ending.done():
                 self._renderer.stopping(session_id)
+                self._stopped()
                 await self.process.cancel(session_id)
 
             idle = await self._idle(turn)
@@ -990,10 +1001,18 @@ class ThreadAgent:
             return False
 
         self._renderer.stopping(active)
+        self._stopped()
         await self.process.cancel(active)
         logger.info("thread %s: cancel sent for session %s", self.thread_id, active)
 
         return True
+
+    def _stopped(self) -> None:
+        launched = self._launched
+        if launched is None:
+            return
+
+        self._launcher.stopped(launched)
 
     async def close(self) -> None:
         """Закрытие сессии у агента (замок отпущен) и остановка процесса."""

@@ -74,7 +74,7 @@ class AuthStand(FakeServiceProcess):
     async def whoami(self, server: McpToolServer) -> str:
         """Текст для модели из ответа fake_whoami: логин, роли и токен."""
         params = mt.CallToolRequestParams(name="fake_whoami", arguments={})
-        reply = await server.call(OWN, params, None, None, None)
+        reply = await server.call(OWN, params, None, None, None, None)
 
         return McpResults().result(params.name, "call-whoami", reply).llm_view()
 
