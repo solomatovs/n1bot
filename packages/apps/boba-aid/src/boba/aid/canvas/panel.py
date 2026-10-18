@@ -65,7 +65,7 @@ from boba.canvas.journal import (
     StreamSlice,
     WindowAlign,
 )
-from boba.canvas.keys import ObjectKey
+from boba.canvas.keys import WorkspaceKey
 from boba.canvas.storage import StorageError, StorageNotFoundError
 from boba.identity.errors import RefusalError
 from boba.runtime.storage import StorageClient
@@ -166,7 +166,7 @@ class FileWatch:
     не делает; пустая версия — её не снять, и сигнал пошлёт первый опрос.
     """
 
-    key: ObjectKey
+    key: WorkspaceKey
     source: WatchSource | None
     seen: str
 
@@ -295,7 +295,7 @@ class FileViewer(CanvasViewer):
 
         return mime.lower().startswith(known)
 
-    def describe(self, key: ObjectKey, mime: str, **extra: Any) -> CanvasContent:
+    def describe(self, key: WorkspaceKey, mime: str, **extra: Any) -> CanvasContent:
         """Описание файла key вида mime: путь, подпись, ссылка на файл и
         метка показа.
 
@@ -313,17 +313,19 @@ class FileViewer(CanvasViewer):
             **extra,
         )
 
-    async def content(self, key: ObjectKey, mime: str) -> CanvasContent:
+    async def content(self, key: WorkspaceKey, mime: str) -> CanvasContent:
         return self.describe(key, mime)
 
-    async def link(self, key: ObjectKey, mime: str) -> VisualResult:
+    async def link(self, key: WorkspaceKey, mime: str) -> VisualResult:
         return VisualResult(
             element=CanvasElement.LINK,
             props={"path": key.in_workspace(), "label": key.name, "mime": mime},
             title=key.name,
         )
 
-    async def open(self, key: ObjectKey, mime: str, push: CanvasPush) -> OpenedCanvas:
+    async def open(
+        self, key: WorkspaceKey, mime: str, push: CanvasPush
+    ) -> OpenedCanvas:
         described = await self.content(key, mime)
         await push(described)
 
@@ -331,11 +333,11 @@ class FileViewer(CanvasViewer):
             label=key.name, path=key.in_workspace(), nonce=described.nonce
         )
 
-    def watch_source(self, key: ObjectKey) -> WatchSource | None:
+    def watch_source(self, key: WorkspaceKey) -> WatchSource | None:
         return StorageStatSource(PanelStorage.client(), key.render())
 
     @staticmethod
-    def _serve(key: ObjectKey, mime: str) -> str:
+    def _serve(key: WorkspaceKey, mime: str) -> str:
         """Ссылка на файл панели: тред, каталог и имя; пользователь — из токена.
 
         Сессионная ссылка тут не годится: панель рассылается во все вкладки
@@ -386,7 +388,7 @@ class LogViewer(FileViewer):
     kind: ClassVar[CanvasKind] = CanvasKind.STREAM
     mimes: ClassVar[frozenset[str]] = frozenset({ContentMime.PLAIN})
 
-    async def content(self, key: ObjectKey, mime: str) -> CanvasContent:
+    async def content(self, key: WorkspaceKey, mime: str) -> CanvasContent:
         windows = StorageWindows(PanelStorage.client(), key.render())
 
         try:
@@ -432,7 +434,7 @@ class CanvasPanel:
     панель не мигает при смене файла, а вьюверы не теряют своё состояние."""
 
     @classmethod
-    async def open(cls, key: ObjectKey, mime: str) -> OpenedCanvas:
+    async def open(cls, key: WorkspaceKey, mime: str) -> OpenedCanvas:
         """Показ файла key вьювером его MIME mime; MIME без вьювера — отказ
         и объяснение в панели."""
         viewer = CanvasRegistry.viewer_for(mime)
@@ -456,7 +458,7 @@ class CanvasPanel:
         return opened
 
     @classmethod
-    async def watch_file(cls, key: ObjectKey, viewer: CanvasViewer) -> FileWatch:
+    async def watch_file(cls, key: WorkspaceKey, viewer: CanvasViewer) -> FileWatch:
         """Слежение за файлом key, заведённое до его показа: версия файла
         снимается сейчас; вьювер без источника не отслеживается."""
         if not CanvasWatch.enabled():
@@ -488,7 +490,7 @@ class CanvasPanel:
         await cls._push(content)
 
     @classmethod
-    def notice(cls, key: ObjectKey, mime: str) -> CanvasContent:
+    def notice(cls, key: WorkspaceKey, mime: str) -> CanvasContent:
         """Объяснение вместо содержимого: файл вида mime показать некому.
 
         Ссылка на файл остаётся: показать формат панель не умеет, а отдать
@@ -505,7 +507,7 @@ class CanvasPanel:
         )
 
     @classmethod
-    async def _explain(cls, key: ObjectKey, mime: str) -> None:
+    async def _explain(cls, key: WorkspaceKey, mime: str) -> None:
         """Файл некому показать: в панели остаётся объяснение, а не прошлый файл."""
         await cls._push(cls.notice(key, mime))
 
