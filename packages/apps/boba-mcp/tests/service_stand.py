@@ -58,6 +58,7 @@ from boba.mcp_server.server import (
     OfferClient,
     RunLimits,
 )
+from boba.runtime.config import AppLayers
 from boba.runtime.journal import DirVault, StreamJournal
 from boba.runtime.storage import LocalStorageConfig
 from boba.stand import fake_connection
@@ -306,6 +307,7 @@ class ServiceStand:
                 ),
                 mount_dir=str(workdir),
                 binaries=TrustedBinaries(dirs=("/usr/bin", "/bin")),
+                interpreter=AppLayers.interpreter(),
             ),
         )
 

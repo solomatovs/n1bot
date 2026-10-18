@@ -109,6 +109,7 @@
     kind           = "image"
     op_timeout_sec = 60
     mount_dir      = "/tmp"
+    interpreter    = "${interpreter}"
     [storage.workspace]
         template = "${env.sandbox}/workspace.ext4"
         mount    = "${env.data}/workspace/{user_id}.ext4:/workspace"

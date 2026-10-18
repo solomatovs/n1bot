@@ -30,7 +30,6 @@ import shlex
 import signal
 import socket
 import subprocess
-import sys
 import threading
 import time
 import uuid
@@ -45,7 +44,7 @@ from typing import ClassVar
 from pydantic import BaseModel, ConfigDict, Field
 
 from boba.cancellation import RunCancellation
-from boba.sandbox.argv import build_zygote_argv
+from boba.sandbox.argv import ZygoteArgv
 from boba.sandbox.cgroup import CgroupManager, GroupLimits
 from boba.sandbox.diagnostics import SandboxDiagnostics
 from boba.sandbox.fds import FdReader
@@ -109,10 +108,10 @@ from boba.toolkit.stream import (
 )
 from boba.workspace.binaries import SandboxBinary
 from boba.workspace.launcher import (
+    LauncherChain,
+    LauncherInterpreter,
     LauncherMode,
     ResourceLimits,
-    build_chain_argv,
-    require_fuse,
 )
 
 __all__ = [
@@ -1245,9 +1244,11 @@ class ZygoteSpawner:
     супервизор зовёт на каждом подъёме секции.
 
     Корень образом монтируется цепочкой лаунчера один раз на жизнь зиготы:
-    внешний bwrap -> лаунчер (fuse2fs) -> вложенный bwrap с корнем из
-    монтирования -> зигота. Корень каталогом идёт прямым bwrap. tmpfs на
-    /tmp обязателен — из него дети получают приватный размерный /tmp.
+    внешний bwrap (LauncherChain) -> лаунчер (fuse2fs) -> вложенный bwrap
+    (ZygoteArgv) с корнем из монтирования -> зигота. Внешний слой видит
+    только явный список путей, и источники биндов вложенного слоя он берёт
+    у того же ZygoteArgv, что пишет его argv. tmpfs на /tmp обязателен — из
+    него дети получают приватный размерный /tmp.
     """
 
     PYTHON: ClassVar[str] = "python3"
@@ -1261,6 +1262,7 @@ class ZygoteSpawner:
         profile: SandboxProfile,
         modules: Sequence[str],
         policy: ZygotePolicy,
+        interpreter: LauncherInterpreter,
     ) -> None:
         self._policy = policy
         # образ workspace рендерится на вызов и монтируется ребёнком: зиготе
@@ -1282,6 +1284,10 @@ class ZygoteSpawner:
         self._with_images = profile.mounts.workspace is not None
         self._profile = bare
         self._modules = tuple(modules)
+        self._chain = LauncherChain(
+            interpreter, bare.host.binaries, bare.host.mounting.to_options()
+        )
+        self._nested = ZygoteArgv(bare)
 
         if self._with_images:
             ZygoteMounts(profile).check()
@@ -1308,7 +1314,6 @@ class ZygoteSpawner:
             stdin=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
             pass_fds=(fd,),
-            env=dict(os.environ),
         )
 
         self._pin_cpus(proc.pid)
@@ -1338,32 +1343,19 @@ class ZygoteSpawner:
         os.sched_setaffinity(pid, set(available[:cores]))
 
     def _argv(self, command: list[str], env: Mapping[str, str], fd: int) -> list[str]:
-        require_fuse(self._profile.host.binaries)
+        self._chain.check()
 
         # вложенный bwrap стартует уже смонтированным корнем, а не образом
-        inner_argv = build_zygote_argv(
-            self._profile, command, env=env, root=SandboxMount.ROOTFS.value
-        )
+        inner_argv = self._nested.argv(command, env=env, root=SandboxMount.ROOTFS.value)
 
-        # внешний bwrap держит / хоста read-only: пути записи он обязан знать,
-        # иначе вложенный bind не сделает их записываемыми
-        setup = self._profile.setup_binds()
-
-        rw_paths: list[str] = []
-        for spec in (*self._profile.mounts.rw, *setup.rw):
-            rw_paths.append(spec.host)
-
-        return build_chain_argv(
+        return self._chain.argv(
             images=(),
             ro_images=((self._profile.rootfs, SandboxMount.ROOTFS.value),),
             template="",
             op=[LauncherMode.RUN.value, shlex.join(inner_argv)],
-            python_bin=sys.executable,
-            options=self._profile.host.mounting.to_options(),
             limits=ResourceLimits(),
-            binaries=self._profile.host.binaries,
             pass_fds=(fd,),
-            rw_paths=rw_paths,
+            nested=self._nested.sources(),
             network=self._profile.isolation.network,
             replace=True,
         )
@@ -1740,12 +1732,14 @@ class ZygoteRegistry:
     сколько бы раз ни собирались инструменты.
 
     Создаёт и держит его способ запуска в песочнице (ZygoteLaunchers) — один
-    на процесс. Инструменты собираются несколько раз: повторный obtain
-    отдаёт уже поднятый супервизор. stop_all гасит всех на shutdown
-    приложения.
+    на процесс, с интерпретатором процесса из секции [interpreter]: его
+    получает спавнер каждой секции. Инструменты собираются несколько раз:
+    повторный obtain отдаёт уже поднятый супервизор. stop_all гасит всех на
+    shutdown приложения.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, interpreter: LauncherInterpreter) -> None:
+        self._interpreter = interpreter
         self._lock = threading.Lock()
         self._entries: dict[str, ZygoteSupervisor] = {}
 
@@ -1765,7 +1759,7 @@ class ZygoteRegistry:
         with self._lock:
             supervisor = self._entries.get(name)
             if supervisor is None or supervisor.state is ZygoteState.STOPPED:
-                spawner = ZygoteSpawner(profile, modules, policy)
+                spawner = ZygoteSpawner(profile, modules, policy, self._interpreter)
                 supervisor = ZygoteSupervisor(
                     name,
                     spawner.spawn,
