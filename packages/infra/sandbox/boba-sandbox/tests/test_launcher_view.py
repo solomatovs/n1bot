@@ -2,8 +2,8 @@
 
 Внешний слой видит не корень хоста, а явный список путей (LauncherView).
 Таблицу монтирования слоя читаем у процесса, который живёт в нём: fuse2fs,
-смонтировавшего образ. Опыт с исчезающей точкой идёт в собственном слое
-теста (PrivateImageMount.racing): хост его точек не видит.
+смонтировавшего образ. Опыты с исчезающей точкой и ссылкой resolv.conf идут
+в собственном слое теста (PrivateImageMount.racing): хост их точек не видит.
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ from typing import Any, ClassVar
 from uuid import uuid4
 
 import pytest
+from launcher_layer import ResolvedLayout, ResolvedProbe
 
 from boba.runtime.config import AppLayers
 from boba.runtime.storage import ImageStorageClient, LocalStorageConfig
@@ -471,7 +472,7 @@ class PrivateLayer:
 
 @needs_chain
 class TestPrivateLayer:
-    """Опыт в собственном слое теста: исчезающая точка."""
+    """Опыты в собственном слое теста: исчезающая точка и ссылка resolv.conf."""
 
     SECONDS: ClassVar[float] = 10.0
     WORKERS: ClassVar[int] = 4
@@ -508,3 +509,25 @@ class TestPrivateLayer:
                 f"{len(report['failures'])} of {report['starts']} starts failed: "
                 f"{report['failures'][:3]}"
             )
+
+    def test_resolv_conf_of_systemd_resolved_reaches_the_body(
+        self, tmp_path: Path
+    ) -> None:
+        """/etc/resolv.conf — ссылка в /run: слой видит один этот файл, тело —
+        его содержимое на месте /etc/resolv.conf образа."""
+        layer = PrivateLayer(tmp_path)
+
+        report = layer.run(["resolved"])
+
+        if report["body"] != ResolvedLayout.CONTENT:
+            raise AssertionError(f"resolv.conf тела: {report['body']!r}")
+
+        if ResolvedProbe.BIND.split(":")[0] not in report["sources"]:
+            raise AssertionError(f"источник вложенного слоя: {report['sources']}")
+
+        if "/etc/resolv.conf" not in report["points"]:
+            raise AssertionError(f"resolv.conf нет в слое: {report['points']}")
+
+        view = LayerView(report["points"], ())
+        if view.leaked():
+            raise AssertionError(f"слой видит каталоги хоста: {view.leaked()}")

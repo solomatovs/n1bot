@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from collections.abc import Mapping, Sequence
 
 from boba.sandbox.profile import BindSpec, SandboxMount, SandboxProfile
@@ -70,18 +69,14 @@ class ZygoteArgv:
         for spec in self._profile.tmpfs():
             argv += ["--size", str(spec.size_bytes), "--tmpfs", spec.path]
 
-        symlinks: list[tuple[str, str]] = []
-
+        # источник-ссылку bwrap разыменует сам, а точка в образе — та, что в
+        # профиле: под systemd-resolved /etc/resolv.conf ведёт в /run, которого
+        # в read-only корне образа не создать
         for spec in self._ro_binds():
-            argv += ["--ro-bind-try", self._source(spec), self._target(spec)]
-            symlinks.extend(self._link(spec))
+            argv += ["--ro-bind-try", spec.host, spec.target]
 
         for spec in self._rw_binds():
-            argv += ["--bind-try", self._source(spec), self._target(spec)]
-            symlinks.extend(self._link(spec))
-
-        for target, link_path in dict.fromkeys(symlinks):
-            argv += ["--symlink", target, link_path]
+            argv += ["--bind-try", spec.host, spec.target]
 
         argv += ["--clearenv"]
         for name, value in env.items():
@@ -96,11 +91,11 @@ class ZygoteArgv:
         """Источники биндов ровно в том виде, в каком их пишет argv."""
         ro: list[str] = []
         for spec in self._ro_binds():
-            ro.append(self._source(spec))
+            ro.append(spec.host)
 
         rw: list[str] = []
         for spec in self._rw_binds():
-            rw.append(self._source(spec))
+            rw.append(spec.host)
 
         return LayerSources(ro=tuple(ro), rw=tuple(rw))
 
@@ -111,30 +106,3 @@ class ZygoteArgv:
     def _rw_binds(self) -> tuple[BindSpec, ...]:
         setup = self._profile.setup_binds()
         return tuple(dict.fromkeys((*self._profile.mounts.rw, *setup.rw)))
-
-    @staticmethod
-    def _source(spec: BindSpec) -> str:
-        """Явный target монтируется как есть; same-path bind чинит host-симлинки."""
-        if spec.target != spec.host:
-            return spec.host
-
-        if not os.path.islink(spec.host):
-            return spec.host
-
-        return os.path.realpath(spec.host)
-
-    def _target(self, spec: BindSpec) -> str:
-        if spec.target != spec.host:
-            return spec.target
-
-        return self._source(spec)
-
-    @staticmethod
-    def _link(spec: BindSpec) -> tuple[tuple[str, str], ...]:
-        if spec.target != spec.host:
-            return ()
-
-        if not os.path.islink(spec.host):
-            return ()
-
-        return ((os.readlink(spec.host), spec.host),)

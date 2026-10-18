@@ -8,6 +8,8 @@
 race — точка FUSE вне вида монтируется и снимается в цикле, а операции
 хранилища образов стартуют цепочку снова и снова; итог — число стартов и
 сбоев.
+resolved — в слое /etc/resolv.conf — ссылка systemd-resolved на файл в /run;
+зигота с биндом /etc/resolv.conf отдаёт, что видит тело и внешний слой.
 
 Итог печатается одной строкой JSON в stdout.
 """
@@ -32,8 +34,10 @@ from boba.canvas.storage import StorageError
 from boba.runtime.config import AppLayers
 from boba.runtime.storage import ImageStorageClient, LocalStorageConfig
 from boba.sandbox import WorkspaceSpec
-from boba.stand.zygote import SandboxStand
-from boba.workspace.binaries import TrustedBinaries
+from boba.sandbox.argv import ZygoteArgv
+from boba.stand.shell import ShellRun
+from boba.stand.zygote import ProcTree, SandboxStand, ZygoteStand
+from boba.workspace.binaries import SandboxBinary, TrustedBinaries
 from boba.workspace.launcher import MountingConfig
 
 
@@ -196,6 +200,97 @@ class StorageRace:
         yield b"race\n"
 
 
+@dataclass(frozen=True)
+class ResolvedReport:
+    body: str
+    sources: tuple[str, ...]
+    points: tuple[str, ...]
+
+
+class ResolvedLayout:
+    """Раскладка systemd-resolved внутри слоя: /etc/resolv.conf — ссылка на
+    файл в /run.
+
+    /etc и /run слоя накрыты своими tmpfs: ссылка и файл появляются только в
+    слое, а из /etc машины в его tmpfs копируется то, что читают процессы
+    цепочки.
+    """
+
+    LINK: ClassVar[str] = "../run/systemd/resolve/stub-resolv.conf"
+    CONTENT: ClassVar[str] = "nameserver 192.0.2.53\n"
+    ETC: ClassVar[Path] = Path("/etc")
+    RUN: ClassVar[Path] = Path("/run")
+    KEPT: ClassVar[tuple[str, ...]] = (
+        "ld.so.cache",
+        "hosts",
+        "passwd",
+        "group",
+        "nsswitch.conf",
+    )
+
+    def __init__(self) -> None:
+        self._libc = Libc()
+
+    def make(self) -> None:
+        kept: dict[str, bytes] = {}
+        for name in self.KEPT:
+            source = self.ETC / name
+            if source.exists():
+                kept[name] = source.read_bytes()
+
+        self._libc.tmpfs(self.RUN)
+        stub = self.RUN / "systemd/resolve/stub-resolv.conf"
+        stub.parent.mkdir(parents=True)
+        stub.write_text(self.CONTENT, encoding="utf-8")
+
+        self._libc.tmpfs(self.ETC)
+        for name, body in kept.items():
+            (self.ETC / name).write_bytes(body)
+
+        os.symlink(self.LINK, self.ETC / "resolv.conf")
+
+
+class ResolvedProbe:
+    """Зигота с биндом /etc/resolv.conf, как у плагинов с сетью: что видит
+    тело и внешний слой её цепочки."""
+
+    BIND: ClassVar[str] = "/etc/resolv.conf:/etc/resolv.conf"
+
+    def __init__(self) -> None:
+        self._layout = ResolvedLayout()
+        self._stand = ZygoteStand()
+
+    def run(self) -> ResolvedReport:
+        self._layout.make()
+        profile = SandboxStand.profile(ro=(*SandboxStand.image_ro_binds(), self.BIND))
+        try:
+            caller = self._stand.caller("resolved", profile)
+            body = ShellRun.call_text(caller, "cat /etc/resolv.conf")
+            if body.exit_code != 0:
+                msg = f"cat /etc/resolv.conf in the body: rc={body.exit_code}"
+                raise SystemExit(msg)
+
+            roots = ProcTree().named(caller.supervisor.pid, SandboxBinary.FUSE2FS)
+            points = self._points(next(iter(roots)))
+        finally:
+            self._stand.stop()
+
+        return ResolvedReport(
+            body=body.stdout,
+            sources=ZygoteArgv(profile).sources().ro,
+            points=points,
+        )
+
+    @staticmethod
+    def _points(pid: int) -> tuple[str, ...]:
+        points: list[str] = []
+        mountinfo = Path("/proc") / str(pid) / "mountinfo"
+        for line in mountinfo.read_text().splitlines():
+            points.append(line.split()[4])
+
+        return tuple(points)
+
+
 class LayerCli:
     """Разбор аргументов и запуск опыта."""
 
@@ -211,16 +306,21 @@ class LayerCli:
         race.add_argument("--seconds", type=float, required=True)
         race.add_argument("--workers", type=int, required=True)
 
+        commands.add_parser("resolved")
+
         self._parser = parser
 
     async def run(self, argv: Sequence[str]) -> str:
         args = self._parser.parse_args(argv)
         HostNamespace(args.host_mntns).require_private()
 
-        flapper = PointFlapper(args.image, args.point)
-        race = StorageRace(args.work, flapper)
-        report = await race.run(args.seconds, args.workers)
-        return json.dumps(asdict(report))
+        if args.command == "race":
+            flapper = PointFlapper(args.image, args.point)
+            race = StorageRace(args.work, flapper)
+            report = await race.run(args.seconds, args.workers)
+            return json.dumps(asdict(report))
+
+        return json.dumps(asdict(ResolvedProbe().run()))
 
 
 async def main() -> None:
