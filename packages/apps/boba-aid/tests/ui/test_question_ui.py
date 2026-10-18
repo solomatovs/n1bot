@@ -379,14 +379,15 @@ class QuestionPage:
         self.page.keyboard.press(key)
         self.page.wait_for_timeout(80)
 
-    def tab_to(self, target: Locator) -> None:
-        """Tab, пока фокус не встанет на target, как с клавиатуры."""
+    def tab_to(self, target: Locator, key: str) -> None:
+        """Tab или Shift+Tab (key), пока фокус не встанет на target, как с
+        клавиатуры."""
         for _ in range(self.TABS):
-            self.press("Tab")
+            self.press(key)
             if target.evaluate("(node) => node === document.activeElement"):
                 return
 
-        msg = f"{self.TABS} Tab presses did not reach {target} in the question panel"
+        msg = f"{self.TABS} {key} presses did not reach {target} in the question panel"
         raise AssertionError(msg)
 
     def theme(self, dark: bool) -> None:
@@ -606,13 +607,13 @@ class TestKeyboard:
         asked.row("PostgreSQL").click()
 
         submit = panel.locator(SUBMIT)
-        asked.tab_to(submit)
+        asked.tab_to(submit, "Tab")
         assert css(submit, "outlineStyle") == "solid"
         assert css(submit, "outlineWidth") == "2px"
         assert css(submit, "outlineColor") == asked.color("hsl(var(--ring))")
 
         row = asked.row("ClickHouse")
-        asked.tab_to(row)
+        asked.tab_to(row, "Shift+Tab")
         assert css(row, "outlineStyle") == "none"
         assert css(row, "backgroundColor") == asked.color("hsl(var(--muted))")
 

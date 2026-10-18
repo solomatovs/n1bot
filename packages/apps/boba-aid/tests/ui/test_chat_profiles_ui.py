@@ -227,7 +227,7 @@ class TestProfileSettingsApplied:
     def test_profile_settings_reach_the_llm(
         self, chat: ChatPage, llm_port: int, spec: ProfileSpec
     ) -> None:
-        if spec.name != chat.profile_label().lower():
+        if chat.profile_label() != spec.display_name:
             _switch_to(chat, spec.name)
 
         _ask_and_wait(chat)
@@ -263,7 +263,7 @@ class TestProfileSettingsApplied:
     def test_admin_tools_follow_the_profile(
         self, chat: ChatPage, llm_port: int, spec: ProfileSpec
     ) -> None:
-        if spec.name != chat.profile_label().lower():
+        if chat.profile_label() != spec.display_name:
             _switch_to(chat, spec.name)
 
         _ask_and_wait(chat)
