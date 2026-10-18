@@ -337,14 +337,19 @@ class SharedToken(httpx2.Auth):
             if response.status_code not in self.REFUSED:
                 return
 
+        # поток провайдера держит замок, привязанный к задаче: закрывается
+        # он здесь же, в задаче запроса, даже когда запрос отменён
         flow = self._inner.async_auth_flow(request)
-        sent = await flow.__anext__()
-        while True:
-            response = yield sent
-            try:
-                sent = await flow.asend(response)
-            except StopAsyncIteration:
-                break
+        try:
+            sent = await flow.__anext__()
+            while True:
+                response = yield sent
+                try:
+                    sent = await flow.asend(response)
+                except StopAsyncIteration:
+                    break
+        finally:
+            await flow.aclose()
 
         self._header = request.headers.get(self.HEADER)
 
