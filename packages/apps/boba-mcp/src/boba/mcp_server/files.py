@@ -73,7 +73,7 @@ from boba.runtime.storage import (
 from boba.toolkit.channels import JournalChannels
 from boba.toolkit.failure import ValidationText
 from boba.toolkit.result import ContentMime
-from boba.toolkit.wire import FilesFeature, JournalFeature, JournalOrigin, JournalRead
+from boba.toolkit.wire import FilesFeature, JournalFeature, JournalRead
 from boba.toolrun.streams import CallJournals
 
 __all__ = [
@@ -211,12 +211,10 @@ class CallerBus(SubscriptionBus):
 
 @dataclass(frozen=True)
 class OpenJournal:
-    """Журнал идущего вызова: запуск, идентификатор вызова на сервере и чей
-    запрос его открыл; origin None — запрос не назвал токена прогресса."""
+    """Журнал идущего вызова: запуск и идентификатор вызова на сервере."""
 
     run: str
     node: str
-    origin: JournalOrigin | None
 
 
 class OpenJournals:
@@ -267,12 +265,12 @@ class JournalListing(Provider):
     """Провайдер fastmcp: каналы журналов идущих вызовов вызывающего —
     ресурсы resources/list.
 
-    Создаётся сервером endpoint'а над OpenJournals. Каждый видимый канал
-    открытого журнала — ресурс для человека (audience user) по шаблону
-    канала с JournalOrigin в _meta:
-    по нему клиент находит свой вызов. Читаются ресурсы шаблоном журнала
-    (JournalRoutes.read), поэтому найти ресурс по uri провайдер не берётся;
-    канал, в который тело ещё не писало, читается отказом «ресурса нет».
+    Создаётся сервером endpoint'а над OpenJournals. Это путь ядра MCP для
+    клиента без расширения журнала: каждый видимый канал открытого журнала —
+    ресурс для человека (audience user) по шаблону канала. Читаются ресурсы
+    шаблоном журнала (JournalRoutes.read), поэтому найти ресурс по uri
+    провайдер не берётся; канал, в который тело ещё не писало, читается
+    отказом «ресурса нет».
     """
 
     def __init__(self, journals: OpenJournals, subjects: TokenSubjects) -> None:
@@ -297,11 +295,6 @@ class JournalListing(Provider):
 
     def _listed(self, journals: Iterable[OpenJournal]) -> Iterator[Resource]:
         for journal in journals:
-            meta: dict[str, Any] | None = None
-            if journal.origin is not None:
-                origin = journal.origin.model_dump(mode="json", exclude_none=True)
-                meta = {JournalFeature.ID: origin}
-
             for channel in JournalChannels.VISIBLE:
                 read = JournalRead(run=journal.run, node=journal.node, channel=channel)
                 yield Resource(
@@ -310,7 +303,6 @@ class JournalListing(Provider):
                     title=f"{channel.value} of call {journal.node}",
                     mime_type=ContentMime.PLAIN.value,
                     annotations=JournalRoutes.FOR_USER,
-                    meta=meta,
                 )
 
 

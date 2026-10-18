@@ -6,8 +6,8 @@
 по outputSchema инструмента. Перевод описан в одном месте — ResultWire.
 
 Здесь же модели границы клиент—сервер: адрес окна журнала (JournalRead),
-чей запрос открыл журнал (JournalOrigin) и настройки расширений сервера
-(JournalFeature, FilesFeature).
+уведомление об открытом журнале вызова (JournalNotice) и настройки
+расширений сервера (JournalFeature, FilesFeature).
 
 Ошибки:
 ValidationError — настройки расширения не проходят свою модель.
@@ -30,7 +30,7 @@ from boba.toolkit.result import BlockAudience, ContentOut
 __all__ = [
     "FilesFeature",
     "JournalFeature",
-    "JournalOrigin",
+    "JournalNotice",
     "JournalRead",
     "ResultWire",
     "WireResult",
@@ -41,40 +41,52 @@ class JournalFeature(ServerFeature):
     """Настройки расширения сервера «журнал вызовов».
 
     Сервер объявляет их в своём описании словарём settings(); клиент
-    разбирает объявление этой же моделью из описания сервера. path — путь
+    разбирает объявление этой же моделью из описания сервера и объявляет
+    расширение в своих возможностях пустыми настройками. path — путь
     маршрута, по которому канал журнала скачивается целиком:
     `{path}/{run}/{node}/{channel}` (GET, потоком, с Range). resource —
     шаблон uri (RFC 6570) ресурса канала журнала с переменными run, node и
     channel и запросом offset, before: resources/read по нему отдаёт окно
     канала, координаты окна — в _meta содержимого под ключом ID. Итог
     вызова несёт ссылки resource_link на каналы его журнала по этому
-    шаблону, а журналы идущих вызовов вызывающего — ресурсы resources/list
-    с JournalOrigin в _meta под тем же ключом.
+    шаблону. Пока вызов идёт, сервер сообщает о каждом открытом им журнале
+    уведомлением OPENED (параметры — JournalNotice) в потоке ответа самого
+    tools/call, если клиент объявил расширение и назвал токен прогресса.
+    Клиенту без расширения уведомления не идут: ему остаётся путь ядра —
+    журналы идущих вызовов ресурсами resources/list со сменой списка и
+    ссылки в итоге.
     """
 
     ID: ClassVar[str] = "com.boba/journal"
     ROUTE: ClassVar[str] = "{run}/{node}/{channel}"
     """Канал журнала под путём path и в uri ресурса: одна запись на сервер
     (маршрут и шаблон ресурса) и на клиент (JournalRead.route)."""
+    OPENED: ClassVar[str] = "notifications/com.boba/journal/opened"
+    """Метод уведомления об открытом журнале идущего вызова."""
 
     path: str = Field(min_length=1)
     resource: str = Field(min_length=1)
 
 
-class JournalOrigin(BaseModel):
-    """Чей запрос открыл журнал идущего вызова: ресурс канала журнала в
-    resources/list несёт его в _meta под ключом JournalFeature.ID.
+class JournalNotice(mt.NotificationParams):
+    """Параметры уведомления JournalFeature.OPENED: вызов открыл журнал.
 
-    request — токен прогресса запроса tools/call, открывшего журнал: по нему
-    клиент находит свой вызов. node — ключ узла от автора связки, когда
-    журнал принадлежит узлу вызова со вложенными вызовами; у вызова одного
+    progress_token — токен прогресса того запроса tools/call, в потоке
+    ответа которого идёт уведомление: по нему клиент отдаёт его обработчику
+    хода своего вызова, как notifications/progress. run и node — адрес
+    журнала (запуск и идентификатор вызова на сервере), channels — его
+    каналы для человека. key — ключ узла от автора связки, когда журнал
+    принадлежит узлу вызова со вложенными вызовами; у вызова одного
     инструмента его нет.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    request: mt.ProgressToken
-    node: str | None = None
+    progress_token: mt.ProgressToken
+    run: str = Field(min_length=1)
+    node: str = Field(min_length=1)
+    channels: tuple[JournalChannel, ...] = Field(min_length=1)
+    key: str | None = None
 
 
 class FilesFeature(ServerFeature):
@@ -107,8 +119,9 @@ class JournalRead(BaseModel):
     обоих — канал целиком от начала, как его называют ссылки.
 
     Адрес журнала — запуск run и идентификатор вызова на сервере node: оба
-    приходят ссылкой resource_link на канал журнала в итоге вызова либо
-    ресурсом открытого журнала в resources/list.
+    приходят ссылкой resource_link на канал журнала в итоге вызова,
+    уведомлением об открытом журнале (JournalNotice) либо ресурсом открытого
+    журнала в resources/list.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
