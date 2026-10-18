@@ -1,9 +1,11 @@
 """Клиент MCP-серверов: подключения, списки, вызовы и потоки подписки.
 
-Клиент работает с любым сервером стандарта MCP 2026-07-28: согласует
-протокол server/discover, читает списки инструментов, ресурсов, шаблонов и
-промптов, исполняет tools/call, resources/read, prompts/get и
-completion/complete и держит потоки subscriptions/listen, отдавая ответ
+Клиент работает с любым сервером стандарта MCP — редакции 2026-07-28 и
+прежних с рукопожатием initialize: версию согласует штатная политика SDK
+(проба server/discover, при отказе сервера прежней редакции — initialize).
+Клиент читает списки инструментов, ресурсов, шаблонов и промптов, исполняет
+tools/call, resources/read, prompts/get и completion/complete и держит
+потоки subscriptions/listen (они есть только в 2026-07-28), отдавая ответ
 сервера как есть. Серверу клиент представляется личностью McpClientIdentity:
 своей либо агента, чьи запросы ретранслирует чат. Транспорт — streamable
 HTTP, SSE или stdio. Способ входа — свойство записи сервера (McpAuth): без
@@ -13,9 +15,10 @@ HTTP, SSE или stdio. Способ входа — свойство запис�
 проход страницы входа без человека (UnattendedLogin).
 
 Ошибки:
-McpClientError — сервер недоступен, не прошёл согласование server/discover,
-    не отдал список инструментов, отказал во входе, не ответил на запрос,
-    ответил не по схеме, отказал в подписке либо порт позвали до open().
+McpClientError — сервер недоступен, не согласовал версию протокола, не отдал
+    список инструментов, отказал во входе, не ответил на запрос, забыл
+    сессию клиента, ответил не по схеме, отказал в подписке либо порт позвали
+    до open().
 MCPError (mcp.shared.exceptions) — сервер ответил на запрос ошибкой MCP.
 """
 
@@ -48,6 +51,7 @@ from uuid import uuid4
 import httpx2
 import mcp.types as mt
 from mcp import ClientSession, StdioServerParameters
+from mcp.client._probe import negotiate_auto
 from mcp.client.auth import OAuthClientProvider, TokenStorage
 from mcp.client.auth.extensions.identity_assertion import (
     IdentityAssertionOAuthProvider,
@@ -55,7 +59,7 @@ from mcp.client.auth.extensions.identity_assertion import (
 from mcp.client.session import IncomingMessage, MessageHandlerFnT
 from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client
-from mcp.client.streamable_http import streamable_http_client
+from mcp.client.streamable_http import MCP_SESSION_ID, streamable_http_client
 from mcp.client.subscriptions import (
     ListenNotSupportedError,
     Subscription,
@@ -74,7 +78,7 @@ from mcp.shared.auth import (
 from mcp.shared.exceptions import MCPError
 from mcp.shared.message import SessionMessage
 from mcp.shared.uri_template import InvalidUriTemplate, UriTemplate
-from mcp.types.version import MODERN_PROTOCOL_VERSIONS
+from mcp.types.version import KNOWN_PROTOCOL_VERSIONS, MODERN_PROTOCOL_VERSIONS
 from pydantic import (
     AnyUrl,
     BaseModel,
@@ -533,8 +537,9 @@ class Transport(Protocol):
     """Транспорт MCP-сервера: открывает потоки сообщений сессии."""
 
     @abstractmethod
-    def opened(self) -> AbstractAsyncContextManager[Streams]:
-        """Потоки сессии; открыты, пока открыт контекст."""
+    def opened(self, refusals: HttpRefusals) -> AbstractAsyncContextManager[Streams]:
+        """Потоки сессии; открыты, пока открыт контекст. Транспорт HTTP
+        показывает ответы сервера refusals."""
 
     @abstractmethod
     def on_behalf_of(self, caller: McpCaller) -> Transport:
@@ -567,20 +572,24 @@ class ErrorCauses:
 class HttpRefusals:
     """Отказы HTTP одного подключения к серверу.
 
-    Создаётся транспортом HttpEndpoint на каждое открытие и ставится
-    наблюдателем ответов его HTTP-клиента. Библиотека mcp заменяет ответ с
-    отказом (401, 403, 502) безликой ошибкой протокола; по последнему
-    отказу запроса POST транспорт возвращает в текст ошибки адрес и статус.
-    Отказ на GET не считается: им сервер без потока уведомлений отвечает
-    исправной сессии. К отказу добавляется причина, которую назвал клиент
-    (refused): так видно и статус, и что именно сервер отверг.
+    Создаётся соединением McpConnection на каждое открытие и ставится
+    транспортом HttpEndpoint наблюдателем ответов его HTTP-клиента.
+    Библиотека mcp заменяет ответ с отказом (401, 403, 502) безликой ошибкой
+    протокола; по последнему отказу запроса POST транспорт возвращает в
+    текст ошибки адрес и статус. Отказ на GET не считается: им сервер без
+    потока уведомлений отвечает исправной сессии. К отказу добавляется
+    причина, которую назвал клиент (refused): так видно и статус, и что
+    именно сервер отверг. 404 на запрос с Mcp-Session-Id — сервер забыл
+    сессию (forgotten).
     """
 
     FIRST_REFUSAL: ClassVar[int] = 400
+    FORGOTTEN: ClassVar[int] = 404
     REQUEST: ClassVar[str] = "POST"
 
     def __init__(self) -> None:
         self._last: str | None = None
+        self._forgotten = False
         self._causes = ErrorCauses()
 
     async def seen(self, response: httpx2.Response) -> None:
@@ -592,10 +601,17 @@ class HttpRefusals:
             self._last = None
             return
 
+        if response.status_code == self.FORGOTTEN:
+            self._forgotten = MCP_SESSION_ID in request.headers
+
         self._last = (
             f"{request.method} {request.url}: expected a reply of the MCP server, "
             f"got HTTP {response.status_code} {response.reason_phrase}"
         )
+
+    def forgotten(self) -> bool:
+        """Сервер ответил 404 на запрос в своей сессии: сессии больше нет."""
+        return self._forgotten
 
     def refused(self, error: BaseException) -> McpClientError | None:
         """Отказ HTTP с причиной error; None — отказа не было."""
@@ -629,9 +645,8 @@ class HttpEndpoint(HttpAddress):
         return self.url()
 
     @asynccontextmanager
-    async def opened(self) -> AsyncGenerator[Streams, None]:
+    async def opened(self, refusals: HttpRefusals) -> AsyncGenerator[Streams, None]:
         auth = self.auth.httpx_auth(self.url())
-        refusals = HttpRefusals()
         async with create_mcp_http_client(auth=auth) as http:
             http.event_hooks["response"].append(refusals.seen)
             async with streamable_http_client(self.url(), http_client=http) as streams:
@@ -655,7 +670,7 @@ class SseEndpoint(HttpAddress):
         return self.url()
 
     @asynccontextmanager
-    async def opened(self) -> AsyncGenerator[Streams, None]:
+    async def opened(self, refusals: HttpRefusals) -> AsyncGenerator[Streams, None]:
         auth = self.auth.httpx_auth(self.url())
         async with sse_client(self.url(), auth=auth) as streams:
             yield streams
@@ -683,7 +698,7 @@ class StdioCommand(BaseModel):
         return self
 
     @asynccontextmanager
-    async def opened(self) -> AsyncGenerator[Streams, None]:
+    async def opened(self, refusals: HttpRefusals) -> AsyncGenerator[Streams, None]:
         env: dict[str, str] | None = None
         if self.env:
             env = dict(self.env)
@@ -856,7 +871,9 @@ class IdentifiedSession(ClientSession):
     Создаётся соединением McpConnection. SDK собирает clientCapabilities
     _meta запроса сам из обработчиков сессии; ретранслятор чата обязан
     передать серверу возможности агента как есть, поэтому сборка
-    возможностей здесь отдаёт их из личности клиента.
+    возможностей здесь отдаёт их из личности клиента; на проводе
+    рукопожатия — без elicitation, sampling и roots: запросов сервера
+    посреди вызова принять некому.
     """
 
     def __init__(
@@ -875,7 +892,13 @@ class IdentifiedSession(ClientSession):
         self._identity = identity
 
     def _build_capabilities(self, version: str) -> mt.ClientCapabilities:
-        return self._identity.capabilities
+        capabilities = self._identity.capabilities
+        if version in MODERN_PROTOCOL_VERSIONS:
+            return capabilities
+
+        return capabilities.model_copy(
+            update={"elicitation": None, "sampling": None, "roots": None}
+        )
 
 
 class McpConnection:
@@ -884,10 +907,10 @@ class McpConnection:
     Создаётся портом McpToolServer. Транспорт и сессия библиотеки mcp
     открываются и закрываются в одной собственной задаче — их области отмены
     привязаны к задаче, которая их открыла; запросы идут из задач вызовов.
-    Протокол согласует server/discover; сервер, который на него не отвечает
-    (эпоха рукопожатия initialize), отвергается. Сессия говорит от личности
-    identity. Уведомления прогресса сессия отдаёт целиком, с _meta: каждое
-    уходит обработчику запроса, который слушает его токен (listening).
+    Версию протокола согласует штатная политика SDK (negotiate_auto) заново
+    на каждое открытие. Сессия говорит от личности identity. Уведомления
+    прогресса сессия отдаёт целиком, с _meta: каждое уходит обработчику
+    запроса, который слушает его токен (listening).
     """
 
     def __init__(
@@ -903,6 +926,7 @@ class McpConnection:
         self._task: asyncio.Task[None] | None = None
         self._stop = asyncio.Event()
         self._ready: asyncio.Future[ClientSession] | None = None
+        self._refusals = HttpRefusals()
         self._listeners: dict[
             mt.ProgressToken,
             Callable[[mt.ProgressNotificationParams], Awaitable[None]],
@@ -948,6 +972,9 @@ class McpConnection:
             await self.close()
             raise
 
+    def forgotten(self) -> bool:
+        return self._refusals.forgotten()
+
     async def close(self) -> None:
         task = self._task
         self._task = None
@@ -967,16 +994,15 @@ class McpConnection:
             )
 
     async def _serve(self, ready: asyncio.Future[ClientSession]) -> None:
-        """Сессия живёт в этой задаче. Протокол согласует server/discover:
-        сервер прежней спецификации (рукопожатие initialize) на него не
-        отвечает, и клиент его отвергает. Отказ HTTP за время согласования
+        """Сессия живёт в этой задаче. Отказ HTTP за время согласования
         называет транспорт (HttpRefusals)."""
         stop = self._stop
+        self._refusals = HttpRefusals()
         try:
-            async with self._transport.opened() as (read, write):
+            async with self._transport.opened(self._refusals) as (read, write):
                 session = IdentifiedSession(read, write, self._identity, self._heard)
                 async with session:
-                    await self._discover(session)
+                    await self._negotiated(session)
                     ready.set_result(session)
                     await stop.wait()
         except Exception as exc:
@@ -990,20 +1016,26 @@ class McpConnection:
 
             raise
 
-    async def _discover(self, session: ClientSession) -> None:
+    async def _negotiated(self, session: ClientSession) -> None:
         """Ошибки:
-        McpClientError — сервер отказал в server/discover.
+        McpClientError — сервер отверг обе попытки либо назвал версию,
+            которой клиент не знает.
         """
         try:
-            await session.discover()
+            await negotiate_auto(session)
         except MCPError as exc:
             msg = (
-                f"mcp {self._transport.label()}: server/discover was refused with "
-                f"MCP error {exc.error.code}: {exc.error.message}; the client "
-                f"expects server/discover with one of "
-                f"{list(MODERN_PROTOCOL_VERSIONS)} and does not speak the "
-                "initialize handshake of earlier releases, update the server to "
-                "a release of MCP that answers server/discover."
+                f"mcp {self._transport.label()}: negotiating the protocol by "
+                f"server/discover and then initialize was refused with MCP error "
+                f"{exc.error.code}: {exc.error.message} (data {exc.error.data!r}); "
+                f"the client speaks {list(KNOWN_PROTOCOL_VERSIONS)}"
+            )
+            raise McpClientError(msg) from exc
+        except RuntimeError as exc:
+            msg = (
+                f"mcp {self._transport.label()}: initialize was answered with a "
+                f"protocol version the client does not know: {exc}; the client "
+                f"speaks {list(KNOWN_PROTOCOL_VERSIONS)}"
             )
             raise McpClientError(msg) from exc
 
@@ -1319,8 +1351,9 @@ class McpToolPort(Protocol):
 
     @abstractmethod
     def discovered(self) -> mt.DiscoverResult:
-        """Ответ сервера на server/discover: версии, возможности, расширения,
-        инструкции и serverInfo в _meta."""
+        """Что сервер сказал о себе при согласовании и что порт может дать:
+        согласованная версия, возможности, расширения, инструкции и
+        serverInfo в _meta."""
 
     @abstractmethod
     def tools(self) -> Sequence[mt.Tool]:
@@ -1531,15 +1564,15 @@ class McpToolServer(McpToolPort):
 
     Создаётся McpServers на пару «сервер, личность клиента» с общим входом
     либо на тройку с пользователем при личном. open() подключается,
-    согласует протокол (server/discover) и читает список инструментов;
+    согласует протокол и читает список инструментов;
     tools() отдаёт его как есть, refreshed() перечитывает. Операции, которые
     клиент исполняет сам (загрузка файла), из списка для модели убирает
     ретранслятор чата. call() шлёт tools/call, остальные методы — запросы
     ресурсов, промптов, подсказок и поток subscriptions/listen; ответ
     сервера отдаётся как есть. Расширения boba (features) берутся из
     возможностей сервера: у стороннего их нет. К личности клиента порт
-    добавляет расширения, которые исполняет сам чат. Оборванная сессия
-    открывается заново следующим запросом.
+    добавляет расширения, которые исполняет сам чат. Оборванная и забытая
+    сервером сессия открывается заново следующим запросом.
     """
 
     FEATURE_PREFIX: ClassVar[str] = "com.boba/"
@@ -1554,10 +1587,17 @@ class McpToolServer(McpToolPort):
     """Коды «ресурса нет» resources/read: -32602 и прежний -32002, которого
     в константах SDK нет."""
     OWN_META: ClassVar[frozenset[str]] = frozenset(
-        {"progress_token", mt.LOG_LEVEL_META_KEY}
+        {
+            "progress_token",
+            mt.LOG_LEVEL_META_KEY,
+            mt.PROTOCOL_VERSION_META_KEY,
+            mt.CLIENT_INFO_META_KEY,
+            mt.CLIENT_CAPABILITIES_META_KEY,
+        }
     )
     """Ключи _meta запроса, которые порт ставит сам либо не несёт: токен
-    прогресса (имя поля модели) и уровень логов."""
+    прогресса (имя поля модели), уровень логов и конверт версии и личности —
+    его ставит сессия по своему проводу."""
     READ_REPLY: ClassVar[
         TypeAdapter[mt.ReadResourceResult | mt.InputRequiredResult]
     ] = TypeAdapter(mt.ReadResourceResult | mt.InputRequiredResult)
@@ -1606,7 +1646,7 @@ class McpToolServer(McpToolPort):
         McpClientError — сервер недоступен либо не отдал список инструментов.
         """
         session = await self._session()
-        self._discovered = session.discover_result
+        self._discovered = self._described(session)
         self._features = self._declared(session)
         self._journal = self._feature(JournalFeature)
         self._links = self._journal_links(self._journal)
@@ -1665,6 +1705,60 @@ class McpToolServer(McpToolPort):
                 exc,
             )
             return None
+
+    def _described(self, session: ClientSession) -> mt.DiscoverResult:
+        """Описание сервера из полей сессии, общих для обеих эпох; без потоков
+        subscriptions/listen — без смены списков и подписки.
+
+        Ошибки:
+        McpClientError — сессия без согласованной версии и возможностей.
+        """
+        version = session.protocol_version
+        if version is None:
+            msg = f"{self._label}: the session has no negotiated protocol version"
+            raise McpClientError(msg)
+
+        capabilities = session.server_capabilities
+        if capabilities is None:
+            msg = f"{self._label}: the session has no capabilities of the server"
+            raise McpClientError(msg)
+
+        if version not in MODERN_PROTOCOL_VERSIONS:
+            capabilities = self._unheard(capabilities)
+
+        meta: dict[str, Any] = {}
+        info = session.server_info
+        if info is not None:
+            dumped = info.model_dump(mode="json", by_alias=True, exclude_none=True)
+            meta[mt.SERVER_INFO_META_KEY] = dumped
+
+        return mt.DiscoverResult(
+            supported_versions=[version],
+            capabilities=capabilities,
+            instructions=session.instructions,
+            _meta=meta,
+        )
+
+    @staticmethod
+    def _unheard(capabilities: mt.ServerCapabilities) -> mt.ServerCapabilities:
+        """Возможности без смены списков и подписки на ресурсы."""
+        update: dict[str, Any] = {}
+        if capabilities.tools is not None:
+            update["tools"] = capabilities.tools.model_copy(
+                update={"list_changed": False}
+            )
+
+        if capabilities.prompts is not None:
+            update["prompts"] = capabilities.prompts.model_copy(
+                update={"list_changed": False}
+            )
+
+        if capabilities.resources is not None:
+            update["resources"] = capabilities.resources.model_copy(
+                update={"list_changed": False, "subscribe": False}
+            )
+
+        return capabilities.model_copy(update=update)
 
     def discovered(self) -> mt.DiscoverResult:
         discovered = self._discovered
@@ -1989,10 +2083,19 @@ class McpToolServer(McpToolPort):
             raise McpClientError(msg) from exc
 
     async def _unanswered(self, error: MCPError, action: str) -> None:
-        """Запрос action остался без ответа — оборвалась сессия или вышел
-        срок: соединение закрывается, следующий запрос подключится заново, а
-        наверх уходит McpClientError. Иную ошибку MCP вызывающий поднимает
-        как есть."""
+        """Запрос action остался без ответа — оборвалась сессия, вышел срок
+        или сервер забыл сессию: соединение закрывается, следующий запрос
+        подключится заново, а наверх уходит McpClientError. Иную ошибку MCP
+        вызывающий поднимает как есть."""
+        if self._connection.forgotten():
+            await self._connection.close()
+            msg = (
+                f"{self._label}: {action} was refused, the server forgot the "
+                "session of the client (HTTP 404 with Mcp-Session-Id); the next "
+                f"request opens a new session: {self._causes.text(error)}"
+            )
+            raise McpClientError(msg) from error
+
         closed = error.error.code == mt.CONNECTION_CLOSED
         expired = error.error.code == mt.REQUEST_TIMEOUT
         unanswered = closed or expired

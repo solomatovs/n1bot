@@ -2,7 +2,6 @@
 
 from boba.mcp_adapter.tools import (
     CallerServers,
-    FeatureExtension,
     JournalUris,
     McpReplies,
     McpTool,
@@ -12,7 +11,6 @@ from boba.mcp_adapter.tools import (
 
 __all__ = [
     "CallerServers",
-    "FeatureExtension",
     "JournalUris",
     "McpReplies",
     "McpTool",

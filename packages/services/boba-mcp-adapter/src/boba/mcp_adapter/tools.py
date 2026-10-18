@@ -9,9 +9,7 @@
 и всё, что решает о составе порта), собранные один раз. McpToolProvider —
 провайдер fastmcp: на каждый запрос берёт инструменты вызывающего у
 CallerServers (кто вызывает, решает приложение по своему токену).
-FeatureExtension — возможность сервера, объявляемая клиенту при
-согласовании протокола. JournalUris — uri каналов журнала вызова ресурсами
-MCP и их разбор.
+JournalUris — uri каналов журнала вызова ресурсами MCP и их разбор.
 
 Ошибки:
 наружу уходит только итог вызова — сбой любого вида возвращается
@@ -30,7 +28,6 @@ from typing import Any, Generic, Protocol, TypeVar
 
 import mcp_types as mt
 from fastmcp.resources.template import expand_uri_template, match_uri_template
-from fastmcp.server.extensions import ServerExtension
 from fastmcp.server.providers import Provider
 from fastmcp.tools import Tool
 from fastmcp.tools.base import ToolResult
@@ -47,7 +44,6 @@ from boba.toolkit.wire import JournalRead, ResultWire
 
 __all__ = [
     "CallerServers",
-    "FeatureExtension",
     "JournalUris",
     "McpReplies",
     "McpTool",
@@ -285,19 +281,3 @@ class McpToolProvider(Provider):
             offered[operation.name] = operation
 
         return offered
-
-
-class FeatureExtension(ServerExtension):
-    """Возможность сервера как расширение MCP: идентификатор и настройки,
-    которые клиент получает при согласовании протокола.
-
-    Создаётся сборкой сервера на каждую возможность (журнал вызовов,
-    запечатывание соединений) и регистрируется в сервере fastmcp.
-    """
-
-    def __init__(self, identifier: str, settings: Mapping[str, Any]) -> None:
-        self.identifier = identifier
-        self._settings = dict(settings)
-
-    def settings(self) -> dict[str, Any]:
-        return dict(self._settings)
