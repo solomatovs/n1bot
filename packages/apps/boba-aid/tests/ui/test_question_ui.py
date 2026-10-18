@@ -21,7 +21,7 @@ import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import httpx
 import pytest
@@ -247,6 +247,8 @@ class QuestionPage:
     """Вкладка чата с вопросом агента: вопрос моделью, панель, запись ответа
     и то, что модель получила в ответ."""
 
+    TABS: ClassVar[int] = 30
+
     def __init__(self, chat: ChatPage, llm_port: int) -> None:
         self.chat = chat
         self.page: Page = chat.page
@@ -376,6 +378,17 @@ class QuestionPage:
     def press(self, key: str) -> None:
         self.page.keyboard.press(key)
         self.page.wait_for_timeout(80)
+
+    def tab_to(self, target: Locator, key: str) -> None:
+        """Tab или Shift+Tab (key), пока фокус не встанет на target, как с
+        клавиатуры."""
+        for _ in range(self.TABS):
+            self.press(key)
+            if target.evaluate("(node) => node === document.activeElement"):
+                return
+
+        msg = f"{self.TABS} {key} presses did not reach {target} in the question panel"
+        raise AssertionError(msg)
 
     def theme(self, dark: bool) -> None:
         self.page.evaluate(
@@ -584,6 +597,25 @@ class TestKeyboard:
         asked.page.locator(PANEL).locator(SUBMIT).click()
         asked.record("accept")
         assert '="v1"' in asked.tool_result()
+
+    def test_tab_rings_the_button_rows_keep_their_background(
+        self, asked: QuestionPage
+    ) -> None:
+        """Tab по панели: кнопка отправки в кольце фокуса темы, строка
+        варианта — своим фоном, без кольца."""
+        panel = asked.ask(DB)
+        asked.row("PostgreSQL").click()
+
+        submit = panel.locator(SUBMIT)
+        asked.tab_to(submit, "Tab")
+        assert css(submit, "outlineStyle") == "solid"
+        assert css(submit, "outlineWidth") == "2px"
+        assert css(submit, "outlineColor") == asked.color("hsl(var(--ring))")
+
+        row = asked.row("ClickHouse")
+        asked.tab_to(row, "Shift+Tab")
+        assert css(row, "outlineStyle") == "none"
+        assert css(row, "backgroundColor") == asked.color("hsl(var(--muted))")
 
 
 class TestWithoutTheUser:
