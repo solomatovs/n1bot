@@ -73,4 +73,4 @@ async def answering_model() -> AsyncIterator[FakeModel]:
 
 @pytest.fixture
 def registration() -> StandRegistration:
-    return StandRegistration([StandRegistration.STAND])
+    return StandRegistration([StandRegistration.STAND], 0)

@@ -1,0 +1,1 @@
+{count} tools are no longer available (MCP server disconnected): {names}. Do not call them.

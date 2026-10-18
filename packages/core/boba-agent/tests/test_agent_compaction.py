@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from boba.agent.attachments import ConnectedServer
 from boba.agent.control import AllowAnswer
 from boba.agent.events import RecordEvent, TurnOutcome
 from boba.agent.history import SessionId
@@ -43,6 +44,7 @@ from boba.stand.agent import (
     Protocol,
     Served,
     StandAgents,
+    StandServers,
     StandToolName,
     StandTools,
 )
@@ -54,6 +56,7 @@ SESSION = SessionId(value="agent-compaction-1")
 VERSION = "0.0.26.dev4"
 CONTINUED = "This session is being continued from a previous conversation"
 INSTRUCTION_MARK = "an <analysis> block followed by a <summary> block"
+NOTE = "Look the rows up before you drop them."
 LARGE_CHARS = 24_000
 """Результат, после которого учёт следующего ответа переходит порог
 (80 % окна 8000 минус 512), но не предел (95 %)."""
@@ -291,6 +294,39 @@ class TestThreshold:
         assert len(server.requests()) == 5
         assert messages(server, 4)[: len(after)] == after
         assert len(boundaries(resumed.agent.session.records())) == 1
+
+    async def test_compaction_announces_the_server_instructions_again(
+        self, agents: StandAgents
+    ) -> None:
+        """Пачка сжатия объявляет инструкции подключённых серверов MCP
+        заново вслед за моделью: прежнее вложение осталось за границей.
+        Каждый ход перед объявлениями освежает серверы."""
+        sink = Collected()
+        profile = agents.profile(Protocol.OPENAI, chars_per_token=4)
+        servers = StandServers([ConnectedServer(name="stand", instructions=NOTE)])
+        agent = agents.agent(profile, sink, tools=StandTools(), servers=servers)
+        served = Served(agent)
+        session = await served.open(SESSION, resume=False)
+
+        served.agent.queue.enqueue(prompt(call(large())))
+        await served.agent.settled()
+        before = len(session.records())
+        served.agent.queue.enqueue(prompt(ScenarioName.ANSWER.value))
+        await served.agent.settled()
+        await served.close()
+
+        records = list(session.records())
+        announced = kinds(records[before:])
+        first = kinds(records[:before])
+        assert first.count("attachment:mcp_instructions_delta") == 1, first
+        assert announced[3:8] == [
+            "system:compact_boundary",
+            "attachment:date",
+            "user:summary",
+            "attachment:model",
+            "attachment:mcp_instructions_delta",
+        ], announced
+        assert servers.refreshes == 2
 
     @staticmethod
     def check_records(session: Session, before: int) -> None:

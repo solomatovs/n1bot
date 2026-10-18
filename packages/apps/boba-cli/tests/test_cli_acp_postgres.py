@@ -150,8 +150,8 @@ class Pair:
         )
         self.holder_client = AcpClient()
         self.observer_client = AcpClient()
-        self.holder_registration = StandRegistration([StandRegistration.STAND])
-        self.observer_registration = StandRegistration([StandRegistration.STAND])
+        self.holder_registration = StandRegistration([StandRegistration.STAND], 0)
+        self.observer_registration = StandRegistration([StandRegistration.STAND], 0)
         self._stand = stand
         self.holder_conn: Any = None
         self.observer_conn: Any = None
