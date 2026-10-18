@@ -1831,25 +1831,34 @@ class TestRefusals:
 
         assert await boba.wait() == 0
 
-    async def test_unreachable_mcp_server_fails_the_session(
-        self, boba: AcpProcess, registration: StandRegistration, tmp_path: Path
+    async def test_unreachable_mcp_server_is_left_out_with_a_notice(
+        self, boba: AcpProcess, tmp_path: Path
     ) -> None:
+        """Сервер, который не открылся, сессия не берёт: клиент получает
+        пометку с причиной, а ход идёт с инструментами остальных серверов."""
+        alive = schema.AcpMcpServer(name="alive", server_id="alive:1")
+        dead = schema.AcpMcpServer(name="dead", server_id="dead:0")
         client = AcpClient()
-        conn = await boba.start(client, registration)
+        conn = await boba.start(client, StandRegistration([alive]))
         try:
             await handshake(conn)
-            dead = schema.AcpMcpServer(name="dead", server_id="dead:0")
-            with pytest.raises(RequestError) as failed:
-                await conn.new_session(cwd=str(tmp_path), mcp_servers=[dead])
-
-            assert failed.value.code == AcpErrorCode.INTERNAL_ERROR
-            assert "'dead'" in str(failed.value.data)
-            assert "dead:0" in str(failed.value.data)
+            session = await conn.new_session(
+                cwd=str(tmp_path), mcp_servers=[alive, dead]
+            )
+            added = call({"name": "mcp__alive__add", "arguments": {"a": 1, "b": 2}})
+            await boba.turn(client, session.session_id, added)
+            notices = client.of(schema.SessionNotice)
+            starts = client.of(schema.SessionToolCallUpdate)
         finally:
             await conn.close()
             await boba.close_stdin()
 
         assert await boba.wait() == 0
+        assert len(notices) == 1, notices
+        assert notices[0].severity == "warning", notices
+        assert "'dead'" in notices[0].title, notices
+        assert "dead:0" in str(notices[0].description), notices
+        assert result_text(client.calls_of(starts[0].tool_call_id)[-1]) == "3"
 
     async def test_same_tool_of_two_servers_is_called_on_each(
         self, boba: AcpProcess, tmp_path: Path
@@ -3460,14 +3469,6 @@ class TestFork:
                 )
 
             assert relative.value.code == AcpErrorCode.INVALID_PARAMS
-
-            dead = schema.AcpMcpServer(name="dead", server_id="dead:0")
-            with pytest.raises(RequestError) as unreachable:
-                await conn.fork_session(
-                    session_id=session_id, cwd=str(tmp_path), mcp_servers=[dead]
-                )
-
-            assert unreachable.value.code == AcpErrorCode.INTERNAL_ERROR
         finally:
             await conn.close()
             await second.close_stdin()

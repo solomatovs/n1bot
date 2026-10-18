@@ -1498,9 +1498,18 @@ class TestBobaMcpService:
     async def test_every_tool_is_listed_to_a_client_of_an_earlier_edition(
         self, service: McpToolServer, process: BobaMcpService
     ) -> None:
-        """Рукопожатие 2025-11-25 клиентом официального SDK: сервис отдаёт
-        такому клиенту tools/list, только если каждый инструмент всех
-        плагинов проходит схему этой редакции."""
+        """Клиент официального SDK без расширений: рукопожатие 2025-11-25
+        видит те же инструменты всех плагинов, что server/discover 2026-07-28
+        — SDK сервиса отдаёт старому клиенту tools/list, только если каждый
+        инструмент проходит схему его редакции."""
+        legacy = await self._listed(process, Edition.LEGACY)
+        modern = await self._listed(process, Edition.MODERN)
+
+        assert legacy, legacy
+        assert legacy == modern
+
+    async def _listed(self, process: BobaMcpService, edition: Edition) -> list[str]:
+        """Имена инструментов сервиса сессией SDK, согласованной на edition."""
         endpoint = process.endpoint().on_behalf_of(self.CALLER)
         auth = endpoint.auth.httpx_auth(endpoint.url())
         names: list[str] = []
@@ -1510,8 +1519,12 @@ class TestBobaMcpService:
             streamable_http_client(endpoint.url(), http_client=http) as streams,
             ClientSession(*streams) as session,
         ):
-            await session.initialize()
-            version = session.protocol_version
+            if edition is Edition.LEGACY:
+                await session.initialize()
+            else:
+                await session.discover()
+
+            assert session.protocol_version == edition.value
             while True:
                 params = mt.PaginatedRequestParams(cursor=cursor)
                 page = await session.list_tools(params=params)
@@ -1520,8 +1533,7 @@ class TestBobaMcpService:
                 if not cursor:
                     break
 
-        assert version == Edition.LEGACY.value
-        assert sorted(names) == sorted(tool.name for tool in service.tools())
+        return sorted(names)
 
     async def test_plugin_tool_runs_in_the_service_process(
         self, service: McpToolServer
@@ -1916,6 +1928,54 @@ class TestHandshakeEdition:
         )
         assert capabilities.prompts == mt.PromptsCapability(list_changed=False)
         assert capabilities.completions == mt.CompletionsCapability()
+
+    @pytest.mark.parametrize(
+        ("server", "version"),
+        [
+            (AppServer.LEGACY, Edition.LEGACY.value),
+            (AppServer.OLDER, "2025-06-18"),
+            (AppServer.DUAL, "2025-06-18"),
+        ],
+        ids=["handshake", "older-only", "dual-of-a-later-edition"],
+    )
+    async def test_highest_common_version_is_negotiated(
+        self, apps_slot: AppsSlot, server: AppServer, version: str
+    ) -> None:
+        """Версия — наибольшая общая: на initialize с самой новой версией
+        рукопожатия сервер отвечает своей самой новой, а сервер более поздней
+        редакции называет свои версии отказом -32022 на server/discover, и
+        клиент переходит на рукопожатие."""
+        endpoint = _legacy(apps_slot, server)
+        port = McpToolServer(server.name.lower(), _config(endpoint), McpServers.OWN)
+        await port.open()
+        try:
+            versions = port.discovered().supported_versions
+            reply = await port.call(_call("add", a=2, b=3), None, None)
+        finally:
+            await port.close()
+
+        assert versions == [version]
+        assert McpResults().result("add", "c1", reply).llm_view() == "5"
+
+    async def test_server_of_a_later_edition_only_is_refused_with_the_versions(
+        self, apps_slot: AppsSlot
+    ) -> None:
+        """Общей версии нет: сервер знает только 2027-01-01 и рукопожатия не
+        ведёт — подключение отказано, текст называет версии обеих сторон."""
+        endpoint = _legacy(apps_slot, AppServer.AHEAD)
+        server = McpToolServer("ahead", _config(endpoint), McpServers.OWN)
+        try:
+            with pytest.raises(McpClientError) as refused:
+                await server.open()
+        finally:
+            await server.close()
+
+        text = str(refused.value)
+        assert "'ahead'" in text, text
+        assert "MCP error -32022" in text, text
+        assert "2027-01-01" in text, text
+        assert Edition.MODERN.value in text, text
+        assert "2025-06-18" in text, text
 
     async def test_listen_is_refused_with_the_reason(
         self, legacy: McpToolServer

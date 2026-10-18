@@ -5,13 +5,18 @@
 // забыванием по команде (forget), вопрос пользователю только клиенту с
 // elicitation (ask), смену списка инструментов уведомлением (toggle_extra),
 // инструмент только для задач (slow_report) и эхо личности клиента и _meta
-// запроса (client). Состояние — своё у каждой сессии.
+// запроса (client). Состояние — своё у каждой сессии. Редакцию сервера задают
+// параметры: --handshake — версии рукопожатия initialize, которые он знает
+// (по умолчанию все версии SDK; пусто — рукопожатия нет), --modern — версии
+// с конвертом _meta, которые он называет отказом UnsupportedProtocolVersionError
+// на server/discover, как сервер более поздней редакции.
 //
-// node legacy-server.mjs <порт>   — streamable HTTP с сессиями на /mcp
-// node legacy-server.mjs --stdio  — stdio
+// node legacy-server.mjs <порт> [--handshake v,...] [--modern v,...] — HTTP с сессиями на /mcp
+// node legacy-server.mjs --stdio                                    — stdio
 
 import { randomUUID } from "node:crypto";
 import http from "node:http";
+import { parseArgs } from "node:util";
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -28,7 +33,35 @@ import {
   ListToolsRequestSchema,
   McpError,
   ReadResourceRequestSchema,
+  SUPPORTED_PROTOCOL_VERSIONS,
 } from "@modelcontextprotocol/sdk/types.js";
+
+const { values: EDITION, positionals } = parseArgs({
+  allowPositionals: true,
+  options: {
+    stdio: { type: "boolean", default: false },
+    handshake: { type: "string", default: SUPPORTED_PROTOCOL_VERSIONS.join(",") },
+    modern: { type: "string", default: "" },
+  },
+});
+const versions = (listed) => listed.split(",").filter((version) => version !== "");
+const HANDSHAKE = versions(EDITION.handshake);
+const MODERN = versions(EDITION.modern);
+const UNSUPPORTED_VERSION = -32022;
+
+// Рукопожатие редакции сервера: запрошенная версия, если сервер её знает,
+// иначе его самая новая — как велит lifecycle 2025-11-25.
+class EditionServer extends Server {
+  async _oninitialize(request) {
+    const result = await super._oninitialize(request);
+    const requested = request.params.protocolVersion;
+    if (HANDSHAKE.includes(requested)) {
+      return { ...result, protocolVersion: requested };
+    }
+
+    return { ...result, protocolVersion: HANDSHAKE[0] };
+  }
+}
 
 const INFO = { name: "legacy-standard", version: "1.0" };
 const INSTRUCTIONS = "Call add for sums; read standard://notes first.";
@@ -179,7 +212,7 @@ function read(uri) {
 
 // Сервер одной сессии: forget зовётся после ответа на одноимённый вызов.
 function build(forget) {
-  const server = new Server(INFO, {
+  const server = new EditionServer(INFO, {
     capabilities: { tools: { listChanged: true }, resources: {}, prompts: { listChanged: false }, completions: {} },
     instructions: INSTRUCTIONS,
   });
@@ -285,9 +318,26 @@ function build(forget) {
   return server;
 }
 
-function refuse(res, status, code, message) {
+function refuse(res, status, code, message, data) {
   res.writeHead(status, { "content-type": "application/json" });
-  res.end(JSON.stringify({ jsonrpc: "2.0", error: { code, message }, id: null }));
+  res.end(JSON.stringify({ jsonrpc: "2.0", error: { code, message, data }, id: null }));
+}
+
+// Отказ сервера более поздней редакции: server/discover — всегда (своих версий
+// с конвертом клиент не знает), initialize — если рукопожатия у сервера нет.
+function unsupported(res, message) {
+  const discovering = message.method === "server/discover";
+  const handshaking = isInitializeRequest(message) && HANDSHAKE.length === 0;
+  if (!discovering && !handshaking) {
+    return false;
+  }
+
+  const supported = [...MODERN, ...HANDSHAKE];
+  const meta = message.params?._meta ?? {};
+  const requested = message.params?.protocolVersion ?? meta["io.modelcontextprotocol/protocolVersion"];
+  refuse(res, 400, UNSUPPORTED_VERSION, "Unsupported protocol version", { supported, requested });
+
+  return true;
 }
 
 async function body(req) {
@@ -322,6 +372,10 @@ function serveHttp(port) {
     }
 
     const message = await body(req);
+    if (MODERN.length > 0 && unsupported(res, message)) {
+      return;
+    }
+
     if (!isInitializeRequest(message)) {
       refuse(res, 400, -32000, "Bad Request: No valid session ID provided");
       return;
@@ -352,8 +406,8 @@ function serveHttp(port) {
     .listen(port, "0.0.0.0", () => console.log(`legacy MCP server on http://0.0.0.0:${port}/mcp`));
 }
 
-if (process.argv[2] === "--stdio") {
+if (EDITION.stdio) {
   await build(() => {}).connect(new StdioServerTransport());
 } else {
-  serveHttp(Number.parseInt(process.argv[2], 10));
+  serveHttp(Number.parseInt(positionals[0], 10));
 }
