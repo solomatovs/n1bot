@@ -21,7 +21,6 @@ import contextlib
 import logging
 import os
 import stat as stat_module
-import sys
 import time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator, AsyncIterator, Sequence
@@ -50,15 +49,16 @@ from boba.toolkit.result import ContentMime
 from boba.workspace.binaries import TrustedBinaries
 from boba.workspace.launcher import (
     ImageMountPoint,
+    LauncherChain,
     LauncherExit,
+    LauncherInterpreter,
     LauncherMarker,
     LauncherMode,
+    LayerSources,
     MountingConfig,
     ReadHeader,
     ReadWindow,
     ResourceLimits,
-    build_chain_argv,
-    require_fuse,
 )
 
 __all__ = [
@@ -123,6 +123,12 @@ class LocalStorageConfig(BaseModel):
         description=(
             "kind=image: каталоги, откуда берутся bwrap и fuse2fs; "
             "$PATH не используется."
+        ),
+    )
+    interpreter: LauncherInterpreter = Field(
+        description=(
+            "kind=image: интерпретатор лаунчера образов — секция процесса "
+            "${interpreter}, которую собирает граница конфига."
         ),
     )
 
@@ -390,10 +396,21 @@ class LocalStorageClient(ConfiguredStorageClient):
 
 
 class ImageStorageClient(ConfiguredStorageClient):
-    """Хранит вложения внутри per-thread ext4-образа: fuse2fs на одну операцию."""
+    """Хранит вложения внутри per-thread ext4-образа: fuse2fs на одну операцию.
+
+    Каждая операция — цепочка лаунчера (LauncherChain) над образом
+    пользователя: внешний слой видит интерпретатор, бинари, шаблон и каталог
+    образов, а не корень хоста.
+    """
 
     WATCH_POLL_SEC: ClassVar[float] = 1.0
     """Период проверки простоя идущей операции."""
+
+    def __init__(self, config: LocalStorageConfig) -> None:
+        super().__init__(config)
+        self._chain = LauncherChain(
+            config.interpreter, config.binaries, config.mounting.to_options()
+        )
 
     async def _upload_stream(
         self,
@@ -564,16 +581,18 @@ class ImageStorageClient(ConfiguredStorageClient):
         with_stdin: bool,
     ) -> asyncio.subprocess.Process:
         """Запускает лаунчер на одну операцию над образом."""
-        require_fuse(self._config.binaries)
+        self._chain.check()
         await aiofiles.os.makedirs(os.path.dirname(image), exist_ok=True)
-        argv = build_chain_argv(
+        argv = self._chain.argv(
             images=[(image, ImageMountPoint.under(self._config.mount_dir, image))],
+            ro_images=(),
             template=self._workspace().template,
             op=op,
-            python_bin=sys.executable,
-            options=self._config.mounting.to_options(),
             limits=ResourceLimits(),
-            binaries=self._config.binaries,
+            pass_fds=(),
+            nested=LayerSources(ro=(), rw=()),
+            network=False,
+            replace=False,
         )
         stdin = asyncio.subprocess.DEVNULL
         if with_stdin:

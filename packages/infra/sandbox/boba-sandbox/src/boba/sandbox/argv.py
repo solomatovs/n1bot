@@ -2,120 +2,107 @@
 
 from __future__ import annotations
 
-import os
-from collections.abc import Mapping
-from typing import TypeVar
+from collections.abc import Mapping, Sequence
 
 from boba.sandbox.profile import BindSpec, SandboxMount, SandboxProfile
 from boba.workspace.binaries import SandboxBinary
-from boba.workspace.launcher import FUSE_DEVICE
+from boba.workspace.launcher import LayerPath, LayerSources
 
-__all__ = ["build_zygote_argv"]
+__all__ = ["ZygoteArgv"]
 
 
-def build_zygote_argv(
-    profile: SandboxProfile,
-    command: list[str],
-    *,
-    env: Mapping[str, str],
-    root: str,
-) -> list[str]:
-    """bwrap для зиготы внутри userns лаунчера образов.
+class ZygoteArgv:
+    """argv вложенного bwrap зиготы по профилю песочницы и источники его биндов.
 
-    CAP_SYS_ADMIN — unshare и mount детей, CAP_SYS_RESOURCE — запрет
-    вложенных userns записью max_user_namespaces=0, CAP_SETPCAP — сброс
-    bounding set перед запуском тела. Свой userns не создаётся: цепочка
-    лаунчера уже в нём, зато его капабилити наследуются. root — точка,
-    куда цепочка смонтировала образ корня; сеть отбирает внешний bwrap.
+    Вложенный bwrap ищет каждый источник бинда в виде внешнего слоя цепочки
+    лаунчера, поэтому внешний слой берёт их отсюда же, из объекта, который
+    пишет argv: второго перечня источников нет. Создаёт его ZygoteSpawner и
+    отдаёт источники построителю цепочки LauncherChain.
     """
-    bwrap_path = profile.host.binaries.resolve(SandboxBinary.BWRAP)
 
-    argv = [
-        bwrap_path,
-        "--die-with-parent",
-        "--as-pid-1",
-        "--cap-add",
-        "CAP_SYS_ADMIN",
-        "--cap-add",
-        "CAP_SYS_RESOURCE",
-        "--cap-add",
-        "CAP_SETPCAP",
-        "--unshare-pid",
-        "--unshare-ipc",
-        "--unshare-uts",
-        "--unshare-cgroup-try",
-        # внутреннее устройство телу не видно
-        "--hostname",
-        "sandbox",
-        "--new-session",
-        "--ro-bind",
-        root,
-        "/",
-    ]
+    def __init__(self, profile: SandboxProfile) -> None:
+        self._profile = profile
 
-    argv += ["--proc", SandboxMount.PROC.value]
-    argv += ["--dev", SandboxMount.DEV.value]
+    def argv(
+        self, command: Sequence[str], *, env: Mapping[str, str], root: str
+    ) -> list[str]:
+        """bwrap для зиготы внутри userns лаунчера образов.
 
-    argv += ["--dev-bind", FUSE_DEVICE, FUSE_DEVICE]
+        CAP_SYS_ADMIN — unshare и mount детей, CAP_SYS_RESOURCE — запрет
+        вложенных userns записью max_user_namespaces=0, CAP_SETPCAP — сброс
+        bounding set перед запуском тела. Свой userns не создаётся: цепочка
+        лаунчера уже в нём, зато его капабилити наследуются. root — точка,
+        куда цепочка смонтировала образ корня; сеть отбирает внешний bwrap.
+        """
+        bwrap_path = self._profile.host.binaries.resolve(SandboxBinary.BWRAP)
 
-    # tmpfs раньше биндов: на read-only корне bwrap не создаст точку
-    # монтирования, а поверх tmpfs — создаст
-    for spec in profile.tmpfs():
-        argv += ["--size", str(spec.size_bytes), "--tmpfs", spec.path]
+        argv = [
+            bwrap_path,
+            "--die-with-parent",
+            "--as-pid-1",
+            "--cap-add",
+            "CAP_SYS_ADMIN",
+            "--cap-add",
+            "CAP_SYS_RESOURCE",
+            "--cap-add",
+            "CAP_SETPCAP",
+            "--unshare-pid",
+            "--unshare-ipc",
+            "--unshare-uts",
+            "--unshare-cgroup-try",
+            # внутреннее устройство телу не видно
+            "--hostname",
+            "sandbox",
+            "--new-session",
+            "--ro-bind",
+            root,
+            "/",
+        ]
 
-    setup = profile.setup_binds()
-    symlinks: list[tuple[str, str]] = []
+        argv += ["--proc", SandboxMount.PROC.value]
+        argv += ["--dev", SandboxMount.DEV.value]
 
-    ro_binds = (*profile.mounts.ro, *setup.ro)
-    for spec in ro_binds:
-        argv += _bind_args("--ro-bind-try", spec, symlinks)
+        argv += ["--dev-bind", LayerPath.FUSE.value, LayerPath.FUSE.value]
 
-    rw_binds = (*profile.mounts.rw, *setup.rw)
-    for spec in _dedup_preserve_order(rw_binds):
-        argv += _bind_args("--bind-try", spec, symlinks)
+        # tmpfs раньше биндов: на read-only корне bwrap не создаст точку
+        # монтирования, а поверх tmpfs — создаст
+        for spec in self._profile.tmpfs():
+            argv += ["--size", str(spec.size_bytes), "--tmpfs", spec.path]
 
-    for target, link_path in _dedup_preserve_order(symlinks):
-        argv += ["--symlink", target, link_path]
+        # источник-ссылку bwrap разыменует сам, а точка в образе — та, что в
+        # профиле: под systemd-resolved /etc/resolv.conf ведёт в /run, которого
+        # в read-only корне образа не создать
+        for spec in self._ro_binds():
+            argv += ["--ro-bind-try", spec.host, spec.target]
 
-    argv += ["--clearenv"]
-    for name, value in env.items():
-        argv += ["--setenv", name, value]
+        for spec in self._rw_binds():
+            argv += ["--bind-try", spec.host, spec.target]
 
-    # cwd профиля может быть точкой образа, которую смонтирует ребёнок
-    argv += ["--chdir", "/"]
-    argv += ["--", *command]
-    return argv
+        argv += ["--clearenv"]
+        for name, value in env.items():
+            argv += ["--setenv", name, value]
 
+        # cwd профиля может быть точкой образа, которую смонтирует ребёнок
+        argv += ["--chdir", "/"]
+        argv += ["--", *command]
+        return argv
 
-def _bind_args(
-    flag: str,
-    spec: BindSpec,
-    symlinks: list[tuple[str, str]],
-) -> list[str]:
-    """Явный target монтируется как есть; same-path bind чинит host-симлинки."""
-    if spec.target != spec.host:
-        return [flag, spec.host, spec.target]
-    real, link = _resolve_bind(spec.host)
-    if link is not None:
-        symlinks.append(link)
-    return [flag, real, real]
+    def sources(self) -> LayerSources:
+        """Источники биндов ровно в том виде, в каком их пишет argv."""
+        ro: list[str] = []
+        for spec in self._ro_binds():
+            ro.append(spec.host)
 
+        rw: list[str] = []
+        for spec in self._rw_binds():
+            rw.append(spec.host)
 
-def _resolve_bind(path: str) -> tuple[str, tuple[str, str] | None]:
-    if not os.path.islink(path):
-        return path, None
-    real = os.path.realpath(path)
-    return real, (os.readlink(path), path)
+        return LayerSources(ro=tuple(ro), rw=tuple(rw))
 
+    def _ro_binds(self) -> tuple[BindSpec, ...]:
+        setup = self._profile.setup_binds()
+        return (*self._profile.mounts.ro, *setup.ro)
 
-_T = TypeVar("_T")
-
-
-def _dedup_preserve_order(items: tuple[_T, ...] | list[_T]) -> list[_T]:
-    seen: set[_T] = set()
-    out: list[_T] = []
-    for x in items:
-        if x not in seen:
-            seen.add(x)
-            out.append(x)
-    return out
+    def _rw_binds(self) -> tuple[BindSpec, ...]:
+        setup = self._profile.setup_binds()
+        return tuple(dict.fromkeys((*self._profile.mounts.rw, *setup.rw)))

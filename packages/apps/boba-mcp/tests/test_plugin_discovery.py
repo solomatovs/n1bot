@@ -6,6 +6,7 @@ import pytest
 from omegaconf import OmegaConf
 
 from boba.access import GrantCheck
+from boba.runtime.config import AppLayers
 from boba.runtime.plugins import (
     ConfigGrants,
     EntryPointPlugins,
@@ -15,6 +16,7 @@ from boba.runtime.plugins import (
 from boba.stand.refs import StandRefs
 from boba.stand_core.context import CallStand
 from boba.toolkit.entry import ToolArgv
+from boba.workspace.launcher import LauncherInterpreter
 
 EXPECTED = {"bash", "ch", "chart", "confluence", "doc", "ingest", "kb", "pg", "web"}
 
@@ -59,9 +61,11 @@ def test_discovered_plugin_without_config_file_refuses_start(
     runtime_stand: StandRefs,
     call_stand: CallStand,
 ) -> None:
+    interpreter = AppLayers.interpreter().model_dump(mode="json")
     raw = OmegaConf.create(
         {
             "tool_launcher": {"provider": "sandbox"},
+            LauncherInterpreter.SECTION: interpreter,
             "stream_groups": {
                 "open_sec": 60.0,
                 "stall_sec": 120.0,

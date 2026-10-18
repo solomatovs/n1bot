@@ -35,6 +35,7 @@ from boba.toolkit.facade import WarmupHooks
 from boba.toolkit.launcher import ToolLauncher
 from boba.toolkit.manifest import LaunchSpec
 from boba.toolrun.process import ProcessLauncherConfig, ProcessToolCaller
+from boba.workspace.launcher import LauncherInterpreter
 
 __all__ = [
     "CallSurface",
@@ -312,11 +313,13 @@ class ZygoteLaunchers(SectionLaunchers):
     дефолтов и секции [sandbox] файла плагина.
 
     Реализация SectionLaunchers; объект один на процесс, зиготы секций живут
-    в его реестре (ZygoteRegistry) между сборками инструментов."""
+    в его реестре (ZygoteRegistry) между сборками инструментов. Цепочке
+    лаунчера реестр отдаёт интерпретатор процесса из секции [interpreter]."""
 
     def __init__(self, raw: DictConfig) -> None:
         self._raw = raw
-        self._zygotes = ZygoteRegistry()
+        interpreter = bind(raw, LauncherInterpreter.SECTION, LauncherInterpreter)
+        self._zygotes = ZygoteRegistry(interpreter)
 
     def stop(self) -> None:
         self._zygotes.stop_all()
