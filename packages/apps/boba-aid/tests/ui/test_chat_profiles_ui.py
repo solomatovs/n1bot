@@ -82,7 +82,7 @@ class ProfileSpec:
 PROFILES = (
     ProfileSpec(
         name="general",
-        display_name="General",
+        display_name="Общий",
         model="fake-model-general",
         system_prompt="You are the general stand assistant",
         temperature=0.1,
@@ -92,7 +92,7 @@ PROFILES = (
     ),
     ProfileSpec(
         name="search",
-        display_name="Search",
+        display_name="Поиск",
         model="fake-model-search",
         system_prompt="You are the search stand assistant",
         temperature=0.7,
@@ -159,8 +159,11 @@ class TestProfileSelectorDom:
         if not chat.has_profile_selector():
             raise AssertionError(f"no profile selector\n{chat.dom()[:2000]}")
 
-        if chat.profile_label() != "General":
-            raise AssertionError(f"default is not General: {chat.profile_label()!r}")
+        default = PROFILES[0].display_name
+        if chat.profile_label() != default:
+            raise AssertionError(
+                f"the default profile is {chat.profile_label()!r}, expected {default!r}"
+            )
 
         if chat.profile_menu_open():
             raise AssertionError("profile menu is open before any click")
@@ -224,7 +227,7 @@ class TestProfileSettingsApplied:
     def test_profile_settings_reach_the_llm(
         self, chat: ChatPage, llm_port: int, spec: ProfileSpec
     ) -> None:
-        if spec.name != chat.profile_label().lower():
+        if chat.profile_label() != spec.display_name:
             _switch_to(chat, spec.name)
 
         _ask_and_wait(chat)
@@ -260,7 +263,7 @@ class TestProfileSettingsApplied:
     def test_admin_tools_follow_the_profile(
         self, chat: ChatPage, llm_port: int, spec: ProfileSpec
     ) -> None:
-        if spec.name != chat.profile_label().lower():
+        if chat.profile_label() != spec.display_name:
             _switch_to(chat, spec.name)
 
         _ask_and_wait(chat)
@@ -404,7 +407,7 @@ class TestRetiredThreadProfile:
     TOAST: ClassVar[str] = "[data-sonner-toast]"
     THREAD_HISTORY: ClassVar[str] = "#thread-history"
     NOTICE: ClassVar[str] = "aid.notice.profileRetired"
-    FALLBACK: ClassVar[str] = "General"
+    FALLBACK: ClassVar[str] = PROFILES[0].display_name
     SETTLE_MS: ClassVar[int] = 3000
     WAIT_MS: ClassVar[int] = 15000
 
@@ -460,5 +463,5 @@ class TestRetiredThreadProfile:
         expect(chat.page.locator(Selector.INPUT.value)).to_be_visible()
         expect(asked).to_be_visible()
 
-        if chat.profile_label() != "General":
+        if chat.profile_label() != self.FALLBACK:
             raise AssertionError(f"selector shows {chat.profile_label()!r}")

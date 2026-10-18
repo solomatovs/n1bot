@@ -4,10 +4,10 @@
     "light": {
       "--primary": "221 83% 53%",
       "--primary-foreground": "0 0% 100%",
-      "--ring": "221 83% 53%",
+      "--ring": "205.71 100% 41.18%",
       "--sidebar-primary": "221 83% 53%",
       "--sidebar-primary-foreground": "0 0% 100%",
-      "--sidebar-ring": "221 83% 53%",
+      "--sidebar-ring": "205.71 100% 41.18%",
       "--chart-1": "221 83% 53%"
     },
     "dark": {
