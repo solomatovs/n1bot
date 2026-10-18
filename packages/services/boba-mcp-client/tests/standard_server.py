@@ -8,7 +8,9 @@
 version|session` — сервер по HTTP с первого запроса не говорит на
 2026-07-28 (ModernSwitch). Для проверок порта без состояния: pid — процесс
 сервера, region — параметр с x-mcp-header, retitle — смена инструкций,
-retire_modern — отказ от 2026-07-28 посреди жизни. На нём есть каждый запрос и каждое
+retire_modern — отказ от 2026-07-28 посреди жизни; `--workspace DIR` —
+расширение файлов workspace с каталогом DIR (пути файлов show). На нём есть
+каждый запрос и каждое
 уведомление редакции 2026-07-28, кроме устаревших (sampling, roots,
 logging), чтобы клиент проверялся на всём: server/discover с инструкциями;
 инструменты — обычные, отказы стенда (задержка, большой результат, обрыв
@@ -236,16 +238,16 @@ class StandardServer:
         DeclaredExtension("com.boba/nested-calls", {"tool": "workflow"}),
     )
 
-    def __init__(self, port: int, extended: bool, ttl_ms: int, retired: str) -> None:
+    def __init__(
+        self, port: int, extended: bool, ttl_ms: int, retired: str, workspace: str
+    ) -> None:
         apps = Apps()
         apps.tool(resource_uri=self.ORDERS)(self.orders)
         apps.tool(resource_uri=self.ORDERS, visibility=["app"])(self.refresh_orders)
         apps.tool(resource_uri=self.ORDERS, visibility=["model"])(self.archive_orders)
         html = Path(__file__).with_name("orders.html").read_text()
         apps.add_html_resource(self.ORDERS, html, csp=self.ORDERS_CSP)
-        extensions: tuple[Extension, ...] = (apps,)
-        if extended:
-            extensions = (apps, *self.EXTENSIONS)
+        extensions = self._extensions(apps, extended, workspace)
 
         hints: dict[Any, CacheHint] = {}
         if ttl_ms:
@@ -299,6 +301,21 @@ class StandardServer:
         self._mcp.prompt()(self.greet)
         self._mcp.prompt()(self.ask_prompt)
         self._mcp.completion()(self.complete)
+
+    def _extensions(
+        self, apps: Apps, extended: bool, workspace: str
+    ) -> tuple[Extension, ...]:
+        """Расширения сервера: MCP Apps, с extended — объявленные не по
+        моделям клиента, с workspace — файлы workspace под этим каталогом."""
+        extensions: tuple[Extension, ...] = (apps,)
+        if extended:
+            extensions = (apps, *self.EXTENSIONS)
+
+        if workspace:
+            files = {"path": "/files", "upload": "show", "workspace": workspace}
+            extensions = (*extensions, DeclaredExtension("com.boba/files", files))
+
+        return extensions
 
     def add(self, a: int, b: int) -> int:
         """Adds two numbers."""
@@ -602,7 +619,10 @@ if __name__ == "__main__":
     parser.add_argument("port", nargs="?", type=int, default=0)
     parser.add_argument("--ttl-ms", type=int, default=0)
     parser.add_argument("--retired", default="")
+    parser.add_argument("--workspace", default="")
     args = parser.parse_args()
 
     extended = args.transport == "stdio-extended"
-    StandardServer(args.port, extended, args.ttl_ms, args.retired).run(args.transport)
+    StandardServer(args.port, extended, args.ttl_ms, args.retired, args.workspace).run(
+        args.transport
+    )

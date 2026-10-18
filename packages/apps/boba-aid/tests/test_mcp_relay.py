@@ -425,8 +425,10 @@ class TestMcpRelay:
         call_stand: CallStand,
     ) -> None:
         """Панель живой вкладки не показала файл (вьювера для MIME нет):
-        агент получает isError с причиной в том же вызове."""
-        servers = McpServers(McpServersConfig(servers={"standard": standard}))
+        агент получает isError с причиной в том же вызове. Путь файла
+        разбирается по каталогу workspace, который объявил сервер."""
+        shows = self._flagged(standard, "--workspace", "/workspace")
+        servers = McpServers(McpServersConfig(servers={"standard": shows}))
         canvas = CanvasOpener(HolderSurface(context_var.get()))
         relay = relay_stand.relay_with(servers, relay_stand.chat, canvas)
         registration = tab.registration(uuid4(), SignInStand.PROFILE)
@@ -567,11 +569,16 @@ class TestMcpRelay:
     @staticmethod
     def _cached(standard: McpServerConfig, ttl_ms: int) -> McpServerConfig:
         """Обычный сервер стенда с подсказками кэша описания и списка."""
+        return TestMcpRelay._flagged(standard, "--ttl-ms", str(ttl_ms))
+
+    @staticmethod
+    def _flagged(standard: McpServerConfig, *flags: str) -> McpServerConfig:
+        """Обычный сервер стенда с флагами запуска flags."""
         endpoint = standard.endpoint
         if not isinstance(endpoint, StdioCommand):
             raise AssertionError(f"the standard server runs over stdio: {endpoint}")
 
-        args = (*endpoint.args, "--ttl-ms", str(ttl_ms))
+        args = (*endpoint.args, *flags)
 
         return standard.model_copy(
             update={"endpoint": endpoint.model_copy(update={"args": args})}

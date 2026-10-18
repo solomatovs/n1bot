@@ -9,7 +9,7 @@ CanvasError — путь вне каталогов треда, файл неко
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator
 
 import mcp_types as mt
 from chainlit.context import context_var
@@ -21,7 +21,6 @@ from boba.aid.canvas.panel import (
     ImageViewer,
     LogViewer,
     MarkdownViewer,
-    PanelStorage,
     PdfViewer,
     VideoViewer,
 )
@@ -34,7 +33,6 @@ from boba.canvas.canvas import (
     CanvasScope,
     OpenedCanvas,
 )
-from boba.canvas.storage import StorageError
 from boba.toolkit.result import BlockAudience
 from boba.toolkit.wire import McpContent
 
@@ -108,11 +106,9 @@ class CanvasOpener:
         return file_watch.described(described)
 
     async def reply(
-        self, user_id: str, thread_id: str, reply: mt.CallToolResult
+        self, scope: CanvasScope, reply: mt.CallToolResult
     ) -> mt.CallToolResult:
-        """Ответ tools/call после показа его файлов в панели треда thread_id
-        пользователя user_id: пути — под каталогом workspace, который даёт
-        хранилище файлов треда.
+        """Ответ tools/call после показа его файлов в панели треда scope.
 
         Ссылка file:// человеку с annotations.priority McpContent.SHOWN_PRIORITY
         открывает панель; отказ показа (диаграмма не отрисовалась, вьювера
@@ -124,13 +120,19 @@ class CanvasOpener:
         if not shown:
             return reply
 
-        context = self._surfaces.live(thread_id).context()
+        context = self._surfaces.live(scope.thread_id).context()
         if context is None:
             return reply
 
+        refusals: list[mt.ContentBlock] = []
         token = context_var.set(context)
         try:
-            refusals = await self._opened(user_id, thread_id, shown)
+            for mounted in shown:
+                try:
+                    await CanvasPanel.open(scope.key(mounted.path), mounted.mime)
+                except CanvasError as exc:
+                    note = f"{mounted.path} is not shown in the canvas: {exc}"
+                    refusals.append(mt.TextContent(text=note))
         finally:
             context_var.reset(token)
 
@@ -140,31 +142,6 @@ class CanvasOpener:
         content = [*reply.content, *refusals]
 
         return reply.model_copy(update={"content": content, "is_error": True})
-
-    async def _opened(
-        self, user_id: str, thread_id: str, shown: Sequence[WorkspaceFile]
-    ) -> list[mt.ContentBlock]:
-        """Файлы shown — в панель треда; итог — причины, по которым файл не
-        показан."""
-        refusals: list[mt.ContentBlock] = []
-        try:
-            workspace = await PanelStorage.client().workspace(user_id, thread_id)
-        except StorageError as exc:
-            for mounted in shown:
-                note = f"{mounted.path} is not shown in the canvas: {exc}"
-                refusals.append(mt.TextContent(text=note))
-
-            return refusals
-
-        scope = CanvasScope(user_id=user_id, thread_id=thread_id, workspace=workspace)
-        for mounted in shown:
-            try:
-                await CanvasPanel.open(scope.key(mounted.path), mounted.mime)
-            except CanvasError as exc:
-                note = f"{mounted.path} is not shown in the canvas: {exc}"
-                refusals.append(mt.TextContent(text=note))
-
-        return refusals
 
     def _shown(self, reply: mt.CallToolResult) -> Iterator[WorkspaceFile]:
         """Путь в workspace и MIME файлов ответа, которые сервер просит
