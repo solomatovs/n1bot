@@ -33,6 +33,7 @@ from __future__ import annotations
 import logging
 from abc import abstractmethod
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any, Protocol, TypeAlias
 
 import mcp_types as mt
@@ -53,7 +54,7 @@ from boba.mcp_client.client import (
     McpServerApps,
     McpServers,
 )
-from boba.messaging import JournalOpened
+from boba.messaging import JournalOpened, TurnOutcome
 from boba.toolkit.calls import CallViews
 from boba.toolkit.chain import StreamPlanError
 from boba.toolkit.dag import (
@@ -70,6 +71,7 @@ from boba.transport.acp.protocol import (
     ElicitationRound,
     IdleErrorUpdate,
     MetaKey,
+    StopReason,
     ToolStatus,
 )
 
@@ -80,6 +82,7 @@ __all__ = [
     "SessionUpdateCodec",
     "ToolCards",
     "ToolMedia",
+    "TurnEnding",
     "UpdateView",
 ]
 
@@ -323,6 +326,16 @@ class JournalRegistry(Protocol):
         """Адрес журнала вызова call_id треда."""
 
 
+@dataclass(frozen=True)
+class TurnEnding:
+    """Чем кончился ход по его idle: исход для итога хода в шине и пометка
+    ленты. Строит UpdateView.ending — для живого хода держатель (AgentFeed),
+    для истории сам переводчик; у штатного конца пометки нет."""
+
+    outcome: TurnOutcome
+    note: str
+
+
 class UpdateView:
     """Перевод уведомлений одной сессии в шаги ленты через ChatView.
 
@@ -331,7 +344,9 @@ class UpdateView:
     `begin_turn`/`question` (живой — по TurnStarted из шины, при
     воспроизведении — по `user_message`), уведомления идут в `apply`, конец
     хода — `finish_turn`. Вызов создаёт и меняет одно уведомление
-    `tool_call_update`.
+    `tool_call_update`. idle хода — его конец: остановка дописывается к
+    ответу, сбой встаёт шагом ошибки; живой ход получает idle из шины,
+    история — из воспроизведения агента.
     """
 
     def __init__(
@@ -418,9 +433,43 @@ class UpdateView:
             await self._tool_update(update)
             return
 
+        if isinstance(update, schema.IdleSessionStateUpdate):
+            await self._ended(update)
+            return
+
         logger.debug(
             "thread %s: update %s is not drawn", self._thread_id, type(update).__name__
         )
+
+    def ending(self, idle: schema.IdleSessionStateUpdate) -> TurnEnding:
+        """Исход хода и пометка ленты по его idle."""
+        stop_reason = idle.stop_reason
+        if stop_reason is None:
+            return TurnEnding(outcome=TurnOutcome.OK, note="")
+
+        if stop_reason == StopReason.END_TURN:
+            return TurnEnding(outcome=TurnOutcome.OK, note="")
+
+        if stop_reason == StopReason.CANCELLED:
+            note = self._view.label(StepText.STOPPED)
+            return TurnEnding(outcome=TurnOutcome.STOPPED, note=note)
+
+        note = f"the turn ended early: {stop_reason}"
+        if isinstance(idle, IdleErrorUpdate):
+            if idle.error is not None:
+                note = f"the turn failed: {idle.error.message}"
+
+        return TurnEnding(outcome=TurnOutcome.FAILED, note=note)
+
+    async def _ended(self, idle: schema.IdleSessionStateUpdate) -> None:
+        """Пометка конца хода: остановка — к ответу, сбой — шагом ошибки."""
+        ending = self.ending(idle)
+        if ending.outcome is TurnOutcome.STOPPED:
+            await self._view.interrupt_answer(ending.note, self._turn_key)
+            return
+
+        if ending.outcome is TurnOutcome.FAILED:
+            await self._view.error(ending.note, self._turn_key)
 
     async def finish_turn(self) -> None:
         """Ход закончен любым исходом: открытые вызовы закрываются, кружок
@@ -523,7 +572,6 @@ class UpdateView:
         if text is None:
             return
 
-        await self._view.model_answered()
         if self._thought_id is not None and self._thought_id != update.message_id:
             await self._close_thinking()
 
@@ -542,7 +590,6 @@ class UpdateView:
         if text is None:
             return
 
-        await self._view.model_answered()
         await self._close_thinking()
         if self._answer_id is not None and self._answer_id != update.message_id:
             await self._view.seal_answer()

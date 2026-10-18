@@ -31,7 +31,7 @@ import mcp_types as mt
 from acp.experimental.v2 import schema
 from chainlit.config import config as chainlit_config
 from chainlit.context import context
-from chainlit.element import CustomElement, Element, File
+from chainlit.element import CustomElement, Element, File, Image
 from chainlit.message import Message
 from chainlit.step import Step
 from chainlit.utils import utc_now
@@ -45,6 +45,7 @@ from boba.canvas.canvas import (
     CanvasAction,
     CanvasElement,
     CanvasError,
+    CanvasKind,
     CanvasRegistry,
     CanvasScope,
 )
@@ -91,9 +92,6 @@ class StepText(StrEnum):
 
     CONTAINER = "aid.feed.working"
     """Контейнер идущего хода."""
-
-    REQUESTED = "aid.feed.requested"
-    """Подпись контейнера, пока модель молчит: ход уже идёт, токенов ещё нет."""
 
     DONE = "aid.feed.done"
     """Контейнер законченного хода без шагов."""
@@ -305,9 +303,6 @@ class TurnDraft:
 
     key: str | None = None
     container: Step | None = None
-    container_name: StepText = StepText.CONTAINER
-    """Название контейнера: «запрос отправлен», пока модель молчит."""
-
     steps: int = 0
     """Шаги хода под контейнером: их число — в подписи законченного хода."""
 
@@ -800,8 +795,7 @@ class ChatView:
         links: Sequence[schema.ResourceContentBlock] = (),
     ) -> Step:
         """Шаг вопроса; name — автор, если он известен точнее имени ленты;
-        вложения — файлы шага по адресу маршрута canvas: путь из ссылки
-        агента, а не её хост, который браузеру может быть не виден."""
+        вложения — файлы шага (_attachment)."""
         author = name
         if not author:
             author = self._user_name
@@ -814,19 +808,66 @@ class ChatView:
         )
         step.output = text
         if self._sink.emits_elements:
-            step.elements = list(self._attached(links, step_id))
+            attached = self._attached(links, step_id)
+            step.elements = [element async for element in attached]
 
         await self._sink.put(step)
         return step
 
-    def _attached(
+    async def _attached(
         self, links: Sequence[schema.ResourceContentBlock], step_id: str | None
-    ) -> Iterator[Element]:
-        """Файлы вопроса по его ссылкам: путь и запрос ссылки без хоста."""
+    ) -> AsyncIterator[Element]:
         for number, link in enumerate(links):
-            address = urlsplit(str(link.uri))
-            url = urlunsplit(("", "", address.path, address.query, ""))
-            yield self._file(link.name, url, link.mime_type, step_id, number)
+            yield await self._attachment(link, step_id, number)
+
+    async def _attachment(
+        self, link: schema.ResourceContentBlock, step_id: str | None, number: int
+    ) -> Element:
+        """Файл вопроса по его ссылке: картинка — миниатюрой, файл, который
+        показывает панель, — кнопкой открытия в панели, как файлы итогов
+        вызовов, прочее — вложением для скачивания. Адрес — путь и запрос
+        ссылки агента без хоста, который браузеру может быть не виден."""
+        address = urlsplit(str(link.uri))
+        url = urlunsplit(("", "", address.path, address.query, ""))
+        mime = ContentMime.named(link.mime_type, link.name)
+        viewer = CanvasRegistry.viewer_for(mime)
+        if viewer is None:
+            return self._file(link.name, url, mime, step_id, number)
+
+        if viewer.kind is CanvasKind.IMAGE:
+            image = Image(name=link.name, url=url, mime=mime, display="inline")
+            self._numbered(image, step_id, number)
+            return image
+
+        try:
+            file_key = CanvasFileUrl.key(self._user_key, address.path)
+        except ValueError as exc:
+            logger.info(
+                "thread %s: attachment %s of question %s is not a file of the "
+                "thread, it stays a download: %s",
+                self._thread_id,
+                link.uri,
+                step_id,
+                exc,
+            )
+            return self._file(link.name, url, mime, step_id, number)
+
+        try:
+            card = await viewer.link(file_key, mime)
+        except CanvasError as exc:
+            logger.info(
+                "thread %s: the panel refused attachment %s of question %s, it "
+                "stays a download: %s",
+                self._thread_id,
+                file_key.in_workspace(),
+                step_id,
+                exc,
+            )
+            return self._file(link.name, url, mime, step_id, number)
+
+        element = self._elements.of_result(card)
+        self._numbered(element, step_id, number)
+        return element
 
     async def answer(self, text: str, key: str | None = None) -> Step:
         step = self._step(
@@ -881,13 +922,12 @@ class ChatView:
 
     async def interrupt_answer(self, note: str, key: str | None = None) -> None:
         """Дописывает к накопленному ответу курсивную пометку об остановке; без
-        ответа пометка становится ответом. Накопленное — вместе с токенами, ещё
-        не ушедшими из пачки.
+        ответа пометка становится очередным ответом хода. Накопленное — вместе
+        с токенами, ещё не ушедшими из пачки.
         """
         marker = f"_{note}_"
         if self._turn.answer is None:
-            await self.answer(marker, key)
-            return
+            self._turn.answer = self._open_answer(key)
 
         await self._batch.flush()
         partial = self._turn.answer.content
@@ -922,13 +962,15 @@ class ChatView:
         message.parent_id = None
         return message
 
-    async def container(self, name: StepText = StepText.CONTAINER) -> Step:
+    async def container(self) -> Step:
+        """Контейнер хода: появляется с первым шагом под ним — вживую и при
+        воспроизведении истории одинаково; ход из одного ответа контейнера
+        не имеет."""
         if self._turn.container is not None:
             return self._turn.container
 
-        self._turn.container_name = name
         step = self._step(
-            self.label(name),
+            self.label(StepText.CONTAINER),
             StepKind.RUN,
             parent_id=None,
             step_id=self.derive_id(self._thread_id, self._turn.key, StepRole.PROCESS),
@@ -940,35 +982,10 @@ class ChatView:
         self._turn.container = step
         return step
 
-    async def await_model(self) -> Step:
-        """Контейнер до первого токена: ход виден сразу, ещё до ответа модели.
-
-        Иначе лента молчит всё время инференса, и пользователь не понимает,
-        принят ли его вопрос вообще.
-        """
-        step = await self.container(StepText.REQUESTED)
+    async def await_model(self) -> None:
+        """Ход ждёт модель: в конце ленты встаёт кружок ожидания, так что
+        принятый вопрос виден сразу, ещё до первого токена."""
         await self._pulse.start()
-
-        if self._turn.container_name == StepText.REQUESTED:
-            return step
-
-        self._turn.container_name = StepText.REQUESTED
-        step.name = self.label(StepText.REQUESTED)
-        await self._sink.put(step)
-        return step
-
-    async def model_answered(self) -> None:
-        """Первый токен пришёл: контейнер снова обычный «process...»."""
-        step = self._turn.container
-        if step is None:
-            return
-
-        if self._turn.container_name != StepText.REQUESTED:
-            return
-
-        self._turn.container_name = StepText.CONTAINER
-        step.name = self.label(StepText.CONTAINER)
-        await self._sink.put(step)
 
     async def stream_thinking(self, token: str, key: str | None = None) -> None:
         """Токен рассуждения; первое обращение открывает шаг под контейнером."""

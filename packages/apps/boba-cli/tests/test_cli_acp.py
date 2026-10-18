@@ -2558,6 +2558,83 @@ class TestHistory:
         ]
         assert human == [*self.PROMPTS, ScenarioName.ANSWER.value]
 
+    async def test_replay_ends_the_stopped_and_the_failed_turn_like_the_live_one(
+        self,
+        boba: AcpProcess,
+        registration: StandRegistration,
+        model: FakeModel,
+        tmp_path: Path,
+    ) -> None:
+        """Ход, остановленный посреди вызова, и ход, сорванный отказом модели:
+        воспроизведение кончает каждый тем же idle, что видел живой клиент, —
+        лента истории ставит по нему те же пометки."""
+        client = AcpClient()
+        document = boba.settings_document(mode="bypassPermissions", allow_bypass=True)
+        document["limits"] = {"apiRetries": 0}
+        conn = await boba.start(client, registration, document)
+        try:
+            await handshake(conn)
+            session = await conn.new_session(
+                cwd=str(tmp_path), mcp_servers=[StandRegistration.STAND]
+            )
+            session_id = session.session_id
+            slow = {
+                "name": "mcp__stand__progress",
+                "arguments": {"steps": 1, "seconds": 30},
+            }
+            await conn.prompt(session_id=session_id, prompt=[*call(slow)])
+            while not client.of(schema.SessionToolCallUpdate):
+                await asyncio.sleep(0.05)
+
+            while registration.received[-1].method != "tools/call":
+                await asyncio.sleep(0.05)
+
+            await conn.cancel_session(session_id=session_id)
+            stopped = await client.idle(session_id)
+            broken = f"{ScenarioName.ANSWER.value} {FailureName.STATUS_500.value}"
+            _, failed = await boba.turn(
+                client, session_id, [schema.TextContentBlock(text=broken)]
+            )
+        finally:
+            await conn.close()
+            await boba.close_stdin()
+
+        assert await boba.wait() == 0
+        assert stopped.stop_reason == StopReason.CANCELLED
+        assert isinstance(failed, IdleErrorUpdate)
+
+        second = AcpProcess(tmp_path, model)
+        replaying = AcpClient()
+        conn = await second.start(replaying, registration, document)
+        try:
+            await handshake(conn)
+            await conn.resume_session(
+                cwd=str(tmp_path),
+                session_id=session_id,
+                mcp_servers=[StandRegistration.STAND],
+                replay_from=schema.ReplayFromStartVariant(),
+            )
+            replayed = replaying.updates_of(session_id)
+        finally:
+            await conn.close()
+            await second.close_stdin()
+            await second.kill()
+
+        kinds: list[str] = []
+        ends: list[schema.IdleSessionStateUpdate] = []
+        for update in replayed:
+            if isinstance(update, schema.UserMessageUpdate):
+                kinds.append("user")
+                continue
+
+            if isinstance(update, schema.IdleSessionStateUpdate):
+                kinds.append(str(update.stop_reason))
+                ends.append(update)
+
+        assert kinds == ["user", StopReason.CANCELLED, "user", StopReason.ERROR]
+        assert isinstance(ends[1], IdleErrorUpdate)
+        assert ends[1].error == failed.error
+
     async def test_resume_restores_without_replay(
         self,
         boba: AcpProcess,
