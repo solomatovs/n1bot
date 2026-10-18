@@ -3,6 +3,8 @@
 
 Ошибки:
 CanvasError — окно нельзя открыть или обновить; код — CanvasErrorKind.
+WatchProbeError — источник слежения не снял состояние файла сейчас; его
+    ловит сторож CanvasWatch и повторяет опрос на следующем такте.
 """
 
 from __future__ import annotations
@@ -39,6 +41,7 @@ __all__ = [
     "CanvasError",
     "CanvasErrorKind",
     "CanvasFileRequest",
+    "CanvasHoldRequest",
     "CanvasKind",
     "CanvasPush",
     "CanvasRegistry",
@@ -58,6 +61,7 @@ __all__ = [
     "StreamShowRequest",
     "StreamWindowRequest",
     "WatchProbe",
+    "WatchProbeError",
     "WatchSource",
 ]
 
@@ -78,6 +82,13 @@ class CanvasErrorKind(StrEnum):
 
 class CanvasError(RefusalError):
     """Панель не показала файл; kind — код причины, текст готов для LLM."""
+
+
+class WatchProbeError(RuntimeError):
+    """Источник слежения (WatchSource.probe) не снял состояние файла сейчас:
+    хранилище или сервер журнала отказали, файла нет или он переписывается.
+    Ловит сторож CanvasWatch и повторяет опрос; текст называет файл и
+    причину."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,6 +135,7 @@ class CanvasAction(StrEnum):
     STATUS = "canvas_render_status"
     SHOW = "canvas_stream"
     WINDOW = "canvas_stream_window"
+    HOLD = "canvas_hold"
     LEAVE = "canvas_leave"
     CALL_ID = "call_id"
 
@@ -281,6 +293,9 @@ class CanvasContent(BaseModel):
     """Причина для notice: почему файл не показан."""
     nonce: str = ""
     """Метка показа: по ней ждут вердикт рендера и снимают слежение."""
+    revision: str = ""
+    """Версия файла, которую видел сторож при показе: с неё панель держит
+    показ (canvas_hold); пусто — версия неизвестна."""
     stream: StreamPos | None = None
     """Окно потока: есть только у kind = stream."""
     channel: str = ""
@@ -325,7 +340,12 @@ class WatchSource(Protocol):
 
     @abstractmethod
     async def probe(self) -> WatchProbe | None:
-        """Текущее состояние; None — файла больше нет, следить не за чем."""
+        """Текущее состояние; None — источник исчерпан навсегда (журнал
+        вызова забыт), следить не за чем.
+
+        Ошибки:
+        WatchProbeError — состояние не снять сейчас; сторож повторит опрос.
+        """
         ...
 
     @abstractmethod
@@ -468,8 +488,17 @@ class CanvasSignal(BaseModel):
 
 
 class CanvasWatch:
-    """Слежение за файлом, показанным в панели: один сторож на тред живёт, пока
-    открыта панель, и сообщает фронту об изменениях файла.
+    """Слежение за показами панели: сторож на каждый показ (nonce) треда шлёт
+    фронту сигналы об изменении файла.
+
+    Сервер ставит сторожа при показе (show), экземпляры панели держат его
+    своими метками: объявляют при монтировании и после переподключения
+    сокета (hold) и снимают уходом (leave). Уход прежнего экземпляра и
+    объявление пересозданного приходят в любом порядке, поэтому сторож
+    снимается, только когда показ не держит никто; неудержанных сторожей
+    треда снимает следующий показ. Сторож кончается и сам — без подключённых
+    вкладок треда или с исчерпанным источником, — а отказ опроса
+    (WatchProbeError) уходит в лог и повторяется следующим тактом.
     """
 
     POLL_SEC: ClassVar[float] = 1.0
@@ -479,7 +508,7 @@ class CanvasWatch:
     """Пауза после пробуждения: болтливый инструмент не заливает сокет."""
 
     _TRANSPORT: ClassVar[SignalTransport | None] = None
-    _WATCHES: ClassVar[dict[str, CanvasWatch]] = {}
+    _WATCHES: ClassVar[dict[tuple[str, str], CanvasWatch]] = {}
 
     def __init__(
         self,
@@ -492,17 +521,12 @@ class CanvasWatch:
         self._thread_id = thread_id
         self._path = path
         self._nonce = nonce
+        self._key = (thread_id, nonce)
         self._source = source
         self._seen = seen
+        self._holders: set[str] = set()
+        self._failures = 0
         self._task: asyncio.Task[None] | None = None
-
-    @property
-    def path(self) -> str:
-        return self._path
-
-    @property
-    def nonce(self) -> str:
-        return self._nonce
 
     @classmethod
     def configure(cls, transport: SignalTransport) -> None:
@@ -516,7 +540,7 @@ class CanvasWatch:
     @classmethod
     def reset(cls) -> None:
         """Сброс: пользуются тесты, приложению это не нужно."""
-        for thread_id in list(cls._WATCHES):
+        for thread_id, _ in list(cls._WATCHES):
             cls.drop(thread_id)
         cls._TRANSPORT = None
 
@@ -527,48 +551,91 @@ class CanvasWatch:
         path: str,
         nonce: str,
         source: WatchSource,
-        seen: str = "",
+        seen: str,
     ) -> None:
-        """Начать следить за файлом панели; прежнее слежение треда снимается."""
+        """Следить за показом nonce файла path; seen — версия, отданная
+        фронту, пустая — неизвестна, и сигнал шлёт первый опрос. Показ под
+        слежением второго сторожа не получает; неудержанные сторожа треда
+        снимаются."""
         if cls._TRANSPORT is None:
             return
 
-        cls.drop(thread_id)
+        for key, known in list(cls._WATCHES.items()):
+            if key[0] != thread_id:
+                continue
+
+            if known._holders:
+                continue
+
+            if known._nonce == nonce:
+                continue
+
+            cls._drop(key)
+
+        if (thread_id, nonce) in cls._WATCHES:
+            return
 
         watch = cls(thread_id, path, nonce, source, seen)
-        cls._WATCHES[thread_id] = watch
+        cls._WATCHES[watch._key] = watch
         watch._task = asyncio.create_task(watch._run())
 
     @classmethod
-    def leave(cls, thread_id: str, nonce: str) -> None:
-        """Панель ушла с показа nonce: слежение другого показа не трогается,
-        пустая метка тоже ничего не снимает."""
-        watch = cls._WATCHES.get(thread_id)
+    def hold(cls, thread_id: str, nonce: str, holder: str, seen: str) -> bool:
+        """Экземпляр панели holder держит показ nonce с версией seen: True —
+        за показом следят, и версия новее seen придёт сигналом; False —
+        сторожа нет, его ставит show."""
+        watch = cls._WATCHES.get((thread_id, nonce))
+        if watch is None:
+            return False
+
+        watch._holders.add(holder)
+        watch._seen = seen
+        return True
+
+    @classmethod
+    def leave(cls, thread_id: str, nonce: str, holder: str) -> None:
+        """Экземпляр панели holder ушёл с показа nonce: слежение снимается,
+        когда показ больше никто не держит; другие показы не трогаются."""
+        key = (thread_id, nonce)
+        watch = cls._WATCHES.get(key)
         if watch is None:
             return
 
-        if watch._nonce != nonce:
+        watch._holders.discard(holder)
+        if watch._holders:
             return
 
-        cls.drop(thread_id)
+        cls._drop(key)
 
     @classmethod
     def drop(cls, thread_id: str) -> None:
-        watch = cls._WATCHES.pop(thread_id, None)
+        """Снимает все сторожа треда."""
+        for key in list(cls._WATCHES):
+            if key[0] != thread_id:
+                continue
+
+            cls._drop(key)
+
+    @classmethod
+    def watching(cls, thread_id: str) -> tuple[str, ...]:
+        """Пути показов треда под слежением в порядке постановки."""
+        paths: list[str] = []
+        for key, watch in cls._WATCHES.items():
+            if key[0] != thread_id:
+                continue
+
+            paths.append(watch._path)
+
+        return tuple(paths)
+
+    @classmethod
+    def _drop(cls, key: tuple[str, str]) -> None:
+        watch = cls._WATCHES.pop(key, None)
         if watch is None:
             return
 
         if watch._task is not None:
             watch._task.cancel()
-
-    @classmethod
-    def watching(cls, thread_id: str) -> str | None:
-        """Путь под слежением; None — тред ни на что не смотрит."""
-        watch = cls._WATCHES.get(thread_id)
-        if watch is None:
-            return None
-
-        return watch._path
 
     async def _run(self) -> None:
         transport = self._TRANSPORT
@@ -577,25 +644,16 @@ class CanvasWatch:
 
         waker = self._source.attach_waker()
         try:
-            while self._current():
-                if not transport.alive(self._thread_id):
-                    return
-
-                probe = await self._source.probe()
-                if probe is None:
-                    return
-
-                stop = await self._advance(transport, probe)
-                if stop:
-                    return
-
-                await self._pause(waker)
+            await self._follow(transport, waker)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             logger.warning(
-                "canvas watch of %s stopped by an unexpected error: %s",
+                "canvas watch of %s (show %s) in thread %s stopped by an "
+                "unexpected error: %s",
                 self._path,
+                self._nonce,
+                self._thread_id,
                 exc,
                 exc_info=True,
             )
@@ -605,17 +663,79 @@ class CanvasWatch:
 
             self._forget()
 
-    async def _advance(self, transport: SignalTransport, probe: WatchProbe) -> bool:
-        """Сигнал на смену revision; исчерпанный источник досылается и снимается."""
-        if not self._seen:
-            self._seen = probe.revision
-            return probe.final
+    async def _follow(
+        self, transport: SignalTransport, waker: asyncio.Event | None
+    ) -> None:
+        """Такты слежения, пока сторож нужен; причина конца — в лог."""
+        while self._current():
+            if not transport.alive(self._thread_id):
+                self._ended("the thread has no connected tab")
+                return
 
+            try:
+                probe = await self._source.probe()
+            except WatchProbeError as exc:
+                self._failed(exc)
+                await self._pause(waker)
+                continue
+
+            self._recovered()
+            if probe is None:
+                self._ended("the source is exhausted")
+                return
+
+            final = await self._advance(transport, probe)
+            if final:
+                self._ended("the source is final")
+                return
+
+            await self._pause(waker)
+
+    async def _advance(self, transport: SignalTransport, probe: WatchProbe) -> bool:
+        """Сигнал на смену версии; True — источник исчерпан, сигнал дослан."""
         if probe.revision != self._seen:
             self._seen = probe.revision
             await transport.send(self._thread_id, self._signal(probe))
 
         return probe.final
+
+    def _failed(self, exc: WatchProbeError) -> None:
+        self._failures += 1
+        if self._failures > 1:
+            return
+
+        logger.warning(
+            "canvas watch of %s (show %s) in thread %s: probing failed, it is "
+            "retried every %.1fs while the show is held: %s",
+            self._path,
+            self._nonce,
+            self._thread_id,
+            self.POLL_SEC,
+            exc,
+        )
+
+    def _recovered(self) -> None:
+        if not self._failures:
+            return
+
+        logger.info(
+            "canvas watch of %s (show %s) in thread %s: probing recovered after "
+            "%d failed attempts",
+            self._path,
+            self._nonce,
+            self._thread_id,
+            self._failures,
+        )
+        self._failures = 0
+
+    def _ended(self, reason: str) -> None:
+        logger.info(
+            "canvas watch of %s (show %s) in thread %s ended: %s",
+            self._path,
+            self._nonce,
+            self._thread_id,
+            reason,
+        )
 
     def _signal(self, probe: WatchProbe) -> CanvasSignal:
         return CanvasSignal(
@@ -628,11 +748,11 @@ class CanvasWatch:
         )
 
     def _current(self) -> bool:
-        return self._WATCHES.get(self._thread_id) is self
+        return self._WATCHES.get(self._key) is self
 
     def _forget(self) -> None:
-        if self._WATCHES.get(self._thread_id) is self:
-            del self._WATCHES[self._thread_id]
+        if self._current():
+            del self._WATCHES[self._key]
 
     async def _pause(self, waker: asyncio.Event | None) -> None:
         if waker is None:
@@ -727,10 +847,25 @@ class StreamWindowRequest(BaseModel):
         return self
 
 
-class StreamLeaveRequest(BaseModel):
-    """Payload действия canvas_leave: с какого показа ушла панель."""
+class CanvasHoldRequest(BaseModel):
+    """Payload действия canvas_hold: экземпляр панели holder держит показ
+    nonce файла path вида mime с версией revision; у журнала mime пуст, у
+    неизвестной версии — revision."""
 
     model_config = ConfigDict(extra="ignore")
 
-    path: str = ""
-    nonce: str = ""
+    path: str = Field(min_length=1)
+    mime: str
+    nonce: str = Field(min_length=1)
+    holder: str = Field(min_length=1)
+    revision: str
+
+
+class StreamLeaveRequest(BaseModel):
+    """Payload действия canvas_leave: с какого показа ушёл экземпляр панели
+    holder."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    nonce: str
+    holder: str = Field(min_length=1)

@@ -216,6 +216,11 @@ class StreamSlice(BaseModel):
     closed: bool
     note: str
 
+    @property
+    def revision(self) -> str:
+        """Версия журнала для слежения панели: размер и признак конца."""
+        return f"{self.size}:{int(self.closed)}"
+
 
 class ChannelProbe(BaseModel):
     """Состояние одного канала живого вызова: что насос сравнивает между записями."""

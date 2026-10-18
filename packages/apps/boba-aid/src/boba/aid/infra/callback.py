@@ -814,10 +814,33 @@ async def on_canvas_stream_window(
     return await StreamActions.window(user_id, thread_id, action.payload, streams)
 
 
+@cl.action_callback(CanvasAction.HOLD)
+@chainlit_error_ctx_handler
+@di_inject
+async def on_canvas_hold(
+    action: cl.Action,
+    journals: Annotated[RemoteJournals, Depends(remote_journals)],
+    servers: Annotated[McpServers, Depends(mcp_servers)],
+) -> None:
+    """Панель держит свой показ — при монтировании и после переподключения
+    сокета вкладки: слежение показа, которого уже нет, ставится заново."""
+    session = current_session()
+    owner = session.canvas_owner()
+    if owner is None:
+        return
+
+    user_id, thread_id = owner
+    caller = McpCaller(login=session.identifier, roles=session.roles)
+    streams = RemoteStreams(journals, servers, caller)
+
+    await StreamActions.hold(user_id, thread_id, action.payload, streams)
+
+
 @cl.action_callback(CanvasAction.LEAVE)
 @chainlit_error_ctx_handler
 async def on_canvas_leave(action: cl.Action) -> None:
-    """Панель закрыта или сменила файл: слежение прежнего показа снимается."""
+    """Экземпляр панели закрыт или сменил файл: слежение прежнего показа
+    снимается, когда его не держит никто."""
     thread_id = current_session().thread_id
     if thread_id is None:
         return

@@ -10,6 +10,8 @@ subscriptions/listen.
 
 Ошибки:
 McpClientError — сервер недоступен или ответил не окном журнала.
+WatchProbeError — слежение не сняло состояние канала журнала; опрос
+    повторяет сторож панели.
 """
 
 from __future__ import annotations
@@ -23,7 +25,7 @@ import mcp_types as mt
 from mcp.shared.exceptions import MCPError
 
 from boba.aid.rendering.acp_view import JournalRegistry
-from boba.canvas.canvas import WatchProbe, WatchSource
+from boba.canvas.canvas import WatchProbe, WatchProbeError, WatchSource
 from boba.canvas.journal import StreamSlice
 from boba.mcp_client.client import (
     McpCaller,
@@ -224,19 +226,18 @@ class ListenedChannelWatch(WatchSource):
                 self._thread_id, self._call_id, self._channel, self.BEYOND
             )
         except McpClientError as exc:
-            logger.warning(
-                "journal watch: probing call %s of thread %s failed: %s",
-                self._call_id,
-                self._thread_id,
-                exc,
+            self._changed = True
+            msg = (
+                f"probing channel {self._channel.value} of call {self._call_id} "
+                f"in thread {self._thread_id} on its mcp server failed: {exc}"
             )
-            return None
+            raise WatchProbeError(msg) from exc
 
         if piece is None:
             return None
 
         self._last = WatchProbe(
-            revision=f"{piece.size}:{int(piece.closed)}",
+            revision=piece.revision,
             size=piece.size,
             closed=piece.closed,
             final=piece.closed,

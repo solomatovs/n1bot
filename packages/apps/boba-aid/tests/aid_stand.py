@@ -1126,6 +1126,9 @@ class FakeTransport(SignalTransport):
     """Транспорт сигналов слежения канваса в тестах: копит payload'ы сигналов
     вместо сокетов; dead имитирует тред без живых вкладок."""
 
+    SIGNAL_SEC: ClassVar[float] = 5.0
+    POLL_SEC: ClassVar[float] = 0.01
+
     def __init__(self) -> None:
         self.sent: list[dict[str, Any]] = []
         self.dead = False
@@ -1135,6 +1138,26 @@ class FakeTransport(SignalTransport):
 
     async def send(self, thread_id: str, signal: CanvasSignal) -> None:
         self.sent.append(signal.payload())
+
+    async def signaled(self, size: int) -> dict[str, Any]:
+        """Сигнал о версии файла размером size. Запись файла проходит через
+        промежуточные версии (файл обрезан, тело ещё пишется), и сторож вправе
+        сигналить о каждой — панель перечитывает файл и сходится к итогу,
+        поэтому ждётся сигнал итоговой версии, а не первый."""
+        deadline = time.monotonic() + self.SIGNAL_SEC
+
+        while time.monotonic() < deadline:
+            for payload in self.sent:
+                if payload["size"] == size:
+                    return payload
+
+            await asyncio.sleep(self.POLL_SEC)
+
+        msg = (
+            f"canvas watch: expected a signal of the {size}-byte version within "
+            f"{self.SIGNAL_SEC:.0f}s, got {self.sent}"
+        )
+        raise AssertionError(msg)
 
 
 async def get_bytes(storage: StorageClient, object_key: str) -> bytes:

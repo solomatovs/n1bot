@@ -46,6 +46,7 @@ from boba.canvas.canvas import (
     CanvasWatch,
     StreamPath,
     WatchProbe,
+    WatchProbeError,
     WatchSource,
 )
 from boba.canvas.journal import JournalWindow, StreamKey
@@ -467,7 +468,7 @@ def _journal_source(
 async def _watch_finished(timeout_sec: float = 5.0) -> None:
     deadline = time.monotonic() + timeout_sec
 
-    while CanvasWatch.watching(THREAD) is not None:
+    while CanvasWatch.watching(THREAD):
         if time.monotonic() > deadline:
             raise AssertionError("watch has not finished in time")
         await asyncio.sleep(0.01)
@@ -543,36 +544,34 @@ class TestWatch:
         if len(transport.sent) >= self.CHUNKS / 10:
             raise AssertionError("len(transport.sent) < self.CHUNKS / 10")
 
-    def test_show_replaces_previous_watch(
+    def test_show_drops_only_unheld_watches(
         self, journals: CallJournals, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """Новый показ снимает сторожей треда, которых не держит ни одна
+        панель; показ, который держит панель другой вкладки, остаётся."""
         _speed_up_watch(monkeypatch)
 
-        async def scenario() -> str | None:
+        async def scenario() -> tuple[str, ...]:
             CanvasWatch.configure(FakeTransport())
-            first = begin_stream(journals, "call-a")
-            second = begin_stream(journals, "call-b")
-
-            CanvasWatch.show(
-                THREAD,
-                stream_path("call-a"),
-                "n-a",
-                _journal_source(journals, "call-a", first),
-            )
-            CanvasWatch.show(
-                THREAD,
-                stream_path("call-b"),
-                "n-b",
-                _journal_source(journals, "call-b", second),
-            )
+            for call_id in ("call-a", "call-b", "call-c"):
+                stream = begin_stream(journals, call_id)
+                CanvasWatch.show(
+                    THREAD,
+                    stream_path(call_id),
+                    f"n-{call_id}",
+                    _journal_source(journals, call_id, stream),
+                    "0:0",
+                )
+                if call_id == "call-a":
+                    CanvasWatch.hold(THREAD, "n-call-a", "tab-1", "0:0")
 
             watching = CanvasWatch.watching(THREAD)
             CanvasWatch.drop(THREAD)
             return watching
 
         watching = run(scenario())
-        if watching != stream_path("call-b"):
-            raise AssertionError('watching == stream_path("call-b")')
+        if watching != (stream_path("call-a"), stream_path("call-c")):
+            raise AssertionError(f"watched after three shows: {watching}")
 
     def test_leave_respects_the_nonce(
         self, journals: CallJournals, monkeypatch: pytest.MonkeyPatch
@@ -581,7 +580,7 @@ class TestWatch:
         и leave с пустой меткой тоже — у такого показа своего слежения нет."""
         _speed_up_watch(monkeypatch)
 
-        async def scenario() -> tuple[str | None, str | None]:
+        async def scenario() -> tuple[tuple[str, ...], tuple[str, ...]]:
             CanvasWatch.configure(FakeTransport())
             stream = begin_stream(journals)
             CanvasWatch.show(
@@ -589,21 +588,144 @@ class TestWatch:
                 STREAM_PATH,
                 "n-new",
                 _journal_source(journals, CALL_ID, stream),
+                "0:0",
             )
+            CanvasWatch.hold(THREAD, "n-new", "tab-1", "0:0")
 
-            CanvasWatch.leave(THREAD, "n-old")
-            CanvasWatch.leave(THREAD, "")
+            CanvasWatch.leave(THREAD, "n-old", "tab-1")
+            CanvasWatch.leave(THREAD, "", "tab-1")
             after_foreign = CanvasWatch.watching(THREAD)
 
-            CanvasWatch.leave(THREAD, "n-new")
+            CanvasWatch.leave(THREAD, "n-new", "tab-1")
             after_own = CanvasWatch.watching(THREAD)
             return after_foreign, after_own
 
         after_foreign, after_own = run(scenario())
-        if after_foreign != STREAM_PATH:
-            raise AssertionError("after_foreign == STREAM_PATH")
-        if after_own is not None:
-            raise AssertionError("after_own is None")
+        if after_foreign != (STREAM_PATH,):
+            raise AssertionError(f"after a foreign leave: {after_foreign}")
+        if after_own:
+            raise AssertionError(f"after the own leave: {after_own}")
+
+    @pytest.mark.parametrize("leave_first", [True, False])
+    def test_a_remounted_panel_keeps_its_watch(
+        self,
+        journals: CallJournals,
+        monkeypatch: pytest.MonkeyPatch,
+        leave_first: bool,
+    ) -> None:
+        """Пересоздание элемента панели: уход прежнего экземпляра и
+        объявление нового приходят в любом порядке, и показ остаётся под
+        слежением; объявление после ухода ставит сторожа заново."""
+        _speed_up_watch(monkeypatch)
+
+        async def scenario() -> tuple[str, ...]:
+            CanvasWatch.configure(FakeTransport())
+            stream = begin_stream(journals)
+            CanvasWatch.show(
+                THREAD,
+                STREAM_PATH,
+                "n-1",
+                _journal_source(journals, CALL_ID, stream),
+                "0:0",
+            )
+            CanvasWatch.hold(THREAD, "n-1", "old", "0:0")
+
+            if leave_first:
+                CanvasWatch.leave(THREAD, "n-1", "old")
+
+            held = CanvasWatch.hold(THREAD, "n-1", "new", "0:0")
+            if not held:
+                CanvasWatch.show(
+                    THREAD,
+                    STREAM_PATH,
+                    "n-1",
+                    _journal_source(journals, CALL_ID, stream),
+                    "0:0",
+                )
+                CanvasWatch.hold(THREAD, "n-1", "new", "0:0")
+
+            CanvasWatch.leave(THREAD, "n-1", "old")
+            watching = CanvasWatch.watching(THREAD)
+            CanvasWatch.drop(THREAD)
+            return watching
+
+        watching = run(scenario())
+        if watching != (STREAM_PATH,):
+            raise AssertionError(f"watched after the remount: {watching}")
+
+    def test_a_failed_probe_is_retried(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Разовый отказ опроса не кончает слежение: сторож повторяет опрос,
+        и смена версии после отказа доходит сигналом."""
+        _speed_up_watch(monkeypatch)
+
+        class FlakyFile(WatchSource):
+            def __init__(self) -> None:
+                self.failures = 2
+
+            async def probe(self) -> WatchProbe:
+                if self.failures:
+                    self.failures -= 1
+                    raise WatchProbeError("stat of a.log failed: storage is down")
+
+                return WatchProbe(revision="r2", size=1, closed=True)
+
+            def attach_waker(self) -> None:
+                return None
+
+            def detach_waker(self, event: asyncio.Event) -> None:
+                return None
+
+        async def scenario() -> list[dict[str, Any]]:
+            transport = FakeTransport()
+            CanvasWatch.configure(transport)
+            source = FlakyFile()
+            CanvasWatch.show(THREAD, "/workspace/t/upload/a.log", "n-1", source, "r1")
+
+            deadline = time.monotonic() + 5.0
+            while not transport.sent:
+                if time.monotonic() > deadline:
+                    raise AssertionError("no signal after the failed probes")
+                await asyncio.sleep(0.02)
+
+            CanvasWatch.drop(THREAD)
+            return transport.sent
+
+        sent = run(scenario())
+        if sent[0]["revision"] != "r2":
+            raise AssertionError(f"signals after the failed probes: {sent}")
+
+    def test_hold_rebases_a_live_watch(
+        self, journals: CallJournals, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Вкладка, вернувшаяся со старой версией, получает сигнал о новой:
+        сторож отправлял его, пока сокет был отключён."""
+        _speed_up_watch(monkeypatch)
+        stream = begin_stream(journals)
+        stream.sink_of(STDOUT).feed(b"written while the tab was away")
+
+        async def scenario() -> list[dict[str, Any]]:
+            transport = FakeTransport()
+            CanvasWatch.configure(transport)
+            source = _journal_source(journals, CALL_ID, stream)
+            current = await source.probe()
+            if current is None:
+                raise AssertionError("the live journal has no state")
+
+            CanvasWatch.show(THREAD, STREAM_PATH, "n-1", source, current.revision)
+            CanvasWatch.hold(THREAD, "n-1", "tab-1", "0:0")
+
+            deadline = time.monotonic() + 5.0
+            while not transport.sent:
+                if time.monotonic() > deadline:
+                    raise AssertionError("no signal for the version the tab missed")
+                await asyncio.sleep(0.02)
+
+            CanvasWatch.drop(THREAD)
+            return transport.sent
+
+        sent = run(scenario())
+        if sent[0]["size"] != len(b"written while the tab was away"):
+            raise AssertionError(f"signals after the hold: {sent}")
 
     def test_watch_stops_when_the_room_dies(
         self, journals: CallJournals, monkeypatch: pytest.MonkeyPatch
@@ -619,6 +741,7 @@ class TestWatch:
                 STREAM_PATH,
                 "n-1",
                 _journal_source(journals, CALL_ID, stream),
+                "0:0",
             )
 
             transport.dead = True
@@ -651,11 +774,11 @@ class TestWatch:
             def detach_waker(self, event: asyncio.Event) -> None:
                 return None
 
-        async def scenario() -> tuple[list[dict[str, Any]], str | None]:
+        async def scenario() -> tuple[list[dict[str, Any]], tuple[str, ...]]:
             transport = FakeTransport()
             CanvasWatch.configure(transport)
             source = MutableFile()
-            CanvasWatch.show(THREAD, "/workspace/t/upload/a.log", "n-1", source)
+            CanvasWatch.show(THREAD, "/workspace/t/upload/a.log", "n-1", source, "r1")
 
             await asyncio.sleep(0.2)
             source.revision = "r2"
@@ -671,7 +794,7 @@ class TestWatch:
             return transport.sent, watching
 
         sent, watching = run(scenario())
-        if watching != "/workspace/t/upload/a.log":
+        if watching != ("/workspace/t/upload/a.log",):
             raise AssertionError("слежение снялось после closed-пробы файла")
         if sent[0]["revision"] != "r2":
             raise AssertionError('sent[0]["revision"] == "r2"')
@@ -693,12 +816,12 @@ class TestWatch:
         async def scenario() -> FakeTransport:
             transport = FakeTransport()
             CanvasWatch.configure(transport)
-            CanvasWatch.show(
-                THREAD,
-                STREAM_PATH,
-                "n-1",
-                _journal_source(journals, CALL_ID, None),
-            )
+            source = _journal_source(journals, CALL_ID, None)
+            shown = await source.probe()
+            if shown is None:
+                raise AssertionError("the closed journal has no state")
+
+            CanvasWatch.show(THREAD, STREAM_PATH, "n-1", source, shown.revision)
             await _watch_finished()
             return transport
 
@@ -971,7 +1094,7 @@ class TestShowAction:
         stream.sink_of(ToolChannel.STDERR).feed(b"live complaints")
         PanelProbe(monkeypatch)
 
-        async def scenario() -> str | None:
+        async def scenario() -> tuple[str, ...]:
             CanvasWatch.configure(FakeTransport())
             await StreamActions.show(USER, THREAD, {"call_id": CALL_ID}, REMOTE.streams)
             await StreamActions.show(
@@ -989,7 +1112,7 @@ class TestShowAction:
             return watching
 
         watching = run(scenario())
-        if watching != stream_path(CALL_ID, ToolChannel.STDERR):
+        if watching != (stream_path(CALL_ID, ToolChannel.STDERR),):
             raise AssertionError("watching == stream_path(CALL_ID, ToolChannel.STDERR)")
 
     def test_show_registers_the_watch(
@@ -1001,7 +1124,7 @@ class TestShowAction:
 
         probe = PanelProbe(monkeypatch)
 
-        async def scenario() -> str | None:
+        async def scenario() -> tuple[str, ...]:
             CanvasWatch.configure(FakeTransport())
             await StreamActions.show(USER, THREAD, {"call_id": CALL_ID}, REMOTE.streams)
             watching = CanvasWatch.watching(THREAD)
@@ -1009,7 +1132,7 @@ class TestShowAction:
             return watching
 
         watching = run(scenario())
-        if watching != STREAM_PATH:
+        if watching != (STREAM_PATH,):
             raise AssertionError("watching == STREAM_PATH")
         if len(probe.shown) != 1:
             raise AssertionError("len(probe.shown) == 1")
@@ -1033,17 +1156,17 @@ class TestShowAction:
 
         probe = PanelProbe(monkeypatch)
 
-        async def scenario() -> str | None:
+        async def scenario() -> tuple[str, ...]:
             CanvasWatch.configure(FakeTransport())
             await StreamActions.show(USER, THREAD, {"call_id": CALL_ID}, REMOTE.streams)
             nonce = probe.shown[0].nonce
 
-            StreamActions.leave(THREAD, {"path": probe.shown[0].path, "nonce": nonce})
+            StreamActions.leave(THREAD, {"nonce": nonce, "holder": "tab-1"})
             return CanvasWatch.watching(THREAD)
 
         watching = run(scenario())
-        if watching is not None:
-            raise AssertionError("watching is None")
+        if watching:
+            raise AssertionError(f"watched after the leave: {watching}")
 
 
 class ElementSink(ChatSink):

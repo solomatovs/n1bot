@@ -7,13 +7,18 @@
 перерисовывается целиком. Текст любого размера ходит окнами по смещению в
 файле, как less: целиком в память не поднимается ни на сервере, ни во фронте.
 
-Слежение за показанным файлом живёт, пока панель открыта: снимается уходом
-на другой файл, закрытием панели (canvas_leave) или смертью всех сокетов
-треда. Живой журнал будит слежение записью, файлы workspace поллятся.
+Слежение за показанным файлом живёт, пока показ держит панель: экземпляр
+панели объявляет его при монтировании и после переподключения сокета
+(canvas_hold) и снимает уходом на другой файл или закрытием (canvas_leave);
+без подключённых вкладок треда сторож кончается, а вернувшаяся вкладка
+ставит его снова. Живой журнал будит слежение записью, файлы workspace
+поллятся; отказ опроса уходит в лог, и опрос повторяется.
 
-Ошибки: CanvasError — файл некому показать или он не отрисовался.
-Действия фронта и слежение своих ошибок наружу не выпускают: недоступный
-поток показывается объяснением в панели, сбои слежения гасятся в лог.
+Ошибки:
+CanvasError — файл некому показать, он не отрисовался или путь показа,
+    который держит панель, вне каталогов треда.
+Действия фронта и слежение других ошибок наружу не выпускают: недоступный
+поток показывается объяснением в панели, сбои слежения уходят в лог.
 """
 
 from __future__ import annotations
@@ -38,6 +43,7 @@ from boba.canvas.canvas import (
     CanvasElement,
     CanvasError,
     CanvasErrorKind,
+    CanvasHoldRequest,
     CanvasKind,
     CanvasPush,
     CanvasRegistry,
@@ -51,6 +57,7 @@ from boba.canvas.canvas import (
     StreamShowRequest,
     StreamWindowRequest,
     WatchProbe,
+    WatchProbeError,
     WatchSource,
 )
 from boba.canvas.journal import (
@@ -90,26 +97,21 @@ class StorageStatSource(WatchSource):
     """Слежение за файлом workspace: версия по размеру и времени записи.
 
     Одного размера мало — правка той же длины (переписанная строка, тот же
-    график) его не меняет, и обновление не дошло бы до панели.
+    график) его не меняет, и обновление не дошло бы до панели. Отказ
+    хранилища и отсутствие файла (удалён, чтобы записаться заново) — отказ
+    опроса: сторож его повторит.
     """
 
     def __init__(self, storage: StorageClient, object_key: str) -> None:
         self._storage = storage
         self._object_key = object_key
 
-    async def probe(self) -> WatchProbe | None:
+    async def probe(self) -> WatchProbe:
         try:
             stat = await self._storage.stat(self._object_key)
-        except StorageNotFoundError:
-            return None
         except StorageError as exc:
-            logger.warning(
-                "canvas watch probe: stat of %s failed: %s",
-                self._object_key,
-                exc,
-                exc_info=True,
-            )
-            return None
+            msg = f"stat of {self._object_key} failed: {exc}"
+            raise WatchProbeError(msg) from exc
 
         return WatchProbe(
             revision=f"{stat.size}:{stat.revision}", size=stat.size, closed=True
@@ -126,25 +128,24 @@ class StorageHashSource(WatchSource):
     """Слежение за маленьким текстовым файлом по содержимому.
 
     Спека диаграммы может меняться без смены размера, поэтому revision — хэш
-    текста. Отказ чтения (файл переписывается) пропускает тик, а не гасит
-    слежение.
+    текста. Отказ чтения (файл переписывается) слежение не кончает: опрос
+    повторит сторож.
     """
 
     def __init__(self, read: Callable[[], Awaitable[str]]) -> None:
         self._read = read
-        self._last: WatchProbe | None = None
 
-    async def probe(self) -> WatchProbe | None:
+    async def probe(self) -> WatchProbe:
         try:
             text = await self._read()
-        except RefusalError:
-            return self._last
+        except RefusalError as exc:
+            msg = f"reading the text to watch failed: {exc}"
+            raise WatchProbeError(msg) from exc
 
         raw = text.encode("utf-8")
         digest = hashlib.sha256(raw).hexdigest()
 
-        self._last = WatchProbe(revision=digest, size=len(raw), closed=True)
-        return self._last
+        return WatchProbe(revision=digest, size=len(raw), closed=True)
 
     def attach_waker(self) -> asyncio.Event | None:
         return None
@@ -159,15 +160,19 @@ class FileWatch:
 
     Версия файла снята раньше, чем вьювер прочтёт его для фронта, поэтому
     правка, попавшая между чтением и первым опросом сторожа, доходит до
-    панели сигналом, а не становится исходной версией сторожа. Создаёт
-    CanvasPanel.watch_file; start ставит сторожа CanvasWatch под метку
-    показа. Без источника — слежение выключено, вьювер файл не отслеживает
-    или файла нет — start ничего не делает.
+    панели сигналом, а не становится исходной версией сторожа; ту же версию
+    показ несёт фронту (described). Создаёт CanvasPanel.watch_file; start
+    ставит сторожа CanvasWatch под метку показа. Без источника start ничего
+    не делает; пустая версия — её не снять, и сигнал пошлёт первый опрос.
     """
 
     key: ObjectKey
     source: WatchSource | None
     seen: str
+
+    def described(self, content: CanvasContent) -> CanvasContent:
+        """Содержимое показа с версией файла, снятой до него."""
+        return content.model_copy(update={"revision": self.seen})
 
     def start(self, nonce: str) -> None:
         if self.source is None:
@@ -441,7 +446,11 @@ class CanvasPanel:
             raise CanvasError(CanvasErrorKind.NO_VIEWER, msg)
 
         watch = await cls.watch_file(key, viewer)
-        opened = await viewer.open(key, mime, cls._push)
+
+        async def push(content: CanvasContent) -> None:
+            await cls._push(watch.described(content))
+
+        opened = await viewer.open(key, mime, push)
         watch.start(opened.nonce)
 
         return opened
@@ -457,7 +466,17 @@ class CanvasPanel:
         if source is None:
             return FileWatch(key=key, source=None, seen="")
 
-        probe = await source.probe()
+        try:
+            probe = await source.probe()
+        except WatchProbeError as exc:
+            logger.warning(
+                "canvas show of %s: the file version is unknown, the watch "
+                "signals its first probe: %s",
+                key.in_workspace(),
+                exc,
+            )
+            return FileWatch(key=key, source=source, seen="")
+
         if probe is None:
             return FileWatch(key=key, source=None, seen="")
 
@@ -564,8 +583,7 @@ class StreamActions:
             await CanvasPanel.show(content)
 
         source = await remote.watch_source(thread_id, request.call_id, request.channel)
-        seen = f"{piece.size}:{int(piece.closed)}"
-        CanvasWatch.show(thread_id, content.path, content.nonce, source, seen)
+        CanvasWatch.show(thread_id, content.path, content.nonce, source, piece.revision)
 
         if not request.inline:
             return {}
@@ -674,11 +692,68 @@ class StreamActions:
         return content.props()
 
     @staticmethod
+    async def hold(
+        user_id: str,
+        thread_id: str,
+        payload: Mapping[str, object],
+        remote: RemoteStreams,
+    ) -> None:
+        """Экземпляр панели держит свой показ — при монтировании и после
+        переподключения сокета. Сторожа, которого уже нет, ставит заново с
+        версии панели: правка без слежения придёт сигналом первого опроса."""
+        request = CanvasHoldRequest.model_validate(payload)
+        if not CanvasWatch.enabled():
+            return
+
+        held = CanvasWatch.hold(
+            thread_id, request.nonce, request.holder, request.revision
+        )
+        if held:
+            return
+
+        source = await StreamActions._source(user_id, thread_id, request, remote)
+        if source is None:
+            return
+
+        CanvasWatch.show(
+            thread_id, request.path, request.nonce, source, request.revision
+        )
+        CanvasWatch.hold(thread_id, request.nonce, request.holder, request.revision)
+
+    @staticmethod
+    async def _source(
+        user_id: str,
+        thread_id: str,
+        request: CanvasHoldRequest,
+        remote: RemoteStreams,
+    ) -> WatchSource | None:
+        """Источник слежения показа: канал журнала вызова или файл workspace
+        его вьювером; None — показ не отслеживается."""
+        stream_path = StreamPath.parse(request.path)
+        if stream_path is not None:
+            return await remote.watch_source(
+                thread_id, stream_path.call_id, stream_path.channel
+            )
+
+        if StreamPath.is_stream(request.path):
+            return None
+
+        workspace = await PanelStorage.client().workspace(user_id, thread_id)
+        scope = CanvasScope(user_id=user_id, thread_id=thread_id, workspace=workspace)
+        key = scope.key(request.path)
+        viewer = CanvasRegistry.viewer_for(request.mime)
+        if viewer is None:
+            return None
+
+        return viewer.watch_source(key)
+
+    @staticmethod
     def leave(thread_id: str, payload: Mapping[str, object]) -> None:
-        """Панель закрыта или ушла с файла: слежение этого показа снимается."""
+        """Экземпляр панели закрыт или ушёл с файла: слежение показа
+        снимается, когда его не держит больше никто."""
         request = StreamLeaveRequest.model_validate(payload)
 
-        CanvasWatch.leave(thread_id, request.nonce)
+        CanvasWatch.leave(thread_id, request.nonce, request.holder)
 
     @staticmethod
     def content(  # noqa: PLR0913
@@ -701,6 +776,7 @@ class StreamActions:
             text=piece.text,
             note=piece.note,
             nonce=nonce,
+            revision=piece.revision,
             stream=StreamActions._pos(piece),
             channel=stream_path.channel.value,
             channels=tuple(names),

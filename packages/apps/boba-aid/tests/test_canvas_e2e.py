@@ -24,6 +24,7 @@ import socket
 import subprocess
 import time
 from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
+from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, ClassVar
@@ -240,6 +241,9 @@ FILES: dict[str, bytes] = {
     "data.bin": b"\x00\x01\x02\x03unsupported",
     "broken.mmd": BROKEN_MMD.encode(),
     "notes.log": ("строка журнала\n" * 40).encode(),
+    "layout.png": PNG,
+    "reconnect.png": PNG,
+    "outage.png": PNG,
 }
 
 
@@ -248,13 +252,59 @@ def anyio_backend() -> str:
     return "asyncio"
 
 
+class LogTail:
+    """Строки журнала процесса стенда, дописанные после метки: тест ждёт в
+    них состояния, которое видно только серверу. Файл читается порциями с
+    запомненного смещения и целиком в память не поднимается. Создаёт
+    E2eApp.tail."""
+
+    READ_BYTES: ClassVar[int] = 1 << 16
+    POLL_SEC: ClassVar[float] = 0.2
+    TIMEOUT_SEC: ClassVar[float] = 60.0
+
+    def __init__(self, log: Path, offset: int) -> None:
+        self._log = log
+        self._offset = offset
+        self._rest = b""
+
+    async def until(self, pattern: re.Pattern[str], what: str) -> None:
+        """Ждёт строку журнала, в которой есть pattern."""
+        deadline = time.monotonic() + self.TIMEOUT_SEC
+
+        while time.monotonic() < deadline:
+            for line in self._lines():
+                if pattern.search(line):
+                    return
+
+            await asyncio.sleep(self.POLL_SEC)
+
+        msg = (
+            f"{self._log.name}: expected {what} (a line matching "
+            f"{pattern.pattern!r}) within {self.TIMEOUT_SEC:.0f}s, got none"
+        )
+        raise AssertionError(msg)
+
+    def _lines(self) -> Iterator[str]:
+        with self._log.open("rb") as log:
+            log.seek(self._offset)
+            chunk = log.read(self.READ_BYTES)
+
+        self._offset += len(chunk)
+        pieces = (self._rest + chunk).split(b"\n")
+        self._rest = pieces.pop()
+        for piece in pieces:
+            yield piece.decode("utf-8", errors="replace")
+
+
 class E2eApp:
     """Процесс стенда e2e — чат или сервис boba-mcp: старт своим лончером на
     конфиге отладки, ожидание ответа адреса готовности и остановка с добиванием.
 
     Под нагрузкой параллельного прогона прогрев зигот растягивает старт, поэтому
     ожидание ограничено сроком, а не числом попыток, и обрывается сразу, если
-    процесс умер; остановка, не уложившаяся в срок, добивает процесс."""
+    процесс умер; остановка, не уложившаяся в срок, добивает процесс. Процесс
+    можно остановить и поднять снова — журнал дописывается, а не начинается
+    заново."""
 
     BOOT_SEC: ClassVar[float] = 300.0
     STOP_SEC: ClassVar[float] = 20.0
@@ -280,7 +330,7 @@ class E2eApp:
             # nosemgrep: dangerous-subprocess-use-tainted-env-args
             [str(LAUNCHER), *self._command],
             env={**os.environ, **self._overrides},
-            stdout=self._log.open("wb"),
+            stdout=self._log.open("ab"),
             stderr=subprocess.STDOUT,
         )
         self._await_ready(self._process)
@@ -295,6 +345,14 @@ class E2eApp:
         except subprocess.TimeoutExpired:
             self._process.kill()
             self._process.wait()
+
+    def tail(self) -> LogTail:
+        """Журнал процесса с этого момента: прежние строки не в счёт."""
+        offset = 0
+        if self._log.is_file():
+            offset = self._log.stat().st_size
+
+        return LogTail(self._log, offset)
 
     def _await_ready(self, process: subprocess.Popen[bytes]) -> None:
         url = self._ready_url
@@ -334,8 +392,17 @@ class E2eApp:
         return "\n".join(lines[-self.TAIL_LINES :])
 
 
+@dataclass(frozen=True)
+class E2eProcesses:
+    """Процессы стенда: чат и сервис boba-mcp, к которому он ходит. Отдаёт
+    фикстура app_server; тесты читают журнал чата и останавливают сервис."""
+
+    app: E2eApp
+    service: E2eApp
+
+
 @pytest.fixture(scope="module")
-def app_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
+def app_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[E2eProcesses]:
     stand = E2eStand()
     try:
         stand.prepare()
@@ -385,7 +452,7 @@ def app_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
         try:
             service.start()
             app.start()
-            yield
+            yield E2eProcesses(app=app, service=service)
         finally:
             app.stop()
             service.stop()
@@ -479,7 +546,8 @@ class _SessionProbe:
 
     Сессию называет тело запроса socket.io, тред — кадр сокета после старта
     чата; joined ждёт обоих. Вердикты — payload действий canvas_render_status,
-    которые браузер шлёт серверу после рендера диаграммы."""
+    которые браузер шлёт серверу после рендера диаграммы. socket — последний
+    открытый страницей websocket."""
 
     JOIN_SEC: ClassVar[float] = 120.0
     STATUS_ACTION: ClassVar[str] = "canvas_render_status"
@@ -487,6 +555,7 @@ class _SessionProbe:
     def __init__(self) -> None:
         self.session: dict[str, str] = {}
         self.verdicts: list[Mapping[str, Any]] = []
+        self.socket: Any = None
         self._joined = asyncio.Event()
 
     def watch(self, page: Page) -> None:
@@ -527,6 +596,7 @@ class _SessionProbe:
             self._check()
 
     def _on_websocket(self, ws: Any) -> None:
+        self.socket = ws
         ws.on("framereceived", self._on_frame)
 
     def _on_frame(self, payload: Any) -> None:
@@ -624,6 +694,8 @@ class PanelScript(StrEnum):
         return side.contains(stage);
     }"""
     CLOSED = "() => !document.querySelector('#side-view-content')"
+    REMOUNTED = """(old) => !old.isConnected
+        && !!document.querySelector('[data-canvas-panel]')"""
     GEOMETRY = """() => {
         const stage = document.querySelector('[data-canvas-panel][data-full="true"]');
         if (!stage) return null;
@@ -711,6 +783,9 @@ class CanvasPage:
     TIMEOUT_MS: ClassVar[float] = 60000.0
     SIDE: ClassVar[str] = "#side-view-content"
     ACTION_PATH: ClassVar[str] = "/project/action"
+    LEAVE_ACTION: ClassVar[str] = "canvas_leave"
+    NARROW_WIDTH: ClassVar[int] = 420
+    """Окно уже точки перелома chainlit (768 px): панель — лист поверх чата."""
 
     def __init__(self, page: Page, probe: _SessionProbe) -> None:
         self.page = page
@@ -777,6 +852,39 @@ class CanvasPage:
 
         await self.page.evaluate(PanelScript.SWITCH, [path, ContentMime.of_name(name)])
         await self.until(PanelScript.DRAWN, previous, f"{path} drawn after a switch")
+
+    async def relayout(self, width: int) -> None:
+        """Окно шириной width по ту сторону точки перелома: chainlit меняет
+        раскладку (лист узкого окна, боковая панель широкого) и монтирует
+        элемент панели заново. Возвращается, когда прежний узел панели ушёл
+        со страницы, сервер ответил на уход прежнего экземпляра с показа и
+        новый экземпляр дорисовал показ."""
+        size = self.page.viewport_size
+        if size is None:
+            raise AssertionError("the page has no viewport size")
+
+        old = await self.page.locator("[data-canvas-panel]").element_handle()
+        async with self.page.expect_request_finished(
+            self._is_leave, timeout=self.TIMEOUT_MS
+        ):
+            await self.page.set_viewport_size(
+                {"width": width, "height": size["height"]}
+            )
+            await self.until(
+                PanelScript.REMOUNTED, old, f"the panel mounted anew at {width}px"
+            )
+
+        await self.until(PanelScript.DRAWN, None, f"the show drawn at {width}px")
+
+    def _is_leave(self, request: Any) -> bool:
+        if not request.url.endswith(self.ACTION_PATH):
+            return False
+
+        body = request.post_data
+        if not body:
+            return False
+
+        return json.loads(body)["action"]["name"] == self.LEAVE_ACTION
 
     async def expand(self) -> Any:
         """На весь экран кнопкой шапки; отдаёт геометрию развёрнутой сцены."""
@@ -850,7 +958,7 @@ class CanvasPage:
 
 
 @pytest.fixture(scope="module")
-async def panel(app_server: None) -> AsyncIterator[CanvasPage]:
+async def panel(app_server: E2eProcesses) -> AsyncIterator[CanvasPage]:
     """Логин, живой тред и файлы в нём; отдаёт страницу с панелью канваса."""
     async with async_playwright() as pw:
         browser = await pw.chromium.launch()
@@ -1599,6 +1707,89 @@ async def test_file_after_a_notice_follows_its_changes(panel: CanvasPage) -> Non
     )
 
 
+async def test_panel_follows_the_file_across_layouts(panel: CanvasPage) -> None:
+    """Смена раскладки монтирует элемент панели заново, а показ тот же:
+    новый экземпляр держит слежение своей меткой, и правка файла видна и в
+    листе узкого окна, и после возврата к боковой панели. Уход прежнего
+    экземпляра сервер принимает раньше правки — снять слежение он должен
+    был бы именно тогда. Правки разной длины: версия файла — размер и
+    секунда записи."""
+    wide = panel.page.viewport_size
+    if wide is None:
+        raise AssertionError("the page has no viewport size")
+
+    side = await panel.show("layout.png")
+    try:
+        for step, width in enumerate((panel.NARROW_WIDTH, wide["width"]), start=1):
+            await panel.relayout(width)
+            before = await side.locator("img").evaluate("img => img.src")
+
+            await panel.rewrite("layout.png", PNG + bytes(step))
+            await panel.until(
+                PanelScript.IMAGE_REVISED,
+                before,
+                f"the image link to get a new revision at {width}px",
+            )
+    finally:
+        await panel.page.set_viewport_size(wide)
+
+
+async def test_switched_file_survives_a_layout_change(panel: CanvasPage) -> None:
+    """Панель, сменившая файл на месте, после смены раскладки показывает
+    тот же файл, а не тот, с которым её открыл пуш элемента."""
+    wide = panel.page.viewport_size
+    if wide is None:
+        raise AssertionError("the page has no viewport size")
+
+    await panel.show("chart.png")
+    await panel.switch("report.md")
+    switched = await panel.page.evaluate(PanelScript.NONCE)
+    try:
+        await panel.relayout(panel.NARROW_WIDTH)
+        shown = await panel.page.evaluate(PanelScript.NONCE)
+        described = await panel.page.evaluate(PanelScript.SHOWN)
+    finally:
+        await panel.page.set_viewport_size(wide)
+
+    if shown != switched:
+        raise AssertionError(
+            f"after the layout change the panel left show {switched} of report.md: "
+            f"{described}"
+        )
+
+
+async def test_panel_follows_the_file_after_the_socket_reconnects(
+    panel: CanvasPage, app_server: E2eProcesses
+) -> None:
+    """Вкладка без сети теряет сокет, и сторож треда без подключённых
+    вкладок кончается; вернувшийся сокет снова объявляет показ, и правка
+    файла после переподключения доходит до панели."""
+    side = await panel.show("reconnect.png")
+    before = await side.locator("img").evaluate("img => img.src")
+    context = panel.page.context
+    socket = panel.probe.socket
+    path = panel.tool_view("reconnect.png")
+    ended = re.compile(
+        rf"canvas watch of {re.escape(path)} .*ended: the thread has no connected tab"
+    )
+
+    log = app_server.app.tail()
+    try:
+        await context.set_offline(True)
+        await socket.wait_for_event("close", timeout=CanvasPage.TIMEOUT_MS)
+        await log.until(ended, "the end of the watch without a connected tab")
+    finally:
+        async with panel.page.expect_websocket(timeout=CanvasPage.TIMEOUT_MS):
+            await context.set_offline(False)
+
+    await panel.rewrite("reconnect.png", PNG + bytes(1))
+    await panel.until(
+        PanelScript.IMAGE_REVISED,
+        before,
+        "the image link to get a new revision after the socket reconnected",
+    )
+
+
 # ——— Поведение: окна текста в панели (файл workspace, не журнал) ———
 
 
@@ -2318,3 +2509,30 @@ async def test_hostile_pdf_runs_no_script(panel: CanvasPage) -> None:
     pwned = await page.evaluate("() => window.__boba_pwned")
     if pwned is not None:
         raise AssertionError(f"the pdf ran a script: {pwned!r}")
+
+
+async def test_panel_follows_the_file_after_a_storage_outage(
+    panel: CanvasPage, app_server: E2eProcesses
+) -> None:
+    """Сервис файлов недоступен (перезапуск): опрос версии файла отказывает,
+    но слежение не кончается — отказ виден в журнале чата, опрос
+    повторяется, и правка файла после возврата сервиса доходит до панели.
+
+    Тест последний в модуле: он перезапускает сервис стенда."""
+    side = await panel.show("outage.png")
+    before = await side.locator("img").evaluate("img => img.src")
+    failed = re.compile(r"stat of \S*/outage\.png failed")
+
+    log = app_server.app.tail()
+    await asyncio.to_thread(app_server.service.stop)
+    try:
+        await log.until(failed, "a failed stat of outage.png while the service is down")
+    finally:
+        await asyncio.to_thread(app_server.service.start)
+
+    await panel.rewrite("outage.png", PNG + bytes(1))
+    await panel.until(
+        PanelScript.IMAGE_REVISED,
+        before,
+        "the image link to get a new revision after the storage came back",
+    )
