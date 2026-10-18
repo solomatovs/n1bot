@@ -46,8 +46,6 @@ from contextlib import (
     AbstractAsyncContextManager,
     asynccontextmanager,
     contextmanager,
-    nullcontext,
-    suppress,
 )
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
@@ -75,6 +73,7 @@ from mcp.client.caching import (
     ClientResponseCache,
     InMemoryResponseCacheStore,
 )
+from mcp.client.extension import NotificationBinding
 from mcp.client.session import IncomingMessage, MessageHandlerFnT
 from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client
@@ -137,7 +136,7 @@ from boba.canvas.storage import (
 from boba.connections.sealed import SealFeature
 from boba.toolkit.dag import NestedCallsFeature, ServerFeature
 from boba.toolkit.mcp import McpToolNames
-from boba.toolkit.wire import FilesFeature, JournalFeature, JournalOrigin, JournalRead
+from boba.toolkit.wire import FilesFeature, JournalFeature, JournalNotice, JournalRead
 from boba.workspace.launcher import ReadWindow
 
 __all__ = [
@@ -146,7 +145,6 @@ __all__ = [
     "HttpLocation",
     "JournalHeard",
     "JournalLinks",
-    "JournalOpening",
     "LocalAuth",
     "McpAuth",
     "McpAuthEntry",
@@ -1000,7 +998,8 @@ class IdentifiedSession(ClientSession):
     elicitation, sampling и roots: запросов сервера посреди вызова принять
     некому. absorbed() отдаёт сессии карточки инструментов, которые порт уже
     знает: по ним она зеркалит параметры x-mcp-header в заголовки и
-    проверяет итог вызова по схеме.
+    проверяет итог вызова по схеме. bindings — уведомления расширений,
+    которые принимает сессия подключения.
     """
 
     def __init__(
@@ -1008,10 +1007,12 @@ class IdentifiedSession(ClientSession):
         dispatcher: Dispatcher[Any],
         identity: McpClientIdentity,
         message_handler: MessageHandlerFnT | None,
+        bindings: Sequence[NotificationBinding[Any]],
     ) -> None:
         super().__init__(
             client_info=identity.info,
             message_handler=message_handler,
+            notification_bindings=bindings,
             dispatcher=dispatcher,
         )
         self._identity = identity
@@ -1092,7 +1093,7 @@ class RequestSession(IdentifiedSession):
     """
 
     def __init__(self, line: IdentifiedSession, identity: McpClientIdentity) -> None:
-        super().__init__(BorrowedDispatcher(line._wire), identity, None)
+        super().__init__(BorrowedDispatcher(line._wire), identity, None, ())
         self._line = line
         self._task_group = line._task_group
         version = line.protocol_version
@@ -1151,7 +1152,8 @@ class McpConnection:
     вызовов. Версию согласует штатная политика SDK (negotiate_auto), а
     версию современной редакции, которую порт уже знает, сессия принимает
     без пробы. Отказ HTTP за время согласования называет учёт отказов порта
-    (HttpRefusals). Уведомления прогресса уходят обработчику запроса,
+    (HttpRefusals). Уведомления прогресса и уведомления расширения журнала
+    об открытом журнале (JournalNotice) уходят обработчику хода запроса,
     который слушает его токен (listening); уведомления сервера о смене
     списков и ресурсов сбрасывают кэши ответов подключения (cache).
     """
@@ -1172,10 +1174,15 @@ class McpConnection:
         self._stop = asyncio.Event()
         self._ready: asyncio.Future[IdentifiedSession] | None = None
         self._session: IdentifiedSession | None = None
-        self._listeners: dict[
-            mt.ProgressToken,
-            Callable[[mt.ProgressNotificationParams], Awaitable[None]],
-        ] = {}
+        self._progress: dict[mt.ProgressToken, ProgressHeard] = {}
+        self._journals: dict[mt.ProgressToken, JournalHeard] = {}
+        self._bindings = (
+            NotificationBinding(
+                method=JournalFeature.OPENED,
+                params_type=JournalNotice,
+                handler=self._noticed,
+            ),
+        )
         self._store = AgingCacheStore()
         self._caches: dict[str, ClientResponseCache] = {}
         self._target = hashlib.sha256(transport.label().encode()).hexdigest()
@@ -1184,15 +1191,23 @@ class McpConnection:
     async def listening(
         self,
         token: mt.ProgressToken,
-        heard: Callable[[mt.ProgressNotificationParams], Awaitable[None]],
+        progress: ProgressHeard | None,
+        journals: JournalHeard | None,
     ) -> AsyncGenerator[None, None]:
-        """Уведомления прогресса под токеном token уходят heard, пока
-        открыт контекст."""
-        self._listeners[token] = heard
+        """Уведомления хода запроса под токеном token, пока открыт контекст:
+        прогресс — progress, открытые запросом журналы — journals; None —
+        такие не нужны."""
+        if progress is not None:
+            self._progress[token] = progress
+
+        if journals is not None:
+            self._journals[token] = journals
+
         try:
             yield
         finally:
-            self._listeners.pop(token, None)
+            self._progress.pop(token, None)
+            self._journals.pop(token, None)
 
     def cache(self, identity: McpClientIdentity) -> ClientResponseCache:
         """Кэш ответов личности identity на этом подключении: у современной
@@ -1303,7 +1318,9 @@ class McpConnection:
                 async with self._transport.opened(self._refusals.seen) as streams:
                     read, write = streams
                     dispatcher = JSONRPCDispatcher(read, write)
-                    session = IdentifiedSession(dispatcher, self._identity, self._heard)
+                    session = IdentifiedSession(
+                        dispatcher, self._identity, self._heard, self._bindings
+                    )
                     async with session:
                         await self._negotiated_by(session, version)
                         self._session = session
@@ -1360,11 +1377,20 @@ class McpConnection:
         if not isinstance(message, mt.ProgressNotification):
             return
 
-        heard = self._listeners.get(message.params.progress_token)
+        heard = self._progress.get(message.params.progress_token)
         if heard is None:
             return
 
         await heard(message.params)
+
+    async def _noticed(self, notice: JournalNotice) -> None:
+        """Уведомление расширения журнала — обработчику запроса с его
+        токеном; без слушателя не нужно."""
+        heard = self._journals.get(notice.progress_token)
+        if heard is None:
+            return
+
+        await heard(notice)
 
 
 @dataclass(frozen=True)
@@ -1638,18 +1664,7 @@ class JournalLinks:
             return None
 
 
-@dataclass(frozen=True)
-class JournalOpening:
-    """Журнал вызова открылся на сервере: запуск и идентификатор вызова на
-    сервере (адрес журнала) и ключ узла от автора связки; node None — журнал
-    вызова одного инструмента. Создаёт JournalOpenings по ресурсу списка."""
-
-    run: str
-    call: str
-    node: str | None
-
-
-JournalHeard = Callable[[JournalOpening], Awaitable[None]]
+JournalHeard = Callable[[JournalNotice], Awaitable[None]]
 """Кому порт сообщает журналы, открытые вызовом."""
 
 ProgressHeard = Callable[[mt.ProgressNotificationParams], Awaitable[None]]
@@ -1800,171 +1815,14 @@ class McpToolPort(Protocol):
         карточки у вызывающего нет. progress получает уведомления сервера о
         ходе вызова целиком, с _meta: вызов просит их своим токеном
         прогресса. journals узнаёт журналы, которые вызов открыл на сервере,
-        пока он идёт; None — не нужны.
+        пока он идёт, — уведомлением расширения журнала в потоке ответа
+        вызова под тем же токеном (JournalNotice); None — не нужны.
 
         Ошибки:
         McpClientError — сервер недоступен либо ответа нет: сессия оборвалась
             или вышел срок вызова; либо ответ не по схеме инструмента.
         MCPError — сервер ответил на запрос ошибкой MCP.
         """
-
-
-class JournalOpenings:
-    """Журналы, которые вызовы порта открыли на сервере, пока вызовы идут.
-
-    Сервер с расширением журнала перечисляет журналы идущих вызовов
-    вызывающего ресурсами resources/list с JournalOrigin в _meta и сообщает
-    о смене списка потоком subscriptions/listen. Создаётся портом
-    McpToolServer над отдельным соединением с сервером, когда сервер объявил
-    журнал и смену списка ресурсов: запросы основного соединения ждут
-    ответа идущего вызова под замком входа OAuth. Вызов
-    порта ждёт журналов своего токена прогресса (expecting): первый такой
-    вызов поднимает поток подписки в своей задаче и дожидается его
-    подтверждения, на каждую смену списка список перечитывается, и новые
-    журналы ждущих токенов уходят их слушателям. Сбой потока — в лог:
-    журналы тогда узнаются только из итога вызова, следующий вызов
-    поднимает поток заново.
-    """
-
-    def __init__(
-        self, label: str, connection: McpConnection, links: JournalLinks
-    ) -> None:
-        self._label = label
-        self._connection = connection
-        self._links = links
-        self._expected: dict[mt.ProgressToken, JournalHeard] = {}
-        self._reported: dict[mt.ProgressToken, set[tuple[str, str]]] = {}
-        self._task: asyncio.Task[None] | None = None
-        self._ready: asyncio.Future[bool] | None = None
-
-    @asynccontextmanager
-    async def expecting(
-        self, token: mt.ProgressToken, heard: JournalHeard
-    ) -> AsyncGenerator[None, None]:
-        """Журналы, открытые запросом с токеном token, уходят heard, пока
-        открыт контекст; поток подписки к этому моменту подтверждён либо
-        его нет."""
-        await self._listening()
-        self._expected[token] = heard
-        self._reported[token] = set()
-        try:
-            yield
-        finally:
-            self._expected.pop(token, None)
-            self._reported.pop(token, None)
-
-    async def close(self) -> None:
-        task = self._task
-        self._task = None
-        self._ready = None
-        if task is None:
-            return
-
-        task.cancel()
-        with suppress(asyncio.CancelledError):
-            await task
-
-    async def _listening(self) -> bool:
-        """Поднимает поток подписки, если его нет, и ждёт подтверждения."""
-        if self._task is None or self._task.done():
-            self._ready = asyncio.get_running_loop().create_future()
-            self._task = asyncio.create_task(
-                self._listen(self._ready), name=f"journals:{self._label}"
-            )
-
-        ready = self._ready
-        if ready is None:
-            return False
-
-        return await asyncio.shield(ready)
-
-    async def _listen(self, ready: asyncio.Future[bool]) -> None:
-        try:
-            session = await self._connection.open(None)
-            async with listen(session, resources_list_changed=True) as subscription:
-                honored = subscription.honored.resources_list_changed
-                if not honored:
-                    logger.warning(
-                        "%s: subscriptions/listen did not acknowledge "
-                        "resourcesListChanged, journals of running calls are "
-                        "named only by their results",
-                        self._label,
-                    )
-                    ready.set_result(False)
-                    return
-
-                ready.set_result(True)
-                async for _event in subscription:
-                    await self._relist(session)
-        except (
-            McpClientError,
-            MCPError,
-            SubscriptionLost,
-            ListenNotSupportedError,
-            TimeoutError,
-            ValidationError,
-        ) as exc:
-            logger.warning(
-                "%s: the listen stream for journals of running calls ended, "
-                "journals are named only by the results of the calls: %s: %s",
-                self._label,
-                type(exc).__name__,
-                exc,
-            )
-        finally:
-            if not ready.done():
-                ready.set_result(False)
-
-    async def _relist(self, session: ClientSession) -> None:
-        """Список ресурсов целиком; новые журналы ждущих токенов — их
-        слушателям."""
-        cursor: str | None = None
-        while True:
-            params = mt.PaginatedRequestParams(cursor=cursor)
-            page = await session.list_resources(params=params)
-            for resource in page.resources:
-                await self._seen(resource)
-
-            cursor = page.next_cursor
-            if not cursor:
-                return
-
-    async def _seen(self, resource: mt.Resource) -> None:
-        meta = resource.meta
-        if meta is None:
-            return
-
-        raw = meta.get(JournalFeature.ID)
-        if raw is None:
-            return
-
-        try:
-            origin = JournalOrigin.model_validate(raw)
-        except ValidationError as exc:
-            logger.warning(
-                "%s: resource %s carries %s that is not a journal origin: %s",
-                self._label,
-                resource.uri,
-                JournalFeature.ID,
-                exc,
-            )
-            return
-
-        heard = self._expected.get(origin.request)
-        if heard is None:
-            return
-
-        read = self._links.address(str(resource.uri))
-        if read is None:
-            return
-
-        reported = self._reported.setdefault(origin.request, set())
-        place = (read.run, read.node)
-        if place in reported:
-            return
-
-        reported.add(place)
-        await heard(JournalOpening(run=read.run, call=read.node, node=origin.node))
 
 
 class McpToolServer(McpToolPort):
@@ -2044,9 +1902,6 @@ class McpToolServer(McpToolPort):
         """Версия, которую сервер согласовал последней; None — порт её ещё
         не знает либо сервер её опроверг."""
         self._probing = asyncio.Lock()
-        # замок входа OAuth ждёт ответа вызова: журналы — своим соединением
-        self._watching = self._connection(self._own)
-        self._openings: JournalOpenings | None = None
         self._files: dict[str, McpFiles] = {}
         self._running = 0
         self._retired = False
@@ -2114,20 +1969,14 @@ class McpToolServer(McpToolPort):
         identity = self._speaking(client)
         token = uuid4().hex
         sent = params.model_copy(update={"meta": self._sent_meta(params.meta, token)})
-        expecting: AbstractAsyncContextManager[None] = nullcontext()
-        if journals is not None:
-            expecting = await self._expecting(client, token, journals)
 
         async def send(
             connection: McpConnection, session: IdentifiedSession
         ) -> mt.CallToolResult | mt.InputRequiredResult:
-            async with self._heard(connection, token, progress):
+            async with connection.listening(token, progress, journals):
                 return await self._tool_call(identity, connection, session, sent, card)
 
-        async with expecting:
-            return await self._exchange(
-                identity, f"tools/call of {params.name!r}", send
-            )
+        return await self._exchange(identity, f"tools/call of {params.name!r}", send)
 
     async def list_resources(
         self, client: McpClientIdentity, params: mt.PaginatedRequestParams | None
@@ -2309,11 +2158,6 @@ class McpToolServer(McpToolPort):
         await self.close()
 
     async def close(self) -> None:
-        if self._openings is not None:
-            await self._openings.close()
-            self._openings = None
-
-        await self._watching.close()
         for files in self._files.values():
             await files.close()
 
@@ -2718,7 +2562,7 @@ class McpToolServer(McpToolPort):
         async def send(
             connection: McpConnection, session: IdentifiedSession
         ) -> ResultT:
-            async with self._heard(connection, token, progress):
+            async with connection.listening(token, progress, None):
                 return await session.send_request(
                     sent,
                     result,
@@ -2745,50 +2589,6 @@ class McpToolServer(McpToolPort):
             sent[key] = value
 
         return sent
-
-    def _heard(
-        self,
-        connection: McpConnection,
-        token: mt.ProgressToken,
-        progress: ProgressHeard | None,
-    ) -> AbstractAsyncContextManager[None]:
-        if progress is None:
-            return nullcontext()
-
-        return connection.listening(token, progress)
-
-    async def _expecting(
-        self, client: McpClientIdentity, token: str, journals: JournalHeard
-    ) -> AbstractAsyncContextManager[None]:
-        """Слежение за журналами вызова с токеном token, если сервер объявил
-        журнал и смену списка ресурсов."""
-        openings = await self._journal_openings(client)
-        if openings is None:
-            return nullcontext()
-
-        return openings.expecting(token, journals)
-
-    async def _journal_openings(
-        self, client: McpClientIdentity
-    ) -> JournalOpenings | None:
-        if self._openings is not None:
-            return self._openings
-
-        described = await self.described(client)
-        links = described.links()
-        if links is None:
-            return None
-
-        resources = described.result.capabilities.resources
-        if resources is None:
-            return None
-
-        if not resources.list_changed:
-            return None
-
-        self._openings = JournalOpenings(self._label, self._watching, links)
-
-        return self._openings
 
     def _files_at(self, path: str) -> McpFiles | None:
         """Клиент файлов сервера под маршрутом path; у сервера не по HTTP
