@@ -3,7 +3,9 @@
 // тестов клиента (standard_server.py) теми запросами и ответами, что есть в
 // 2025-11-25, и добавляет то, чего нет у примеров MCP Apps: сессии HTTP с
 // забыванием по команде (forget), вопрос пользователю только клиенту с
-// elicitation (ask), смену списка инструментов уведомлением (toggle_extra),
+// elicitation (ask), вопросы пользователю посреди вызова встречным запросом
+// elicitation/create, один или два подряд (load_rows), и запись полученных
+// ответов (answers), смену списка инструментов уведомлением (toggle_extra),
 // инструмент только для задач (slow_report) и эхо личности клиента и _meta
 // запроса (client). Состояние — своё у каждой сессии. Редакцию сервера задают
 // параметры: --handshake — версии рукопожатия initialize, которые он знает
@@ -89,6 +91,31 @@ const TARGET_FORM = {
   required: ["table"],
 };
 
+const LOAD_FORM = {
+  type: "object",
+  properties: {
+    table: {
+      type: "string",
+      title: "Target",
+      description: "Which table should receive the rows?",
+      oneOf: [
+        { const: "sales.orders", title: "sales.orders" },
+        { const: "sales.orders_stage", title: "sales.orders_stage" },
+        { const: "tmp.orders_copy", title: "tmp.orders_copy" },
+      ],
+    },
+  },
+  required: ["table"],
+};
+const CONFIRM_FORM = {
+  type: "object",
+  properties: { go: { type: "boolean", title: "Go", description: "Start the copy now?" } },
+  required: ["go"],
+};
+const ASK_TIMEOUT_MS = 600_000;
+// ответы на вопросы load_rows всех сессий процесса — по ним тесты видят, что дошло до сервера
+const ANSWERS = [];
+
 const object = (properties, required) => ({ type: "object", properties, required });
 const text = (value) => ({ content: [{ type: "text", text: String(value) }] });
 const ORDER = object(
@@ -107,6 +134,8 @@ const TOOLS = [
   { name: "progress", description: "Reports progress once per step, then answers.", inputSchema: object({ steps: { type: "integer" } }, ["steps"]), annotations: { readOnlyHint: true } },
   { name: "toggle_extra", description: "Adds or removes the tool extra and notifies the client.", inputSchema: object({}, []) },
   { name: "ask", description: "Asks the user for the target table when the client declares elicitation, or refuses with an MCP error.", inputSchema: object({ refuse: { type: "boolean" } }, ["refuse"]) },
+  { name: "load_rows", description: "Loads the rows into a table the user chooses, and asks to confirm when told so.", inputSchema: object({ rows: { type: "integer" }, confirm: { type: "boolean" } }, ["rows", "confirm"]) },
+  { name: "answers", description: "Returns as JSON the answers load_rows got for the given number of rows.", inputSchema: object({ rows: { type: "integer" } }, ["rows"]) },
   { name: "client", description: "Returns the clientInfo and capabilities of the session and the _meta of the request as JSON.", inputSchema: object({}, []) },
   { name: "forget", description: "Forgets the session of the client after the answer, as a restarted server would.", inputSchema: object({}, []) },
   { name: "slow_report", description: "Builds a report; runs only as a task.", inputSchema: object({}, []), execution: { taskSupport: "required" } },
@@ -170,6 +199,38 @@ async function ask(server, refuse) {
   });
 
   return text(`the user answered ${answer.action}`);
+}
+
+// Вопросы встречным запросом elicitation/create в потоке своего вызова
+// (relatedRequestId), как задаёт их сервер 2025-11-25.
+async function loadRows(server, extra, rows, confirm) {
+  const options = { relatedRequestId: extra.requestId, timeout: ASK_TIMEOUT_MS };
+  const target = await server.elicitInput(
+    { mode: "form", message: "load_rows needs the target table before it can start the copy.", requestedSchema: LOAD_FORM },
+    options,
+  );
+  ANSWERS.push({ rows, step: "target", action: target.action, content: target.content ?? null });
+  if (target.action !== "accept") {
+    return { ...text(`the user answered ${target.action}`), isError: true };
+  }
+
+  const table = target.content.table;
+  if (confirm) {
+    const go = await server.elicitInput(
+      { mode: "form", message: `load_rows asks to start the copy of ${rows} rows into ${table}.`, requestedSchema: CONFIRM_FORM },
+      options,
+    );
+    ANSWERS.push({ rows, step: "confirm", action: go.action, content: go.content ?? null });
+    if (go.action !== "accept") {
+      return { ...text(`the user answered ${go.action}`), isError: true };
+    }
+
+    if (!go.content.go) {
+      return text(`the copy into ${table} is not started`);
+    }
+  }
+
+  return text(`loaded ${rows} rows into ${table}`);
 }
 
 async function progress(extra, steps) {
@@ -254,6 +315,10 @@ function build(forget) {
         return text("extra answered");
       case "ask":
         return ask(server, args.refuse);
+      case "load_rows":
+        return loadRows(server, extra, args.rows, args.confirm);
+      case "answers":
+        return text(JSON.stringify(ANSWERS.filter((answer) => answer.rows === args.rows)));
       case "client": {
         const seen = { info: server.getClientVersion(), capabilities: server.getClientCapabilities(), meta: request.params._meta ?? {} };
         return text(JSON.stringify(seen));

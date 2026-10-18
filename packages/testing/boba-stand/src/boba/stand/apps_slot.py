@@ -45,6 +45,8 @@ class AppsDocker(StrEnum):
     LABEL = "boba.e2e=1"
     OWNER = "boba.e2e.apps"
     BUILD = "make -C build testapps"
+    OPTION = "--testapps-image"
+    OPTION_DEST = "testapps_image"
 
 
 class AppsSlot:
@@ -63,7 +65,8 @@ class AppsSlot:
     BOOT_SEC: ClassVar[float] = 60.0
     PATH: ClassVar[str] = "/mcp"
 
-    def __init__(self) -> None:
+    def __init__(self, image: str) -> None:
+        self._image = image
         self._owner = os.getpid()
         self._name = AppsDocker.NAME.format(owner=self._owner)
         self.host = ""
@@ -85,12 +88,12 @@ class AppsSlot:
             AppsDocker.LABEL,
             "--label",
             f"{AppsDocker.OWNER}={self._owner}",
-            AppsDocker.IMAGE,
+            self._image,
         )
         started = self._docker(*run)
         if started.returncode != 0:
             msg = (
-                f"apps slot {self._name}: docker run {AppsDocker.IMAGE} failed: "
+                f"apps slot {self._name}: docker run {self._image} failed: "
                 f"{started.stderr.strip()}; build the image with {AppsDocker.BUILD}"
             )
             raise StandError(msg)
@@ -121,7 +124,7 @@ class AppsSlot:
             AppsDocker.LABEL,
             "--entrypoint",
             "node",
-            AppsDocker.IMAGE,
+            self._image,
             "legacy-server.mjs",
             "--stdio",
         )

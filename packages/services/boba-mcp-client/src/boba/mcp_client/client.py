@@ -44,6 +44,7 @@ from collections.abc import (
 )
 from contextlib import (
     AbstractAsyncContextManager,
+    AbstractContextManager,
     asynccontextmanager,
     contextmanager,
     nullcontext,
@@ -75,7 +76,12 @@ from mcp.client.caching import (
     ClientResponseCache,
     InMemoryResponseCacheStore,
 )
-from mcp.client.session import IncomingMessage, MessageHandlerFnT
+from mcp.client.session import (
+    ClientRequestContext,
+    ElicitationFnT,
+    IncomingMessage,
+    MessageHandlerFnT,
+)
 from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import MCP_SESSION_ID, streamable_http_client
@@ -162,6 +168,7 @@ __all__ = [
     "NoAuth",
     "ProgressHeard",
     "ProxyAuth",
+    "QuestionHeard",
     "SseEndpoint",
     "StdioCommand",
 ]
@@ -996,11 +1003,12 @@ class IdentifiedSession(ClientSession):
     запроса — порт (RequestSession). SDK собирает clientCapabilities _meta
     запроса сам из обработчиков сессии; ретранслятор чата обязан передать
     серверу возможности агента как есть, поэтому сборка возможностей здесь
-    отдаёт их из личности клиента; на проводе рукопожатия — без
-    elicitation, sampling и roots: запросов сервера посреди вызова принять
-    некому. absorbed() отдаёт сессии карточки инструментов, которые порт уже
-    знает: по ним она зеркалит параметры x-mcp-header в заголовки и
-    проверяет итог вызова по схеме.
+    отдаёт их из личности клиента; на проводе рукопожатия — без sampling и
+    roots: таких запросов сервера посреди вызова исполнить некому, а вопрос
+    пользователю (elicitation, если его объявила личность) уходит
+    elicitation_callback тому, кто ведёт вызов. absorbed() отдаёт сессии
+    карточки инструментов, которые порт уже знает: по ним она зеркалит
+    параметры x-mcp-header в заголовки и проверяет итог вызова по схеме.
     """
 
     def __init__(
@@ -1008,10 +1016,12 @@ class IdentifiedSession(ClientSession):
         dispatcher: Dispatcher[Any],
         identity: McpClientIdentity,
         message_handler: MessageHandlerFnT | None,
+        elicitation_callback: ElicitationFnT | None,
     ) -> None:
         super().__init__(
             client_info=identity.info,
             message_handler=message_handler,
+            elicitation_callback=elicitation_callback,
             dispatcher=dispatcher,
         )
         self._identity = identity
@@ -1035,9 +1045,7 @@ class IdentifiedSession(ClientSession):
         if version in MODERN_PROTOCOL_VERSIONS:
             return capabilities
 
-        return capabilities.model_copy(
-            update={"elicitation": None, "sampling": None, "roots": None}
-        )
+        return capabilities.model_copy(update={"sampling": None, "roots": None})
 
 
 class BorrowedDispatcher(Dispatcher[Any]):
@@ -1092,7 +1100,7 @@ class RequestSession(IdentifiedSession):
     """
 
     def __init__(self, line: IdentifiedSession, identity: McpClientIdentity) -> None:
-        super().__init__(BorrowedDispatcher(line._wire), identity, None)
+        super().__init__(BorrowedDispatcher(line._wire), identity, None, None)
         self._line = line
         self._task_group = line._task_group
         version = line.protocol_version
@@ -1153,7 +1161,11 @@ class McpConnection:
     без пробы. Отказ HTTP за время согласования называет учёт отказов порта
     (HttpRefusals). Уведомления прогресса уходят обработчику запроса,
     который слушает его токен (listening); уведомления сервера о смене
-    списков и ресурсов сбрасывают кэши ответов подключения (cache).
+    списков и ресурсов сбрасывают кэши ответов подключения (cache). Вопрос
+    пользователю, который сервер прежней редакции задаёт встречным запросом,
+    уходит вызову, открытому на подключении с приёмником вопросов (asking):
+    запрос сервера 2025-11-25 не называет вызов, к которому относится, и
+    вопрос при нескольких таких вызовах сервер получает отказом.
     """
 
     def __init__(
@@ -1176,6 +1188,7 @@ class McpConnection:
             mt.ProgressToken,
             Callable[[mt.ProgressNotificationParams], Awaitable[None]],
         ] = {}
+        self._askers: dict[str, QuestionHeard] = {}
         self._store = AgingCacheStore()
         self._caches: dict[str, ClientResponseCache] = {}
         self._target = hashlib.sha256(transport.label().encode()).hexdigest()
@@ -1193,6 +1206,16 @@ class McpConnection:
             yield
         finally:
             self._listeners.pop(token, None)
+
+    @contextmanager
+    def asking(self, token: str, asked: QuestionHeard) -> Iterator[None]:
+        """Вопросы пользователю от сервера уходят asked вызова token, пока
+        открыт контекст."""
+        self._askers[token] = asked
+        try:
+            yield
+        finally:
+            self._askers.pop(token, None)
 
     def cache(self, identity: McpClientIdentity) -> ClientResponseCache:
         """Кэш ответов личности identity на этом подключении: у современной
@@ -1303,7 +1326,9 @@ class McpConnection:
                 async with self._transport.opened(self._refusals.seen) as streams:
                     read, write = streams
                     dispatcher = JSONRPCDispatcher(read, write)
-                    session = IdentifiedSession(dispatcher, self._identity, self._heard)
+                    session = IdentifiedSession(
+                        dispatcher, self._identity, self._heard, self._asked
+                    )
                     async with session:
                         await self._negotiated_by(session, version)
                         self._session = session
@@ -1348,6 +1373,27 @@ class McpConnection:
                 f"speaks {list(KNOWN_PROTOCOL_VERSIONS)}"
             )
             raise McpClientError(msg) from exc
+
+    async def _asked(
+        self, context: ClientRequestContext, params: mt.ElicitRequestParams
+    ) -> mt.ElicitResult | mt.ErrorData:
+        """Вопрос пользователю от сервера — единственному вызову подключения,
+        который принимает вопросы; без такого вызова и при нескольких — отказ
+        с причиной."""
+        askers = list(self._askers.values())
+        if len(askers) == 1:
+            return await askers[0](params)
+
+        text = (
+            f"mcp {self._transport.label()}: elicitation/create (request "
+            f"{context.request_id!r}) is answered only within a tools/call of "
+            f"the client that takes questions of the user, expected one such "
+            f"call open on the session, got {len(askers)}; ask within the "
+            "call, one call at a time"
+        )
+        logger.warning("%s", text)
+
+        return mt.ErrorData(code=mt.INVALID_REQUEST, message=text)
 
     async def _heard(self, message: IncomingMessage) -> None:
         """Обработчик сообщений сессии: уведомление сервера сбрасывает кэши,
@@ -1655,6 +1701,10 @@ JournalHeard = Callable[[JournalOpening], Awaitable[None]]
 ProgressHeard = Callable[[mt.ProgressNotificationParams], Awaitable[None]]
 """Кому порт отдаёт уведомления сервера о ходе запроса."""
 
+QuestionHeard = Callable[[mt.ElicitRequestParams], Awaitable[mt.ElicitResult]]
+"""Кто отвечает на вопрос пользователю (elicitation/create), который сервер
+прежней редакции задал посреди вызова."""
+
 
 PortSend = Callable[[McpConnection, IdentifiedSession], Awaitable[SentT]]
 """Запрос порта: шлёт его сессией запроса на подключении порта."""
@@ -1782,13 +1832,14 @@ class McpToolPort(Protocol):
         """
 
     @abstractmethod
-    async def call(
+    async def call(  # noqa: PLR0913 — вызов несёт приёмники хода, журналов и вопросов
         self,
         client: McpClientIdentity,
         params: mt.CallToolRequestParams,
         card: mt.Tool | None,
         progress: ProgressHeard | None,
         journals: JournalHeard | None,
+        asked: QuestionHeard | None,
     ) -> mt.CallToolResult | mt.InputRequiredResult:
         """tools/call клиента client с готовыми аргументами; ответ сервера —
         как есть.
@@ -1800,7 +1851,9 @@ class McpToolPort(Protocol):
         карточки у вызывающего нет. progress получает уведомления сервера о
         ходе вызова целиком, с _meta: вызов просит их своим токеном
         прогресса. journals узнаёт журналы, которые вызов открыл на сервере,
-        пока он идёт; None — не нужны.
+        пока он идёт; None — не нужны. asked отвечает на вопросы пользователю,
+        которые сервер прежней редакции задаёт посреди вызова; None — вопросы
+        вызову не задаются.
 
         Ошибки:
         McpClientError — сервер недоступен либо ответа нет: сессия оборвалась
@@ -2103,13 +2156,14 @@ class McpToolServer(McpToolPort):
 
         return self._files_at(declared.path)
 
-    async def call(
+    async def call(  # noqa: PLR0913 — вызов несёт приёмники хода, журналов и вопросов
         self,
         client: McpClientIdentity,
         params: mt.CallToolRequestParams,
         card: mt.Tool | None,
         progress: ProgressHeard | None,
         journals: JournalHeard | None,
+        asked: QuestionHeard | None,
     ) -> mt.CallToolResult | mt.InputRequiredResult:
         identity = self._speaking(client)
         token = uuid4().hex
@@ -2121,8 +2175,11 @@ class McpToolServer(McpToolPort):
         async def send(
             connection: McpConnection, session: IdentifiedSession
         ) -> mt.CallToolResult | mt.InputRequiredResult:
-            async with self._heard(connection, token, progress):
-                return await self._tool_call(identity, connection, session, sent, card)
+            with self._questions(connection, token, asked):
+                async with self._heard(connection, token, progress):
+                    return await self._tool_call(
+                        identity, connection, session, sent, card
+                    )
 
         async with expecting:
             return await self._exchange(
@@ -2756,6 +2813,14 @@ class McpToolServer(McpToolPort):
             return nullcontext()
 
         return connection.listening(token, progress)
+
+    def _questions(
+        self, connection: McpConnection, token: str, asked: QuestionHeard | None
+    ) -> AbstractContextManager[None]:
+        if asked is None:
+            return nullcontext()
+
+        return connection.asking(token, asked)
 
     async def _expecting(
         self, client: McpClientIdentity, token: str, journals: JournalHeard
