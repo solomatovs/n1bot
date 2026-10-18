@@ -306,6 +306,49 @@ class HeldTokens(TokenStorage):
         self._client = client_info
 
 
+class SharedToken(httpx2.Auth):
+    """Токен входа OAuth на все запросы подключения разом.
+
+    Штатные провайдеры OAuth библиотеки mcp держат свой замок от отправки
+    запроса до его ответа, и запросы одного подключения идут по одному:
+    запрос панели ждёт, пока кончится долгий вызов агента. Этот вход
+    отдаёт уже полученный токен каждому запросу без замка, а получение и
+    обновление токена — отказ 401 или 403 — ведёт штатный провайдер
+    (inner) под его замком. Создаётся способом входа (LocalAuth, ProxyAuth)
+    на подключение.
+    """
+
+    HEADER: ClassVar[str] = "Authorization"
+    REFUSED: ClassVar[frozenset[int]] = frozenset(
+        {HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN}
+    )
+
+    def __init__(self, inner: httpx2.Auth) -> None:
+        self._inner = inner
+        self._header: str | None = None
+
+    async def async_auth_flow(
+        self, request: httpx2.Request
+    ) -> AsyncGenerator[httpx2.Request, httpx2.Response]:
+        header = self._header
+        if header is not None:
+            request.headers[self.HEADER] = header
+            response = yield request
+            if response.status_code not in self.REFUSED:
+                return
+
+        flow = self._inner.async_auth_flow(request)
+        sent = await flow.__anext__()
+        while True:
+            response = yield sent
+            try:
+                sent = await flow.asend(response)
+            except StopAsyncIteration:
+                break
+
+        self._header = request.headers.get(self.HEADER)
+
+
 class UnattendedLogin:
     """Вход на страницу входа сервиса boba без человека: два обработчика
     штатного провайдера OAuth (OAuthClientProvider) вместо браузера.
@@ -472,13 +515,15 @@ class LocalAuth(McpAuthEntry):
     def httpx_auth(self, resource: str) -> httpx2.Auth | None:
         login = UnattendedLogin(self.login, self.password, resource)
 
-        return OAuthClientProvider(
+        provider = OAuthClientProvider(
             server_url=resource,
             client_metadata=login.client(),
             storage=HeldTokens(),
             redirect_handler=login.redirect,
             callback_handler=login.callback,
         )
+
+        return SharedToken(provider)
 
 
 class ProxyAuth(McpAuthEntry):
@@ -524,7 +569,7 @@ class ProxyAuth(McpAuthEntry):
             self.roles,
         )
 
-        return IdentityAssertionOAuthProvider(
+        provider = IdentityAssertionOAuthProvider(
             server_url=resource,
             storage=HeldTokens(),
             client_id=self.client_id,
@@ -532,6 +577,8 @@ class ProxyAuth(McpAuthEntry):
             issuer=self.issuer.url(),
             assertion_provider=assertions.issue,
         )
+
+        return SharedToken(provider)
 
 
 class StatedAssertions:

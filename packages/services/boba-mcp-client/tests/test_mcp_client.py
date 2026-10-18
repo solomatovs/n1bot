@@ -1191,6 +1191,34 @@ class TestSignInAsTheUser:
         assert isinstance(reply, mt.CallToolResult)
         assert not reply.is_error, reply
 
+    async def test_requests_of_one_port_do_not_wait_for_a_long_call(
+        self, boba_mcp_stand: BobaMcpStand, tmp_path: Path
+    ) -> None:
+        """Чат и агент делят подключение: пока идёт долгий вызов агента,
+        запрос панели того же пользователя отвечает сразу, а не после
+        вызова — токен входа выдаётся без замка провайдера OAuth."""
+        servers = self._servers(boba_mcp_stand, self.SECRET, self.CLIENT_SECRET)
+        caller = McpCaller(login="ivanov", roles=frozenset({"dev"}))
+        marker = tmp_path / "sleep.pid"
+        try:
+            port = await self._port(servers, caller, "boba")
+            slow = _call("fake_sleep", seconds=4.0, marker=str(marker))
+            running = asyncio.create_task(port.call(OWN, slow, None, None, None))
+            async with asyncio.timeout(10):
+                while not marker.exists():
+                    await asyncio.sleep(0.05)
+
+            started = asyncio.get_running_loop().time()
+            await port.list_resources(OWN, None)
+            waited = asyncio.get_running_loop().time() - started
+            reply = await running
+        finally:
+            await servers.stop()
+
+        assert waited < 2.0, waited
+        assert isinstance(reply, mt.CallToolResult)
+        assert not reply.is_error, reply
+
     async def test_private_lists_of_two_users_stay_apart(
         self, boba_mcp_stand: BobaMcpStand
     ) -> None:
