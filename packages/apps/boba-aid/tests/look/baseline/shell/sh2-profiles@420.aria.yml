@@ -1,0 +1,4 @@
+- listbox:
+  - option "Общий" [selected]
+  - article: Профиль стенда со всеми инструментами
+  - option "Поиск"

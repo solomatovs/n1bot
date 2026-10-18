@@ -1,0 +1,20 @@
+- region "Notifications alt+T":
+  - list:
+    - status:
+      - img
+      - text: "Access denied: no roles are assigned to your account"
+- img "logo"
+- heading "Login to access the app" [level=1]
+- img
+- paragraph: "Access denied: no roles are assigned to your account"
+- text: Login
+- textbox "Login":
+  - /placeholder: Enter your login
+  - text: norole
+- text: Password
+- textbox "Password":
+  - /placeholder: Enter your password
+  - text: stand-norole-pass
+- button
+- button "Sign In"
+- button "Sign in with SSO"

@@ -90,37 +90,38 @@ html:not(.dark) :is(input, textarea).border-input::placeholder {
 
 /* =========================================================
    Страница входа
-   Привязка к форме пароля — не затрагивает страницу чата.
+   Сетка с формой входа есть только на ней: и с паролем, и с одной
+   кнопкой SSO. Страницу чата правила не затрагивают.
    ========================================================= */
 
 /* Одна колонка вместо двух */
 
-#root > .grid:has(form input#password) {
+#root > .grid:has(form) {
   grid-template-columns: minmax(0, 1fr) !important;
 }
 
 /* Убираем правую панель независимо от URL картинки */
 
-#root > .grid:has(form input#password) > .bg-muted {
+#root > .grid:has(form) > .bg-muted {
   display: none !important;
 }
 
 /* Логотип по центру */
 
-#root > .grid:has(form input#password) > .flex > div:has(> img.logo) {
+#root > .grid:has(form) > .flex > div:has(> img.logo) {
   justify-content: center !important;
 }
 
 /* Сохраняем компактную ширину формы */
 
-#root > .grid:has(form input#password) .max-w-xs {
+#root > .grid:has(form) .max-w-xs {
   width: 100%;
   max-width: 360px;
 }
 
 /* Заголовок */
 
-form:has(input#password) h1 {
+#root > .grid form h1 {
   font-size: 24px;
   font-weight: 600;
   line-height: 1.4;
@@ -128,7 +129,7 @@ form:has(input#password) h1 {
 
 /* Подписи */
 
-form:has(input#password) label {
+#root > .grid form label {
   font-size: 14px;
   font-weight: 400;
   line-height: 1.4;
@@ -136,13 +137,13 @@ form:has(input#password) label {
 
 /* Контролы размера M: 40 px, текст 16 px */
 
-form:has(input#password) :is(input#email, input#password) {
+#root > .grid form :is(input#email, input#password) {
   height: 40px;
   font-size: 16px;
   border-radius: 4px;
 }
 
-form:has(input#password) :is(button[type="submit"], #sso-login-btn) {
+#root > .grid form :is(button[type="submit"], #sso-login-btn) {
   min-height: 40px;
   padding: 8px 16px;
   font-size: 16px;
@@ -317,7 +318,12 @@ button[id^="step-"] {
 .q-root .q-hint{color:var(--app-secondary-foreground);margin-bottom:6px}
 
 /* =========================================================
-   Убираем всю обводку фокуса
+   Фокус: мышью колец нет, с клавиатуры — кольцо цвета --ring темы.
+   Кольца tailwind (ring-*) сняты целиком: chainlit ставит их и на фокус
+   мышью. Текстовое поле Chromium держит в :focus-visible и после клика,
+   поэтому поле показывает фокус рамкой, как TextField Consta. Пункты меню и
+   списков и строки вопроса показывают фокус своим фоном; элементы с
+   tabindex="-1" фокусирует скрипт, а не Tab.
    Должно стоять в конце файла.
    ========================================================= */
 
@@ -328,14 +334,28 @@ button[id^="step-"] {
   --tw-ring-offset-shadow: 0 0 #0000 !important;
 }
 
-*:focus,
-*:focus-visible,
-*:focus-within {
+*:focus {
   outline: none !important;
   outline-offset: 0 !important;
 }
 
-:is(button, input, textarea, select, a, [role="combobox"], [tabindex]):is(:focus, :focus-visible) {
-  outline: none !important;
+:is(button, input, textarea, select, a, [role="combobox"], [tabindex]):focus {
   box-shadow: none !important;
+}
+
+:focus-visible:not(
+  input,
+  textarea,
+  [contenteditable],
+  [tabindex="-1"],
+  [role^="menuitem"],
+  [role="option"],
+  .q-root .option
+) {
+  outline: 2px solid hsl(var(--ring)) !important;
+  outline-offset: 2px !important;
+}
+
+:is(input, textarea).border-input:focus-visible {
+  border-color: hsl(var(--ring)) !important;
 }

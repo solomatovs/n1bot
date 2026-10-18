@@ -970,8 +970,8 @@ class StandConfig(StandService):
 
         doc["profiles"] = {
             "general": {
-                "display_name": "General",
-                "description": "Stand profile with every tool",
+                "display_name": "Общий",
+                "description": "Профиль стенда со всеми инструментами",
                 "default": True,
                 "roles": ["*"],
                 "tools": ["*"],
@@ -986,8 +986,8 @@ class StandConfig(StandService):
                 },
             },
             "search": {
-                "display_name": "Search",
-                "description": "Stand profile with a narrow toolset",
+                "display_name": "Поиск",
+                "description": "Профиль стенда с узким набором инструментов",
                 "default": False,
                 "roles": ["*"],
                 "tools": self._search_tools(),
