@@ -1,0 +1,24 @@
+- article: Покажи последние заказы магазина
+- img "Avatar for Aссистент-BOBA"
+- 'heading "Завершено · шагов: 1" [level=3]':
+  - 'button "Завершено · шагов: 1"'
+- text: apps · orders
+- button "На весь экран"
+- button "Свернуть"
+- iframe
+- img "Avatar for Aссистент-BOBA"
+- article: Три последних заказа магазина — в таблице выше.
+- article: Покажи заказы северного и южного магазинов
+- img "Avatar for Aссистент-BOBA"
+- 'heading "Завершено · шагов: 2" [level=3]':
+  - 'button "Завершено · шагов: 2"'
+- text: apps · orders
+- button "На весь экран"
+- button "Свернуть"
+- iframe
+- text: apps · orders
+- button "На весь экран"
+- button "Свернуть"
+- iframe
+- img "Avatar for Aссистент-BOBA"
+- article: Заказы обоих магазинов — в двух таблицах выше.
