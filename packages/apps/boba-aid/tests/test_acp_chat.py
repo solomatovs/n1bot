@@ -234,6 +234,45 @@ def sandboxed(
 
 
 @pytest.fixture(scope="module")
+def ghosted(
+    tmp_path_factory: pytest.TempPathFactory,
+    llm_port: int,
+    fake_llm: None,
+    stand_database: str,
+    app: StandProcess,
+) -> Iterator[StandProcess]:
+    """Инстанс aid над той же базой, профили которого называют сервер MCP,
+    который не отвечает: на его порту никто не слушает."""
+    workdir = tmp_path_factory.mktemp("acp-chat-ghost")
+    ghost = {
+        "connect_timeout_sec": 5.0,
+        "call_timeout_sec": 5.0,
+        "endpoint": {
+            "transport": "streamable-http",
+            "scheme": "http",
+            "host": StandUrl.HOST.value,
+            "port": StandPorts().free(),
+            "path": "/mcp",
+        },
+    }
+    config = StandConfig(
+        workdir=workdir,
+        app=StandApp.AID,
+        app_port=StandPorts().free(),
+        llm_port=llm_port,
+        db_name=stand_database,
+        generation=GENERATION,
+        mcp_servers={"ghost": ghost},
+    )
+    process = StandProcess(config=config, log_path=workdir / "ghost.log")
+    process.start(boot_timeout_sec=BOOT_TIMEOUT_SEC)
+    try:
+        yield process
+    finally:
+        process.stop()
+
+
+@pytest.fixture(scope="module")
 def cookie(app: StandProcess) -> str:
     credential = app.config.credential()
     response = httpx.post(
@@ -834,6 +873,36 @@ class TestConversation:
         ]
         assert all((path / WorkdirFile.SETTINGS.value).is_file() for path in left)
         assert not any(str(pid) in str(path) for path in left)
+
+
+class TestUnavailableServer:
+    """Сервер MCP профиля не отвечает: агент открывает сессию без его
+    инструментов и отвечает на вопрос, а лента хода показывает пометку с
+    именем сервера и причиной."""
+
+    async def test_agent_answers_while_a_server_of_the_profile_is_down(
+        self, ghosted: StandProcess, cookie: str
+    ) -> None:
+        tab = ChatSocket(ghosted, cookie, str(uuid4()))
+        await tab.open()
+        try:
+            await tab.send(f"hello {ScenarioName.THINKING_ANSWER.value}")
+            await tab.wait_task_end()
+            notes = tab.errors()
+            answers: list[str] = []
+            for payload in tab.messages():
+                if payload.get("isError"):
+                    continue
+
+                answers.append(str(payload.get("output")))
+        finally:
+            await tab.end_session()
+
+        answered = any("answer the question" in answer for answer in answers)
+        assert answered, (tab.trace(), ghosted.tail(60))
+        noted = [note for note in notes if "'ghost' is unavailable" in note]
+        assert noted, (notes, ghosted.tail(60))
+        assert "127.0.0.1" in noted[0], noted
 
 
 class TestHistory:

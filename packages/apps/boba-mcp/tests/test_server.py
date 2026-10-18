@@ -858,7 +858,8 @@ class TestJournal:
 class TestDiscovery:
     """server/discover объявляет то, что сервер действительно даёт, а поток
     subscriptions/listen подтверждает только события, которые он шлёт, и
-    штатно кончается при остановке."""
+    штатно кончается при остановке. Клиент прежней редакции (initialize)
+    получает то, что работает на его проводе."""
 
     async def test_capabilities_are_the_real_ones(
         self, stand: ServiceStand, url: str, dev_token: str
@@ -880,6 +881,42 @@ class TestDiscovery:
             raise AssertionError(f"no completions: {capabilities}")
         if prompts:
             raise AssertionError(f"the server has no prompts: {prompts}")
+
+    async def test_client_of_an_earlier_edition_gets_what_its_wire_carries(
+        self, stand: ServiceStand, url: str, dev_token: str
+    ) -> None:
+        """Рукопожатие 2025-11-25 без сессии: инструменты без смены списка,
+        ресурсы журналов без подписки и смены списка, без расширений,
+        промптов и логов; инструменты всех endpoint'ов проходят схему этой
+        редакции, вызов и список журналов работают."""
+        legacy = Client(StreamableHttpTransport(url, auth=dev_token), mode="legacy")
+        async with legacy as client:
+            version = client.session.protocol_version
+            capabilities = client.session.server_capabilities
+            called = await client.call_tool_mcp(
+                "fake_echo", {"text": "hi", "repeat": 1}
+            )
+            journals = await client.list_resources()
+
+        listed: dict[str, list[str]] = {}
+        for profile in (PROFILE, NARROW, ServiceStand.OFFERS):
+            token = await stand.dev_token(profile)
+            transport = StreamableHttpTransport(stand.url(profile), auth=token)
+            async with Client(transport, mode="legacy") as client:
+                tools = await client.list_tools()
+
+            listed[profile] = sorted(tool.name for tool in tools)
+
+        assert version == "2025-11-25"
+        assert capabilities == mt.ServerCapabilities(
+            tools=mt.ToolsCapability(list_changed=False),
+            resources=mt.ResourcesCapability(subscribe=False, list_changed=False),
+        )
+        assert _text(called) == "hi|t0ken", called
+        assert journals == [], journals
+        assert "workflow" in listed[PROFILE], listed
+        assert listed[NARROW] == ["fake_echo", FileUploadTool.NAME], listed
+        assert listed[ServiceStand.OFFERS], listed
 
     async def test_listen_acknowledges_only_what_the_server_sends(
         self, stand: ServiceStand, url: str, dev_token: str
