@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+<title id="title">Цифровой помощник N1</title>
+<desc id="desc">Фирменный знак N1 в синем облаке диалога с оранжевой искрой на прозрачном фоне.</desc>
+<defs><mask id="spark-gap"><rect width="128" height="128" fill="white"/><circle cx="102" cy="30" r="16" fill="black"/></mask></defs>
+<g mask="url(#spark-gap)">
+<path d="M40 32H88A18 18 0 0 1 106 50V76A18 18 0 0 1 88 94H58L38 105V94A18 18 0 0 1 22 76V50A18 18 0 0 1 40 32Z" fill="none" stroke="#004596" stroke-width="4" stroke-linejoin="round"/>
+<g transform="translate(37.68 44.4) scale(.8)"><path xmlns="http://www.w3.org/2000/svg" d="M65.7886 45.8506H57.2567V11.5929L46.25 16.5427V8.8575L65.7886 0V45.8506Z" fill="#E65907" />
+<path xmlns="http://www.w3.org/2000/svg" d="M30.5453 28.331V0.65129H38.7515V46.5018L8.14108 18.1709V45.8506H0V0L30.5453 28.331Z" fill="#004596" /></g>
+</g>
+<path d="M102 17L105.6 26.4L115 30L105.6 33.6L102 43L98.4 33.6L89 30L98.4 26.4Z" fill="#E65907"/>
+</svg>

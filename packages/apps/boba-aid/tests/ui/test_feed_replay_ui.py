@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 from chat_ui import ChatOpener
 from playwright.sync_api import Locator
+from playwright.sync_api import TimeoutError as PlaywrightTimeout
 
 from boba.stand.ui.chat_page import ChatPage, Selector, StepKind
 from boba.stand.ui.fake_llm import ScenarioName
@@ -120,6 +121,32 @@ class TestReplayLooksLikeLive:
 
         if _texts(chat) != live_texts:
             raise AssertionError(f"DOM texts differ: {_texts(chat)} != {live_texts}")
+
+    def test_assistant_avatar_loads_on_the_thread_page(self, chat: ChatPage) -> None:
+        """Аватар ассистента на странице треда — картинка из-под префикса
+        приложения: адрес из настроек chainlit фронт берёт как есть, и
+        относительный вёл бы в /thread/…, где вместо картинки — страница.
+        Тег картинки аватар вставляет, только когда она загрузилась."""
+        chat.ask(f"{ScenarioName.ANSWER.value} please")
+        chat.await_idle()
+
+        _reload(chat)
+
+        avatar = chat.page.locator(Selector.AVATAR.value).first
+        try:
+            avatar.wait_for(state="visible", timeout=30000)
+        except PlaywrightTimeout as exc:
+            msg = (
+                f"the assistant avatar did not load on the thread page "
+                f"{chat.page.url}: no avatar image in the feed: {exc}"
+            )
+            raise AssertionError(msg) from exc
+
+        src = str(avatar.evaluate("img => img.src"))
+        if not src.startswith(f"{chat.base_url}/"):
+            raise AssertionError(
+                f"the assistant avatar {src!r} is outside the app {chat.base_url}"
+            )
 
     def test_tool_step_survives_reload(self, chat: ChatPage) -> None:
         chat.ask(f"{ScenarioName.DIAGRAM.value} please")
