@@ -13,6 +13,9 @@
 set -eu
 
 export HOME=/tmp HUSKY=0 CYPRESS_INSTALL_BINARY=0
+# закрытый контур: pnpm и npm не спрашивают реестр о своей новой версии, pnpm не качает
+# версию из packageManager тега — работает та, что в образе nodejs
+export npm_config_update_notifier=false npm_config_manage_package_manager_versions=false
 PNPM_OPTS="--frozen-lockfile --config.package-manager-strict=false --filter @chainlit/react-client --filter @chainlit/app --filter @chainlit/copilot"
 WORK="${UI_WORK:-/tmp/chainlit-ui}"
 
