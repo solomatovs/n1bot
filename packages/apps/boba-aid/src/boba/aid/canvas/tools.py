@@ -103,7 +103,7 @@ class CanvasOpener:
         described = await viewer.content(key, mime)
         file_watch.start(described.nonce)
 
-        return described
+        return file_watch.described(described)
 
     async def reply(
         self, scope: CanvasScope, reply: mt.CallToolResult

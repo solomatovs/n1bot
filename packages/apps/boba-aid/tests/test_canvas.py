@@ -15,7 +15,7 @@ from aid_stand import ChatSessionStand, FakeTransport, RemoteStand, put_bytes
 
 from boba.aid.canvas import panel as rendering_canvas
 from boba.aid.canvas.diagram import MermaidViewer
-from boba.aid.canvas.panel import CanvasPanel
+from boba.aid.canvas.panel import CanvasPanel, StreamActions
 from boba.aid.canvas.tools import (
     AudioViewer,
     CanvasOpener,
@@ -383,6 +383,105 @@ class TestShow:
         finally:
             CanvasWatch.reset()
 
+        if transport.sent[0]["size"] != len(revised):
+            raise AssertionError(f"the signal names another version: {transport.sent}")
+
+    @pytest.mark.anyio
+    async def test_a_file_written_anew_is_followed(
+        self,
+        storage: LocalStorageClient,
+        http_context: None,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Файл, которого какое-то время нет (инструмент удаляет его и пишет
+        заново), слежение не кончает: отказ опроса виден в логе с путём
+        файла, опрос повторяется, и новая запись доходит сигналом."""
+        object_key = f"{USER}/{THREAD}/upload/a.png"
+        png = b"\x89PNG\r\n\x1a\n" + bytes(8)
+        rewritten = png + bytes(8)
+        await put_bytes(storage, object_key, png)
+        CanvasRegistry.register(ImageViewer())
+
+        transport = FakeTransport()
+        monkeypatch.setattr(
+            rendering_canvas.PanelStorage, "client", staticmethod(lambda: storage)
+        )
+        monkeypatch.setattr(CanvasWatch, "POLL_SEC", 0.05)
+        CanvasWatch.configure(transport)
+        deadline = time.monotonic() + 5.0
+        try:
+            await CanvasOpener(ThreadSurfaces()).show(
+                f"/workspace/{THREAD}/upload/a.png",
+                "image/png",
+                CanvasScope(user_id=USER, thread_id=THREAD),
+            )
+            await storage.delete_file(object_key)
+            while "probing failed" not in caplog.text:
+                if time.monotonic() > deadline:
+                    raise AssertionError("no failed probe logged for the missing file")
+                await asyncio.sleep(0.01)
+
+            await put_bytes(storage, object_key, rewritten)
+            while not transport.sent:
+                if time.monotonic() > deadline:
+                    raise AssertionError("no canvas signal for the file written anew")
+                await asyncio.sleep(0.01)
+        finally:
+            CanvasWatch.reset()
+
+        if object_key not in caplog.text:
+            raise AssertionError(f"the failed probe names no file: {caplog.text}")
+        if transport.sent[0]["size"] != len(rewritten):
+            raise AssertionError(f"the signal names another version: {transport.sent}")
+
+    @pytest.mark.anyio
+    async def test_hold_restores_the_watch_of_a_show(
+        self,
+        storage: LocalStorageClient,
+        http_context: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Панель, объявившая показ без сторожа (пересоздана после ухода
+        прежнего экземпляра, вкладка подключилась снова), получает его с
+        версии, которую видит: правка после неё доходит сигналом с меткой
+        показа."""
+        object_key = f"{USER}/{THREAD}/upload/a.png"
+        png = b"\x89PNG\r\n\x1a\n" + bytes(8)
+        revised = png + bytes(8)
+        await put_bytes(storage, object_key, png)
+        CanvasRegistry.register(ImageViewer())
+        seen = await rendering_canvas.StorageStatSource(storage, object_key).probe()
+
+        transport = FakeTransport()
+        monkeypatch.setattr(
+            rendering_canvas.PanelStorage, "client", staticmethod(lambda: storage)
+        )
+        monkeypatch.setattr(CanvasWatch, "POLL_SEC", 0.05)
+        CanvasWatch.configure(transport)
+        deadline = time.monotonic() + 5.0
+        payload = {
+            "path": f"/workspace/{THREAD}/upload/a.png",
+            "mime": "image/png",
+            "nonce": "n-held",
+            "holder": "tab-1",
+            "revision": seen.revision,
+        }
+        try:
+            await StreamActions.hold(USER, THREAD, payload, NO_REMOTE)
+            watching = CanvasWatch.watching(THREAD)
+            await put_bytes(storage, object_key, revised)
+            while not transport.sent:
+                if time.monotonic() > deadline:
+                    raise AssertionError("no canvas signal for the held show")
+                await asyncio.sleep(0.01)
+        finally:
+            CanvasWatch.reset()
+
+        if watching != (f"/workspace/{THREAD}/upload/a.png",):
+            raise AssertionError(f"watched after the hold: {watching}")
+        if transport.sent[0]["nonce"] != "n-held":
+            raise AssertionError(f"the signal names another show: {transport.sent}")
         if transport.sent[0]["size"] != len(revised):
             raise AssertionError(f"the signal names another version: {transport.sent}")
 

@@ -1,4 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useRecoilValue } from "recoil";
+import { sessionState } from "@chainlit/react-client";
 import { Markdown } from "@/components/markdown";
 import { Button } from "@/components/ui/button";
 import { PDFViewer } from "@/components/elements/pdf";
@@ -163,6 +165,42 @@ const pageExit = {
     });
   },
 };
+
+// Показ панели переживает пересоздание её элемента. Смена раскладки (узкое
+// окно — лист, широкое — боковая панель) монтирует элемент заново, а с ним
+// заново исполняется и этот модуль, поэтому показ хранится на странице:
+// новый экземпляр продолжает файл и сигнал прежнего, а не props пуша, с
+// которого панель могла уже уйти на другой файл. Новый пуш с сервера (другая
+// метка props) начинается со своих props.
+const PANEL_SHOWN = "__bobaCanvasShown";
+const panelShown = {
+  recall(pushed) {
+    const fresh = { content: pushed, signal: null };
+    if (pushed.preview) return fresh;
+
+    const kept = browser.global(PANEL_SHOWN);
+    if (!kept || kept.pushed !== pushed.nonce) return fresh;
+    return kept;
+  },
+  keep(pushed, content, signal) {
+    const win = browser.win;
+    if (!win) return;
+    win[PANEL_SHOWN] = { pushed: pushed.nonce, content: { ...content }, signal };
+  },
+};
+
+// Метка экземпляра панели: сервер следит за показом, пока его держит хоть
+// один экземпляр, и уход одного не снимает слежение, объявленное другим.
+function holderId() {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
+// Показ, за которым следит сервер: у объяснения и карточки ленты слежения нет.
+function heldShow(content, preview) {
+  if (preview) return false;
+  if (!content.nonce) return false;
+  return content.kind !== "notice";
+}
 
 // Режим показа панели живёт вне React-дерева. Содержимое панели сменяемо:
 // другой канал, другой файл, пуш элемента с сервера, — и любая такая смена
@@ -1329,18 +1367,33 @@ function Body({ content, signal, preview, onContent }) {
 // или файл, поэтому панель не переоткрывается и DOM не пересоздаётся.
 export default function CanvasView() {
   const { t } = useTranslation();
-  const [content, setContent] = useState(props);
-  const [signal, setSignal] = useState(null);
+  const [recalled] = useState(() => panelShown.recall(props));
+  const [content, setContent] = useState(recalled.content);
+  const [signal, setSignal] = useState(recalled.signal);
+  const [holder] = useState(holderId);
   const [full, setFull] = usePanelMode();
+  const session = useRecoilValue(sessionState);
   const contentRef = useRef(content);
+  const revisionRef = useRef("");
   const panelRef = useRef(null);
   contentRef.current = content;
+
+  let revision = content.revision || "";
+  if (signal && signal.revision) revision = signal.revision;
+  revisionRef.current = revision;
+
+  let socket = null;
+  if (session) socket = session.socket;
 
   // оверлей держит панель: её узел переживает и смену содержимого, и
   // пересоздание элемента сервером — режим восстанавливается из panelMode
   useOverlay(panelRef, full && !props.preview, () => setFull(false));
 
-  useEffect(() => setContent(props), [props.path, props.nonce]);
+  useEffect(() => {
+    if (props.preview) return;
+
+    panelShown.keep(props, content, signal);
+  }, [props.preview, content, signal]);
 
   // показанный файл — общее состояние панели: шапка берёт его оттуда и рисует
   // скачивание одинаково для любого вьювера
@@ -1374,22 +1427,54 @@ export default function CanvasView() {
     return () => browser.unlisten("message", onMessage);
   }, [props.preview]);
 
-  // уход с показа (закрытие панели, смена файла, пересоздание элемента):
-  // сервер снимает слежение этого nonce; чужой nonce он не тронет. Уход
-  // вместе со страницей — не наш случай: сессии уже нет, и слежение гаснет
-  // само, когда у треда не остаётся живых сокетов
+  // экземпляр держит свой показ: сервер следит за файлом, пока показ держит
+  // хоть один экземпляр. Объявление уходит при монтировании, в том числе
+  // после пересоздания элемента, с версией, которую панель видит, — правка,
+  // сделанная без слежения, придёт сигналом
+  const holdShown = () => {
+    const shown = contentRef.current;
+    callAction({
+      name: "canvas_hold",
+      payload: {
+        path: shown.path,
+        mime: shown.mime || "",
+        nonce: shown.nonce,
+        holder,
+        revision: revisionRef.current,
+      },
+    });
+  };
+
+  // уход с показа (закрытие панели, смена файла, пересоздание элемента)
+  // снимает только метку этого экземпляра: уход прежнего экземпляра и
+  // объявление нового приходят на сервер в любом порядке. Уход вместе со
+  // страницей — не наш случай: сессии уже нет, и слежение гаснет само,
+  // когда у треда не остаётся подключённых вкладок
   useEffect(() => {
-    if (props.preview) return;
+    if (!heldShow(content, props.preview)) return;
 
     pageExit.watch();
+    holdShown();
 
-    const shown = { path: content.path, nonce: content.nonce || "" };
+    const shown = { path: content.path, nonce: content.nonce, holder };
     return () => {
       if (pageExit.leaving) return;
 
       callAction({ name: "canvas_leave", payload: shown });
     };
   }, [content.path, content.nonce, props.preview]);
+
+  // сторож треда без подключённых вкладок кончается: вернувшийся сокет
+  // объявляет показ снова, и сервер ставит сторожа заново
+  useEffect(() => {
+    if (!heldShow(content, props.preview)) return;
+    if (!socket) return;
+
+    socket.on("connect", holdShown);
+    return () => {
+      socket.off("connect", holdShown);
+    };
+  }, [socket, content.path, content.nonce, props.preview]);
 
   // карточка в ленте: тот же рендер, но кликом показывает файл в панели
   const openInCanvas = () => {
