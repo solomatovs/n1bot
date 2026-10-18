@@ -1811,6 +1811,7 @@ name = "boba-mcp-client"
 version = "0.0.26.dev4"
 source = { editable = "packages/services/boba-mcp-client" }
 dependencies = [
+    { name = "anyio", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-auth", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-canvas", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-connections", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -1830,10 +1831,13 @@ dev = [
     { name = "httpx", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "pytest", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "pytest-xdist", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "starlette", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "uvicorn", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "anyio", specifier = ">=4,<5" },
     { name = "boba-auth", editable = "packages/services/boba-auth" },
     { name = "boba-canvas", editable = "packages/core/boba-canvas" },
     { name = "boba-config", marker = "extra == 'dev'", editable = "packages/infra/config/boba-config" },
@@ -1849,6 +1853,8 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.12,<3" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.1,<10" },
     { name = "pytest-xdist", marker = "extra == 'dev'", specifier = ">=3.6,<4" },
+    { name = "starlette", marker = "extra == 'dev'", specifier = ">=1.0,<2" },
+    { name = "uvicorn", marker = "extra == 'dev'", specifier = ">=0.35,<1" },
 ]
 provides-extras = ["dev"]
 
