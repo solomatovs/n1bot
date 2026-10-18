@@ -2,7 +2,7 @@
 # onnxruntime_genai ищет каталог пакета onnxruntime через find_spec, а у пакета,
 # скомпилированного Nuitka, submodule_search_locations пуст; каталог onnxruntime
 # с его библиотеками лежит рядом с пакетом genai в распакованном дереве.
-- module-name: 'onnxruntime_genai._dll_directory'
+- module-name: 'onnxruntime_genai._dll_directory' # checksum: 26f576a0
   anti-bloat:
     - description: 'onnxruntime directory next to this package instead of find_spec locations'
       replacements_plain:

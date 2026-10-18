@@ -391,10 +391,10 @@ RUN [ -z "${NUITKA_VERSION}" ] || { onnx=""; \
         onnx="--include-package=onnxruntime_genai --include-package-data=onnxruntime_genai \
               --include-package=onnxruntime"; \
     fi; \
-    python3 -m nuitka --onefile --static-libpython=yes --output-filename=boba \
+    python3 -m nuitka --onefile --static-libpython=yes --output-filename=boba --update-check=never \
         --output-dir=/tmp/nuitka --jobs=${JOBS} \
         --user-package-configuration-file=/tmp/nuitka-boba.yml \
-        --include-package=gssapi --include-distribution-metadata=boba-cli \
+        --include-package=gssapi --nofollow-import-to=gssapi.tests --include-distribution-metadata=boba-cli \
         --include-package-data=boba.agent --include-package-data=boba.history.postgres ${onnx} \
         /opt/bin-site/boba/cli/app.py \
     && install -m 0755 /tmp/nuitka/boba /out/boba \
