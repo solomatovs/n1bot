@@ -46,7 +46,7 @@ from playwright.sync_api import (
 )
 
 from boba.aid.chat.ui_text import UiText
-from boba.mcp_client.client import McpServerConfig
+from boba.mcp_client.client import HttpEndpoint, McpServerConfig
 from boba.stand.apps_slot import AppServer, AppsSlot
 from boba.stand.ui.chat_page import ChatPage, Selector, StepKind
 from boba.stand.ui.fake_llm import (
@@ -1264,6 +1264,299 @@ class TestServerQuestion:
         step = self._finished(chat)
         if "the user answered decline" not in str(step.get(StepField.OUTPUT.value)):
             raise AssertionError(f"the server got the refusal: {step}")
+
+
+@pytest.fixture(scope="module")
+def handshake_stand(  # noqa: PLR0913 — стенд собирается из фикстур модуля
+    stand_workdir: Path,
+    llm_port: int,
+    fake_llm: None,
+    stand_database: str,
+    standard: McpServerConfig,
+    apps_slot: AppsSlot,
+) -> Iterator[StandProcess]:
+    """Стенд чата с обычным сервером 2026-07-28 (standard) и своим сервером
+    2025-11-25 на TypeScript SDK 1.x в контейнере boba-testapps дважды: со
+    сроком вызова 120 с (legacy) и 3 с (brief)."""
+    endpoint = HttpEndpoint(
+        scheme="http",
+        host=apps_slot.host,
+        port=AppServer.LEGACY.value,
+        path=apps_slot.PATH,
+    )
+    servers: dict[str, Any] = {
+        "standard": standard.model_dump(mode="json", exclude_none=True),
+    }
+    for name, call_timeout_sec in (("legacy", 120.0), ("brief", 3.0)):
+        config = McpServerConfig(
+            endpoint=endpoint,
+            connect_timeout_sec=20.0,
+            call_timeout_sec=call_timeout_sec,
+        )
+        servers[name] = config.model_dump(mode="json", exclude_none=True)
+
+    config = StandConfig(
+        workdir=stand_workdir / "chat-handshake",
+        app=StandApp.AID,
+        app_port=StandPorts().free(),
+        llm_port=llm_port,
+        db_name=stand_database,
+        url_prefix="/boba-handshake",
+        mcp_servers=servers,
+    )
+    process = StandProcess(config=config, log_path=stand_workdir / "handshake.log")
+    try:
+        process.start(boot_timeout_sec=BOOT_TIMEOUT_SEC)
+        yield process
+    finally:
+        process.stop()
+
+
+class TestHandshakeQuestion:
+    """Вопрос сервера 2025-11-25 встречным запросом elicitation/create
+    посреди вызова: ретранслятор держит вызов открытым и отдаёт агенту
+    вопрос просьбой о вводе, агент задаёт его чату той же формой, панель —
+    та же, что у сервера 2026-07-28; ответ, отказ, стоп хода и срок вызова
+    доходят до сервера. Что сервер получил, тест читает его инструментом
+    answers."""
+
+    PANEL: ClassVar[str] = "#question-dock [data-question-panel]"
+    MESSAGE: ClassVar[str] = (
+        "load_rows needs the target table before it can start the copy."
+    )
+    SIGNATURE: ClassVar[str] = """(panel) => {
+        const rows = [];
+        for (const el of [panel, ...panel.querySelectorAll("*")]) {
+            const style = getComputedStyle(el);
+            const own = [...el.childNodes]
+                .filter((node) => node.nodeType === Node.TEXT_NODE)
+                .map((node) => node.textContent.trim())
+                .join(" ");
+            const box = el.getBoundingClientRect();
+            rows.push([
+                el.tagName, String(el.className), el.getAttribute("role"), own,
+                style.color, style.backgroundColor, style.fontSize, style.fontWeight,
+                style.padding, style.borderTopWidth, style.borderTopColor,
+                Math.round(box.width), Math.round(box.height),
+            ].join("|"));
+        }
+        return rows;
+    }"""
+    """Вид панели: каждый элемент — тег, классы, роль, свой текст, цвета,
+    кегль, отступы, рамка и размер."""
+
+    def _called(self, chat: ChatPage, tool: str, arguments: dict[str, Any]) -> None:
+        """Ход, в котором модель сразу зовёт tool; ход не ждём — его держит
+        вопрос."""
+        request = json.dumps({"name": tool, "arguments": arguments})
+        chat.ask(f"{ScenarioName.CALL.value} {request}")
+
+    def _panel(self, chat: ChatPage) -> Locator:
+        panel = chat.page.locator(self.PANEL)
+        panel.wait_for(state="visible", timeout=60_000)
+        chat.page.wait_for_timeout(600)
+
+        return panel
+
+    def _output(self, chat: ChatPage) -> str:
+        """Итог последнего вызова законченного хода."""
+        chat.await_idle(timeout_sec=120.0)
+        step = chat.log.last_step(StepKind.TOOL.value)
+        if step is None:
+            raise AssertionError(f"no tool step\n{chat.log.describe()}")
+
+        return str(step.get(StepField.OUTPUT.value))
+
+    def _answers(self, chat: ChatPage, rows: int) -> list[dict[str, Any]]:
+        """Ответы, которые сервер получил на вопросы load_rows с rows строк."""
+        step = FeedCalls(chat).ask("mcp__legacy__answers", {"rows": rows})
+        output = str(step.get(StepField.OUTPUT.value))
+        found = re.search(r"\[.*\]", output, re.S)
+        if found is None:
+            raise AssertionError(f"answers gives a JSON list: {output}")
+
+        return json.loads(found.group(0))
+
+    def _signature(self, panel: Locator, server: str) -> list[str]:
+        """Вид панели без имени сервера: его элемент — без текста и ширины."""
+        rows: list[str] = []
+        for row in panel.evaluate(self.SIGNATURE):
+            fields = str(row).split("|")
+            if fields[3] == server:
+                fields[3] = "<server>"
+                fields[11] = "<width>"
+
+            rows.append("|".join(fields))
+
+        return rows
+
+    def test_panel_of_the_handshake_era_is_the_panel_of_the_modern_one(
+        self,
+        handshake_stand: StandProcess,
+        open_chat: OpenChat,
+        stand_workdir: Path,
+    ) -> None:
+        """Та же форма сервера 2026-07-28 (MRTR) и сервера 2025-11-25
+        (встречный запрос) — одна и та же панель в обеих темах; ответы
+        доходят до обоих серверов."""
+        chat = open_chat(handshake_stand, "")
+        look = stand_workdir / "question-look"
+        look.mkdir(parents=True, exist_ok=True)
+        seen: dict[str, dict[str, list[str]]] = {}
+        calls = (
+            ("standard", {"rows": 41}),
+            ("legacy", {"rows": 41, "confirm": False}),
+        )
+        for server, arguments in calls:
+            self._called(chat, f"mcp__{server}__load_rows", arguments)
+            panel = self._panel(chat)
+            source = panel.locator(".q-source").inner_text()
+            if source != f"{server} · {self.MESSAGE}":
+                raise AssertionError(
+                    f"the panel names {server} and its message: {source}"
+                )
+
+            themes: dict[str, list[str]] = {}
+            for dark, theme in ((False, "light"), (True, "dark")):
+                chat.page.evaluate(
+                    "(dark) => document.documentElement.classList.toggle('dark', dark)",
+                    dark,
+                )
+                chat.page.wait_for_timeout(300)
+                themes[theme] = self._signature(panel, server)
+                panel.screenshot(path=str(look / f"09-panel-{server}-{theme}.png"))
+
+            chat.page.evaluate(
+                "() => document.documentElement.classList.remove('dark')"
+            )
+            chat.page.wait_for_timeout(300)
+            seen[server] = themes
+            panel.locator('[role="radio"]').filter(
+                has_text="sales.orders_stage"
+            ).click()
+            panel.locator("[data-submit]").click()
+            output = self._output(chat)
+            if "loaded 41 rows into sales.orders_stage" not in output:
+                raise AssertionError(f"{server} got the answer: {output}")
+
+        for theme in ("light", "dark"):
+            modern = seen["standard"][theme]
+            handshake = seen["legacy"][theme]
+            if modern != handshake:
+                differ: list[str] = []
+                for left, right in zip(modern, handshake, strict=False):
+                    if left != right:
+                        differ.append(f"{left}\n  != {right}")
+
+                raise AssertionError(
+                    f"{theme}: the panels differ ({len(modern)} and "
+                    f"{len(handshake)} elements):\n" + "\n".join(differ[:10])
+                )
+
+    def test_two_questions_in_one_call_are_answered_in_the_panel(
+        self, handshake_stand: StandProcess, open_chat: OpenChat
+    ) -> None:
+        chat = open_chat(handshake_stand, "")
+        self._called(chat, "mcp__legacy__load_rows", {"rows": 42, "confirm": True})
+        panel = self._panel(chat)
+        labels = panel.locator(".optionLabel").all_inner_texts()
+        if labels != ["sales.orders", "sales.orders_stage", "tmp.orders_copy"]:
+            raise AssertionError(f"the options of the first question: {labels}")
+
+        panel.locator('[role="radio"]').filter(has_text="tmp.orders_copy").click()
+        panel.locator("[data-submit]").click()
+        panel.locator(".q-source").filter(has_text="asks to start the copy").wait_for(
+            timeout=60_000
+        )
+        chat.page.wait_for_timeout(600)
+        source = panel.locator(".q-source").inner_text()
+        expected = (
+            "legacy · load_rows asks to start the copy of 42 rows into tmp.orders_copy."
+        )
+        if source != expected:
+            raise AssertionError(f"the second question: {source}")
+
+        panel.locator('[role="radio"]').first.click()
+        panel.locator("[data-submit]").click()
+        output = self._output(chat)
+        if "loaded 42 rows into tmp.orders_copy" not in output:
+            raise AssertionError(f"the server got both answers: {output}")
+
+        records = chat.page.locator('[data-question-review="accept"]')
+        records.nth(1).wait_for(state="visible", timeout=30_000)
+        answers = self._answers(chat, 42)
+        if [answer["content"] for answer in answers] != [
+            {"table": "tmp.orders_copy"},
+            {"go": True},
+        ]:
+            raise AssertionError(f"the server got the answers: {answers}")
+
+    def test_declined_question_reaches_the_server(
+        self, handshake_stand: StandProcess, open_chat: OpenChat
+    ) -> None:
+        chat = open_chat(handshake_stand, "")
+        self._called(chat, "mcp__legacy__load_rows", {"rows": 43, "confirm": False})
+        self._panel(chat)
+        chat.page.keyboard.press("Escape")
+
+        output = self._output(chat)
+        if "the user answered decline" not in output:
+            raise AssertionError(f"the server got the refusal: {output}")
+
+        actions = [answer["action"] for answer in self._answers(chat, 43)]
+        if actions != ["decline"]:
+            raise AssertionError(f"the server got decline: {actions}")
+
+    def test_stop_of_the_turn_cancels_the_question_on_the_server(
+        self, handshake_stand: StandProcess, open_chat: OpenChat
+    ) -> None:
+        chat = open_chat(handshake_stand, "")
+        self._called(chat, "mcp__legacy__load_rows", {"rows": 44, "confirm": False})
+        self._panel(chat)
+        thread_url = f"{chat.base_url}/thread/{chat.log.thread_id()}"
+        second = chat.page.context.new_page()
+        try:
+            second.goto(thread_url, wait_until="domcontentloaded")
+            stop = second.locator("#stop-button")
+            stop.wait_for(state="visible", timeout=60_000)
+            stop.click()
+            chat.page.locator(self.PANEL).wait_for(state="detached", timeout=30_000)
+        finally:
+            second.close()
+
+        chat.await_idle(timeout_sec=120.0)
+        deadline = time.monotonic() + 30.0
+        actions: list[str] = []
+        while time.monotonic() < deadline:
+            actions = [answer["action"] for answer in self._answers(chat, 44)]
+            if actions:
+                break
+
+        if actions != ["cancel"]:
+            raise AssertionError(f"the server got cancel after the stop: {actions}")
+
+    def test_answer_after_the_call_time_is_an_error_and_the_server_got_cancel(
+        self, handshake_stand: StandProcess, open_chat: OpenChat
+    ) -> None:
+        """Срок вызова сервера (3 с) вышел раньше ответа: сервер получил
+        cancel, поздний ответ — ошибка вызова с причиной."""
+        chat = open_chat(handshake_stand, "")
+        self._called(chat, "mcp__brief__load_rows", {"rows": 45, "confirm": False})
+        panel = self._panel(chat)
+        chat.page.wait_for_timeout(4_000)
+        panel.locator('[role="radio"]').filter(has_text="sales.orders").first.click()
+        panel.locator("[data-submit]").click()
+
+        output = self._output(chat)
+        if "names no call the relay holds open" not in output:
+            raise AssertionError(f"the late answer is an error: {output}")
+
+        if "call_timeout_sec of [mcp.servers.brief]" not in output:
+            raise AssertionError(f"the error names the setting: {output}")
+
+        actions = [answer["action"] for answer in self._answers(chat, 45)]
+        if actions != ["cancel"]:
+            raise AssertionError(f"the server got cancel: {actions}")
 
 
 @pytest.fixture(scope="module")

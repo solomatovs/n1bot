@@ -20,7 +20,7 @@ from boba.runtime.config import (
     RawConfig,
     RuntimeConfig,
 )
-from boba.stand.apps_slot import AppsSlot
+from boba.stand.apps_slot import AppsDocker, AppsSlot
 from boba.stand.database import TestDatabase
 from boba.stand.refs import StandRefs
 from boba.stand.site import StandLayers
@@ -65,11 +65,25 @@ def anyio_backend() -> str:
     return "asyncio"
 
 
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        AppsDocker.OPTION.value,
+        dest=AppsDocker.OPTION_DEST.value,
+        default=AppsDocker.IMAGE.value,
+        help=(
+            "образ тестовых серверов MCP прежних редакций (make -C build testapps "
+            "TESTAPPS_TAGS=<образ>); по умолчанию общий boba-testapps:latest"
+        ),
+    )
+
+
 @pytest.fixture(scope="session")
-def apps_slot() -> Iterator[AppsSlot]:
+def apps_slot(request: pytest.FixtureRequest) -> Iterator[AppsSlot]:
     """Контейнер серверов MCP редакции 2025-11-25 процесса тестов (образ
-    boba-testapps); без образа тест падает с причиной."""
-    slot = AppsSlot()
+    boba-testapps либо названный --testapps-image); без образа тест падает
+    с причиной."""
+    image = str(request.config.getoption(AppsDocker.OPTION_DEST.value))
+    slot = AppsSlot(image)
     try:
         slot.start()
         yield slot

@@ -21,7 +21,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import secrets
-from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
+from collections.abc import (
+    Awaitable,
+    Callable,
+    Collection,
+    Iterator,
+    Mapping,
+    Sequence,
+)
 from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from enum import StrEnum
@@ -83,6 +90,7 @@ from boba.mcp_client.client import (
     McpToolPort,
     McpToolServer,
     ProgressHeard,
+    QuestionHeard,
 )
 from boba.messaging import JournalOpened, LockToken, MessageBus, MessageBusError
 from boba.toolkit.calls import SchemaMark
@@ -107,6 +115,7 @@ __all__ = [
     "ChatToolPort",
     "ChatTools",
     "ClientName",
+    "HeldCall",
     "McpRegistration",
     "McpRegistrations",
     "McpRelay",
@@ -390,13 +399,14 @@ class ChatToolPort(McpToolPort):
 
         return mt.ListToolsResult(tools=listed)
 
-    async def call(
+    async def call(  # noqa: PLR0913 — вызов несёт приёмники хода, журналов и вопросов
         self,
         client: McpClientIdentity,
         params: mt.CallToolRequestParams,
         card: mt.Tool | None,
         progress: ProgressHeard | None,
         journals: JournalHeard | None,
+        asked: QuestionHeard | None,
     ) -> mt.CallToolResult | mt.InputRequiredResult:
         tool = self._tools[params.name]
 
@@ -454,6 +464,207 @@ class ChatTools(RoleTools[tuple[frozenset[str], str]]):
         return self._registry.server(tools, self._calls)
 
 
+HeldReply = mt.CallToolResult | mt.InputRequiredResult
+"""Ответ на tools/call агента: итог вызова либо просьба о вводе."""
+
+
+@dataclass(frozen=True)
+class ServerQuestion:
+    """Встречный вопрос пользователю (elicitation/create), который сервер
+    прежней редакции задал посреди вызова, и ожидание ответа на него."""
+
+    params: mt.ElicitRequestParams
+    answer: asyncio.Future[mt.ElicitResult]
+
+
+class HeldCall:
+    """Вызов инструмента сервера профиля, который ретранслятор ведёт своей
+    задачей и держит открытым, пока пользователь отвечает на встречный
+    вопрос сервера прежней редакции.
+
+    Сервер 2025-11-25 спрашивает пользователя запросом elicitation/create
+    посреди tools/call и ждёт ответа, а агенту ретранслятор — сервер
+    2026-07-28, у которого вопрос идёт через MRTR. Создаёт McpRelay на каждый
+    tools/call модели; порт отдаёт вопросы сервера в ask. next() ждёт итог
+    вызова либо вопрос: вопрос становится InputRequiredResult с requestState
+    этого вызова (state), и McpRelay держит вызов по нему до повтора агента;
+    ответ повтора уходит серверу (answered), и вызов снова ждёт итог или
+    следующий вопрос. Отмена (cancel) отвечает серверу cancel на вопросы,
+    которые ждут ответа, а без вопросов отменяет сам вызов. Когда задача
+    вызова кончается, ended убирает вызов, который ждал агента, и говорит,
+    ждал ли он: итог такого и отменённого вызова читать некому, он уходит в
+    лог.
+    """
+
+    def __init__(
+        self,
+        server_id: str,
+        tool: str,
+        state: str,
+        send: Callable[[ProgressHeard, QuestionHeard], Awaitable[HeldReply]],
+        ended: Callable[[HeldCall], bool],
+    ) -> None:
+        self.server_id = server_id
+        self.tool = tool
+        self.state = state
+        self._arrived: asyncio.Queue[ServerQuestion] = asyncio.Queue()
+        self._waiting: dict[str, ServerQuestion] = {}
+        self._asked = 0
+        self._closed = False
+        self._dropped = False
+        self._progress: ProgressHeard | None = None
+        self._ended = ended
+        self._task = asyncio.ensure_future(send(self.progressed, self.ask))
+        self._task.add_done_callback(self._finished)
+
+    @property
+    def asking(self) -> bool:
+        """Вопросы сервера ждут ответа агента."""
+        return bool(self._waiting)
+
+    def follow(self, progress: ProgressHeard | None) -> None:
+        """Ход вызова уходит запросу агента, который ждёт его сейчас."""
+        self._progress = progress
+
+    async def progressed(self, params: mt.ProgressNotificationParams) -> None:
+        if self._progress is None:
+            return
+
+        await self._progress(params)
+
+    async def ask(self, params: mt.ElicitRequestParams) -> mt.ElicitResult:
+        """Вопрос сервера ждёт ответа агента; у отменённого вызова — cancel."""
+        if self._closed:
+            return mt.ElicitResult(action="cancel")
+
+        answer = asyncio.get_running_loop().create_future()
+        self._arrived.put_nowait(ServerQuestion(params=params, answer=answer))
+
+        return await answer
+
+    async def next(self) -> HeldReply:
+        """Итог вызова либо вопросы сервера просьбой о вводе с requestState
+        вызова.
+
+        Ошибки: те же, что у McpToolPort.call.
+        """
+        arrived = asyncio.ensure_future(self._arrived.get())
+        try:
+            await asyncio.wait(
+                (self._task, arrived), return_when=asyncio.FIRST_COMPLETED
+            )
+        finally:
+            arrived.cancel()
+
+        if self._task.done():
+            return self._task.result()
+
+        self._waited(arrived.result())
+        while not self._arrived.empty():
+            self._waited(self._arrived.get_nowait())
+
+        requests: dict[str, mt.InputRequest] = {}
+        for key, question in self._waiting.items():
+            requests[key] = mt.ElicitRequest(params=question.params)
+
+        return mt.InputRequiredResult(input_requests=requests, request_state=self.state)
+
+    def answered(self, responses: Mapping[str, mt.InputResponse] | None) -> None:
+        """Ответы агента на вопросы сервера по их ключам — серверу.
+
+        Ошибки:
+        MCPError — ответа на какой-то вопрос нет либо он не ответ на форму.
+        """
+        given: Mapping[str, mt.InputResponse] = {}
+        if responses is not None:
+            given = responses
+
+        answers: dict[str, mt.ElicitResult] = {}
+        for key in self._waiting:
+            response = given.get(key)
+            if not isinstance(response, mt.ElicitResult):
+                msg = (
+                    f"tools/call of {self.tool!r} retried with requestState "
+                    f"{self.state!r}: inputResponses expected an elicitation "
+                    f"result under {key!r} for each of {sorted(self._waiting)}, "
+                    f"got {response!r}"
+                )
+                raise MCPError(code=mt.INVALID_PARAMS, message=msg)
+
+            answers[key] = response
+
+        for key, answer in answers.items():
+            self._settle(self._waiting[key], answer)
+
+        self._waiting.clear()
+
+    def cancel(self) -> None:
+        """Вызов отменён: вопросы, которые ждут ответа, получают cancel и
+        сервер доделывает вызов сам; без вопросов отменяется сам вызов."""
+        self._closed = True
+        self._dropped = True
+        while not self._arrived.empty():
+            self._waited(self._arrived.get_nowait())
+
+        if not self._waiting:
+            self._task.cancel()
+            return
+
+        cancelled = mt.ElicitResult(action="cancel")
+        for question in self._waiting.values():
+            self._settle(question, cancelled)
+
+        self._waiting.clear()
+
+    def _waited(self, question: ServerQuestion) -> None:
+        self._asked += 1
+        self._waiting[str(self._asked)] = question
+
+    @staticmethod
+    def _settle(question: ServerQuestion, answer: mt.ElicitResult) -> None:
+        # вопрос, который сервер уже снял, ответа не ждёт
+        if question.answer.done():
+            return
+
+        question.answer.set_result(answer)
+
+    def _finished(self, task: asyncio.Future[HeldReply]) -> None:
+        self._closed = True
+        cancelled = mt.ElicitResult(action="cancel")
+        for question in self._waiting.values():
+            self._settle(question, cancelled)
+
+        self._waiting.clear()
+        if task.cancelled():
+            return
+
+        error = task.exception()
+        waited = self._ended(self)
+        unread = waited or self._dropped
+        if not unread:
+            return
+
+        if error is not None:
+            logger.warning(
+                "mcp relay: tools/call of %r (requestState %s) ended with %s while "
+                "nobody waited for it, the question was stopped or its answer did "
+                "not come in time; a retry of the agent finds no call: %s",
+                self.tool,
+                self.state,
+                type(error).__name__,
+                error,
+            )
+            return
+
+        logger.info(
+            "mcp relay: tools/call of %r (requestState %s) was answered while "
+            "nobody waited for it, the question was stopped or its answer did not "
+            "come in time; the answer is dropped",
+            self.tool,
+            self.state,
+        )
+
+
 class McpRelay:
     """Ретранслятор mcp/message: исполняет запросы MCP агента серверами,
     которые чат aid объявил его процессу.
@@ -466,7 +677,12 @@ class McpRelay:
     профиля любой редакции: различие эпох поглощает клиент McpServers.
     Состояния между запросами у ретранслятора нет: описание сервера и список
     инструментов он берёт у порта через его кэш ответов и отдаёт агенту со
-    сроком свежести и областью кэша сервера.
+    сроком свежести и областью кэша сервера. Исключение требует прежняя
+    редакция: вопрос пользователю сервер 2025-11-25 задаёт встречным
+    запросом посреди вызова, и ретранслятор держит такой вызов открытым
+    (HeldCall), а агенту отвечает просьбой о вводе, как сервер 2026-07-28;
+    повтор агента с её requestState отдаёт ответ тому же вызову. Вызов
+    держится, пока идёт, его срок — call_timeout_sec сервера.
     Конверт и версию запроса проверяет SDK mcp (classify_inbound_request),
     на initialize прежних редакций ретранслятор отвечает отказом с перечнем
     своих версий, неизвестные методы отвечает lowlevel Server SDK;
@@ -503,6 +719,8 @@ class McpRelay:
 
     TASK_ONLY: ClassVar[str] = "required"
     """execution.taskSupport инструмента, который без задачи не исполняется."""
+    HELD: ClassVar[str] = "boba-aid/held/"
+    """Начало requestState вызова, который ретранслятор держит открытым."""
 
     def __init__(  # noqa: PLR0913 — ретранслятор собирается всеми входами процесса
         self,
@@ -525,6 +743,9 @@ class McpRelay:
         self._names = McpToolNames()
         self._apps = AppMeta()
         self._active: set[tuple[str, str]] = set()
+        self._held: dict[str, HeldCall] = {}
+        """Вызовы серверов прежней редакции, чьи вопросы ждут повтора агента,
+        по requestState."""
         # состояние запроса ретранслятор отдаёт serve_one сам: lifespan
         # сервера здесь не запускается и только задаёт его тип
         idle = RelayedRequest(server_id="", client=McpServers.OWN)
@@ -734,7 +955,6 @@ class McpRelay:
         request = ctx.lifespan_context
         registration = self._registrations.of(request.server_id)
         context = registration.context()
-        port = await self._port(registration, context)
 
         forwarded: ProgressHeard | None = None
         journals: JournalHeard | None = None
@@ -743,16 +963,24 @@ class McpRelay:
             forwarded = partial(self._forwarded, ctx, token)
             journals = partial(self._journaled, registration, str(token))
 
-        reply = await self._called(
-            registration,
-            context,
-            port,
-            request.client,
-            params,
-            "model",
-            forwarded,
-            journals,
-        )
+        held = self._resumed(request, registration, params)
+        if held is None:
+            port = await self._port(registration, context)
+            send = partial(
+                self._called,
+                registration,
+                context,
+                port,
+                request.client,
+                params,
+                "model",
+                journals,
+            )
+            state = f"{self.HELD}{secrets.token_urlsafe(McpRegistrations.KEY_BYTES)}"
+            held = HeldCall(request.server_id, params.name, state, send, self._ended)
+
+        held.follow(forwarded)
+        reply = await self._waited(held)
         if not isinstance(reply, mt.CallToolResult):
             return reply
 
@@ -772,6 +1000,97 @@ class McpRelay:
         )
 
         return await self._canvas.reply(scope, reply)
+
+    def _resumed(
+        self,
+        request: RelayedRequest,
+        registration: McpRegistration,
+        params: mt.CallToolRequestParams,
+    ) -> HeldCall | None:
+        """Вызов, который ждёт ответа на вопрос, — повтору агента с его
+        requestState, с ответами повтора; None — повтор не к вызову
+        ретранслятора, а requestState сервера, если есть, уходит ему.
+
+        Ошибки:
+        MCPError — requestState ретранслятора не называет вызов, который
+            ждёт этого агента, либо ответы не к его вопросам.
+        """
+        state = params.request_state
+        if state is None:
+            return None
+
+        if not state.startswith(self.HELD):
+            return None
+
+        held = self._held.get(state)
+        if held is None:
+            msg = (
+                f"tools/call of {params.name!r} on server {registration.server!r}: "
+                f"requestState {state!r} names no call the relay holds open for "
+                "an answer of the user; the call to the server ended before the "
+                "answer came: it was stopped or ran out of call_timeout_sec of "
+                f"[mcp.servers.{registration.server}]; call the tool again"
+            )
+            raise MCPError(code=mt.INVALID_PARAMS, message=msg)
+
+        if held.server_id != request.server_id:
+            msg = (
+                f"tools/call of {params.name!r} on server {registration.server!r}: "
+                f"requestState {state!r} belongs to a call of another server "
+                "registration; retry a call with the requestState it got"
+            )
+            raise MCPError(code=mt.INVALID_PARAMS, message=msg)
+
+        if held.tool != params.name:
+            msg = (
+                f"tools/call of {params.name!r} on server {registration.server!r}: "
+                f"requestState {state!r} belongs to a call of {held.tool!r}; "
+                "retry the original request with the same tool"
+            )
+            raise MCPError(code=mt.INVALID_PARAMS, message=msg)
+
+        del self._held[state]
+        try:
+            held.answered(params.input_responses)
+        except MCPError:
+            held.cancel()
+            raise
+
+        return held
+
+    async def _waited(self, held: HeldCall) -> HeldReply:
+        """Итог вызова либо вопросы сервера; вызов с вопросами ждёт повтора
+        агента, отменённый запрос агента отменяет и вызов."""
+        try:
+            reply = await held.next()
+        except asyncio.CancelledError:
+            held.cancel()
+            raise
+
+        if held.asking:
+            self._held[held.state] = held
+
+        return reply
+
+    def stopped(self, server_ids: Collection[str]) -> None:
+        """Ход агента с серверами server_ids остановлен: его вызовы, открытые
+        для вопросов, отменены — сервер получает cancel."""
+        for state, held in list(self._held.items()):
+            if held.server_id not in server_ids:
+                continue
+
+            del self._held[state]
+            held.cancel()
+
+    def _ended(self, held: HeldCall) -> bool:
+        """Вызов кончился: если он ждал агента, он убран — True."""
+        waiting = self._held.get(held.state)
+        if waiting is not held:
+            return False
+
+        del self._held[held.state]
+
+        return True
 
     async def _list_resources(
         self,
@@ -886,7 +1205,7 @@ class McpRelay:
         context = registration.context()
         port = await self._app_server(registration, context)
         result = await self._called(
-            registration, context, port, McpServers.OWN, params, "app", None, None
+            registration, context, port, McpServers.OWN, params, "app", None, None, None
         )
         if isinstance(result, mt.CallToolResult):
             return result
@@ -951,14 +1270,15 @@ class McpRelay:
         client: McpClientIdentity,
         params: mt.CallToolRequestParams,
         audience: Visibility,
-        forwarded: ProgressHeard | None,
         journals: JournalHeard | None,
+        forwarded: ProgressHeard | None,
+        questions: QuestionHeard | None,
     ) -> mt.CallToolResult | mt.InputRequiredResult:
         """Вызов инструмента клиента client, видимого стороне audience, по
         списку и описанию сервера из кэша порта: соединения запечатаны, у
         вызова со вложенными вызовами — и в узлах, тред регистрации — в
         параметрах с пометкой SchemaMark.THREAD, отказ запечатывания —
-        isError с причиной.
+        isError с причиной; вопросы сервера прежней редакции — questions.
 
         Ошибки:
         MCPError — инструмента у сервера нет либо он не для audience.
@@ -1001,7 +1321,7 @@ class McpRelay:
 
         sent = params.model_copy(update={"arguments": arguments})
 
-        return await port.call(client, sent, tool, forwarded, journals)
+        return await port.call(client, sent, tool, forwarded, journals, questions)
 
     @staticmethod
     def _named(tools: Iterator[mt.Tool]) -> dict[str, mt.Tool]:
