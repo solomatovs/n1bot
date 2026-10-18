@@ -7,17 +7,15 @@ read-only: нет пустого каталога в образе — bwrap не
 
 from __future__ import annotations
 
-import shutil
 import subprocess
-from collections.abc import Generator
-from contextlib import contextmanager
+from collections.abc import Sequence
 from pathlib import Path
 from typing import ClassVar
 
 import pytest
 
 from boba.stand.sandbox import SandboxLayout
-from boba.stand.zygote import RUNTIME, SandboxStand
+from boba.stand.zygote import RUNTIME, PrivateImageMount, SandboxStand
 
 FUSE2FS = SandboxStand.FUSE2FS
 
@@ -32,34 +30,31 @@ needs_images = pytest.mark.failif(
 )
 
 
-class MountedImage:
-    """Образ корня плагина, смонтированный fuse2fs только на чтение."""
+class ImageDirs:
+    """Каталоги, которых нет в образе корня плагина: образ смонтирован в
+    собственном пространстве имён (PrivateImageMount), а не в дереве хоста."""
 
-    UMOUNT: ClassVar[str] = "fusermount3"
+    MISSING: ClassVar[str] = (
+        'root=$1; shift; for dir in "$@"; do [ -d "$root$dir" ] || echo "$dir"; done'
+    )
 
     def __init__(self, image: Path, point: Path) -> None:
-        self._image = image
+        self._mount = PrivateImageMount(image, point)
         self._point = point
 
-    @contextmanager
-    def opened(self) -> Generator[Path, None, None]:
-        subprocess.run(
-            [str(FUSE2FS), "-o", "ro", str(self._image), str(self._point)],
-            check=True,
-            capture_output=True,
+    def missing(self, guests: Sequence[str]) -> list[str]:
+        command = ["/bin/sh", "-c", self.MISSING, "sh", str(self._point), *guests]
+        done = subprocess.run(
+            self._mount.argv(command), capture_output=True, text=True, check=False
         )
-        try:
-            yield self._point
-        finally:
-            self._umount()
-
-    def _umount(self) -> None:
-        fusermount = shutil.which(self.UMOUNT)
-        if fusermount is None:
-            msg = f"{self.UMOUNT} недоступен: {self._point} осталась смонтированной"
+        if done.returncode != 0:
+            msg = (
+                f"checking directories of the image mounted at {self._point} "
+                f"exited with {done.returncode}: {done.stderr.strip()}"
+            )
             raise AssertionError(msg)
 
-        subprocess.run([fusermount, "-u", str(self._point)], check=True)
+        return done.stdout.split()
 
 
 @needs_images
@@ -68,16 +63,14 @@ class TestPluginDataMountpoints:
     def test_declared_data_paths_exist_in_the_image(
         self, package: str, tmp_path_factory: pytest.TempPathFactory
     ) -> None:
-        image = MountedImage(
+        image = ImageDirs(
             RUNTIME.plugin_rootfs(package), tmp_path_factory.mktemp("rootfs")
         )
 
-        missing: list[str] = []
-        with image.opened() as root:
-            for _, guest in SandboxLayout.DATA_BINDS[package]:
-                if (root / guest.lstrip("/")).is_dir():
-                    continue
+        guests: list[str] = []
+        for _, guest in SandboxLayout.DATA_BINDS[package]:
+            guests.append(guest)
 
-                missing.append(guest)
+        missing = image.missing(guests)
 
         assert missing == [], f"{package}: в образе нет точек монтирования: {missing}"

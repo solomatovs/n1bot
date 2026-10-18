@@ -9,11 +9,14 @@ StandError — стенд не поднялся, не ответил в отве
 
 from __future__ import annotations
 
+import fcntl
 import os
+import secrets
 import shlex
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import tomllib
 from abc import abstractmethod
@@ -40,11 +43,11 @@ __all__ = [
     "StandConfig",
     "StandError",
     "StandPaths",
+    "StandPorts",
     "StandProcess",
     "StandRuntime",
     "StandServerName",
     "StandToolNames",
-    "free_port",
 ]
 
 REPO_ROOT = Path(__file__).resolve().parents[7]
@@ -141,11 +144,66 @@ class StandAuth(StrEnum):
         return self in (StandAuth.SSO, StandAuth.LOCAL_SSO)
 
 
-def free_port() -> int:
-    """Свободный порт: параллельные прогоны не должны драться за один."""
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        return int(sock.getsockname()[1])
+class StandPorts:
+    """Порты процессов стенда, не повторяющиеся на машине.
+
+    Порт, который отдало ядро и который тут же отпустили, до старта процесса
+    стенда успевает получить стенд другого воркера xdist или набора: тогда
+    проба готовности слышит чужой сервер, а свой процесс не поднимается.
+    Поэтому порт берётся вне эфемерного диапазона ядра (из него берут порты
+    исходящие соединения) и закрепляется за процессом теста блокировкой
+    файла до его выхода; порт, который уже кто-то слушает, пропускается.
+    """
+
+    FIRST: ClassVar[int] = 20000
+    LAST: ClassVar[int] = 32000
+    LOCKS: ClassVar[Path] = Path(tempfile.gettempdir()) / "boba-stand-ports"
+    _held: ClassVar[list[int]] = []
+    """Дескрипторы блокировок выданных портов: живут, пока жив процесс."""
+
+    def free(self) -> int:
+        """Ошибки:
+        StandError — в диапазоне не осталось свободного порта.
+        """
+        self.LOCKS.mkdir(parents=True, exist_ok=True)
+        span = self.LAST - self.FIRST
+        start = secrets.randbelow(span)
+        for offset in range(span):
+            port = self.FIRST + (start + offset) % span
+            if self._reserve(port):
+                return port
+
+        msg = (
+            f"stand ports: no port in {self.FIRST}-{self.LAST} is both unlocked "
+            f"in {self.LOCKS} and bindable"
+        )
+        raise StandError(msg)
+
+    def _reserve(self, port: int) -> bool:
+        lock = os.open(self.LOCKS / f"{port}.lock", os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            os.close(lock)
+            return False
+
+        if not self._bindable(port):
+            os.close(lock)
+            return False
+
+        self._held.append(lock)
+        return True
+
+    @staticmethod
+    def _bindable(port: int) -> bool:
+        with socket.socket() as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                sock.bind(("", port))
+            except OSError:
+                return False
+
+        return True
 
 
 @dataclass(frozen=True)
@@ -675,7 +733,7 @@ class StandConfig(StandService):
     """MCP-серверы стенда по именам, как секции [mcp.servers.<имя>]; внешние
     серверы рабочего конфига стенд не наследует."""
 
-    service_port: int = field(default_factory=free_port)
+    service_port: int = field(default_factory=StandPorts().free)
     """Порт сервиса boba-mcp стенда чата."""
 
     agent_history: dict[str, Any] = field(

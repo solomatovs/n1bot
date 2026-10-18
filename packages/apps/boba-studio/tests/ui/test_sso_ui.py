@@ -28,7 +28,7 @@ from boba.stand.ui.stand import (
     StandAuth,
     StandConfig,
     StandProcess,
-    free_port,
+    StandPorts,
 )
 from boba.transport.http import (
     HttpRequest,
@@ -65,7 +65,7 @@ class NegotiateProbe:
 
     def __init__(self) -> None:
         self.tokens: list[str] = []
-        self.port = free_port()
+        self.port = StandPorts().free()
         self._server = self._build()
 
     def _build(self) -> socketserver.TCPServer:
@@ -140,7 +140,7 @@ def sso_stand(
     config = StandConfig(
         workdir=workdir,
         app=StandApp.STUDIO,
-        app_port=free_port(),
+        app_port=StandPorts().free(),
         llm_port=llm_port,
         db_name=stand_database,
         url_prefix="/boba-krb",

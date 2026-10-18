@@ -576,13 +576,16 @@ class Agent:
             session.enter(SessionState.TURN)
             watcher = asyncio.create_task(self._superseder(queue, cancellation))
             try:
-                outcome = await turns.run(taken, cancellation)
+                result = await turns.run(taken, cancellation)
             finally:
                 watcher.cancel()
                 self._current = None
                 session.enter(SessionState.IDLE)
 
-            self._outcomes.append(outcome)
+            # конец хода слышат, когда сессия уже свободна: ответ на него
+            # (смена модели, следующий вопрос) не застаёт ход идущим
+            self._outcomes.append(result.outcome)
+            await self._parts.sink.emit(result)
             failure = self.writer.failed()
             if failure is not None:
                 msg = (

@@ -47,14 +47,20 @@ from boba.stand.database import TestDatabase
 from boba.stand.names import StandNames
 from boba.stand.site import Stand
 from boba.stand.ui.database import StandDatabase
-from boba.stand.ui.fake_llm import ScenarioName, serve
+from boba.stand.ui.fake_llm import (
+    Reply,
+    ReplyBookClient,
+    ReplyTurn,
+    ScenarioName,
+    serve,
+)
 from boba.stand.ui.stand import (
     StandApp,
     StandConfig,
+    StandPorts,
     StandProcess,
     StandToolNames,
     StandUrl,
-    free_port,
 )
 
 pytestmark = pytest.mark.anyio
@@ -86,7 +92,7 @@ def stand_database() -> str:
 
 @pytest.fixture(scope="module")
 def llm_port() -> int:
-    return free_port()
+    return StandPorts().free()
 
 
 @pytest.fixture(scope="module")
@@ -130,7 +136,7 @@ def app(
     config = StandConfig(
         workdir=workdir,
         app=StandApp.AID,
-        app_port=free_port(),
+        app_port=StandPorts().free(),
         llm_port=llm_port,
         db_name=stand_database,
         generation=GENERATION,
@@ -157,7 +163,7 @@ def second(
     config = StandConfig(
         workdir=workdir,
         app=StandApp.AID,
-        app_port=free_port(),
+        app_port=StandPorts().free(),
         llm_port=llm_port,
         db_name=stand_database,
         generation=GENERATION,
@@ -185,7 +191,7 @@ def foreign_app(
     config = StandConfig(
         workdir=workdir,
         app=StandApp.AID,
-        app_port=free_port(),
+        app_port=StandPorts().free(),
         llm_port=llm_port,
         db_name=stand_database,
         generation=GENERATION,
@@ -213,7 +219,7 @@ def sandboxed(
     config = StandConfig(
         workdir=workdir,
         app=StandApp.AID,
-        app_port=free_port(),
+        app_port=StandPorts().free(),
         llm_port=llm_port,
         db_name=stand_database,
         generation=GENERATION,
@@ -579,20 +585,6 @@ class AgentProcesses:
 
         return found
 
-    async def await_new(self, before: set[int], timeout_sec: float = 60.0) -> int:
-        """Pid агента, появившегося после отметки: on_chat_start идёт задачей
-        после task_end, процесс поднимается не мгновенно."""
-        deadline = time.monotonic() + timeout_sec
-        while time.monotonic() < deadline:
-            started = set(self.pids()) - before
-            if len(started) == 1:
-                return next(iter(started))
-
-            await asyncio.sleep(0.3)
-
-        msg = f"no agent process appeared in {timeout_sec}s, known pids {before}"
-        raise AssertionError(msg)
-
     def settings_dirs(self) -> list[Path]:
         if not self._agents_dir.is_dir():
             return []
@@ -742,7 +734,9 @@ class TestConversation:
         self, app: StandProcess, tab: ChatSocket, rows: ChatRows, stand: Stand
     ) -> None:
         agents = AgentProcesses(app)
-        pid = await agents.await_new(set())
+        # агенты вкладок прошлых тестов стенда ещё живы: агент этой вкладки
+        # узнаётся по треду в его argv
+        pid = await agents.await_thread(tab.thread_id)
 
         files = ProcFiles(pid)
         joined = " ".join(files.cmdline())
@@ -819,10 +813,9 @@ class TestConversation:
         self, app: StandProcess, cookie: str
     ) -> None:
         agents = AgentProcesses(app)
-        before = set(agents.pids())
         tab = ChatSocket(app, cookie, str(uuid4()))
         await tab.open()
-        pid = await agents.await_new(before)
+        pid = await agents.await_thread(tab.thread_id)
         settings_dirs = [
             path
             for path in agents.settings_dirs()
@@ -1598,17 +1591,42 @@ class TestFeed:
         finally:
             await again.end_session()
 
+    FOLLOWED: ClassVar[str] = "Follow this turn from the second instance"
+    FOLLOWED_REASONING: ClassVar[str] = (
+        "the holder streams a few words while the observer joins the thread"
+    )
+    FOLLOWED_ANSWER: ClassVar[str] = (
+        "Result. The observer joined a live turn and saw its tokens and its end."
+    )
+
     async def test_second_instance_follows_a_live_turn(
-        self, app: StandProcess, second: StandProcess, cookie: str
+        self, app: StandProcess, second: StandProcess, cookie: str, llm_port: int
     ) -> None:
+        # ход держится живым, пока наблюдатель не подключится: иначе под
+        # нагрузкой он кончается раньше, чем второй инстанс подхватит тред
+        book = ReplyBookClient(StandUrl.of(llm_port))
+        turn = ReplyTurn(
+            reasoning=self.FOLLOWED_REASONING,
+            content=self.FOLLOWED_ANSWER,
+            hold=True,
+            hold_after_tokens=1,
+        )
+        followed = Reply(
+            question=self.FOLLOWED, turns=[turn], token_delay_sec=TOKEN_DELAY_SEC
+        )
+        book.register([followed])
+
         holder = ChatSocket(app, cookie, str(uuid4()))
         await holder.open()
-        await holder.send(f"follow {ScenarioName.LONG.value}")
-        await holder.wait_event("stream_token")
-
         observer = ChatSocket(second, cookie, holder.thread_id)
         try:
+            await holder.send(self.FOLLOWED)
+            await asyncio.to_thread(book.await_held, self.FOLLOWED, TURN_TIMEOUT_SEC)
+            # удержанный поток отдал первый токен: шаг открыт им, токенов нет
+            await holder.wait_event("stream_start")
+
             await observer.open(resumed=True)
+            book.release(self.FOLLOWED)
             await observer.wait_event("stream_token", timeout_sec=60.0)
             await observer.wait_task_end()
             await holder.wait_task_end()
@@ -1622,6 +1640,7 @@ class TestFeed:
                 <= (observer.step_ids()["assistant_message"])
             ), (holder.step_ids(), observer.step_ids())
         finally:
+            book.release(self.FOLLOWED)
             await observer.end_session()
             await holder.end_session()
 

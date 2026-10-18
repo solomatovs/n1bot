@@ -193,9 +193,12 @@ async def test_subscribers_survive_the_idle_purge(
     assert await first.purge_idle(0) >= 3
     assert await first.replay(scope, after_seq=0) == []
 
+    # последний номер берётся до публикации: свой подписчик может получить
+    # новый конверт раньше проверки
+    before = local.envelopes[-1].seq
     seq = await first.publish(scope, _token("turn2-0"), token)
 
-    assert seq > local.envelopes[-1].seq
+    assert seq > before
     await local.wait(4)
     await remote.wait(4)
     assert local.tokens()[-1] == "turn2-0"

@@ -44,7 +44,7 @@ from boba.llm.providers import (
     LlmProviderTypes,
 )
 from boba.stand.ui.fake_llm import FakeLlmApp
-from boba.stand.ui.stand import free_port
+from boba.stand.ui.stand import StandPorts
 from boba.toolkit.dag import (
     DagNode,
     NodeOutcome,
@@ -345,7 +345,7 @@ class FakeServer:
             hang_sec=hang_sec,
             estimate_usage=estimate_usage,
         )
-        self.port = free_port()
+        self.port = StandPorts().free()
         self._server = uvicorn.Server(
             uvicorn.Config(
                 self.app.asgi(),

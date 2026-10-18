@@ -70,10 +70,10 @@ from boba.stand.ui.socket_log import ChatEvent, StepField
 from boba.stand.ui.stand import (
     StandApp,
     StandConfig,
+    StandPorts,
     StandProcess,
     StandToolNames,
     StandUrl,
-    free_port,
 )
 from boba.text.grep import GrepLimits, TextGrep
 from boba.toolkit.calls import ToolIntent
@@ -521,7 +521,10 @@ class StepCheck:
         if re.fullmatch(self.ELAPSED.titled(title, timed), self._step.name):
             return
 
-        self._fail(f"step name {self._step.name!r} is not {title!r} with a duration")
+        self._fail(
+            f"step name {self._step.name!r} is not {title!r} with a duration; "
+            f"output:\n{self._step.output}"
+        )
 
     def _check_input(self) -> None:
         expected = self._call.expected_input()
@@ -1057,7 +1060,7 @@ def sandbox_stand(
     config = StandConfig(
         workdir=stand_workdir / "sandbox",
         app=StandApp.AID,
-        app_port=free_port(),
+        app_port=StandPorts().free(),
         llm_port=llm_port,
         db_name=stand_database,
         url_prefix="/boba-sandbox",
