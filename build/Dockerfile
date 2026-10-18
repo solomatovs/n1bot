@@ -58,6 +58,10 @@ RUN if [ -f /tmp/conf/uv.toml ]; then cp /tmp/conf/uv.toml /index/etc/uv/uv.toml
 # среда сборки: gcc + наш python поверх системного, uv, CA и индексы контура
 FROM ${GCC_IMAGE} AS base
 
+# область кэша: make offline-check задаёт своё значение, и шаги стадии, а с ней и всех
+# стадий от base, идут заново. Её же объявляют остальные стадии с сетью от образов-основ
+ARG CACHE_SCOPE
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libssl1.1 libffi6 libsqlite3-0 libbz2-1.0                \
         liblzma5 libreadline7 libncurses5 zlib1g                 \
@@ -72,6 +76,9 @@ COPY build/src/uv/uv        /usr/local/bin/uv
 # число заданий компилирующих шагов: наследуют все сборочные стадии, uv читает сам
 ARG JOBS=4
 ENV JOBS=${JOBS} UV_CONCURRENT_BUILDS=${JOBS} UV_CONCURRENT_INSTALLS=${JOBS}
+
+# закрытый контур: pip не спрашивает индекс о своей новой версии, uv не качает python
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 UV_PYTHON_DOWNLOADS=never
 
 RUN ldconfig && gcc --version | head -n1 && python3 --version && pip3 --version
 
@@ -276,6 +283,7 @@ COPY --from=plugin-site /opt/code-sandbox  /usr/src
 # плагинов, libstdc++ сборочного gcc и python. Одна на все плагины и версии
 FROM ${GLIBC_IMAGE} AS sandbox-base
 
+ARG CACHE_SCOPE
 ARG LIBSTDCXX_VERSION=6.0.25
 ARG LIBSTDCXX_OLD=6.0.22
 
@@ -434,6 +442,7 @@ RUN pip3 list --path /opt/app-site --format=freeze | grep '^boba-' | cut -d= -f1
 # кладут последним слоем — его правка не трогает слои ниже
 FROM ${GLIBC_IMAGE} AS runtime-os
 
+ARG CACHE_SCOPE
 ARG PYTHON_VERSION=3.11
 ARG LIBSTDCXX_VERSION=6.0.25
 ARG BOBA_DIR=/app/boba
@@ -516,6 +525,7 @@ CMD ["-m", "boba.mcp_server", "--config", "/app/boba/conf/config.toml", "--site"
 # шаге и удаляется, в слой попадает лишь /out/ui
 FROM ${NODE_IMAGE} AS chainlit-ui-build
 
+ARG CACHE_SCOPE
 ARG CHAINLIT_VERSION
 
 COPY build/scripts/chainlit_ui.sh                   /tmp/chainlit_ui.sh
@@ -529,6 +539,10 @@ RUN sh /tmp/chainlit_ui.sh /tmp/chainlit.tar.gz /tmp/overlay /tmp/elements /out/
 
 # скрипт страницы chainlit (web/page, TypeScript)
 FROM ${NODE_IMAGE} AS aid-page-build
+
+ARG CACHE_SCOPE
+# закрытый контур: npm не спрашивает реестр о своей новой версии
+ENV npm_config_update_notifier=false
 
 COPY packages/apps/boba-aid/web/page/  /src/web/page/
 

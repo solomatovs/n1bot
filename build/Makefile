@@ -1,7 +1,8 @@
 # Сборка boba: образы boba-aid и boba-mcp, образы корней плагинов, агент boba одним файлом,
 # деревья запуска. Образы собирает классический сборщик docker (DOCKER_BUILDKIT=0).
-# Сеть: apt-зеркало из sources.list образов dmp/* (стадии base, oracledb-wheel, bwrap-build,
-# fuse2fs-build, sandbox-base, plugin-root, runtime-os), реестры pypi и npm, артефакты fetch.
+# Сеть: в интернет ходит только fetch. Остальные цели — только в реестры через прокси:
+# apt-зеркало из sources.list образов dmp/*, pypi из conf/pip.conf и conf/uv.toml, npm из
+# npmrc образа nodejs. Проверка этого — make offline-check.
 
 # от каталога Makefile, а не от cwd: make -f build/Makefile из корня искал бы
 # test/ и conf/ рядом с собой
@@ -303,9 +304,19 @@ SANDBOX_DEV_KRB := $(foreach app,$(SANDBOX_APPS),$(SRC_DIR)/compose/$(app)/conf/
 # одно значение — в conf/local.mk
 JOBS            ?= 4
 
+# сеть шагов docker build и запусков docker run, которым нужен реестр (npm фронта):
+# пусто — сеть docker по умолчанию; offline-check ставит container:<ловушка>
+BUILD_NETWORK   ?=
+NETWORK_OPT      = $(if $(BUILD_NETWORK),--network $(BUILD_NETWORK))
+# своя область кэша сборщика: стадии от образов-основ в build/Dockerfile и
+# testapps.Dockerfile объявляют ARG CACHE_SCOPE, и с новым значением каждый шаг сборки
+# исполняется заново ровно один раз. Пусто — обычный кэш
+CACHE_SCOPE     ?=
+CACHE_SCOPE_ARG  = $(if $(CACHE_SCOPE),--build-arg CACHE_SCOPE=$(CACHE_SCOPE))
+
 # классический сборщик, как в закрытом контуре, где BuildKit нет; --force-rm убирает
 # контейнер упавшего шага
-DOCKER_BUILD    := DOCKER_BUILDKIT=0 docker build --force-rm
+DOCKER_BUILD     = DOCKER_BUILDKIT=0 docker build --force-rm $(NETWORK_OPT)
 
 # от кого идёт docker run с томами хоста и кому отдаются его результаты. Rootless-демон
 # отображает root контейнера на пользователя демона, а его же uid внутри контейнера —
@@ -345,7 +356,7 @@ DOCKER_ARGS      = --build-arg GLIBC_IMAGE=$(GLIBC_IMAGE)              \
     --build-arg ORACLEDB_SHA256=$(ORACLEDB_SHA256)                     \
     --build-arg ORACLEDB_LOCAL=$(ORACLEDB_LOCAL)                       \
     --build-arg CYTHON_VERSION=$(CYTHON_VERSION)                       \
-    --build-arg JOBS=$(JOBS)
+    --build-arg JOBS=$(JOBS) $(CACHE_SCOPE_ARG)
 
 # аргументы стадий одного приложения
 APP_ARGS         = --build-arg APP_PACKAGES="$(APP_PACKAGES)"       \
@@ -388,13 +399,24 @@ endef
 # mke2fs из runtime/sandbox/tools в контейнере glibc: $(1) — скрипт, $(2) — каталог результата,
 # $(3) — аргументы скрипта. root в контейнере нужен, чтобы сохранить владельцев из tar
 define mke2fs-run
-docker run --rm -i -e MKE2FS_CONFIG=/tools/mke2fs.conf -e PATH=/tools:/usr/sbin:/usr/bin:/sbin:/bin \
+docker run --rm -i --network none -e MKE2FS_CONFIG=/tools/mke2fs.conf -e PATH=/tools:/usr/sbin:/usr/bin:/sbin:/bin \
     -v "$(SANDBOX_DIR)/tools:/tools:ro" -v "$(SCRIPTS_DIR):/scripts:ro" -v "$(2):/out" \
     --entrypoint sh $(GLIBC_IMAGE) /scripts/$(1) $(3) "$(RUN_OWNER)"
 endef
 
+# в интернет ходит только fetch (и all, который начинается с него): цель, которой не
+# хватило входа, падает с подсказкой, а не качает его сама мимо реестров
+FETCH_GOALS     := $(filter fetch all,$(MAKECMDGOALS))
+define fetch-only
+if [ -z "$(FETCH_GOALS)" ]; then
+    echo "нет $@ — его кладёт make fetch, другие цели в интернет не ходят" >&2
+    exit 1
+fi
+endef
+
 # загрузка: $(1) — url, $(2) — файл
 define fetch
+$(fetch-only)
 mkdir -p "$(dir $(2))"
 curl -fSL $(CURL_OPTS) -o "$(2)" "$(1)"
 endef
@@ -403,6 +425,7 @@ endef
 # $(3) — аргументы fetch_models.py. Версии пакетов держит $(FETCH_CONSTRAINTS), файлы
 # отдаются владельцу хоста
 define fetch-model
+$(fetch-only)
 mkdir -p "$(2)"
 docker run --rm $(PROXY_ENV) -e HF_ENDPOINT="$(HF_URL)"             \
     -v "$(2)":/out -v "$(SCRIPTS_DIR)":/scripts:ro                  \
@@ -565,6 +588,12 @@ define HELP
   plugin-rootfs         образ корня одного плагина: PLUGIN=<пакет>
   plugin-rootfs-all     образы корней всех плагинов с entry points boba.tools, всегда заново
 
+Закрытый контур:
+  offline-check         сборка без интернета: цели OFFLINE_TARGETS (по умолчанию все, кроме
+                        fetch и dev), у шагов сборки сеть none, наружу — только прокси реестров
+                        pypi, apt и npm из конфигурации сборки; обращение мимо них роняет
+                        проверку с целью, стадией и хостом. Итог — release/offline-check/report.txt
+
 Тестовые образы (не поставка):
   testapps              boba-testapps:$(BOBA_TAG) и :latest — серверы MCP прежних редакций для
                         тестов клиента: примеры MCP Apps и свой сервер на TypeScript SDK 1.x;
@@ -612,10 +641,12 @@ UPSTREAM), KATEX_VERSION, INTER_VERSION, MERMAID_VERSION, ORACLEDB_VERSION, NUIT
 RAPIDOCR_LANGS, EMBED_MODELS, ONNX_MODELS, SANDBOX_WS_SIZE (размер workspace). PYTHON — python хоста
 для скриптов сборки (.venv). Значения для машины — в conf/local.mk.
 
-Сеть: apt — зеркало из sources.list образов dmp/*: стадии base, oracledb-wheel, bwrap-build,
-fuse2fs-build, sandbox-base, plugin-root, runtime-os. Классический сборщик проходит стадии до
-цели по порядку Dockerfile, повторно — из кэша. pypi — conf/pip.conf, conf/uv.toml; npm —
-npmrc образа nodejs; CA — conf/ca-chain.crt; прокси из env уходит в docker. Зеркала fetch:
+Сеть: в интернет ходит только fetch, остальные цели — только в реестры. apt — зеркало из
+sources.list образов dmp/*: стадии base, oracledb-wheel, bwrap-build, fuse2fs-build,
+sandbox-base, plugin-root, runtime-os. Классический сборщик проходит стадии до цели по
+порядку Dockerfile, повторно — из кэша. pypi — conf/pip.conf, conf/uv.toml; npm — npmrc
+образа nodejs; CA — conf/ca-chain.crt; прокси из env уходит в docker. BUILD_NETWORK — сеть
+шагов сборки, CACHE_SCOPE — своя область кэша; их ставит offline-check. Зеркала fetch:
 UV_URL, BWRAP_URL, LIBFUSE_URL, E2FSPROGS_URL, RAPIDOCR_REPO, KATEX_URL, INTER_URL,
 MERMAID_URL, HF_URL, CHAINLIT_SRC_URL. Хосту нужны docker, make и python >= 3.11 (.venv).
 endef
@@ -814,9 +845,91 @@ TESTAPPS_TAGS       ?= boba-testapps:$(BOBA_TAG) boba-testapps:latest
 .PHONY: testapps
 testapps:
 	@echo "== тестовые серверы MCP: $(TESTAPPS_TAGS) от $(TESTAPPS_NODE_IMAGE) =="
-	$(DOCKER_BUILD) -f "$(BASE_DIR)/testapps.Dockerfile" $(NO_CACHE_OPT) $(PROXY_ARGS) \
+	$(DOCKER_BUILD) -f "$(BASE_DIR)/testapps.Dockerfile" $(NO_CACHE_OPT) $(PROXY_ARGS) $(CACHE_SCOPE_ARG) \
 	    --build-arg NODE_IMAGE=$(TESTAPPS_NODE_IMAGE) \
 	    $(addprefix --tag ,$(TESTAPPS_TAGS)) "$(TESTAPPS_DIR)"
+
+# --- проверка закрытого контура ---------------------------------------------------
+
+# сборка целей OFFLINE_TARGETS без выхода в интернет. Шаги docker build и docker run
+# сборки делят сеть контейнера-ловушки (docker --network container:<ловушка>), у которой
+# сеть none: есть только loopback, маршрута наружу нет. На 127.0.0.1:53 ловушка пишет
+# каждое имя, которое инструмент разрешает сам, мимо прокси; на 127.0.0.1:$(OFFLINE_PORT)
+# передаёт соединения через unix-сокет в OFFLINE_DIR прокси, который стоит в сети docker
+# по умолчанию и пускает только хосты реестров из конфигурации сборки (conf/pip.conf,
+# conf/uv.toml, sources.list и npm config образов). Между контейнерами нет ни одного
+# сетевого пакета: только файл сокета. Кэш сборщика — своя область CACHE_SCOPE: каждый шаг
+# исполняется заново один раз. Журналы и итог — в OFFLINE_DIR: allow.jsonl, proxy.jsonl,
+# dns.jsonl, marks.jsonl, build.log, report.txt
+OFFLINE_TARGETS ?= sandbox plugin-rootfs-all chainlit-ui web test testapps boba-bin
+OFFLINE_DIR     ?= $(RELEASE_DIR)/offline-check
+OFFLINE_NAME    := boba-offline-check
+OFFLINE_PORT    := 3128
+OFFLINE_CHECK   := $(PYTHON) $(SCRIPTS_DIR)/offline_check.py
+OFFLINE_SOCKET  := /log/proxy.sock
+# образы-основы стадий: недостающий демон взял бы из registry мимо прокси
+OFFLINE_IMAGES   = $(GLIBC_IMAGE) $(GCC_IMAGE) $(PYTHON_IMAGE) $(NODE_IMAGE) $(TESTAPPS_NODE_IMAGE)
+
+# контейнер проверки на python образа PYTHON_IMAGE (скрипт — только stdlib):
+# $(1) — роль, $(2) — сеть, $(3) — команда offline_check.py
+define offline-daemon
+docker run -d --name "$(OFFLINE_NAME)-$(1)" $(2) -v "$(SCRIPTS_DIR):/scripts:ro" -v "$(OFFLINE_DIR):/log" \
+    -e LD_LIBRARY_PATH=/opt/python/usr/local/lib --entrypoint /opt/python/usr/local/bin/python3 \
+    $(PYTHON_IMAGE) -u /scripts/offline_check.py $(3) > /dev/null
+endef
+
+# контейнеры проверки: и до запуска (остались от прерванного), и по выходу
+offline-clean    = docker rm -f $(OFFLINE_NAME)-proxy $(OFFLINE_NAME)-jail > /dev/null 2>&1 || true
+
+.PHONY: offline-check
+offline-check: version-check
+	@$(call check,$(IMAGE_INPUTS),запусти: make fetch)
+	for image in $(OFFLINE_IMAGES); do
+	    if ! docker image inspect "$$image" > /dev/null 2>&1; then
+	        echo "нет образа $$image: docker build взял бы его из registry мимо прокси — загрузи его: docker load" >&2
+	        exit 1
+	    fi
+	done
+	$(offline-clean)
+	trap '$(offline-clean)' EXIT
+	rm -rf "$(OFFLINE_DIR)"
+	mkdir -p "$(OFFLINE_DIR)"
+	$(OFFLINE_CHECK) hosts --pip-conf "$(CONF_DIR)/pip.conf" --uv-toml "$(CONF_DIR)/uv.toml" \
+	    $(OFFLINE_IMAGES:%=--apt-image %) --npm-image $(NODE_IMAGE) --npm-image $(TESTAPPS_NODE_IMAGE) \
+	    --out "$(OFFLINE_DIR)/allow.jsonl"
+	$(call offline-daemon,proxy,,proxy --allow /log/allow.jsonl --log /log/proxy.jsonl --socket $(OFFLINE_SOCKET))
+	$(call offline-daemon,jail,--network none --dns 127.0.0.1,jail --log /log/dns.jsonl --socket $(OFFLINE_SOCKET) --port $(OFFLINE_PORT))
+	for attempt in $$(seq 20); do
+	    if [ -S "$(OFFLINE_DIR)/proxy.sock" ]; then
+	        break
+	    fi
+	    sleep 0.5
+	done
+	if [ ! -S "$(OFFLINE_DIR)/proxy.sock" ]; then
+	    echo "offline-check: прокси не открыл сокет $(OFFLINE_DIR)/proxy.sock за 10 с — смотри docker logs $(OFFLINE_NAME)-proxy" >&2
+	    docker logs "$(OFFLINE_NAME)-proxy" >&2
+	    exit 1
+	fi
+	proxy="http://127.0.0.1:$(OFFLINE_PORT)"
+	scope="offline-$$(date +%Y%m%d%H%M%S)"
+	echo "== проверка закрытого контура: $(OFFLINE_TARGETS); прокси $$proxy, кэш $$scope, журналы $(OFFLINE_DIR) =="
+	build=0
+	{
+	    for target in $(OFFLINE_TARGETS); do
+	        echo "== offline-check: make $$target =="
+	        $(MAKE) -f "$(MAKEFILE)" "$$target" BUILD_NETWORK="container:$(OFFLINE_NAME)-jail" CACHE_SCOPE="$$scope" \
+	            http_proxy="$$proxy" https_proxy="$$proxy" HTTP_PROXY="$$proxy" HTTPS_PROXY="$$proxy" \
+	            no_proxy= NO_PROXY= || exit $$?
+	    done
+	} 2>&1 | $(OFFLINE_CHECK) stamp --marks "$(OFFLINE_DIR)/marks.jsonl" | tee "$(OFFLINE_DIR)/build.log" || build=$$?
+	verdict=0
+	$(OFFLINE_CHECK) report --allow "$(OFFLINE_DIR)/allow.jsonl" --proxy "$(OFFLINE_DIR)/proxy.jsonl" \
+	    --dns "$(OFFLINE_DIR)/dns.jsonl" --marks "$(OFFLINE_DIR)/marks.jsonl" | tee "$(OFFLINE_DIR)/report.txt" || verdict=$$?
+	if [ "$$build" != 0 ]; then
+	    echo "offline-check: сборка упала с кодом $$build — причина в $(OFFLINE_DIR)/build.log; нарушения сети, если были, — выше" >&2
+	    exit 1
+	fi
+	exit $$verdict
 
 # --- агент boba одним файлом -----------------------------------------------------
 
@@ -1068,8 +1181,8 @@ web: $(PAGE_JS) $(UI_DIST)/index.html $(WEB_FILES)
 # скрипт страницы node'ом образа: на хосте node не нужен
 $(PAGE_JS): $(PAGE_SRCS)
 	@echo "== скрипт страницы page.js: $(NODE_IMAGE) =="
-	docker run --rm --entrypoint /bin/sh -u "$(RUN_OWNER)" -e HOME=/tmp \
-	    -v "$(AID_DIR):/pkg" -w /pkg/web/page $(NODE_IMAGE) \
+	docker run --rm $(NETWORK_OPT) $(PROXY_ENV) --entrypoint /bin/sh -u "$(RUN_OWNER)" -e HOME=/tmp \
+	    -e npm_config_update_notifier=false -v "$(AID_DIR):/pkg" -w /pkg/web/page $(NODE_IMAGE) \
 	    -c 'npm ci --no-audit --no-fund && npm run check && npm run build'
 	ls -la "$@"
 
@@ -1078,7 +1191,7 @@ $(PAGE_JS): $(PAGE_SRCS)
 $(UI_DIST)/index.html: $(UI_SRCS) $(CHAINLIT_TARBALL)
 	@echo "== UI chainlit $(CHAINLIT_VERSION) (фронт + copilot) с overlay: $(NODE_IMAGE) -> $(UI_DIST) =="
 	mkdir -p "$(UI_DIST)"
-	docker run --rm --entrypoint /bin/sh -u "$(RUN_OWNER)" \
+	docker run --rm $(NETWORK_OPT) $(PROXY_ENV) --entrypoint /bin/sh -u "$(RUN_OWNER)" \
 	    -v "$(DEPS_DIR):/deps:ro" -v "$(SCRIPTS_DIR):/scripts:ro" -v "$(UI_DIR):/ui:ro" \
 	    -v "$(UI_ELEMENTS):/elements:ro" -v "$(UI_DIST):/out" $(NODE_IMAGE) \
 	    /scripts/chainlit_ui.sh "/deps/$(notdir $(CHAINLIT_TARBALL))" /ui/overlay /elements /out
