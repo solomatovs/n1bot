@@ -1,0 +1,4 @@
+- menu:
+  - paragraph: dev
+  - separator
+  - menuitem "Выйти"

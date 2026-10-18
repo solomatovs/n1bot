@@ -1,0 +1,13 @@
+- img "logo"
+- heading "Login to access the app" [level=1]
+- img
+- paragraph: SSO sign-in error. Contact support
+- text: Login
+- textbox "Login":
+  - /placeholder: Enter your login
+- text: Password
+- textbox "Password":
+  - /placeholder: Enter your password
+- button
+- button "Sign In"
+- button "Sign in with SSO"

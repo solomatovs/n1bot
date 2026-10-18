@@ -1,0 +1,16 @@
+- main:
+  - button:
+    - img
+  - button:
+    - img
+  - combobox: Общий
+  - button "Описание"
+  - button "Toggle theme"
+  - button "D"
+  - img "logo"
+  - textbox "Введите сообщение здесь..."
+  - img
+  - button [disabled]:
+    - img
+  - button [disabled]:
+    - img
