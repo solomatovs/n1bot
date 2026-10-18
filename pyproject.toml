@@ -230,7 +230,7 @@ extend-immutable-calls = [
     "C901", "E402", "B008", "S603", "RUF012", "PLC0414",
 ]
 "build/test/**" = ["T201", "E402", "TID251", "S603", "PLW1510", "S108"]
-"build/scripts/**" = ["T201", "PLR2004", "PLC0415"]
+"build/scripts/**" = ["T201", "PLR2004", "PLC0415", "S603", "S104"]
 "packages/testing/boba-prompt-assembly/**" = [
     "E501", "SIM110", "C901", "PLW0108", "UP035", "I001", "PLR0911", "PLR2004",
     "PLR0913", "B905", "PLR0912", "UP037", "PLW2901", "S105", "PLR0915", "PLR1714",
