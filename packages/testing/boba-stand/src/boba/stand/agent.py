@@ -19,7 +19,7 @@ import uvicorn
 from pydantic import SecretStr
 
 from boba.agent.agent import Agent, AgentParts
-from boba.agent.attachments import EnvironmentSnapshot
+from boba.agent.attachments import ConnectedServer, EnvironmentSnapshot
 from boba.agent.events import AgentEvent, ControlRequestEvent, EventSink
 from boba.agent.history import HistoryStore, SessionId
 from boba.agent.ids import Clock, SystemClock
@@ -32,6 +32,7 @@ from boba.agent.profile import (
 from boba.agent.records import PermissionMode
 from boba.agent.session import Session
 from boba.agent.skills import Skill
+from boba.agent.tools import McpServerSet
 from boba.connections.sealed import ConnectionOffer, SealedParamSchema
 from boba.history.jsonl import JsonlHistoryStore
 from boba.llm.chat import ChatModel
@@ -371,6 +372,21 @@ class FakeServer:
         return list(self.app.requests)
 
 
+class StandServers(McpServerSet):
+    """Реализация McpServerSet в процессе теста: подключённые серверы с
+    инструкциями задаёт тест полем connected_servers, освежения считаются."""
+
+    def __init__(self, connected: Sequence[ConnectedServer]) -> None:
+        self.connected_servers = list(connected)
+        self.refreshes = 0
+
+    async def refreshed(self) -> None:
+        self.refreshes += 1
+
+    def connected(self) -> Sequence[ConnectedServer]:
+        return self.connected_servers
+
+
 class StandAgents:
     """Собирает агентов на стенд: один транспорт на все."""
 
@@ -431,6 +447,7 @@ class StandAgents:
         limits: TurnLimits | None = None,
         system_prompt: Sequence[str] = SYSTEM_PROMPT,
         tools: ToolServer | None = None,
+        servers: McpServerSet | None = None,
         initial_mode: PermissionMode = PermissionMode.DEFAULT,
         allow_bypass: bool = False,
         classifier: ChatModel | None = None,
@@ -459,6 +476,7 @@ class StandAgents:
             sink=sink,
             version=VERSION,
             tools=tools,
+            servers=servers,
             initial_mode=initial_mode,
             allow_bypass=allow_bypass,
             classifier=classifier,

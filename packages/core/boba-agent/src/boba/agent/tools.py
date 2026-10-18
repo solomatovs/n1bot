@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from abc import abstractmethod
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
@@ -26,7 +27,7 @@ from typing import Any, ClassVar, Protocol, Self
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from boba.agent.attachments import SnapshotTool
+from boba.agent.attachments import ConnectedServer, SnapshotTool
 from boba.agent.control import (
     AllowAnswer,
     CanUseToolRequest,
@@ -81,6 +82,7 @@ __all__ = [
     "AskUserQuestionTool",
     "BatchOutcome",
     "CallResult",
+    "McpServerSet",
     "OwnTool",
     "PlannedCall",
     "Questioner",
@@ -185,6 +187,27 @@ class OwnTool(Protocol):
         QuestionWithdrawnError — ход отменён, пока инструмент ждал ответа.
         """
         ...
+
+
+class McpServerSet(Protocol):
+    """Порт серверов MCP сессии для хода.
+
+    В начале хода ядро просит освежить то, что устарело, — описание
+    сервера, списки инструментов, промптов и ресурсов по сроку свежести
+    ответа сервера, — и спрашивает, какие серверы подключены и с какими
+    инструкциями: из этого и из карточек ToolServer ход объявляет модели
+    разницу инструментов и инструкций. Реализует вход процесса агента над
+    серверами своей сессии; отказ сервера реализация не выпускает: сервер,
+    который не ответил, перестаёт быть подключённым.
+    """
+
+    @abstractmethod
+    async def refreshed(self) -> None:
+        """Устаревшие ответы серверов перечитаны."""
+
+    @abstractmethod
+    def connected(self) -> Sequence[ConnectedServer]:
+        """Подключённые серверы с их инструкциями."""
 
 
 class AskOption(BaseModel):
@@ -515,13 +538,20 @@ class AgentTools:
 
     Создаёт агент при открытии сессии. Карточки инструментов сервера
     берутся у живого сервера при каждом снимке: сервер MCP может сменить
-    список посреди сессии, и ход объявит разницу модели. Собственный
-    инструмент, одноимённый с инструментом сервера, — ошибка на старте и в
-    любом снимке после смены списка.
+    список посреди сессии, и ход объявит разницу модели. Перед этим ход
+    освежает серверы MCP сессии (McpServerSet) и берёт у них инструкции.
+    Собственный инструмент, одноимённый с инструментом сервера, — ошибка на
+    старте и в любом снимке после смены списка.
     """
 
-    def __init__(self, server: ToolServer | None, own: Sequence[OwnTool]) -> None:
+    def __init__(
+        self,
+        server: ToolServer | None,
+        own: Sequence[OwnTool],
+        servers: McpServerSet | None,
+    ) -> None:
         self._server = server
+        self._servers = servers
         self._own: dict[str, OwnTool] = {}
         for tool in own:
             self._own[tool.name] = tool
@@ -531,6 +561,20 @@ class AgentTools:
     @property
     def server(self) -> ToolServer | None:
         return self._server
+
+    async def refreshed(self) -> None:
+        """Устаревшее у серверов MCP сессии перечитано; без них — ничего."""
+        if self._servers is None:
+            return
+
+        await self._servers.refreshed()
+
+    def connected(self) -> Sequence[ConnectedServer]:
+        """Подключённые серверы MCP с инструкциями; без них — пусто."""
+        if self._servers is None:
+            return ()
+
+        return self._servers.connected()
 
     def snapshot(self) -> Sequence[SnapshotTool]:
         """Карточки для снимка промпта: сервера, затем собственные.

@@ -224,6 +224,7 @@ class TurnLoop:
             self._environment,
             self._skills,
             self._budget,
+            self._catalog,
         )
 
     def set_model(
@@ -581,7 +582,10 @@ class TurnLoop:
 
     async def _announce_input(self) -> None:
         """Вложения точки «ввод» (раздел 5.17): окружение, модель, разница
-        инструментов, список скиллов — каждое, только если есть что сообщить."""
+        инструментов, инструкции серверов MCP, список скиллов — каждое,
+        только если есть что сообщить. Перед этим устаревшее у серверов MCP
+        перечитывается: свежесть проверяется там, где списки нужны."""
+        await self._catalog.refreshed()
         announced = Announced(self._session.conversation())
         if self._environment is not None:
             record = self._attachments.environment(
@@ -599,11 +603,14 @@ class TurnLoop:
             await self._keeper.add(record)
 
         await self._announce_tools(announced)
+        await self._announce_instructions(announced)
         await self._announce_skills(announced)
 
     async def _announce_tools(self, announced: Announced) -> None:
         """Список инструментов изменился относительно объявленного: разница
-        вложением и новый снимок; без снимка в разговоре объявляет сам снимок."""
+        вложением и новый снимок; без снимка в разговоре объявляет сам снимок.
+        Инструмент, который разговор уже объявлял и снимал, объявляется
+        вернувшимся."""
         known = announced.tool_names()
         if known is None:
             return
@@ -625,8 +632,14 @@ class TurnLoop:
         if not added and not removed:
             return
 
+        withdrawn = announced.withdrawn_tools()
+        readded: set[str] = set()
+        for tool in added:
+            if tool.name in withdrawn:
+                readded.add(tool.name)
+
         record = self._attachments.tools_delta(
-            self._session.last_chain_uuid(), added, removed
+            self._session.last_chain_uuid(), added, removed, frozenset(readded)
         )
         await self._keeper.add(record)
         await self._keeper.add(
@@ -634,6 +647,19 @@ class TurnLoop:
                 self._session.last_chain_uuid(), self._fresh_snapshot()
             )
         )
+
+    async def _announce_instructions(self, announced: Announced) -> None:
+        """Инструкции подключённых серверов MCP относительно объявленных в
+        разговоре: новые и сменившиеся — блоками, отключившиеся — именами."""
+        record = self._attachments.instructions(
+            self._session.last_chain_uuid(),
+            self._catalog.connected(),
+            announced.instructions(),
+        )
+        if record is None:
+            return
+
+        await self._keeper.add(record)
 
     async def _announce_skills(self, announced: Announced) -> None:
         known = announced.skill_names()

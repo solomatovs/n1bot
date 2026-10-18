@@ -3,8 +3,9 @@
 
 Сервер стандартный (standard_server.py клиента MCP): на нём есть каждый
 запрос и каждое уведомление редакции. Агент согласует его server/discover
-(инструкции — в системном промпте модели), читает инструменты и промпты,
-держит поток subscriptions/listen смены списков через ретранслятор, читает
+(инструкции — вложением хода), читает инструменты и промпты, держит поток
+subscriptions/listen смены списков через ретранслятор и поднимает его снова,
+когда сервер вернулся после обрыва, читает
 ресурсы своими инструментами и раскрывает промпт сервера командой вопроса;
 ретранслятор передаёт серверу личность агента. Что агент предложил модели и
 что она получила, видно по запросам фейковой модели. Методы, которые агент
@@ -25,7 +26,7 @@ from uuid import uuid4
 import mcp_types as mt
 import pytest
 from acp.experimental.v2 import schema
-from acp_stand import Agents, FakeModel, RecordingUpdates
+from acp_stand import Agents, FakeModel, ModelRequests, RecordingUpdates
 from aid_stand import TabSession
 
 from boba.aid.agent.client import AgentProcess, AgentRequestError
@@ -33,8 +34,7 @@ from boba.aid.agent.relay import McpRelay
 from boba.mcp_client.client import McpServerConfig, McpServersConfig
 from boba.stand.signin import SignInStand
 from boba.stand.site import Stand
-from boba.stand.ui.fake_llm import OfferedTools, ScenarioName
-from boba.toolkit.mcp import McpToolNames
+from boba.stand.ui.fake_llm import ScenarioName
 from boba.transport.acp.protocol import (
     McpErrorOutcome,
     McpMessage,
@@ -75,44 +75,20 @@ async def agents(
         await made.close_all()
 
 
-class ModelRequests:
-    """Запросы фейковой модели теста: системный промпт, предложенные
-    инструменты и всё, что модель прочитала в беседе."""
-
-    def __init__(self, model: FakeModel) -> None:
-        self._model = model
-
-    def last(self) -> Mapping[str, Any]:
-        return self._model.app.requests[-1]
-
-    def read(self) -> str:
-        """Беседа последнего запроса одной строкой: вопросы, служебный
-        контекст и итоги инструментов."""
-        return json.dumps(self.last()["messages"], ensure_ascii=False)
-
-    def tool_result(self) -> str:
-        """Итог последнего вызова инструмента, как его прочитала модель."""
-        for message in reversed(self.last()["messages"]):
-            if message["role"] == "tool":
-                return str(message["content"])
-
-        msg = f"the last model request carries no tool result: {self.last()}"
-        raise AssertionError(msg)
-
-    def system(self) -> str:
-        for message in self.last()["messages"]:
-            if message["role"] == "system":
-                return json.dumps(message["content"], ensure_ascii=False)
-
-        return ""
-
-    def offered(self) -> OfferedTools:
-        return OfferedTools(self.last(), McpToolNames())
-
-
 class TestAgentThroughRelay:
     """Агент зовёт сервер только через ретранслятор чата; каждый метод
     редакции, которым он пользуется, проверяется по его следу у модели."""
+
+    INSTRUCTIONS: ClassVar[str] = (
+        "<system-reminder>\n"
+        "# MCP Server Instructions\n\n"
+        "The following MCP servers have provided instructions for how to use "
+        "their tools and resources:\n\n"
+        f"## {SERVER}\n"
+        "Call add for sums; read standard://notes first.\n"
+        "</system-reminder>"
+    )
+    """Вложение с инструкциями сервера, как его читает модель."""
 
     @staticmethod
     def _call(name: str, arguments: Mapping[str, Any]) -> str:
@@ -134,19 +110,21 @@ class TestAgentThroughRelay:
 
         return process, updates, opened.session_id
 
-    async def test_discover_puts_the_instructions_into_the_system_prompt(
+    async def test_discover_gives_the_instructions_as_an_attachment_of_the_turn(
         self, agents: Agents, model: FakeModel
     ) -> None:
-        """server/discover: инструкции сервера — разделом системного промпта."""
+        """server/discover: инструкции сервера модель читает вложением
+        mcp_instructions_delta первого хода дословно по docs/prompt_assembly,
+        системный промпт их не несёт."""
         process, _, session_id = await self._session(agents, "discover")
 
         _, idle = await agents.turn(process, session_id, ScenarioName.ANSWER.value)
 
-        system = ModelRequests(model).system()
+        requests = ModelRequests(model)
+        system = requests.system()
         assert idle.stop_reason == "end_turn"
-        assert "# MCP Server Instructions" in system, system
-        assert f"## {SERVER}" in system, system
-        assert "Call add for sums; read standard://notes first." in system, system
+        assert "# MCP Server Instructions" not in system, system
+        assert requests.saw(self.INSTRUCTIONS), requests.read()
 
     async def test_server_sees_the_client_info_of_the_agent(
         self, agents: Agents, model: FakeModel
@@ -207,6 +185,30 @@ class TestAgentThroughRelay:
             await asyncio.sleep(0.2)
 
         return offered
+
+    async def test_listen_stream_is_raised_again_after_the_server_drops(
+        self, agents: Agents
+    ) -> None:
+        """Поток subscriptions/listen оборвался вместе с сервером: начало
+        следующего хода, когда сервер снова отвечает, поднимает поток, и
+        смена промптов снова доходит до команд сессии без хода."""
+        process, updates, session_id = await self._session(agents, "relisten")
+
+        await agents.turn(process, session_id, self._call("mcp__standard__die", {}))
+        await agents.turn(process, session_id, ScenarioName.ANSWER.value)
+        await agents.turn(
+            process, session_id, self._call("mcp__standard__toggle_prompt", {})
+        )
+        announced: list[str] = []
+        for _ in range(50):
+            announced = self._commands(updates)[-1:]
+            if announced and "mcp__standard__extra_prompt" in announced[0]:
+                break
+
+            await asyncio.sleep(0.1)
+
+        assert announced, self._commands(updates)
+        assert "mcp__standard__extra_prompt" in announced[0], announced
 
     async def test_resources_are_listed_and_read_by_the_agent_tools(
         self, agents: Agents, model: FakeModel
