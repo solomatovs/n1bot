@@ -52,7 +52,7 @@ from boba.aid.agent.settings import (
     AgentSettingsTable,
     ChatAgentSettings,
 )
-from boba.aid.canvas.panel import StreamActions
+from boba.aid.canvas.panel import PanelStorage, StreamActions
 from boba.aid.canvas.remote import RemoteJournals, RemoteStreams
 from boba.aid.canvas.tools import CanvasOpener
 from boba.aid.chat.panel_text import PanelText
@@ -73,7 +73,6 @@ from boba.aid.infra.providers import (
     session_profile,
     thread_agents,
     thread_agents_index,
-    tool_media,
 )
 from boba.aid.infra.session import (
     ChainlitSession,
@@ -88,7 +87,6 @@ from boba.aid.infra.thread_room import (
     ThreadRoom,
     UserRoom,
 )
-from boba.aid.rendering.acp_view import ToolMedia
 from boba.aid.rendering.errors import chainlit_error_ctx_handler
 from boba.cancellation import StopReason
 from boba.canvas.canvas import CanvasAction, CanvasFileRequest, RenderVerdicts
@@ -720,7 +718,7 @@ async def on_canvas_open(
     """Клик по файлу в списке или по ссылке в переписке открывает панель без
     участия агента."""
     request = CanvasFileRequest.model_validate(action.payload)
-    scope = current_session().canvas_scope()
+    scope = await current_session().canvas_scope(PanelStorage.client())
     if scope is None:
         logger.warning("canvas open without a thread session: %s", action.payload)
         return
@@ -745,7 +743,7 @@ async def on_canvas_content(
     по сигналу слежения: слежение не перерегистрируется.
     """
     request = CanvasFileRequest.model_validate(action.payload)
-    scope = current_session().canvas_scope()
+    scope = await current_session().canvas_scope(PanelStorage.client())
     if scope is None:
         return {}
 
@@ -767,7 +765,6 @@ async def on_canvas_stream(
     action: cl.Action,
     journals: Annotated[RemoteJournals, Depends(remote_journals)],
     servers: Annotated[McpServers, Depends(mcp_servers)],
-    media: Annotated[ToolMedia, Depends(tool_media)],
 ) -> dict[str, Any]:
     """Кнопка на шаге инструмента: журнал вызова в панель плюс слежение.
 
@@ -777,22 +774,22 @@ async def on_canvas_stream(
     Пользователь и тред берутся из сессии: чужой журнал по payload недостижим.
     """
     session = current_session()
-    scope = session.canvas_scope()
-    if scope is None:
+    owner = session.canvas_owner()
+    if owner is None:
         return {}
+
+    user_id, thread_id = owner
 
     logger.info(
         "stream show: user=%s thread=%s payload=%s",
-        scope.user_id,
-        scope.thread_id,
+        user_id,
+        thread_id,
         dict(action.payload),
     )
     caller = McpCaller(login=session.identifier, roles=session.roles)
-    streams = RemoteStreams(journals, servers, caller, media)
+    streams = RemoteStreams(journals, servers, caller)
 
-    return await StreamActions.show(
-        scope.user_id, scope.thread_id, action.payload, streams
-    )
+    return await StreamActions.show(user_id, thread_id, action.payload, streams)
 
 
 @cl.action_callback(CanvasAction.WINDOW)
@@ -802,20 +799,19 @@ async def on_canvas_stream_window(
     action: cl.Action,
     journals: Annotated[RemoteJournals, Depends(remote_journals)],
     servers: Annotated[McpServers, Depends(mcp_servers)],
-    media: Annotated[ToolMedia, Depends(tool_media)],
 ) -> dict[str, Any]:
     """Окно журнала или файла по смещению: панель не подменяется."""
     session = current_session()
-    scope = session.canvas_scope()
-    if scope is None:
+    owner = session.canvas_owner()
+    if owner is None:
         return {}
 
-    caller = McpCaller(login=session.identifier, roles=session.roles)
-    streams = RemoteStreams(journals, servers, caller, media)
+    user_id, thread_id = owner
 
-    return await StreamActions.window(
-        scope.user_id, scope.thread_id, action.payload, streams
-    )
+    caller = McpCaller(login=session.identifier, roles=session.roles)
+    streams = RemoteStreams(journals, servers, caller)
+
+    return await StreamActions.window(user_id, thread_id, action.payload, streams)
 
 
 @cl.action_callback(CanvasAction.LEAVE)

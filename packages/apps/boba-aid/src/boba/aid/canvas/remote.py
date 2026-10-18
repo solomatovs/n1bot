@@ -22,7 +22,7 @@ from typing import ClassVar
 import mcp_types as mt
 from mcp.shared.exceptions import MCPError
 
-from boba.aid.rendering.acp_view import JournalRegistry, ToolMedia
+from boba.aid.rendering.acp_view import JournalRegistry
 from boba.canvas.canvas import WatchProbe, WatchSource
 from boba.canvas.journal import StreamSlice
 from boba.mcp_client.client import (
@@ -76,10 +76,10 @@ class RemoteJournals(JournalRegistry):
 class RemoteStreams:
     """Чтение журналов вызовов MCP-серверов для панели живого вывода.
 
-    Создаётся обработчиком действия панели из реестра журналов, клиента MCP,
-    пользователя сессии и знаний ленты о серверах (ToolMedia: адреса
-    каналов журнала для подписки): сервер отдаёт журнал только тому, кто
-    вызывал.
+    Создаётся обработчиком действия панели из реестра журналов, клиента MCP
+    и пользователя сессии: сервер отдаёт журнал только тому, кто вызывал;
+    адреса каналов журнала для подписки — из описания сервера в кэше его
+    порта.
     Панель зовёт его, когда своего журнала у вызова нет: окно читает
     resources/read канала, адрес журнала даёт реестр RemoteJournals.
     """
@@ -89,12 +89,10 @@ class RemoteStreams:
         journals: RemoteJournals,
         servers: McpServers,
         caller: McpCaller,
-        media: ToolMedia,
     ) -> None:
         self._journals = journals
         self._servers = servers
         self._caller = caller
-        self._media = media
 
     async def slice_at(
         self, thread_id: str, call_id: str, channel: JournalChannel, offset: int
@@ -145,22 +143,36 @@ class RemoteStreams:
         listened: tuple[McpToolServer, str] | None = None
         address = await self._journals.address(thread_id, call_id)
         if address is not None:
-            if uris := self._media.journal(address.server):
-                read = JournalRead(run=address.run, node=address.call, channel=channel)
-                try:
-                    port = await self._servers.port(address.server, self._caller)
-                except McpClientError as exc:
-                    logger.warning(
-                        "journal watch: call %s of thread %s is polled, the "
-                        "server is not reachable to listen: %s",
-                        call_id,
-                        thread_id,
-                        exc,
-                    )
-                else:
-                    listened = (port, uris.uri(read))
+            listened = await self._listened(address, channel)
 
         return ListenedChannelWatch(self, thread_id, call_id, channel, listened)
+
+    async def _listened(
+        self, address: JournalAddress, channel: JournalChannel
+    ) -> tuple[McpToolServer, str] | None:
+        """Порт сервера журнала и uri канала для подписки; None — сервер не
+        объявил журнал либо не ответил (причина в логе)."""
+        port = await self._servers.port(address.server, self._caller)
+        try:
+            described = await port.described(McpServers.OWN)
+        except (McpClientError, MCPError) as exc:
+            logger.warning(
+                "journal watch: call %s of run %s is polled, the server %s is "
+                "not reachable to listen: %s",
+                address.call,
+                address.run,
+                address.server,
+                exc,
+            )
+            return None
+
+        links = described.links()
+        if links is None:
+            return None
+
+        read = JournalRead(run=address.run, node=address.call, channel=channel)
+
+        return port, links.uri(read)
 
 
 class ListenedChannelWatch(WatchSource):
@@ -260,7 +272,7 @@ class ListenedChannelWatch(WatchSource):
         возвращается к опросу."""
         notifications = mt.SubscriptionFilter(resource_subscriptions=[uri])
         try:
-            async with port.listen(notifications) as subscription:
+            async with port.listen(McpServers.OWN, notifications) as subscription:
                 honored = subscription.honored.resource_subscriptions
                 if honored is None or uri not in honored:
                     logger.warning(

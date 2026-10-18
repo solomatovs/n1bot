@@ -637,13 +637,16 @@ class StreamActions:
     async def _file_window(
         user_id: str, thread_id: str, request: StreamWindowRequest
     ) -> dict[str, Any]:
+        storage = PanelStorage.client()
+        workspace = await storage.workspace(user_id, thread_id)
+        scope = CanvasScope(user_id=user_id, thread_id=thread_id, workspace=workspace)
         try:
-            key = CanvasScope(user_id=user_id, thread_id=thread_id).key(request.path)
+            key = scope.key(request.path)
         except CanvasError as exc:
             logger.warning("stream window: bad path %s: %s", request.path, exc)
             return {}
 
-        windows = StorageWindows(PanelStorage.client(), key.render())
+        windows = StorageWindows(storage, key.render())
 
         try:
             if request.before is not None:
