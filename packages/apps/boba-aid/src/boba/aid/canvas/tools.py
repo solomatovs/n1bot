@@ -96,9 +96,12 @@ class CanvasOpener:
         if viewer is None:
             return CanvasPanel.notice(key, mime)
 
+        if not watch:
+            return await viewer.content(key, mime)
+
+        file_watch = await CanvasPanel.watch_file(key, viewer)
         described = await viewer.content(key, mime)
-        if watch:
-            CanvasPanel.watch_file(key, viewer, described.nonce)
+        file_watch.start(described.nonce)
 
         return described
 
