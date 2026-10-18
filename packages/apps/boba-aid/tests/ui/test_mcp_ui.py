@@ -3,7 +3,9 @@
 Стенд поднимается с MCP-серверами: обычным (официальный SDK, stdio),
 который о boba не знает, своим boba-mcp отдельным процессом по HTTP и тем же
 обычным сервером по HTTP дважды — с секцией apps (его приложения рисуются в
-песочнице на localhost, чат открыт на 127.0.0.1) и без неё.
+песочнице на localhost, чат открыт на 127.0.0.1) и без неё. Второй стенд —
+с официальными примерами MCP Apps редакции 2025-11-25 из контейнера
+boba-testapps, у каждого своя песочница: чат согласует с ними initialize.
 Серверы получает агент треда (`session/new.mcpServers`); фейковая модель
 зовёт их инструменты под полными именами (сервер и имя инструмента на
 нём), шаг ленты подписан именем без сервера. Проверяется то, что
@@ -31,7 +33,7 @@ from typing import Any, ClassVar
 from urllib.parse import urlencode, urlsplit, urlunsplit
 
 import pytest
-from acp_stand import AppsHost, OrdersBook
+from acp_stand import AppsHost, OrdersBook, SandboxHost
 from chat_ui import BOOT_TIMEOUT_SEC, OpenChat
 from playwright.sync_api import (
     Browser,
@@ -40,10 +42,12 @@ from playwright.sync_api import (
     FrameLocator,
     Locator,
     Page,
+    expect,
 )
 
 from boba.aid.chat.ui_text import UiText
 from boba.mcp_client.client import McpServerConfig
+from boba.stand.apps_slot import AppServer, AppsSlot
 from boba.stand.ui.chat_page import ChatPage, Selector, StepKind
 from boba.stand.ui.fake_llm import (
     Reply,
@@ -1260,3 +1264,275 @@ class TestServerQuestion:
         step = self._finished(chat)
         if "the user answered decline" not in str(step.get(StepField.OUTPUT.value)):
             raise AssertionError(f"the server got the refusal: {step}")
+
+
+@pytest.fixture(scope="module")
+def example_stand(
+    stand_workdir: Path,
+    llm_port: int,
+    fake_llm: None,
+    stand_database: str,
+    apps_slot: AppsSlot,
+) -> Iterator[StandProcess]:
+    """Стенд чата с официальными примерами MCP Apps из npm (сегменты
+    клиентов и отладка) в контейнере boba-testapps, у каждого — своя
+    песочница на своём источнике."""
+    segments = SandboxHost(stand_workdir / "sandbox-segments")
+    debug = SandboxHost(stand_workdir / "sandbox-debug")
+    config = StandConfig(
+        workdir=stand_workdir / "chat-examples",
+        app=StandApp.AID,
+        app_port=StandPorts().free(),
+        llm_port=llm_port,
+        db_name=stand_database,
+        url_prefix="/boba-examples",
+        mcp_servers={
+            "segments": segments.drawn(apps_slot.host, AppServer.SEGMENTS.value),
+            "debug": debug.drawn(apps_slot.host, AppServer.DEBUG.value),
+        },
+    )
+    process = StandProcess(config=config, log_path=stand_workdir / "examples.log")
+    try:
+        process.start(boot_timeout_sec=BOOT_TIMEOUT_SEC)
+        yield process
+    finally:
+        process.stop()
+        segments.stop()
+        debug.stop()
+
+
+class ExampleBook(StrEnum):
+    """Вопросы и ответы книги фейковой модели для примеров MCP Apps."""
+
+    SEGMENTS = "Покажи сегменты клиентов: выручка против числа сотрудников"
+    SEGMENTS_ANSWER = "Крупные клиенты держатся в правом верхнем углу."
+    DEBUG = "Покажи, что хост передаёт приложению"
+    DEBUG_ANSWER = "Приложение отладки показывает контекст хоста."
+    SLOW = "Вызови отладку с задержкой"
+    SLOW_ANSWER = "Не дождался."
+    MESSAGE = "Message from debug app"
+    """Вопрос, который приложение отладки шлёт ui/message."""
+    MESSAGE_ANSWER = "Got the message of the app."
+    CONTEXT = "Current app state info"
+    """Текст ui/update-model-context приложения отладки."""
+
+
+class ExampleApp:
+    """Приложение примера MCP Apps глазами теста: вопрос книге ответов, его
+    карточка в ленте и само приложение внутри страницы-прокси песочницы.
+    Ошибки страницы чата копятся с открытия: их не должно быть."""
+
+    CARD: ClassVar[str] = "[data-mcp-app]"
+    WAIT_MS: ClassVar[float] = 60_000
+    POLL_MS: ClassVar[float] = 200
+
+    def __init__(self, chat: ChatPage, llm_port: int) -> None:
+        self.chat = chat
+        self.errors: list[str] = []
+        chat.page.on("pageerror", self._failed)
+        ReplyBookClient(StandUrl.of(llm_port)).register(self._book())
+
+    def _failed(self, error: Error) -> None:
+        self.errors.append(str(error))
+
+    def _book(self) -> list[Reply]:
+        """Книга ответов: по вопросу — вызов инструмента примера и ответ
+        после итога."""
+        segments = ReplyCall(
+            tool="mcp__segments__get-customer-data",
+            arguments={"segment": "All"},
+            intent="Сегменты клиентов",
+        )
+        debug = ReplyCall(
+            tool="mcp__debug__debug-tool",
+            arguments={"contentType": "text", "includeStructuredContent": True},
+            intent="Контекст хоста",
+        )
+        slow = ReplyCall(
+            tool="mcp__debug__debug-tool",
+            arguments={"contentType": "text", "delayMs": 60000},
+            intent="Долгая отладка",
+        )
+        in_context = "\n".join((ExampleBook.MESSAGE, ExampleBook.CONTEXT))
+        answered = [ReplyTurn(content=ExampleBook.MESSAGE_ANSWER)]
+
+        return [
+            Reply(
+                question=ExampleBook.SEGMENTS,
+                turns=[
+                    ReplyTurn(calls=[segments]),
+                    ReplyTurn(content=ExampleBook.SEGMENTS_ANSWER),
+                ],
+            ),
+            Reply(
+                question=ExampleBook.DEBUG,
+                turns=[
+                    ReplyTurn(calls=[debug]),
+                    ReplyTurn(content=ExampleBook.DEBUG_ANSWER),
+                ],
+            ),
+            Reply(
+                question=ExampleBook.SLOW,
+                turns=[
+                    ReplyTurn(calls=[slow]),
+                    ReplyTurn(content=ExampleBook.SLOW_ANSWER),
+                ],
+            ),
+            Reply(question=ExampleBook.MESSAGE, turns=answered),
+            Reply(question=in_context, turns=answered),
+        ]
+
+    @property
+    def page(self) -> Page:
+        return self.chat.page
+
+    def ask(self, question: ExampleBook, answer: ExampleBook) -> Locator:
+        """Ход с вызовом инструмента примера: карточка его приложения."""
+        self.chat.ask(question.value)
+        self.chat.await_idle(timeout_sec=120.0)
+        self.page.get_by_text(answer.value).last.wait_for(timeout=self.WAIT_MS)
+
+        return self.page.locator(self.CARD).last
+
+    def app(self, card: Locator) -> FrameLocator:
+        """Приложение в странице-прокси песочницы карточки."""
+        app = card.frame_locator("iframe").first.frame_locator("iframe")
+        app.locator("body").wait_for(timeout=self.WAIT_MS)
+
+        return app
+
+    def logged(self, app: FrameLocator, event: str) -> None:
+        """Журнал приложения отладки записал событие event."""
+        entry = app.locator("#event-log").get_by_text(f"{event}:").first
+        entry.wait_for(timeout=self.WAIT_MS)
+
+    def themed(self, app: FrameLocator) -> None:
+        """Переменные стилей приложения сошлись с токенами чата его темы."""
+        wanted = self.page.evaluate(ThemeProbe.CHAT)
+        deadline = time.monotonic() + self.WAIT_MS / 1000
+        seen = app.locator("body").evaluate(ThemeProbe.APP)
+        while seen != wanted:
+            if time.monotonic() > deadline:
+                msg = f"the app takes {seen}, the chat has {wanted}"
+                raise AssertionError(msg)
+
+            self.page.wait_for_timeout(self.POLL_MS)
+            seen = app.locator("body").evaluate(ThemeProbe.APP)
+
+    def callbacks(self, app: FrameLocator) -> dict[str, int]:
+        """Счётчики колбэков приложения отладки по его таблице."""
+        rows = app.locator("#callback-table-body tr").all_inner_texts()
+        counts: dict[str, int] = {}
+        for row in rows:
+            cells = row.split("\t")
+            counts[cells[0].strip()] = int(cells[2].strip())
+
+        return counts
+
+    def check_clean(self) -> None:
+        if self.errors:
+            raise AssertionError(f"the chat page raised errors: {self.errors}")
+
+
+class TestExampleApps:
+    """Официальные примеры MCP Apps из npm (TypeScript SDK v2, редакция
+    2025-11-25) в основной ленте: карточка приложения сегментов берёт тему и
+    шрифт чата; приложение отладки получает ввод и итог вызова и контекст
+    хоста, зовёт свой инструмент только для приложения, меняет режим
+    показа, передаёт контекст модели и сообщение агенту; остановка хода
+    отменяет вызов, итог которого рисует приложение."""
+
+    def test_card_of_an_example_app_takes_the_theme_and_font_of_the_chat(
+        self, example_stand: StandProcess, open_chat: OpenChat, llm_port: int
+    ) -> None:
+        example = ExampleApp(open_chat(example_stand, ""), llm_port)
+        card = example.ask(ExampleBook.SEGMENTS, ExampleBook.SEGMENTS_ANSWER)
+        app = example.app(card)
+
+        message = card.locator("xpath=ancestor::*[@data-step-type][1]")
+        if message.get_attribute("data-step-type") != StepKind.ASSISTANT.value:
+            raise AssertionError("the card is a message of the main feed")
+
+        for dark in (False, True):
+            example.page.evaluate(
+                "(dark) => document.documentElement.classList.toggle('dark', dark)",
+                dark,
+            )
+            example.themed(app)
+
+        if not app.locator("body").evaluate(ThemeProbe.FONT):
+            raise AssertionError("the app loaded the Inter font of the chat")
+
+        example.check_clean()
+
+    def test_debug_app_hears_the_call_and_the_host_and_calls_its_server(
+        self, example_stand: StandProcess, open_chat: OpenChat, llm_port: int
+    ) -> None:
+        example = ExampleApp(open_chat(example_stand, ""), llm_port)
+        card = example.ask(ExampleBook.DEBUG, ExampleBook.DEBUG_ANSWER)
+        app = example.app(card)
+        example.logged(app, "ontoolresult")
+
+        app.locator("#call-debug-refresh-btn").click()
+        example.logged(app, "server-tool-result")
+        app.locator("#display-fullscreen-btn").click()
+        expect(card).to_have_attribute(
+            "data-display-mode", "fullscreen", timeout=ExampleApp.WAIT_MS
+        )
+        app.locator("#display-inline-btn").click()
+        expect(card).to_have_attribute(
+            "data-display-mode", "inline", timeout=ExampleApp.WAIT_MS
+        )
+        host = app.locator("#host-info-content").inner_text()
+        counts = example.callbacks(app)
+
+        assert "boba-aid" in host, host
+        assert counts["ontoolinput"] == 1, counts
+        assert counts["ontoolresult"] == 1, counts
+        assert counts["onhostcontextchanged"] >= 2, counts
+        example.check_clean()
+
+    def test_context_and_message_of_the_debug_app_reach_the_agent(
+        self, example_stand: StandProcess, open_chat: OpenChat, llm_port: int
+    ) -> None:
+        """ui/update-model-context уходит модели со следующим вопросом —
+        ui/message приложения."""
+        example = ExampleApp(open_chat(example_stand, ""), llm_port)
+        app = example.app(example.ask(ExampleBook.DEBUG, ExampleBook.DEBUG_ANSWER))
+
+        app.locator("#update-context-text-btn").click()
+        example.logged(app, "update-context")
+        app.locator("#message-text").fill(ExampleBook.MESSAGE.value)
+        app.locator("#send-message-text-btn").click()
+        example.page.get_by_text(ExampleBook.MESSAGE_ANSWER.value).last.wait_for(
+            timeout=ExampleApp.WAIT_MS
+        )
+
+        reply = example.page.request.get(StandUrl.of(llm_port, "/requests"))
+        asked: list[str] = []
+        for payload in reply.json()["requests"]:
+            messages = json.dumps(payload.get("messages"), ensure_ascii=False)
+            if ExampleBook.MESSAGE.value in messages:
+                asked.append(messages)
+
+        assert asked, "ui/message of the app reaches the model"
+        assert ExampleBook.CONTEXT.value in asked[-1], asked[-1]
+        example.check_clean()
+
+    def test_stopped_turn_cancels_the_call_drawn_by_the_app(
+        self, example_stand: StandProcess, open_chat: OpenChat, llm_port: int
+    ) -> None:
+        example = ExampleApp(open_chat(example_stand, ""), llm_port)
+        example.chat.ask(ExampleBook.SLOW.value)
+        card = example.page.locator(ExampleApp.CARD).last
+        card.wait_for(timeout=ExampleApp.WAIT_MS)
+        app = example.app(card)
+        example.logged(app, "ontoolinput")
+
+        example.page.locator("#stop-button").click()
+        example.logged(app, "ontoolcancelled")
+        counts = example.callbacks(app)
+
+        assert counts["ontoolcancelled"] == 1, counts
+        assert counts["ontoolresult"] == 0, counts
+        example.check_clean()

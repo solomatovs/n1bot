@@ -1,5 +1,6 @@
 """Ретранслятор mcp/message без агента: запросы MCP по serverId регистрации
-исполняют настоящие серверы — обычный сервер на SDK mcp по stdio и стенд
+исполняют настоящие серверы — обычный сервер на SDK mcp по stdio, сервер
+редакции 2025-11-25 на TypeScript SDK 1.x в контейнере boba-testapps и стенд
 boba-mcp со входом proxy. Проверяются строки таблицы ошибок MCP-over-ACP,
 встроенные методы SDK, видимость инструментов для модели и приложения MCP
 Apps, ход вызова и запечатывание соединений пользователя."""
@@ -7,6 +8,7 @@ Apps, ход вызова и запечатывание соединений п�
 from __future__ import annotations
 
 import asyncio
+import json
 import secrets
 from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -42,12 +44,14 @@ from boba.db.postgres.connection import PostgresConfig
 from boba.identity.context import DelegatedTicket, NoUserCredential, Scope
 from boba.identity.errors import AuthenticationError, RefusalError
 from boba.mcp_client.client import (
+    HttpEndpoint,
     McpServerApps,
     McpServerConfig,
     McpServers,
     McpServersConfig,
 )
 from boba.messaging import Envelope, JournalOpened
+from boba.stand.apps_slot import AppServer, AppsSlot
 from boba.stand.refs import StandRefs
 from boba.stand.signin import SignInStand
 from boba.stand.toolstand import ProbeTools
@@ -91,7 +95,8 @@ def relay_stand(call_stand: CallStand) -> RelayStand:
 class TestMcpRelay:
     """Ретранслятор над обычным сервером: таблица ошибок, встроенные
     методы SDK, видимость инструментов, ход вызова и отказ запечатывания
-    серверу, который не принимает соединений."""
+    серверу, который не принимает соединений. Сервер редакции 2025-11-25
+    агент видит обычным сервером 2026-07-28."""
 
     ENVELOPE: ClassVar[dict[str, Any]] = {
         mt.PROTOCOL_VERSION_META_KEY: McpVersion.V2026_07_28.value,
@@ -103,6 +108,26 @@ class TestMcpRelay:
         self, relay_stand: RelayStand, standard: McpServerConfig
     ) -> AsyncIterator[McpRelay]:
         servers = McpServers(McpServersConfig(servers={"standard": standard}))
+        try:
+            yield relay_stand.relay(servers)
+        finally:
+            await servers.stop()
+
+    @pytest.fixture
+    async def legacy_relay(
+        self, relay_stand: RelayStand, apps_slot: AppsSlot
+    ) -> AsyncIterator[McpRelay]:
+        """Ретранслятор над своим сервером редакции 2025-11-25."""
+        endpoint = HttpEndpoint(
+            scheme="http",
+            host=apps_slot.host,
+            port=AppServer.LEGACY.value,
+            path=apps_slot.PATH,
+        )
+        legacy = McpServerConfig(
+            endpoint=endpoint, connect_timeout_sec=20.0, call_timeout_sec=60.0
+        )
+        servers = McpServers(McpServersConfig(servers={"legacy": legacy}))
         try:
             yield relay_stand.relay(servers)
         finally:
@@ -132,10 +157,10 @@ class TestMcpRelay:
 
         return outcome, notes
 
-    def _server_id(self, stand: RelayStand, tab: TabSession) -> str:
+    def _server_id(self, stand: RelayStand, tab: TabSession, server: str) -> str:
         registration = tab.registration(uuid4(), SignInStand.PROFILE)
 
-        return stand.registrations.register(registration, ["standard"])[0].server_id
+        return stand.registrations.register(registration, [server])[0].server_id
 
     async def test_unknown_server_id_is_an_external_error(
         self, relay: McpRelay
@@ -151,7 +176,7 @@ class TestMcpRelay:
     async def test_request_id_in_work_is_an_external_error(
         self, relay: McpRelay, relay_stand: RelayStand, tab: TabSession
     ) -> None:
-        server_id = self._server_id(relay_stand, tab)
+        server_id = self._server_id(relay_stand, tab, "standard")
         slow = self._message(
             server_id,
             "tools/call",
@@ -171,7 +196,7 @@ class TestMcpRelay:
     async def test_envelope_and_version_are_inner_errors(
         self, relay: McpRelay, relay_stand: RelayStand, tab: TabSession
     ) -> None:
-        server_id = self._server_id(relay_stand, tab)
+        server_id = self._server_id(relay_stand, tab, "standard")
         bare = McpMessage(
             server_id=server_id, request_id="mcp:bare", method="tools/list", params={}
         )
@@ -195,7 +220,7 @@ class TestMcpRelay:
         """server/discover отдаёт возможности, инструкции и serverInfo
         сервера за регистрацией; ping и методы вне редакции SDK отвечает
         -32601."""
-        server_id = self._server_id(relay_stand, tab)
+        server_id = self._server_id(relay_stand, tab, "standard")
 
         discovered, _ = await self._answer(
             relay, self._message(server_id, "server/discover", {})
@@ -219,10 +244,113 @@ class TestMcpRelay:
         assert isinstance(unknown, McpErrorOutcome), unknown
         assert unknown.error.code == mt.METHOD_NOT_FOUND
 
+    async def test_initialize_of_an_earlier_edition_is_refused_with_the_versions(
+        self, relay: McpRelay, relay_stand: RelayStand, tab: TabSession
+    ) -> None:
+        """Рукопожатия у ретранслятора нет: initialize — отказ -32022 с
+        перечнем его версий, а не ошибка конверта."""
+        server_id = self._server_id(relay_stand, tab, "standard")
+        handshake = McpMessage(
+            server_id=server_id,
+            request_id="mcp:init",
+            method="initialize",
+            params={
+                "protocolVersion": "2025-11-25",
+                "capabilities": {},
+                "clientInfo": {"name": "old-agent", "version": "1"},
+            },
+        )
+
+        outcome, _ = await self._answer(relay, handshake)
+
+        assert isinstance(outcome, McpErrorOutcome), outcome
+        assert outcome.error.code == mt.UNSUPPORTED_PROTOCOL_VERSION
+        assert outcome.error.data == {
+            "supported": [McpVersion.V2026_07_28.value],
+            "requested": "2025-11-25",
+        }
+        assert "initialize" in outcome.error.message
+
+    @pytest.mark.integration
+    async def test_server_of_the_handshake_era_is_discovered_as_a_modern_one(
+        self, legacy_relay: McpRelay, relay_stand: RelayStand, tab: TabSession
+    ) -> None:
+        """server/discover агенту — редакции 2026-07-28 с инструкциями и
+        serverInfo из initialize сервера и без смены списков: потоков
+        подписки у такого сервера нет."""
+        server_id = self._server_id(relay_stand, tab, "legacy")
+
+        discovered, _ = await self._answer(
+            legacy_relay, self._message(server_id, "server/discover", {})
+        )
+
+        assert isinstance(discovered, McpResultOutcome), discovered
+        result = mt.DiscoverResult.model_validate(discovered.result)
+        assert result.supported_versions == [McpVersion.V2026_07_28.value]
+        assert result.instructions, result
+        assert result.meta is not None
+        assert result.meta[mt.SERVER_INFO_META_KEY]["name"] == "legacy-standard"
+        assert result.capabilities.tools == mt.ToolsCapability(list_changed=False)
+        assert result.capabilities.resources == mt.ResourcesCapability(
+            subscribe=False, list_changed=False
+        )
+
+    @pytest.mark.integration
+    async def test_tools_of_the_handshake_era_hide_the_app_and_task_only_ones(
+        self, legacy_relay: McpRelay, relay_stand: RelayStand, tab: TabSession
+    ) -> None:
+        """Инструмент только для приложения и инструмент, который сервер
+        исполняет только задачей, агент не видит и вызвать не может."""
+        server_id = self._server_id(relay_stand, tab, "legacy")
+        task_only = {"name": "slow_report", "arguments": {}}
+
+        listed, _ = await self._answer(
+            legacy_relay, self._message(server_id, "tools/list", {})
+        )
+        called, _ = await self._answer(
+            legacy_relay, self._message(server_id, "tools/call", task_only)
+        )
+
+        assert isinstance(listed, McpResultOutcome), listed
+        tools = mt.ListToolsResult.model_validate(listed.result).tools
+        names = [tool.name for tool in tools]
+        assert "add" in names, names
+        assert "archive_orders" in names, names
+        assert "refresh_orders" not in names, names
+        assert "slow_report" not in names, names
+        assert isinstance(called, McpErrorOutcome), called
+        assert called.error.code == mt.INVALID_PARAMS
+        assert "'slow_report'" in called.error.message
+
+    @pytest.mark.integration
+    async def test_call_reaches_the_handshake_era_without_the_envelope_of_the_agent(
+        self, legacy_relay: McpRelay, relay_stand: RelayStand, tab: TabSession
+    ) -> None:
+        """Вызов проходит, ход идёт агенту; конверт версии и личности агента
+        из _meta запроса серверу не уходит — его ставит сессия."""
+        server_id = self._server_id(relay_stand, tab, "legacy")
+        echo = {
+            "name": "client",
+            "arguments": {},
+            "_meta": {"progressToken": "call_002"},
+        }
+
+        outcome, _ = await self._answer(
+            legacy_relay, self._message(server_id, "tools/call", echo)
+        )
+
+        assert isinstance(outcome, McpResultOutcome), outcome
+        reply = mt.CallToolResult.model_validate(outcome.result)
+        block = reply.content[0]
+        assert isinstance(block, mt.TextContent), reply
+        seen = json.loads(block.text)
+        assert sorted(seen["meta"]) == ["progressToken"], seen
+        assert seen["info"] == McpServers.OWN.info.model_dump(exclude_none=True)
+
     async def test_tool_for_the_app_is_neither_listed_nor_called(
         self, relay: McpRelay, relay_stand: RelayStand, tab: TabSession
     ) -> None:
-        server_id = self._server_id(relay_stand, tab)
+        server_id = self._server_id(relay_stand, tab, "standard")
         call = {"name": "refresh_orders", "arguments": {}}
 
         listed, _ = await self._answer(
@@ -247,7 +375,7 @@ class TestMcpRelay:
     async def test_progress_reaches_the_agent_under_its_token(
         self, relay: McpRelay, relay_stand: RelayStand, tab: TabSession
     ) -> None:
-        server_id = self._server_id(relay_stand, tab)
+        server_id = self._server_id(relay_stand, tab, "standard")
         call = {
             "name": "progress",
             "arguments": {"steps": 2},
@@ -324,7 +452,7 @@ class TestMcpRelay:
     async def test_input_required_and_server_errors_come_back_as_they_are(
         self, relay: McpRelay, relay_stand: RelayStand, tab: TabSession
     ) -> None:
-        server_id = self._server_id(relay_stand, tab)
+        server_id = self._server_id(relay_stand, tab, "standard")
         asking = {"name": "ask", "arguments": {"refuse": False}}
         refusing = {"name": "ask", "arguments": {"refuse": True}}
 
@@ -344,7 +472,7 @@ class TestMcpRelay:
     async def test_dead_server_is_an_external_error(
         self, relay: McpRelay, relay_stand: RelayStand, tab: TabSession
     ) -> None:
-        server_id = self._server_id(relay_stand, tab)
+        server_id = self._server_id(relay_stand, tab, "standard")
         message = self._message(server_id, "tools/call", {"name": "die"})
 
         with pytest.raises(RequestError) as refused:

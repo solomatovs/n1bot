@@ -1,0 +1,12 @@
+{
+  "name": "boba-testapps",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "MCP servers of the 2025-11-25 edition for the integration tests of the MCP client of boba",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "@modelcontextprotocol/server-customer-segmentation": "2.0.3",
+    "@modelcontextprotocol/server-debug": "2.0.3"
+  }
+}
