@@ -248,10 +248,23 @@ def service(
 def lasting(
     tmp_path_factory: pytest.TempPathFactory, stand_postgres: PostgresConfig
 ) -> Iterator[StandProcess[ServiceStand]]:
-    """Сервис с заданным поколением сессий и коротким токеном доступа: вход
-    переживает рестарт, а токен приходится продлевать."""
+    """Сервис с заданным поколением сессий и коротким токеном доступа:
+    токен приходится продлевать."""
     yield from _service(
         tmp_path_factory.mktemp("sign-in-lasting"), stand_postgres, "stand", 4
+    )
+
+
+@pytest.fixture(scope="module")
+def kept(
+    tmp_path_factory: pytest.TempPathFactory, stand_postgres: PostgresConfig
+) -> Iterator[StandProcess[ServiceStand]]:
+    """Сервис с заданным поколением сессий и токеном доступа, который живёт
+    дольше рестарта: вход переживает рестарт без продления."""
+    # на 401 клиент MCP зовёт браузер, а не продлевает токен: срок не должен
+    # кончиться посреди рестарта
+    yield from _service(
+        tmp_path_factory.mktemp("sign-in-kept"), stand_postgres, "stand", 300
     )
 
 
@@ -502,16 +515,16 @@ class TestLastingSession:
 
     def test_session_survives_a_restart(
         self,
-        lasting: StandProcess[ServiceStand],
+        kept: StandProcess[ServiceStand],
         opened: OpenedLinks,
         login_page: LoginPage,
     ) -> None:
         storage = MemoryStore()
-        _signed_in(lasting, storage, opened, login_page)
+        _signed_in(kept, storage, opened, login_page)
 
-        _restart(lasting)
+        _restart(kept)
 
-        tools = _connected(lasting, storage)
+        tools = _connected(kept, storage)
         if TOOL not in tools:
             raise AssertionError(f"the kept sign-in reaches the tools: {tools}")
 

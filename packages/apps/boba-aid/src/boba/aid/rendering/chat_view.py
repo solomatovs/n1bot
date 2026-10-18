@@ -9,6 +9,7 @@ import csv
 import io
 import json
 import logging
+import re
 from abc import ABC, abstractmethod
 from collections import deque
 from collections.abc import (
@@ -36,7 +37,9 @@ from chainlit.step import Step
 from chainlit.utils import utc_now
 from literalai.observability.step import TrueStepType
 
+from boba.aid.chat.ui_text import UiText
 from boba.aid.domain.keys import CanvasFileUrl
+from boba.aid.rendering.question import QuestionCard
 from boba.aid.rendering.tool import ChatElements, ToolAppView
 from boba.canvas.canvas import (
     CanvasAction,
@@ -55,6 +58,7 @@ from boba.toolkit.result import (
     ContentMime,
     Fence,
     JsonBlock,
+    NoteLine,
     TableText,
     VisualResult,
 )
@@ -80,18 +84,30 @@ logger = logging.getLogger(__name__)
 
 
 class StepText(StrEnum):
-    """Тексты шагов ленты."""
+    """Ключи подписей ленты в переводах chainlit: строку на языке интерфейса
+    даёт ChatView.label."""
 
-    CONTAINER = "process..."
-    REQUESTED = "process... (request sent)"
+    CONTAINER = "aid.feed.working"
+    """Контейнер идущего хода."""
+
+    REQUESTED = "aid.feed.requested"
     """Подпись контейнера, пока модель молчит: ход уже идёт, токенов ещё нет."""
 
-    RUNNING = "running"
-    THINKING = "thinking"
-    TOOL = "tool"
-    STOPPED = "stopped by the user"
-    FINISHED = "finished"
-    TURN_FAILED = "turn failed"
+    DONE = "aid.feed.done"
+    """Контейнер законченного хода без шагов."""
+
+    DONE_STEPS = "aid.feed.doneSteps"
+    """Контейнер законченного хода с числом его шагов."""
+
+    RUNNING = "aid.feed.running"
+    THINKING = "aid.feed.thinking"
+    TOOL = "aid.feed.tool"
+    STOPPED = "aid.feed.stoppedByUser"
+    FINISHED = "aid.feed.unfinished"
+    """Выход вызова, который не закончился к концу хода."""
+
+    NO_ROWS = "aid.feed.noRows"
+    """Пустая таблица результата."""
 
 
 class StepKind(StrEnum):
@@ -118,46 +134,97 @@ class StepLanguage(StrEnum):
 
 
 class StepStatus(StrEnum):
-    """Статусный кружок в названии шага."""
+    """Статусный знак в названии шага: идёт, готово, провал и остановка.
+
+    Провал (ошибка инструмента) рисуется ещё и цветом ошибки (is_error шага);
+    остановленный вызов — ход прервали раньше, чем он закончился, — не
+    ошибка и отмечается нейтрально.
+    """
 
     IDLE = "○"
     DONE = "✔"
     FAILED = "✖"
+    STOPPED = "⊘"
 
     def title(self, name: str) -> str:
         """Название шага со статусным кружком слева."""
         return f"{self.value} {name}"
 
-    def timed(self, name: str, elapsed_ms: int) -> str:
-        """То же название с длительностью вызова; неизмеренное время опускается."""
-        label = StepElapsed.of(elapsed_ms)
-        if not label:
+    def timed(self, name: str, elapsed: str) -> str:
+        """То же название с длительностью вызова; пустая длительность опускается."""
+        if not elapsed:
             return self.title(name)
 
-        return f"{self.title(name)} · {label}"
+        return f"{self.title(name)}{ToolStepLabel.SEPARATOR}{elapsed}"
+
+
+class ElapsedText(StrEnum):
+    """Ключи единиц длительности вызова в переводах chainlit."""
+
+    MILLISECONDS = "aid.feed.elapsedMs"
+    SECONDS = "aid.feed.elapsedSec"
+    MINUTES = "aid.feed.elapsedMin"
 
 
 class StepElapsed:
-    """Длительность вызова в названии шага."""
+    """Длительность вызова в названии шага, единицами языка интерфейса: и
+    подпись, и её разбор — регулярное выражение по тем же переводам.
+
+    Создаётся лентой (ChatView) из её подписей; разбором пользуются тесты,
+    сверяющие название шага с длительностью любой величины.
+    """
 
     SECOND_MS: ClassVar[int] = 1000
     MINUTE_MS: ClassVar[int] = 60 * SECOND_MS
+    INTEGER: ClassVar[str] = r"\d+"
+    DECIMAL: ClassVar[str] = r"\d+\.\d"
+    MARK: ClassVar[str] = "\x00"
 
-    @classmethod
-    def of(cls, elapsed_ms: int) -> str:
+    def __init__(self, texts: UiText) -> None:
+        self._texts = texts
+
+    def of(self, elapsed_ms: int) -> str:
         """Подпись длительности; 0 и отрицательное — время не измерено."""
         if elapsed_ms <= 0:
             return ""
 
-        if elapsed_ms < cls.SECOND_MS:
-            return f"{elapsed_ms} ms"
+        if elapsed_ms < self.SECOND_MS:
+            return self._texts.text(ElapsedText.MILLISECONDS.value, ms=elapsed_ms)
 
-        if elapsed_ms < cls.MINUTE_MS:
-            return f"{elapsed_ms / cls.SECOND_MS:.1f} s"
+        if elapsed_ms < self.MINUTE_MS:
+            seconds = f"{elapsed_ms / self.SECOND_MS:.1f}"
+            return self._texts.text(ElapsedText.SECONDS.value, sec=seconds)
 
-        minutes = elapsed_ms // cls.MINUTE_MS
-        seconds = (elapsed_ms % cls.MINUTE_MS) / cls.SECOND_MS
-        return f"{minutes} m {seconds:.0f} s"
+        minutes = elapsed_ms // self.MINUTE_MS
+        rest = f"{(elapsed_ms % self.MINUTE_MS) / self.SECOND_MS:.0f}"
+        return self._texts.text(ElapsedText.MINUTES.value, min=minutes, sec=rest)
+
+    def titled(self, title: str, timed: bool) -> str:
+        """Регулярное выражение названия шага title с длительностью: timed —
+        длительность обязательна, иначе может не быть."""
+        shapes = "|".join(self._shapes())
+        tail = f"(?:{re.escape(ToolStepLabel.SEPARATOR)}(?:{shapes}))"
+        if not timed:
+            tail = f"{tail}?"
+
+        return f"^{re.escape(title)}{tail}$"
+
+    def _shapes(self) -> Iterator[str]:
+        yield self._shape(ElapsedText.MILLISECONDS, ms=self.INTEGER)
+        yield self._shape(ElapsedText.SECONDS, sec=self.DECIMAL)
+        yield self._shape(ElapsedText.MINUTES, min=self.INTEGER, sec=self.INTEGER)
+
+    def _shape(self, key: ElapsedText, **numbers: str) -> str:
+        """Подпись с метками вместо чисел, экранированная, с числами-шаблонами."""
+        marks: dict[str, str] = {}
+        for name in numbers:
+            marks[name] = f"{self.MARK}{name}{self.MARK}"
+
+        shape = re.escape(self._texts.text(key.value, **marks))
+        for name, number in numbers.items():
+            shape = shape.replace(re.escape(marks[name]), number)
+
+        return shape
 
 
 class ToolStepLabel:
@@ -186,6 +253,8 @@ class StepRole(StrEnum):
     ELEMENT = "element"
     STREAM = "stream"
     APP = "app"
+    QUESTION = "question"
+    QUESTION_CARD = "question-card"
 
 
 @dataclass
@@ -198,8 +267,11 @@ class TurnDraft:
 
     key: str | None = None
     container: Step | None = None
-    container_name: str = StepText.CONTAINER
+    container_name: StepText = StepText.CONTAINER
     """Название контейнера: «запрос отправлен», пока модель молчит."""
+
+    steps: int = 0
+    """Шаги хода под контейнером: их число — в подписи законченного хода."""
 
     answer: Message | None = None
     answers: int = 0
@@ -567,16 +639,19 @@ class ChatView:
     AVATAR_NAME_KEY: ClassVar[str] = "avatarName"
     """Ключ metadata шага, по которому фронт chainlit выбирает аватар вместо имени."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 — лента треда собирается всеми своими входами
         self,
         thread_id: str,
         sink: ChatSink,
         user_key: str,
         storage: StorageClient,
+        texts: UiText,
         *,
         user_name: str | None = None,
     ) -> None:
         self._thread_id = thread_id
+        self._texts = texts
+        self._elapsed = StepElapsed(texts)
         self._user_key = user_key
         self._scope = CanvasScope(user_id=user_key, thread_id=thread_id)
         self._links = WorkspaceLinks()
@@ -639,15 +714,33 @@ class ChatView:
         """Показанный кружок ожидания; None — ход ничего не ждёт."""
         return self._pulse.step
 
+    def label(self, key: StepText, **values: object) -> str:
+        """Подпись ленты на языке интерфейса."""
+        return self._texts.text(key.value, **values)
+
     def begin_turn(self, key: str | None) -> None:
         """Открывает ход: его ключ адресует контейнер и ответ."""
         self._turn = TurnDraft(key=key)
         self._pulse = self._new_pulse(key)
 
     async def finish_turn(self) -> None:
-        """Ход закончен любым исходом: кружок ожидания снимается."""
+        """Ход закончен любым исходом: контейнер получает итоговую подпись
+        с числом шагов, кружок ожидания снимается."""
         await self._batch.flush()
+        await self._close_container()
         await self._pulse.stop()
+
+    async def _close_container(self) -> None:
+        step = self._turn.container
+        if step is None:
+            return
+
+        name = self.label(StepText.DONE)
+        if self._turn.steps:
+            name = self.label(StepText.DONE_STEPS, count=self._turn.steps)
+
+        step.name = name
+        await self._sink.put(step)
 
     def rebuilt(self) -> None:
         """Вкладки собрали ленту заново из истории: шаги нового хода с прежними
@@ -794,13 +887,13 @@ class ChatView:
         message.parent_id = None
         return message
 
-    async def container(self, name: str = StepText.CONTAINER) -> Step:
+    async def container(self, name: StepText = StepText.CONTAINER) -> Step:
         if self._turn.container is not None:
             return self._turn.container
 
         self._turn.container_name = name
         step = self._step(
-            name,
+            self.label(name),
             StepKind.RUN,
             parent_id=None,
             step_id=self.derive_id(self._thread_id, self._turn.key, StepRole.PROCESS),
@@ -825,7 +918,7 @@ class ChatView:
             return step
 
         self._turn.container_name = StepText.REQUESTED
-        step.name = StepText.REQUESTED
+        step.name = self.label(StepText.REQUESTED)
         await self._sink.put(step)
         return step
 
@@ -839,7 +932,7 @@ class ChatView:
             return
 
         self._turn.container_name = StepText.CONTAINER
-        step.name = StepText.CONTAINER
+        step.name = self.label(StepText.CONTAINER)
         await self._sink.put(step)
 
     async def stream_thinking(self, token: str, key: str | None = None) -> None:
@@ -856,14 +949,14 @@ class ChatView:
         if step is None:
             return
 
-        step.name = StepStatus.DONE.title(StepText.THINKING)
+        step.name = StepStatus.DONE.title(self.label(StepText.THINKING))
         step.end = utc_now()
         await self._sink.put(step)
 
     async def _open_thinking(self, key: str | None) -> Step:
         """Шаг не уходит в sink сразу: его откроет первый же stream_token."""
         step = await self._child(
-            StepStatus.IDLE.title(StepText.THINKING),
+            StepStatus.IDLE.title(self.label(StepText.THINKING)),
             StepKind.LLM,
             key,
             StepRole.THINKING,
@@ -911,7 +1004,7 @@ class ChatView:
 
         # фронт chainlit рисует секцию output (с inline-элементами, в том числе
         # кнопкой журнала) только при непустом output шага
-        step.output = StepText.RUNNING
+        step.output = self.label(StepText.RUNNING)
         step.start = utc_now()
 
         # приложение рисует итог вызова: элемент встаёт в шаг, когда вызов
@@ -975,6 +1068,65 @@ class ChatView:
         element = self._elements.app(app, key, arguments)
         element.thread_id = self._thread_id
         element_id = self.derive_id(self._thread_id, key, StepRole.APP)
+        if element_id:
+            element.id = element_id
+
+        return element
+
+    async def question_asked(self, card: QuestionCard, key: str) -> Step:
+        """Вопрос агента пользователю — своим сообщением основной ленты на
+        месте хода: пока вопрос ждёт ответа, элемент Question рисует строку
+        с мигающей точкой (сама панель — у поля ввода вкладки), кружок
+        ожидания хода на это время снят. Запись ответа встаёт в то же
+        сообщение (question_finished)."""
+        await self.seal_answer()
+        step = self._question_step(key)
+        if self._sink.emits_elements:
+            step.elements = [self._question(card, key)]
+
+        await self._sink.put(step)
+        await self._pulse.hold()
+
+        return step
+
+    async def question_finished(self, step: Step, card: QuestionCard, key: str) -> None:
+        """Запись ответа на вопрос в его сообщении: та же панель только для
+        чтения с выбранными вариантами; кружок ожидания хода возвращается."""
+        if self._sink.emits_elements:
+            step.elements = [self._question(card, key)]
+
+        await self._sink.put(step)
+        await self._pulse.resume()
+
+    async def questions_answered(self, cards: Sequence[QuestionCard], key: str) -> None:
+        """Записи ответов на вопросы сервера MCP, заданные в вызове key, —
+        сообщениями основной ленты рядом с итогом вызова."""
+        await self.seal_answer()
+        for number, card in enumerate(cards):
+            asked = f"{key}#{number}"
+            step = self._question_step(asked)
+            if self._sink.emits_elements:
+                step.elements = [self._question(card, asked)]
+
+            await self._sink.put(step)
+
+        await self._pulse.bump()
+
+    def _question_step(self, key: str) -> Step:
+        step = self._step(
+            self._assistant_name,
+            StepKind.ASSISTANT,
+            parent_id=None,
+            step_id=self.derive_id(self._thread_id, key, StepRole.QUESTION),
+        )
+        step.output = ""
+
+        return step
+
+    def _question(self, card: QuestionCard, key: str) -> CustomElement:
+        element = self._elements.question(card.props())
+        element.thread_id = self._thread_id
+        element_id = self.derive_id(self._thread_id, key, StepRole.QUESTION_CARD)
         if element_id:
             element.id = element_id
 
@@ -1064,7 +1216,7 @@ class ChatView:
         if reply.is_error:
             status = StepStatus.FAILED
 
-        step.name = status.timed(label, elapsed_ms)
+        step.name = status.timed(label, self._elapsed.of(elapsed_ms))
         step.is_error = reply.is_error
         shown: list[str] = []
         async for piece in self._pieces(reply, step, tool_call_id):
@@ -1137,6 +1289,8 @@ class ChatView:
     ) -> str:
         """text/csv — таблица markdown, как у таблиц семейства."""
         rows = list(csv.DictReader(io.StringIO(text)))
+        if not rows:
+            return NoteLine.render(self.label(StepText.NO_ROWS))
 
         return TableText.render(rows)
 
@@ -1366,12 +1520,12 @@ class ChatView:
 
         element.id = element_id
 
-    async def tool_stopped(self, step: Step, note: str) -> None:
-        """Инструмент не доработал: ход остановлен."""
+    async def tool_stopped(self, step: Step) -> None:
+        """Инструмент не доработал: ход кончился раньше вызова."""
         self._awaiting.pop(step.id, None)
         self._progress.pop(step.id, None)
-        step.name = StepStatus.FAILED.title(self._tool_names.get(step.id, step.name))
-        step.output = note
+        step.name = StepStatus.STOPPED.title(self._tool_names.get(step.id, step.name))
+        step.output = self.label(StepText.FINISHED)
         ended = utc_now()
         step.start = ended
         step.end = ended
@@ -1449,6 +1603,7 @@ class ChatView:
         role: StepRole,
     ) -> Step:
         parent = await self._parent()
+        self._turn.steps += 1
         return self._step(
             name,
             kind,

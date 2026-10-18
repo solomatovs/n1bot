@@ -21,23 +21,25 @@
             "title": "Login to access the app",
             "form": {
                 "email": {
-                    "label": "Email address",
+                    "label": "Login",
                     "required": "email is a required field",
-                    "placeholder": "me@example.com"
+                    "placeholder": "login"
                 },
                 "password": {
                     "label": "Password",
-                    "required": "password is a required field"
+                    "required": "password is a required field",
+                    "placeholder": "password"
                 },
                 "actions": {
-                    "signin": "Sign In"
+                    "signin": "Sign In",
+                    "sso": "Sign in with SSO"
                 },
                 "alternativeText": {
                     "or": "OR"
                 }
             },
             "errors": {
-                "default": "Unable to sign in",
+                "default": "Sign in with your login and password",
                 "sso_ticket": "SSO sign-in failed: the browser did not present a Kerberos ticket",
                 "sso_denied": "Access denied: no roles are assigned to your account",
                 "sso_failed": "SSO sign-in error. Contact support",
@@ -51,12 +53,31 @@
                 "oauthAccountNotLinked": "To confirm your identity, sign in with the same account you used originally",
                 "emailSignin": "The e-mail could not be sent",
                 "emailVerify": "Please verify your email, a new email has been sent",
-                "credentialssignin": "Sign in failed. Check the details you provided are correct",
-                "sessionRequired": "Please sign in to access this page"
+                "credentialssignin": "Wrong login or password",
+                "sessionRequired": "Please sign in to access this page",
+                "invalid_credentials": "Wrong login or password",
+                "user_not_registered": "The user is not registered",
+                "ldap_unavailable": "The directory service is unavailable, try again later",
+                "invalid username or password": "Wrong login or password",
+                "service_unavailable": "The sign-in service is unavailable, try again later",
+                "internal_error": "Internal server error. Contact support",
+                "unauthorized": "Wrong login or password",
+                "service unavailable": "The sign-in service is unavailable, try again later",
+                "internal server error": "Internal server error. Contact support",
+                "bad request": "Bad request",
+                "access_denied": "Access denied: no roles are assigned to your account",
+                "forbidden": "Access denied: no roles are assigned to your account"
             }
         },
         "provider": {
             "continue": "Continue with {{provider}}"
+        },
+        "session": {
+            "errors": {
+                "missing": "This session has no sign-in: reload the page to sign in",
+                "expired": "Your sign-in has expired: reload the page to sign in again",
+                "rejected": "The sign-in of this session is rejected: reload the page to sign in again"
+            }
         }
     },
     "chat": {
@@ -102,8 +123,8 @@
         },
         "messages": {
             "status": {
-                "using": "Using",
-                "used": "Used"
+                "using": "",
+                "used": ""
             },
             "actions": {
                 "copy": {
@@ -133,7 +154,36 @@
         },
         "settings": {
             "title": "Settings panel",
-            "customize": "Customize your chat settings here"
+            "customize": "Customize your chat settings here",
+            "llm": {
+                "tabs": {
+                    "agent_tab": "Agent",
+                    "session_tab": "Session"
+                },
+                "fields": {
+                    "agent_base_url": {
+                        "label": "Provider URL",
+                        "description": "Base URL of the model provider for this chat and new chats; empty keeps the profile provider."
+                    },
+                    "agent_api_key": {
+                        "label": "Provider API key",
+                        "description": "API key of the model provider for this chat and new chats; the saved key is never shown, an empty field keeps it."
+                    },
+                    "agent_model": {
+                        "label": "Model",
+                        "description": "Model name at the provider for this chat and new chats; empty keeps the profile model."
+                    },
+                    "session_mode": {
+                        "label": "Permission mode",
+                        "description": "How the agent of this chat treats tool permissions."
+                    },
+                    "session_model": {
+                        "label": "Session model",
+                        "description": "Model profile the agent of this chat answers with."
+                    }
+                },
+                "kept": "(kept)"
+            }
         },
         "watermark": "LLMs can make mistakes. Check important info."
     },
@@ -258,6 +308,88 @@
                 "single": "Pick a date",
                 "range": "Pick a date range"
             }
+        }
+    },
+    "aid": {
+        "feed": {
+            "working": "Working…",
+            "requested": "Request sent…",
+            "done": "Finished",
+            "doneSteps": "Finished · steps: {{count}}",
+            "running": "running…",
+            "thinking": "Thinking",
+            "tool": "tool",
+            "stoppedByUser": "stopped by the user",
+            "unfinished": "the turn ended before the call did",
+            "elapsedMs": "{{ms}} ms",
+            "elapsedSec": "{{sec}} s",
+            "elapsedMin": "{{min}} m {{sec}} s",
+            "noRows": "(no rows)"
+        },
+        "canvas": {
+            "download": "Download file",
+            "downloadNamed": "Download {{name}}",
+            "close": "Close",
+            "fullscreen": "Fullscreen",
+            "zoomIn": "Zoom in",
+            "zoomOut": "Zoom out",
+            "resetView": "Reset view",
+            "larger": "Larger",
+            "smaller": "Smaller",
+            "resetSize": "Reset size",
+            "toStart": "Go to the file start",
+            "toEnd": "Go to the file end and follow output",
+            "channel": "Channel {{label}}",
+            "running": "running…",
+            "notReadable": "The file is not readable: {{name}}",
+            "showInCanvas": "Show in the canvas",
+            "diagramFailed": "The diagram is not drawn: {{error}}",
+            "diagramRendering": "Drawing the diagram…",
+            "unsupported": "The panel cannot display files of type {{mime}}: download the file with the Download file button.",
+            "logGone": "The log of this call is unavailable: journaling was not active."
+        },
+        "stream": {
+            "liveOutput": "Tool output: {{label}}",
+            "showOutput": "Show tool output"
+        },
+        "json": {
+            "key_one": "{{count}} key",
+            "key_other": "{{count}} keys",
+            "item_one": "{{count}} item",
+            "item_other": "{{count}} items",
+            "showMore": "show {{count}} more of {{rest}}"
+        },
+        "app": {
+            "sameOrigin": "The app sandbox {{url}} is on the origin of the chat, so the app is not drawn."
+        },
+        "notice": {
+            "settingsDeferred": "Settings are saved and will apply after the current answer.",
+            "profileRetired": "Chat profile \"{{retired}}\" is no longer available: this chat continues with \"{{profile}}\""
+        },
+        "question": {
+            "title": {
+                "one": "Question",
+                "many": "Questions"
+            },
+            "status": {
+                "accept": "Answered",
+                "decline": "Declined",
+                "cancel": "No answer"
+            },
+            "questions_one": "{{count}} question",
+            "questions_other": "{{count}} questions",
+            "other": "Other",
+            "typed": "Type your answer…",
+            "yes": "Yes",
+            "no": "No",
+            "submit": "Submit answers",
+            "cancelHint": "Esc to cancel",
+            "held": "Waiting for permission…",
+            "noPreview": "No preview for this option",
+            "preview": "Preview: {{caption}}",
+            "collapse": "Collapse",
+            "expand": "Expand",
+            "close": "Close"
         }
     }
 }

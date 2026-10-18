@@ -23,6 +23,7 @@ import hashlib
 import logging
 import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from enum import StrEnum
 from typing import Any, ClassVar
 
 import chainlit as cl
@@ -53,7 +54,6 @@ from boba.canvas.canvas import (
 )
 from boba.canvas.journal import (
     JournalWindow,
-    StreamNote,
     StreamSlice,
     WindowAlign,
 )
@@ -149,6 +149,14 @@ class StorageHashSource(WatchSource):
 
     def detach_waker(self, event: asyncio.Event) -> None:
         return None
+
+
+class CanvasNote(StrEnum):
+    """Объяснения панели вместо содержимого — ключи переводов chainlit: строку
+    на языке интерфейса подставляет элемент CanvasView."""
+
+    UNSUPPORTED = "aid.canvas.unsupported"
+    GONE = "aid.canvas.logGone"
 
 
 class PanelStorage:
@@ -366,7 +374,7 @@ class LogViewer(FileViewer):
             key,
             mime,
             text=piece.text,
-            note=StreamNote.status_of(piece),
+            note=piece.note,
             stream=StreamPos(
                 offset=piece.offset,
                 end=piece.end,
@@ -440,10 +448,7 @@ class CanvasPanel:
             label=key.name,
             url=CanvasFileUrl.path(key, mime),
             mime=mime,
-            note=(
-                "The panel cannot display this file format. Supported: "
-                f"{CanvasRegistry.mimes_hint()}"
-            ),
+            note=CanvasNote.UNSUPPORTED.value,
         )
 
     @classmethod
@@ -626,7 +631,7 @@ class StreamActions:
             label=key.name,
             url=CanvasFileUrl.path(key, ContentMime.of_name(key.name)),
             text=piece.text,
-            note=StreamNote.status_of(piece),
+            note=piece.note,
             stream=StreamActions._pos(piece),
         )
         return content.props()
@@ -657,7 +662,7 @@ class StreamActions:
             label=label,
             url=StreamUrl.path(thread_id, stream_path.call_id, stream_path.channel),
             text=piece.text,
-            note=StreamNote.status_of(piece),
+            note=piece.note,
             nonce=nonce,
             stream=StreamActions._pos(piece),
             channel=stream_path.channel.value,
@@ -680,5 +685,5 @@ class StreamActions:
             kind=CanvasKind.NOTICE,
             path=path,
             label="tool stream",
-            note=str(StreamNote.GONE),
+            note=CanvasNote.GONE.value,
         )

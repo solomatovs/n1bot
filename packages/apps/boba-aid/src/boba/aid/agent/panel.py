@@ -61,9 +61,6 @@ class AgentPanel:
     показывается: пустое поле оставляет сохранённый, непустое заменяет его.
     """
 
-    KEPT_HINT: ClassVar[str] = "(kept)"
-    """Подсказка поля ключа: сохранённый ключ есть, пустое поле его оставит."""
-
     def __init__(
         self,
         profile: ChatProfileConfig,
@@ -137,7 +134,7 @@ class AgentPanel:
 
         api_key_hint = ""
         if self._user.api_key is not None:
-            api_key_hint = self.KEPT_HINT
+            api_key_hint = self._text.kept_hint()
 
         return [
             self._input(UserSetting.AGENT_BASE_URL, self._user.base_url),

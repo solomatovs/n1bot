@@ -366,7 +366,11 @@ const useChatSession = () => {
       socket.on('ask', ({ msg, spec }, callback) => {
         flushTokens();
         setAskUser({ spec, callback, parentId: msg.parentId });
-        setMessages((oldMessages) => addMessage(oldMessages, msg));
+        // boba: вопрос элементом показывает панель у поля ввода, а шаг его
+        // вызова в ленте уже есть — msg ленту не трогает
+        if (spec.type !== 'element') {
+          setMessages((oldMessages) => addMessage(oldMessages, msg));
+        }
 
         setLoading(false);
       });

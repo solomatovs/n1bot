@@ -18,7 +18,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from enum import IntEnum, StrEnum
 from types import ModuleType
-from typing import Annotated, Any, ClassVar, TypeAlias, assert_never
+from typing import Annotated, Any, ClassVar, Literal, TypeAlias, assert_never
 
 import mcp_types
 from mcp_types.jsonrpc import (
@@ -55,6 +55,7 @@ __all__ = [
     "AgentSide",
     "BatchTransport",
     "ClientConnection",
+    "ElicitationRound",
     "ErrorDataKey",
     "IdleErrorNotification",
     "IdleErrorUpdate",
@@ -148,12 +149,40 @@ class ErrorDataKey(StrEnum):
 
 
 class MetaKey(StrEnum):
-    """Ключи boba в `_meta` ACP: срез ветки `session/fork` по messageId — и в
-    `_meta` запроса `session/fork` (id вопроса), и в
-    `capabilities.session.fork._meta` ответа initialize (true — агент режет
-    ветку по нему)."""
+    """Ключи boba в `_meta` ACP и MCP.
+
+    Срез ветки `session/fork` по messageId — и в `_meta` запроса
+    `session/fork` (id вопроса), и в `capabilities.session.fork._meta` ответа
+    initialize (true — агент режет ветку по нему). Форма `elicitation/create`
+    своего вопроса агента: у поля вопроса — ключ парного поля «Other» со
+    своим текстом, у варианта — предпросмотр. Вопрос сервера MCP: имя сервера
+    и инструмента в `_meta` запроса, раунды вопросов вызова — в `_meta`
+    результата tools/call.
+    """
 
     UP_TO_MESSAGE_ID = "boba/upToMessageId"
+    OTHER = "boba/other"
+    PREVIEW = "boba/preview"
+    SERVER = "boba/server"
+    TOOL = "boba/tool"
+    ELICITATIONS = "boba/elicitations"
+
+
+class ElicitationRound(BaseModel):
+    """Раунд вопроса сервера MCP в вызове инструмента: сервер и инструмент,
+    форма, какой её увидел пользователь (сообщение сервера и поля схемой
+    ACP), и ответ. Агент кладёт раунды вызова списком в `_meta` результата
+    tools/call под MetaKey.ELICITATIONS, лента рисует по ним запись вопроса
+    одинаково вживую и в истории."""
+
+    server: str
+    tool: str
+    message: str
+    requested: schema.ElicitationSchema
+    action: Literal["accept", "decline", "cancel"]
+    content: dict[str, str | int | float | bool | list[str]] = Field(
+        default_factory=dict
+    )
 
 
 class McpMessage(BaseModel):

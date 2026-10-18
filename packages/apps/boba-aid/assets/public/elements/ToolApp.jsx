@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { AppRenderer } from "@mcp-ui/client";
+import { useTranslation } from "@/components/i18n";
 
 // Приложение MCP Apps у шага вызова: AppRenderer рисует его в песочнице на
 // хосте сервера (sandbox_url), запросы приложения уходят действиями chainlit в
@@ -108,6 +109,7 @@ function useDark() {
 }
 
 export default function ToolApp() {
+  const { t } = useTranslation();
   const chat = browser.origin();
   const isolated = originOf(props.sandbox_url) !== chat;
   const dark = useDark();
@@ -154,8 +156,10 @@ export default function ToolApp() {
   if (!isolated) {
     return (
       <div className="text-sm text-destructive" data-mcp-app-error>
-        The app sandbox {props.sandbox_url} is on the origin of the chat; the
-        app is not drawn.
+        {t("aid.app.sameOrigin", {
+          url: props.sandbox_url,
+          interpolation: { escapeValue: false },
+        })}
       </div>
     );
   }

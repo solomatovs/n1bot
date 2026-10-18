@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from abc import abstractmethod
-from collections.abc import Coroutine, Iterator, Mapping, Sequence
+from collections.abc import Collection, Coroutine, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -25,6 +25,7 @@ from uuid import UUID
 import chainlit as cl
 import mcp_types as mt
 from acp.experimental.v2 import schema
+from chainlit.session import WebsocketSession
 from pydantic import AliasPath, AnyUrl, BaseModel, ConfigDict, Field
 
 from boba.agent.settings import McpClientJson
@@ -35,6 +36,7 @@ from boba.aid.agent.client import (
     AgentProcess,
     AgentProcessError,
     AgentRequestError,
+    ElicitationReply,
     PromptBlock,
     SessionUpdate,
     SessionUpdates,
@@ -346,7 +348,17 @@ class TurnRenderer(SessionUpdates, Protocol):
 
     @abstractmethod
     def stopping(self, session_id: str) -> None:
-        """Ход останавливается: висящие вопросы разрешения получат отмену."""
+        """Ход останавливается: висящие вопросы разрешения и вопросы
+        пользователю получат отмену."""
+
+    @abstractmethod
+    async def question_shown(
+        self, anchor: WebsocketSession, live: Collection[str]
+    ) -> bool:
+        """Вкладка anchor подключилась (заново): висящий вопрос пользователю
+        показывается в ней. live — сессии вкладок треда с подключённым
+        сокетом: вопрос, показанный другой живой вкладке, остаётся там.
+        False — вопроса нет либо он остался в другой вкладке."""
 
     @abstractmethod
     async def turn_started(
@@ -390,10 +402,16 @@ class TurnRenderers(Protocol):
 
 
 class MuteUpdates(SessionUpdates):
-    """Приёмник без ленты: короткоживущий процесс удаления сессии."""
+    """Приёмник без ленты: короткоживущий процесс удаления сессии; вопросы
+    пользователю он снимает."""
 
     async def update(self, session_id: str, update: SessionUpdate) -> None:
         return
+
+    async def elicitation(
+        self, request: schema.CreateFormSessionElicitationRequest
+    ) -> ElicitationReply:
+        return schema.CancelElicitationResponse()
 
     async def permission(
         self, session_id: str, title: str, options: Sequence[schema.PermissionOption]
@@ -459,6 +477,11 @@ class AskedQuestions(SessionUpdates):
         self, session_id: str, title: str, options: Sequence[schema.PermissionOption]
     ) -> schema.RequestPermissionResponse:
         return await self._inner.permission(session_id, title, options)
+
+    async def elicitation(
+        self, request: schema.CreateFormSessionElicitationRequest
+    ) -> ElicitationReply:
+        return await self._inner.elicitation(request)
 
     async def turn_finished(
         self, session_id: str, idle: schema.IdleSessionStateUpdate
@@ -671,6 +694,10 @@ class ThreadAgent:
     @property
     def thread_id(self) -> str:
         return self._identity.thread_id
+
+    @property
+    def user_id(self) -> UUID:
+        return self._identity.user_id
 
     @property
     def session_id(self) -> str | None:
@@ -947,6 +974,14 @@ class ThreadAgent:
                 return
 
             await self._restart_idle()
+
+    async def question_shown(
+        self, anchor: WebsocketSession, live: Collection[str]
+    ) -> bool:
+        """Висящий вопрос пользователю этого агента — во вкладку anchor,
+        если его не показывает другая живая вкладка (live); False — не
+        показан."""
+        return await self._renderer.question_shown(anchor, live)
 
     async def stop(self) -> bool:
         """Отмена идущего хода; False — хода нет."""

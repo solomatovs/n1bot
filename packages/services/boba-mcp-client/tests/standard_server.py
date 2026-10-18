@@ -9,7 +9,8 @@ logging), чтобы клиент проверялся на всём: server/dis
 инструменты — обычные, отказы стенда (задержка, большой результат, обрыв
 посреди вызова), ход вызова, ответ из блоков разных видов и адресатов,
 файл, который клиенту стоит показать сразу (priority 1), просьба о вводе
-(input_required) и отказ ошибкой MCP; ресурсы — текст, двоичный, шаблон с
+(input_required) — пустая и с формой вопроса пользователю (load_rows) — и
+отказ ошибкой MCP; ресурсы — текст, двоичный, шаблон с
 подсказками значений и шаблон, просящий ввода; промпты — с аргументами,
 сообщениями обеих ролей и просящий ввода; completion/complete для
 аргументов промпта и шаблона; потоки subscriptions/listen со сменой списков
@@ -40,6 +41,9 @@ from mcp.types import (
     Completion,
     CompletionArgument,
     CompletionContext,
+    ElicitRequest,
+    ElicitRequestFormParams,
+    ElicitResult,
     EmbeddedResource,
     InputRequiredResult,
     PromptReference,
@@ -78,6 +82,27 @@ class StandardServer:
     STYLES: ClassVar[tuple[str, ...]] = ("plain", "poem", "pirate")
     LARGE_LINE: ClassVar[str] = "0123456789"
     ASKED: ClassVar[str] = "asked once"
+    TARGET: ClassVar[str] = "target"
+    TARGET_STATE: ClassVar[str] = "load_rows asked for the target"
+    TARGET_MESSAGE: ClassVar[str] = (
+        "load_rows needs the target table before it can start the copy."
+    )
+    TARGET_FORM: ClassVar[dict[str, Any]] = {
+        "type": "object",
+        "properties": {
+            "table": {
+                "type": "string",
+                "title": "Target",
+                "description": "Which table should receive the rows?",
+                "oneOf": [
+                    {"const": "sales.orders", "title": "sales.orders"},
+                    {"const": "sales.orders_stage", "title": "sales.orders_stage"},
+                    {"const": "tmp.orders_copy", "title": "tmp.orders_copy"},
+                ],
+            }
+        },
+        "required": ["table"],
+    }
     REFUSAL: ClassVar[dict[str, str]] = {"reason": "the stand refuses"}
     BOARD: ClassVar[str] = "ui://standard/board.html"
     BOARD_CSP: ClassVar[ResourceCsp] = ResourceCsp(
@@ -137,6 +162,7 @@ class StandardServer:
         self._mcp.tool()(self.toggle_extra)
         self._mcp.tool(annotations=ToolAnnotations(read_only_hint=True))(self.progress)
         self._mcp.tool()(self.ask)
+        self._mcp.tool()(self.load_rows)
         self._mcp.tool()(self.client)
         self._mcp.tool()(self.toggle_prompt)
         self._mcp.tool()(self.grow_resources)
@@ -260,6 +286,34 @@ class StandardServer:
             raise MCPError(code=INVALID_PARAMS, message=msg, data=self.REFUSAL)
 
         return InputRequiredResult(request_state=self.ASKED)
+
+    def load_rows(self, ctx: Context, rows: int) -> str | InputRequiredResult:
+        """Loads the rows into a table the user chooses."""
+        responses = ctx.input_responses
+        if not responses:
+            form = ElicitRequestFormParams(
+                message=self.TARGET_MESSAGE,
+                requested_schema=self.TARGET_FORM,
+            )
+            return InputRequiredResult(
+                input_requests={self.TARGET: ElicitRequest(params=form)},
+                request_state=self.TARGET_STATE,
+            )
+
+        if ctx.request_state != self.TARGET_STATE:
+            msg = f"load_rows got request state {ctx.request_state!r}"
+            raise ToolError(msg)
+
+        answer = responses.get(self.TARGET)
+        if not isinstance(answer, ElicitResult):
+            msg = f"load_rows expected an elicitation answer, got {answer!r}"
+            raise ToolError(msg)
+
+        if answer.action != "accept" or answer.content is None:
+            msg = f"the user answered {answer.action}"
+            raise ToolError(msg)
+
+        return f"loaded {rows} rows into {answer.content['table']}"
 
     def client(self, ctx: Context) -> str:
         """Returns the clientInfo and clientCapabilities of the request as JSON."""

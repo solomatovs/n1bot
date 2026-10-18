@@ -8,7 +8,11 @@
 прежним id; вопрос с вложениями всем вкладкам рисует рендерер треда по
 TurnStarted. Воспроизведение `session/resume` своего процесса рисуется тем
 же переводчиком прямо в вкладке, без шины: история есть у каждого процесса
-агента. Файлы и ссылки итогов рисует лента.
+агента. Файлы и ссылки итогов рисует лента. Вопрос агента пользователю
+(форма `elicitation/create`) держатель показывает в своей вкладке панелью
+вместо поля ввода (элемент Question и `ask` chainlit) до ответа, срока
+[agent].question_timeout_sec или снятия; вкладка, подключившаяся к треду
+заново, получает висящий вопрос снова.
 
 Ошибки:
 LockBusyError — тред уже ведёт другой держатель: ход не начат.
@@ -23,16 +27,30 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Coroutine, Iterator, Sequence
+import math
+from collections.abc import (
+    Awaitable,
+    Collection,
+    Coroutine,
+    Iterator,
+    Mapping,
+    Sequence,
+)
 from contextlib import AsyncExitStack, contextmanager
 from dataclasses import dataclass
-from typing import Any, ClassVar
+from enum import StrEnum
+from typing import Any, ClassVar, Literal, cast
+from uuid import uuid4
 
+from acp.exceptions import RequestError
 from acp.experimental.v2 import schema
 from chainlit.context import ChainlitContext, context, context_var
+from chainlit.element import CustomElement
 from chainlit.emitter import ChainlitEmitter
 from chainlit.session import WebsocketSession
 from chainlit.step import StepDict
+from chainlit.types import AskElementSpec
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from boba.aid.agent.chat import (
     PermissionKind,
@@ -43,14 +61,22 @@ from boba.aid.agent.chat import (
     TurnRenderer,
     TurnRenderers,
 )
+from boba.aid.agent.client import ElicitationReply
 from boba.aid.canvas.remote import RemoteJournals
 from boba.aid.chat.feed import TurnFeed
+from boba.aid.chat.ui_text import UiText
 from boba.aid.data.data_layer import FeedRows
 from boba.aid.domain.fields import StepField
 from boba.aid.rendering.acp_view import SessionUpdate, ToolMedia, UpdateView
-from boba.aid.rendering.chat_view import ChatView, LiveSink, StepText
+from boba.aid.rendering.chat_view import (
+    ChatView,
+    LiveSink,
+    StepText,
+)
 from boba.aid.rendering.errors import show_error
+from boba.aid.rendering.question import QuestionCards
 from boba.aid.rendering.renderer import RenderSurface, TabSurfaces
+from boba.aid.rendering.tool import ChatElements
 from boba.cancellation import RunCancellation
 from boba.identity.context import Scope
 from boba.identity.errors import InternalServiceError
@@ -58,12 +84,15 @@ from boba.identity.locks import LiveLocks, LockKeeper, LockMode, LockPurpose
 from boba.mcp_client.client import McpCaller, McpServers
 from boba.messaging import MessageBus, NoticeLevel, PayloadStore, TurnOutcome
 from boba.runtime.storage import StorageClient
-from boba.transport.acp.protocol import IdleErrorUpdate, StopReason
+from boba.transport.acp.protocol import ErrorDataKey, IdleErrorUpdate, StopReason
 
 __all__ = [
     "AgentFeed",
     "AgentFeeds",
+    "AskEvent",
     "BusParts",
+    "QuestionAsk",
+    "QuestionReply",
     "TabEmitter",
     "TabSurface",
 ]
@@ -80,6 +109,15 @@ class BusParts:
     payloads: PayloadStore
     locks: LiveLocks
     heartbeat_sec: float
+
+
+class AskEvent(StrEnum):
+    """События chainlit вокруг вопроса пользователю: показ панели с ожиданием
+    ответа, снятие панели и элемента вопроса во вкладке."""
+
+    ASK = "ask"
+    CLEAR = "clear_ask"
+    REMOVE_ELEMENT = "remove_element"
 
 
 class TabEmitter(ChainlitEmitter):
@@ -115,6 +153,15 @@ class TabEmitter(ChainlitEmitter):
 
         return super().stream_start(step_dict)
 
+    async def signal(self, event: AskEvent, payload: Mapping[str, Any]) -> None:
+        """Событие вопроса вкладке."""
+        # chainlit типизирует emit сессии без ожидания, хотя отдаёт корутину
+        await cast("Awaitable[None]", self.session.emit(event.value, dict(payload)))
+
+    async def asked(self, payload: Mapping[str, Any], timeout: int) -> object:
+        """`ask` вкладке: ответ её колбэка; срок socket.io — timeout."""
+        return await self.session.emit_call(AskEvent.ASK.value, dict(payload), timeout)
+
 
 class TabSurface:
     """Контекст chainlit одной вкладки: воспроизведение истории рисуется
@@ -128,6 +175,10 @@ class TabSurface:
     def emitter(self) -> TabEmitter:
         return self._emitter
 
+    @property
+    def session_id(self) -> str:
+        return self._anchor.id
+
     @contextmanager
     def entered(self) -> Iterator[None]:
         token = context_var.set(ChainlitContext(self._anchor, self._emitter))
@@ -135,6 +186,120 @@ class TabSurface:
             yield
         finally:
             context_var.reset(token)
+
+
+class QuestionReply(BaseModel):
+    """Ответ панели вопроса из колбэка `ask`: действие и поля формы; флаг
+    submitted chainlit добавляет сам."""
+
+    model_config = ConfigDict(frozen=True, extra="ignore")
+
+    action: Literal["accept", "decline"]
+    content: dict[str, str | int | float | bool | list[str]] = Field(
+        default_factory=dict
+    )
+
+    def response(self) -> ElicitationReply:
+        if self.action == "decline":
+            return schema.DeclineElicitationResponse()
+
+        return schema.AcceptElicitationResponse(content=self.content)
+
+
+class QuestionAsk:
+    """Висящий вопрос агента во вкладке: элемент Question и `ask` chainlit до
+    ответа пользователя, конца срока или снятия.
+
+    Вкладка, подключившаяся заново, получает панель снова (show_in): прежнее
+    ожидание снимается, его вкладка панель убирает. Каждое ожидание
+    кончается снятием панели и элемента и возвратом индикатора хода — `ask`
+    chainlit его гасит. Создаёт приёмник AgentFeed на каждую форму агента.
+    """
+
+    GRACE_SEC: ClassVar[int] = 5
+    """Запас срока ожидания socket.io поверх своего: срок ведёт сам вопрос."""
+
+    def __init__(
+        self,
+        element: CustomElement,
+        step: StepDict,
+        step_id: str,
+        tab: TabSurface,
+        timeout_sec: float,
+    ) -> None:
+        self._element = element
+        self._step = step
+        self._step_id = step_id
+        self._tab = tab
+        self._timeout_sec = timeout_sec
+        self._asking: asyncio.Future[QuestionReply | None] | None = None
+        self._stopped = False
+
+    async def reply(self) -> QuestionReply | None:
+        """Ответ пользователя; None — срок вышел или вопрос снят.
+
+        Ошибки:
+        ValidationError — ответ вкладки не по форме ответа.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self._timeout_sec
+        try:
+            while not self._stopped:
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    return None
+
+                asking = asyncio.ensure_future(self._asked(self._tab, remaining))
+                self._asking = asking
+                await asyncio.wait((asking,))
+                if not asking.cancelled():
+                    return asking.result()
+
+            return None
+        finally:
+            if self._asking is not None:
+                self._asking.cancel()
+
+    @property
+    def tab_id(self) -> str:
+        """Сессия вкладки, которой показан вопрос."""
+        return self._tab.session_id
+
+    def show_in(self, tab: TabSurface) -> None:
+        """Панель — во вкладку tab: текущее ожидание снимается и начинается
+        заново там."""
+        self._tab = tab
+        if self._asking is not None:
+            self._asking.cancel()
+
+    def stop(self) -> None:
+        """Вопрос снят без пользователя: ход останавливается."""
+        self._stopped = True
+        if self._asking is not None:
+            self._asking.cancel()
+
+    async def _asked(self, tab: TabSurface, remaining: float) -> QuestionReply | None:
+        emitter = tab.emitter
+        spec = AskElementSpec(
+            type="element",
+            step_id=self._step_id,
+            element_id=self._element.id,
+            timeout=math.ceil(remaining) + self.GRACE_SEC,
+        )
+        await emitter.send_element(self._element.to_dict())
+        try:
+            async with asyncio.timeout(remaining):
+                raw = await emitter.asked(
+                    {"msg": self._step, "spec": spec.to_dict()}, spec.timeout
+                )
+        except TimeoutError:
+            return None
+        finally:
+            await emitter.signal(AskEvent.CLEAR, {})
+            await emitter.signal(AskEvent.REMOVE_ELEMENT, {"id": self._element.id})
+            await emitter.task_start()
+
+        return QuestionReply.model_validate(raw)
 
 
 @dataclass
@@ -176,6 +341,9 @@ class AgentFeed(TurnRenderer):
     """Уведомления сессии, которых в ленте нет: заголовок, план, команды,
     сжатие и состояние хода (его конец приходит turn_finished)."""
 
+    ABANDONED: ClassVar[str] = "turn failed"
+    """Причина в итоге хода, сорвавшегося без ответа агента."""
+
     def __init__(  # noqa: PLR0913 — приёмник собирается всеми своими входами
         self,
         identity: ThreadIdentity,
@@ -185,6 +353,7 @@ class AgentFeed(TurnRenderer):
         surface: RenderSurface,
         parts: BusParts,
         rows: FeedRows,
+        question_timeout_sec: float,
     ) -> None:
         self._identity = identity
         self._options = options
@@ -193,10 +362,16 @@ class AgentFeed(TurnRenderer):
         self._surface = surface
         self._parts = parts
         self._rows = rows
+        self._question_timeout_sec = question_timeout_sec
         self._scope = Scope.chat(identity.thread_id)
+        self._cards = QuestionCards()
+        self._elements = ChatElements()
         self._turn: LiveTurn | None = None
         self._stopping: set[str] = set()
         self._ordered = asyncio.Lock()
+        self._asking = asyncio.Lock()
+        """Вопросы пользователю показываются по одному, в порядке прихода."""
+        self._ask: QuestionAsk | None = None
 
     @property
     def thread_id(self) -> str:
@@ -204,6 +379,93 @@ class AgentFeed(TurnRenderer):
 
     def stopping(self, session_id: str) -> None:
         self._stopping.add(session_id)
+        if self._ask is not None:
+            self._ask.stop()
+
+    async def question_shown(
+        self, anchor: WebsocketSession, live: Collection[str]
+    ) -> bool:
+        ask = self._ask
+        if ask is None:
+            return False
+
+        shown_in = ask.tab_id
+        if shown_in != anchor.id and shown_in in live:
+            return False
+
+        ask.show_in(TabSurface(anchor))
+        logger.info(
+            "thread %s: the waiting question is shown again in session %s",
+            self.thread_id,
+            anchor.id,
+        )
+
+        return True
+
+    async def elicitation(
+        self, request: schema.CreateFormSessionElicitationRequest
+    ) -> ElicitationReply:
+        """Форма агента — панелью во вкладке держателя хода; ответ панели —
+        ответ агенту, срок и остановка хода — отмена. Вопрос вне хода не
+        показывается. Форма встаёт в очередь уведомлений: ход, начало которого
+        ещё публикуется, и вызов, задавший вопрос, видны раньше неё.
+
+        Ошибки:
+        RequestError — ответ вкладки не по форме ответа.
+        """
+        async with self._ordered:
+            turn = self._turn
+
+        if turn is None:
+            logger.warning(
+                "thread %s: the agent asked the user outside a turn of session %s; "
+                "the question is cancelled",
+                self.thread_id,
+                request.session_id,
+            )
+            return schema.CancelElicitationResponse()
+
+        card = self._cards.pending(request)
+        # панель живёт только у поля ввода: шаг ask не совпадает ни с одним
+        # сообщением ленты, иначе элемент встал бы в него второй строкой
+        step_id = str(uuid4())
+        element = self._elements.question(card.props())
+        element.id = str(uuid4())
+        element.thread_id = self.thread_id
+        element.for_id = step_id
+        step = StepDict(id=step_id, parentId=None, threadId=self.thread_id)
+        async with self._asking:
+            if request.session_id in self._stopping:
+                return schema.CancelElicitationResponse()
+
+            ask = QuestionAsk(
+                element, step, step_id, self._tab, self._question_timeout_sec
+            )
+            self._ask = ask
+            try:
+                reply = await ask.reply()
+            except ValidationError as exc:
+                logger.error(
+                    "thread %s: the answer of the question of call %s is off the "
+                    "form: %s",
+                    self.thread_id,
+                    request.tool_call_id,
+                    exc,
+                )
+                details = (
+                    f"the tab answered the question of call {request.tool_call_id} "
+                    f"off the answer form: {exc}"
+                )
+                raise RequestError.internal_error(
+                    {ErrorDataKey.DETAILS.value: details}
+                ) from exc
+            finally:
+                self._ask = None
+
+        if reply is None:
+            return schema.CancelElicitationResponse()
+
+        return reply.response()
 
     async def turn_started(
         self, question: Question, start: Coroutine[Any, Any, StartedTurn]
@@ -389,7 +651,7 @@ class AgentFeed(TurnRenderer):
                 return
 
             if stop_reason == StopReason.CANCELLED:
-                note = StepText.STOPPED.value
+                note = self._replay.view.label(StepText.STOPPED)
                 await turn.feed.answer_interrupted(turn.key, note)
                 await turn.feed.finished(TurnOutcome.STOPPED, note)
                 return
@@ -416,7 +678,7 @@ class AgentFeed(TurnRenderer):
                 return
 
             try:
-                await turn.feed.finished(TurnOutcome.FAILED, StepText.TURN_FAILED.value)
+                await turn.feed.finished(TurnOutcome.FAILED, self.ABANDONED)
             finally:
                 await self._release(turn)
 
@@ -471,7 +733,8 @@ class AgentFeeds(TurnRenderers):
     """Фабрика приёмников потока: на агента треда — переводчик воспроизведения
     во вкладке, поверхность рассылки треда и шина инстанса. Карточки
     инструментов серверов профиля (вид аргументов, журнал) узнаются здесь же
-    у клиента MCP чата. Создаётся провайдером процесса.
+    у клиента MCP чата; срок ответа на вопрос агента — из [agent]. Создаётся
+    провайдером процесса.
     """
 
     def __init__(  # noqa: PLR0913 — фабрика собирается всеми входами процесса
@@ -483,14 +746,18 @@ class AgentFeeds(TurnRenderers):
         rows: FeedRows,
         surfaces: TabSurfaces,
         storage: StorageClient,
+        texts: UiText,
+        question_timeout_sec: float,
     ) -> None:
         self._parts = parts
+        self._texts = texts
         self._journals = journals
         self._media = media
         self._servers = servers
         self._rows = rows
         self._surfaces = surfaces
         self._storage = storage
+        self._question_timeout_sec = question_timeout_sec
 
     async def create(
         self, identity: ThreadIdentity, options: SessionOptions
@@ -516,6 +783,7 @@ class AgentFeeds(TurnRenderers):
             LiveSink(),
             str(identity.user_id),
             self._storage,
+            self._texts,
             user_name=identity.login,
         )
         replay = UpdateView(view, identity.thread_id, self._journals, self._media)
@@ -528,4 +796,5 @@ class AgentFeeds(TurnRenderers):
             self._surfaces.thread(anchor, identity.thread_id),
             self._parts,
             self._rows,
+            self._question_timeout_sec,
         )

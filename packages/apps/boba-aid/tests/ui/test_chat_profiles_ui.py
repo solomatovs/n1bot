@@ -18,6 +18,7 @@ import pytest
 from chat_ui import OpenChat
 from playwright.sync_api import expect
 
+from boba.aid.chat.ui_text import UiText
 from boba.stand.ui.chat_page import ChatPage, Selector, StepKind
 from boba.stand.ui.database import StandDatabase
 from boba.stand.ui.fake_llm import ScenarioName
@@ -28,8 +29,13 @@ pytestmark = pytest.mark.ui
 ADMIN_LOGIN = "admin"
 """Логин с ролью ADM: видит все инструменты, tools=['*']."""
 
+AGENT_TOOL = "AskUserQuestion"
+"""Собственный инструмент агента — вопрос пользователю: чат объявляет агенту
+формы, и модель видит его при любом профиле."""
+
 STAND_TOOLS = frozenset(
     {
+        AGENT_TOOL,
         "mcp__boba_general__send_file",
         "mcp__boba_general__diagram_save",
         "mcp__boba_general__canvas_open",
@@ -38,16 +44,18 @@ STAND_TOOLS = frozenset(
     }
 )
 """Инструменты профиля general стенда под полными именами, как их видит
-модель: каталог соединений исполняет сам чат (сервер chat), остальные отдаёт
-endpoint general сервиса boba-mcp (песочные секции выключены)."""
+модель: каталог соединений исполняет сам чат (сервер chat), вопрос
+пользователю — агент, остальные отдаёт endpoint general сервиса boba-mcp
+(песочные секции выключены)."""
 
 DEV_OWN_TOOLS = frozenset({"mcp__chat__connection_list"})
 """Собственные инструменты чата, выданные роли DEV: без connection_search."""
 
 SEARCH_PROFILE_TOOLS = frozenset(
-    {"mcp__boba_search__diagram_save", "mcp__boba_search__canvas_open"}
+    {AGENT_TOOL, "mcp__boba_search__diagram_save", "mcp__boba_search__canvas_open"}
 )
-"""Набор endpoint'а search сервиса: его называет профиль search стенда."""
+"""Набор endpoint'а search сервиса, который называет профиль search стенда,
+и вопрос пользователю агента."""
 
 
 @pytest.fixture(autouse=True)
@@ -395,10 +403,8 @@ class TestRetiredThreadProfile:
 
     TOAST: ClassVar[str] = "[data-sonner-toast]"
     THREAD_HISTORY: ClassVar[str] = "#thread-history"
-    NOTICE: ClassVar[str] = (
-        f'Chat profile "{RetiredThreads.PROFILE}" is no longer available: '
-        'this chat continues with "General"'
-    )
+    NOTICE: ClassVar[str] = "aid.notice.profileRetired"
+    FALLBACK: ClassVar[str] = "General"
     SETTLE_MS: ClassVar[int] = 3000
     WAIT_MS: ClassVar[int] = 15000
 
@@ -407,6 +413,7 @@ class TestRetiredThreadProfile:
         open_chat: OpenChat,
         stand: StandProcess,
         retired_threads: RetiredThreads,
+        app_texts: UiText,
     ) -> None:
         chat = open_chat(stand, ADMIN_LOGIN)
         thread = retired_threads.made_in(chat)
@@ -416,7 +423,10 @@ class TestRetiredThreadProfile:
             wait_until="domcontentloaded",
         )
 
-        toast = chat.page.locator(self.TOAST).filter(has_text=self.NOTICE)
+        notice = app_texts.text(
+            self.NOTICE, retired=RetiredThreads.PROFILE, profile=self.FALLBACK
+        )
+        toast = chat.page.locator(self.TOAST).filter(has_text=notice)
         expect(toast).to_be_visible(timeout=self.WAIT_MS)
 
         self._check_opened(chat, thread)

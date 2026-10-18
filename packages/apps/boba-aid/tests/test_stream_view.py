@@ -19,12 +19,19 @@ from typing import Any, ClassVar, cast
 from uuid import UUID
 
 import pytest
-from aid_stand import FakeTurn, RecordingSink, RemoteStand, ServiceProcess
+from aid_stand import (
+    AppLanguage,
+    FakeTurn,
+    RecordingSink,
+    RemoteStand,
+    ServiceProcess,
+)
 from chainlit.context import ChainlitContext, context_var
 from chainlit.step import Step
 from pydantic import ValidationError
 
-from boba.aid.canvas.panel import CanvasPanel, StreamActions
+from boba.aid.canvas.panel import CanvasNote, CanvasPanel, StreamActions
+from boba.aid.chat.ui_text import UiText
 from boba.aid.rendering.chat_view import (
     ChatSink,
     ChatView,
@@ -76,6 +83,9 @@ def _bin_dirs() -> list[str]:
 
     return dirs
 
+
+TEXTS = UiText(AppLanguage.ASSETS, UiText.DEFAULT_LANGUAGE)
+"""Подписи ленты на языке по умолчанию."""
 
 THREAD = "33333333-3333-3333-3333-333333333333"
 USER = ServiceProcess.OWNER
@@ -1023,8 +1033,8 @@ class TestShowAction:
 
         if probe.shown[0].kind is not CanvasKind.NOTICE:
             raise AssertionError("probe.shown[0].kind is CanvasKind.NOTICE")
-        if "unavailable" not in probe.shown[0].note:
-            raise AssertionError('"unavailable" in probe.shown[0].note')
+        if probe.shown[0].note != CanvasNote.GONE.value:
+            raise AssertionError(f"note: {probe.shown[0].note!r}")
 
     def test_leave_action_drops_the_watch(
         self, journals: CallJournals, monkeypatch: pytest.MonkeyPatch
@@ -1080,7 +1090,7 @@ class TestStreamButton:
     async def _running_step(
         self, storage: LocalStorageClient, sink: ChatSink, name: str
     ) -> tuple[ChatView, Step]:
-        view = ChatView(THREAD, sink, "u-1", storage, user_name="tester")
+        view = ChatView(THREAD, sink, "u-1", storage, TEXTS, user_name="tester")
         view.begin_turn("turn-1")
         step = await view.tool_started(name, {"command": "ls"}, CALL_ID, None, None)
 

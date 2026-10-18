@@ -32,9 +32,16 @@ import pytest
 from chat_ui import BOOT_TIMEOUT_SEC, OpenChat
 from playwright.sync_api import Browser, FrameLocator, Locator, Page
 
+from boba.aid.chat.ui_text import UiText
 from boba.mcp_client.client import McpServerConfig
 from boba.stand.ui.chat_page import ChatPage, Selector, StepKind
-from boba.stand.ui.fake_llm import ScenarioName
+from boba.stand.ui.fake_llm import (
+    Reply,
+    ReplyBookClient,
+    ReplyCall,
+    ReplyTurn,
+    ScenarioName,
+)
 from boba.stand.ui.socket_log import ChatEvent, StepField
 from boba.stand.ui.stand import (
     REPO_ROOT,
@@ -330,7 +337,7 @@ class TestMcpToolInTheFeed:
             raise AssertionError(f"the text resource is a code block: {output!r}")
 
     def test_json_of_a_tool_is_a_tree_under_the_step(
-        self, mcp_stand: StandProcess, open_chat: OpenChat
+        self, mcp_stand: StandProcess, open_chat: OpenChat, app_texts: UiText
     ) -> None:
         """Look-тест дерева JSON: корень раскрыт, вложенное свёрнуто и
         раскрывается кликом; строка с разметкой видна текстом и ничего не
@@ -345,10 +352,11 @@ class TestMcpToolInTheFeed:
         tree.wait_for(state="visible", timeout=30_000)
         rows = tree.locator("[data-json-node] [data-json-node]").first
 
+        one_item = app_texts.text("aid.json.item_one", count=1)
         folded = tree.inner_text()
         if '"total": 1' not in folded:
             raise AssertionError(f"the root is expanded: {folded!r}")
-        if "1 item ]" not in folded:
+        if f"{one_item} ]" not in folded:
             raise AssertionError(f"the nested array is folded: {folded!r}")
         if "<script>" in folded:
             raise AssertionError(f"the nested string is folded away: {folded!r}")
@@ -368,9 +376,9 @@ class TestMcpToolInTheFeed:
             raise AssertionError("the string ran as a script")
 
         rows.locator("summary").first.click()
-        folded_back = tree.get_by_text(re.compile(r"\b1 item\b"))
+        folded_back = tree.get_by_text(re.compile(re.escape(one_item)))
         folded_back.wait_for(state="visible", timeout=10_000)
-        if "1 item ]" not in tree.inner_text():
+        if f"{one_item} ]" not in tree.inner_text():
             raise AssertionError(f"the array folds back: {tree.inner_text()!r}")
 
 
@@ -476,7 +484,7 @@ class TestOwnServerInTheFeed:
         _ask(chat, "mcp__boba__fake_echo", {"text": "journal", "repeat": 1})
 
         tool = chat.expand_last_tool()
-        tool.locator('[aria-label="Show tool output"]').click()
+        tool.locator("[data-canvas-stream]").click()
 
         side = chat.page.locator("#side-view-content")
         side.get_by_text("echo progress: journal").first.wait_for(timeout=30_000)
@@ -782,3 +790,121 @@ class TestSandboxPage:
 
         assert connect is not None, srcdoc
         assert connect.group(1).split() == ["'self'", "https://cdn.example.com"]
+
+
+class TestServerQuestion:
+    """Вопрос сервера MCP (input_required с формой): агент задаёт его чату
+    формой `elicitation/create`, чат — панелью вместо поля ввода с именем
+    сервера и его сообщением; ответ уходит серверу повтором вызова, запись
+    ответа встаёт сообщением основной ленты после итога вызова."""
+
+    PANEL: str = "#question-dock [data-question-panel]"
+    PROMPT: str = "Загрузи заказы в хранилище"
+    LOADED: str = "Строки загружены."
+
+    def _asked(self, chat: ChatPage, llm_port: int) -> None:
+        """Обычный вопрос пользователя; модель по книге ответов зовёт
+        load_rows, после итога отвечает текстом."""
+        call = ReplyCall(
+            tool="mcp__standard__load_rows",
+            arguments={"rows": 10},
+            intent="Загрузить заказы",
+        )
+        turns = [ReplyTurn(calls=[call]), ReplyTurn(content=self.LOADED)]
+        ReplyBookClient(StandUrl.of(llm_port)).register(
+            [Reply(question=self.PROMPT, turns=turns)]
+        )
+        chat.ask(self.PROMPT)
+
+    def _finished(self, chat: ChatPage) -> dict[str, Any]:
+        deadline = time.monotonic() + 120.0
+        while time.monotonic() < deadline:
+            chat.page.wait_for_timeout(100)
+            step = chat.log.last_step(StepKind.TOOL.value)
+            if step is None:
+                continue
+
+            if str(step.get(StepField.NAME.value)).startswith(RUNNING):
+                continue
+
+            return step
+
+        raise AssertionError(f"no finished tool step\n{chat.log.describe()}")
+
+    def test_server_question_is_answered_in_the_panel(
+        self,
+        mcp_stand: StandProcess,
+        open_chat: OpenChat,
+        stand_workdir: Path,
+        llm_port: int,
+    ) -> None:
+        chat = open_chat(mcp_stand, "")
+        self._asked(chat, llm_port)
+        panel = chat.page.locator(self.PANEL)
+        panel.wait_for(state="visible", timeout=60_000)
+
+        source = panel.locator(".q-source").inner_text()
+        if source != (
+            "standard · load_rows needs the target table before it can start the copy."
+        ):
+            raise AssertionError(
+                f"the panel names the server and its message: {source}"
+            )
+
+        if panel.locator(".navTab").all_inner_texts() != ["Target"]:
+            raise AssertionError("the tab is the title of the field")
+
+        labels = panel.locator(".optionLabel").all_inner_texts()
+        if labels != ["sales.orders", "sales.orders_stage", "tmp.orders_copy"]:
+            raise AssertionError(f"the options of a server form, no Other: {labels}")
+
+        look = stand_workdir / "question-look"
+        look.mkdir(parents=True, exist_ok=True)
+        for dark, theme in ((False, "light"), (True, "dark")):
+            chat.page.evaluate(
+                "(dark) => document.documentElement.classList.toggle('dark', dark)",
+                dark,
+            )
+            chat.page.wait_for_timeout(150)
+            path = look / f"09-mcp-elicitation-extension-{theme}.png"
+            chat.page.screenshot(path=str(path))
+
+        chat.page.evaluate("() => document.documentElement.classList.remove('dark')")
+        chat.page.wait_for_timeout(600)
+        panel.locator('[role="radio"]').filter(has_text="sales.orders_stage").click()
+        panel.locator("[data-submit]").click()
+
+        step = self._finished(chat)
+        output = str(step.get(StepField.OUTPUT.value))
+        if "loaded 10 rows into sales.orders_stage" not in output:
+            raise AssertionError(f"the server got the answer: {step}")
+
+        # запись видна в основной ленте без раскрытия хода и шага вызова
+        chat.page.get_by_text(self.LOADED).last.wait_for(timeout=60_000)
+        record = chat.page.locator('[data-question-review="accept"]').last
+        record.wait_for(state="visible", timeout=30_000)
+        message = record.locator("xpath=ancestor::*[@data-step-type][1]")
+        if message.get_attribute("data-step-type") != "assistant_message":
+            raise AssertionError("the record is a message of the main feed")
+
+        checked = record.locator('[aria-checked="true"]').inner_text()
+        if "sales.orders_stage" not in checked:
+            raise AssertionError(f"the record checks the answer: {checked}")
+
+        source = record.locator(".q-source").inner_text()
+        if not source.startswith("standard · "):
+            raise AssertionError(f"the record names the server: {source}")
+
+    def test_declined_server_question_reaches_the_server(
+        self, mcp_stand: StandProcess, open_chat: OpenChat, llm_port: int
+    ) -> None:
+        chat = open_chat(mcp_stand, "")
+        self._asked(chat, llm_port)
+        panel = chat.page.locator(self.PANEL)
+        panel.wait_for(state="visible", timeout=60_000)
+        chat.page.wait_for_timeout(600)
+        chat.page.keyboard.press("Escape")
+
+        step = self._finished(chat)
+        if "the user answered decline" not in str(step.get(StepField.OUTPUT.value)):
+            raise AssertionError(f"the server got the refusal: {step}")

@@ -9,6 +9,8 @@
 
 import logging
 from collections.abc import Awaitable, Callable
+from enum import StrEnum
+from pathlib import Path
 from typing import Annotated, Any, ClassVar
 from uuid import UUID
 
@@ -54,6 +56,7 @@ from boba.aid.canvas.panel import StreamActions
 from boba.aid.canvas.remote import RemoteJournals, RemoteStreams
 from boba.aid.canvas.tools import CanvasOpener
 from boba.aid.chat.panel_text import PanelText
+from boba.aid.chat.ui_text import UiText
 from boba.aid.domain.fields import ThreadField, ThreadMetaField
 from boba.aid.infra.config import AppConfig
 from boba.aid.infra.providers import (
@@ -112,6 +115,20 @@ from boba.runtime.http import SessionCookie
 logger = logging.getLogger(__name__)
 
 
+class TabText(StrEnum):
+    """Ключи пометок вкладке в переводах chainlit: строки — на языке вкладки."""
+
+    SETTINGS_DEFERRED = "aid.notice.settingsDeferred"
+    """Настройки сохранены и вступят после идущего хода."""
+
+    PROFILE_RETIRED = "aid.notice.profileRetired"
+    """Профиль треда больше не выдан: тред продолжается профилем по умолчанию."""
+
+    def of(self, app_config: AppConfig, **values: object) -> str:
+        texts = UiText(Path(app_config.aid.root), current_session().language)
+        return texts.text(self.value, **values)
+
+
 class TabSettings:
     """Панель настроек агента вкладки: вкладки из слоя пользователя, слоя
     чата треда и вариантов сессии у агента вкладки.
@@ -120,11 +137,6 @@ class TabSettings:
     шлётся при старте вкладки, после хода, открывшего сессию или
     перезапустившего агента, после правки настроек и после возврата к треду.
     """
-
-    NOTICE_DEFERRED: ClassVar[str] = (
-        "Settings are saved and will apply after the current answer."
-    )
-    """Пометка в ленте о сохранённых настройках, которые ждут конца хода."""
 
     def __init__(
         self, app_config: AppConfig, registry: ChatProfiles, table: AgentSettingsTable
@@ -388,6 +400,39 @@ async def on_edit(  # noqa: PLR0913 — зависимости обработч�
     await tab.run(identity, question, TabSettings(app_config, registry, table))
 
 
+@di_inject
+async def show_question(
+    session: ChainlitSession,
+    index: Annotated[ThreadAgentsIndex, Depends(thread_agents_index)],
+) -> None:
+    """Вкладка подключилась к треду с идущим ходом: висящий вопрос агента
+    этого треда и этого пользователя на инстансе показывается в ней — после
+    обрыва сокета и после перезагрузки страницы; вопрос, открытый в другой
+    живой вкладке, там и остаётся."""
+    thread_id = session.thread_id
+    if thread_id is None:
+        return
+
+    user_id = session.user_id
+    if user_id is None:
+        return
+
+    socket = session.websocket
+    if socket is None:
+        return
+
+    live: set[str] = set()
+    for tab in ThreadRoom.sessions(thread_id):
+        live.add(tab.id)
+
+    for agent in index.of_thread(thread_id):
+        if agent.user_id != UUID(user_id):
+            continue
+
+        if await agent.question_shown(socket, live):
+            return
+
+
 @cl.set_chat_profiles
 @di_inject
 async def set_chat_profiles(
@@ -588,9 +633,8 @@ async def on_settings_update(  # noqa: PLR0913 — зависимости обр
         return
 
     if outcome is SettingsOutcome.DEFERRED:
-        await cl.Message(
-            content=TabSettings.NOTICE_DEFERRED, author=TabAgent.AUTHOR
-        ).send()
+        notice = TabText.SETTINGS_DEFERRED.of(app_config)
+        await cl.Message(content=notice, author=TabAgent.AUTHOR).send()
 
     # панель показывает сохранённое; после перезапуска — с настройками сессии
     await panel_of.send(agent)
@@ -894,9 +938,8 @@ async def on_chat_resume(  # noqa: PLR0913 — зависимости обраб
             stored,
             fallback.name,
         )
-        notice = (
-            f'Chat profile "{stored}" is no longer available: '
-            f'this chat continues with "{fallback.config.display_name}"'
+        notice = TabText.PROFILE_RETIRED.of(
+            app_config, retired=stored, profile=fallback.config.display_name
         )
         await context.emitter.send_toast(notice, "warning")
 
@@ -994,9 +1037,10 @@ class ResumeEmitter(ChainlitEmitter):
 
 class ChatCallbacks:
     """Обработчики чата, которые chainlit и сокет берут не декоратором:
-    вопрос, правка вопроса, правка настроек и обновление чужих вкладок
-    пользователя. Ставит их bootstrap один раз на процесс; остальные
-    обработчики модуля регистрируются декораторами chainlit при импорте.
+    вопрос, правка вопроса, правка настроек, висящий вопрос агента вкладке,
+    подключившейся к треду, и обновление чужих вкладок пользователя. Ставит
+    их bootstrap один раз на процесс; остальные обработчики модуля
+    регистрируются декораторами chainlit при импорте.
     """
 
     def install(self) -> None:
@@ -1004,4 +1048,5 @@ class ChatCallbacks:
         # без task-обёртки chainlit: её task_end погасил бы индикатор идущего хода
         chainlit_config.code.on_settings_update = wrap_user_function(on_settings_update)
         SocketEvents.on_edit(on_edit)
+        SocketEvents.on_ready(show_question)
         UserRoom.on_settings(SettingsRefresh().apply)

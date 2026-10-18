@@ -708,6 +708,9 @@ class StandConfig(StandService):
     messaging: str = ""
     """Провайдер шины [messaging]: пусто — как в конфиге отладки (память
     процесса); postgres — шина в базе стенда, общая у двух инстансов."""
+    app_root: str = ""
+    """Корень приложения chainlit ([env].app_root): пусто — assets пакета, как
+    в отладке; свой корень даёт стенду другой конфиг chainlit (язык)."""
 
     CHAT_TOOLS: ClassVar[tuple[str, ...]] = StandToolNames.CHAT_TOOLS
     """Инструменты, которые чат исполняет сам; остальные — у сервиса boba-mcp."""
@@ -749,8 +752,10 @@ class StandConfig(StandService):
         "admin": "stand-admin-pass",
         "dev": "stand-dev-pass",
         "guest": "stand-guest-pass",
+        "norole": "stand-norole-pass",
     }
-    """Учётки стенда: фиксированы кодом, рабочий конфиг их не задаёт."""
+    """Учётки стенда: фиксированы кодом, рабочий конфиг их не задаёт. У norole
+    ролей нет: её вход отказан, как у учётной записи без ролей."""
 
     STAND_ROLES: ClassVar[dict[str, list[str]]] = {
         "admin": ["ADM"],
@@ -810,6 +815,7 @@ class StandConfig(StandService):
         doc["agent"] = {
             "public_url": self.base_url,
             "seal_ttl_sec": 600,
+            "question_timeout_sec": 600,
             "process": {
                 "command": self.agent_process["command"],
                 "args": self.agent_process["args"],
@@ -853,6 +859,8 @@ class StandConfig(StandService):
         env["BOBA_URL_PREFIX"] = self.url_prefix
         if self.messaging:
             env["BOBA_MESSAGING"] = self.messaging
+        if self.app_root:
+            env["BOBA_APP_ROOT"] = self.app_root
         env["PGGSSENCMODE"] = "disable"
         # способ запуска tools фиксируется стендом, а не окружением прогона
         if self.sandbox:

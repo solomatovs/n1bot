@@ -1,7 +1,8 @@
 """ACP-клиент чата aid на v2: процесс агента, соединение ClientConnection по
-его stdio, методы сессии; уведомления и вопросы агента уходят приёмнику с
-явным интерфейсом SessionUpdates, который заменяет рендерер ленты, а запросы
-mcp/message — ретранслятору (McpRelay).
+его stdio, методы сессии; уведомления, вопросы разрешений и формы
+`elicitation/create` агента уходят приёмнику с явным интерфейсом
+SessionUpdates, который заменяет рендерер ленты, а запросы mcp/message —
+ретранслятору (McpRelay). Клиент объявляет агенту формы (`elicitation.form`).
 
 Ошибки:
 AgentProcessError — процесс не запустился, не прошёл рукопожатие (чужая
@@ -26,7 +27,7 @@ from uuid import UUID
 from acp.exceptions import RequestError
 from acp.experimental.v2 import Client, schema
 from acp.transports import spawn_stdio_transport
-from pydantic import BaseModel, ValidationError
+from pydantic import AnyUrl, BaseModel, ValidationError
 
 from boba.aid.agent.relay import ClientName, McpRelay
 from boba.aid.agent.settings import AgentWorkdir, WorkdirFile
@@ -47,6 +48,7 @@ __all__ = [
     "AgentProcess",
     "AgentProcessError",
     "AgentRequestError",
+    "ElicitationReply",
     "PromptBlock",
     "SessionUpdates",
 ]
@@ -56,6 +58,11 @@ logger = logging.getLogger(__name__)
 ModelT = TypeVar("ModelT", bound=BaseModel)
 
 PromptBlock: TypeAlias = schema.TextContentBlock | schema.ResourceContentBlock
+ElicitationReply: TypeAlias = (
+    schema.AcceptElicitationResponse
+    | schema.DeclineElicitationResponse
+    | schema.CancelElicitationResponse
+)
 
 
 class AcpClientError(Exception):
@@ -90,9 +97,9 @@ class AgentRequestError(AcpClientError):
 
 
 class SessionUpdates(Protocol):
-    """Приёмник потока сессии: уведомления, вопросы разрешений и итог хода.
-    Реализуют приёмник ленты (AgentFeed), приёмник без ленты (MuteUpdates)
-    и обёртка агента треда (AskedQuestions)."""
+    """Приёмник потока сессии: уведомления, вопросы разрешений, формы
+    вопросов пользователю и итог хода. Реализуют приёмник ленты (AgentFeed),
+    приёмник без ленты (MuteUpdates) и обёртка агента треда (AskedQuestions)."""
 
     @abstractmethod
     async def update(self, session_id: str, update: SessionUpdate) -> None:
@@ -103,6 +110,17 @@ class SessionUpdates(Protocol):
         self, session_id: str, title: str, options: Sequence[schema.PermissionOption]
     ) -> schema.RequestPermissionResponse:
         """Вопрос `session/request_permission`: ответ выбирает приёмник."""
+
+    @abstractmethod
+    async def elicitation(
+        self, request: schema.CreateFormSessionElicitationRequest
+    ) -> ElicitationReply:
+        """Форма `elicitation/create` агента: вопрос пользователю в рамках
+        сессии и вызова; ответ — принятая форма, отказ или отмена.
+
+        Ошибки:
+        RequestError — ответ вкладки не по форме ответа.
+        """
 
     @abstractmethod
     async def turn_finished(
@@ -116,9 +134,13 @@ class SessionUpdates(Protocol):
 
 
 class AgentClient(Client):
-    """Реализация Client SDK v2 для чата aid: уведомления и вопросы
-    разрешений — приёмнику; остальные методы протокола клиент не обслуживает,
-    и SDK сам отвечает на них method_not_found."""
+    """Реализация Client SDK v2 для чата aid: уведомления, вопросы
+    разрешений и формы `elicitation/create` — приёмнику; остальные методы
+    протокола клиент не обслуживает, и SDK сам отвечает на них
+    method_not_found."""
+
+    FORM: ClassVar[str] = "form"
+    """Единственный вид форм, который объявляет клиент."""
 
     def __init__(self, updates: SessionUpdates) -> None:
         self._updates = updates
@@ -142,12 +164,67 @@ class AgentClient(Client):
     ) -> None:
         await self._updates.update(session_id, update)
 
+    async def create_elicitation(  # noqa: PLR0913 — сигнатура протокола SDK
+        self,
+        message: str,
+        mode: str,
+        *,
+        session_id: str | None = None,
+        request_id: int | str | None = None,
+        tool_call_id: str | None = None,
+        requested_schema: schema.ElicitationSchema | None = None,
+        elicitation_id: str | None = None,
+        url: str | AnyUrl | None = None,
+        **kwargs: Any,
+    ) -> ElicitationReply:
+        """Форма сессии — приёмнику; `_meta` запроса SDK отдаёт именованными
+        аргументами kwargs. Клиент объявил только формы: запрос другого вида
+        или без сессии — ошибка -32602.
+
+        Ошибки:
+        RequestError — запрос не форма сессии либо ответ вкладки не по
+            форме ответа.
+        """
+        if mode != self.FORM:
+            details = (
+                f"elicitation/create of mode {mode!r} is refused: this client "
+                f"declared the {self.FORM!r} mode only"
+            )
+            raise RequestError.invalid_params({ErrorDataKey.DETAILS.value: details})
+
+        if session_id is None:
+            details = (
+                "elicitation/create without sessionId is refused: this client "
+                "asks the user only within a session"
+            )
+            raise RequestError.invalid_params({ErrorDataKey.DETAILS.value: details})
+
+        if requested_schema is None:
+            details = (
+                f"elicitation/create of session {session_id}: a form needs "
+                "requestedSchema, got none"
+            )
+            raise RequestError.invalid_params({ErrorDataKey.DETAILS.value: details})
+
+        meta: dict[str, Any] | None = None
+        if kwargs:
+            meta = dict(kwargs)
+
+        request = schema.CreateFormSessionElicitationRequest(
+            message=message,
+            session_id=session_id,
+            tool_call_id=tool_call_id,
+            requested_schema=requested_schema,
+            field_meta=meta,
+        )
+
+        return await self._updates.elicitation(request)
+
     # SDK считает метод протокола, оставленный как есть, неподдержанным
     connect_mcp = Client.connect_mcp
     mcp_message = Client.mcp_message
     notify_mcp = Client.notify_mcp
     disconnect_mcp = Client.disconnect_mcp
-    create_elicitation = Client.create_elicitation
     complete_elicitation = Client.complete_elicitation
 
 
@@ -484,12 +561,16 @@ class AgentProcess:
         connection = self._require_connection()
         info = schema.Implementation(name=ClientName.NAME.value, version=self._version)
 
+        elicitation = schema.ElicitationCapabilities(
+            form=schema.ElicitationFormCapabilities()
+        )
+
         return await self._answer_of(
             "initialize",
             connection.initialize(
                 protocol_version=AcpVersion.V2.value,
                 info=info,
-                capabilities=schema.ClientCapabilities(),
+                capabilities=schema.ClientCapabilities(elicitation=elicitation),
             ),
         )
 
