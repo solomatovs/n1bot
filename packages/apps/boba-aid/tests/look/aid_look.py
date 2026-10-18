@@ -938,9 +938,10 @@ class LookPages:
             reduced_motion="reduce",
         )
         self._contexts.append(context)
+        # скрипт идёт и во фреймы песочницы приложений, где localStorage нет
         context.add_init_script(
-            f"window.localStorage.setItem({json.dumps(self.THEME_KEY)}, "
-            f"{json.dumps(theme.value)})"
+            f"if (window === window.top) window.localStorage.setItem("
+            f"{json.dumps(self.THEME_KEY)}, {json.dumps(theme.value)})"
         )
         return context.new_page()
 

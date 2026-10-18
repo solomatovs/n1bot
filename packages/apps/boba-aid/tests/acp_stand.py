@@ -520,6 +520,11 @@ class OrdersBook:
     ASKED: ClassVar[str] = "Which orders are still new?"
     """Вопрос, который приложение шлёт ui/message."""
     ASKED_ANSWER: ClassVar[str] = "Новый только заказ 7."
+    CONTEXT: ClassVar[str] = "the user sees 3 orders: #7, #8, #9"
+    """Текст ui/update-model-context приложения при всех трёх строках."""
+    ASKED_IN_CONTEXT: ClassVar[str] = "\n".join((ASKED, CONTEXT, '{\n  "orders": 3\n}'))
+    """Тот же вопрос, когда приложение передало контекст: агент дописывает к
+    сообщению пользователя служебные строки — текст и structuredContent JSON."""
     TOOL: ClassVar[str] = "mcp__apps__orders"
     PLAIN_TOOL: ClassVar[str] = "mcp__plain__orders"
     ROWS: ClassVar[list[JsonValue]] = [
@@ -569,6 +574,10 @@ class OrdersBook:
                 turns=[ReplyTurn(calls=[plain]), ReplyTurn(content=self.PLAIN_ANSWER)],
             ),
             Reply(question=self.ASKED, turns=[ReplyTurn(content=self.ASKED_ANSWER)]),
+            Reply(
+                question=self.ASKED_IN_CONTEXT,
+                turns=[ReplyTurn(content=self.ASKED_ANSWER)],
+            ),
         ]
 
 

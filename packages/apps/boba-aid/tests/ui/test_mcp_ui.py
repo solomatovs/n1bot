@@ -665,7 +665,7 @@ class TestToolApps:
             last = json.loads(asked[-1])[-1]
             raise AssertionError(f"the book answers the question: {last!r}")
 
-        if "the user sees 3 orders: #7, #8, #9" not in asked[-1]:
+        if OrdersBook.CONTEXT not in asked[-1]:
             raise AssertionError(f"the context goes with the question: {asked[-1]}")
 
         if '\\"orders\\": 3' not in asked[-1]:
