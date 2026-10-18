@@ -17,6 +17,7 @@ from boba.canvas.canvas import (
     CanvasErrorKind,
     RenderStatus,
     RenderVerdicts,
+    WatchProbeError,
 )
 from boba.canvas.diagram import DiagramEntry, DiagramSpecError, MermaidSpec
 from boba.canvas.keys import ObjectKey, ThreadDir
@@ -302,7 +303,8 @@ class TestEntry:
 
 
 class TestWatchSource:
-    """Слежение за спекой: сигнал по смене содержимого, битый тик пропускается."""
+    """Слежение за спекой: сигнал по смене содержимого, отказ чтения — отказ
+    опроса."""
 
     @pytest.mark.anyio
     async def test_probe_changes_only_on_new_content(
@@ -331,32 +333,21 @@ class TestWatchSource:
             raise AssertionError("changed.revision != first.revision")
 
     @pytest.mark.anyio
-    async def test_read_error_keeps_the_last_probe(
+    async def test_read_error_fails_the_probe(
         self, files: DiagramFiles, http_context: None
     ) -> None:
-        """Файл в момент чтения переписывается — тик отдаёт прежнее состояние."""
-        await _stored("orders.mmd", ER_SPEC)
-        key = ObjectKey.build(
-            str(UUID(int=7)), THREAD, "orders.mmd", "el-1", dir_thread=ThreadDir.MERMAID
-        )
-
-        source = MermaidViewer(files).watch_source(key)
-        if source is None:
-            raise AssertionError("source is not None")
-
-        first = await source.probe()
-
+        """Спека в момент опроса не читается (переписывается или удалена):
+        опрос отказывает ошибкой с путём файла, и сторож повторит его на
+        следующем такте, а не снимет слежение."""
         missing = ObjectKey.build(
             str(UUID(int=7)), THREAD, "absent.mmd", "el-1", dir_thread=ThreadDir.MERMAID
         )
         broken = MermaidViewer(files).watch_source(missing)
         if broken is None:
-            raise AssertionError("broken is not None")
+            raise AssertionError("the diagram viewer offers no watch source")
 
-        if await broken.probe() is not None:
-            raise AssertionError("await broken.probe() is None")
-        if first is None:
-            raise AssertionError("first is not None")
+        with pytest.raises(WatchProbeError, match=r"absent\.mmd"):
+            await broken.probe()
 
 
 class TestRenderVerdicts:
