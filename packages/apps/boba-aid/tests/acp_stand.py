@@ -407,30 +407,26 @@ class SandboxPages(SimpleHTTPRequestHandler):
         super().end_headers()
 
 
-class AppsHost:
-    """Хост приложений MCP Apps для стендов чата: стандартный сервер
-    (standard_server.py) по HTTP и страница песочницы на своём источнике,
-    разложенная как в образе чата: sandbox.html и рядом шрифт Inter
-    (fonts/inter/files) из vendor фронта. Чат открыт на 127.0.0.1, песочница
-    — на localhost, источники разные. Создают его фикстуры стендов ui- и
-    look-тестов; секции [mcp.servers.<имя>] чата дают drawn и plain."""
+class SandboxHost:
+    """Страница-прокси песочницы MCP Apps на своём источнике, разложенная как
+    в образе чата: sandbox.html и рядом шрифт Inter (fonts/inter/files) из
+    vendor фронта. Чат открыт на 127.0.0.1, песочница — на localhost со
+    своим портом: источники разные, и у каждого сервера с приложениями
+    песочница своя. Создают её хост приложений AppsHost и ui-тесты
+    приложений чужих серверов; секцию [mcp.servers.<имя>] сервера по HTTP
+    с этой песочницей даёт drawn."""
 
-    SCRIPT: ClassVar[Path] = (
-        REPO_ROOT / "packages/services/boba-mcp-client/tests/standard_server.py"
-    )
     ASSETS: ClassVar[Path] = REPO_ROOT / "packages/apps/boba-aid/assets"
     FONTS: ClassVar[tuple[str, ...]] = ("fonts", "inter", "files")
     SANDBOX: ClassVar[str] = "sandbox.html"
-    BOOT_SEC: ClassVar[float] = 60.0
-    STOP_SEC: ClassVar[float] = 10.0
 
     def __init__(self, workdir: Path) -> None:
         vendor = self.ASSETS.joinpath("public", "vendor", "inter", "files")
         faces = sorted(vendor.glob("*.woff2"))
         if not faces:
             msg = (
-                f"apps host: no Inter fonts in {vendor} to put next to the sandbox "
-                "page; build the front with make -C build web"
+                f"sandbox host: no Inter fonts in {vendor} to put next to the "
+                "sandbox page; build the front with make -C build web"
             )
             raise AssertionError(msg)
 
@@ -441,18 +437,59 @@ class AppsHost:
         for face in faces:
             shutil.copy2(face, fonts / face.name)
 
-        self._mcp_port = StandPorts().free()
-        self._sandbox_port = StandPorts().free()
-        self._server = subprocess.Popen(
-            [sys.executable, str(self.SCRIPT), "streamable-http", str(self._mcp_port)]
-        )
+        self._port = StandPorts().free()
         handler = partial(SandboxPages, directory=str(root))
-        self._pages = ThreadingHTTPServer(("127.0.0.1", self._sandbox_port), handler)
+        self._pages = ThreadingHTTPServer(("127.0.0.1", self._port), handler)
         threading.Thread(target=self._pages.serve_forever, daemon=True).start()
 
     @property
     def sandbox_url(self) -> str:
-        return f"http://localhost:{self._sandbox_port}/{self.SANDBOX}"
+        return f"http://localhost:{self._port}/{self.SANDBOX}"
+
+    def drawn(self, host: str, port: int) -> dict[str, Any]:
+        """Секция [mcp.servers.<имя>] сервера по HTTP на host:port с
+        песочницей этого хоста."""
+        return {
+            "connect_timeout_sec": 30.0,
+            "call_timeout_sec": 60.0,
+            "endpoint": {
+                "transport": "streamable-http",
+                "scheme": "http",
+                "host": host,
+                "port": port,
+                "path": "/mcp",
+            },
+            "apps": {"sandbox_url": self.sandbox_url},
+        }
+
+    def stop(self) -> None:
+        self._pages.shutdown()
+        self._pages.server_close()
+
+
+class AppsHost:
+    """Хост приложений MCP Apps для стендов чата: стандартный сервер
+    (standard_server.py) по HTTP и его песочница (SandboxHost). Создают его
+    фикстуры стендов ui- и look-тестов; секции [mcp.servers.<имя>] чата
+    дают drawn и plain."""
+
+    SCRIPT: ClassVar[Path] = (
+        REPO_ROOT / "packages/services/boba-mcp-client/tests/standard_server.py"
+    )
+    HOST: ClassVar[str] = "127.0.0.1"
+    BOOT_SEC: ClassVar[float] = 60.0
+    STOP_SEC: ClassVar[float] = 10.0
+
+    def __init__(self, workdir: Path) -> None:
+        self._sandbox = SandboxHost(workdir)
+        self._mcp_port = StandPorts().free()
+        self._server = subprocess.Popen(
+            [sys.executable, str(self.SCRIPT), "streamable-http", str(self._mcp_port)]
+        )
+
+    @property
+    def sandbox_url(self) -> str:
+        return self._sandbox.sandbox_url
 
     def await_listening(self) -> None:
         """Ошибки:
@@ -461,7 +498,7 @@ class AppsHost:
         deadline = time.monotonic() + self.BOOT_SEC
         while True:
             try:
-                with socket.create_connection(("127.0.0.1", self._mcp_port), 1.0):
+                with socket.create_connection((self.HOST, self._mcp_port), 1.0):
                     return
             except OSError as exc:
                 if time.monotonic() > deadline:
@@ -476,27 +513,19 @@ class AppsHost:
 
     def plain(self) -> dict[str, Any]:
         """Секция [mcp.servers.<имя>] стандартного сервера без секции apps."""
-        return {
-            "connect_timeout_sec": 30.0,
-            "call_timeout_sec": 60.0,
-            "endpoint": {
-                "transport": "streamable-http",
-                "scheme": "http",
-                "host": "127.0.0.1",
-                "port": self._mcp_port,
-                "path": "/mcp",
-            },
-        }
+        drawn = self.drawn()
+        del drawn["apps"]
+
+        return drawn
 
     def drawn(self) -> dict[str, Any]:
         """Та же секция с песочницей приложений этого хоста."""
-        return {**self.plain(), "apps": {"sandbox_url": self.sandbox_url}}
+        return self._sandbox.drawn(self.HOST, self._mcp_port)
 
     def stop(self) -> None:
         """Сервер, у которого ещё открыты потоки чата, сам не выходит: после
         срока его снимает kill."""
-        self._pages.shutdown()
-        self._pages.server_close()
+        self._sandbox.stop()
         self._server.terminate()
         try:
             self._server.wait(timeout=self.STOP_SEC)
