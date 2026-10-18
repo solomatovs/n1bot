@@ -360,7 +360,12 @@
             "showMore": "show {{count}} more of {{rest}}"
         },
         "app": {
-            "sameOrigin": "The app sandbox {{url}} is on the origin of the chat, so the app is not drawn."
+            "sameOrigin": "The app sandbox {{url}} is on the origin of the chat, so the app is not drawn.",
+            "loading": "Loading the app…",
+            "fullscreen": "Full screen",
+            "exit": "Exit full screen",
+            "collapse": "Collapse",
+            "expand": "Expand"
         },
         "notice": {
             "settingsDeferred": "Settings are saved and will apply after the current answer.",

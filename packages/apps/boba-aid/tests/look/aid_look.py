@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from importlib.metadata import version
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from PIL import Image, ImageChops
 from playwright.sync_api import Browser, BrowserContext, Locator, Page, ViewportSize
@@ -166,6 +166,15 @@ class LookFixes:
         summary=(
             "имя ассистента «Ассистент-BOBA» целиком кириллицей; «Описание» "
             "называет его так же, а не прежним AID"
+        ),
+    )
+    APP_CARD: ClassVar[LookFix] = LookFix(
+        code="A1",
+        summary=(
+            "приложение MCP Apps — карточкой основной ленты под ходом, а не в "
+            "шаге вызова: рамка с края текста ответа до края вопроса, шапка "
+            "«сервер · инструмент» с кнопками «на весь экран» и «свернуть», "
+            "цвета и шрифт чата у приложения; шаг — только аргументы и итог"
         ),
     )
 
@@ -1052,9 +1061,10 @@ class LookPages:
             reduced_motion="reduce",
         )
         self._contexts.append(context)
+        # скрипт идёт и во фреймы песочницы приложений, где localStorage нет
         context.add_init_script(
-            f"window.localStorage.setItem({json.dumps(self.THEME_KEY)}, "
-            f"{json.dumps(theme.value)})"
+            f"if (window === window.top) window.localStorage.setItem("
+            f"{json.dumps(self.THEME_KEY)}, {json.dumps(theme.value)})"
         )
         return context.new_page()
 
@@ -1158,6 +1168,7 @@ class LookStand:
         self._database = database
         self._roots = LookAppRoots(workdir)
         self._running: dict[tuple[StandAuth, LookLanguage], StandProcess] = {}
+        self._served: dict[str, StandProcess] = {}
 
     def of(
         self, auth: StandAuth, language: LookLanguage = LookLanguage.RU
@@ -1181,8 +1192,38 @@ class LookStand:
         self._running[(auth, language)] = process
         return process
 
+    def served(
+        self, name: str, servers: Mapping[str, Mapping[str, object]]
+    ) -> StandProcess:
+        """Стенд name с серверами MCP servers (секции [mcp.servers.<имя>]):
+        вход local, язык конфига assets; поднят по первому запросу."""
+        if running := self._served.get(name):
+            return running
+
+        mcp_servers: dict[str, dict[str, Any]] = {}
+        for server, section in servers.items():
+            mcp_servers[server] = dict(section)
+
+        config = StandConfig(
+            workdir=self._workdir / name,
+            app=StandApp.AID,
+            app_port=StandPorts().free(),
+            llm_port=self._llm_port,
+            db_name=self._database,
+            url_prefix="/boba-look",
+            mcp_servers=mcp_servers,
+        )
+        process = StandProcess(config=config, log_path=self._workdir / f"{name}.log")
+        process.start(boot_timeout_sec=self.BOOT_TIMEOUT_SEC)
+        self._served[name] = process
+        return process
+
     def stop(self) -> None:
         for process in self._running.values():
             process.stop()
 
+        for process in self._served.values():
+            process.stop()
+
         self._running.clear()
+        self._served.clear()

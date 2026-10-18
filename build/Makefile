@@ -45,7 +45,7 @@ SANDBOX_aid      :=
 MODELS_aid       :=
 PARTS_aid        := app_root/public app_root/public/page.js app_root/public/vendor \
                     app_root/ui/index.html app_root/ui/index.js app_root/mcp-apps/sandbox.html \
-                    bin/boba
+                    app_root/mcp-apps/fonts/inter/files bin/boba
 # агент чата — бинарник boba-bin в bin/boba; локальную модель чат агенту не отдаёт,
 # поэтому рантайм onnxruntime-genai в него не входит
 BUILD_ARGS_aid    = $(BIN_TOOL_ARGS) --build-arg BIN_ONNX=

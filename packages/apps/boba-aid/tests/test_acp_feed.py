@@ -46,9 +46,11 @@ from boba.aid.rendering.acp_view import (
     UpdateView,
 )
 from boba.aid.rendering.chat_view import (
+    AppCancel,
     ChatView,
     LiveSink,
     StepKind,
+    StepMeta,
     StepRole,
     StepText,
 )
@@ -560,66 +562,121 @@ class TestUpdateViewIds:
 
 
 class TestToolApps:
-    """Инструмент с приложением MCP Apps у сервера с секцией apps: шаг
-    вызова получает элемент приложения с аргументами и итогом под
-    детерминированным id, блоки итога показываются рядом; у сервера без
-    секции — только блоки."""
+    """Инструмент с приложением MCP Apps у сервера с секцией apps: карточка
+    приложения — своё сообщение основной ленты под контейнером хода с
+    элементом ToolApp, сразу с аргументами вызова; итог или отмена
+    дописываются в тот же элемент. Шаг вызова — только факт вызова: в нём
+    приложения нет. У сервера без секции — только блоки."""
 
-    BOARD: ClassVar[mt.Tool] = mt.Tool.model_validate(
+    ORDERS: ClassVar[mt.Tool] = mt.Tool.model_validate(
         {
-            "name": "board",
+            "name": "orders",
             "inputSchema": {"type": "object"},
-            "_meta": {"ui": {"resourceUri": "ui://standard/board.html"}},
+            "_meta": {"ui": {"resourceUri": "ui://standard/orders.html"}},
         }
     )
     SANDBOX: ClassVar[McpServerApps] = McpServerApps.model_validate(
         {"sandbox_url": "http://localhost:8123/mcp-apps/sandbox.html"}
     )
+    ROWS: ClassVar[list[dict[str, Any]]] = [
+        {"id": 7, "customer": "Acme", "status": "new", "total": 120.5}
+    ]
+    TOOL: ClassVar[dict[str, Any]] = ORDERS.model_dump(
+        mode="json", by_alias=True, exclude_none=True
+    )
     REPLY: ClassVar[dict[str, Any]] = {
-        "content": [{"type": "text", "text": "drawn"}],
+        "content": [{"type": "text", "text": "1 orders are shown by their app"}],
         "isError": False,
         "resultType": "complete",
     }
 
-    async def _drawn(
+    async def _started(
         self,
         runtime_stand: StandRefs,
         storage: LocalStorageClient,
         apps: McpServerApps | None,
-    ) -> None:
+    ) -> UpdateView:
         media = ToolMedia()
-        media.shown("standard", [self.BOARD], None, None, apps)
+        media.shown("standard", [self.ORDERS], None, None, apps)
         view = ChatView(THREAD, LiveSink(), "u-1", storage, TEXTS, user_name="a")
         updates = UpdateView(view, THREAD, RemoteJournals(), media)
         updates.begin_turn(QUESTION)
 
-        await updates.apply(_call(CALL, "mcp__standard__board", {"markup": "<b/>"}))
-        await updates.apply(_done(CALL, "drawn", self.REPLY))
+        args = {"rows": self.ROWS, "intent": "Заказы магазина"}
+        await updates.apply(_call(CALL, "mcp__standard__orders", args))
+
+        return updates
+
+    @staticmethod
+    def _apps(recorded: FakeEmitter) -> list[dict[str, Any]]:
+        return [e for e in recorded.elements if e.get("name") == "ToolApp"]
 
     @pytest.mark.anyio
-    async def test_app_is_an_element_of_the_step_with_the_call_and_its_result(
+    async def test_app_card_is_a_feed_message_with_the_arguments_at_once(
         self,
         runtime_stand: StandRefs,
         storage: LocalStorageClient,
         recorded: FakeEmitter,
     ) -> None:
-        await self._drawn(runtime_stand, storage, self.SANDBOX)
+        await self._started(runtime_stand, storage, self.SANDBOX)
 
-        apps = [e for e in recorded.elements if e.get("name") == "ToolApp"]
-        step = recorded.last()[_id(CALL, StepRole.TOOL)]
+        apps = self._apps(recorded)
+        message = recorded.last()[_id(CALL, StepRole.APP_MESSAGE)]
 
         assert len(apps) == 1, recorded.elements
         assert apps[0]["id"] == _id(CALL, StepRole.APP)
+        assert apps[0]["forId"] == _id(CALL, StepRole.APP_MESSAGE)
         assert apps[0]["props"] == {
             "server": "standard",
-            "tool": "board",
-            "resource_uri": "ui://standard/board.html",
+            "tool": self.ORDERS.model_dump(
+                mode="json", by_alias=True, exclude_none=True
+            ),
+            "resource_uri": "ui://standard/orders.html",
             "sandbox_url": "http://localhost:8123/mcp-apps/sandbox.html",
             "call_id": CALL,
-            "input": {"markup": "<b/>"},
-            "result": self.REPLY,
+            "input": {"rows": self.ROWS},
         }
-        assert step.get(StepField.OUTPUT) == "drawn"
+        assert message.get(StepField.TYPE) == StepKind.ASSISTANT.value
+        assert message.get(StepField.PARENT_ID) == _id(QUESTION, StepRole.PROCESS)
+        assert message.get(StepField.OUTPUT) == ""
+        assert message.get(StepField.METADATA) == {StepMeta.APP.value: True}
+
+    @pytest.mark.anyio
+    async def test_result_reaches_the_card_and_the_step_stays_a_call(
+        self,
+        runtime_stand: StandRefs,
+        storage: LocalStorageClient,
+        recorded: FakeEmitter,
+    ) -> None:
+        updates = await self._started(runtime_stand, storage, self.SANDBOX)
+
+        await updates.apply(_done(CALL, "shown", self.REPLY))
+
+        apps = self._apps(recorded)
+        step = recorded.last()[_id(CALL, StepRole.TOOL)]
+
+        assert apps[-1]["id"] == _id(CALL, StepRole.APP)
+        assert apps[-1]["props"]["result"] == self.REPLY
+        assert "cancelled" not in apps[-1]["props"]
+        assert step.get(StepField.OUTPUT) == "1 orders are shown by their app"
+        tool_id = _id(CALL, StepRole.TOOL)
+        assert not [e for e in recorded.elements if e.get("forId") == tool_id]
+
+    @pytest.mark.anyio
+    async def test_stopped_turn_cancels_the_call_of_the_app(
+        self,
+        runtime_stand: StandRefs,
+        storage: LocalStorageClient,
+        recorded: FakeEmitter,
+    ) -> None:
+        updates = await self._started(runtime_stand, storage, self.SANDBOX)
+
+        await updates.finish_turn()
+
+        apps = self._apps(recorded)
+
+        assert apps[-1]["props"]["cancelled"] == AppCancel.STOPPED.value
+        assert "result" not in apps[-1]["props"]
 
     @pytest.mark.anyio
     async def test_server_without_apps_draws_only_the_blocks(
@@ -628,12 +685,14 @@ class TestToolApps:
         storage: LocalStorageClient,
         recorded: FakeEmitter,
     ) -> None:
-        await self._drawn(runtime_stand, storage, None)
+        updates = await self._started(runtime_stand, storage, None)
+        await updates.apply(_done(CALL, "shown", self.REPLY))
 
         step = recorded.last()[_id(CALL, StepRole.TOOL)]
 
-        assert not [e for e in recorded.elements if e.get("name") == "ToolApp"]
-        assert step.get(StepField.OUTPUT) == "drawn"
+        assert not self._apps(recorded)
+        assert _id(CALL, StepRole.APP_MESSAGE) not in recorded.last()
+        assert step.get(StepField.OUTPUT) == "1 orders are shown by their app"
 
 
 class TestQuestionRecords:

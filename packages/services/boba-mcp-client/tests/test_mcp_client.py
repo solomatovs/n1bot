@@ -532,7 +532,10 @@ class TestServerApps:
     """Секция apps: расширение MCP Apps объявляется только её серверу, ресурс
     приложения читается с его CSP, песочницы серверов не делят источник."""
 
-    BOARD: ClassVar[str] = "ui://standard/board.html"
+    ORDERS: ClassVar[str] = "ui://standard/orders.html"
+    ROWS: ClassVar[list[dict[str, object]]] = [
+        {"id": 7, "customer": "Acme", "status": "new", "total": 120.5}
+    ]
     SANDBOX: ClassVar[McpServerApps] = McpServerApps.model_validate(
         {"sandbox_url": "http://localhost:8123/mcp-apps/sandbox.html"}
     )
@@ -554,23 +557,23 @@ class TestServerApps:
         drawn = await self._open(self.SANDBOX)
         plain = await self._open(None)
         try:
-            by_app = await drawn.call(_call("board", markup="<b>x</b>"), None, None)
-            by_blocks = await plain.call(_call("board", markup="<b>x</b>"), None, None)
+            by_app = await drawn.call(_call("orders", rows=self.ROWS), None, None)
+            by_blocks = await plain.call(_call("orders", rows=self.ROWS), None, None)
         finally:
             await drawn.close()
             await plain.close()
 
-        app_text = McpResults().result("board", "c1", by_app).llm_view()
-        block_text = McpResults().result("board", "c2", by_blocks).llm_view()
+        app_text = McpResults().result("orders", "c1", by_app).llm_view()
+        block_text = McpResults().result("orders", "c2", by_blocks).llm_view()
 
-        assert app_text == "the board is drawn by its app"
-        assert block_text == "board markup: <b>x</b>"
+        assert app_text == "1 orders are shown by their app"
+        assert block_text == "1 orders:\n#7 Acme new 120.50"
 
     async def test_app_resource_is_read_with_its_csp(self) -> None:
         server = await self._open(self.SANDBOX)
         try:
             read = await server.read_resource(
-                mt.ReadResourceRequestParams(uri=self.BOARD), None
+                mt.ReadResourceRequestParams(uri=self.ORDERS), None
             )
         finally:
             await server.close()
@@ -1470,10 +1473,9 @@ class TestFailureStand:
 
     STANDARD_TOOLS: ClassVar[list[str]] = [
         "add",
-        "app_only",
+        "archive_orders",
         "ask",
         "blocks",
-        "board",
         "broken",
         "bump",
         "client",
@@ -1481,9 +1483,10 @@ class TestFailureStand:
         "grow_resources",
         "large",
         "load_rows",
-        "model_only",
+        "orders",
         "picture",
         "progress",
+        "refresh_orders",
         "shout",
         "show",
         "sleep_for",
