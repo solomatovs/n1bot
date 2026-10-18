@@ -68,6 +68,7 @@ from boba.agent.template import AgentTemplate
 from boba.agent.tools import (
     AgentTools,
     AskUserQuestionTool,
+    McpServerSet,
     OwnTool,
     ToolRunner,
     ToolsError,
@@ -100,6 +101,7 @@ class AgentParts:
         sink: EventSink,
         version: str,
         tools: ToolServer | None = None,
+        servers: McpServerSet | None = None,
         initial_mode: PermissionMode = PermissionMode.DEFAULT,
         allow_bypass: bool = False,
         classifier: ChatModel | None = None,
@@ -124,6 +126,8 @@ class AgentParts:
         self.sink = sink
         self.version = version
         self.tools = tools
+        self.servers = servers
+        """Серверы MCP сессии: свежесть списков и инструкции на каждый ход."""
         self.initial_mode = initial_mode
         self.allow_bypass = allow_bypass
         self.classifier = classifier
@@ -235,7 +239,7 @@ class Agent:
         session = Session(session_id)
         try:
             report = await self._restored(session, resume)
-            tools = AgentTools(parts.tools, self._own_tools())
+            tools = AgentTools(parts.tools, self._own_tools(), parts.servers)
             self._check_tools_survived(session, tools, resume)
             self._check_profile(parts.profile, parts.system_prompt, tools)
             mode = self._effective_mode(session, resume)

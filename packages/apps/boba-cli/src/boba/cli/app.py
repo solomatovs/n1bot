@@ -57,7 +57,7 @@ from boba.agent.settings import (
 )
 from boba.agent.skills import Skill, SkillsDir, SkillsError
 from boba.agent.template import AgentTemplate
-from boba.agent.tools import ToolsError
+from boba.agent.tools import McpServerSet, ToolsError
 from boba.cancellation import ProcessStop, StopAction, StopReason
 from boba.cli.acp_server import (
     AcpAgent,
@@ -358,7 +358,7 @@ class AssembledObserver(ObservedSession):
         session_id: SessionId,
         cwd: Path,
         tools: ToolServer | None,
-        instructions: Sequence[str],
+        servers: McpServerSet,
         sink: EventSink,
         conversation: Sequence[ChainRecord],
         questions: bool,
@@ -367,7 +367,7 @@ class AssembledObserver(ObservedSession):
         self._session_id = session_id
         self._cwd = cwd
         self._tools = tools
-        self._instructions = list(instructions)
+        self._servers = servers
         self._sink = sink
         self._conversation = list(conversation)
         self._questions = questions
@@ -391,7 +391,7 @@ class AssembledObserver(ObservedSession):
             self._session_id,
             self._cwd,
             self._tools,
-            self._instructions,
+            self._servers,
             self._sink,
             resume=True,
             questions=self._questions,
@@ -445,13 +445,13 @@ class AgentAssembly(SessionAssembly):
         session_id: SessionId,
         cwd: Path,
         tools: ToolServer | None,
-        instructions: Sequence[str],
+        servers: McpServerSet,
         sink: EventSink,
         resume: bool,
         questions: bool,
     ) -> OpenedSession:
         agent = await self.attach_agent(
-            session_id, cwd, tools, instructions, sink, resume, questions
+            session_id, cwd, tools, servers, sink, resume, questions
         )
 
         return self.assembled(agent)
@@ -468,14 +468,14 @@ class AgentAssembly(SessionAssembly):
         session_id: SessionId,
         cwd: Path,
         tools: ToolServer | None,
-        instructions: Sequence[str],
+        servers: McpServerSet,
         sink: EventSink,
         questions: bool,
     ) -> ObservedSession:
         conversation = await self._conversation(session_id)
 
         return AssembledObserver(
-            self, session_id, cwd, tools, instructions, sink, conversation, questions
+            self, session_id, cwd, tools, servers, sink, conversation, questions
         )
 
     async def sessions(self, cursor: str | None) -> SessionPage:
@@ -511,7 +511,7 @@ class AgentAssembly(SessionAssembly):
         session_id: SessionId,
         cwd: Path,
         tools: ToolServer | None,
-        instructions: Sequence[str],
+        servers: McpServerSet,
         sink: EventSink,
         resume: bool,
         questions: bool,
@@ -528,7 +528,7 @@ class AgentAssembly(SessionAssembly):
         if self._stateless:
             resume = False
 
-        agent = Agent(self._parts(cwd, tools, instructions, sink, questions))
+        agent = Agent(self._parts(cwd, tools, servers, sink, questions))
         try:
             await agent.open(session_id, resume=resume)
         except (SessionHeldError, SessionNotFoundError):
@@ -568,25 +568,25 @@ class AgentAssembly(SessionAssembly):
         self,
         cwd: Path,
         tools: ToolServer | None,
-        instructions: Sequence[str],
+        servers: McpServerSet,
         sink: EventSink,
         questions: bool,
     ) -> AgentParts:
-        """Части агента сессии: системный промпт — промпт настроек и разделы
-        серверов MCP сессии instructions."""
+        """Части агента сессии: системный промпт — промпт настроек;
+        инструкции серверов MCP сессии ход объявляет вложением."""
         settings = self._settings
-        system_prompt = [*settings.system_prompt, *instructions]
 
         return AgentParts(
             profile=self._catalog.profile(settings.model),
             limits=settings.limits,
             compaction=settings.compaction,
-            system_prompt=system_prompt,
+            system_prompt=settings.system_prompt,
             store=self._store,
             model=self._catalog.model(settings.model),
             sink=sink,
             version=self._version,
             tools=tools,
+            servers=servers,
             initial_mode=settings.permission_mode,
             allow_bypass=settings.allow_bypass,
             agent_name=settings.agent_name,

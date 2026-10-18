@@ -11,11 +11,13 @@
 сборка (SessionAssembly): агент ядра над инструментами серверов, которые
 клиент объявил записями `type: "acp"`; с серверами агент говорит запросами
 MCP внутри `mcp/message` (AcpToolServer, SessionMcp): server/discover —
-инструкции серверов в системном промпте, инструменты, ресурсы — его
-инструментами list_mcp_resources и read_mcp_resource, промпты — командами
-сессии (`available_commands_update` с подсказками значений аргументов по
-completion/complete, вопрос `/<команда> <аргументы>`), смена списков —
-потоком subscriptions/listen. События ядра приёмник
+возможности и инструкции серверов (инструкции модель получает вложением
+хода), инструменты, ресурсы — его инструментами list_mcp_resources и
+read_mcp_resource, промпты — командами сессии (`available_commands_update`
+с подсказками значений аргументов по completion/complete, вопрос
+`/<команда> <аргументы>`). Описание и списки живут по сроку свежести
+ответа (ttlMs) и перечитываются в начале хода, смена списков по потоку
+subscriptions/listen делает их устаревшими сразу. События ядра приёмник
 SessionRelay переводит в уведомления по таблице AcpMapping.
 
 Ход по v2: ответ на `session/prompt` — `messageId` вставленного вопроса (он же
@@ -65,7 +67,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, ClassVar, Protocol, TypeAlias, TypeVar
+from typing import Any, ClassVar, Generic, Protocol, TypeAlias, TypeVar
 
 import mcp_types as mt
 from acp.exceptions import RequestError
@@ -75,6 +77,7 @@ from mcp_types.methods import parse_server_notification, parse_server_result
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 from boba.agent.agent import Agent
+from boba.agent.attachments import ConnectedServer
 from boba.agent.control import (
     AllowAnswer,
     CanUseToolRequest,
@@ -126,6 +129,7 @@ from boba.agent.tools import (
     AskQuestion,
     AskUserQuestionInput,
     AskUserQuestionTool,
+    McpServerSet,
 )
 from boba.agent.turn import ContextUsage
 from boba.cancellation import StopReason as CoreStopReason
@@ -204,6 +208,20 @@ __all__ = [
 
 ReplyT = TypeVar("ReplyT", bound=BaseModel)
 """Модель ответа сервера MCP на запрос агента."""
+PageT = TypeVar(
+    "PageT",
+    mt.ListToolsResult,
+    mt.ListPromptsResult,
+    mt.ListResourcesResult,
+    mt.ListResourceTemplatesResult,
+)
+"""Страница списка сервера MCP."""
+ListRequest: TypeAlias = (
+    mt.ListToolsRequest
+    | mt.ListPromptsRequest
+    | mt.ListResourcesRequest
+    | mt.ListResourceTemplatesRequest
+)
 
 ContentBlock: TypeAlias = (
     schema.TextContentBlock
@@ -1258,11 +1276,29 @@ class McpRequestError(Exception):
     ошибка ACP, ошибка MCP, срок или ответ не по схеме."""
 
 
-class ListChange(StrEnum):
-    """Какой список сервера сменился по потоку subscriptions/listen."""
+class McpUnreachableError(McpRequestError):
+    """Запрос не дошёл до сервера: клиент ответил ошибкой ACP, связь
+    оборвалась или ответа нет в срок."""
 
-    TOOLS = "tools"
-    PROMPTS = "prompts"
+
+class McpListing(StrEnum):
+    """Ответы сервера, которые агент держит со сроком свежести по ttlMs
+    утилиты caching: описание сервера и списки; ресурсы для модели — по
+    обоим спискам ресурсов вместе."""
+
+    DISCOVER = "server/discover"
+    TOOLS = "tools/list"
+    PROMPTS = "prompts/list"
+    RESOURCES = "resources/list"
+
+
+@dataclass(frozen=True)
+class McpPages(Generic[PageT]):
+    """Все страницы одного списка сервера и срок их общей свежести — самый
+    ранний из сроков страниц по монотонным часам."""
+
+    pages: Sequence[PageT]
+    fresh_until: float
 
 
 class AcpToolServer(ToolServer):
@@ -1271,19 +1307,25 @@ class AcpToolServer(ToolServer):
 
     Создаёт AcpAgent на каждую запись сессии и отдаёт SessionMcp. open()
     согласует сервер (server/discover: возможности и инструкции), читает все
-    страницы `tools/list` и, если сервер их объявил, промпты; если сервер
-    обещал смену списков инструментов или промптов, держит поток
-    subscriptions/listen и на каждую смену перечитывает список. Вызов —
-    `tools/call` запросом mcp/message через AgentSide; текст для модели
-    собирает McpResults, ответ сервера как пришёл ложится в
-    NodeOutcome.reply, ход вызова идёт в приёмник сессии через
-    CallProgressRelay. ask() — любой другой запрос MCP (ресурсы, промпты).
-    Каждый запрос несёт в _meta версию протокола, clientInfo агента и его
-    clientCapabilities: формы (elicitation.form) агент объявляет, только если
-    их объявил его клиент. Просьбы сервера о вводе (input_required) приёмник
-    сессии задаёт пользователю формами `elicitation/create`, вызов
-    повторяется с ответами.
+    страницы `tools/list`, промпты и ресурсы для модели; refreshed() в
+    начале хода перечитывает то из них, чей срок свежести (ttlMs ответа)
+    вышел. Сервер, до которого запрос не дошёл, отключается: его
+    инструменты, промпты и инструкции уходят из сессии до первого удачного
+    перечитывания. Если сервер обещал смену списков, агент держит поток
+    subscriptions/listen: смена делает список устаревшим, а смена промптов
+    перечитывает их сразу; кончившийся поток поднимает следующее удачное
+    перечитывание. Вызов — `tools/call` запросом mcp/message через
+    AgentSide; текст для модели собирает McpResults, ответ сервера как
+    пришёл ложится в NodeOutcome.reply, ход вызова идёт в приёмник сессии
+    через CallProgressRelay. ask() — любой другой запрос MCP (ресурсы,
+    промпты). Каждый запрос несёт в _meta версию протокола, clientInfo
+    агента и его clientCapabilities: формы (elicitation.form) агент
+    объявляет, только если их объявил его клиент. Просьбы сервера о вводе
+    (input_required) приёмник сессии задаёт пользователю формами
+    `elicitation/create`, вызов повторяется с ответами.
     """
+
+    MILLIS: ClassVar[int] = 1000
 
     def __init__(  # noqa: PLR0913 — сервер собирается всеми частями сессии
         self,
@@ -1310,10 +1352,14 @@ class AcpToolServer(ToolServer):
         self._cards: list[ToolCard] = []
         self._prompts: list[mt.Prompt] = []
         self._for_model = False
-        """Сервер при открытии отдал модели ресурсы или шаблоны."""
+        """Сервер отдаёт модели ресурсы или шаблоны ресурсов."""
         self._discovered: mt.DiscoverResult | None = None
-        self._changes: asyncio.Queue[ListChange] = asyncio.Queue()
-        self._tasks: list[asyncio.Task[None]] = []
+        self._fresh: dict[McpListing, float] = {}
+        """Срок свежести ответов по монотонным часам; без срока ответ устарел."""
+        self._connected = False
+        self._prompts_changed = asyncio.Event()
+        self._listening: asyncio.Task[None] | None = None
+        self._applying: asyncio.Task[None] | None = None
         capabilities: dict[str, Any] = {}
         if relay.elicits:
             capabilities = {
@@ -1334,8 +1380,14 @@ class AcpToolServer(ToolServer):
         """Имя сервера в сессии: часть полных имён его инструментов."""
         return self._server.name
 
+    @property
+    def connected(self) -> bool:
+        """Последнее чтение у сервера удалось: его списки и инструкции в
+        сессии."""
+        return self._connected
+
     async def open(self) -> None:
-        """Согласование, инструменты, промпты и поток смены списков.
+        """Согласование, инструменты, промпты, ресурсы и поток смены списков.
 
         Ошибки:
         SessionOpenError — клиент ответил ошибкой ACP, ошибкой MCP, не уложился
@@ -1343,17 +1395,12 @@ class AcpToolServer(ToolServer):
             имя которого не годится для полного имени.
         """
         try:
-            discovered = await self.ask(
-                mt.DiscoverRequest(params=mt.RequestParams()), mt.DiscoverResult
-            )
-            self._discovered = discovered
-            self._cards = await self._listed_cards()
-            self._prompts = await self._listed_prompts()
-            self._for_model = await self._offers_model_resources()
+            await self._fetched()
         except McpRequestError as exc:
             raise SessionOpenError(str(exc)) from exc
 
-        self._follow(discovered.capabilities)
+        self._connected = True
+        self._follow()
         logger.info(
             "mcp: server %s (%s) offers %d tool(s), %d prompt(s)",
             self._server.name,
@@ -1362,10 +1409,41 @@ class AcpToolServer(ToolServer):
             len(self._prompts),
         )
 
+    async def refreshed(self) -> None:
+        """Ответы с вышедшим сроком свежести — заново, свежие остаются.
+        Сервер, до которого запрос не дошёл, отключается, и все его ответы
+        устаревают; ошибка MCP или ответ не по схеме оставляют прежний ответ
+        (caching: клиент вправе отдать устаревшее при сбое перечитывания).
+        Удача подключает сервер и поднимает кончившийся поток смены списков."""
+        try:
+            await self._fetched()
+        except McpUnreachableError as exc:
+            self._disconnect(exc)
+            return
+        except McpRequestError as exc:
+            logger.warning(
+                "mcp: %s: re-reading its stale answers failed, the earlier "
+                "answers stay: %s",
+                self._label,
+                exc,
+            )
+            return
+
+        if not self._connected:
+            logger.info("mcp: %s answers again, it is back in the session", self._label)
+
+        self._connected = True
+        self._follow()
+
     async def close(self) -> None:
         """Поток смены списков и его разбор закрываются."""
-        tasks = list(self._tasks)
-        self._tasks.clear()
+        tasks: list[asyncio.Task[None]] = []
+        for task in (self._listening, self._applying):
+            if task is not None:
+                tasks.append(task)
+
+        self._listening = None
+        self._applying = None
         for task in tasks:
             task.cancel()
 
@@ -1379,11 +1457,17 @@ class AcpToolServer(ToolServer):
         return self._known().instructions
 
     def prompts(self) -> Sequence[mt.Prompt]:
+        """Промпты подключённого сервера; отключённый — без промптов."""
+        if not self._connected:
+            return ()
+
         return self._prompts
 
     def for_model(self) -> bool:
-        """Сервер отдаёт модели ресурсы или шаблоны ресурсов (по разбору
-        при открытии)."""
+        """Подключённый сервер отдаёт модели ресурсы или шаблоны ресурсов."""
+        if not self._connected:
+            return False
+
         return self._for_model
 
     async def model_resources(self) -> list[mt.Resource]:
@@ -1396,20 +1480,9 @@ class AcpToolServer(ToolServer):
         if self._known().capabilities.resources is None:
             return []
 
-        offered: list[mt.Resource] = []
-        cursor: str | None = None
-        while True:
-            params = mt.PaginatedRequestParams(cursor=cursor)
-            page = await self.ask(
-                mt.ListResourcesRequest(params=params), mt.ListResourcesResult
-            )
-            for resource in page.resources:
-                if self._for_assistant(resource.annotations):
-                    offered.append(resource)
+        listed = await self._paged(mt.ListResourcesRequest, mt.ListResourcesResult)
 
-            cursor = page.next_cursor
-            if cursor is None:
-                return offered
+        return list(self._model_resources(listed.pages))
 
     async def model_templates(self) -> list[mt.ResourceTemplate]:
         """Шаблоны ресурсов сервера для модели по всем страницам
@@ -1421,30 +1494,27 @@ class AcpToolServer(ToolServer):
         if self._known().capabilities.resources is None:
             return []
 
-        offered: list[mt.ResourceTemplate] = []
-        cursor: str | None = None
-        while True:
-            params = mt.PaginatedRequestParams(cursor=cursor)
-            request = mt.ListResourceTemplatesRequest(params=params)
-            page = await self.ask(request, mt.ListResourceTemplatesResult)
+        listed = await self._paged(
+            mt.ListResourceTemplatesRequest, mt.ListResourceTemplatesResult
+        )
+
+        return list(self._model_templates(listed.pages))
+
+    def _model_resources(
+        self, pages: Sequence[mt.ListResourcesResult]
+    ) -> Iterator[mt.Resource]:
+        for page in pages:
+            for resource in page.resources:
+                if self._for_assistant(resource.annotations):
+                    yield resource
+
+    def _model_templates(
+        self, pages: Sequence[mt.ListResourceTemplatesResult]
+    ) -> Iterator[mt.ResourceTemplate]:
+        for page in pages:
             for template in page.resource_templates:
                 if self._for_assistant(template.annotations):
-                    offered.append(template)
-
-            cursor = page.next_cursor
-            if cursor is None:
-                return offered
-
-    async def _offers_model_resources(self) -> bool:
-        """Ошибки:
-        McpRequestError — список не получен либо не разобран.
-        """
-        if await self.model_resources():
-            return True
-
-        templates = await self.model_templates()
-
-        return len(templates) > 0
+                    yield template
 
     @staticmethod
     def _for_assistant(annotations: mt.Annotations | None) -> bool:
@@ -1456,6 +1526,10 @@ class AcpToolServer(ToolServer):
         return BlockAudience.MODEL.reads(annotations.audience)
 
     def tools(self) -> Sequence[ToolCard]:
+        """Инструменты подключённого сервера; отключённый — без инструментов."""
+        if not self._connected:
+            return ()
+
         return self._cards
 
     def features(self) -> Mapping[str, Mapping[str, object]]:
@@ -1470,8 +1544,9 @@ class AcpToolServer(ToolServer):
         моделью result.
 
         Ошибки:
-        McpRequestError — клиент ответил ошибкой ACP, сервер — ошибкой MCP
-            (код — в ошибке), ответа нет в срок либо он не по схеме.
+        McpUnreachableError — клиент ответил ошибкой ACP или ответа нет в срок.
+        McpRequestError — сервер ответил ошибкой MCP (код — в ошибке) либо
+            ответ не по схеме.
         """
         params = request.params
         meta = self._meta.copy()
@@ -1491,16 +1566,16 @@ class AcpToolServer(ToolServer):
                 outcome = await self._side.request(message, None)
         except TimeoutError as exc:
             msg = f"{what} expected an answer within {limit} s, got none"
-            raise McpRequestError(msg) from exc
+            raise McpUnreachableError(msg) from exc
         except RequestError as exc:
             msg = (
                 f"{what} expected a result, got ACP error {exc.code} {exc}: "
                 f"{exc.data!r}"
             )
-            raise McpRequestError(msg) from exc
+            raise McpUnreachableError(msg) from exc
         except AcpTransportError as exc:
             msg = f"{what} expected a result, got no answer: {exc}"
-            raise McpRequestError(msg) from exc
+            raise McpUnreachableError(msg) from exc
 
         if isinstance(outcome, McpErrorOutcome):
             msg = (
@@ -1536,20 +1611,85 @@ class AcpToolServer(ToolServer):
 
         return discovered
 
-    async def _listed_cards(self) -> list[ToolCard]:
-        """Карточки по всем страницам `tools/list`.
+    async def _fetched(self) -> None:
+        """Устаревшие ответы — заново, по порядку: описание, затем списки по
+        его возможностям.
 
         Ошибки:
-        McpRequestError — страница не получена, не разобрана либо инструмент
-            назван не по форме полных имён.
+        McpUnreachableError — запрос не дошёл до сервера.
+        McpRequestError — сервер отказал ошибкой MCP, ответил не по схеме
+            либо назвал инструмент не по форме полных имён.
         """
-        cards: list[ToolCard] = []
+        if self._stale(McpListing.DISCOVER):
+            discovered = await self.ask(
+                mt.DiscoverRequest(params=mt.RequestParams()), mt.DiscoverResult
+            )
+            self._discovered = discovered
+            self._fresh[McpListing.DISCOVER] = self._until(discovered)
+
+        if self._stale(McpListing.TOOLS):
+            await self._read_tools()
+
+        if self._stale(McpListing.PROMPTS):
+            await self._read_prompts()
+
+        if self._stale(McpListing.RESOURCES):
+            await self._read_resources()
+
+    def _stale(self, listing: McpListing) -> bool:
+        deadline = self._fresh.get(listing)
+        if deadline is None:
+            return True
+
+        return time.monotonic() >= deadline
+
+    def _until(self, answer: mt.CacheableResult) -> float:
+        """Срок свежести ответа, полученного сейчас, по его ttlMs."""
+        return time.monotonic() + answer.ttl_ms / self.MILLIS
+
+    def _disconnect(self, cause: McpUnreachableError) -> None:
+        """Сервер отключён до первого удачного чтения; все ответы устарели."""
+        if self._connected:
+            logger.warning(
+                "mcp: %s does not answer, its tools, prompts and instructions "
+                "leave the session until it answers again: %s",
+                self._label,
+                cause,
+            )
+
+        self._connected = False
+        self._fresh.clear()
+
+    async def _paged(
+        self, request: type[ListRequest], result: type[PageT]
+    ) -> McpPages[PageT]:
+        """Все страницы списка и срок их общей свежести.
+
+        Ошибки:
+        McpUnreachableError, McpRequestError — от ask().
+        """
+        pages: list[PageT] = []
+        fresh_until = float("inf")
         cursor: str | None = None
         while True:
             params = mt.PaginatedRequestParams(cursor=cursor)
-            page = await self.ask(
-                mt.ListToolsRequest(params=params), mt.ListToolsResult
-            )
+            page = await self.ask(request(params=params), result)
+            pages.append(page)
+            fresh_until = min(fresh_until, self._until(page))
+            cursor = page.next_cursor
+            if cursor is None:
+                return McpPages(pages=pages, fresh_until=fresh_until)
+
+    async def _read_tools(self) -> None:
+        """Карточки по всем страницам `tools/list`.
+
+        Ошибки:
+        McpUnreachableError, McpRequestError — страница не получена, не
+            разобрана либо инструмент назван не по форме полных имён.
+        """
+        listed = await self._paged(mt.ListToolsRequest, mt.ListToolsResult)
+        cards: list[ToolCard] = []
+        for page in listed.pages:
             for tool in page.tools:
                 try:
                     card = self._stubs.card(self._server.name, tool)
@@ -1559,49 +1699,66 @@ class AcpToolServer(ToolServer):
 
                 cards.append(card)
 
-            cursor = page.next_cursor
-            if cursor is None:
-                return cards
+        self._cards = cards
+        self._fresh[McpListing.TOOLS] = listed.fresh_until
 
-    async def _listed_prompts(self) -> list[mt.Prompt]:
-        """Промпты по всем страницам `prompts/list`; сервер без промптов — пусто.
+    async def _read_prompts(self) -> None:
+        """Промпты по всем страницам `prompts/list`; сервер без промптов —
+        пусто без запроса.
 
         Ошибки:
-        McpRequestError — страница не получена либо не разобрана.
+        McpUnreachableError, McpRequestError — страница не получена либо не
+            разобрана.
         """
         if self._known().capabilities.prompts is None:
-            return []
-
-        prompts: list[mt.Prompt] = []
-        cursor: str | None = None
-        while True:
-            params = mt.PaginatedRequestParams(cursor=cursor)
-            request = mt.ListPromptsRequest(params=params)
-            page = await self.ask(request, mt.ListPromptsResult)
-            prompts.extend(page.prompts)
-            cursor = page.next_cursor
-            if cursor is None:
-                return prompts
-
-    def _follow(self, capabilities: mt.ServerCapabilities) -> None:
-        """Поток subscriptions/listen на смену списков, которую сервер
-        обещал; без обещаний потока нет."""
-        tools = capabilities.tools
-        prompts = capabilities.prompts
-        tools_changed: bool | None = None
-        if tools is not None and tools.list_changed:
-            tools_changed = True
-
-        prompts_changed: bool | None = None
-        if prompts is not None and prompts.list_changed:
-            prompts_changed = True
-
-        if tools_changed is None and prompts_changed is None:
+            self._prompts = []
             return
 
-        notifications = mt.SubscriptionFilter(
-            tools_list_changed=tools_changed, prompts_list_changed=prompts_changed
+        listed = await self._paged(mt.ListPromptsRequest, mt.ListPromptsResult)
+        prompts: list[mt.Prompt] = []
+        for page in listed.pages:
+            prompts.extend(page.prompts)
+
+        self._prompts = prompts
+        self._fresh[McpListing.PROMPTS] = listed.fresh_until
+
+    async def _read_resources(self) -> None:
+        """Признак «сервер отдаёт модели ресурсы»: ресурсы, а без них —
+        шаблоны ресурсов для модели; сервер без ресурсов — нет без запроса.
+
+        Ошибки:
+        McpUnreachableError, McpRequestError — страница не получена либо не
+            разобрана.
+        """
+        if self._known().capabilities.resources is None:
+            self._for_model = False
+            return
+
+        resources = await self._paged(mt.ListResourcesRequest, mt.ListResourcesResult)
+        if any(self._model_resources(resources.pages)):
+            self._for_model = True
+            self._fresh[McpListing.RESOURCES] = resources.fresh_until
+            return
+
+        templates = await self._paged(
+            mt.ListResourceTemplatesRequest, mt.ListResourceTemplatesResult
         )
+        self._for_model = any(self._model_templates(templates.pages))
+        fresh_until = min(resources.fresh_until, templates.fresh_until)
+        self._fresh[McpListing.RESOURCES] = fresh_until
+
+    def _follow(self) -> None:
+        """Поток subscriptions/listen на смену списков, которую сервер обещал;
+        поток уже идёт — ничего, кончился — поднимается заново, без обещаний
+        потока нет."""
+        listening = self._listening
+        if listening is not None and not listening.done():
+            return
+
+        notifications = self._promised(self._known().capabilities)
+        if notifications is None:
+            return
+
         listen = mt.SubscriptionsListenRequest(
             params=mt.SubscriptionsListenRequestParams(
                 notifications=notifications, _meta=self._meta
@@ -1613,19 +1770,46 @@ class AcpToolServer(ToolServer):
             **listen.model_dump(mode="json", by_alias=True, exclude_none=True),
         )
         name = self._server.name
-        self._tasks.append(
-            asyncio.create_task(self._listen(message), name=f"mcp-listen-{name}")
+        self._listening = asyncio.create_task(
+            self._listen(message), name=f"mcp-listen-{name}"
         )
-        self._tasks.append(
-            asyncio.create_task(self._applied(), name=f"mcp-changes-{name}")
+        if self._applying is None:
+            self._applying = asyncio.create_task(
+                self._applied(), name=f"mcp-changes-{name}"
+            )
+
+    @staticmethod
+    def _promised(capabilities: mt.ServerCapabilities) -> mt.SubscriptionFilter | None:
+        """Смены списков, которые сервер обещал; None — не обещал ни одной."""
+        tools: bool | None = None
+        if capabilities.tools is not None and capabilities.tools.list_changed:
+            tools = True
+
+        prompts: bool | None = None
+        if capabilities.prompts is not None and capabilities.prompts.list_changed:
+            prompts = True
+
+        resources: bool | None = None
+        if capabilities.resources is not None and capabilities.resources.list_changed:
+            resources = True
+
+        if tools is None and prompts is None and resources is None:
+            return None
+
+        return mt.SubscriptionFilter(
+            tools_list_changed=tools,
+            prompts_list_changed=prompts,
+            resources_list_changed=resources,
         )
 
     async def _listen(self, message: McpMessage) -> None:
-        """Поток живёт, пока его не закроет сервер или сессия; конец потока —
-        в лог: списки остаются последними прочитанными."""
+        """Поток живёт, пока его не закроет сервер или сессия. Конец потока —
+        в лог, а списки устаревают: смену без потока увидит начало хода,
+        которое поднимет и сам поток."""
         try:
             outcome = await self._side.request(message, self._heard)
         except (RequestError, AcpTransportError) as exc:
+            self._expire_lists()
             logger.warning(
                 "mcp: %s: the listen stream for list changes ended: %s",
                 self._label,
@@ -1633,6 +1817,7 @@ class AcpToolServer(ToolServer):
             )
             return
 
+        self._expire_lists()
         if isinstance(outcome, McpErrorOutcome):
             logger.warning(
                 "mcp: %s refused the listen stream: MCP error %s: %s",
@@ -1644,9 +1829,14 @@ class AcpToolServer(ToolServer):
 
         logger.info("mcp: %s closed the listen stream", self._label)
 
+    def _expire_lists(self) -> None:
+        for listing in (McpListing.TOOLS, McpListing.PROMPTS, McpListing.RESOURCES):
+            self._fresh.pop(listing, None)
+
     async def _heard(self, message: McpMessage) -> None:
-        """Уведомление потока подписки: смена списка — в очередь разбора, без
-        запросов из обработчика уведомления.
+        """Уведомление потока подписки: смена списка делает его устаревшим,
+        смена промптов ещё и будит их перечитывание — без запросов из
+        обработчика уведомления.
 
         Ошибки:
         RequestError — уведомление не разбирается как уведомление сервера MCP
@@ -1677,9 +1867,12 @@ class AcpToolServer(ToolServer):
                     notification.params.notifications,
                 )
             case mt.ToolListChangedNotification():
-                self._changes.put_nowait(ListChange.TOOLS)
+                self._fresh.pop(McpListing.TOOLS, None)
             case mt.PromptListChangedNotification():
-                self._changes.put_nowait(ListChange.PROMPTS)
+                self._fresh.pop(McpListing.PROMPTS, None)
+                self._prompts_changed.set()
+            case mt.ResourceListChangedNotification():
+                self._fresh.pop(McpListing.RESOURCES, None)
             case _:
                 logger.info(
                     "mcp: %s sent %s on the listen stream; not followed",
@@ -1688,22 +1881,17 @@ class AcpToolServer(ToolServer):
                 )
 
     async def _applied(self) -> None:
-        """Смена списка — список перечитывается; сбой чтения — в лог,
-        остаётся прежний список."""
+        """Смена промптов — список перечитывается сразу и команды сессии
+        уходят клиенту заново: их ждёт клиент, а не ход. Сбой чтения — в
+        лог, список перечитает начало хода."""
         while True:
-            change = await self._changes.get()
+            await self._prompts_changed.wait()
+            self._prompts_changed.clear()
             try:
-                if change is ListChange.TOOLS:
-                    self._cards = await self._listed_cards()
-                    logger.info(
-                        "mcp: %s re-listed %d tool(s)", self._label, len(self._cards)
-                    )
-                    continue
-
-                self._prompts = await self._listed_prompts()
+                await self._read_prompts()
             except McpRequestError as exc:
                 logger.warning(
-                    "mcp: %s changed a list, re-reading it failed: %s",
+                    "mcp: %s changed its prompts, re-reading them failed: %s",
                     self._label,
                     exc,
                 )
@@ -1811,6 +1999,8 @@ class AcpToolServer(ToolServer):
             return outcome
 
         if isinstance(outcome, McpErrorOutcome):
+            # отказ вызову может значить, что список инструментов сменился
+            self._fresh.pop(McpListing.TOOLS, None)
             error = self._results.error(node.tool, node.key, outcome.error)
             return self._outcomes.refused(node, error)
 
@@ -1844,7 +2034,8 @@ class AcpToolServer(ToolServer):
         self, node: DagNode, request: mt.CallToolRequest
     ) -> McpOutcome | NodeOutcome:
         """Запрос mcp/message с ходом вызова в срок `call_timeout_sec`; итог —
-        исход MCP либо отказ, если ответа нет."""
+        исход MCP либо отказ, если ответа нет. Без ответа все ответы сервера
+        устаревают: доступность проверит начало следующего хода."""
         message = McpMessage(
             server_id=self._server.server_id,
             request_id=self._ids.request_id(),
@@ -1857,6 +2048,7 @@ class AcpToolServer(ToolServer):
             async with asyncio.timeout(limit):
                 return await self._side.request(message, relay.accept)
         except TimeoutError:
+            self._fresh.clear()
             failure = ErrorResult(
                 message=(
                     f"{what} expected a tools/call result within {limit} s, got none"
@@ -1865,6 +2057,7 @@ class AcpToolServer(ToolServer):
             )
             return self._outcomes.refused(node, failure)
         except RequestError as exc:
+            self._fresh.clear()
             failure = ErrorResult(
                 message=(
                     f"{what} expected a tools/call result, got ACP error {exc.code} "
@@ -1874,6 +2067,7 @@ class AcpToolServer(ToolServer):
             )
             return self._outcomes.refused(node, failure)
         except AcpTransportError as exc:
+            self._fresh.clear()
             failure = ErrorResult(
                 message=f"{what} expected a tools/call result, got no answer: {exc}",
                 error_kind=McpFailure.TRANSPORT,
@@ -2033,9 +2227,10 @@ class McpResourceTools(ToolServer):
     """Реализация ToolServer: ресурсы серверов MCP сессии собственными
     инструментами агента для модели.
 
-    Создаётся SessionMcp, когда хоть один сервер сессии отдаёт модели
-    ресурсы (audience без assistant — для человека, как журнал вызова,
-    модели не идёт). list_mcp_resources отдаёт модели ресурсы и шаблоны
+    Создаётся SessionMcp на сессию с серверами; инструменты у неё есть,
+    пока хоть один подключённый сервер отдаёт модели ресурсы (audience без
+    assistant — для человека, как журнал вызова, модели не идёт): признак
+    сервер обновляет в начале хода. list_mcp_resources отдаёт модели ресурсы и шаблоны
     ресурсов серверов (resources/list, resources/templates/list всеми
     страницами),
     read_mcp_resource читает ресурс по uri (resources/read): текст — как
@@ -2080,7 +2275,12 @@ class McpResourceTools(ToolServer):
         )
 
     def tools(self) -> Sequence[ToolCard]:
-        return self._cards
+        """Инструменты ресурсов, если хоть один сервер отдаёт модели ресурсы."""
+        for server in self._servers.values():
+            if server.for_model():
+                return self._cards
+
+        return ()
 
     def features(self) -> Mapping[str, Mapping[str, object]]:
         return {}
@@ -2224,27 +2424,23 @@ class InputReplies:
     )
 
 
-class SessionMcp:
-    """MCP-серверы одной сессии ACP: регистрации `type: "acp"` клиента.
+class SessionMcp(McpServerSet):
+    """MCP-серверы одной сессии ACP: регистрации `type: "acp"` клиента;
+    реализация McpServerSet ядра.
 
     Создаётся AcpAgent на `session/new|resume|fork` до сборки агента и живёт
-    с сессией. Отдаёт сборке инструменты для модели (tools: серверы и, если
-    хоть один объявил ресурсы, McpResourceTools) и раздел системного промпта
-    с инструкциями серверов из server/discover. Промпты серверов — команды
+    с сессией. Отдаёт сборке инструменты для модели (tools: серверы и
+    McpResourceTools), а ядру — свежесть серверов в начале хода и
+    подключённые серверы с их инструкциями: инструкции модель получает
+    вложением хода, а не системным промптом. Промпты серверов — команды
     сессии: их список уходит клиенту `available_commands_update` при
-    открытии и при смене списка промптов, а вопрос `/<команда> <аргументы>`
+    открытии и при смене промптов, а вопрос `/<команда> <аргументы>`
     раскрывается prompts/get в служебный контекст вопроса. Сервер, который
     не открылся, в сессию не входит: клиент получает о нём пометку notice
     вместе с командами. Закрытие сессии закрывает потоки подписки серверов.
     """
 
     COMMAND_PREFIX: ClassVar[str] = "/"
-    INSTRUCTIONS: ClassVar[str] = (
-        "# MCP Server Instructions\n\n"
-        "The following MCP servers have provided instructions for how to use "
-        "their tools and resources:"
-    )
-    """Заголовок раздела системного промпта с инструкциями серверов."""
 
     def __init__(self, relay: SessionRelay) -> None:
         self._relay = relay
@@ -2277,28 +2473,41 @@ class SessionMcp:
             return None
 
         offered: list[ToolServer] = list(self._servers)
-        if self._with_resources():
-            offered.append(McpResourceTools(self._servers))
+        offered.append(McpResourceTools(self._servers))
 
         return ToolServers(offered)
 
-    def instructions(self) -> Sequence[str]:
-        """Раздел системного промпта с инструкциями серверов; без инструкций
-        — пусто."""
-        notes: list[str] = []
+    async def refreshed(self) -> None:
+        """Устаревшее у серверов — заново, у всех разом; сменились промпты
+        подключённых серверов — команды сессии уходят клиенту заново."""
+        before = list(self._prompt_lists())
+        pending: list[Awaitable[None]] = []
         for server in self._servers:
-            instructions = server.instructions()
-            if not instructions:
+            pending.append(server.refreshed())
+
+        await asyncio.gather(*pending)
+        if list(self._prompt_lists()) == before:
+            return
+
+        await self.announce_commands()
+
+    def connected(self) -> Sequence[ConnectedServer]:
+        return list(self._connected())
+
+    def _connected(self) -> Iterator[ConnectedServer]:
+        for server in self._servers:
+            if not server.connected:
                 continue
 
-            notes.append(f"## {server.name}\n{instructions}")
+            instructions = server.instructions()
+            if instructions is None:
+                instructions = ""
 
-        if not notes:
-            return ()
+            yield ConnectedServer(name=server.name, instructions=instructions)
 
-        sections = [self.INSTRUCTIONS, *notes]
-
-        return ("\n\n".join(sections),)
+    def _prompt_lists(self) -> Iterator[Sequence[mt.Prompt]]:
+        for server in self._servers:
+            yield server.prompts()
 
     def announce_later(self) -> None:
         """Пометки о серверах, которые не открылись, и команды сессии клиенту
@@ -2388,19 +2597,6 @@ class SessionMcp:
 
         for server in self._servers:
             await server.close()
-
-    def _with_resources(self) -> bool:
-        """Хоть один сервер отдаёт модели ресурсы: только тогда у модели
-        есть инструменты ресурсов."""
-        offering = list(self._offering())
-
-        return len(offering) > 0
-
-    def _offering(self) -> Iterator[AcpToolServer]:
-        """Серверы, отдающие модели ресурсы."""
-        for server in self._servers:
-            if server.for_model():
-                yield server
 
     async def _hint(self, server: AcpToolServer, prompt: mt.Prompt) -> str:
         """Подсказка ввода команды промпта: аргументы по порядку, у аргумента
@@ -2941,14 +3137,14 @@ class SessionAssembly(Protocol):
         session_id: SessionId,
         cwd: Path,
         tools: ToolServer | None,
-        instructions: Sequence[str],
+        servers: McpServerSet,
         sink: EventSink,
         resume: bool,
         questions: bool,
     ) -> OpenedSession:
-        """instructions — разделы системного промпта от серверов MCP
-        сессии сверх промпта настроек; questions — клиент объявил формы, и
-        модели предлагается собственный инструмент «вопрос пользователю».
+        """servers — серверы MCP сессии: свежесть их списков и инструкции на
+        каждый ход; questions — клиент объявил формы, и модели предлагается
+        собственный инструмент «вопрос пользователю».
 
         Ошибки:
         SessionOpenError — сессию открыть не удалось.
@@ -2962,7 +3158,7 @@ class SessionAssembly(Protocol):
         session_id: SessionId,
         cwd: Path,
         tools: ToolServer | None,
-        instructions: Sequence[str],
+        servers: McpServerSet,
         sink: EventSink,
         questions: bool,
     ) -> ObservedSession:
@@ -3337,7 +3533,7 @@ class AcpAgent(AcpAgentProtocol):
                     SessionId(value=session_id),
                     directory,
                     mcp.tools(),
-                    mcp.instructions(),
+                    mcp,
                     relay,
                     resume=False,
                     questions=self._elicits,
@@ -3656,13 +3852,12 @@ class AcpAgent(AcpAgentProtocol):
         HistoryError — от сборки.
         """
         tools = mcp.tools()
-        instructions = mcp.instructions()
         try:
             opened = await self._assembly.open(
                 stored,
                 directory,
                 tools,
-                instructions,
+                mcp,
                 relay,
                 resume=True,
                 questions=self._elicits,
@@ -3674,7 +3869,7 @@ class AcpAgent(AcpAgentProtocol):
                 exc,
             )
             observed = await self._assembly.observe(
-                stored, directory, tools, instructions, relay, self._elicits
+                stored, directory, tools, mcp, relay, self._elicits
             )
 
             return ObserverSession(stored.value, observed, relay, self._mapping, mcp)
@@ -4005,7 +4200,7 @@ class AcpAgent(AcpAgentProtocol):
                 target,
                 directory,
                 mcp.tools(),
-                mcp.instructions(),
+                mcp,
                 relay,
                 resume=resume,
                 questions=self._elicits,
