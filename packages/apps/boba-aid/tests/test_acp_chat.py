@@ -25,9 +25,8 @@ import stat
 import sys
 import time
 from collections.abc import AsyncIterator, Iterator
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any, ClassVar
-from urllib.parse import unquote, urlsplit
 from uuid import uuid4
 
 import httpx
@@ -48,6 +47,7 @@ from boba.stand.names import StandNames
 from boba.stand.site import Stand
 from boba.stand.ui.database import StandDatabase
 from boba.stand.ui.fake_llm import (
+    FailureName,
     Reply,
     ReplyBookClient,
     ReplyTurn,
@@ -941,6 +941,49 @@ class TestHistory:
         finally:
             await again.end_session()
 
+    async def test_resumed_tab_keeps_the_stop_and_the_failure_of_turns(
+        self, app: StandProcess, cookie: str, app_texts: UiText
+    ) -> None:
+        """Пометка остановки у ответа и шаг сбоя модели — часть истории:
+        вкладка, открывшая тред заново, получает те же шаги с тем же текстом,
+        что видела живая."""
+        tab = ChatSocket(app, cookie, str(uuid4()))
+        await tab.open()
+        await tab.send(f"go {ScenarioName.LONG.value}")
+        await tab.wait_event("stream_token")
+        await tab.stop()
+        await tab.wait_task_end()
+        broken = f"broken {ScenarioName.ANSWER.value} {FailureName.STATUS_500.value}"
+        await tab.send(broken)
+        await tab.wait_task_end()
+        live = tab.steps()
+        await tab.end_session()
+
+        stopped = app_texts.text(StepText.STOPPED.value)
+        marked: list[str] = []
+        failed: list[str] = []
+        for step_id, step in live.items():
+            if stopped in str(step.get("output")):
+                marked.append(step_id)
+
+            if step.get("isError"):
+                failed.append(step_id)
+
+        assert marked, tab.trace()
+        assert failed, tab.trace()
+
+        again = ChatSocket(app, cookie, tab.thread_id)
+        await again.open(resumed=True)
+        try:
+            replayed = again.steps()
+            for step_id in [*marked, *failed]:
+                assert step_id in replayed, (step_id, again.trace())
+                shown = replayed[step_id].get("output")
+                assert shown == live[step_id].get("output"), (step_id, shown)
+                assert replayed[step_id].get("isError") == live[step_id].get("isError")
+        finally:
+            await again.end_session()
+
     async def test_second_instance_observes_and_is_refused_a_turn(
         self, app: StandProcess, second: StandProcess, cookie: str
     ) -> None:
@@ -1426,10 +1469,11 @@ class TestHistory:
     ) -> None:
         """Файл вложения треда после удаления треда не отдаётся: область треда
         удалена у сервиса файлов от имени владельца — по строке users, когда
-        вкладка закрыта, и по живой сессии, когда открыта."""
+        вкладка закрыта, и по живой сессии, когда открыта. Таблицу панель не
+        показывает: вложение — файл со ссылкой на скачивание."""
         tab = ChatSocket(app, cookie, str(uuid4()))
         await tab.open()
-        file_id = tab.upload("gone.txt", b"gone with the thread", "text/plain")
+        file_id = tab.upload("gone.csv", b"gone,with\nthe,thread\n", "text/csv")
         await tab.send(f"files {ScenarioName.ANSWER.value}", (file_id,))
         await tab.wait_task_end()
         assert not tab.errors(), (tab.errors(), app.tail(60))
@@ -1461,12 +1505,13 @@ class TestHistory:
         self, app: StandProcess, cookie: str, llm_port: int
     ) -> None:
         """Вложение вопроса после перезагрузки: текст вопроса без ссылки,
-        файл — элемент шага вопроса с адресом маршрута canvas, он скачивается;
-        правка вопроса после перезагрузки сохраняет вложение для модели."""
+        файл без вьювера панели (таблица) — элемент шага вопроса с адресом
+        маршрута canvas, он скачивается; правка вопроса после перезагрузки
+        сохраняет вложение для модели."""
         text = f"attach {ScenarioName.ANSWER.value}"
         tab = ChatSocket(app, cookie, str(uuid4()))
         await tab.open()
-        file_id = tab.upload("note.txt", b"attached text", "text/plain")
+        file_id = tab.upload("note.csv", b"attached text", "text/csv")
         await tab.send(text, (file_id,))
         await tab.wait_task_end()
         assert not tab.errors(), (tab.errors(), app.tail(60))
@@ -1481,7 +1526,7 @@ class TestHistory:
             attached = [e for e in again.elements() if e.get("forId") == question]
             assert attached, again.trace()
             url = str(attached[-1].get("url"))
-            assert attached[-1].get("name") == "note.txt"
+            assert attached[-1].get("name") == "note.csv"
             assert url.startswith(
                 f"{app.config.url_prefix}/canvas/{tab.thread_id}/upload/"
             ), url
@@ -1498,7 +1543,7 @@ class TestHistory:
             await again.wait_task_end()
             assert not again.errors(), (again.errors(), app.tail(60))
             request = LlmRequests(llm_port).with_text(edited)
-            assert "[@note.txt](" in json.dumps(request["messages"])
+            assert "[@note.csv](" in json.dumps(request["messages"])
         finally:
             await again.end_session()
 
@@ -1574,7 +1619,9 @@ class TestFeed:
         self, sandboxed: StandProcess, cookie: str
     ) -> None:
         """Вложение вопроса, файл итога send_file и ссылка панели canvas_open
-        после перезагрузки треда приходят теми же кадрами element, что вживую."""
+        после перезагрузки треда приходят теми же кадрами element, что вживую.
+        Текст показывает панель: вложение — кнопка открытия в панели с путём
+        файла в workspace, как у файлов итогов."""
         app = sandboxed
         tab = ChatSocket(app, cookie, str(uuid4()))
         await tab.open()
@@ -1585,9 +1632,9 @@ class TestFeed:
         question = str(tab.messages("user_message")[-1].get("id"))
         attached = [e for e in tab.elements() if e.get("forId") == question]
         assert attached, tab.trace()
-        address = urlsplit(str(attached[-1].get("url")))
-        stored = PurePosixPath(unquote(address.path))
-        path = f"/workspace/{tab.thread_id}/upload/{stored.name}"
+        assert attached[-1].get("name") == "CanvasLink", attached
+        path = str(attached[-1]["props"]["path"])
+        assert path == f"/workspace/{tab.thread_id}/upload/note.txt", path
         tools = StandToolNames()
         calls = [
             {"name": tools.full("send_file"), "arguments": {"path": path}},
@@ -1611,14 +1658,14 @@ class TestFeed:
         for name, *_ in live.values():
             shown.append(name)
 
-        # вложение вопроса, ссылки на файл итога у обоих вызовов (у текста
+        # вложение вопроса и ссылки на файл итога у обоих вызовов (у текста
         # есть вьювер канваса) и кнопки журналов вызовов
         assert sorted(shown) == [
             "CanvasLink",
             "CanvasLink",
+            "CanvasLink",
             "CanvasStream",
             "CanvasStream",
-            "note.txt",
         ], live
         assert live == replayed, (live, replayed)
 

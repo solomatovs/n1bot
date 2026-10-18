@@ -23,6 +23,7 @@ from boba.aid.rendering.chat_view import (
     ChatView,
     LiveSink,
     StepElapsed,
+    StepKind,
     StepMeta,
     StepRole,
     StepStatus,
@@ -119,6 +120,63 @@ class TestAnswerOrder:
 
         if len(set(seen)) != len(seen):
             raise AssertionError("len(set(seen)) == len(seen)")
+
+
+class TestTurnContainer:
+    """Контейнер хода появляется с первым шагом под ним: так ход рисует и
+    воспроизведение истории, поэтому ход из одного ответа живьём тоже без
+    контейнера."""
+
+    @staticmethod
+    def _runs(steps: list[StepDict]) -> list[StepDict]:
+        found: list[StepDict] = []
+        for step in steps:
+            if step.get(StepField.TYPE) == StepKind.RUN.value:
+                found.append(step)
+
+        return found
+
+    @pytest.mark.anyio
+    async def test_answer_only_turn_has_no_container(
+        self, runtime_stand: StandRefs, storage: LocalStorageClient, http_context: None
+    ) -> None:
+        sink = RecordingSink()
+        view = ChatView(THREAD, sink, "u-1", storage, TEXTS, user_name="Пользователь")
+        view.begin_turn(TURN)
+
+        await view.await_model()
+        await view.stream_answer("ответ", TURN)
+        await view.close_answer(TURN)
+        await view.finish_turn()
+
+        if self._runs(sink.steps):
+            raise AssertionError(
+                f"an answer-only turn draws no container: {sink.steps}"
+            )
+
+    @pytest.mark.anyio
+    async def test_first_step_opens_the_container(
+        self, runtime_stand: StandRefs, storage: LocalStorageClient, http_context: None
+    ) -> None:
+        sink = RecordingSink()
+        view = ChatView(THREAD, sink, "u-1", storage, TEXTS, user_name="Пользователь")
+        view.begin_turn(TURN)
+
+        await view.await_model()
+        if self._runs(sink.steps):
+            raise AssertionError("waiting for the model draws only the pulse")
+
+        await view.tool_started("bash", {"cmd": "ls"}, "call-1", None, None)
+        await view.finish_turn()
+
+        runs = self._runs(sink.steps)
+        names: list[object] = []
+        for run in runs:
+            names.append(run.get(StepField.NAME))
+
+        expected = [TEXTS.text(StepText.DONE_STEPS.value, count=1)]
+        if names != expected:
+            raise AssertionError(f"container names are {names}, expected {expected}")
 
 
 class TestTurnPulse:
@@ -377,7 +435,11 @@ class TestLivePulseFrames:
 
         emitter = self._play(runtime_stand, storage, scenario)
 
+        # кружок: ожидание модели, снят потоком ответа, вернулся под ответ,
+        # переехал под контейнер, который открыл вызов, снят концом хода
         expected = [
+            ChatEvent.NEW,
+            ChatEvent.DELETE,
             ChatEvent.NEW,
             ChatEvent.DELETE,
             ChatEvent.NEW,
