@@ -20,6 +20,10 @@ import {
 // песочницы, режим и размеры контейнера. Подписи карточки — из переводов
 // chainlit (aid.app), содержимое приложения — как пришло.
 
+// новые props (итог вызова, отмена) карточка принимает на месте: перемонтаж
+// перезагрузил бы приложение и потерял его состояние
+export const updatesInPlace = true;
+
 const TEXT = "aid.app";
 const APP_MIME = "text/html;profile=mcp-app";
 const METHOD_NOT_FOUND = -32601;
