@@ -9,7 +9,8 @@
 нём), шаг ленты подписан именем без сервера. Проверяется то, что
 видит пользователь: шаг инструмента в ленте, вложение у шага и сам файл по
 ссылке вложения, итог своего сервера в его собственной модели результата,
-приложение MCP Apps у шага вызова и его изоляция от страницы чата.
+карточка приложения MCP Apps в основной ленте под контейнером хода, её
+вид, режимы и изоляция приложения от страницы чата.
 
 Ошибки: своих не выпускает; расхождение — падение теста.
 """
@@ -24,13 +25,22 @@ import subprocess
 import sys
 import time
 from collections.abc import Iterator
+from enum import StrEnum
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, ClassVar
 from urllib.parse import urlencode, urlsplit, urlunsplit
 
 import pytest
+from acp_stand import AppsHost, OrdersBook
 from chat_ui import BOOT_TIMEOUT_SEC, OpenChat
-from playwright.sync_api import Browser, FrameLocator, Locator, Page
+from playwright.sync_api import (
+    Browser,
+    Error,
+    FloatRect,
+    FrameLocator,
+    Locator,
+    Page,
+)
 
 from boba.aid.chat.ui_text import UiText
 from boba.mcp_client.client import McpServerConfig
@@ -57,9 +67,6 @@ pytestmark = [pytest.mark.ui, pytest.mark.xdist_group("mcp-ui")]
 CHAT_LOGIN = "admin"
 CHAT_ROLE = "ADM"
 """Логин пользователя стенда чата: под ним открыт чат в браузере."""
-
-RUNNING = "○"
-"""Кружок идущего вызова в названии шага."""
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
 """Картинка, которую отдаёт инструмент picture стандартного сервера."""
@@ -140,6 +147,16 @@ def boba_mcp_stand(stand_workdir: Path) -> Iterator[BobaMcpStand]:
 
 
 @pytest.fixture(scope="module")
+def apps_host(stand_workdir: Path) -> Iterator[AppsHost]:
+    host = AppsHost(stand_workdir / "apps-host")
+    try:
+        host.await_listening()
+        yield host
+    finally:
+        host.stop()
+
+
+@pytest.fixture(scope="module")
 def mcp_stand(  # noqa: PLR0913 — стенд собирается из фикстур модуля
     stand_workdir: Path,
     llm_port: int,
@@ -147,38 +164,12 @@ def mcp_stand(  # noqa: PLR0913 — стенд собирается из фик�
     stand_database: str,
     boba_mcp_stand: BobaMcpStand,
     standard: McpServerConfig,
+    apps_host: AppsHost,
 ) -> Iterator[StandProcess]:
     """Стенд чата с MCP-серверами: обычный по stdio, boba-mcp и обычный по
     HTTP — записью apps с секцией apps (страница-прокси песочницы на своём
-    порту) и записью plain без неё."""
+    источнике) и записью plain без неё."""
     server = standard.model_dump(mode="json", exclude_none=True)
-    apps_port = StandPorts().free()
-    sandbox_port = StandPorts().free()
-    script = REPO_ROOT / "packages/services/boba-mcp-client/tests/standard_server.py"
-    pages = REPO_ROOT / "packages/apps/boba-aid/assets/mcp-apps"
-    apps_server = subprocess.Popen(
-        [sys.executable, str(script), "streamable-http", str(apps_port)]
-    )
-    # страница-прокси — на своём источнике, как её отдаёт nginx хоста сервера
-    serve = ["-m", "http.server", str(sandbox_port), "--bind", "127.0.0.1"]
-    sandbox_server = subprocess.Popen(
-        [sys.executable, *serve, "--directory", str(pages)]
-    )
-    plain = {
-        "connect_timeout_sec": 30.0,
-        "call_timeout_sec": 60.0,
-        "endpoint": {
-            "transport": "streamable-http",
-            "scheme": "http",
-            "host": "127.0.0.1",
-            "port": apps_port,
-            "path": "/mcp",
-        },
-    }
-    drawn = {
-        **plain,
-        "apps": {"sandbox_url": f"http://localhost:{sandbox_port}/sandbox.html"},
-    }
     config = StandConfig(
         # не "mcp": это каталог сервиса boba-mcp общего стенда (StandConfig.service)
         workdir=stand_workdir / "chat-mcp",
@@ -190,66 +181,107 @@ def mcp_stand(  # noqa: PLR0913 — стенд собирается из фик�
         mcp_servers={
             "standard": server,
             "boba": boba_mcp_stand.server(),
-            "apps": drawn,
-            "plain": plain,
+            "apps": apps_host.drawn(),
+            "plain": apps_host.plain(),
         },
     )
     process = StandProcess(config=config, log_path=stand_workdir / "mcp-app.log")
     try:
-        for port in (apps_port, sandbox_port):
-            deadline = time.monotonic() + BobaMcpStand.BOOT_SEC
-            while True:
-                try:
-                    with socket.create_connection(("127.0.0.1", port), timeout=1.0):
-                        break
-                except OSError as exc:
-                    if time.monotonic() > deadline:
-                        msg = (
-                            f"the apps server ({apps_server.args}) or the sandbox page "
-                            f"({sandbox_server.args}) is not listening on port {port} "
-                            f"within {BobaMcpStand.BOOT_SEC}s: {exc}"
-                        )
-                        raise AssertionError(msg) from exc
-
-                    time.sleep(0.2)
-
         process.start(boot_timeout_sec=BOOT_TIMEOUT_SEC)
         yield process
     finally:
         process.stop()
-        apps_server.terminate()
-        apps_server.wait(timeout=10)
-        sandbox_server.terminate()
-        sandbox_server.wait(timeout=10)
 
 
-def _ask(chat: ChatPage, tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    """Ход с вызовом инструмента; отдаёт его законченный шаг из журнала
-    сокета."""
-    request = json.dumps({"name": tool, "arguments": arguments})
-    chat.ask(f"{ScenarioName.CALL.value} {request}")
-    chat.await_idle(timeout_sec=120.0)
+class FeedCalls:
+    """Ход с вызовом инструмента по маркеру сценария фейковой модели: тест
+    называет инструмент и аргументы, лента рисует законченный шаг."""
 
-    step = chat.log.last_step(StepKind.TOOL.value)
-    if step is None:
-        raise AssertionError(f"no tool step of {tool}\n{chat.log.describe()}")
+    RUNNING: ClassVar[str] = "○"
+    """Кружок идущего вызова в названии шага."""
 
-    if str(step.get(StepField.NAME.value)).startswith(RUNNING):
-        raise AssertionError(f"the turn ended with {tool} running: {step!r}")
+    def __init__(self, chat: ChatPage) -> None:
+        self._chat = chat
 
-    return step
+    def ask(self, tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        """Законченный шаг вызова из журнала сокета: конец хода агент
+        объявляет, когда итоги вызовов уже в ленте."""
+        chat = self._chat
+        request = json.dumps({"name": tool, "arguments": arguments})
+        chat.ask(f"{ScenarioName.CALL.value} {request}")
+        chat.await_idle(timeout_sec=120.0)
+
+        step = chat.log.last_step(StepKind.TOOL.value)
+        if step is None:
+            raise AssertionError(f"no tool step of {tool}\n{chat.log.describe()}")
+
+        if str(step.get(StepField.NAME.value)).startswith(self.RUNNING):
+            raise AssertionError(f"the turn ended with {tool} running: {step!r}")
+
+        return step
 
 
-def _app(chat: ChatPage) -> tuple[Locator, FrameLocator]:
-    """Ход с вызовом board сервера apps: шаг вызова и внутренний iframe его
-    приложения, нарисовавшего разметку модели."""
-    _ask(chat, "mcp__apps__board", {"markup": '<b id="cells">three cells</b>'})
-    tool = chat.expand_last_tool()
-    tool.locator("iframe").first.wait_for(timeout=30_000)
-    inner = tool.frame_locator("iframe").first.frame_locator("iframe")
-    inner.locator("#cells").wait_for(timeout=30_000)
+class OrdersApp:
+    """Приложение заказов сервера apps глазами теста. Вопросы — обычный
+    текст: книга ответов фейковой модели зовёт по ним orders и отвечает
+    после итога. Карточка приложения — блок основной ленты под контейнером
+    хода; внутри неё iframe страницы-прокси песочницы и в нём iframe самого
+    приложения. Ошибки страницы чата копятся с открытия: их не должно быть."""
 
-    return tool, inner
+    CARD: ClassVar[str] = "[data-mcp-app]"
+    SHOWN: ClassVar[str] = "result: 3 orders are shown by their app"
+
+    def __init__(self, chat: ChatPage, llm_port: int) -> None:
+        self.chat = chat
+        self.errors: list[str] = []
+        chat.page.on("pageerror", self._failed)
+        ReplyBookClient(StandUrl.of(llm_port)).register(OrdersBook().replies())
+
+    def _failed(self, error: Error) -> None:
+        self.errors.append(str(error))
+
+    @property
+    def page(self) -> Page:
+        return self.chat.page
+
+    def ask(self) -> Locator:
+        """Ход с одним вызовом orders: карточка его приложения, дорисованного
+        с аргументами и итогом."""
+        self.chat.ask(OrdersBook.QUESTION)
+        self.chat.await_idle(timeout_sec=120.0)
+        self.page.get_by_text(OrdersBook.ANSWER).last.wait_for(timeout=60_000)
+        card = self.cards().last
+        self.drawn(card, "3 of 3 orders")
+        return card
+
+    def cards(self) -> Locator:
+        return self.page.locator(self.CARD)
+
+    def outer(self, card: Locator) -> Locator:
+        """iframe страницы-прокси песочницы в карточке."""
+        return card.locator("iframe").first
+
+    def inner(self, card: Locator) -> FrameLocator:
+        """iframe приложения в странице-прокси."""
+        return card.frame_locator("iframe").first.frame_locator("iframe")
+
+    def drawn(self, card: Locator, count: str) -> FrameLocator:
+        """Приложение карточки получило строки (count) и итог вызова."""
+        inner = self.inner(card)
+        inner.locator("#count").get_by_text(count).wait_for(timeout=60_000)
+        inner.locator("#result").get_by_text("result:").wait_for(timeout=60_000)
+        return inner
+
+    def box(self, locator: Locator) -> FloatRect:
+        box = locator.bounding_box()
+        if box is None:
+            raise AssertionError(f"{locator} is laid out on the page")
+
+        return box
+
+    def check_clean(self) -> None:
+        if self.errors:
+            raise AssertionError(f"the chat page raised errors: {self.errors}")
 
 
 class TestMcpToolInTheFeed:
@@ -258,7 +290,7 @@ class TestMcpToolInTheFeed:
     ) -> None:
         chat = open_chat(mcp_stand, "")
 
-        step = _ask(chat, "mcp__standard__add", {"a": 2, "b": 3})
+        step = FeedCalls(chat).ask("mcp__standard__add", {"a": 2, "b": 3})
 
         if "add" not in str(step.get(StepField.NAME.value)):
             raise AssertionError(f"the step is named after the mcp tool: {step}")
@@ -273,7 +305,7 @@ class TestMcpToolInTheFeed:
         байтов блока в ленте нет, тело файла отдаёт маршрут канваса с Range."""
         chat = open_chat(mcp_stand, "")
 
-        step = _ask(chat, "mcp__standard__picture", {})
+        step = FeedCalls(chat).ask("mcp__standard__picture", {})
 
         cards: list[dict[str, Any]] = []
         for frame in chat.log.of_event(ChatEvent.ELEMENT):
@@ -317,7 +349,7 @@ class TestMcpToolInTheFeed:
         для модели в ленту не попадает."""
         chat = open_chat(mcp_stand, "")
 
-        step = _ask(chat, "mcp__standard__blocks", {"empty": False})
+        step = FeedCalls(chat).ask("mcp__standard__blocks", {"empty": False})
 
         output = str(step.get(StepField.OUTPUT.value))
         expected = (
@@ -339,7 +371,7 @@ class TestMcpToolInTheFeed:
         chat = open_chat(mcp_stand, "")
         page = chat.page
 
-        _ask(chat, "mcp__standard__blocks", {"empty": False})
+        FeedCalls(chat).ask("mcp__standard__blocks", {"empty": False})
         step = chat.expand_last_tool()
 
         tree = step.locator("[data-json-tree]").last
@@ -382,7 +414,7 @@ class TestOwnServerInTheFeed:
     ) -> None:
         chat = open_chat(mcp_stand, "")
 
-        step = _ask(chat, "mcp__boba__fake_echo", {"text": "hi", "repeat": 2})
+        step = FeedCalls(chat).ask("mcp__boba__fake_echo", {"text": "hi", "repeat": 2})
 
         if "fake_echo" not in str(step.get(StepField.NAME.value)):
             raise AssertionError(f"the step is named after the tool: {step}")
@@ -396,7 +428,7 @@ class TestOwnServerInTheFeed:
         вошёл в чат, приходят при входе proxy; тело исполняется от его имени."""
         chat = open_chat(mcp_stand, "")
 
-        step = _ask(chat, "mcp__boba__fake_whoami", {})
+        step = FeedCalls(chat).ask("mcp__boba__fake_whoami", {})
 
         output = str(step.get(StepField.OUTPUT.value))
         if not output.startswith(f"{CHAT_LOGIN}|{CHAT_ROLE}|"):
@@ -412,7 +444,7 @@ class TestOwnServerInTheFeed:
         файлы, загруженные пользователем, и то, что открывает панель канваса."""
         chat = open_chat(mcp_stand, "")
 
-        step = _ask(chat, "mcp__boba__fake_scope", {})
+        step = FeedCalls(chat).ask("mcp__boba__fake_scope", {})
 
         output = str(step.get(StepField.OUTPUT.value)).strip()
         thread_id = str(step.get(StepField.THREAD_ID.value))
@@ -426,7 +458,9 @@ class TestOwnServerInTheFeed:
     ) -> None:
         chat = open_chat(mcp_stand, "")
 
-        step = _ask(chat, "mcp__boba__fake_echo", {"text": "boom", "repeat": 1})
+        step = FeedCalls(chat).ask(
+            "mcp__boba__fake_echo", {"text": "boom", "repeat": 1}
+        )
 
         if "fake backend is down" not in str(step.get(StepField.OUTPUT.value)):
             raise AssertionError(f"the step shows the cause of the failure: {step}")
@@ -442,7 +476,9 @@ class TestOwnServerInTheFeed:
         треду — тем же шагом с тем же id."""
         chat = open_chat(mcp_stand, "")
 
-        live = _ask(chat, "mcp__boba__fake_query", {"sql": "select 42", "limit": 3})
+        live = FeedCalls(chat).ask(
+            "mcp__boba__fake_query", {"sql": "select 42", "limit": 3}
+        )
 
         shown = str(live.get(StepField.INPUT.value))
         if not shown.startswith("```sql\nselect 42\n```"):
@@ -475,7 +511,7 @@ class TestOwnServerInTheFeed:
         панель читает окном через клиента MCP."""
         chat = open_chat(mcp_stand, "")
 
-        _ask(chat, "mcp__boba__fake_echo", {"text": "journal", "repeat": 1})
+        FeedCalls(chat).ask("mcp__boba__fake_echo", {"text": "journal", "repeat": 1})
 
         tool = chat.expand_last_tool()
         tool.locator("[data-canvas-stream]").click()
@@ -485,16 +521,17 @@ class TestOwnServerInTheFeed:
 
 
 class TestToolApps:
-    """Приложение MCP Apps у шага вызова: рисуется в песочнице на хосте
-    сервера, его кнопки зовут инструменты своего сервера только с "app" в
-    visibility, ui/message доходит до агента, контекст приложения уходит
-    модели со следующим вопросом; страница и куки чата скрипту приложения
-    недоступны. Сервер без секции apps показывает итог блоками."""
+    """Приложение MCP Apps в основной ленте: карточка под контейнером хода,
+    шаг вызова — только факт вызова. Кнопки приложения зовут инструменты
+    своего сервера только с "app" в visibility, ui/message доходит до агента,
+    контекст приложения уходит модели со следующим вопросом; страница и куки
+    чата скрипту приложения недоступны; после перезагрузки треда карточка та
+    же. Сервер без секции apps показывает итог блоками."""
 
     @staticmethod
-    def _llm_requests(chat: ChatPage, llm_port: int, marker: str) -> list[str]:
+    def _llm_requests(page: Page, llm_port: int, marker: str) -> list[str]:
         """Сообщения запросов фейковой модели с marker, JSON-текстом."""
-        reply = chat.page.request.get(StandUrl.of(llm_port, "/requests"))
+        reply = page.request.get(StandUrl.of(llm_port, "/requests"))
         found: list[str] = []
         for payload in reply.json()["requests"]:
             messages = json.dumps(payload.get("messages"))
@@ -503,30 +540,92 @@ class TestToolApps:
 
         return found
 
-    def test_app_draws_the_call_and_calls_its_server(
-        self, mcp_stand: StandProcess, open_chat: OpenChat
+    def test_card_stands_in_the_feed_and_the_step_is_the_call(
+        self, mcp_stand: StandProcess, open_chat: OpenChat, llm_port: int
     ) -> None:
-        chat = open_chat(mcp_stand, "")
-        _tool, inner = _app(chat)
+        """Карточка видна без раскрытия хода: блок основной ленты между
+        контейнером и ответом; раскрытый шаг показывает аргументы и итог, но
+        не приложение."""
+        orders = OrdersApp(open_chat(mcp_stand, ""), llm_port)
+        card = orders.ask()
+
+        message = card.locator("xpath=ancestor::*[@data-step-type][1]")
+        if message.get_attribute("data-step-type") != StepKind.ASSISTANT.value:
+            raise AssertionError("the card is a message of the main feed")
+
+        order = orders.page.evaluate(
+            """(card) => {
+              const blocks = [...document.querySelectorAll('[data-step-type]')]
+                .filter((node) => !node.parentElement.closest('[data-step-type]'));
+              return blocks.map((node) => {
+                if (node.contains(card)) return 'card';
+                return node.getAttribute('data-step-type');
+              });
+            }""",
+            card.element_handle(),
+        )
+        turn = order[order.index(StepKind.USER.value) :]
+        if turn[:4] != [
+            StepKind.USER.value,
+            StepKind.RUN.value,
+            "card",
+            "assistant_message",
+        ]:
+            raise AssertionError(f"question, container, card, answer: {order}")
+
+        tool = orders.chat.expand_last_tool()
+        shown = tool.inner_text()
+        if "7\tAcme\tnew\t120.5" not in shown:
+            raise AssertionError(f"the step shows the rows of the call: {shown!r}")
+
+        if "3 orders are shown by their app" not in shown:
+            raise AssertionError(f"the step shows the result: {shown!r}")
+
+        if tool.locator("iframe").count():
+            raise AssertionError("the step draws no app")
+
+        orders.check_clean()
+
+    def test_two_calls_of_a_turn_are_two_cards_in_order(
+        self, mcp_stand: StandProcess, open_chat: OpenChat, llm_port: int
+    ) -> None:
+        orders = OrdersApp(open_chat(mcp_stand, ""), llm_port)
+        orders.chat.ask(OrdersBook.TWO_STORES)
+        orders.chat.await_idle(timeout_sec=120.0)
+        orders.page.get_by_text(OrdersBook.TWO_ANSWER).last.wait_for(timeout=60_000)
+
+        cards = orders.cards()
+        if cards.count() != 2:
+            raise AssertionError(f"two calls give two cards: {cards.count()}")
+
+        orders.drawn(cards.nth(0), "2 of 2 orders")
+        orders.drawn(cards.nth(1), "1 of 1 orders")
+        orders.check_clean()
+
+    def test_app_calls_the_tools_of_its_server_for_the_app(
+        self, mcp_stand: StandProcess, open_chat: OpenChat, llm_port: int
+    ) -> None:
+        orders = OrdersApp(open_chat(mcp_stand, ""), llm_port)
+        inner = orders.inner(orders.ask())
         answer = inner.locator("#answer")
 
-        inner.locator("#result").get_by_text("the board is drawn by its app").wait_for()
-        inner.locator("#call-app").click()
-        answer.get_by_text("answer: app_only answered").wait_for(timeout=30_000)
-        inner.locator("#call-model").click()
+        inner.locator("#result").get_by_text(OrdersApp.SHOWN).wait_for()
+        inner.locator("#refresh").click()
+        answer.get_by_text("answer: orders refreshed").wait_for(timeout=30_000)
+        inner.locator("#archive").click()
         answer.get_by_text("error:").wait_for(timeout=30_000)
 
         refused = answer.inner_text()
-        if "model_only" not in refused:
+        if "archive_orders" not in refused:
             raise AssertionError(f"the app is refused the tool of the model: {refused}")
 
-    def test_app_sees_neither_the_cookies_nor_the_page_of_the_chat(
-        self, mcp_stand: StandProcess, open_chat: OpenChat
-    ) -> None:
-        chat = open_chat(mcp_stand, "")
-        _tool, inner = _app(chat)
+        orders.check_clean()
 
-        probe = inner.locator("#probe").inner_text()
+    def test_app_sees_neither_the_cookies_nor_the_page_of_the_chat(
+        self, mcp_stand: StandProcess, open_chat: OpenChat, llm_port: int
+    ) -> None:
+        orders = OrdersApp(open_chat(mcp_stand, ""), llm_port)
+        probe = orders.inner(orders.ask()).locator("#probe").inner_text()
 
         if probe != "cookies: none; chat page: hidden":
             raise AssertionError(f"the app script is cut off from the chat: {probe}")
@@ -536,66 +635,117 @@ class TestToolApps:
     ) -> None:
         """ui/message — вопрос агенту от пользователя; ui/update-model-context
         модель получает со следующим вопросом, а лента вопроса его не
-        показывает."""
-        chat = open_chat(mcp_stand, "")
-        _tool, inner = _app(chat)
+        показывает. Приложение не перезагружается, пока идёт и кончается
+        новый ход: счётчик в нём остаётся."""
+        orders = OrdersApp(open_chat(mcp_stand, ""), llm_port)
+        inner = orders.inner(orders.ask())
 
-        inner.locator("#send-context").click()
+        inner.locator("#refresh").click()
+        inner.locator("#refreshed").get_by_text("refreshed: 1").wait_for()
+        inner.locator("#context").click()
         inner.locator("#answer").get_by_text("answer:").wait_for(timeout=30_000)
-        # вопрос приложения ждёт свой ход: в журнале не остаётся конца хода board
-        chat.log.clear()
-        inner.locator("#send-message").click()
-        chat.page.get_by_text("the board asks to go on").first.wait_for(timeout=60_000)
-        chat.await_idle(timeout_sec=120.0)
+        # вопрос приложения ждёт свой ход: в журнале не остаётся конца хода orders
+        orders.chat.log.clear()
+        inner.locator("#ask").click()
+        orders.page.get_by_text(OrdersBook.ASKED).last.wait_for(timeout=60_000)
+        orders.chat.await_idle(timeout_sec=120.0)
 
-        asked = self._llm_requests(chat, llm_port, "the board asks to go on")
+        asked = self._llm_requests(orders.page, llm_port, OrdersBook.ASKED)
         if not asked:
             raise AssertionError("ui/message of the app reaches the model")
 
-        if "the board shows three cells" not in asked[-1]:
+        answered = orders.page.get_by_text(OrdersBook.ASKED_ANSWER)
+        if not answered.count():
+            last = json.loads(asked[-1])[-1]
+            raise AssertionError(f"the book answers the question: {last!r}")
+
+        if OrdersBook.CONTEXT not in asked[-1]:
             raise AssertionError(f"the context goes with the question: {asked[-1]}")
 
-        if '\\"cells\\": 3' not in asked[-1]:
+        if '\\"orders\\": 3' not in asked[-1]:
             raise AssertionError(f"the structured context goes as json: {asked[-1]}")
 
         questions = [
             str(step.get(StepField.OUTPUT.value))
-            for step in chat.log.steps_of_type(StepKind.USER.value)
+            for step in orders.chat.log.steps_of_type(StepKind.USER.value)
         ]
-        if any("the board shows" in question for question in questions):
+        if any("the user sees" in question for question in questions):
             raise AssertionError(
                 f"the context is not a part of the question: {questions}"
             )
 
-    def test_server_without_apps_shows_the_blocks(
-        self, mcp_stand: StandProcess, open_chat: OpenChat
+        kept = inner.locator("#refreshed").inner_text()
+        if kept != "refreshed: 1":
+            raise AssertionError(f"the app keeps its state over a new turn: {kept}")
+
+        orders.check_clean()
+
+    def test_card_comes_back_with_the_thread(
+        self, mcp_stand: StandProcess, open_chat: OpenChat, llm_port: int
     ) -> None:
-        chat = open_chat(mcp_stand, "")
+        """Тред открыт заново: карточка рисуется тем же кодом по истории
+        агента, приложение получает сохранённые аргументы и итог, а сервер
+        второй раз не зовётся."""
+        orders = OrdersApp(open_chat(mcp_stand, ""), llm_port)
+        live = orders.ask()
+        call_id = str(live.get_attribute("data-mcp-app"))
 
-        step = _ask(chat, "mcp__plain__board", {"markup": "plain"})
-        tool = chat.expand_last_tool()
+        step = orders.chat.log.last_step(StepKind.TOOL.value)
+        if step is None:
+            raise AssertionError(f"no tool step\n{orders.chat.log.describe()}")
 
-        output = str(step.get(StepField.OUTPUT.value))
-        if "board markup: plain" not in output:
-            raise AssertionError(f"the server answers with blocks: {step}")
+        thread_id = str(step.get(StepField.THREAD_ID.value))
+        orders.page.goto(
+            f"{orders.chat.base_url}/thread/{thread_id}", wait_until="domcontentloaded"
+        )
+        orders.page.wait_for_selector(Selector.INPUT.value, timeout=60_000)
 
-        if tool.locator("iframe").count():
-            raise AssertionError("a server without apps draws no app")
+        orders.page.get_by_text(OrdersBook.ANSWER).last.wait_for(timeout=60_000)
+        card = orders.page.locator(f'[data-mcp-app="{call_id}"]')
+        card.wait_for(timeout=60_000)
+        inner = orders.drawn(card, "3 of 3 orders")
+        inner.locator("#result").get_by_text(OrdersApp.SHOWN).wait_for()
+        orders.check_clean()
+
+    def test_server_without_apps_shows_the_blocks(
+        self, mcp_stand: StandProcess, open_chat: OpenChat, llm_port: int
+    ) -> None:
+        orders = OrdersApp(open_chat(mcp_stand, ""), llm_port)
+        orders.chat.ask(OrdersBook.PLAIN)
+        orders.chat.await_idle(timeout_sec=120.0)
+        orders.page.get_by_text(OrdersBook.PLAIN_ANSWER).last.wait_for(timeout=60_000)
+
+        tool = orders.chat.expand_last_tool()
+        shown = tool.inner_text()
+        if "#7 Acme new 120.50" not in shown:
+            raise AssertionError(f"the server answers with blocks: {shown!r}")
+
+        if orders.cards().count():
+            raise AssertionError("a server without apps draws no card")
 
 
 class TestToolAppLook:
-    """Вид приложения у шага: внешний iframe на источнике песочницы с
-    разрешениями стандарта, внутренний — без allow-same-origin и с CSP;
-    высота по size-changed приложения, узкое окно без горизонтальной
-    прокрутки, тема чата в контексте хоста."""
+    """Вид карточки приложения: рамка с края текста ответа до края пузыря
+    вопроса, зазоры ленты 24px, шапка 44px, отступ тела 8px; внешний iframe
+    на источнике песочницы с разрешениями стандарта, внутренний — без
+    allow-same-origin и с CSP; высота по size-changed приложения; тема,
+    переменные стилей и шрифт чата у приложения; режимы «на весь экран» и
+    «свернуть»; узкое окно без горизонтальной прокрутки."""
+
+    EDGE: ClassVar[float] = 1.0
+    """Допуск выравнивания краёв, px: дробные координаты колонки."""
+
+    GAP: ClassVar[float] = 24.0
+    HEAD: ClassVar[float] = 44.0
+    PAD: ClassVar[float] = 8.0
 
     def test_app_frames_follow_the_standard(
-        self, mcp_stand: StandProcess, open_chat: OpenChat
+        self, mcp_stand: StandProcess, open_chat: OpenChat, llm_port: int
     ) -> None:
-        chat = open_chat(mcp_stand, "")
-        tool, inner = _app(chat)
-        outer = tool.locator("iframe").first
-        proxy = tool.frame_locator("iframe").first.locator("iframe").first
+        orders = OrdersApp(open_chat(mcp_stand, ""), llm_port)
+        card = orders.ask()
+        outer = orders.outer(card)
+        proxy = card.frame_locator("iframe").first.locator("iframe").first
 
         src = str(outer.get_attribute("src"))
         if not src.startswith("http://localhost:"):
@@ -619,78 +769,286 @@ class TestToolAppLook:
                 f"the CSP takes the domains of the resource: {srcdoc[:300]}"
             )
 
-        dark = chat.page.evaluate("document.documentElement.classList.contains('dark')")
-        theme = "light"
-        if dark:
-            theme = "dark"
-
-        inner.locator("#theme").get_by_text(f"theme: {theme}").wait_for()
-        box = outer.bounding_box()
-        if box is None:
-            raise AssertionError("the frame of the app is laid out on the page")
-
-        if not 0 < box["height"] < 600:
-            raise AssertionError(f"the frame takes the height of the app: {box}")
-
-    def test_app_follows_the_theme_and_the_narrow_window(
-        self, mcp_stand: StandProcess, open_chat: OpenChat
-    ) -> None:
-        chat = open_chat(mcp_stand, "")
-        chat.page.set_viewport_size({"width": 420, "height": 800})
-        _tool, inner = _app(chat)
-
-        dark = chat.page.evaluate("document.documentElement.classList.toggle('dark')")
-        theme = "light"
-        if dark:
-            theme = "dark"
-
-        inner.locator("#theme").get_by_text(f"theme: {theme}").wait_for(timeout=10_000)
-
-        width = "document.documentElement.scrollWidth"
-        shown = "document.documentElement.clientWidth"
-        scroll = chat.page.evaluate(f"[{width}, {shown}]")
-        if scroll[0] > scroll[1]:
-            raise AssertionError(f"no horizontal scroll in a narrow window: {scroll}")
-
-        # текст приложения берёт тему хоста: светлый на тёмном и наоборот
-        light = inner.locator("#board").evaluate(
-            "el => { const [r, g, b] = getComputedStyle(el).color"
-            ".match(/\\d+/g).map(Number); return (r + g + b) / 3 > 128; }"
-        )
-        if light is not dark:
+        font_src = re.search(r"font-src ([^;]*)", srcdoc)
+        sandbox = urlsplit(src)
+        if font_src is None or f"http://localhost:{sandbox.port}" not in font_src.group(
+            1
+        ):
             raise AssertionError(
-                f"the text of the app follows the {theme} theme of the host"
+                f"the app takes fonts from the sandbox host: {srcdoc[:400]}"
             )
 
-    def test_frame_grows_with_the_app(
-        self, mcp_stand: StandProcess, open_chat: OpenChat
+        orders.check_clean()
+
+    def test_card_is_aligned_with_the_feed(
+        self, mcp_stand: StandProcess, open_chat: OpenChat, llm_port: int
     ) -> None:
-        """Приложение дописало строку ответа — рамка выросла по его
-        size-changed, нижняя строка не обрезана."""
-        chat = open_chat(mcp_stand, "")
-        tool, inner = _app(chat)
-        outer = tool.locator("iframe").first
-        before = outer.bounding_box()
+        orders = OrdersApp(open_chat(mcp_stand, ""), llm_port)
+        card = orders.ask()
+        page = orders.page
+        frame = orders.box(card)
+        head = orders.box(card.locator("> div").first)
+        app = orders.box(orders.outer(card))
+        answer = page.locator('[data-step-type="assistant_message"]').filter(
+            has_text=OrdersBook.ANSWER
+        )
+        text = orders.box(answer.last.locator(".message-content").first)
+        bubble = orders.box(
+            page.locator('[data-step-type="user_message"] .rounded-3xl').last
+        )
+        container = orders.box(page.locator('[data-step-type="run"] .ai-message').last)
+        reply = orders.box(answer.last.locator(".ai-message").first)
 
-        inner.locator("#call-app").click()
-        answer = inner.locator("#answer")
-        answer.get_by_text("answer: app_only answered").wait_for(timeout=30_000)
+        edges = {
+            "left to the answer text": frame["x"] - text["x"],
+            "right to the question bubble": (
+                frame["x"] + frame["width"] - bubble["x"] - bubble["width"]
+            ),
+        }
+        for name, shift in edges.items():
+            if abs(shift) > self.EDGE:
+                raise AssertionError(f"the card edge {name}: off by {shift}px")
 
-        clipped = "b => b.scrollHeight - window.innerHeight"
-        rest = inner.locator("body").evaluate(clipped)
-        for _ in range(20):
-            if rest <= 1:
-                break
-            chat.page.wait_for_timeout(250)
-            rest = inner.locator("body").evaluate(clipped)
+        gaps = {
+            "container to card": frame["y"] - container["y"] - container["height"],
+            "card to answer": reply["y"] - frame["y"] - frame["height"],
+        }
+        for name, gap in gaps.items():
+            if abs(gap - self.GAP) > self.EDGE:
+                raise AssertionError(f"the gap {name} is {self.GAP}px: {gap}")
 
-        after = outer.bounding_box()
-        if rest > 1:
-            raise AssertionError(f"the app is clipped by {rest}px: {before} -> {after}")
-        if before is None or after is None:
-            raise AssertionError("the frame of the app is laid out on the page")
-        if after["height"] <= before["height"]:
-            raise AssertionError(f"the frame grows with the app: {before} -> {after}")
+        if abs(head["height"] - self.HEAD) > self.EDGE:
+            raise AssertionError(f"the head is {self.HEAD}px high: {head}")
+
+        pads = {
+            "left": app["x"] - frame["x"] - 1,
+            "right": frame["x"] + frame["width"] - 1 - app["x"] - app["width"],
+            "bottom": frame["y"] + frame["height"] - 1 - app["y"] - app["height"],
+        }
+        for name, pad in pads.items():
+            if abs(pad - self.PAD) > self.EDGE:
+                raise AssertionError(
+                    f"the body pads the app by {self.PAD}px {name}: {pad}"
+                )
+
+        orders.check_clean()
+
+    def test_frame_takes_the_height_of_the_app(
+        self, mcp_stand: StandProcess, open_chat: OpenChat, llm_port: int
+    ) -> None:
+        """Высота iframe — высота документа приложения, прокрутки внутри
+        нет; приложение выросло после фильтра — рамка выросла за ним."""
+        orders = OrdersApp(open_chat(mcp_stand, ""), llm_port)
+        card = orders.ask()
+        inner = orders.inner(card)
+        outer = orders.outer(card)
+
+        inner.locator("#status").select_option("paid")
+        inner.locator("#count").get_by_text("1 of 3 orders").wait_for()
+        narrow = self._settled(outer, inner)
+        inner.locator("#status").select_option("")
+        inner.locator("#count").get_by_text("3 of 3 orders").wait_for()
+        full = self._settled(outer, inner)
+
+        if full <= narrow:
+            raise AssertionError(f"the frame grows with the app: {narrow} -> {full}")
+
+        orders.check_clean()
+
+    @staticmethod
+    def _settled(outer: Locator, inner: FrameLocator) -> float:
+        """Высота iframe, когда она сравнялась с документом приложения и
+        прокрутки в нём нет."""
+        measure = (
+            "() => [document.body.scrollHeight, "
+            "document.documentElement.scrollHeight, window.innerHeight]"
+        )
+        body = inner.locator("body")
+        for _ in range(40):
+            document, scrolled, shown = body.evaluate(measure)
+            box = outer.bounding_box()
+            if box is not None and box["height"] == document and scrolled <= shown:
+                return box["height"]
+
+            body.page.wait_for_timeout(100)
+
+        raise AssertionError(
+            f"the frame takes the height of the app: {outer.bounding_box()} vs "
+            f"{body.evaluate(measure)}"
+        )
+
+    def test_narrow_window_scrolls_no_page_sideways(
+        self, mcp_stand: StandProcess, open_chat: OpenChat, llm_port: int
+    ) -> None:
+        orders = OrdersApp(open_chat(mcp_stand, ""), llm_port)
+        card = orders.ask()
+        orders.page.set_viewport_size({"width": 420, "height": 800})
+        orders.page.wait_for_timeout(500)
+
+        widths = orders.page.evaluate(
+            "() => [document.documentElement.scrollWidth, "
+            "document.documentElement.clientWidth]"
+        )
+        if widths[0] > widths[1]:
+            raise AssertionError(f"no horizontal scroll in a narrow window: {widths}")
+
+        frame = orders.box(card)
+        app = orders.box(orders.outer(card))
+        if app["width"] > frame["width"] - 2 * self.PAD:
+            raise AssertionError(f"the app is no wider than its card: {app} in {frame}")
+
+        orders.check_clean()
+
+    def test_app_takes_the_theme_styles_and_font_of_the_chat(
+        self, mcp_stand: StandProcess, open_chat: OpenChat, llm_port: int
+    ) -> None:
+        """Переменные стилей приложения — токены чата текущей темы; смена
+        темы чата доходит без перезагрузки приложения; шрифт чата приложение
+        берёт с хоста песочницы."""
+        orders = OrdersApp(open_chat(mcp_stand, ""), llm_port)
+        inner = orders.inner(orders.ask())
+        inner.locator("#refresh").click()
+        inner.locator("#refreshed").get_by_text("refreshed: 1").wait_for()
+
+        for dark in (False, True):
+            orders.page.evaluate(
+                "(dark) => document.documentElement.classList.toggle('dark', dark)",
+                dark,
+            )
+            theme = "light"
+            if dark:
+                theme = "dark"
+
+            inner.locator("#host").get_by_text(f"theme: {theme}").wait_for()
+            seen = inner.locator("body").evaluate(ThemeProbe.APP)
+            wanted = orders.page.evaluate(ThemeProbe.CHAT)
+            if seen != wanted:
+                raise AssertionError(
+                    f"{theme}: the app takes {seen}, the chat has {wanted}"
+                )
+
+        kept = inner.locator("#refreshed").inner_text()
+        if kept != "refreshed: 1":
+            raise AssertionError(f"the theme changes without reloading the app: {kept}")
+
+        loaded = inner.locator("body").evaluate(ThemeProbe.FONT)
+        if not loaded:
+            raise AssertionError("the app loaded the Inter font of the chat")
+
+        orders.check_clean()
+
+    def test_full_screen_by_the_button_and_by_the_app(
+        self,
+        mcp_stand: StandProcess,
+        open_chat: OpenChat,
+        llm_port: int,
+        app_texts: UiText,
+    ) -> None:
+        """Кнопка шапки разворачивает карточку на окно, приложение получает
+        displayMode и высоту контейнера; Esc возвращает карточку. Запрос
+        приложения fullscreen выполняется, pip получает текущий режим."""
+        orders = OrdersApp(open_chat(mcp_stand, ""), llm_port)
+        card = orders.ask()
+        inner = orders.inner(card)
+        expand = card.locator('[data-app-action="fullscreen"]')
+
+        if expand.get_attribute("aria-label") != app_texts.text("aid.app.fullscreen"):
+            raise AssertionError(
+                f"the button is labelled: {expand.get_attribute('aria-label')}"
+            )
+
+        expand.click()
+        inner.locator("#host").get_by_text(
+            re.compile(r"mode: fullscreen; width: \d+; height: \d+")
+        ).wait_for()
+        box = orders.box(card)
+        if (box["x"], box["y"], box["width"], box["height"]) != (0, 0, 1280, 900):
+            raise AssertionError(f"the card covers the window: {box}")
+
+        exit_button = card.locator('[data-app-action="exit"]')
+        if exit_button.get_attribute("aria-label") != app_texts.text("aid.app.exit"):
+            raise AssertionError("the exit button is labelled from the translations")
+
+        orders.page.keyboard.press("Escape")
+        inner.locator("#host").get_by_text("mode: inline").wait_for()
+        if card.get_attribute("data-display-mode") != "inline":
+            raise AssertionError("Esc brings the card back to the feed")
+
+        inner.locator("#fullscreen").click()
+        inner.locator("#answer").get_by_text("mode: fullscreen").wait_for()
+        if card.get_attribute("data-display-mode") != "fullscreen":
+            raise AssertionError("the request of the app opens the full screen")
+
+        kept = inner.locator("body").evaluate(
+            "() => requestMode('pip').then((result) => result && result.mode)"
+        )
+        if kept != "fullscreen":
+            raise AssertionError(f"pip is refused with the current mode: {kept}")
+
+        inner.locator("#fullscreen").click()
+        inner.locator("#answer").get_by_text("mode: inline").wait_for()
+        orders.check_clean()
+
+    def test_collapsed_card_keeps_the_app(
+        self,
+        mcp_stand: StandProcess,
+        open_chat: OpenChat,
+        llm_port: int,
+        app_texts: UiText,
+    ) -> None:
+        orders = OrdersApp(open_chat(mcp_stand, ""), llm_port)
+        card = orders.ask()
+        inner = orders.inner(card)
+        inner.locator("#refresh").click()
+        inner.locator("#refreshed").get_by_text("refreshed: 1").wait_for()
+
+        collapse = card.locator('[data-app-action="collapse"]')
+        if collapse.get_attribute("aria-label") != app_texts.text("aid.app.collapse"):
+            raise AssertionError(
+                "the collapse button is labelled from the translations"
+            )
+
+        collapse.click()
+        folded = orders.box(card)
+        if abs(folded["height"] - self.HEAD - 2) > self.EDGE:
+            raise AssertionError(f"the collapsed card is its head: {folded}")
+
+        card.locator('[data-app-action="expand"]').click()
+        kept = inner.locator("#refreshed").inner_text()
+        if kept != "refreshed: 1":
+            raise AssertionError(f"the app keeps its state: {kept}")
+
+        orders.check_clean()
+
+
+class ThemeProbe(StrEnum):
+    """Скрипты сверки темы: переменные стилей в документе приложения против
+    токенов чата и загруженный шрифт Inter."""
+
+    APP = """() => {
+      const probe = document.createElement("div");
+      probe.style.color = "var(--color-background-primary)";
+      document.body.appendChild(probe);
+      const color = getComputedStyle(probe).color;
+      probe.remove();
+      const style = getComputedStyle(document.documentElement);
+      return [color, style.getPropertyValue("--font-sans").trim()];
+    }"""
+    CHAT = """() => {
+      const probe = document.createElement("div");
+      probe.style.color = "hsl(var(--background))";
+      document.body.appendChild(probe);
+      const color = getComputedStyle(probe).color;
+      probe.remove();
+      const style = getComputedStyle(document.documentElement);
+      return [color, style.getPropertyValue("--font-sans").trim()];
+    }"""
+    FONT = """async () => {
+      await document.fonts.ready;
+      const loaded = [...document.fonts].filter((face) =>
+        face.family.replace(/['"]/g, "") === "Inter" && face.status === "loaded");
+      return loaded.length > 0;
+    }"""
 
 
 class TestSandboxPage:
@@ -818,7 +1176,7 @@ class TestServerQuestion:
             if step is None:
                 continue
 
-            if str(step.get(StepField.NAME.value)).startswith(RUNNING):
+            if str(step.get(StepField.NAME.value)).startswith(FeedCalls.RUNNING):
                 continue
 
             return step

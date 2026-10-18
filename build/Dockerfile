@@ -533,6 +533,7 @@ RUN npm ci --no-audit --no-fund && npm run check && npm run build
 
 
 # образ чата: общий конфиг, ассеты chainlit, vendor-шрифты и стили формул вместо CDN,
+# страница песочницы MCP Apps со шрифтом чата рядом (его берут приложения),
 # агент одним файлом из стадии boba-bin (его путь — BOBA_AGENT_COMMAND в boba.env).
 # Вложения сессий приложение держит в данных ([aid].files_dir), app_root не пишется
 FROM runtime-os AS runtime-aid
@@ -546,6 +547,7 @@ COPY --chown=${BOBA_UID}:${BOBA_GID} packages/apps/boba-aid/assets/.chainlit/tra
 COPY --chown=${BOBA_UID}:${BOBA_GID} packages/apps/boba-aid/assets/chainlit.md             ${BOBA_DIR}/app_root/
 COPY --chown=${BOBA_UID}:${BOBA_GID} packages/apps/boba-aid/assets/public/                 ${BOBA_DIR}/app_root/public/
 COPY --chown=${BOBA_UID}:${BOBA_GID} packages/apps/boba-aid/assets/mcp-apps/               ${BOBA_DIR}/app_root/mcp-apps/
+COPY --chown=${BOBA_UID}:${BOBA_GID} build/src/webassets/inter/files/                    ${BOBA_DIR}/app_root/mcp-apps/fonts/inter/files/
 COPY --chown=${BOBA_UID}:${BOBA_GID} --from=aid-page-build /src/assets/public/page.js                  ${BOBA_DIR}/app_root/public/page.js
 COPY --chown=${BOBA_UID}:${BOBA_GID} --from=chainlit-ui-build /out/ui/                            ${BOBA_DIR}/app_root/ui/
 COPY --chown=${BOBA_UID}:${BOBA_GID} build/src/webassets/                                ${BOBA_DIR}/app_root/public/vendor/

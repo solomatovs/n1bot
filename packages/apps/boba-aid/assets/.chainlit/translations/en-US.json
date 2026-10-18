@@ -22,13 +22,13 @@
             "form": {
                 "email": {
                     "label": "Login",
-                    "required": "email is a required field",
-                    "placeholder": "login"
+                    "required": "login is a required field",
+                    "placeholder": "Enter your login"
                 },
                 "password": {
                     "label": "Password",
                     "required": "password is a required field",
-                    "placeholder": "password"
+                    "placeholder": "Enter your password"
                 },
                 "actions": {
                     "signin": "Sign In",
@@ -360,7 +360,12 @@
             "showMore": "show {{count}} more of {{rest}}"
         },
         "app": {
-            "sameOrigin": "The app sandbox {{url}} is on the origin of the chat, so the app is not drawn."
+            "sameOrigin": "The app sandbox {{url}} is on the origin of the chat, so the app is not drawn.",
+            "loading": "Loading the app…",
+            "fullscreen": "Full screen",
+            "exit": "Exit full screen",
+            "collapse": "Collapse",
+            "expand": "Expand"
         },
         "notice": {
             "settingsDeferred": "Settings are saved and will apply after the current answer.",

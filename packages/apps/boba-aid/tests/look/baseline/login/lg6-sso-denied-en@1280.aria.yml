@@ -1,0 +1,13 @@
+- img "logo"
+- heading "Login to access the app" [level=1]
+- img
+- paragraph: "Access denied: no roles are assigned to your account"
+- text: Login
+- textbox "Login":
+  - /placeholder: Enter your login
+- text: Password
+- textbox "Password":
+  - /placeholder: Enter your password
+- button
+- button "Sign In"
+- button "Sign in with SSO"

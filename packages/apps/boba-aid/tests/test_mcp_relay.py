@@ -219,11 +219,11 @@ class TestMcpRelay:
         assert isinstance(unknown, McpErrorOutcome), unknown
         assert unknown.error.code == mt.METHOD_NOT_FOUND
 
-    async def test_app_only_tool_is_neither_listed_nor_called(
+    async def test_tool_for_the_app_is_neither_listed_nor_called(
         self, relay: McpRelay, relay_stand: RelayStand, tab: TabSession
     ) -> None:
         server_id = self._server_id(relay_stand, tab)
-        call = {"name": "app_only", "arguments": {}}
+        call = {"name": "refresh_orders", "arguments": {}}
 
         listed, _ = await self._answer(
             relay, self._message(server_id, "tools/list", {})
@@ -237,12 +237,12 @@ class TestMcpRelay:
             tool.name for tool in mt.ListToolsResult.model_validate(listed.result).tools
         ]
         assert "add" in names, names
-        assert "board" in names, names
-        assert "model_only" in names, names
-        assert "app_only" not in names, names
+        assert "orders" in names, names
+        assert "archive_orders" in names, names
+        assert "refresh_orders" not in names, names
         assert isinstance(called, McpErrorOutcome), called
         assert called.error.code == mt.INVALID_PARAMS
-        assert "'app_only'" in called.error.message
+        assert "'refresh_orders'" in called.error.message
 
     async def test_progress_reaches_the_agent_under_its_token(
         self, relay: McpRelay, relay_stand: RelayStand, tab: TabSession
@@ -426,42 +426,42 @@ class TestAppRequests:
         self, relay: McpRelay, tab: TabSession
     ) -> None:
         registration = self._of(tab, "apps", self.PROFILE_SERVERS)
-        app_only = mt.CallToolRequestParams(name="app_only", arguments={})
-        board = mt.CallToolRequestParams(name="board", arguments={"markup": "<i/>"})
+        refresh = mt.CallToolRequestParams(name="refresh_orders", arguments={})
+        orders = mt.CallToolRequestParams(name="orders", arguments={"rows": []})
 
-        refreshed = await relay.app_call(registration, app_only)
-        drawn = await relay.app_call(registration, board)
+        refreshed = await relay.app_call(registration, refresh)
+        shown = await relay.app_call(registration, orders)
 
         assert not refreshed.is_error, refreshed
-        assert refreshed.content == [mt.TextContent(text="app_only answered")]
-        assert drawn.content == [mt.TextContent(text="the board is drawn by its app")]
+        assert refreshed.content == [mt.TextContent(text="orders refreshed")]
+        assert shown.content == [mt.TextContent(text="0 orders are shown by their app")]
 
     async def test_tool_for_the_model_is_refused_to_the_app(
         self, relay: McpRelay, tab: TabSession
     ) -> None:
         registration = self._of(tab, "apps", self.PROFILE_SERVERS)
-        model_only = mt.CallToolRequestParams(name="model_only", arguments={})
+        archive = mt.CallToolRequestParams(name="archive_orders", arguments={})
 
         with pytest.raises(MCPError) as refused:
-            await relay.app_call(registration, model_only)
+            await relay.app_call(registration, archive)
 
-        answered = await relay.app_answer(relay.app_call(registration, model_only))
+        answered = await relay.app_answer(relay.app_call(registration, archive))
 
         assert refused.value.error.code == mt.INVALID_PARAMS
-        assert "offers the app no tool 'model_only'" in refused.value.error.message
+        assert "offers the app no tool 'archive_orders'" in refused.value.error.message
         assert answered["error"]["code"] == mt.INVALID_PARAMS
-        assert "'model_only'" in answered["error"]["message"]
+        assert "'archive_orders'" in answered["error"]["message"]
 
     @pytest.mark.parametrize("server", ["standard", ChatTools.NAME])
     async def test_server_without_apps_refuses_the_app(
         self, relay: McpRelay, tab: TabSession, server: str
     ) -> None:
         registration = self._of(tab, server, self.PROFILE_SERVERS)
-        board = mt.CallToolRequestParams(name="board", arguments={"markup": "<i/>"})
-        read = mt.ReadResourceRequestParams(uri="ui://standard/board.html")
+        orders = mt.CallToolRequestParams(name="orders", arguments={"rows": []})
+        read = mt.ReadResourceRequestParams(uri="ui://standard/orders.html")
 
         with pytest.raises(MCPError) as called:
-            await relay.app_call(registration, board)
+            await relay.app_call(registration, orders)
 
         with pytest.raises(MCPError) as reading:
             await relay.app_read(registration, read)
@@ -476,11 +476,11 @@ class TestAppRequests:
         """Сервер с секцией apps, которого профиль треда не даёт: приложение
         и любой код вкладки его не зовут и не читают."""
         registration = self._of(tab, "apps", frozenset({"standard"}))
-        board = mt.CallToolRequestParams(name="board", arguments={"markup": "<i/>"})
-        read = mt.ReadResourceRequestParams(uri="ui://standard/board.html")
+        orders = mt.CallToolRequestParams(name="orders", arguments={"rows": []})
+        read = mt.ReadResourceRequestParams(uri="ui://standard/orders.html")
 
         with pytest.raises(MCPError) as called:
-            await relay.app_call(registration, board)
+            await relay.app_call(registration, orders)
 
         with pytest.raises(MCPError) as reading:
             await relay.app_read(registration, read)
@@ -493,7 +493,7 @@ class TestAppRequests:
         self, relay: McpRelay, tab: TabSession
     ) -> None:
         registration = self._of(tab, "apps", self.PROFILE_SERVERS)
-        read = mt.ReadResourceRequestParams(uri="ui://standard/board.html")
+        read = mt.ReadResourceRequestParams(uri="ui://standard/orders.html")
 
         answered = await relay.app_answer(relay.app_read(registration, read))
 
