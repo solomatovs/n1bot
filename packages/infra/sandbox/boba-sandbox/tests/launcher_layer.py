@@ -5,9 +5,8 @@
 монтирования хоста скрипт работать отказывается: точка, которую он
 монтирует и снимает, роняла бы старты песочниц всей машины.
 
-race — точка FUSE вне вида монтируется и снимается в цикле, а операции
-хранилища образов стартуют цепочку снова и снова; итог — число стартов и
-сбоев.
+race — точка FUSE вне вида монтируется и снимается в цикле, а цепочка
+лаунчера над образом стартует снова и снова; итог — число стартов и сбоев.
 resolved — в слое /etc/resolv.conf — ссылка systemd-resolved на файл в /run;
 зигота с биндом /etc/resolv.conf отдаёт, что видит тело и внешний слой.
 
@@ -25,20 +24,25 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import ClassVar
 
-from boba.canvas.storage import StorageError
 from boba.runtime.config import AppLayers
-from boba.runtime.storage import ImageStorageClient, LocalStorageConfig
-from boba.sandbox import WorkspaceSpec
 from boba.sandbox.argv import ZygoteArgv
 from boba.stand.shell import ShellRun
 from boba.stand.zygote import ProcTree, SandboxStand, ZygoteStand
 from boba.workspace.binaries import SandboxBinary, TrustedBinaries
-from boba.workspace.launcher import MountingConfig
+from boba.workspace.launcher import (
+    ImageMountPoint,
+    LauncherChain,
+    LauncherExit,
+    LauncherMode,
+    LayerSources,
+    MountingConfig,
+    ResourceLimits,
+)
 
 
 class HostNamespace:
@@ -133,41 +137,48 @@ class PointFlapper:
             time.sleep(self.PAUSE_SEC)
 
 
-class StorageRace:
-    """Операции хранилища образов, пока точка вне вида мигает."""
+class ChainRace:
+    """Старты цепочки лаунчера над образом, пока точка вне вида мигает.
 
-    KEY: ClassVar[str] = "7/t1/upload/race.txt"
+    Каждая операция — полный старт внешнего слоя: тот самый шаг, на котором
+    старый вид с корнем хоста падал на снятой точке. Сбой — любой код выхода,
+    кроме OK.
+    """
+
+    REL: ClassVar[str] = "race.txt"
+    MOUNT_DIR: ClassVar[str] = "/tmp"  # noqa: S108 — внутри слоя цепочки
+    PAYLOAD: ClassVar[bytes] = b"race\n"
+    DETAIL_CHARS: ClassVar[int] = 300
 
     def __init__(self, work: Path, flapper: PointFlapper) -> None:
         images = work / "ws"
         images.mkdir(exist_ok=True)
-        config = LocalStorageConfig(
-            kind="image",
-            mount_dir="/tmp",  # noqa: S108 — внутри слоя цепочки
-            workspace=WorkspaceSpec.model_validate(
-                {
-                    "template": SandboxStand.mkfs_template(work),
-                    "mount": f"{images}/{{user_id}}.ext4:/workspace",
-                }
-            ),
-            op_timeout_sec=60,
-            mounting=MountingConfig(
-                mount_wait_sec=10.0,
-                mount_poll_sec=0.01,
-                shutdown_wait_sec=5.0,
-                lock_wait_sec=30.0,
-                copy_chunk_bytes=1 << 16,
-            ),
-            binaries=TrustedBinaries(dirs=tuple(SandboxStand.bin_dirs())),
-            interpreter=AppLayers.interpreter(),
+        self._image = str(images / "7.ext4")
+        self._template = SandboxStand.mkfs_template(work)
+        mounting = MountingConfig(
+            mount_wait_sec=10.0,
+            mount_poll_sec=0.01,
+            shutdown_wait_sec=5.0,
+            lock_wait_sec=30.0,
+            copy_chunk_bytes=1 << 16,
         )
-        self._client = ImageStorageClient(config)
+        self._chain = LauncherChain(
+            AppLayers.interpreter(),
+            TrustedBinaries(dirs=tuple(SandboxStand.bin_dirs())),
+            mounting.to_options(),
+        )
         self._flapper = flapper
         self._starts = 0
         self._failures: list[str] = []
 
     async def run(self, seconds: float, workers: int) -> RaceReport:
-        await self._client.upload_stream(self.KEY, self._source())
+        code, detail = await self._launch(LauncherMode.WRITE, self.PAYLOAD)
+        if code != LauncherExit.OK:
+            msg = (
+                f"race: write of {self.REL} into {self._image} "
+                f"exited with {code}: {detail}"
+            )
+            raise SystemExit(msg)
 
         self._flapper.start()
         deadline = time.monotonic() + seconds
@@ -190,14 +201,37 @@ class StorageRace:
     async def _stat_until(self, deadline: float) -> None:
         while time.monotonic() < deadline:
             self._starts += 1
-            try:
-                await self._client.stat(self.KEY)
-            except StorageError as exc:
-                self._failures.append(str(exc)[:300])
+            code, detail = await self._launch(LauncherMode.STAT, b"")
+            if code != LauncherExit.OK:
+                self._failures.append(f"stat exited with {code}: {detail}")
 
-    @staticmethod
-    async def _source() -> AsyncIterator[bytes]:
-        yield b"race\n"
+    async def _launch(self, mode: LauncherMode, payload: bytes) -> tuple[int, str]:
+        argv = self._chain.argv(
+            images=[(self._image, ImageMountPoint.under(self.MOUNT_DIR, self._image))],
+            ro_images=(),
+            template=self._template,
+            op=[mode.value, self.REL],
+            limits=ResourceLimits(),
+            pass_fds=(),
+            nested=LayerSources(ro=(), rw=()),
+            network=False,
+            replace=False,
+        )
+        proc = await asyncio.create_subprocess_exec(
+            *argv,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, err = await proc.communicate(payload)
+
+        code = proc.returncode
+        if code is None:
+            msg = f"race: {mode.value} of {self.REL} ended without an exit code"
+            raise SystemExit(msg)
+
+        detail = err.decode(errors="replace").strip()[: self.DETAIL_CHARS]
+        return code, detail
 
 
 @dataclass(frozen=True)
@@ -316,7 +350,7 @@ class LayerCli:
 
         if args.command == "race":
             flapper = PointFlapper(args.image, args.point)
-            race = StorageRace(args.work, flapper)
+            race = ChainRace(args.work, flapper)
             report = await race.run(args.seconds, args.workers)
             return json.dumps(asdict(report))
 

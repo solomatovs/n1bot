@@ -40,9 +40,6 @@ from boba.stand.zygote import (
 from boba.workspace.binaries import SandboxBinary, TrustedBinaries
 from boba.workspace.launcher import ImageMountPoint, LayerPath, MountingConfig
 
-HERE = Path(__file__).resolve().parent
-LAYER_SCRIPT = HERE / "launcher_layer.py"
-
 needs_chain = pytest.mark.failif(
     not ROOTFS_IMAGE.exists()
     or not SandboxStand.FUSE2FS.exists()
@@ -176,10 +173,6 @@ def section(zygote_stand: ZygoteStand) -> Iterator[str]:
     yield f"view-{uuid4().hex[:8]}"
 
     zygote_stand.stop()
-
-
-def _host_points() -> list[str]:
-    return MountTable(os.getpid()).points()
 
 
 @needs_chain
@@ -420,6 +413,8 @@ class TestStorageLayer:
 class PrivateLayer:
     """Слой теста для опытов с точками и ссылками: хост их не видит."""
 
+    SCRIPT: ClassVar[Path] = Path(__file__).resolve().parent / "launcher_layer.py"
+
     def __init__(self, tmp_path: Path) -> None:
         self._point = tmp_path / "pt"
         self._point.mkdir()
@@ -428,6 +423,7 @@ class PrivateLayer:
         self._image = Path(SandboxStand.mkfs_template(flap))
         self._mount = PrivateImageMount(self._image, self._point)
         self._host = os.stat("/proc/self/ns/mnt").st_ino
+        self._host_table = MountTable(os.getpid())
 
     def run(self, command: Sequence[str]) -> dict[str, Any]:
         """Скрипт слоя с аргументами command; итог — его JSON."""
@@ -435,7 +431,7 @@ class PrivateLayer:
         argv = self._mount.racing(
             [
                 sys.executable,
-                str(LAYER_SCRIPT),
+                str(self.SCRIPT),
                 "--host-mntns",
                 str(self._host),
                 *command,
@@ -462,7 +458,7 @@ class PrivateLayer:
     def require_unseen(self) -> None:
         """Точки слоя хост не видит ни до опыта, ни после."""
         seen: list[str] = []
-        for point in _host_points():
+        for point in self._host_table.points():
             if point.startswith(str(self._point.parent)):
                 seen.append(point)
 
