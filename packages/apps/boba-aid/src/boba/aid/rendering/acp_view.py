@@ -32,19 +32,27 @@ from __future__ import annotations
 
 import logging
 from abc import abstractmethod
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any, Protocol, TypeAlias
 
 import mcp_types as mt
 from acp.experimental.v2 import schema
 from chainlit.step import Step
+from mcp.shared.exceptions import MCPError
 from pydantic import TypeAdapter, ValidationError
 
 from boba.agent.tools import AskUserQuestionTool
 from boba.aid.rendering.chat_view import ChatView, StepText
 from boba.aid.rendering.question import QuestionCard, QuestionCards
 from boba.aid.rendering.tool import AppMeta, ToolAppView
-from boba.mcp_client.client import JournalLinks, McpServerApps
+from boba.mcp_client.client import (
+    JournalLinks,
+    McpCaller,
+    McpClientError,
+    McpDescription,
+    McpServerApps,
+    McpServers,
+)
 from boba.messaging import JournalOpened
 from boba.toolkit.calls import CallViews
 from boba.toolkit.chain import StreamPlanError
@@ -67,8 +75,10 @@ from boba.transport.acp.protocol import (
 
 __all__ = [
     "JournalRegistry",
+    "ServerCards",
     "SessionUpdate",
     "SessionUpdateCodec",
+    "ToolCards",
     "ToolMedia",
     "UpdateView",
 ]
@@ -125,107 +135,183 @@ class SessionUpdateCodec:
         return self._adapter.validate_python(raw)
 
 
-class ToolMedia:
-    """Что лента знает об инструментах серверов профиля по полным именам:
-    типы содержимого аргументов (по ним рисуется вход шага: sql, bash, json),
-    вложенные вызовы, которые объявил сервер (по ним вызов рисуется шагами
-    узлов), ссылки на журнал вызовов сервера (по ним у шага кнопка
-    журнала) и приложения MCP Apps инструментов сервера с секцией apps (по
-    ним у вызова карточка приложения). Один объект на процесс; инструменты
-    называет сборка приёмника по портам серверов профиля."""
+class ToolCards(Protocol):
+    """Откуда лента треда берёт карточки инструментов и описания серверов
+    профиля. Реализация — ServerCards: порты McpServers владельца треда."""
 
-    def __init__(self) -> None:
+    @abstractmethod
+    async def card(self, server: str, tool: str) -> mt.Tool | None:
+        """Карточка инструмента tool сервера server; None — такого у
+        сервера нет либо сервер не ответил."""
+
+    @abstractmethod
+    async def described(self, server: str) -> McpDescription | None:
+        """Описание сервера server; None — сервер не назван либо не
+        ответил."""
+
+    @abstractmethod
+    def apps(self, server: str) -> McpServerApps | None:
+        """Секция apps сервера server; None — его приложения не рисуются."""
+
+
+class ServerCards(ToolCards):
+    """Реализация ToolCards портами McpServers пользователя, чей это тред.
+
+    Создаётся на тред тем, кто рисует его ленту (приёмник агента вкладки,
+    рендерер шины треда). Карточку и описание даёт порт сервера через свой
+    кэш ответов: свежие по сроку сервера и из списка только этого
+    пользователя — списки с cacheScope private у разных пользователей не
+    смешиваются. Сервер, который не ответил, — вызов рисуется без карточки,
+    причина в логе.
+    """
+
+    def __init__(self, servers: McpServers, caller: McpCaller) -> None:
+        self._servers = servers
+        self._caller = caller
+
+    async def card(self, server: str, tool: str) -> mt.Tool | None:
+        if not self._servers.served(server):
+            return None
+
+        port = await self._servers.port(server, self._caller)
+        try:
+            listed = await port.tools(McpServers.OWN)
+        except (McpClientError, MCPError) as exc:
+            logger.warning(
+                "mcp server %s gave no tool list to %s, tool %s is drawn "
+                "without its card: %s",
+                server,
+                self._caller.login,
+                tool,
+                exc,
+            )
+            return None
+
+        for listed_tool in listed.tools:
+            if listed_tool.name == tool:
+                return listed_tool
+
+        return None
+
+    async def described(self, server: str) -> McpDescription | None:
+        if not self._servers.served(server):
+            return None
+
+        port = await self._servers.port(server, self._caller)
+        try:
+            return await port.described(McpServers.OWN)
+        except (McpClientError, MCPError) as exc:
+            logger.warning(
+                "mcp server %s gave no description to %s, its calls are drawn "
+                "without nested calls and journals: %s",
+                server,
+                self._caller.login,
+                exc,
+            )
+            return None
+
+    def apps(self, server: str) -> McpServerApps | None:
+        return self._servers.apps(server)
+
+
+class ToolMedia:
+    """Что лента треда знает об инструментах серверов профиля по полным
+    именам: типы содержимого аргументов (по ним рисуется вход шага: sql,
+    bash, json), вложенные вызовы, которые объявил сервер (по ним вызов
+    рисуется шагами узлов), адреса каналов журнала вызовов сервера (по ним
+    у шага кнопка журнала) и приложения MCP Apps инструментов сервера с
+    секцией apps (по ним у вызова карточка приложения).
+
+    Создаётся на тред вместе с его лентой (UpdateView); своих списков не
+    держит: карточку и описание сервера всякий раз даёт источник карточек
+    треда (ToolCards).
+    """
+
+    def __init__(self, cards: ToolCards) -> None:
+        self._cards = cards
         self._views = CallViews()
         self._names = McpToolNames()
         self._app_meta = AppMeta()
-        self._media: dict[str, Mapping[str, str]] = {}
-        self._nested: dict[str, NestedCallsFeature] = {}
-        self._journals: dict[str, JournalLinks] = {}
-        self._apps: dict[str, ToolAppView] = {}
 
-    def shown(
-        self,
-        server: str,
-        tools: Iterable[mt.Tool],
-        nested: NestedCallsFeature | None,
-        journal: JournalLinks | None,
-        apps: McpServerApps | None,
-    ) -> None:
-        """Типы аргументов инструментов tools сервера server под полными
-        именами, вложенные вызовы и адреса журнала вызовов, объявленные
-        сервером, и приложения его инструментов по секции apps; None —
-        сервер их не объявил либо секции apps у него нет."""
-        for tool in tools:
-            name = self._names.full(server, tool.name)
-            self._media[name] = self._views.media_of(tool.input_schema)
-            if apps is None:
-                continue
+    async def card(self, name: str) -> mt.Tool | None:
+        """Карточка инструмента по полному имени; None — имя не инструмента
+        сервера либо сервер его не знает."""
+        owner = self._names.parse(name)
+        if owner is None:
+            return None
 
-            try:
-                config = self._app_meta.of(tool)
-            except ValidationError as exc:
-                logger.warning(
-                    "mcp server %s: tool %s carries _meta.ui that is not an MCP "
-                    "Apps tool config, its calls are drawn without the app: %s",
-                    server,
-                    tool.name,
-                    exc,
-                )
-                continue
+        return await self._cards.card(owner.server, owner.tool)
 
-            if config is None:
-                continue
+    def media(self, card: mt.Tool) -> Mapping[str, str]:
+        """Типы аргументов инструмента по его карточке."""
+        return self._views.media_of(card.input_schema)
 
-            if config.resource_uri is None:
-                continue
+    def app(self, name: str, card: mt.Tool) -> ToolAppView | None:
+        """Приложение MCP Apps инструмента name по его карточке card; None —
+        у сервера нет секции apps либо у инструмента нет
+        _meta.ui.resourceUri."""
+        owner = self._names.parse(name)
+        if owner is None:
+            return None
 
-            self._apps[name] = ToolAppView(
-                server=server,
-                tool=tool,
-                resource_uri=config.resource_uri,
-                sandbox_url=str(apps.sandbox_url),
+        apps = self._cards.apps(owner.server)
+        if apps is None:
+            return None
+
+        try:
+            config = self._app_meta.of(card)
+        except ValidationError as exc:
+            logger.warning(
+                "mcp server %s: tool %s carries _meta.ui that is not an MCP "
+                "Apps tool config, its calls are drawn without the app: %s",
+                owner.server,
+                card.name,
+                exc,
             )
-
-        if journal is not None:
-            self._journals[server] = journal
-
-        if nested is None:
-            return
-
-        self._nested[self._names.full(server, nested.tool)] = nested
-
-    def journal(self, server: str) -> JournalLinks | None:
-        """Ссылки на журнал вызовов сервера; None — сервер журнала не
-        объявил."""
-        return self._journals.get(server)
-
-    def journal_address(self, server: str, uri: str) -> JournalAddress | None:
-        """Адрес журнала вызова по ссылке uri на канал журнала сервера
-        server; None — сервер журнала не объявил либо ссылка не на журнал."""
-        uris = self._journals.get(server)
-        if uris is None:
             return None
 
-        read = uris.address(uri)
-        if read is None:
+        if config is None:
             return None
 
-        return JournalAddress(server=server, run=read.run, call=read.node)
+        if config.resource_uri is None:
+            return None
 
-    def of(self, name: str) -> Mapping[str, str] | None:
-        """Типы аргументов инструмента; None — инструмент серверам неизвестен."""
-        return self._media.get(name)
+        return ToolAppView(
+            server=owner.server,
+            tool=card,
+            resource_uri=config.resource_uri,
+            sandbox_url=str(apps.sandbox_url),
+        )
 
-    def app(self, name: str) -> ToolAppView | None:
-        """Приложение MCP Apps инструмента name; None — у сервера нет секции
-        apps либо у инструмента нет _meta.ui.resourceUri."""
-        return self._apps.get(name)
-
-    def nested(self, name: str) -> NestedCallsFeature | None:
+    async def nested(self, name: str) -> NestedCallsFeature | None:
         """Объявление вложенных вызовов для вызова инструмента name; None —
         сервер его не объявил либо name не его инструмент со вложенными
         вызовами."""
-        return self._nested.get(name)
+        owner = self._names.parse(name)
+        if owner is None:
+            return None
+
+        described = await self._cards.described(owner.server)
+        if described is None:
+            return None
+
+        nested = described.nested_calls()
+        if nested is None:
+            return None
+
+        if nested.tool != owner.tool:
+            return None
+
+        return nested
+
+    async def links(self, server: str) -> JournalLinks | None:
+        """Ссылки на журнал вызовов сервера; None — сервер журнала не
+        объявил."""
+        described = await self._cards.described(server)
+        if described is None:
+            return None
+
+        return described.links()
 
 
 class JournalRegistry(Protocol):
@@ -516,7 +602,7 @@ class UpdateView:
             self._steps[call_id] = await self._view.question_asked(card, call_id)
             return None
 
-        group = self._nodes_of(name, call_id, args)
+        group = await self._nodes_of(name, call_id, args)
         if group is None:
             await self._step_of(name, args, call_id)
             return None
@@ -550,14 +636,19 @@ class UpdateView:
         """Шаг нового вызова инструмента name с аргументами args под ключом key."""
         await self._close_thinking()
         self._answer_id = None
-        step = await self._view.tool_started(
-            name, args, key, self._media.of(name), self._media.app(name)
-        )
+        media: Mapping[str, str] | None = None
+        app: ToolAppView | None = None
+        card = await self._media.card(name)
+        if card is not None:
+            media = self._media.media(card)
+            app = self._media.app(name, card)
+
+        step = await self._view.tool_started(name, args, key, media, app)
         self._steps[key] = step
 
         return step
 
-    def _nodes_of(
+    async def _nodes_of(
         self, name: str, call_id: str, args: Mapping[str, Any]
     ) -> tuple[NestedCallsFeature, Sequence[DagNode]] | None:
         """Объявление сервера и узлы вызова call_id инструмента
@@ -565,7 +656,7 @@ class UpdateView:
         называет ретранслятор; None — сервер вложенных вызовов для name не
         объявил либо вызов не по объявленной форме, и он рисуется одним
         шагом."""
-        nested = self._media.nested(name)
+        nested = await self._media.nested(name)
         if nested is None:
             return None
 
@@ -662,7 +753,7 @@ class UpdateView:
         journals: Mapping[str, JournalAddress] = {}
         reply = self._reply(update)
         if reply is not None:
-            _, journals = self._journaled(reply, name)
+            _, journals = await self._journaled(reply, name)
             try:
                 replied = NestedCallsOutput.model_validate(reply.structured_content)
             except ValidationError as exc:
@@ -712,7 +803,7 @@ class UpdateView:
         call_id = update.tool_call_id
         reply = self._reply(update)
         if reply is not None:
-            shown, journals = self._journaled(reply, name)
+            shown, journals = await self._journaled(reply, name)
             # журналов несколько только у связки: любой из них — чужого узла
             journal: JournalAddress | None = None
             if len(journals) == 1:
@@ -754,7 +845,7 @@ class UpdateView:
 
         await self._view.tool_finished(step, reply, key, elapsed_ms)
 
-    def _journaled(
+    async def _journaled(
         self, reply: mt.CallToolResult, name: str
     ) -> tuple[mt.CallToolResult, Mapping[str, JournalAddress]]:
         """Ответ инструмента name без ссылок на каналы журнала и адреса
@@ -764,6 +855,10 @@ class UpdateView:
         if owner is None:
             return reply, {}
 
+        links = await self._media.links(owner.server)
+        if links is None:
+            return reply, {}
+
         shown: list[mt.ContentBlock] = []
         journals: dict[str, JournalAddress] = {}
         for block in reply.content:
@@ -771,12 +866,14 @@ class UpdateView:
                 shown.append(block)
                 continue
 
-            address = self._media.journal_address(owner.server, str(block.uri))
-            if address is None:
+            read = links.address(str(block.uri))
+            if read is None:
                 shown.append(block)
                 continue
 
-            journals[address.call] = address
+            journals[read.node] = JournalAddress(
+                server=owner.server, run=read.run, call=read.node
+            )
 
         return reply.model_copy(update={"content": shown}), journals
 

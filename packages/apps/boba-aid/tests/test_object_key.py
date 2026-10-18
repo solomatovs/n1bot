@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from boba.canvas.keys import ObjectKey, ThreadDir, WorkspaceMount
+from boba.canvas.keys import ObjectKey, ThreadDir, WorkspaceKey, WorkspaceMount
 
 USER = "7"
 THREAD = "11111111-1111-1111-1111-111111111111"
@@ -55,28 +55,32 @@ class TestFromWorkspace:
 
     def test_absolute_sandbox_path(self) -> None:
         path = f"{MOUNT}/{THREAD}/upload/{NAME}"
-        key = ObjectKey.from_workspace(USER, THREAD, path)
+        key = WorkspaceKey.located(MOUNT, USER, THREAD, path)
         if key.render() != f"{USER}/{THREAD}/upload/{NAME}":
             raise AssertionError('key.render() == f"{USER}/{THREAD}/upload/{NAME}"')
 
     def test_path_without_mount_prefix(self) -> None:
-        key = ObjectKey.from_workspace(USER, THREAD, f"{THREAD}/upload/{NAME}")
+        key = WorkspaceKey.located(MOUNT, USER, THREAD, f"{THREAD}/upload/{NAME}")
         if key.name != NAME:
             raise AssertionError("key.name == NAME")
 
     def test_round_trip_with_in_workspace(self) -> None:
         built = ObjectKey.build(USER, THREAD, NAME, "el-1")
-        if ObjectKey.from_workspace(USER, THREAD, built.in_workspace()) != built:
-            raise AssertionError("ObjectKey.from_workspace(USER, THREAD, built.in_wor…")
+        located = WorkspaceKey.located(MOUNT, USER, THREAD, built.in_workspace())
+        if located.render() != built.render():
+            raise AssertionError("the located key is the built one")
+
+        if located.in_workspace() != built.in_workspace():
+            raise AssertionError("the located key keeps the path in the workspace")
 
     def test_file_outside_upload_dir_rejected(self) -> None:
         with pytest.raises(ValueError, match="attachments dir"):
-            ObjectKey.from_workspace(USER, THREAD, f"{MOUNT}/{NAME}")
+            WorkspaceKey.located(MOUNT, USER, THREAD, f"{MOUNT}/{NAME}")
 
     def test_error_names_the_expected_path(self) -> None:
         """По тексту ошибки агент понимает, куда положить файл."""
         with pytest.raises(ValueError, match="attachments dir") as failure:
-            ObjectKey.from_workspace(USER, THREAD, f"{MOUNT}/{NAME}")
+            WorkspaceKey.located(MOUNT, USER, THREAD, f"{MOUNT}/{NAME}")
         wanted = f"{MOUNT}/{THREAD}/{{mermaid|upload}}/{NAME}"
         if wanted not in str(failure.value):
             raise AssertionError(f"текст ошибки не подсказывает путь: {wanted}")
@@ -84,22 +88,22 @@ class TestFromWorkspace:
     def test_foreign_thread_rejected(self) -> None:
         other = "22222222-2222-2222-2222-222222222222"
         with pytest.raises(ValueError, match="attachments dir"):
-            ObjectKey.from_workspace(USER, THREAD, f"{MOUNT}/{other}/upload/{NAME}")
+            WorkspaceKey.located(MOUNT, USER, THREAD, f"{MOUNT}/{other}/upload/{NAME}")
 
     def test_parent_traversal_rejected(self) -> None:
         with pytest.raises(ValueError, match="attachments dir"):
-            ObjectKey.from_workspace(USER, THREAD, f"{MOUNT}/{THREAD}/upload/..")
+            WorkspaceKey.located(MOUNT, USER, THREAD, f"{MOUNT}/{THREAD}/upload/..")
 
     def test_nested_path_rejected(self) -> None:
         with pytest.raises(ValueError, match="attachments dir"):
-            ObjectKey.from_workspace(
-                USER, THREAD, f"{MOUNT}/{THREAD}/upload/sub/{NAME}"
+            WorkspaceKey.located(
+                MOUNT, USER, THREAD, f"{MOUNT}/{THREAD}/upload/sub/{NAME}"
             )
 
     def test_bare_name_rejected(self) -> None:
         """Голое имя двусмысленно: рядом с cwd агента лежит другой файл."""
         with pytest.raises(ValueError, match="attachments dir"):
-            ObjectKey.from_workspace(USER, THREAD, NAME)
+            WorkspaceKey.located(MOUNT, USER, THREAD, NAME)
 
 
 class TestMermaidDir:
@@ -130,7 +134,7 @@ class TestMermaidDir:
 
     def test_from_workspace_accepts_mermaid_path(self) -> None:
         path = f"{MOUNT}/{THREAD}/mermaid/{self.SPEC}"
-        key = ObjectKey.from_workspace(USER, THREAD, path)
+        key = WorkspaceKey.located(MOUNT, USER, THREAD, path)
         if key.dir != ThreadDir.MERMAID:
             raise AssertionError("key.dir == ThreadDir.MERMAID")
         if key.render() != f"{USER}/{THREAD}/mermaid/{self.SPEC}":
@@ -147,6 +151,6 @@ class TestMermaidDir:
 
     def test_unknown_dir_rejected_in_workspace_path(self) -> None:
         with pytest.raises(ValueError, match="attachments dir"):
-            ObjectKey.from_workspace(
-                USER, THREAD, f"{MOUNT}/{THREAD}/other/{self.SPEC}"
+            WorkspaceKey.located(
+                MOUNT, USER, THREAD, f"{MOUNT}/{THREAD}/other/{self.SPEC}"
             )

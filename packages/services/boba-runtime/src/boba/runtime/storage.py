@@ -31,7 +31,7 @@ import aiofiles
 import aiofiles.os
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from boba.canvas.keys import DirKey, ObjectKey, ThreadDir
+from boba.canvas.keys import DirKey, ObjectKey, ThreadDir, WorkspaceMount
 from boba.canvas.storage import (
     FileStat,
     LauncherRead,
@@ -183,6 +183,16 @@ class StorageClient(ABC):
     async def close(self) -> None:
         """Хранилище без долгоживущих ресурсов: закрывать нечего."""
         return
+
+    async def workspace(self, user_id: str, thread_id: str) -> str:
+        """Каталог workspace, под которым песочница видит файлы треда: у
+        хранилища процесса — точка workspace его песочницы; хранилище на
+        сервере файлов отвечает каталогом, который объявил сервер.
+
+        Ошибки:
+        StorageError — каталог узнать негде.
+        """
+        return WorkspaceMount.path()
 
     @staticmethod
     def _uploaded(object_key: str) -> dict[str, Any]:

@@ -9,7 +9,14 @@ import os
 from enum import StrEnum
 from typing import ClassVar, Self
 
-from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    ValidationInfo,
+    field_validator,
+)
 
 from boba.identity.context import PathSegment
 from boba.toolkit.failure import ValidationText
@@ -20,6 +27,7 @@ __all__ = [
     "KeySegment",
     "ObjectKey",
     "ThreadDir",
+    "WorkspaceKey",
     "WorkspaceMount",
     "WorkspaceRoot",
 ]
@@ -33,11 +41,13 @@ class ThreadDir(StrEnum):
 
 
 class WorkspaceMount:
-    """Точка рабочего каталога чата в песочнице; значение приходит из профиля.
+    """Точка рабочего каталога в песочнице процесса, который исполняет
+    инструменты; значение приходит из его профиля песочницы.
 
-    Ключи вложений строятся по ней, поэтому она нужна и вне запуска — в
-    отрисовке и в инструментах. Настраивается один раз при загрузке
-    инструментов; обращение до настройки — ошибка, а не тихий дефолт.
+    Настраивается один раз при загрузке инструментов процесса (сервис,
+    тело инструмента); обращение до настройки — ошибка, а не тихий дефолт.
+    Клиент сервиса её не настраивает: каталог workspace сервера он берёт из
+    описания сервера, и ключ файла несёт его сам (WorkspaceKey).
     """
 
     _PATH: ClassVar[str] = ""
@@ -86,6 +96,7 @@ class KeyField(StrEnum):
     THREAD_ID = "thread_id"
     DIR = "dir"
     NAME = "name"
+    WORKSPACE = "workspace"
 
 
 class KeySegment(BaseModel):
@@ -95,11 +106,16 @@ class KeySegment(BaseModel):
 
     SEPARATOR: ClassVar[str] = PathSegment.SEPARATOR
     SEGMENT: ClassVar[PathSegment] = PathSegment()
+    PATHS: ClassVar[frozenset[str]] = frozenset()
+    """Поля-пути, а не сегменты: их сегментом не проверяют."""
 
     @field_validator("*", mode="after")
     @classmethod
-    def _segment_is_safe(cls, value: object) -> object:
+    def _segment_is_safe(cls, value: object, info: ValidationInfo) -> object:
         if not isinstance(value, str):
+            return value
+
+        if info.field_name in cls.PATHS:
             return value
 
         return cls.SEGMENT.checked(value, "key segment")
@@ -156,49 +172,6 @@ class ObjectKey(KeySegment):
             msg = f"invalid object_key {raw!r}: {ValidationText.of(e)}"
             raise ValueError(msg) from e
 
-    @classmethod
-    def from_workspace(cls, user_id: object, thread_id: object, path: str) -> Self:
-        """Ключ по пути из песочницы; вне каталогов треда — ValueError."""
-        rel = path.strip()
-
-        mount = cls.SEPARATOR.join((WorkspaceMount.path(), ""))
-        if rel.startswith(mount):
-            rel = rel[len(mount) :]
-
-        parts = rel.split(cls.SEPARATOR)
-        if len(parts) != cls.THREAD_SEGMENTS:
-            raise ValueError(cls._outside(thread_id, path))
-
-        order = (KeyField.THREAD_ID, KeyField.DIR, KeyField.NAME)
-        fields: dict[str, str] = dict(zip(order, parts, strict=True))
-        fields[KeyField.USER_ID] = str(user_id)
-
-        try:
-            key = cls.model_validate(fields)
-        except ValidationError as e:
-            raise ValueError(cls._outside(thread_id, path)) from e
-
-        if key.thread_id != str(thread_id):
-            raise ValueError(cls._outside(thread_id, path))
-
-        return key
-
-    @classmethod
-    def _outside(cls, thread_id: object, path: str) -> str:
-        """Текст ошибки называет ожидаемый путь."""
-        name = os.path.basename(path.strip())
-        if not name:
-            name = "<file name>"
-
-        dirs = "|".join(sorted(ThreadDir))
-        expected = cls.SEPARATOR.join(
-            (WorkspaceMount.path(), str(thread_id), f"{{{dirs}}}", name)
-        )
-        return (
-            f"file is outside the thread attachments dir: {path!r}; "
-            f"expected {expected!r}"
-        )
-
     def render(self) -> str:
         return self.SEPARATOR.join((self.user_id, self.in_thread()))
 
@@ -244,6 +217,67 @@ class ObjectKey(KeySegment):
         while len(head.encode("utf-8")) > room:
             head = head[:-1]
         return head + tail
+
+
+class WorkspaceKey(ObjectKey):
+    """Ключ файла треда вместе с каталогом workspace, под которым его видит
+    песочница сервера файлов треда: путь показа (in_workspace) — под этим
+    каталогом, а не под точкой процесса (WorkspaceMount).
+
+    Строит его область канваса (CanvasScope) по пути в workspace либо по
+    имени файла треда; ключ хранилища (render) тот же, что у ObjectKey.
+    """
+
+    PATHS: ClassVar[frozenset[str]] = frozenset({KeyField.WORKSPACE.value})
+
+    workspace: str = Field(min_length=1)
+
+    @classmethod
+    def located(
+        cls, workspace: str, user_id: object, thread_id: object, path: str
+    ) -> Self:
+        """Ключ по пути в workspace треда; вне каталогов треда — ValueError."""
+        rel = path.strip()
+
+        mount = cls.SEPARATOR.join((workspace, ""))
+        if rel.startswith(mount):
+            rel = rel[len(mount) :]
+
+        parts = rel.split(cls.SEPARATOR)
+        if len(parts) != cls.THREAD_SEGMENTS:
+            raise ValueError(cls._outside(workspace, thread_id, path))
+
+        order = (KeyField.THREAD_ID, KeyField.DIR, KeyField.NAME)
+        fields: dict[str, str] = dict(zip(order, parts, strict=True))
+        fields[KeyField.USER_ID] = str(user_id)
+        fields[KeyField.WORKSPACE] = workspace
+
+        try:
+            key = cls.model_validate(fields)
+        except ValidationError as e:
+            raise ValueError(cls._outside(workspace, thread_id, path)) from e
+
+        if key.thread_id != str(thread_id):
+            raise ValueError(cls._outside(workspace, thread_id, path))
+
+        return key
+
+    @classmethod
+    def _outside(cls, workspace: str, thread_id: object, path: str) -> str:
+        """Текст ошибки называет ожидаемый путь."""
+        name = os.path.basename(path.strip())
+        if not name:
+            name = "<file name>"
+
+        dirs = "|".join(sorted(ThreadDir))
+        expected = cls.SEPARATOR.join((workspace, str(thread_id), f"{{{dirs}}}", name))
+        return (
+            f"file is outside the thread attachments dir: {path!r}; "
+            f"expected {expected!r}"
+        )
+
+    def in_workspace(self) -> str:
+        return self.SEPARATOR.join((self.workspace, self.in_thread()))
 
 
 class DirKey(KeySegment):
