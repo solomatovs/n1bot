@@ -3,6 +3,9 @@
 Клиент работает с любым сервером стандарта MCP — редакции 2026-07-28 и
 прежних с рукопожатием initialize: версию согласует штатная политика SDK
 (проба server/discover, при отказе сервера прежней редакции — initialize).
+С сервером 2026-07-28 у клиента нет состояния сверх того, что разрешает
+спецификация: версия сервера, кэш ответов по правилам caching и то, что
+живёт один запрос; личность клиента едет в каждом запросе.
 Клиент читает списки инструментов, ресурсов, шаблонов и промптов, исполняет
 tools/call, resources/read, prompts/get и completion/complete и держит
 потоки subscriptions/listen (они есть только в 2026-07-28), отдавая ответ
@@ -15,18 +18,19 @@ HTTP, SSE или stdio. Способ входа — свойство запис�
 проход страницы входа без человека (UnattendedLogin).
 
 Ошибки:
-McpClientError — сервер недоступен, не согласовал версию протокола, не отдал
-    список инструментов, отказал во входе, не ответил на запрос, забыл
-    сессию клиента, ответил не по схеме, отказал в подписке либо порт позвали
-    до open().
+McpClientError — сервер недоступен, не согласовал версию протокола,
+    отказал во входе, не ответил на запрос, забыл сессию клиента, ответил не
+    по схеме либо отказал в подписке.
 MCPError (mcp.shared.exceptions) — сервер ответил на запрос ошибкой MCP.
 """
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
+import time
 from abc import abstractmethod
 from collections import OrderedDict
 from collections.abc import (
@@ -34,20 +38,28 @@ from collections.abc import (
     AsyncIterator,
     Awaitable,
     Callable,
+    Iterator,
     Mapping,
     Sequence,
 )
 from contextlib import (
     AbstractAsyncContextManager,
     asynccontextmanager,
+    contextmanager,
     nullcontext,
     suppress,
 )
+from contextvars import ContextVar
 from dataclasses import dataclass, replace
+from enum import StrEnum
+from functools import partial
+from http import HTTPStatus
 from typing import Annotated, Any, ClassVar, Literal, Protocol, Self, TypeVar
 from urllib.parse import quote, urlsplit, urlunsplit
 from uuid import uuid4
 
+import anyio
+import anyio.abc
 import httpx2
 import mcp.types as mt
 from mcp import ClientSession, StdioServerParameters
@@ -56,12 +68,21 @@ from mcp.client.auth import OAuthClientProvider, TokenStorage
 from mcp.client.auth.extensions.identity_assertion import (
     IdentityAssertionOAuthProvider,
 )
+from mcp.client.caching import (
+    MAX_TTL_MS,
+    CacheEntry,
+    CacheKey,
+    ClientResponseCache,
+    InMemoryResponseCacheStore,
+)
 from mcp.client.session import IncomingMessage, MessageHandlerFnT
 from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import MCP_SESSION_ID, streamable_http_client
 from mcp.client.subscriptions import (
     ListenNotSupportedError,
+    ListenRoute,
+    ServerEvent,
     Subscription,
     SubscriptionLost,
     listen,
@@ -75,8 +96,18 @@ from mcp.shared.auth import (
     OAuthClientMetadata,
     OAuthToken,
 )
+from mcp.shared.dispatcher import (
+    CallOptions,
+    Dispatcher,
+    OnNotify,
+    OnNotifyIntercept,
+    OnRequest,
+)
 from mcp.shared.exceptions import MCPError
+from mcp.shared.inbound import ERROR_CODE_HTTP_STATUS
+from mcp.shared.jsonrpc_dispatcher import JSONRPCDispatcher
 from mcp.shared.message import SessionMessage
+from mcp.shared.subscriptions import event_to_notification
 from mcp.shared.uri_template import InvalidUriTemplate, UriTemplate
 from mcp.types.version import KNOWN_PROTOCOL_VERSIONS, MODERN_PROTOCOL_VERSIONS
 from pydantic import (
@@ -95,7 +126,7 @@ from pydantic.alias_generators import to_camel
 from boba.auth.proxy import ProxyAssertions
 from boba.auth.signin import LoginField
 from boba.canvas.journal import StreamSlice
-from boba.canvas.keys import ObjectKey, WorkspaceMount
+from boba.canvas.keys import ObjectKey
 from boba.canvas.storage import (
     FileStat,
     OpenedStream,
@@ -142,6 +173,9 @@ FeatureModel = TypeVar("FeatureModel", bound=ServerFeature)
 
 ResultT = TypeVar("ResultT", bound=BaseModel)
 """Модель ответа сервера на запрос порта."""
+
+SentT = TypeVar("SentT")
+"""Ответ запроса, который порт шлёт сессией запроса."""
 
 Streams = tuple[ReadStream[SessionMessage | Exception], WriteStream[SessionMessage]]
 """Пара потоков сообщений транспорта MCP: чтение и запись."""
@@ -533,13 +567,17 @@ McpAuth = Annotated[
 ]
 
 
+ResponseHook = Callable[[httpx2.Response], Awaitable[None]]
+"""Наблюдатель ответов HTTP-клиента транспорта."""
+
+
 class Transport(Protocol):
     """Транспорт MCP-сервера: открывает потоки сообщений сессии."""
 
     @abstractmethod
-    def opened(self, refusals: HttpRefusals) -> AbstractAsyncContextManager[Streams]:
+    def opened(self, seen: ResponseHook) -> AbstractAsyncContextManager[Streams]:
         """Потоки сессии; открыты, пока открыт контекст. Транспорт HTTP
-        показывает ответы сервера refusals."""
+        показывает seen каждый ответ сервера."""
 
     @abstractmethod
     def on_behalf_of(self, caller: McpCaller) -> Transport:
@@ -553,7 +591,7 @@ class Transport(Protocol):
 class ErrorCauses:
     """Причины сбоя одной строкой: группа исключений anyio раскрывается до
     своих листьев, иначе в тексте остаётся «unhandled errors in a TaskGroup».
-    Создаётся соединением и портом McpToolServer."""
+    Создаётся соединением, учётом отказов и портом McpToolServer."""
 
     def text(self, error: BaseException) -> str:
         return "; ".join(self._leaves(error))
@@ -569,57 +607,97 @@ class ErrorCauses:
         return [f"{type(error).__name__}: {error}"]
 
 
-class HttpRefusals:
-    """Отказы HTTP одного подключения к серверу.
+class HttpRefusal:
+    """Отказ HTTP одного запроса к серверу: последний ответ POST этого
+    запроса со статусом от 400.
 
-    Создаётся соединением McpConnection на каждое открытие и ставится
-    транспортом HttpEndpoint наблюдателем ответов его HTTP-клиента.
+    Создаётся учётом отказов порта (HttpRefusals) на каждый запрос и на
+    согласование версии соединения и видит ответы только своего запроса.
     Библиотека mcp заменяет ответ с отказом (401, 403, 502) безликой ошибкой
-    протокола; по последнему отказу запроса POST транспорт возвращает в
-    текст ошибки адрес и статус. Отказ на GET не считается: им сервер без
-    потока уведомлений отвечает исправной сессии. К отказу добавляется
-    причина, которую назвал клиент (refused): так видно и статус, и что
-    именно сервер отверг. 404 на запрос с Mcp-Session-Id — сервер забыл
-    сессию (forgotten).
+    протокола; text() возвращает в текст ошибки адрес и статус. Отказ на
+    GET не считается: им сервер без потока уведомлений отвечает исправной
+    сессии. 404 на запрос с Mcp-Session-Id — сервер забыл сессию
+    (forgotten); 400 — отказ, по телу которого порт узнаёт в сервере
+    современной редакции сервер прежней (bad_request).
     """
 
-    FIRST_REFUSAL: ClassVar[int] = 400
-    FORGOTTEN: ClassVar[int] = 404
     REQUEST: ClassVar[str] = "POST"
 
-    def __init__(self) -> None:
+    def __init__(self, causes: ErrorCauses) -> None:
+        self._causes = causes
         self._last: str | None = None
+        self._bad_request = False
         self._forgotten = False
-        self._causes = ErrorCauses()
 
-    async def seen(self, response: httpx2.Response) -> None:
+    def seen(self, response: httpx2.Response) -> None:
         request = response.request
         if request.method != self.REQUEST:
             return
 
-        if response.status_code < self.FIRST_REFUSAL:
+        if response.status_code < HTTPStatus.BAD_REQUEST:
             self._last = None
+            self._bad_request = False
             return
 
-        if response.status_code == self.FORGOTTEN:
+        if response.status_code == HTTPStatus.NOT_FOUND:
             self._forgotten = MCP_SESSION_ID in request.headers
 
+        self._bad_request = response.status_code == HTTPStatus.BAD_REQUEST
         self._last = (
             f"{request.method} {request.url}: expected a reply of the MCP server, "
             f"got HTTP {response.status_code} {response.reason_phrase}"
         )
 
     def forgotten(self) -> bool:
-        """Сервер ответил 404 на запрос в своей сессии: сессии больше нет."""
+        """Сервер ответил запросу 404 в своей сессии: сессии больше нет."""
         return self._forgotten
 
-    def refused(self, error: BaseException) -> McpClientError | None:
-        """Отказ HTTP с причиной error; None — отказа не было."""
+    def bad_request(self) -> bool:
+        """Последний отказ запроса — 400."""
+        return self._bad_request
+
+    def text(self, error: BaseException) -> str:
+        """Причина error вместе с отказом HTTP запроса, если он был."""
+        causes = self._causes.text(error)
         last = self._last
         if last is None:
-            return None
+            return causes
 
-        return McpClientError(f"{last}; {self._causes.text(error)}")
+        return f"{last}; {causes}"
+
+
+class HttpRefusals:
+    """Учёт отказов HTTP подключений порта по запросам.
+
+    Создаётся портом McpToolServer; seen() транспорт HTTP ставит
+    наблюдателем ответов своего HTTP-клиента. Каждый запрос порта и каждое
+    согласование версии открывают свой отказ (watching) в переменной
+    контекста, а ответ на запрос HTTP-клиент разбирает в контексте того,
+    кто запрос отправил: отказ одного запроса не достаётся соседнему.
+    """
+
+    def __init__(self, label: str) -> None:
+        self._current: ContextVar[HttpRefusal | None] = ContextVar(
+            f"mcp-refusal {label}", default=None
+        )
+        self._causes = ErrorCauses()
+
+    async def seen(self, response: httpx2.Response) -> None:
+        refusal = self._current.get()
+        if refusal is None:
+            return
+
+        refusal.seen(response)
+
+    @contextmanager
+    def watching(self) -> Iterator[HttpRefusal]:
+        """Отказ запроса, который идёт, пока открыт контекст."""
+        refusal = HttpRefusal(self._causes)
+        token = self._current.set(refusal)
+        try:
+            yield refusal
+        finally:
+            self._current.reset(token)
 
 
 class HttpAddress(HttpLocation):
@@ -645,24 +723,18 @@ class HttpEndpoint(HttpAddress):
         return self.url()
 
     @asynccontextmanager
-    async def opened(self, refusals: HttpRefusals) -> AsyncGenerator[Streams, None]:
+    async def opened(self, seen: ResponseHook) -> AsyncGenerator[Streams, None]:
         auth = self.auth.httpx_auth(self.url())
         async with create_mcp_http_client(auth=auth) as http:
-            http.event_hooks["response"].append(refusals.seen)
+            http.event_hooks["response"].append(seen)
             async with streamable_http_client(self.url(), http_client=http) as streams:
-                try:
-                    yield streams
-                except Exception as exc:
-                    refused = refusals.refused(exc)
-                    if refused is None:
-                        raise
-
-                    raise refused from exc
+                yield streams
 
 
 class SseEndpoint(HttpAddress):
     """Сервер по SSE (прежний HTTP-транспорт MCP). Модель конфига; транспорт
-    — она же (протокол Transport)."""
+    — она же (протокол Transport). Ответов своего HTTP-клиента транспорт
+    SDK не показывает: отказ называет только ошибка протокола."""
 
     transport: Literal["sse"] = "sse"
 
@@ -670,7 +742,7 @@ class SseEndpoint(HttpAddress):
         return self.url()
 
     @asynccontextmanager
-    async def opened(self, refusals: HttpRefusals) -> AsyncGenerator[Streams, None]:
+    async def opened(self, seen: ResponseHook) -> AsyncGenerator[Streams, None]:
         auth = self.auth.httpx_auth(self.url())
         async with sse_client(self.url(), auth=auth) as streams:
             yield streams
@@ -678,7 +750,7 @@ class SseEndpoint(HttpAddress):
 
 class StdioCommand(BaseModel):
     """Сервер-субпроцесс со стандартным вводом и выводом. Модель конфига;
-    транспорт — она же (протокол Transport)."""
+    транспорт — она же (протокол Transport). Ответов HTTP у него нет."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -698,7 +770,7 @@ class StdioCommand(BaseModel):
         return self
 
     @asynccontextmanager
-    async def opened(self, refusals: HttpRefusals) -> AsyncGenerator[Streams, None]:
+    async def opened(self, seen: ResponseHook) -> AsyncGenerator[Streams, None]:
         env: dict[str, str] | None = None
         if self.env:
             env = dict(self.env)
@@ -828,19 +900,19 @@ class McpClientIdentity:
     версия (clientInfo) и возможности (clientCapabilities).
 
     Свою личность клиент чата держит в McpServers.OWN; запросы, которые чат
-    ретранслирует за агента, идут с личностью агента из его запроса
-    (McpServers.relayed): сервер видит настоящего клиента и его
-    возможности. Расширения, которые исполняет сам чат (журнал,
-    запечатывание соединений, MCP Apps), McpToolServer добавляет к любой
-    личности.
+    ретранслирует за агента, идут с личностью агента из его запроса: сервер
+    видит настоящего клиента и его возможности. Личность — свойство
+    запроса, а не подключения: порт McpToolServer принимает её каждым
+    запросом. Расширения, которые исполняет сам чат (журнал, запечатывание
+    соединений, MCP Apps), порт добавляет к любой личности.
     """
 
     info: mt.Implementation
     capabilities: mt.ClientCapabilities
 
     def key(self) -> str:
-        """Одна строка на одну личность: по ней McpServers различает
-        подключения."""
+        """Одна строка на одну личность: по ней порт различает сессии
+        прежней редакции и кэши ответов."""
         info = self.info.model_dump(mode="json", by_alias=True, exclude_none=True)
         capabilities = self.capabilities.model_dump(
             mode="json", by_alias=True, exclude_none=True
@@ -868,28 +940,43 @@ class McpClientIdentity:
 class IdentifiedSession(ClientSession):
     """Сессия SDK mcp, которая объявляет серверу ровно заданные возможности.
 
-    Создаётся соединением McpConnection. SDK собирает clientCapabilities
-    _meta запроса сам из обработчиков сессии; ретранслятор чата обязан
-    передать серверу возможности агента как есть, поэтому сборка
-    возможностей здесь отдаёт их из личности клиента; на проводе
-    рукопожатия — без elicitation, sampling и roots: запросов сервера
-    посреди вызова принять некому.
+    Сессию подключения создаёт соединение McpConnection, лёгкую сессию
+    запроса — порт (RequestSession). SDK собирает clientCapabilities _meta
+    запроса сам из обработчиков сессии; ретранслятор чата обязан передать
+    серверу возможности агента как есть, поэтому сборка возможностей здесь
+    отдаёт их из личности клиента; на проводе рукопожатия — без
+    elicitation, sampling и roots: запросов сервера посреди вызова принять
+    некому. absorbed() отдаёт сессии карточки инструментов, которые порт уже
+    знает: по ним она зеркалит параметры x-mcp-header в заголовки и
+    проверяет итог вызова по схеме.
     """
 
     def __init__(
         self,
-        read_stream: ReadStream[SessionMessage | Exception],
-        write_stream: WriteStream[SessionMessage],
+        dispatcher: Dispatcher[Any],
         identity: McpClientIdentity,
-        message_handler: MessageHandlerFnT,
+        message_handler: MessageHandlerFnT | None,
     ) -> None:
         super().__init__(
-            read_stream,
-            write_stream,
             client_info=identity.info,
             message_handler=message_handler,
+            dispatcher=dispatcher,
         )
         self._identity = identity
+        self._wire = dispatcher
+
+    def absorbed(self, tools: Sequence[mt.Tool]) -> None:
+        """Карточки tools, известные порту, — сессии."""
+        listing = mt.ListToolsResult(tools=list(tools))
+        self._absorb_tool_listing(listing, complete=False)
+
+    def adopted(self, version: str) -> None:
+        """Версия современной редакции, которую порт уже знает у сервера,
+        принята без пробы и без обмена по сети."""
+        described = mt.DiscoverResult(
+            supported_versions=[version], capabilities=mt.ServerCapabilities()
+        )
+        self.adopt(described)
 
     def _build_capabilities(self, version: str) -> mt.ClientCapabilities:
         capabilities = self._identity.capabilities
@@ -901,16 +988,120 @@ class IdentifiedSession(ClientSession):
         )
 
 
-class McpConnection:
-    """Живая сессия MCP с одним сервером.
+class BorrowedDispatcher(Dispatcher[Any]):
+    """Реализация Dispatcher SDK над диспетчером подключения для лёгкой
+    сессии запроса (RequestSession): запросы и уведомления уходят
+    диспетчером подключения, а своего цикла приёма нет — принимает сессия
+    подключения."""
 
-    Создаётся портом McpToolServer. Транспорт и сессия библиотеки mcp
-    открываются и закрываются в одной собственной задаче — их области отмены
-    привязаны к задаче, которая их открыла; запросы идут из задач вызовов.
-    Версию протокола согласует штатная политика SDK (negotiate_auto) заново
-    на каждое открытие. Сессия говорит от личности identity. Уведомления
-    прогресса сессия отдаёт целиком, с _meta: каждое уходит обработчику
-    запроса, который слушает его токен (listening).
+    def __init__(self, line: Dispatcher[Any]) -> None:
+        self._line = line
+
+    async def run(
+        self,
+        on_request: OnRequest,
+        on_notify: OnNotify,
+        on_notify_intercept: OnNotifyIntercept | None = None,
+        *,
+        task_status: anyio.abc.TaskStatus[None] = anyio.TASK_STATUS_IGNORED,
+    ) -> None:
+        task_status.started()
+        await anyio.sleep_forever()
+
+    async def send_raw_request(
+        self,
+        method: str,
+        params: Mapping[str, Any] | None,
+        opts: CallOptions | None = None,
+    ) -> dict[str, Any]:
+        return await self._line.send_raw_request(method, params, opts)
+
+    async def notify(
+        self,
+        method: str,
+        params: Mapping[str, Any] | None,
+        opts: CallOptions | None = None,
+    ) -> None:
+        await self._line.notify(method, params, opts)
+
+
+class RequestSession(IdentifiedSession):
+    """Лёгкая сессия SDK одного запроса к серверу современной редакции.
+
+    Создаётся портом McpToolServer на каждый запрос поверх сессии
+    подключения порта с личностью клиента этого запроса: принимает версию
+    подключения без обмена по сети (adopt) и ставит личность и возможности в
+    _meta запроса, а сам запрос шлёт диспетчер подключения
+    (BorrowedDispatcher). Ответы и уведомления принимает сессия подключения;
+    маршрут потока subscriptions/listen регистрируется у неё же — иначе
+    подтверждение потока до запроса не дойдёт. В контекст лёгкая сессия не
+    входит: своего цикла приёма у неё нет, а поток subscriptions/listen
+    идёт в группе задач сессии подключения.
+    """
+
+    def __init__(self, line: IdentifiedSession, identity: McpClientIdentity) -> None:
+        super().__init__(BorrowedDispatcher(line._wire), identity, None)
+        self._line = line
+        self._task_group = line._task_group
+        version = line.protocol_version
+        if version is None:
+            msg = (
+                f"a request session of {identity.info.name!r} expects an opened "
+                "session to borrow its negotiated protocol version, got none"
+            )
+            raise McpClientError(msg)
+
+        self.adopted(version)
+
+    def _register_listen_route(self, request_id: mt.RequestId) -> ListenRoute:
+        return self._line._register_listen_route(request_id)
+
+    def _unregister_listen_route(self, request_id: mt.RequestId) -> None:
+        self._line._unregister_listen_route(request_id)
+
+
+class AgingCacheStore(InMemoryResponseCacheStore):
+    """Хранилище кэша ответов SDK в памяти, которое отдаёт ответ с
+    оставшимся сроком свежести: в ttlMs — сколько ему осталось, а не сколько
+    дал сервер. Так ретранслятор чата отдаёт агенту честный срок. Ответ без
+    ttlMs от сервера (прежняя редакция) отдаётся как есть.
+
+    Создаётся соединением McpConnection, одно на все его кэши.
+    """
+
+    async def get(self, key: CacheKey) -> CacheEntry | None:
+        entry = await super().get(key)
+        if entry is None:
+            return None
+
+        expires = entry.expires_at
+        if expires is None:
+            return entry
+
+        value = entry.value
+        if "ttl_ms" not in value.model_fields_set:
+            return entry
+
+        left = max(0, int((expires - time.time()) * 1000))
+
+        return replace(entry, value=value.model_copy(update={"ttl_ms": left}))
+
+
+class McpConnection:
+    """Подключение к серверу MCP с согласованной версией протокола.
+
+    Создаётся портом McpToolServer: у сервера прежней редакции — на каждую
+    личность клиента (сессия initialize и есть состояние, которого требует
+    2025-11-25), у современного — одно на порт: его диспетчер несёт лёгкие
+    сессии запросов всех личностей (RequestSession). Транспорт и сессия SDK
+    открываются и закрываются в одной собственной задаче — их области
+    отмены привязаны к задаче, которая их открыла; запросы идут из задач
+    вызовов. Версию согласует штатная политика SDK (negotiate_auto), а
+    версию современной редакции, которую порт уже знает, сессия принимает
+    без пробы. Отказ HTTP за время согласования называет учёт отказов порта
+    (HttpRefusals). Уведомления прогресса уходят обработчику запроса,
+    который слушает его токен (listening); уведомления сервера о смене
+    списков и ресурсов сбрасывают кэши ответов подключения (cache).
     """
 
     def __init__(
@@ -918,19 +1109,24 @@ class McpConnection:
         transport: Transport,
         connect_timeout_sec: float,
         identity: McpClientIdentity,
+        refusals: HttpRefusals,
     ) -> None:
         self._transport = transport
         self._connect_timeout_sec = connect_timeout_sec
         self._identity = identity
+        self._refusals = refusals
         self._causes = ErrorCauses()
         self._task: asyncio.Task[None] | None = None
         self._stop = asyncio.Event()
-        self._ready: asyncio.Future[ClientSession] | None = None
-        self._refusals = HttpRefusals()
+        self._ready: asyncio.Future[IdentifiedSession] | None = None
+        self._session: IdentifiedSession | None = None
         self._listeners: dict[
             mt.ProgressToken,
             Callable[[mt.ProgressNotificationParams], Awaitable[None]],
         ] = {}
+        self._store = AgingCacheStore()
+        self._caches: dict[str, ClientResponseCache] = {}
+        self._target = hashlib.sha256(transport.label().encode()).hexdigest()
 
     @asynccontextmanager
     async def listening(
@@ -946,14 +1142,59 @@ class McpConnection:
         finally:
             self._listeners.pop(token, None)
 
-    async def open(self) -> ClientSession:
+    def cache(self, identity: McpClientIdentity) -> ClientResponseCache:
+        """Кэш ответов личности identity на этом подключении: у современной
+        редакции ответ свеж ttlMs и делится по cacheScope, у прежней — живёт
+        до конца сессии; уведомления сервера о смене списков его сбрасывают,
+        а с подключением он закрывается."""
+        key = identity.key()
+        cache = self._caches.get(key)
+        if cache is not None:
+            return cache
+
+        lifetime = MAX_TTL_MS
+        if self._negotiated() in MODERN_PROTOCOL_VERSIONS:
+            lifetime = 0
+
+        cache = ClientResponseCache(
+            store=self._store,
+            partition=key,
+            arm_id=self._target,
+            default_ttl_ms=lifetime,
+            clock=time.time,
+            share_public=False,
+            negotiated_version=self._negotiated,
+        )
+        self._caches[key] = cache
+
+        return cache
+
+    async def evicted(self, notification: mt.ServerNotification) -> None:
+        """Уведомление сервера сбрасывает ответы кэшей, к которым относится."""
+        for cache in list(self._caches.values()):
+            await cache.evict_for_notification(notification)
+
+    async def heard(self, event: ServerEvent) -> None:
+        """Событие потока subscriptions/listen сбрасывает кэш раньше, чем
+        его получит читатель потока: тот перечитает свежий ответ."""
+        await self.evicted(event_to_notification(event, {}))
+
+    async def open(self, version: str | None) -> IdentifiedSession:
         """Сессия с согласованным протоколом; повторный вызов отдаёт уже
-        открытую."""
+        открытую. version — версия современной редакции, которую порт уже
+        знает у сервера: сессия принимает её без пробы; None — версию
+        согласует negotiate_auto.
+
+        Ошибки:
+        McpClientError — сервер недоступен, не согласовал версию либо не
+            ответил за срок подключения.
+        """
         if self._ready is None:
             self._stop = asyncio.Event()
             self._ready = asyncio.get_running_loop().create_future()
             self._task = asyncio.create_task(
-                self._serve(self._ready), name=f"mcp:{self._transport.label()}"
+                self._serve(self._ready, version),
+                name=f"mcp:{self._transport.label()}",
             )
 
         try:
@@ -972,13 +1213,12 @@ class McpConnection:
             await self.close()
             raise
 
-    def forgotten(self) -> bool:
-        return self._refusals.forgotten()
-
     async def close(self) -> None:
         task = self._task
         self._task = None
         self._ready = None
+        self._session = None
+        self._caches.clear()
         self._stop.set()
         if task is None:
             return
@@ -993,34 +1233,52 @@ class McpConnection:
                 exc,
             )
 
-    async def _serve(self, ready: asyncio.Future[ClientSession]) -> None:
-        """Сессия живёт в этой задаче. Отказ HTTP за время согласования
-        называет транспорт (HttpRefusals)."""
+    def _negotiated(self) -> str | None:
+        """Версия открытой сессии; None — сессия не открыта."""
+        session = self._session
+        if session is None:
+            return None
+
+        return session.protocol_version
+
+    async def _serve(
+        self, ready: asyncio.Future[IdentifiedSession], version: str | None
+    ) -> None:
+        """Сессия живёт в этой задаче."""
         stop = self._stop
-        self._refusals = HttpRefusals()
-        try:
-            async with self._transport.opened(self._refusals) as (read, write):
-                session = IdentifiedSession(read, write, self._identity, self._heard)
-                async with session:
-                    await self._negotiated(session)
-                    ready.set_result(session)
-                    await stop.wait()
-        except Exception as exc:
-            if not ready.done():
-                msg = (
-                    f"mcp {self._transport.label()}: connecting and initializing "
-                    f"failed: {self._causes.text(exc)}"
-                )
-                ready.set_exception(McpClientError(msg))
-                return
+        with self._refusals.watching() as refusal:
+            try:
+                async with self._transport.opened(self._refusals.seen) as streams:
+                    read, write = streams
+                    dispatcher = JSONRPCDispatcher(read, write)
+                    session = IdentifiedSession(dispatcher, self._identity, self._heard)
+                    async with session:
+                        await self._negotiated_by(session, version)
+                        self._session = session
+                        ready.set_result(session)
+                        await stop.wait()
+            except Exception as exc:
+                if not ready.done():
+                    msg = (
+                        f"mcp {self._transport.label()}: connecting and "
+                        f"initializing failed: {refusal.text(exc)}"
+                    )
+                    ready.set_exception(McpClientError(msg))
+                    return
 
-            raise
+                raise
 
-    async def _negotiated(self, session: ClientSession) -> None:
+    async def _negotiated_by(
+        self, session: IdentifiedSession, version: str | None
+    ) -> None:
         """Ошибки:
         McpClientError — сервер отверг обе попытки либо назвал версию,
             которой клиент не знает.
         """
+        if version is not None:
+            session.adopted(version)
+            return
+
         try:
             await negotiate_auto(session)
         except MCPError as exc:
@@ -1040,8 +1298,13 @@ class McpConnection:
             raise McpClientError(msg) from exc
 
     async def _heard(self, message: IncomingMessage) -> None:
-        """Обработчик сообщений сессии: уведомление прогресса — обработчику
-        запроса с его токеном; прочее и прогресс без слушателя не нужны."""
+        """Обработчик сообщений сессии: уведомление сервера сбрасывает кэши,
+        к которым относится; уведомление прогресса — обработчику запроса с
+        его токеном; прочее и прогресс без слушателя не нужны."""
+        if isinstance(message, Exception):
+            return
+
+        await self.evicted(message)
         if not isinstance(message, mt.ProgressNotification):
             return
 
@@ -1341,62 +1604,155 @@ ProgressHeard = Callable[[mt.ProgressNotificationParams], Awaitable[None]]
 """Кому порт отдаёт уведомления сервера о ходе запроса."""
 
 
+PortSend = Callable[[McpConnection, IdentifiedSession], Awaitable[SentT]]
+"""Запрос порта: шлёт его сессией запроса на подключении порта."""
+
+
+class CachedMethod(StrEnum):
+    """Запросы, ответы на которые порт держит в кэше SDK по правилам
+    caching."""
+
+    DISCOVER = "server/discover"
+    TOOLS = "tools/list"
+
+
+@dataclass(frozen=True)
+class McpDescription:
+    """Описание сервера: ответ server/discover (у сервера прежней редакции —
+    собранный из его initialize) со сроком свежести и расширения boba,
+    которые из него следуют.
+
+    Создаёт порт (McpToolServer.described, ChatToolPort чата) на каждое
+    обращение из ответа, который тот взял из кэша или у сервера. Расширение
+    с настройками не по модели считается необъявленным: такой сервер
+    работает как сервер без расширения, причина — в логе.
+    """
+
+    FEATURE_PREFIX: ClassVar[str] = "com.boba/"
+
+    label: str
+    result: mt.DiscoverResult
+
+    def features(self) -> Mapping[str, Mapping[str, object]]:
+        """Расширения com.boba/*, объявленные сервером: идентификатор →
+        настройки; у стороннего сервера их нет."""
+        extensions = self.result.capabilities.extensions
+        if not extensions:
+            return {}
+
+        declared: dict[str, Mapping[str, object]] = {}
+        for feature, settings in extensions.items():
+            if not feature.startswith(self.FEATURE_PREFIX):
+                continue
+
+            declared[feature] = dict(settings)
+
+        return declared
+
+    def journal(self) -> JournalFeature | None:
+        """Расширение журнала вызовов; None — сервер его не объявил."""
+        return self._feature(JournalFeature)
+
+    def files(self) -> FilesFeature | None:
+        """Расширение файлов workspace; None — сервер его не объявил."""
+        return self._feature(FilesFeature)
+
+    def nested_calls(self) -> NestedCallsFeature | None:
+        """Инструмент сервера со вложенными вызовами и форма его узлов;
+        None — сервер такого не объявил."""
+        return self._feature(NestedCallsFeature)
+
+    def links(self) -> JournalLinks | None:
+        """Адреса каналов журнала по шаблону, объявленному сервером; None —
+        журнала нет либо шаблон не по RFC 6570 (причина в логе)."""
+        declared = self.journal()
+        if declared is None:
+            return None
+
+        try:
+            return JournalLinks(declared.resource)
+        except InvalidUriTemplate as exc:
+            logger.warning(
+                "%s: extension %s declares resource %r that is not an RFC 6570 "
+                "template: %s; the journal of the server is not read",
+                self.label,
+                JournalFeature.ID,
+                declared.resource,
+                exc,
+            )
+            return None
+
+    def _feature(self, model: type[FeatureModel]) -> FeatureModel | None:
+        settings = self.features().get(model.ID)
+        if settings is None:
+            return None
+
+        try:
+            return model.model_validate(settings)
+        except ValidationError as exc:
+            logger.warning(
+                "%s: extension %s expects the settings of %s, got %r: %s; the "
+                "extension is not declared for this server",
+                self.label,
+                model.ID,
+                model.__name__,
+                dict(settings),
+                exc,
+            )
+            return None
+
+
 class McpToolPort(Protocol):
     """Порт сервера инструментов, которым ретранслятор чата отвечает на
     server/discover, tools/list и tools/call агента.
 
     Реализации: McpToolServer — сервер MCP профиля по его транспорту;
     ChatToolPort чата — собственные инструменты чата в его процессе.
+    Личность клиента у каждого запроса своя: client.
     """
 
     @abstractmethod
-    def discovered(self) -> mt.DiscoverResult:
-        """Что сервер сказал о себе при согласовании и что порт может дать:
-        согласованная версия, возможности, расширения, инструкции и
-        serverInfo в _meta."""
-
-    @abstractmethod
-    def tools(self) -> Sequence[mt.Tool]:
-        """Инструменты сервера как есть, из последнего прочитанного списка."""
-
-    @abstractmethod
-    async def refreshed(self) -> Sequence[mt.Tool]:
-        """Список инструментов, перечитанный у сервера.
+    async def described(self, client: McpClientIdentity) -> McpDescription:
+        """Что сервер говорит о себе клиенту client: описание server/discover
+        со сроком свежести и расширения boba.
 
         Ошибки:
-        McpClientError — сервер недоступен либо не отдал список.
+        McpClientError — сервер недоступен либо ответил не по схеме.
+        MCPError — сервер ответил ошибкой MCP.
         """
 
     @abstractmethod
-    def features(self) -> Mapping[str, Mapping[str, object]]:
-        """Расширения com.boba/*, объявленные сервером: идентификатор →
-        настройки; у стороннего сервера их нет."""
+    async def tools(self, client: McpClientIdentity) -> mt.ListToolsResult:
+        """Инструменты сервера клиенту client одним списком, со сроком
+        свежести и областью кэша ответа сервера.
 
-    @abstractmethod
-    def nested_calls(self) -> NestedCallsFeature | None:
-        """Инструмент сервера со вложенными вызовами и форма его узлов;
-        None — сервер такого не объявил."""
+        Ошибки: те же, что у described.
+        """
 
     @abstractmethod
     async def call(
         self,
+        client: McpClientIdentity,
         params: mt.CallToolRequestParams,
+        card: mt.Tool | None,
         progress: ProgressHeard | None,
         journals: JournalHeard | None,
     ) -> mt.CallToolResult | mt.InputRequiredResult:
-        """tools/call с готовыми аргументами; ответ сервера — как есть.
+        """tools/call клиента client с готовыми аргументами; ответ сервера —
+        как есть.
 
         params — запрос на имя инструмента на сервере, с ответами на прежний
         input_required, если они есть; тред вызова — среди его аргументов.
-        progress получает уведомления сервера о ходе вызова целиком, с
-        _meta: вызов просит их своим токеном прогресса. journals узнаёт
-        журналы, которые вызов открыл на сервере, пока он идёт; None — не
-        нужны.
+        card — карточка инструмента из списка, по которому вызов собран: по
+        ней сессия зеркалит параметры x-mcp-header и проверяет итог; None —
+        карточки у вызывающего нет. progress получает уведомления сервера о
+        ходе вызова целиком, с _meta: вызов просит их своим токеном
+        прогресса. journals узнаёт журналы, которые вызов открыл на сервере,
+        пока он идёт; None — не нужны.
 
         Ошибки:
         McpClientError — сервер недоступен либо ответа нет: сессия оборвалась
-            или вышел срок вызова, соединение закрывается, следующий вызов
-            подключается заново; либо ответ не по схеме инструмента.
+            или вышел срок вызова; либо ответ не по схеме инструмента.
         MCPError — сервер ответил на запрос ошибкой MCP.
         """
 
@@ -1472,7 +1828,7 @@ class JournalOpenings:
 
     async def _listen(self, ready: asyncio.Future[bool]) -> None:
         try:
-            session = await self._connection.open()
+            session = await self._connection.open(None)
             async with listen(session, resources_list_changed=True) as subscription:
                 honored = subscription.honored.resources_list_changed
                 if not honored:
@@ -1560,22 +1916,30 @@ class JournalOpenings:
 
 
 class McpToolServer(McpToolPort):
-    """Порт одного MCP-сервера: подключение, списки и запросы стандарта.
+    """Порт одного MCP-сервера для одного контекста авторизации: подключения,
+    описание, списки и запросы стандарта.
 
-    Создаётся McpServers на пару «сервер, личность клиента» с общим входом
-    либо на тройку с пользователем при личном. open() подключается,
-    согласует протокол и читает список инструментов;
-    tools() отдаёт его как есть, refreshed() перечитывает. Операции, которые
-    клиент исполняет сам (загрузка файла), из списка для модели убирает
-    ретранслятор чата. call() шлёт tools/call, остальные методы — запросы
+    Создаётся McpServers на сервер с общим входом либо на пару «сервер,
+    пользователь» с личным (proxy); подключается при первом запросе.
+    Личность клиента — у каждого запроса своя (client): к ней порт добавляет
+    расширения, которые исполняет сам чат. С сервером современной редакции у
+    порта одно подключение, и личность едет в _meta каждого запроса лёгкой
+    сессией SDK над ним (RequestSession); с сервером прежней редакции — своё
+    подключение на личность: возможности там часть сессии. Версию сервера
+    порт помнит и подключается заново без пробы, пока сервер её не
+    опроверг: на отказ -32022 и на отказ 400 без современной ошибки —
+    признак сервера прежней редакции — порт закрывает подключение,
+    согласует версию заново и повторяет запрос один раз. Описание сервера
+    (described) и список инструментов (tools) порт держит кэшем ответов SDK
+    по правилам caching: ответ свеж ttlMs, делится по cacheScope,
+    сбрасывается уведомлением о смене списка; у сервера прежней редакции —
+    на время его сессии. call() шлёт tools/call, остальные методы — запросы
     ресурсов, промптов, подсказок и поток subscriptions/listen; ответ
-    сервера отдаётся как есть. Расширения boba (features) берутся из
-    возможностей сервера: у стороннего их нет. К личности клиента порт
-    добавляет расширения, которые исполняет сам чат. Оборванная и забытая
-    сервером сессия открывается заново следующим запросом.
+    сервера отдаётся как есть. Оборванная и забытая сервером сессия
+    открывается заново следующим запросом. Вытесненный порт (retire)
+    закрывается, когда кончатся идущие через него запросы.
     """
 
-    FEATURE_PREFIX: ClassVar[str] = "com.boba/"
     OWN_EXTENSIONS: ClassVar[Mapping[str, Mapping[str, Any]]] = {
         JournalFeature.ID: {},
         SealFeature.ID: {},
@@ -1586,6 +1950,9 @@ class McpToolServer(McpToolPort):
     NOT_FOUND: ClassVar[frozenset[int]] = frozenset({mt.INVALID_PARAMS, -32002})
     """Коды «ресурса нет» resources/read: -32602 и прежний -32002, которого
     в константах SDK нет."""
+    RECOGNIZED: ClassVar[frozenset[int]] = frozenset(ERROR_CODE_HTTP_STATUS)
+    """Ошибки, с которыми сервер современной редакции отвечает 400: другое
+    тело отказа 400 на современный запрос — сервер прежней редакции."""
     OWN_META: ClassVar[frozenset[str]] = frozenset(
         {
             "progress_token",
@@ -1597,7 +1964,7 @@ class McpToolServer(McpToolPort):
     )
     """Ключи _meta запроса, которые порт ставит сам либо не несёт: токен
     прогресса (имя поля модели), уровень логов и конверт версии и личности —
-    его ставит сессия по своему проводу."""
+    его ставит сессия запроса."""
     READ_REPLY: ClassVar[
         TypeAdapter[mt.ReadResourceResult | mt.InputRequiredResult]
     ] = TypeAdapter(mt.ReadResourceResult | mt.InputRequiredResult)
@@ -1607,108 +1974,523 @@ class McpToolServer(McpToolPort):
     )
     """Ответ на prompts/get: сообщения промпта либо просьба о вводе."""
 
-    def __init__(
-        self, name: str, config: McpServerConfig, identity: McpClientIdentity
-    ) -> None:
+    def __init__(self, name: str, config: McpServerConfig) -> None:
         self._name = name
         self._config = config
+        self._label = f"mcp server {name!r} ({config.endpoint.label()})"
         extensions = dict(self.OWN_EXTENSIONS)
         if config.apps is not None:
             extensions[EXTENSION_ID] = config.apps.settings()
 
-        speaking = identity.with_extensions(extensions)
-        self._connection = McpConnection(
-            config.endpoint, config.connect_timeout_sec, speaking
-        )
+        self._extensions = extensions
+        self._own = McpServers.OWN.with_extensions(extensions)
+        self._refusals = HttpRefusals(self._label)
+        self._line = self._connection(self._own)
+        self._sessions: dict[str, McpConnection] = {}
+        """Подключения сервера прежней редакции по личностям клиента."""
+        self._version: str | None = None
+        """Версия, которую сервер согласовал последней; None — порт её ещё
+        не знает либо сервер её опроверг."""
+        self._probing = asyncio.Lock()
         # замок входа OAuth ждёт ответа вызова: журналы — своим соединением
-        self._watching = McpConnection(
-            config.endpoint, config.connect_timeout_sec, speaking
-        )
-        self._label = f"mcp server {name!r} ({config.endpoint.label()})"
-        self._causes = ErrorCauses()
-        self._tools: list[mt.Tool] | None = None
-        self._discovered: mt.DiscoverResult | None = None
-        self._features: dict[str, Mapping[str, object]] = {}
-        self._journal: JournalFeature | None = None
-        """Расширение журнала вызовов, объявленное сервером; None — его нет."""
-        self._links: JournalLinks | None = None
-        """Адреса каналов журнала по шаблону сервера; None — журнала нет."""
-        self._files_feature: FilesFeature | None = None
-        """Расширение файлов workspace, объявленное сервером; None — его нет."""
-        self._nested: NestedCallsFeature | None = None
-        """Расширение вложенных вызовов, объявленное сервером; None — его нет."""
-        self._files: McpFiles | None = None
-        self._journal_files: McpFiles | None = None
+        self._watching = self._connection(self._own)
         self._openings: JournalOpenings | None = None
+        self._files: dict[str, McpFiles] = {}
+        self._running = 0
+        self._retired = False
 
-    async def open(self) -> None:
-        """Ошибки:
-        McpClientError — сервер недоступен либо не отдал список инструментов.
+    async def described(self, client: McpClientIdentity) -> McpDescription:
+        identity = self._speaking(client)
+        send = partial(self._discovered, identity)
+        result = await self._exchange(identity, CachedMethod.DISCOVER, send)
+
+        return McpDescription(self._label, result)
+
+    async def tools(self, client: McpClientIdentity) -> mt.ListToolsResult:
+        identity = self._speaking(client)
+        send = partial(self._listed, identity, "use")
+
+        return await self._exchange(identity, CachedMethod.TOOLS, send)
+
+    async def files(self) -> McpFiles | None:
+        """Файлы workspace на сервере; None — сервер их не объявил.
+
+        Ошибки: те же, что у described.
         """
-        session = await self._session()
-        self._discovered = self._described(session)
-        self._features = self._declared(session)
-        self._journal = self._feature(JournalFeature)
-        self._links = self._journal_links(self._journal)
-        self._files_feature = self._feature(FilesFeature)
-        self._nested = self._feature(NestedCallsFeature)
-        await self.refreshed()
-        await self._open_files()
-        await self._open_journal_files()
-        await self._open_openings(session)
-        logger.info(
-            "mcp server %s: %d tools, features %s",
-            self._name,
-            len(self.tools()),
-            sorted(self._features),
-        )
-
-    def _feature(self, model: type[FeatureModel]) -> FeatureModel | None:
-        """Настройки расширения model.ID моделью; None — сервер его не
-        объявил либо объявил с настройками не по модели: такой сервер
-        работает как сервер без расширения, причина — в логе."""
-        settings = self._features.get(model.ID)
-        if settings is None:
-            return None
-
-        try:
-            return model.model_validate(settings)
-        except ValidationError as exc:
-            logger.warning(
-                "mcp server %s (%s): extension %s expects the settings of %s, "
-                "got %r: %s; the extension is not declared for this server",
-                self._name,
-                self._config.endpoint.label(),
-                model.ID,
-                model.__name__,
-                dict(settings),
-                exc,
-            )
-            return None
-
-    def _journal_links(self, declared: JournalFeature | None) -> JournalLinks | None:
-        """Адреса каналов журнала по шаблону, объявленному сервером; шаблон
-        не по RFC 6570 — сервер работает как сервер без журнала, причина в
-        логе."""
+        described = await self.described(McpServers.OWN)
+        declared = described.files()
         if declared is None:
             return None
 
-        try:
-            return JournalLinks(declared.resource)
-        except InvalidUriTemplate as exc:
-            logger.warning(
-                "%s: extension %s declares resource %r that is not an RFC 6570 "
-                "template: %s; the journal of the server is not read",
-                self._label,
-                JournalFeature.ID,
-                declared.resource,
-                exc,
-            )
+        return self._files_at(declared.path)
+
+    async def workspace(self) -> str | None:
+        """Каталог workspace, под которым песочница сервера видит файлы
+        workspace: по нему ключи файлов в итогах сервера разбирает тот, кто
+        держит этот порт; None — сервер файлов не объявил.
+
+        Ошибки: те же, что у described.
+        """
+        described = await self.described(McpServers.OWN)
+        declared = described.files()
+        if declared is None:
             return None
 
-    def _described(self, session: ClientSession) -> mt.DiscoverResult:
-        """Описание сервера из полей сессии, общих для обеих эпох; без потоков
-        subscriptions/listen — без смены списков и подписки.
+        return declared.workspace
+
+    async def journal_files(self) -> McpFiles | None:
+        """Журналы вызовов сервера целыми файлами: канал журнала лежит по
+        пути `{run}/{node}/{channel}`; None — сервер такого не объявил.
+
+        Ошибки: те же, что у described.
+        """
+        described = await self.described(McpServers.OWN)
+        declared = described.journal()
+        if declared is None:
+            return None
+
+        return self._files_at(declared.path)
+
+    async def call(
+        self,
+        client: McpClientIdentity,
+        params: mt.CallToolRequestParams,
+        card: mt.Tool | None,
+        progress: ProgressHeard | None,
+        journals: JournalHeard | None,
+    ) -> mt.CallToolResult | mt.InputRequiredResult:
+        identity = self._speaking(client)
+        token = uuid4().hex
+        sent = params.model_copy(update={"meta": self._sent_meta(params.meta, token)})
+        expecting: AbstractAsyncContextManager[None] = nullcontext()
+        if journals is not None:
+            expecting = await self._expecting(client, token, journals)
+
+        async def send(
+            connection: McpConnection, session: IdentifiedSession
+        ) -> mt.CallToolResult | mt.InputRequiredResult:
+            async with self._heard(connection, token, progress):
+                return await self._tool_call(identity, connection, session, sent, card)
+
+        async with expecting:
+            return await self._exchange(
+                identity, f"tools/call of {params.name!r}", send
+            )
+
+    async def list_resources(
+        self, client: McpClientIdentity, params: mt.PaginatedRequestParams | None
+    ) -> mt.ListResourcesResult:
+        """resources/list одной страницей курсора params; ответ как есть.
+
+        Ошибки:
+        McpClientError — сервер недоступен или ответил не по схеме.
+        MCPError — сервер ответил ошибкой MCP.
+        """
+        request = mt.ListResourcesRequest(params=params)
+
+        return await self._request(client, request, mt.ListResourcesResult, None)
+
+    async def list_resource_templates(
+        self, client: McpClientIdentity, params: mt.PaginatedRequestParams | None
+    ) -> mt.ListResourceTemplatesResult:
+        """resources/templates/list одной страницей; ответ как есть.
+
+        Ошибки: те же, что у list_resources.
+        """
+        request = mt.ListResourceTemplatesRequest(params=params)
+
+        return await self._request(
+            client, request, mt.ListResourceTemplatesResult, None
+        )
+
+    async def read_resource(
+        self,
+        client: McpClientIdentity,
+        params: mt.ReadResourceRequestParams,
+        progress: ProgressHeard | None,
+    ) -> mt.ReadResourceResult | mt.InputRequiredResult:
+        """resources/read: содержимое ресурса либо просьба о вводе
+        (input_required), с ответами на прежнюю, если они есть в params.
+
+        Ошибки: те же, что у list_resources.
+        """
+        request = mt.ReadResourceRequest(params=params)
+
+        return await self._request(client, request, self.READ_REPLY, progress)
+
+    async def list_prompts(
+        self, client: McpClientIdentity, params: mt.PaginatedRequestParams | None
+    ) -> mt.ListPromptsResult:
+        """prompts/list одной страницей; ответ как есть.
+
+        Ошибки: те же, что у list_resources.
+        """
+        request = mt.ListPromptsRequest(params=params)
+
+        return await self._request(client, request, mt.ListPromptsResult, None)
+
+    async def get_prompt(
+        self,
+        client: McpClientIdentity,
+        params: mt.GetPromptRequestParams,
+        progress: ProgressHeard | None,
+    ) -> mt.GetPromptResult | mt.InputRequiredResult:
+        """prompts/get: сообщения промпта либо просьба о вводе.
+
+        Ошибки: те же, что у list_resources.
+        """
+        request = mt.GetPromptRequest(params=params)
+
+        return await self._request(client, request, self.PROMPT_REPLY, progress)
+
+    async def complete(
+        self, client: McpClientIdentity, params: mt.CompleteRequestParams
+    ) -> mt.CompleteResult:
+        """completion/complete: варианты значения аргумента промпта или
+        шаблона ресурса.
+
+        Ошибки: те же, что у list_resources.
+        """
+        request = mt.CompleteRequest(params=params)
+
+        return await self._request(client, request, mt.CompleteResult, None)
+
+    @asynccontextmanager
+    async def listen(
+        self, client: McpClientIdentity, notifications: mt.SubscriptionFilter
+    ) -> AsyncGenerator[Subscription, None]:
+        """Поток subscriptions/listen клиента client на события
+        notifications; поток живёт, пока открыт контекст, подтверждённый
+        сервером набор — subscription.honored. Событие сбрасывает кэш порта,
+        к которому относится, раньше, чем его получит читатель потока.
+
+        Ошибки:
+        McpClientError — сервер недоступен, подписку не поддерживает или
+            поток оборвался без штатного закрытия.
+        MCPError — сервер отказал в подписке ошибкой MCP.
+        """
+        identity = self._speaking(client)
+        uris: list[str] = []
+        if notifications.resource_subscriptions is not None:
+            uris.extend(notifications.resource_subscriptions)
+
+        label = f"{self._label}: subscriptions/listen"
+        async with self._busy():
+            connection, line = await self._opened(identity)
+            with self._refusals.watching() as refusal:
+                try:
+                    async with (
+                        listen(
+                            self._asking(line, identity),
+                            tools_list_changed=bool(notifications.tools_list_changed),
+                            prompts_list_changed=bool(
+                                notifications.prompts_list_changed
+                            ),
+                            resources_list_changed=bool(
+                                notifications.resources_list_changed
+                            ),
+                            resource_subscriptions=uris,
+                            on_event=connection.heard,
+                        ) as subscription,
+                    ):
+                        yield subscription
+                except ListenNotSupportedError as exc:
+                    msg = (
+                        f"{label}: the negotiated protocol has no listen streams: {exc}"
+                    )
+                    raise McpClientError(msg) from exc
+                except MCPError as exc:
+                    await self._unanswered(
+                        exc, "subscriptions/listen", refusal, connection
+                    )
+                    raise
+                except SubscriptionLost as exc:
+                    msg = f"{label}: the stream ended without the server's close: {exc}"
+                    raise McpClientError(msg) from exc
+                except TimeoutError as exc:
+                    msg = (
+                        f"{label}: the server did not acknowledge the subscription: "
+                        f"{exc}"
+                    )
+                    raise McpClientError(msg) from exc
+
+    async def journal(self, request: JournalRead) -> StreamSlice | None:
+        """Окно журнала вызова ресурсом resources/read; None — сервер журнал
+        не объявлял либо такого журнала у него нет.
+
+        Ошибки:
+        McpClientError — сервер недоступен или ответил не окном журнала.
+        """
+        described = await self.described(McpServers.OWN)
+        links = described.links()
+        if links is None:
+            return None
+
+        uri = links.uri(request)
+        what = (
+            f"{self._label}: reading the journal of call {request.node!r} in run "
+            f"{request.run!r} as resource {uri}"
+        )
+        params = mt.ReadResourceRequestParams(uri=uri)
+        try:
+            read = await self.read_resource(McpServers.OWN, params, None)
+        except MCPError as exc:
+            if exc.error.code in self.NOT_FOUND:
+                return None
+
+            msg = f"{what} failed: MCP error {exc.error.code}: {exc.error.message}"
+            raise McpClientError(msg) from exc
+
+        if not isinstance(read, mt.ReadResourceResult):
+            msg = f"{what}: the server asked for more input, expected a window"
+            raise McpClientError(msg)
+
+        return self._window(what, read)
+
+    async def retire(self) -> None:
+        """Порт вытеснен из McpServers: закрывается сразу либо, если через
+        него идут запросы, когда кончится последний."""
+        self._retired = True
+        if self._running:
+            return
+
+        await self.close()
+
+    async def close(self) -> None:
+        if self._openings is not None:
+            await self._openings.close()
+            self._openings = None
+
+        await self._watching.close()
+        for files in self._files.values():
+            await files.close()
+
+        self._files.clear()
+        for connection in self._sessions.values():
+            await connection.close()
+
+        await self._line.close()
+
+    def _connection(self, identity: McpClientIdentity) -> McpConnection:
+        return McpConnection(
+            self._config.endpoint,
+            self._config.connect_timeout_sec,
+            identity,
+            self._refusals,
+        )
+
+    def _speaking(self, client: McpClientIdentity) -> McpClientIdentity:
+        """Личность client с расширениями, которые исполняет сам чат."""
+        return client.with_extensions(self._extensions)
+
+    async def _exchange(
+        self, identity: McpClientIdentity, action: str, send: PortSend[SentT]
+    ) -> SentT:
+        """Запрос action личности identity, который send шлёт сессией
+        запроса.
+
+        Ошибки:
+        McpClientError — сервер недоступен, ответа нет либо ответ не по схеме.
+        MCPError — сервер ответил ошибкой MCP.
+        """
+        async with self._busy():
+            return await self._sent(identity, action, send, True)
+
+    async def _sent(
+        self,
+        identity: McpClientIdentity,
+        action: str,
+        send: PortSend[SentT],
+        again: bool,
+    ) -> SentT:
+        """Запрос с повтором на опровергнутую сервером версию (again)."""
+        connection, line = await self._opened(identity)
+        with self._refusals.watching() as refusal:
+            try:
+                return await send(connection, self._asking(line, identity))
+            except MCPError as exc:
+                if again and self._left(exc, refusal, line):
+                    await self._forget(connection, action, exc)
+                    return await self._sent(identity, action, send, False)
+
+                await self._unanswered(exc, action, refusal, connection)
+                raise
+            except ValidationError as exc:
+                msg = f"{self._label}: {action} answered off the schema: {exc}"
+                raise McpClientError(msg) from exc
+
+    @asynccontextmanager
+    async def _busy(self) -> AsyncGenerator[None, None]:
+        """Запрос идёт через порт, пока открыт контекст."""
+        self._running += 1
+        try:
+            yield
+        finally:
+            await self._released()
+
+    async def _released(self) -> None:
+        self._running -= 1
+        if not self._retired:
+            return
+
+        if self._running:
+            return
+
+        await self.close()
+
+    async def _opened(
+        self, identity: McpClientIdentity
+    ) -> tuple[McpConnection, IdentifiedSession]:
+        """Подключение для запроса личности identity и его сессия: пробу
+        версии делает один запрос, остальные её ждут."""
+        if self._version is not None:
+            return await self._settled(identity)
+
+        async with self._probing:
+            return await self._settled(identity)
+
+    async def _settled(
+        self, identity: McpClientIdentity
+    ) -> tuple[McpConnection, IdentifiedSession]:
+        """Подключение порта с сервером современной редакции либо
+        подключение личности с сервером прежней; подключение, на котором
+        сервер согласовал современную редакцию, становится подключением
+        порта."""
+        version = self._version
+        if version in MODERN_PROTOCOL_VERSIONS:
+            return self._line, await self._open(self._line, version)
+
+        key = identity.key()
+        connection = self._sessions.get(key)
+        if connection is None:
+            connection = self._connection(identity)
+            self._sessions[key] = connection
+
+        session = await self._open(connection, None)
+        negotiated = session.protocol_version
+        self._version = negotiated
+        if negotiated not in MODERN_PROTOCOL_VERSIONS:
+            return connection, session
+
+        self._sessions.pop(key)
+        await self._line.close()
+        self._line = connection
+
+        return connection, session
+
+    async def _open(
+        self, connection: McpConnection, version: str | None
+    ) -> IdentifiedSession:
+        """Открытая сессия подключения; неудача подключения называет сервер."""
+        try:
+            return await connection.open(version)
+        except McpClientError as exc:
+            msg = f"mcp server {self._name!r}: {exc}"
+            raise McpClientError(msg) from exc
+
+    def _asking(
+        self, line: IdentifiedSession, identity: McpClientIdentity
+    ) -> IdentifiedSession:
+        """Сессия запроса личности identity: у сервера современной редакции
+        — лёгкая сессия над подключением порта, у прежней — сессия личности
+        сама."""
+        if line.protocol_version not in MODERN_PROTOCOL_VERSIONS:
+            return line
+
+        return RequestSession(line, identity)
+
+    def _left(
+        self, error: MCPError, refusal: HttpRefusal, line: IdentifiedSession
+    ) -> bool:
+        """Сервер опроверг версию, которую порт за ним помнит: отказ -32022
+        либо, на современный запрос, 400 без современной ошибки — так
+        отвечает сервер прежней редакции."""
+        if error.error.code == mt.UNSUPPORTED_PROTOCOL_VERSION:
+            return True
+
+        if line.protocol_version not in MODERN_PROTOCOL_VERSIONS:
+            return False
+
+        if not refusal.bad_request():
+            return False
+
+        return error.error.code not in self.RECOGNIZED
+
+    async def _forget(
+        self, connection: McpConnection, action: str, error: MCPError
+    ) -> None:
+        """Версия, которую сервер опроверг, забыта: подключение закрыто,
+        следующий запрос согласует её заново."""
+        logger.info(
+            "%s: %s was refused for the protocol version %s, the version is "
+            "negotiated again: MCP error %s: %s",
+            self._label,
+            action,
+            self._version,
+            error.error.code,
+            error.error.message,
+        )
+        self._version = None
+        await connection.close()
+
+    async def _unanswered(
+        self,
+        error: MCPError,
+        action: str,
+        refusal: HttpRefusal,
+        connection: McpConnection,
+    ) -> None:
+        """Запрос action остался без ответа — оборвалось подключение, вышел
+        срок или сервер забыл сессию (её требует открыть заново 2025-11-25):
+        наверх уходит McpClientError, оборванное и забытое подключение
+        закрывается, следующий запрос подключится заново. Иную ошибку MCP
+        вызывающий поднимает как есть."""
+        if refusal.forgotten():
+            await connection.close()
+            msg = (
+                f"{self._label}: {action} was refused, the server forgot the "
+                "session of the client (HTTP 404 with Mcp-Session-Id); the next "
+                f"request opens a new session: {refusal.text(error)}"
+            )
+            raise McpClientError(msg) from error
+
+        if error.error.code == mt.CONNECTION_CLOSED:
+            await connection.close()
+            msg = f"{self._label}: {action} got no answer: {refusal.text(error)}"
+            raise McpClientError(msg) from error
+
+        if error.error.code == mt.REQUEST_TIMEOUT:
+            msg = f"{self._label}: {action} got no answer: {refusal.text(error)}"
+            raise McpClientError(msg) from error
+
+    async def _discovered(
+        self,
+        identity: McpClientIdentity,
+        connection: McpConnection,
+        session: IdentifiedSession,
+    ) -> mt.DiscoverResult:
+        """Описание сервера: у современной редакции — server/discover через
+        кэш личности, у прежней — initialize её сессии."""
+        version = session.protocol_version
+        if version not in MODERN_PROTOCOL_VERSIONS:
+            return self._initialized(session)
+
+        cache = connection.cache(identity)
+        hit = await cache.read(CachedMethod.DISCOVER, "")
+        if isinstance(hit, mt.DiscoverResult):
+            return hit
+
+        generation = cache.capture(CachedMethod.DISCOVER, "")
+        raw = await session.send_discover(version)
+        discovered = mt.DiscoverResult.model_validate(raw)
+        await cache.write(CachedMethod.DISCOVER, "", discovered, generation, "use")
+
+        return discovered
+
+    def _initialized(self, session: IdentifiedSession) -> mt.DiscoverResult:
+        """Описание сервера прежней редакции из initialize его сессии: без
+        потоков subscriptions/listen — без смены списков и подписки; срока
+        свежести у него нет.
 
         Ошибки:
         McpClientError — сессия без согласованной версии и возможностей.
@@ -1723,9 +2505,6 @@ class McpToolServer(McpToolPort):
             msg = f"{self._label}: the session has no capabilities of the server"
             raise McpClientError(msg)
 
-        if version not in MODERN_PROTOCOL_VERSIONS:
-            capabilities = self._unheard(capabilities)
-
         meta: dict[str, Any] = {}
         info = session.server_info
         if info is not None:
@@ -1734,7 +2513,7 @@ class McpToolServer(McpToolPort):
 
         return mt.DiscoverResult(
             supported_versions=[version],
-            capabilities=capabilities,
+            capabilities=self._unheard(capabilities),
             instructions=session.instructions,
             _meta=meta,
         )
@@ -1760,185 +2539,102 @@ class McpToolServer(McpToolPort):
 
         return capabilities.model_copy(update=update)
 
-    def discovered(self) -> mt.DiscoverResult:
-        discovered = self._discovered
-        if discovered is None:
-            msg = (
-                f"{self._label}: discovered() is called before open(), the "
-                "server is not discovered yet"
-            )
-            raise McpClientError(msg)
+    async def _listed(
+        self,
+        identity: McpClientIdentity,
+        mode: Literal["use", "refresh"],
+        connection: McpConnection,
+        session: IdentifiedSession,
+    ) -> mt.ListToolsResult:
+        """Список инструментов через кэш личности: свежий — без запроса;
+        refresh — перечитывается в любом случае."""
+        cache = connection.cache(identity)
+        if mode == "use":
+            hit = await cache.read(CachedMethod.TOOLS, "")
+            if isinstance(hit, mt.ListToolsResult):
+                return hit
 
-        return discovered
-
-    def files(self) -> McpFiles | None:
-        """Файлы workspace на сервере; None — сервер их не объявил."""
-        return self._files
-
-    def journal_files(self) -> McpFiles | None:
-        """Журналы вызовов сервера целыми файлами: канал журнала лежит по
-        пути `{run}/{node}/{channel}`; None — сервер такого не объявил."""
-        return self._journal_files
-
-    def nested_calls(self) -> NestedCallsFeature | None:
-        return self._nested
-
-    def apps(self) -> McpServerApps | None:
-        """Секция apps записи сервера; None — сервер показывает итоги
-        блоками, приложения его не рисуются."""
-        return self._config.apps
-
-    def journal_links(self) -> JournalLinks | None:
-        """Адреса каналов журнала сервера; None — сервер журнала не объявил."""
-        return self._links
-
-    async def _open_journal_files(self) -> None:
-        if self._journal_files is not None:
-            await self._journal_files.close()
-            self._journal_files = None
-
-        declared = self._journal
-        if declared is None:
-            return
-
-        endpoint = self._config.endpoint
-        if not isinstance(endpoint, HttpAddress):
-            return
-
-        self._journal_files = McpFiles(self._name, endpoint, declared.path)
-
-    async def _open_files(self) -> None:
-        """Клиент файлов по расширению FilesFeature; прежний закрывается."""
-        if self._files is not None:
-            await self._files.close()
-            self._files = None
-
-        declared = self._files_feature
-        if declared is None:
-            return
-
-        endpoint = self._config.endpoint
-        if not isinstance(endpoint, HttpAddress):
-            return
-
-        # пути файлов в результатах инструментов сервера начинаются с его
-        # каталога workspace: по нему клиент разбирает их в ключи файлов
-        WorkspaceMount.configure(declared.workspace)
-        self._files = McpFiles(self._name, endpoint, declared.path)
-
-    async def _open_openings(self, session: ClientSession) -> None:
-        """Слежение за журналами идущих вызовов: сервер объявил журнал и
-        смену списка ресурсов; прежнее закрывается."""
-        if self._openings is not None:
-            await self._openings.close()
-            self._openings = None
-
-        links = self._links
-        if links is None:
-            return
-
-        capabilities = session.server_capabilities
-        if capabilities is None:
-            return
-
-        resources = capabilities.resources
-        if resources is None:
-            return
-
-        if not resources.list_changed:
-            return
-
-        self._openings = JournalOpenings(self._label, self._watching, links)
-
-    async def close(self) -> None:
-        if self._openings is not None:
-            await self._openings.close()
-            self._openings = None
-
-        await self._watching.close()
-
-        if self._files is not None:
-            await self._files.close()
-            self._files = None
-
-        if self._journal_files is not None:
-            await self._journal_files.close()
-            self._journal_files = None
-
-        await self._connection.close()
-
-    @property
-    def opened(self) -> bool:
-        """Список инструментов прочитан: порт можно отдавать модели."""
-        return self._tools is not None
-
-    def tools(self) -> Sequence[mt.Tool]:
-        if self._tools is None:
-            msg = (
-                f"{self._label}: tools() is called before open(), the tool list "
-                "is not read yet"
-            )
-            raise McpClientError(msg)
-
-        return self._tools
-
-    async def refreshed(self) -> Sequence[mt.Tool]:
-        session = await self._session()
-        listed: list[mt.Tool] = []
-        cursor: str | None = None
-        try:
-            while True:
-                params = mt.PaginatedRequestParams(cursor=cursor)
-                page = await session.list_tools(params=params)
-                listed.extend(page.tools)
-                cursor = page.next_cursor
-                if not cursor:
-                    break
-        except MCPError as exc:
-            await self._unanswered(exc, "tools/list")
-            msg = (
-                f"{self._label}: tools/list was refused with MCP error "
-                f"{exc.error.code}: {exc.error.message}"
-            )
-            raise McpClientError(msg) from exc
-        except ValidationError as exc:
-            msg = f"{self._label}: tools/list answered off the schema: {exc}"
-            raise McpClientError(msg) from exc
-
-        self._tools = listed
+        generation = cache.capture(CachedMethod.TOOLS, "")
+        listed = await self._pages(session)
+        await cache.write(CachedMethod.TOOLS, "", listed, generation, mode)
 
         return listed
 
-    def features(self) -> Mapping[str, Mapping[str, object]]:
-        return self._features
+    async def _pages(self, session: IdentifiedSession) -> mt.ListToolsResult:
+        """Список инструментов целиком: страницы курсора одним ответом; срок
+        — наименьший из сроков страниц, область — private, если хоть одна
+        страница private."""
+        first = await session.list_tools(params=mt.PaginatedRequestParams())
+        cursor = first.next_cursor
+        if not cursor:
+            return first
 
-    async def call(
+        tools = list(first.tools)
+        ttl_ms = first.ttl_ms
+        scope = first.cache_scope
+        while cursor:
+            page = await session.list_tools(
+                params=mt.PaginatedRequestParams(cursor=cursor)
+            )
+            tools.extend(page.tools)
+            ttl_ms = min(ttl_ms, page.ttl_ms)
+            if page.cache_scope == "private":
+                scope = "private"
+
+            cursor = page.next_cursor
+
+        update: dict[str, Any] = {"tools": tools, "next_cursor": None}
+        if "ttl_ms" in first.model_fields_set:
+            update["ttl_ms"] = ttl_ms
+            update["cache_scope"] = scope
+
+        return first.model_copy(update=update)
+
+    async def _tool_call(
         self,
+        identity: McpClientIdentity,
+        connection: McpConnection,
+        session: IdentifiedSession,
         params: mt.CallToolRequestParams,
-        progress: ProgressHeard | None,
-        journals: JournalHeard | None,
+        card: mt.Tool | None,
     ) -> mt.CallToolResult | mt.InputRequiredResult:
-        session = await self._session()
-        token = uuid4().hex
-        meta = self._sent_meta(params.meta, token)
-        opened: AbstractAsyncContextManager[None] = nullcontext()
-        if journals is not None and self._openings is not None:
-            opened = self._openings.expecting(token, journals)
+        """tools/call сессией запроса; отказ HeaderMismatch — сессии не
+        хватило схемы инструмента для заголовков Mcp-Param-*: список
+        перечитывается, вызов повторяется один раз."""
+        if card is not None:
+            session.absorbed([card])
 
         try:
-            async with self._heard(token, progress), opened:
-                return await session.call_tool(
-                    params.name,
-                    params.arguments,
-                    read_timeout_seconds=self._config.call_timeout_sec,
-                    input_responses=params.input_responses,
-                    request_state=params.request_state,
-                    meta=meta,
-                    allow_input_required=True,
-                )
+            return await self._asked(session, params)
         except MCPError as exc:
-            await self._unanswered(exc, f"tools/call of {params.name!r}")
-            raise
+            if exc.error.code != mt.HEADER_MISMATCH:
+                raise
+
+            logger.info(
+                "%s: tools/call of %r was refused for its Mcp-Param headers, "
+                "the tool list is read again: %s",
+                self._label,
+                params.name,
+                exc.error.message,
+            )
+
+        await self._listed(identity, "refresh", connection, session)
+
+        return await self._asked(session, params)
+
+    async def _asked(
+        self, session: IdentifiedSession, params: mt.CallToolRequestParams
+    ) -> mt.CallToolResult | mt.InputRequiredResult:
+        try:
+            return await session.call_tool(
+                params.name,
+                params.arguments,
+                read_timeout_seconds=self._config.call_timeout_sec,
+                input_responses=params.input_responses,
+                request_state=params.request_state,
+                meta=params.meta,
+                allow_input_required=True,
+            )
         except RuntimeError as exc:
             msg = (
                 f"{self._label}: tools/call of {params.name!r} was answered off "
@@ -1947,83 +2643,17 @@ class McpToolServer(McpToolPort):
             )
             raise McpClientError(msg) from exc
 
-    async def list_resources(
-        self, params: mt.PaginatedRequestParams | None
-    ) -> mt.ListResourcesResult:
-        """resources/list одной страницей курсора params; ответ как есть.
-
-        Ошибки:
-        McpClientError — сервер недоступен или ответил не по схеме.
-        MCPError — сервер ответил ошибкой MCP.
-        """
-        request = mt.ListResourcesRequest(params=params)
-
-        return await self._request(request, mt.ListResourcesResult, None)
-
-    async def list_resource_templates(
-        self, params: mt.PaginatedRequestParams | None
-    ) -> mt.ListResourceTemplatesResult:
-        """resources/templates/list одной страницей; ответ как есть.
-
-        Ошибки: те же, что у list_resources.
-        """
-        request = mt.ListResourceTemplatesRequest(params=params)
-
-        return await self._request(request, mt.ListResourceTemplatesResult, None)
-
-    async def read_resource(
-        self, params: mt.ReadResourceRequestParams, progress: ProgressHeard | None
-    ) -> mt.ReadResourceResult | mt.InputRequiredResult:
-        """resources/read: содержимое ресурса либо просьба о вводе
-        (input_required), с ответами на прежнюю, если они есть в params.
-
-        Ошибки: те же, что у list_resources.
-        """
-        request = mt.ReadResourceRequest(params=params)
-
-        return await self._request(request, self.READ_REPLY, progress)
-
-    async def list_prompts(
-        self, params: mt.PaginatedRequestParams | None
-    ) -> mt.ListPromptsResult:
-        """prompts/list одной страницей; ответ как есть.
-
-        Ошибки: те же, что у list_resources.
-        """
-        request = mt.ListPromptsRequest(params=params)
-
-        return await self._request(request, mt.ListPromptsResult, None)
-
-    async def get_prompt(
-        self, params: mt.GetPromptRequestParams, progress: ProgressHeard | None
-    ) -> mt.GetPromptResult | mt.InputRequiredResult:
-        """prompts/get: сообщения промпта либо просьба о вводе.
-
-        Ошибки: те же, что у list_resources.
-        """
-        request = mt.GetPromptRequest(params=params)
-
-        return await self._request(request, self.PROMPT_REPLY, progress)
-
-    async def complete(self, params: mt.CompleteRequestParams) -> mt.CompleteResult:
-        """completion/complete: варианты значения аргумента промпта или
-        шаблона ресурса.
-
-        Ошибки: те же, что у list_resources.
-        """
-        request = mt.CompleteRequest(params=params)
-
-        return await self._request(request, mt.CompleteResult, None)
-
     async def _request(
         self,
+        client: McpClientIdentity,
         request: mt.ClientRequest,
         result: type[ResultT] | TypeAdapter[ResultT],
         progress: ProgressHeard | None,
     ) -> ResultT:
-        """Запрос request серверу со сроком вызова; ход запроса — progress
-        под своим токеном прогресса клиента вместо токена запроса."""
-        session = await self._session()
+        """Запрос request клиента client серверу со сроком вызова; ход
+        запроса — progress под своим токеном прогресса клиента вместо
+        токена запроса."""
+        identity = self._speaking(client)
         token = uuid4().hex
         sent = request
         params = request.params
@@ -2033,27 +2663,25 @@ class McpToolServer(McpToolPort):
                 update={"params": params.model_copy(update={"meta": meta})}
             )
 
-        try:
-            async with self._heard(token, progress):
+        async def send(
+            connection: McpConnection, session: IdentifiedSession
+        ) -> ResultT:
+            async with self._heard(connection, token, progress):
                 return await session.send_request(
                     sent,
                     result,
                     request_read_timeout_seconds=self._config.call_timeout_sec,
                 )
-        except MCPError as exc:
-            await self._unanswered(exc, request.method)
-            raise
-        except ValidationError as exc:
-            msg = f"{self._label}: {request.method} answered off the schema: {exc}"
-            raise McpClientError(msg) from exc
+
+        return await self._exchange(identity, request.method, send)
 
     def _sent_meta(
         self, meta: mt.RequestParamsMeta | None, token: str
     ) -> mt.RequestParamsMeta:
         """_meta запроса серверу: ключи запроса как есть, кроме токена
         прогресса — у запроса свой токен клиента token, его слушает
-        соединение — и уровня логов: логов сервера клиент не несёт. Ключи
-        личности клиента ставит сессия."""
+        подключение — и уровня логов: логов сервера клиент не несёт. Ключи
+        личности клиента ставит сессия запроса."""
         sent = mt.RequestParamsMeta(progress_token=token)
         if meta is None:
             return sent
@@ -2067,117 +2695,64 @@ class McpToolServer(McpToolPort):
         return sent
 
     def _heard(
-        self, token: mt.ProgressToken, progress: ProgressHeard | None
+        self,
+        connection: McpConnection,
+        token: mt.ProgressToken,
+        progress: ProgressHeard | None,
     ) -> AbstractAsyncContextManager[None]:
         if progress is None:
             return nullcontext()
 
-        return self._connection.listening(token, progress)
+        return connection.listening(token, progress)
 
-    async def _session(self) -> ClientSession:
-        """Открытая сессия сервера; неудача подключения называет сервер."""
-        try:
-            return await self._connection.open()
-        except McpClientError as exc:
-            msg = f"mcp server {self._name!r}: {exc}"
-            raise McpClientError(msg) from exc
+    async def _expecting(
+        self, client: McpClientIdentity, token: str, journals: JournalHeard
+    ) -> AbstractAsyncContextManager[None]:
+        """Слежение за журналами вызова с токеном token, если сервер объявил
+        журнал и смену списка ресурсов."""
+        openings = await self._journal_openings(client)
+        if openings is None:
+            return nullcontext()
 
-    async def _unanswered(self, error: MCPError, action: str) -> None:
-        """Запрос action остался без ответа — оборвалась сессия, вышел срок
-        или сервер забыл сессию: соединение закрывается, следующий запрос
-        подключится заново, а наверх уходит McpClientError. Иную ошибку MCP
-        вызывающий поднимает как есть."""
-        if self._connection.forgotten():
-            await self._connection.close()
-            msg = (
-                f"{self._label}: {action} was refused, the server forgot the "
-                "session of the client (HTTP 404 with Mcp-Session-Id); the next "
-                f"request opens a new session: {self._causes.text(error)}"
-            )
-            raise McpClientError(msg) from error
+        return openings.expecting(token, journals)
 
-        closed = error.error.code == mt.CONNECTION_CLOSED
-        expired = error.error.code == mt.REQUEST_TIMEOUT
-        unanswered = closed or expired
-        if not unanswered:
-            return
+    async def _journal_openings(
+        self, client: McpClientIdentity
+    ) -> JournalOpenings | None:
+        if self._openings is not None:
+            return self._openings
 
-        await self._connection.close()
-        msg = f"{self._label}: {action} got no answer: {self._causes.text(error)}"
-        raise McpClientError(msg) from error
-
-    @asynccontextmanager
-    async def listen(
-        self, notifications: mt.SubscriptionFilter
-    ) -> AsyncGenerator[Subscription, None]:
-        """Поток subscriptions/listen сессии этого порта на события
-        notifications; поток живёт, пока открыт контекст, подтверждённый
-        сервером набор — subscription.honored.
-
-        Ошибки:
-        McpClientError — сервер недоступен, подписку не поддерживает или
-            поток оборвался без штатного закрытия.
-        MCPError — сервер отказал в подписке ошибкой MCP.
-        """
-        uris: list[str] = []
-        if notifications.resource_subscriptions is not None:
-            uris.extend(notifications.resource_subscriptions)
-
-        label = f"{self._label}: subscriptions/listen"
-        session = await self._session()
-        try:
-            async with listen(
-                session,
-                tools_list_changed=bool(notifications.tools_list_changed),
-                prompts_list_changed=bool(notifications.prompts_list_changed),
-                resources_list_changed=bool(notifications.resources_list_changed),
-                resource_subscriptions=uris,
-            ) as subscription:
-                yield subscription
-        except ListenNotSupportedError as exc:
-            msg = f"{label}: the negotiated protocol has no listen streams: {exc}"
-            raise McpClientError(msg) from exc
-        except MCPError as exc:
-            await self._unanswered(exc, "subscriptions/listen")
-            raise
-        except SubscriptionLost as exc:
-            msg = f"{label}: the stream ended without the server's close: {exc}"
-            raise McpClientError(msg) from exc
-        except TimeoutError as exc:
-            msg = f"{label}: the server did not acknowledge the subscription: {exc}"
-            raise McpClientError(msg) from exc
-
-    async def journal(self, request: JournalRead) -> StreamSlice | None:
-        """Окно журнала вызова ресурсом resources/read; None — сервер журнал
-        не объявлял либо такого журнала у него нет.
-
-        Ошибки:
-        McpClientError — сервер недоступен или ответил не окном журнала.
-        """
-        links = self._links
+        described = await self.described(client)
+        links = described.links()
         if links is None:
             return None
 
-        uri = links.uri(request)
-        what = (
-            f"{self._label}: reading the journal of call {request.node!r} in run "
-            f"{request.run!r} as resource {uri}"
-        )
-        params = mt.ReadResourceRequestParams(uri=uri)
-        try:
-            read = await self.read_resource(params, None)
-        except MCPError as exc:
-            if exc.error.code in self.NOT_FOUND:
-                return None
+        resources = described.result.capabilities.resources
+        if resources is None:
+            return None
 
-            msg = f"{what} failed: MCP error {exc.error.code}: {exc.error.message}"
-            raise McpClientError(msg) from exc
+        if not resources.list_changed:
+            return None
 
-        if not isinstance(read, mt.ReadResourceResult):
-            msg = f"{what}: the server asked for more input, expected a window"
-            raise McpClientError(msg)
+        self._openings = JournalOpenings(self._label, self._watching, links)
 
-        return self._window(what, read)
+        return self._openings
+
+    def _files_at(self, path: str) -> McpFiles | None:
+        """Клиент файлов сервера под маршрутом path; у сервера не по HTTP
+        файлов нет."""
+        endpoint = self._config.endpoint
+        if not isinstance(endpoint, HttpAddress):
+            return None
+
+        files = self._files.get(path)
+        if files is not None:
+            return files
+
+        files = McpFiles(self._name, endpoint, path)
+        self._files[path] = files
+
+        return files
 
     def _window(self, what: str, read: mt.ReadResourceResult) -> StreamSlice:
         """Окно журнала из содержимого ресурса: текст и координаты окна в
@@ -2210,41 +2785,24 @@ class McpToolServer(McpToolPort):
             msg = f"{what}: the window place is off the journal window: {exc}"
             raise McpClientError(msg) from exc
 
-    def _declared(self, session: ClientSession) -> dict[str, Mapping[str, object]]:
-        """Расширения boba среди расширений, объявленных сервером."""
-        capabilities = session.server_capabilities
-        if capabilities is None:
-            return {}
-
-        extensions = capabilities.extensions
-        if not extensions:
-            return {}
-
-        declared: dict[str, Mapping[str, object]] = {}
-        for feature, settings in extensions.items():
-            if not feature.startswith(self.FEATURE_PREFIX):
-                continue
-
-            declared[feature] = dict(settings)
-
-        return declared
-
 
 class McpServers:
-    """MCP-серверы клиента: порты по имени сервера, пользователю и личности
-    клиента.
+    """MCP-серверы клиента: порты по имени сервера и пользователю.
 
-    Создаётся сборкой приложения из секции [mcp]. Сервер с общей
-    авторизацией подключается один раз на процесс и личность клиента,
-    сервер с личной (proxy) — от имени каждого пользователя; оба при первом
-    обращении к ним. port() отдаёт открытый порт сервера от личности самого
-    чата (OWN), relayed() — от личности агента, чьи запросы ретранслирует
-    чат. Сервер, который не ответил, отказывает ошибкой McpClientError тому,
-    кто его позвал, и следующее обращение подключает его заново.
+    Создаётся сборкой приложения из секции [mcp]. Порт сервера с общей
+    авторизацией — один на процесс, сервера с личной (proxy) — свой у
+    каждого пользователя: кэши ответов с cacheScope private не делятся
+    между контекстами авторизации. Личность клиента порт принимает каждым
+    запросом: собственные запросы чата идут от личности OWN, ретранслятор —
+    от личности агента. Порт подключается при первом запросе; сервер,
+    который не ответил, отказывает ошибкой McpClientError тому, кто его
+    позвал, и следующий запрос подключает его заново. Давно не нужный
+    личный порт вытесняется и закрывается, как только через него кончатся
+    идущие запросы.
     """
 
     KEEP: ClassVar[int] = 256
-    """Сколько личных подключений держать; давно не нужные закрываются."""
+    """Сколько личных портов держать."""
 
     OWN: ClassVar[McpClientIdentity] = McpClientIdentity(
         info=mt.Implementation(name="boba-aid", version="1"),
@@ -2254,9 +2812,8 @@ class McpServers:
 
     def __init__(self, config: McpServersConfig) -> None:
         self._configs = dict(config.servers)
-        self._names = McpToolNames()
-        self._shared: dict[tuple[str, str], McpToolServer] = {}
-        self._personal: OrderedDict[tuple[str, McpCaller, str], McpToolServer]
+        self._shared: dict[str, McpToolServer] = {}
+        self._personal: OrderedDict[tuple[str, McpCaller], McpToolServer]
         self._personal = OrderedDict()
 
     async def stop(self) -> None:
@@ -2265,6 +2822,19 @@ class McpServers:
 
         for server in self._personal.values():
             await server.close()
+
+    def served(self, name: str) -> bool:
+        """Сервер name назван в [mcp.servers]."""
+        return name in self._configs
+
+    def apps(self, name: str) -> McpServerApps | None:
+        """Секция apps сервера name; None — сервер не назван либо
+        показывает итоги блоками, приложения его не рисуются."""
+        config = self._configs.get(name)
+        if config is None:
+            return None
+
+        return config.apps
 
     async def journal(
         self, server: str, caller: McpCaller, request: JournalRead
@@ -2284,44 +2854,51 @@ class McpServers:
 
     async def files(self, server: str, caller: McpCaller) -> McpFiles | None:
         """Файлы workspace на сервере server от имени caller; None — сервер
-        не назван в [mcp.servers] или файлов не объявил."""
+        не назван в [mcp.servers] или файлов не объявил.
+
+        Ошибки:
+        McpClientError — сервер недоступен.
+        """
         if server not in self._configs:
             return None
 
         port = await self.port(server, caller)
 
-        return port.files()
+        return await port.files()
+
+    async def workspace(self, server: str, caller: McpCaller) -> str | None:
+        """Каталог workspace сервера server для caller; None — сервер не
+        назван в [mcp.servers] или файлов не объявил.
+
+        Ошибки:
+        McpClientError — сервер недоступен.
+        """
+        if server not in self._configs:
+            return None
+
+        port = await self.port(server, caller)
+
+        return await port.workspace()
 
     async def journal_files(self, server: str, caller: McpCaller) -> McpFiles | None:
         """Журналы вызовов сервера server целыми файлами от имени caller;
-        None — сервер не назван или такого не объявил."""
+        None — сервер не назван или такого не объявил.
+
+        Ошибки:
+        McpClientError — сервер недоступен.
+        """
         if server not in self._configs:
             return None
 
         port = await self.port(server, caller)
 
-        return port.journal_files()
+        return await port.journal_files()
 
     async def port(self, name: str, caller: McpCaller) -> McpToolServer:
-        """Открытый порт сервера name для пользователя caller от личности
-        чата: общий либо его личный.
+        """Порт сервера name для пользователя caller: общий либо его личный.
 
         Ошибки:
-        McpClientError — имя не названо в [mcp.servers] либо сервер
-            недоступен или не прошёл подключение.
-        """
-        return await self.relayed(name, caller, self.OWN)
-
-    async def relayed(
-        self, name: str, caller: McpCaller, identity: McpClientIdentity
-    ) -> McpToolServer:
-        """Открытый порт сервера name для пользователя caller от личности
-        identity: так чат ретранслирует запросы агента с его clientInfo и
-        clientCapabilities.
-
-        Ошибки:
-        McpClientError — имя не названо в [mcp.servers] либо сервер
-            недоступен или не прошёл подключение.
+        McpClientError — имя не названо в [mcp.servers].
         """
         config = self._configs.get(name)
         if config is None:
@@ -2331,39 +2908,23 @@ class McpServers:
             )
             raise McpClientError(msg)
 
-        server = await self._held(name, config, caller, identity)
-        if not server.opened:
-            await server.open()
-
-        return server
-
-    async def _held(
-        self,
-        name: str,
-        config: McpServerConfig,
-        caller: McpCaller,
-        identity: McpClientIdentity,
-    ) -> McpToolServer:
-        """Порт сервера из подключений клиента; нового — заводит."""
-        client = identity.key()
         if not config.endpoint.personal():
-            shared = (name, client)
-            server = self._shared.get(shared)
-            if server is None:
-                server = McpToolServer(name, config, identity)
-                self._shared[shared] = server
+            shared = self._shared.get(name)
+            if shared is None:
+                shared = McpToolServer(name, config)
+                self._shared[name] = shared
 
-            return server
+            return shared
 
-        key = (name, caller, client)
+        key = (name, caller)
         server = self._personal.get(key)
         if server is None:
-            server = McpToolServer(name, config.on_behalf_of(caller), identity)
+            server = McpToolServer(name, config.on_behalf_of(caller))
             self._personal[key] = server
 
         self._personal.move_to_end(key)
         while len(self._personal) > self.KEEP:
             _stale, evicted = self._personal.popitem(last=False)
-            await evicted.close()
+            await evicted.retire()
 
         return server

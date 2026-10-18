@@ -36,7 +36,7 @@ from pydantic import BaseModel, ConfigDict, SecretStr, ValidationError
 from standard_server import StandardServer
 
 from boba.auth.config import ProxyAuthConfig
-from boba.canvas.keys import ObjectKey, ThreadDir
+from boba.canvas.keys import ObjectKey, ThreadDir, WorkspaceMount
 from boba.canvas.storage import StorageNotFoundError
 from boba.config import bind
 from boba.connections.sealed import ConnectionSeal, SealedConnection, SealFeature
@@ -102,9 +102,9 @@ class Edition(StrEnum):
     LEGACY = "2025-11-25"
 
 
-def _tools_of(port: McpToolServer) -> list[str]:
+async def _tools_of(port: McpToolServer) -> list[str]:
     """Имена инструментов обычного сервера согласованной редакции."""
-    if port.discovered().supported_versions == [Edition.LEGACY.value]:
+    if (await port.described(OWN)).result.supported_versions == [Edition.LEGACY.value]:
         return TestFailureStand.LEGACY_TOOLS
 
     return TestFailureStand.STANDARD_TOOLS
@@ -117,11 +117,12 @@ def _legacy(slot: AppsSlot, server: AppServer) -> HttpEndpoint:
 
 
 CALLER = McpCaller(login="alice", roles=frozenset({"dev"}))
+OWN = McpServers.OWN
 
 
-def _stdout(port: McpToolServer, reply: mt.CallToolResult) -> JournalRead:
+async def _stdout(port: McpToolServer, reply: mt.CallToolResult) -> JournalRead:
     """Адрес канала stdout журнала вызова по ссылке в итоге."""
-    links = port.journal_links()
+    links = (await port.described(OWN)).links()
     if links is None:
         raise AssertionError("the server declares its journal")
 
@@ -165,8 +166,8 @@ async def served(
     edition_endpoint: HttpEndpoint | StdioCommand,
 ) -> AsyncIterator[McpToolServer]:
     """Открытый порт обычного сервера редакции параметра."""
-    server = McpToolServer("standard", _config(edition_endpoint), McpServers.OWN)
-    await server.open()
+    server = McpToolServer("standard", _config(edition_endpoint))
+    await server.described(OWN)
     try:
         yield server
     finally:
@@ -176,8 +177,8 @@ async def served(
 @pytest.fixture
 async def stdio() -> AsyncIterator[McpToolServer]:
     endpoint = StdioCommand(command=sys.executable, args=(str(SERVER), "stdio"))
-    server = McpToolServer("standard", _config(endpoint), McpServers.OWN)
-    await server.open()
+    server = McpToolServer("standard", _config(endpoint))
+    await server.described(OWN)
     try:
         yield server
     finally:
@@ -185,13 +186,16 @@ async def stdio() -> AsyncIterator[McpToolServer]:
 
 
 @pytest.fixture
-def http_port() -> Iterator[int]:
+def http_port(request: pytest.FixtureRequest) -> Iterator[int]:
+    """Порт обычного сервера по HTTP; косвенный параметр — добавочные
+    аргументы сервера (--ttl-ms, --retired)."""
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
 
+    extra: tuple[str, ...] = getattr(request, "param", ())
     process = subprocess.Popen(
-        [sys.executable, str(SERVER), "streamable-http", str(port)]
+        [sys.executable, str(SERVER), "streamable-http", str(port), *extra]
     )
     try:
         yield port
@@ -205,10 +209,10 @@ async def http(http_port: int) -> AsyncIterator[McpToolServer]:
     endpoint = HttpEndpoint(
         scheme="http", host="127.0.0.1", port=http_port, path="/mcp"
     )
-    server = McpToolServer("standard", _config(endpoint), McpServers.OWN)
+    server = McpToolServer("standard", _config(endpoint))
     for _ in range(100):
         try:
-            await server.open()
+            await server.described(OWN)
         except McpClientError:
             await asyncio.sleep(0.1)
             continue
@@ -252,17 +256,19 @@ class TestStandardServer:
     async def test_tools_are_listed_with_the_server_schema(
         self, served: McpToolServer
     ) -> None:
-        names = sorted(tool.name for tool in served.tools())
-        if names != _tools_of(served):
+        names = sorted(tool.name for tool in (await served.tools(OWN)).tools)
+        if names != await _tools_of(served):
             raise AssertionError(f"the server's tools as listed: {names}")
 
-        add = next(tool for tool in served.tools() if tool.name == "add")
+        add = next(
+            tool for tool in (await served.tools(OWN)).tools if tool.name == "add"
+        )
         if sorted(add.input_schema["properties"]) != ["a", "b"]:
             raise AssertionError(f"the server's schema is kept: {add.input_schema}")
 
     async def test_annotations_become_hints(self, served: McpToolServer) -> None:
         stubs = McpToolStubs()
-        by_name = {tool.name: tool for tool in served.tools()}
+        by_name = {tool.name: tool for tool in (await served.tools(OWN)).tools}
 
         assert stubs.hints_of(by_name["add"]) == ToolHints(
             read_only=True, destructive=True
@@ -275,12 +281,10 @@ class TestStandardServer:
     async def test_standard_server_declares_no_boba_features(
         self, served: McpToolServer
     ) -> None:
-        if served.features():
-            raise AssertionError(
-                f"a foreign server has no features: {served.features()}"
-            )
+        if (await served.described(OWN)).features():
+            raise AssertionError("a foreign server has no features")
 
-        if served.nested_calls() is not None:
+        if (await served.described(OWN)).nested_calls() is not None:
             raise AssertionError("a foreign server declares no nested calls")
 
     async def test_extension_settings_off_the_model_do_not_fail_the_open(
@@ -292,10 +296,10 @@ class TestStandardServer:
         endpoint = StdioCommand(
             command=sys.executable, args=(str(SERVER), "stdio-extended")
         )
-        server = McpToolServer("standard", _config(endpoint), McpServers.OWN)
-        await server.open()
+        server = McpToolServer("standard", _config(endpoint))
+        await server.described(OWN)
         try:
-            links = server.journal_links()
+            links = (await server.described(OWN)).links()
         finally:
             await server.close()
 
@@ -307,13 +311,13 @@ class TestStandardServer:
         if read != expected:
             raise AssertionError(f"the template of the server is used: {read}")
 
-        if server.nested_calls() is not None:
+        if (await server.described(OWN)).nested_calls() is not None:
             raise AssertionError("broken nested calls settings declare nothing")
 
     async def test_text_result_becomes_a_tool_message(
         self, served: McpToolServer
     ) -> None:
-        reply = await served.call(_call("add", a=2, b=3), None, None)
+        reply = await served.call(OWN, _call("add", a=2, b=3), None, None, None)
         result = McpResults().result("add", "c1", reply)
 
         if not isinstance(result, MarkdownResult) or result.text != "5":
@@ -322,7 +326,7 @@ class TestStandardServer:
     async def test_tool_error_is_an_error_message_with_the_server_text(
         self, served: McpToolServer
     ) -> None:
-        reply = await served.call(_call("broken"), None, None)
+        reply = await served.call(OWN, _call("broken"), None, None, None)
         result = McpResults().result("broken", "c1", reply)
 
         if not isinstance(reply, mt.CallToolResult) or not reply.is_error:
@@ -337,7 +341,7 @@ class TestStandardServer:
     async def test_non_text_block_is_named_in_the_text(
         self, served: McpToolServer
     ) -> None:
-        reply = await served.call(_call("picture"), None, None)
+        reply = await served.call(OWN, _call("picture"), None, None, None)
         text = McpResults().result("picture", "c1", reply).llm_view()
 
         if text != "[image image/png]":
@@ -346,7 +350,7 @@ class TestStandardServer:
     async def test_model_gets_its_blocks_text_and_marks(
         self, served: McpToolServer
     ) -> None:
-        reply = await served.call(_call("blocks", empty=False), None, None)
+        reply = await served.call(OWN, _call("blocks", empty=False), None, None, None)
         text = McpResults().result("blocks", "c1", reply).llm_view()
 
         expected = (
@@ -362,14 +366,14 @@ class TestStandardServer:
     async def test_structured_content_without_blocks_is_json(
         self, served: McpToolServer
     ) -> None:
-        reply = await served.call(_call("blocks", empty=True), None, None)
+        reply = await served.call(OWN, _call("blocks", empty=True), None, None, None)
         text = McpResults().result("blocks", "c1", reply).llm_view()
 
         if text != '{\n  "rows": 2\n}':
             raise AssertionError(f"structured content becomes JSON text: {text}")
 
     async def test_input_required_comes_back_as_is(self, stdio: McpToolServer) -> None:
-        reply = await stdio.call(_call("ask", refuse=False), None, None)
+        reply = await stdio.call(OWN, _call("ask", refuse=False), None, None, None)
 
         if not isinstance(reply, mt.InputRequiredResult):
             raise AssertionError(f"the request for input is returned: {reply}")
@@ -380,7 +384,7 @@ class TestStandardServer:
         self, stdio: McpToolServer
     ) -> None:
         """Форма сервера и повтор вызова с ответом и тем же requestState."""
-        asked = await stdio.call(_call("load_rows", rows=10), None, None)
+        asked = await stdio.call(OWN, _call("load_rows", rows=10), None, None, None)
         if not isinstance(asked, mt.InputRequiredResult):
             raise AssertionError(f"the server asks for the target first: {asked}")
 
@@ -396,7 +400,7 @@ class TestStandardServer:
                 "request_state": asked.request_state,
             }
         )
-        reply = await stdio.call(again, None, None)
+        reply = await stdio.call(OWN, again, None, None, None)
         text = McpResults().result("load_rows", "c1", reply).llm_view()
 
         if text != "loaded 10 rows into sales.orders":
@@ -404,7 +408,7 @@ class TestStandardServer:
 
     async def test_server_error_goes_up_as_is(self, served: McpToolServer) -> None:
         with pytest.raises(MCPError) as refused:
-            await served.call(_call("ask", refuse=True), None, None)
+            await served.call(OWN, _call("ask", refuse=True), None, None, None)
 
         error = refused.value.error
         if error.code != mt.INVALID_PARAMS or "refuses" not in error.message:
@@ -417,7 +421,7 @@ class TestStandardServer:
     ) -> None:
         heard = HeardCall()
 
-        await served.call(_call("progress", steps=2), heard, None)
+        await served.call(OWN, _call("progress", steps=2), None, heard, None)
 
         expected = [(1.0, 2.0, "step 1 of 2"), (2.0, 2.0, "step 2 of 2")]
         if heard.reports != expected:
@@ -426,7 +430,7 @@ class TestStandardServer:
 
 class TestStandardServerOverHttp:
     async def test_call_goes_over_streamable_http(self, http: McpToolServer) -> None:
-        reply = await http.call(_call("shout", text="over http"), None, None)
+        reply = await http.call(OWN, _call("shout", text="over http"), None, None, None)
         text = McpResults().result("shout", "c1", reply).llm_view()
 
         if text != "OVER HTTP":
@@ -436,24 +440,17 @@ class TestStandardServerOverHttp:
 class TestUnreachableServer:
     async def test_missing_command_is_a_client_error(self) -> None:
         endpoint = StdioCommand(command="/nonexistent/mcp-server")
-        server = McpToolServer("ghost", _config(endpoint), McpServers.OWN)
+        server = McpToolServer("ghost", _config(endpoint))
 
         with pytest.raises(McpClientError, match=r"ghost|nonexistent"):
-            await server.open()
-
-    async def test_tools_before_open_is_a_client_error(self) -> None:
-        endpoint = StdioCommand(command=sys.executable, args=(str(SERVER), "stdio"))
-        server = McpToolServer("standard", _config(endpoint), McpServers.OWN)
-
-        with pytest.raises(McpClientError, match="before open"):
-            server.tools()
+            await server.described(OWN)
 
     async def test_lost_session_fails_the_call_and_the_next_call_reconnects(
         self, http_port: int, http: McpToolServer
     ) -> None:
         await http.close()
 
-        reply = await http.call(_call("add", a=4, b=4), None, None)
+        reply = await http.call(OWN, _call("add", a=4, b=4), None, None, None)
         text = McpResults().result("add", "c1", reply).llm_view()
 
         if text != "8":
@@ -481,15 +478,15 @@ class TestPublicServers:
         """deepwiki отвечает только на initialize: клиент согласует с ним
         2025-11-25 и работает тем же портом."""
         await self._reachable(self.DEEPWIKI)
-        server = McpToolServer("deepwiki", _config(self.DEEPWIKI), McpServers.OWN)
-        await server.open()
+        server = McpToolServer("deepwiki", _config(self.DEEPWIKI))
+        await server.described(OWN)
         try:
-            versions = server.discovered().supported_versions
-            names = [tool.name for tool in server.tools()]
+            versions = (await server.described(OWN)).result.supported_versions
+            names = [tool.name for tool in (await server.tools(OWN)).tools]
             asked = _call(
                 "read_wiki_structure", repoName="modelcontextprotocol/python-sdk"
             )
-            reply = await server.call(asked, None, None)
+            reply = await server.call(OWN, asked, None, None, None)
         finally:
             await server.close()
 
@@ -504,22 +501,30 @@ class TestPublicServers:
 
     async def test_context7_lists_tools_and_answers_a_call(self) -> None:
         await self._reachable(self.CONTEXT7)
-        server = McpToolServer("context7", _config(self.CONTEXT7), McpServers.OWN)
-        await server.open()
+        server = McpToolServer("context7", _config(self.CONTEXT7))
+        await server.described(OWN)
         try:
-            if server.discovered().supported_versions != [Edition.MODERN.value]:
-                raise AssertionError(f"context7 stays modern: {server.discovered()}")
+            if (await server.described(OWN)).result.supported_versions != [
+                Edition.MODERN.value
+            ]:
+                raise AssertionError(
+                    f"context7 stays modern: {(await server.described(OWN)).result}"
+                )
 
-            names = [tool.name for tool in server.tools()]
+            names = [tool.name for tool in (await server.tools(OWN)).tools]
             if "resolve-library-id" not in names:
                 raise AssertionError(f"context7 offers its tools: {names}")
 
-            tool = next(t for t in server.tools() if t.name == "resolve-library-id")
+            tool = next(
+                t
+                for t in (await server.tools(OWN)).tools
+                if t.name == "resolve-library-id"
+            )
             args: dict[str, object] = {}
             for name in tool.input_schema.get("required", []):
                 args[name] = "fastapi"
 
-            reply = await server.call(_call(tool.name, **args), None, None)
+            reply = await server.call(OWN, _call(tool.name, **args), None, None, None)
         finally:
             await server.close()
 
@@ -562,7 +567,7 @@ class TestServersOfASession:
         servers = self._servers()
         try:
             port = await servers.port("standard", CALLER)
-            names = sorted(tool.name for tool in port.tools())
+            names = sorted(tool.name for tool in (await port.tools(OWN)).tools)
         finally:
             await servers.stop()
 
@@ -576,19 +581,21 @@ class TestServersOfASession:
         servers = self._servers(late=_config(StdioCommand(command=str(command))))
         try:
             other = await servers.port("standard", CALLER)
+            late = await servers.port("late", CALLER)
             with pytest.raises(McpClientError, match="'late'"):
-                await servers.port("late", CALLER)
+                await late.tools(OWN)
 
             command.write_text(f"#!/bin/sh\nexec {sys.executable} {SERVER} stdio\n")
             command.chmod(0o755)
-            late = await servers.port("late", CALLER)
+            others = await other.tools(OWN)
+            came_up = await late.tools(OWN)
         finally:
             await servers.stop()
 
-        if not other.tools():
+        if not others.tools:
             raise AssertionError("a dead server does not hold back other servers")
-        if not late.tools():
-            raise AssertionError("the next session connects the server that came up")
+        if not came_up.tools:
+            raise AssertionError("the next request connects the server that came up")
 
     async def test_undeclared_server_name_is_an_error(self) -> None:
         servers = self._servers()
@@ -615,8 +622,8 @@ class TestServerApps:
         self, endpoint: HttpEndpoint | StdioCommand, apps: McpServerApps | None
     ) -> McpToolServer:
         config = _config(endpoint).model_copy(update={"apps": apps})
-        server = McpToolServer("standard", config, McpServers.OWN)
-        await server.open()
+        server = McpToolServer("standard", config)
+        await server.described(OWN)
 
         return server
 
@@ -626,8 +633,12 @@ class TestServerApps:
         drawn = await self._open(edition_endpoint, self.SANDBOX)
         plain = await self._open(edition_endpoint, None)
         try:
-            by_app = await drawn.call(_call("orders", rows=self.ROWS), None, None)
-            by_blocks = await plain.call(_call("orders", rows=self.ROWS), None, None)
+            by_app = await drawn.call(
+                OWN, _call("orders", rows=self.ROWS), None, None, None
+            )
+            by_blocks = await plain.call(
+                OWN, _call("orders", rows=self.ROWS), None, None, None
+            )
         finally:
             await drawn.close()
             await plain.close()
@@ -644,7 +655,7 @@ class TestServerApps:
         server = await self._open(edition_endpoint, self.SANDBOX)
         try:
             read = await server.read_resource(
-                mt.ReadResourceRequestParams(uri=self.ORDERS), None
+                OWN, mt.ReadResourceRequestParams(uri=self.ORDERS), None
             )
         finally:
             await server.close()
@@ -664,7 +675,7 @@ class TestServerApps:
     ) -> None:
         missing = mt.ReadResourceRequestParams(uri="ui://standard/missing.html")
         with pytest.raises(MCPError):
-            await served.read_resource(missing, None)
+            await served.read_resource(OWN, missing, None)
 
     def test_sandboxes_of_two_servers_on_one_origin_are_refused(self) -> None:
         endpoint = StdioCommand(command=sys.executable, args=(str(SERVER), "stdio"))
@@ -749,10 +760,10 @@ def boba_mcp_stand(tmp_path: Path) -> Iterator[BobaMcpStand]:
 
 @pytest.fixture
 async def dag(boba_mcp_stand: BobaMcpStand) -> AsyncIterator[McpToolServer]:
-    server = McpToolServer("boba", _config(boba_mcp_stand.endpoint()), McpServers.OWN)
+    server = McpToolServer("boba", _config(boba_mcp_stand.endpoint()))
     for _ in range(150):
         try:
-            await server.open()
+            await server.described(OWN)
         except McpClientError:
             await asyncio.sleep(0.2)
             continue
@@ -774,7 +785,9 @@ class TestScopeOfTheCall:
     async def test_scope_of_the_call_travels_to_the_server(
         self, dag: McpToolServer
     ) -> None:
-        reply = await dag.call(_call("fake_scope", thread_id=self.THREAD), None, None)
+        reply = await dag.call(
+            OWN, _call("fake_scope", thread_id=self.THREAD), None, None, None
+        )
         text = McpResults().result("fake_scope", "c1", reply).llm_view()
 
         if self.THREAD not in text:
@@ -792,12 +805,26 @@ class TestWorkspaceFiles:
         for start in range(0, len(payload), size):
             yield payload[start : start + size]
 
+    async def test_workspace_of_the_server_stays_with_its_port(
+        self, dag: McpToolServer
+    ) -> None:
+        """Каталог workspace сервера — часть его описания у порта: клиент не
+        кладёт его в общую точку процесса, ключи файлов итогов разбирает тот,
+        кто держит порт этого сервера."""
+        workspace = await dag.workspace()
+        files = await dag.files()
+
+        assert workspace == "/workspace"
+        assert files is not None
+        with pytest.raises(RuntimeError, match="not configured"):
+            WorkspaceMount.path()
+
     async def test_uploaded_stream_is_read_back_by_window(
         self, dag: McpToolServer
     ) -> None:
-        files = dag.files()
+        files = await dag.files()
         if files is None:
-            raise AssertionError(f"the server declares its files: {dag.features()}")
+            raise AssertionError("the server declares its files")
 
         payload = bytes(range(256)) * 2048
         key = ObjectKey(user_id="-", thread_id=self.SCOPE, name="data.bin")
@@ -824,9 +851,9 @@ class TestWorkspaceFiles:
     async def test_missing_file_is_a_storage_not_found_error(
         self, dag: McpToolServer
     ) -> None:
-        files = dag.files()
+        files = await dag.files()
         if files is None:
-            raise AssertionError(f"the server declares its files: {dag.features()}")
+            raise AssertionError("the server declares its files")
 
         key = ObjectKey(user_id="-", thread_id=self.SCOPE, name="ghost.bin")
         with pytest.raises(StorageNotFoundError, match="404"):
@@ -841,9 +868,9 @@ class TestWorkspaceFiles:
     ) -> None:
         """Удаление области одной операцией: файлы всех её каталогов уходят,
         повторное удаление пустой области — успех."""
-        files = dag.files()
+        files = await dag.files()
         if files is None:
-            raise AssertionError(f"the server declares its files: {dag.features()}")
+            raise AssertionError("the server declares its files")
 
         scope = str(uuid4())
         upload = ObjectKey(user_id="-", thread_id=scope, name="a.txt")
@@ -864,7 +891,7 @@ class TestWorkspaceFiles:
         """Файлы шлёт сам клиент: инструмент адреса загрузки сервер помечает
         видимым только интерфейсу, модели его прячет ретранслятор."""
         visible: dict[str, object] = {}
-        for tool in dag.tools():
+        for tool in (await dag.tools(OWN)).tools:
             meta = tool.meta
             if meta is None:
                 continue
@@ -885,7 +912,9 @@ class TestBobaMcpJournal:
     ) -> None:
         heard = HeardCall()
 
-        reply = await dag.call(_call("fake_progress", steps=2, pause=0.6), heard, None)
+        reply = await dag.call(
+            OWN, _call("fake_progress", steps=2, pause=0.6), None, heard, None
+        )
 
         if not isinstance(reply, mt.CallToolResult) or reply.is_error:
             raise AssertionError(f"the call succeeds: {reply}")
@@ -897,16 +926,16 @@ class TestBobaMcpJournal:
     ) -> None:
         """Уведомление доходит до вызова целиком: ключ узла связки лежит в
         _meta под ключом, объявленным расширением вложенных вызовов."""
-        nested = dag.nested_calls()
+        nested = (await dag.described(OWN)).nested_calls()
         if nested is None:
-            raise AssertionError(f"the server declares nested calls: {dag.features()}")
+            raise AssertionError("the server declares nested calls")
 
         nodes = [
             {"key": "left", "tool": "fake_progress", "args": {"steps": 2, "pause": 0.6}}
         ]
         heard = HeardCall()
 
-        reply = await dag.call(_call("workflow", nodes=nodes), heard, None)
+        reply = await dag.call(OWN, _call("workflow", nodes=nodes), None, heard, None)
 
         if not isinstance(reply, mt.CallToolResult) or reply.is_error:
             raise AssertionError(f"the workflow succeeds: {reply}")
@@ -923,11 +952,13 @@ class TestBobaMcpJournal:
         читает resources/read."""
         heard = HeardCall()
         journals = HeardJournals()
-        reply = await dag.call(_call("fake_echo", text="hi", repeat=2), heard, journals)
+        reply = await dag.call(
+            OWN, _call("fake_echo", text="hi", repeat=2), None, heard, journals
+        )
         if not isinstance(reply, mt.CallToolResult):
             raise AssertionError(f"the call is answered: {reply}")
 
-        stdout = _stdout(dag, reply)
+        stdout = await _stdout(dag, reply)
         window = await dag.journal(stdout)
 
         if heard.reports:
@@ -943,15 +974,17 @@ class TestBobaMcpJournal:
     async def test_journal_channel_is_downloaded_whole_and_by_range(
         self, dag: McpToolServer
     ) -> None:
-        reply = await dag.call(_call("fake_echo", text="hi", repeat=2), None, None)
+        reply = await dag.call(
+            OWN, _call("fake_echo", text="hi", repeat=2), None, None, None
+        )
         if not isinstance(reply, mt.CallToolResult):
             raise AssertionError(f"the call is answered: {reply}")
 
-        files = dag.journal_files()
+        files = await dag.journal_files()
         if files is None:
             raise AssertionError(f"the journal is addressable: {reply}")
 
-        address = _stdout(dag, reply)
+        address = await _stdout(dag, reply)
         rel = f"{address.run}/{address.node}/{address.channel.value}"
         whole = await files.relay(rel, "")
         body = b"".join([chunk async for chunk in whole.chunks])
@@ -970,8 +1003,8 @@ class TestBobaMcpJournal:
             raise AssertionError(f"a range is relayed as 206: {part.status} {head!r}")
 
     async def test_missing_journal_is_no_window(self, dag: McpToolServer) -> None:
-        if JournalFeature.ID not in dag.features():
-            raise AssertionError(f"the journal is declared: {dag.features()}")
+        if JournalFeature.ID not in (await dag.described(OWN)).features():
+            raise AssertionError("the journal is declared")
 
         request = JournalRead(run="nope", node="nope", channel=ToolChannel.STDOUT)
         window = await dag.journal(request)
@@ -1024,13 +1057,18 @@ class TestSignInAsTheUser:
     async def _port(
         self, servers: McpServers, caller: McpCaller, name: str
     ) -> McpToolServer:
+        """Порт сервера name пользователя caller, когда стенд поднялся."""
+        port = await servers.port(name, caller)
         for _ in range(150):
             try:
-                return await servers.port(name, caller)
+                await port.described(OWN)
             except McpClientError:
                 await asyncio.sleep(0.2)
+                continue
 
-        return await servers.port(name, caller)
+            break
+
+        return port
 
     async def test_journal_growth_is_heard_only_by_its_caller(  # noqa: PLR0915 — один идущий вызов на все подписки
         self, boba_mcp_stand: BobaMcpStand
@@ -1048,12 +1086,12 @@ class TestSignInAsTheUser:
         try:
             port = await self._port(servers, owner, "boba")
             other = await self._port(servers, stranger, "boba")
-            links = port.journal_links()
+            links = (await port.described(OWN)).links()
             if links is None:
                 raise AssertionError("the server declares its journal")
 
             slow = _call("fake_progress", steps=8, pause=0.5)
-            running = asyncio.create_task(port.call(slow, heard, journals))
+            running = asyncio.create_task(port.call(OWN, slow, None, heard, journals))
             async with asyncio.timeout(30):
                 while not journals.opened:
                     await asyncio.sleep(0.05)
@@ -1069,21 +1107,21 @@ class TestSignInAsTheUser:
                     await asyncio.sleep(0.05)
 
             with pytest.raises(MCPError) as refused:
-                async with other.listen(self._channel(uri)):
+                async with other.listen(OWN, self._channel(uri)):
                     pass
 
             # у запуска нет такого вызова: журнала нет, подписка на него — отказ
             absent = links.uri(read.model_copy(update={"node": "no-such-call"}))
             with pytest.raises(MCPError) as missing:
-                async with port.listen(self._channel(absent)):
+                async with port.listen(OWN, self._channel(absent)):
                     pass
 
             with pytest.raises(MCPError) as alien:
-                async with port.listen(self._channel("file:///x")):
+                async with port.listen(OWN, self._channel("file:///x")):
                     pass
 
             channel = self._channel(uri)
-            async with asyncio.timeout(30), port.listen(channel) as subscription:
+            async with asyncio.timeout(30), port.listen(OWN, channel) as subscription:
                 async for event in subscription:
                     events.append(getattr(event, "uri", ""))
                     window = await port.journal(read)
@@ -1118,13 +1156,64 @@ class TestSignInAsTheUser:
         caller = McpCaller(login="ivanov", roles=frozenset({"dev"}))
         try:
             port = await self._port(servers, caller, "boba")
-            reply = await port.call(_call("fake_whoami"), None, None)
+            reply = await port.call(OWN, _call("fake_whoami"), None, None, None)
         finally:
             await servers.stop()
 
         text = McpResults().result("fake_whoami", "c1", reply).llm_view()
         if not text.startswith("ivanov|dev|"):
             raise AssertionError(f"the body sees the user and the roles: {text}")
+
+    async def test_evicted_port_lets_its_call_finish(
+        self, boba_mcp_stand: BobaMcpStand
+    ) -> None:
+        """Личный порт вытеснен, пока через него идёт вызов: вызов
+        доходит до конца, порт закрывается после него."""
+
+        class Few(McpServers):
+            KEEP: ClassVar[int] = 1
+
+        auth = self._auth(boba_mcp_stand, self.SECRET, self.CLIENT_SECRET)
+        endpoint = boba_mcp_stand.endpoint().model_copy(update={"auth": auth})
+        servers = Few(McpServersConfig(servers={"boba": _config(endpoint)}))
+        owner = McpCaller(login="ivanov", roles=frozenset({"dev"}))
+        other = McpCaller(login="petrov", roles=frozenset({"dev"}))
+        try:
+            port = await self._port(servers, owner, "boba")
+            slow = _call("fake_progress", steps=6, pause=0.5)
+            running = asyncio.create_task(port.call(OWN, slow, None, None, None))
+            await asyncio.sleep(1.0)
+            await self._port(servers, other, "boba")
+            reply = await running
+        finally:
+            await servers.stop()
+
+        assert isinstance(reply, mt.CallToolResult)
+        assert not reply.is_error, reply
+
+    async def test_private_lists_of_two_users_stay_apart(
+        self, boba_mcp_stand: BobaMcpStand
+    ) -> None:
+        """Список инструментов зависит от ролей токена и приходит private: у
+        каждого пользователя свой порт и свой кэш, описание — public."""
+        servers = self._servers(boba_mcp_stand, self.SECRET, self.CLIENT_SECRET)
+        wide = McpCaller(login="ivanov", roles=frozenset({"dev"}))
+        weak = McpCaller(login="petrov", roles=frozenset({"weak"}))
+        try:
+            wide_port = await self._port(servers, wide, "boba")
+            described = await wide_port.described(OWN)
+            wide_tools = await wide_port.tools(OWN)
+            weak_port = await self._port(servers, weak, "boba")
+            weak_tools = await weak_port.tools(OWN)
+        finally:
+            await servers.stop()
+
+        assert described.result.cache_scope == "public"
+        assert described.result.ttl_ms > 0
+        assert wide_tools.cache_scope == "private"
+        assert wide_tools.ttl_ms > 0
+        assert "fake_progress" in [tool.name for tool in wide_tools.tools]
+        assert "fake_progress" not in [tool.name for tool in weak_tools.tools]
 
     async def test_endpoint_gives_the_tools_of_its_profile(
         self, boba_mcp_stand: BobaMcpStand
@@ -1134,7 +1223,7 @@ class TestSignInAsTheUser:
         try:
             await self._port(servers, caller, "boba")
             port = await servers.port("narrow", caller)
-            names = sorted(tool.name for tool in port.tools())
+            names = sorted(tool.name for tool in (await port.tools(OWN)).tools)
         finally:
             await servers.stop()
 
@@ -1148,8 +1237,9 @@ class TestSignInAsTheUser:
         weak = McpCaller(login="petrov", roles=frozenset({"weak"}))
         try:
             await self._port(servers, weak, "boba")
+            narrow = await servers.port("narrow", weak)
             with pytest.raises(McpClientError, match=r"'narrow'.*HTTP 403"):
-                await servers.port("narrow", weak)
+                await narrow.described(OWN)
         finally:
             await servers.stop()
 
@@ -1163,8 +1253,9 @@ class TestSignInAsTheUser:
         caller = McpCaller(login="ivanov", roles=frozenset({"dev"}))
         try:
             await self._port(honest, caller, "boba")
+            port = await forged.port("boba", caller)
             with pytest.raises(McpClientError) as refused:
-                await forged.port("boba", caller)
+                await port.described(OWN)
         finally:
             await honest.stop()
             await forged.stop()
@@ -1188,8 +1279,9 @@ class TestSignInAsTheUser:
         caller = McpCaller(login="ivanov", roles=frozenset({"dev"}))
         try:
             await self._port(honest, caller, "boba")
+            port = await foreign.port("boba", caller)
             with pytest.raises(McpClientError) as refused:
-                await foreign.port("boba", caller)
+                await port.described(OWN)
         finally:
             await honest.stop()
             await foreign.stop()
@@ -1208,7 +1300,9 @@ class TestBobaMcpServer:
     вложенные вызовы, журнал, файлы."""
 
     async def test_result_carries_its_text(self, dag: McpToolServer) -> None:
-        reply = await dag.call(_call("fake_echo", text="hi", repeat=2), None, None)
+        reply = await dag.call(
+            OWN, _call("fake_echo", text="hi", repeat=2), None, None, None
+        )
         if not isinstance(reply, mt.CallToolResult) or reply.is_error:
             raise AssertionError(f"the call succeeds: {reply}")
 
@@ -1219,15 +1313,15 @@ class TestBobaMcpServer:
     async def test_nested_calls_name_the_workflow_offered_to_the_model(
         self, dag: McpToolServer
     ) -> None:
-        nested = dag.nested_calls()
+        nested = (await dag.described(OWN)).nested_calls()
         if nested is None:
-            raise AssertionError(f"the server declares nested calls: {dag.features()}")
+            raise AssertionError("the server declares nested calls")
 
         if nested != CallDag().feature():
             raise AssertionError(f"the declared shape is the workflow's: {nested}")
 
         names: list[str] = []
-        for tool in dag.tools():
+        for tool in (await dag.tools(OWN)).tools:
             names.append(tool.name)
 
         if nested.tool not in names:
@@ -1262,7 +1356,7 @@ class TestBobaMcpServer:
             },
         ]
 
-        reply = await dag.call(_call("workflow", nodes=nodes), None, None)
+        reply = await dag.call(OWN, _call("workflow", nodes=nodes), None, None, None)
 
         if not isinstance(reply, mt.CallToolResult) or reply.is_error:
             raise AssertionError(f"the workflow succeeds: {reply}")
@@ -1275,7 +1369,7 @@ class TestBobaMcpServer:
 
         stubs = McpToolStubs()
         cards: dict[str, ToolCard] = {}
-        for tool in dag.tools():
+        for tool in (await dag.tools(OWN)).tools:
             cards[tool.name] = stubs.card("boba", tool)
 
         if cards["workflow"].output != NestedCallsOutput.model_json_schema():
@@ -1287,16 +1381,22 @@ class TestBobaMcpServer:
         """Вид аргументов клиент выводит из схемы: у аргументов без типа
         содержимого особого вида нет, служебные параметры сервер не шлёт."""
         views = CallViews()
-        echo = next(tool for tool in dag.tools() if tool.name == "fake_echo")
+        echo = next(
+            tool for tool in (await dag.tools(OWN)).tools if tool.name == "fake_echo"
+        )
         if views.seen(echo.input_schema):
             raise AssertionError(f"plain arguments have no special view: {echo}")
 
-        workflow = next(tool for tool in dag.tools() if tool.name == "workflow")
+        workflow = next(
+            tool for tool in (await dag.tools(OWN)).tools if tool.name == "workflow"
+        )
         if views.seen(workflow.input_schema):
             raise AssertionError(f"a built-in node has no special view: {workflow}")
 
     async def test_failure_names_its_cause(self, dag: McpToolServer) -> None:
-        reply = await dag.call(_call("fake_echo", text="boom", repeat=1), None, None)
+        reply = await dag.call(
+            OWN, _call("fake_echo", text="boom", repeat=1), None, None, None
+        )
         if not isinstance(reply, mt.CallToolResult) or not reply.is_error:
             raise AssertionError(f"the server reports isError: {reply}")
 
@@ -1311,9 +1411,9 @@ class TestBobaMcpServer:
     ) -> None:
         """Ключ запечатывания сервер объявляет при подключении; значение,
         запечатанное им для вызывающего, тело получает профилем."""
-        declared = dag.features().get(SealFeature.ID)
+        declared = (await dag.described(OWN)).features().get(SealFeature.ID)
         if declared is None:
-            raise AssertionError(f"the server declares the seal key: {dag.features()}")
+            raise AssertionError("the server declares the seal key")
 
         profile = PostgresConfig.model_validate(
             {
@@ -1330,7 +1430,7 @@ class TestBobaMcpServer:
         value = ConnectionSeal(SealFeature.model_validate(declared).key).seal(sealed)
 
         reply = await dag.call(
-            _call("fake_connection_host", connection=value), None, None
+            OWN, _call("fake_connection_host", connection=value), None, None, None
         )
         result = McpResults().result("fake_connection_host", "c1", reply)
 
@@ -1341,7 +1441,7 @@ class TestBobaMcpServer:
         self, dag: McpToolServer
     ) -> None:
         reply = await dag.call(
-            _call("fake_connection_host", connection="main"), None, None
+            OWN, _call("fake_connection_host", connection="main"), None, None, None
         )
 
         if not isinstance(reply, mt.CallToolResult) or not reply.is_error:
@@ -1353,11 +1453,11 @@ class TestBobaMcpServer:
         endpoint = boba_mcp_stand.endpoint().model_copy(
             update={"auth": BearerAuth(token=SecretStr("stranger"))}
         )
-        server = McpToolServer("boba", _config(endpoint), McpServers.OWN)
+        server = McpToolServer("boba", _config(endpoint))
 
         for _ in range(150):
             try:
-                await server.open()
+                await server.described(OWN)
             except McpClientError as exc:
                 if "401" in str(exc):
                     return
@@ -1479,12 +1579,11 @@ class TestBobaMcpService:
         server = McpToolServer(
             "boba",
             _config(process.endpoint()).on_behalf_of(self.CALLER),
-            McpServers.OWN,
         )
         try:
             for _ in range(600):
                 try:
-                    await server.open()
+                    await server.described(OWN)
                 except McpClientError:
                     await asyncio.sleep(0.2)
                     continue
@@ -1538,12 +1637,12 @@ class TestBobaMcpService:
     async def test_plugin_tool_runs_in_the_service_process(
         self, service: McpToolServer
     ) -> None:
-        names = [tool.name for tool in service.tools()]
+        names = [tool.name for tool in (await service.tools(OWN)).tools]
         if "bash" not in names or "workflow" not in names:
             raise AssertionError(f"the service offers its plugin tools: {names}")
 
         reply = await service.call(
-            _call("bash", command="echo from the service"), None, None
+            OWN, _call("bash", command="echo from the service"), None, None, None
         )
         if not isinstance(reply, mt.CallToolResult):
             raise AssertionError(f"the call is answered: {reply}")
@@ -1569,13 +1668,25 @@ class TestBobaMcpService:
         results = McpResults()
 
         await service.call(
-            _call("bash", command="echo kept > note.txt", thread_id=first), None, None
+            OWN,
+            _call("bash", command="echo kept > note.txt", thread_id=first),
+            None,
+            None,
+            None,
         )
         again = await service.call(
-            _call("bash", command="cat note.txt", thread_id=first), None, None
+            OWN,
+            _call("bash", command="cat note.txt", thread_id=first),
+            None,
+            None,
+            None,
         )
         apart = await service.call(
-            _call("bash", command="cat note.txt", thread_id=other), None, None
+            OWN,
+            _call("bash", command="cat note.txt", thread_id=other),
+            None,
+            None,
+            None,
         )
 
         seen = results.result("bash", "c1", again).llm_view()
@@ -1605,8 +1716,12 @@ class TestFailureStand:
         "load_rows",
         "orders",
         "picture",
+        "pid",
         "progress",
         "refresh_orders",
+        "region",
+        "retire_modern",
+        "retitle",
         "shout",
         "show",
         "sleep_for",
@@ -1641,13 +1756,13 @@ class TestFailureStand:
             connect_timeout_sec=20.0,
             call_timeout_sec=call_timeout_sec,
         )
-        server = McpToolServer("standard", config, McpServers.OWN)
-        await server.open()
+        server = McpToolServer("standard", config)
+        await server.described(OWN)
 
         return server
 
     async def test_large_result_arrives_whole(self, served: McpToolServer) -> None:
-        reply = await served.call(_call("large", size=200_000), None, None)
+        reply = await served.call(OWN, _call("large", size=200_000), None, None, None)
         text = McpResults().result("large", "c1", reply).llm_view()
 
         assert len(text) == 200_000
@@ -1658,7 +1773,9 @@ class TestFailureStand:
         server = await self._open(edition_endpoint, call_timeout_sec=1.0)
         try:
             with pytest.raises(McpClientError, match="'sleep_for' got no answer"):
-                await server.call(_call("sleep_for", seconds=5.0), None, None)
+                await server.call(
+                    OWN, _call("sleep_for", seconds=5.0), None, None, None
+                )
         finally:
             await server.close()
 
@@ -1667,28 +1784,31 @@ class TestFailureStand:
         server = await self._open(endpoint, call_timeout_sec=10.0)
         try:
             with pytest.raises(McpClientError, match="'die' got no answer"):
-                await server.call(_call("die"), None, None)
+                await server.call(OWN, _call("die"), None, None, None)
         finally:
             await server.close()
 
-    async def test_tool_list_is_read_again_on_refresh(
-        self, served: McpToolServer
-    ) -> None:
-        """Список читается при открытии и заново по refreshed(): новый
-        инструмент сервера появляется в списке порта, вызов уходит серверу
-        как есть."""
-        before = sorted(tool.name for tool in served.tools())
-        toggled = await served.call(_call("toggle_extra"), None, None)
-        stale = sorted(tool.name for tool in served.tools())
-        fresh = await served.refreshed()
-        answered = await served.call(_call("extra"), None, None)
+    async def test_changed_tool_list_is_read_again(self, served: McpToolServer) -> None:
+        """Сервер сменил список: у современного без подсказок кэша ответ
+        свеж 0 и перечитывается при каждом обращении, у прежнего
+        notifications/tools/list_changed его сессии сбрасывает кэш. Новый
+        инструмент сразу в списке порта, вызов уходит серверу как есть."""
+        before = sorted(tool.name for tool in (await served.tools(OWN)).tools)
+        toggled = await served.call(OWN, _call("toggle_extra"), None, None, None)
+        fresh: list[str] = []
+        async with asyncio.timeout(10):
+            while "extra" not in fresh:
+                listed = await served.tools(OWN)
+                fresh = sorted(tool.name for tool in listed.tools)
+                await asyncio.sleep(0.05)
 
-        assert before == _tools_of(served)
+        answered = await served.call(OWN, _call("extra"), None, None, None)
+
+        assert before == await _tools_of(served)
         assert McpResults().result("toggle_extra", "c1", toggled).llm_view() == (
             "extra on: True"
         )
-        assert stale == before
-        assert sorted(tool.name for tool in fresh) == sorted([*before, "extra"])
+        assert fresh == sorted([*before, "extra"])
         assert McpResults().result("extra", "c2", answered).llm_view() == (
             "extra answered"
         )
@@ -1702,7 +1822,7 @@ class TestStandardEdition:
     async def test_discover_gives_capabilities_instructions_and_server_info(
         self, stdio: McpToolServer
     ) -> None:
-        discovered = stdio.discovered()
+        discovered = (await stdio.described(OWN)).result
         capabilities = discovered.capabilities
         meta = discovered.meta
         if meta is None:
@@ -1721,8 +1841,8 @@ class TestStandardEdition:
     async def test_resources_and_templates_are_listed(
         self, served: McpToolServer
     ) -> None:
-        resources = await served.list_resources(None)
-        templates = await served.list_resource_templates(None)
+        resources = await served.list_resources(OWN, None)
+        templates = await served.list_resource_templates(OWN, None)
 
         uris = sorted(str(resource.uri) for resource in resources.resources)
         patterns = sorted(item.uri_template for item in templates.resource_templates)
@@ -1734,9 +1854,11 @@ class TestStandardEdition:
     async def test_resources_are_read_as_text_and_blob(
         self, served: McpToolServer
     ) -> None:
-        notes = await served.read_resource(self._read(StandardServer.NOTES), None)
-        logo = await served.read_resource(self._read(StandardServer.LOGO), None)
-        item = await served.read_resource(self._read("standard://items/apple"), None)
+        notes = await served.read_resource(OWN, self._read(StandardServer.NOTES), None)
+        logo = await served.read_resource(OWN, self._read(StandardServer.LOGO), None)
+        item = await served.read_resource(
+            OWN, self._read("standard://items/apple"), None
+        )
 
         assert isinstance(notes, mt.ReadResourceResult)
         assert isinstance(logo, mt.ReadResourceResult)
@@ -1755,9 +1877,11 @@ class TestStandardEdition:
     async def test_resource_and_prompt_asking_for_input_are_given_as_they_are(
         self, stdio: McpToolServer
     ) -> None:
-        read = await stdio.read_resource(self._read("standard://ask/weather"), None)
+        read = await stdio.read_resource(
+            OWN, self._read("standard://ask/weather"), None
+        )
         asking = await stdio.get_prompt(
-            mt.GetPromptRequestParams(name="ask_prompt"), None
+            OWN, mt.GetPromptRequestParams(name="ask_prompt"), None
         )
 
         assert isinstance(read, mt.InputRequiredResult)
@@ -1767,18 +1891,18 @@ class TestStandardEdition:
     async def test_missing_resource_is_not_found(self, served: McpToolServer) -> None:
         """«Ресурса нет» — -32602 в 2026-07-28 и -32002 в прежних редакциях."""
         with pytest.raises(MCPError) as missing:
-            await served.read_resource(self._read("standard://nothing"), None)
+            await served.read_resource(OWN, self._read("standard://nothing"), None)
 
         assert missing.value.error.code in McpToolServer.NOT_FOUND
 
     async def test_prompts_are_listed_and_given_with_both_roles(
         self, served: McpToolServer
     ) -> None:
-        listed = await served.list_prompts(None)
+        listed = await served.list_prompts(OWN, None)
         params = mt.GetPromptRequestParams(
             name="greet", arguments={"name": "Bob", "style": "poem"}
         )
-        given = await served.get_prompt(params, None)
+        given = await served.get_prompt(OWN, params, None)
 
         names = sorted(prompt.name for prompt in listed.prompts)
         assert "greet" in names
@@ -1793,16 +1917,18 @@ class TestStandardEdition:
         self, served: McpToolServer
     ) -> None:
         styles = await served.complete(
+            OWN,
             mt.CompleteRequestParams(
                 ref=mt.PromptReference(name="greet"),
                 argument=mt.CompletionArgument(name="style", value="p"),
-            )
+            ),
         )
         items = await served.complete(
+            OWN,
             mt.CompleteRequestParams(
                 ref=mt.ResourceTemplateReference(uri="standard://items/{item}"),
                 argument=mt.CompletionArgument(name="item", value="ap"),
-            )
+            ),
         )
 
         assert styles.completion.values == ["plain", "poem", "pirate"]
@@ -1820,12 +1946,15 @@ class TestStandardEdition:
             resource_subscriptions=[StandardServer.COUNTER],
         )
         heard: list[str] = []
-        async with asyncio.timeout(30), stdio.listen(notifications) as subscription:
+        async with (
+            asyncio.timeout(30),
+            stdio.listen(OWN, notifications) as subscription,
+        ):
             honored = subscription.honored
-            await stdio.call(_call("toggle_extra"), None, None)
-            await stdio.call(_call("toggle_prompt"), None, None)
-            await stdio.call(_call("grow_resources"), None, None)
-            await stdio.call(_call("bump"), None, None)
+            await stdio.call(OWN, _call("toggle_extra"), None, None, None)
+            await stdio.call(OWN, _call("toggle_prompt"), None, None, None)
+            await stdio.call(OWN, _call("grow_resources"), None, None, None)
+            await stdio.call(OWN, _call("bump"), None, None, None)
             async for event in subscription:
                 heard.append(type(event).__name__)
                 if len(heard) == 4:
@@ -1839,8 +1968,11 @@ class TestStandardEdition:
             "ToolsListChanged",
         ]
 
-    async def test_relayed_identity_reaches_the_server(self) -> None:
-        """Порт от личности агента: сервер видит его clientInfo и
+    async def test_identity_of_each_request_reaches_one_server_process(
+        self,
+    ) -> None:
+        """Личность — свойство запроса: запросы агента и чата идут одним
+        процессом stdio-сервера, и сервер видит у каждого его clientInfo и
         возможности, а расширения чата — поверх них."""
         endpoint = StdioCommand(command=sys.executable, args=(str(SERVER), "stdio"))
         config = McpServersConfig(servers={"standard": _config(endpoint)})
@@ -1854,18 +1986,20 @@ class TestStandardEdition:
         )
         servers = McpServers(config)
         try:
-            relayed = await servers.relayed("standard", CALLER, agent)
-            own = await servers.port("standard", CALLER)
-            seen = await relayed.call(_call("client"), None, None)
-            ours = await relayed.call(_call("client"), None, None)
-            chat = await own.call(_call("client"), None, None)
+            port = await servers.port("standard", CALLER)
+            seen = await port.call(agent, _call("client"), None, None, None)
+            chat = await port.call(OWN, _call("client"), None, None, None)
+            by_agent = await port.call(agent, _call("pid"), None, None, None)
+            by_chat = await port.call(OWN, _call("pid"), None, None, None)
         finally:
             await servers.stop()
 
-        assert relayed is not own
         assert isinstance(seen, mt.CallToolResult)
-        assert isinstance(ours, mt.CallToolResult)
         assert isinstance(chat, mt.CallToolResult)
+        pids = McpResults()
+        assert pids.result("pid", "p1", by_agent).llm_view() == (
+            pids.result("pid", "p2", by_chat).llm_view()
+        )
         declared = json.loads(McpResults().result("client", "c1", seen).llm_view())
         mine = json.loads(McpResults().result("client", "c3", chat).llm_view())
         assert declared["info"] == {"name": "boba-cli", "version": "9.9"}
@@ -1901,8 +2035,8 @@ class TestHandshakeEdition:
     @pytest.fixture
     async def legacy(self, apps_slot: AppsSlot) -> AsyncIterator[McpToolServer]:
         endpoint = _legacy(apps_slot, AppServer.LEGACY)
-        server = McpToolServer("legacy", _config(endpoint), McpServers.OWN)
-        await server.open()
+        server = McpToolServer("legacy", _config(endpoint))
+        await server.described(OWN)
         try:
             yield server
         finally:
@@ -1911,7 +2045,7 @@ class TestHandshakeEdition:
     async def test_server_is_described_by_its_initialize_without_streams(
         self, legacy: McpToolServer
     ) -> None:
-        discovered = legacy.discovered()
+        discovered = (await legacy.described(OWN)).result
         capabilities = discovered.capabilities
         meta = discovered.meta
         if meta is None:
@@ -1946,11 +2080,11 @@ class TestHandshakeEdition:
         редакции называет свои версии отказом -32022 на server/discover, и
         клиент переходит на рукопожатие."""
         endpoint = _legacy(apps_slot, server)
-        port = McpToolServer(server.name.lower(), _config(endpoint), McpServers.OWN)
-        await port.open()
+        port = McpToolServer(server.name.lower(), _config(endpoint))
+        await port.described(OWN)
         try:
-            versions = port.discovered().supported_versions
-            reply = await port.call(_call("add", a=2, b=3), None, None)
+            versions = (await port.described(OWN)).result.supported_versions
+            reply = await port.call(OWN, _call("add", a=2, b=3), None, None, None)
         finally:
             await port.close()
 
@@ -1963,10 +2097,10 @@ class TestHandshakeEdition:
         """Общей версии нет: сервер знает только 2027-01-01 и рукопожатия не
         ведёт — подключение отказано, текст называет версии обеих сторон."""
         endpoint = _legacy(apps_slot, AppServer.AHEAD)
-        server = McpToolServer("ahead", _config(endpoint), McpServers.OWN)
+        server = McpToolServer("ahead", _config(endpoint))
         try:
             with pytest.raises(McpClientError) as refused:
-                await server.open()
+                await server.described(OWN)
         finally:
             await server.close()
 
@@ -1983,7 +2117,7 @@ class TestHandshakeEdition:
         notifications = mt.SubscriptionFilter(tools_list_changed=True)
 
         with pytest.raises(McpClientError, match="no listen streams"):
-            async with legacy.listen(notifications):
+            async with legacy.listen(OWN, notifications):
                 pass
 
     async def test_requests_of_the_server_and_the_envelope_stay_with_the_client(
@@ -2013,9 +2147,9 @@ class TestHandshakeEdition:
         traced = mt.CallToolRequestParams(name="client", arguments={}, _meta=meta)
         servers = McpServers(config)
         try:
-            relayed = await servers.relayed("legacy", CALLER, agent)
-            seen = await relayed.call(traced, None, None)
-            asked = await relayed.call(_call("ask", refuse=False), None, None)
+            port = await servers.port("legacy", CALLER)
+            seen = await port.call(agent, traced, None, None, None)
+            asked = await port.call(agent, _call("ask", refuse=False), None, None, None)
         finally:
             await servers.stop()
 
@@ -2035,13 +2169,13 @@ class TestHandshakeEdition:
     ) -> None:
         """Сервер забыл сессию (404 на запрос с Mcp-Session-Id): запрос
         кончается ошибкой с причиной, следующий открывает новую сессию."""
-        await legacy.call(_call("forget"), None, None)
+        await legacy.call(OWN, _call("forget"), None, None, None)
         await asyncio.sleep(0.5)
 
         with pytest.raises(McpClientError) as refused:
-            await legacy.call(_call("add", a=1, b=2), None, None)
+            await legacy.call(OWN, _call("add", a=1, b=2), None, None, None)
 
-        reply = await legacy.call(_call("add", a=2, b=2), None, None)
+        reply = await legacy.call(OWN, _call("add", a=2, b=2), None, None, None)
 
         assert "forgot the session" in str(refused.value)
         assert "HTTP 404 with Mcp-Session-Id" in str(refused.value)
@@ -2052,11 +2186,13 @@ class TestHandshakeEdition:
     ) -> None:
         command, *args = apps_slot.stdio()
         endpoint = StdioCommand(command=command, args=tuple(args))
-        server = McpToolServer("legacy", _config(endpoint), McpServers.OWN)
-        await server.open()
+        server = McpToolServer("legacy", _config(endpoint))
+        await server.described(OWN)
         try:
-            versions = server.discovered().supported_versions
-            reply = await server.call(_call("shout", text="over stdio"), None, None)
+            versions = (await server.described(OWN)).result.supported_versions
+            reply = await server.call(
+                OWN, _call("shout", text="over stdio"), None, None, None
+            )
         finally:
             await server.close()
 
@@ -2083,20 +2219,22 @@ class TestHandshakeEdition:
         config = _config(_legacy(apps_slot, app)).model_copy(
             update={"apps": TestServerApps.SANDBOX}
         )
-        server = McpToolServer("example", config, McpServers.OWN)
-        await server.open()
+        server = McpToolServer("example", config)
+        await server.described(OWN)
         try:
-            versions = server.discovered().supported_versions
-            listed = next(item for item in server.tools() if item.name == tool)
+            versions = (await server.described(OWN)).result.supported_versions
+            listed = next(
+                item for item in (await server.tools(OWN)).tools if item.name == tool
+            )
             meta = listed.meta
             if meta is None:
                 raise AssertionError(f"the tool names its app: {listed}")
 
             uri = meta["ui"]["resourceUri"]
             read = await server.read_resource(
-                mt.ReadResourceRequestParams(uri=uri), None
+                OWN, mt.ReadResourceRequestParams(uri=uri), None
             )
-            reply = await server.call(_call(tool, **arguments), None, None)
+            reply = await server.call(OWN, _call(tool, **arguments), None, None, None)
         finally:
             await server.close()
 
@@ -2108,3 +2246,187 @@ class TestHandshakeEdition:
         assert "<html" in content.text.lower()
         assert isinstance(reply, mt.CallToolResult)
         assert not reply.is_error, reply
+
+
+def _cached(ttl_ms: int) -> StdioCommand:
+    """Обычный сервер по stdio с подсказками кэша описания и списка."""
+    return StdioCommand(
+        command=sys.executable,
+        args=(str(SERVER), "stdio", "--ttl-ms", str(ttl_ms)),
+    )
+
+
+def _text(name: str, reply: mt.CallToolResult | mt.InputRequiredResult) -> str:
+    return McpResults().result(name, "c1", reply).llm_view()
+
+
+class TestCachedAnswers:
+    """Описание сервера и список инструментов порт держит кэшем SDK по
+    правилам caching: свежие ttlMs, перечитываются после срока, уведомление
+    о смене списка сбрасывает кэш раньше срока, срок отдаётся оставшимся."""
+
+    AGENT: ClassVar[McpClientIdentity] = McpClientIdentity(
+        info=mt.Implementation(name="boba-cli", version="9.9"),
+        capabilities=mt.ClientCapabilities(),
+    )
+
+    async def test_expired_description_is_read_again(self) -> None:
+        """Сервер сменил инструкции: пока описание свежо, порт отдаёт
+        прежнее, а после ttlMs перечитывает server/discover."""
+        server = McpToolServer("standard", _config(_cached(1000)))
+        try:
+            first = await server.described(OWN)
+            await server.call(OWN, _call("retitle", text="renamed"), None, None, None)
+            fresh = await server.described(OWN)
+            await asyncio.sleep(1.5)
+            again = await server.described(OWN)
+        finally:
+            await server.close()
+
+        assert first.result.instructions == StandardServer.INSTRUCTIONS
+        assert first.result.cache_scope == "public"
+        assert fresh.result.instructions == StandardServer.INSTRUCTIONS
+        assert again.result.instructions == "renamed"
+
+    async def test_served_answer_carries_the_time_it_has_left(self) -> None:
+        server = McpToolServer("standard", _config(_cached(60_000)))
+        try:
+            first = await server.tools(OWN)
+            await asyncio.sleep(1.2)
+            later = await server.tools(OWN)
+        finally:
+            await server.close()
+
+        assert first.cache_scope == "private"
+        assert 0 < later.ttl_ms <= 60_000 - 1000, later.ttl_ms
+
+    async def test_expired_tool_list_is_read_again(self) -> None:
+        """Сервер молча добавил инструмент: до срока список прежний, после
+        срока — новый."""
+        server = McpToolServer("standard", _config(_cached(1000)))
+        try:
+            before = await server.tools(OWN)
+            await server.call(OWN, _call("toggle_extra"), None, None, None)
+            stale = await server.tools(OWN)
+            await asyncio.sleep(1.5)
+            fresh = await server.tools(OWN)
+        finally:
+            await server.close()
+
+        names = [tool.name for tool in fresh.tools]
+        assert [tool.name for tool in stale.tools] == [
+            tool.name for tool in before.tools
+        ]
+        assert "extra" in names, names
+
+    async def test_list_change_of_the_listen_stream_resets_the_fresh_list(
+        self,
+    ) -> None:
+        """Список свеж ещё минуту, но событие смены списка потока
+        subscriptions/listen сбрасывает его раньше, чем событие получит
+        читатель: перечитанный список уже новый."""
+        server = McpToolServer("standard", _config(_cached(60_000)))
+        notifications = mt.SubscriptionFilter(tools_list_changed=True)
+        try:
+            await server.tools(OWN)
+            async with (
+                asyncio.timeout(30),
+                server.listen(OWN, notifications) as subscription,
+            ):
+                await server.call(OWN, _call("toggle_extra"), None, None, None)
+                async for _event in subscription:
+                    break
+
+            fresh = await server.tools(OWN)
+        finally:
+            await server.close()
+
+        assert "extra" in [tool.name for tool in fresh.tools]
+
+    async def test_lists_of_two_identities_are_cached_apart(self) -> None:
+        """Ответ зависит от возможностей запроса: кэш у каждой личности свой,
+        а процесс сервера у них один."""
+        server = McpToolServer("standard", _config(_cached(60_000)))
+        try:
+            await server.tools(OWN)
+            await server.call(OWN, _call("toggle_extra"), None, None, None)
+            own = await server.tools(OWN)
+            agent = await server.tools(self.AGENT)
+            by_agent = await server.call(self.AGENT, _call("pid"), None, None, None)
+            by_chat = await server.call(OWN, _call("pid"), None, None, None)
+        finally:
+            await server.close()
+
+        assert "extra" not in [tool.name for tool in own.tools]
+        assert "extra" in [tool.name for tool in agent.tools]
+        assert _text("pid", by_agent) == _text("pid", by_chat)
+
+
+class TestRenegotiation:
+    """Подключение заново и пересогласование: после переподключения
+    заголовки x-mcp-header идут по перечитанному списку, сервер, который
+    перестал говорить на 2026-07-28, согласуется заново, а отказ HTTP
+    одного запроса не достаётся соседнему."""
+
+    async def test_param_header_survives_a_reconnection(
+        self, http: McpToolServer
+    ) -> None:
+        """Подключение закрыто — кэша и схем сессии нет: сервер отвергает
+        вызов HeaderMismatch, порт перечитывает список и повторяет вызов."""
+        await http.close()
+
+        reply = await http.call(
+            OWN, _call("region", region="eu-west"), None, None, None
+        )
+
+        assert _text("region", reply) == "region eu-west"
+
+    async def test_card_of_the_call_gives_its_header_at_once(
+        self, http: McpToolServer
+    ) -> None:
+        listed = await http.tools(OWN)
+        card = next(tool for tool in listed.tools if tool.name == "region")
+        await http.close()
+
+        reply = await http.call(OWN, _call("region", region="eu"), card, None, None)
+
+        assert _text("region", reply) == "region eu"
+
+    @pytest.mark.parametrize("mode", ["version", "session"])
+    async def test_server_that_left_the_modern_edition_is_negotiated_again(
+        self, http: McpToolServer, mode: str
+    ) -> None:
+        """Сервер перестал говорить на 2026-07-28 — отказ -32022 либо 400
+        сервера прежней редакции: порт согласует версию заново
+        рукопожатием и повторяет запрос."""
+        await http.call(OWN, _call("retire_modern", mode=mode), None, None, None)
+
+        reply = await http.call(OWN, _call("add", a=2, b=3), None, None, None)
+        described = await http.described(OWN)
+
+        assert _text("add", reply) == "5"
+        assert described.result.supported_versions == [Edition.LEGACY.value]
+
+    @pytest.mark.parametrize("http_port", [("--retired", "version")], indirect=True)
+    async def test_refusal_of_one_request_stays_with_it(
+        self, http: McpToolServer
+    ) -> None:
+        """Запрос сессии прежней редакции получил 404 — сессия забыта и
+        закрыта; соседний запрос, оборванный закрытием, называет обрыв, а
+        не забытую сессию."""
+        slow = asyncio.create_task(
+            http.call(OWN, _call("sleep_for", seconds=3.0), None, None, None)
+        )
+        await asyncio.sleep(0.5)
+        with pytest.raises(McpClientError) as forgot:
+            await http.call(OWN, _call("lost"), None, None, None)
+
+        with pytest.raises(McpClientError) as cut:
+            await slow
+
+        reply = await http.call(OWN, _call("add", a=1, b=1), None, None, None)
+
+        assert "forgot the session" in str(forgot.value)
+        assert "forgot the session" not in str(cut.value), str(cut.value)
+        assert "got no answer" in str(cut.value), str(cut.value)
+        assert _text("add", reply) == "2"

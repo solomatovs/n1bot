@@ -87,7 +87,9 @@ class ThreadFiles:
 
     def __init__(self, subject: Subject, scope: Scope, root: WorkspaceRoot) -> None:
         root.apply()
-        self._scope = CanvasScope(user_id=subject.user_key, thread_id=scope.id)
+        self._scope = CanvasScope(
+            user_id=subject.user_key, thread_id=scope.id, workspace=root.path
+        )
 
     def existing(self, path: str) -> ObjectKey:
         """Ключ файла по пути из аргумента.

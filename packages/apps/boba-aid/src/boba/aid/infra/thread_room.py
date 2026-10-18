@@ -20,7 +20,7 @@ from boba.aid.chat.feed import TextClip
 from boba.aid.domain.fields import StepField, ThreadField
 from boba.aid.infra import providers
 from boba.aid.infra.session import SocketSend, current_session, session_source_ref
-from boba.aid.rendering.acp_view import UpdateView
+from boba.aid.rendering.acp_view import ServerCards, ToolMedia, UpdateView
 from boba.aid.rendering.chat_view import ChatView, LiveSink
 from boba.aid.rendering.renderer import (
     ChatRenderers,
@@ -33,6 +33,7 @@ from boba.canvas.canvas import CanvasSignal, SignalTransport
 from boba.identity.context import Scope
 from boba.identity.errors import InternalServiceError
 from boba.identity.locks import LockMode
+from boba.mcp_client.client import McpCaller
 from boba.messaging import (
     CanvasChanged,
     ChatSettingsChanged,
@@ -263,7 +264,8 @@ class ChatRoomSurface(RenderSurface):
             )
 
         # файлы итогов лежат у владельца треда: его вкладки и есть вкладки треда
-        owner = session_source_ref().of(anchor).user_id
+        session = session_source_ref().of(anchor)
+        owner = session.user_id
         if owner is None:
             raise InternalServiceError(
                 internal_detail=(
@@ -276,12 +278,15 @@ class ChatRoomSurface(RenderSurface):
         journals = root.resolved(providers.remote_journals)
         storage = root.resolved(providers.storage_provider)
         texts = root.resolved(providers.feed_text)
+        servers = root.resolved(providers.mcp_servers)
+        caller = McpCaller(login=session.identifier, roles=session.roles)
+        media = ToolMedia(ServerCards(servers, caller))
         view = ChatView(thread_id, LiveSink(), str(owner), storage, texts)
 
         return ChatRenderers.ensure(
             thread_id,
             root.resolved(runtime.message_bus),
-            UpdateView(view, thread_id, journals, root.resolved(providers.tool_media)),
+            UpdateView(view, thread_id, journals, media),
             root.resolved(runtime.payload_store),
             cls(anchor, thread_id),
             root.resolved(providers.thread_agents_index),

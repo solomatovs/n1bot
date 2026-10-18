@@ -5,8 +5,8 @@
 читает на старте; файл down — сервер недоступен и выходит сразу на старте.
 Потока subscriptions/listen у сервера нет, поэтому смену списков он не
 обещает (listChanged false): drift добавляет или убирает инструмент extra,
-publish добавляет ресурс notes — молча, без уведомлений; die обрывает
-процесс посреди вызова.
+publish добавляет ресурс notes, instruct меняет инструкции server/discover —
+молча, без уведомлений; die обрывает процесс посреди вызова.
 """
 
 import os
@@ -27,7 +27,7 @@ class DriftingFile(StrEnum):
 
 
 class DriftingServer:
-    """Сервер с инструментами echo, drift, publish и die."""
+    """Сервер с инструментами echo, drift, publish, instruct и die."""
 
     EXTRA: ClassVar[str] = "extra"
     NOTES: ClassVar[str] = "drifting://notes"
@@ -42,6 +42,7 @@ class DriftingServer:
         self._mcp.tool()(self.echo)
         self._mcp.tool()(self.drift)
         self._mcp.tool()(self.publish)
+        self._mcp.tool()(self.instruct)
         self._mcp.tool()(self.die)
 
     def echo(self, text: str) -> str:
@@ -70,6 +71,11 @@ class DriftingServer:
         )
         self._mcp.add_resource(notes)
         return self.NOTES
+
+    def instruct(self, text: str) -> str:
+        """Replaces the instructions of the server without notifying the client."""
+        self._mcp._lowlevel_server.instructions = text
+        return f"instructions: {text}"
 
     def die(self) -> str:
         """Kills the server in the middle of the call."""
