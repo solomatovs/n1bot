@@ -43,6 +43,7 @@ from boba.canvas.canvas import (
     OpenedCanvas,
 )
 from boba.canvas.keys import ObjectKey
+from boba.runtime.config import AppLayers
 from boba.runtime.storage import LocalStorageClient, LocalStorageConfig
 from boba.stand_core.context import CallStand
 from boba.toolkit.result import ContentMime, VisualResult
@@ -256,6 +257,7 @@ def storage(
         ),
         mount_dir="/tmp",  # noqa: S108
         binaries=TrustedBinaries(dirs=("/usr/bin", "/bin")),
+        interpreter=AppLayers.interpreter(),
     )
     client = LocalStorageClient(config)
     layer = _StorageOnlyLayer(client)

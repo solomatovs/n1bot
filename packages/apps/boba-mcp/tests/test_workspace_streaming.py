@@ -23,15 +23,16 @@ from typing import Any, ClassVar, Self
 import pytest
 
 from boba.canvas.storage import OpenedStream
+from boba.runtime.config import AppLayers
 from boba.runtime.storage import ImageStorageClient, LocalStorageConfig, StorageFactory
 from boba.stand.storage import StorageSeed
-from boba.workspace.launcher import FUSE_DEVICE, ReadWindow
+from boba.workspace.launcher import LayerPath, ReadWindow
 
 needs_fuse = pytest.mark.failif(
     shutil.which("bwrap") is None
     or shutil.which("fuse2fs") is None
     or shutil.which("mkfs.ext4") is None
-    or not os.path.exists(FUSE_DEVICE),
+    or not os.path.exists(LayerPath.FUSE),
     reason="нужны bwrap, fuse2fs, mkfs.ext4 и /dev/fuse",
 )
 
@@ -163,6 +164,7 @@ def storage(
             "copy_chunk_bytes": 1 << 20,
         },
         "binaries": {"dirs": _bin_dirs()},
+        "interpreter": AppLayers.interpreter(),
     }
     client = StorageFactory.create(LocalStorageConfig.model_validate(fields))
     if not (isinstance(client, ImageStorageClient)):
@@ -229,6 +231,7 @@ class TestStreamingReads:
                 "copy_chunk_bytes": 1 << 20,
             },
             "binaries": {"dirs": _bin_dirs()},
+            "interpreter": AppLayers.interpreter(),
         }
         client = StorageFactory.create(LocalStorageConfig.model_validate(fields))
 
@@ -421,6 +424,7 @@ class TestStreamingReads:
                 "copy_chunk_bytes": 1 << 20,
             },
             "binaries": {"dirs": _bin_dirs()},
+            "interpreter": AppLayers.interpreter(),
         }
         client = StorageFactory.create(LocalStorageConfig.model_validate(fields))
 

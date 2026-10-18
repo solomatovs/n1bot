@@ -707,6 +707,7 @@ def storage(files_dir: Path) -> LocalStorageClient:
         ),
         mount_dir=str(files_dir),
         binaries=TrustedBinaries(dirs=("/usr/bin", "/bin")),
+        interpreter=AppLayers.interpreter(),
     )
 
     return LocalStorageClient(config)

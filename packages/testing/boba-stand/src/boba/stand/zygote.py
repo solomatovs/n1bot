@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import time
 from collections.abc import Callable, Mapping, Sequence
 from enum import StrEnum
 from pathlib import Path
@@ -17,7 +18,7 @@ from typing import Any, ClassVar
 
 import pytest
 
-from boba.runtime.config import EnvOverride
+from boba.runtime.config import AppLayers, EnvOverride
 from boba.sandbox import BindSpec, SandboxProfile
 from boba.sandbox.guest import WarmupCall
 from boba.sandbox.zygote import (
@@ -370,13 +371,14 @@ class PrivateImageMount:
     """Образ ext4 под командой теста, смонтированный fuse2fs в её собственных
     пространствах имён пользователя и монтирования.
 
-    Монтирование в дереве хоста видят песочницы других тестов прогона:
-    лаунчер берёт корень хоста рекурсивным --ro-bind / / и перемонтирует
-    каждую точку, а точка, снятая между чтением mountinfo и перемонтированием,
-    роняет их старт («Unable to apply mount flags ... Invalid argument»).
-    Здесь образ живёт, пока жива команда, и снаружи не виден. Сеть отбирает
-    этот внешний слой: вложенному bwrap без своего userns её не поднять.
-    Им оборачивают свою команду тесты, которым нужен корень образа на хосте.
+    Монтирование в дереве хоста видят пространства монтирования всех
+    процессов машины, и точка, снятая посреди старта чужой песочницы под
+    одним из её биндов, роняет его («Unable to apply mount flags ... Invalid
+    argument»). Здесь образ живёт, пока жива команда, и снаружи не виден.
+    Сеть отбирает этот внешний слой: вложенному bwrap без своего userns её
+    не поднять. Им оборачивают свою команду тесты, которым нужен корень
+    образа на хосте, и тест исчезающей точки (racing): в его слое образ
+    монтирует и снимает сама команда.
     """
 
     BWRAP: ClassVar[Path] = RUNTIME.third_bin / "bwrap"
@@ -386,6 +388,10 @@ class PrivateImageMount:
     )
     """Скрипт внутри слоя: монтирует образ и заменяется командой теста."""
 
+    SHARE_THEN_EXEC: ClassVar[str] = 'mount --make-rshared / && exec "$@"'
+    """Скрипт слоя гонки: точки слоя shared, и снятие точки в слое доходит до
+    копий во вложенных пространствах монтирования, как снятие на хосте."""
+
     def __init__(self, image: Path, point: Path) -> None:
         self._image = image
         self._point = point
@@ -394,6 +400,46 @@ class PrivateImageMount:
         """argv команды, которой образ виден в point; права в слое — root
         userns с CAP_SYS_ADMIN и CAP_SETPCAP, как у цепочки лаунчера."""
         argv = [
+            *self._layer(),
+            "--",
+            "/bin/sh",
+            "-c",
+            self.MOUNT_THEN_EXEC,
+            "sh",
+            SandboxStand.fuse2fs(),
+            str(self._image),
+            str(self._point),
+        ]
+        argv.extend(command)
+
+        return argv
+
+    def racing(self, command: Sequence[str]) -> list[str]:
+        """argv команды, которая сама монтирует и снимает образ в point и
+        стартует внутри слоя цепочки продукта.
+
+        CAP_SETFCAP нужен вложенному userns цепочки: ядро требует его, чтобы
+        отобразить uid 0 слоя. Свой procfs слоя показывает процессы его
+        пространства PID: по их номерам команда читает таблицы монтирования.
+        """
+        argv = [
+            *self._layer(),
+            "--cap-add",
+            "CAP_SETFCAP",
+            "--proc",
+            "/proc",
+            "--",
+            "/bin/sh",
+            "-c",
+            self.SHARE_THEN_EXEC,
+            "sh",
+        ]
+        argv.extend(command)
+
+        return argv
+
+    def _layer(self) -> list[str]:
+        return [
             str(self.BWRAP),
             "--die-with-parent",
             "--unshare-user",
@@ -410,26 +456,96 @@ class PrivateImageMount:
             "--dev-bind",
             "/",
             "/",
-            "--",
-            "/bin/sh",
-            "-c",
-            self.MOUNT_THEN_EXEC,
-            "sh",
-            SandboxStand.fuse2fs(),
-            str(self._image),
-            str(self._point),
         ]
-        argv.extend(command)
 
-        return argv
+
+class ProcTree:
+    """Дерево процессов хоста: потомки pid'а по /proc.
+
+    Исполнитель вызова рождается не прямым ребёнком того, кого запустил
+    супервизор: между ними внешний bwrap, вложенный bwrap и сама зигота, а
+    fuse2fs корня — ребёнок лаунчера во внешнем слое. Поэтому считаем всех
+    потомков, а не первый уровень.
+    """
+
+    PROC: ClassVar[Path] = Path("/proc")
+
+    def children_of(self, pid: int) -> frozenset[int]:
+        kids: set[int] = set()
+        task_dir = self.PROC / str(pid) / "task"
+
+        try:
+            tids = os.listdir(task_dir)
+        except OSError:
+            return frozenset()
+
+        for tid in tids:
+            try:
+                raw = (task_dir / tid / "children").read_text()
+            except OSError:
+                continue
+
+            for item in raw.split():
+                kids.add(int(item))
+
+        return frozenset(kids)
+
+    def descendants_of(self, pid: int) -> frozenset[int]:
+        found: set[int] = set()
+        pending = [pid]
+
+        while pending:
+            current = pending.pop()
+            for child in self.children_of(current):
+                if child in found:
+                    continue
+
+                found.add(child)
+                pending.append(child)
+
+        return frozenset(found)
+
+    def alive(self, pid: int) -> bool:
+        return (self.PROC / str(pid)).exists()
+
+    def named(self, pid: int, name: str) -> frozenset[int]:
+        """Потомки pid'а с именем процесса name (comm)."""
+        found: set[int] = set()
+        for child in self.descendants_of(pid):
+            try:
+                comm = (self.PROC / str(child) / "comm").read_text().strip()
+            except OSError:
+                continue
+
+            if comm == name:
+                found.add(child)
+
+        return frozenset(found)
+
+    def settled(
+        self, pid: int, known: frozenset[int], wait_sec: float, poll_sec: float
+    ) -> frozenset[int]:
+        """Ждёт, пока в дереве pid'а не останется процессов сверх известных."""
+        deadline = time.monotonic() + wait_sec
+
+        while time.monotonic() < deadline:
+            extra = self.descendants_of(pid) - known
+            if not extra:
+                return frozenset()
+
+            time.sleep(poll_sec)
+
+        return self.descendants_of(pid) - known
 
 
 class ZygoteStand:
     """Вызывающие поверх зигот; имя секции — ключ реестра.
 
     Объект один на прогон тестов (фикстура zygote_stand), как способ
-    запуска в приложении один на процесс: зиготы секций живут в его реестре.
-    Гасит зиготы сам тест — stop(); остаток гасит конец прогона.
+    запуска в приложении один на процесс: зиготы секций живут в его реестре,
+    а интерпретатор цепочки лаунчера снимает та же граница конфига, что у
+    приложения (AppLayers). Гасит зиготы сам тест — stop(); остаток гасит
+    конец прогона.
     """
 
     POLICY: ClassVar[ZygotePolicy] = ZygotePolicy(
@@ -442,7 +558,7 @@ class ZygoteStand:
     )
 
     def __init__(self) -> None:
-        self._zygotes = ZygoteRegistry()
+        self._zygotes = ZygoteRegistry(AppLayers.interpreter())
 
     def registry(self) -> ZygoteRegistry:
         """Реестр зигот стенда для тестов, которым нужен сам супервизор."""

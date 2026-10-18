@@ -15,6 +15,7 @@ from typing import ClassVar
 
 import pytest
 
+from boba.runtime.config import AppLayers
 from boba.workspace.binaries import TrustedBinaries
 from boba.workspace.images import (
     FuseMounter,
@@ -28,12 +29,13 @@ from boba.workspace.images import (
 from boba.workspace.launcher import (
     FileOperations,
     Launcher,
+    LauncherChain,
     LauncherExit,
+    LayerSources,
     MountingConfig,
     ReadHeader,
     ReadWindow,
     ResourceLimits,
-    build_chain_argv,
 )
 
 CHUNK = 1 << 16
@@ -821,15 +823,22 @@ class TestLauncherMain:
 
 class TestChainOptions:
     @staticmethod
-    def _argv(op: list[str], options: LauncherOptions) -> list[str]:
-        return build_chain_argv(
+    def _argv(
+        op: list[str],
+        options: LauncherOptions,
+        limits: ResourceLimits,
+    ) -> list[str]:
+        chain = LauncherChain(AppLayers.interpreter(), _trusted(), options)
+        return chain.argv(
             images=[("/ws/a.ext4", "/ws/a.ext4.mnt")],
+            ro_images=(),
             template="/t.ext4",
             op=op,
-            python_bin="/usr/bin/python3",
-            options=options,
-            limits=ResourceLimits(),
-            binaries=_trusted(),
+            limits=limits,
+            pass_fds=(),
+            nested=LayerSources(ro=(), rw=()),
+            network=False,
+            replace=False,
         )
 
     def test_options_rendered_as_flags(self) -> None:
@@ -840,7 +849,7 @@ class TestChainOptions:
             lock_wait_sec=4.5,
             copy_chunk_bytes=4096,
         )
-        argv = self._argv(["read", "x"], options)
+        argv = self._argv(["read", "x"], options, ResourceLimits())
         if argv[argv.index("--mount-wait-sec") + 1] != "3.5":
             raise AssertionError('argv[argv.index("--mount-wait-sec") + 1] == "3.5"')
         if argv[argv.index("--mount-poll-sec") + 1] != "0.1":
@@ -854,7 +863,9 @@ class TestChainOptions:
 
     def test_run_command_shlex_roundtrip(self) -> None:
         inner = ["/bin/echo", "a b", "it's", "--flag=v"]
-        argv = self._argv(["run", shlex.join(inner)], _launcher_options())
+        argv = self._argv(
+            ["run", shlex.join(inner)], _launcher_options(), ResourceLimits()
+        )
         if shlex.split(argv[-1]) != inner:
             raise AssertionError("shlex.split(argv[-1]) == inner")
 
@@ -888,15 +899,7 @@ class TestChainOptions:
             max_cpu_sec=7,
             max_file_size_bytes=2048,
         )
-        argv = build_chain_argv(
-            images=[("/ws/a.ext4", "/ws/a.ext4.mnt")],
-            template="/t.ext4",
-            op=["read", "x"],
-            python_bin="/usr/bin/python3",
-            options=_launcher_options(),
-            limits=limits,
-            binaries=_trusted(),
-        )
+        argv = self._argv(["read", "x"], _launcher_options(), limits)
         if argv[argv.index("--max-memory-bytes") + 1] != "1048576":
             raise AssertionError('argv[argv.index("--max-memory-bytes") + 1] == "1048…')
         if argv[argv.index("--max-cpu-sec") + 1] != "7":
