@@ -33,6 +33,7 @@ class Selector(StrEnum):
     OPENED = "open"
     PROFILES = "#chat-profiles"
     PROFILE_ITEM = '[data-test^="select-item:"]'
+    AVATAR = 'img[alt^="Avatar for"]'
 
     @staticmethod
     def of_type(step_type: str) -> str:

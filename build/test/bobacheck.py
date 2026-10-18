@@ -1,6 +1,7 @@
 """Проверка собранного образа приложения boba (make test): интерпретатор, пакеты boba-*,
 консольные точки входа; у приложения с песочницей — образы корней плагинов и модели
-рядом с релизом, у чата — ход агента boba с моделью проверки.
+рядом с релизом, у чата — файлы ассетов, названные конфигом chainlit, и ход агента boba
+с моделью проверки.
 
 Скрипт идёт на stdin интерпретатора образа с окружением conf/boba.env, без сети:
   python3 - --app aid|mcp --base /app/boba --names <app/packages.txt> \
@@ -25,12 +26,14 @@ import subprocess
 import sys
 import tempfile
 import threading
+import tomllib
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, ClassVar
+from urllib.parse import urlsplit
 
 
 class ImageCheckError(Exception):
@@ -61,6 +64,14 @@ class SandboxOnly(StrEnum):
     ONNXRUNTIME = "onnxruntime"
     PANDAS = "pandas"
     OPENPYXL = "openpyxl"
+
+
+class ChainlitAsset(StrEnum):
+    """Поля [UI] .chainlit/config.toml, которые называют файл app_root: без файла
+    страница получает 404 вместо стиля или аватара."""
+
+    CUSTOM_CSS = "custom_css"
+    AVATAR = "default_avatar_file_url"
 
 
 class BareEnv(StrEnum):
@@ -427,6 +438,7 @@ class ImageCheck:
         self._turn = AgentTurn(options.agent)
         self._plugins_dir = options.base / "sandbox" / "plugins"
         self._models_dir = options.base / "models"
+        self._app_root = options.base / "app_root"
 
     def run(self) -> int:
         self._interpreter()
@@ -437,6 +449,7 @@ class ImageCheck:
         if self._options.sandbox:
             self._sandbox()
         if self._options.app is App.AID:
+            self._assets()
             self._agent()
         return self._report.result()
 
@@ -484,6 +497,13 @@ class ImageCheck:
         self._report.check("образы корней плагинов", self._plugin_images)
         self._report.check("веса эмбеддера fastembed", self._embed_weights)
         self._report.check("модели OCR", self._ocr_models)
+
+    def _assets(self) -> None:
+        self._report.section("ассеты chainlit, названные в .chainlit/config.toml")
+        for asset in ChainlitAsset:
+            self._report.check(
+                f"[UI] {asset.value}", functools.partial(self._asset_file, asset)
+            )
 
     def _agent(self) -> None:
         self._report.section("ход агента чата в окружении SDK ACP")
@@ -568,6 +588,34 @@ class ImageCheck:
                 raise ImageCheckError(f"нет модели {name} в {root}")
 
         return f"моделей: {len(self._options.ocr)}"
+
+    def _asset_file(self, asset: ChainlitAsset) -> str:
+        config = self._app_root / ".chainlit" / "config.toml"
+        with config.open("rb") as handle:
+            settings = tomllib.load(handle)
+
+        ui = settings.get("UI")
+        if not isinstance(ui, dict):
+            raise ImageCheckError(
+                f"{config}: expected the [UI] section of chainlit, got {ui!r}"
+            )
+
+        address = str(ui.get(asset.value, ""))
+        if not address:
+            return "not set"
+
+        parts = urlsplit(address)
+        if parts.netloc:
+            return f"external {address}"
+
+        path = self._app_root / parts.path.lstrip("/")
+        if not path.is_file():
+            raise ImageCheckError(
+                f"{config}: [UI] {asset.value} = {address!r} expects the file {path} "
+                "in the image, it is missing"
+            )
+
+        return str(path)
 
     def _agent_turn(self) -> str:
         with tempfile.TemporaryDirectory() as workdir:

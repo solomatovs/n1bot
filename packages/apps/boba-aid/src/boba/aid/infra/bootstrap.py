@@ -12,6 +12,7 @@ from collections.abc import AsyncGenerator, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import ClassVar
+from urllib.parse import urljoin
 
 import uvicorn
 from chainlit.config import config as chainlit_config
@@ -220,6 +221,12 @@ def _use_chainlit_middleware(app: FastAPI, config: AidSection):
     SocketEvents.install()
 
     init_markdown(config.root)
+
+    # адрес аватара фронт ставит в <img> как есть, а префикс приложения chainlit
+    # добавляет только адресам index.html: относительный ведём от корня приложения
+    if avatar := chainlit_config.ui.default_avatar_file_url:
+        app_url = f"{AppPrefix.render()}/"
+        chainlit_config.ui.default_avatar_file_url = urljoin(app_url, avatar)
 
     class AppPrefixMiddleware(BaseHTTPMiddleware):
         """Отвечает 404 на пути вне префикса приложения [aid].url_prefix."""
