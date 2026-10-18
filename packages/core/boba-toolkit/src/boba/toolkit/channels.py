@@ -12,12 +12,15 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import ClassVar
+from typing import Annotated, ClassVar, TypeAlias
+
+from pydantic import AfterValidator
 
 __all__ = [
     "CallOutcome",
     "JournalChannel",
     "JournalChannels",
+    "ReadableChannel",
     "ToolChannel",
     "WrapChannel",
 ]
@@ -123,6 +126,24 @@ class JournalChannels:
         return channel in cls.VISIBLE
 
     @classmethod
+    def readable(cls, channel: JournalChannel) -> JournalChannel:
+        """Канал как есть, если его можно читать пользователю: валидатор
+        полей канала в запросах чтения.
+
+        Ошибки:
+        ValueError — канал служебный.
+        """
+        if not cls.visible(channel):
+            readable = [visible.value for visible in cls.VISIBLE]
+            msg = (
+                f"journal channel {channel.value!r} is not readable, "
+                f"expected one of {readable}"
+            )
+            raise ValueError(msg)
+
+        return channel
+
+    @classmethod
     def parse_visible(cls, raw: str) -> JournalChannel | None:
         """Канал по имени с проверкой доступа; None — читать его нельзя."""
         channel = cls.parse(raw)
@@ -133,3 +154,9 @@ class JournalChannels:
             return None
 
         return channel
+
+
+ReadableChannel: TypeAlias = Annotated[
+    JournalChannel, AfterValidator(JournalChannels.readable)
+]
+"""Канал журнала, который пользователь может читать: тип поля запросов чтения."""

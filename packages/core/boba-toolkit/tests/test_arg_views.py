@@ -1,4 +1,4 @@
-"""Модель вызова: форма studio по полям, показ входа объявленными результатами."""
+"""Модель вызова: схема вызова и показ аргументов в ленте объявленными результатами."""
 
 from __future__ import annotations
 
@@ -204,7 +204,7 @@ class TestViewsTravelWithTheSchema:
         expected = {
             "sql": FieldView(
                 placement=FieldPlacement.BODY,
-                display=MarkdownResult(language="sql").model_dump(mode="json"),
+                display=MarkdownResult(language="sql"),
             ),
             "intent": FieldView(placement=FieldPlacement.HEADER, display=None),
             "cfg": FieldView(placement=FieldPlacement.HIDDEN, display=None),

@@ -25,7 +25,6 @@ from boba.canvas.journal import (
     JournalFile,
     JournalText,
     JournalWindow,
-    PathSegment,
     StreamJournalError,
     StreamKey,
     StreamMeta,
@@ -37,6 +36,7 @@ from boba.canvas.journal import (
     VaultUsage,
     WindowAlign,
 )
+from boba.identity.context import PathSegment
 from boba.toolkit.channels import JournalChannel, JournalChannels
 from boba.toolkit.stream import Chunk
 
@@ -82,6 +82,7 @@ class DirVault:
 
     def __init__(self, root: str) -> None:
         self._root = root
+        self._segment = PathSegment()
 
     def users(self) -> Iterator[str]:
         """Пользователи, у которых в томе есть каталог."""
@@ -97,13 +98,11 @@ class DirVault:
             yield entry.name
 
     def root_for(self, user_id: str) -> str:
-        """Каталог тома; сегмент сверяется с шаблоном прямо перед сборкой пути."""
-        if not PathSegment.SAFE.fullmatch(user_id):
-            msg = (
-                f"stream journal vault segment must match "
-                f"{PathSegment.SAFE.pattern}, got {user_id!r}"
-            )
-            raise StreamJournalError(msg)
+        """Каталог тома; сегмент сверяется прямо перед сборкой пути."""
+        try:
+            self._segment.checked(user_id, "stream journal vault user")
+        except ValueError as exc:
+            raise StreamJournalError(str(exc)) from exc
 
         path = VaultPath.inside(self._root, user_id)
         os.makedirs(path, exist_ok=True)
@@ -124,7 +123,7 @@ class StreamRecorder(StreamRecorderPort):
         self,
         log_path: str,
         meta_path: str,
-        tool_name: str,
+        meta: StreamMeta,
         on_data: Callable[[], None],
     ) -> None:
         self._log_path = log_path
@@ -132,7 +131,7 @@ class StreamRecorder(StreamRecorderPort):
         self._on_data = on_data
         self._lock = threading.Lock()
         self._closed = False
-        self._meta = StreamMeta(tool_name=tool_name)
+        self._meta = meta
 
         flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
         descriptor = os.open(log_path, flags, self.FILE_MODE)
@@ -317,9 +316,10 @@ class StreamJournal(StreamStorePort):
 
         self._vault = vault
         self._reserve = reserve_bytes
+        self._segment = PathSegment()
 
     def owner_of(self, thread_id: str) -> str | None:
-        segment = PathSegment.checked(thread_id)
+        segment = self._segment.checked(thread_id, "stream journal run id")
         for user_id in self._vault.users():
             root = self._vault.root_for(user_id)
             if os.path.isdir(VaultPath.inside(root, segment)):
@@ -327,9 +327,10 @@ class StreamJournal(StreamStorePort):
 
         return None
 
-    def recorder(
+    def recorder(  # noqa: PLR0913 — адрес, область, инструмент, канал, слежение
         self,
         key: StreamKey,
+        scope: str,
         tool_name: str,
         channel: JournalChannel,
         on_data: Callable[[], None],
@@ -337,6 +338,7 @@ class StreamJournal(StreamStorePort):
     ) -> StreamRecorder:
         """Открыть журнал канала на запись; каталог треда создаётся здесь.
 
+        scope — id области запуска: сайдкар его помнит для purge_scope.
         protected_prefixes — префиксы {thread}/{call_id}. живых вызовов,
         вытеснять их файлы нельзя; открываемый вызов защищён всегда. Место
         кончилось — старейшие закрытые вызовы вытесняются до успеха.
@@ -351,13 +353,15 @@ class StreamJournal(StreamStorePort):
         # вместо релея stderr в общий журнал — одна строка о месте записи
         logger.info("tool stream journal: %s -> %s", tool_name, log_path)
 
-        return self._open_recorder(key, root, tool_name, channel, on_data, protected)
+        meta = StreamMeta(tool_name=tool_name, scope=scope)
+
+        return self._open_recorder(key, root, meta, channel, on_data, protected)
 
     def _open_recorder(  # noqa: PLR0913
         self,
         key: StreamKey,
         root: str,
-        tool_name: str,
+        meta: StreamMeta,
         channel: JournalChannel,
         on_data: Callable[[], None],
         protected: frozenset[str],
@@ -367,13 +371,13 @@ class StreamJournal(StreamStorePort):
         Каталог треда создаётся в цикле: вытеснение могло снести опустевший
         каталог того же треда, куда пишем.
         """
-        log_path = VaultPath.inside(root, key.rel_log(tool_name, channel))
+        log_path = VaultPath.inside(root, key.rel_log(meta.tool_name, channel))
         meta_path = VaultPath.inside(root, key.rel_meta())
 
         while True:
             try:
                 os.makedirs(os.path.dirname(log_path), exist_ok=True)
-                return StreamRecorder(log_path, meta_path, tool_name, on_data)
+                return StreamRecorder(log_path, meta_path, meta, on_data)
             except OSError as exc:
                 if exc.errno != errno.ENOSPC:
                     msg = (
@@ -408,33 +412,40 @@ class StreamJournal(StreamStorePort):
             threads=tuple(threads),
         )
 
-    def purge_thread(self, user_id: str, thread_id: str) -> int:
-        """Удалить журналы треда; возвращает освобождённые байты."""
+    def purge_scope(self, user_id: str, scope: str) -> int:
+        """Удалить журналы всех запусков области scope; итог — освобождённые
+        байты. Запуск области узнаётся по сайдкарам его вызовов."""
         root = self._vault.root_for(user_id)
 
-        try:
-            segment = PathSegment.checked(thread_id)
-        except ValueError as exc:
-            msg = f"stream journal purge: thread id is not a safe segment: {exc}"
-            raise StreamJournalError(msg) from exc
-
-        path = VaultPath.inside(root, segment)
-
         freed = 0
-        for entry in self._thread_usages(root):
-            if entry.thread_id == thread_id:
-                freed = entry.bytes_used
-
-        if freed == 0 and not os.path.isdir(path):
-            return 0
-
-        try:
-            shutil.rmtree(path)
-        except OSError as exc:
-            msg = f"stream journal: removing the thread directory {path} failed: {exc}"
-            raise StreamJournalError(msg) from exc
+        for run in self._runs_of(root, scope):
+            freed += run.bytes_used
+            path = VaultPath.inside(root, run.thread_id)
+            try:
+                shutil.rmtree(path)
+            except OSError as exc:
+                msg = (
+                    f"stream journal: removing run {run.thread_id} of scope "
+                    f"{scope} in {root} failed: {exc}"
+                )
+                raise StreamJournalError(msg) from exc
 
         return freed
+
+    def _runs_of(self, root: str, scope: str) -> Iterator[ThreadUsage]:
+        """Каталоги запусков области scope: хоть один сайдкар называет её."""
+        for usage in self._thread_usages(root):
+            run_path = VaultPath.inside(root, usage.thread_id)
+            for _, name, _ in self._call_files(run_path):
+                if not JournalFile.is_meta(name):
+                    continue
+
+                meta = self._read_meta(os.path.join(run_path, name))
+                if meta.scope != scope:
+                    continue
+
+                yield usage
+                break
 
     def _ensure_reserve(self, root: str, protected: frozenset[str]) -> None:
         """LRU-вытеснение логов до резерва; нечего вытеснять — предупредить."""
@@ -720,4 +731,4 @@ class StreamJournal(StreamStorePort):
                 raw = json.load(f)
             return StreamMeta.model_validate(raw)
         except (OSError, ValueError):
-            return StreamMeta(tool_name="", closed=True, note="")
+            return StreamMeta(tool_name="", scope="", closed=True, note="")

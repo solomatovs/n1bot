@@ -188,8 +188,6 @@ class QueueRemoveReason(StrEnum):
     """Причины удаления элемента очереди без обработки."""
 
     ABSORBED_MID_TURN = "absorbed_mid_turn"
-    DELIVERED_AS_TOOL_RESULT = "delivered_as_tool_result"
-    DROPPED_BY_HOOK = "dropped_by_hook"
     CLEARED_ON_CANCEL = "cleared_on_cancel"
 
 

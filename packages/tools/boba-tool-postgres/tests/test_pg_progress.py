@@ -12,7 +12,7 @@ import pytest
 
 from boba.config import bind
 from boba.db.postgres.connection import PostgresConfig
-from boba.tool.pg.tools import pg_query
+from boba.tool.pg.tools import PgToolConfig, pg_query
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.ports import ProgressReport, ToolProgress
 
@@ -93,6 +93,7 @@ async def test_stages_and_server_messages_are_reported(
             sql=SCRIPT,
             offset=0,
             limit=10,
+            cfg=PgToolConfig.model_validate({"max_rows": 500, "max_bytes": 1_000_000}),
             progress=ToolProgress(write_fd),
         )
         os.close(write_fd)

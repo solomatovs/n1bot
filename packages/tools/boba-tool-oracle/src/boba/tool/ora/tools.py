@@ -57,7 +57,7 @@ from boba.toolkit.result import (
     SqlStatement,
     TableResult,
 )
-from boba.toolkit.sql import SqlLimits
+from boba.toolkit.sql import QueryRowLimit, SqlLimits
 from boba.toolkit.transfer import (
     ColumnRules,
     CommandJournal,
@@ -374,7 +374,7 @@ async def ora_describe_table(
 
 
 @tool
-async def ora_query(
+async def ora_query(  # noqa: PLR0913 — аргументы модели и внедрённые входы
     sql: Annotated[
         str,
         Field(
@@ -393,17 +393,18 @@ async def ora_query(
     connection: OraConnection,
     *,
     offset: RowOffset,
-    limit: RowLimit,
+    limit: QueryRowLimit,
+    cfg: Annotated[OraToolConfig, Injected],
     progress: Annotated[ToolProgress, Injected],
 ) -> SqlResult:
     """Выполнить SQL на подключении: строки либо счётчик затронутых."""
+    window = cfg.window(offset, limit)
 
-    return await run_statement(
-        connection,
-        sql,
-        RowWindow(offset=offset, limit=limit),
-        QueryProgress(progress, OraToolConfig.ENGINE),
+    result = await run_statement(
+        connection, sql, window, QueryProgress(progress, OraToolConfig.ENGINE)
     )
+
+    return cfg.checked(result)
 
 
 @tool(read_only=True, destructive=False)

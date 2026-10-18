@@ -99,26 +99,19 @@ class ChatProfileConfig(ChatSettings, ProfileGrant):
     )
 
     def setting_allowed(self, name: str) -> bool:
-        if ToolGrant.WILDCARD in self.settings:
-            return True
+        return self._settings_grant().covers(name)
 
-        return name in self.settings
+    def _settings_grant(self) -> ToolGrant:
+        """Настройки профиля тем же правилом грантов, что и инструменты."""
+        return ToolGrant(tools=list(self.settings))
 
     @model_validator(mode="after")
     def _validate_settings(self) -> Self:
-        known = {setting.value for setting in UserSetting}
+        known: set[str] = set()
+        for setting in UserSetting:
+            known.add(setting.value)
 
-        unknown: list[str] = []
-        for name in self.settings:
-            if name == ToolGrant.WILDCARD:
-                continue
-
-            if name in known:
-                continue
-
-            unknown.append(name)
-
-        if unknown:
+        if unknown := self._settings_grant().unknown(frozenset(known)):
             msg = (
                 f"chat profile: unknown settings {unknown}, "
                 f"expected names from {sorted(known)} or '*'"

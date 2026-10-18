@@ -13,9 +13,9 @@
 списками `Sequence[Outbound[...]]`; сколько каналов у списка, решает
 вызывающий, тело пишет в каждый своё.
 
-Кроме модельных портов есть истинно сырые — RawInbound и RawOutbound, и их
-наследники в boba.toolkit.arrow с разбором потока Arrow IPC:
-никаких структур и кадрирования, по каналу идут только сами байты
+Кроме модельных портов есть истинно сырые — RawInbound и RawOutbound (поток
+Arrow IPC поверх них разбирает boba.toolkit.arrow): никаких структур и
+кадрирования, по каналу идут только сами байты
 (passthrough pg->pg, файлы, PCM). Сырой канал совместим только с сырым:
 модельный поток кадрирован, и его рамки попали бы в данные.
 
@@ -83,8 +83,6 @@ from boba.toolkit.frames import FrameProtocolError, ToolIo
 from boba.toolkit.stream import Chunk
 
 __all__ = [
-    "ArrowInbound",
-    "ArrowOutbound",
     "ArrowStreamError",
     "DownloadProgress",
     "Framed",
@@ -386,20 +384,6 @@ class RawWriter(io.RawIOBase):
 class ArrowStreamError(Exception):
     """Байты порта не читаются как поток Arrow IPC или оборвались посреди
     пачки."""
-
-
-class ArrowInbound(RawInbound):
-    """Входной порт потока Arrow IPC. На проводе обычный поток IPC (схема,
-    пачки, конец), поэтому порт стыкуется с любым сырым концом, который
-    пишет Arrow IPC: ClickHouse с FORMAT ArrowStream, ora_stream_out. Сам порт
-    сырой, как RawInbound; пачки из него читает ArrowIpc из
-    boba.toolkit.arrow — тот тянет pyarrow, которого у хоста, читающего
-    объявления инструментов, нет."""
-
-
-class ArrowOutbound(RawOutbound):
-    """Выходной порт потока Arrow IPC: сырой, как RawOutbound; схему и пачки
-    пишет ArrowIpc из boba.toolkit.arrow в файл порта (writer)."""
 
 
 class ProgressReport(BaseModel):

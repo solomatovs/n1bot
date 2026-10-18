@@ -22,11 +22,9 @@ from typing import Any, ClassVar, Protocol
 from chainlit.context import ChainlitContext, context_var
 from chainlit.session import WebsocketSession
 from chainlit.step import StepDict
-from chainlit.types import ThreadDict
 from pydantic import BaseModel, ConfigDict
 
 from boba.aid.chat.feed import QuestionBody
-from boba.aid.domain.fields import StepField, ThreadField
 from boba.aid.rendering.acp_view import SessionUpdateCodec, UpdateView
 from boba.aid.rendering.chat_view import ChatView
 from boba.aid.rendering.errors import show_error
@@ -400,35 +398,6 @@ class ChatRenderer:
             steps.append(pulse.to_dict())
 
         return steps
-
-    def resume_into(self, thread_dict: ThreadDict) -> None:
-        """Подкладывает открытые шаги хода в ленту треда до её отправки клиенту."""
-        live = self.resume_steps()
-
-        steps = list(thread_dict.get(ThreadField.STEPS) or [])
-        positions: dict[str, int] = {}
-        for index, step in enumerate(steps):
-            positions[step.get(StepField.ID, "")] = index
-
-        for step in live:
-            index = positions.get(step.get(StepField.ID, ""))
-            if index is None:
-                steps.append(step)
-            else:
-                steps[index] = step
-
-        thread_dict[ThreadField.STEPS] = steps
-
-        names: list[str] = []
-        for step in live:
-            names.append(str(step.get(StepField.NAME, "")))
-
-        logger.info(
-            "resume thread %s: %d live steps merged (%s)",
-            self._thread_id,
-            len(live),
-            ", ".join(names),
-        )
 
 
 class ChatRenderers:

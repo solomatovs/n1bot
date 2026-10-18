@@ -17,7 +17,7 @@ from boba.toolkit.facade import PayloadTool
 
 
 def ch_config() -> ChToolConfig:
-    return ChToolConfig.model_validate({"limit": 10})
+    return ChToolConfig.model_validate({"max_rows": 10, "max_bytes": 1000})
 
 
 class TestChTools:
@@ -63,7 +63,7 @@ class TestChTools:
     def test_section_config_holds_limits_only(self) -> None:
         """Whitelist ушёл на хост: в секции остались только границы выдачи."""
         cfg = ch_config()
-        if cfg.limit != 10:
+        if cfg.max_rows != 10:
             raise AssertionError("section keys must reach the model")
 
         if hasattr(cfg, "profiles"):

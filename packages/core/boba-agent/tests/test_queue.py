@@ -200,7 +200,7 @@ class TestPriorityChanges:
         _, queue = fresh()
 
         assert not queue.raise_to_now("missing")
-        assert not queue.remove("missing", QueueRemoveReason.DROPPED_BY_HOOK)
+        assert not queue.remove("missing", QueueRemoveReason.CLEARED_ON_CANCEL)
 
 
 class TestLimits:

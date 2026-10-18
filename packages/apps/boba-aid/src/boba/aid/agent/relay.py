@@ -820,7 +820,7 @@ class McpRelay:
             "requests, call the tool from the chat instead"
         )
 
-        return mt.CallToolResult(content=[mt.TextContent(text=reason)], is_error=True)
+        return self._refused(reason)
 
     async def app_read(
         self, registration: McpRegistration, params: mt.ReadResourceRequestParams
@@ -916,15 +916,13 @@ class McpRelay:
         except (RefusalError, ToolConfigError) as exc:
             reason = f"{full}: {exc}"
             logger.warning("mcp relay: sealing refused: %s", reason)
-            denied = mt.TextContent(text=reason)
 
-            return mt.CallToolResult(content=[denied], is_error=True)
+            return self._refused(reason)
         except (ConnectionStoreError, KerberosError) as exc:
             reason = f"{full}: sealing the connections failed: {exc}"
             logger.warning("mcp relay: %s", reason)
-            failed = mt.TextContent(text=reason)
 
-            return mt.CallToolResult(content=[failed], is_error=True)
+            return self._refused(reason)
 
         sent = params.model_copy(update={"arguments": arguments})
 
@@ -947,6 +945,12 @@ class McpRelay:
             return None
 
         return partial(self._forwarded, ctx, token)
+
+    @staticmethod
+    def _refused(reason: str) -> mt.CallToolResult:
+        """Отказ вызову ответом isError с причиной: модель видит её в том же
+        вызове."""
+        return mt.CallToolResult(content=[mt.TextContent(text=reason)], is_error=True)
 
     async def _forwarded(
         self,

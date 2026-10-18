@@ -7,7 +7,6 @@ __pycache__
 *.pyd
 *.egg-info/
 /docs/*
-!/docs/adding-connections-and-tools.md
 !/docs/admin-guide.md
 !/docs/developer-guide.md
 !/docs/knowledge-graph-plan.md
@@ -65,13 +64,5 @@ packages/apps/boba-aid/web/page/.vite/
 packages/apps/boba-aid/web/page/.eslintcache
 packages/apps/boba-aid/web/page/*.tsbuildinfo
 packages/apps/boba-aid/assets/public/page.js
-
-# страница каталога: зависимости, кэши и сборка (собирает Dockerfile / make web-catalog)
-packages/apps/boba-aid/web/catalog/node_modules/
-packages/apps/boba-aid/web/catalog/.vite/
-packages/apps/boba-aid/web/catalog/src/api/schema.d.ts
-packages/apps/boba-aid/web/catalog/.eslintcache
-packages/apps/boba-aid/web/catalog/*.tsbuildinfo
-packages/apps/boba-aid/assets/catalog/
 packages/apps/boba-aid/assets/ui/
 /docs/catalog.md

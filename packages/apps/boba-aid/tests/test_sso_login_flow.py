@@ -272,8 +272,15 @@ class Refresh:
 
 
 async def _signed_in(auth: KerberosAuth, tmp_path: Path) -> cl.User:
+    """Пользователь chainlit входа SPNEGO — тот, что попадает в JWT сессии."""
     outcome = await Sso.signed(auth, Browser.token(tmp_path))
-    return KerberosAuth.user_of(outcome.signed)
+    signed = outcome.signed
+
+    return cl.User(
+        identifier=signed.identifier,
+        display_name=signed.display_name,
+        metadata=signed.sign_in.render(),
+    )
 
 
 async def test_sign_in_puts_principal_and_ticket_into_the_jwt(

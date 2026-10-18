@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterator
-from urllib.parse import unquote, urlsplit
 
 import mcp_types as mt
 from chainlit.context import context_var
@@ -25,7 +24,7 @@ from boba.aid.canvas.panel import (
     PdfViewer,
     VideoViewer,
 )
-from boba.aid.rendering.chat_view import ChatView
+from boba.aid.rendering.chat_view import WorkspaceFile, WorkspaceLinks
 from boba.aid.rendering.renderer import TabSurfaces
 from boba.canvas.canvas import (
     CanvasContent,
@@ -34,7 +33,7 @@ from boba.canvas.canvas import (
     CanvasScope,
     OpenedCanvas,
 )
-from boba.toolkit.result import BlockAudience, ContentMime
+from boba.toolkit.result import BlockAudience
 from boba.toolkit.wire import McpContent
 
 __all__ = [
@@ -73,15 +72,12 @@ class CanvasOpener:
 
     def __init__(self, surfaces: TabSurfaces) -> None:
         self._surfaces = surfaces
+        self._links = WorkspaceLinks()
 
     async def show(self, path: str, mime: str, scope: CanvasScope) -> OpenedCanvas:
         """Панель с содержимым одного файла вида mime — того, каким его
-        назвала ссылка; пусто — вид по имени файла (ссылки старой истории).
-        Слежение ставит CanvasPanel."""
+        назвала ссылка. Слежение ставит CanvasPanel."""
         key = scope.key(path)
-
-        if not mime:
-            mime = ContentMime.of_name(key.name)
 
         return await CanvasPanel.open(key, mime)
 
@@ -89,15 +85,12 @@ class CanvasOpener:
         self, path: str, mime: str, watch: bool, scope: CanvasScope
     ) -> CanvasContent:
         """Описание файла вида mime для уже открытой панели: элемент не
-        подменяется; пусто — вид по имени файла.
+        подменяется.
 
         watch — слежение переезжает на новый файл вместе с показом; без него
         описание отдаётся как есть (перечитывание уже показанного файла).
         """
         key = scope.key(path)
-
-        if not mime:
-            mime = ContentMime.of_name(key.name)
 
         viewer = CanvasRegistry.viewer_for(mime)
         if viewer is None:
@@ -131,11 +124,11 @@ class CanvasOpener:
         refusals: list[mt.ContentBlock] = []
         token = context_var.set(context)
         try:
-            for path, mime in shown:
+            for mounted in shown:
                 try:
-                    await CanvasPanel.open(scope.key(path), mime)
+                    await CanvasPanel.open(scope.key(mounted.path), mounted.mime)
                 except CanvasError as exc:
-                    note = f"{path} is not shown in the canvas: {exc}"
+                    note = f"{mounted.path} is not shown in the canvas: {exc}"
                     refusals.append(mt.TextContent(text=note))
         finally:
             context_var.reset(token)
@@ -147,8 +140,7 @@ class CanvasOpener:
 
         return reply.model_copy(update={"content": content, "is_error": True})
 
-    @staticmethod
-    def _shown(reply: mt.CallToolResult) -> Iterator[tuple[str, str]]:
+    def _shown(self, reply: mt.CallToolResult) -> Iterator[WorkspaceFile]:
         """Путь в workspace и MIME файлов ответа, которые сервер просит
         показать человеку сразу."""
         for block in reply.content:
@@ -165,14 +157,5 @@ class CanvasOpener:
             if annotations.priority != McpContent.SHOWN_PRIORITY:
                 continue
 
-            address = urlsplit(str(block.uri))
-            if address.scheme != ChatView.FILE_SCHEME:
-                continue
-
-            path = unquote(address.path)
-
-            mime = block.mime_type
-            if mime is None:
-                mime = ContentMime.of_name(path)
-
-            yield path, mime
+            if mounted := self._links.file_of(block):
+                yield mounted

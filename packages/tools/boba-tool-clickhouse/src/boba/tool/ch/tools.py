@@ -44,6 +44,7 @@ from boba.toolkit.ports import (
 )
 from boba.toolkit.result import MarkdownResult, SqlResult, SqlStatement, TableResult
 from boba.toolkit.sql import (
+    QueryRowLimit,
     SqlLimits,
 )
 from boba.toolkit.transfer import (
@@ -230,7 +231,7 @@ async def run_steps(client: Any, steps: Sequence[str], journal: CommandJournal) 
 
 
 @tool
-async def ch_query(
+async def ch_query(  # noqa: PLR0913 — аргументы модели и внедрённые входы
     sql: Annotated[
         str,
         Field(
@@ -246,19 +247,23 @@ async def ch_query(
     connection: ChConnection,
     *,
     offset: RowOffset,
-    limit: RowLimit,
+    limit: QueryRowLimit,
+    cfg: Annotated[ChToolConfig, Injected],
     progress: Annotated[ToolProgress, Injected],
 ) -> SqlResult:
     """ADQM, ClickHouse, произвольный SQL.
     Выполнить SQL на выбранном соединении: строки окном offset/limit
     """
+    window = cfg.window(offset, limit)
 
-    return await run_query(
+    result = await run_query(
         connection,
         ChQuery(text=sql, params={}),
-        RowWindow(offset=offset, limit=limit),
+        window,
         QueryProgress(progress, ChToolConfig.ENGINE),
     )
+
+    return cfg.checked(result)
 
 
 '''

@@ -37,6 +37,7 @@ __all__ = [
     "Initiator",
     "LlmInitiator",
     "NoUserCredential",
+    "PathSegment",
     "ScheduleInitiator",
     "Scope",
     "ScopeKind",
@@ -50,6 +51,45 @@ class ContextKind(StrEnum):
     NO_CONTEXT = "no_context"
     CHAT_ONLY = "chat_only"
     NO_TOOL_CALL = "no_tool_call"
+
+
+class PathSegment:
+    """Правило сегмента пути, собранного из внешнего значения: id области,
+    сегменты ключа хранилища, идентификаторы журнала вызовов.
+
+    Такие значения приходят из ссылок, токена и протокола и уходят в
+    os.path.join, поэтому сегмент не бывает пустым, точкой или двумя,
+    не содержит разделителя и нулевого байта. Модели держат экземпляр
+    в ClassVar и зовут checked из своих валидаторов; хранилища — из
+    конструктора.
+    """
+
+    SEPARATOR: ClassVar[str] = "/"
+    RESERVED: ClassVar[frozenset[str]] = frozenset({"", ".", ".."})
+    NUL: ClassVar[str] = "\0"
+
+    def checked(self, value: str, what: str) -> str:
+        """value как есть; what — что за сегмент, для текста отказа.
+
+        Ошибки:
+        ValueError — сегмент пуст, точка, две точки, с разделителем или NUL.
+        """
+        if value in self.RESERVED:
+            msg = f"invalid {what} {value!r}: expected a name, not '', '.' or '..'"
+            raise ValueError(msg)
+
+        if self.SEPARATOR in value:
+            msg = (
+                f"invalid {what} {value!r}: separator {self.SEPARATOR!r} "
+                "is not allowed inside a path segment"
+            )
+            raise ValueError(msg)
+
+        if self.NUL in value:
+            msg = f"invalid {what} {value!r}: a NUL byte is not allowed in a path"
+            raise ValueError(msg)
+
+        return value
 
 
 class ScopeKind(StrEnum):
@@ -70,23 +110,13 @@ class Scope(BaseModel):
     id: str = Field(min_length=1)
 
     SEPARATOR: ClassVar[str] = "/"
+    SEGMENT: ClassVar[PathSegment] = PathSegment()
 
     @field_validator("id")
     @classmethod
     def _segment_is_safe(cls, value: str) -> str:
         """id становится сегментом путей журнала и workspace: наружу вести не может."""
-        if value in (".", ".."):
-            msg = f"invalid scope id {value!r}: expected a name, not '.' or '..'"
-            raise ValueError(msg)
-
-        if cls.SEPARATOR in value:
-            msg = (
-                f"invalid scope id {value!r}: separator {cls.SEPARATOR!r} "
-                "is not allowed inside the id"
-            )
-            raise ValueError(msg)
-
-        return value
+        return cls.SEGMENT.checked(value, "scope id")
 
     def render(self) -> str:
         """Область одной строкой «kind/id»: журнал, ключи блокировок, сообщения."""

@@ -8,16 +8,18 @@ from typing import Any, ClassVar
 from uuid import UUID
 
 import mcp_types as mt
+import pytest
+from pydantic import ValidationError
 
+from boba.toolkit.failure import ToolRefusalError
 from boba.toolkit.launcher import RowStream
 from boba.toolkit.result import (
     Fact,
     SqlResult,
     SqlStatement,
-    ToolArtifact,
     ToolResultBase,
 )
-from boba.toolkit.sql import SqlLimits
+from boba.toolkit.sql import SqlCeiling, SqlLimits
 from boba.toolkit.wire import McpContent
 
 
@@ -48,21 +50,56 @@ class FakeLimits(SqlLimits):
 
 
 class TestSqlLimits:
-    def test_defaults_are_sane(self) -> None:
-        limits = FakeLimits.model_validate({})
-        if limits.limit <= 0 or limits.max_bytes <= 0:
-            raise AssertionError("limits must be positive")
+    def test_ceilings_are_required(self) -> None:
+        """Потолки задаёт администратор: секция без них не собирается."""
+        with pytest.raises(ValidationError, match="max_rows"):
+            FakeLimits.model_validate({"max_bytes": 100})
+
+        with pytest.raises(ValidationError, match="max_bytes"):
+            FakeLimits.model_validate({"max_rows": 5})
 
     def test_section_keys_are_read(self) -> None:
-        limits = FakeLimits.model_validate({"limit": 5, "max_bytes": 100})
-        if (limits.limit, limits.max_bytes) != (5, 100):
-            raise AssertionError("section keys must reach the model")
+        limits = FakeLimits.model_validate({"max_rows": 5, "max_bytes": 100})
+        if (limits.max_rows, limits.max_bytes) != (5, 100):
+            raise AssertionError(f"section keys must reach the model: {limits}")
 
     def test_foreign_keys_are_ignored(self) -> None:
         """В секции лежат ещё enable/tools/sandbox: модель их не касается."""
-        limits = FakeLimits.model_validate({"limit": 5, "enable": True})
-        if limits.limit != 5:
-            raise AssertionError("extra keys must not break the model")
+        limits = FakeLimits.model_validate(
+            {"max_rows": 5, "max_bytes": 100, "enable": True}
+        )
+        if limits.max_rows != 5:
+            raise AssertionError(f"extra keys must not break the model: {limits}")
+
+    def test_window_above_the_ceiling_is_refused_with_the_ceiling(self) -> None:
+        limits = FakeLimits.model_validate({"max_rows": 5, "max_bytes": 100})
+
+        window = limits.window(10, 5)
+        with pytest.raises(ToolRefusalError, match="ceiling of 5 rows") as refused:
+            limits.window(0, 6)
+
+        if (window.offset, window.limit) != (10, 5):
+            raise AssertionError(f"the window under the ceiling is kept: {window}")
+        if refused.value.kind != SqlCeiling.ROWS:
+            raise AssertionError(f"the refusal names the rows ceiling: {refused.value}")
+
+    def test_answer_above_the_byte_ceiling_is_refused(self) -> None:
+        limits = FakeLimits.model_validate({"max_rows": 5, "max_bytes": 100})
+        small = SqlResult(engine="postgres", statements=[SqlStatement(rows=[{"a": 1}])])
+        large = SqlResult(
+            engine="postgres", statements=[SqlStatement(rows=[{"a": "x" * 200}])]
+        )
+
+        kept = limits.checked(small)
+        with pytest.raises(ToolRefusalError, match="ceiling of 100 bytes") as refused:
+            limits.checked(large)
+
+        if kept is not small:
+            raise AssertionError("an answer under the ceiling goes as is")
+        if refused.value.kind != SqlCeiling.BYTES:
+            raise AssertionError(
+                f"the refusal names the bytes ceiling: {refused.value}"
+            )
 
 
 class TestRowStreamPlain:
@@ -149,15 +186,6 @@ class TestSqlResult:
         if not markdown.endswith("\n\n_UPDATE 5_"):
             raise AssertionError(f"status statement last: {markdown!r}")
 
-    def test_artifact_survives_serialization(self) -> None:
-        result = SqlResult(
-            engine="postgres",
-            statements=[SqlStatement(affected_rows=1, status="UPDATE 1")],
-        )
-        revived = ToolArtifact.revive(result.model_dump(mode="json"))
-        if revived != result:
-            raise AssertionError("revived == result")
-
 
 class TestPumpStatement:
     """Команда насоса отчитывается целиком: текст, подпись, контракт, сервер."""
@@ -203,11 +231,3 @@ class TestPumpStatement:
         server = text.index("server: backend pid 776600, version 170010")
         if server > text.index('"column": "id"'):
             raise AssertionError(f"facts go before the rows: {text}")
-
-    def test_revives_from_history(self) -> None:
-        result = self.result()
-
-        revived = ToolArtifact.revive(result.model_dump(mode="json"))
-
-        if revived != result:
-            raise AssertionError(f"revived: {revived!r}")

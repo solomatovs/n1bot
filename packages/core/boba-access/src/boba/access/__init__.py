@@ -1,9 +1,7 @@
 """Доступ к инструментам: гранты ролей и профилей, одно решение о доступности.
 
 Инструмент доступен субъекту, когда профиль виден его ролям, профиль
-разрешает инструмент и хотя бы одна роль его разрешает. Инструменты задач
-(headless_only) модели в чате не отдаются: их зовут страница, REST и
-workflow — решение HEADLESS_ONLY. Deny by default.
+разрешает инструмент и хотя бы одна роль его разрешает. Deny by default.
 
 Ошибки:
 ToolAccessError — гранты ссылаются на инструменты, которых нет.
@@ -31,7 +29,6 @@ __all__ = [
     "ToolAvailability",
     "ToolGrant",
     "ToolGrants",
-    "ToolSurfaces",
 ]
 
 
@@ -40,31 +37,16 @@ class ToolAvailability(StrEnum):
 
     AVAILABLE = "available"
     DENIED = "denied"
-    HEADLESS_ONLY = "headless_only"
 
     @property
-    def headless(self) -> bool:
-        """Можно звать вне чата: со страницы, по REST, из workflow."""
-        return self in (ToolAvailability.AVAILABLE, ToolAvailability.HEADLESS_ONLY)
-
-    @property
-    def in_chat(self) -> bool:
-        """Можно звать внутри хода чата."""
+    def allowed(self) -> bool:
         return self is ToolAvailability.AVAILABLE
 
 
-class ToolSurfaces(BaseModel):
-    """Где инструмент доступен помимо общего правила: headless_only — только
-    вне чата (страница, REST, workflow). Не названные — везде, где разрешают
-    гранты."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    headless_only: frozenset[str] = frozenset()
-
-
 class ToolGrant(BaseModel):
-    """Набор инструментов, разрешённых субъекту доступа: роли или профилю."""
+    """Набор инструментов, разрешённых субъекту доступа: роли или профилю.
+    Тем же правилом имён и '*' профиль чата разрешает свои настройки агента
+    (ChatProfileConfig.settings)."""
 
     model_config = ConfigDict(extra="ignore")
 
@@ -177,18 +159,11 @@ class ToolAccess:
         tool_names: Iterable[str],
         roles: Mapping[str, ToolGrant],
         profiles: Mapping[str, ProfileGrant],
-        surfaces: ToolSurfaces | None = None,
         check: GrantCheck = GrantCheck.STRICT,
     ) -> None:
         self._tool_names = frozenset(tool_names)
         self._roles = dict(roles)
         self._profiles = dict(profiles)
-        if surfaces is None:
-            surfaces = ToolSurfaces()
-
-        self._headless_only = surfaces.headless_only
-
-        self._check_headless_only()
         if check is GrantCheck.STRICT:
             self._check_grants()
 
@@ -217,9 +192,6 @@ class ToolAccess:
         """Единственное решение о доступе; DENIED по умолчанию."""
         if not self._granted(tool_name, frozenset(user_roles), profile):
             return ToolAvailability.DENIED
-
-        if tool_name in self._headless_only:
-            return ToolAvailability.HEADLESS_ONLY
 
         return ToolAvailability.AVAILABLE
 
@@ -275,16 +247,6 @@ class ToolAccess:
                     f"{missing} that are not among the built tools {known}"
                 )
                 raise ToolAccessError(msg)
-
-    def _check_headless_only(self) -> None:
-        stray = sorted(self._headless_only - self._tool_names)
-        if stray:
-            known = sorted(self._tool_names)
-            msg = (
-                f"tool access: headless-only tools {stray} are not among "
-                f"the built tools {known}"
-            )
-            raise ToolAccessError(msg)
 
 
 class RoleConfig(ToolGrant):
