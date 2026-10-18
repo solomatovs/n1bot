@@ -58,6 +58,7 @@ class McpNamePart(StrEnum):
     PREFIX = "mcp__"
     SEPARATOR = "__"
     EDGE = "_"
+    ALL = "*"
 
 
 @dataclass(frozen=True)
@@ -142,6 +143,18 @@ class McpToolNames:
             return None
 
         return McpToolName(server=server, tool=tool)
+
+    def group(self, name: str) -> str:
+        """Группа инструментов сервера `mcp__<server>__*`, куда входит name;
+        имя не инструмента сервера MCP — само имя."""
+        parsed = self.parse(name)
+        if parsed is None:
+            return name
+
+        prefix = McpNamePart.PREFIX.value
+        separator = McpNamePart.SEPARATOR.value
+
+        return f"{prefix}{parsed.server}{separator}{McpNamePart.ALL.value}"
 
     def tool_of(self, name: str) -> str:
         """Имя инструмента без сервера: у инструмента сервера MCP — его имя

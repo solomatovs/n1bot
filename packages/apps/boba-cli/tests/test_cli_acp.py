@@ -30,6 +30,7 @@ import os
 import signal
 import stat
 import sys
+import time
 from collections.abc import AsyncIterator, Mapping, Sequence
 from enum import StrEnum
 from pathlib import Path
@@ -150,7 +151,9 @@ class StandRegistration:
     ACP -33002, RETIRED — внутренней ошибкой MCP -32602 (инструмент снят после
     листинга), ASKING — `input_required`, MIXED — блоки для человека и для
     модели, LARGE — текст заданной длины. serverId вне `servers` — внешняя
-    ошибка -33001. Копит запросы и requestId отменённых ответов."""
+    ошибка -33001. Описание и страницы списка несут срок свежести ttl_ms;
+    drop() молча убирает инструмент из списка. Копит запросы и requestId
+    отменённых ответов."""
 
     STAND: ClassVar[schema.AcpMcpServer] = schema.AcpMcpServer(
         name="stand", server_id="stand:3f9c2a"
@@ -252,8 +255,10 @@ class StandRegistration:
         "exclude_none": True,
     }
 
-    def __init__(self, servers: Sequence[schema.AcpMcpServer]) -> None:
+    def __init__(self, servers: Sequence[schema.AcpMcpServer], ttl_ms: int) -> None:
         self._served = {server.server_id for server in servers}
+        self._ttl_ms = ttl_ms
+        self._listed: list[mt.Tool] = list(self.TOOLS)
         self.connection: ClientConnection | None = None
         self.received: list[McpMessage] = []
         self.cancelled: list[str] = []
@@ -272,6 +277,7 @@ class StandRegistration:
             discovered = mt.DiscoverResult(
                 supported_versions=[McpVersion.V2026_07_28.value],
                 capabilities=capabilities,
+                ttl_ms=self._ttl_ms,
             )
             return McpResultOutcome(result=discovered.model_dump(**self.WIRE))
 
@@ -281,10 +287,11 @@ class StandRegistration:
                 start = int(request.params.cursor)
 
             end = start + self.PAGE
-            page = mt.ListToolsResult(tools=list(self.TOOLS[start:end]))
-            if end < len(self.TOOLS):
+            tools = self._listed[start:end]
+            page = mt.ListToolsResult(tools=tools, ttl_ms=self._ttl_ms)
+            if end < len(self._listed):
                 page = mt.ListToolsResult(
-                    tools=list(self.TOOLS[start:end]), next_cursor=str(end)
+                    tools=tools, next_cursor=str(end), ttl_ms=self._ttl_ms
                 )
 
             return McpResultOutcome(result=page.model_dump(**self.WIRE))
@@ -294,6 +301,15 @@ class StandRegistration:
             return McpErrorOutcome(error=ErrorData(code=-32601, message=missing))
 
         return await self._call(message, request)
+
+    def drop(self, tool: RegisteredTool) -> None:
+        """Инструмент tool уходит из списка без уведомления клиента."""
+        kept: list[mt.Tool] = []
+        for listed in self._listed:
+            if listed.name != tool.value:
+                kept.append(listed)
+
+        self._listed = kept
 
     async def _call(
         self, message: McpMessage, request: mt.CallToolRequest
@@ -1419,6 +1435,17 @@ class TestConversation:
 class TestMcpOverAcp:
     """Инструменты только через MCP-over-ACP: регистрация отвечает сама."""
 
+    TTL_MS: ClassVar[int] = 8000
+    DROPPED: ClassVar[str] = (
+        "<system-reminder>\n"
+        "The following tools are no longer available (their MCP server "
+        "disconnected). Do not call them:\n"
+        "mcp__stand__large\n\n"
+        "This is ambient context — do not narrate it to the user unless they ask "
+        "or it is directly relevant to their request.\n"
+        "</system-reminder>"
+    )
+
     async def test_list_pages_arrive_before_session_new_answers(
         self,
         boba: AcpProcess,
@@ -1456,8 +1483,9 @@ class TestMcpOverAcp:
             if message.method == "tools/list":
                 cursors.append(message.params.get("cursor"))
 
-        assert methods == ["server/discover"] + ["tools/list"] * 4
-        assert cursors == [None, "3", "6", "9"]
+        listing = ["server/discover"] + ["tools/list"] * 4
+        assert methods == listing * 2, "ttlMs 0: the turn reads everything again"
+        assert cursors == [None, "3", "6", "9"] * 2
 
         answered_at = boba.frames.position_of_response(
             boba.frames.request_id("session/new")
@@ -1469,8 +1497,9 @@ class TestMcpOverAcp:
             if incoming and message.get("method") == "mcp/message":
                 asked_at.append(position)
 
-        assert len(asked_at) == 5
-        assert max(asked_at) < answered_at
+        assert len(asked_at) == 10
+        assert max(asked_at[:5]) < answered_at
+        assert min(asked_at[5:]) > answered_at
 
         offered: list[str] = []
         for tool in model.app.requests[0]["tools"]:
@@ -1481,6 +1510,59 @@ class TestMcpOverAcp:
             expected.append(f"mcp__stand__{tool.value}")
 
         assert sorted(offered) == sorted(expected)
+
+    async def test_answers_stay_fresh_for_their_ttl_in_a_long_session(
+        self, boba: AcpProcess, model: FakeModel, tmp_path: Path
+    ) -> None:
+        """ttlMs ответов сервера: пока срок не вышел, ходы не перечитывают
+        описание и список — даже сменившийся у сервера; по истечении начало
+        хода перечитывает их, и модель получает разницу вложением дословно
+        по docs/prompt_assembly."""
+        registration = StandRegistration([StandRegistration.STAND], self.TTL_MS)
+        client = AcpClient()
+        conn = await boba.start(client, registration)
+        try:
+            await handshake(conn)
+            session = await conn.new_session(
+                cwd=str(tmp_path), mcp_servers=[StandRegistration.STAND]
+            )
+            started = time.monotonic()
+            opened = len(registration.received)
+            question = [schema.TextContentBlock(text=ScenarioName.ANSWER.value)]
+            await boba.turn(client, session.session_id, question)
+            registration.drop(RegisteredTool.LARGE)
+            await boba.turn(client, session.session_id, question)
+            fresh_for = time.monotonic() - started
+            within = registration.received[opened:]
+            offered_within = self._offered(model)
+            await asyncio.sleep(self.TTL_MS / 1000)
+            await boba.turn(client, session.session_id, question)
+            after = registration.received[opened + len(within) :]
+            offered_after = self._offered(model)
+            read = json.dumps(model.app.requests[-1]["messages"], ensure_ascii=False)
+        finally:
+            await conn.close()
+            await boba.close_stdin()
+
+        assert await boba.wait() == 0
+        assert fresh_for < self.TTL_MS / 1000, "the turns outlived the TTL"
+        assert within == [], within
+        assert "mcp__stand__large" in offered_within
+        methods: list[str] = []
+        for message in after:
+            methods.append(message.method)
+
+        assert methods == ["server/discover"] + ["tools/list"] * 3
+        assert "mcp__stand__large" not in offered_after
+        assert json.dumps(self.DROPPED, ensure_ascii=False)[1:-1] in read, read
+
+    @staticmethod
+    def _offered(model: FakeModel) -> list[str]:
+        offered: list[str] = []
+        for tool in model.app.requests[-1]["tools"]:
+            offered.append(tool["function"]["name"])
+
+        return offered
 
     async def test_internal_and_external_errors_differ(
         self, boba: AcpProcess, registration: StandRegistration, tmp_path: Path
@@ -1839,7 +1921,7 @@ class TestRefusals:
         alive = schema.AcpMcpServer(name="alive", server_id="alive:1")
         dead = schema.AcpMcpServer(name="dead", server_id="dead:0")
         client = AcpClient()
-        conn = await boba.start(client, StandRegistration([alive]))
+        conn = await boba.start(client, StandRegistration([alive], 0))
         try:
             await handshake(conn)
             session = await conn.new_session(
@@ -1867,7 +1949,7 @@ class TestRefusals:
         видит оба под полными именами и вызов уходит названному серверу."""
         first = schema.AcpMcpServer(name="first", server_id="first:1")
         second = schema.AcpMcpServer(name="second", server_id="second:2")
-        registration = StandRegistration([first, second])
+        registration = StandRegistration([first, second], 0)
         client = AcpClient()
         conn = await boba.start(client, registration)
         try:

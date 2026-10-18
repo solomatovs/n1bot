@@ -4,7 +4,10 @@
 пользователя (план, раздел 5.17); текст фиксируется один раз в `rendered`
 по шаблонам пакета. Снимок `prompt_snapshot` модели не отправляется: по нему
 сборщик берёт системный промпт, инструменты и режим подачи вложений. Свёртка
-Announced считает по разговору, что модели уже объявлено.
+Announced считает по разговору, что модели уже объявлено. Инструкции
+серверов MCP идут вложением `mcp_instructions_delta`, а не системным
+промптом: смена инструкций посреди сессии не переписывает начало запроса
+(docs/prompt_assembly/texts/attachments/mcp_instructions_delta.md).
 
 ContextAttachments строит записи, но в сессию их не кладёт: родителя
 называет вызывающий. Так сжатие собирает всю пачку — границу, дату,
@@ -13,7 +16,9 @@ ContextAttachments строит записи, но в сессию их не к�
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections import Counter
+from collections.abc import Iterator, Mapping, Sequence
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, ClassVar
 
@@ -33,10 +38,12 @@ from boba.agent.records import (
 )
 from boba.agent.tags import AgentTag
 from boba.agent.template import AgentTemplate, AgentTemplateFile
+from boba.toolkit.mcp import McpToolNames
 
 __all__ = [
     "Announced",
     "AttachmentKind",
+    "ConnectedServer",
     "ContextAttachments",
     "DateAttachment",
     "EnvironmentAttachment",
@@ -44,6 +51,7 @@ __all__ = [
     "EnvironmentField",
     "EnvironmentSnapshot",
     "MaxTurnsAttachment",
+    "McpInstructionsAttachment",
     "ModelAttachment",
     "ModelIdentity",
     "PromptSnapshot",
@@ -64,9 +72,19 @@ class AttachmentKind(StrEnum):
     DATE = "date"
     ENVIRONMENT = "environment"
     TOOLS_DELTA = "tools_delta"
+    MCP_INSTRUCTIONS_DELTA = "mcp_instructions_delta"
     SKILL_LISTING = "skill_listing"
     QUEUED_COMMAND = "queued_command"
     MAX_TURNS_REACHED = "max_turns_reached"
+
+
+@dataclass(frozen=True)
+class ConnectedServer:
+    """Подключённый сервер MCP сессии и его инструкции из server/discover;
+    пустая строка — сервер инструкций не дал."""
+
+    name: str
+    instructions: str
 
 
 class PayloadModel(BaseModel):
@@ -184,12 +202,27 @@ class EnvironmentAttachment(PayloadModel):
 
 
 class ToolsDeltaAttachment(PayloadModel):
-    """Изменение списка инструментов относительно объявленного."""
+    """Изменение списка инструментов относительно объявленного; readded —
+    добавленные, которые этот разговор уже объявлял и потом снимал: их
+    строк в added_lines нет."""
 
     type: str = AttachmentKind.TOOLS_DELTA.value
     added_names: Sequence[str] = ()
     removed_names: Sequence[str] = ()
     added_lines: Sequence[str] = ()
+    readded_names: Sequence[str] = ()
+
+
+class McpInstructionsAttachment(PayloadModel):
+    """Изменение инструкций серверов MCP относительно объявленного: блоки
+    `## <сервер>` появившихся серверов и серверов с новым текстом, имена
+    отключившихся (docs/prompt_assembly, mcp_instructions_delta)."""
+
+    type: str = AttachmentKind.MCP_INSTRUCTIONS_DELTA.value
+    added_names: Sequence[str] = ()
+    added_blocks: Sequence[str] = ()
+    added_server_instructions: Sequence[str] = ()
+    removed_names: Sequence[str] = ()
 
 
 class SkillListingAttachment(PayloadModel):
@@ -269,6 +302,49 @@ class Announced:
             names.difference_update(delta.removed_names)
 
         return frozenset(names)
+
+    def withdrawn_tools(self) -> frozenset[str]:
+        """Имена, которые разговор объявлял и потом снял разницей, а заново
+        с тех пор не объявлял."""
+        withdrawn: set[str] = set()
+        for delta in self._tool_deltas():
+            withdrawn.difference_update(delta.added_names)
+            withdrawn.update(delta.removed_names)
+
+        return frozenset(withdrawn)
+
+    def instructions(self) -> Mapping[str, str]:
+        """Объявленные инструкции серверов MCP по имени сервера: свёртка
+        вложений mcp_instructions_delta разговора."""
+        announced: dict[str, str] = {}
+        for record in self._conversation:
+            if not isinstance(record, AttachmentRecord):
+                continue
+
+            if record.attachment.type != AttachmentKind.MCP_INSTRUCTIONS_DELTA.value:
+                continue
+
+            delta = McpInstructionsAttachment.model_validate(
+                record.attachment.model_dump()
+            )
+            texts = zip(delta.added_names, delta.added_server_instructions, strict=True)
+            for name, text in texts:
+                announced[name] = text
+
+            for name in delta.removed_names:
+                announced.pop(name, None)
+
+        return announced
+
+    def _tool_deltas(self) -> Iterator[ToolsDeltaAttachment]:
+        for record in self._conversation:
+            if not isinstance(record, AttachmentRecord):
+                continue
+
+            if record.attachment.type != AttachmentKind.TOOLS_DELTA.value:
+                continue
+
+            yield ToolsDeltaAttachment.model_validate(record.attachment.model_dump())
 
     def skill_names(self) -> frozenset[str]:
         """Имена скиллов, уже перечисленных модели в этом разговоре."""
@@ -350,6 +426,9 @@ class ContextAttachments:
     """Строит записи вложений контекста одной сессии; добавляет их вызывающий."""
 
     DATE_LENGTH: ClassVar[int] = 10
+    LISTED_UP_TO: ClassVar[int] = 30
+    """Сколько снятых инструментов MCP перечисляется по строке; больше —
+    группами `mcp__<сервер>__*` с числом."""
 
     def __init__(
         self,
@@ -364,6 +443,7 @@ class ContextAttachments:
         self._clock = clock
         self._version = version
         self._session_id = session_id
+        self._names = McpToolNames()
 
     def today(self) -> str:
         return self._clock.now()[: self.DATE_LENGTH]
@@ -442,13 +522,20 @@ class ContextAttachments:
         parent: str | None,
         added: Sequence[SnapshotTool],
         removed: Sequence[str],
+        readded: frozenset[str],
     ) -> AttachmentRecord:
-        """Разница списка инструментов: добавленные с описанием, снятые по имени."""
-        sections: list[str] = []
+        """Разница списка инструментов (docs/prompt_assembly, deferred_tools_delta
+        без поиска инструментов): новые — с описанием; вернувшиеся (readded) —
+        числом и именами, инструменты MCP — как вернувшиеся с сервером;
+        снятые — по имени, инструменты MCP — как ушедшие с сервером."""
         lines: list[str] = []
         for tool in added:
+            if tool.name in readded:
+                continue
+
             lines.append(tool.text())
 
+        sections: list[str] = []
         if lines:
             sections.append(
                 self._templates.read(AgentTemplateFile.TOOLS_ADDED).format(
@@ -456,23 +543,171 @@ class ContextAttachments:
                 )
             )
 
-        if removed:
-            sections.append(
-                self._templates.read(AgentTemplateFile.TOOLS_REMOVED).format(
-                    names="\n".join(removed)
-                )
-            )
-            sections.append(self._templates.read(AgentTemplateFile.TOOLS_AMBIENT))
+        returned = sorted(readded)
+        sections.extend(self._readded(returned))
+        sections.extend(self._removed(removed))
 
         added_names: list[str] = []
         for tool in added:
             added_names.append(tool.name)
 
         attachment = ToolsDeltaAttachment(
-            added_names=added_names, removed_names=list(removed), added_lines=lines
+            added_names=added_names,
+            removed_names=list(removed),
+            added_lines=lines,
+            readded_names=returned,
         )
 
         return self._system(parent, attachment.payload(), "\n\n".join(sections))
+
+    def instructions(
+        self,
+        parent: str | None,
+        connected: Sequence[ConnectedServer],
+        announced: Mapping[str, str],
+    ) -> AttachmentRecord | None:
+        """Инструкции серверов MCP относительно объявленных (docs/prompt_assembly,
+        mcp_instructions_delta): сервер с инструкциями, которых модель не
+        знает или знает другими, — блоком `## <сервер>`; объявленный сервер,
+        который больше не подключён, — именем; None — сообщать нечего."""
+        added = list(self._instructed(connected, announced))
+        removed = list(self._departed(connected, announced))
+        if not added and not removed:
+            return None
+
+        names: list[str] = []
+        blocks: list[str] = []
+        texts: list[str] = []
+        for server in added:
+            names.append(server.name)
+            blocks.append(f"## {server.name}\n{server.instructions}")
+            texts.append(server.instructions)
+
+        sections: list[str] = []
+        if blocks:
+            sections.append(
+                self._templates.read(AgentTemplateFile.MCP_INSTRUCTIONS).format(
+                    blocks="\n\n".join(blocks)
+                )
+            )
+
+        if removed:
+            sections.append(
+                self._templates.read(AgentTemplateFile.MCP_INSTRUCTIONS_REMOVED).format(
+                    names="\n".join(removed)
+                )
+            )
+            sections.append(self._templates.read(AgentTemplateFile.AMBIENT))
+
+        attachment = McpInstructionsAttachment(
+            added_names=names,
+            added_blocks=blocks,
+            added_server_instructions=texts,
+            removed_names=removed,
+        )
+
+        return self._system(parent, attachment.payload(), "\n\n".join(sections))
+
+    def _instructed(
+        self, connected: Sequence[ConnectedServer], announced: Mapping[str, str]
+    ) -> Iterator[ConnectedServer]:
+        """Серверы по имени, чьих инструкций модель не знает или знает
+        другими; сервер без инструкций — не в счёт."""
+        for server in sorted(connected, key=self._server_name):
+            if not server.instructions:
+                continue
+
+            if announced.get(server.name) == server.instructions:
+                continue
+
+            yield server
+
+    @staticmethod
+    def _departed(
+        connected: Sequence[ConnectedServer], announced: Mapping[str, str]
+    ) -> Iterator[str]:
+        """Объявленные серверы, которых нет среди подключённых, по имени."""
+        present: set[str] = set()
+        for server in connected:
+            present.add(server.name)
+
+        for name in sorted(announced):
+            if name not in present:
+                yield name
+
+    @staticmethod
+    def _server_name(server: ConnectedServer) -> str:
+        return server.name
+
+    def _readded(self, names: Sequence[str]) -> Iterator[str]:
+        """Разделы о вернувшихся инструментах: сначала инструменты MCP, затем
+        прочие."""
+        servers = list(self._picked(names, True))
+        own = list(self._picked(names, False))
+        if servers:
+            yield self._templates.read(AgentTemplateFile.TOOLS_READDED_MCP).format(
+                subject=self._counted(len(servers)), names=self._grouped(servers)
+            )
+
+        if own:
+            yield self._templates.read(AgentTemplateFile.TOOLS_READDED).format(
+                subject=self._counted(len(own)), names=", ".join(own)
+            )
+
+    def _removed(self, names: Sequence[str]) -> Iterator[str]:
+        """Разделы о снятых инструментах и замыкающая строка о фоновом
+        контексте; без снятых — ничего."""
+        servers = list(self._picked(names, True))
+        own = list(self._picked(names, False))
+        if len(servers) > self.LISTED_UP_TO:
+            yield self._templates.read(AgentTemplateFile.TOOLS_REMOVED_MCP_MANY).format(
+                count=len(servers), names=self._grouped(servers)
+            )
+        elif servers:
+            yield self._templates.read(AgentTemplateFile.TOOLS_REMOVED_MCP).format(
+                names="\n".join(servers)
+            )
+
+        if own:
+            yield self._templates.read(AgentTemplateFile.TOOLS_REMOVED).format(
+                names="\n".join(own)
+            )
+
+        if names:
+            yield self._templates.read(AgentTemplateFile.AMBIENT)
+
+    def _picked(self, names: Sequence[str], of_servers: bool) -> Iterator[str]:
+        """Имена инструментов серверов MCP (of_servers) либо прочие, в
+        исходном порядке."""
+        for name in names:
+            served = self._names.parse(name) is not None
+            if served is of_servers:
+                yield name
+
+    def _grouped(self, names: Sequence[str]) -> str:
+        """Имена инструментов MCP группами серверов `mcp__<сервер>__*` по
+        алфавиту; у группы больше одного имени — число в скобках."""
+        groups: Counter[str] = Counter()
+        for name in names:
+            groups[self._names.group(name)] += 1
+
+        shown: list[str] = []
+        for group in sorted(groups):
+            count = groups[group]
+            if count > 1:
+                shown.append(f"{group} ({count})")
+                continue
+
+            shown.append(group)
+
+        return ", ".join(shown)
+
+    @staticmethod
+    def _counted(count: int) -> str:
+        if count == 1:
+            return "1 tool is"
+
+        return f"{count} tools are"
 
     def skill_listing(
         self,
