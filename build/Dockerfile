@@ -141,18 +141,21 @@ RUN strip _build/bwrap && install -D -m 0755 _build/bwrap /out/bwrap
 RUN ! ldd /out/bwrap | grep libcap && /out/bwrap --version
 
 
-# fuse2fs статически с libfuse, плюс шаблон workspace тем же mke2fs, что уедет в релиз
+# fuse2fs статически с libfuse, плюс шаблон workspace тем же mke2fs, что уедет в релиз.
+# Патч: монтирование ro открывает образ только на чтение — без него fuse2fs пишет суперблок
+# образа, смонтированного ro, и не монтирует образ под ro-биндом (EROFS)
 FROM base AS fuse2fs-build
 
 ARG LIBFUSE_VERSION=3.12.0
-ARG E2FSPROGS_VERSION=1.47.2
+ARG E2FSPROGS_VERSION=1.47.4
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        meson ninja-build pkg-config xz-utils                    \
+        meson ninja-build patch pkg-config xz-utils              \
     && rm -rf /var/lib/apt/lists/*
 
 COPY build/src/fuse-${LIBFUSE_VERSION}.tar.xz         /tmp/fuse.tar.xz
 COPY build/src/e2fsprogs-${E2FSPROGS_VERSION}.tar.xz  /tmp/e2fsprogs.tar.xz
+COPY build/scripts/e2fsprogs-${E2FSPROGS_VERSION}-ro-mount.patch  /tmp/e2fsprogs.patch
 
 WORKDIR /tmp/fuse-src
 RUN tar -xJf /tmp/fuse.tar.xz --strip-components=1
@@ -163,6 +166,7 @@ RUN meson setup _build --buildtype=release --prefix=/usr/local \
 WORKDIR /tmp/e2fs-src
 ENV PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/usr/local/lib/x86_64-linux-gnu/pkgconfig
 RUN tar -xJf /tmp/e2fsprogs.tar.xz --strip-components=1
+RUN patch -p1 < /tmp/e2fsprogs.patch
 RUN LIBS="-lpthread -ldl" ./configure --enable-fuse2fs --disable-nls && make -j"${JOBS}"
 RUN strip misc/fuse2fs && install -D -m 0755 misc/fuse2fs /out/fuse2fs
 

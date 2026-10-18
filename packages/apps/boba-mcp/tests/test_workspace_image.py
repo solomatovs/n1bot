@@ -26,7 +26,13 @@ from boba.sandbox.profile import SandboxProfile
 from boba.sandbox.runner import SandboxMountError
 from boba.stand.shell import ShellRun
 from boba.stand.storage import StorageSeed
-from boba.stand.zygote import ROOTFS_IMAGE, ProfileFields, SandboxStand, ZygoteStand
+from boba.stand.zygote import (
+    ROOTFS_IMAGE,
+    RUNTIME,
+    ProfileFields,
+    SandboxStand,
+    ZygoteStand,
+)
 from boba.tool.shell.tools import BashToolConfig
 from boba.toolkit.result import ShellResult
 from boba.workspace.binaries import TrustedBinaries
@@ -110,6 +116,19 @@ def template(tmp_path: Path) -> Path:
         [mkfs, "-F", "-q", "-O", "^has_journal", "-m", "0", str(path)],
         check=True,
     )
+    return path
+
+
+@pytest.fixture
+def build_template() -> Path:
+    """Шаблон workspace сборки: тот же образ, из которого сервис делает образы
+    пользователей."""
+    path = RUNTIME.workspace_template
+    if not path.is_file():
+        pytest.fail(
+            f"workspace template {path} does not exist, build it with `make sandbox`"
+        )
+
     return path
 
 
@@ -654,11 +673,11 @@ class TestLiveImage:
             raise AssertionError('asyncio.run(cycle()).decode() == "текст"')
 
     def test_storage_overwrite_with_shorter_content(
-        self, tmp_path: Path, template: Path
+        self, tmp_path: Path, build_template: Path
     ) -> None:
-        """Перезапись короче прежнего файла не оставляет его хвоста: длина и
-        содержимое — новые."""
-        storage = _storage(tmp_path, template)
+        """Перезапись хранилищем (загрузка чата) короче прежнего файла не
+        оставляет его хвоста: O_TRUNC открытия исполняет fuse2fs."""
+        storage = _storage(tmp_path, build_template)
 
         async def cycle() -> bytes:
             await StorageSeed().put(storage, "7/t1/upload/over", b"x" * 605)
@@ -670,6 +689,71 @@ class TestLiveImage:
             raise AssertionError(
                 f"the shorter overwrite left {len(got)} bytes ending in {got[-3:]!r}"
             )
+
+    def test_bash_overwrite_with_shorter_content(
+        self, zygote_stand: ZygoteStand, tmp_path: Path, build_template: Path
+    ) -> None:
+        """Перезапись из песочницы короче прежнего файла — перенаправлением
+        shell и open(..., "w") python — оставляет только новое содержимое."""
+        tool = _bash(zygote_stand, tmp_path, build_template)
+        payload = _invoke(
+            tool,
+            "printf long-long-content > f && printf x > f && cat f && echo"
+            " && python3 -c \"open('p', 'w').write('0123456789');"
+            " open('p', 'w').write('ab')\" && cat p",
+        )
+        if payload.stdout != "x\nab":
+            raise AssertionError(
+                f"shorter overwrites kept the old tail: {payload.stdout!r}, "
+                f"stderr {payload.stderr!r}"
+            )
+
+    def test_bash_same_size_writes_in_one_second_differ(
+        self, zygote_stand: ZygoteStand, tmp_path: Path, build_template: Path
+    ) -> None:
+        """Две записи одного размера одной командой — в одну секунду — дают
+        разное время изменения: по размеру и времени их различает слежение."""
+        tool = _bash(zygote_stand, tmp_path, build_template)
+        payload = _invoke(
+            tool, "printf aaaa > g && stat -c %y g && printf bbbb > g && stat -c %y g"
+        )
+        times = payload.stdout.splitlines()
+        if len(times) != 2:
+            raise AssertionError(f"expected two stat lines, got {payload.stdout!r}")
+
+        if times[0] == times[1]:
+            raise AssertionError(f"two writes of equal size got one mtime {times[0]!r}")
+
+    def test_bash_stat_shows_fractions_of_a_second(
+        self, zygote_stand: ZygoteStand, tmp_path: Path, build_template: Path
+    ) -> None:
+        """stat в песочнице показывает время изменения с долями секунды."""
+        tool = _bash(zygote_stand, tmp_path, build_template)
+        payload = _invoke(tool, "printf x > h && stat -c %y h")
+        clock = payload.stdout.split()[1]
+        if clock.endswith(".000000000"):
+            raise AssertionError(f"mtime is whole seconds: {payload.stdout!r}")
+
+    def test_storage_same_size_writes_get_distinct_revisions(
+        self, tmp_path: Path, build_template: Path
+    ) -> None:
+        """Версии двух записей хранилищем одного размера различны и несут доли
+        секунды: две записи в одну секунду слежение не склеит."""
+        storage = _storage(tmp_path, build_template)
+
+        async def cycle() -> tuple[int, int]:
+            await StorageSeed().put(storage, "7/t1/upload/same", b"aaaa")
+            first = await storage.stat("7/t1/upload/same")
+            await StorageSeed().put(storage, "7/t1/upload/same", b"bbbb")
+            second = await storage.stat("7/t1/upload/same")
+            return first.revision, second.revision
+
+        first, second = asyncio.run(cycle())
+        if first == second:
+            raise AssertionError(f"two writes of equal size got one revision {first}")
+
+        if second % 1_000_000_000 == 0:
+            raise AssertionError(f"revision {second} is whole seconds")
 
     def test_storage_delete(self, tmp_path: Path, template: Path) -> None:
         storage = _storage(tmp_path, template)
