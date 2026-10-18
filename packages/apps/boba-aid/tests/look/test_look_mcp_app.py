@@ -233,7 +233,9 @@ def test_app_card_in_the_feed(
             card.locator('[data-app-action="fullscreen"]').click()
             feed.inner(card).locator("#host").get_by_text("mode: fullscreen").wait_for()
             look_pages.settle(page)
-            look.frame(page.locator("body"), AppLook.FULLSCREEN, theme, size)
+            # карточка на весь экран и есть окно: боковая панель под ней
+            # копит треды прогонов и в кадр не входит
+            look.frame(card, AppLook.FULLSCREEN, theme, size)
             card.locator('[data-app-action="exit"]').click()
 
             feed.ask(
