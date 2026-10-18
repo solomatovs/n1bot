@@ -29,14 +29,19 @@ import { ErrorBoundary } from '@/components/ErrorBoundary';
 import Imports from './Imports';
 import * as Renderer from './Renderer';
 
-type Evaluated = { component?: ComponentType; error?: string };
+type Evaluated = {
+  component?: ComponentType;
+  inPlace?: boolean;
+  error?: string;
+};
 
 // boba: исходник элемента исполняется один раз, а не на каждый рендер. Runner
 // собирал компонент заново при любой смене scope, а scope создавался на каждый
-// рендер: смена loading или askUser в MessageContext и любое обновление props
-// перемонтировали элемент, и приложение MCP Apps в нём грузилось заново. Теперь
-// props и колбэки элемент читает через live — значения последнего рендера, — а
-// обновление props перерисовывает тот же компонент.
+// рендер: смена loading или askUser в MessageContext перемонтировала элемент, и
+// приложение MCP Apps в нём грузилось заново. props и колбэки элемент читает
+// через live — значения последнего рендера. Новые props, как и у upstream,
+// монтируют элемент заново; элемент, объявивший export const updatesInPlace =
+// true, получает их тем же компонентом.
 const CustomElement = memo(function ({ element }: { element: ICustomElement }) {
   const apiClient = useContext(ChainlitContext);
   const sessionId = useRecoilValue(sessionIdState);
@@ -173,11 +178,16 @@ const CustomElement = memo(function ({ element }: { element: ICustomElement }) {
       if (typeof exported.default !== 'function') {
         return { error: `${element.name}.jsx exports no default component` };
       }
-      return { component: exported.default };
+      return {
+        component: exported.default,
+        inPlace: exported.updatesInPlace === true
+      };
     } catch (failed) {
       return { error: String(failed) };
     }
   }, [sourceCode, apiClient, element.name]);
+
+  const generation = useMemo(() => uuidv4(), [element.props]);
 
   if (error) return <Alert variant="error">{error}</Alert>;
   if (!evaluated) return null;
@@ -186,9 +196,12 @@ const CustomElement = memo(function ({ element }: { element: ICustomElement }) {
   const Component = evaluated.component;
   if (!Component) return null;
 
+  let mount = generation;
+  if (evaluated.inPlace) mount = element.id;
+
   return (
     <div className={`${element.display}-custom flex flex-col flex-grow`}>
-      <ErrorBoundary>
+      <ErrorBoundary key={mount}>
         <Component />
       </ErrorBoundary>
     </div>
