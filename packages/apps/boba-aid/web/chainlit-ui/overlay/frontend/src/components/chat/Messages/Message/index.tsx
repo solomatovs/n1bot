@@ -47,6 +47,9 @@ const Message = memo(
     const contentRef = useRef<HTMLDivElement>(null);
     const isUserMessage = message.type === 'user_message';
     const isStep = !message.type.includes('message');
+    // boba: карточка приложения MCP Apps — сообщение без аватара и кнопок:
+    // рамка встаёт с края текста ответа, копировать и оценивать в ней нечего
+    const isApp = Boolean(message.metadata?.mcpApp);
     // Only keep tool calls if Chain of Thought is tool_call
     const toolCallSkip =
       isStep && cot === 'tool_call' && message.type !== 'tool';
@@ -111,6 +114,7 @@ const Message = memo(
                   {!isStep || !indent ? (
                     <MessageAvatar
                       author={message.metadata?.avatarName || message.name}
+                      hide={isApp}
                       isError={message.isError}
                       iconName={message.metadata?.icon}
                     />
@@ -182,14 +186,16 @@ const Message = memo(
                         messageId={message.id}
                       />
 
-                      <MessageButtons
-                        message={message}
-                        actions={actions}
-                        run={
-                          scorableRun && isScorable ? scorableRun : undefined
-                        }
-                        contentRef={contentRef}
-                      />
+                      {isApp ? null : (
+                        <MessageButtons
+                          message={message}
+                          actions={actions}
+                          run={
+                            scorableRun && isScorable ? scorableRun : undefined
+                          }
+                          contentRef={contentRef}
+                        />
+                      )}
                     </div>
                   )}
                 </div>
