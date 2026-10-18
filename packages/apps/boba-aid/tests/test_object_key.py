@@ -66,10 +66,12 @@ class TestFromWorkspace:
 
     def test_round_trip_with_in_workspace(self) -> None:
         built = ObjectKey.build(USER, THREAD, NAME, "el-1")
-        if WorkspaceKey.located(MOUNT, USER, THREAD, built.in_workspace()) != built:
-            raise AssertionError(
-                "WorkspaceKey.located(MOUNT, USER, THREAD, built.in_wor…"
-            )
+        located = WorkspaceKey.located(MOUNT, USER, THREAD, built.in_workspace())
+        if located.render() != built.render():
+            raise AssertionError("the located key is the built one")
+
+        if located.in_workspace() != built.in_workspace():
+            raise AssertionError("the located key keeps the path in the workspace")
 
     def test_file_outside_upload_dir_rejected(self) -> None:
         with pytest.raises(ValueError, match="attachments dir"):
