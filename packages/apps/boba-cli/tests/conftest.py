@@ -61,9 +61,9 @@ async def model() -> AsyncIterator[FakeModel]:
 
 @pytest.fixture
 async def answering_model() -> AsyncIterator[FakeModel]:
-    """Фейковая модель, которая отвечает и на вопрос без маркера и выдаёт
-    ответ медленно: TCK шлёт обычный текст и отменяет ход, пока он идёт."""
-    fake = FakeModel(unmarked=ScenarioName.ANSWER, token_delay_sec=0.2)
+    """Фейковая модель, которая отвечает и на вопрос без маркера: TCK шлёт
+    обычный текст. Медленный ответ на вопрос отмены кладёт книгой сам тест."""
+    fake = FakeModel(unmarked=ScenarioName.ANSWER)
     await fake.start()
     try:
         yield fake
