@@ -6,6 +6,10 @@
 ARG NODE_IMAGE=dmp/nodejs:22
 FROM ${NODE_IMAGE}
 
+# область кэша make offline-check; npm не спрашивает реестр о своей новой версии
+ARG CACHE_SCOPE
+ENV npm_config_update_notifier=false
+
 WORKDIR /srv
 COPY package.json package-lock.json /srv/
 RUN npm ci --no-audit --no-fund --omit=dev && npm cache clean --force
