@@ -144,7 +144,9 @@ class PackageDataSurvey:
 
             yield from self._data_of(files)
 
-    def _data_of(self, files: Iterable[metadata.PackagePath]) -> Iterator[PackageResource]:
+    def _data_of(
+        self, files: Iterable[metadata.PackagePath]
+    ) -> Iterator[PackageResource]:
         recorded: set[PurePosixPath] = set()
         for file in files:
             recorded.add(PurePosixPath(file.as_posix()))
@@ -257,9 +259,8 @@ class SurveyEntry:
 
     def run(self, argv: Sequence[str]) -> int:
         if len(argv) != 1:
-            print(
-                "usage: python3 -m boba.cli.package_data <manifest.json>",
-                file=sys.stderr,
+            sys.stderr.write(
+                "usage: python3 -m boba.cli.package_data <manifest.json>\n"
             )
             return 2
 
@@ -267,14 +268,14 @@ class SurveyEntry:
         try:
             manifest = self._survey.manifest()
         except PackageDataError as exc:
-            print(str(exc), file=sys.stderr)
+            sys.stderr.write(f"{exc}\n")
             return 1
 
         written.write_text(
             manifest.model_dump_json(indent=2), encoding=ManifestFile.ENCODING.value
         )
         for flag in self._survey.flags(manifest, written):
-            print(flag)
+            sys.stdout.write(f"{flag}\n")
 
         return 0
 
