@@ -29,7 +29,13 @@ from boba.sandbox import SandboxProfile
 from boba.sandbox.guest import WarmupCall
 from boba.sandbox.zygote import ZygoteSpawner, ZygoteState
 from boba.stand.shell import ShellRun
-from boba.stand.zygote import ROOTFS_IMAGE, SandboxCgroup, SandboxStand, ZygoteStand
+from boba.stand.zygote import (
+    ROOTFS_IMAGE,
+    ProcTree,
+    SandboxCgroup,
+    SandboxStand,
+    ZygoteStand,
+)
 from boba.toolkit.chain import CallAmbient
 from boba.toolkit.channels import JournalChannel, ToolChannel
 from boba.toolkit.entry import ToolAddress, ToolArgv, ToolMain
@@ -40,6 +46,7 @@ from boba.toolkit.stream import (
     Chunk,
     StreamSink,
 )
+from boba.workspace.binaries import SandboxBinary
 from boba.workspace.images import PartialCopy
 
 needs_sandbox = pytest.mark.failif(
@@ -70,74 +77,6 @@ class Waiting:
     POLL_SEC: ClassVar[float] = 0.1
     ALIVE_SEC: ClassVar[float] = 2.0
     """Пауза, за которую сработал бы pdeathsig умершего треда-родителя."""
-
-
-class ProcTree:
-    """Дерево процессов хоста: потомки pid'а по /proc.
-
-    Исполнитель вызова рождается не прямым ребёнком того, кого запустил
-    супервизор: между ними внешний bwrap, вложенный bwrap и сама зигота.
-    Поэтому считаем всех потомков, а не первый уровень.
-    """
-
-    PROC: ClassVar[str] = "/proc"
-
-    @classmethod
-    def children_of(cls, pid: int) -> frozenset[int]:
-        kids: set[int] = set()
-        task_dir = os.path.join(cls.PROC, str(pid), "task")
-
-        try:
-            tids = os.listdir(task_dir)
-        except OSError:
-            return frozenset()
-
-        for tid in tids:
-            path = os.path.join(task_dir, tid, "children")
-            try:
-                with open(path) as handle:
-                    raw = handle.read()
-            except OSError:
-                continue
-
-            for item in raw.split():
-                kids.add(int(item))
-
-        return frozenset(kids)
-
-    @classmethod
-    def descendants_of(cls, pid: int) -> frozenset[int]:
-        found: set[int] = set()
-        pending = [pid]
-
-        while pending:
-            current = pending.pop()
-            for child in cls.children_of(current):
-                if child in found:
-                    continue
-
-                found.add(child)
-                pending.append(child)
-
-        return frozenset(found)
-
-    @classmethod
-    def alive(cls, pid: int) -> bool:
-        return os.path.exists(os.path.join(cls.PROC, str(pid)))
-
-    @classmethod
-    def wait_tree_settled(cls, pid: int, known: frozenset[int]) -> frozenset[int]:
-        """Ждёт, пока в дереве зиготы не останется процессов сверх известных."""
-        deadline = time.monotonic() + Waiting.SETTLE_SEC
-
-        while time.monotonic() < deadline:
-            extra = cls.descendants_of(pid) - known
-            if not extra:
-                return frozenset()
-
-            time.sleep(Waiting.POLL_SEC)
-
-        return cls.descendants_of(pid) - known
 
 
 class ChannelRecorder(StreamSink):
@@ -361,7 +300,8 @@ class TestBrokenSinkFreesTheCall:
         if zygote_pid == 0:
             raise AssertionError("зигота не запущена")
 
-        known = ProcTree.descendants_of(zygote_pid)
+        tree = ProcTree()
+        known = tree.descendants_of(zygote_pid)
 
         call_ambient.set_sinks(BrokenSinks())
         try:
@@ -370,7 +310,9 @@ class TestBrokenSinkFreesTheCall:
         finally:
             call_ambient.set_sinks(None)
 
-        survivors = ProcTree.wait_tree_settled(zygote_pid, known)
+        survivors = tree.settled(
+            zygote_pid, known, Waiting.SETTLE_SEC, Waiting.POLL_SEC
+        )
         if survivors:
             raise AssertionError(f"исполнитель пережил сбой приёмника: {survivors}")
 
@@ -434,7 +376,7 @@ class TestZygoteOutlivesSpawningThread:
 
         time.sleep(Waiting.ALIVE_SEC)
 
-        if not ProcTree.alive(born):
+        if not ProcTree().alive(born):
             raise AssertionError("зигота убита смертью породившего треда")
 
         if caller.supervisor.pid != born:
@@ -468,15 +410,8 @@ class TestRootMountRecovery:
     @staticmethod
     def _fuse_of(zygote_pid: int) -> int:
         """Pid демона корня: он рождается ребёнком той же цепочки, что и зигота."""
-        for pid in ProcTree.descendants_of(zygote_pid):
-            try:
-                with open(f"/proc/{pid}/comm") as comm:
-                    name = comm.read().strip()
-            except OSError:
-                continue
-
-            if name == "fuse2fs":
-                return pid
+        for pid in ProcTree().named(zygote_pid, SandboxBinary.FUSE2FS.value):
+            return pid
 
         return 0
 

@@ -12,7 +12,7 @@ from typing import Any, ClassVar, cast
 import pytest
 from pydantic import BaseModel
 
-from boba.sandbox.argv import build_zygote_argv
+from boba.sandbox.argv import ZygoteArgv
 from boba.sandbox.profile import (
     BindSpec,
     SandboxProfile,
@@ -196,7 +196,7 @@ class TestBwrapArgv:
     _WS = "/srv/workspace"
 
     def test_starts_with_bwrap_and_unshare_flags(self) -> None:
-        argv = build_zygote_argv(_profile(), ["echo", "hi"], env={}, root=_ROOT)
+        argv = ZygoteArgv(_profile()).argv(["echo", "hi"], env={}, root=_ROOT)
         if not (argv[0].endswith("bwrap")):
             raise AssertionError('argv[0].endswith("bwrap")')
         if "--die-with-parent" not in argv:
@@ -208,7 +208,7 @@ class TestBwrapArgv:
 
     def test_userns_creation_is_closed_by_capability(self) -> None:
         """Вложенные userns закрывает сама зигота: ей нужен CAP_SYS_RESOURCE."""
-        argv = build_zygote_argv(_profile(), ["true"], env={}, root=_ROOT)
+        argv = ZygoteArgv(_profile()).argv(["true"], env={}, root=_ROOT)
 
         caps: list[str] = []
         for index, arg in enumerate(argv):
@@ -219,18 +219,18 @@ class TestBwrapArgv:
             raise AssertionError('"CAP_SYS_RESOURCE" in caps')
 
     def test_neutral_hostname(self) -> None:
-        argv = build_zygote_argv(_profile(), ["true"], env={}, root=_ROOT)
+        argv = ZygoteArgv(_profile()).argv(["true"], env={}, root=_ROOT)
         if argv[argv.index("--hostname") + 1] != "sandbox":
             raise AssertionError('argv[argv.index("--hostname") + 1] == "sandbox"')
 
     def test_network_is_left_to_the_outer_bwrap(self) -> None:
         """Зигота стартует внутри цепочки: сеть у неё отобрал внешний bwrap."""
-        argv = build_zygote_argv(_profile(network=False), ["true"], env={}, root=_ROOT)
+        argv = ZygoteArgv(_profile(network=False)).argv(["true"], env={}, root=_ROOT)
         if "--unshare-net" in argv:
             raise AssertionError('"--unshare-net" not in argv')
 
     def test_no_implicit_rw_binds(self) -> None:
-        argv = build_zygote_argv(_profile(), ["true"], env={}, root=_ROOT)
+        argv = ZygoteArgv(_profile()).argv(["true"], env={}, root=_ROOT)
         if "--bind-try" in argv:
             raise AssertionError('"--bind-try" not in argv')
         if "--bind" in argv:
@@ -238,14 +238,14 @@ class TestBwrapArgv:
 
     def test_rw_bind_same_path(self) -> None:
         profile = _profile(rw=(self._WS,), cwd=self._WS)
-        argv = build_zygote_argv(profile, ["true"], env={}, root=_ROOT)
+        argv = ZygoteArgv(profile).argv(["true"], env={}, root=_ROOT)
         i = argv.index("--bind-try")
         if argv[i + 1 : i + 3] != [self._WS, self._WS]:
             raise AssertionError("argv[i + 1 : i + 3] == [self._WS, self._WS]")
 
     def test_rw_bind_with_explicit_target(self) -> None:
         profile = _profile(rw=(f"{self._WS}:/workspace",), cwd="/workspace")
-        argv = build_zygote_argv(profile, ["true"], env={}, root=_ROOT)
+        argv = ZygoteArgv(profile).argv(["true"], env={}, root=_ROOT)
         i = argv.index("--bind-try")
         if argv[i + 1 : i + 3] != [self._WS, "/workspace"]:
             raise AssertionError('argv[i + 1 : i + 3] == [self._WS, "/workspace"]')
@@ -253,12 +253,12 @@ class TestBwrapArgv:
     def test_zygote_starts_at_root(self) -> None:
         """cwd профиля — дело вызова: точку образа монтирует исполнитель."""
         profile = _profile(rw=(f"{self._WS}:/workspace",), cwd="/workspace")
-        argv = build_zygote_argv(profile, ["true"], env={}, root=_ROOT)
+        argv = ZygoteArgv(profile).argv(["true"], env={}, root=_ROOT)
         if argv[argv.index("--chdir") + 1] != "/":
             raise AssertionError('argv[argv.index("--chdir") + 1] == "/"')
 
     def test_tmp_size_precedes_mount(self) -> None:
-        argv = build_zygote_argv(_profile(tmp="64M"), ["true"], env={}, root=_ROOT)
+        argv = ZygoteArgv(_profile(tmp="64M")).argv(["true"], env={}, root=_ROOT)
         i = argv.index("--size")
         if argv[i + 1] != str(64 * 1024**2):
             raise AssertionError("argv[i + 1] == str(64 * 1024**2)")
@@ -270,7 +270,7 @@ class TestBwrapArgv:
             _profile(tmp="64X")
 
     def test_rootfs_mounted_as_root_before_proc_dev(self) -> None:
-        argv = build_zygote_argv(_profile(ro=()), ["true"], env={}, root=_ROOT)
+        argv = ZygoteArgv(_profile(ro=())).argv(["true"], env={}, root=_ROOT)
         i = argv.index("--ro-bind")
         if argv[i + 1 : i + 3] != [_ROOT, "/"]:
             raise AssertionError("argv[i + 1 : i + 3] == [_ROOT, /]")
@@ -280,8 +280,7 @@ class TestBwrapArgv:
             raise AssertionError('i < argv.index("--dev")')
 
     def test_env_cleared_and_set(self) -> None:
-        argv = build_zygote_argv(
-            _profile(),
+        argv = ZygoteArgv(_profile()).argv(
             ["true"],
             env={"PATH": "/usr/bin:/bin"},
             root=_ROOT,
@@ -293,7 +292,7 @@ class TestBwrapArgv:
             raise AssertionError('argv[i + 1 : i + 3] == ["PATH", "/usr/bin:/bin"]')
 
     def test_command_goes_after_separator(self) -> None:
-        argv = build_zygote_argv(_profile(), ["echo", "hi"], env={}, root=_ROOT)
+        argv = ZygoteArgv(_profile()).argv(["echo", "hi"], env={}, root=_ROOT)
         sep = argv.index("--")
         if argv[sep + 1 :] != ["echo", "hi"]:
             raise AssertionError('argv[sep + 1 :] == ["echo", "hi"]')

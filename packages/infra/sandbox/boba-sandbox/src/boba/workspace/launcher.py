@@ -13,12 +13,12 @@ import stat as stat_module
 import subprocess
 import sys
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from enum import IntEnum, StrEnum
 from typing import BinaryIO, ClassVar
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from boba.toolkit.timing import Elapsed
 from boba.workspace.binaries import (
@@ -38,7 +38,6 @@ from boba.workspace.images import (
 from boba.workspace.timing import ProcessAge
 
 __all__ = [
-    "FUSE_DEVICE",
     "CapabilityDropper",
     "FileHead",
     "FileOperations",
@@ -46,26 +45,23 @@ __all__ = [
     "ImageMountPoint",
     "ImagePath",
     "Launcher",
+    "LauncherChain",
     "LauncherEnv",
     "LauncherExit",
+    "LauncherInterpreter",
     "LauncherMode",
+    "LauncherView",
+    "LayerPath",
+    "LayerSources",
     "MountingConfig",
     "NotRegularFileError",
+    "OsLoader",
     "ReadHeader",
     "ReadWindow",
     "ResourceLimits",
-    "build_chain_argv",
+    "ViewBind",
     "render_image_path",
-    "require_fuse",
 ]
-
-
-"""Точки монтирования ro-образов: tmpfs цепочки, на хосте ничего не пишется.
-
-Каталог песочницы в дереве установки только для чтения, поэтому точку рядом
-с образом там не создать; tmpfs накрывает существующий /tmp, который есть в
-любом корне — bwrap не умеет заводить каталог под tmpfs на read-only корне.
-"""
 
 
 class LauncherExit(IntEnum):
@@ -189,11 +185,71 @@ class ReadHeader:
 
 
 class LauncherEnv(StrEnum):
-    """Переменные окружения портативного python: без них лаунчер не стартует."""
+    """Окружение интерпретатора лаунчера: с ним портативный python находит
+    себя, свои библиотеки и код; всё остальное внешний слой стирает."""
 
+    PATH = "PATH"
     LD_LIBRARY_PATH = "LD_LIBRARY_PATH"
     PYTHONHOME = "PYTHONHOME"
     PYTHONPATH = "PYTHONPATH"
+
+
+class LauncherInterpreter(BaseModel):
+    """Интерпретатор лаунчера цепочки: исполняемый файл, его окружение и корни.
+
+    Лаунчер — тот же python, что и процесс приложения, но во внешнем слое
+    цепочки он видит только явный список путей (LauncherView) и приносит в
+    него свои. Снимает его с процесса граница конфига (AppLayers) и кладёт
+    секцией [interpreter]; построитель цепочки LauncherChain получает его
+    оттуда через способ запуска песочницы и секцию [storage].
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    SECTION: ClassVar[str] = "interpreter"
+
+    executable: str = Field(
+        min_length=1,
+        description="Абсолютный путь интерпретатора процесса (sys.executable).",
+    )
+    env: dict[LauncherEnv, str] = Field(
+        description=(
+            "Заданные у процесса переменные LauncherEnv: с ними лаунчер стартует "
+            "во внешнем слое."
+        ),
+    )
+    roots: tuple[str, ...] = Field(
+        description=(
+            "Абсолютные пути, без которых интерпретатор не стартует: prefix, "
+            "каталог исполняемого файла, каталоги sys.path и LD_LIBRARY_PATH. "
+            "Текущего каталога процесса и его предков среди них нет: в нём "
+            "лежит дерево установки с конфигом и данными."
+        ),
+    )
+
+    @field_validator("executable", mode="after")
+    @classmethod
+    def _absolute_executable(cls, value: str) -> str:
+        if not os.path.isabs(value):
+            msg = f"[interpreter]: executable expects an absolute path, got {value!r}"
+            raise ValueError(msg)
+
+        return value
+
+    @field_validator("roots", mode="after")
+    @classmethod
+    def _absolute_roots(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        for root in value:
+            if os.path.isabs(root):
+                continue
+
+            msg = (
+                f"[interpreter]: roots expect absolute paths, got {root!r} "
+                f"among {list(value)}"
+            )
+            raise ValueError(msg)
+
+        return value
 
 
 class HostPath:
@@ -805,164 +861,445 @@ class Launcher:
         return op_args[0], window
 
 
-_LAUNCHER_MODULE = "boba.workspace.launcher"
+class LayerPath(StrEnum):
+    """Точки внешнего слоя, которые цепочка ставит сама: корень, устройства, procfs."""
 
-FUSE_DEVICE = "/dev/fuse"
+    ROOT = "/"
+    DEV = "/dev"
+    FUSE = "/dev/fuse"
+    PROC = "/proc"
 
 
-def require_fuse(binaries: TrustedBinaries) -> None:
-    """Проверяет предпосылки монтирования образов; падает громко и сразу."""
-    if not os.path.exists(FUSE_DEVICE):
-        msg = (
-            f"workspace: mounting images requires fuse, "
-            f"but {FUSE_DEVICE} is missing on the host"
+class OsLoader(StrEnum):
+    """Пути загрузчика ОС, которые внешний слой видит всегда.
+
+    Это свойство платформы, а не развёртывания: ld.so каждого ELF цепочки
+    (PT_INTERP /lib64/ld-linux-x86-64.so.2), libc и библиотеки модулей
+    python (_ctypes, _ssl). Путь-ссылка ставится в слое ссылкой, путь,
+    которого на машине нет, пропускается.
+    """
+
+    USR = "/usr"
+    LIB = "/lib"
+    LIB64 = "/lib64"
+    LD_CACHE = "/etc/ld.so.cache"
+
+
+class ViewBind(StrEnum):
+    """Режим пути в виде внешнего слоя; значение — флаг бинда bwrap."""
+
+    RO = "--ro-bind"
+    RW = "--bind"
+
+
+@dataclass(frozen=True)
+class LayerSources:
+    """Источники биндов вложенного слоя: их он ищет в виде внешнего."""
+
+    ro: tuple[str, ...]
+    rw: tuple[str, ...]
+
+
+class LauncherView:
+    """Явный вид внешнего слоя цепочки лаунчера вместо корня хоста.
+
+    bwrap перемонтирует на чтение каждую точку под путём своего бинда, и
+    точка хоста, исчезнувшая посреди этого цикла, роняет старт с EINVAL.
+    Поэтому внешний слой видит не корень хоста, а только то, без чего
+    цепочка не работает: загрузчик ОС, интерпретатор лаунчера, исполняемые
+    файлы цепочки, образы и источники биндов вложенного слоя. Путей
+    развёртывания вид не знает: их приносит построитель цепочки
+    (LauncherChain), который его и держит.
+    """
+
+    MAX_LINKS: ClassVar[int] = 40
+    """Сколько ссылок подряд разыменовывает ядро (MAXSYMLINKS)."""
+
+    def __init__(self, interpreter: LauncherInterpreter) -> None:
+        self._interpreter = interpreter
+
+    def args(
+        self,
+        *,
+        ro: Sequence[str],
+        rw: Sequence[str],
+        executables: Sequence[str],
+        tmpfs: Sequence[str],
+    ) -> list[str]:
+        """Операции bwrap вида: ссылки, tmpfs под точки монтирования, бинды.
+
+        Бинды идут по возрастанию глубины: путь под предком того же режима
+        отбрасывается, путь с другим режимом (rw внутри ro) ложится поверх.
+        """
+        links = self._os_links()
+
+        entries: dict[str, ViewBind] = {}
+        loader = (*self._os_paths(), *self._interpreter.roots)
+        for path in (*loader, *executables, *ro):
+            self._add(entries, self._through(links, path), ViewBind.RO)
+
+        for path in rw:
+            self._add(entries, self._through(links, path), ViewBind.RW)
+
+        kept = self._kept(entries)
+        self._check_executables(executables, links, kept)
+
+        argv: list[str] = []
+        for target, path in links:
+            argv += ["--symlink", target, path]
+
+        for parent in dict.fromkeys(tmpfs):
+            argv += ["--tmpfs", parent]
+
+        for path, mode in kept:
+            argv += [mode.value, path, path]
+
+        return argv
+
+    @staticmethod
+    def _os_links() -> list[tuple[str, str]]:
+        """Пути загрузчика-ссылки (/lib на слитом /usr): цель и сама ссылка."""
+        links: list[tuple[str, str]] = []
+        for path in OsLoader:
+            if os.path.islink(path.value):
+                links.append((os.readlink(path.value), path.value))
+
+        return links
+
+    @staticmethod
+    def _os_paths() -> Iterator[str]:
+        """Пути загрузчика; на месте ссылки в вид идёт её настоящий путь."""
+        for path in OsLoader:
+            yield os.path.realpath(path.value)
+
+    def _through(self, links: Sequence[tuple[str, str]], path: str) -> str:
+        """Абсолютный путь; под ссылкой загрузчика (/lib на слитом /usr) — через
+        её настоящий путь."""
+        normal = os.path.abspath(path)
+        for _, link in links:
+            if not self._covers(link, normal):
+                continue
+
+            return os.path.realpath(link) + normal[len(link) :]
+
+        return normal
+
+    @staticmethod
+    def _add(entries: dict[str, ViewBind], path: str, mode: ViewBind) -> None:
+        """Отсутствующий путь пропускается; rw сильнее ro того же пути."""
+        if not os.path.exists(path):
+            return
+
+        if mode is ViewBind.RO and path in entries:
+            return
+
+        entries[path] = mode
+
+    def _kept(self, entries: Mapping[str, ViewBind]) -> list[tuple[str, ViewBind]]:
+        kept: list[tuple[str, ViewBind]] = []
+        for path in sorted(entries, key=self._depth):
+            mode = entries[path]
+            owner = self._owner(path, kept)
+            if owner is not None and owner[1] is mode:
+                continue
+
+            kept.append((path, mode))
+
+        return kept
+
+    @staticmethod
+    def _depth(path: str) -> tuple[int, str]:
+        return path.count("/"), path
+
+    def _owner(
+        self, path: str, kept: Sequence[tuple[str, ViewBind]]
+    ) -> tuple[str, ViewBind] | None:
+        """Самый глубокий принятый бинд над путём (или сам путь) и его режим."""
+        for entry in reversed(kept):
+            if self._covers(entry[0], path):
+                return entry
+
+        return None
+
+    def _check_executables(
+        self,
+        executables: Sequence[str],
+        links: Sequence[tuple[str, str]],
+        kept: Sequence[tuple[str, ViewBind]],
+    ) -> None:
+        """Исполняемый файл цепочки обязан открываться внутри вида.
+
+        Ссылка по дороге к нему, которая ведёт за пределы вида
+        (/etc/alternatives), внутри слоя не откроется; молча её не чиним —
+        бинарь кладётся в доверенный каталог развёртывания.
+        """
+        for executable in executables:
+            if self._opens(self._through(links, executable), links, kept):
+                continue
+
+            real = os.path.realpath(executable)
+            msg = (
+                f"launcher view: chain executable {executable} resolves to {real} "
+                "through a link outside the paths the outer sandbox layer sees; "
+                "put a regular copy of the binary into the trusted directory of "
+                "the deployment (${env.third}/bin)"
+            )
+            raise UntrustedBinaryError(msg)
+
+    def _opens(
+        self,
+        path: str,
+        links: Sequence[tuple[str, str]],
+        kept: Sequence[tuple[str, ViewBind]],
+    ) -> bool:
+        """Путь открывается внутри вида: каждая ссылка по дороге видна в нём."""
+        current = path
+        for _ in range(self.MAX_LINKS):
+            if self._owner(current, kept) is None:
+                return False
+
+            link = self._first_link(current, kept)
+            if not link:
+                return True
+
+            target = os.path.join(os.path.dirname(link), os.readlink(link))
+            rest = current[len(link) :]
+            current = self._through(links, os.path.normpath(target + rest))
+
+        return False
+
+    def _first_link(self, path: str, kept: Sequence[tuple[str, ViewBind]]) -> str:
+        """Первая ссылка пути, какой её видит слой; пусто — ссылок нет.
+
+        Каталоги над биндами слой создаёт сам, а сам бинд монтирует уже
+        разыменованный источник: ссылками внутри слоя остаются только записи
+        под путём бинда.
+        """
+        prefix = ""
+        for part in path.strip("/").split("/"):
+            prefix = f"{prefix}/{part}"
+            owner = self._owner(prefix, kept)
+            if owner is None:
+                continue
+
+            if prefix == owner[0]:
+                continue
+
+            if os.path.islink(prefix):
+                return prefix
+
+        return ""
+
+    @staticmethod
+    def _covers(root: str, path: str) -> bool:
+        if path == root:
+            return True
+
+        return path.startswith(root.rstrip("/") + "/")
+
+
+class LauncherChain:
+    """Построитель цепочки лаунчера: внешний bwrap с явным видом и команда
+    лаунчера в нём.
+
+    Внешний слой — userns с uid 0 и CAP_SYS_ADMIN: fuse2fs монтирует в нём
+    образы, а --disable-userns с монтированием fuse несовместим. Владельцы
+    цепочки — спавнер зиготы и хранилище образов — создают построитель в
+    конструкторе из интерпретатора процесса, доверенных бинарей и таймингов
+    монтирования и на каждый запуск зовут check и argv.
+    """
+
+    MODULE: ClassVar[str] = "boba.workspace.launcher"
+
+    def __init__(
+        self,
+        interpreter: LauncherInterpreter,
+        binaries: TrustedBinaries,
+        options: LauncherOptions,
+    ) -> None:
+        self._interpreter = interpreter
+        self._binaries = binaries
+        self._options = options
+        self._view = LauncherView(interpreter)
+
+    def check(self) -> None:
+        """Предпосылки монтирования образов; падает громко и сразу."""
+        if not os.path.exists(LayerPath.FUSE):
+            msg = (
+                f"workspace: mounting images requires fuse, "
+                f"but {LayerPath.FUSE.value} is missing on the host"
+            )
+            raise RuntimeError(msg)
+
+        self._binaries.resolve(SandboxBinary.FUSE2FS)
+        self._binaries.resolve(SandboxBinary.BWRAP)
+
+    def argv(  # noqa: PLR0913 — состав запуска задаётся целиком
+        self,
+        *,
+        images: Sequence[tuple[str, str]],
+        ro_images: Sequence[tuple[str, str]],
+        template: str,
+        op: Sequence[str],
+        limits: ResourceLimits,
+        pass_fds: Sequence[int],
+        nested: LayerSources,
+        network: bool,
+        replace: bool,
+    ) -> list[str]:
+        """images — пары (образ, mountpoint) на запись; op — режим и аргументы."""
+        bwrap = self._binaries.resolve(SandboxBinary.BWRAP)
+        fuse2fs = self._binaries.resolve(SandboxBinary.FUSE2FS)
+
+        rw_images: list[tuple[str, str]] = []
+        for image, mnt in images:
+            rw_images.append((os.path.abspath(image), os.path.abspath(mnt)))
+
+        # корень цепочки read-only: относительные пути приводим к абсолютным
+        read_images: list[tuple[str, str]] = []
+        for image, mnt in ro_images:
+            read_images.append((os.path.abspath(image), mnt))
+
+        argv = [
+            bwrap,
+            "--die-with-parent",
+            "--unshare-user",
+            "--uid",
+            "0",
+            "--gid",
+            "0",
+            "--cap-add",
+            "CAP_SYS_ADMIN",
+            # CAP_SYS_RESOURCE (в userns) — право обнулить max_user_namespaces
+            "--cap-add",
+            "CAP_SYS_RESOURCE",
+            # CAP_SETPCAP — исполнитель вызова сбрасывает им bounding set тела
+            "--cap-add",
+            "CAP_SETPCAP",
+            "--unshare-pid",
+            "--as-pid-1",
+            "--unshare-ipc",
+            "--unshare-uts",
+            "--unshare-cgroup-try",
+            "--hostname",
+            "sandbox",
+            "--new-session",
+        ]
+        argv += self._view.args(
+            ro=self._ro_sources(read_images, template, nested),
+            rw=self._rw_sources(rw_images, nested),
+            executables=(self._interpreter.executable, bwrap, fuse2fs),
+            tmpfs=self._mount_parents((*read_images, *rw_images)),
         )
-        raise RuntimeError(msg)
+        argv += [
+            "--dev",
+            LayerPath.DEV.value,
+            "--dev-bind",
+            LayerPath.FUSE.value,
+            LayerPath.FUSE.value,
+            "--proc",
+            LayerPath.PROC.value,
+            "--remount-ro",
+            LayerPath.ROOT.value,
+            "--chdir",
+            LayerPath.ROOT.value,
+            "--clearenv",
+        ]
+        for name, value in self._interpreter.env.items():
+            argv += ["--setenv", name.value, value]
 
-    binaries.resolve(SandboxBinary.FUSE2FS)
-    binaries.resolve(SandboxBinary.BWRAP)
+        if not network:
+            argv.append("--unshare-net")
 
+        argv += [
+            "--",
+            self._interpreter.executable,
+            # -P: корень слоя не встаёт первым в sys.path лаунчера
+            "-P",
+            "-m",
+            self.MODULE,
+            "--template",
+            template,
+            *self._flags(limits),
+        ]
+        if replace:
+            argv.append(Launcher.EXEC_ARG)
 
-def build_chain_argv(  # noqa: PLR0913, PLR0912, C901 — линейная сборка argv
-    *,
-    images: Sequence[tuple[str, str]],
-    ro_images: Sequence[tuple[str, str]] = (),
-    template: str,
-    op: Sequence[str],
-    python_bin: str,
-    options: LauncherOptions,
-    limits: ResourceLimits,
-    binaries: TrustedBinaries,
-    pass_fds: Sequence[int] = (),
-    rw_paths: Sequence[str] = (),
-    network: bool = False,
-    replace: bool = False,
-) -> list[str]:
-    """images — пары (образ, mountpoint); op — run/write/read/delete + аргумент.
-    CAP_SYS_ADMIN только в userns; --disable-userns несовместим с mount fuse."""
-    bwrap_path = binaries.resolve(SandboxBinary.BWRAP)
+        for fd in pass_fds:
+            argv += [Launcher.PASS_FDS_ARG, str(fd)]
 
-    # корень песочницы read-only: относительные пути приводим к абсолютным
-    absolute: list[tuple[str, str]] = []
-    for image, mnt in images:
-        absolute.append((os.path.abspath(image), os.path.abspath(mnt)))
-    images = absolute
+        for directory in self._binaries.dirs:
+            argv += ["--trusted-bin-dir", directory]
 
-    ro_absolute: list[tuple[str, str]] = []
-    for image, mnt in ro_images:
-        ro_absolute.append((os.path.abspath(image), mnt))
-    ro_images = ro_absolute
-    argv = [
-        bwrap_path,
-        "--die-with-parent",
-        "--unshare-user",
-        "--uid",
-        "0",
-        "--gid",
-        "0",
-        "--cap-add",
-        "CAP_SYS_ADMIN",
-        # CAP_SYS_RESOURCE (в userns) — право обнулить max_user_namespaces
-        "--cap-add",
-        "CAP_SYS_RESOURCE",
-        # CAP_SETPCAP — исполнитель вызова сбрасывает им bounding set тела
-        "--cap-add",
-        "CAP_SETPCAP",
-        "--unshare-pid",
-        "--as-pid-1",
-        "--unshare-ipc",
-        "--unshare-uts",
-        "--unshare-cgroup-try",
-        "--hostname",
-        "sandbox",
-        "--new-session",
-        "--ro-bind",
-        "/",
-        "/",
-    ]
-    writable: list[str] = []
-    for image, _mnt in images:
-        writable.append(os.path.dirname(image))
-    for path in rw_paths:
-        writable.append(os.path.abspath(path))
-    for path in dict.fromkeys(writable):
-        argv += ["--bind", path, path]
-    mount_dirs: list[str] = []
-    for _image, mnt in (*ro_images, *images):
-        # точку монтирования надо где-то создать: её родитель — tmpfs
-        parent = os.path.dirname(mnt)
-        if parent in mount_dirs:
-            continue
+        for image, mnt in read_images:
+            argv += ["--ro-image", image, mnt]
 
-        mount_dirs.append(parent)
+        for image, mnt in rw_images:
+            argv += ["--image", image, mnt]
 
-    for parent in mount_dirs:
-        argv += ["--tmpfs", parent]
+        argv += list(op)
+        return argv
 
-    argv += [
-        "--dev",
-        "/dev",
-        "--dev-bind",
-        FUSE_DEVICE,
-        FUSE_DEVICE,
-        "--proc",
-        "/proc",
-        "--clearenv",
-        "--setenv",
-        "PATH",
-        os.environ.get("PATH", "/usr/bin:/bin"),
-    ]
-    for name in LauncherEnv:
-        value = os.environ.get(name.value)
-        if not value:
-            continue
-        argv += ["--setenv", name.value, value]
-    if not network:
-        argv.append("--unshare-net")
-    argv += [
-        "--",
-        python_bin,
-        "-m",
-        _LAUNCHER_MODULE,
-        "--template",
-        template,
-        "--mount-wait-sec",
-        str(options.mount_wait_sec),
-        "--mount-poll-sec",
-        str(options.mount_poll_sec),
-        "--shutdown-wait-sec",
-        str(options.shutdown_wait_sec),
-        "--lock-wait-sec",
-        str(options.lock_wait_sec),
-        "--copy-chunk-bytes",
-        str(options.copy_chunk_bytes),
-        "--max-memory-bytes",
-        str(limits.max_memory_bytes),
-        "--max-cpu-sec",
-        str(limits.max_cpu_sec),
-        "--max-file-size-bytes",
-        str(limits.max_file_size_bytes),
-        "--max-open-files",
-        str(limits.max_open_files),
-        "--oom-score-adj",
-        str(limits.oom_score_adj),
-    ]
-    if replace:
-        argv.append(Launcher.EXEC_ARG)
+    def _flags(self, limits: ResourceLimits) -> list[str]:
+        return [
+            "--mount-wait-sec",
+            str(self._options.mount_wait_sec),
+            "--mount-poll-sec",
+            str(self._options.mount_poll_sec),
+            "--shutdown-wait-sec",
+            str(self._options.shutdown_wait_sec),
+            "--lock-wait-sec",
+            str(self._options.lock_wait_sec),
+            "--copy-chunk-bytes",
+            str(self._options.copy_chunk_bytes),
+            "--max-memory-bytes",
+            str(limits.max_memory_bytes),
+            "--max-cpu-sec",
+            str(limits.max_cpu_sec),
+            "--max-file-size-bytes",
+            str(limits.max_file_size_bytes),
+            "--max-open-files",
+            str(limits.max_open_files),
+            "--oom-score-adj",
+            str(limits.oom_score_adj),
+        ]
 
-    for fd in pass_fds:
-        argv += [Launcher.PASS_FDS_ARG, str(fd)]
+    @staticmethod
+    def _ro_sources(
+        images: Sequence[tuple[str, str]], template: str, nested: LayerSources
+    ) -> list[str]:
+        """Образы корня, шаблон и ro-источники вложенного слоя."""
+        sources: list[str] = []
+        for image, _ in images:
+            sources.append(image)
 
-    for directory in binaries.dirs:
-        argv += ["--trusted-bin-dir", directory]
+        # пустой шаблон законен: без rw-образа он не нужен
+        if template:
+            sources.append(os.path.abspath(template))
 
-    for image, mnt in ro_images:
-        argv += ["--ro-image", image, mnt]
+        sources.extend(nested.ro)
+        return sources
 
-    for image, mnt in images:
-        argv += ["--image", image, mnt]
-    argv += list(op)
-    return argv
+    @staticmethod
+    def _rw_sources(
+        images: Sequence[tuple[str, str]], nested: LayerSources
+    ) -> list[str]:
+        """Каталоги rw-образов (в них .lock и копия шаблона) и rw-источники."""
+        sources: list[str] = []
+        for image, _ in images:
+            sources.append(os.path.dirname(image))
+
+        sources.extend(nested.rw)
+        return sources
+
+    @staticmethod
+    def _mount_parents(images: Sequence[tuple[str, str]]) -> list[str]:
+        """Точку монтирования надо где-то создать: её родитель — tmpfs."""
+        parents: list[str] = []
+        for _, mnt in images:
+            parents.append(os.path.dirname(mnt))
+
+        return parents
 
 
 def render_image_path(template: str, variables: Mapping[str, str]) -> str:

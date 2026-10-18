@@ -29,6 +29,7 @@ import pytest
 from pydantic import BaseModel, ConfigDict
 
 from boba.cancellation import RunCancellation, ToolStopped, run_cancellation
+from boba.runtime.config import AppLayers
 from boba.runtime.storage import ImageStorageClient, LocalStorageConfig, StorageFactory
 from boba.sandbox import SandboxProfile
 from boba.sandbox.cgroup import CgroupManager
@@ -52,10 +53,7 @@ from boba.toolkit.launcher import LauncherError
 from boba.toolkit.result import ShellResult
 from boba.toolkit.stream import Chunk, JournalChannel, StreamSink
 from boba.workspace.images import PartialCopy
-from boba.workspace.launcher import (
-    FUSE_DEVICE,
-    ReadWindow,
-)
+from boba.workspace.launcher import LayerPath, ReadWindow
 
 pytestmark = pytest.mark.load
 
@@ -67,7 +65,7 @@ needs_fuse = pytest.mark.failif(
     shutil.which("bwrap") is None
     or shutil.which("fuse2fs") is None
     or shutil.which("mkfs.ext4") is None
-    or not os.path.exists(FUSE_DEVICE),
+    or not os.path.exists(LayerPath.FUSE),
     reason="нужны bwrap, fuse2fs, mkfs.ext4 и /dev/fuse",
 )
 
@@ -658,6 +656,7 @@ class LoadStand:
                     "copy_chunk_bytes": 1 << 20,
                 },
                 "binaries": {"dirs": self._bin_dirs()},
+                "interpreter": AppLayers.interpreter(),
             }
         )
         client = StorageFactory.create(cfg)
