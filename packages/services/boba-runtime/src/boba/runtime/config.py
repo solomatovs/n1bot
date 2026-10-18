@@ -197,7 +197,7 @@ class AppLayers:
     plugins/<id>.toml рядом с общим конфигом ложатся секциями tool.<id>, а
     окружение лишь переопределяет ключи [env] из реестра EnvOverride.
     [interpreter] снимается с самого процесса: им цепочка лаунчера песочницы
-    запускает тот же python.
+    запускает тот же python во внешнем слое.
     """
 
     HOST_FALLBACK: ClassVar[str] = "HOSTNAME"
@@ -219,7 +219,11 @@ class AppLayers:
 
     @classmethod
     def interpreter(cls) -> LauncherInterpreter:
-        """Интерпретатор процесса и его окружение для цепочки лаунчера."""
+        """Интерпретатор процесса и его окружение для цепочки лаунчера.
+
+        Текущий каталог и его предки в корни не идут: python -m кладёт cwd в
+        sys.path, а cwd сервиса — дерево установки с конфигом и данными.
+        """
         env: dict[LauncherEnv, str] = {}
         for name in LauncherEnv:
             value = os.environ.get(name.value)
@@ -228,9 +232,43 @@ class AppLayers:
 
             env[name] = value
 
-        # запуск относительным путём оставляет в sys.executable `..`
+        libraries = env.get(LauncherEnv.LD_LIBRARY_PATH, "").split(os.pathsep)
+        # запуск относительным путём оставляет в sys.executable `..`: внутри
+        # слоя такой путь не пройти, там нет промежуточных каталогов
         executable = os.path.abspath(sys.executable)
-        return LauncherInterpreter(executable=executable, env=env)
+        candidates = (
+            sys.base_prefix,
+            sys.prefix,
+            sys.exec_prefix,
+            os.path.dirname(executable),
+            os.path.dirname(os.path.realpath(executable)),
+            *sys.path,
+            *libraries,
+        )
+
+        cwd = os.getcwd()
+        roots: list[str] = []
+        for candidate in candidates:
+            if not os.path.isabs(candidate):
+                continue
+
+            root = os.path.normpath(candidate)
+            if cls._holds(root, cwd):
+                continue
+
+            roots.append(root)
+
+        return LauncherInterpreter(
+            executable=executable, env=env, roots=tuple(dict.fromkeys(roots))
+        )
+
+    @staticmethod
+    def _holds(root: str, path: str) -> bool:
+        """root — сам path или его предок."""
+        if path == root:
+            return True
+
+        return path.startswith(root.rstrip("/") + "/")
 
     @classmethod
     def _common(cls, path: Path) -> dict[str, Any]:

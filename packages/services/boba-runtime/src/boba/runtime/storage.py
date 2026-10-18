@@ -399,7 +399,8 @@ class ImageStorageClient(ConfiguredStorageClient):
     """Хранит вложения внутри per-thread ext4-образа: fuse2fs на одну операцию.
 
     Каждая операция — цепочка лаунчера (LauncherChain) над образом
-    пользователя.
+    пользователя: внешний слой видит интерпретатор, бинари, шаблон и каталог
+    образов, а не корень хоста.
     """
 
     WATCH_POLL_SEC: ClassVar[float] = 1.0

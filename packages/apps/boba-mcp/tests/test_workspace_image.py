@@ -407,13 +407,21 @@ class TestChainArgv:
             raise AssertionError('argv[argv.index("--hostname") + 1] == "sandbox"')
 
     def test_host_fs_readonly_except_image_dir(self, tmp_path: Path) -> None:
+        """Корня хоста в слое нет: каталог образа на запись, шаблон на чтение,
+        а сам корень слоя после сборки перемонтирован только для чтения."""
         argv = self._argv(tmp_path)
-        i = argv.index("--ro-bind")
-        if argv[i + 1 : i + 3] != ["/", "/"]:
-            raise AssertionError('argv[i + 1 : i + 3] == ["/", "/"]')
+
+        if "/" in _binds(argv, "--ro-bind"):
+            raise AssertionError(f"корень хоста в слое: {_binds(argv, '--ro-bind')}")
 
         if _binds(argv, "--bind") != [str(tmp_path / "ws")]:
             raise AssertionError(f"rw-бинды: {_binds(argv, '--bind')}")
+
+        if str(tmp_path / "t.ext4") not in _binds(argv, "--ro-bind"):
+            raise AssertionError(f"шаблона нет среди ro: {_binds(argv, '--ro-bind')}")
+
+        if argv[argv.index("--remount-ro") + 1] != "/":
+            raise AssertionError("корень слоя не перемонтирован только для чтения")
 
     def test_rw_paths_bound_writable(self, tmp_path: Path) -> None:
         data = tmp_path / "srv-data"
