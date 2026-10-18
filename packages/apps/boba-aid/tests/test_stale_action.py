@@ -21,7 +21,7 @@ SESSION_ID = "session-alive-1"
 SOCKET_ID = "socket-alive-1"
 ACTION = {
     "name": "canvas_leave",
-    "payload": {"path": "stream://call-1/tool_stdout", "nonce": "n-1"},
+    "payload": {"nonce": "n-1", "holder": "tab-1"},
     "label": "",
     "tooltip": "",
     "icon": None,
