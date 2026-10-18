@@ -21,8 +21,8 @@ from boba.stand.ui.stand import (
     StandApp,
     StandAuth,
     StandConfig,
+    StandPorts,
     StandProcess,
-    free_port,
 )
 
 pytestmark = pytest.mark.ui
@@ -45,7 +45,7 @@ def _sso_stand(
     config = StandConfig(
         workdir=workdir,
         app=StandApp.AID,
-        app_port=free_port(),
+        app_port=StandPorts().free(),
         llm_port=llm_port,
         db_name=db_name,
         url_prefix=prefix,

@@ -16,7 +16,7 @@ from studio_ui import BOOT_TIMEOUT_SEC, login_cookies
 from boba.stand.names import StandNames
 from boba.stand.ui.database import StandDatabase
 from boba.stand.ui.fake_llm import serve
-from boba.stand.ui.stand import StandApp, StandConfig, StandProcess, StandUrl, free_port
+from boba.stand.ui.stand import StandApp, StandConfig, StandProcess, StandUrl, StandPorts
 
 DB_NAME = "boba_ui_test"
 TOKEN_DELAY_SEC = 0.03
@@ -39,7 +39,7 @@ def stand_workdir(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 @pytest.fixture(scope="session")
 def llm_port() -> int:
-    return free_port()
+    return StandPorts().free()
 
 
 @pytest.fixture(scope="session")
@@ -80,7 +80,7 @@ def stand(
     config = StandConfig(
         workdir=stand_workdir,
         app=StandApp.STUDIO,
-        app_port=free_port(),
+        app_port=StandPorts().free(),
         llm_port=llm_port,
         db_name=stand_database,
     )
@@ -100,7 +100,7 @@ def workflow_stand(
     config = StandConfig(
         workdir=stand_workdir / "sandbox-workflow",
         app=StandApp.STUDIO,
-        app_port=free_port(),
+        app_port=StandPorts().free(),
         llm_port=llm_port,
         db_name=stand_database,
         url_prefix="/boba-workflow",

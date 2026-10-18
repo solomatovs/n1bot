@@ -57,9 +57,9 @@ from boba.stand.ui.stand import (
     REPO_ROOT,
     StandApp,
     StandConfig,
+    StandPorts,
     StandProcess,
     StandUrl,
-    free_port,
 )
 
 pytestmark = [pytest.mark.ui, pytest.mark.xdist_group("mcp-ui")]
@@ -87,7 +87,7 @@ class BobaMcpStand:
     BOOT_SEC: float = 60.0
 
     def __init__(self, workdir: Path) -> None:
-        self.port = free_port()
+        self.port = StandPorts().free()
         workdir.mkdir(parents=True, exist_ok=True)
         self._process = subprocess.Popen(
             [sys.executable, str(self.STAND), str(self.port), str(workdir)]
@@ -174,7 +174,7 @@ def mcp_stand(  # noqa: PLR0913 — стенд собирается из фик�
         # не "mcp": это каталог сервиса boba-mcp общего стенда (StandConfig.service)
         workdir=stand_workdir / "chat-mcp",
         app=StandApp.AID,
-        app_port=free_port(),
+        app_port=StandPorts().free(),
         llm_port=llm_port,
         db_name=stand_database,
         url_prefix="/boba-mcp",
@@ -204,27 +204,21 @@ class FeedCalls:
         self._chat = chat
 
     def ask(self, tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        """Законченный шаг вызова из журнала сокета. Конец хода ждётся по
-        самому шагу: пара task_start/task_end от старта чата может прийти
-        уже после вопроса."""
+        """Законченный шаг вызова из журнала сокета: конец хода агент
+        объявляет, когда итоги вызовов уже в ленте."""
         chat = self._chat
         request = json.dumps({"name": tool, "arguments": arguments})
         chat.ask(f"{ScenarioName.CALL.value} {request}")
         chat.await_idle(timeout_sec=120.0)
 
-        deadline = time.monotonic() + 120.0
-        while time.monotonic() < deadline:
-            chat.page.wait_for_timeout(100)
-            step = chat.log.last_step(StepKind.TOOL.value)
-            if step is None:
-                continue
+        step = chat.log.last_step(StepKind.TOOL.value)
+        if step is None:
+            raise AssertionError(f"no tool step of {tool}\n{chat.log.describe()}")
 
-            if str(step.get(StepField.NAME.value)).startswith(self.RUNNING):
-                continue
+        if str(step.get(StepField.NAME.value)).startswith(self.RUNNING):
+            raise AssertionError(f"the turn ended with {tool} running: {step!r}")
 
-            return step
-
-        raise AssertionError(f"no finished tool step of {tool}\n{chat.log.describe()}")
+        return step
 
 
 class OrdersApp:

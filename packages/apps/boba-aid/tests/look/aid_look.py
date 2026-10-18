@@ -46,8 +46,8 @@ from boba.stand.ui.stand import (
     StandApp,
     StandAuth,
     StandConfig,
+    StandPorts,
     StandProcess,
-    free_port,
 )
 
 __all__ = [
@@ -1061,7 +1061,7 @@ class LookStand:
         config = StandConfig(
             workdir=self._workdir / name,
             app=StandApp.AID,
-            app_port=free_port(),
+            app_port=StandPorts().free(),
             llm_port=self._llm_port,
             db_name=self._database,
             url_prefix="/boba-look",
@@ -1088,7 +1088,7 @@ class LookStand:
         config = StandConfig(
             workdir=self._workdir / name,
             app=StandApp.AID,
-            app_port=free_port(),
+            app_port=StandPorts().free(),
             llm_port=self._llm_port,
             db_name=self._database,
             url_prefix="/boba-look",

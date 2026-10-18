@@ -32,7 +32,7 @@ from boba.llm.http.ollama import OllamaProvider
 from boba.llm.http.openai import OpenAiProvider
 from boba.llm.providers import ChatModelConfig, LlmProviders, LlmProviderTypes
 from boba.stand.ui.fake_llm import FailureName, FakeLlmApp, ScenarioName
-from boba.stand.ui.stand import free_port
+from boba.stand.ui.stand import StandPorts
 from boba.transport.http import HttpTransportConfig
 from boba.transport.http.connection import HttpConnection, NoneAuth, UrlScheme
 
@@ -146,7 +146,7 @@ class StandClients:
 
 @pytest.fixture
 async def stand_port() -> AsyncIterator[int]:
-    port = free_port()
+    port = StandPorts().free()
     app = FakeLlmApp(token_delay_sec=0.0, hang_sec=HANG_SEC)
     config = uvicorn.Config(
         app.asgi(),

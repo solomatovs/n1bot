@@ -38,9 +38,9 @@ from boba.stand.ui.stand import (
     StandApp,
     StandAuth,
     StandConfig,
+    StandPorts,
     StandProcess,
     StandUrl,
-    free_port,
 )
 from boba.transport.http import (
     HttpRequest,
@@ -117,7 +117,7 @@ class DomainProxy:
 
     def __init__(self, domain: str) -> None:
         self._domain = domain
-        self._port = free_port()
+        self._port = StandPorts().free()
         self._stopped = threading.Event()
         self._server = self._build()
         self._thread = threading.Thread(target=self._server.serve_forever)
@@ -238,7 +238,7 @@ class NegotiateProbe:
 
     def __init__(self) -> None:
         self.tokens: list[str] = []
-        self.port = free_port()
+        self.port = StandPorts().free()
         self._server = self._build()
         self._thread = threading.Thread(target=self._server.serve_forever)
 
@@ -335,7 +335,7 @@ def sso_stand(
     config = StandConfig(
         workdir=workdir,
         app=StandApp.AID,
-        app_port=free_port(),
+        app_port=StandPorts().free(),
         llm_port=llm_port,
         db_name=stand_database,
         url_prefix="/boba-krb",

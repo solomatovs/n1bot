@@ -22,7 +22,7 @@ from typing import Any, ClassVar
 
 import pytest
 
-from boba.stand.ui.stand import REPO_ROOT, StandApp, StandConfig, free_port
+from boba.stand.ui.stand import REPO_ROOT, StandApp, StandConfig, StandPorts
 from boba.stand.ui.toml_text import TomlText
 
 pytestmark = pytest.mark.integration
@@ -83,8 +83,8 @@ def test_startup_without_postgres_exits_with_a_failure(
     config = SilentDatabaseStand(
         workdir=tmp_path,
         app=app,
-        app_port=free_port(),
-        llm_port=free_port(),
+        app_port=StandPorts().free(),
+        llm_port=StandPorts().free(),
         db_name="unreachable",
         postgres=silent_postgres,
     )

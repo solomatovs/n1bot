@@ -23,7 +23,7 @@ from psycopg import sql
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
 from boba.stand.names import StandNames
-from boba.stand.ui.stand import REPO_ROOT, ServiceStand, StandApp, free_port
+from boba.stand.ui.stand import REPO_ROOT, ServiceStand, StandApp, StandPorts
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -111,7 +111,7 @@ async def test_service_without_vector_exits_naming_the_extensions(
 ) -> None:
     config = ServiceStand(
         workdir=tmp_path,
-        app_port=free_port(),
+        app_port=StandPorts().free(),
         db_name=bare_database,
         sandbox=False,
         plugins=("kb",),

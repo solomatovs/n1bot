@@ -99,7 +99,7 @@ from boba.stand.refs import StandRefs
 from boba.stand.service_signin import ServiceSignIn
 from boba.stand.signin import SignInStand
 from boba.stand.storage import StorageSeed
-from boba.stand.ui.stand import ServiceStand, StandProcess, free_port
+from boba.stand.ui.stand import ServiceStand, StandPorts, StandProcess
 from boba.stand.zygote import ROOTFS_IMAGE, SandboxCgroup
 from boba.stand_core.context import CallStand, StandIdentity
 from boba.stand_core.context import FakeTurn as FakeTurn
@@ -263,7 +263,7 @@ class ToolService:
 
     def __init__(self, workdir: Path, db_name: str) -> None:
         self._config = ServiceStand(
-            workdir=workdir, app_port=free_port(), db_name=db_name, sandbox=True
+            workdir=workdir, app_port=StandPorts().free(), db_name=db_name, sandbox=True
         )
         self._process = StandProcess[ServiceStand](
             config=self._config, log_path=workdir / "mcp.log"
