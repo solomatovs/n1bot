@@ -1219,6 +1219,36 @@ class TestSignInAsTheUser:
         assert isinstance(reply, mt.CallToolResult)
         assert not reply.is_error, reply
 
+    async def test_cancelled_call_leaves_the_sign_in_usable(
+        self, boba_mcp_stand: BobaMcpStand, tmp_path: Path
+    ) -> None:
+        """Идущий вызов отменён посреди ответа: вход провайдера OAuth
+        освобождается в задаче вызова, и следующие запросы того же
+        подключения идут как прежде."""
+        servers = self._servers(boba_mcp_stand, self.SECRET, self.CLIENT_SECRET)
+        caller = McpCaller(login="ivanov", roles=frozenset({"dev"}))
+        marker = tmp_path / "sleep.pid"
+        try:
+            port = await self._port(servers, caller, "boba")
+            slow = _call("fake_sleep", seconds=30.0, marker=str(marker))
+            running = asyncio.create_task(port.call(OWN, slow, None, None, None))
+            async with asyncio.timeout(10):
+                while not marker.exists():
+                    await asyncio.sleep(0.05)
+
+            running.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await running
+
+            listed = await port.list_resources(OWN, None)
+            reply = await port.call(OWN, _call("fake_whoami"), None, None, None)
+        finally:
+            await servers.stop()
+
+        assert isinstance(listed, mt.ListResourcesResult)
+        assert isinstance(reply, mt.CallToolResult)
+        assert not reply.is_error, reply
+
     async def test_private_lists_of_two_users_stay_apart(
         self, boba_mcp_stand: BobaMcpStand
     ) -> None:
