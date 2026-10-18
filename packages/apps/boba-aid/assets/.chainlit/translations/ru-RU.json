@@ -23,12 +23,12 @@
                 "email": {
                     "label": "Логин",
                     "required": "логин обязателен для заполнения",
-                    "placeholder": "login"
+                    "placeholder": "Введите логин"
                 },
                 "password": {
                     "label": "Пароль",
                     "required": "пароль обязателен для заполнения",
-                    "placeholder": "password"
+                    "placeholder": "Введите пароль"
                 },
                 "actions": {
                     "signin": "Войти",

@@ -32,14 +32,7 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 from PIL import Image, ImageChops
-from playwright.sync_api import (
-    Browser,
-    BrowserContext,
-    Locator,
-    Page,
-    ViewportSize,
-    expect,
-)
+from playwright.sync_api import Browser, BrowserContext, Locator, Page, ViewportSize
 from pydantic import BaseModel, ConfigDict, TypeAdapter
 
 from boba.stand.ui.stand import (
@@ -56,6 +49,8 @@ __all__ = [
     "LookCheck",
     "LookEnvironment",
     "LookError",
+    "LookFix",
+    "LookFixes",
     "LookFrame",
     "LookLanguage",
     "LookOutcome",
@@ -63,7 +58,6 @@ __all__ = [
     "LookPaths",
     "LookReport",
     "LookSettings",
-    "LookSignIn",
     "LookSize",
     "LookStand",
     "LookState",
@@ -127,14 +121,75 @@ class LookAxes:
         return frames
 
 
+class LookFix(BaseModel):
+    """Правка вида, которую показывают кадры: пункт перечня правок вида или
+    решение по редизайну. Состояние называет свои правки, а страница отчёта
+    перечисляет их наверху со ссылками на кадры, где правку видно."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    code: str
+    summary: str
+
+
+class LookFixes:
+    """Правки вида, которые показывают кадры тестов вида: пункты перечня
+    правок вида (N…) и решения по редизайну (R…). Состояние называет их в
+    LookState.fixes, отчёт собирает наверху страницы утверждения."""
+
+    N3: ClassVar[LookFix] = LookFix(
+        code="N3",
+        summary=(
+            "один язык в окне: подсказки полей входа «Введите логин» и «Введите "
+            "пароль» вместо login и password, профили чата названы и описаны "
+            "по-русски"
+        ),
+    )
+    N33: ClassVar[LookFix] = LookFix(
+        code="N33",
+        summary=(
+            "страница входа без картинки справа при любом наборе входов, в том "
+            "числе только SSO: одна колонка, логотип по центру, кнопка SSO "
+            "размера M Consta; в тёмной теме логотип белый"
+        ),
+    )
+    FOCUS: ClassVar[LookFix] = LookFix(
+        code="R1",
+        summary=(
+            "кольцо клавиатурного фокуса: Tab рисует кольцо 2 px цвета --ring "
+            "темы (в светлой — синий Consta #0078d2) у кнопок и ссылок, поле "
+            "ввода — рамкой того же цвета; мышью колец нет"
+        ),
+    )
+    NAME: ClassVar[LookFix] = LookFix(
+        code="R2",
+        summary=(
+            "имя ассистента «Ассистент-BOBA» целиком кириллицей; «Описание» "
+            "называет его так же, а не прежним AID"
+        ),
+    )
+    APP_CARD: ClassVar[LookFix] = LookFix(
+        code="A1",
+        summary=(
+            "приложение MCP Apps — карточкой основной ленты под ходом, а не в "
+            "шаге вызова: рамка с края текста ответа до края вопроса, шапка "
+            "«сервер · инструмент» с кнопками «на весь экран» и «свернуть», "
+            "цвета и шрифт чата у приложения; шаг — только аргументы и итог"
+        ),
+    )
+
+
 @dataclass(frozen=True)
 class LookState:
-    """Состояние интерфейса из описи плана тестов вида: группа, номер и
-    подпись для человека, утверждающего эталон."""
+    """Состояние интерфейса из описи плана тестов вида: группа, номер, подпись
+    и что проверить глазами человеку, утверждающему эталон, и правки вида,
+    которые видно в его кадрах."""
 
     group: str
     name: str
     caption: str
+    check: str
+    fixes: Sequence[LookFix]
 
 
 @dataclass(frozen=True)
@@ -540,6 +595,8 @@ class ReportRow(BaseModel):
     group: str
     state: str
     caption: str
+    check: str
+    fixes: Sequence[LookFix]
     theme: str
     size: str
     kind: OutcomeKind
@@ -597,6 +654,8 @@ class LookReport:
                     group=outcome.frame.state.group,
                     state=outcome.frame.state.name,
                     caption=outcome.frame.state.caption,
+                    check=outcome.frame.state.check,
+                    fixes=outcome.frame.state.fixes,
                     theme=outcome.frame.theme.value,
                     size=outcome.frame.size.value,
                     kind=outcome.kind,
@@ -621,10 +680,12 @@ class LookReport:
 
 
 class ReportPage:
-    """Страница отчёта: состояния по группам с подписями, под каждым — его
-    кадры во всех темах и размерах. У разошедшегося кадра — эталон, новый
-    кадр, карта отличий, наложение ползунком и разница дерева доступности;
-    переснятый кадр показан как есть: страница служит и для утверждения."""
+    """Страница отчёта: наверху правки вида со ссылками на состояния, где их
+    видно, ниже состояния по группам с подписью и тем, что проверить глазами,
+    под каждым — его кадры во всех темах и размерах. У разошедшегося кадра —
+    эталон, новый кадр, карта отличий, наложение ползунком и разница дерева
+    доступности; переснятый кадр показан как есть: страница служит и для
+    утверждения."""
 
     STYLE: ClassVar[str] = """
       :root { color-scheme: light; }
@@ -636,6 +697,13 @@ class ReportPage:
                padding: 12px; margin: 12px 0; }
       .state h3 { font-size: 15px; margin: 0 0 10px; }
       .state h3 code { color: #52525b; font-weight: 400; }
+      .check { margin: -4px 0 10px; color: #3f3f46; }
+      .tags { margin: -6px 0 10px; }
+      .tag { display: inline-block; font-size: 12px; background: #e0f2fe;
+             color: #075985; border-radius: 4px; padding: 0 6px; margin-right: 4px; }
+      .fixes { background: #fff; border: 1px solid #d4d4d8; border-radius: 8px;
+               padding: 4px 16px 8px; }
+      .fixes li { margin: 6px 0; }
       .frames { display: flex; gap: 16px; flex-wrap: wrap; align-items: flex-start; }
       figure { margin: 0; }
       figure.wide { width: min(560px, 100%); }
@@ -677,6 +745,7 @@ class ReportPage:
             "<h1>Look report</h1>",
             f"<div class='summary'>{len(rows)} frames: {failed} differ, "
             f"{retaken} retaken</div>",
+            self._fixes(rows),
         ]
         group = ""
         for state, frames in self._states(rows):
@@ -685,10 +754,40 @@ class ReportPage:
                 group = first.group
                 parts.append(f"<h2>{html.escape(group)}</h2>")
 
-            parts.append(self._state(state, first.caption, frames))
+            parts.append(self._state(state, first, frames))
 
         parts.append("</body></html>")
         return "\n".join(parts)
+
+    def _fixes(self, rows: Sequence[ReportRow]) -> str:
+        """Правки вида прогона: у каждой — ссылки на состояния, где её видно."""
+        summaries: dict[str, str] = {}
+        states: dict[str, dict[str, ReportRow]] = {}
+        for row in sorted(rows, key=ReportRow.order):
+            for fix in row.fixes:
+                summaries[fix.code] = fix.summary
+                shown = states.setdefault(fix.code, {})
+                shown.setdefault(row.state, row)
+
+        if not summaries:
+            return ""
+
+        items: list[str] = []
+        for code, summary in summaries.items():
+            links: list[str] = []
+            for row in states[code].values():
+                anchor = html.escape(self._anchor(row))
+                links.append(f"<a href='#{anchor}'>{html.escape(row.state)}</a>")
+
+            items.append(
+                f"<li><b>{html.escape(code)}</b> {html.escape(summary)} — "
+                f"{', '.join(links)}</li>"
+            )
+
+        return (
+            "<section class='fixes'><h2>Fixes shown in these frames</h2>"
+            f"<ul>{''.join(items)}</ul></section>"
+        )
 
     @staticmethod
     def _states(rows: Sequence[ReportRow]) -> list[tuple[str, list[ReportRow]]]:
@@ -702,7 +801,11 @@ class ReportPage:
 
         return found
 
-    def _state(self, state: str, caption: str, frames: Sequence[ReportRow]) -> str:
+    @staticmethod
+    def _anchor(row: ReportRow) -> str:
+        return f"{row.group}-{row.state}"
+
+    def _state(self, state: str, first: ReportRow, frames: Sequence[ReportRow]) -> str:
         figures: list[str] = []
         details: list[str] = []
         for row in frames:
@@ -710,9 +813,18 @@ class ReportPage:
             if row.failed and row.kind is not OutcomeKind.UPDATED:
                 details.append(self._detail(row))
 
+        tags: list[str] = []
+        for fix in first.fixes:
+            tags.append(f"<span class='tag'>{html.escape(fix.code)}</span>")
+
+        tagged = ""
+        if tags:
+            tagged = f"<div class='tags'>{''.join(tags)}</div>"
+
         return (
-            f"<section class='state'><h3>{html.escape(caption)} "
-            f"<code>{html.escape(state)}</code></h3>"
+            f"<section class='state' id='{html.escape(self._anchor(first))}'>"
+            f"<h3>{html.escape(first.caption)} <code>{html.escape(state)}</code></h3>"
+            f"<p class='check'>Check: {html.escape(first.check)}</p>{tagged}"
             f"<div class='frames'>{''.join(figures)}</div>{''.join(details)}</section>"
         )
 
@@ -922,6 +1034,17 @@ class LookPages:
 
     THEME_KEY: ClassVar[str] = "vite-ui-theme"
     FONTS: ClassVar[str] = "() => document.fonts.ready.then(() => document.fonts.size)"
+    TABS: ClassVar[int] = 40
+    FOCUSED: ClassVar[str] = "(node) => node === document.activeElement"
+    ACTIVE: ClassVar[str] = (
+        "() => { const node = document.activeElement; "
+        "return node ? node.outerHTML.slice(0, 160) : ''; }"
+    )
+    OUTLINE: ClassVar[str] = (
+        "(node) => { const style = getComputedStyle(node); "
+        "if (style.outlineStyle === 'none') return 'none'; "
+        "return `${style.outlineStyle} ${style.outlineWidth}`; }"
+    )
 
     def __init__(self, browser: Browser) -> None:
         self._browser = browser
@@ -950,39 +1073,35 @@ class LookPages:
         page.evaluate(self.FONTS)
         page.evaluate("() => document.activeElement && document.activeElement.blur()")
 
+    def tab_to(self, page: Page, selector: str) -> None:
+        """Клавиатурный фокус на selector: Tab, пока фокус не встанет на него, —
+        так пользователь идёт по странице с клавиатуры.
+
+        Ошибки:
+        LookError — за TABS нажатий фокус не дошёл до selector.
+        """
+        target = page.locator(selector).first
+        for _ in range(self.TABS):
+            page.keyboard.press("Tab")
+            if target.evaluate(self.FOCUSED):
+                return
+
+        active = page.evaluate(self.ACTIVE)
+        msg = (
+            f"look keyboard focus: {self.TABS} Tab presses did not reach "
+            f"{selector}, the focus is on {active!r}"
+        )
+        raise LookError(msg)
+
+    def outline(self, element: Locator) -> str:
+        """Кольцо фокуса элемента: стиль и толщина outline, «none» — кольца нет."""
+        return str(element.evaluate(self.OUTLINE))
+
     def close(self) -> None:
         for context in self._contexts:
             context.close()
 
         self._contexts.clear()
-
-
-class LookSignIn:
-    """Вход формой стенда пользователем admin: после него открыт пустой
-    тред с полем ввода и выбором профиля, сеть затихла. Им входят тесты вида
-    оболочки и ленты."""
-
-    LOGIN: ClassVar[str] = "#email"
-    PASSWORD: ClassVar[str] = "#password"
-    SUBMIT: ClassVar[str] = 'form button[type="submit"]'
-    INPUT: ClassVar[str] = "#chat-input"
-    PROFILE_SELECT: ClassVar[str] = "#chat-profiles"
-    LOGIN_USER: ClassVar[str] = "admin"
-
-    def __init__(self, page: Page, stand: StandProcess) -> None:
-        self._page = page
-        self._stand = stand
-
-    def sign_in(self) -> None:
-        credential = self._stand.config.credential(self.LOGIN_USER)
-        base = self._stand.config.base_url
-        self._page.goto(f"{base}/login", wait_until="domcontentloaded")
-        self._page.locator(self.LOGIN).fill(credential.login)
-        self._page.locator(self.PASSWORD).fill(credential.password)
-        self._page.locator(self.SUBMIT).click()
-        expect(self._page.locator(self.INPUT)).to_be_visible(timeout=60_000)
-        expect(self._page.locator(self.PROFILE_SELECT)).to_be_visible()
-        self._page.wait_for_load_state("networkidle")
 
 
 class LookLanguage(StrEnum):
