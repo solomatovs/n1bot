@@ -1,5 +1,5 @@
-"""Arrow-порты toolkit поверх трубы ОС: ArrowOutbound пишет схему и пачки,
-ArrowInbound на другом конце читает ту же схему и те же пачки, а поток на
+"""Arrow IPC поверх сырых портов toolkit и трубы ОС: в RawOutbound пишутся
+схема и пачки, RawInbound на другом конце читает ту же схему и те же пачки, а поток на
 проводе — обычный Arrow IPC, который читает и pyarrow напрямую; мусор на
 входе — ArrowStreamError. Баз стенда не трогает."""
 
@@ -16,13 +16,7 @@ import pytest
 from boba.pump_stand import Pipe
 from boba.toolkit.arrow import ArrowIpc
 from boba.toolkit.frames import ToolIo
-from boba.toolkit.ports import (
-    ArrowInbound,
-    ArrowOutbound,
-    ArrowStreamError,
-    RawInbound,
-    RawOutbound,
-)
+from boba.toolkit.ports import ArrowStreamError, RawInbound, RawOutbound
 
 pytestmark = pytest.mark.anyio
 
@@ -54,13 +48,13 @@ def _batch(start: int, rows: int) -> pyarrow.RecordBatch:
 
 class TestArrowPorts:
     async def test_batches_cross_the_pipe_intact(self) -> None:
-        pipe = Pipe(ArrowOutbound, ArrowInbound)
+        pipe = Pipe(RawOutbound, RawInbound)
         sent = [_batch(0, 1000), _batch(1000, 7), _batch(1007, 3000)]
 
         async def produce() -> None:
             out = pipe.outbound
-            if not isinstance(out, ArrowOutbound):
-                raise AssertionError("outbound port is ArrowOutbound")
+            if not isinstance(out, RawOutbound):
+                raise AssertionError("outbound port is RawOutbound")
 
             try:
                 writer = await ArrowIpc().open_out(out.writer(), SCHEMA, 262144)
@@ -73,8 +67,8 @@ class TestArrowPorts:
 
         async def consume() -> list[Any]:
             feed = pipe.inbound
-            if not isinstance(feed, ArrowInbound):
-                raise AssertionError("inbound port is ArrowInbound")
+            if not isinstance(feed, RawInbound):
+                raise AssertionError("inbound port is RawInbound")
 
             try:
                 reader = await ArrowIpc().open_in(feed, BUFFER)
@@ -93,7 +87,7 @@ class TestArrowPorts:
     async def test_wire_is_plain_arrow_ipc(self) -> None:
         """Сырой приёмник на другом конце читает поток обычным pyarrow."""
         read_fd, write_fd = os.pipe()
-        out = ArrowOutbound(ToolIo.on_channels(-1, write_fd))
+        out = RawOutbound(ToolIo.on_channels(-1, write_fd))
 
         async def produce() -> None:
             try:
@@ -119,7 +113,7 @@ class TestArrowPorts:
     async def test_garbage_is_refused_with_a_format_error(self) -> None:
         read_fd, write_fd = os.pipe()
         raw = RawOutbound(ToolIo.on_channels(-1, write_fd))
-        feed = ArrowInbound(ToolIo.on_channels(read_fd, -1))
+        feed = RawInbound(ToolIo.on_channels(read_fd, -1))
 
         async def produce() -> None:
             try:

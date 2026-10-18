@@ -17,8 +17,6 @@ from boba.toolkit.result import (
     CodeBlock,
     ErrorResult,
     ExceptionResult,
-    FailureResult,
-    ToolArtifact,
 )
 
 PACKER = FailurePacker()
@@ -272,16 +270,6 @@ class TestEnvelopeAndHistory:
             return
 
         raise AssertionError("markdown result must not pass as a failure")
-
-    def test_history_revives_the_failure(self) -> None:
-        failure = packed(chained())
-
-        revived = ToolArtifact.revive(failure.model_dump(mode="json"))
-
-        if not isinstance(revived, FailureResult):
-            raise AssertionError(f"revived: {revived!r}")
-        if revived.markdown() != failure.markdown():
-            raise AssertionError("revived failure renders differently")
 
 
 class TestGroupFailure:

@@ -13,8 +13,9 @@ from enum import StrEnum
 from pathlib import Path
 from typing import ClassVar
 
-from omegaconf import OmegaConf
+from omegaconf import DictConfig, OmegaConf
 
+from boba.aid.infra.config import AidSection
 from boba.config import bind
 from boba.runtime.config import (
     AppLayers,
@@ -23,7 +24,7 @@ from boba.runtime.config import (
     SessionConfig,
 )
 
-__all__ = ["AppEntry", "ChainlitEnv", "ChainlitFiles"]
+__all__ = ["AppEntry", "ChainlitEnv", "ChainlitFiles", "cli"]
 
 
 class ChainlitEnv(StrEnum):
@@ -88,25 +89,27 @@ class ChainlitFiles:
 
 
 class AppEntry:
-    """Конфиг -> env chainlit -> каталог вложений -> запуск приложения."""
+    """Конфиг -> env chainlit -> каталог вложений -> запуск приложения.
+
+    Создаёт его скрипт чата (main.py, консольная команда boba-aid) и зовёт
+    run(); тесты точки входа зовут export_env и attachments по отдельности.
+    """
 
     SECTION: ClassVar[str] = "app.aid"
 
     SESSION_SECTION: ClassVar[str] = "session"
 
-    @classmethod
-    def run(cls) -> None:
-        files = cls.config_files()
-        cls.export_env(files)
-        cls.attachments(files).install()
+    def run(self) -> None:
+        files = self.config_files()
+        self.export_env(files)
+        self.attachments(files).install()
 
         # импорт здесь: chainlit фиксирует пути из env на импорте своих модулей
         from boba.aid.infra.bootstrap import run_app  # noqa: PLC0415
 
         run_app(files)
 
-    @classmethod
-    def config_files(cls) -> ConfigFiles:
+    def config_files(self) -> ConfigFiles:
         """Пути общего конфига и site-файла — обязательные аргументы запуска."""
         parser = argparse.ArgumentParser(
             prog="boba.aid",
@@ -115,51 +118,51 @@ class AppEntry:
 
         return ConfigArguments(parser).files()
 
-    @classmethod
-    def attachments(cls, files: ConfigFiles) -> ChainlitFiles:
+    def attachments(self, files: ConfigFiles) -> ChainlitFiles:
         """Каталог вложений из [aid].files_dir; пустое значение отвергается."""
-        raw = AppLayers.compose(files)
-        section = OmegaConf.select(raw, cls.SECTION)
-        if section is None:
-            msg = f"{files.config}: section [{cls.SECTION}] is missing"
-            raise ValueError(msg)
-
-        files_dir = section.get("files_dir")
-        if not files_dir:
+        aid = self._section(files, AppLayers.compose(files))
+        if not aid.files_dir:
             msg = (
-                f"{files.config}: section [{cls.SECTION}] expects files_dir as a "
+                f"{files.config}: section [{self.SECTION}] expects files_dir as a "
                 f"non-empty path (chainlit attachments outside app root), "
-                f"got {files_dir!r}"
+                f"got {aid.files_dir!r}"
             )
             raise ValueError(msg)
 
         root = Path(os.environ[ChainlitEnv.APP_ROOT])
 
-        return ChainlitFiles(root, Path(files_dir).resolve())
+        return ChainlitFiles(root, Path(aid.files_dir).resolve())
 
-    @classmethod
-    def export_env(cls, files: ConfigFiles) -> None:
+    def export_env(self, files: ConfigFiles) -> None:
         """Секции [aid] и [session] -> переменные окружения chainlit."""
         raw = AppLayers.compose(files)
-        section = OmegaConf.select(raw, cls.SECTION)
-        if section is None:
-            msg = f"{files.config}: section [{cls.SECTION}] is missing"
-            raise ValueError(msg)
-
-        root = section.get("root")
-        if not root:
+        aid = self._section(files, raw)
+        if not aid.root:
             msg = (
-                f"{files.config}: section [{cls.SECTION}] expects root as a "
-                f"non-empty path (chainlit app root), got {root!r}"
+                f"{files.config}: section [{self.SECTION}] expects root as a "
+                f"non-empty path (chainlit app root), got {aid.root!r}"
             )
             raise ValueError(msg)
 
-        session = bind(raw, cls.SESSION_SECTION, SessionConfig)
+        session = bind(raw, self.SESSION_SECTION, SessionConfig)
 
         # chainlit складывает пути от APP_ROOT сам, относительный сбился бы на chdir
-        os.environ[ChainlitEnv.APP_ROOT] = str(Path(root).resolve())
-        os.environ[ChainlitEnv.ROOT_PATH] = section.get("url_prefix") or ""
+        os.environ[ChainlitEnv.APP_ROOT] = str(Path(aid.root).resolve())
+        os.environ[ChainlitEnv.ROOT_PATH] = aid.url_prefix
 
         os.environ[ChainlitEnv.AUTH_SECRET] = session.auth_secret
         os.environ[ChainlitEnv.COOKIE_NAME] = session.cookie
         os.environ[ChainlitEnv.COOKIE_SAMESITE] = session.cookie_samesite
+
+    def _section(self, files: ConfigFiles, raw: DictConfig) -> AidSection:
+        """Секция [aid] моделью; без секции — ValueError с путём конфига."""
+        if OmegaConf.select(raw, self.SECTION) is None:
+            msg = f"{files.config}: section [{self.SECTION}] is missing"
+            raise ValueError(msg)
+
+        return bind(raw, self.SECTION, AidSection)
+
+
+def cli() -> None:
+    """Консольная команда boba-aid."""
+    AppEntry().run()

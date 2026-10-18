@@ -16,7 +16,9 @@ from boba.tool.pg.tools import PgToolConfig
 
 
 def pg_config() -> PgToolConfig:
-    return PgToolConfig.model_validate({"limit": 10, "sandbox": _SANDBOX})
+    return PgToolConfig.model_validate(
+        {"max_rows": 10, "max_bytes": 1000, "sandbox": _SANDBOX}
+    )
 
 
 def kb_config() -> KbToolConfig:
@@ -84,7 +86,7 @@ class TestPgTools:
     def test_section_config_holds_limits_only(self) -> None:
         """Whitelist ушёл на хост: в секции остались только границы выдачи."""
         cfg = pg_config()
-        if cfg.limit != 10:
+        if cfg.max_rows != 10:
             raise AssertionError("section keys must reach the model")
 
         if hasattr(cfg, "profiles"):

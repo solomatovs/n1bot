@@ -44,7 +44,6 @@ __all__ = [
     "EnvelopeReply",
     "LaunchPayload",
     "LauncherError",
-    "LauncherFactory",
     "PayloadFailureError",
     "RowStream",
     "RunResult",
@@ -458,14 +457,3 @@ class CollectedCall:
                 continue
 
             return call.result()
-
-
-class LauncherFactory(Protocol):
-    """Протокол фабрики исполнителей: по имени инструмента отдаёт его
-    ToolLauncher. Какое окружение достанется инструменту (секция песочницы,
-    process-режим), решает приложение при сборке инструментов."""
-
-    @abstractmethod
-    def __call__(self, tool: str, /) -> ToolLauncher:
-        """Исполнитель для инструмента tool (метка идёт в логи и диагностику)."""
-        ...

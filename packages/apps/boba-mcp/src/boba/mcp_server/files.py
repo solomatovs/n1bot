@@ -6,16 +6,17 @@
 отдаёт окно чанков. Файл не оседает ни в памяти, ни на диске вне workspace.
 Адрес файла — область (scope), каталог области и имя; владелец — вошедший
 по токену, чужой workspace по адресу недостижим. DELETE по адресу самой
-области удаляет все файлы её каталогов: так чат удаляет файлы треда.
-Каналы журнала вызова — ресурсы MCP: окна читает resources/read, журналы
-идущих вызовов перечисляет resources/list, рост и смену списка сообщают
-потоки subscriptions/listen.
+области удаляет область целиком — файлы её каталогов и журналы вызовов её
+запусков: так чат удаляет тред. Каналы журнала вызова — ресурсы MCP: окна
+читает resources/read, журналы идущих вызовов перечисляет resources/list,
+рост и смену списка сообщают потоки subscriptions/listen.
 
 Ошибки:
 HTTPException 400 — адрес не называет файл каталога области или область.
 HTTPException 401 — запрос без токена входа либо токен негоден.
 HTTPException 404 — файла нет в workspace.
 HTTPException 416 — диапазон начинается за концом файла.
+HTTPException 500 — журналы вызовов удаляемой области не удалились.
 HTTPException 507 — в workspace не осталось места.
 InvalidResourceError (ValidationError fastmcp) — resources/read канала
     журнала: адрес не канал, канал не читается либо журнала вызова у
@@ -32,7 +33,6 @@ from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Sequenc
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, ClassVar
-from urllib.parse import urlsplit
 
 import mcp_types as mt
 from fastmcp import FastMCP
@@ -334,7 +334,7 @@ class JournalRoutes:
     """
 
     MIME: ClassVar[str] = "text/plain; charset=utf-8"
-    RESOURCE: ClassVar[str] = "boba-journal://{run}/{node}/{channel}"
+    RESOURCE: ClassVar[str] = f"boba-journal://{JournalFeature.ROUTE}"
     """Адрес канала журнала: по нему же стоит маршрут скачивания."""
     TEMPLATE: ClassVar[str] = f"{RESOURCE}{{?offset,before}}"
     """Шаблон uri ресурса канала журнала с окном (JournalFeature.resource)."""
@@ -369,9 +369,7 @@ class JournalRoutes:
         return self._published
 
     def install(self, server: FastMCP, lowlevel: Server[Any]) -> None:
-        # маршрут канала — тот же адрес ресурса под путём журналов
-        resource = urlsplit(self.RESOURCE)
-        path = f"{self._base}/{resource.netloc}{resource.path}"
+        path = f"{self._base}/{JournalFeature.ROUTE}"
         server.custom_route(path, methods=["GET"])(self.get)
         server.resource(
             self.TEMPLATE, mime_type=ContentMime.PLAIN.value, annotations=self.FOR_USER
@@ -586,11 +584,13 @@ class FileRoutes:
     def __init__(
         self,
         storage: StorageClient,
+        journals: CallJournals,
         callers: RouteCallers,
         base: str,
         published: str,
     ) -> None:
         self._storage = storage
+        self._journals = journals
         self._callers = callers
         self._base = f"{base}/files"
         self._published = f"{published}{self._base}"
@@ -608,23 +608,20 @@ class FileRoutes:
 
     def address(self, scope: str, name: str) -> str:
         """Путь маршрута, куда клиент шлёт файл вложением области scope."""
-        return "/".join((self._published, scope, ThreadDir.UPLOAD.value, name))
+        route = FilesFeature.ROUTE.format(
+            scope=scope, dir=ThreadDir.UPLOAD.value, name=name
+        )
+
+        return f"{self._published}/{route}"
 
     def install(self, server: FastMCP) -> None:
-        path = "/".join(
-            (
-                self._base,
-                f"{{{FilePart.SCOPE.value}}}",
-                f"{{{FilePart.DIR.value}}}",
-                f"{{{FilePart.NAME.value}}}",
-            )
-        )
+        path = f"{self._base}/{FilesFeature.ROUTE}"
         # HEAD стоит раньше GET: маршрут GET у starlette отвечает и на HEAD
         server.custom_route(path, methods=["HEAD"])(self.head)
         server.custom_route(path, methods=["GET"])(self.get)
         server.custom_route(path, methods=["PUT"])(self.put)
         server.custom_route(path, methods=["DELETE"])(self.delete)
-        area = "/".join((self._base, f"{{{FilePart.SCOPE.value}}}"))
+        area = f"{self._base}/{FilesFeature.AREA}"
         server.custom_route(area, methods=["DELETE"])(self.delete_scope)
 
     async def put(self, request: Request) -> Response:
@@ -685,7 +682,8 @@ class FileRoutes:
         return Response(status_code=204)
 
     async def delete_scope(self, request: Request) -> Response:
-        """Все файлы каталогов области вошедшего; область без файлов — успех."""
+        """Область вошедшего целиком: файлы её каталогов и журналы вызовов её
+        запусков; область без файлов и журналов — успех."""
         subject = await self._callers.of(request)
         try:
             scope = Scope.chat(str(request.path_params[FilePart.SCOPE.value]))
@@ -697,7 +695,24 @@ class FileRoutes:
             raise HTTPException(status_code=400, detail=msg) from exc
 
         await self._storage.delete_thread(subject.user_key, scope.id)
-        logger.info("files: scope %s of %s deleted", scope.id, subject.user_key)
+
+        freed = 0
+        if store := self._journals.store:
+            try:
+                freed = store.purge_scope(subject.user_key, scope.id)
+            except StreamJournalError as exc:
+                msg = (
+                    f"DELETE {request.url.path}: files of scope {scope.id} are "
+                    f"deleted, its call journals are not: {exc}"
+                )
+                raise HTTPException(status_code=500, detail=msg) from exc
+
+        logger.info(
+            "files: scope %s of %s deleted, %d bytes of call journals freed",
+            scope.id,
+            subject.user_key,
+            freed,
+        )
 
         return Response(status_code=204)
 

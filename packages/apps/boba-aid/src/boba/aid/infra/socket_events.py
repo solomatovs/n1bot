@@ -30,7 +30,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, ClassVar, cast
+from typing import Any, ClassVar
 
 from chainlit.config import config as chainlit_config
 from chainlit.context import init_ws_context
@@ -155,7 +155,7 @@ class SocketEvents:
             logger.info("socket handlers already wrapped")
             return
 
-        handlers = cast("dict[str, dict[str, Any]]", sio.handlers).get(cls.NAMESPACE)
+        handlers = sio.handlers.get(cls.NAMESPACE)
         if not handlers:
             raise InternalServiceError(
                 f"chainlit socket handlers are missing: namespace={cls.NAMESPACE}",
@@ -334,11 +334,7 @@ class SocketEvents:
             logger.info("socket ready: %s", facts.line())
             return
 
-        emit = cast(
-            "Callable[[str, Any], Awaitable[None]]",
-            session.emit,
-        )
-        await emit(SocketEvent.TASK_START.value, {})
+        await session.emit(SocketEvent.TASK_START.value, {})
 
         logger.info("socket ready, loading restored: %s", facts.line())
 
@@ -366,4 +362,4 @@ class SocketEvents:
                 None,
             )
 
-        return cast("Callable[..., Awaitable[Any]]", handler)
+        return handler

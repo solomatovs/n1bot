@@ -56,6 +56,7 @@ from boba.toolkit.result import (
     TableResult,
 )
 from boba.toolkit.sql import (
+    QueryRowLimit,
     SqlLimits,
 )
 from boba.toolkit.transfer import (
@@ -425,7 +426,7 @@ async def pg_describe_table(
 
 
 @tool
-async def pg_query(
+async def pg_query(  # noqa: PLR0913 — аргументы модели и внедрённые входы
     connection: PgConnection,
     sql: Annotated[
         str,
@@ -443,17 +444,18 @@ async def pg_query(
     ],
     *,
     offset: RowOffset,
-    limit: RowLimit,
+    limit: QueryRowLimit,
+    cfg: Annotated[PgToolConfig, Injected],
     progress: Annotated[ToolProgress, Injected],
 ) -> SqlResult:
     """Выполнить SQL на подключении: строки либо счётчик затронутых."""
+    window = cfg.window(offset, limit)
 
-    return await run_script(
-        connection,
-        sql,
-        RowWindow(offset=offset, limit=limit),
-        QueryProgress(progress, PgToolConfig.ENGINE),
+    result = await run_script(
+        connection, sql, window, QueryProgress(progress, PgToolConfig.ENGINE)
     )
+
+    return cfg.checked(result)
 
 
 @tool(read_only=True, destructive=False)

@@ -92,7 +92,11 @@ class PostgresStand:
     def environment(self) -> dict[str, str]:
         auth = self._postgres.auth
         if not isinstance(auth, KeytabAuth):
-            pytest.skip("the stand Postgres is not entered with a keytab")
+            got = type(auth).__name__
+            pytest.fail(
+                f"the stand Postgres must be entered with a keytab: expected "
+                f"KeytabAuth in [postgres].auth of the stand config, got {got}"
+            )
 
         return {
             KerberosEnv.CCACHE: KerberosWorkspace.ccache_for(auth),

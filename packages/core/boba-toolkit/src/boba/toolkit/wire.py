@@ -5,14 +5,12 @@
 вызова в _meta и structuredContent — только собственные данные результата
 по outputSchema инструмента. Перевод описан в одном месте — ResultWire.
 
-Здесь же модели границы клиент—сервер: служебные поля запроса
-(RequestFields), адрес окна журнала (JournalRead), чей запрос открыл
-журнал (JournalOrigin) и настройки расширений сервера (JournalFeature,
-FilesFeature).
+Здесь же модели границы клиент—сервер: адрес окна журнала (JournalRead),
+чей запрос открыл журнал (JournalOrigin) и настройки расширений сервера
+(JournalFeature, FilesFeature).
 
 Ошибки:
-ValidationError — служебные поля запроса либо настройки расширения не
-    проходят свою модель.
+ValidationError — настройки расширения не проходят свою модель.
 """
 
 from __future__ import annotations
@@ -34,25 +32,9 @@ __all__ = [
     "JournalFeature",
     "JournalOrigin",
     "JournalRead",
-    "RequestFields",
     "ResultWire",
     "WireResult",
 ]
-
-
-class RequestFields(BaseModel):
-    """Служебные поля запроса tools/call в _meta, моделью.
-
-    Сервер разбирает ею _meta запроса (SentMeta). progress_token —
-    стандартный токен прогресса запроса; None — клиент о ходе вызова не
-    просил. Остальные ключи _meta модель пропускает.
-    """
-
-    model_config = ConfigDict(frozen=True, extra="ignore", populate_by_name=True)
-
-    progress_token: mt.ProgressToken | None = Field(
-        default=None, validation_alias="progressToken"
-    )
 
 
 class JournalFeature(ServerFeature):
@@ -71,6 +53,9 @@ class JournalFeature(ServerFeature):
     """
 
     ID: ClassVar[str] = "com.boba/journal"
+    ROUTE: ClassVar[str] = "{run}/{node}/{channel}"
+    """Канал журнала под путём path и в uri ресурса: одна запись на сервер
+    (маршрут и шаблон ресурса) и на клиент (JournalRead.route)."""
 
     path: str = Field(min_length=1)
     resource: str = Field(min_length=1)
@@ -106,6 +91,11 @@ class FilesFeature(ServerFeature):
     """
 
     ID: ClassVar[str] = "com.boba/files"
+    ROUTE: ClassVar[str] = "{scope}/{dir}/{name}"
+    """Файл области под путём path: одна запись на маршрут сервера и адреса
+    клиента."""
+    AREA: ClassVar[str] = "{scope}"
+    """Область целиком под путём path: DELETE удаляет её файлы и журналы."""
 
     path: str = Field(min_length=1)
     upload: str = Field(min_length=1)
@@ -124,20 +114,27 @@ class JournalRead(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     run: str = Field(
-        min_length=1, description="Run id: the `run` of the call result or signal."
+        min_length=1, description="id запуска: поле run итога вызова или сигнала."
     )
-    node: str = Field(min_length=1, description="Call id of the tool call (node).")
-    channel: JournalChannel = Field(description="Journal channel of the call.")
+    node: str = Field(min_length=1, description="id вызова инструмента (узла).")
+    channel: JournalChannel = Field(description="Канал журнала вызова.")
     offset: int | None = Field(
         default=None,
         description=(
-            "Read the window starting at this byte; a negative value reads the "
-            "last window of the journal."
+            "Начало окна:\n"
+            "   - байт — окно, которое начинается с этого байта\n"
+            "   - отрицательное число — последнее окно журнала\n"
         ),
     )
     before: int | None = Field(
-        default=None, ge=0, description="Read the window ending before this byte."
+        default=None, ge=0, description="Окно, которое кончается перед этим байтом."
     )
+
+    def route(self) -> str:
+        """Канал журнала под путём маршрута журналов (JournalFeature.path)."""
+        return JournalFeature.ROUTE.format(
+            run=self.run, node=self.node, channel=self.channel.value
+        )
 
 
 @dataclass(frozen=True)

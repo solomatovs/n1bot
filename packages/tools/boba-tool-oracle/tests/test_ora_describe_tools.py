@@ -169,6 +169,11 @@ class TestDescribeTools:
 
 
 class TestQuery:
+    CEILINGS: ClassVar[ora.OraToolConfig] = ora.OraToolConfig.model_validate(
+        {"max_rows": 500, "max_bytes": 1_000_000}
+    )
+    """Потолки ответа ora_query, как в секции [tool.ora] сервиса."""
+
     async def test_select_is_windowed(self, target: Any) -> None:
         body = ToolMain.toolset(ora.ora_query)[0].coroutine
         if body is None:
@@ -176,6 +181,7 @@ class TestQuery:
 
         sql = _sql("select id, email from ", " order by id")
         first = await body(
+            cfg=self.CEILINGS,
             progress=ToolProgress(-1),
             connection=target.oracle,
             sql=sql,
@@ -183,6 +189,7 @@ class TestQuery:
             limit=10,
         )
         second = await body(
+            cfg=self.CEILINGS,
             progress=ToolProgress(-1),
             connection=target.oracle,
             sql=sql,
@@ -202,6 +209,7 @@ class TestQuery:
 
         update = _sql("update ", " set note = 'x' where id <= 3")
         result = await body(
+            cfg=self.CEILINGS,
             progress=ToolProgress(-1),
             connection=target.demo_owner,
             sql=update,
@@ -214,6 +222,7 @@ class TestQuery:
 
         check = _sql("select count(*) as n from ", " where note = 'x'")
         seen = await body(
+            cfg=self.CEILINGS,
             progress=ToolProgress(-1),
             connection=target.oracle,
             sql=check,
@@ -228,6 +237,7 @@ class TestQuery:
             raise AssertionError("body is a coroutine")
 
         result = await body(
+            cfg=self.CEILINGS,
             progress=ToolProgress(-1),
             connection=target.oracle,
             sql="begin null; end;",

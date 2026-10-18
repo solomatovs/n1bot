@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any
 
 from omegaconf import OmegaConf
@@ -26,7 +26,7 @@ from boba.tool.pg.tools import PgToolConfig
 from boba.tool.web.tools import WebToolsConfig
 from boba.toolkit.chain import CallAmbient
 from boba.toolkit.facade import PayloadTool
-from boba.toolkit.launcher import LauncherFactory, ToolLauncher
+from boba.toolkit.launcher import ToolLauncher
 from boba.toolrun.injected import ParamSource
 from boba.transport.http.connection import HttpConnection
 
@@ -119,7 +119,9 @@ class ToolSetup:
         )
 
     @staticmethod
-    def launchers(zygote_stand: ZygoteStand, raw: Any, section: str) -> LauncherFactory:
+    def launchers(
+        zygote_stand: ZygoteStand, raw: Any, section: str
+    ) -> Callable[[str], ToolLauncher]:
         """Фабрика исполнителей секции: одна зигота на все её инструменты."""
         caller = ToolSetup.caller(zygote_stand, raw, section)
 

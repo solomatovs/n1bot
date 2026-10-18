@@ -489,7 +489,7 @@ class ZygoteStand:
         modules: Sequence[str] = (),
         path_vars: Callable[[], Mapping[str, str]] = dict,
     ) -> Callable[[str], ZygoteToolCaller]:
-        """LauncherFactory секции: одна зигота на все её инструменты."""
+        """Фабрика исполнителей секции: одна зигота на все её инструменты."""
         caller = self.caller(section, profile, modules, path_vars)
 
         def factory(tool: str) -> ZygoteToolCaller:

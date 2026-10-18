@@ -8,7 +8,6 @@ StreamJournalError — журнал недоступен или запись/о�
 from __future__ import annotations
 
 import os
-import re
 from abc import abstractmethod
 from collections.abc import Callable
 from enum import IntEnum, StrEnum
@@ -17,6 +16,7 @@ from typing import ClassVar, Protocol
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from boba.canvas.canvas import WatchProbe
+from boba.identity.context import PathSegment
 from boba.toolkit.channels import JournalChannel
 from boba.toolkit.stream import StreamSink
 
@@ -28,7 +28,6 @@ __all__ = [
     "JournalText",
     "JournalWindow",
     "LogName",
-    "PathSegment",
     "StreamJournalError",
     "StreamKey",
     "StreamMeta",
@@ -147,29 +146,6 @@ class JournalText(StrEnum):
         return data.decode(cls.ENCODING, errors=cls.DECODE_ERRORS)
 
 
-class PathSegment:
-    """Проверка сегмента пути в томе журнала: одна на ключи и на сам том.
-
-    Сегмент приходит извне — идентификатор пользователя из аутентификации,
-    thread_id из ссылки, call_id из протокола провайдера, — а дальше уходит
-    в os.path.join, поэтому проверяется на входе и только здесь.
-    """
-
-    SAFE: ClassVar[re.Pattern[str]] = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9._-]*")
-    """Сегмент целиком: только безопасные символы и без точки в начале."""
-
-    @classmethod
-    def checked(cls, value: str) -> str:
-        if not cls.SAFE.fullmatch(value):
-            msg = (
-                f"unsafe journal path segment {value!r}: "
-                f"expected to match {cls.SAFE.pattern}"
-            )
-            raise ValueError(msg)
-
-        return value
-
-
 class StreamKey(BaseModel):
     """Адрес журнала одного вызова: {thread_id}/{call_id} в томе пользователя.
 
@@ -185,10 +161,12 @@ class StreamKey(BaseModel):
     thread_id: str = Field(min_length=1)
     call_id: str = Field(min_length=1, max_length=255)
 
+    SEGMENT: ClassVar[PathSegment] = PathSegment()
+
     @field_validator("user_id", "thread_id", "call_id")
     @classmethod
     def _safe_segment(cls, value: str) -> str:
-        return PathSegment.checked(value)
+        return cls.SEGMENT.checked(value, "journal path segment")
 
     @field_validator("call_id")
     @classmethod
@@ -210,11 +188,16 @@ class StreamKey(BaseModel):
 
 
 class StreamMeta(BaseModel):
-    """Сайдкар журнала: имя инструмента и итог записи."""
+    """Сайдкар журнала: имя инструмента, область запуска и итог записи.
+
+    scope — id области (тред), в которой шёл запуск: по нему удаление
+    области находит журналы своих запусков.
+    """
 
     model_config = ConfigDict(extra="ignore")
 
     tool_name: str
+    scope: str
     closed: bool = False
     note: str = ""
 
@@ -382,9 +365,10 @@ class CallStream(Protocol):
 class StreamStorePort(Protocol):
     """Журнал приложения: открыть писателя канала и прочитать окно."""
 
-    def recorder(
+    def recorder(  # noqa: PLR0913 — адрес, область, инструмент, канал, слежение
         self,
         key: StreamKey,
+        scope: str,
         tool_name: str,
         channel: JournalChannel,
         on_data: Callable[[], None],
@@ -411,6 +395,8 @@ class StreamStorePort(Protocol):
 
     def usage(self, user_id: str) -> VaultUsage: ...
 
-    def purge_thread(self, user_id: str, thread_id: str) -> int: ...
+    def purge_scope(self, user_id: str, scope: str) -> int:
+        """Удалить журналы всех запусков области scope; итог — освобождённые байты."""
+        ...
 
     def vault_root(self, user_id: str) -> str: ...

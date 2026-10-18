@@ -75,7 +75,7 @@ live_kdc = pytest.mark.failif(
     reason="нет keytab/krb5.conf локального AD",
 )
 
-SCHEMA = "connections_hook"
+SCHEMA = "connections_injected"
 ROLE = "analyst"
 THREAD = "44444444-4444-4444-4444-444444444444"
 PROFILE = "test"
@@ -280,7 +280,7 @@ async def test_only_requested_profile_is_shipped(
     plain = service_pg.model_copy(
         update={"auth": TrustAuth(method="trust", user="boba")}
     )
-    user = await Session.user(layer, "hook-plain", Session.local_metadata())
+    user = await Session.user(layer, "inj-plain", Session.local_metadata())
     first = await store.add("alpha", plain)
     second = await store.add("beta", plain)
     await store.grant(first, GrantTarget.user(UUID(user.id)))
@@ -312,7 +312,7 @@ async def test_client_label_names_the_user_and_the_tool(
     plain = service_pg.model_copy(
         update={"auth": TrustAuth(method="trust", user="boba")}
     )
-    user = await Session.user(layer, "hook-label", Session.local_metadata())
+    user = await Session.user(layer, "inj-label", Session.local_metadata())
     await store.grant(await store.add("alpha", plain), GrantTarget.user(UUID(user.id)))
     chat_session.sign_in(user, dict(user.metadata), THREAD, PROFILE)
 
@@ -321,7 +321,7 @@ async def test_client_label_names_the_user_and_the_tool(
     shipped = connection
     if not isinstance(shipped, PostgresConfig):
         raise AssertionError(f"postgres connection expected: {type(shipped)}")
-    if shipped.application_name != "boba:hook-label:capture":
+    if shipped.application_name != "boba:inj-label:capture":
         raise AssertionError(f"unexpected client label: {shipped.application_name}")
 
 
@@ -335,7 +335,7 @@ async def test_unrequested_call_ships_names_only(
     plain = service_pg.model_copy(
         update={"auth": TrustAuth(method="trust", user="boba")}
     )
-    user = await Session.user(layer, "hook-names", Session.local_metadata())
+    user = await Session.user(layer, "inj-names", Session.local_metadata())
     connection_id = await store.add("alpha", plain)
     await store.grant(connection_id, GrantTarget.user(UUID(user.id)))
     chat_session.sign_in(user, dict(user.metadata), THREAD, PROFILE)
@@ -357,7 +357,7 @@ async def test_keytab_row_ships_a_service_ticket_only(
     layer: PostgresDataLayer,
     service_pg: PostgresConfig,
 ) -> None:
-    user = await Session.user(layer, "hook-keytab", Session.local_metadata())
+    user = await Session.user(layer, "inj-keytab", Session.local_metadata())
     connection_id = await store.add("main", service_pg)
     await store.grant(connection_id, GrantTarget.user(UUID(user.id)))
     chat_session.sign_in(user, dict(user.metadata), THREAD, PROFILE)
@@ -387,7 +387,7 @@ async def test_delegated_row_uses_the_session_principal(  # noqa: PLR0913 — ф
     sso: tuple[SsoTickets, dict[str, str]],
 ) -> None:
     sso_meta = Session.sso_metadata(SERVICE_PRINCIPAL, sso[1][SERVICE_PRINCIPAL])
-    user = await Session.user(layer, "hook-sso", sso_meta)
+    user = await Session.user(layer, "inj-sso", sso_meta)
     connection_id = await store.add("main", delegated_pg)
     await store.grant(connection_id, GrantTarget.user(UUID(user.id)))
     chat_session.sign_in(user, sso_meta, THREAD, PROFILE)
@@ -423,8 +423,8 @@ async def test_role_shared_delegated_row_gives_each_user_their_own_ticket(  # no
 
     first_meta = Session.sso_metadata(SERVICE_PRINCIPAL, sso[1][SERVICE_PRINCIPAL])
     second_meta = Session.sso_metadata(READER_PRINCIPAL, sso[1][READER_PRINCIPAL])
-    first = await Session.user(layer, "hook-role-a", first_meta)
-    second = await Session.user(layer, "hook-role-b", second_meta)
+    first = await Session.user(layer, "inj-role-a", first_meta)
+    second = await Session.user(layer, "inj-role-b", second_meta)
 
     chat_session.sign_in(first, first_meta, THREAD, PROFILE)
     ticket_a = (await capture.connection(tool, "shared")).auth
@@ -453,7 +453,7 @@ async def test_delegated_row_refuses_session_without_sso(  # noqa: PLR0913 — �
     delegated_pg: PostgresConfig,
     sso: tuple[SsoTickets, dict[str, str]],
 ) -> None:
-    user = await Session.user(layer, "hook-local", Session.local_metadata())
+    user = await Session.user(layer, "inj-local", Session.local_metadata())
     connection_id = await store.add("main", delegated_pg)
     await store.grant(connection_id, GrantTarget.user(UUID(user.id)))
     chat_session.sign_in(user, dict(user.metadata), THREAD, PROFILE)
@@ -477,7 +477,7 @@ async def test_delegated_row_refuses_unknown_principal(  # noqa: PLR0913 — ф�
     sso_meta = Session.sso_metadata(
         f"nobody@{STAND.krb_realm}", sso[1][SERVICE_PRINCIPAL]
     )
-    user = await Session.user(layer, "hook-no-ticket", sso_meta)
+    user = await Session.user(layer, "inj-no-ticket", sso_meta)
     connection_id = await store.add("main", delegated_pg)
     await store.grant(connection_id, GrantTarget.user(UUID(user.id)))
     chat_session.sign_in(user, sso_meta, THREAD, PROFILE)
@@ -497,7 +497,7 @@ async def test_delegated_row_refuses_without_sso_configured(
     delegated_pg: PostgresConfig,
 ) -> None:
     sso_meta = Session.sso_metadata(SERVICE_PRINCIPAL, "sealed-unused")
-    user = await Session.user(layer, "hook-no-sso", sso_meta)
+    user = await Session.user(layer, "inj-no-sso", sso_meta)
     connection_id = await store.add("main", delegated_pg)
     await store.grant(connection_id, GrantTarget.user(UUID(user.id)))
     chat_session.sign_in(user, sso_meta, THREAD, PROFILE)
@@ -520,7 +520,7 @@ async def test_stale_users_row_does_not_grant_a_local_login(  # noqa: PLR0913 �
 ) -> None:
     """Строка users помнит SSO-вход, но эта сессия вошла по паролю."""
     sso_meta = Session.sso_metadata(SERVICE_PRINCIPAL, sso[1][SERVICE_PRINCIPAL])
-    user = await Session.user(layer, "hook-stale", sso_meta)
+    user = await Session.user(layer, "inj-stale", sso_meta)
     connection_id = await store.add("main", delegated_pg)
     await store.grant(connection_id, GrantTarget.user(UUID(user.id)))
     chat_session.sign_in(user, Session.local_metadata(), THREAD, PROFILE)
@@ -543,7 +543,7 @@ async def test_login_label_must_match_its_principal(  # noqa: PLR0913 — фик
 ) -> None:
     """JWT с чужой меткой входа билета не получает."""
     forged = Session.sso_metadata(READER_PRINCIPAL, sso[1][SERVICE_PRINCIPAL])
-    user = await Session.user(layer, "hook-forged", forged)
+    user = await Session.user(layer, "inj-forged", forged)
     connection_id = await store.add("main", delegated_pg)
     await store.grant(connection_id, GrantTarget.user(UUID(user.id)))
     chat_session.sign_in(user, forged, THREAD, PROFILE)

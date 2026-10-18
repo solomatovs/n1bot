@@ -18,14 +18,18 @@ from typing import Any, ClassVar, Protocol, Self
 from pydantic import (
     BaseModel,
     ConfigDict,
-    field_validator,
+    Field,
     model_validator,
 )
 
 from boba.canvas.keys import ObjectKey
 from boba.canvas.transfer import ContentDisposition
 from boba.identity.errors import RefusalError
-from boba.toolkit.channels import JournalChannel, JournalChannels, ToolChannel
+from boba.toolkit.channels import (
+    JournalChannels,
+    ReadableChannel,
+    ToolChannel,
+)
 from boba.toolkit.result import VisualResult
 
 __all__ = [
@@ -34,6 +38,7 @@ __all__ = [
     "CanvasElement",
     "CanvasError",
     "CanvasErrorKind",
+    "CanvasFileRequest",
     "CanvasKind",
     "CanvasPush",
     "CanvasRegistry",
@@ -106,11 +111,7 @@ class CanvasAction(StrEnum):
     SHOW = "canvas_stream"
     WINDOW = "canvas_stream_window"
     LEAVE = "canvas_leave"
-    PATH = "path"
-    MIME = "mime"
-    NONCE = "nonce"
     CALL_ID = "call_id"
-    OFFSET = "offset"
 
 
 class CanvasElement(StrEnum):
@@ -640,20 +641,7 @@ class StreamPath(BaseModel):
     SCHEME: ClassVar[str] = "stream://"
 
     call_id: str
-    channel: JournalChannel
-
-    @field_validator("channel")
-    @classmethod
-    def _readable(cls, value: JournalChannel) -> JournalChannel:
-        if not JournalChannels.visible(value):
-            readable = [channel.value for channel in JournalChannels.VISIBLE]
-            msg = (
-                f"stream path: channel {value.value!r} is not readable, "
-                f"expected one of {readable}"
-            )
-            raise ValueError(msg)
-
-        return value
+    channel: ReadableChannel
 
     def render(self) -> str:
         return f"{self.SCHEME}{self.call_id}/{self.channel.value}"
@@ -680,27 +668,26 @@ class StreamPath(BaseModel):
         return cls(call_id=call_id, channel=channel)
 
 
+class CanvasFileRequest(BaseModel):
+    """Payload действий canvas_open и canvas_content: файл workspace и его вид
+    так, как их назвала ссылка; refresh — перечитать уже показанный файл, не
+    перенося слежение."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    path: str = Field(min_length=1)
+    mime: str = Field(min_length=1)
+    refresh: bool = False
+
+
 class StreamShowRequest(BaseModel):
     """Payload действия canvas_stream: вызов, канал и способ доставки."""
 
     model_config = ConfigDict(extra="ignore")
 
     call_id: str
-    channel: JournalChannel = ToolChannel.STDOUT
+    channel: ReadableChannel = ToolChannel.STDOUT
     inline: bool = False
-
-    @field_validator("channel")
-    @classmethod
-    def _readable(cls, value: JournalChannel) -> JournalChannel:
-        if not JournalChannels.visible(value):
-            readable = [channel.value for channel in JournalChannels.VISIBLE]
-            msg = (
-                f"canvas_stream: channel {value.value!r} is not readable, "
-                f"expected one of {readable}"
-            )
-            raise ValueError(msg)
-
-        return value
 
 
 class StreamWindowRequest(BaseModel):

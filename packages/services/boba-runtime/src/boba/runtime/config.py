@@ -170,7 +170,6 @@ class EnvOverride(StrEnum):
     URL_PREFIX = "url_prefix"
     CGROUP_BASE = "cgroup_base"
     APP_ROOT = "app_root"
-    WORKFLOW_PAGE = "workflow_page"
     MESSAGING = "messaging_provider"
     TOOL_LAUNCHER = "tool_launcher"
     MCP_HOST = "mcp_host"
@@ -315,9 +314,13 @@ class RawConfig:
 
 
 class StreamJournalConfig(BaseModel):
-    """Журнал живого вывода инструментов: служебный том на пользователя."""
+    """Секция [stream_journal]: журнал живого вывода инструментов, служебный
+    том на пользователя. Её читает провайдер журналов процесса, который
+    исполняет инструменты (boba-mcp); у чата журналов нет."""
 
     model_config = ConfigDict(extra="ignore")
+
+    SECTION: ClassVar[str] = "stream_journal"
 
     enable: bool = Field(
         default=False,
@@ -581,9 +584,9 @@ class ProcessLogging:
 
 
 class ProcessConfig(BaseModel):
-    """Секции [app], нужные любому процессу, который исполняет инструменты и
-    принимает вход: kerberos, способы входа, токен сессии, журналы вызовов.
-    Базовая для RuntimeConfig (чат) и конфига сервиса boba-mcp.
+    """Секции [app], нужные любому процессу, который принимает вход: kerberos,
+    способы входа, токен сессии. Базовая для RuntimeConfig (чат) и конфига
+    сервиса boba-mcp.
     """
 
     model_config = ConfigDict(extra="ignore", populate_by_name=True)
@@ -601,7 +604,6 @@ class ProcessConfig(BaseModel):
     krb: KerberosWorkspaceConfig
     auth: list[AuthConfig]
     logger: dict[str, Any] = Field(default_factory=ProcessLogging.default)
-    stream_journal: StreamJournalConfig
     session: TokenConfig
 
     @classmethod

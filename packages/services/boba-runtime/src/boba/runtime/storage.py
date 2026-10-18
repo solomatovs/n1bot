@@ -46,6 +46,7 @@ from boba.canvas.storage import (
     StorageUrl,
 )
 from boba.sandbox import WorkspaceSpec
+from boba.toolkit.result import ContentMime
 from boba.workspace.binaries import TrustedBinaries
 from boba.workspace.launcher import (
     ImageMountPoint,
@@ -185,7 +186,7 @@ class StorageClient(ABC):
         self,
         object_key: str,
         source: AsyncIterator[bytes],
-        mime: str = "application/octet-stream",
+        mime: str = ContentMime.OCTET.value,
     ) -> dict[str, Any]:
         with StorageGuard(StorageOp.WRITE, object_key):
             return await self._upload_stream(object_key, source, mime)

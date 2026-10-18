@@ -446,8 +446,8 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership, FeedRows):
 
     @data_boundary
     async def delete_thread(self, thread_id: str) -> None:
-        """Слушатели (сессия агента) идут первыми, затем файлы треда в
-        хранилище: отказ любого из них оставляет тред."""
+        """Слушатели (сессия агента) идут первыми, затем область треда у
+        сервиса — файлы и журналы вызовов: отказ любого из них оставляет тред."""
         tid = UUID(thread_id)
         stored = await self._threads.get(tid)
         if stored is not None:

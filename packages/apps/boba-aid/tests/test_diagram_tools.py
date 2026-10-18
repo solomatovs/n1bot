@@ -393,7 +393,14 @@ class TestRenderVerdicts:
 
     @pytest.mark.anyio
     async def test_unknown_nonce_is_ignored(self) -> None:
+        """Отчёт о чужом nonce не трогает ожидающий вердикт."""
+        RenderVerdicts.expect("n-4")
+
         RenderVerdicts.report({"nonce": "missing", "ok": True, "error": ""})
+        verdict = await RenderVerdicts.wait("n-4", 0.05)
+
+        if verdict.status is not RenderStatus.UNKNOWN:
+            raise AssertionError(f"the pending verdict stays unknown, got {verdict}")
 
 
 class TestViewerVerdict:

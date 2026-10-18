@@ -211,7 +211,7 @@ async def send_file(
 ```python
 """Инструменты redis: функции уровня модуля, модуль — обычная программа.
 
-Запуск: `python -m boba.tool.redis.tools redis_scan --pattern "user:*"`.
+Запуск: `python -m boba.tool.redis.tools redis_scan --pattern "user:*" --limit 50`.
 
 Ошибки:
 RedisError — сервер недоступен или отверг команду.
@@ -230,7 +230,7 @@ from redis.exceptions import RedisError
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, tool
 from boba.toolkit.result import TableResult
-from boba.toolkit.sql import SqlErrorKind, SqlLimits
+from boba.toolkit.sql import QueryRowLimit, SqlErrorKind, SqlLimits
 
 
 class RedisServer(BaseModel):
@@ -268,19 +268,21 @@ async def redis_scan(
             min_length=1,
             description=(
                 "Шаблон ключей в синтаксисе SCAN MATCH, например 'user:*' "
-                "или 'session:2026-*'. Выдача ограничена max_rows конфига."
+                "или 'session:2026-*'."
             ),
         ),
     ],
+    limit: QueryRowLimit,
     cfg: Annotated[RedisToolConfig, Injected],
 ) -> TableResult:
     """Перебрать ключи по шаблону с типом и TTL каждого."""
+    window = cfg.window(0, limit)
     client = Redis(host=cfg.server.host, port=cfg.server.port, db=cfg.server.db)
 
     rows: list[dict[str, object]] = []
     try:
         async for key in client.scan_iter(match=pattern, count=cfg.scan_batch):
-            if len(rows) >= cfg.max_rows:
+            if len(rows) >= window.limit:
                 break
 
             row = RedisKeyRow(
@@ -315,12 +317,17 @@ JSON-канал под ключом `"cfg"`, то есть под именем �
 got None».
 
 **`extra = "ignore"`** нужен потому, что в той же таблице toml лежат
-служебные ключи `enable`, `tools`, `headless`, `sandbox`. Их читает
+служебные ключи `enable`, `tools`, `connections`, `sandbox`. Их читает
 загрузчик хоста, а не ваша модель.
 
-**`SqlLimits`** из `boba.toolkit.sql` даёт поля `max_rows` и `max_bytes`,
-общие для всех инструментов с табличной выдачей. Инструменту без таблиц
-подойдёт обычный `BaseModel` с `SECTION`.
+**`SqlLimits`** из `boba.toolkit.sql` даёт обязательные поля `max_rows` и
+`max_bytes` — потолки одного ответа, которые администратор задаёт в секции
+плагина. Модель сама просит окно аргументом `limit` (тип `QueryRowLimit`: его
+описание говорит модели о потолке), а `cfg.window(offset, limit)` отказывает
+`ToolRefusalError` с числом потолка, если `limit` больше `max_rows`;
+`cfg.checked(result)` так же отказывает ответу длиннее `max_bytes` байт текста
+для модели. Молча выдача не обрезается. Инструменту без таблиц подойдёт обычный
+`BaseModel` с `SECTION`.
 
 **Докстринг** функции обязателен: это описание инструмента, которое читает
 модель. **`Field(description=...)`** у аргумента модели — единственное, что
@@ -371,7 +378,7 @@ workspace или тред вызова, хост подаёт их injected-па
 ноль, хост поднимает `LauncherError` с хвостом stderr.
 
 **`TOOLS` и блок `__main__`** делают модуль программой. Одну и ту же
-команду `python -m boba.tool.redis.tools redis_scan --pattern "user:*"`
+команду `python -m boba.tool.redis.tools redis_scan --pattern "user:*" --limit 50`
 исполняет launcher и человек в терминале.
 
 ### Манифест и pyproject
@@ -483,10 +490,6 @@ scan_batch = 500
 - `tools` — список инструментов, которые получит модель. Инструмент есть
   в `TOOLS`, но не в списке — модели он не виден. Так администратор
   управляет набором.
-- `headless` — подмножество `tools` для вызовов вне хода чата. Ключ
-  остался в модели конфига (`PluginMeta.headless`), но ни один плагин
-  поставки его не задаёт. boba-mcp публикует по MCP и такие инструменты:
-  список его endpoint'а собирается так же, как для вызовов вне чата.
 - Остальные ключи — поля `RedisToolConfig`, вложенная таблица `[server]`
   — поля `RedisServer`.
 - `[sandbox]` — изоляция для sandbox-режима. По умолчанию у тела нет сети,
@@ -496,10 +499,10 @@ scan_batch = 500
 
 ### Что получает тело
 
-Вызов `redis_scan(pattern="user:*")` хост превращает в две части:
+Вызов `redis_scan(pattern="user:*", limit=50)` хост превращает в две части:
 
 ```
-argv:      python3 -m boba.tool.redis.tools redis_scan --pattern "user:*"
+argv:      python3 -m boba.tool.redis.tools redis_scan --pattern "user:*" --limit 50
 injected:  {"cfg": {"max_rows": 200, "max_bytes": 1000000, "scan_batch": 500,
                     "server": {"host": "redis.corp", "port": 6379, "db": 0}}}
 ```
@@ -517,8 +520,10 @@ injected:  {"subject": {"user_id": "f8920970-…", "login": "ivanov", "roles": [
             "root":    {"path": "/workspace"}}
 ```
 
-Тело валидирует флаг `--pattern` типом поля и ключ `"cfg"` моделью
-`RedisToolConfig`, потом зовёт `await redis_scan(pattern=..., cfg=...)`.
+Тело валидирует флаги `--pattern` и `--limit` типами полей и ключ `"cfg"`
+моделью `RedisToolConfig`, потом зовёт
+`await redis_scan(pattern=..., limit=..., cfg=...)`; `limit` больше `max_rows`
+из `"cfg"` тело отказывает с числом потолка.
 Нет ключа или значение не проходит модель — конверт `ReplyError` с видом
 `invalid_request`.
 
@@ -855,16 +860,18 @@ async def redis_copy(
         str,
         Field(min_length=1, description="Шаблон ключей источника, например 'cache:*'."),
     ],
+    limit: QueryRowLimit,
     cfg: Annotated[RedisToolConfig, Injected],
 ) -> MarkdownResult:
     """Скопировать ключи по шаблону с одного сервера на другой с сохранением TTL."""
+    window = cfg.window(0, limit)
     src = _client(source)
     dst = _client(target)
 
     copied = 0
     try:
         async for key in src.scan_iter(match=pattern, count=cfg.scan_batch):
-            if copied >= cfg.max_rows:
+            if copied >= window.limit:
                 break
 
             dump = await src.dump(key)
@@ -987,7 +994,7 @@ to use. Pass the name of one of your own connections, the client seals it.»
 ### Что происходит на вызове
 
 Модель вызвала `redis_copy(source="cache", target="cache-staging",
-pattern="cache:*")`. Работа делится между чатом и сервисом boba-mcp.
+pattern="cache:*", limit=100)`. Работа делится между чатом и сервисом boba-mcp.
 
 На загрузке хост нашёл у `redis_copy` два параметра с маркером и вывел их
 вид из типа: `redis`. В схеме инструмента на их месте строки с пометкой
@@ -1546,7 +1553,7 @@ cat > /tmp/redis.json <<'EOF'
 EOF
 
 .venv/bin/python -m boba.tool.redis.tools redis_copy \
-    --source cache --target cache-staging --pattern "cache:*" \
+    --source cache --target cache-staging --pattern "cache:*" --limit 100 \
     --injected /tmp/redis.json --artifact
 ```
 
@@ -1578,7 +1585,7 @@ Injected по toml приложения собирает CLI хоста, и по
 
 ```bash
 .venv/bin/python -m boba.runtime.toolcli boba.tool.redis.tools redis_scan \
-    --pattern "user:*" \
+    --pattern "user:*" --limit 50 \
     --config packages/apps/boba-mcp/conf/config.toml \
     --site debug/mcp/conf/site.toml
 ```

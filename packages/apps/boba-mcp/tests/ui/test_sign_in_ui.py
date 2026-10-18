@@ -567,10 +567,10 @@ class TestDeployedService:
         try:
             health = httpx.get(f"{public}/health", timeout=10.0)
         except httpx.HTTPError as exc:
-            pytest.skip(f"the deployed service at {public} is not reachable: {exc}")
+            pytest.fail(f"the deployed service at {public} is not reachable: {exc}")
 
         if health.status_code != httpx.codes.OK:
-            pytest.skip(
+            pytest.fail(
                 f"the deployed service at {public} answers {health.status_code}"
             )
 
@@ -583,7 +583,10 @@ class TestDeployedService:
                 break
 
         if not login:
-            pytest.skip("the deployed config has no local user with roles")
+            pytest.fail(
+                f"{self.SITE}: the deployed config has no local user with roles "
+                "in [site.local_auth]"
+            )
 
         with StandApp.MCP.files().config.open("rb") as handle:
             common = tomllib.load(handle)

@@ -9,9 +9,6 @@ from pathlib import Path
 
 import httpx
 import pytest
-
-pytest.importorskip("playwright.sync_api", reason="ui-тестам нужен playwright")
-
 from chat_ui import (
     BOOT_TIMEOUT_SEC,
     ChatOpener,

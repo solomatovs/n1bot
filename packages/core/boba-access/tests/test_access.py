@@ -1,4 +1,4 @@
-"""Решение о доступе: пересечение ролей и профиля, видимость профиля, headless_only."""
+"""Решение о доступе: пересечение ролей и профиля, видимость профиля."""
 
 from __future__ import annotations
 
@@ -10,7 +10,6 @@ from boba.access import (
     ToolAccessError,
     ToolAvailability,
     ToolGrant,
-    ToolSurfaces,
 )
 
 
@@ -60,39 +59,38 @@ class TestToolAccess:
             "search": ProfileGrant(tools=["list_targets"], roles=["*"]),
             "adm-only": ProfileGrant(tools=["*"], roles=["ADM"]),
         },
-        surfaces=ToolSurfaces(headless_only=frozenset({"snapshot"})),
     )
 
     def test_role_and_profile_both_cover(self) -> None:
-        assert self.ACCESS.decide("query", {"ADM"}, "general").headless
+        assert self.ACCESS.decide("query", {"ADM"}, "general").allowed
 
     def test_profile_cuts_role_wildcard(self) -> None:
-        assert self.ACCESS.decide("query", {"ADM"}, "search").headless is False
+        assert self.ACCESS.decide("query", {"ADM"}, "search").allowed is False
 
     def test_role_cuts_profile_wildcard(self) -> None:
-        assert self.ACCESS.decide("query", {"DEV"}, "general").headless is False
+        assert self.ACCESS.decide("query", {"DEV"}, "general").allowed is False
 
     def test_any_role_intersection_is_enough(self) -> None:
-        assert self.ACCESS.decide("query", {"DEV", "ADM"}, "general").headless is True
+        assert self.ACCESS.decide("query", {"DEV", "ADM"}, "general").allowed is True
 
     def test_profile_invisible_to_roles_denies(self) -> None:
-        assert self.ACCESS.decide("query", {"DEV"}, "adm-only").headless is False
-        assert self.ACCESS.decide("query", {"ADM"}, "adm-only").headless is True
+        assert self.ACCESS.decide("query", {"DEV"}, "adm-only").allowed is False
+        assert self.ACCESS.decide("query", {"ADM"}, "adm-only").allowed is True
 
     def test_unknown_profile_denies(self) -> None:
-        assert self.ACCESS.decide("query", {"ADM"}, "ghost").headless is False
+        assert self.ACCESS.decide("query", {"ADM"}, "ghost").allowed is False
 
     def test_empty_profile_denies(self) -> None:
-        assert self.ACCESS.decide("query", {"ADM"}, "").headless is False
+        assert self.ACCESS.decide("query", {"ADM"}, "").allowed is False
 
     def test_unknown_role_denies(self) -> None:
-        assert self.ACCESS.decide("query", {"GHOST"}, "general").headless is False
+        assert self.ACCESS.decide("query", {"GHOST"}, "general").allowed is False
 
     def test_no_roles_denies_even_wildcard_profile(self) -> None:
-        assert self.ACCESS.decide("query", set(), "general").headless is False
+        assert self.ACCESS.decide("query", set(), "general").allowed is False
 
     def test_empty_role_grant_denies(self) -> None:
-        assert self.ACCESS.decide("query", {"EMPTY"}, "general").headless is False
+        assert self.ACCESS.decide("query", {"EMPTY"}, "general").allowed is False
 
     def test_unknown_tool_denied(self) -> None:
         assert self.ACCESS.decide("nope", {"ADM"}, "general") is ToolAvailability.DENIED
@@ -100,22 +98,11 @@ class TestToolAccess:
     def test_granted_tool_is_available_everywhere(self) -> None:
         decision = self.ACCESS.decide("canvas_open", {"DEV"}, "general")
         assert decision is ToolAvailability.AVAILABLE
-        assert decision.in_chat
-        assert decision.headless
+        assert decision.allowed
 
     def test_grants_still_apply(self) -> None:
         decision = self.ACCESS.decide("canvas_open", {"EMPTY"}, "general")
         assert decision is ToolAvailability.DENIED
-
-    def test_headless_only_is_allowed_outside_chat(self) -> None:
-        decision = self.ACCESS.decide("snapshot", {"DEV"}, "general")
-        assert decision is ToolAvailability.HEADLESS_ONLY
-        assert decision.headless
-        assert not decision.in_chat
-        assert self.ACCESS.decide("snapshot", {"DEV"}, "general").headless
-        assert self.ACCESS.decide("snapshot", {"EMPTY"}, "general") is (
-            ToolAvailability.DENIED
-        )
 
 
 class TestGrantChecks:
@@ -126,9 +113,3 @@ class TestGrantChecks:
     def test_profile_typo_is_refused(self) -> None:
         with pytest.raises(ToolAccessError, match=r"'p'.*no_such"):
             ToolAccess(["query"], {}, {"p": ProfileGrant(tools=["no_such"])})
-
-    def test_headless_only_must_be_built(self) -> None:
-        with pytest.raises(ToolAccessError, match="ghost"):
-            ToolAccess(
-                ["query"], {}, {}, ToolSurfaces(headless_only=frozenset({"ghost"}))
-            )

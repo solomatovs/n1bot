@@ -13,7 +13,6 @@ from aid_stand import (
 )
 from pydantic import ValidationError
 
-from boba.aid.domain.context import ChatCallContext, ChatSurface
 from boba.identity.context import (
     ContextKind,
     HumanInitiator,
@@ -23,7 +22,7 @@ from boba.identity.context import (
 )
 from boba.identity.errors import AuthenticationError, RefusalError
 from boba.identity.session import LoginTemplate, LogUserMark
-from boba.stand_core.context import CallStand, StandIdentity
+from boba.stand_core.context import CallStand
 
 THREAD = "55555555-5555-5555-5555-555555555555"
 
@@ -77,19 +76,6 @@ class TestCurrent:
 
 
 class TestChatContext:
-    def test_session_context_is_a_chat_with_a_surface(
-        self,
-        chat_session: ChatSessionStand,
-        call_stand: CallStand,
-    ) -> None:
-        chat_session.use(user_id=str(UUID(int=7)), thread_id=THREAD)
-
-        context = call_stand.contexts.current()
-        if not isinstance(context, ChatCallContext):
-            raise AssertionError(f"session context is a chat context: {context!r}")
-        if not isinstance(context.surface, ChatSurface):
-            raise AssertionError("chat context carries a surface")
-
     def test_tool_call_derives_llm_initiator(
         self,
         call_stand: CallStand,
@@ -153,4 +139,4 @@ class TestExpiredSignIn:
         stub.token = expired
 
         with pytest.raises(AuthenticationError, match="expired"):
-            session.call_context(StandIdentity.TURN, StandIdentity.PROFILE)
+            session.signed_in()

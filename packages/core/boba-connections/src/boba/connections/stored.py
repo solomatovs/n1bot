@@ -166,11 +166,6 @@ class ConnectionRepository(Protocol):
     async def add(self, name: str, connection: ConnectionBase) -> UUID: ...
 
     @abstractmethod
-    async def add_owned(
-        self, name: str, connection: ConnectionBase, user_id: UUID
-    ) -> UUID: ...
-
-    @abstractmethod
     async def update(
         self, connection_id: UUID, name: str, connection: ConnectionBase
     ) -> bool: ...

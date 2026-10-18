@@ -139,8 +139,10 @@ class SkillCallInput(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    skill: str = Field(description="exact name from the listing, no leading slash")
-    args: str = Field(default="", description="optional arguments to pass through")
+    skill: str = Field(description="Точное имя скилла из списка, без ведущего слеша.")
+    args: str = Field(
+        default="", description="Аргументы для скилла; пусто — без аргументов."
+    )
 
 
 class SkillTool(OwnTool):

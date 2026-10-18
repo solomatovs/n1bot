@@ -30,7 +30,7 @@
 | таблицы dev | кто пользуется | схема в новой базе | создаёт ли приложение при старте | что делает `migrate.sql` |
 |---|---|---|---|---|
 | `chainlit.users`, `threads`, `feedbacks` | чат (boba-runtime) | `aid` | да, если нет; существующие оставляет | `threads.meta.agent_session` каждому перенесённому треду; оценкам — id шагов новой ленты; у `users` — умолчание `created_at`, ключ `meta.llm` удаляется |
-| `chainlit.elements` | чат dev | — | нет, новое приложение её не читает | читает `mime` вложений вопросов и удаляет таблицу |
+| `chainlit.elements` | чат dev | — | нет, новое приложение её не читает | читает `mime` вложений вопросов (нет — вид по суффиксу имени) и удаляет таблицу |
 | `chainlit.connections`, `roles`, `grants` | соединения (boba-connection-broker) | `aid` | да, если нет; `roles` пополняет из `[roles]` | только переносит в `aid` |
 | `chainlit.agent_user_settings`, `agent_chat_settings` | настройки агента | `aid` | да | переносит, если есть (в базе dev их нет) |
 | `checkpoints.*` | dev: чекпойнтер langgraph | — | нет | переводит в историю агента и удаляет вместе со схемой |

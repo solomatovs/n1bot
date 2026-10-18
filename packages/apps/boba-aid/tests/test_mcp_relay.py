@@ -36,6 +36,7 @@ from boba.connection_broker.store import ConnectionStore
 from boba.connections.manifest import ConnectionTypes
 from boba.connections.sealed import ConnectionOffer, SealedParamSchema, SealFeature
 from boba.connections.secrets import SecretCipher
+from boba.connections.stored import GrantTarget
 from boba.db.postgres import AsyncPostgresPool, PostgresSchema
 from boba.db.postgres.connection import PostgresConfig
 from boba.identity.context import DelegatedTicket, NoUserCredential, Scope
@@ -708,8 +709,10 @@ class TestRelaySealing:
                 "auth": {"method": "trust", "user": "u"},
             }
         )
+        owner = GrantTarget.user(registration.user_id)
         for name in owned:
-            await store.add_owned(name, profile, registration.user_id)
+            connection_id = await store.add(name, profile)
+            await store.grant(connection_id, owner)
 
         heard: asyncio.Queue[McpMessage] = asyncio.Queue()
         listing = McpMessage(
@@ -944,7 +947,9 @@ class TestChatServer:
                 "auth": {"method": "trust", "user": "u"},
             }
         )
-        await store.add_owned("orders", profile, registration.user_id)
+        connection_id = await store.add("orders", profile)
+        await store.grant(connection_id, GrantTarget.user(registration.user_id))
+
         heard: asyncio.Queue[McpMessage] = asyncio.Queue()
 
         listed = await relay.answer(

@@ -11,6 +11,7 @@ from typing import ClassVar, Self
 
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
+from boba.identity.context import PathSegment
 from boba.toolkit.failure import ValidationText
 
 __all__ = [
@@ -92,7 +93,8 @@ class KeySegment(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    SEPARATOR: ClassVar[str] = "/"
+    SEPARATOR: ClassVar[str] = PathSegment.SEPARATOR
+    SEGMENT: ClassVar[PathSegment] = PathSegment()
 
     @field_validator("*", mode="after")
     @classmethod
@@ -100,18 +102,7 @@ class KeySegment(BaseModel):
         if not isinstance(value, str):
             return value
 
-        if value in ("", ".", ".."):
-            msg = f"invalid key segment {value!r}: expected a name, not '', '.' or '..'"
-            raise ValueError(msg)
-
-        if cls.SEPARATOR in value:
-            msg = (
-                f"invalid key segment {value!r}: "
-                f"separator {cls.SEPARATOR!r} is not allowed inside a segment"
-            )
-            raise ValueError(msg)
-
-        return value
+        return cls.SEGMENT.checked(value, "key segment")
 
 
 class ObjectKey(KeySegment):

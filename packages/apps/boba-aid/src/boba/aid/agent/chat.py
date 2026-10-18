@@ -80,6 +80,7 @@ __all__ = [
     "MuteUpdates",
     "PermissionKind",
     "Question",
+    "Questions",
     "SessionOptions",
     "SettingsOutcome",
     "StartedTurn",
@@ -87,6 +88,7 @@ __all__ = [
     "ThreadAgents",
     "ThreadAgentsIndex",
     "ThreadDeleter",
+    "ThreadIdentities",
     "ThreadIdentity",
     "TurnRenderer",
     "TurnRenderers",
@@ -104,7 +106,7 @@ ConfigOption: TypeAlias = (
 class Question(BaseModel):
     """Вопрос пользователя, с которого начинается ход: id его шага, текст,
     вложения к сообщению и признак правки. Строится из сообщения chainlit
-    (of_message) или разбором события правки edit_message вкладки — по
+    (Questions) или разбором события правки edit_message вкладки — по
     алиасам полей; edited — правка шага key: ход ведёт ветка `session/fork`
     до этого вопроса.
     """
@@ -116,14 +118,21 @@ class Question(BaseModel):
     links: tuple[schema.ResourceContentBlock, ...] = ()
     edited: bool = False
 
-    @classmethod
+    def body(self, author: str = "") -> QuestionBody:
+        """Тело вопроса для шины; author — имя шага вопроса во всех вкладках."""
+        return QuestionBody(text=self.text, links=self.links, author=author)
+
+
+class Questions:
+    """Сборка вопроса из сообщения chainlit: вложения — блоки resource_link с
+    адресом файла по его месту в хранилище (маршрут canvas) глазами агента.
+    Держит её в поле обработчик хода вкладки (TabAgent)."""
+
     def of_message(
-        cls, msg: cl.Message, identity: ThreadIdentity, public_url: str
+        self, msg: cl.Message, identity: ThreadIdentity, public_url: str
     ) -> Question:
-        """Вопрос из сообщения chainlit: вложения — блоки resource_link с
-        адресом файла по его месту в хранилище (маршрут canvas) глазами
-        агента; public_url — адрес чата для агента.
-        """
+        """Вопрос из сообщения msg вкладки identity; public_url — адрес чата
+        для агента."""
         attached = msg.elements
         if not attached:
             attached = []
@@ -133,9 +142,7 @@ class Question(BaseModel):
             key = ObjectKey.build(
                 identity.user_id, identity.thread_id, element.name, element.id
             )
-            mime = element.mime
-            if not mime:
-                mime = ContentMime.of_name(element.name)
+            mime = ContentMime.named(element.mime, element.name)
 
             path = CanvasFileUrl.path(key, mime)
             address = urljoin(public_url, path)
@@ -144,11 +151,7 @@ class Question(BaseModel):
                 schema.ResourceContentBlock(name=element.name, uri=uri, mime_type=mime)
             )
 
-        return cls(key=msg.id, text=msg.content, links=tuple(links))
-
-    def body(self, author: str = "") -> QuestionBody:
-        """Тело вопроса для шины; author — имя шага вопроса во всех вкладках."""
-        return QuestionBody(text=self.text, links=self.links, author=author)
+        return Question(key=msg.id, text=msg.content, links=tuple(links))
 
 
 class ModelContextUpdate(BaseModel):
@@ -184,13 +187,12 @@ class PermissionKind(StrEnum):
     ALLOW_ONCE = "allow_once"
     ALLOW_ALWAYS = "allow_always"
     REJECT_ONCE = "reject_once"
-    REJECT_ALWAYS = "reject_always"
 
 
 @dataclass(frozen=True)
 class ThreadIdentity:
     """Кто и в каком треде говорит с агентом: тред, пользователь, его вход и
-    профиль чата. Собирается из сессии chainlit в обработчике. session —
+    профиль чата. Собирается из сессии chainlit (ThreadIdentities). session —
     живой вход пользователя вкладки: по нему регистрация сервера агента
     читает роли и секреты входа в момент вызова."""
 
@@ -201,8 +203,26 @@ class ThreadIdentity:
     session: LiveSignIn
     profile: SelectedProfile
 
-    @classmethod
-    def of(cls, session: ChainlitSession, profile: SelectedProfile) -> ThreadIdentity:
+    def registration(self, server: str) -> McpRegistration:
+        """Регистрация сервера server для агента или приложения этой
+        вкладки: вызовы идут от имени её пользователя в её треде."""
+        return McpRegistration(
+            user_id=self.user_id,
+            login=self.login,
+            thread_id=self.thread_id,
+            profile=self.profile.name,
+            session=self.session,
+            server=server,
+            servers=frozenset(self.profile.config.mcp),
+        )
+
+
+class ThreadIdentities:
+    """Сборка ThreadIdentity из сессии chainlit вкладки и выбранного профиля.
+    Держат её в поле обработчики вкладки (TabAgent) и ретранслятор
+    приложений MCP Apps."""
+
+    def of(self, session: ChainlitSession, profile: SelectedProfile) -> ThreadIdentity:
         """Ошибки:
         InternalServiceError — у сессии нет треда или сохранённого пользователя.
         AuthenticationError — токен входа отсутствует или не принят.
@@ -226,26 +246,13 @@ class ThreadIdentity:
                 user_detail=None,
             )
 
-        return cls(
+        return ThreadIdentity(
             thread_id=thread_id,
             user_id=UUID(user_id),
             login=session.identifier,
             roles=session.roles,
             session=session,
             profile=profile,
-        )
-
-    def registration(self, server: str) -> McpRegistration:
-        """Регистрация сервера server для агента или приложения этой
-        вкладки: вызовы идут от имени её пользователя в её треде."""
-        return McpRegistration(
-            user_id=self.user_id,
-            login=self.login,
-            thread_id=self.thread_id,
-            profile=self.profile.name,
-            session=self.session,
-            server=server,
-            servers=frozenset(self.profile.config.mcp),
         )
 
 
@@ -1254,14 +1261,32 @@ class ThreadAgents:
         return agent
 
     async def close_all(self) -> None:
+        """Закрывает агентов всех тредов вкладки; отказ одного не мешает
+        закрыть остальных и поднимается после всех.
+
+        Ошибки:
+        AgentProcessError — агенты каких-то тредов не закрылись: тред и причина
+            каждого.
+        """
         agents = list(self._agents.values())
         self._agents.clear()
+
+        failures: list[AcpClientError] = []
+        reasons: list[str] = []
         for agent in agents:
             self._index.forget(agent)
             try:
                 await agent.close()
-            except Exception:
-                logger.exception("thread %s: closing the agent failed", agent.thread_id)
+            except AcpClientError as exc:
+                failures.append(exc)
+                reasons.append(f"thread {agent.thread_id}: {exc}")
+
+        if failures:
+            msg = (
+                f"closing the agents of the tab: {len(failures)} of {len(agents)} "
+                f"did not close: {'; '.join(reasons)}"
+            )
+            raise AgentProcessError(msg) from failures[0]
 
 
 class AgentSettingsChanges:
