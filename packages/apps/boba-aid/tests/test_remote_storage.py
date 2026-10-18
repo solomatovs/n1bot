@@ -168,7 +168,7 @@ class TestRemoteStorage:
         журнала его запуска у сервиса."""
         arguments = {"text": "hi", "repeat": 1, CallFields.THREAD: thread_id}
         params = mt.CallToolRequestParams(name="fake_echo", arguments=arguments)
-        reply = await port.call(McpServers.OWN, params, None, None, None)
+        reply = await port.call(McpServers.OWN, params, None, None, None, None)
         if not isinstance(reply, mt.CallToolResult) or reply.is_error:
             raise AssertionError(f"fake_echo answers in thread {thread_id}: {reply}")
 

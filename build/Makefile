@@ -567,7 +567,8 @@ define HELP
 
 Тестовые образы (не поставка):
   testapps              boba-testapps:$(BOBA_TAG) и :latest — серверы MCP прежних редакций для
-                        тестов клиента: примеры MCP Apps и свой сервер на TypeScript SDK 1.x
+                        тестов клиента: примеры MCP Apps и свой сервер на TypeScript SDK 1.x;
+                        TESTAPPS_TAGS=<образ> — свой тег, тесты берут его --testapps-image <образ>
 
 Образы — APP=$(subst $(space),|,$(APPS)) либо <цель>-<приложение>, без APP — оба:
   build                 boba-<приложение>:$(BOBA_TAG) и :latest; в aid — агент bin/boba (Nuitka),
@@ -808,13 +809,14 @@ plugin-rootfs-all: version-check
 # берёт из реестра образа nodejs
 TESTAPPS_DIR        := $(SRC_DIR)/tests/services/testapps
 TESTAPPS_NODE_IMAGE ?= dmp/nodejs:22
+TESTAPPS_TAGS       ?= boba-testapps:$(BOBA_TAG) boba-testapps:latest
 
 .PHONY: testapps
 testapps:
-	@echo "== тестовые серверы MCP: boba-testapps:$(BOBA_TAG) от $(TESTAPPS_NODE_IMAGE) =="
+	@echo "== тестовые серверы MCP: $(TESTAPPS_TAGS) от $(TESTAPPS_NODE_IMAGE) =="
 	$(DOCKER_BUILD) -f "$(BASE_DIR)/testapps.Dockerfile" $(NO_CACHE_OPT) $(PROXY_ARGS) \
 	    --build-arg NODE_IMAGE=$(TESTAPPS_NODE_IMAGE) \
-	    --tag boba-testapps:$(BOBA_TAG) --tag boba-testapps:latest "$(TESTAPPS_DIR)"
+	    $(addprefix --tag ,$(TESTAPPS_TAGS)) "$(TESTAPPS_DIR)"
 
 # --- агент boba одним файлом -----------------------------------------------------
 
