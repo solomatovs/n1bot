@@ -564,6 +564,10 @@ define HELP
   plugin-rootfs         образ корня одного плагина: PLUGIN=<пакет>
   plugin-rootfs-all     образы корней всех плагинов с entry points boba.tools, всегда заново
 
+Тестовые образы (не поставка):
+  testapps              boba-testapps:$(BOBA_TAG) и :latest — серверы MCP прежних редакций для
+                        тестов клиента: примеры MCP Apps и свой сервер на TypeScript SDK 1.x
+
 Образы — APP=$(subst $(space),|,$(APPS)) либо <цель>-<приложение>, без APP — оба:
   build                 boba-<приложение>:$(BOBA_TAG) и :latest; в aid — агент bin/boba (Nuitka),
                         в mcp — образы корней плагинов и workspace из runtime/sandbox
@@ -600,10 +604,10 @@ define HELP
 Переменные: JOBS=$(JOBS) — заданий на шаг сборки; входит в ключ кэша, другое значение
 пересобирает всё от base — держать одно. NO_CACHE=1, BOBA_TAG, BIN_ONNX=1, PLUGIN, VER,
 MODE, INSTANCE, INSTALL_ROOT, BUNDLE_OS_LIBS=1, PRUNE_KEEP, PYTHON_VERSION=$(PYTHON_VERSION),
-GLIBC_IMAGE, GCC_IMAGE, PYTHON_IMAGE, NODE_IMAGE. Версии и состав входов: UV_VERSION,
-BWRAP_VERSION, LIBFUSE_VERSION, E2FSPROGS_VERSION, CHAINLIT (файл UPSTREAM), KATEX_VERSION,
-INTER_VERSION, MERMAID_VERSION, ORACLEDB_VERSION, NUITKA_VERSION, RAPIDOCR_LANGS,
-EMBED_MODELS, ONNX_MODELS, SANDBOX_WS_SIZE (размер workspace). PYTHON — python хоста
+GLIBC_IMAGE, GCC_IMAGE, PYTHON_IMAGE, NODE_IMAGE, TESTAPPS_NODE_IMAGE. Версии и состав
+входов: UV_VERSION, BWRAP_VERSION, LIBFUSE_VERSION, E2FSPROGS_VERSION, CHAINLIT (файл
+UPSTREAM), KATEX_VERSION, INTER_VERSION, MERMAID_VERSION, ORACLEDB_VERSION, NUITKA_VERSION,
+RAPIDOCR_LANGS, EMBED_MODELS, ONNX_MODELS, SANDBOX_WS_SIZE (размер workspace). PYTHON — python хоста
 для скриптов сборки (.venv). Значения для машины — в conf/local.mk.
 
 Сеть: apt — зеркало из sources.list образов dmp/*: стадии base, oracledb-wheel, bwrap-build,
@@ -796,6 +800,20 @@ plugin-rootfs-all: version-check
 	for name in $(PLUGIN_PACKAGES); do
 	    $(MAKE) -f "$(MAKEFILE)" plugin-rootfs PLUGIN=$$name
 	done
+
+# --- тестовые образы -------------------------------------------------------------
+
+# серверы MCP прежних редакций для тестов клиента; контекст — их каталог, пакеты npm ci
+# берёт из реестра образа nodejs
+TESTAPPS_DIR        := $(SRC_DIR)/tests/services/testapps
+TESTAPPS_NODE_IMAGE ?= dmp/nodejs:22
+
+.PHONY: testapps
+testapps:
+	@echo "== тестовые серверы MCP: boba-testapps:$(BOBA_TAG) от $(TESTAPPS_NODE_IMAGE) =="
+	$(DOCKER_BUILD) -f "$(BASE_DIR)/testapps.Dockerfile" $(NO_CACHE_OPT) $(PROXY_ARGS) \
+	    --build-arg NODE_IMAGE=$(TESTAPPS_NODE_IMAGE) \
+	    --tag boba-testapps:$(BOBA_TAG) --tag boba-testapps:latest "$(TESTAPPS_DIR)"
 
 # --- агент boba одним файлом -----------------------------------------------------
 

@@ -20,6 +20,7 @@ from boba.runtime.config import (
     RawConfig,
     RuntimeConfig,
 )
+from boba.stand.apps_slot import AppsSlot
 from boba.stand.database import TestDatabase
 from boba.stand.refs import StandRefs
 from boba.stand.site import StandLayers
@@ -62,6 +63,18 @@ def zygote_stand() -> Iterator[ZygoteStand]:
 @pytest.fixture(scope="session")
 def anyio_backend() -> str:
     return "asyncio"
+
+
+@pytest.fixture(scope="session")
+def apps_slot() -> Iterator[AppsSlot]:
+    """Контейнер серверов MCP редакции 2025-11-25 процесса тестов (образ
+    boba-testapps); без образа тест падает с причиной."""
+    slot = AppsSlot()
+    try:
+        slot.start()
+        yield slot
+    finally:
+        slot.stop()
 
 
 class ServiceData(StrEnum):

@@ -149,6 +149,13 @@ class ClientName(StrEnum):
     NAME = "boba-aid"
 
 
+class Handshake(StrEnum):
+    """Рукопожатие прежних редакций MCP: метод и параметр версии в нём."""
+
+    METHOD = "initialize"
+    VERSION = "protocolVersion"
+
+
 class RelayExchange(DispatchContext[TransportContext]):
     """Реализация DispatchContext SDK mcp на один запрос mcp/message.
 
@@ -460,10 +467,14 @@ class McpRelay:
     (AgentProcess) отдаёт ему каждый запрос вместе с отправкой уведомлений
     своего соединения. По serverId запроса McpRegistrations даёт
     регистрацию (пользователь, тред, имя сервера), а она — контекст вызова.
+    Агенту ретранслятор — сервер редакции 2026-07-28, за ним — серверы
+    профиля любой редакции: различие эпох поглощает клиент McpServers.
     Конверт и версию запроса проверяет SDK mcp (classify_inbound_request),
-    неизвестные методы отвечает его lowlevel Server; обработчики здесь —
-    все запросы редакции 2026-07-28, кроме устаревших. server/discover
-    отдаёт возможности, инструкции и serverInfo сервера за регистрацией;
+    на initialize прежних редакций ретранслятор отвечает отказом с перечнем
+    своих версий, неизвестные методы отвечает lowlevel Server SDK;
+    обработчики здесь — все запросы редакции 2026-07-28, кроме устаревших.
+    server/discover отдаёт возможности, инструкции и serverInfo сервера за
+    регистрацией;
     сервер профиля зовётся портом McpServers от имени пользователя вкладки
     и от личности агента (RelayedRequest), сервер chat — собственными
     инструментами чата в процессе (ChatTools) и знает только инструменты.
@@ -485,13 +496,17 @@ class McpRelay:
     отрисовалась — становится isError того же вызова (8.2). Параметры треда
     (пометка SchemaMark.THREAD) агент в списке не видит: на вызове
     ретранслятор ставит в них тред регистрации. Инструменты только для
-    интерфейса (_meta.ui.visibility без "model") агенту не видны и не
-    вызываются. Приложения MCP Apps серверов с секцией apps зовут
+    интерфейса (_meta.ui.visibility без "model") и инструменты, которые
+    без задачи не исполняются (execution.taskSupport "required"), агенту не
+    видны и не вызываются. Приложения MCP Apps серверов с секцией apps зовут
     инструменты с "app" в visibility (app_call) и читают ресурсы сервера
     (app_read) тем же путём от имени пользователя вкладки и от личности
     чата; их ответ приложение получает как есть, файлы показа открывает
     только вызов модели.
     """
+
+    TASK_ONLY: ClassVar[str] = "required"
+    """execution.taskSupport инструмента, который без задачи не исполняется."""
 
     def __init__(  # noqa: PLR0913 — ретранслятор собирается всеми входами процесса
         self,
@@ -553,6 +568,10 @@ class McpRelay:
                 "a new requestId for every request"
             )
             raise RequestError(AcpErrorCode.INVALID_PARAMS, msg)
+
+        handshake = self._handshake_refused(message)
+        if handshake is not None:
+            return handshake
 
         envelope = {"method": message.method, "params": message.params}
         route = classify_inbound_request(envelope)
@@ -616,6 +635,34 @@ class McpRelay:
             self._active.discard(active)
 
         return McpResultOutcome(result=result)
+
+    def _handshake_refused(self, message: McpMessage) -> McpErrorOutcome | None:
+        """Отказ на initialize прежних редакций с перечнем версий
+        ретранслятора; None — запрос не initialize."""
+        if message.method != Handshake.METHOD:
+            return None
+
+        requested = ""
+        if message.params is not None:
+            requested = str(message.params.get(Handshake.VERSION, ""))
+
+        supported = list(MODERN_PROTOCOL_VERSIONS)
+        data = mt.UnsupportedProtocolVersionErrorData(
+            supported=supported, requested=requested
+        )
+        text = (
+            f"mcp/message {message.method!r} to server {message.server_id!r}: "
+            f"the relay has no initialize handshake and speaks only {supported} "
+            f"with the version in the _meta of every request, got "
+            f"protocolVersion {requested!r}"
+        )
+        error = ErrorData(
+            code=mt.UNSUPPORTED_PROTOCOL_VERSION,
+            message=text,
+            data=data.model_dump(mode="json"),
+        )
+
+        return McpErrorOutcome(error=error)
 
     def _client_of(self, route: InboundModernRoute) -> McpClientIdentity:
         """Личность агента из _meta запроса; без clientInfo (его шлют по
@@ -1157,12 +1204,17 @@ class McpRelay:
         self, tools: Sequence[mt.Tool], server: str, audience: Visibility
     ) -> Iterator[mt.Tool]:
         """Инструменты tools сервера server, видимые стороне audience: без
-        _meta.ui.visibility — обеим, иначе — названной в нём.
+        _meta.ui.visibility — обеим, иначе — названной в нём. Инструмент,
+        который сервер исполняет только задачей, не видит никто: задач
+        клиент не объявляет.
 
         Ошибки:
         MCPError — _meta.ui инструмента не по форме MCP Apps: ошибка сервера.
         """
         for tool in tools:
+            if self._task_only(tool, server):
+                continue
+
             try:
                 config = self._apps.of(tool)
             except ValidationError as exc:
@@ -1184,3 +1236,22 @@ class McpRelay:
 
             if audience in visibility:
                 yield tool
+
+    def _task_only(self, tool: mt.Tool, server: str) -> bool:
+        """Сервер исполняет инструмент только задачей, а задач клиент не
+        объявляет."""
+        execution = tool.execution
+        if execution is None:
+            return False
+
+        if execution.task_support != self.TASK_ONLY:
+            return False
+
+        logger.info(
+            "mcp server %r: tool %r runs only as a task, which the client does "
+            "not declare; it is offered to no one",
+            server,
+            tool.name,
+        )
+
+        return True
