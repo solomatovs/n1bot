@@ -366,6 +366,64 @@ class SandboxStand:
         return str(template)
 
 
+class PrivateImageMount:
+    """Образ ext4 под командой теста, смонтированный fuse2fs в её собственных
+    пространствах имён пользователя и монтирования.
+
+    Монтирование в дереве хоста видят песочницы других тестов прогона:
+    лаунчер берёт корень хоста рекурсивным --ro-bind / / и перемонтирует
+    каждую точку, а точка, снятая между чтением mountinfo и перемонтированием,
+    роняет их старт («Unable to apply mount flags ... Invalid argument»).
+    Здесь образ живёт, пока жива команда, и снаружи не виден. Сеть отбирает
+    этот внешний слой: вложенному bwrap без своего userns её не поднять.
+    Им оборачивают свою команду тесты, которым нужен корень образа на хосте.
+    """
+
+    BWRAP: ClassVar[Path] = RUNTIME.third_bin / "bwrap"
+    MOUNT_THEN_EXEC: ClassVar[str] = (
+        "fuse2fs=$1; image=$2; point=$3; shift 3; "
+        '"$fuse2fs" -o ro "$image" "$point" && exec "$@"'
+    )
+    """Скрипт внутри слоя: монтирует образ и заменяется командой теста."""
+
+    def __init__(self, image: Path, point: Path) -> None:
+        self._image = image
+        self._point = point
+
+    def argv(self, command: Sequence[str]) -> list[str]:
+        """argv команды, которой образ виден в point; права в слое — root
+        userns с CAP_SYS_ADMIN и CAP_SETPCAP, как у цепочки лаунчера."""
+        argv = [
+            str(self.BWRAP),
+            "--die-with-parent",
+            "--unshare-user",
+            "--uid",
+            "0",
+            "--gid",
+            "0",
+            "--cap-add",
+            "CAP_SYS_ADMIN",
+            "--cap-add",
+            "CAP_SETPCAP",
+            "--unshare-pid",
+            "--unshare-net",
+            "--dev-bind",
+            "/",
+            "/",
+            "--",
+            "/bin/sh",
+            "-c",
+            self.MOUNT_THEN_EXEC,
+            "sh",
+            SandboxStand.fuse2fs(),
+            str(self._image),
+            str(self._point),
+        ]
+        argv.extend(command)
+
+        return argv
+
+
 class ZygoteStand:
     """Вызывающие поверх зигот; имя секции — ключ реестра.
 
