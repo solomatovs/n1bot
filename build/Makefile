@@ -186,7 +186,8 @@ BWRAP_TARBALL   := $(DEPS_DIR)/bubblewrap-$(BWRAP_VERSION).tar.xz
 LIBFUSE_VERSION ?= 3.12.0
 LIBFUSE_URL     ?= https://github.com/libfuse/libfuse/releases/download/fuse-$(LIBFUSE_VERSION)/fuse-$(LIBFUSE_VERSION).tar.xz
 LIBFUSE_TARBALL := $(DEPS_DIR)/fuse-$(LIBFUSE_VERSION).tar.xz
-E2FSPROGS_VERSION ?= 1.47.2
+# патч fuse2fs к версии — build/scripts/e2fsprogs-<версия>-ro-mount.patch
+E2FSPROGS_VERSION ?= 1.47.4
 E2FSPROGS_URL   ?= https://www.kernel.org/pub/linux/kernel/people/tytso/e2fsprogs/v$(E2FSPROGS_VERSION)/e2fsprogs-$(E2FSPROGS_VERSION).tar.xz
 E2FSPROGS_TARBALL := $(DEPS_DIR)/e2fsprogs-$(E2FSPROGS_VERSION).tar.xz
 SANDBOX_WS_SIZE ?= 1G
