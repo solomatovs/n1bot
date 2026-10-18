@@ -2,7 +2,8 @@
 канал журнала.
 
 Ошибки: ValueError — сегмент ключа пуст, ведёт наружу каталога, называет
-неизвестный каталог треда, либо путь ссылки не маршрут файла панели.
+неизвестный каталог треда, путь ссылки не маршрут файла панели либо ссылка
+называет файл другого треда.
 """
 
 from __future__ import annotations
@@ -10,7 +11,8 @@ from __future__ import annotations
 from typing import ClassVar
 from urllib.parse import quote, unquote, urlencode
 
-from boba.canvas.keys import ObjectKey, ThreadDir
+from boba.canvas.canvas import CanvasScope
+from boba.canvas.keys import ObjectKey, ThreadDir, WorkspaceKey
 from boba.toolkit.channels import JournalChannel
 
 __all__ = [
@@ -75,13 +77,13 @@ class CanvasFileUrl:
         return f"{AppPrefix.render()}{route}?{query}"
 
     @classmethod
-    def key(cls, user_id: str, path: str) -> ObjectKey:
-        """Ключ файла пользователя user_id по пути ссылки (без хоста и
+    def key(cls, scope: CanvasScope, path: str) -> WorkspaceKey:
+        """Ключ файла треда области scope по пути ссылки (без хоста и
         запроса): хвост пути — маршрут с тредом, каталогом и именем.
 
         Ошибки:
-        ValueError — путь не маршрут файла панели либо ключ не проходит
-            проверку сегментов.
+        ValueError — путь не маршрут файла панели, файл другого треда либо
+            ключ не проходит проверку сегментов.
         """
         route = cls.ROUTE.split("/")
         expected = f"canvas file link {path!r}: expected a path ending with {cls.ROUTE}"
@@ -92,11 +94,19 @@ class CanvasFileUrl:
         if tail[1] != route[1]:
             raise ValueError(expected)
 
-        return ObjectKey(
-            user_id=user_id,
+        if tail[2] != scope.thread_id:
+            msg = (
+                f"canvas file link {path!r}: expected a file of thread "
+                f"{scope.thread_id}, got thread {tail[2]}"
+            )
+            raise ValueError(msg)
+
+        return WorkspaceKey(
+            user_id=scope.user_id,
             thread_id=tail[2],
             dir=ThreadDir(tail[3]),
             name=unquote(tail[4]),
+            workspace=scope.workspace,
         )
 
 

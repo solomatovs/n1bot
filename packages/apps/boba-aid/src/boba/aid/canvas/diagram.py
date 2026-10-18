@@ -27,7 +27,7 @@ from boba.canvas.canvas import (
     WatchSource,
 )
 from boba.canvas.diagram import DiagramEntry, DiagramMarker
-from boba.canvas.keys import ObjectKey
+from boba.canvas.keys import WorkspaceKey
 from boba.canvas.storage import StorageError, StorageNotFoundError
 from boba.toolkit.result import ContentMime, VisualResult
 from boba.workspace.launcher import ReadWindow
@@ -50,7 +50,7 @@ class DiagramFiles:
     def __init__(self, max_bytes: int = MAX_BYTES) -> None:
         self._max_bytes = max_bytes
 
-    async def read(self, key: ObjectKey) -> str:
+    async def read(self, key: WorkspaceKey) -> str:
         """Спека целиком в памяти: её размер ограничен, а хранилище лишь стримит."""
         try:
             blob = await self._collect(key)
@@ -71,7 +71,7 @@ class DiagramFiles:
             msg = f"the file is not utf-8 text: {key.in_workspace()}: {e}"
             raise CanvasError(CanvasErrorKind.BAD_FILE, msg) from e
 
-    async def _collect(self, key: ObjectKey) -> bytes:
+    async def _collect(self, key: WorkspaceKey) -> bytes:
         """Читает файл потоком; слишком большой отвергается по размеру, до тела."""
         storage = AttachmentDataLayer.require().storage
 
@@ -109,10 +109,12 @@ class MermaidViewer(FileViewer):
     def __init__(self, files: DiagramFiles) -> None:
         self._files = files
 
-    async def content(self, key: ObjectKey, mime: str) -> CanvasContent:
+    async def content(self, key: WorkspaceKey, mime: str) -> CanvasContent:
         return self._content(key, mime, await self._read(key), str(uuid.uuid4()))
 
-    async def open(self, key: ObjectKey, mime: str, push: CanvasPush) -> OpenedCanvas:
+    async def open(
+        self, key: WorkspaceKey, mime: str, push: CanvasPush
+    ) -> OpenedCanvas:
         text = await self._read(key)
         nonce = str(uuid.uuid4())
 
@@ -130,11 +132,11 @@ class MermaidViewer(FileViewer):
 
         return OpenedCanvas(label=entry.label, path=entry.path, nonce=nonce)
 
-    async def link(self, key: ObjectKey, mime: str) -> VisualResult:
+    async def link(self, key: WorkspaceKey, mime: str) -> VisualResult:
         """Карточка диаграммы читает спеку: подпись берётся из её заголовка."""
         return DiagramCard.link(DiagramEntry.of(key, await self._read(key)))
 
-    def watch_source(self, key: ObjectKey) -> WatchSource | None:
+    def watch_source(self, key: WorkspaceKey) -> WatchSource | None:
         """Слежение по содержимому: спека мала, а размер может не меняться."""
 
         async def read() -> str:
@@ -142,11 +144,11 @@ class MermaidViewer(FileViewer):
 
         return StorageHashSource(read)
 
-    async def _read(self, key: ObjectKey) -> str:
+    async def _read(self, key: WorkspaceKey) -> str:
         return await self._files.read(key)
 
     def _content(
-        self, key: ObjectKey, mime: str, text: str, nonce: str
+        self, key: WorkspaceKey, mime: str, text: str, nonce: str
     ) -> CanvasContent:
         """Спека поверх описания базы: подпись берётся из заголовка диаграммы."""
         entry = DiagramEntry.of(key, text)

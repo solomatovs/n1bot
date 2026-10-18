@@ -20,7 +20,7 @@ from boba.canvas.canvas import (
     WatchProbeError,
 )
 from boba.canvas.diagram import DiagramEntry, DiagramSpecError, MermaidSpec
-from boba.canvas.keys import ObjectKey, ThreadDir
+from boba.canvas.keys import ThreadDir, WorkspaceKey
 from boba.runtime.config import AppLayers
 from boba.runtime.storage import LocalStorageClient, LocalStorageConfig
 from boba.toolkit.result import ContentMime
@@ -28,6 +28,7 @@ from boba.workspace.binaries import TrustedBinaries
 from boba.workspace.launcher import MountingConfig
 
 THREAD = "11111111-1111-1111-1111-111111111111"
+MOUNT = "/workspace"
 ER_SPEC = "erDiagram\n    CUSTOMER ||--o{ ORDER : has"
 
 
@@ -171,8 +172,12 @@ class TestSaveAndView:
         async def push(content: Any) -> None:
             shown.append(content)
 
-        key = ObjectKey.build(
-            str(UUID(int=7)), THREAD, "orders.mmd", "el-1", dir_thread=ThreadDir.MERMAID
+        key = WorkspaceKey(
+            user_id=str(UUID(int=7)),
+            thread_id=THREAD,
+            name="orders.mmd",
+            dir=ThreadDir.MERMAID,
+            workspace=MOUNT,
         )
         opened = await MermaidViewer(files).open(key, ContentMime.MERMAID, push)
 
@@ -200,8 +205,12 @@ class TestSaveAndView:
         async def push(content: Any) -> None:
             shown.append(content)
 
-        key = ObjectKey.build(
-            str(UUID(int=7)), THREAD, "mine.mmd", "el-1", dir_thread=ThreadDir.UPLOAD
+        key = WorkspaceKey(
+            user_id=str(UUID(int=7)),
+            thread_id=THREAD,
+            name="mine.mmd",
+            dir=ThreadDir.UPLOAD,
+            workspace=MOUNT,
         )
         await MermaidViewer(files).open(key, ContentMime.MERMAID, push)
 
@@ -218,8 +227,12 @@ class TestSaveAndView:
 
     @pytest.mark.anyio
     async def test_read_missing_file(self, files: DiagramFiles) -> None:
-        key = ObjectKey.build(
-            str(UUID(int=7)), THREAD, "no.mmd", "el-1", dir_thread=ThreadDir.MERMAID
+        key = WorkspaceKey(
+            user_id=str(UUID(int=7)),
+            thread_id=THREAD,
+            name="no.mmd",
+            dir=ThreadDir.MERMAID,
+            workspace=MOUNT,
         )
 
         with pytest.raises(CanvasError) as failure:
@@ -236,8 +249,12 @@ class TestEntry:
 
     def test_entry_of_unparsed_spec_keeps_text(self) -> None:
         """Файл не mermaid: текст едет как есть, метаданных нет, подпись — имя."""
-        key = ObjectKey.build(
-            str(UUID(int=7)), THREAD, "a.mmd", "el-1", dir_thread=ThreadDir.MERMAID
+        key = WorkspaceKey(
+            user_id=str(UUID(int=7)),
+            thread_id=THREAD,
+            name="a.mmd",
+            dir=ThreadDir.MERMAID,
+            workspace=MOUNT,
         )
 
         entry = DiagramEntry.of(key, "не диаграмма вовсе")
@@ -251,8 +268,12 @@ class TestEntry:
 
     def test_entry_of_broken_body_keeps_type(self) -> None:
         """Заголовок разобран — тип известен; синтаксис тела проверяет браузер."""
-        key = ObjectKey.build(
-            str(UUID(int=7)), THREAD, "a.mmd", "el-1", dir_thread=ThreadDir.MERMAID
+        key = WorkspaceKey(
+            user_id=str(UUID(int=7)),
+            thread_id=THREAD,
+            name="a.mmd",
+            dir=ThreadDir.MERMAID,
+            workspace=MOUNT,
         )
 
         entry = DiagramEntry.of(key, "erDiagram\n  A ||--")
@@ -271,8 +292,12 @@ class TestEntry:
             data=b"\xff\xfe\x00\x01",
         )
 
-        key = ObjectKey.build(
-            str(UUID(int=7)), THREAD, "bin.mmd", "el-1", dir_thread=ThreadDir.MERMAID
+        key = WorkspaceKey(
+            user_id=str(UUID(int=7)),
+            thread_id=THREAD,
+            name="bin.mmd",
+            dir=ThreadDir.MERMAID,
+            workspace=MOUNT,
         )
 
         with pytest.raises(CanvasError) as failure:
@@ -291,8 +316,12 @@ class TestEntry:
         oversized = "flowchart LR\n" + "  A --> B\n" * 4000
         await _stored("huge.mmd", oversized)
 
-        key = ObjectKey.build(
-            str(UUID(int=7)), THREAD, "huge.mmd", "el-1", dir_thread=ThreadDir.MERMAID
+        key = WorkspaceKey(
+            user_id=str(UUID(int=7)),
+            thread_id=THREAD,
+            name="huge.mmd",
+            dir=ThreadDir.MERMAID,
+            workspace=MOUNT,
         )
 
         with pytest.raises(CanvasError) as failure:
@@ -311,8 +340,12 @@ class TestWatchSource:
         self, files: DiagramFiles, http_context: None
     ) -> None:
         await _stored("orders.mmd", ER_SPEC)
-        key = ObjectKey.build(
-            str(UUID(int=7)), THREAD, "orders.mmd", "el-1", dir_thread=ThreadDir.MERMAID
+        key = WorkspaceKey(
+            user_id=str(UUID(int=7)),
+            thread_id=THREAD,
+            name="orders.mmd",
+            dir=ThreadDir.MERMAID,
+            workspace=MOUNT,
         )
 
         source = MermaidViewer(files).watch_source(key)
@@ -339,8 +372,12 @@ class TestWatchSource:
         """Спека в момент опроса не читается (переписывается или удалена):
         опрос отказывает ошибкой с путём файла, и сторож повторит его на
         следующем такте, а не снимет слежение."""
-        missing = ObjectKey.build(
-            str(UUID(int=7)), THREAD, "absent.mmd", "el-1", dir_thread=ThreadDir.MERMAID
+        missing = WorkspaceKey(
+            user_id=str(UUID(int=7)),
+            thread_id=THREAD,
+            name="absent.mmd",
+            dir=ThreadDir.MERMAID,
+            workspace=MOUNT,
         )
         broken = MermaidViewer(files).watch_source(missing)
         if broken is None:
@@ -404,8 +441,12 @@ class TestViewerVerdict:
         self, files: DiagramFiles, http_context: None
     ) -> None:
         await _stored("orders.mmd", ER_SPEC)
-        key = ObjectKey.build(
-            str(UUID(int=7)), THREAD, "orders.mmd", "el-1", dir_thread=ThreadDir.MERMAID
+        key = WorkspaceKey(
+            user_id=str(UUID(int=7)),
+            thread_id=THREAD,
+            name="orders.mmd",
+            dir=ThreadDir.MERMAID,
+            workspace=MOUNT,
         )
 
         shown: list[Any] = []

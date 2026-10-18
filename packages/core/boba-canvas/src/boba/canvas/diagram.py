@@ -12,7 +12,7 @@ from typing import ClassVar, Self
 
 from pydantic import BaseModel, ConfigDict
 
-from boba.canvas.keys import ObjectKey
+from boba.canvas.keys import WorkspaceKey
 
 __all__ = [
     "DiagramEntry",
@@ -210,7 +210,7 @@ class DiagramEntry(BaseModel):
     """Тип диаграммы; пустой — спека сейчас не парсится."""
 
     @classmethod
-    def of(cls, key: ObjectKey, text: str) -> Self:
+    def of(cls, key: WorkspaceKey, text: str) -> Self:
         """Метаданные берутся из спеки; неразбираемая спека едет без них."""
         label = key.name
         diagram_type = ""
