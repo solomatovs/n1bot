@@ -653,6 +653,24 @@ class TestLiveImage:
         if asyncio.run(cycle()).decode() != "текст":
             raise AssertionError('asyncio.run(cycle()).decode() == "текст"')
 
+    def test_storage_overwrite_with_shorter_content(
+        self, tmp_path: Path, template: Path
+    ) -> None:
+        """Перезапись короче прежнего файла не оставляет его хвоста: длина и
+        содержимое — новые."""
+        storage = _storage(tmp_path, template)
+
+        async def cycle() -> bytes:
+            await StorageSeed().put(storage, "7/t1/upload/over", b"x" * 605)
+            await StorageSeed().put(storage, "7/t1/upload/over", b"y" * 398)
+            return await read_all(storage, "7/t1/upload/over")
+
+        got = asyncio.run(cycle())
+        if got != b"y" * 398:
+            raise AssertionError(
+                f"the shorter overwrite left {len(got)} bytes ending in {got[-3:]!r}"
+            )
+
     def test_storage_delete(self, tmp_path: Path, template: Path) -> None:
         storage = _storage(tmp_path, template)
 
