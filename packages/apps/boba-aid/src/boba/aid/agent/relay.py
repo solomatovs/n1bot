@@ -74,7 +74,6 @@ from boba.kerberos import KerberosError
 from boba.mcp_adapter import McpTool, RoleTools
 from boba.mcp_client.client import (
     JournalHeard,
-    JournalOpening,
     McpCaller,
     McpClientError,
     McpClientIdentity,
@@ -90,6 +89,7 @@ from boba.toolkit.chain import StreamPlanError
 from boba.toolkit.dag import DagNode, ToolServer, ToolServersError
 from boba.toolkit.failure import InvokeErrorKind, ValidationText
 from boba.toolkit.mcp import McpToolNames
+from boba.toolkit.wire import JournalNotice
 from boba.toolrun.hosted import DirectCalls
 from boba.toolrun.injected import ToolConfigError
 from boba.toolrun.registry import ToolRegistry
@@ -1042,17 +1042,17 @@ class McpRelay:
         )
 
     async def _journaled(
-        self, registration: McpRegistration, call_id: str, opening: JournalOpening
+        self, registration: McpRegistration, call_id: str, notice: JournalNotice
     ) -> None:
         """Журнал, который вызов call_id агента открыл на сервере, — ленте
         треда сообщением JournalOpened. Шина его не приняла — кнопка журнала
         появится по ссылке в итоге вызова, причина — в логе."""
         opened = JournalOpened(
             call_id=call_id,
-            node=opening.node,
+            node=notice.key,
             server=registration.server,
-            run=opening.run,
-            call=opening.call,
+            run=notice.run,
+            call=notice.node,
         )
         scope = Scope.chat(registration.thread_id)
         try:

@@ -27,7 +27,7 @@ import mcp_types as mt
 import pytest
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
-from mcp.client.extension import advertise
+from mcp.client.extension import ClientExtension, NotificationBinding, advertise
 from mcp.client.session import IncomingMessage
 from mcp.client.subscriptions import listen
 from mcp.server.auth.provider import IdentityAssertionParams, TokenError
@@ -82,6 +82,7 @@ from boba.toolkit.mcp import McpResults
 from boba.toolkit.wire import (
     FilesFeature,
     JournalFeature,
+    JournalNotice,
     JournalRead,
     ResultWire,
 )
@@ -522,6 +523,26 @@ class Heard:
             self.notes.append(message.params)
 
 
+class JournalNotices(ClientExtension):
+    """Расширение клиента в тесте: слушает уведомления сервера об открытых
+    журналах вызова и объявляется под идентификатором identifier — журнала
+    либо чужим, которого сервер не знает."""
+
+    def __init__(self, identifier: str) -> None:
+        self.identifier = identifier
+        self.heard: list[JournalNotice] = []
+
+    def notifications(self) -> list[NotificationBinding[Any]]:
+        binding = NotificationBinding(
+            method=JournalFeature.OPENED, params_type=JournalNotice, handler=self._heard
+        )
+
+        return [binding]
+
+    async def _heard(self, notice: JournalNotice) -> None:
+        self.heard.append(notice)
+
+
 class TestProgress:
     """Прогресс вызова — только то, что сообщил сам инструмент: стандартными
     уведомлениями notifications/progress, числами и текстом."""
@@ -626,14 +647,61 @@ class TestProgress:
         if values != sorted(set(values)):
             raise AssertionError(f"the progress of the request only grows: {values}")
 
-    async def test_running_call_journals_are_listed_with_their_request(
+    async def test_running_call_journal_is_noticed_in_the_stream_of_its_call(
         self, stand: ServiceStand, url: str, dev_token: str
     ) -> None:
-        """Журнал идущего вызова — ресурсы resources/list вызывающего по
-        видимым каналам с токеном прогресса запроса в _meta; поток
-        subscriptions/listen узнаёт об открытии и о конце смены списка;
-        вызов кончился — журналов в списке нет, а адрес тот же, что у
-        ссылок итога."""
+        """Клиенту с расширением журнала сервер сообщает об открытом журнале
+        уведомлением расширения в потоке ответа самого вызова, под токеном
+        прогресса запроса: адрес тот же, что у ссылок итога."""
+        notices = JournalNotices(JournalFeature.ID)
+        transport = StreamableHttpTransport(url, auth=dev_token)
+        heard = Heard()
+        async with Client(transport, extensions=[notices]) as client:
+            result = await client.call_tool_mcp(
+                "fake_progress", {"steps": 3, "pause": 0.5}, progress_handler=heard
+            )
+
+        if result.is_error:
+            raise AssertionError(f"the call succeeds: {result}")
+        if len(notices.heard) != 1:
+            raise AssertionError(f"the journal is noticed once: {notices.heard}")
+        notice = notices.heard[0]
+        stdout = _journal(result)
+        if (notice.run, notice.node, notice.key) != (stdout.run, stdout.node, None):
+            raise AssertionError(f"the address of the result: {notice} {stdout}")
+        if notice.channels != JournalChannels.VISIBLE:
+            raise AssertionError(f"the channels for the user: {notice}")
+
+    async def test_client_without_the_journal_extension_is_not_noticed(
+        self, stand: ServiceStand, url: str, dev_token: str
+    ) -> None:
+        """Клиент, который расширения журнала не объявил, уведомлений о нём
+        не получает, даже если умеет их слушать: ему — путь ядра, ссылки на
+        каналы журнала в итоге."""
+        notices = JournalNotices("com.boba/listener")
+        transport = StreamableHttpTransport(url, auth=dev_token)
+        heard = Heard()
+        async with Client(transport, extensions=[notices]) as client:
+            result = await client.call_tool_mcp(
+                "fake_progress", {"steps": 2, "pause": 0.5}, progress_handler=heard
+            )
+
+        if result.is_error:
+            raise AssertionError(f"the call succeeds: {result}")
+        if notices.heard:
+            raise AssertionError(f"no notice without the extension: {notices.heard}")
+        if len(heard.reports) != 2:
+            raise AssertionError(f"the progress still goes: {heard.reports}")
+        _journal(result)
+
+    async def test_running_call_journals_are_listed_as_resources(
+        self, stand: ServiceStand, url: str, dev_token: str
+    ) -> None:
+        """Путь ядра для клиента без расширения журнала: журнал идущего
+        вызова — ресурсы resources/list вызывающего по видимым каналам;
+        поток subscriptions/listen узнаёт об открытии и о конце смены
+        списка; вызов кончился — журналов в списке нет, а адрес тот же, что
+        у ссылок итога."""
         async with _client(url, dev_token) as client:
             async with listen(client.session, resources_list_changed=True) as stream:
                 running = asyncio.create_task(
@@ -651,18 +719,12 @@ class TestProgress:
 
         uris = JournalUris(JournalRoutes.TEMPLATE)
         addresses: list[JournalRead] = []
-        origins: list[object] = []
         for resource in listed.resources:
             read = uris.address(str(resource.uri))
             if read is None:
                 raise AssertionError(f"{resource.uri} is a journal channel")
 
             addresses.append(read)
-            meta = resource.meta
-            if meta is None:
-                raise AssertionError(f"the resource names its request: {resource}")
-
-            origins.append(meta[JournalFeature.ID])
 
         if type(changed).__name__ != "ResourcesListChanged":
             raise AssertionError(f"the open journal changes the list: {changed}")
@@ -675,11 +737,10 @@ class TestProgress:
         channels = [read.channel for read in addresses]
         if channels != list(JournalChannels.VISIBLE):
             raise AssertionError(f"every visible channel is listed: {channels}")
-        first = origins[0]
-        if not isinstance(first, dict) or sorted(first) != ["request"]:
-            raise AssertionError(f"the journal names its request only: {origins}")
-        if origins != [first, first]:
-            raise AssertionError(f"both channels name one request: {origins}")
+        for resource in listed.resources:
+            meta = resource.meta
+            if meta is not None and JournalFeature.ID in meta:
+                raise AssertionError(f"a listed journal names no request: {resource}")
         stdout = _journal(result)
         if addresses[0].model_copy(update={"channel": stdout.channel}) != stdout:
             raise AssertionError(f"the address of the result: {addresses} {stdout}")

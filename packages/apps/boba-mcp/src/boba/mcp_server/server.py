@@ -11,9 +11,11 @@ McpReplies — стандартными полями результата MCP (R
 итог с текстом отказа.
 
 Во время вызова сервер пересылает клиенту отчёты тела о ходе работы
-уведомлениями notifications/progress (CallProgress); каналы журнала вызова
-— ресурсы сервера: журналы идущих вызовов перечисляет resources/list, окна
-читает resources/read, итог несёт ссылки на каналы (JournalUris). Адрес
+уведомлениями notifications/progress, а клиенту с расширением журнала — и
+открытые вызовом журналы уведомлением расширения, оба в потоке ответа
+самого вызова (CallProgress); каналы журнала вызова — ресурсы сервера:
+журналы идущих вызовов перечисляет resources/list, окна читает
+resources/read, итог несёт ссылки на каналы (JournalUris). Адрес
 загрузки файла отдаёт операция file_upload (FileUploadTool), видная только
 интерфейсу клиента. Клиентов сервер принимает обеих эпох — server/discover
 (2026-07-28) и initialize прежних редакций — и объявляет возможности такими,
@@ -113,7 +115,7 @@ from boba.toolkit.result import ContentMime, ErrorResult
 from boba.toolkit.wire import (
     FilesFeature,
     JournalFeature,
-    JournalOrigin,
+    JournalNotice,
     JournalRead,
     McpContent,
 )
@@ -267,9 +269,11 @@ class ProgressShape(Protocol):
         запроса token; None — отчёт не уходит."""
 
     @abstractmethod
-    def origin(self, call_id: str, token: mt.ProgressToken) -> JournalOrigin | None:
-        """Чей запрос под токеном token открыл журнал вызова call_id — ресурс
-        журнала в resources/list несёт это в _meta; None — вызов не назван."""
+    def opened(
+        self, call_id: str, run: str, token: mt.ProgressToken
+    ) -> JournalNotice | None:
+        """Уведомление об открытом журнале вызова call_id запуска run под
+        токеном прогресса запроса token; None — вызов не назван."""
 
 
 class OwnProgress(ProgressShape):
@@ -297,8 +301,15 @@ class OwnProgress(ProgressShape):
             message=report.message,
         )
 
-    def origin(self, call_id: str, token: mt.ProgressToken) -> JournalOrigin | None:
-        return JournalOrigin(request=token)
+    def opened(
+        self, call_id: str, run: str, token: mt.ProgressToken
+    ) -> JournalNotice | None:
+        return JournalNotice(
+            progress_token=token,
+            run=run,
+            node=call_id,
+            channels=JournalChannels.VISIBLE,
+        )
 
 
 class NodeProgress(ProgressShape):
@@ -341,7 +352,9 @@ class NodeProgress(ProgressShape):
             _meta={self._feature.progress_key: title},
         )
 
-    def origin(self, call_id: str, token: mt.ProgressToken) -> JournalOrigin | None:
+    def opened(
+        self, call_id: str, run: str, token: mt.ProgressToken
+    ) -> JournalNotice | None:
         title = self._dags.title_of(self._call, call_id)
         if title is None:
             logger.warning(
@@ -349,31 +362,38 @@ class NodeProgress(ProgressShape):
             )
             return None
 
-        return JournalOrigin(request=token, node=title)
+        return JournalNotice(
+            progress_token=token,
+            run=run,
+            node=call_id,
+            channels=JournalChannels.VISIBLE,
+            key=title,
+        )
 
 
 class CallProgress(StreamFeed):
-    """Ход работы вызова уведомлениями notifications/progress и рост его
-    журнала событиями подписки на ресурсы. Реализация StreamFeed: за
-    журналами запуска следят насосы StreamPumps.
+    """Ход работы вызова уведомлениями notifications/progress, открытые им
+    журналы уведомлениями расширения журнала и рост журнала событиями
+    подписки на ресурсы. Реализация StreamFeed: за журналами запуска следят
+    насосы StreamPumps.
 
     Создаётся CallContextMiddleware на каждый вызов инструмента и следит за
-    журналами запуска (CallJournals.following зовёт opened). Открытый журнал
-    вызова сразу становится ресурсом resources/list вызывающего (OpenJournals
-    шлёт его потокам subscriptions/listen смену списка) с токеном прогресса
-    запроса и ключом узла связки (ProgressShape.origin): по ним клиент
-    находит свой вызов и читает журнал, пока вызов идёт; close() снимает
-    журналы запуска со списка. Рост видимого канала уходит событием
-    ResourceUpdated по uri канала в шину подписок сервера (bus): его
-    получают потоки subscriptions/listen этого uri. Тело пишет отчёты о
-    ходе работы в канал ToolChannel.PROGRESS;
-    отсюда они уходят клиенту стандартным прогрессом запроса: числа done и
-    total и текст отчёта. token — токен прогресса из _meta запроса; None —
-    клиент о ходе вызова не просил, и уведомлений нет. Уведомления ждут в
-    очереди, а отправляет их задача, заведённая start() внутри запроса:
-    уведомление привязано к запросу, и из чужой задачи оно не уходит. Каким
-    отчёт уходит клиенту, решает shape: у вызова одного инструмента — как
-    есть, у связки — с ключом узла в _meta.
+    журналами запуска (CallJournals.following зовёт opened). Об открытом
+    журнале клиент, объявивший расширение журнала, узнаёт уведомлением
+    JournalFeature.OPENED в потоке ответа своего вызова (ProgressShape.opened:
+    адрес журнала и ключ узла связки). Для клиента без расширения журнал
+    становится ресурсом resources/list вызывающего (OpenJournals шлёт его
+    потокам subscriptions/listen смену списка); close() снимает журналы
+    запуска со списка. Рост видимого канала уходит событием ResourceUpdated
+    по uri канала в шину подписок сервера (bus): его получают потоки
+    subscriptions/listen этого uri. Тело пишет отчёты о ходе работы в канал
+    ToolChannel.PROGRESS; отсюда они уходят клиенту стандартным прогрессом
+    запроса: числа done и total и текст отчёта. token — токен прогресса из
+    _meta запроса; None — клиент о ходе вызова не просил, и уведомлений нет.
+    Уведомления ждут в очереди, а отправляет их задача, заведённая start()
+    внутри запроса: уведомление привязано к запросу, и из чужой задачи оно
+    не уходит. Каким отчёт уходит клиенту, решает shape: у вызова одного
+    инструмента — как есть, у связки — с ключом узла в _meta.
     """
 
     def __init__(  # noqa: PLR0913 — ход вызова привязан к запросу, журналам, запуску и токену
@@ -397,7 +417,10 @@ class CallProgress(StreamFeed):
         self._bus = bus
         self._listed = listed
         self._token = token
-        self._queue: asyncio.Queue[mt.ProgressNotificationParams | None]
+        self._noticed = context.client_extension_settings(JournalFeature.ID) is not None
+        """Клиент объявил расширение журнала: открытые журналы — ему
+        уведомлением."""
+        self._queue: asyncio.Queue[mt.JSONRPCNotification | None]
         self._queue = asyncio.Queue()
         self._sender: asyncio.Task[None] | None = None
         self._pumps = StreamPumps(self)
@@ -415,17 +438,23 @@ class CallProgress(StreamFeed):
     def opened(self, call_id: str, stream: ToolStream) -> None:
         """Наблюдатель CallJournals: журнал вызова открыт — вызов попадает в
         список журналов запуска, за журналом следит насос, журнал становится
-        ресурсом resources/list вызывающего; токен прогресса запроса — в
-        его _meta, если клиент его назвал."""
+        ресурсом resources/list вызывающего, а клиенту с расширением журнала
+        и токеном прогресса уходит уведомление о нём."""
         self._journaled.append(call_id)
         self._pumps.opened(call_id, stream)
-        origin: JournalOrigin | None = None
-        token = self._token
-        if token is not None:
-            origin = self._shape.origin(call_id, token)
+        self._listed.opened(self._user, OpenJournal(run=self._run, node=call_id))
+        if not self._noticed:
+            return
 
-        journal = OpenJournal(run=self._run, node=call_id, origin=origin)
-        self._listed.opened(self._user, journal)
+        token = self._token
+        if token is None:
+            return
+
+        notice = self._shape.opened(call_id, self._run, token)
+        if notice is None:
+            return
+
+        self._queued(JournalFeature.OPENED, notice)
 
     def journaled(self) -> Sequence[str]:
         """Вызовы запуска с журналом в порядке их открытия."""
@@ -479,9 +508,16 @@ class CallProgress(StreamFeed):
             for line in piece.text.splitlines():
                 report = self._report_of(call_id, line)
                 if shaped := self._shape.shaped(call_id, report, token):
-                    self._queue.put_nowait(shaped)
+                    notification = mt.ProgressNotification(params=shaped)
+                    self._queued(notification.method, shaped)
 
             offset = piece.end
+
+    def _queued(self, method: str, params: BaseModel) -> None:
+        """Уведомление method с параметрами params — в очередь отправки."""
+        wire = params.model_dump(by_alias=True, mode="json", exclude_none=True)
+        notification = mt.JSONRPCNotification(jsonrpc="2.0", method=method, params=wire)
+        self._queue.put_nowait(notification)
 
     @staticmethod
     def _report_of(call_id: str, line: str) -> ProgressReport:
@@ -495,15 +531,15 @@ class CallProgress(StreamFeed):
             raise ProgressChannelError(msg) from exc
 
     async def _send(self) -> None:
+        # типизированная отправка SDK знает только уведомления ядра, а
+        # уведомление расширения уходит тем же каналом запроса в обход неё
+        outbound = self._context.session._request_outbound
         while True:
-            shaped = await self._queue.get()
-            if shaped is None:
+            notification = await self._queue.get()
+            if notification is None:
                 return
 
-            notification = mt.ProgressNotification(params=shaped)
-            await self._context.session.send_notification(
-                notification, related_request_id=self._context.request_id
-            )
+            await outbound.notify(notification.method, notification.params)
 
 
 class FileUploadRequest(BaseModel):
