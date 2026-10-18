@@ -4,7 +4,7 @@ socket.io тем же протоколом, что и браузер. Прове
 в ленту, остановка кнопкой Stop, sessionId агента в threads.meta, процесс
 агента без секретов в argv и окружении и его уход вместе с вкладкой; возврат к
 треду воспроизводит историю через `session/resume`, второй инстанс видит её
-как наблюдатель и получает отказ держателя в ленту, шаг вопроса получает
+и ведёт следующий ход своим процессом, шаг вопроса получает
 messageId агента, правка вопроса по нему ветвит сессию, а у чужого агента
 без среза ветки отказана и ничего не меняет; удаление треда удаляет сессию
 агента и файлы треда; элементы хода (вложение, файл итога, ссылка панели)
@@ -70,7 +70,6 @@ BOOT_TIMEOUT_SEC = 180.0
 TURN_TIMEOUT_SEC = 120.0
 TOKEN_DELAY_SEC = 0.03
 PROFILE = "general"
-HELD_TEXT = "held by another process"
 GENERATION = "acp-chat-stand"
 MESSAGING = "postgres"
 """Шина в базе стенда: второй инстанс видит ход первого."""
@@ -984,9 +983,11 @@ class TestHistory:
         finally:
             await again.end_session()
 
-    async def test_second_instance_observes_and_is_refused_a_turn(
+    async def test_second_instance_observes_and_asks_after_the_turn(
         self, app: StandProcess, second: StandProcess, cookie: str
     ) -> None:
+        """Процесс вкладки первого инстанса после хода сессию не держит:
+        вкладка второго инстанса видит историю и получает ответ на вопрос."""
         first = ChatSocket(app, cookie, str(uuid4()))
         await first.open()
         await first.send(f"start {ScenarioName.ANSWER.value}")
@@ -1002,11 +1003,14 @@ class TestHistory:
                     f"start {ScenarioName.ANSWER.value}"
                 ]
 
+                mark = len(observer.events)
                 await observer.send(f"mine {ScenarioName.ANSWER.value}")
                 await observer.wait_task_end()
-                refusals = observer.errors()
-                assert refusals, observer.trace()
-                assert HELD_TEXT in refusals[0], refusals
+                assert not observer.errors(), (observer.errors(), second.tail(60))
+                answers = " ".join(
+                    str(m.get("output")) for m in observer.messages(since=mark)
+                )
+                assert "plain streamed answer" in answers, observer.trace()[mark:]
             finally:
                 await observer.end_session()
         finally:
@@ -1261,11 +1265,11 @@ class TestHistory:
             await editing.end_session()
             await holder.end_session()
 
-    async def test_an_observer_edits_only_after_the_holder_left(
+    async def test_an_observer_edits_while_the_holder_tab_is_idle(
         self, app: StandProcess, cookie: str, rows: ChatRows
     ) -> None:
-        """Прежнюю сессию держит процесс другой вкладки: правка отказана и
-        ничего не меняет; после ухода держателя та же правка проходит и
+        """Вкладка, задавшая вопрос, открыта, но хода не ведёт: её процесс
+        сессию не держит, и правка из другой вкладки проходит сразу и
         удаляет прежнюю сессию."""
         holder = ChatSocket(app, cookie, str(uuid4()))
         await holder.open()
@@ -1277,33 +1281,22 @@ class TestHistory:
         original = before[ThreadMetaField.AGENT_SESSION]
         recorded = await rows.history_rows(original)
 
+        assert recorded > 0
+
         observer = ChatSocket(app, cookie, holder.thread_id)
         await observer.open(resumed=True)
         try:
             question = str(observer.messages("user_message")[-1].get("id"))
             await observer.edit(question, f"edited {ScenarioName.ANSWER.value}")
             await observer.wait_task_end()
-            refusals = observer.errors()
-            assert refusals, observer.trace()
-            assert "could not be deleted" in refusals[-1], refusals
-            assert HELD_TEXT in refusals[-1], refusals
-            assert await rows.thread_meta(holder.thread_id) == before
-            assert await rows.history_rows(original) == recorded
-
-            await holder.end_session()
-            mark = len(observer.events)
-            replayed = observer.messages("user_message")
-            await observer.edit(
-                str(replayed[-1].get("id")), f"edited {ScenarioName.ANSWER.value}"
-            )
-            await observer.wait_task_end()
-            assert not observer.errors()[len(refusals) :], observer.trace()[mark:]
+            assert not observer.errors(), (observer.errors(), app.tail(60))
             after = await rows.thread_meta(holder.thread_id)
             assert after is not None
             assert after[ThreadMetaField.AGENT_SESSION] != original
             assert await rows.history_rows(original) == 0
         finally:
             await observer.end_session()
+            await holder.end_session()
 
     async def test_deleting_an_edited_thread_deletes_all_its_sessions(
         self, app: StandProcess, cookie: str, rows: ChatRows
@@ -1343,7 +1336,8 @@ class TestHistory:
     ) -> None:
         """Правка в одной вкладке: вкладки треда на этом и на другом инстансе
         очищаются, перечитывают ветку без хвоста, затем видят новый ход; их
-        агенты на ветке, а не на удалённой сессии."""
+        агенты на ветке, а не на удалённой сессии, и следующий вопрос другой
+        вкладки ведёт её процесс по ветке."""
         first = f"first {ScenarioName.ANSWER.value}"
         tail = f"tail {ScenarioName.ANSWER.value}"
         edited = f"edited {ScenarioName.ANSWER.value}"
@@ -1378,11 +1372,12 @@ class TestHistory:
                 assert first not in shown, tab.trace()[mark:]
                 assert edited in shown, tab.trace()[mark:]
 
+            mark = len(other.events)
             await other.send(f"mine {ScenarioName.ANSWER.value}")
             await other.wait_task_end()
-            refusals = other.errors()
-            assert refusals, other.trace()
-            assert HELD_TEXT in refusals[-1], refusals
+            assert not other.errors(), (other.errors(), app.tail(60))
+            shown = [m.get("output") for m in other.messages("user_message", mark)]
+            assert f"mine {ScenarioName.ANSWER.value}" in shown, other.trace()[mark:]
         finally:
             await remote.end_session()
             await other.end_session()
@@ -1573,6 +1568,119 @@ class TestHistory:
         assert await rows.chat_settings_rows(tab.thread_id) == 0
         assert await rows.history_rows(session_id) == 0
         await tab.close()
+
+
+class TestTabsOfOneThread:
+    """Две вкладки одного треда — на одном инстансе или на двух над общей
+    базой и шиной: ход ведёт вкладка, которая спросила, а процесс агента
+    прошлого хода сессию между ходами не держит; вопрос во время чужого хода
+    отказан занятым тредом."""
+
+    ANSWERED: ClassVar[str] = "plain streamed answer"
+
+    @pytest.fixture(params=["same", "second"])
+    def other_app(
+        self, request: pytest.FixtureRequest, app: StandProcess
+    ) -> StandProcess:
+        """Инстанс второй вкладки: тот же, что у первой, или второй."""
+        if request.param == "same":
+            return app
+
+        return request.getfixturevalue("second")
+
+    async def _reply(self, tab: ChatSocket, since: int) -> list[str]:
+        """Ждёт после события since ответ или отказ хода вкладки; итог —
+        отказы, пришедшие за это время."""
+        deadline = time.monotonic() + TURN_TIMEOUT_SEC
+        while time.monotonic() < deadline:
+            refusals: list[str] = []
+            answered = False
+            for payload in tab.messages(since=since):
+                output = str(payload.get("output"))
+                if payload.get("isError"):
+                    refusals.append(output)
+                    continue
+
+                if self.ANSWERED in output:
+                    answered = True
+
+            if refusals:
+                return refusals
+
+            if answered:
+                return []
+
+            await asyncio.sleep(0.1)
+
+        msg = f"no reply in {TURN_TIMEOUT_SEC}s: {tab.trace()[since:]}"
+        raise AssertionError(msg)
+
+    async def test_a_tab_stops_the_turn_of_another_and_asks_about_a_file(
+        self, app: StandProcess, other_app: StandProcess, cookie: str, llm_port: int
+    ) -> None:
+        """Вопрос в первой вкладке, Stop и вопрос с файлом во второй: ход
+        второй вкладки идёт, модель получает ссылку на файл."""
+        first = ChatSocket(app, cookie, str(uuid4()))
+        await first.open()
+        other = ChatSocket(other_app, cookie, first.thread_id)
+        try:
+            await first.send(f"go {ScenarioName.LONG.value}")
+            await first.wait_event("stream_token")
+            await other.open(resumed=True)
+
+            await other.stop()
+            await first.wait_task_end()
+
+            mark = len(other.events)
+            file_id = other.upload(
+                "note.csv", b"the,file\nof,the second tab\n", "text/csv"
+            )
+            text = f"what is in this file {uuid4().hex}? {ScenarioName.ANSWER.value}"
+            await other.send(text, (file_id,))
+            refusals = await self._reply(other, mark)
+
+            assert not refusals, (refusals, app.tail(60), other_app.tail(60))
+            request = LlmRequests(llm_port).with_text(text)
+            assert "[@note.csv](" in json.dumps(request["messages"])
+        finally:
+            await other.end_session()
+            await first.end_session()
+
+    async def test_a_question_during_the_turn_of_another_tab_is_refused(
+        self, app: StandProcess, other_app: StandProcess, cookie: str
+    ) -> None:
+        """Вопрос второй вкладки во время хода первой отказан занятым тредом;
+        после конца хода тот же вопрос проходит, затем первая вкладка снова
+        спрашивает сама."""
+        first = ChatSocket(app, cookie, str(uuid4()))
+        await first.open()
+        other = ChatSocket(other_app, cookie, first.thread_id)
+        try:
+            await first.send(f"go {ScenarioName.LONG.value}")
+            await first.wait_event("stream_token")
+            await other.open(resumed=True)
+
+            busy = len(other.events)
+            await other.send(f"mine {ScenarioName.ANSWER.value}")
+            refusals = await self._reply(other, busy)
+            assert refusals, other.trace()[busy:]
+            assert "is busy" in refusals[-1], refusals
+
+            await first.stop()
+            await first.wait_task_end()
+
+            mark = len(other.events)
+            await other.send(f"mine {ScenarioName.ANSWER.value}")
+            refused = await self._reply(other, mark)
+            assert not refused, (refused, app.tail(60), other_app.tail(60))
+
+            back = len(first.events)
+            await first.send(f"back {ScenarioName.ANSWER.value}")
+            again = await self._reply(first, back)
+            assert not again, (again, app.tail(60), other_app.tail(60))
+        finally:
+            await other.end_session()
+            await first.end_session()
 
 
 class TestFeed:
