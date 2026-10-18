@@ -39,6 +39,7 @@ from literalai.observability.step import TrueStepType
 
 from boba.aid.chat.ui_text import UiText
 from boba.aid.domain.keys import CanvasFileUrl
+from boba.aid.rendering.question import QuestionCard
 from boba.aid.rendering.tool import ChatElements, ToolAppView
 from boba.canvas.canvas import (
     CanvasAction,
@@ -249,6 +250,8 @@ class StepRole(StrEnum):
     ELEMENT = "element"
     STREAM = "stream"
     APP = "app"
+    QUESTION = "question"
+    QUESTION_CARD = "question-card"
 
 
 @dataclass
@@ -1060,6 +1063,65 @@ class ChatView:
         element = self._elements.app(app, key, arguments)
         element.thread_id = self._thread_id
         element_id = self.derive_id(self._thread_id, key, StepRole.APP)
+        if element_id:
+            element.id = element_id
+
+        return element
+
+    async def question_asked(self, card: QuestionCard, key: str) -> Step:
+        """Вопрос агента пользователю — своим сообщением основной ленты на
+        месте хода: пока вопрос ждёт ответа, элемент Question рисует строку
+        с мигающей точкой (сама панель — у поля ввода вкладки), кружок
+        ожидания хода на это время снят. Запись ответа встаёт в то же
+        сообщение (question_finished)."""
+        await self.seal_answer()
+        step = self._question_step(key)
+        if self._sink.emits_elements:
+            step.elements = [self._question(card, key)]
+
+        await self._sink.put(step)
+        await self._pulse.hold()
+
+        return step
+
+    async def question_finished(self, step: Step, card: QuestionCard, key: str) -> None:
+        """Запись ответа на вопрос в его сообщении: та же панель только для
+        чтения с выбранными вариантами; кружок ожидания хода возвращается."""
+        if self._sink.emits_elements:
+            step.elements = [self._question(card, key)]
+
+        await self._sink.put(step)
+        await self._pulse.resume()
+
+    async def questions_answered(self, cards: Sequence[QuestionCard], key: str) -> None:
+        """Записи ответов на вопросы сервера MCP, заданные в вызове key, —
+        сообщениями основной ленты рядом с итогом вызова."""
+        await self.seal_answer()
+        for number, card in enumerate(cards):
+            asked = f"{key}#{number}"
+            step = self._question_step(asked)
+            if self._sink.emits_elements:
+                step.elements = [self._question(card, asked)]
+
+            await self._sink.put(step)
+
+        await self._pulse.bump()
+
+    def _question_step(self, key: str) -> Step:
+        step = self._step(
+            self._assistant_name,
+            StepKind.ASSISTANT,
+            parent_id=None,
+            step_id=self.derive_id(self._thread_id, key, StepRole.QUESTION),
+        )
+        step.output = ""
+
+        return step
+
+    def _question(self, card: QuestionCard, key: str) -> CustomElement:
+        element = self._elements.question(card.props())
+        element.thread_id = self._thread_id
+        element_id = self.derive_id(self._thread_id, key, StepRole.QUESTION_CARD)
         if element_id:
             element.id = element_id
 

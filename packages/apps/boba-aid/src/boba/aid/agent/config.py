@@ -249,4 +249,12 @@ class AgentConfig(BaseModel):
             "инструментов, в секундах: сервер отвергает значение старше срока."
         ),
     )
+    question_timeout_sec: int = Field(
+        gt=0,
+        description=(
+            "Сколько ждать ответа пользователя на вопрос агента (форма "
+            "elicitation/create), в секундах: по истечении вопрос снимается "
+            "ответом cancel, ход идёт дальше."
+        ),
+    )
     model: AgentModelConfig

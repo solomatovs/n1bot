@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 import shlex
 import sys
-from collections.abc import AsyncIterator, Coroutine, Sequence
+from collections.abc import AsyncIterator, Collection, Coroutine, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar
@@ -17,6 +17,7 @@ import pytest
 import uvicorn
 from acp.experimental.v2 import schema
 from aid_stand import NoConnectionStore, RelayStand
+from chainlit.session import WebsocketSession
 from pydantic import SecretStr
 
 from boba.agent.profile import ReasoningReturn
@@ -31,6 +32,7 @@ from boba.aid.agent.client import (
     AgentClient,
     AgentCommand,
     AgentProcess,
+    ElicitationReply,
 )
 from boba.aid.agent.config import (
     AgentCommandConfig,
@@ -201,6 +203,7 @@ class AgentStand:
             history=self._history,
             public_url=public_url,
             seal_ttl_sec=600,
+            question_timeout_sec=600,
             model=AgentModelConfig(
                 context_window=32000,
                 max_output_tokens=4096,
@@ -211,8 +214,9 @@ class AgentStand:
 
 class RecordingUpdates(TurnRenderer):
     """Реализация TurnRenderer для тестов транспорта и агента треда: копит
-    уведомления, итоги и messageId вопросов; ход начинает ответом агента на
-    вопрос."""
+    уведомления, итоги, формы вопросов пользователю и messageId вопросов; ход
+    начинает ответом агента на вопрос, форму — ответом из replies (без него
+    — отмена)."""
 
     def __init__(self) -> None:
         self.asked: list[str] = []
@@ -220,6 +224,8 @@ class RecordingUpdates(TurnRenderer):
         self.finished: list[tuple[str, schema.IdleSessionStateUpdate]] = []
         self.abandoned: list[str] = []
         self.permissions: list[str] = []
+        self.forms: list[schema.CreateFormSessionElicitationRequest] = []
+        self.replies: list[ElicitationReply] = []
         self.first_update = asyncio.Event()
 
     async def update(self, session_id: str, update: SessionUpdate) -> None:
@@ -234,6 +240,15 @@ class RecordingUpdates(TurnRenderer):
 
         return schema.RequestPermissionResponse(outcome=chosen)
 
+    async def elicitation(
+        self, request: schema.CreateFormSessionElicitationRequest
+    ) -> ElicitationReply:
+        self.forms.append(request)
+        if not self.replies:
+            return schema.CancelElicitationResponse()
+
+        return self.replies.pop(0)
+
     async def turn_finished(
         self, session_id: str, idle: schema.IdleSessionStateUpdate
     ) -> None:
@@ -244,6 +259,11 @@ class RecordingUpdates(TurnRenderer):
 
     def stopping(self, session_id: str) -> None:
         return
+
+    async def question_shown(
+        self, anchor: WebsocketSession, live: Collection[str]
+    ) -> bool:
+        return False
 
     async def turn_started(
         self, question: Question, start: Coroutine[Any, Any, StartedTurn]

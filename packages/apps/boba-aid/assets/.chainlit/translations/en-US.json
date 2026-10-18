@@ -365,6 +365,31 @@
         "notice": {
             "settingsDeferred": "Settings are saved and will apply after the current answer.",
             "profileRetired": "Chat profile \"{{retired}}\" is no longer available: this chat continues with \"{{profile}}\""
+        },
+        "question": {
+            "title": {
+                "one": "Question",
+                "many": "Questions"
+            },
+            "status": {
+                "accept": "Answered",
+                "decline": "Declined",
+                "cancel": "No answer"
+            },
+            "questions_one": "{{count}} question",
+            "questions_other": "{{count}} questions",
+            "other": "Other",
+            "typed": "Type your answer…",
+            "yes": "Yes",
+            "no": "No",
+            "submit": "Submit answers",
+            "cancelHint": "Esc to cancel",
+            "held": "Waiting for permission…",
+            "noPreview": "No preview for this option",
+            "preview": "Preview: {{caption}}",
+            "collapse": "Collapse",
+            "expand": "Expand",
+            "close": "Close"
         }
     }
 }

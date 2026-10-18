@@ -173,6 +173,42 @@ SocketEvents.on_edit(on_edit)
 
 
 @di_inject
+async def show_question(
+    session: ChainlitSession,
+    index: Annotated[ThreadAgentsIndex, Depends(thread_agents_index)],
+) -> None:
+    """Вкладка подключилась к треду с идущим ходом: висящий вопрос агента
+    этого треда и этого пользователя на инстансе показывается в ней — после
+    обрыва сокета и после перезагрузки страницы; вопрос, открытый в другой
+    живой вкладке, там и остаётся."""
+    thread_id = session.thread_id
+    if thread_id is None:
+        return
+
+    user_id = session.user_id
+    if user_id is None:
+        return
+
+    socket = session.websocket
+    if socket is None:
+        return
+
+    live: set[str] = set()
+    for tab in ThreadRoom.sessions(thread_id):
+        live.add(tab.id)
+
+    for agent in index.of_thread(thread_id):
+        if agent.user_id != UUID(user_id):
+            continue
+
+        if await agent.question_shown(socket, live):
+            return
+
+
+SocketEvents.on_ready(show_question)
+
+
+@di_inject
 async def _run_turn(  # noqa: PLR0913, C901 — зависимости и ветки обработчика
     identity: ThreadIdentity,
     question: Question,

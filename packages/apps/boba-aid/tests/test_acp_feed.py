@@ -627,6 +627,231 @@ class TestToolApps:
         assert step.get(StepField.OUTPUT) == "drawn"
 
 
+class TestQuestionRecords:
+    """Вопрос агента пользователю в ленте: вызов AskUserQuestion — своё
+    сообщение основной ленты (не шаг контейнера хода) с элементом Question:
+    пока ждёт — висящий вопрос по вводу, после итога — запись ответа тем же
+    элементом; вопросы сервера MCP в вызове — такими же сообщениями по
+    раундам из `_meta` результата. Живой ход и воспроизведение рисуют их
+    одним кодом (UpdateView)."""
+
+    ASKED: ClassVar[dict[str, Any]] = {
+        "questions": [
+            {
+                "question": "Which checks should run?",
+                "header": "Checks",
+                "multiSelect": True,
+                "options": [
+                    {"label": "Unit tests", "description": "Fast."},
+                    {"label": "UI tests", "description": "Slow."},
+                ],
+            }
+        ]
+    }
+    ITEM: ClassVar[dict[str, Any]] = {
+        "key": "Which checks should run?",
+        "header": "Checks",
+        "text": "Which checks should run?",
+        "kind": "multi",
+        "options": [
+            {
+                "value": "Unit tests",
+                "label": "Unit tests",
+                "description": "Fast.",
+                "preview": "",
+            },
+            {
+                "value": "UI tests",
+                "label": "UI tests",
+                "description": "Slow.",
+                "preview": "",
+            },
+        ],
+        "other": "",
+        "required": True,
+        "minimum": None,
+        "maximum": None,
+    }
+
+    def _updates(
+        self, storage: LocalStorageClient, media: ToolMedia | None = None
+    ) -> UpdateView:
+        if media is None:
+            media = ToolMedia()
+
+        view = ChatView(THREAD, LiveSink(), "u-1", storage, TEXTS, user_name="a")
+        updates = UpdateView(view, THREAD, RemoteJournals(), media)
+        updates.begin_turn(QUESTION)
+
+        return updates
+
+    def _questions(self, recorded: FakeEmitter) -> list[dict[str, Any]]:
+        return [e for e in recorded.elements if e.get("name") == "Question"]
+
+    @pytest.mark.anyio
+    async def test_answered_question_is_a_feed_message_with_its_record(
+        self,
+        runtime_stand: StandRefs,
+        storage: LocalStorageClient,
+        recorded: FakeEmitter,
+    ) -> None:
+        updates = self._updates(storage)
+        output = {
+            "questions": self.ASKED["questions"],
+            "answers": {"Which checks should run?": "UI tests, smoke"},
+            "picks": {
+                "Which checks should run?": {"labels": ["UI tests"], "other": "smoke"}
+            },
+            "outcome": "accept",
+        }
+
+        await updates.apply(_call(CALL, "AskUserQuestion", self.ASKED))
+        pending = recorded.last()[_id(CALL, StepRole.QUESTION)]
+        await updates.apply(_done(CALL, "answered", output))
+        message = recorded.last()[_id(CALL, StepRole.QUESTION)]
+
+        assert _id(CALL, StepRole.TOOL) not in recorded.last()
+        for step in (pending, message):
+            assert step.get(StepField.TYPE) == "assistant_message"
+            assert step.get(StepField.PARENT_ID) is None
+            assert step.get(StepField.OUTPUT) == ""
+            assert step.get(StepField.IS_ERROR) is False
+
+        asking, record = self._questions(recorded)
+        assert asking["id"] == _id(CALL, StepRole.QUESTION_CARD)
+        assert asking["forId"] == _id(CALL, StepRole.QUESTION)
+        assert asking["display"] == "inline"
+        assert asking["props"] == {
+            "state": "pending",
+            "items": [self.ITEM],
+            "source": None,
+            "answers": {},
+            "failed": False,
+        }
+        assert record["id"] == asking["id"]
+        assert record["props"] == {
+            "state": "accept",
+            "items": [self.ITEM],
+            "source": None,
+            "answers": {
+                "Which checks should run?": {"picked": ["UI tests"], "typed": "smoke"}
+            },
+            "failed": False,
+        }
+
+    @pytest.mark.anyio
+    async def test_declined_and_interrupted_questions(
+        self,
+        runtime_stand: StandRefs,
+        storage: LocalStorageClient,
+        recorded: FakeEmitter,
+    ) -> None:
+        """Отказ — запись decline без ответов, вызов неудачен; вызов,
+        оборванный концом хода, — запись без ответа, тоже неудачен."""
+        updates = self._updates(storage)
+        declined = {"questions": self.ASKED["questions"], "outcome": "decline"}
+        failed = schema.SessionToolCallUpdate(
+            tool_call_id=CALL,
+            status="failed",
+            content=[
+                schema.ContentToolCallContent(
+                    content=schema.TextContentBlock(text="rejected")
+                )
+            ],
+            raw_output=declined,
+        )
+        await updates.apply(_call(CALL, "AskUserQuestion", self.ASKED))
+        await updates.apply(failed)
+        await updates.apply(_call(SECOND_CALL, "AskUserQuestion", self.ASKED))
+        await updates.finish_turn()
+
+        assert _id(CALL, StepRole.QUESTION) in recorded.last()
+        assert _id(SECOND_CALL, StepRole.QUESTION) in recorded.last()
+        outcomes: list[tuple[str, bool]] = []
+        for element in self._questions(recorded):
+            props = element["props"]
+            outcomes.append((props["state"], props["failed"]))
+            assert props["answers"] == {}
+
+        assert outcomes == [
+            ("pending", False),
+            ("decline", True),
+            ("pending", False),
+            ("cancel", True),
+        ]
+
+    @pytest.mark.anyio
+    async def test_server_questions_are_feed_messages_after_the_call(
+        self,
+        runtime_stand: StandRefs,
+        storage: LocalStorageClient,
+        recorded: FakeEmitter,
+    ) -> None:
+        """Раунд вопроса сервера MCP в `_meta` результата — сообщение ленты
+        с записью после итога вызова, источник — сервер и его сообщение."""
+        updates = self._updates(storage)
+        requested = {
+            "type": "object",
+            "properties": {
+                "table": {
+                    "type": "string",
+                    "title": "Target",
+                    "description": "Which table should receive the rows?",
+                    "oneOf": [
+                        {"const": "sales.orders", "title": "Orders"},
+                        {"const": "sales.stage", "title": "Stage"},
+                    ],
+                },
+                "rows": {"type": "integer", "title": "Rows", "minimum": 1},
+            },
+            "required": ["table"],
+        }
+        reply = {
+            "content": [{"type": "text", "text": "copied"}],
+            "isError": False,
+            "_meta": {
+                "boba/elicitations": [
+                    {
+                        "server": "boba",
+                        "tool": "pg_copy_in",
+                        "message": "pg_copy_in needs the target table",
+                        "requested": requested,
+                        "action": "accept",
+                        "content": {"table": "sales.stage", "rows": 10},
+                    }
+                ]
+            },
+        }
+
+        await updates.apply(_call(CALL, "mcp__boba__pg_copy_in", {"sql": "x"}))
+        await updates.apply(_done(CALL, "copied", reply))
+
+        step = recorded.last()[_id(CALL, StepRole.TOOL)]
+        assert step.get(StepField.OUTPUT) == "copied"
+        message = recorded.last()[_id(f"{CALL}#0", StepRole.QUESTION)]
+        assert message.get(StepField.PARENT_ID) is None
+        (element,) = self._questions(recorded)
+        assert element["id"] == _id(f"{CALL}#0", StepRole.QUESTION_CARD)
+        assert element["forId"] == _id(f"{CALL}#0", StepRole.QUESTION)
+        props = element["props"]
+        assert props["state"] == "accept"
+        assert props["failed"] is False
+        assert props["source"] == {
+            "server": "boba",
+            "message": "pg_copy_in needs the target table",
+        }
+        kinds: list[tuple[str, str, bool]] = []
+        for item in props["items"]:
+            kinds.append((item["key"], item["kind"], item["required"]))
+
+        assert kinds == [("table", "choice", True), ("rows", "integer", False)]
+        assert props["items"][0]["options"][1]["label"] == "Stage"
+        assert props["answers"] == {
+            "table": {"picked": ["sales.stage"], "typed": None},
+            "rows": {"picked": [], "typed": "10"},
+        }
+
+
 class TestNestedCallSteps:
     """Вызов инструмента, который сервер объявил несущим вложенные вызовы,
     рисуется подшагами узлов: имя — инструмент и подпись узла, ход — по

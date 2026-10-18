@@ -208,10 +208,12 @@ class LimitsJson(SettingsModel):
 
 class McpClientJson(SettingsModel):
     """Ключ `mcp`: сроки ожидания серверов MCP-over-ACP — одной страницы
-    `tools/list` и одного вызова `tools/call`."""
+    `tools/list` и одного вызова `tools/call`, — и сколько раз сервер может
+    попросить ввод пользователя (input_required) в одном вызове."""
 
     list_timeout_sec: float = Field(default=30.0, gt=0)
     call_timeout_sec: float = Field(default=600.0, gt=0)
+    input_rounds: int = Field(default=3, gt=0)
 
 
 class SettingsLayer(SettingsModel):
