@@ -647,14 +647,6 @@ function Diagram({ content, signal, preview }) {
     });
   };
 
-  // смена файла в открытой панели: компонент не размонтируется — состояние
-  // прошлой спеки сбрасывается явно
-  useEffect(() => {
-    setSpec(content.text || "");
-    setError(null);
-    setSvg("");
-  }, [content.path, content.nonce]);
-
   // сигнал слежения: файл переписан — забираем свежую спеку и рисуем на месте;
   // refresh не перерегистрирует слежение — оно остаётся за этим показом
   useEffect(() => {
@@ -1475,10 +1467,15 @@ export default function CanvasView() {
   let stretch;
   if (full) stretch = { position: "fixed", inset: 0, zIndex: 50 };
 
+  // вид и метка показа на узле панели называют, какой показ она рисует;
+  // вьювер у каждого показа свой (key), и состояние прошлого файла в новый
+  // показ не переходит
   return (
     <div
       ref={panelRef}
       data-canvas-panel=""
+      data-canvas-kind={content.kind}
+      data-canvas-nonce={content.nonce || ""}
       data-full={full ? "true" : "false"}
       className={shell}
       style={stretch}
@@ -1495,6 +1492,7 @@ export default function CanvasView() {
         }
       `}</style>
       <Body
+        key={content.nonce}
         content={content}
         signal={signal}
         preview={false}

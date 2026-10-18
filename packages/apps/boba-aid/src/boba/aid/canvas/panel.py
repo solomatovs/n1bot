@@ -23,6 +23,7 @@ import hashlib
 import logging
 import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, ClassVar
 
@@ -69,6 +70,7 @@ __all__ = [
     "AudioViewer",
     "CanvasPanel",
     "FileViewer",
+    "FileWatch",
     "ImageViewer",
     "LogViewer",
     "MarkdownViewer",
@@ -149,6 +151,31 @@ class StorageHashSource(WatchSource):
 
     def detach_waker(self, event: asyncio.Event) -> None:
         return None
+
+
+@dataclass(frozen=True, slots=True)
+class FileWatch:
+    """Слежение за файлом панели, заведённое до показа файла.
+
+    Версия файла снята раньше, чем вьювер прочтёт его для фронта, поэтому
+    правка, попавшая между чтением и первым опросом сторожа, доходит до
+    панели сигналом, а не становится исходной версией сторожа. Создаёт
+    CanvasPanel.watch_file; start ставит сторожа CanvasWatch под метку
+    показа. Без источника — слежение выключено, вьювер файл не отслеживает
+    или файла нет — start ничего не делает.
+    """
+
+    key: ObjectKey
+    source: WatchSource | None
+    seen: str
+
+    def start(self, nonce: str) -> None:
+        if self.source is None:
+            return
+
+        CanvasWatch.show(
+            self.key.thread_id, self.key.in_workspace(), nonce, self.source, self.seen
+        )
 
 
 class CanvasNote(StrEnum):
@@ -413,22 +440,28 @@ class CanvasPanel:
             )
             raise CanvasError(CanvasErrorKind.NO_VIEWER, msg)
 
+        watch = await cls.watch_file(key, viewer)
         opened = await viewer.open(key, mime, cls._push)
-        cls.watch_file(key, viewer, opened.nonce)
+        watch.start(opened.nonce)
 
         return opened
 
     @classmethod
-    def watch_file(cls, key: ObjectKey, viewer: CanvasViewer, nonce: str) -> None:
-        """Слежение за файлом панели; вьювер без источника не отслеживается."""
+    async def watch_file(cls, key: ObjectKey, viewer: CanvasViewer) -> FileWatch:
+        """Слежение за файлом key, заведённое до его показа: версия файла
+        снимается сейчас; вьювер без источника не отслеживается."""
         if not CanvasWatch.enabled():
-            return
+            return FileWatch(key=key, source=None, seen="")
 
         source = viewer.watch_source(key)
         if source is None:
-            return
+            return FileWatch(key=key, source=None, seen="")
 
-        CanvasWatch.show(key.thread_id, key.in_workspace(), nonce, source)
+        probe = await source.probe()
+        if probe is None:
+            return FileWatch(key=key, source=None, seen="")
+
+        return FileWatch(key=key, source=source, seen=probe.revision)
 
     @classmethod
     async def show(cls, content: CanvasContent) -> None:
@@ -449,6 +482,7 @@ class CanvasPanel:
             url=CanvasFileUrl.path(key, mime),
             mime=mime,
             note=CanvasNote.UNSUPPORTED.value,
+            nonce=str(uuid.uuid4()),
         )
 
     @classmethod
@@ -686,4 +720,5 @@ class StreamActions:
             path=path,
             label="tool stream",
             note=CanvasNote.GONE.value,
+            nonce=str(uuid.uuid4()),
         )

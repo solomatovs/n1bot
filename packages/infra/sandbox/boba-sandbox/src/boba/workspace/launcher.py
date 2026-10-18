@@ -425,6 +425,9 @@ class FileOperations:
 
         try:
             with os.fdopen(fd, "wb") as f:
+                # fuse2fs не исполняет O_TRUNC открытия: без явного усечения
+                # короткая запись поверх длинного файла оставила бы его хвост
+                f.truncate()
                 shutil.copyfileobj(src, f)
                 f.flush()
                 os.fsync(f.fileno())

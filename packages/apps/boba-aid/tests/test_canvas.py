@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
 from pathlib import Path
 from typing import Any, ClassVar
 from urllib.parse import quote, urlsplit
@@ -9,7 +11,7 @@ from uuid import UUID
 
 import chainlit as cl
 import pytest
-from aid_stand import ChatSessionStand, RemoteStand, put_bytes
+from aid_stand import ChatSessionStand, FakeTransport, RemoteStand, put_bytes
 
 from boba.aid.canvas import panel as rendering_canvas
 from boba.aid.canvas.diagram import MermaidViewer
@@ -37,6 +39,7 @@ from boba.canvas.canvas import (
     CanvasRegistry,
     CanvasScope,
     CanvasViewer,
+    CanvasWatch,
     OpenedCanvas,
 )
 from boba.canvas.keys import ObjectKey
@@ -99,6 +102,24 @@ class FakeViewer(CanvasViewer):
 
 class OtherViewer(FakeViewer):
     """Второй тип вьювера: реестр различает вьюверы по классу."""
+
+
+class RewrittenAfterShow(ImageViewer):
+    """Картинка, которую инструмент переписывает сразу после того, как её
+    показ ушёл во фронт, — раньше первого опроса сторожа слежения."""
+
+    def __init__(
+        self, storage: LocalStorageClient, object_key: str, revised: bytes
+    ) -> None:
+        self._storage = storage
+        self._object_key = object_key
+        self._revised = revised
+
+    async def open(self, key: ObjectKey, mime: str, push: CanvasPush) -> OpenedCanvas:
+        opened = await super().open(key, mime, push)
+        await put_bytes(self._storage, self._object_key, self._revised)
+
+        return opened
 
 
 @pytest.fixture(autouse=True)
@@ -323,6 +344,47 @@ class TestShow:
             raise AssertionError("shown[1].id == CanvasPanel.CONTENT_ID")
         if titles != [CanvasPanel.TITLE, CanvasPanel.TITLE]:
             raise AssertionError("titles == [CanvasPanel.TITLE, CanvasPanel.TITLE]")
+
+    @pytest.mark.anyio
+    async def test_a_write_right_after_the_show_is_signaled(
+        self,
+        storage: LocalStorageClient,
+        http_context: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Версия файла снимается до показа: правка, успевшая между показом и
+        первым опросом сторожа, доходит до панели сигналом, а не становится
+        исходной версией сторожа."""
+        object_key = f"{USER}/{THREAD}/upload/a.png"
+        png = b"\x89PNG\r\n\x1a\n" + bytes(8)
+        revised = png + bytes(8)
+        await put_bytes(storage, object_key, png)
+        CanvasRegistry.register(RewrittenAfterShow(storage, object_key, revised))
+
+        transport = FakeTransport()
+        monkeypatch.setattr(
+            rendering_canvas.PanelStorage, "client", staticmethod(lambda: storage)
+        )
+        monkeypatch.setattr(CanvasWatch, "POLL_SEC", 0.05)
+        CanvasWatch.configure(transport)
+        deadline = time.monotonic() + 5.0
+        try:
+            await CanvasOpener(ThreadSurfaces()).show(
+                f"/workspace/{THREAD}/upload/a.png",
+                "image/png",
+                CanvasScope(user_id=USER, thread_id=THREAD),
+            )
+            while not transport.sent:
+                if time.monotonic() > deadline:
+                    raise AssertionError(
+                        "no canvas signal within 5s for a write right after the show"
+                    )
+                await asyncio.sleep(0.01)
+        finally:
+            CanvasWatch.reset()
+
+        if transport.sent[0]["size"] != len(revised):
+            raise AssertionError(f"the signal names another version: {transport.sent}")
 
 
 class ElementSink:
