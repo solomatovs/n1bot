@@ -49,6 +49,7 @@ from boba.mcp_client.client import (
     McpServerConfig,
     McpServers,
     McpServersConfig,
+    StdioCommand,
 )
 from boba.messaging import Envelope, JournalOpened
 from boba.stand.apps_slot import AppServer, AppsSlot
@@ -424,8 +425,10 @@ class TestMcpRelay:
         call_stand: CallStand,
     ) -> None:
         """Панель живой вкладки не показала файл (вьювера для MIME нет):
-        агент получает isError с причиной в том же вызове."""
-        servers = McpServers(McpServersConfig(servers={"standard": standard}))
+        агент получает isError с причиной в том же вызове. Путь файла
+        разбирается по каталогу workspace, который объявил сервер."""
+        shows = self._flagged(standard, "--workspace", "/workspace")
+        servers = McpServers(McpServersConfig(servers={"standard": shows}))
         canvas = CanvasOpener(HolderSurface(context_var.get()))
         relay = relay_stand.relay_with(servers, relay_stand.chat, canvas)
         registration = tab.registration(uuid4(), SignInStand.PROFILE)
@@ -480,6 +483,106 @@ class TestMcpRelay:
 
         assert refused.value.code == AcpErrorCode.BACKEND_FAILED
         assert "'die'" in str(refused.value)
+
+    async def test_relay_gives_the_time_left_and_the_scope_of_the_server(
+        self, relay_stand: RelayStand, standard: McpServerConfig, tab: TabSession
+    ) -> None:
+        """Подсказки кэша сервера доходят до агента: описание и список — с
+        оставшимся сроком свежести и областью кэша сервера, а не с нулём."""
+        cached = self._cached(standard, 60_000)
+        servers = McpServers(McpServersConfig(servers={"standard": cached}))
+        try:
+            relay = relay_stand.relay(servers)
+            server_id = self._server_id(relay_stand, tab, "standard")
+            discovered, _ = await self._answer(
+                relay, self._message(server_id, "server/discover", {})
+            )
+            listed, _ = await self._answer(
+                relay, self._message(server_id, "tools/list", {})
+            )
+        finally:
+            await servers.stop()
+
+        assert isinstance(discovered, McpResultOutcome), discovered
+        assert isinstance(listed, McpResultOutcome), listed
+        described = mt.DiscoverResult.model_validate(discovered.result)
+        tools = mt.ListToolsResult.model_validate(listed.result)
+        assert 0 < described.ttl_ms <= 60_000, described.ttl_ms
+        assert described.cache_scope == "public"
+        assert 0 < tools.ttl_ms <= 60_000, tools.ttl_ms
+        assert tools.cache_scope == "private"
+
+    async def test_relay_reads_the_expired_description_again(
+        self, relay_stand: RelayStand, standard: McpServerConfig, tab: TabSession
+    ) -> None:
+        """Сервер сменил инструкции: после срока свежести ретранслятор
+        перечитывает server/discover и отдаёт агенту новые."""
+        cached = self._cached(standard, 1000)
+        servers = McpServers(McpServersConfig(servers={"standard": cached}))
+        try:
+            relay = relay_stand.relay(servers)
+            server_id = self._server_id(relay_stand, tab, "standard")
+            first, _ = await self._answer(
+                relay, self._message(server_id, "server/discover", {})
+            )
+            retitle = {"name": "retitle", "arguments": {"text": "renamed"}}
+            await self._answer(relay, self._message(server_id, "tools/call", retitle))
+            await asyncio.sleep(1.5)
+            again, _ = await self._answer(
+                relay, self._message(server_id, "server/discover", {})
+            )
+        finally:
+            await servers.stop()
+
+        assert isinstance(first, McpResultOutcome), first
+        assert isinstance(again, McpResultOutcome), again
+        before = mt.DiscoverResult.model_validate(first.result)
+        after = mt.DiscoverResult.model_validate(again.result)
+        assert before.instructions != "renamed"
+        assert after.instructions == "renamed"
+
+    @pytest.mark.parametrize("method", ["server/discover", "tools/list"])
+    async def test_unreachable_server_is_an_external_error(
+        self, relay_stand: RelayStand, tab: TabSession, method: str
+    ) -> None:
+        """Сервер профиля не поднимается: агент получает ошибку ACP
+        BACKEND_FAILED, а не ответ MCP, и не считает сервер живым."""
+        endpoint = StdioCommand(command="/nonexistent/mcp-server")
+        ghost = McpServerConfig(
+            endpoint=endpoint, connect_timeout_sec=5.0, call_timeout_sec=5.0
+        )
+        servers = McpServers(McpServersConfig(servers={"ghost": ghost}))
+        try:
+            relay = relay_stand.relay(servers)
+            server_id = self._server_id(relay_stand, tab, "ghost")
+            with pytest.raises(RequestError) as refused:
+                await relay.answer(
+                    self._message(server_id, method, {}),
+                    asyncio.Queue[McpMessage]().put,
+                )
+        finally:
+            await servers.stop()
+
+        assert refused.value.code == AcpErrorCode.BACKEND_FAILED
+        assert "'ghost'" in str(refused.value)
+
+    @staticmethod
+    def _cached(standard: McpServerConfig, ttl_ms: int) -> McpServerConfig:
+        """Обычный сервер стенда с подсказками кэша описания и списка."""
+        return TestMcpRelay._flagged(standard, "--ttl-ms", str(ttl_ms))
+
+    @staticmethod
+    def _flagged(standard: McpServerConfig, *flags: str) -> McpServerConfig:
+        """Обычный сервер стенда с флагами запуска flags."""
+        endpoint = standard.endpoint
+        if not isinstance(endpoint, StdioCommand):
+            raise AssertionError(f"the standard server runs over stdio: {endpoint}")
+
+        args = (*endpoint.args, *flags)
+
+        return standard.model_copy(
+            update={"endpoint": endpoint.model_copy(update={"args": args})}
+        )
 
     async def test_sealing_is_refused_to_a_server_without_the_seal_feature(
         self, relay_stand: RelayStand

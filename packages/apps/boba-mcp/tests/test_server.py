@@ -2047,13 +2047,17 @@ class TestConnectionOffers:
         self, stand: ServiceStand, offers: str
     ) -> None:
         """Клиент без расширений видит enum имён сервера и параметр thread_id,
-        а список инструментов помечен личным."""
+        а список инструментов помечен личным со сроком свежести: он зависит
+        от ролей токена и возможностей запроса, а реестр собран на старте."""
         token = await self._token(stand, True)
         async with self._client(offers, token, False) as client:
             listed = await client.list_tools_mcp()
 
-        if listed.cache_scope != "private" or listed.ttl_ms != 0:
-            raise AssertionError(f"the list is private and not cached: {listed}")
+        if listed.cache_scope != "private":
+            raise AssertionError(f"the list is private: {listed}")
+
+        if listed.ttl_ms <= 0:
+            raise AssertionError(f"the list is fresh for a while: {listed}")
 
         tool = next(tool for tool in listed.tools if tool.name == self.TOOL)
         properties = tool.input_schema["properties"]

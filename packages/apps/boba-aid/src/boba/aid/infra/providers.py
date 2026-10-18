@@ -42,7 +42,6 @@ from boba.aid.infra.session import (
     current_session,
     session_source_ref,
 )
-from boba.aid.rendering.acp_view import ToolMedia
 from boba.aid.rendering.renderer import TabSurfaces
 from boba.auth import JwtTokens
 from boba.chat.profiles import ChatProfiles, SelectedProfile
@@ -161,12 +160,6 @@ def remote_journals() -> RemoteJournals:
     """Адреса журналов вызовов, исполненных MCP-серверами, на процесс:
     лента кладёт их по итогам вызовов агента."""
     return RemoteJournals()
-
-
-def tool_media() -> ToolMedia:
-    """Типы содержимого аргументов инструментов серверов MCP: по ним лента
-    рисует вход шага вызова; наполняется приёмниками потока по профилю."""
-    return ToolMedia()
 
 
 class HarnessSchema(StrEnum):
@@ -348,7 +341,6 @@ def agent_feeds(  # noqa: PLR0913 — фабрика собирается все
     payloads: Annotated[PayloadStore, Depends(runtime.payload_store)],
     locks: Annotated[LiveLocks, Depends(runtime.live_locks)],
     journals: Annotated[RemoteJournals, Depends(remote_journals)],
-    media: Annotated[ToolMedia, Depends(tool_media)],
     servers: Annotated[McpServers, Depends(mcp_servers)],
     data_layer: Annotated[PostgresDataLayer, Depends(chainlit_data_layer)],
     surfaces: Annotated[TabSurfaces, Depends(thread_surfaces)],
@@ -369,7 +361,6 @@ def agent_feeds(  # noqa: PLR0913 — фабрика собирается все
     return AgentFeeds(
         parts,
         journals,
-        media,
         servers,
         data_layer,
         surfaces,

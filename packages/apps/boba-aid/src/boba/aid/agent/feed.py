@@ -66,7 +66,12 @@ from boba.aid.chat.feed import TurnFeed
 from boba.aid.chat.ui_text import UiText
 from boba.aid.data.data_layer import FeedRows
 from boba.aid.domain.fields import StepField
-from boba.aid.rendering.acp_view import SessionUpdate, ToolMedia, UpdateView
+from boba.aid.rendering.acp_view import (
+    ServerCards,
+    SessionUpdate,
+    ToolMedia,
+    UpdateView,
+)
 from boba.aid.rendering.chat_view import (
     ChatView,
     LiveSink,
@@ -80,7 +85,7 @@ from boba.cancellation import RunCancellation
 from boba.identity.context import Scope
 from boba.identity.errors import InternalServiceError
 from boba.identity.locks import LiveLocks, LockKeeper, LockMode, LockPurpose
-from boba.mcp_client.client import McpCaller, McpClientError, McpServers
+from boba.mcp_client.client import McpCaller, McpServers
 from boba.messaging import MessageBus, NoticeLevel, PayloadStore, TurnOutcome
 from boba.runtime.storage import StorageClient
 from boba.transport.acp.protocol import ErrorDataKey, IdleErrorUpdate, StopReason
@@ -731,17 +736,17 @@ class AgentFeed(TurnRenderer):
 class AgentFeeds(TurnRenderers):
     """Фабрика приёмников потока: на агента треда — переводчик воспроизведения
     во вкладке, поверхность рассылки треда и шина инстанса. Карточки
-    инструментов серверов профиля (вид аргументов, журнал) узнаются здесь же
-    у клиента MCP чата; сервер, который не открылся, тред ведётся без него —
-    о нём пользователю сообщает агент. Срок ответа на вопрос агента — из
-    [agent]. Создаётся провайдером процесса.
+    инструментов серверов профиля (вид аргументов, журнал) переводчик берёт
+    у портов клиента MCP чата от имени владельца треда (ServerCards); сервер,
+    который не ответил, — его вызовы рисуются без карточек, о самом сервере
+    пользователю сообщает агент. Срок ответа на вопрос агента — из [agent].
+    Создаётся провайдером процесса.
     """
 
     def __init__(  # noqa: PLR0913 — фабрика собирается всеми входами процесса
         self,
         parts: BusParts,
         journals: RemoteJournals,
-        media: ToolMedia,
         servers: McpServers,
         rows: FeedRows,
         surfaces: TabSurfaces,
@@ -752,7 +757,6 @@ class AgentFeeds(TurnRenderers):
         self._parts = parts
         self._texts = texts
         self._journals = journals
-        self._media = media
         self._servers = servers
         self._rows = rows
         self._surfaces = surfaces
@@ -766,27 +770,7 @@ class AgentFeeds(TurnRenderers):
         InternalServiceError — у текущей сессии chainlit нет сокета.
         """
         caller = McpCaller(login=identity.login, roles=identity.roles)
-        for name in identity.profile.config.mcp:
-            try:
-                port = await self._servers.port(name, caller)
-            except McpClientError as exc:
-                logger.warning(
-                    "thread %s: mcp server %s did not open, the thread goes on "
-                    "without it: %s",
-                    identity.thread_id,
-                    name,
-                    exc,
-                )
-                continue
-
-            self._media.shown(
-                name,
-                port.tools(),
-                port.nested_calls(),
-                port.journal_links(),
-                port.apps(),
-            )
-
+        media = ToolMedia(ServerCards(self._servers, caller))
         anchor = self._surfaces.anchor()
         view = ChatView(
             identity.thread_id,
@@ -796,7 +780,7 @@ class AgentFeeds(TurnRenderers):
             self._texts,
             user_name=identity.login,
         )
-        replay = UpdateView(view, identity.thread_id, self._journals, self._media)
+        replay = UpdateView(view, identity.thread_id, self._journals, media)
 
         return AgentFeed(
             identity,

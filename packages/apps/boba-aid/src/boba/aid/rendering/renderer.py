@@ -14,6 +14,7 @@ TurnFinished держателя, сами шаги — по уведомлени
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from abc import abstractmethod
 from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -174,7 +175,10 @@ class CatchUp(BaseModel):
 class ChatRenderer:
     """Получает сообщения одного треда из шины и превращает их в шаги ленты
     chainlit; уведомления агента переводит в шаги UpdateView — тот же
-    переводчик, что рисует историю при `session/resume`.
+    переводчик, что рисует историю при `session/resume`. Сообщения рисуются
+    по одному в порядке прихода, хотя публикуют их разные задачи (агент,
+    ретранслятор): шаг вызова, который ждёт карточку инструмента у сервера,
+    достраивается раньше, чем до него дойдёт журнал этого вызова.
     """
 
     def __init__(
@@ -195,6 +199,7 @@ class ChatRenderer:
         self._codec = SessionUpdateCodec()
         self._turn_key: str | None = None
         self._handlers = self._handler_table()
+        self._order = asyncio.Lock()
 
     @property
     def view(self) -> ChatView:
@@ -242,7 +247,8 @@ class ChatRenderer:
         if handler is None:
             return
 
-        await handler(envelope.message)
+        async with self._order:
+            await handler(envelope.message)
 
     def _handler_table(self) -> Mapping[MessageKind, Handler]:
         return {

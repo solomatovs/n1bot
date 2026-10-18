@@ -167,6 +167,33 @@ class RemoteStorageClient(StorageClient):
         self._owners = owners
         self._servers = servers
 
+    async def workspace(self, user_id: str, thread_id: str) -> str:
+        """Каталог workspace, который объявил сервер файлов треда.
+
+        Ошибки:
+        StorageError — сервер файлов недоступен, хранилища файлов у
+            пользователя нет либо сервер его не объявил.
+        """
+        target = await self._owners.of_thread(user_id, thread_id)
+        try:
+            workspace = await self._servers().workspace(target.server, target.caller)
+        except McpClientError as exc:
+            msg = (
+                f"workspace of thread {thread_id} of user {user_id}: mcp server "
+                f"{target.server!r} is unavailable for {target.caller.login!r}: "
+                f"{exc}"
+            )
+            raise StorageError(msg) from exc
+
+        if workspace is None:
+            msg = (
+                f"workspace of thread {thread_id} of user {user_id}: mcp server "
+                f"{target.server!r} declares no file storage"
+            )
+            raise StorageAbsentError(msg)
+
+        return workspace
+
     async def _upload_stream(
         self,
         object_key: str,
