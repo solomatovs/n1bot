@@ -585,20 +585,6 @@ class AgentProcesses:
 
         return found
 
-    async def await_new(self, before: set[int], timeout_sec: float = 60.0) -> int:
-        """Pid агента, появившегося после отметки: on_chat_start идёт задачей
-        после task_end, процесс поднимается не мгновенно."""
-        deadline = time.monotonic() + timeout_sec
-        while time.monotonic() < deadline:
-            started = set(self.pids()) - before
-            if len(started) == 1:
-                return next(iter(started))
-
-            await asyncio.sleep(0.3)
-
-        msg = f"no agent process appeared in {timeout_sec}s, known pids {before}"
-        raise AssertionError(msg)
-
     def settings_dirs(self) -> list[Path]:
         if not self._agents_dir.is_dir():
             return []
@@ -748,7 +734,9 @@ class TestConversation:
         self, app: StandProcess, tab: ChatSocket, rows: ChatRows, stand: Stand
     ) -> None:
         agents = AgentProcesses(app)
-        pid = await agents.await_new(set())
+        # агенты вкладок прошлых тестов стенда ещё живы: агент этой вкладки
+        # узнаётся по треду в его argv
+        pid = await agents.await_thread(tab.thread_id)
 
         files = ProcFiles(pid)
         joined = " ".join(files.cmdline())
@@ -825,10 +813,9 @@ class TestConversation:
         self, app: StandProcess, cookie: str
     ) -> None:
         agents = AgentProcesses(app)
-        before = set(agents.pids())
         tab = ChatSocket(app, cookie, str(uuid4()))
         await tab.open()
-        pid = await agents.await_new(before)
+        pid = await agents.await_thread(tab.thread_id)
         settings_dirs = [
             path
             for path in agents.settings_dirs()
