@@ -21,6 +21,7 @@ from boba.runtime.journal import DirVault, StreamJournal, StreamRecorder
 from boba.toolkit.channels import ToolChannel
 
 KEY = StreamKey(user_id="7", thread_id="t-1", call_id="call-1")
+SCOPE = "thread-1"
 
 STDOUT = ToolChannel.STDOUT
 STDERR = ToolChannel.STDERR
@@ -37,7 +38,7 @@ def _journal(tmp_path: Path) -> StreamJournal:
 def _recorder(
     journal: StreamJournal, on_data: Callable[[], None] = _wake
 ) -> StreamRecorder:
-    return journal.recorder(KEY, "bash", STDOUT, on_data, frozenset())
+    return journal.recorder(KEY, SCOPE, "bash", STDOUT, on_data, frozenset())
 
 
 class TestKey:
@@ -47,9 +48,10 @@ class TestKey:
         with pytest.raises(ValidationError):
             StreamKey(user_id="7", thread_id="t", call_id="../../etc/passwd")
 
-    def test_dot_prefix_is_refused(self) -> None:
-        with pytest.raises(ValidationError):
-            StreamKey(user_id="7", thread_id=".hidden", call_id="c")
+    def test_dot_names_are_refused(self) -> None:
+        for name in (".", ".."):
+            with pytest.raises(ValidationError):
+                StreamKey(user_id="7", thread_id=name, call_id="c")
 
     def test_dot_inside_call_id_is_refused(self) -> None:
         """Точка внутри call_id сделала бы имя файла неразложимым."""
@@ -74,16 +76,18 @@ class TestVaultSegments:
         if (tmp_path / "etc").exists():
             raise AssertionError('not (tmp_path / "etc").exists()')
 
-    def test_purge_refuses_traversal(self, tmp_path: Path) -> None:
+    def test_purge_of_a_path_like_scope_touches_nothing(self, tmp_path: Path) -> None:
+        """Область ищется по сайдкарам, а не путём: чужой каталог цел."""
         journal = _journal(tmp_path)
         outside = tmp_path / "outside"
         outside.mkdir()
 
-        with pytest.raises(StreamJournalError):
-            journal.purge_thread(KEY.user_id, "../../outside")
+        freed = journal.purge_scope(KEY.user_id, "../../outside")
 
-        if not (outside.is_dir()):
-            raise AssertionError("outside.is_dir()")
+        if freed != 0:
+            raise AssertionError(f"nothing of the scope is in the vault, freed {freed}")
+        if not outside.is_dir():
+            raise AssertionError(f"the directory {outside} outside the vault is kept")
 
 
 class TestLogName:
@@ -148,8 +152,8 @@ class TestRecorder:
 
     def test_channels_are_separate_files(self, tmp_path: Path) -> None:
         journal = _journal(tmp_path)
-        out = journal.recorder(KEY, "bash", STDOUT, _wake, frozenset())
-        err = journal.recorder(KEY, "bash", STDERR, _wake, frozenset())
+        out = journal.recorder(KEY, SCOPE, "bash", STDOUT, _wake, frozenset())
+        err = journal.recorder(KEY, SCOPE, "bash", STDERR, _wake, frozenset())
 
         out.feed(b"body")
         err.feed(b"trace")
@@ -342,9 +346,11 @@ class TestUsageAndPurge:
     """Занятость тома по тредам и адресная уборка."""
 
     @staticmethod
-    def _fill(journal: StreamJournal, thread_id: str, body: bytes) -> None:
+    def _fill(
+        journal: StreamJournal, thread_id: str, body: bytes, scope: str = SCOPE
+    ) -> None:
         key = StreamKey(user_id="7", thread_id=thread_id, call_id="c-1")
-        recorder = journal.recorder(key, "bash", STDOUT, _wake, frozenset())
+        recorder = journal.recorder(key, scope, "bash", STDOUT, _wake, frozenset())
         recorder.feed(body)
         recorder.close("rc=0")
 
@@ -372,7 +378,7 @@ class TestUsageAndPurge:
         """Три файла каналов одного вызова — один вызов в учёте треда."""
         journal = _journal(tmp_path)
         for channel in (STDOUT, STDERR, ToolChannel.RESULT):
-            recorder = journal.recorder(KEY, "bash", channel, _wake, frozenset())
+            recorder = journal.recorder(KEY, SCOPE, "bash", channel, _wake, frozenset())
             recorder.feed(b"x")
             recorder.close("rc=0")
 
@@ -382,18 +388,25 @@ class TestUsageAndPurge:
         if by_name["t-1"].calls != 1:
             raise AssertionError('by_name["t-1"].calls == 1')
 
-    def test_purge_removes_the_thread(self, tmp_path: Path) -> None:
+    def test_purge_removes_the_runs_of_the_scope(self, tmp_path: Path) -> None:
+        """Удаление области сносит журналы всех её запусков, чужие целы."""
         journal = _journal(tmp_path)
         self._fill(journal, "t-1", b"z" * 3000)
+        self._fill(journal, "t-2", b"z" * 10)
+        self._fill(journal, "t-other", b"o" * 10, "thread-other")
+        other = StreamKey(user_id="7", thread_id="t-other", call_id="c-1")
 
-        freed = journal.purge_thread("7", "t-1")
+        freed = journal.purge_scope("7", SCOPE)
 
-        if freed <= 3000:
-            raise AssertionError("freed > 3000")
-        if journal.slice_at(KEY, 0, STDOUT) is not None:
-            raise AssertionError("journal.slice_at(KEY, 0, STDOUT) is None")
-        if journal.purge_thread("7", "t-1") != 0:
-            raise AssertionError('journal.purge_thread("7", "t-1") == 0')
+        if freed <= 3010:
+            raise AssertionError(f"both runs of the scope are freed, got {freed}")
+        for run in ("t-1", "t-2"):
+            if (tmp_path / "vault" / "7" / run).exists():
+                raise AssertionError(f"run {run} of the scope is removed")
+        if journal.slice_at(other, 0, STDOUT) is None:
+            raise AssertionError("the run of another scope is kept")
+        if journal.purge_scope("7", SCOPE) != 0:
+            raise AssertionError("a purged scope has nothing left to free")
 
     def test_rotation_evicts_oldest_unprotected(self, tmp_path: Path) -> None:
         """Резерв больше свободного места: старые логи вытесняются.
@@ -407,7 +420,9 @@ class TestUsageAndPurge:
         self._fill(journal, "t-protected", b"b" * 100)
 
         key = StreamKey(user_id="7", thread_id="t-cur", call_id="c-2")
-        journal.recorder(key, "bash", STDOUT, _wake, frozenset({"t-protected/c-1."}))
+        journal.recorder(
+            key, SCOPE, "bash", STDOUT, _wake, frozenset({"t-protected/c-1."})
+        )
 
         root = tmp_path / "vault" / "7"
         if (root / "t-old").exists():
@@ -422,13 +437,15 @@ class TestUsageAndPurge:
         journal = _journal(tmp_path)
         old_key = StreamKey(user_id="7", thread_id="t-1", call_id="c-old")
         for channel in (STDOUT, STDERR):
-            recorder = journal.recorder(old_key, "bash", channel, _wake, frozenset())
+            recorder = journal.recorder(
+                old_key, SCOPE, "bash", channel, _wake, frozenset()
+            )
             recorder.feed(b"a" * 100)
             recorder.close("rc=0")
 
         rotating = StreamJournal(DirVault(str(tmp_path / "vault")), reserve_bytes=2**60)
         fresh_key = StreamKey(user_id="7", thread_id="t-1", call_id="c-new")
-        rotating.recorder(fresh_key, "bash", STDOUT, _wake, frozenset())
+        rotating.recorder(fresh_key, SCOPE, "bash", STDOUT, _wake, frozenset())
 
         root = tmp_path / "vault" / "7" / "t-1"
         if (root / "c-old.bash.tool_stdout.log").exists():
@@ -444,12 +461,12 @@ class TestUsageAndPurge:
         """Защищён живой вызов, не тред: старый закрытый лог треда уходит."""
         journal = StreamJournal(DirVault(str(tmp_path / "vault")), reserve_bytes=2**60)
         old_key = StreamKey(user_id="7", thread_id="t-1", call_id="c-old")
-        recorder = journal.recorder(old_key, "bash", STDOUT, _wake, frozenset())
+        recorder = journal.recorder(old_key, SCOPE, "bash", STDOUT, _wake, frozenset())
         recorder.feed(b"a" * 100)
         recorder.close("rc=0")
 
         fresh_key = StreamKey(user_id="7", thread_id="t-1", call_id="c-new")
-        journal.recorder(fresh_key, "bash", STDOUT, _wake, frozenset())
+        journal.recorder(fresh_key, SCOPE, "bash", STDOUT, _wake, frozenset())
 
         root = tmp_path / "vault" / "7"
         if (root / "t-1" / "c-old.bash.tool_stdout.log").exists():
@@ -469,7 +486,7 @@ class TestWriteFailure:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         journal = _journal(tmp_path)
-        recorder = journal.recorder(KEY, "bash", STDOUT, _wake, frozenset())
+        recorder = journal.recorder(KEY, SCOPE, "bash", STDOUT, _wake, frozenset())
         recorder.feed(b"head")
 
         def no_space(data: bytes) -> int:

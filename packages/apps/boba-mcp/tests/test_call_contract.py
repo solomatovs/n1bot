@@ -65,8 +65,8 @@ class TestToolSchema:
     INTENT: ClassVar[dict[str, Any]] = {
         "default": "",
         "description": (
-            "Short line shown to the user as the step title: what this call does "
-            "and why, in the language of the conversation. Keep it under ten words."
+            "Подпись шага, которую видит пользователь: что делает этот вызов и "
+            "зачем, на языке беседы, короче десяти слов."
         ),
         "title": "Intent",
         "type": "string",

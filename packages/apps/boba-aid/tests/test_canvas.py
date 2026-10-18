@@ -31,6 +31,7 @@ from boba.canvas.canvas import (
     CanvasElement,
     CanvasError,
     CanvasErrorKind,
+    CanvasFileRequest,
     CanvasKind,
     CanvasPush,
     CanvasRegistry,
@@ -202,7 +203,9 @@ class TestRefusal:
         scope = CanvasScope(user_id=USER, thread_id=THREAD)
 
         with pytest.raises(CanvasError) as failure:
-            await CanvasOpener(ThreadSurfaces()).show("/etc/passwd", "", scope)
+            await CanvasOpener(ThreadSurfaces()).show(
+                "/etc/passwd", ContentMime.PLAIN.value, scope
+            )
 
         if failure.value.kind != CanvasErrorKind.BAD_PATH:
             raise AssertionError(failure.value.kind)
@@ -255,7 +258,7 @@ class TestShow:
 
         opened = await CanvasOpener(ThreadSurfaces()).show(
             f"/workspace/{THREAD}/mermaid/a.mmd",
-            "",
+            ContentMime.MERMAID.value,
             CanvasScope(user_id=USER, thread_id=THREAD),
         )
 
@@ -297,12 +300,12 @@ class TestShow:
 
         await CanvasOpener(ThreadSurfaces()).show(
             f"/workspace/{THREAD}/upload/a.png",
-            "",
+            "image/png",
             CanvasScope(user_id=USER, thread_id=THREAD),
         )
         await CanvasOpener(ThreadSurfaces()).show(
             f"/workspace/{THREAD}/upload/b.png",
-            "",
+            "image/png",
             CanvasScope(user_id=USER, thread_id=THREAD),
         )
 
@@ -405,7 +408,7 @@ class TestFileViewers:
 
         opened = await CanvasOpener(ThreadSurfaces()).show(
             f"/workspace/{THREAD}/upload/график.png",
-            "",
+            "image/png",
             CanvasScope(user_id=USER, thread_id=THREAD),
         )
 
@@ -624,12 +627,17 @@ class TestActionsWithoutCallContext:
         call_stand.clear()
         action = cl.Action(
             name=CanvasAction.CONTENT.value,
-            payload={CanvasAction.PATH.value: f"/workspace/{THREAD}/upload/a.log"},
+            payload=CanvasFileRequest(
+                path=f"/workspace/{THREAD}/upload/a.log", mime=ContentMime.PLAIN.value
+            ).model_dump(),
         )
 
-        path = str(action.payload[CanvasAction.PATH.value])
+        request = CanvasFileRequest.model_validate(action.payload)
         content = await CanvasOpener(ThreadSurfaces()).content(
-            path, "", watch=True, scope=CanvasScope(user_id=USER, thread_id=THREAD)
+            request.path,
+            request.mime,
+            watch=True,
+            scope=CanvasScope(user_id=USER, thread_id=THREAD),
         )
         described = content.props()
 

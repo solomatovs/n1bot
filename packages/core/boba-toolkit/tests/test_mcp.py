@@ -105,18 +105,6 @@ class TestMcpToolNames:
         if names.tool_of("Skill") != "Skill":
             raise AssertionError("собственное имя остаётся как есть")
 
-    def test_node_tool_is_named_fully_from_either_form(self) -> None:
-        names = McpToolNames()
-
-        if names.in_server("boba", "pg_query") != "mcp__boba__pg_query":
-            raise AssertionError("имя на сервере получает сервер")
-
-        if names.in_server("boba", "mcp__boba__pg_query") != "mcp__boba__pg_query":
-            raise AssertionError("полное имя своего сервера остаётся собой")
-
-        if names.in_server("boba", "mcp__other__x") != "mcp__boba__mcp__other__x":
-            raise AssertionError("имя чужого сервера — имя инструмента на своём")
-
 
 @pytest.mark.parametrize(
     "hints",

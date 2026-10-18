@@ -26,7 +26,7 @@ from typing import Annotated, Any, ClassVar, Literal
 
 from chainlit.auth import get_current_user
 from chainlit.user import PersistedUser, User
-from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.datastructures import UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import ValidationError
@@ -35,7 +35,6 @@ from starlette.datastructures import Headers
 
 from boba.aid.canvas.remote import RemoteJournals
 from boba.aid.domain.fields import FileField
-from boba.aid.domain.keys import AppPrefix
 from boba.aid.infra.session import ChainlitSession, session_source_ref
 from boba.canvas.canvas import CanvasRegistry
 from boba.canvas.keys import ObjectKey, ThreadDir
@@ -57,6 +56,7 @@ from boba.runtime.storage import StorageClient
 from boba.toolkit.channels import JournalChannels, ToolChannel
 from boba.toolkit.failure import ValidationText
 from boba.toolkit.result import ContentMime
+from boba.toolkit.wire import JournalRead
 
 __all__ = [
     "CanvasServing",
@@ -80,7 +80,6 @@ class MultipartFile:
 
     DISPOSITION: ClassVar[bytes] = b"content-disposition"
     CONTENT_TYPE: ClassVar[bytes] = b"content-type"
-    DEFAULT_MIME: ClassVar[str] = "application/octet-stream"
     NAME_FORM: ClassVar[Literal["NFC"]] = "NFC"
 
     def __init__(self, request: Request) -> None:
@@ -205,8 +204,10 @@ class MultipartFile:
         # составными буквами: путь к файлу обязан совпасть побайтно
         raw = filename.decode("utf-8", errors="replace")
         self.filename = unicodedata.normalize(self.NAME_FORM, raw)
-        mime = self._headers.get(self.CONTENT_TYPE, b"").decode()
-        self.content_type = mime or self.DEFAULT_MIME
+        self.content_type = ContentMime.OCTET.value
+        if mime := self._headers.get(self.CONTENT_TYPE, b"").decode():
+            self.content_type = mime
+
         self._found = True
 
     def _on_part_data(self, data: bytes, start: int, end: int) -> None:
@@ -229,9 +230,6 @@ class SessionFiles:
     OBJECT_KEY: ClassVar[str] = "object_key"
     """Поле записи: тело файла лежит в storage по этому ключу."""
 
-    LINK: ClassVar[str] = "/project/file/{file_id}?session_id={session_id}"
-    """Шаблон ссылки chainlit на файл сессии."""
-
     @classmethod
     def register(
         cls, session: ChainlitSession, key: ObjectKey, *, mime: str, size: int
@@ -249,13 +247,6 @@ class SessionFiles:
             cls.OBJECT_KEY: key.render(),
         }
         return file_id
-
-    @classmethod
-    def url_for(cls, session: ChainlitSession, file_id: str) -> str:
-        """Ссылка на файл сессии — тот же вид, что строит фронт по chainlit_key."""
-        link = cls.LINK.format(file_id=file_id, session_id=session.id)
-
-        return AppPrefix.render() + link
 
 
 class UploadRoute:
@@ -503,6 +494,22 @@ class UploadRoute:
         return str(user_id)
 
 
+class PersistedSignIn:
+    """Зависимость FastAPI маршрутов файлов панели и журналов: вошедший по
+    токену chainlit пользователь со строкой users; без неё — 401."""
+
+    async def __call__(
+        self,
+        current_user: Annotated[User | PersistedUser | None, Depends(get_current_user)],
+    ) -> PersistedUser:
+        if not isinstance(current_user, PersistedUser):
+            got = type(current_user).__name__
+            msg = f"sign-in required: expected a persisted user, got {got}"
+            raise HTTPException(status_code=401, detail=msg)
+
+        return current_user
+
+
 class CanvasServing:
     """Отдаёт файл панели по треду, каталогу и имени; сессия здесь ни при чём.
 
@@ -520,16 +527,10 @@ class CanvasServing:
         thread_id: str,
         dir: ThreadDir,  # noqa: A002
         name: str,
-        current_user: Annotated[User | PersistedUser | None, Depends(get_current_user)],
-        mime: str = "",
+        current_user: Annotated[PersistedUser, Depends(PersistedSignIn())],
+        mime: Annotated[str, Query(min_length=1)],
     ) -> Response:
-        """Файл панели вида mime — каким его назвала ссылка; без него
-        (ссылки старой истории) — вид по имени файла."""
-        if not isinstance(current_user, PersistedUser):
-            got = type(current_user).__name__
-            msg = f"sign-in required: expected a persisted user, got {got}"
-            raise HTTPException(status_code=401, detail=msg)
-
+        """Файл панели вида mime — каким его назвала ссылка."""
         try:
             key = ObjectKey(
                 user_id=str(current_user.id),
@@ -543,9 +544,6 @@ class CanvasServing:
                 f"name {name!r}: {ValidationText.of(e)}"
             )
             raise HTTPException(status_code=404, detail=msg) from e
-
-        if not mime:
-            mime = ContentMime.of_name(key.name)
 
         disposition = CanvasRegistry.disposition(mime)
 
@@ -584,14 +582,9 @@ class StreamServing:
         request: Request,
         thread_id: str,
         call_id: str,
-        current_user: Annotated[User | PersistedUser | None, Depends(get_current_user)],
+        current_user: Annotated[PersistedUser, Depends(PersistedSignIn())],
         channel: str = ToolChannel.STDOUT.value,
     ) -> Response:
-        if not isinstance(current_user, PersistedUser):
-            got = type(current_user).__name__
-            msg = f"sign-in required: expected a persisted user, got {got}"
-            raise HTTPException(status_code=401, detail=msg)
-
         # служебные каналы вызова наружу не отдаются: скачать можно то же,
         # что показывает панель
         log_channel = JournalChannels.parse_visible(channel)
@@ -603,12 +596,10 @@ class StreamServing:
             )
             raise HTTPException(status_code=404, detail=msg)
 
+        stream = f"stream {call_id}/{log_channel} of thread {thread_id}"
         address = await self._journals_ref().address(thread_id, call_id)
         if address is None:
-            msg = (
-                f"stream {call_id}/{log_channel} of thread {thread_id} is not "
-                "found: no server keeps a journal of this call"
-            )
+            msg = f"{stream} is not found: no server keeps a journal of this call"
             raise HTTPException(status_code=404, detail=msg)
 
         caller = McpCaller(
@@ -618,24 +609,23 @@ class StreamServing:
         try:
             files = await self._servers_ref().journal_files(address.server, caller)
         except McpClientError as e:
-            msg = f"stream {call_id}/{log_channel} of thread {thread_id}: {e}"
+            msg = f"{stream}: {e}"
             raise HTTPException(status_code=self.BAD_GATEWAY, detail=msg) from e
 
         if files is None:
-            msg = (
-                f"stream {call_id}/{log_channel} of thread {thread_id}: mcp "
-                f"server {address.server!r} serves no journals"
-            )
+            msg = f"{stream}: mcp server {address.server!r} serves no journals"
             raise HTTPException(status_code=404, detail=msg)
 
-        rel = "/".join((address.run, address.call, log_channel.value))
+        read = JournalRead(run=address.run, node=address.call, channel=log_channel)
         try:
-            relayed = await files.relay(rel, request.headers.get(FileHeader.RANGE, ""))
+            relayed = await files.relay(
+                read.route(), request.headers.get(FileHeader.RANGE, "")
+            )
         except StorageNotFoundError as e:
-            msg = f"stream {call_id}/{log_channel} of thread {thread_id}: {e}"
+            msg = f"{stream}: {e}"
             raise HTTPException(status_code=404, detail=msg) from e
         except StorageError as e:
-            msg = f"stream {call_id}/{log_channel} of thread {thread_id}: {e}"
+            msg = f"{stream}: {e}"
             raise HTTPException(status_code=self.BAD_GATEWAY, detail=msg) from e
 
         return StreamingResponse(

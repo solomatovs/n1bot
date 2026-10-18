@@ -71,7 +71,7 @@ dev = [
 ]
 
 [project.scripts]
-boba-aid = "boba.aid.infra.entry:AppEntry.run"
+boba-aid = "boba.aid.infra.entry:cli"
 
 [tool.boba.unimported]
 boba-db-clickhouse = "entry points boba.addresses: адреса clickhouse в соединениях пользователей"

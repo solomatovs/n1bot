@@ -49,9 +49,10 @@ CONFIG = """
     session_max_sec = 86400
 
 [aid]
-    root        = "<root>"
-    files_dir   = "<files_dir>"
-    url_prefix  = "/boba"
+    root                 = "<root>"
+    files_dir            = "<files_dir>"
+    url_prefix           = "/boba"
+    shutdown_timeout_sec = 10
 """
 
 ASSETS = Path(__file__).resolve().parents[1] / "assets"
@@ -66,8 +67,8 @@ from boba.aid.infra.entry import AppEntry
 from boba.runtime.config import ConfigFiles
 
 files = ConfigFiles(config=Path(sys.argv[1]), site=Path(sys.argv[2]))
-AppEntry.export_env(files)
-AppEntry.attachments(files).install()
+AppEntry().export_env(files)
+AppEntry().attachments(files).install()
 
 import chainlit.config
 import chainlit.server
@@ -102,7 +103,7 @@ class TestExportEnv:
         monkeypatch.delenv(ChainlitEnv.AUTH_SECRET, raising=False)
 
         root = tmp_path / "data"
-        AppEntry.export_env(self._config(tmp_path, str(root)))
+        AppEntry().export_env(self._config(tmp_path, str(root)))
 
         if os.environ[ChainlitEnv.APP_ROOT] != str(root):
             raise AssertionError("os.environ[ChainlitEnv.APP_ROOT] == str(root)")
@@ -119,14 +120,14 @@ class TestExportEnv:
     ) -> None:
         monkeypatch.chdir(tmp_path)
 
-        AppEntry.export_env(self._config(tmp_path, "./data"))
+        AppEntry().export_env(self._config(tmp_path, "./data"))
 
         if not (Path(os.environ[ChainlitEnv.APP_ROOT]).is_absolute()):
             raise AssertionError("Path(os.environ[ChainlitEnv.APP_ROOT]).is_absolute…")
 
     def test_empty_root_rejected(self, tmp_path: Path) -> None:
         with pytest.raises(ValueError, match="root"):
-            AppEntry.export_env(self._config(tmp_path, ""))
+            AppEntry().export_env(self._config(tmp_path, ""))
 
 
 class TestEntryPointsFreeOfChainlit:
@@ -227,4 +228,4 @@ class TestChainlitFilesOutsideAppRoot:
         monkeypatch.setenv(ChainlitEnv.APP_ROOT, str(tmp_path))
 
         with pytest.raises(ValueError, match="files_dir"):
-            AppEntry.attachments(self._config(tmp_path, tmp_path, ""))
+            AppEntry().attachments(self._config(tmp_path, tmp_path, ""))

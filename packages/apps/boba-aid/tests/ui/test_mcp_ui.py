@@ -26,7 +26,7 @@ import time
 from collections.abc import Iterator
 from pathlib import Path, PurePosixPath
 from typing import Any
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urlencode, urlsplit, urlunsplit
 
 import pytest
 from chat_ui import BOOT_TIMEOUT_SEC, OpenChat
@@ -304,7 +304,8 @@ class TestMcpToolInTheFeed:
 
         name = PurePosixPath(str(cards[0].get("path"))).name
         thread_id = str(step.get(StepField.THREAD_ID.value))
-        url = f"{chat.base_url}/canvas/{thread_id}/upload/{name}"
+        query = urlencode({"mime": str(cards[0].get("mime"))})
+        url = f"{chat.base_url}/canvas/{thread_id}/upload/{name}?{query}"
         reply = chat.page.request.get(url, headers={"Range": "bytes=0-7"})
         if reply.status != 206:
             raise AssertionError(

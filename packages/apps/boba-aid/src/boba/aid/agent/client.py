@@ -614,14 +614,19 @@ class AgentProcess:
 
     def _require_process(self) -> Process:
         if self._process is None:
-            msg = "agent process has not been started"
-            raise AgentProcessError(msg)
+            raise AgentProcessError(self._unstarted("its pid and exit"))
 
         return self._process
 
     def _require_connection(self) -> ClientConnection:
         if self._connection is None:
-            msg = "agent process has not been started"
-            raise AgentProcessError(msg)
+            raise AgentProcessError(self._unstarted("an ACP request"))
 
         return self._connection
+
+    def _unstarted(self, wanted: str) -> str:
+        """Текст отказа процессу, к которому обратились до запуска."""
+        return (
+            f"agent process {self._command.executable!r} in {self._workdir.path}: "
+            f"{wanted} needs a started process, got none: start() was not called"
+        )

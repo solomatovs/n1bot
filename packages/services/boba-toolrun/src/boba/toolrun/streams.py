@@ -78,11 +78,13 @@ class ToolStream(ChannelSinks, CallStream):
     def __init__(
         self,
         key: StreamKey,
+        scope: str,
         tool_name: str,
         journal: StreamStorePort,
         protected_prefixes: Callable[[], frozenset[str]],
     ) -> None:
         self._key = key
+        self._scope = scope
         self._tool_name = tool_name
         self._journal = journal
         self._protected = protected_prefixes
@@ -170,7 +172,12 @@ class ToolStream(ChannelSinks, CallStream):
 
             protected = self._protected() | {self._key.call_prefix()}
             recorder = self._journal.recorder(
-                self._key, self._tool_name, channel, self._wake, protected
+                self._key,
+                self._scope,
+                self._tool_name,
+                channel,
+                self._wake,
+                protected,
             )
             self._recorders[channel] = recorder
             return recorder
@@ -442,7 +449,8 @@ class CallJournals:
 
         try:
             key = StreamKey(user_id=user_id, thread_id=run_id, call_id=call_id)
-            stream = ToolStream(key, tool_name, store, self.live_prefixes)
+            scope = run.context.scope.id
+            stream = ToolStream(key, scope, tool_name, store, self.live_prefixes)
         except (StreamJournalError, ValidationError) as exc:
             logger.warning(
                 "stream journal refused call %s of %s in run %s of user %s: %s",

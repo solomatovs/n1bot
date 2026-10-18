@@ -40,7 +40,6 @@ from boba.toolkit.result import (
     FieldLines,
     JsonBlock,
     MarkdownResult,
-    ToolArtifact,
     ToolResultBase,
 )
 
@@ -68,8 +67,8 @@ class ToolIntent:
     NAME: ClassVar[str] = "intent"
 
     DESCRIPTION: ClassVar[str] = (
-        "Short line shown to the user as the step title: what this call does "
-        "and why, in the language of the conversation. Keep it under ten words."
+        "Подпись шага, которую видит пользователь: что делает этот вызов и "
+        "зачем, на языке беседы, короче десяти слов."
     )
 
     MAX_CHARS: ClassVar[int] = 160
@@ -121,7 +120,6 @@ class CallIdPrefix(StrEnum):
     """Префикс id вызова по источнику: отличим от id, которые выдаёт модель."""
 
     API = "api-"
-    PREFETCH = "prefetch-"
 
     def new_id(self) -> str:
         return f"{self.value}{uuid4().hex}"
@@ -359,14 +357,14 @@ class ToolCallModels:
 class FieldView(BaseModel):
     """Вид одного аргумента вызова в ленте: где он показывается и чем.
 
-    display — объявленный показ значения: дамп результата (с kind), которым
-    значение рисуется; None — обычная строка «имя: значение».
+    display — объявленный показ значения: результат, которым значение
+    рисуется; None — обычная строка «имя: значение».
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     placement: FieldPlacement
-    display: Mapping[str, Any] | None
+    display: ToolResultBase | None
 
 
 class SchemaCall(ToolCallBase):
@@ -404,11 +402,7 @@ class SchemaCall(ToolCallBase):
             if view.placement is not FieldPlacement.BODY:
                 continue
 
-            if view.display is None:
-                yield from self._line(name, value)
-                continue
-
-            display = ToolArtifact.revive(view.display)
+            display = view.display
             if not isinstance(display, MarkdownResult):
                 yield from self._line(name, value)
                 continue
@@ -451,14 +445,10 @@ class CallViews:
         for name, field in model.model_fields.items():
             placement = model.placement_of(field, name)
             display = FieldMarks.display(field)
-            dumped: dict[str, Any] | None = None
-            if display is not None:
-                dumped = display.model_dump(mode="json")
-
-            if placement is FieldPlacement.BODY and dumped is None:
+            if placement is FieldPlacement.BODY and display is None:
                 continue
 
-            views[name] = FieldView(placement=placement, display=dumped)
+            views[name] = FieldView(placement=placement, display=display)
 
         return views
 
@@ -518,8 +508,7 @@ class CallViews:
 
             language = ContentMime(value).language
             display = MarkdownResult(text="", language=language)
-            dumped = display.model_dump(mode="json")
-            views[name] = FieldView(placement=FieldPlacement.BODY, display=dumped)
+            views[name] = FieldView(placement=FieldPlacement.BODY, display=display)
 
         return views
 
@@ -534,10 +523,7 @@ class CallViews:
 
     def _media_of(self, view: FieldView) -> str | None:
         """Тип содержимого аргумента; None — аргумент не код известного языка."""
-        if view.display is None:
-            return None
-
-        display = ToolArtifact.revive(view.display)
+        display = view.display
         if not isinstance(display, MarkdownResult):
             return None
 

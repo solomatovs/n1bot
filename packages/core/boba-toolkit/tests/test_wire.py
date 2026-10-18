@@ -1,19 +1,13 @@
-"""Итог вызова проходит формат MCP туда и обратно без потерь.
-
-Каждый вид результата проверяется на снимках истории: тех же, по которым
-проверяется оживление сохранённых сообщений.
-"""
+"""Итог вызова проходит формат MCP туда и обратно без потерь."""
 
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import ClassVar
 
 import mcp_types as mt
 import pytest
 
-from boba.stand_core.history import HistorySnapshots
 from boba.toolkit.chain import GroupFailureResult
 from boba.toolkit.dag import (
     DagNode,
@@ -29,19 +23,18 @@ from boba.toolkit.result import (
     ContentMime,
     ErrorResult,
     ExceptionResult,
+    FailureCause,
     FileResult,
     MarkdownResult,
     ShellResult,
+    SqlFailureResult,
     SqlResult,
     SqlStatement,
     TableResult,
-    ToolArtifact,
     ToolResultBase,
     VisualResult,
 )
 from boba.toolkit.wire import McpContent, ResultWire, WireResult
-
-SNAPSHOTS = HistorySnapshots(Path(__file__).parent / "history", "boba.toolkit")
 
 WIRE = ResultWire()
 
@@ -50,15 +43,6 @@ OUTCOMES = NodeOutcomes()
 CALL = DagNode(key="call_1", tool="probe")
 
 SERVER = "probe-server"
-
-
-def _snapshot(path: Path):
-    """Результат семейства из снимка истории."""
-    revived = ToolArtifact.revive(json.loads(path.read_text(encoding="utf-8")))
-    if revived is None:
-        raise AssertionError(f"снимок {path.name} оживает в результат семейства")
-
-    return revived
 
 
 def _for_model(wire: WireResult) -> str:
@@ -247,14 +231,53 @@ class TestContentBlocks:
     """content ответа по таблице 7.4: модель получает текст результата,
     человек — блоки по видам содержимого с audience user."""
 
-    @pytest.mark.parametrize("path", SNAPSHOTS.paths(), ids=lambda path: path.stem)
-    def test_model_reads_the_text_of_the_result(self, path: Path) -> None:
-        artifact = _snapshot(path)
+    CRASH: ClassVar[ExceptionResult] = ExceptionResult(
+        error_kind="ClickHouseQueryError",
+        message="clickhouse statement failed: Code: 36. (BAD_ARGUMENTS)",
+        causes=[FailureCause(error_type="DatabaseError", message="Code: 36.")],
+        raised_at="boba/tool/ch/tools.py:812 in ch_stream_in",
+        traceback="Traceback (most recent call last):\n  boom",
+    )
+    KINDS: ClassVar[tuple[ToolResultBase, ...]] = (
+        CanvasResult(path="/workspace/t/mermaid/a.mmd", label="a.mmd", note="n"),
+        ErrorResult(message="boom", error_kind="e"),
+        CRASH,
+        FileResult(
+            path="/workspace/t/upload/a.pdf", name="a.pdf", mime="application/pdf"
+        ),
+        MarkdownResult(text="x", language="sql", note="n"),
+        ShellResult(
+            exit_code=0,
+            stdout="hi",
+            stdout_bytes=2,
+            stdout_truncated=False,
+            stderr="",
+            stderr_bytes=0,
+            stderr_truncated=False,
+            duration_ms=1,
+            timed_out=False,
+        ),
+        SqlResult(
+            engine="postgres",
+            statements=[SqlStatement(rows=[{"a": 1}], status="SELECT 1")],
+        ),
+        SqlFailureResult(
+            error_kind="ClickHouseQueryError",
+            cause=CRASH,
+            columns=[{"column": "id", "type": "Nullable(Int32)"}],
+            statements=[SqlStatement(text="create table t (id Nullable(Int32))")],
+        ),
+        GroupFailureResult(error_kind="stream_group_failed", cause=CRASH),
+        TableResult(rows=[{"a": 1}], note="n"),
+        VisualResult(element="plotly", props={"spec": {"data": []}}, title="t"),
+    )
 
+    @pytest.mark.parametrize("artifact", KINDS, ids=lambda artifact: artifact.kind)
+    def test_model_reads_the_text_of_the_result(self, artifact: ToolResultBase) -> None:
         wire = WIRE.packed(OUTCOMES.of(CALL, artifact, False))
 
         if _for_model(wire) != artifact.disclosed().llm_view():
-            raise AssertionError(f"модель видит текст результата {path.stem}")
+            raise AssertionError(f"модель видит текст результата {artifact.kind}")
 
     def _user_blocks(self, artifact: ToolResultBase) -> list[mt.ContentBlock]:
         blocks: list[mt.ContentBlock] = []

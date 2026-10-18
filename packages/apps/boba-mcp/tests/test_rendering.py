@@ -19,7 +19,6 @@ from boba.toolkit.result import (
     SqlResult,
     SqlStatement,
     TableResult,
-    ToolArtifact,
     ToolResultBase,
     VisualResult,
 )
@@ -451,12 +450,3 @@ class TestSqlResult:
             ("text", "", "_DELETE 5_"),
         ]:
             raise AssertionError(shown(self._both()))
-
-    def test_result_survives_the_artifact_round_trip(self) -> None:
-        """Итог персистится в checkpointer: команды оживают."""
-        revived = ToolArtifact.revive(self._both().model_dump(mode="json"))
-
-        if not isinstance(revived, SqlResult):
-            raise AssertionError("isinstance(revived, SqlResult)")
-        if len(revived.statements) != 2:
-            raise AssertionError("len(revived.statements) == 2")

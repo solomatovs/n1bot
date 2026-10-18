@@ -26,6 +26,7 @@ import time
 from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any, ClassVar
+from urllib.parse import urlencode
 
 import httpx
 import pytest
@@ -38,6 +39,7 @@ from boba.runtime.config import ConfigFiles, ConfigLayoutError, EnvOverride
 from boba.stand.names import StandNames
 from boba.stand.ui.database import StandDatabase
 from boba.stand.ui.stand import StandApp, StandFiles, free_port
+from boba.toolkit.result import ContentMime
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -581,8 +583,10 @@ async def panel(app_server: None) -> AsyncIterator[Any]:
             return page.locator("#side-view-content")
 
         async def show(name: str) -> Any:
+            """Клик по ссылке на файл: ссылка называет и путь, и вид файла."""
             path = _tool_view(session["thread"], name)
-            return await act("canvas_open", {"path": path})
+            mime = ContentMime.of_name(name)
+            return await act("canvas_open", {"path": path, "mime": mime})
 
         yield show, probe, session["thread"], act
 
@@ -758,9 +762,9 @@ async def test_switching_file_does_not_reopen_the_panel(panel: Any) -> None:
     )
 
     await page.evaluate(
-        """path => window.dispatchEvent(
-            new CustomEvent('boba:canvas', {detail: {path}}))""",
-        other,
+        """([path, mime]) => window.dispatchEvent(
+            new CustomEvent('boba:canvas', {detail: {path, mime}}))""",
+        [other, ContentMime.of_name(other)],
     )
     await page.wait_for_timeout(2500)
 
@@ -936,9 +940,9 @@ async def test_panel_switches_after_a_render_error(panel: Any) -> None:
         raise AssertionError(f"the diagram failure is not shown: {shown!r}")
 
     await page.evaluate(
-        """path => window.dispatchEvent(
-            new CustomEvent('boba:canvas', {detail: {path}}))""",
-        _tool_view(thread, "flow.mmd"),
+        """([path, mime]) => window.dispatchEvent(
+            new CustomEvent('boba:canvas', {detail: {path, mime}}))""",
+        [_tool_view(thread, "flow.mmd"), ContentMime.MERMAID.value],
     )
     await page.wait_for_timeout(3000)
 
@@ -1650,7 +1654,8 @@ async def test_panel_reopens_after_closing(panel: Any) -> None:
 async def test_missing_file_is_explained(panel: Any) -> None:
     """Пропавший файл объясняется в панели, а не роняет её молча."""
     _show, _, thread, act = panel
-    side = await act("canvas_open", {"path": _tool_view(thread, "нет-такого.md")})
+    missing = {"path": _tool_view(thread, "нет-такого.md"), "mime": "text/markdown"}
+    side = await act("canvas_open", missing)
 
     text = await side.inner_text()
     if not text.strip():
@@ -1894,7 +1899,8 @@ async def test_canvas_route_downloads_what_the_browser_would_run(panel: Any) -> 
         "clip.wav": "inline",
     }
     for name, kind in expected.items():
-        url = f"{BASE}/canvas/{thread}/upload/{name}"
+        query = urlencode({"mime": ContentMime.of_name(name)})
+        url = f"{BASE}/canvas/{thread}/upload/{name}?{query}"
         response = await page.request.get(url, headers={"cookie": cookie})
         if response.status != 200:
             raise AssertionError(f"GET {url}: expected 200, got {response.status}")

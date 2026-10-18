@@ -53,6 +53,7 @@ from fastmcp.tools.base import ToolResult
 from mcp.server.apps import EXTENSION_ID as APPS_EXTENSION
 from mcp.server.context import ServerRequestContext
 from mcp.server.subscriptions import ResourceUpdated, SubscriptionBus
+from mcp.shared.jsonrpc_dispatcher import progress_token_from_params
 from mcp_types.version import MODERN_PROTOCOL_VERSIONS
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError
 from starlette.applications import Starlette
@@ -91,7 +92,6 @@ from boba.mcp_adapter import (
 from boba.mcp_server.auth import (
     CallScopeError,
     CallScopes,
-    SentMeta,
     ServiceAuth,
     TokenSubjects,
 )
@@ -516,7 +516,7 @@ class FileUploadRequest(BaseModel):
 
     name: str = Field(
         min_length=1,
-        description="File name as it should appear in the workspace upload dir.",
+        description="Имя файла, под которым он ляжет в каталог вложений workspace.",
     )
 
 
@@ -543,11 +543,11 @@ class FileUploadTool(Tool):
     NAME: ClassVar[str] = "file_upload"
 
     DESCRIPTION: ClassVar[str] = (
-        "Get the address to upload a file into the workspace:\n"
-        "   - name — file name in the upload dir of the workspace\n"
-        "The file body is sent by the client with HTTP PUT to the returned "
-        "path of this server using the same bearer token; tools then read the "
-        "file at the returned workspace path"
+        "Адрес для загрузки файла в workspace:\n"
+        "   - name — имя файла в каталоге вложений workspace\n"
+        "Тело файла клиент шлёт HTTP PUT на полученный путь этого сервера тем "
+        "же bearer-токеном; инструменты затем читают файл по полученному пути "
+        "в workspace.\n"
     )
 
     _request: type[BaseModel] = PrivateAttr()
@@ -619,6 +619,10 @@ class CallContextMiddleware(Middleware):
     (operations) проходят мимо: запуска у них нет.
     """
 
+    PARAMS_META: ClassVar[str] = "_meta"
+    """Ключ блока _meta в параметрах запроса: fastmcp отдаёт сам блок, а
+    разбор токена прогресса SDK ждёт параметры целиком."""
+
     def __init__(  # noqa: PLR0913 — middleware собирается всеми входами endpoint'а
         self,
         runs: Runs,
@@ -637,7 +641,6 @@ class CallContextMiddleware(Middleware):
         self._replies = McpReplies()
         self._uris = JournalUris(JournalRoutes.TEMPLATE)
         self._scopes = CallScopes()
-        self._meta = SentMeta()
 
     async def on_call_tool(
         self,
@@ -648,14 +651,6 @@ class CallContextMiddleware(Middleware):
             return await call_next(context)
 
         subject = self._subjects.current()
-        try:
-            fields = self._meta.sent()
-        except CallScopeError as exc:
-            failure = ErrorResult(
-                message=str(exc), error_kind=ServerRefusal.INVALID_REQUEST
-            )
-
-            return self._replies.refused(context.message.name, failure)
 
         arguments: Mapping[str, Any] = {}
         if sent := context.message.arguments:
@@ -696,7 +691,7 @@ class CallContextMiddleware(Middleware):
             self._uris,
             self._bus,
             self._listed,
-            fields.progress_token,
+            self._progress_token(),
         )
         progress.start()
         try:
@@ -730,6 +725,15 @@ class CallContextMiddleware(Middleware):
             links.link(uri, address.channel.value, ContentMime.PLAIN, False)
 
         return self._replies.journaled(result, links.blocks())
+
+    def _progress_token(self) -> mt.ProgressToken | None:
+        """Токен прогресса из _meta запроса разбором SDK; None — клиент о
+        ходе вызова не просил."""
+        request = get_context().request_context
+        if request is None:
+            return None
+
+        return progress_token_from_params({self.PARAMS_META: request.meta})
 
     def _recorded(
         self, progress: CallProgress, user: str, run_id: str
@@ -850,7 +854,7 @@ class McpServer:
         bus = CallerBus(self._subjects)
         listed = OpenJournals(bus)
         self._files = FileRoutes(
-            StorageFactory.create(storage), callers, path, published
+            StorageFactory.create(storage), journals, callers, path, published
         )
         self._journal_files = JournalRoutes(
             journals, callers, self._subjects, storage, path, published, bus

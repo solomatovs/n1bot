@@ -6,7 +6,6 @@
     schema          = "mcp"
     krb             = "${krb}"
     session         = "${session}"
-    stream_journal  = "${stream_journal}"
     mcp             = "${mcp}"
     storage         = "${storage}"
     connections     = "${connections}"
@@ -68,7 +67,7 @@
 [connections]
 
 [http]
-    dump                      = { enable = false, path = "" }
+    dump                      = { enable = false, path = "${env.data}/dump" }
     trust_env                 = true
     proxy                     = ""
     http2                     = false

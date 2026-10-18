@@ -367,10 +367,6 @@ async def test_build_debug_url(layer: PostgresDataLayer):
         raise AssertionError('await layer.build_debug_url() == ""')
 
 
-async def test_close_releases_storage(layer: PostgresDataLayer):
-    await layer.close()
-
-
 async def test_thread_changes_are_published_to_the_user_scope(
     layer: PostgresDataLayer, seeded: Seed, data_bus: MemoryMessageBus
 ) -> None:

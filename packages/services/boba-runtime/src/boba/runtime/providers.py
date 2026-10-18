@@ -49,6 +49,7 @@ from boba.runtime.config import (
     ProcessConfig,
     RawConfig,
     RuntimeConfig,
+    StreamJournalConfig,
 )
 from boba.runtime.di import Container, Depends
 from boba.runtime.http import ServerStartError
@@ -430,11 +431,13 @@ def runs(
 
 
 def call_journals(
-    config: Annotated[ProcessConfig, Depends(get_process_config)],
+    raw: Annotated[DictConfig, Depends(get_raw_config)],
     active: Annotated[Runs, Depends(runs)],
 ) -> CallJournals:
-    """Журналы живого вывода инструментов на процесс; без секции потоков нет."""
-    section = config.stream_journal
+    """Журналы живого вывода инструментов на процесс по секции [stream_journal];
+    выключенный журнал — потоков нет. Процесс без журналов (чат) кладёт свои
+    через provide."""
+    section = bind(raw, StreamJournalConfig.SECTION, StreamJournalConfig)
     if not section.enable:
         return CallJournals(None, active)
 

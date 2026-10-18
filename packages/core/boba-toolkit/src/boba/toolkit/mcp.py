@@ -143,23 +143,6 @@ class McpToolNames:
 
         return McpToolName(server=server, tool=tool)
 
-    def in_server(self, server: str, name: str) -> str:
-        """Полное имя инструмента сервера server по имени из узла вызова
-        workflow этого сервера: модель называет узлу инструмент либо полным
-        именем из своего списка, либо именем на сервере.
-
-        Ошибки:
-        McpToolNameError — имя сервера не годится либо имя инструмента пустое.
-        """
-        parsed = self.parse(name)
-        if parsed is None:
-            return self.full(server, name)
-
-        if parsed.server != server:
-            return self.full(server, name)
-
-        return name
-
     def tool_of(self, name: str) -> str:
         """Имя инструмента без сервера: у инструмента сервера MCP — его имя
         на сервере, у собственного инструмента агента — само имя."""

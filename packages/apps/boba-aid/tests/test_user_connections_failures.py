@@ -47,7 +47,6 @@ from boba.toolkit.facade import UserConnection
 from boba.toolkit.result import (
     FailureResult,
     MarkdownResult,
-    ToolArtifact,
     ToolResultBase,
 )
 from boba.toolrun.errors import ToolErrorGuard
@@ -319,8 +318,7 @@ class Guarded:
 
     @staticmethod
     async def failure(tool: HostedTool, **args: Any) -> FailureResult:
-        artifact = await Guarded.call(tool, **args)
-        result = ToolArtifact.revive(artifact)
+        result = await Guarded.call(tool, **args)
         if not isinstance(result, FailureResult):
             raise AssertionError(f"expected a FailureResult, got {result!r}")
         return result

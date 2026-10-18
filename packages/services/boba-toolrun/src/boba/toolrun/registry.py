@@ -201,7 +201,7 @@ class ToolRegistry:
     def for_session(self, user_roles: Iterable[str], profile: str) -> list[HostedTool]:
         """Инструменты хода чата: всё, что решение допускает в чате."""
         roles = frozenset(user_roles)
-        allowed = list(self._select(roles, profile, headless=False))
+        allowed = list(self._select(roles, profile))
 
         logger.info(
             "tools available: %d of %d (roles: %s, chat profile: %s)",
@@ -219,20 +219,12 @@ class ToolRegistry:
         roles = frozenset(user_roles)
 
         by_name: dict[str, HostedTool] = {}
-        for tool in self._select(roles, profile, headless=True):
+        for tool in self._select(roles, profile):
             by_name[tool.name] = tool
 
         return by_name
 
-    def _select(
-        self, roles: frozenset[str], profile: str, *, headless: bool
-    ) -> Iterator[HostedTool]:
+    def _select(self, roles: frozenset[str], profile: str) -> Iterator[HostedTool]:
         for tool in self.tools:
-            decision = self.access.decide(tool.name, roles, profile)
-            if headless:
-                admitted = decision.headless
-            else:
-                admitted = decision.in_chat
-
-            if admitted:
+            if self.access.decide(tool.name, roles, profile).allowed:
                 yield tool

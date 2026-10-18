@@ -342,7 +342,11 @@ class TestHistoryDsn:
     ) -> None:
         auth = test_postgres.auth
         if not isinstance(auth, KeytabAuth):
-            pytest.skip("the stand postgres is not entered with a keytab")
+            got = type(auth).__name__
+            pytest.fail(
+                f"the stand postgres must be entered with a keytab: expected "
+                f"KeytabAuth in [postgres].auth of the stand config, got {got}"
+            )
 
         history = PostgresAgentHistory.model_validate(
             {"kind": "postgres", "schema": "agent"}

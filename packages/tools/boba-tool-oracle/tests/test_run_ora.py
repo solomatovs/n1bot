@@ -12,7 +12,7 @@ import pytest
 from ora_tool_stand import IxStand
 
 from boba.db.oracle.connection import OracleConfig
-from boba.tool.ora.tools import ora_list_tables, ora_query
+from boba.tool.ora.tools import OraToolConfig, ora_list_tables, ora_query
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.ports import ToolProgress
 
@@ -40,6 +40,7 @@ async def test_run_ora_query(connection: OracleConfig) -> None:
         sql=RunArgs.SQL,
         offset=0,
         limit=50,
+        cfg=OraToolConfig.model_validate({"max_rows": 500, "max_bytes": 1_000_000}),
         progress=ToolProgress(-1),
     )
 

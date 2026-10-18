@@ -906,9 +906,14 @@ class ColumnDeclaration(BaseModel):
     family: TypeFamily | None = Field(
         default=None,
         description=(
-            "integer, float, decimal, boolean, string, binary, date, timestamp, "
-            "time, uuid, json, interval, network, bit, money, xml, geometry, "
-            "range, textsearch, array, system"
+            "Семейство типа колонки:\n"
+            "   - integer, float, decimal, money — числа\n"
+            "   - boolean, bit — логические значения и битовые строки\n"
+            "   - string, binary — текст и байты\n"
+            "   - date, timestamp, time, interval — дата и время\n"
+            "   - uuid, json, xml, network — значения своего формата\n"
+            "   - geometry, range, textsearch, array, system — типы движка, "
+            "сверяются только по имени типа\n"
         ),
     )
     bits: int | None = Field(
