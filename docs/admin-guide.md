@@ -754,11 +754,25 @@ No such file or directory; check [env].agent_command`.
 proxy клиентом `boba-chat`), сроки подключения и вызова. Профиль подключает
 сервер, называя его имя в `mcp`; имя, которого нет в `[mcp.servers]`, — отказ
 старта: `[profiles.<имя>].mcp names server '...' that is not declared in
-[mcp.servers], declared: [...]`. Сервер должен отвечать по текущей редакции
-протокола MCP. Сервер, который знает только прежнее рукопожатие
-`initialize`, чат отвергает: `the server negotiated protocol version ...
-through initialize, but the client expects server/discover with one of [...];
-update the server to a release of MCP that answers server/discover.`
+[mcp.servers], declared: [...]`. Версию протокола клиент чата согласует
+штатной политикой SDK: сначала `server/discover` редакции 2026-07-28, а если
+сервер ответил отказом прежней редакции — рукопожатие `initialize`, и дальше
+он говорит с сервером его редакцией (2025-11-25 и раньше). Так подключаются и
+серверы прежних редакций — официальные примеры MCP Apps, deepwiki и другие. У
+такого сервера нет вопросов пользователю (elicitation): чат их ему не
+объявляет, и сервер обходится без них; смену своих списков он агенту не
+сообщает — новый инструмент модель видит, когда агент перечитает список.
+Сервер, который забыл сессию (404 на запрос с `Mcp-Session-Id`, например
+после перезапуска), отвечает вызову ошибкой `the server forgot the session of
+the client`, следующий вызов открывает новую сессию. Сервер, не согласовавший
+ни одной версии, даёт `negotiating the protocol by server/discover and then
+initialize was refused with MCP error ...; the client speaks [...]`. Молчащий
+stdio-сервер прежней редакции SDK ждёт на пробе `server/discover` до 10 с,
+поэтому `connect_timeout_sec` у такого сервера — больше 10.
+
+boba-mcp принимает клиентов обеих редакций на одном адресе: клиенту
+`initialize` он объявляет инструменты и ресурсы журналов без подписки и смены
+списка, без расширений boba (провод прежней редакции их не несёт).
 
 ### Соединения сервера
 
