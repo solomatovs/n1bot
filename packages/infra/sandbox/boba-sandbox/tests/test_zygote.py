@@ -32,7 +32,7 @@ from boba.sandbox.zygote import (
     ZygoteSupervisor,
     ZygoteUnavailableError,
 )
-from boba.stand.zygote import ROOTFS_IMAGE, SandboxStand
+from boba.stand.zygote import ROOTFS_IMAGE, PrivateImageMount, SandboxStand
 from boba.toolkit.channels import ToolChannel
 from boba.toolkit.protocol import REPLY, ReplyOk
 from boba.toolkit.stream import Chunk
@@ -389,22 +389,10 @@ class TestIsolated:
     """E2e в настоящем bwrap: зигота с CAP_SYS_ADMIN, дети изолированы."""
 
     @pytest.fixture(scope="class")
-    def mounted_root(self, tmp_path_factory: pytest.TempPathFactory) -> Any:
-        """Образ shell-плагина, смонтированный fuse2fs: корень для ручного bwrap."""
-        point = tmp_path_factory.mktemp("rootfs")
-        subprocess.run(
-            [str(FUSE2FS), "-o", "ro", str(ROOTFS_IMAGE), str(point)],
-            check=True,
-            capture_output=True,
-        )
-        yield point
-
-        fusermount = shutil.which("fusermount3")
-        if fusermount is None:
-            msg = "fusermount3 недоступен: точка осталась смонтированной"
-            raise AssertionError(msg)
-
-        subprocess.run([fusermount, "-u", str(point)], check=True)
+    def mounted_root(self, tmp_path_factory: pytest.TempPathFactory) -> Path:
+        """Точка корня для ручного bwrap: образ shell-плагина монтирует в неё
+        сама команда зиготы (PrivateImageMount), в дереве хоста её нет."""
+        return tmp_path_factory.mktemp("rootfs")
 
     def _bwrap_spawner(self, fd: int, root: Path) -> subprocess.Popen[bytes]:
         python_path = SandboxStand.python_path(
@@ -415,14 +403,11 @@ class TestIsolated:
         if bwrap is None:
             raise AssertionError("bwrap исчез после проверки failif")
 
+        # userns и сеть даёт внешний слой с образом: зигота — в нём, как в
+        # боевой цепочке лаунчера
         argv = [
             bwrap,
             "--die-with-parent",
-            "--unshare-user",
-            "--uid",
-            "0",
-            "--gid",
-            "0",
             "--cap-add",
             "CAP_SYS_ADMIN",
             # исполнитель сбрасывает им bounding set тела, как в боевой цепочке
@@ -431,7 +416,6 @@ class TestIsolated:
             "--unshare-pid",
             "--unshare-ipc",
             "--unshare-uts",
-            "--unshare-net",
             "--hostname",
             "zygote",
             "--new-session",
@@ -472,7 +456,10 @@ class TestIsolated:
             ).render(),
         ]
 
-        return subprocess.Popen(argv, pass_fds=(fd,), stdin=subprocess.DEVNULL)
+        layer = PrivateImageMount(ROOTFS_IMAGE, root)
+        return subprocess.Popen(
+            layer.argv(argv), pass_fds=(fd,), stdin=subprocess.DEVNULL
+        )
 
     def test_isolated_call_works(self, supervisor: Any, mounted_root: Path) -> None:
         def spawner(fd: int) -> subprocess.Popen[bytes]:

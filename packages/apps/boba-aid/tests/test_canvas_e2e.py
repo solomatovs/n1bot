@@ -38,7 +38,7 @@ from boba.aid.canvas.panel import CanvasNote
 from boba.runtime.config import ConfigFiles, ConfigLayoutError, EnvOverride
 from boba.stand.names import StandNames
 from boba.stand.ui.database import StandDatabase
-from boba.stand.ui.stand import StandApp, StandFiles, free_port
+from boba.stand.ui.stand import StandApp, StandFiles, StandPorts
 from boba.toolkit.result import ContentMime
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
@@ -71,7 +71,7 @@ class E2eStand:
     ROOT: ClassVar[Path] = REPO / "debug" / "e2e"
     APP_DATA: ClassVar[Path] = ROOT / "aid" / "data"
     SERVICE_DATA: ClassVar[Path] = ROOT / "mcp" / "data"
-    SERVICE_PORT: ClassVar[int] = free_port()
+    SERVICE_PORT: ClassVar[int] = StandPorts().free()
     SERVICE_HOST: ClassVar[str] = "localhost"
     INSTANCE: ClassVar[str] = "e2e"
     SERVICE_LAUNCHER: ClassVar[str] = "sandbox"
@@ -123,7 +123,7 @@ class E2eStand:
         }
 
 
-PORT = int(os.environ.get("BOBA_E2E_PORT") or free_port())
+PORT = int(os.environ.get("BOBA_E2E_PORT") or StandPorts().free())
 """Порт чата стенда: свободный на момент прогона, если его не назвали явно —
 порты конфигов отладки заняты интерактивной отладкой, своей и соседей."""
 BASE = FakeUrl.loopback(PORT, "/boba-debug")

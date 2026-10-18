@@ -59,7 +59,7 @@ from boba.mcp_client.client import (
 from boba.stand.names import StandNames
 from boba.stand.site import Stand
 from boba.stand.ui.fake_llm import FakeLlmApp
-from boba.stand.ui.stand import REPO_ROOT, free_port
+from boba.stand.ui.stand import REPO_ROOT, StandPorts
 
 API_KEY = "sk-aid-acp-test-secret"
 MODEL_NAME = "stand-model"
@@ -79,7 +79,7 @@ class FakeModel:
 
     def __init__(self, tls: TlsFiles | None = None) -> None:
         self.app = FakeLlmApp(token_delay_sec=0.0)
-        self.port = free_port()
+        self.port = StandPorts().free()
         self._scheme = "http"
         keyfile: str | None = None
         certfile: str | None = None

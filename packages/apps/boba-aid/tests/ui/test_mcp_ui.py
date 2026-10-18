@@ -47,9 +47,9 @@ from boba.stand.ui.stand import (
     REPO_ROOT,
     StandApp,
     StandConfig,
+    StandPorts,
     StandProcess,
     StandUrl,
-    free_port,
 )
 
 pytestmark = [pytest.mark.ui, pytest.mark.xdist_group("mcp-ui")]
@@ -80,7 +80,7 @@ class BobaMcpStand:
     BOOT_SEC: float = 60.0
 
     def __init__(self, workdir: Path) -> None:
-        self.port = free_port()
+        self.port = StandPorts().free()
         workdir.mkdir(parents=True, exist_ok=True)
         self._process = subprocess.Popen(
             [sys.executable, str(self.STAND), str(self.port), str(workdir)]
@@ -152,8 +152,8 @@ def mcp_stand(  # noqa: PLR0913 — стенд собирается из фик�
     HTTP — записью apps с секцией apps (страница-прокси песочницы на своём
     порту) и записью plain без неё."""
     server = standard.model_dump(mode="json", exclude_none=True)
-    apps_port = free_port()
-    sandbox_port = free_port()
+    apps_port = StandPorts().free()
+    sandbox_port = StandPorts().free()
     script = REPO_ROOT / "packages/services/boba-mcp-client/tests/standard_server.py"
     pages = REPO_ROOT / "packages/apps/boba-aid/assets/mcp-apps"
     apps_server = subprocess.Popen(
@@ -183,7 +183,7 @@ def mcp_stand(  # noqa: PLR0913 — стенд собирается из фик�
         # не "mcp": это каталог сервиса boba-mcp общего стенда (StandConfig.service)
         workdir=stand_workdir / "chat-mcp",
         app=StandApp.AID,
-        app_port=free_port(),
+        app_port=StandPorts().free(),
         llm_port=llm_port,
         db_name=stand_database,
         url_prefix="/boba-mcp",
@@ -225,25 +225,19 @@ def mcp_stand(  # noqa: PLR0913 — стенд собирается из фик�
 
 def _ask(chat: ChatPage, tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
     """Ход с вызовом инструмента; отдаёт его законченный шаг из журнала
-    сокета. Конец хода ждётся по самому шагу: пара task_start/task_end от
-    старта чата может прийти уже после вопроса."""
+    сокета."""
     request = json.dumps({"name": tool, "arguments": arguments})
     chat.ask(f"{ScenarioName.CALL.value} {request}")
     chat.await_idle(timeout_sec=120.0)
 
-    deadline = time.monotonic() + 120.0
-    while time.monotonic() < deadline:
-        chat.page.wait_for_timeout(100)
-        step = chat.log.last_step(StepKind.TOOL.value)
-        if step is None:
-            continue
+    step = chat.log.last_step(StepKind.TOOL.value)
+    if step is None:
+        raise AssertionError(f"no tool step of {tool}\n{chat.log.describe()}")
 
-        if str(step.get(StepField.NAME.value)).startswith(RUNNING):
-            continue
+    if str(step.get(StepField.NAME.value)).startswith(RUNNING):
+        raise AssertionError(f"the turn ended with {tool} running: {step!r}")
 
-        return step
-
-    raise AssertionError(f"no finished tool step of {tool}\n{chat.log.describe()}")
+    return step
 
 
 def _app(chat: ChatPage) -> tuple[Locator, FrameLocator]:

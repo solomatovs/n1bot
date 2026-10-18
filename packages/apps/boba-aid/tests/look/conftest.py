@@ -30,7 +30,7 @@ from playwright.sync_api import Browser
 from boba.stand.names import StandNames
 from boba.stand.ui.database import StandDatabase
 from boba.stand.ui.fake_llm import FakeRoute, serve
-from boba.stand.ui.stand import StandApp, StandUrl, free_port
+from boba.stand.ui.stand import StandApp, StandPorts, StandUrl
 
 
 class LookOption(StrEnum):
@@ -98,7 +98,7 @@ def look_pages(browser: Browser) -> Iterator[LookPages]:
 
 @pytest.fixture(scope="session")
 def look_llm_port() -> Iterator[int]:
-    port = free_port()
+    port = StandPorts().free()
     process = multiprocessing.Process(
         target=serve,
         args=(StandUrl.HOST.value, port, LookStand.TOKEN_DELAY_SEC),

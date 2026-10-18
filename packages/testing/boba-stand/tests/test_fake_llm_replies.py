@@ -30,7 +30,7 @@ from boba.stand.ui.fake_llm import (
     ScenarioName,
     serve,
 )
-from boba.stand.ui.stand import StandUrl, free_port
+from boba.stand.ui.stand import StandPorts, StandUrl
 
 STATUS_QUESTION = "Какой сегодня статус выгрузки?"
 STATUS_ANSWER = "Выгрузка закончилась в 06:10, ошибок нет."
@@ -123,7 +123,7 @@ class Frames:
 
 @pytest.fixture(scope="module")
 def stand_url() -> Iterator[str]:
-    port = free_port()
+    port = StandPorts().free()
     process = multiprocessing.Process(
         target=serve, args=(StandUrl.HOST.value, port, 0.0), daemon=True
     )

@@ -232,13 +232,26 @@ class SocketLog:
         )
         raise FrameError(msg)
 
-    def has_step_named(self, name: str) -> bool:
-        """Был ли шаг с таким именем: так тест узнаёт служебный ход chainlit."""
-        for frame in self.frames:
+    def task_done(self, name: str) -> bool:
+        """Закончена ли задача chainlit вокруг шага с таким именем: после
+        закрытия шага (update_message) пришёл task_end. Так тест узнаёт конец
+        служебного хода chainlit, а не его начало."""
+        closed = -1
+        for index, frame in enumerate(self.frames):
+            if frame.event is not ChatEvent.UPDATE_MESSAGE:
+                continue
+
             if not isinstance(frame.payload, dict):
                 continue
 
             if frame.payload.get(StepField.NAME.value) == name:
+                closed = index
+
+        if closed < 0:
+            return False
+
+        for frame in self.frames[closed + 1 :]:
+            if frame.event is ChatEvent.TASK_END:
                 return True
 
         return False
