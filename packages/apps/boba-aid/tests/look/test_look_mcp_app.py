@@ -112,9 +112,6 @@ class AppFeed:
     Ошибки страницы чата копятся с открытия."""
 
     TOP: ClassVar[str] = "(node) => node.scrollIntoView({block: 'start'})"
-    LOGIN: ClassVar[str] = "#email"
-    PASSWORD: ClassVar[str] = "#password"
-    SUBMIT: ClassVar[str] = 'form button[type="submit"]'
     LOGIN_USER: ClassVar[str] = "admin"
     """Учётка ходов с приложением: её треды копятся в базе тестов вида, dev
     оставлен оболочке, которая проверяет, что тредов у него нет."""
@@ -139,17 +136,6 @@ class AppFeed:
 
     def _watch(self, socket: WebSocket) -> None:
         socket.on("framereceived", self._log.accept)
-
-    def sign_in(self, stand: StandProcess) -> None:
-        """Вход формой стенда: открыт пустой тред с полем ввода."""
-        credential = stand.config.credential(self.LOGIN_USER)
-        page = self._page
-        page.goto(f"{stand.config.base_url}/login", wait_until="domcontentloaded")
-        page.locator(self.LOGIN).fill(credential.login)
-        page.locator(self.PASSWORD).fill(credential.password)
-        page.locator(self.SUBMIT).click()
-        page.locator(Selector.INPUT.value).wait_for(timeout=60_000)
-        page.wait_for_load_state("networkidle")
 
     def reopen(self) -> None:
         """Тред открыт заново по адресу: лента собирается из истории агента."""
@@ -253,7 +239,7 @@ def test_app_card_in_the_feed(
         for theme in LookTheme:
             page = look_pages.open(theme, size)
             feed = AppFeed(page, apps_stand)
-            feed.sign_in(apps_stand)
+            look_pages.sign_in(page, apps_stand, AppFeed.LOGIN_USER)
             feed.ask(book.QUESTION, book.ANSWER, ("3 of 3 orders",))
             look_pages.settle(page)
             look.frame(feed.feed(book.QUESTION), AppLook.CARD, theme, size)

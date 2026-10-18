@@ -416,7 +416,7 @@ class NormalRule(StrEnum):
     JavaScript и подстановка того же вида; новое правило вводится только с
     объяснением в тесте."""
 
-    DURATION = r"· \d+(?:[.,]\d+)? (ms|s|мс|с)\b"
+    DURATION = r"· \d+(?:[.,]\d+)? (ms|s|мс|с)(?![A-Za-zА-Яа-яЁё])"
     UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
     LAST_SEEN = r"\d+s ago"
 
@@ -898,6 +898,9 @@ class LookCheck:
         self._normal = TextNormalizer()
         self._styles = LookStyles()
         self._outcomes: list[LookOutcome] = []
+        self._taken: dict[str, bytes] = {}
+        """Кадры этого прогона по stem: с ними сверяется тот же вид, снятый
+        иначе (живая лента против истории)."""
 
     def frame(
         self,
@@ -917,6 +920,7 @@ class LookCheck:
         actual = self._shots.take(region)
         aria = region.aria_snapshot()
 
+        self._taken[frame.stem] = actual
         files: dict[str, str] = {}
         files["actual.png"] = self._report.save(frame, "actual.png", actual)
 
@@ -937,6 +941,57 @@ class LookCheck:
         outcome = LookOutcome(
             frame=frame, kind=kind, detail=detail, test=self._test, files=files
         )
+        self._outcomes.append(outcome)
+        self._report.add(outcome)
+
+    def same_as(
+        self, state: LookState, live: LookState, theme: LookTheme, size: LookSize
+    ) -> None:
+        """Кадр state этого прогона обязан совпасть пиксель в пиксель с кадром
+        live в той же теме и размере: один вид, полученный двумя путями (ход
+        вживую и тот же ход после перезагрузки). Разница — разошедшийся кадр
+        state с картой отличий в отчёте."""
+        frame = LookFrame(state=state, theme=theme, size=size)
+        other = LookFrame(state=live, theme=theme, size=size)
+        shot = self._taken[frame.stem]
+        original = self._taken[other.stem]
+        files: dict[str, str] = {}
+        files["expected.png"] = self._report.save(frame, "live.png", original)
+        files["actual.png"] = self._report.save(frame, "actual.png", shot)
+        try:
+            diff = self._pixels.compare(original, shot)
+        except LookError as exc:
+            detail = f"differs from the live frame {other.stem}: {exc}"
+            self._add(
+                LookOutcome(
+                    frame=frame,
+                    kind=OutcomeKind.PIXELS,
+                    detail=detail,
+                    test=self._test,
+                    files=files,
+                )
+            )
+            return
+
+        if diff.pixels == 0:
+            return
+
+        files["diff.png"] = self._report.save(frame, "live-diff.png", diff.map_png)
+        detail = (
+            f"{diff.pixels} of {diff.total} pixels differ from the live frame "
+            f"{other.stem}"
+        )
+        self._add(
+            LookOutcome(
+                frame=frame,
+                kind=OutcomeKind.PIXELS,
+                detail=detail,
+                test=self._test,
+                files=files,
+            )
+        )
+
+    def _add(self, outcome: LookOutcome) -> None:
         self._outcomes.append(outcome)
         self._report.add(outcome)
 
@@ -1033,6 +1088,10 @@ class LookPages:
     Создаётся фикстурой теста и закрывает свои контексты в конце."""
 
     THEME_KEY: ClassVar[str] = "vite-ui-theme"
+    LOGIN: ClassVar[str] = "#email"
+    PASSWORD: ClassVar[str] = "#password"
+    SUBMIT: ClassVar[str] = 'form button[type="submit"]'
+    INPUT: ClassVar[str] = "#chat-input"
     FONTS: ClassVar[str] = "() => document.fonts.ready.then(() => document.fonts.size)"
     TABS: ClassVar[int] = 40
     FOCUSED: ClassVar[str] = "(node) => node === document.activeElement"
@@ -1067,6 +1126,16 @@ class LookPages:
             f"{json.dumps(self.THEME_KEY)}, {json.dumps(theme.value)})"
         )
         return context.new_page()
+
+    def sign_in(self, page: Page, stand: StandProcess, login: str) -> None:
+        """Вход формой стенда учёткой login: открыт пустой тред с полем ввода."""
+        credential = stand.config.credential(login)
+        page.goto(f"{stand.config.base_url}/login", wait_until="domcontentloaded")
+        page.locator(self.LOGIN).fill(credential.login)
+        page.locator(self.PASSWORD).fill(credential.password)
+        page.locator(self.SUBMIT).click()
+        page.locator(self.INPUT).wait_for(timeout=60_000)
+        page.wait_for_load_state("networkidle")
 
     def settle(self, page: Page) -> None:
         """Шрифты загружены, фокус снят с поля: кадр не ловит мигание."""

@@ -1,7 +1,7 @@
 """Производитель сообщений хода: единственное место, откуда ход публикует в шину;
 большие тела уходят в PayloadStore, сообщение несёт ссылку. Ход агента ACP
 публикует вопрос, уведомления `session/update` как есть (AgentUpdate), правку
-вопроса, пометки остановки и итог.
+вопроса, пометки агента и итог; конец хода — idle агента уведомлением и итогом.
 
 Ошибки:
 MessageBusError — шина не приняла сообщение; вызывающий показывает сбой сам.
@@ -18,7 +18,6 @@ from boba.aid.rendering.acp_view import SessionUpdate, SessionUpdateCodec
 from boba.identity.context import Scope
 from boba.messaging import (
     AgentUpdate,
-    AnswerInterrupted,
     AnyMessage,
     LockToken,
     MessageBus,
@@ -97,9 +96,12 @@ class TurnFeed:
     async def agent_update(self, update: SessionUpdate) -> None:
         """Уведомление агента как есть: вызовы с аргументами и итогом — по
         ссылке (ключи аргументов обязаны сохранить порядок, jsonb шины его
-        не хранит), куски текста — в самом сообщении."""
+        не хранит), idle конца хода — тоже по ссылке (текст ошибки модели
+        длиной не ограничен), куски текста — в самом сообщении."""
         body = self._codec.encode(update)
-        if isinstance(update, schema.SessionToolCallUpdate):
+        if isinstance(
+            update, schema.SessionToolCallUpdate | schema.IdleSessionStateUpdate
+        ):
             ref = await self._payloads.put(self._scope, body)
             await self._publish(AgentUpdate(turn_id=self._turn_id, stored=ref))
             return
@@ -115,11 +117,6 @@ class TurnFeed:
     async def rewound(self, session_id: str) -> None:
         """История треда заменена веткой session_id до правленого вопроса."""
         await self._publish(ThreadRewound(turn_id=self._turn_id, session_id=session_id))
-
-    async def answer_interrupted(self, key: str, note: str) -> None:
-        await self._publish(
-            AnswerInterrupted(turn_id=self._turn_id, key=key, note=note)
-        )
 
     async def notice(self, level: NoticeLevel, text: str) -> None:
         await self._publish(Notice(level=level, text=TextClip.fit(text)))

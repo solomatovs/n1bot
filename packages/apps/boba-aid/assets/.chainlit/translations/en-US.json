@@ -313,7 +313,6 @@
     "aid": {
         "feed": {
             "working": "Working…",
-            "requested": "Request sent…",
             "done": "Finished",
             "doneSteps": "Finished · steps: {{count}}",
             "running": "running…",

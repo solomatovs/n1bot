@@ -48,6 +48,13 @@ export default function ScrollContainer({
   const [showScrollButton, setShowScrollButton] = useState(false);
   const [isScrolling, setIsScrolling] = useState(false);
   const spacerFrameRef = useRef(0);
+  // boba: «внизу» — у конца ленты, а не у конца спейсера: спейсер держит
+  // последний вопрос наверху, и пустое место под ним кнопку «↓» не зовёт
+  const atContentEnd = useCallback((node: HTMLDivElement) => {
+    const spacer = spacerRef.current?.offsetHeight ?? 0;
+    const { scrollTop, scrollHeight, clientHeight } = node;
+    return scrollTop + clientHeight >= scrollHeight - spacer - 10;
+  }, []);
   const lastUserMessageId = useMemo(
     () => lastUserMessageIdOf(messages),
     [messages]
@@ -100,8 +107,10 @@ export default function ScrollContainer({
     spacerFrameRef.current = requestAnimationFrame(() => {
       spacerFrameRef.current = 0;
       updateSpacerHeight();
+      // boba: спейсер дорос до конца ленты — ниже ничего нет, кнопка уходит
+      if (ref.current && atContentEnd(ref.current)) setShowScrollButton(false);
     });
-  }, [updateSpacerHeight]);
+  }, [updateSpacerHeight, atContentEnd]);
 
   useEffect(() => () => cancelAnimationFrame(spacerFrameRef.current), []);
 
@@ -156,11 +165,9 @@ export default function ScrollContainer({
     setTimeout(() => {
       if (!ref.current) return;
 
-      const { scrollTop, scrollHeight, clientHeight } = ref.current;
-      const atBottom = scrollTop + clientHeight >= scrollHeight - 10;
-      setShowScrollButton(!atBottom);
+      setShowScrollButton(!atContentEnd(ref.current));
     }, 500);
-  }, []);
+  }, [atContentEnd]);
 
   const checkScrollEnd = () => {
     if (!ref.current) return;
@@ -174,9 +181,7 @@ export default function ScrollContainer({
       if (currentScrollTop === prevScrollTop) {
         setIsScrolling(false);
 
-        const { scrollTop, scrollHeight, clientHeight } = ref.current;
-        const atBottom = scrollTop + clientHeight >= scrollHeight - 10;
-        setShowScrollButton(!atBottom);
+        setShowScrollButton(!atContentEnd(ref.current));
       } else {
         checkScrollEnd();
       }
@@ -225,7 +230,7 @@ export default function ScrollContainer({
       autoScrollRef.current = atBottom;
     }
 
-    setShowScrollButton(!atBottom);
+    setShowScrollButton(!atContentEnd(ref.current));
   };
 
   return (

@@ -124,6 +124,7 @@ from boba.agent.session import SessionState
 from boba.agent.settings import (
     McpClientJson,
 )
+from boba.agent.template import AgentTemplate, AgentTemplateFile
 from boba.agent.tools import (
     AskOption,
     AskQuestion,
@@ -626,9 +627,16 @@ class AcpMapping:
     }
     COMPACTED: ClassVar[str] = "completed"
 
+    INTERRUPTS: ClassVar[tuple[AgentTemplateFile, ...]] = (
+        AgentTemplateFile.REQUEST_INTERRUPTED,
+        AgentTemplateFile.REQUEST_INTERRUPTED_TOOL_USE,
+    )
+    """Тексты маркеров остановки хода, которые ядро пишет записью user."""
+
     def __init__(self) -> None:
         self._titles = ToolTitles()
         self._uses = ToolUseResults()
+        self._templates = AgentTemplate()
 
     def idle(
         self, result: ResultEvent
@@ -731,10 +739,11 @@ class AcpMapping:
     ) -> Sequence[Update]:
         """Беседа из записей → уведомления по порядку записей: сообщения
         целиком (`user_message`, `agent_thought`, `agent_message`), вызовы и
-        их итоги — как в живом ходе. Синтетические записи агента (заметки об
-        ошибках, заглушки) не воспроизводятся, оборванный ответ —
-        воспроизводится; служебные сообщения, вложения и границы сжатия в
-        ленту не идут."""
+        их итоги — как в живом ходе. Конец хода остановкой или отказом модели
+        — тот же idle, что вживую: маркер остановки — `cancelled`, запись об
+        отказе модели — idle с ошибкой; прочие синтетические записи агента
+        (заглушки) не воспроизводятся, оборванный ответ — воспроизводится;
+        служебные сообщения, вложения и границы сжатия в ленту не идут."""
         updates: list[Update] = []
         for record in conversation:
             updates.extend(self._replayed(record, hints))
@@ -744,14 +753,39 @@ class AcpMapping:
     def _replayed(self, record: ChainRecord, hints: ToolHintSource) -> Iterator[Update]:
         if isinstance(record, UserRecord):
             yield from self.user_updates(record)
+            if self._interrupted(record):
+                yield schema.IdleSessionStateUpdate(stop_reason=StopReason.CANCELLED)
+
             return
 
         if isinstance(record, AssistantRecord):
             yield from self._replayed_assistant(record, hints)
 
+    def _interrupted(self, record: UserRecord) -> bool:
+        """Запись user — маркер остановки хода пользователем или выключением."""
+        content = record.message.content
+        if not isinstance(content, str):
+            return False
+
+        for marker in self.INTERRUPTS:
+            if content == self._templates.read(marker):
+                return True
+
+        return False
+
+    def _failed(self, record: AssistantRecord) -> Iterator[Update]:
+        """Запись агента об отказе модели — конец хода сбоем, как idle живого
+        хода."""
+        if not record.is_synthetic():
+            return
+
+        if failure := record.error:
+            yield self.idle_error(TurnOutcome.API_ERROR.value, failure)
+
     def _replayed_assistant(
         self, record: AssistantRecord, hints: ToolHintSource
     ) -> Iterator[Update]:
+        yield from self._failed(record)
         if record.is_synthetic() and not record.is_aborted_mid_stream:
             return
 
