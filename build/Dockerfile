@@ -395,7 +395,7 @@ RUN [ -z "${NUITKA_VERSION}" ] || { onnx=""; \
         --output-dir=/tmp/nuitka --jobs=${JOBS} \
         --user-package-configuration-file=/tmp/nuitka-boba.yml \
         --include-package=gssapi --include-distribution-metadata=boba-cli \
-        --include-package-data=boba.agent ${onnx} \
+        --include-package-data=boba.agent --include-package-data=boba.history.postgres ${onnx} \
         /opt/bin-site/boba/cli/app.py \
     && install -m 0755 /tmp/nuitka/boba /out/boba \
     && rm -rf /tmp/nuitka \
