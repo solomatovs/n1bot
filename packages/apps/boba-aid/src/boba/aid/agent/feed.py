@@ -407,12 +407,16 @@ class AgentFeed(TurnRenderer):
     ) -> ElicitationReply:
         """Форма агента — панелью во вкладке держателя хода; ответ панели —
         ответ агенту, срок и остановка хода — отмена. Вопрос вне хода не
-        показывается.
+        показывается. Форма встаёт в очередь уведомлений: ход, начало которого
+        ещё публикуется, и вызов, задавший вопрос, видны раньше неё.
 
         Ошибки:
         RequestError — ответ вкладки не по форме ответа.
         """
-        if self._turn is None:
+        async with self._ordered:
+            turn = self._turn
+
+        if turn is None:
             logger.warning(
                 "thread %s: the agent asked the user outside a turn of session %s; "
                 "the question is cancelled",

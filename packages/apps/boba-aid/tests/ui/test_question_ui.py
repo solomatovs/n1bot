@@ -1,9 +1,10 @@
 """Вопрос агента пользователю в живом чате: панель вместо поля ввода и
 запись ответа в ленте.
 
-Фейковая модель зовёт собственный инструмент агента AskUserQuestion, агент
-шлёт чату форму `elicitation/create`, чат показывает её панелью элемента
-Question вместо поля ввода. Проверяется то, что видит пользователь: панель
+На обычный вопрос пользователя фейковая модель по книге ответов зовёт
+собственный инструмент агента AskUserQuestion, агент шлёт чату форму
+`elicitation/create`, чат показывает её панелью элемента Question вместо
+поля ввода. Проверяется то, что видит пользователь: панель
 по каждому состоянию макета в обеих темах (цвета по токенам темы, кегль,
 геометрия), клавиатура, ответ, отказ, отмена остановкой хода, придержанная
 панель, пока пользователь печатает, повторный показ после перезагрузки
@@ -16,7 +17,6 @@ Question вместо поля ввода. Проверяется то, что �
 
 from __future__ import annotations
 
-import json
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -26,9 +26,17 @@ from typing import Any
 import httpx
 import pytest
 from playwright.sync_api import Locator, Page
+from pydantic import JsonValue
 
 from boba.stand.ui.chat_page import ChatPage
-from boba.stand.ui.fake_llm import FakeRoute, ScenarioName
+from boba.stand.ui.fake_llm import (
+    FakeRoute,
+    Reply,
+    ReplyBookClient,
+    ReplyCall,
+    ReplyTurn,
+    ScenarioName,
+)
 from boba.stand.ui.stand import StandUrl
 
 pytestmark = [pytest.mark.ui, pytest.mark.xdist_group("question-ui")]
@@ -38,7 +46,9 @@ COMPOSER = "#message-composer"
 SUBMIT = "[data-submit]"
 HELD = "[data-question-held]"
 ROWS = '[role="radio"], [role="checkbox"]'
-ANSWER_AFTER_TOOL = "the tool has answered"
+ANSWER_AFTER_TOOL = "Принято, продолжаю с выбранными ответами."
+ASK_REASONING = "Прежде чем продолжать, нужно решение пользователя."
+ASK_INTENT = "Уточнить решение у пользователя"
 WAITING = "[data-question-waiting]"
 MESSAGE_OF = "xpath=ancestor::*[@data-step-type][1]"
 SUCCESS_DOT = "rgb(116, 201, 145)"
@@ -169,6 +179,19 @@ NAME: dict[str, Any] = {
 }
 
 
+PROMPTS: dict[tuple[str, ...], str] = {
+    (DB["question"],): "Подготовь хранилище для нового сервиса",
+    (DB["question"], CHECKS["question"]): "Подготовь выпуск сервиса выгрузки",
+    (CHECKS["question"],): "Какие проверки запустить перед выпуском?",
+    (APPROACH["question"],): "Как переделать модуль экспорта?",
+    (DB["question"], AUTH["question"], DEPLOY["question"]): "Разверни новый сервис",
+    (LAYOUT["question"],): "Нарисуй страницу отчёта",
+    (NAME["question"],): "Создай схему для витрины продаж",
+}
+"""Вопрос пользователя, на который модель отвечает этими вопросами: ключ
+книги ответов фейковой модели, текст пузыря и имя треда."""
+
+
 @dataclass(frozen=True)
 class QuestionLabels:
     """Подписи панели и записи вопроса (aid.question) из переводов,
@@ -228,18 +251,40 @@ class QuestionPage:
         self.chat = chat
         self.page: Page = chat.page
         self._llm_port = llm_port
+        self._book = ReplyBookClient(StandUrl.of(llm_port))
         reply = httpx.get(f"{chat.base_url}/project/translations", timeout=10.0)
         reply.raise_for_status()
         texts = reply.json()["translation"]["aid"]["question"]
         self.labels = QuestionLabels(texts)
 
     def ask(self, *questions: Mapping[str, Any]) -> Locator:
-        """Ход, в котором модель зовёт AskUserQuestion; итог — панель."""
-        arguments = {"questions": list(questions)}
-        request = json.dumps({"name": "AskUserQuestion", "arguments": arguments})
-        self.chat.ask(f"{ScenarioName.CALL.value} {request}")
+        """Ход, в котором модель на обычный вопрос пользователя зовёт
+        AskUserQuestion; итог — панель."""
+        self.chat.ask(self._asking(questions))
 
         return self.panel()
+
+    def _asking(self, questions: Sequence[Mapping[str, Any]]) -> str:
+        """Книга ответов модели: на вопрос пользователя — вызов
+        AskUserQuestion с questions, после итога — ответ текстом; итог —
+        вопрос пользователя."""
+        texts: list[str] = []
+        asked: list[JsonValue] = []
+        for question in questions:
+            texts.append(str(question["question"]))
+            asked.append(dict(question))
+
+        prompt = PROMPTS[tuple(texts)]
+        call = ReplyCall(
+            tool="AskUserQuestion", arguments={"questions": asked}, intent=ASK_INTENT
+        )
+        turns = [
+            ReplyTurn(reasoning=ASK_REASONING, calls=[call]),
+            ReplyTurn(content=ANSWER_AFTER_TOOL),
+        ]
+        self._book.register([Reply(question=prompt, turns=turns)])
+
+        return prompt
 
     def panel(self) -> Locator:
         panel = self.page.locator(PANEL)
@@ -278,12 +323,10 @@ class QuestionPage:
         """Вопрос приходит, пока пользователь печатает: ход с вопросом и
         набор text в поле ввода сразу за ним. Вопрос, обогнавший первую букву
         (стенд под нагрузкой), отклоняется и задаётся снова."""
-        request = json.dumps(
-            {"name": "AskUserQuestion", "arguments": {"questions": [DB]}}
-        )
+        prompt = self._asking([DB])
         held = self.page.locator(HELD)
         for _ in range(3):
-            self.chat.ask(f"{ScenarioName.CALL.value} {request}")
+            self.chat.ask(prompt)
             self.page.locator("#chat-input").focus()
             if self._typed(text, held):
                 return

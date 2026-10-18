@@ -35,7 +35,13 @@ from playwright.sync_api import Browser, FrameLocator, Locator, Page
 from boba.aid.chat.ui_text import UiText
 from boba.mcp_client.client import McpServerConfig
 from boba.stand.ui.chat_page import ChatPage, Selector, StepKind
-from boba.stand.ui.fake_llm import ScenarioName
+from boba.stand.ui.fake_llm import (
+    Reply,
+    ReplyBookClient,
+    ReplyCall,
+    ReplyTurn,
+    ScenarioName,
+)
 from boba.stand.ui.socket_log import ChatEvent, StepField
 from boba.stand.ui.stand import (
     REPO_ROOT,
@@ -792,9 +798,22 @@ class TestServerQuestion:
     ответа встаёт сообщением основной ленты после итога вызова."""
 
     PANEL: str = "#question-dock [data-question-panel]"
-    REQUEST: str = json.dumps(
-        {"name": "mcp__standard__load_rows", "arguments": {"rows": 10}}
-    )
+    PROMPT: str = "Загрузи заказы в хранилище"
+    LOADED: str = "Строки загружены."
+
+    def _asked(self, chat: ChatPage, llm_port: int) -> None:
+        """Обычный вопрос пользователя; модель по книге ответов зовёт
+        load_rows, после итога отвечает текстом."""
+        call = ReplyCall(
+            tool="mcp__standard__load_rows",
+            arguments={"rows": 10},
+            intent="Загрузить заказы",
+        )
+        turns = [ReplyTurn(calls=[call]), ReplyTurn(content=self.LOADED)]
+        ReplyBookClient(StandUrl.of(llm_port)).register(
+            [Reply(question=self.PROMPT, turns=turns)]
+        )
+        chat.ask(self.PROMPT)
 
     def _finished(self, chat: ChatPage) -> dict[str, Any]:
         deadline = time.monotonic() + 120.0
@@ -812,10 +831,14 @@ class TestServerQuestion:
         raise AssertionError(f"no finished tool step\n{chat.log.describe()}")
 
     def test_server_question_is_answered_in_the_panel(
-        self, mcp_stand: StandProcess, open_chat: OpenChat, stand_workdir: Path
+        self,
+        mcp_stand: StandProcess,
+        open_chat: OpenChat,
+        stand_workdir: Path,
+        llm_port: int,
     ) -> None:
         chat = open_chat(mcp_stand, "")
-        chat.ask(f"{ScenarioName.CALL.value} {self.REQUEST}")
+        self._asked(chat, llm_port)
         panel = chat.page.locator(self.PANEL)
         panel.wait_for(state="visible", timeout=60_000)
 
@@ -856,7 +879,7 @@ class TestServerQuestion:
             raise AssertionError(f"the server got the answer: {step}")
 
         # запись видна в основной ленте без раскрытия хода и шага вызова
-        chat.page.get_by_text("the tool has answered").last.wait_for(timeout=60_000)
+        chat.page.get_by_text(self.LOADED).last.wait_for(timeout=60_000)
         record = chat.page.locator('[data-question-review="accept"]').last
         record.wait_for(state="visible", timeout=30_000)
         message = record.locator("xpath=ancestor::*[@data-step-type][1]")
@@ -872,10 +895,10 @@ class TestServerQuestion:
             raise AssertionError(f"the record names the server: {source}")
 
     def test_declined_server_question_reaches_the_server(
-        self, mcp_stand: StandProcess, open_chat: OpenChat
+        self, mcp_stand: StandProcess, open_chat: OpenChat, llm_port: int
     ) -> None:
         chat = open_chat(mcp_stand, "")
-        chat.ask(f"{ScenarioName.CALL.value} {self.REQUEST}")
+        self._asked(chat, llm_port)
         panel = chat.page.locator(self.PANEL)
         panel.wait_for(state="visible", timeout=60_000)
         chat.page.wait_for_timeout(600)
