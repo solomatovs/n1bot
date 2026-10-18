@@ -1,0 +1,12 @@
+- button:
+  - img
+- button:
+  - img
+- text: Поиск Ctrl+k
+- tooltip "Поиск Ctrl+k"
+- button:
+  - img
+- list:
+  - img
+  - paragraph: Чаты не найдены
+- button "Toggle Sidebar"
