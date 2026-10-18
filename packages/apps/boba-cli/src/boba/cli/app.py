@@ -361,6 +361,7 @@ class AssembledObserver(ObservedSession):
         instructions: Sequence[str],
         sink: EventSink,
         conversation: Sequence[ChainRecord],
+        questions: bool,
     ) -> None:
         self._assembly = assembly
         self._session_id = session_id
@@ -369,6 +370,7 @@ class AssembledObserver(ObservedSession):
         self._instructions = list(instructions)
         self._sink = sink
         self._conversation = list(conversation)
+        self._questions = questions
 
     def conversation(self) -> Sequence[ChainRecord]:
         return self._conversation
@@ -392,6 +394,7 @@ class AssembledObserver(ObservedSession):
             self._instructions,
             self._sink,
             resume=True,
+            questions=self._questions,
         )
 
         return self._assembly.assembled(agent)
@@ -404,12 +407,12 @@ class AgentAssembly(SessionAssembly):
     всех сессий; сессия открывается на профиле `model` настроек и может
     переключиться на любой другой из каталога. На сессию собираются снимок
     окружения с `cwd` сессии и агент ядра над инструментами от входа.
-    Собственный инструмент «вопрос пользователю» в ACP не предлагается: формы
-    вопроса у клиента нет. С хранилищем `memory` возобновление сессии даёт
-    пустую историю: возобновлять нечего, сессия открывается заново под тем же
-    идентификатором, а ветвить нечего. В списке сессий рабочий каталог
-    берётся из снимка окружения в записях, а у сессии без него — каталог
-    самого процесса.
+    Собственный инструмент «вопрос пользователю» предлагается, только если
+    клиент объявил формы `elicitation.form`. С хранилищем `memory`
+    возобновление сессии даёт пустую историю: возобновлять нечего, сессия
+    открывается заново под тем же идентификатором, а ветвить нечего. В
+    списке сессий рабочий каталог берётся из снимка окружения в записях, а у
+    сессии без него — каталог самого процесса.
     """
 
     PAGE_SIZE: ClassVar[int] = 50
@@ -445,9 +448,10 @@ class AgentAssembly(SessionAssembly):
         instructions: Sequence[str],
         sink: EventSink,
         resume: bool,
+        questions: bool,
     ) -> OpenedSession:
         agent = await self.attach_agent(
-            session_id, cwd, tools, instructions, sink, resume
+            session_id, cwd, tools, instructions, sink, resume, questions
         )
 
         return self.assembled(agent)
@@ -459,18 +463,19 @@ class AgentAssembly(SessionAssembly):
     def models(self) -> Sequence[str]:
         return self._catalog.names()
 
-    async def observe(
+    async def observe(  # noqa: PLR0913 — наблюдатель собирается всеми частями сессии
         self,
         session_id: SessionId,
         cwd: Path,
         tools: ToolServer | None,
         instructions: Sequence[str],
         sink: EventSink,
+        questions: bool,
     ) -> ObservedSession:
         conversation = await self._conversation(session_id)
 
         return AssembledObserver(
-            self, session_id, cwd, tools, instructions, sink, conversation
+            self, session_id, cwd, tools, instructions, sink, conversation, questions
         )
 
     async def sessions(self, cursor: str | None) -> SessionPage:
@@ -509,6 +514,7 @@ class AgentAssembly(SessionAssembly):
         instructions: Sequence[str],
         sink: EventSink,
         resume: bool,
+        questions: bool,
     ) -> Agent:
         """Агент ядра над инструментами сессии; с хранилищем `memory`
         возобновление становится открытием заново.
@@ -522,7 +528,7 @@ class AgentAssembly(SessionAssembly):
         if self._stateless:
             resume = False
 
-        agent = Agent(self._parts(cwd, tools, instructions, sink))
+        agent = Agent(self._parts(cwd, tools, instructions, sink, questions))
         try:
             await agent.open(session_id, resume=resume)
         except (SessionHeldError, SessionNotFoundError):
@@ -564,6 +570,7 @@ class AgentAssembly(SessionAssembly):
         tools: ToolServer | None,
         instructions: Sequence[str],
         sink: EventSink,
+        questions: bool,
     ) -> AgentParts:
         """Части агента сессии: системный промпт — промпт настроек и разделы
         серверов MCP сессии instructions."""
@@ -588,7 +595,7 @@ class AgentAssembly(SessionAssembly):
             allowed_tools=settings.permissions.allow,
             denied_tools=settings.permissions.deny,
             record_requests=settings.record_requests,
-            question_tool=False,
+            question_tool=questions,
         )
 
 

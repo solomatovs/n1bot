@@ -3,9 +3,11 @@
 Сервер JSON-RPC по stdio на стороне агента AgentSide (boba-transport-acp):
 `initialize` с `capabilities.session.mcp.acp`, `session/new`,
 `session/prompt`, `session/cancel`, запрос `session/request_permission` к
-клиенту; история — `session/resume` (с `replayFrom: start` беседа
-воспроизводится уведомлениями до ответа), `session/list` страницами с
-курсором, `session/close`, `session/delete`, `session/fork`. Сессию открывает
+клиенту и форма `elicitation/create` на вопрос AskUserQuestion, если клиент
+объявил `elicitation.form` (без форм инструмента вопроса у модели нет);
+история — `session/resume` (с `replayFrom: start` беседа воспроизводится
+уведомлениями до ответа), `session/list` страницами с курсором,
+`session/close`, `session/delete`, `session/fork`. Сессию открывает
 сборка (SessionAssembly): агент ядра над инструментами серверов, которые
 клиент объявил записями `type: "acp"`; с серверами агент говорит запросами
 MCP внутри `mcp/message` (AcpToolServer, SessionMcp): server/discover —
@@ -119,6 +121,12 @@ from boba.agent.session import SessionState
 from boba.agent.settings import (
     McpClientJson,
 )
+from boba.agent.tools import (
+    AskOption,
+    AskQuestion,
+    AskUserQuestionInput,
+    AskUserQuestionTool,
+)
 from boba.agent.turn import ContextUsage
 from boba.cancellation import StopReason as CoreStopReason
 from boba.toolkit.calls import ToolIntent
@@ -146,18 +154,19 @@ from boba.toolkit.result import (
     ErrorResult,
     FailureResult,
     MarkdownResult,
-    ToolResultBase,
 )
 from boba.transport.acp.protocol import (
     AcpErrorCode,
     AcpTransportError,
     AcpVersion,
     AgentSide,
+    ElicitationRound,
     ErrorDataKey,
     IdleErrorNotification,
     IdleErrorUpdate,
     McpErrorOutcome,
     McpMessage,
+    McpOutcome,
     McpVersion,
     MetaKey,
     StopReason,
@@ -215,6 +224,21 @@ ConfigOption: TypeAlias = (
     | schema.BooleanSessionConfigOption
     | schema.OtherSessionConfigOption
 )
+FormValue: TypeAlias = str | int | float | bool | list[str]
+ElicitationAnswer: TypeAlias = (
+    schema.AcceptElicitationResponse
+    | schema.DeclineElicitationResponse
+    | schema.CancelElicitationResponse
+    | schema.OtherElicitationResponse
+)
+FormProperty: TypeAlias = (
+    schema.ElicitationStringPropertySchema
+    | schema.ElicitationNumberPropertySchema
+    | schema.ElicitationIntegerPropertySchema
+    | schema.ElicitationBooleanPropertySchema
+    | schema.ElicitationMultiSelectPropertySchema
+    | schema.ElicitationOtherPropertySchema
+)
 Update: TypeAlias = (
     schema.UserMessageUpdate
     | schema.AgentMessageUpdate
@@ -228,6 +252,7 @@ Update: TypeAlias = (
     | schema.SessionCompactionUpdate
     | schema.SessionNotice
     | schema.RunningSessionStateUpdate
+    | schema.RequiresActionSessionStateUpdate
     | schema.IdleSessionStateUpdate
     | schema.AvailableCommandsUpdate
 )
@@ -279,6 +304,54 @@ class PermissionChoice(StrEnum):
             return "Allow and remember"
 
         return "Reject"
+
+
+class FormSchemaKey(StrEnum):
+    """Ключи JSON Schema формы сервера MCP, которые агент переводит в ACP."""
+
+    PROPERTIES = "properties"
+    ENUM = "enum"
+    ENUM_NAMES = "enumNames"
+    ONE_OF = "oneOf"
+
+
+class McpCapability(StrEnum):
+    """Ключи `clientCapabilities`, которые агент объявляет серверам MCP."""
+
+    ELICITATION = "elicitation"
+    FORM = "form"
+
+
+class FormKey(StrEnum):
+    """Ключи полей формы `elicitation/create` своего вопроса агента: поле
+    вопроса по его номеру и парное поле «Other» со своим текстом."""
+
+    QUESTION = "q{number}"
+    OTHER = "q{number}.other"
+
+    def of(self, number: int) -> str:
+        return self.value.format(number=number)
+
+
+@dataclass(frozen=True)
+class FormQuestion:
+    """Вопрос AskUserQuestion в форме: ключ его поля и ключ парного поля
+    «Other»."""
+
+    key: str
+    other: str
+    question: AskQuestion
+
+
+@dataclass(frozen=True)
+class QuestionForm:
+    """Вопрос AskUserQuestion формой `elicitation/create`: текст запроса,
+    схема полей и вопросы по ключам полей — по ним ответ формы
+    разворачивается обратно в ответы по текстам вопросов."""
+
+    message: str
+    requested: schema.ElicitationSchema
+    questions: Sequence[FormQuestion]
 
 
 class ForkMeta(BaseModel):
@@ -514,7 +587,9 @@ class PermissionAsk(BaseModel):
 class AcpMapping:
     """Соответствие ядра протоколу: исходы хода → `idle` со `stopReason`,
     события → уведомления `session/update`, пометки инструмента → `kind`,
-    вопрос `can_use_tool` → запрос разрешения и ответ на него.
+    вопрос `can_use_tool` → запрос разрешения и ответ на него, вопрос
+    AskUserQuestion → форма `elicitation/create` и ответ формы → ответы
+    вопроса.
 
     Единственное место, где ядро встречается со схемой ACP; создаёт вход и
     отдаёт приёмникам событий сессий.
@@ -821,6 +896,190 @@ class AcpMapping:
 
         return AllowAnswer()
 
+    def question_form(self, request: CanUseToolRequest) -> QuestionForm:
+        """Вопрос AskUserQuestion формой: поле на вопрос (одиночный выбор —
+        строка с `oneOf`, множественный — массив с `items.anyOf`), заголовок
+        вопроса — `title`, текст — `description`, у варианта — описание и
+        предпросмотр в `_meta`; у каждого вопроса парное строковое поле
+        «Other», его ключ — в `_meta` поля вопроса. `required` пуст: ответ
+        на вопрос — вариант либо свой текст, схема так не умеет.
+
+        Ошибки:
+        ValidationError — ввод вызова не по схеме AskUserQuestion.
+        """
+        asked = AskUserQuestionInput.model_validate(request.input)
+        properties: dict[str, FormProperty] = {}
+        questions: list[FormQuestion] = []
+        texts: list[str] = []
+        for number, question in enumerate(asked.questions, start=1):
+            key = FormKey.QUESTION.of(number)
+            other = FormKey.OTHER.of(number)
+            options = list(self._enum_options(question.options))
+            properties[key] = self._question_field(question, options, other)
+            properties[other] = schema.ElicitationStringPropertySchema(
+                title=AskQuestion.OTHER
+            )
+            questions.append(FormQuestion(key=key, other=other, question=question))
+            texts.append(question.question)
+
+        return QuestionForm(
+            message="\n".join(texts),
+            requested=schema.ElicitationSchema(properties=properties),
+            questions=questions,
+        )
+
+    def question_answer(
+        self, response: ElicitationAnswer, form: QuestionForm
+    ) -> PermissionAnswer:
+        """Ответ формы → ответ ядру: принятая форма — ответы по текстам
+        вопросов (метки через ", " в порядке отметки, свой текст последним,
+        выбранный пустой «Other» — словом Other), отказ — DenyAnswer, отмена
+        и неизвестное действие — ответ без ответов."""
+        if isinstance(response, schema.DeclineElicitationResponse):
+            return DenyAnswer()
+
+        if not isinstance(response, schema.AcceptElicitationResponse):
+            return AllowAnswer()
+
+        content: Mapping[str, FormValue] = {}
+        if response.content is not None:
+            content = response.content
+
+        answers: dict[str, str] = {}
+        for asked in form.questions:
+            parts = list(self._picked(asked, content.get(asked.key)))
+            typed = content.get(asked.other)
+            if isinstance(typed, str):
+                text = typed.strip()
+                if not text:
+                    text = AskQuestion.OTHER
+
+                parts.append(text)
+
+            if parts:
+                answers[asked.question.question] = AskQuestion.JOIN.join(parts)
+
+        return AllowAnswer(updated_input={AskUserQuestionTool.ANSWERS_KEY: answers})
+
+    def server_form(self, requested: Mapping[str, Any]) -> schema.ElicitationSchema:
+        """Схема формы сервера MCP — схемой ACP: поля те же, устаревшие
+        `enumNames` строкового поля становятся вариантами `oneOf`.
+
+        Ошибки:
+        ValidationError — схема не форма ACP.
+        """
+        fields: dict[str, Any] = {}
+        properties = requested.get(FormSchemaKey.PROPERTIES.value)
+        if isinstance(properties, Mapping):
+            for key, field in properties.items():
+                fields[str(key)] = self._titled_enum(field)
+
+        shown = dict(requested)
+        shown[FormSchemaKey.PROPERTIES.value] = fields
+
+        return schema.ElicitationSchema.model_validate(shown)
+
+    @staticmethod
+    def _titled_enum(field: Any) -> Any:
+        """Строковое поле с `enum` и `enumNames` → поле с `oneOf`; прочее —
+        как есть."""
+        if not isinstance(field, Mapping):
+            return field
+
+        shown: dict[str, Any] = dict(field)
+        names = shown.pop(FormSchemaKey.ENUM_NAMES.value, None)
+        if not isinstance(names, list):
+            return shown
+
+        values = shown.get(FormSchemaKey.ENUM.value)
+        if not isinstance(values, list):
+            return shown
+
+        options: list[dict[str, Any]] = []
+        for value, title in zip(values, names, strict=False):
+            options.append({"const": value, "title": title})
+
+        shown.pop(FormSchemaKey.ENUM.value)
+        shown[FormSchemaKey.ONE_OF.value] = options
+
+        return shown
+
+    def server_answer(self, answer: ElicitationAnswer) -> mt.ElicitResult:
+        """Ответ формы клиента → ответ серверу MCP; неизвестное действие —
+        отмена."""
+        if isinstance(answer, schema.AcceptElicitationResponse):
+            content: dict[str, FormValue | None] = {}
+            if answer.content is not None:
+                content.update(answer.content)
+
+            return mt.ElicitResult(action="accept", content=content)
+
+        if isinstance(answer, schema.DeclineElicitationResponse):
+            return mt.ElicitResult(action="decline")
+
+        return mt.ElicitResult(action="cancel")
+
+    @staticmethod
+    def _question_field(
+        question: AskQuestion, options: list[schema.EnumOption], other: str
+    ) -> FormProperty:
+        """Поле вопроса: строка с `oneOf` у одиночного выбора, массив с
+        `items.anyOf` у множественного."""
+        meta = {MetaKey.OTHER.value: other}
+        if question.multi_select:
+            return schema.ElicitationMultiSelectPropertySchema(
+                title=question.header,
+                description=question.question,
+                items=schema.TitledMultiSelectItems(any_of=options),
+                field_meta=meta,
+            )
+
+        return schema.ElicitationStringPropertySchema(
+            title=question.header,
+            description=question.question,
+            one_of=options,
+            field_meta=meta,
+        )
+
+    @staticmethod
+    def _enum_options(options: Sequence[AskOption]) -> Iterator[schema.EnumOption]:
+        for option in options:
+            meta: dict[str, Any] | None = None
+            if option.preview:
+                meta = {MetaKey.PREVIEW.value: option.preview}
+
+            yield schema.EnumOption(
+                const=option.label,
+                title=option.label,
+                description=option.description,
+                field_meta=meta,
+            )
+
+    @staticmethod
+    def _picked(asked: FormQuestion, value: FormValue | None) -> Iterator[str]:
+        """Метки вариантов вопроса в значении поля: строка одиночного выбора
+        либо список множественного; значение не из вариантов — в журнал."""
+        values: list[str] = []
+        if isinstance(value, str):
+            values = [value]
+
+        if isinstance(value, list):
+            values = value
+
+        labels = asked.question.labels()
+        for picked in values:
+            if picked in labels:
+                yield picked
+                continue
+
+            logger.warning(
+                "question %r: the client answered %r, which is not one of its "
+                "options %s; the value is dropped",
+                asked.question.question,
+                picked,
+                labels,
+            )
+
 
 class PromptText:
     """Вопрос из блоков `session/prompt` элементом очереди: текст как есть,
@@ -1020,22 +1279,28 @@ class AcpToolServer(ToolServer):
     NodeOutcome.reply, ход вызова идёт в приёмник сессии через
     CallProgressRelay. ask() — любой другой запрос MCP (ресурсы, промпты).
     Каждый запрос несёт в _meta версию протокола, clientInfo агента и его
-    clientCapabilities.
+    clientCapabilities: формы (elicitation.form) агент объявляет, только если
+    их объявил его клиент. Просьбы сервера о вводе (input_required) приёмник
+    сессии задаёт пользователю формами `elicitation/create`, вызов
+    повторяется с ответами.
     """
 
     def __init__(  # noqa: PLR0913 — сервер собирается всеми частями сессии
         self,
         side: AgentSide,
         server: schema.AcpMcpServer,
-        sink: EventSink,
+        relay: SessionRelay,
         limits: McpClientJson,
+        mapping: AcpMapping,
         client: mt.Implementation,
         prompted: Callable[[], Awaitable[None]],
     ) -> None:
         self._side = side
         self._server = server
-        self._sink = sink
+        self._sink: EventSink = relay
+        self._relay = relay
         self._limits = limits
+        self._mapping = mapping
         self._prompted = prompted
         self._ids = IdMint()
         self._stubs = McpToolStubs()
@@ -1049,12 +1314,18 @@ class AcpToolServer(ToolServer):
         self._discovered: mt.DiscoverResult | None = None
         self._changes: asyncio.Queue[ListChange] = asyncio.Queue()
         self._tasks: list[asyncio.Task[None]] = []
+        capabilities: dict[str, Any] = {}
+        if relay.elicits:
+            capabilities = {
+                McpCapability.ELICITATION.value: {McpCapability.FORM.value: {}}
+            }
+
         self._meta: mt.RequestParamsMeta = {
             mt.PROTOCOL_VERSION_META_KEY: McpVersion.V2026_07_28.value,
             mt.CLIENT_INFO_META_KEY: client.model_dump(
                 mode="json", by_alias=True, exclude_none=True
             ),
-            mt.CLIENT_CAPABILITIES_META_KEY: {},
+            mt.CLIENT_CAPABILITIES_META_KEY: capabilities,
         }
         self._label = f"MCP server '{server.name}' (serverId '{server.server_id}')"
 
@@ -1476,13 +1747,104 @@ class AcpToolServer(ToolServer):
         return pending
 
     async def _call(self, node: DagNode) -> NodeOutcome:
-        """Один вызов `tools/call`; наружу идёт только отмена (контракт NodeBody)."""
+        """Вызов `tools/call` с раундами ввода: просьбу сервера о вводе
+        (input_required) агент задаёт пользователю формами и повторяет вызов
+        с ответами и тем же requestState, но не больше `mcp.input_rounds`
+        раз; раунды вопросов ложатся в `_meta` результата. Наружу идёт только
+        отмена (контракт NodeBody)."""
         meta = mt.RequestParamsMeta(progress_token=node.key)
         meta.update(self._meta)
         params = mt.CallToolRequestParams(
             name=self._names.tool_of(node.tool), arguments=dict(node.args), _meta=meta
         )
+        rounds: list[ElicitationRound] = []
+        asked = 0
+        while True:
+            reply = await self._requested(node, params)
+            if isinstance(reply, NodeOutcome):
+                return reply
+
+            required = reply.parsed
+            if isinstance(required, mt.CallToolResult):
+                return self._finished(node, reply, rounds)
+
+            limit = self._limits.input_rounds
+            if asked >= limit:
+                failure = ErrorResult(
+                    message=(
+                        f"{self._what(node)} asked for user input more than {limit} "
+                        "times in one call (settings mcp.input_rounds); the call "
+                        "is stopped, call the tool again with arguments that need "
+                        "less input"
+                    ),
+                    error_kind=McpFailure.TOOL_ERROR,
+                )
+                return self._outcomes.refused(node, failure)
+
+            asked += 1
+            answered = await self._answers(node, required, rounds)
+            if isinstance(answered, ErrorResult):
+                return self._outcomes.refused(node, answered)
+
+            params = params.model_copy(
+                update={
+                    "input_responses": answered,
+                    "request_state": required.request_state,
+                }
+            )
+
+    def _what(self, node: DagNode) -> str:
+        return (
+            f"calling tool {node.tool!r} (call {node.key}) on MCP server "
+            f"'{self._server.name}' (serverId '{self._server.server_id}')"
+        )
+
+    async def _requested(
+        self, node: DagNode, params: mt.CallToolRequestParams
+    ) -> CallReply | NodeOutcome:
+        """Один запрос `tools/call`: ответ сервера либо итог-отказ, если
+        ответа нет или он не по схеме."""
         request = mt.CallToolRequest(params=params)
+        what = self._what(node)
+        outcome = await self._sent(node, request)
+        if isinstance(outcome, NodeOutcome):
+            return outcome
+
+        if isinstance(outcome, McpErrorOutcome):
+            error = self._results.error(node.tool, node.key, outcome.error)
+            return self._outcomes.refused(node, error)
+
+        shown = repr(outcome.result)[:200]
+        try:
+            parsed = parse_server_result(
+                request.method, McpVersion.V2026_07_28, outcome.result
+            )
+        except (ValidationError, KeyError, ValueError) as exc:
+            failure = ErrorResult(
+                message=f"{what} expected a tools/call result, got {shown}: {exc}",
+                error_kind=McpFailure.TRANSPORT,
+            )
+            return self._outcomes.refused(node, failure)
+
+        if isinstance(parsed, mt.CallToolResult | mt.InputRequiredResult):
+            return CallReply(raw=outcome.result, parsed=parsed)
+
+        failure = ErrorResult(
+            message=(
+                f"{what} expected a tools/call result, got "
+                f"{type(parsed).__name__}: {shown}"
+            ),
+            error_kind=McpFailure.TRANSPORT,
+        )
+        built = self._outcomes.refused(node, failure)
+
+        return built.model_copy(update={"reply": outcome.result})
+
+    async def _sent(
+        self, node: DagNode, request: mt.CallToolRequest
+    ) -> McpOutcome | NodeOutcome:
+        """Запрос mcp/message с ходом вызова в срок `call_timeout_sec`; итог —
+        исход MCP либо отказ, если ответа нет."""
         message = McpMessage(
             server_id=self._server.server_id,
             request_id=self._ids.request_id(),
@@ -1490,13 +1852,10 @@ class AcpToolServer(ToolServer):
         )
         relay = CallProgressRelay(self._sink, node.key)
         limit = self._limits.call_timeout_sec
-        what = (
-            f"calling tool {node.tool!r} (call {node.key}) on MCP server "
-            f"'{self._server.name}' (serverId '{self._server.server_id}')"
-        )
+        what = self._what(node)
         try:
             async with asyncio.timeout(limit):
-                outcome = await self._side.request(message, relay.accept)
+                return await self._side.request(message, relay.accept)
         except TimeoutError:
             failure = ErrorResult(
                 message=(
@@ -1521,41 +1880,119 @@ class AcpToolServer(ToolServer):
             )
             return self._outcomes.refused(node, failure)
 
-        if isinstance(outcome, McpErrorOutcome):
-            error = self._results.error(node.tool, node.key, outcome.error)
-            return self._outcomes.refused(node, error)
-
-        shown = repr(outcome.result)[:200]
-        try:
-            parsed = parse_server_result(
-                request.method, McpVersion.V2026_07_28, outcome.result
-            )
-        except (ValidationError, KeyError, ValueError) as exc:
-            failure = ErrorResult(
-                message=f"{what} expected a tools/call result, got {shown}: {exc}",
-                error_kind=McpFailure.TRANSPORT,
-            )
-            return self._outcomes.refused(node, failure)
-
-        family: ToolResultBase
-        match parsed:
-            case mt.CallToolResult() | mt.InputRequiredResult():
-                family = self._results.result(node.tool, node.key, parsed)
-            case _:
-                family = ErrorResult(
-                    message=(
-                        f"{what} expected a tools/call result, got "
-                        f"{type(parsed).__name__}: {shown}"
-                    ),
-                    error_kind=McpFailure.TRANSPORT,
-                )
-
+    def _finished(
+        self, node: DagNode, reply: CallReply, rounds: Sequence[ElicitationRound]
+    ) -> NodeOutcome:
+        """Итог вызова по результату сервера; ответ сервера ложится как
+        пришёл, с раундами вопросов в `_meta`."""
+        family = self._results.result(node.tool, node.key, reply.parsed)
         if isinstance(family, FailureResult):
             built = self._outcomes.refused(node, family)
         else:
             built = self._outcomes.of(node, family, False)
 
-        return built.model_copy(update={"reply": outcome.result})
+        return built.model_copy(update={"reply": self._with_rounds(reply, rounds)})
+
+    @staticmethod
+    def _with_rounds(reply: CallReply, rounds: Sequence[ElicitationRound]) -> Any:
+        """Ответ сервера как пришёл; с раундами вопросов — тот же результат с
+        раундами в `_meta`."""
+        if not rounds:
+            return reply.raw
+
+        meta: dict[str, Any] = {}
+        if reply.parsed.meta is not None:
+            meta.update(reply.parsed.meta)
+
+        dumped: list[dict[str, Any]] = []
+        for asked in rounds:
+            dumped.append(
+                asked.model_dump(mode="json", by_alias=True, exclude_none=True)
+            )
+
+        meta[MetaKey.ELICITATIONS.value] = dumped
+        shown = reply.parsed.model_copy(update={"meta": meta})
+
+        return shown.model_dump(mode="json", by_alias=True, exclude_none=True)
+
+    async def _answers(
+        self,
+        node: DagNode,
+        required: mt.InputRequiredResult,
+        rounds: list[ElicitationRound],
+    ) -> dict[str, mt.InputResponse] | ErrorResult:
+        """Ответы пользователя на просьбы сервера по их ключам: каждая форма
+        уходит клиенту `elicitation/create` с именем сервера и инструмента в
+        `_meta`. Выборку (sampling), корни (roots) и форму-ссылку агент не
+        выполняет — вызов кончается ошибкой с причиной."""
+        what = self._what(node)
+        tool = self._names.tool_of(node.tool)
+        meta = {MetaKey.SERVER.value: self._server.name, MetaKey.TOOL.value: tool}
+        requests: Mapping[str, mt.InputRequest] = {}
+        if required.input_requests is not None:
+            requests = required.input_requests
+
+        responses: dict[str, mt.InputResponse] = {}
+        for key, request in requests.items():
+            if not isinstance(request, mt.ElicitRequest):
+                return ErrorResult(
+                    message=(
+                        f"{what} asked the client for {request.method} (input "
+                        f"request {key!r}); this agent answers only elicitation "
+                        "forms, sampling and roots are not supported"
+                    ),
+                    error_kind=McpFailure.TOOL_ERROR,
+                )
+
+            form = request.params
+            if not isinstance(form, mt.ElicitRequestFormParams):
+                return ErrorResult(
+                    message=(
+                        f"{what} asked the user to open a URL (input request "
+                        f"{key!r}); this agent declared form elicitation only"
+                    ),
+                    error_kind=McpFailure.TOOL_ERROR,
+                )
+
+            try:
+                requested = self._mapping.server_form(form.requested_schema)
+            except ValidationError as exc:
+                return ErrorResult(
+                    message=(
+                        f"{what} asked a form (input request {key!r}) that the "
+                        f"client cannot show: {exc}"
+                    ),
+                    error_kind=McpFailure.TOOL_ERROR,
+                )
+
+            answer = await self._relay.elicit(node.key, form.message, requested, meta)
+            content: dict[str, FormValue] = {}
+            if isinstance(answer, schema.AcceptElicitationResponse):
+                if answer.content is not None:
+                    content = dict(answer.content)
+
+            result = self._mapping.server_answer(answer)
+            rounds.append(
+                ElicitationRound(
+                    server=self._server.name,
+                    tool=tool,
+                    message=form.message,
+                    requested=requested,
+                    action=result.action,
+                    content=content,
+                )
+            )
+            responses[key] = result
+
+        return responses
+
+
+@dataclass(frozen=True)
+class CallReply:
+    """Ответ сервера на один запрос `tools/call`: как пришёл и разобранный."""
+
+    raw: Any
+    parsed: mt.CallToolResult | mt.InputRequiredResult
 
 
 class ResourceToolName(StrEnum):
@@ -2052,14 +2489,20 @@ class SessionRelay(EventSink):
     у него. Первое событие хода шлёт `state_update` `running`, итог хода —
     `usage_update`, после первого вопроса — `session_info_update` и затем
     `idle`. Вопрос `can_use_tool` уходит клиенту отдельной задачей, которую
-    снимает отмена хода. После ухода клиента приёмник отвязывается и дальше
-    молчит.
+    снимает отмена хода: разрешение — `session/request_permission`, вопрос
+    AskUserQuestion — формой `elicitation/create` с toolCallId вызова, если
+    клиент объявил формы (elicits); без них вопрос остаётся без ответа.
+    На время вопроса сессия в `requires_action`. После ухода клиента
+    приёмник отвязывается и дальше молчит.
     """
 
-    def __init__(self, session_id: str, link: ClientLink, mapping: AcpMapping) -> None:
+    def __init__(
+        self, session_id: str, link: ClientLink, mapping: AcpMapping, elicits: bool
+    ) -> None:
         self._session_id = session_id
         self._link = link
         self._mapping = mapping
+        self._elicits = elicits
         self._titles = SessionTitles()
         self._agent: Agent | None = None
         self._asks: dict[str, asyncio.Task[None]] = {}
@@ -2069,6 +2512,11 @@ class SessionRelay(EventSink):
 
     def attach(self, agent: Agent) -> None:
         self._agent = agent
+
+    @property
+    def elicits(self) -> bool:
+        """Клиент объявил формы `elicitation.form`."""
+        return self._elicits
 
     async def replay(self, updates: Sequence[Update]) -> None:
         """Воспроизведение беседы: уведомления уходят по порядку тем же
@@ -2252,10 +2700,110 @@ class SessionRelay(EventSink):
             )
 
     def _ask(self, event: ControlRequestEvent) -> None:
-        task = asyncio.create_task(
-            self._permission(event), name=f"acp-permission-{event.request_id}"
-        )
+        name = f"acp-ask-{event.request_id}"
+        if event.request.tool_name == AskUserQuestionTool.NAME:
+            task = asyncio.create_task(self._question(event), name=name)
+        else:
+            task = asyncio.create_task(self._permission(event), name=name)
+
         self._asks[event.request_id] = task
+
+    async def _question(self, event: ControlRequestEvent) -> None:
+        """Вопрос AskUserQuestion пользователю формой; ответ формы — ответ
+        ядру."""
+        agent = self._agent
+        if agent is None:
+            msg = "A question arrived before the agent was attached."
+            raise RuntimeError(msg)
+
+        try:
+            answer = await self._answered(event)
+        finally:
+            self._asks.pop(event.request_id, None)
+
+        taken = agent.answer(event.request_id, answer)
+        if not taken:
+            logger.info(
+                "session %s: the answer to question %s came after the turn moved on",
+                self._session_id,
+                event.request_id,
+            )
+
+    async def _answered(self, event: ControlRequestEvent) -> PermissionAnswer:
+        """Ответ формы на вопрос; ввод не по схеме AskUserQuestion — вопрос
+        без ответа с записью в журнал."""
+        request = event.request
+        try:
+            form = self._mapping.question_form(request)
+        except ValidationError as exc:
+            logger.error(
+                "session %s: question %s of call %s is not an AskUserQuestion input "
+                "and is left unanswered: %s",
+                self._session_id,
+                event.request_id,
+                request.tool_use_id,
+                exc,
+            )
+            return AllowAnswer()
+
+        response = await self.elicit(
+            request.tool_use_id, form.message, form.requested, {}
+        )
+
+        return self._mapping.question_answer(response, form)
+
+    async def elicit(
+        self,
+        tool_call_id: str,
+        message: str,
+        requested: schema.ElicitationSchema,
+        meta: Mapping[str, Any],
+    ) -> ElicitationAnswer:
+        """Форма `elicitation/create` клиенту в рамках вызова tool_call_id:
+        сессия на время вопроса в `requires_action`. Клиент без форм, ушедший
+        клиент и ответ ошибкой — отмена (`cancel`) с записью в журнал; снятие
+        вопроса отменой хода снимает и запрос."""
+        if not self._elicits:
+            logger.info(
+                "session %s: call %s asks the user, but the client declared no "
+                "form elicitation; the question is cancelled",
+                self._session_id,
+                tool_call_id,
+            )
+            return schema.CancelElicitationResponse()
+
+        await self._send(schema.RequiresActionSessionStateUpdate())
+        try:
+            response = await self._link.connection.create_elicitation(
+                message=message,
+                mode="form",
+                session_id=self._session_id,
+                tool_call_id=tool_call_id,
+                requested_schema=requested,
+                **meta,
+            )
+        except ConnectionError as exc:
+            logger.warning(
+                "session %s: the question of call %s cannot be asked, the client "
+                "is gone (%s); it is cancelled",
+                self._session_id,
+                tool_call_id,
+                exc,
+            )
+            return schema.CancelElicitationResponse()
+        except RequestError as exc:
+            logger.warning(
+                "session %s: the client answered the question of call %s with an "
+                "error (%s); it is cancelled",
+                self._session_id,
+                tool_call_id,
+                exc,
+            )
+            return schema.CancelElicitationResponse()
+
+        await self._send(schema.RunningSessionStateUpdate())
+
+        return response
 
     async def _permission(self, event: ControlRequestEvent) -> None:
         agent = self._agent
@@ -2375,9 +2923,11 @@ class SessionAssembly(Protocol):
         instructions: Sequence[str],
         sink: EventSink,
         resume: bool,
+        questions: bool,
     ) -> OpenedSession:
         """instructions — разделы системного промпта от серверов MCP
-        сессии сверх промпта настроек.
+        сессии сверх промпта настроек; questions — клиент объявил формы, и
+        модели предлагается собственный инструмент «вопрос пользователю».
 
         Ошибки:
         SessionOpenError — сессию открыть не удалось.
@@ -2386,13 +2936,14 @@ class SessionAssembly(Protocol):
         """
 
     @abstractmethod
-    async def observe(
+    async def observe(  # noqa: PLR0913 — наблюдатель собирается всеми частями сессии
         self,
         session_id: SessionId,
         cwd: Path,
         tools: ToolServer | None,
         instructions: Sequence[str],
         sink: EventSink,
+        questions: bool,
     ) -> ObservedSession:
         """Ошибки:
         SessionNotFoundError — записей сессии нет.
@@ -2685,6 +3236,8 @@ class AcpAgent(AcpAgentProtocol):
         self._info = info
         self._limits = limits
         self._link: ClientLink | None = None
+        self._elicits = False
+        """Клиент объявил формы `elicitation.form` в initialize."""
         self._sessions: dict[str, HeldSession] = {}
         self._mapping = AcpMapping()
         self._options = SessionOptions()
@@ -2719,6 +3272,12 @@ class AcpAgent(AcpAgentProtocol):
             info.version,
             protocol_version,
         )
+        elicitation = None
+        if capabilities is not None:
+            elicitation = capabilities.elicitation
+
+        if elicitation is not None:
+            self._elicits = elicitation.form is not None
         session = schema.SessionCapabilities(
             prompt=schema.PromptCapabilities(),
             mcp=schema.McpCapabilities(acp=schema.McpAcpCapabilities()),
@@ -2748,7 +3307,7 @@ class AcpAgent(AcpAgentProtocol):
         directory = self._directory(cwd)
         servers = self._specs.servers(self._blocks(mcp_servers))
         session_id = self._ids.uuid()
-        relay = SessionRelay(session_id, self._linked(), self._mapping)
+        relay = SessionRelay(session_id, self._linked(), self._mapping, self._elicits)
         async with AsyncExitStack() as owned:
             mcp = await self._mcp(servers, relay)
             owned.push_async_callback(mcp.close)
@@ -2760,6 +3319,7 @@ class AcpAgent(AcpAgentProtocol):
                     mcp.instructions(),
                     relay,
                     resume=False,
+                    questions=self._elicits,
                 )
             except SessionRefusedError as exc:
                 raise RequestError.invalid_params(
@@ -2802,7 +3362,13 @@ class AcpAgent(AcpAgentProtocol):
             owned.push_async_callback(mcp.close)
             for server in servers:
                 tool_server = AcpToolServer(
-                    side, server, relay, self._limits, client, mcp.announce_commands
+                    side,
+                    server,
+                    relay,
+                    self._limits,
+                    self._mapping,
+                    client,
+                    mcp.announce_commands,
                 )
                 mcp.add(tool_server)
                 try:
@@ -3032,7 +3598,7 @@ class AcpAgent(AcpAgentProtocol):
             return known
 
         stored = self._stored_id(session_id)
-        relay = SessionRelay(session_id, self._linked(), self._mapping)
+        relay = SessionRelay(session_id, self._linked(), self._mapping, self._elicits)
         async with AsyncExitStack() as owned:
             mcp = await self._mcp(servers, relay)
             owned.push_async_callback(mcp.close)
@@ -3071,7 +3637,13 @@ class AcpAgent(AcpAgentProtocol):
         instructions = mcp.instructions()
         try:
             opened = await self._assembly.open(
-                stored, directory, tools, instructions, relay, resume=True
+                stored,
+                directory,
+                tools,
+                instructions,
+                relay,
+                resume=True,
+                questions=self._elicits,
             )
         except SessionHeldError as exc:
             logger.info(
@@ -3080,7 +3652,7 @@ class AcpAgent(AcpAgentProtocol):
                 exc,
             )
             observed = await self._assembly.observe(
-                stored, directory, tools, instructions, relay
+                stored, directory, tools, instructions, relay, self._elicits
             )
 
             return ObserverSession(stored.value, observed, relay, self._mapping, mcp)
@@ -3310,7 +3882,7 @@ class AcpAgent(AcpAgentProtocol):
         meta = self._fork_meta(kwargs)
         source = self._stored_id(session_id)
         target = SessionId(value=self._ids.uuid())
-        relay = SessionRelay(target.value, self._linked(), self._mapping)
+        relay = SessionRelay(target.value, self._linked(), self._mapping, self._elicits)
         up_to = meta.up_to_message_id
         async with AsyncExitStack() as owned:
             mcp = await self._mcp(servers, relay)
@@ -3414,6 +3986,7 @@ class AcpAgent(AcpAgentProtocol):
                 mcp.instructions(),
                 relay,
                 resume=resume,
+                questions=self._elicits,
             )
         except SessionRefusedError as exc:
             await self._dropped_fork(target, exc)

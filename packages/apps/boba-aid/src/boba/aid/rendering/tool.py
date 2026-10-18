@@ -1,6 +1,7 @@
 """Элементы ленты, которым нужен объект chainlit: график plotly из фигуры
-блока ответа, карточка вьювера канваса и приложение MCP Apps у шага вызова,
-а также разбор настроек MCP Apps инструмента из его _meta.ui.
+блока ответа, карточка вьювера канваса, приложение MCP Apps у шага вызова и
+вопрос агента пользователю, а также разбор настроек MCP Apps инструмента из
+его _meta.ui.
 
 Ошибки: своих не выпускает.
 """
@@ -8,6 +9,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from enum import StrEnum
 from typing import Any, ClassVar
 
 import chainlit as cl
@@ -17,7 +19,7 @@ from pydantic import BaseModel, ConfigDict
 
 from boba.toolkit.result import VisualResult
 
-__all__ = ["AppMeta", "ChatElements", "ToolAppView"]
+__all__ = ["AppMeta", "ChatElements", "ElementName", "ToolAppView"]
 
 
 class AppMeta:
@@ -63,14 +65,19 @@ class ToolAppView(BaseModel):
     sandbox_url: str
 
 
+class ElementName(StrEnum):
+    """Свои jsx-элементы ленты: public/elements/<имя>.jsx."""
+
+    APP = "ToolApp"
+    QUESTION = "Question"
+
+
 class ChatElements:
     """Элементы ленты: cl.Plotly по фигуре plotly, jsx-компонент
-    public/elements/<имя>.jsx по карточке вьювера канваса (VisualResult) и
-    приложение MCP Apps у шага вызова (APP_ELEMENT). Создаёт его лента
-    (ChatView) и зовёт из отрисовки шагов и блоков ответа."""
-
-    APP_ELEMENT: ClassVar[str] = "ToolApp"
-    """Элемент приложения: public/elements/ToolApp.jsx."""
+    public/elements/<имя>.jsx по карточке вьювера канваса (VisualResult),
+    приложение MCP Apps у шага вызова и вопрос агента пользователю
+    (ElementName). Создаёт его лента (ChatView) и приёмник вкладки (вопрос,
+    который ждёт ответа)."""
 
     def of_result(self, result: VisualResult) -> cl.CustomElement:
         """Карточка вьювера у шага ответа."""
@@ -87,7 +94,15 @@ class ChatElements:
         props["call_id"] = call_id
         props["input"] = dict(arguments)
 
-        return cl.CustomElement(name=self.APP_ELEMENT, props=props, display="inline")
+        return cl.CustomElement(
+            name=ElementName.APP.value, props=props, display="inline"
+        )
+
+    def question(self, props: Mapping[str, Any]) -> cl.CustomElement:
+        """Вопрос агента: панель висящего вопроса либо запись ответа."""
+        return cl.CustomElement(
+            name=ElementName.QUESTION.value, props=dict(props), display="inline"
+        )
 
     def plotly(self, figure: Mapping[str, Any], title: str) -> cl.Plotly:
         """cl.Plotly из фигуры — единственное место, знающее про plotly."""

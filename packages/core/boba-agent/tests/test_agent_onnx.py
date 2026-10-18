@@ -20,7 +20,6 @@ from omegaconf import DictConfig
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from boba.agent.agent import Agent, AgentParts
-from boba.agent.control import DenyAnswer
 from boba.agent.events import TurnOutcome
 from boba.agent.history import SessionId
 from boba.agent.profile import CompactionSettings, ModelProfile, TurnLimits
@@ -95,6 +94,7 @@ def agent(  # noqa: PLR0913 — стенд собирает агента по ч
     sink: Collected,
     system_turns: bool = False,
     compaction: CompactionSettings | None = None,
+    questions: bool = True,
 ) -> Agent:
     if compaction is None:
         compaction = CompactionSettings()
@@ -110,6 +110,7 @@ def agent(  # noqa: PLR0913 — стенд собирает агента по ч
         model=providers.chat(model_profile.chat),
         sink=sink,
         version=VERSION,
+        question_tool=questions,
     )
 
     return Agent(parts)
@@ -120,23 +121,6 @@ def prompt(text: str) -> QueueEntry:
 
 
 SETTLE_TIMEOUT_SEC = 900.0
-
-
-async def deny_questions(served: Served, sink: Collected) -> None:
-    """Отвечает отказом на каждый вопрос агента наружу: на длинный промпт
-    локальная модель порой отвечает вызовом AskUserQuestion, а без ответа ход
-    ждал бы вечно."""
-    seen = 0
-    while True:
-        try:
-            question = await sink.next_question(seen)
-        except TimeoutError:
-            continue
-
-        served.agent.answer(
-            question.request_id, DenyAnswer(message="nobody answers questions here")
-        )
-        seen += 1
 
 
 async def settled(served: Served) -> None:
@@ -231,14 +215,23 @@ class TestLocalModel:
         """Длинный кириллический промпт: оценка по знакам переводит ход за
         порог сжатия раньше, чем настоящее окно модели переполняется. Сама
         локальная модель пересказ с потолком в 256 токенов обычно не
-        дописывает — тогда неудача считается, а ход продолжается без ошибок."""
+        дописывает — тогда неудача считается, а ход продолжается без ошибок.
+        Вопроса пользователю у агента нет: на длинный промпт локальная модель
+        порой отвечает вызовом AskUserQuestion, чьи аргументы не влезают в
+        потолок ответа."""
         sink = Collected()
         settings = CompactionSettings(compact_at=0.4, block_at=0.95)
         served = Served(
-            agent(agent_stand, tmp_path / "history", 256, sink, compaction=settings)
+            agent(
+                agent_stand,
+                tmp_path / "history",
+                256,
+                sink,
+                compaction=settings,
+                questions=False,
+            )
         )
         session = await served.open(SESSION, resume=False)
-        answerer = asyncio.create_task(deny_questions(served, sink))
 
         sentence = "Погода сегодня тихая, и река несёт листья к старому мосту. "
         story = sentence * 150
@@ -250,8 +243,6 @@ class TestLocalModel:
             served.agent.queue.enqueue(prompt("Ещё раз скажи «да»."))
             await settled(served)
             await served.close()
-
-        answerer.cancel()
 
         assert list(served.agent.outcomes) == [TurnOutcome.COMPLETED] * 3
         chain = session.chain()

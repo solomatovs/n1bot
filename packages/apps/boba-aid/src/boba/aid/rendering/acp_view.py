@@ -16,7 +16,12 @@
 узлов: ход узла приходит с ключом узла в `_meta`, итог узла — его блоки по
 записи списка узлов в structuredContent (NestedCallsOutput). У инструмента
 с приложением MCP Apps (секция apps сервера и _meta.ui.resourceUri) шаг
-получает элемент приложения с аргументами и итогом вызова.
+получает элемент приложения с аргументами и итогом вызова. Вызов
+собственного инструмента агента AskUserQuestion — своё сообщение основной
+ленты с элементом Question: пока вопрос ждёт ответа — строка «Question(s)» с
+мигающей точкой, после итога — запись ответа той же панелью только для
+чтения; вопросы сервера MCP, заданные в вызове (раунды в `_meta`
+результата), — такими же записями рядом с итогом вызова.
 
 Ошибки:
 ValidationError — тело уведомления из шины не по схеме ACP v2.
@@ -34,7 +39,9 @@ from acp.experimental.v2 import schema
 from chainlit.step import Step
 from pydantic import TypeAdapter, ValidationError
 
+from boba.agent.tools import AskUserQuestionTool
 from boba.aid.rendering.chat_view import ChatView, StepText
+from boba.aid.rendering.question import QuestionCard, QuestionCards
 from boba.aid.rendering.tool import AppMeta, ToolAppView
 from boba.mcp_client.client import JournalLinks, McpServerApps
 from boba.messaging import JournalOpened
@@ -50,7 +57,12 @@ from boba.toolkit.dag import (
 )
 from boba.toolkit.mcp import McpToolNames
 from boba.toolkit.wire import ResultWire
-from boba.transport.acp.protocol import IdleErrorUpdate, ToolStatus
+from boba.transport.acp.protocol import (
+    ElicitationRound,
+    IdleErrorUpdate,
+    MetaKey,
+    ToolStatus,
+)
 
 __all__ = [
     "JournalRegistry",
@@ -247,10 +259,17 @@ class UpdateView:
         self._journals = journals
         self._media = media
         self._names = McpToolNames()
+        self._cards = QuestionCards()
+        self._round_list: TypeAdapter[list[ElicitationRound]] = TypeAdapter(
+            list[ElicitationRound]
+        )
         self._turn_key: str | None = None
         self._thought_id: str | None = None
         self._answer_id: str | None = None
         self._steps: dict[str, Step] = {}
+        self._asked: dict[str, Mapping[str, Any]] = {}
+        """Идущий вызов AskUserQuestion → его ввод: по нему рисуется запись
+        ответа."""
         self._called: dict[str, str] = {}
         """Идущий вызов → имя его инструмента: агент называет инструмент
         только в первом уведомлении вызова."""
@@ -278,6 +297,7 @@ class UpdateView:
         self._thought_id = None
         self._answer_id = None
         self._steps.clear()
+        self._asked.clear()
         self._called.clear()
         self._groups.clear()
         self._view.begin_turn(key)
@@ -323,8 +343,14 @@ class UpdateView:
             await self._view.close_answer(self._turn_key)
             self._answer_id = None
 
-        for step in list(self._steps.values()):
-            await self._view.tool_stopped(step)
+        for key, step in list(self._steps.items()):
+            asked = self._asked.pop(key, None)
+            if asked is None:
+                await self._view.tool_stopped(step)
+                continue
+
+            card = self._cards.asked(asked, None, True)
+            await self._view.question_finished(step, card, key)
 
         self._steps.clear()
         self._groups.clear()
@@ -449,15 +475,12 @@ class UpdateView:
 
         group = self._groups.get(call_id)
         if group is None and call_id not in self._steps:
-            args = self._args(update.raw_input)
-            group = self._nodes_of(name, call_id, args)
-            if group is None:
-                await self._step_of(name, args, call_id)
-            else:
-                for node in group[1]:
-                    await self._step_of(node.tool, node.args, node.key)
+            group = await self._opened(name, call_id, self._args(update.raw_input))
 
-                self._groups[call_id] = group
+        asked = self._asked.get(call_id)
+        if asked is not None:
+            await self._question_update(update, status, asked)
+            return
 
         if not status.terminal:
             progress = self._content_text(update)
@@ -478,6 +501,49 @@ class UpdateView:
 
         self._groups.pop(call_id)
         await self._nodes_result(update, name, group, status)
+
+    async def _opened(
+        self, name: str, call_id: str, args: Mapping[str, Any]
+    ) -> tuple[NestedCallsFeature, Sequence[DagNode]] | None:
+        """Шаги нового вызова: вопрос пользователю, подшаги узлов вызова со
+        вложенными вызовами либо один шаг; итог — узлы вызова или None."""
+        if name == AskUserQuestionTool.NAME:
+            self._asked[call_id] = args
+            await self._close_thinking()
+            self._answer_id = None
+            card = self._cards.asking(args)
+            self._steps[call_id] = await self._view.question_asked(card, call_id)
+            return None
+
+        group = self._nodes_of(name, call_id, args)
+        if group is None:
+            await self._step_of(name, args, call_id)
+            return None
+
+        for node in group[1]:
+            await self._step_of(node.tool, node.args, node.key)
+
+        self._groups[call_id] = group
+
+        return group
+
+    async def _question_update(
+        self,
+        update: schema.SessionToolCallUpdate,
+        status: ToolStatus,
+        asked: Mapping[str, Any],
+    ) -> None:
+        """Вызов AskUserQuestion: ход работы не рисуется, конечный статус —
+        запись ответа по вводу и итогу вызова."""
+        if not status.terminal:
+            return
+
+        call_id = update.tool_call_id
+        self._called.pop(call_id, None)
+        self._asked.pop(call_id)
+        failed = status is not ToolStatus.COMPLETED
+        card = self._cards.asked(asked, update.raw_output, failed)
+        await self._view.question_finished(self._steps.pop(call_id), card, call_id)
 
     async def _step_of(self, name: str, args: Mapping[str, Any], key: str) -> Step:
         """Шаг нового вызова инструмента name с аргументами args под ключом key."""
@@ -653,6 +719,9 @@ class UpdateView:
 
             elapsed = self._elapsed(reply)
             await self._finished(step, name, call_id, journal, shown, elapsed)
+            if cards := self._rounds(reply, call_id):
+                await self._view.questions_answered(cards, call_id)
+
             return
 
         if status is not ToolStatus.COMPLETED:
@@ -709,6 +778,34 @@ class UpdateView:
             journals[address.call] = address
 
         return reply.model_copy(update={"content": shown}), journals
+
+    def _rounds(self, reply: mt.CallToolResult, call_id: str) -> list[QuestionCard]:
+        """Записи ответов на вопросы сервера MCP, заданные в вызове: раунды
+        в `_meta` результата; раунды не по форме — в журнал."""
+        meta = reply.meta
+        if meta is None:
+            return []
+
+        rounds = meta.get(MetaKey.ELICITATIONS.value)
+        if rounds is None:
+            return []
+
+        try:
+            asked = self._round_list.validate_python(rounds)
+        except ValidationError as exc:
+            logger.warning(
+                "thread %s: the question rounds of call %s are not drawn: %s",
+                self._thread_id,
+                call_id,
+                exc,
+            )
+            return []
+
+        cards: list[QuestionCard] = []
+        for each in asked:
+            cards.append(self._cards.round(each))
+
+        return cards
 
     def _elapsed(self, reply: mt.CallToolResult) -> int:
         """Длительность вызова из _meta ответа; 0 — сервер её не назвал."""

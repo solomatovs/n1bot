@@ -2658,7 +2658,11 @@ class TestStreamTools:
 
 
 class TestCoverage:
-    """Прогон вызвал каждый инструмент, который стенд отдаёт модели."""
+    """Прогон вызвал каждый инструмент, который стенд отдаёт модели.
+    Собственный инструмент агента — вопрос пользователю — вызывают тесты
+    test_question_ui.py."""
+
+    AGENT_TOOLS: ClassVar[frozenset[str]] = frozenset({"AskUserQuestion"})
 
     def test_every_stand_tool_is_called(
         self, feed: ToolFeed, stand_database: str, llm_port: int
@@ -2683,7 +2687,7 @@ class TestCoverage:
         for tool in Coverage.called | Coverage.nodes:
             called.add(call.names.full(tool))
 
-        missing = offered - called
+        missing = offered - called - self.AGENT_TOOLS
         if missing:
             raise AssertionError(f"tools without a stand call: {sorted(missing)}")
 

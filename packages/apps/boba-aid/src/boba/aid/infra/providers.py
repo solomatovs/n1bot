@@ -354,9 +354,11 @@ def agent_feeds(  # noqa: PLR0913 — фабрика собирается все
     surfaces: Annotated[TabSurfaces, Depends(thread_surfaces)],
     storage: Annotated[StorageClient, Depends(storage_provider)],
     texts: Annotated[UiText, Depends(feed_text)],
+    agent: Annotated[AgentConfig, Depends(agent_config)],
 ) -> AgentFeeds:
     """Приёмники потока агентов: ход в шину под замком треда, история — в
-    вкладку, оценки шагов — из слоя данных."""
+    вкладку, оценки шагов — из слоя данных, вопросы агента — панелью вкладки
+    со сроком [agent].question_timeout_sec."""
     parts = BusParts(
         bus=bus,
         payloads=payloads,
@@ -365,7 +367,15 @@ def agent_feeds(  # noqa: PLR0913 — фабрика собирается все
     )
 
     return AgentFeeds(
-        parts, journals, media, servers, data_layer, surfaces, storage, texts
+        parts,
+        journals,
+        media,
+        servers,
+        data_layer,
+        surfaces,
+        storage,
+        texts,
+        float(agent.question_timeout_sec),
     )
 
 

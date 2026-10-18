@@ -20,10 +20,11 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
-from typing import Any, ClassVar, Protocol
+from dataclasses import dataclass, replace
+from enum import StrEnum
+from typing import Any, ClassVar, Protocol, Self
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from boba.agent.attachments import SnapshotTool
 from boba.agent.control import (
@@ -64,12 +65,19 @@ from boba.agent.template import AgentTemplate, AgentTemplateFile
 from boba.agent.writer import RecordKeeper
 from boba.cancellation import RunCancellation, StopReason, ToolStopped
 from boba.toolkit.dag import DagNode, NodeOutcome, ToolCard, ToolHints, ToolServer
+from boba.toolkit.failure import ValidationText
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
     "AgentTools",
     "Approved",
+    "AskOption",
+    "AskOutcome",
+    "AskPick",
+    "AskQuestion",
+    "AskUserQuestionInput",
+    "AskUserQuestionOutput",
     "AskUserQuestionTool",
     "BatchOutcome",
     "CallResult",
@@ -184,73 +192,209 @@ class AskOption(BaseModel):
 
     label: str = Field(
         description=(
-            "The display text for this option that the user will see and select. "
-            "Should be concise (1-5 words) and clearly describe the choice."
+            "Текст варианта, который пользователь видит и выбирает: 1–5 слов, "
+            "ясно называющих выбор."
         )
     )
     description: str = Field(
         description=(
-            "Explanation of what this option means or what will happen if chosen. "
-            "Useful for providing context about trade-offs or implications."
+            "Что значит вариант и что будет, если его выбрать: компромиссы и "
+            "последствия."
         )
+    )
+    preview: str = Field(
+        default="",
+        description=(
+            "Предпросмотр варианта, который показывается, пока вариант в фокусе:\n"
+            "   - макет интерфейса, фрагмент кода, вариант схемы или конфигурации\n"
+            "       когда пользователю нужно сравнить варианты глазами\n"
+            "   - пусто — простой выбор, где хватает метки и описания\n"
+            "Только у вопроса с одиночным выбором; формат — в описании "
+            "инструмента."
+        ),
     )
 
 
+class AskPick(BaseModel):
+    """Выбор пользователя по одному вопросу: метки вариантов в порядке
+    отметки и свой текст «Other». other None — «Other» не выбран, пустая
+    строка — выбран без текста."""
+
+    model_config = ConfigDict(frozen=True)
+
+    labels: Sequence[str] = ()
+    other: str | None = None
+
+    def typed(self) -> bool:
+        """Ответ несёт свой текст пользователя, а не только метки."""
+        if self.other is None:
+            return False
+
+        return bool(self.other.strip())
+
+
 class AskQuestion(BaseModel):
+    """Вопрос пользователю: текст, метка вкладки и варианты ответа."""
+
     model_config = ConfigDict(frozen=True, populate_by_name=True)
+
+    OTHER: ClassVar[str] = "Other"
+    """Вариант со своим текстом: его дорисовывает клиент, модель его не пишет."""
+    JOIN: ClassVar[str] = ", "
 
     question: str = Field(
         description=(
-            "The complete question to ask the user. Should be clear, specific, and "
-            'end with a question mark. Example: "Which library should we use for '
-            'date formatting?" If multiSelect is true, phrase it accordingly, e.g. '
-            '"Which features do you want to enable?"'
+            "Полный текст вопроса: ясный, конкретный, с вопросительным знаком в "
+            "конце. Пример: «Какую библиотеку взять для форматирования дат?». "
+            "Вопрос с несколькими ответами формулируется под них: «Какие "
+            "возможности включить?»"
         )
     )
     header: str = Field(
         max_length=12,
         description=(
-            "Very short label displayed as a chip/tag (max 12 chars). Examples: "
-            '"Auth method", "Library", "Approach".'
+            "Короткая метка вопроса на его вкладке, не длиннее 12 знаков: "
+            "«Вход», «Библиотека», «Подход»."
         ),
     )
     options: Sequence[AskOption] = Field(
         min_length=2,
         max_length=4,
         description=(
-            "The available choices for this question. Must have 2-4 options. Each "
-            "option should be a distinct, mutually exclusive choice (unless "
-            "multiSelect is enabled). There should be no 'Other' option, that will "
-            "be provided automatically."
+            "Варианты ответа, от 2 до 4: каждый — отдельный выбор, при одиночном "
+            "выборе варианты исключают друг друга. Вариант «Other» со своим "
+            "текстом интерфейс добавляет сам — в список его не включай."
         ),
     )
     multi_select: bool = Field(
         default=False,
         alias="multiSelect",
         description=(
-            "Set to true to allow the user to select multiple options instead of "
-            "just one. Use when choices are not mutually exclusive."
+            "Сколько вариантов может выбрать пользователь:\n"
+            "   - false — один вариант\n"
+            "   - true — несколько, когда варианты не исключают друг друга\n"
         ),
     )
 
+    def labels(self) -> list[str]:
+        labels: list[str] = []
+        for option in self.options:
+            labels.append(option.label)
+
+        return labels
+
+    def pick(self, reply: str) -> AskPick:
+        """Выбор по ответу reply: метки через ", " в порядке отметки, свой
+        текст последним; у одиночного выбора ответ — метка либо свой текст."""
+        labels = self.labels()
+        if not self.multi_select:
+            if reply in labels:
+                return AskPick(labels=(reply,))
+
+            if reply == self.OTHER:
+                return AskPick(other="")
+
+            return AskPick(other=reply)
+
+        known = [*labels, self.OTHER]
+        picked: list[str] = []
+        rest = reply
+        while rest:
+            label = self._leading(rest, known)
+            if label is None:
+                break
+
+            picked.append(label)
+            rest = rest[len(label) :]
+            rest = rest.removeprefix(self.JOIN)
+
+        chosen = [label for label in picked if label != self.OTHER]
+        if rest:
+            return AskPick(labels=chosen, other=rest)
+
+        if self.OTHER in picked:
+            return AskPick(labels=chosen, other="")
+
+        return AskPick(labels=chosen)
+
+    def _leading(self, rest: str, known: Sequence[str]) -> str | None:
+        """Самая длинная метка, с которой начинается остаток ответа."""
+        found: str | None = None
+        for label in known:
+            whole = rest == label
+            leading = rest.startswith(label + self.JOIN)
+            if not whole and not leading:
+                continue
+
+            if found is not None and len(found) >= len(label):
+                continue
+
+            found = label
+
+        return found
+
 
 class AskUserQuestionInput(BaseModel):
-    """Ввод инструмента «вопрос пользователю»."""
+    """Ввод инструмента «вопрос пользователю»: тексты вопросов различаются,
+    метки вариантов различаются внутри вопроса."""
 
     model_config = ConfigDict(frozen=True, populate_by_name=True)
 
     questions: Sequence[AskQuestion] = Field(
         min_length=1,
         max_length=4,
-        description="Questions to ask the user (1-4 questions)",
+        description="Вопросы пользователю, от 1 до 4.",
     )
+
+    @model_validator(mode="after")
+    def _unique(self) -> Self:
+        texts: set[str] = set()
+        for question in self.questions:
+            labels = question.labels()
+            if len(set(labels)) != len(labels):
+                msg = (
+                    f"option labels must be unique within each question, got "
+                    f"{labels} for {question.question!r}"
+                )
+                raise ValueError(msg)
+
+            if question.question in texts:
+                msg = f"question texts must be unique, got {question.question!r} twice"
+                raise ValueError(msg)
+
+            texts.add(question.question)
+
+        return self
+
+
+class AskOutcome(StrEnum):
+    """Исход вопроса пользователю: ответил, отказался, ответа нет."""
+
+    ACCEPT = "accept"
+    DECLINE = "decline"
+    CANCEL = "cancel"
+
+
+class AskUserQuestionOutput(BaseModel):
+    """Итог вопроса пользователю для истории (`toolUseResult`) и ленты
+    клиента: вопросы, ответы текстом модели, выбор по каждому вопросу и
+    исход. Ключ ответов и выбора — текст вопроса."""
+
+    model_config = ConfigDict(frozen=True, populate_by_name=True)
+
+    questions: Sequence[AskQuestion]
+    answers: Mapping[str, str] = Field(default_factory=dict)
+    picks: Mapping[str, AskPick] = Field(default_factory=dict)
+    outcome: AskOutcome
 
 
 class AskUserQuestionTool(OwnTool):
-    """Инструмент «вопрос пользователю»: схема и тексты — по инструменту
-    AskUserQuestion Claude Code. Вопрос уходит наружу тем же
-    `can_use_tool`, ответы приходят в `updated_input` под ключом `answers`:
-    вопрос → ответ. Создаёт агент."""
+    """Инструмент «вопрос пользователю» (тексты — docs/prompt_assembly).
+
+    Вопрос уходит наружу тем же `can_use_tool`, ответы приходят в
+    `updated_input` под ключом `answers`: текст вопроса → ответ; отказ —
+    DenyAnswer, ответ без ответов — вопрос снят без пользователя. Итог
+    вызова — AskUserQuestionOutput. Создаёт агент."""
 
     NAME: ClassVar[str] = "AskUserQuestion"
     ANSWERS_KEY: ClassVar[str] = "answers"
@@ -278,33 +422,67 @@ class AskUserQuestionTool(OwnTool):
     async def run(
         self, call: PlannedCall, arguments: Mapping[str, Any], questioner: Questioner
     ) -> CallResult:
+        try:
+            asked = AskUserQuestionInput.model_validate(arguments)
+        except ValidationError as exc:
+            text = (
+                f"The {self.NAME} call was not shown to the user: its arguments do "
+                f"not match the tool schema: {ValidationText.of(exc)}"
+            )
+            return self._texts.failed(call, text)
+
+        shown = asked.model_dump(mode="json", by_alias=True, exclude_defaults=True)
         request = CanUseToolRequest(
-            tool_name=self.NAME, input=arguments, tool_use_id=call.block.id
+            tool_name=self.NAME, input=shown, tool_use_id=call.block.id
         )
         answer = await questioner.ask(request)
         if isinstance(answer, DenyAnswer):
-            return self._texts.rejected(call, answer.message)
+            rejected = self._texts.rejected(call, answer.message)
+            output = AskUserQuestionOutput(
+                questions=asked.questions, outcome=AskOutcome.DECLINE
+            )
+            return replace(rejected, artifact=self._dumped(output))
 
-        answers = self._answers(answer)
+        answers = self._answers(answer, asked)
         if not answers:
             text = self._templates.read(AgentTemplateFile.NO_ANSWERS)
-            return CallResult(call=call, text=text, is_error=False, artifact=text)
+            output = AskUserQuestionOutput(
+                questions=asked.questions, outcome=AskOutcome.CANCEL
+            )
+            return CallResult(
+                call=call, text=text, is_error=False, artifact=self._dumped(output)
+            )
 
         listed: list[str] = []
-        for question, reply in answers.items():
-            listed.append(f'"{question}"="{reply}"')
+        picks: dict[str, AskPick] = {}
+        template = AgentTemplateFile.ANSWERS
+        for question in asked.questions:
+            reply = answers.get(question.question)
+            if reply is None:
+                continue
 
-        text = self._templates.read(AgentTemplateFile.ANSWERS).format(
-            answers=", ".join(listed)
+            listed.append(f'"{question.question}"="{reply}"')
+            pick = question.pick(reply)
+            picks[question.question] = pick
+            if pick.typed():
+                template = AgentTemplateFile.ANSWERS_TYPED
+
+        text = self._templates.read(template).format(answers=", ".join(listed))
+        output = AskUserQuestionOutput(
+            questions=asked.questions,
+            answers=answers,
+            picks=picks,
+            outcome=AskOutcome.ACCEPT,
         )
-        artifact = {
-            "questions": list(arguments.get("questions", [])),
-            "answers": answers,
-        }
 
-        return CallResult(call=call, text=text, is_error=False, artifact=artifact)
+        return CallResult(
+            call=call, text=text, is_error=False, artifact=self._dumped(output)
+        )
 
-    def _answers(self, answer: AllowAnswer) -> dict[str, str]:
+    def _answers(
+        self, answer: AllowAnswer, asked: AskUserQuestionInput
+    ) -> dict[str, str]:
+        """Непустые ответы на заданные вопросы по их текстам."""
         updated = answer.updated_input
         if updated is None:
             return {}
@@ -314,10 +492,22 @@ class AskUserQuestionTool(OwnTool):
             return {}
 
         answers: dict[str, str] = {}
-        for question, reply in raw.items():
-            answers[str(question)] = str(reply)
+        for question in asked.questions:
+            reply = raw.get(question.question)
+            if reply is None:
+                continue
+
+            text = str(reply)
+            if not text.strip():
+                continue
+
+            answers[question.question] = text
 
         return answers
+
+    @staticmethod
+    def _dumped(output: AskUserQuestionOutput) -> dict[str, Any]:
+        return output.model_dump(mode="json", by_alias=True, exclude_defaults=True)
 
 
 class AgentTools:

@@ -187,6 +187,135 @@ button[id^="step-"] {
   border-radius: 9999px;
 }
 
+/* Вопрос агента пользователю (элемент Question).
+
+   Панель висящего вопроса встаёт вместо поля ввода (Footer), в ленте —
+   сообщение вопроса: строка с точкой (мигает, пока ждёт), потом запись ответа. Переменные --app-* — роли цветов панели на токенах темы
+   chainlit; кегль панели 13px. Правила скоупятся .q-root: preflight tailwind
+   иначе даёт кнопкам высоту строки 1.5, а svg — display: block. */
+.q-root {
+  --app-primary-foreground: hsl(var(--foreground));
+  --app-secondary-foreground: hsl(var(--muted-foreground));
+  --app-button-background: hsl(var(--primary));
+  --app-button-foreground: hsl(var(--primary-foreground));
+  --app-input-background: hsl(var(--accent));
+  --app-input-secondary-background: hsl(var(--popover));
+  --app-input-border: hsl(var(--muted-foreground) / 0.45);
+  --app-input-active-border: hsl(var(--ring));
+  --app-widget-border: hsl(var(--border));
+  --app-ghost-button-hover-background: hsl(var(--muted));
+  --app-tool-background: hsl(var(--background));
+  --app-code-background: hsl(var(--muted));
+  --app-transparent-inner-border: hsl(var(--foreground) / 0.07);
+  --app-monospace-font-family: var(--font-mono);
+  --app-monospace-font-size: 13px;
+  --corner-radius-large: calc(var(--radius) - 4px);
+  --q-font-size: 13px;
+  font-size: var(--q-font-size);
+  font-family: var(--font-sans);
+  line-height: normal;
+  color: var(--app-primary-foreground);
+  text-align: left;
+}
+.dark .q-root {
+  --app-input-background: hsl(var(--card));
+  --app-transparent-inner-border: hsl(var(--foreground) / 0.1);
+}
+.q-root button { line-height: normal; }
+.q-root svg { display: inline-block; }
+.q-dock { container: panel / inline-size; width: 100%; }
+
+.q-root .permissionRequestContainer{display:flex;background-color:var(--app-input-secondary-background);border:1px solid var(--app-input-border);border-radius:var(--corner-radius-large);overflow:hidden;outline:0;position:relative;flex-direction:column;max-height:70vh;margin-bottom:6px;padding:8px}
+.q-root .permissionRequestContainerBackground{background-color:var(--app-input-background);border-radius:var(--corner-radius-large);position:absolute;inset:0}
+.q-root .permissionRequestContainer:not(:focus-within){border-color:var(--app-input-border)}
+.q-root .permissionRequestContainer:focus-within,.q-root .permissionRequestContainer.is-focus-within{border-color:color-mix(in srgb,var(--app-input-active-border) 65%,transparent)}
+.q-root .permissionRequestContent{color:var(--app-primary-foreground);display:flex;z-index:1;flex-direction:column;flex-shrink:0;font-size:1.1em}
+.q-root .folded>.buttonContainer,.q-root .folded>.keyboardHints{display:none}
+.q-root .buttonContainer{display:flex;z-index:1;flex-direction:column;flex-shrink:0;gap:8px;min-width:0;margin-top:8px}
+.q-root .q-button{color:var(--app-primary-foreground);cursor:pointer;outline:none;font-weight:500;font-family:var(--font-sans);font-size:var(--q-font-size);background-color:#0000;box-shadow:inset 0 0 0 1px var(--app-transparent-inner-border);text-align:left;box-sizing:border-box;border-width:0;border-radius:4px;width:100%;padding:6px 8px}
+.q-root .shortcutNum{opacity:.6;padding-right:4px}
+.q-root .permissionRequestContainer[data-focused-index="0"] .buttonContainer .q-button:first-child:not(:disabled){background-color:var(--app-button-background);border:0 solid var(--app-button-background);color:var(--app-button-foreground);position:relative;font-weight:700}
+.q-root .q-button:disabled{opacity:.5;cursor:not-allowed}
+.q-root .q-button:hover:not(:disabled){filter:brightness(1.1)}
+.q-root .keyboardHints{color:var(--app-secondary-foreground);z-index:1;flex-shrink:0;margin-top:8px;font-size:.85em}
+.q-root .iconButton{color:var(--app-secondary-foreground);cursor:pointer;display:flex;background:0 0;border:none;border-radius:4px;flex-shrink:0;justify-content:center;align-items:center;padding:4px}
+.q-root .iconButton:hover,.q-root .iconButton:focus{background-color:var(--app-ghost-button-hover-background);color:var(--app-primary-foreground);outline:none}
+.q-root .iconButton:active{opacity:.8}
+.q-root .iconButton20 svg{width:20px;height:20px}
+
+.q-root .navigationBar{display:flex;flex-direction:row;align-items:center;gap:10px;min-width:0;margin-top:-4px;margin-bottom:12px;padding:4px 0}
+.q-root .navigationBarFolded{margin-bottom:-4px}
+.q-root .navTab{color:var(--app-primary-foreground);cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;background:0 0;border:none;border-bottom:2px solid #0000;flex-shrink:1;min-width:0;padding:4px 2px;font-size:.85em;font-weight:500;font-family:inherit}
+.q-root .navTab:hover{opacity:.8}
+.q-root .navTabAnswered{color:var(--app-secondary-foreground);font-weight:400}
+.q-root .navTabActive{border-bottom-color:var(--app-button-background)}
+.q-root .navTabLabel{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:120px;display:inline-block;vertical-align:bottom}
+.q-root .navSpacer{flex:1}
+.q-root .questionsContainer{display:flex;overflow-y:auto;border-top:1px solid #0000;border-bottom:1px solid #0000;flex-direction:column;gap:16px;max-height:40vh;margin:8px -8px;padding-left:8px;padding-right:8px;transition:border-color .15s ease-in-out}
+.q-root .questionsContainerOverflowTop{border-top-color:var(--app-widget-border)}
+.q-root .questionsContainerOverflowBottom{border-bottom-color:var(--app-widget-border)}
+.q-root .questionsContainerFolded{display:none}
+.q-root .questionBlock{display:flex;flex-direction:column;gap:8px}
+.q-root .questionHeader{display:flex;flex-direction:column;gap:4px}
+.q-root .questionTextLarge{color:var(--app-primary-foreground);font-size:.95em;font-weight:500}
+.q-root .optionsContainer{display:flex;flex-direction:column;gap:2px}
+.q-root .option{display:flex;cursor:pointer;background-color:#0000;border-radius:4px;flex-direction:row;align-items:flex-start;gap:10px;padding:4px}
+.q-root .option:hover{background-color:var(--app-ghost-button-hover-background)}
+.q-root .option:focus,.q-root .option.is-focus{outline:none;background-color:var(--app-ghost-button-hover-background)}
+.q-root .optionCheckbox{flex-shrink:0;align-self:center;margin-top:2px}
+.q-root .checkbox{border:1.5px solid var(--app-input-border);display:flex;background-color:#0000;border-radius:3px;justify-content:center;align-items:center;width:16px;height:16px}
+.q-root .checkboxChecked{background-color:var(--app-button-background);border-color:var(--app-button-background);color:var(--app-button-foreground)}
+.q-root .radio{border:1.5px solid var(--app-input-border);display:flex;background-color:#0000;border-radius:50%;justify-content:center;align-items:center;width:16px;height:16px}
+.q-root .radioChecked{border-color:var(--app-button-background)}
+.q-root .radioDot{background-color:var(--app-button-background);border-radius:50%;width:8px;height:8px}
+.q-root .optionContent{display:flex;flex-direction:column;flex:1;gap:0;min-width:0}
+.q-root .optionLabel{color:var(--app-primary-foreground);font-size:.9em;font-weight:500}
+.q-root .optionDescription{color:var(--app-secondary-foreground);font-size:.85em;line-height:1.4}
+.q-root .otherInput{border:1px solid var(--app-input-border);background-color:var(--app-tool-background);color:var(--app-primary-foreground);outline:none;box-sizing:border-box;border-radius:4px;width:100%;margin-top:6px;padding:6px 8px;font-size:.9em}
+.q-root .otherInput:focus-within,.q-root .otherInput.is-focus-within{border-color:var(--app-input-active-border)}
+.q-root .q-wrapper{position:relative;width:100%}
+.q-root .q-placeholder{position:absolute;color:var(--app-secondary-foreground);opacity:.7;pointer-events:none;user-select:none;top:6px;left:8px}
+.q-root .q-input{overflow-y:auto;white-space:pre-wrap;word-wrap:break-word;outline:none;max-height:120px;line-height:1.4;min-height:1.4em}
+.q-root .previewPane{overflow:auto;box-sizing:border-box;border:1px solid var(--app-widget-border);background-color:var(--app-code-background);color:var(--app-primary-foreground);outline:none;border-radius:4px;padding:0 8px 8px}
+.q-root .previewBody,.q-root .previewEmpty{font-family:var(--app-monospace-font-family);font-size:var(--app-monospace-font-size)}
+.q-root .withPreview{display:flex;overflow:hidden auto;flex-direction:column;max-height:calc(70vh - 8em);margin:0 -8px;padding:0 8px}
+.q-root .withPreview>.navigationBar{flex-shrink:0}
+.q-root .withPreview>.questionsContainer{flex:0 auto;min-height:min(7em,13vh);max-height:30vh}
+.q-root .withPreview>.previewPane{flex:0 3 min(calc(var(--preview-lines)*1.3em + 3em),35vh);min-height:min(8em,13vh);margin-bottom:8px}
+@container panel (min-width:576px){
+  .q-root .withPreview{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,3fr);overflow:visible;column-gap:12px;max-height:none;margin:0;padding:0}
+  .q-root .withPreview>.navigationBar{grid-column:1/-1}
+  .q-root .withPreview>.questionsContainer{min-height:0;max-height:40vh;margin-top:0;margin-right:0}
+  .q-root .withPreview>.previewPane{contain:size;min-height:min(calc(var(--preview-lines)*1.3em + 3em),40vh)}
+}
+.q-root .previewCaption{position:sticky;z-index:1;background-color:var(--app-code-background);color:var(--app-secondary-foreground);margin:0 -8px 4px;padding:4px 8px;font-size:.85em;top:0;left:0}
+.q-root .previewBody pre{overflow:visible;max-width:none;padding:0;margin:0;font:inherit;white-space:pre;background:none}
+.q-root .previewEmpty{color:var(--app-secondary-foreground);font-style:italic}
+.q-root .optionHighlighted{box-shadow:inset 2px 0 0 0 var(--app-button-background)}
+.q-root .statusLine svg{vertical-align:text-bottom;height:1em;width:1em;margin-left:.2em}
+.q-root .reviewBody{display:flex;flex-direction:column;gap:16px;padding:8px}
+.q-root .optionReadOnly,.q-root .optionReadOnly:hover{cursor:default;background-color:#0000}
+.q-root .optionDimmed{opacity:.6}
+.q-root .typedAnswer{white-space:pre-wrap}
+.q-root .q-typedOnly{padding:0 4px}
+
+.q-root .secondaryLine{display:inline-flex;color:var(--app-secondary-foreground);opacity:.7;flex-direction:row;align-items:flex-start;gap:4px;width:100%;margin-top:2px;margin-bottom:2px;font-size:.85em;cursor:pointer}
+.q-root .secondaryLine:hover .q-content{text-decoration:underline}
+.q-root .q-content{flex-shrink:0;width:100%}
+.q-root .toolBody{border:.5px solid var(--app-input-border);background:var(--app-tool-background);border-radius:5px;align-items:start;max-width:100%;margin:8px 0;font-size:1em}
+
+.q-root .q-source{color:var(--app-secondary-foreground);font-size:.85em;margin:0 0 8px;line-height:1.4}
+.q-root.q-review .q-source{margin:0}
+.q-root .q-heading{display:flex;align-items:center;gap:8px;line-height:1.5}
+.q-root .q-dot{flex-shrink:0;width:7px;height:7px;border-radius:50%;background-color:var(--app-secondary-foreground)}
+.q-root .q-dot-success{background-color:#74c991}
+.q-root .q-dot-failure{background-color:#c74e39}
+.q-root .q-dot-progress{animation:q-blink 1s linear infinite}
+.q-root .toolNameText{margin-right:4px;font-weight:700}
+@keyframes q-blink{0%,100%{opacity:1}50%{opacity:.2}}
+.q-root .q-source b{color:var(--app-primary-foreground);font-weight:500}
+.q-root .q-hint{color:var(--app-secondary-foreground);margin-bottom:6px}
+
 /* =========================================================
    Убираем всю обводку фокуса
    Должно стоять в конце файла.

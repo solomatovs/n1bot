@@ -384,7 +384,7 @@ class TestThreshold:
         )
         session = await served.open(SESSION, resume=False)
 
-        first = f"{FailureName.NO_USAGE.value} {call(large(17_300, 'ы'))}"
+        first = f"{FailureName.NO_USAGE.value} {call(large(15_500, 'ы'))}"
         served.agent.queue.enqueue(prompt(first))
         await served.agent.settled()
         served.agent.queue.enqueue(prompt(ScenarioName.ANSWER.value))

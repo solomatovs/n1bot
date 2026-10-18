@@ -21,7 +21,7 @@ from chainlit.session import WebsocketSession
 from chainlit.user import PersistedUser
 
 from boba.aid.agent.chat import Question
-from boba.aid.infra.session import SessionContainers
+from boba.aid.infra.session import ChainlitSession, SessionContainers
 from boba.aid.infra.socket_events import SocketEvent, SocketEvents
 from boba.stand.refs import StandRefs
 from boba.stand_core.context import CallStand
@@ -106,10 +106,24 @@ class TestLoadingSurvivesReconnect:
     """Ход живёт дольше сокета — индикатор хода обязан жить столько же."""
 
     async def test_live_turn_gets_task_start_back(
-        self, runtime_stand: StandRefs, call_stand: CallStand, session: EmittedEvents
+        self,
+        runtime_stand: StandRefs,
+        call_stand: CallStand,
+        session: EmittedEvents,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Реконнект при живом ходе: за task_end приходит task_start."""
+        """Реконнект при живом ходе: за task_end приходит task_start, а
+        висящий вопрос агента показывается вкладке заново — после clear_ask
+        chainlit."""
         connected = await _handler(SocketEvent.CONNECTED)
+        shown: list[str] = []
+
+        async def shower(ready: ChainlitSession) -> None:
+            shown.append(ready.id)
+            shown.append(ready.thread_id or "")
+            session.names.append("question shown")
+
+        monkeypatch.setattr(SocketEvents, "_SHOWER", shower)
 
         with runtime_stand.runs.open(call_stand.context(THREAD), FakeTurn()):
             await connected(SOCKET_ID)
@@ -121,6 +135,10 @@ class TestLoadingSurvivesReconnect:
         ended = session.names.index("task_end")
         if started < ended:
             raise AssertionError(f"task_start пришёл раньше task_end: {session.names}")
+
+        assert shown == [SESSION_ID, THREAD]
+        cleared = session.names.index("clear_ask")
+        assert session.names.index("question shown") > cleared, session.names
 
     async def test_idle_thread_stays_without_loading(
         self, session: EmittedEvents

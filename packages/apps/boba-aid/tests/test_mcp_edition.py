@@ -90,6 +90,15 @@ class ModelRequests:
         контекст и итоги инструментов."""
         return json.dumps(self.last()["messages"], ensure_ascii=False)
 
+    def tool_result(self) -> str:
+        """Итог последнего вызова инструмента, как его прочитала модель."""
+        for message in reversed(self.last()["messages"]):
+            if message["role"] == "tool":
+                return str(message["content"])
+
+        msg = f"the last model request carries no tool result: {self.last()}"
+        raise AssertionError(msg)
+
     def system(self) -> str:
         for message in self.last()["messages"]:
             if message["role"] == "system":
@@ -143,15 +152,18 @@ class TestAgentThroughRelay:
         self, agents: Agents, model: FakeModel
     ) -> None:
         """tools/call: ретранслятор несёт серверу clientInfo и возможности
-        агента, а сверху — расширения, которые исполняет сам чат."""
+        агента, а сверху — расширения, которые исполняет сам чат. Чат
+        объявил агенту формы, поэтому агент объявляет серверу elicitation
+        ровно с формой: ссылку (url) он не исполняет."""
         process, _, session_id = await self._session(agents, "client-info")
 
         await agents.turn(process, session_id, self._call("mcp__standard__client", {}))
 
-        read = ModelRequests(model).read()
-        assert '\\"name\\": \\"boba\\"' in read, read
-        assert "com.boba/connection-seal" in read, read
-        assert "elicitation" not in read, read
+        seen = json.loads(ModelRequests(model).tool_result())
+        assert seen["info"]["name"] == "boba", seen
+        capabilities = seen["capabilities"]
+        assert capabilities["elicitation"] == {"form": {}}, capabilities
+        assert "com.boba/connection-seal" in json.dumps(capabilities), capabilities
 
     async def test_new_tool_of_the_server_is_offered_after_the_list_changes(
         self, agents: Agents, model: FakeModel
