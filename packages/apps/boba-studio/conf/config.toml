@@ -68,7 +68,6 @@
     tools                 = ["*"]
     provider              = "${llm.main}"
     model                 = "${site.llm_model}"
-    settings              = ["*"]
     system_prompt         = "${site.llm_prompt}"
     [profiles.general.sampling]
         temperature = 0
@@ -81,7 +80,6 @@
     tools                 = ["*"]
     provider              = "${llm.ollama}"
     model                 = "${site.models.ollama}"
-    settings              = ["*"]
     system_prompt         = "${site.llm_prompt}"
     [profiles.ollama.sampling]
         think = "low"
@@ -116,7 +114,6 @@
         "web_grep_page"
     ]
     model                 = "${site.llm_model}"
-    settings              = []
     system_prompt         = "Ты поисковый ассистент BOBA: ищешь ответы в Confluence и базе знаний и отвечаешь со ссылками на источники"
     provider              = "${llm.main}"
     [profiles.search.sampling]

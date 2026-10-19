@@ -9,10 +9,9 @@ messageId агента, правка вопроса по нему ветвит �
 без среза ветки отказана и ничего не меняет; удаление треда удаляет сессию
 агента и файлы треда; элементы хода (вложение, файл итога, ссылка панели)
 после перезагрузки те же, что вживую; второй инстанс получает токены чужого хода
-по шине Postgres, оценки возвращаются к шагам; правка панели настроек пишет слои
-и перезапускает процесс агента с той же сессией без повторной ленты, а во время
-хода — после его конца. История агента — Postgres стенда билетом Kerberos, как у
-самого чата."""
+по шине Postgres, оценки возвращаются к шагам; панели настроек у вкладки нет, а
+агент работает по профилю в режиме bypassPermissions. История агента — Postgres
+стенда билетом Kerberos, как у самого чата."""
 
 from __future__ import annotations
 
@@ -21,7 +20,6 @@ import json
 import multiprocessing
 import os
 import signal
-import stat
 import sys
 import time
 from collections.abc import AsyncIterator, Iterator
@@ -302,6 +300,8 @@ class ChatSocket:
     """Шаги самого chainlit вокруг обработчиков: в ленте треда их нет."""
     TASK_END_GRACE_SEC: ClassVar[float] = 0.5
     CACHE_KEY: ClassVar[str] = "chainlitKey"
+    RESUMED: ClassVar[str] = "resume thread {thread}: session {session} is ready"
+    """Строка лога приложения о конце возврата вкладки к треду."""
 
     def __init__(self, app: StandProcess, cookie: str, thread_id: str) -> None:
         self._app = app
@@ -317,6 +317,10 @@ class ChatSocket:
         """Подключение вкладки; resumed — тред уже есть, chainlit зовёт
         on_chat_resume и завершает его событием resume_thread."""
         base = StandUrl.of(self._app.config.app_port)
+        logged = 0
+        if self._app.log_path.is_file():
+            logged = self._app.log_path.stat().st_size
+
         await self._sio.connect(
             base,
             socketio_path=f"{self._app.config.url_prefix}{self.SOCKET_PATH}",
@@ -337,10 +341,10 @@ class ChatSocket:
         # on_chat_resume заканчивается событием resume_thread
         await self.wait_task_end()
         if resumed:
-            # история воспроизводится после отправки треда вкладке и
-            # заканчивается панелью настроек с настройками сессии
-            resumed_at = await self.wait_event_index("resume_thread")
-            await self.wait_event_index("chat_settings", since=resumed_at + 1)
+            # история воспроизводится после отправки треда вкладке, её конец
+            # приложение отмечает в логе
+            await self.wait_event_index("resume_thread")
+            await self._wait_resumed(logged)
             # on_chat_resume тоже обёрнут task_start/task_end: его конец не
             # должен сойти за конец следующего хода
             while not self._task_ends.empty():
@@ -350,6 +354,25 @@ class ChatSocket:
 
         await self.wait_step_done(self.CHAT_START_STEP)
         await self.wait_task_end()
+
+    async def _wait_resumed(
+        self, since: int, timeout_sec: float = TURN_TIMEOUT_SEC
+    ) -> None:
+        """Строка лога о конце возврата этой вкладки к треду после байта since."""
+        marker = self.RESUMED.format(thread=self.thread_id, session=self.session_id)
+        expected = marker.encode()
+        deadline = time.monotonic() + timeout_sec
+        while time.monotonic() < deadline:
+            with self._app.log_path.open("rb") as handle:
+                handle.seek(since)
+                for line in handle:
+                    if expected in line:
+                        return
+
+            await asyncio.sleep(0.1)
+
+        msg = f"no log line {marker!r} in {timeout_sec}s: {self._app.tail(40)}"
+        raise AssertionError(msg)
 
     async def send(self, text: str, files: tuple[str, ...] = ()) -> str:
         """Вопрос пользователя с загруженными файлами files; итог — id его
@@ -610,10 +633,6 @@ class ChatSocket:
 
             await asyncio.sleep(0.05)
 
-    async def settings(self, form: dict[str, Any]) -> None:
-        """Форма панели настроек, как её шлёт кнопка Confirm."""
-        await self._sio.emit("chat_settings_change", form)
-
     async def _on_any(self, event: str, *args: Any) -> None:
         payload: Any = None
         if args:
@@ -768,21 +787,6 @@ class ChatRows:
 
         return int(row[0])
 
-    async def wipe_user_layers(self) -> None:
-        """Слой пользователя настроек агента общий на вход стенда: тест правки
-        настроек не должен оставить его следующим чатам."""
-        pool = AsyncPostgresPool(self._postgres)
-        await pool.open()
-        try:
-            async with pool.connection() as conn:
-                await conn.execute(
-                    sql.SQL("delete from {}.agent_user_settings").format(
-                        sql.Identifier(self._schema)
-                    )
-                )
-        finally:
-            await pool.close()
-
 
 @pytest.fixture
 def rows(
@@ -837,6 +841,27 @@ class TestConversation:
 
         complaints = app.complaints(since)
         assert not complaints, complaints
+
+    async def test_the_tab_has_no_settings_and_the_agent_bypasses_permissions(
+        self, app: StandProcess, tab: ChatSocket
+    ) -> None:
+        """Настройки агента задаёт только профиль: панели настроек вкладка не
+        получает ни при старте, ни после хода, открывшего сессию, а файл
+        настроек процесса несёт модель профиля и режим bypassPermissions."""
+        agents = AgentProcesses(app)
+        pid = await agents.await_thread(tab.thread_id)
+
+        await tab.send(f"plain {ScenarioName.ANSWER.value}")
+        await tab.wait_task_end()
+
+        assert not tab.errors(), (tab.errors(), app.tail(80))
+        assert "chat_settings" not in tab.names(), tab.trace()
+        settings = agents.of_thread(tab.thread_id)[pid]
+        body = json.loads(settings.read_text(encoding="utf-8"))
+        assert body["permissions"]["default_mode"] == "bypassPermissions"
+        assert body["permissions"]["allow_bypass"] is True
+        assert body["model"] == PROFILE
+        assert body["models"][PROFILE]["model"] == "fake-model-general"
 
     async def test_stop_cancels_the_turn(
         self, app: StandProcess, tab: ChatSocket, app_texts: UiText
@@ -2079,231 +2104,3 @@ class LlmRequests:
         assert found, f"the fake llm got no request with {marker!r}"
 
         return found[-1]
-
-
-class TestSettingsRestart:
-    """Правка панели настроек идёт единым путём: слои записаны, процесс агента
-    вкладки перезапущен из слоя чата и держит ту же сессию."""
-
-    FEED_EVENTS: ClassVar[tuple[str, ...]] = (
-        "new_message",
-        "update_message",
-        "stream_start",
-        "stream_token",
-    )
-    DEFERRED: ClassVar[str] = "aid.notice.settingsDeferred"
-
-    @pytest.fixture(autouse=True)
-    async def _own_user_layer(self, rows: ChatRows) -> AsyncIterator[None]:
-        await rows.wipe_user_layers()
-        try:
-            yield
-        finally:
-            await rows.wipe_user_layers()
-
-    @staticmethod
-    def _form(model: str, mode: str = "bypassPermissions") -> dict[str, Any]:
-        """Форма панели целиком, как её шлёт кнопка Confirm."""
-        return {
-            "agent_base_url": "",
-            "agent_api_key": "",
-            "agent_model": model,
-            "session_mode": mode,
-            "session_model": PROFILE,
-        }
-
-    @staticmethod
-    def _widgets(tab: ChatSocket, since: int = 0) -> dict[str, dict[str, Any]]:
-        """Виджеты последней панели настроек, присланной вкладке."""
-        panels = [p for e, p in tab.events[since:] if e == "chat_settings"]
-        assert panels, tab.names()
-        widgets: dict[str, dict[str, Any]] = {}
-        for panel_tab in panels[-1]:
-            for widget in panel_tab.get("inputs") or []:
-                widgets[str(widget.get("id"))] = widget
-
-        return widgets
-
-    @staticmethod
-    def _assert_private(pid: int, settings: Path, stand: Stand, cookie: str) -> None:
-        """Файл настроек нового процесса закрыт правами, секреты есть только
-        в нём: ни в argv, ни в окружении процесса их нет."""
-        assert stat.S_IMODE(settings.parent.stat().st_mode) == 0o700
-        assert stat.S_IMODE(settings.stat().st_mode) == 0o600
-
-        files = ProcFiles(pid)
-        secrets = [stand.pg_probe_password.get_secret_value()]
-        for part in cookie.split("; "):
-            secrets.append(part.partition("=")[2])
-
-        exposed = " ".join(files.cmdline()) + " ".join(files.environ().values())
-        for secret in secrets:
-            assert secret not in exposed
-
-        assert "BOBA_CONFIG_PATH" not in files.environ()
-        assert "PGPASSWORD" not in files.environ()
-
-    async def test_changed_settings_restart_the_agent_and_keep_the_session(
-        self,
-        app: StandProcess,
-        cookie: str,
-        rows: ChatRows,
-        stand: Stand,
-        llm_port: int,
-    ) -> None:
-        agents = AgentProcesses(app)
-        tab = ChatSocket(app, cookie, str(uuid4()))
-        await tab.open()
-        try:
-            first = f"before-{uuid4().hex} {ScenarioName.ANSWER.value}"
-            await tab.send(first)
-            await tab.wait_task_end()
-            assert not tab.errors(), tab.errors()
-            before = await rows.thread_meta(tab.thread_id)
-            assert before is not None
-            session_id = before[ThreadMetaField.AGENT_SESSION]
-            old_pid = await agents.await_thread(tab.thread_id)
-            old_settings = agents.of_thread(tab.thread_id)[old_pid]
-            assert self._widgets(tab)["session_mode"].get("initial") == (
-                "bypassPermissions"
-            )
-
-            mark = len(tab.events)
-            await tab.settings(self._form("fake-model-restarted", mode="default"))
-            new_pid = await agents.await_thread(tab.thread_id, other_than=old_pid)
-            await tab.wait_event_index("chat_settings", since=mark)
-            await asyncio.sleep(1.0)
-
-            assert not tab.errors(), (tab.errors(), app.tail(80))
-            assert old_pid not in agents.pids(), app.tail(60)
-            assert not old_settings.parent.exists()
-            replayed = [e for e, _ in tab.events[mark:] if e in self.FEED_EVENTS]
-            assert not replayed, tab.trace()[mark:]
-
-            new_settings = agents.of_thread(tab.thread_id)[new_pid]
-            body = json.loads(new_settings.read_text(encoding="utf-8"))
-            assert body["permissions"]["default_mode"] == "default"
-            assert body["models"][PROFILE]["model"] == "fake-model-restarted"
-            self._assert_private(new_pid, new_settings, stand, cookie)
-
-            widgets = self._widgets(tab, since=mark)
-            assert widgets["session_mode"].get("initial") == "default"
-            assert widgets["agent_model"].get("initial") == "fake-model-restarted"
-
-            second = f"after-{uuid4().hex} {ScenarioName.ANSWER.value}"
-            await tab.send(second)
-            await tab.wait_task_end()
-            assert not tab.errors(), (tab.errors(), app.tail(80))
-            after = await rows.thread_meta(tab.thread_id)
-            assert after is not None
-            assert after[ThreadMetaField.AGENT_SESSION] == session_id
-            assert set(agents.of_thread(tab.thread_id)) == {new_pid}
-
-            request = LlmRequests(llm_port).with_text(second)
-            assert request["model"] == "fake-model-restarted"
-            # сессия та же: модель видит и первый вопрос
-            assert first in json.dumps(request["messages"])
-        finally:
-            await tab.end_session()
-
-    async def test_settings_changed_during_a_turn_apply_after_it(
-        self,
-        app: StandProcess,
-        cookie: str,
-        rows: ChatRows,
-        llm_port: int,
-        app_texts: UiText,
-    ) -> None:
-        deferred = app_texts.text(self.DEFERRED)
-        agents = AgentProcesses(app)
-        tab = ChatSocket(app, cookie, str(uuid4()))
-        await tab.open()
-        try:
-            old_pid = await agents.await_thread(tab.thread_id)
-            await tab.send(f"go {ScenarioName.LONG.value}")
-            await tab.wait_event("stream_token")
-
-            await tab.settings(self._form("fake-model-deferred"))
-            deadline = time.monotonic() + 30
-            while time.monotonic() < deadline:
-                if any(deferred in str(m.get("output")) for m in tab.messages()):
-                    break
-
-                await asyncio.sleep(0.2)
-
-            notes = [m for m in tab.messages() if deferred in str(m.get("output"))]
-            assert notes, tab.trace()
-            assert set(agents.of_thread(tab.thread_id)) == {old_pid}
-
-            await tab.wait_task_end()
-            assert not tab.errors(), (tab.errors(), app.tail(80))
-            answer = tab.tokens() + "".join(
-                str(m.get("output")) for m in tab.messages()
-            )
-            assert "Result." in answer, tab.trace()
-            meta = await rows.thread_meta(tab.thread_id)
-            assert meta is not None
-            session_id = meta[ThreadMetaField.AGENT_SESSION]
-
-            new_pid = await agents.await_thread(tab.thread_id, other_than=old_pid)
-            assert old_pid not in agents.pids()
-
-            question = f"next-{uuid4().hex} {ScenarioName.ANSWER.value}"
-            await tab.send(question)
-            await tab.wait_task_end()
-            assert not tab.errors(), (tab.errors(), app.tail(80))
-            assert set(agents.of_thread(tab.thread_id)) == {new_pid}
-            again = await rows.thread_meta(tab.thread_id)
-            assert again is not None
-            assert again[ThreadMetaField.AGENT_SESSION] == session_id
-            request = LlmRequests(llm_port).with_text(question)
-            assert request["model"] == "fake-model-deferred"
-        finally:
-            await tab.end_session()
-
-    async def test_settings_of_a_fresh_chat_apply_to_the_first_question(
-        self, app: StandProcess, cookie: str, rows: ChatRows, llm_port: int
-    ) -> None:
-        agents = AgentProcesses(app)
-        tab = ChatSocket(app, cookie, str(uuid4()))
-        await tab.open()
-        try:
-            old_pid = await agents.await_thread(tab.thread_id)
-
-            await tab.settings(self._form("fake-model-first"))
-            new_pid = await agents.await_thread(tab.thread_id, other_than=old_pid)
-            assert not tab.errors(), (tab.errors(), app.tail(80))
-            assert await rows.chat_settings_rows(tab.thread_id) == 1
-
-            question = f"fresh-{uuid4().hex} {ScenarioName.ANSWER.value}"
-            await tab.send(question)
-            await tab.wait_task_end()
-            assert not tab.errors(), (tab.errors(), app.tail(80))
-            assert set(agents.of_thread(tab.thread_id)) == {new_pid}
-            request = LlmRequests(llm_port).with_text(question)
-            assert request["model"] == "fake-model-first"
-        finally:
-            await tab.end_session()
-
-    async def test_value_the_agent_did_not_offer_is_refused_without_a_restart(
-        self, app: StandProcess, cookie: str
-    ) -> None:
-        agents = AgentProcesses(app)
-        tab = ChatSocket(app, cookie, str(uuid4()))
-        await tab.open()
-        try:
-            await tab.send(f"options {ScenarioName.ANSWER.value}")
-            await tab.wait_task_end()
-            assert not tab.errors(), tab.errors()
-            pid = await agents.await_thread(tab.thread_id)
-
-            await tab.settings(self._form("fake-model-refused", mode="no-such-mode"))
-            deadline = time.monotonic() + 10
-            while time.monotonic() < deadline and not tab.errors():
-                await asyncio.sleep(0.2)
-
-            assert tab.errors(), tab.trace()
-            assert "no-such-mode" in tab.errors()[-1]
-            assert set(agents.of_thread(tab.thread_id)) == {pid}
-        finally:
-            await tab.end_session()

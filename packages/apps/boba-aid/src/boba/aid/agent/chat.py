@@ -1,7 +1,7 @@
 """Агент треда в чате aid: процесс на вкладку, id сессии в threads.meta, ход
-и его остановка, перезапуск процесса после правки настроек, удаление сессии с
-тредом; поток сессии уходит приёмнику TurnRenderer, который создаёт фабрика
-TurnRenderers (feed.py).
+и его остановка, замена вышедшего процесса, удаление сессии с тредом; поток
+сессии уходит приёмнику TurnRenderer, который создаёт фабрика TurnRenderers
+(feed.py).
 
 Ошибки:
 AcpClientError и наследники — процесс или ответ агента (client.py).
@@ -18,7 +18,7 @@ from collections.abc import Collection, Coroutine, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Protocol, TypeAlias
+from typing import Any, Protocol
 from urllib.parse import urljoin
 from uuid import UUID
 
@@ -44,12 +44,11 @@ from boba.aid.agent.client import (
 from boba.aid.agent.config import AgentConfig
 from boba.aid.agent.relay import ChatTools, McpRegistration, McpRegistrations, McpRelay
 from boba.aid.agent.settings import (
-    AgentSettingsChange,
-    AgentSettingsLayers,
     AgentSettingsTable,
     AgentWorkdirs,
     ChatAgentSettings,
     HistoryEnvironment,
+    ProfileModelSpecs,
     SettingsFileBuilder,
 )
 from boba.aid.chat.feed import QuestionBody
@@ -72,17 +71,12 @@ __all__ = [
     "AgentLaunch",
     "AgentLauncher",
     "AgentSessionMeta",
-    "AgentSettingsChanges",
-    "ConfigCategory",
-    "ConfigOption",
     "LaunchedAgent",
     "ModelContextUpdate",
     "MuteUpdates",
     "PermissionKind",
     "Question",
     "Questions",
-    "SessionOptions",
-    "SettingsOutcome",
     "StartedTurn",
     "ThreadAgent",
     "ThreadAgents",
@@ -95,12 +89,6 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
-
-ConfigOption: TypeAlias = (
-    schema.SelectSessionConfigOption
-    | schema.BooleanSessionConfigOption
-    | schema.OtherSessionConfigOption
-)
 
 
 class Question(BaseModel):
@@ -295,51 +283,6 @@ class AgentSessionMeta:
         await self._threads.upsert(change)
 
 
-class SessionOptions:
-    """Текущие настройки сессии агента (`configOptions`): их отдают ответы
-    `session/new|resume|fork`, присылает уведомление
-    `config_option_update`; читает панель настроек чата. Один объект на
-    агента треда, общий у него и у приёмника потока."""
-
-    def __init__(self) -> None:
-        self._options: list[ConfigOption] = []
-
-    @property
-    def options(self) -> Sequence[ConfigOption]:
-        return list(self._options)
-
-    def replace(self, options: Sequence[ConfigOption] | None) -> None:
-        """Полное состояние настроек; None — ответ без них (наблюдатель)."""
-        if options is None:
-            return
-
-        self._options = list(options)
-
-    def selects(self) -> Sequence[schema.SelectSessionConfigOption]:
-        """Настройки-списки: режим и модель."""
-        found: list[schema.SelectSessionConfigOption] = []
-        for option in self._options:
-            if isinstance(option, schema.SelectSessionConfigOption):
-                found.append(option)
-
-        return found
-
-    def current(self, config_id: str) -> str | None:
-        """Текущее значение настройки-списка; None — такой настройки нет."""
-        for option in self.selects():
-            if option.config_id == config_id:
-                return option.current_value
-
-        return None
-
-
-class ConfigCategory(StrEnum):
-    """Категории настроек сессии, которые различает панель."""
-
-    MODE = "mode"
-    MODEL = "model"
-
-
 class TurnRenderer(SessionUpdates, Protocol):
     """Приёмник потока сессии, который знает и о ходе вкладки: его начало,
     остановку, очистку ленты и конец воспроизведения истории. Реализует
@@ -391,10 +334,8 @@ class TurnRenderers(Protocol):
     """Фабрика приёмников потока для агентов вкладки; реализует AgentFeeds."""
 
     @abstractmethod
-    async def create(
-        self, identity: ThreadIdentity, options: SessionOptions
-    ) -> TurnRenderer:
-        """Приёмник для агента треда identity с общим состоянием настроек.
+    async def create(self, identity: ThreadIdentity) -> TurnRenderer:
+        """Приёмник для агента треда identity.
 
         Ошибки:
         McpClientError — серверы MCP профиля не открылись.
@@ -514,9 +455,10 @@ class LaunchedAgent:
 
 
 class AgentLauncher:
-    """Запуск процесса агента под тред: слой чата из Postgres → регистрации
-    серверов профиля и сервера chat → файл настроек в приватном каталоге →
-    процесс → рукопожатие.
+    """Запуск процесса агента под тред: слой чата из профиля треда (он же
+    сохраняется в Postgres для удаления треда) → регистрации серверов профиля
+    и сервера chat → файл настроек в приватном каталоге → процесс →
+    рукопожатие.
 
     Создаётся провайдером процесса; зовут ThreadAgent и ThreadDeleter.
     Регистрации выдаёт и снимает реестр McpRegistrations: каждый запуск получает
@@ -529,13 +471,14 @@ class AgentLauncher:
         config: AgentConfig,
         postgres: PostgresConfig,
         servers: McpServersConfig,
-        layers: AgentSettingsLayers,
+        table: AgentSettingsTable,
         registrations: McpRegistrations,
         relay: McpRelay,
         version: str,
     ) -> None:
         self._config = config
-        self._layers = layers
+        self._table = table
+        self._specs = ProfileModelSpecs(config.model)
         self._registrations = registrations
         self._relay = relay
         self._files = SettingsFileBuilder(config, postgres, servers)
@@ -553,19 +496,20 @@ class AgentLauncher:
         self._version = version
 
     async def prepare(self, identity: ThreadIdentity) -> AgentLaunch:
-        """Слой чата треда (у нового треда копируется из слоя пользователя):
-        то, что может отказать до остановки прежнего процесса.
+        """Слой чата треда по профилю, сохранённый для удаления треда: то, что
+        может отказать до остановки прежнего процесса.
 
         Ошибки:
         AgentSettingsError — профиль не годится агенту или называет сервер
             без секции [mcp.servers].
-        DataUnavailableError — слой настроек недоступен.
+        DataUnavailableError — слой настроек не записан.
         """
         profile = identity.profile
-        chat = await self._layers.chat_layer(
-            UUID(identity.thread_id), identity.user_id, profile.name, profile.config
-        )
+        chat = self._specs.chat_settings(profile.name, profile.config)
         mcp = self._files.mcp(profile.config.mcp)
+        await self._table.save_chat_layer(
+            UUID(identity.thread_id), identity.user_id, profile.name, chat
+        )
 
         return AgentLaunch(chat=chat, mcp=mcp)
 
@@ -659,14 +603,6 @@ class StartedTurn:
     key: str
 
 
-class SettingsOutcome(StrEnum):
-    """Что стало с процессом агента вкладки после правки настроек."""
-
-    RESTARTED = "restarted"
-    DEFERRED = "deferred"
-    SAVED = "saved"
-
-
 class ThreadAgent:
     """Агент одной вкладки треда: процесс, сессия агента и текущий ход.
 
@@ -674,9 +610,8 @@ class ThreadAgent:
     открывается `session/new` на первом вопросе или `session/resume` с
     воспроизведением при возврате к треду; правка вопроса ветвит сессию
     `session/fork`. Ход кончается idle агента (AskedQuestions.ending) либо
-    выходом процесса. Процесс заменяется новым только через restart(): запуск,
-    смена процесса и начало хода идут под одним замком вкладки, а перезапуск,
-    пришедший во время хода, ждёт его конца флагом.
+    выходом процесса. Вышедший процесс заменяется новым перед следующим ходом:
+    запуск, смена процесса и начало хода идут под одним замком вкладки.
 
     Сессия открыта у процесса только на время хода, воспроизведения и
     перезапуска: потом процесс её закрывает и отпускает замок истории, а
@@ -691,13 +626,11 @@ class ThreadAgent:
         launcher: AgentLauncher,
         meta: AgentSessionMeta,
         renderer: TurnRenderer,
-        options: SessionOptions,
     ) -> None:
         self._identity = identity
         self._launcher = launcher
         self._meta = meta
         self._renderer = renderer
-        self._options = options
         self._questions = AskedQuestions(renderer)
         self._launched: LaunchedAgent | None = None
         self._session_id: str | None = None
@@ -706,7 +639,6 @@ class ThreadAgent:
         self._active: str | None = None
         self._gate = asyncio.Lock()
         self._restart_pending = False
-        self._restarts = 0
         self._contexts: dict[str, Sequence[PromptBlock]] = {}
 
     @property
@@ -721,17 +653,6 @@ class ThreadAgent:
     def session_id(self) -> str | None:
         """Id сессии агента; None — сессия ещё не открыта."""
         return self._session_id
-
-    @property
-    def options(self) -> SessionOptions:
-        """Настройки открытой сессии; у закрытой — пустые."""
-        return self._options
-
-    @property
-    def restarts(self) -> int:
-        """Сколько раз процесс заменён новым: по счётчику обработчик хода
-        узнаёт, что отложенный перезапуск состоялся."""
-        return self._restarts
 
     @property
     def process(self) -> AgentProcess:
@@ -749,32 +670,19 @@ class ThreadAgent:
         async with self._gate:
             await self._launch(await self._launcher.prepare(self._identity))
 
-    async def restart(self) -> bool:
-        """Единая точка перезапуска процесса агента вкладки: файл настроек
-        собирается заново из слоя чата, прежний процесс закрывается, новый
+    async def _restart(self) -> None:
+        """Замена процесса под замком вкладки перед ходом: файл настроек
+        собирается заново по профилю, прежний процесс закрывается, новый
         запускается и открывает сессию треда без воспроизведения ленты
-        (`session/resume`). False — идёт ход: перезапуск отложен и состоится
-        сразу после его конца. Повторный вызов до отложенного перезапуска
-        ничего не добавляет.
+        (`session/resume`). Несостоявшаяся замена повторится перед следующим
+        ходом.
 
         Ошибки:
         AgentSettingsError, DataUnavailableError — слой чата не собран.
         AgentProcessError, AgentRequestError — процесс не запустился или
-            отказал в сессии; перезапуск повторится перед следующим ходом.
+            отказал в сессии.
         """
-        async with self._gate:
-            return await self._restart_idle()
-
-    async def _restart_idle(self) -> bool:
-        """Перезапуск под замком вкладки; при идущем ходе только ставит флаг."""
         self._restart_pending = True
-        if self._active is not None:
-            logger.info(
-                "thread %s: restart waits for the end of the turn", self.thread_id
-            )
-
-            return False
-
         launch = await self._launcher.prepare(self._identity)
         await self._close_process()
         await self._launch(launch)
@@ -784,15 +692,12 @@ class ThreadAgent:
             await self._close_session(self.process)
 
         self._restart_pending = False
-        self._restarts += 1
         logger.info(
             "thread %s: agent restarted, pid=%s, session=%s",
             self.thread_id,
             self.process.pid,
             self._session_id,
         )
-
-        return True
 
     async def _launch(self, launch: AgentLaunch) -> None:
         """Новый процесс по заготовке: файл настроек из слоя чата в свежем
@@ -818,7 +723,7 @@ class ThreadAgent:
     async def _resume(self, replay: bool) -> bool:
         """Сессия треда в процессе вкладки: с воспроизведением беседы — при
         возврате к треду (id из threads.meta), без него — открытая сессия в
-        новом процессе после перезапуска; ответ без настроек их не меняет.
+        новом процессе после перезапуска.
         False — сессии нет: открытой нет или агент её не знает, и первый
         вопрос откроет новую."""
         known = self._session_id
@@ -829,7 +734,7 @@ class ThreadAgent:
             return False
 
         try:
-            response = await self.process.resume_session(known, replay)
+            await self.process.resume_session(known, replay)
         except AgentRequestError as exc:
             if exc.code != AcpErrorCode.RESOURCE_NOT_FOUND:
                 raise
@@ -843,7 +748,6 @@ class ThreadAgent:
 
         self._session_id = known
         self._open = True
-        self._options.replace(response.config_options)
         if not replay:
             return True
 
@@ -894,9 +798,8 @@ class ThreadAgent:
         """Ход по вопросу: новая сессия на первом, ветвь на правке; ход
         кончается idle агента. Кнопка Stop снимает задачу обработчика chainlit: ход
         всё равно дожидается idle агента после отмены и отмечает его в ленте.
-        Отложенный перезапуск исполняется сразу после конца хода, а не
-        состоявшийся из-за отказа — перед началом следующего; вышедший процесс
-        (упал сам или посреди хода) заменяется новым тем же перезапуском.
+        Вышедший процесс (упал сам или посреди хода) перед ходом заменяется
+        новым; несостоявшаяся замена повторяется перед следующим ходом.
 
         Ошибки:
         AgentRequestError — агент отказал в методе сессии.
@@ -912,7 +815,7 @@ class ThreadAgent:
                 self._restart_pending = True
 
             if self._restart_pending:
-                await self._restart_idle()
+                await self._restart()
 
             turn = await self._renderer.turn_started(question, self._started(question))
             self._active = turn.session_id
@@ -1009,7 +912,6 @@ class ThreadAgent:
             session_id,
             idle.stop_reason,
         )
-        await self._restart_deferred()
 
     async def _released(self) -> None:
         """Сессия хода закрыта у процесса под замком вкладки; процесс уже
@@ -1020,14 +922,6 @@ class ThreadAgent:
                 return
 
             await self._close_session(launched.process)
-
-    async def _restart_deferred(self) -> None:
-        """Перезапуск, отложенный на время хода; без флага — ничего."""
-        async with self._gate:
-            if not self._restart_pending:
-                return
-
-            await self._restart_idle()
 
     async def question_shown(
         self, anchor: WebsocketSession, live: Collection[str]
@@ -1116,7 +1010,6 @@ class ThreadAgent:
         """Новая сессия треда: её id запоминается в threads.meta."""
         opened = await self.process.open_session()
         created = opened.session_id
-        self._options.replace(opened.config_options)
         await self._meta.remember(self.thread_id, created)
         self._session_id = created
         self._open = True
@@ -1171,7 +1064,6 @@ class ThreadAgent:
             )
             raise AcpClientError(msg) from refused
 
-        self._options.replace(branch.config_options)
         await self._meta.remember(self.thread_id, forked)
         self._session_id = forked
         self._open = True
@@ -1314,15 +1206,8 @@ class ThreadAgents:
             if known is not None:
                 return known
 
-            options = SessionOptions()
-            renderer = await self._renderers.create(identity, options)
-            agent = ThreadAgent(
-                identity,
-                self._launcher,
-                self._meta,
-                renderer,
-                options,
-            )
+            renderer = await self._renderers.create(identity)
+            agent = ThreadAgent(identity, self._launcher, self._meta, renderer)
             await agent.start()
             self._agents[identity.thread_id] = agent
             self._index.register(agent)
@@ -1376,48 +1261,6 @@ class ThreadAgents:
                 f"did not close: {'; '.join(reasons)}"
             )
             raise AgentProcessError(msg) from failures[0]
-
-
-class AgentSettingsChanges:
-    """Единый путь правки настроек агента в чате: правка панели пишется в слой
-    пользователя и в слой чата треда, после записи процесс агента вкладки
-    всегда перезапускается, чтобы работать уже из нового слоя.
-
-    Создаётся провайдером процесса; зовёт обработчик панели настроек. Слои
-    пишет AgentSettingsLayers, процесс меняет ThreadAgent.restart.
-    """
-
-    def __init__(self, layers: AgentSettingsLayers) -> None:
-        self._layers = layers
-
-    async def apply(
-        self,
-        identity: ThreadIdentity,
-        change: AgentSettingsChange,
-        agent: ThreadAgent | None,
-    ) -> SettingsOutcome:
-        """Запись правки и перезапуск агента вкладки; agent None — во вкладке
-        процесса нет, он запустится уже из нового слоя чата.
-
-        Ошибки:
-        AgentSettingsError, DataUnavailableError — слои не записаны.
-        AgentProcessError, AgentRequestError — настройки записаны,
-            перезапуск не состоялся.
-        """
-        await self._layers.change(
-            UUID(identity.thread_id),
-            identity.user_id,
-            identity.profile.name,
-            identity.profile.config,
-            change,
-        )
-        if agent is None:
-            return SettingsOutcome.SAVED
-
-        if await agent.restart():
-            return SettingsOutcome.RESTARTED
-
-        return SettingsOutcome.DEFERRED
 
 
 class ThreadDeleter(ThreadDeletionListener):

@@ -397,7 +397,7 @@ def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
     container.eager(runtime.tool_launchers)
     container.eager(runtime.tool_registry)
     # запуск агента — после реестра: ретранслятор отдаёт его инструменты сервером
-    # chat; слои настроек и запуск процессов поднимаются на старте, первая вкладка
+    # chat; таблица настроек и запуск процессов поднимаются на старте, первая вкладка
     # не ждёт DDL; индекс агентов рендереры тредов читают синхронно
     container.eager(
         providers.agent_settings_table,

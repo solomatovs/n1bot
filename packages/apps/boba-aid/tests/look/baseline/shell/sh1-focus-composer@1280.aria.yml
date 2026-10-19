@@ -1,7 +1,8 @@
 - textbox "Введите сообщение здесь..."
 - button:
   - img
-- button:
-  - img
+- paragraph: Прикрепить файлы
+- tooltip "Прикрепить файлы":
+  - paragraph: Прикрепить файлы
 - button [disabled]:
   - img

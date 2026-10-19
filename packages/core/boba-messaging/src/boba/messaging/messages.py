@@ -20,7 +20,6 @@ __all__ = [
     "AnyMessage",
     "CanvasChanged",
     "ChangeAction",
-    "ChatSettingsChanged",
     "Command",
     "CommandKind",
     "FeedbackChanged",
@@ -70,7 +69,6 @@ class MessageKind(StrEnum):
     THREAD_CHANGED = "thread_changed"
     WORKFLOW_DRAFT_CHANGED = "workflow_draft_changed"
     FEEDBACK_CHANGED = "feedback_changed"
-    CHAT_SETTINGS_CHANGED = "chat_settings_changed"
 
 
 _HOLDER_ONLY: frozenset[MessageKind] = frozenset(
@@ -331,16 +329,6 @@ class FeedbackChanged(Message):
     comment: str = ""
 
 
-class ChatSettingsChanged(Message):
-    """Пользователь сохранил настройки чата для профиля profile из сессии
-    by_session; остальные его вкладки на этом профиле пересобирают агента.
-    """
-
-    kind: Literal[MessageKind.CHAT_SETTINGS_CHANGED] = MessageKind.CHAT_SETTINGS_CHANGED
-    profile: str = Field(min_length=1)
-    by_session: str
-
-
 class StopRequested(Command):
     """Пользователь by_user попросил остановить область; просьба принята инстансом
     by_instance.
@@ -368,7 +356,6 @@ AnyMessage = Annotated[
     | ThreadChanged
     | WorkflowDraftChanged
     | FeedbackChanged
-    | ChatSettingsChanged
     | WorkflowChanged,
     Field(discriminator="kind"),
 ]

@@ -18,7 +18,6 @@ from chainlit.config import config as chainlit_config
 from boba.aid.agent.chat import (
     AgentLauncher,
     AgentSessionMeta,
-    AgentSettingsChanges,
     ThreadAgents,
     ThreadAgentsIndex,
     ThreadDeleter,
@@ -26,11 +25,7 @@ from boba.aid.agent.chat import (
 from boba.aid.agent.config import AgentConfig
 from boba.aid.agent.feed import AgentFeeds, BusParts
 from boba.aid.agent.relay import ChatTools, McpRegistrations, McpRelay
-from boba.aid.agent.settings import (
-    AgentSettingsLayers,
-    AgentSettingsTable,
-    ProfileModelSpecs,
-)
+from boba.aid.agent.settings import AgentSettingsTable
 from boba.aid.canvas.remote import RemoteJournals
 from boba.aid.canvas.tools import CanvasOpener
 from boba.aid.chat.ui_text import UiText
@@ -230,17 +225,10 @@ def agent_settings_table(
     pool: Annotated[AsyncPostgresPool, Depends(runtime.postgres_pool)],
     storage_ready: Annotated[None, Depends(harness_storage)],
 ) -> AgentSettingsTable:
-    """Слои настроек агента в схеме чата; секреты строк — под ключом
+    """Слой чата настроек агента в схеме чата; секреты строк — под ключом
     [keys].encryption."""
     cipher = SecretCipher(app_config.keys.encryption.get_secret_value())
     return AgentSettingsTable(app_config.postgres, app_config.db_schema, cipher, pool)
-
-
-def agent_settings_layers(
-    table: Annotated[AgentSettingsTable, Depends(agent_settings_table)],
-    config: Annotated[AgentConfig, Depends(agent_config)],
-) -> AgentSettingsLayers:
-    return AgentSettingsLayers(table, ProfileModelSpecs(config.model))
 
 
 def mcp_registrations() -> McpRegistrations:
@@ -292,7 +280,7 @@ def mcp_relay(  # noqa: PLR0913 — ретранслятор собираетс�
 def agent_launcher(
     app_config: Annotated[AppConfig, Depends(get_app_config)],
     config: Annotated[AgentConfig, Depends(agent_config)],
-    layers: Annotated[AgentSettingsLayers, Depends(agent_settings_layers)],
+    table: Annotated[AgentSettingsTable, Depends(agent_settings_table)],
     registrations: Annotated[McpRegistrations, Depends(mcp_registrations)],
     relay: Annotated[McpRelay, Depends(mcp_relay)],
 ) -> AgentLauncher:
@@ -302,7 +290,7 @@ def agent_launcher(
         config,
         app_config.postgres,
         app_config.mcp,
-        layers,
+        table,
         registrations,
         relay,
         version("boba-aid"),
@@ -313,13 +301,6 @@ def agent_session_meta(
     threads: Annotated[ThreadsTable, Depends(runtime.threads_table)],
 ) -> AgentSessionMeta:
     return AgentSessionMeta(threads)
-
-
-def agent_settings_changes(
-    layers: Annotated[AgentSettingsLayers, Depends(agent_settings_layers)],
-) -> AgentSettingsChanges:
-    """Единый путь правки настроек агента: слои и перезапуск процесса вкладки."""
-    return AgentSettingsChanges(layers)
 
 
 def thread_agents_index() -> ThreadAgentsIndex:
