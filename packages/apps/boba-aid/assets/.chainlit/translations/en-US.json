@@ -154,36 +154,7 @@
         },
         "settings": {
             "title": "Settings panel",
-            "customize": "Customize your chat settings here",
-            "llm": {
-                "tabs": {
-                    "agent_tab": "Agent",
-                    "session_tab": "Session"
-                },
-                "fields": {
-                    "agent_base_url": {
-                        "label": "Provider URL",
-                        "description": "Base URL of the model provider for this chat and new chats; empty keeps the profile provider."
-                    },
-                    "agent_api_key": {
-                        "label": "Provider API key",
-                        "description": "API key of the model provider for this chat and new chats; the saved key is never shown, an empty field keeps it."
-                    },
-                    "agent_model": {
-                        "label": "Model",
-                        "description": "Model name at the provider for this chat and new chats; empty keeps the profile model."
-                    },
-                    "session_mode": {
-                        "label": "Permission mode",
-                        "description": "How the agent of this chat treats tool permissions."
-                    },
-                    "session_model": {
-                        "label": "Session model",
-                        "description": "Model profile the agent of this chat answers with."
-                    }
-                },
-                "kept": "(kept)"
-            }
+            "customize": "Customize your chat settings here"
         },
         "watermark": "LLMs can make mistakes. Check important info."
     },
@@ -367,7 +338,6 @@
             "expand": "Expand"
         },
         "notice": {
-            "settingsDeferred": "Settings are saved and will apply after the current answer.",
             "profileRetired": "Chat profile \"{{retired}}\" is no longer available: this chat continues with \"{{profile}}\""
         },
         "question": {

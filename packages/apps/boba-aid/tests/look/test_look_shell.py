@@ -116,8 +116,10 @@ class ShellLook:
     FOCUS_COMPOSER: ClassVar[LookState] = LookState(
         GROUP,
         "sh1-focus-composer",
-        "Tab с клавиатуры встал на настройки чата в поле ввода",
-        "кольцо вокруг шестерёнки настроек внутри поля ввода, у самого поля рамки нет",
+        "Tab с клавиатуры встал на вложение файла в поле ввода",
+        "кольцо вокруг скрепки вложения внутри поля ввода и над ней подсказка "
+        "«Прикрепить файлы», у самого поля рамки нет; шестерёнки настроек в поле "
+        "ввода нет",
         (LookFixes.FOCUS,),
     )
 
@@ -139,7 +141,7 @@ class ShellLook:
     DIALOG: ClassVar[str] = '[role="dialog"]'
     COMPOSER: ClassVar[str] = "#message-composer"
     SEARCH: ClassVar[str] = "#search-chats-button"
-    SETTINGS: ClassVar[str] = "#chat-settings-open-modal"
+    UPLOAD: ClassVar[str] = "#upload-button"
     RING: ClassVar[str] = "solid 2px"
     LOGIN_USER: ClassVar[str] = "dev"
     THREADS: ClassVar[str] = '#thread-history [id^="thread-"]'
@@ -247,7 +249,7 @@ def test_shell_keyboard_focus(
         targets = (
             (ShellLook.README_BUTTON, ShellLook.HEADER_BOX, ShellLook.FOCUS_HEADER),
             (ShellLook.SEARCH, ShellLook.SIDEBAR_BOX, ShellLook.FOCUS_SIDEBAR),
-            (ShellLook.SETTINGS, ShellLook.COMPOSER, ShellLook.FOCUS_COMPOSER),
+            (ShellLook.UPLOAD, ShellLook.COMPOSER, ShellLook.FOCUS_COMPOSER),
         )
         for target, region, state in targets:
             look_pages.tab_to(page, target)

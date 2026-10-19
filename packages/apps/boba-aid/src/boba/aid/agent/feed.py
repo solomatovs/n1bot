@@ -54,7 +54,6 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from boba.aid.agent.chat import (
     PermissionKind,
     Question,
-    SessionOptions,
     StartedTurn,
     ThreadIdentity,
     TurnRenderer,
@@ -318,8 +317,7 @@ class AgentFeed(TurnRenderer):
 
     Живой ход (между turn_started и turn_finished) публикует уведомления в
     шину под замком области треда; остальные уведомления — воспроизведение
-    `session/resume` — рисуются переводчиком вкладки. Настройки сессии из
-    уведомлений ложатся в общее с агентом состояние SessionOptions.
+    `session/resume` — рисуются переводчиком вкладки.
     Клиент SDK обрабатывает каждое уведомление своей задачей, поэтому
     приёмник выстраивает их в порядок прихода очередью (asyncio.Lock
     отдаёт замок ждущим по порядку); конец хода и конец воспроизведения
@@ -332,13 +330,14 @@ class AgentFeed(TurnRenderer):
         schema.SessionPlanUpdate,
         schema.SessionPlanRemovedUpdate,
         schema.AvailableCommandsUpdate,
+        schema.ConfigOptionUpdate,
         schema.SessionCompactionUpdate,
         schema.SessionCompactionSummaryChunk,
         schema.RunningSessionStateUpdate,
         schema.RequiresActionSessionStateUpdate,
     )
     """Уведомления сессии, которых в ленте нет: заголовок, план, команды,
-    сжатие и состояние идущего хода."""
+    настройки сессии, сжатие и состояние идущего хода."""
 
     ABANDONED: ClassVar[str] = "turn failed"
     """Причина в итоге хода, сорвавшегося без ответа агента."""
@@ -346,7 +345,6 @@ class AgentFeed(TurnRenderer):
     def __init__(  # noqa: PLR0913 — приёмник собирается всеми своими входами
         self,
         identity: ThreadIdentity,
-        options: SessionOptions,
         replay: UpdateView,
         tab: TabSurface,
         surface: RenderSurface,
@@ -355,7 +353,6 @@ class AgentFeed(TurnRenderer):
         question_timeout_sec: float,
     ) -> None:
         self._identity = identity
-        self._options = options
         self._replay = replay
         self._tab = tab
         self._surface = surface
@@ -547,10 +544,6 @@ class AgentFeed(TurnRenderer):
             await self._update(update)
 
     async def _update(self, update: SessionUpdate) -> None:
-        if isinstance(update, schema.ConfigOptionUpdate):
-            self._options.replace(update.config_options)
-            return
-
         if isinstance(update, schema.UsageUpdate):
             logger.debug(
                 "thread %s: context %d of %d tokens",
@@ -743,9 +736,7 @@ class AgentFeeds(TurnRenderers):
         self._storage = storage
         self._question_timeout_sec = question_timeout_sec
 
-    async def create(
-        self, identity: ThreadIdentity, options: SessionOptions
-    ) -> AgentFeed:
+    async def create(self, identity: ThreadIdentity) -> AgentFeed:
         """Ошибки:
         InternalServiceError — у текущей сессии chainlit нет сокета.
         """
@@ -764,7 +755,6 @@ class AgentFeeds(TurnRenderers):
 
         return AgentFeed(
             identity,
-            options,
             replay,
             TabSurface(anchor),
             self._surfaces.thread(anchor, identity.thread_id),

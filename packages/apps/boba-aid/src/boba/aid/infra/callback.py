@@ -2,9 +2,7 @@
 
 Ход — `session/prompt` агента вкладки, лента рисуется из его уведомлений через
 шину; возврат к треду — `session/resume` после того, как chainlit отдал вкладке
-сам тред; панель настроек — слой пользователя и слой чата агента, её правка
-идёт единым путём AgentSettingsChanges с перезапуском процесса агента;
-приложения MCP Apps у шагов вызова зовут свой сервер действиями mcp_app_*.
+сам тред; приложения MCP Apps у шагов вызова зовут свой сервер действиями mcp_app_*.
 """
 
 import logging
@@ -22,7 +20,7 @@ from chainlit.config import (
     SpontaneousFileUploadFeature,
 )
 from chainlit.config import config as chainlit_config
-from chainlit.context import ChainlitContext, context, context_var
+from chainlit.context import context, context_var
 from chainlit.data.base import BaseDataLayer
 from chainlit.emitter import ChainlitEmitter
 from chainlit.session import WebsocketSession
@@ -31,12 +29,9 @@ from chainlit.utils import wrap_user_function
 from fastapi import Request, Response
 
 from boba.aid.agent.chat import (
-    AgentSettingsChanges,
     ModelContextUpdate,
     Question,
     Questions,
-    SessionOptions,
-    SettingsOutcome,
     ThreadAgent,
     ThreadAgents,
     ThreadAgentsIndex,
@@ -45,24 +40,16 @@ from boba.aid.agent.chat import (
 )
 from boba.aid.agent.client import AcpClientError
 from boba.aid.agent.config import AgentConfig
-from boba.aid.agent.panel import AgentPanel
 from boba.aid.agent.relay import AppAction, AppRequest, McpRelay
-from boba.aid.agent.settings import (
-    AgentSettingsError,
-    AgentSettingsTable,
-    ChatAgentSettings,
-)
+from boba.aid.agent.settings import AgentSettingsError
 from boba.aid.canvas.panel import PanelStorage, StreamActions
 from boba.aid.canvas.remote import RemoteJournals, RemoteStreams
 from boba.aid.canvas.tools import CanvasOpener
-from boba.aid.chat.panel_text import PanelText
 from boba.aid.chat.ui_text import UiText
 from boba.aid.domain.fields import ThreadField, ThreadMetaField
 from boba.aid.infra.config import AppConfig
 from boba.aid.infra.providers import (
     agent_config,
-    agent_settings_changes,
-    agent_settings_table,
     canvas_opener,
     chainlit_data_layer,
     chat_profiles_registry,
@@ -76,7 +63,6 @@ from boba.aid.infra.providers import (
 )
 from boba.aid.infra.session import (
     ChainlitSession,
-    SessionContainers,
     current_session,
 )
 from boba.aid.infra.socket_events import SocketEvents
@@ -100,14 +86,12 @@ from boba.identity.session import Login
 from boba.identity.token import CookieSpec
 from boba.mcp_client.client import McpCaller, McpClientError, McpServers
 from boba.messaging import (
-    ChatSettingsChanged,
-    LockToken,
     MessageBus,
     StopRequested,
 )
 from boba.runtime import providers as runtime
 from boba.runtime.config import RuntimeConfig
-from boba.runtime.di import Container, Depends, di_inject
+from boba.runtime.di import Depends, di_inject
 from boba.runtime.http import SessionCookie
 
 logger = logging.getLogger(__name__)
@@ -116,79 +100,12 @@ logger = logging.getLogger(__name__)
 class TabText(StrEnum):
     """Ключи пометок вкладке в переводах chainlit: строки — на языке вкладки."""
 
-    SETTINGS_DEFERRED = "aid.notice.settingsDeferred"
-    """Настройки сохранены и вступят после идущего хода."""
-
     PROFILE_RETIRED = "aid.notice.profileRetired"
     """Профиль треда больше не выдан: тред продолжается профилем по умолчанию."""
 
     def of(self, app_config: AppConfig, **values: object) -> str:
         texts = UiText(Path(app_config.aid.root), current_session().language)
         return texts.text(self.value, **values)
-
-
-class TabSettings:
-    """Панель настроек агента вкладки: вкладки из слоя пользователя, слоя
-    чата треда и вариантов сессии у агента вкладки.
-
-    Создают обработчики chainlit из зависимостей DI на один вызов: панель
-    шлётся при старте вкладки, после хода, открывшего сессию или
-    перезапустившего агента, после правки настроек и после возврата к треду.
-    """
-
-    def __init__(
-        self, app_config: AppConfig, registry: ChatProfiles, table: AgentSettingsTable
-    ) -> None:
-        self._app_config = app_config
-        self._registry = registry
-        self._table = table
-
-    def selected(self) -> SelectedProfile:
-        """Профиль текущей сессии.
-
-        Ошибки:
-        RefusalError — профиль не выбран или недоступен ролям пользователя.
-        """
-        session = current_session()
-
-        return self._registry.resolve(session.chat_profile, session.sign_in)
-
-    async def panel(self, agent: ThreadAgent | None) -> AgentPanel | None:
-        """Панель текущей сессии: слой пользователя, слой чата треда и
-        варианты выбора сессии у агента вкладки; None — сессия без
-        пользователя."""
-        session = current_session()
-        user_id = session.user_id
-        if user_id is None:
-            return None
-
-        selected = self.selected()
-        user = await self._table.user_layer(UUID(user_id), selected.name)
-        chat: ChatAgentSettings | None = None
-        if thread_id := session.thread_id:
-            chat = await self._table.chat_layer(UUID(thread_id))
-
-        options = SessionOptions()
-        if agent is not None:
-            options = agent.options
-
-        return AgentPanel(
-            selected.config,
-            user,
-            chat,
-            options,
-            PanelText(self._app_config.aid.root, session.language),
-        )
-
-    async def send(self, agent: ThreadAgent | None) -> None:
-        """Панель вкладке; профиль, который ничего не открывает, панели не
-        получает."""
-        panel = await self.panel(agent)
-        if panel is None:
-            return
-
-        if tabs := panel.tabs():
-            await cl.ChatSettings(tabs).send()
 
 
 class TabAgent:
@@ -201,7 +118,7 @@ class TabAgent:
     """
 
     AUTHOR: ClassVar[str] = "Agent"
-    """Подпись сообщений об агенте в ленте: отказы и пометки о настройках."""
+    """Подпись сообщений об отказах агента в ленте."""
 
     FAILURES: ClassVar[tuple[type[Exception], ...]] = (
         AcpClientError,
@@ -266,16 +183,12 @@ class TabAgent:
                 agent.thread_id,
             )
 
-    async def run(
-        self, identity: ThreadIdentity, question: Question, settings: TabSettings
-    ) -> None:
+    async def run(self, identity: ThreadIdentity, question: Question) -> None:
         """Ход по вопросу: агент вкладки получает `session/prompt`, лента
         рисуется из его уведомлений через шину; отказ агента или занятый тред
         уходят в ленту сообщением об ошибке, а при отказе правки вкладка
         сначала заново рисует беседу из истории — фронт уже обрезал её ленту;
-        не вышло и это — в сообщении обе причины. Первая сессия треда
-        открывает настройки сессии, а конец хода исполняет отложенный
-        перезапуск агента — в обоих случаях панель присылается заново."""
+        не вышло и это — в сообщении обе причины."""
         thread_id = identity.thread_id
 
         ThreadRoom.activate(thread_id)
@@ -292,8 +205,6 @@ class TabAgent:
             await self.failed(str(exc))
             return
 
-        had_options = bool(agent.options.options)
-        restarts = agent.restarts
         try:
             asked = question
             if question.edited:
@@ -303,18 +214,6 @@ class TabAgent:
         except self.FAILURES as exc:
             logger.error("thread %s: turn %s failed: %s", thread_id, question.key, exc)
             await self.failed(await self._redrawn(agent, question, exc))
-            return
-
-        opened = False
-        if not had_options:
-            opened = bool(agent.options.options)
-
-        if opened:
-            await settings.send(agent)
-            return
-
-        if agent.restarts != restarts:
-            await settings.send(agent)
 
     async def _redrawn(
         self, agent: ThreadAgent, question: Question, failure: Exception
@@ -363,39 +262,35 @@ class TabAgent:
 
 @chainlit_error_ctx_handler
 @di_inject
-async def on_message(  # noqa: PLR0913 — зависимости обработчика
+async def on_message(
     msg: cl.Message,
     selected: Annotated[SelectedProfile, Depends(session_profile, scope="session")],
     config: Annotated[AgentConfig, Depends(agent_config)],
     agents: Annotated[ThreadAgents, Depends(thread_agents, scope="session")],
-    app_config: Annotated[AppConfig, Depends(get_app_config)],
     registry: Annotated[ChatProfiles, Depends(chat_profiles_registry)],
-    table: Annotated[AgentSettingsTable, Depends(agent_settings_table)],
 ):
     """Ход по новому вопросу вкладки."""
     tab = TabAgent(agents, registry)
     identity = tab.identity(selected)
     question = tab.question(msg, identity, config.public_url)
 
-    await tab.run(identity, question, TabSettings(app_config, registry, table))
+    await tab.run(identity, question)
 
 
 @chainlit_error_ctx_handler
 @di_inject
-async def on_edit(  # noqa: PLR0913 — зависимости обработчика
+async def on_edit(
     question: Question,
     selected: Annotated[SelectedProfile, Depends(session_profile, scope="session")],
     agents: Annotated[ThreadAgents, Depends(thread_agents, scope="session")],
-    app_config: Annotated[AppConfig, Depends(get_app_config)],
     registry: Annotated[ChatProfiles, Depends(chat_profiles_registry)],
-    table: Annotated[AgentSettingsTable, Depends(agent_settings_table)],
 ):
     """Ход по правленому вопросу вкладки: тот же путь, что у нового вопроса;
     вложения правленого вопроса агент вкладки берёт из своей беседы."""
     tab = TabAgent(agents, registry)
     identity = tab.identity(selected)
 
-    await tab.run(identity, question, TabSettings(app_config, registry, table))
+    await tab.run(identity, question)
 
 
 @di_inject
@@ -505,52 +400,12 @@ class ProfileUploads:
         return files is not None
 
 
-class SettingsRefresh:
-    """Чужая вкладка пользователя после сохранения настроек: если она на том же
-    профиле — панель заново, со свежим слоем пользователя. Агент её треда не
-    перезапускается: слой чата у каждого треда свой.
-
-    Ставит его ChatCallbacks.install в комнату пользователя (UserRoom); зависимости
-    берёт из корневого контейнера, агента вкладки — из её контейнера сессии.
-    """
-
-    async def apply(self, socket: WebsocketSession, profile: str) -> None:
-        root = Container.require_root("settings refresh")
-        settings = TabSettings(
-            root.resolved(get_app_config),
-            root.resolved(chat_profiles_registry),
-            root.resolved(agent_settings_table),
-        )
-        token = context_var.set(ChainlitContext(socket, ChainlitEmitter(socket)))
-        try:
-            if settings.selected().name != profile:
-                return
-
-            await settings.send(self._tab_agent(current_session()))
-        finally:
-            context_var.reset(token)
-
-    @staticmethod
-    def _tab_agent(session: ChainlitSession) -> ThreadAgent | None:
-        """Агент треда вкладки; None — у вкладки нет треда или агента."""
-        thread_id = session.thread_id
-        if thread_id is None:
-            return None
-
-        container = SessionContainers.of(session.id)
-        agents = container.resolved(thread_agents, scope="session")
-
-        return agents.of_thread(thread_id)
-
-
 @cl.on_chat_start
 @chainlit_error_ctx_handler
 @di_inject
 async def on_chat_start(
-    app_config: Annotated[AppConfig, Depends(get_app_config)],
     registry: Annotated[ChatProfiles, Depends(chat_profiles_registry)],
     agents: Annotated[ThreadAgents, Depends(thread_agents, scope="session")],
-    table: Annotated[AgentSettingsTable, Depends(agent_settings_table)],
 ):
     session = current_session()
 
@@ -578,75 +433,9 @@ async def on_chat_start(
     if user_id := session.user_id:
         UserRoom.join(UUID(user_id))
 
-    # профиль без разрешённых настроек панель не показывает
-    await TabSettings(app_config, registry, table).send(None)
-
     # процесс агента поднимается вместе с вкладкой: первый вопрос его не ждёт
     if session.thread_id:
         await TabAgent(agents, registry).start(session)
-
-
-@chainlit_error_ctx_handler
-@di_inject
-async def on_settings_update(  # noqa: PLR0913 — зависимости обработчика
-    settings: dict[str, Any],
-    app_config: Annotated[AppConfig, Depends(get_app_config)],
-    registry: Annotated[ChatProfiles, Depends(chat_profiles_registry)],
-    table: Annotated[AgentSettingsTable, Depends(agent_settings_table)],
-    agents: Annotated[ThreadAgents, Depends(thread_agents, scope="session")],
-    changes: Annotated[AgentSettingsChanges, Depends(agent_settings_changes)],
-    bus: Annotated[MessageBus, Depends(runtime.message_bus)],
-):
-    """Форма панели разбирается в правку настроек и уходит единому пути
-    AgentSettingsChanges: слои записаны, процесс агента вкладки перезапущен
-    либо ждёт конца идущего хода — тогда об этом пометка в ленте. Отказ
-    разбора или перезапуска уходит в ленту сообщением об ошибке."""
-    session = current_session()
-    user_id = session.user_id
-    if user_id is None:
-        logger.warning(
-            "settings update: chainlit session %r has no user, ignored", session.id
-        )
-        return
-
-    panel_of = TabSettings(app_config, registry, table)
-    tab = TabAgent(agents, registry)
-    selected = panel_of.selected()
-    identity = tab.identity(selected)
-    agent = agents.of_thread(identity.thread_id)
-    panel = await panel_of.panel(agent)
-    if panel is None:
-        return
-
-    try:
-        outcome = await changes.apply(identity, panel.parse(settings), agent)
-    except TabAgent.FAILURES as exc:
-        logger.error(
-            "thread %s: settings of profile %s are not applied: %s",
-            identity.thread_id,
-            selected.name,
-            exc,
-        )
-        await tab.failed(str(exc))
-        return
-
-    if outcome is SettingsOutcome.DEFERRED:
-        notice = TabText.SETTINGS_DEFERRED.of(app_config)
-        await cl.Message(content=notice, author=TabAgent.AUTHOR).send()
-
-    # панель показывает сохранённое; после перезапуска — с настройками сессии
-    await panel_of.send(agent)
-
-    # остальные вкладки пользователя узнают о настройках из его области
-    changed = ChatSettingsChanged(profile=selected.name, by_session=session.id)
-    await bus.publish(Scope.user(UUID(user_id)), changed, LockToken.local())
-
-    logger.info(
-        "settings saved: thread=%s, profile=%s, outcome=%s",
-        identity.thread_id,
-        selected.name,
-        outcome.value,
-    )
 
 
 @cl.on_logout
@@ -921,12 +710,11 @@ async def on_app_context(
 @cl.on_chat_resume
 @chainlit_error_ctx_handler
 @di_inject
-async def on_chat_resume(  # noqa: PLR0913 — зависимости обработчика
+async def on_chat_resume(
     thread_dict: ThreadDict,
     app_config: Annotated[AppConfig, Depends(get_app_config)],
     registry: Annotated[ChatProfiles, Depends(chat_profiles_registry)],
     agents: Annotated[ThreadAgents, Depends(thread_agents, scope="session")],
-    table: Annotated[AgentSettingsTable, Depends(agent_settings_table)],
     bus: Annotated[MessageBus, Depends(runtime.message_bus)],
 ):
     """Вкладка вернулась к треду.
@@ -963,22 +751,20 @@ async def on_chat_resume(  # noqa: PLR0913 — зависимости обраб
         await context.emitter.send_toast(notice, "warning")
 
     tab = TabAgent(agents, registry)
-    settings = TabSettings(app_config, registry, table)
-    await ThreadResume(tab, settings, bus).enter(thread_dict[ThreadField.ID])
+    await ThreadResume(tab, bus).enter(thread_dict[ThreadField.ID])
 
 
 class ThreadResume:
     """Возврат вкладки к треду: комнаты, агент вкладки и воспроизведение
     истории `session/resume` после того, как chainlit отдал вкладке тред (шагов
-    в нём нет: их рисует воспроизведение), затем панель настроек с
-    настройками сессии. Ход треда, идущий где-то ещё, вкладка догоняет.
+    в нём нет: их рисует воспроизведение). Ход треда, идущий где-то ещё,
+    вкладка догоняет.
 
     Создаёт его обработчик on_chat_resume на один возврат.
     """
 
-    def __init__(self, tab: TabAgent, settings: TabSettings, bus: MessageBus) -> None:
+    def __init__(self, tab: TabAgent, bus: MessageBus) -> None:
         self._tab = tab
-        self._settings = settings
         self._bus = bus
 
     async def enter(self, thread_id: str) -> None:
@@ -1005,7 +791,7 @@ class ThreadResume:
                 await self._tab.load(agent)
 
             await self._follow_live_turn(socket, thread_id)
-            await self._settings.send(agent)
+            logger.info("resume thread %s: session %s is ready", thread_id, socket.id)
 
         ResumeEmitter(socket, after_resume).install()
 
@@ -1033,7 +819,8 @@ class ThreadResume:
 
 class ResumeEmitter(ChainlitEmitter):
     """Эмиттер обработчика возврата к треду: после отправки треда вкладке
-    (resume_thread) исполняет отложенное — воспроизведение истории и панель.
+    (resume_thread) исполняет отложенное — воспроизведение истории и
+    догон идущего хода.
     Раньше отправки шаги воспроизведения пропали бы: фронт заменяет ленту
     шагами треда."""
 
@@ -1056,16 +843,13 @@ class ResumeEmitter(ChainlitEmitter):
 
 class ChatCallbacks:
     """Обработчики чата, которые chainlit и сокет берут не декоратором:
-    вопрос, правка вопроса, правка настроек, висящий вопрос агента вкладке,
-    подключившейся к треду, и обновление чужих вкладок пользователя. Ставит
+    вопрос, правка вопроса и висящий вопрос агента вкладке, подключившейся к
+    треду. Ставит
     их bootstrap один раз на процесс; остальные обработчики модуля
     регистрируются декораторами chainlit при импорте.
     """
 
     def install(self) -> None:
         chainlit_config.code.on_message = wrap_user_function(on_message)
-        # без task-обёртки chainlit: её task_end погасил бы индикатор идущего хода
-        chainlit_config.code.on_settings_update = wrap_user_function(on_settings_update)
         SocketEvents.on_edit(on_edit)
         SocketEvents.on_ready(show_question)
-        UserRoom.on_settings(SettingsRefresh().apply)

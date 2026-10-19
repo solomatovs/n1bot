@@ -1,15 +1,15 @@
-"""Настройки агента: слои пользователь → чат в Postgres стенда с шифрованием
-секретов, правка панели в оба слоя, файл настроек по форме агента в приватном
-каталоге 0700/0600 без серверов MCP, хуков и области вызовов, строка
-подключения истории, и рукопожатие настоящего `boba acp` v2 по этому файлу —
-секреты не попадают в argv и окружение ребёнка, каталог удаляется с
-процессом."""
+"""Настройки агента: слой чата из профиля в Postgres стенда с шифрованием
+секретов, файл настроек по форме агента в приватном каталоге 0700/0600 без
+серверов MCP, хуков и области вызовов, строка подключения истории, и
+рукопожатие настоящего `boba acp` v2 по этому файлу — секреты не попадают в
+argv и окружение ребёнка, каталог удаляется с процессом."""
 
 from __future__ import annotations
 
 import asyncio
 import json
 import os
+import signal
 import stat
 import sys
 from collections.abc import AsyncIterator
@@ -18,7 +18,7 @@ from importlib.resources import files
 from ipaddress import ip_address
 from pathlib import Path
 from typing import Any, ClassVar
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import mcp_types as mt
 import pytest
@@ -40,16 +40,13 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 from psycopg import sql
 from psycopg.types.json import Jsonb
-from pydantic import SecretStr
 
 from boba.agent.profile import ReasoningReturn
-from boba.agent.records import PermissionMode
-from boba.agent.settings import PermissionSettings
 from boba.aid.agent.chat import (
+    AgentLaunch,
     AgentLauncher,
     AgentSessionMeta,
     Question,
-    SessionOptions,
     ThreadAgent,
     ThreadIdentity,
 )
@@ -66,15 +63,12 @@ from boba.aid.agent.config import (
     PostgresAgentHistory,
 )
 from boba.aid.agent.settings import (
-    AgentSettingsChange,
     AgentSettingsError,
-    AgentSettingsLayers,
     AgentSettingsTable,
     AgentWorkdirs,
     HistoryEnvironment,
     ProfileModelSpecs,
     SettingsFileBuilder,
-    UserAgentSettings,
 )
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.chat.profiles import ChatProfileConfig, SelectedProfile
@@ -140,165 +134,123 @@ def specs() -> ProfileModelSpecs:
     return ProfileModelSpecs(model)
 
 
-class TestLayers:
-    """Слои настроек: профиль чата → слой пользователя → копия в слой чата."""
+class TestChatLayer:
+    """Слой чата: запуск агента собирает его из профиля чата, сохраняет для
+    удаления треда и шифрует секреты строки."""
 
-    async def test_chat_layer_is_copied_from_the_user_layer_once(
-        self, table: AgentSettingsTable, specs: ProfileModelSpecs
+    async def test_launch_takes_the_profile_over_the_stored_row(
+        self,
+        tmp_path: Path,
+        stand: Stand,
+        table: AgentSettingsTable,
+        auth_token: str,
     ) -> None:
-        layers = AgentSettingsLayers(table, specs)
-        user_id = uuid4()
-        thread_id = uuid4()
-        profile = SignInStand.profile()
-
-        await table.save_user_layer(
-            user_id,
-            SignInStand.PROFILE,
-            UserAgentSettings(model="user-picked", api_key=SecretStr("user-key")),
+        """Сохранённая строка треда с другой моделью и ключом запуск не
+        трогает: слой берётся из профиля и заменяет строку."""
+        identity = self._identity(SignInStand.profile())
+        thread_id = UUID(identity.thread_id)
+        stored = FakeModel().chat_settings("stale prompt")
+        await table.save_chat_layer(
+            thread_id, identity.user_id, SignInStand.PROFILE, stored
         )
 
-        chat = await layers.chat_layer(thread_id, user_id, SignInStand.PROFILE, profile)
-        assert chat.model.model == "user-picked"
-        assert chat.model.provider.api_key is not None
-        assert chat.model.provider.api_key.get_secret_value() == "user-key"
+        launch = await self._prepare(tmp_path, stand, table, identity)
+
+        chat = launch.chat
+        assert chat.model_name == SignInStand.PROFILE
+        assert chat.model.model == SignInStand.profile().model
         assert chat.model.provider.base_url == "https://fake-llm/v1"
         assert chat.system_prompt == "stand"
-
-        # слой пользователя сменился, слой чата живёт своей жизнью
-        await table.save_user_layer(
-            user_id, SignInStand.PROFILE, UserAgentSettings(model="changed-later")
-        )
-        again = await layers.chat_layer(
-            thread_id, user_id, SignInStand.PROFILE, profile
-        )
-        assert again == chat
-
-        fresh = await layers.chat_layer(uuid4(), user_id, SignInStand.PROFILE, profile)
-        assert fresh.model.model == "changed-later"
+        assert await table.chat_layer(thread_id) == chat
 
     async def test_secrets_are_encrypted_at_rest(
         self, table: AgentSettingsTable, pool: AsyncPostgresPool
     ) -> None:
-        user_id = uuid4()
-        await table.save_user_layer(
-            user_id, "general", UserAgentSettings(api_key=SecretStr("sk-very-secret"))
-        )
+        thread_id = uuid4()
+        chat = FakeModel().chat_settings()
+        await table.save_chat_layer(thread_id, uuid4(), "general", chat)
         async with pool.connection() as conn:
             row = await conn.execute(
-                sql.SQL("select settings::text from {}.agent_user_settings").format(
-                    sql.Identifier(SCHEMA)
-                )
+                sql.SQL(
+                    "select settings::text from {}.agent_chat_settings "
+                    "where thread_id = %s"
+                ).format(sql.Identifier(SCHEMA)),
+                (thread_id,),
             )
             fetched = await row.fetchone()
 
         assert fetched is not None
         raw = fetched[0]
-        assert "sk-very-secret" not in raw
+        assert API_KEY not in raw
         assert "enc:v1:" in raw
 
-        loaded = await table.user_layer(user_id, "general")
-        assert loaded.api_key is not None
-        assert loaded.api_key.get_secret_value() == "sk-very-secret"
+        loaded = await table.chat_layer(thread_id)
+        assert loaded == chat
 
-    async def test_missing_rows_read_as_empty_layers(
-        self, table: AgentSettingsTable
-    ) -> None:
-        assert await table.user_layer(uuid4(), "general") == UserAgentSettings()
+    async def test_missing_row_reads_as_none(self, table: AgentSettingsTable) -> None:
         assert await table.chat_layer(uuid4()) is None
 
         thread_id = uuid4()
         await table.delete_chat_layer(thread_id)
         assert await table.chat_layer(thread_id) is None
 
-    async def test_retired_keys_of_a_stored_user_layer_are_ignored(
+    async def test_stored_permission_mode_is_dropped_on_read(
         self, table: AgentSettingsTable, pool: AsyncPostgresPool
     ) -> None:
-        """Строка прошлой версии с дополнением системного промпта читается:
-        снятый ключ отбрасывается, остальные поля на месте."""
-        user_id = uuid4()
+        """Строка с режимом разрешений, выбранным пользователем, читается: режим
+        отбрасывается, остальные поля на месте."""
+        thread_id = uuid4()
+        chat = FakeModel().chat_settings()
+        await table.save_chat_layer(thread_id, uuid4(), "general", chat)
         async with pool.connection() as conn:
             await conn.execute(
                 sql.SQL(
-                    "insert into {}.agent_user_settings (user_id, profile, settings) "
-                    "values (%s, %s, %s)"
+                    "update {}.agent_chat_settings set settings = settings || %s "
+                    "where thread_id = %s"
                 ).format(sql.Identifier(SCHEMA)),
-                (
-                    user_id,
-                    "general",
-                    Jsonb({"model": "kept", "system_prompt": "be terse"}),
-                ),
+                (Jsonb({"mode": "plan"}), thread_id),
             )
 
-        loaded = await table.user_layer(user_id, "general")
-        assert loaded == UserAgentSettings(model="kept")
+        assert await table.chat_layer(thread_id) == chat
 
-    async def test_change_writes_the_user_layer_and_the_chat_layer(
-        self, table: AgentSettingsTable, specs: ProfileModelSpecs
-    ) -> None:
-        layers = AgentSettingsLayers(table, specs)
-        user_id = uuid4()
-        thread_id = uuid4()
-        other_thread = uuid4()
-        profile = SignInStand.profile()
-        opened = await layers.chat_layer(
-            thread_id, user_id, SignInStand.PROFILE, profile
-        )
-        untouched = await layers.chat_layer(
-            other_thread, user_id, SignInStand.PROFILE, profile
-        )
-        assert opened.mode is PermissionMode.BYPASS_PERMISSIONS
+    @staticmethod
+    def _identity(profile: ChatProfileConfig) -> ThreadIdentity:
+        tab = TabSession()
+        tab.password_sign_in(frozenset({"dev"}))
 
-        edited = UserAgentSettings(model="picked", api_key=SecretStr("user-key"))
-        changed = await layers.change(
-            thread_id,
-            user_id,
-            SignInStand.PROFILE,
-            profile,
-            AgentSettingsChange(
-                user=edited, mode=PermissionMode.DEFAULT, model_name=None
-            ),
+        return ThreadIdentity(
+            thread_id=str(uuid4()),
+            user_id=uuid4(),
+            login=TabSession.LOGIN,
+            roles=frozenset({"dev"}),
+            session=tab.live,
+            profile=SelectedProfile(name=SignInStand.PROFILE, config=profile),
         )
 
-        assert changed.model.model == "picked"
-        assert changed.model.provider.api_key == SecretStr("user-key")
-        assert changed.model.provider.base_url == opened.model.provider.base_url
-        assert changed.mode is PermissionMode.DEFAULT
-        assert changed.system_prompt == "stand"
-        assert await table.chat_layer(thread_id) == changed
-        assert await table.user_layer(user_id, SignInStand.PROFILE) == edited
-        # чужой открытый тред живёт со своим слоем, новый берёт слой пользователя
-        assert await table.chat_layer(other_thread) == untouched
-        fresh = await layers.chat_layer(uuid4(), user_id, SignInStand.PROFILE, profile)
-        assert fresh.model.model == "picked"
-        assert fresh.mode is PermissionMode.BYPASS_PERMISSIONS
-
-    async def test_session_choice_alone_keeps_the_provider_of_the_chat(
-        self, table: AgentSettingsTable, specs: ProfileModelSpecs
-    ) -> None:
-        """Слой пользователя сменился в другом чате; правка одного режима в
-        этом чате его провайдера не трогает."""
-        layers = AgentSettingsLayers(table, specs)
-        user_id = uuid4()
-        thread_id = uuid4()
-        profile = SignInStand.profile()
-        opened = await layers.chat_layer(
-            thread_id, user_id, SignInStand.PROFILE, profile
+    @staticmethod
+    async def _prepare(
+        tmp_path: Path,
+        stand: Stand,
+        table: AgentSettingsTable,
+        identity: ThreadIdentity,
+    ) -> AgentLaunch:
+        credentials = KerberosCredentialSource(None, NoRefresh())
+        relays = RelayStand(NoConnectionStore(), lambda: credentials, CallContexts())
+        servers = McpServers(NO_SERVERS)
+        history = AgentHistoryStand(stand)
+        launcher = AgentLauncher(
+            AgentStand(tmp_path / "agents", history.history()).config(),
+            history.postgres(),
+            NO_SERVERS,
+            table,
+            relays.registrations,
+            relays.relay(servers),
+            "0.0",
         )
-        elsewhere = UserAgentSettings(model="changed-elsewhere")
-        await table.save_user_layer(user_id, SignInStand.PROFILE, elsewhere)
-
-        changed = await layers.change(
-            thread_id,
-            user_id,
-            SignInStand.PROFILE,
-            profile,
-            AgentSettingsChange(
-                user=elsewhere, mode=PermissionMode.PLAN, model_name=None
-            ),
-        )
-
-        assert changed.model == opened.model
-        assert changed.mode is PermissionMode.PLAN
+        try:
+            return await launcher.prepare(identity)
+        finally:
+            await servers.stop()
 
     def test_local_provider_is_refused(self, specs: ProfileModelSpecs) -> None:
         profile = ChatProfileConfig.model_validate(
@@ -413,20 +365,6 @@ class TestSettingsFile:
         workdir.remove()
         assert not workdir.exists()
 
-    def test_permission_mode_of_the_chat_layer_is_the_default_mode(
-        self, tmp_path: Path, stand: Stand
-    ) -> None:
-        history = AgentHistoryStand(stand)
-        config = AgentStand(tmp_path, history.history()).config()
-        chat = FakeModel().chat_settings().with_session(PermissionMode.PLAN, None)
-
-        builder = SettingsFileBuilder(config, history.postgres(), NO_SERVERS)
-        layer = builder.build(chat, None, {})
-
-        assert layer.permissions == PermissionSettings(
-            default_mode=PermissionMode.PLAN, allow_bypass=True
-        )
-
 
 class TestAgentHandshake:
     """Настоящий `boba acp` v2 принимает файл и держит секреты только в нём."""
@@ -484,21 +422,21 @@ class TestAgentHandshake:
 
 
 class TestRetiredServers:
-    """Перезапуск агента вкладки и закрытие вкладки снимают serverId прежнего
-    процесса: ретранслятор отвечает на них UNKNOWN_SERVER."""
+    """Замена вышедшего процесса агента вкладки и закрытие вкладки снимают
+    serverId прежнего процесса: ретранслятор отвечает на них UNKNOWN_SERVER."""
 
     ENVELOPE: ClassVar[dict[str, Any]] = {
         mt.PROTOCOL_VERSION_META_KEY: McpVersion.V2026_07_28.value,
         mt.CLIENT_CAPABILITIES_META_KEY: {},
     }
 
-    async def test_restart_and_close_revoke_the_server_ids(  # noqa: PLR0913 — фикстуры теста
+    async def test_replacement_and_close_revoke_the_server_ids(  # noqa: PLR0913 — фикстуры теста
         self,
         tmp_path: Path,
         stand: Stand,
         table: AgentSettingsTable,
-        specs: ProfileModelSpecs,
-        test_postgres: PostgresConfig,
+        threads: ThreadsTable,
+        model: FakeModel,
         auth_token: str,
         standard: McpServerConfig,
     ) -> None:
@@ -509,19 +447,18 @@ class TestRetiredServers:
         relay = relays.relay(servers)
         history = AgentHistoryStand(stand)
         agent_stand = AgentStand(tmp_path / "agents", history.history())
-        layers = AgentSettingsLayers(table, specs)
         launcher = AgentLauncher(
             agent_stand.config(),
             history.postgres(),
             servers_config,
-            layers,
+            table,
             relays.registrations,
             relay,
             "0.0",
         )
         tab = TabSession()
         tab.password_sign_in(frozenset({"dev"}))
-        config = SignInStand.profile().model_copy(update={"mcp": ("standard",)})
+        config = self._profile(model)
         identity = ThreadIdentity(
             thread_id=str(uuid4()),
             user_id=uuid4(),
@@ -530,20 +467,19 @@ class TestRetiredServers:
             session=tab.live,
             profile=SelectedProfile(name=SignInStand.PROFILE, config=config),
         )
-        meta = AgentSessionMeta(ThreadsTable(test_postgres, SCHEMA))
-        agent = ThreadAgent(
-            identity,
-            launcher,
-            meta,
-            RecordingUpdates(),
-            SessionOptions(),
-        )
+        meta = AgentSessionMeta(threads)
+        updates = RecordingUpdates()
+        agent = ThreadAgent(identity, launcher, meta, updates)
         try:
             await agent.start()
             first = agent.process._servers[0].server_id
             relays.registrations.of(first)
 
-            assert await agent.restart()
+            # вышедший процесс заменяется новым перед следующим ходом
+            os.kill(agent.process.pid, signal.SIGKILL)
+            await agent.process.exited()
+            await agent.ask(Question(key="draft", text=ScenarioName.ANSWER.value))
+            assert updates.finished, updates.updates
             second = agent.process._servers[0].server_id
             assert second != first
             relays.registrations.of(second)
@@ -578,6 +514,26 @@ class TestRetiredServers:
         assert restarted.value.code == AcpErrorCode.UNKNOWN_SERVER
         assert closed.value.code == AcpErrorCode.UNKNOWN_SERVER
 
+    @staticmethod
+    def _profile(model: FakeModel) -> ChatProfileConfig:
+        """Профиль стенда с сервером standard и провайдером фейковой модели."""
+        provider = {
+            "kind": "openai",
+            "connection": {
+                "scheme": "http",
+                "host": "127.0.0.1",
+                "port": model.port,
+                "path": "/v1",
+                "auth": {"method": "bearer", "token": API_KEY},
+            },
+            "transport": HttpTransportConfig().model_dump(mode="json"),
+        }
+        base = SignInStand.profile().model_dump(mode="json")
+
+        return ChatProfileConfig.model_validate(
+            {**base, "provider": provider, "model": "fake-model", "mcp": ["standard"]}
+        )
+
 
 class TestForkCut:
     """Правка вопроса ведётся веткой session/fork, только если агент объявил
@@ -591,7 +547,6 @@ class TestForkCut:
         tmp_path: Path,
         stand: Stand,
         table: AgentSettingsTable,
-        specs: ProfileModelSpecs,
         test_postgres: PostgresConfig,
         pool: AsyncPostgresPool,
         auth_token: str,
@@ -610,7 +565,7 @@ class TestForkCut:
             config.model_copy(update={"process": foreign}),
             history.postgres(),
             NO_SERVERS,
-            AgentSettingsLayers(table, specs),
+            table,
             relays.registrations,
             relay,
             "0.0",
@@ -633,13 +588,7 @@ class TestForkCut:
 
         threads = ThreadsTable(test_postgres, SCHEMA)
         updates = RecordingUpdates()
-        agent = ThreadAgent(
-            identity,
-            launcher,
-            AgentSessionMeta(threads),
-            updates,
-            SessionOptions(),
-        )
+        agent = ThreadAgent(identity, launcher, AgentSessionMeta(threads), updates)
         try:
             await agent.start()
             assert not agent.process.forks_by_message()
@@ -660,7 +609,7 @@ class TestForkCut:
 
 
 class ChatLaunch:
-    """Чат теста ниже обработчиков chainlit: слои настроек в Postgres стенда,
+    """Чат теста ниже обработчиков chainlit: слой чата в Postgres стенда,
     запуск агента AgentLauncher по профилю чата и [agent], агент вкладки
     ThreadAgent, ретранслятор стенда. Файл настроек строится по серверам
     filed, ретранслятор ходит к серверам relayed: так видно, чьим сроком
@@ -696,10 +645,10 @@ class ChatLaunch:
         self._servers.append(servers)
         config = AgentStand(self._root / "agents", self._history.history()).config()
         launcher = AgentLauncher(
-            config,
+            config.model_copy(update={"model": model}),
             self._history.postgres(),
             filed,
-            AgentSettingsLayers(self._table, ProfileModelSpecs(model)),
+            self._table,
             self._relays.registrations,
             self._relays.relay(servers),
             "0.0",
@@ -715,11 +664,7 @@ class ChatLaunch:
             profile=SelectedProfile(name=SignInStand.PROFILE, config=profile),
         )
         agent = ThreadAgent(
-            identity,
-            launcher,
-            AgentSessionMeta(self._threads),
-            updates,
-            SessionOptions(),
+            identity, launcher, AgentSessionMeta(self._threads), updates
         )
         self._agents.append(agent)
 
@@ -1012,7 +957,6 @@ class TestFailedLaunch:
         tmp_path: Path,
         stand: Stand,
         table: AgentSettingsTable,
-        specs: ProfileModelSpecs,
     ) -> None:
         history = AgentHistoryStand(stand)
         config = AgentStand(tmp_path / "agents", history.history()).config()
@@ -1026,7 +970,7 @@ class TestFailedLaunch:
             config.model_copy(update={"process": missing}),
             history.postgres(),
             NO_SERVERS,
-            AgentSettingsLayers(table, specs),
+            table,
             relays.registrations,
             relays.relay(servers),
             "0.0",
