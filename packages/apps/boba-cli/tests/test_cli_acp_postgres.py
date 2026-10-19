@@ -12,7 +12,7 @@ Kerberos из кэша тестового стенда: пути к кэшу и 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 from acp.exceptions import RequestError
@@ -121,6 +121,8 @@ class Pair:
     """Два процесса над одной сессией: держатель и наблюдатель, их клиенты,
     регистрации и соединения."""
 
+    POOL_CLOSED: ClassVar[str] = "AsyncPostgresPool closed"
+
     def __init__(self, stand: PostgresStand, model: FakeModel, tmp_path: Path) -> None:
         (tmp_path / "a").mkdir()
         (tmp_path / "b").mkdir()
@@ -151,12 +153,18 @@ class Pair:
         await handshake(self.observer_conn)
 
     async def stop(self) -> None:
+        """Конец ввода обоим: процессы выходят с кодом 0 и до выхода сами
+        закрывают пул истории, не оставляя его отмене задач asyncio.run."""
         await self.holder_conn.close()
         await self.observer_conn.close()
         await self.holder.close_stdin()
         await self.observer.close_stdin()
         assert await self.holder.wait() == 0
         assert await self.observer.wait() == 0
+        holder_log = "\n".join(self.holder.stderr)
+        assert self.POOL_CLOSED in holder_log, self.holder.stderr[-10:]
+        observer_log = "\n".join(self.observer.stderr)
+        assert self.POOL_CLOSED in observer_log, self.observer.stderr[-10:]
 
     async def delete(self, session_id: str) -> None:
         await self.observer_conn.delete_session(session_id=session_id)
