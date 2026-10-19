@@ -34,7 +34,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor, wait
 from contextlib import suppress
 from dataclasses import dataclass
 from enum import StrEnum
@@ -55,6 +55,7 @@ from boba.sandbox.guest import (
     CallSetupFailed,
     ChildLimits,
     ControlMark,
+    CoreWindow,
     ImageMount,
     ImageMounting,
     SetupFailure,
@@ -1336,11 +1337,7 @@ class ZygoteSpawner:
         if not cores:
             return
 
-        available = sorted(os.sched_getaffinity(0))
-        if len(available) <= cores:
-            return
-
-        os.sched_setaffinity(pid, set(available[:cores]))
+        CoreWindow(cores).pin(pid)
 
     def _argv(self, command: list[str], env: Mapping[str, str], fd: int) -> list[str]:
         self._chain.check()
@@ -1734,7 +1731,9 @@ class ZygoteRegistry:
     Создаёт и держит его способ запуска в песочнице (ZygoteLaunchers) — один
     на процесс, с интерпретатором процесса из секции [interpreter]: его
     получает спавнер каждой секции. Инструменты собираются несколько раз:
-    повторный obtain отдаёт уже поднятый супервизор. stop_all гасит всех на
+    повторный obtain отдаёт уже поднятый супервизор. Сборка приложения
+    поднимает секции одновременно: prepare начинает подъём в фоне, settle
+    дожидается всех и отдаёт первую неудачу. stop_all гасит всех на
     shutdown приложения.
     """
 
@@ -1742,6 +1741,8 @@ class ZygoteRegistry:
         self._interpreter = interpreter
         self._lock = threading.Lock()
         self._entries: dict[str, ZygoteSupervisor] = {}
+        self._starts: dict[str, Future[None]] = {}
+        self._sections = ThreadPoolExecutor(thread_name_prefix="zygote-section")
 
     def obtain(
         self,
@@ -1756,28 +1757,86 @@ class ZygoteRegistry:
         start() зовётся и для найденного супервизора: он идемпотентен и ждёт,
         если зиготу в этот момент поднимает другой поток.
         """
-        with self._lock:
-            supervisor = self._entries.get(name)
-            if supervisor is None or supervisor.state is ZygoteState.STOPPED:
-                spawner = ZygoteSpawner(profile, modules, policy, self._interpreter)
-                supervisor = ZygoteSupervisor(
-                    name,
-                    spawner.spawn,
-                    policy,
-                    stderr_tail_bytes=profile.host.stderr_tail_bytes,
-                    warmup_calls=warmup_calls,
-                    modules=modules,
-                    root=spawner.root_label(),
-                )
-                self._entries[name] = supervisor
-
+        supervisor = self._entry(name, profile, modules, policy, warmup_calls)
         supervisor.start()
         return supervisor
 
+    def prepare(
+        self,
+        name: str,
+        profile: SandboxProfile,
+        modules: Sequence[str],
+        policy: ZygotePolicy,
+        warmup_calls: Sequence[WarmupCall] = (),
+    ) -> ZygoteSupervisor:
+        """Супервизор секции, как у obtain, но подъём зиготы идёт в фоне:
+        секции поднимаются одновременно, исход подъёма отдаёт settle()."""
+        supervisor = self._entry(name, profile, modules, policy, warmup_calls)
+        with self._lock:
+            if name not in self._starts:
+                self._starts[name] = self._sections.submit(supervisor.start)
+
+        return supervisor
+
+    def settle(self) -> None:
+        """Дожидается подъёма всех секций, начатого prepare; неудача любой —
+        ZygoteStartError первой из них."""
+        pending = self._take_starts()
+        wait(pending)
+
+        for start in pending:
+            start.result()
+
     def stop_all(self) -> None:
+        """Гасит все секции разом: начатые подъёмы сначала доходят до конца."""
+        pending = self._take_starts()
+        wait(pending)
+
         with self._lock:
             entries = list(self._entries.values())
             self._entries.clear()
 
+        stopping: list[Future[None]] = []
         for supervisor in entries:
-            supervisor.stop()
+            stopping.append(self._sections.submit(supervisor.stop))
+
+        for stop in stopping:
+            stop.result()
+
+    def _entry(
+        self,
+        name: str,
+        profile: SandboxProfile,
+        modules: Sequence[str],
+        policy: ZygotePolicy,
+        warmup_calls: Sequence[WarmupCall],
+    ) -> ZygoteSupervisor:
+        with self._lock:
+            supervisor = self._entries.get(name)
+            if supervisor is not None:
+                if supervisor.state is not ZygoteState.STOPPED:
+                    return supervisor
+
+                if name in self._starts:
+                    return supervisor
+
+            spawner = ZygoteSpawner(profile, modules, policy, self._interpreter)
+            supervisor = ZygoteSupervisor(
+                name,
+                spawner.spawn,
+                policy,
+                stderr_tail_bytes=profile.host.stderr_tail_bytes,
+                warmup_calls=warmup_calls,
+                modules=modules,
+                root=spawner.root_label(),
+            )
+            self._entries[name] = supervisor
+
+        return supervisor
+
+    def _take_starts(self) -> list[Future[None]]:
+        with self._lock:
+            pending = list(self._starts.values())
+            self._starts.clear()
+
+        return pending

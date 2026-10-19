@@ -172,6 +172,8 @@ class ToolLoader:
                 streamable.append(tool.name)
             self._journals.mark_streamable(streamable)
 
+        self._launchers.settle()
+
         if next(self._stream_writers(tools, specs), None) is not None:
             tools.append(self._hosting.hosted(self._drain.build()))
             specs = specs.declaring(DevNullTool.NAME, self._drain.spec())

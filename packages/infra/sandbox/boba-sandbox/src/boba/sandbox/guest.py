@@ -29,6 +29,7 @@ import signal
 import socket
 import sys
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from enum import IntEnum, StrEnum
 from types import ModuleType
 from typing import Any, ClassVar, Literal
@@ -55,6 +56,7 @@ __all__ = [
     "CallMounts",
     "CallRequest",
     "ChildLimits",
+    "CoreWindow",
     "Isolation",
     "ZygoteArgs",
     "ZygoteMain",
@@ -246,20 +248,34 @@ class ChildLimits(BaseModel):
 
         cgroup-квоту нативные движки не видят и размер пула берут из маски
         доступных ядер: без неё под квотой в одно ядро поднимается пул на всю
-        машину. Окно ядер сдвигается по pid, чтобы параллельные вызовы не
-        толпились на одних и тех же.
+        машину.
         """
+        CoreWindow(self.cpu_cores).pin(os.getpid())
+
+
+@dataclass(frozen=True)
+class CoreWindow:
+    """Окно ядер процесса под квоту профиля: столько ядер, сколько квота.
+
+    Окно сдвигается по pid, чтобы соседние процессы не толпились на одних и
+    тех же ядрах. Ставят его спавнер зиготы на хосте (ZygoteSpawner) и
+    ребёнок вызова в песочнице (ChildLimits).
+    """
+
+    cores: int
+
+    def pin(self, pid: int) -> None:
         available = sorted(os.sched_getaffinity(0))
-        if len(available) <= self.cpu_cores:
+        if len(available) <= self.cores:
             return
 
-        start = (os.getpid() * self.cpu_cores) % len(available)
-        window = available[start : start + self.cpu_cores]
+        start = (pid * self.cores) % len(available)
+        window = available[start : start + self.cores]
 
-        if len(window) < self.cpu_cores:
-            window += available[: self.cpu_cores - len(window)]
+        if len(window) < self.cores:
+            window += available[: self.cores - len(window)]
 
-        os.sched_setaffinity(0, set(window))
+        os.sched_setaffinity(pid, set(window))
 
 
 class ImageMount(BaseModel):
