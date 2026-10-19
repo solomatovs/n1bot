@@ -1,0 +1,1 @@
+- code: SELECT region, sum(amount) FROM sales GROUP BY region;

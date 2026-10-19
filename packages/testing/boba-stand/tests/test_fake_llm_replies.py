@@ -17,8 +17,10 @@ from collections.abc import Iterator, Mapping, Sequence
 from typing import Any, ClassVar
 
 import httpx
+import mcp_types as mt
 import pytest
 
+from boba.agent.records import LinkText
 from boba.agent.tags import AgentTag
 from boba.stand.ui.fake_llm import (
     FakeRoute,
@@ -186,6 +188,24 @@ def test_plain_question_is_answered_from_the_book(
     book: ReplyBookClient, stand_url: str
 ) -> None:
     message = LlmWire.message(LlmWire(stand_url).ask(STATUS_QUESTION))
+
+    assert message["content"] == STATUS_ANSWER
+
+
+def test_attachment_links_are_not_part_of_the_question(
+    book: ReplyBookClient, stand_url: str
+) -> None:
+    """Ссылки на вложения, которые агент дописывает к вопросу, не входят в
+    ключ книги: вопрос с файлами отвечается так же, как без них."""
+    links: list[str] = []
+    for name in ("chart.png", "report.pdf"):
+        link = mt.ResourceLink(
+            name=name, uri=f"http://127.0.0.1:1/files/upload/{name}?thread=t"
+        )
+        links.append(LinkText.TEMPLATE.render(link))
+
+    question = "\n".join((STATUS_QUESTION, *links))
+    message = LlmWire.message(LlmWire(stand_url).ask(question))
 
     assert message["content"] == STATUS_ANSWER
 

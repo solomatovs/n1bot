@@ -432,20 +432,29 @@ class NormalRule(StrEnum):
 
 
 class TextNormalizer:
-    """Подставляет правила NormalRule в текстовые узлы области; отдаёт
-    правила, которые что-то заменили, — их список уходит в отчёт."""
+    """Подставляет правила NormalRule в текстовые узлы области и в адреса
+    ссылок (их показывает дерево доступности: id треда в пути файла);
+    отдаёт правила, которые что-то заменили, — их список уходит в отчёт."""
 
     SCRIPT: ClassVar[str] = """(root, rules) => {
       const applied = new Set();
-      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-        let text = node.nodeValue;
+      const normal = (text) => {
         for (const [name, pattern, replacement] of rules) {
           const next = text.replace(new RegExp(pattern, "g"), replacement);
           if (next !== text) applied.add(name);
           text = next;
         }
+        return text;
+      };
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        const text = normal(node.nodeValue);
         if (text !== node.nodeValue) node.nodeValue = text;
+      }
+      for (const link of root.querySelectorAll("[href]")) {
+        const href = link.getAttribute("href");
+        const next = normal(href);
+        if (next !== href) link.setAttribute("href", next);
       }
       return [...applied];
     }"""
@@ -760,7 +769,8 @@ class ReportPage:
         return "\n".join(parts)
 
     def _fixes(self, rows: Sequence[ReportRow]) -> str:
-        """Правки вида прогона: у каждой — ссылки на состояния, где её видно."""
+        """Правки вида прогона: у каждой — ссылки на состояния, где её видно,
+        подписью состояния."""
         summaries: dict[str, str] = {}
         states: dict[str, dict[str, ReportRow]] = {}
         for row in sorted(rows, key=ReportRow.order):
@@ -777,7 +787,7 @@ class ReportPage:
             links: list[str] = []
             for row in states[code].values():
                 anchor = html.escape(self._anchor(row))
-                links.append(f"<a href='#{anchor}'>{html.escape(row.state)}</a>")
+                links.append(f"<a href='#{anchor}'>{html.escape(row.caption)}</a>")
 
             items.append(
                 f"<li><b>{html.escape(code)}</b> {html.escape(summary)} — "
@@ -1093,6 +1103,26 @@ class LookPages:
     SUBMIT: ClassVar[str] = 'form button[type="submit"]'
     INPUT: ClassVar[str] = "#chat-input"
     FONTS: ClassVar[str] = "() => document.fonts.ready.then(() => document.fonts.size)"
+    TOP: ClassVar[str] = """async (node) => {
+      const frames = () => new Promise((done) =>
+        requestAnimationFrame(() => requestAnimationFrame(done)));
+      const pause = () => new Promise((done) => setTimeout(done, 250));
+      let last = NaN;
+      let same = 0;
+      for (let round = 0; round < 40 && same < 3; round += 1) {
+        node.scrollIntoView({block: 'start'});
+        await frames();
+        await pause();
+        const top = node.getBoundingClientRect().top;
+        same = top === last ? same + 1 : 0;
+        last = top;
+      }
+    }"""
+    """Сообщение наверх области прокрутки, пока место не устоится (одно и то
+    же положение три раза подряд через 250 мс): спейсер chainlit под последним
+    вопросом догоняет высоту ленты позже, и прокрутка до него упирается в
+    прежний конец ленты. Тест вида зовёт его у сообщения,
+    которое ставит наверх кадра."""
     TABS: ClassVar[int] = 40
     FOCUSED: ClassVar[str] = "(node) => node === document.activeElement"
     ACTIVE: ClassVar[str] = (

@@ -1,0 +1,28 @@
+- table:
+  - rowgroup:
+    - row "Регион Июль Август Сентябрь":
+      - columnheader "Регион"
+      - columnheader "Июль"
+      - columnheader "Август"
+      - columnheader "Сентябрь"
+  - rowgroup:
+    - row "Север 1 200 1 340 1 410":
+      - cell "Север"
+      - cell "1 200"
+      - cell "1 340"
+      - cell "1 410"
+    - row "Юг 2 010 1 980 2 150":
+      - cell "Юг"
+      - cell "2 010"
+      - cell "1 980"
+      - cell "2 150"
+    - row "Запад 880 920 1 005":
+      - cell "Запад"
+      - cell "880"
+      - cell "920"
+      - cell "1 005"
+    - row "Итого 4 090 4 240 4 565":
+      - cell "Итого"
+      - cell "4 090"
+      - cell "4 240"
+      - cell "4 565"

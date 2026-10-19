@@ -1,0 +1,69 @@
+- img "Avatar for Ассистент-BOBA"
+- heading "Отчёт по продажам за III квартал" [level=1]
+- heading "Итоги" [level=2]
+- article:
+  - text: Выручка выросла на 12 %, средний чек — на 3 %. Данные — из витрины
+  - code: sales_q3
+  - text: .
+- heading "Регионы" [level=3]
+- list:
+  - listitem:
+    - text: Север
+    - list:
+      - listitem: Мурманск
+      - listitem: Архангельск
+  - listitem: Юг
+- list:
+  - listitem: Собрать данные
+  - listitem: Проверить дубли
+  - listitem: Отправить отчёт
+- table:
+  - rowgroup:
+    - row "Регион Июль Август Сентябрь":
+      - columnheader "Регион"
+      - columnheader "Июль"
+      - columnheader "Август"
+      - columnheader "Сентябрь"
+  - rowgroup:
+    - row "Север 1 200 1 340 1 410":
+      - cell "Север"
+      - cell "1 200"
+      - cell "1 340"
+      - cell "1 410"
+    - row "Юг 2 010 1 980 2 150":
+      - cell "Юг"
+      - cell "2 010"
+      - cell "1 980"
+      - cell "2 150"
+    - row "Запад 880 920 1 005":
+      - cell "Запад"
+      - cell "880"
+      - cell "920"
+      - cell "1 005"
+    - row "Итого 4 090 4 240 4 565":
+      - cell "Итого"
+      - cell "4 090"
+      - cell "4 240"
+      - cell "4 565"
+- text: python
+- button
+- code: total = sum(row.amount for row in rows)
+- text: sql
+- button
+- code: SELECT region, sum(amount) FROM sales GROUP BY region;
+- text: json
+- button
+- code: "{\"region\": \"Север\", \"amount\": 3950}"
+- text: bash
+- button
+- code: psql -c "\copy sales to 'q3.csv' csv header"
+- blockquote:
+  - article: Данные за сентябрь предварительные.
+- article:
+  - text: Подробнее —
+  - link "методика":
+    - /url: https://example.com/method
+  - text: и
+  - link "итоги":
+    - /url: "#%D0%B8%D1%82%D0%BE%D0%B3%D0%B8"
+  - text: .
