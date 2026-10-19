@@ -87,7 +87,7 @@ class ShellLook:
         GROUP,
         "sh6-readme",
         "Описание приложения (chainlit.md)",
-        "заголовок описания — «Ассистент-BOBA», как имя ассистента в конфиге",
+        "заголовок описания — «AID», как имя ассистента в конфиге",
         (LookFixes.NAME,),
     )
     USER_MENU: ClassVar[LookState] = LookState(
