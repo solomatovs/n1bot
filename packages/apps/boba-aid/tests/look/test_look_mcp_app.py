@@ -111,7 +111,6 @@ class AppFeed:
     чата, и область прокрутки сообщений, прокрученная к вопросу хода.
     Ошибки страницы чата копятся с открытия."""
 
-    TOP: ClassVar[str] = "(node) => node.scrollIntoView({block: 'start'})"
     LOGIN_USER: ClassVar[str] = "admin"
     """Учётка ходов с приложением: её треды копятся в базе тестов вида, dev
     оставлен оболочке, которая проверяет, что тредов у него нет."""
@@ -186,7 +185,7 @@ class AppFeed:
     def feed(self, question: str) -> Locator:
         """Область прокрутки сообщений, прокрученная к вопросу хода."""
         asked = self.turn(question).asked
-        asked.evaluate(self.TOP)
+        asked.evaluate(LookPages.TOP)
         return asked.locator(AppLook.FEED)
 
     def fold_last_run(self) -> None:

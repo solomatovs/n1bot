@@ -30,6 +30,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import time
 import unicodedata
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence
@@ -43,6 +44,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, RootModel, ValidationError
 
+from boba.agent.records import LinkText
 from boba.agent.tags import AgentTag
 from boba.toolkit.mcp import McpToolNames
 
@@ -1326,14 +1328,21 @@ class ReplyQuestions:
 
     Берётся последнее сообщение пользователя с текстом; у сообщения частями —
     текст частей `text`. Агент дописывает в то же сообщение свои служебные
-    блоки `<system-reminder>`, поэтому ключ — только набранное
-    пользователем: блоки вырезаются, остаток проходит strip и NFC. Тем же
-    правилом приводится вопрос, который кладёт в книгу тест.
+    блоки `<system-reminder>` и ссылки на вложения вопроса (LinkText),
+    поэтому ключ — только набранное пользователем: блоки и ссылки
+    вырезаются, остаток проходит strip и NFC. Тем же правилом приводится
+    вопрос, который кладёт в книгу тест.
     """
 
     FORM: ClassVar[Literal["NFC"]] = "NFC"
     TEXT_PART: ClassVar[str] = "text"
     PART_JOIN: ClassVar[str] = "\n\n"
+    LINK: ClassVar[re.Pattern[str]] = re.compile(
+        re.escape(LinkText.TEMPLATE.value)
+        .replace(re.escape("{name}"), r"[^\]]*")
+        .replace(re.escape("{uri}"), r"[^)]*")
+    )
+    """Ссылка на вложение вопроса в тексте, каким его видит модель."""
 
     def normal(self, text: str) -> str:
         return unicodedata.normalize(self.FORM, text.strip())
@@ -1377,7 +1386,8 @@ class ReplyQuestions:
                 yield text
 
     def _typed(self, text: str) -> str:
-        """Текст без служебных блоков агента; незакрытый блок срезает хвост."""
+        """Текст без служебных блоков агента и ссылок на вложения; незакрытый
+        блок срезает хвост."""
         tag = AgentTag.SYSTEM_REMINDER
         kept: list[str] = []
         rest = text
@@ -1391,7 +1401,7 @@ class ReplyQuestions:
             rest = rest[end + len(tag.close) :]
 
         kept.append(rest)
-        return "".join(kept)
+        return self.LINK.sub("", "".join(kept))
 
 
 class ReplyBook:
