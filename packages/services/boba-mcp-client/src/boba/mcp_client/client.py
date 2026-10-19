@@ -44,10 +44,8 @@ from collections.abc import (
 )
 from contextlib import (
     AbstractAsyncContextManager,
-    AbstractContextManager,
     asynccontextmanager,
     contextmanager,
-    nullcontext,
 )
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
@@ -1224,10 +1222,12 @@ class McpConnection:
             self._journals.pop(token, None)
 
     @contextmanager
-    def asking(self, token: str, asked: QuestionHeard) -> Iterator[None]:
+    def asking(self, token: str, asked: QuestionHeard | None) -> Iterator[None]:
         """Вопросы пользователю от сервера уходят asked вызова token, пока
-        открыт контекст."""
-        self._askers[token] = asked
+        открыт контекст; None — вопросы вызову не задаются."""
+        if asked is not None:
+            self._askers[token] = asked
+
         try:
             yield
         finally:
@@ -2030,7 +2030,7 @@ class McpToolServer(McpToolPort):
         async def send(
             connection: McpConnection, session: IdentifiedSession
         ) -> mt.CallToolResult | mt.InputRequiredResult:
-            with self._questions(connection, token, asked):
+            with connection.asking(token, asked):
                 async with connection.listening(token, progress, journals):
                     return await self._tool_call(
                         identity, connection, session, sent, card
@@ -2649,14 +2649,6 @@ class McpToolServer(McpToolPort):
             sent[key] = value
 
         return sent
-
-    def _questions(
-        self, connection: McpConnection, token: str, asked: QuestionHeard | None
-    ) -> AbstractContextManager[None]:
-        if asked is None:
-            return nullcontext()
-
-        return connection.asking(token, asked)
 
     def _files_at(self, path: str) -> McpFiles | None:
         """Клиент файлов сервера под маршрутом path; у сервера не по HTTP
