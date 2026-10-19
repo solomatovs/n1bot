@@ -91,6 +91,7 @@ from boba.llm.http.ollama import MANIFEST as OLLAMA
 from boba.llm.http.openai import MANIFEST as OPENAI
 from boba.llm.onnx.chat import MANIFEST as ONNX
 from boba.llm.providers import LlmProviders, LlmProvidersError, LlmProviderTypes
+from boba.toolkit.closing import ProcessClosers
 from boba.toolkit.dag import ToolHints, ToolServer
 from boba.transport.acp.protocol import AgentSide, BatchTransport
 
@@ -681,11 +682,15 @@ class AgentProcess:
         # состав провайдеров объявлен явно (план, раздел 5.20): в одном файле
         # метаданных дистрибутивов и их entry points нет
         self._providers = LlmProviders(LlmProviderTypes.declare([OPENAI, OLLAMA, ONNX]))
+        # воркер psycopg_pool поглощает отмену задач asyncio.run: пулы процесс
+        # закрывает сам до выхода из main
+        self._closers = ProcessClosers()
 
     async def run(self) -> None:
         """Всё проверяется до чтения ввода: настройки, профиль, хранилище,
         скиллы; затем вход обслуживает соединение до конца ввода или сигнала,
-        после чего сессии закрываются. Переменные ключа `env` настроек
+        после чего закрываются сессии, провайдеры моделей и процессные ресурсы
+        (пулы истории, ProcessClosers). Переменные ключа `env` настроек
         процесс ставит себе до сборки частей: их читают сами libpq и libkrb5.
 
         Ошибки:
@@ -708,6 +713,7 @@ class AgentProcess:
         finally:
             await agent.close_all()
             await self._providers.aclose()
+            await self._closers.close_all()
 
     @staticmethod
     def _stopper(agent: AcpAgent) -> StopAction:
