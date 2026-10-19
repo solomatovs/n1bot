@@ -1,0 +1,14 @@
+- article: Проверь доступность хранилища
+- img "Avatar for Ассистент-BOBA"
+- article: Хранилище доступно, свободно 120 ГБ.
+- article: Подумай, как разбить таблицу на партиции
+- img "Avatar for Ассистент-BOBA"
+- heading "Работаю…" [level=3]:
+  - button "Работаю…" [expanded]
+- region:
+  - heading "○ Размышления" [level=3]:
+    - button "○ Размышления" [expanded]
+  - region:
+    - article: Таблица растёт на миллион строк в месяц, отчёты читают месяц или квартал, значит ключ —
+- img "Avatar for Ассистент-BOBA"
+- article

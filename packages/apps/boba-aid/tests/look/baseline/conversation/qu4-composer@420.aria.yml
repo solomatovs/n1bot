@@ -1,0 +1,15 @@
+- button
+- img "chart.png"
+- button
+- img: pdf
+- text: report.pdf
+- button
+- img: csv
+- text: table.csv
+- textbox "Введите сообщение здесь...": Посмотри эти файлы
+- button:
+  - img
+- button:
+  - img
+- button:
+  - img
