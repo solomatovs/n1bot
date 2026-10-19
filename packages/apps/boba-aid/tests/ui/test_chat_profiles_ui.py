@@ -58,11 +58,6 @@ SEARCH_PROFILE_TOOLS = frozenset(
 и вопрос пользователю агента."""
 
 
-@pytest.fixture(autouse=True)
-def _no_user_overrides(clean_agent_settings: None) -> None:
-    """Профили проверяются без личных настроек: их сохраняют соседние тесты."""
-
-
 @dataclass(frozen=True)
 class ProfileSpec:
     """Ожидания одного профиля стенда: что обязано дойти до провайдера."""

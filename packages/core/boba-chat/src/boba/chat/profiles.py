@@ -10,11 +10,11 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping
 from enum import StrEnum
-from typing import Annotated, Self
+from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field, RootModel, model_validator
+from pydantic import BaseModel, ConfigDict, Field, RootModel
 
-from boba.access import ProfileGrant, RoleConfig, ToolGrant
+from boba.access import ProfileGrant, RoleConfig
 from boba.identity.errors import RefusalError
 from boba.identity.signin import ProfileCatalog, SignInMetadata
 from boba.llm.providers import ChatModelConfig
@@ -28,7 +28,6 @@ __all__ = [
     "ProfilesSection",
     "RolesSection",
     "SelectedProfile",
-    "UserSetting",
 ]
 
 logger = logging.getLogger(__name__)
@@ -42,19 +41,6 @@ class ChatSettings(ChatModelConfig):
         default="",
         description="Системный промпт по умолчанию",
     )
-
-
-class UserSetting(StrEnum):
-    """Настройки агента, которые профиль может открыть пользователю: адрес,
-    ключ и модель провайдера поверх профиля.
-
-    Значения — id виджетов панели чата; подписи и описания живут в
-    переводах chainlit (chat.settings.llm).
-    """
-
-    AGENT_BASE_URL = "agent_base_url"
-    AGENT_API_KEY = "agent_api_key"
-    AGENT_MODEL = "agent_model"
 
 
 class ChatProfileConfig(ChatSettings, ProfileGrant):
@@ -88,37 +74,6 @@ class ChatProfileConfig(ChatSettings, ProfileGrant):
             "пользователь не может; набор инструментов решает сам сервер."
         ),
     )
-
-    settings: StringList = Field(
-        default=[],
-        description=(
-            "Настройки агента, которые пользователь может переопределять; "
-            "имена UserSetting, '*' — все. Пустой список — вкладка "
-            "настроек агента профилю не показывается."
-        ),
-    )
-
-    def setting_allowed(self, name: str) -> bool:
-        return self._settings_grant().covers(name)
-
-    def _settings_grant(self) -> ToolGrant:
-        """Настройки профиля тем же правилом грантов, что и инструменты."""
-        return ToolGrant(tools=list(self.settings))
-
-    @model_validator(mode="after")
-    def _validate_settings(self) -> Self:
-        known: set[str] = set()
-        for setting in UserSetting:
-            known.add(setting.value)
-
-        if unknown := self._settings_grant().unknown(frozenset(known)):
-            msg = (
-                f"chat profile: unknown settings {unknown}, "
-                f"expected names from {sorted(known)} or '*'"
-            )
-            raise ValueError(msg)
-
-        return self
 
 
 class ProfilesSection(RootModel[dict[str, ChatProfileConfig]]):

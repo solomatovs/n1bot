@@ -216,16 +216,6 @@ class StandDatabase:
                     msg = f"{extension.manual_hint(self._name)}: {exc}"
                     raise StandError(msg) from exc
 
-    def wipe_agent_user_layers(self) -> None:
-        """Снимает слой пользователя настроек агента у всех пользователей
-        базы: с него копируется слой нового чата."""
-        layers = (
-            PgQueryBuilder(schema=sql.Identifier(self._schema))
-            .add("delete from {schema}.agent_user_settings")
-            .build()
-        )
-        run_blocking(self._execute(layers))
-
     def thread_profile(self, thread_id: str) -> str:
         """Профиль из meta треда; пусто — chainlit ещё не сохранил сессию треда."""
         query = (
@@ -269,34 +259,6 @@ class StandDatabase:
             .build()
         )
         run_blocking(self._execute(query))
-
-    def agent_user_layer_of(self, identifier: str, profile: str) -> dict[str, Any]:
-        """Сохранённый слой пользователя настроек агента для профиля как он
-        лежит в строке (секреты зашифрованы); пусто — строки нет."""
-        query = (
-            PgQueryBuilder(schema=sql.Identifier(self._schema))
-            .add(
-                """
-                select
-                    layers.settings
-                from
-                    {schema}.agent_user_settings as layers
-                join
-                    {schema}.users as users on users.id = layers.user_id
-                where
-                    users.identifier = %(identifier)s
-                    and layers.profile = %(profile)s
-                """,
-                identifier=identifier,
-                profile=profile,
-            )
-            .build()
-        )
-        row = run_blocking(self._execute(query))
-        if row is None:
-            return {}
-
-        return dict(row[0])
 
     def add_stored_connection(self, name: str, connection: ConnectionBase) -> UUID:
         """Готовый профиль под именем name, выданный всем ролям стенда: тест
