@@ -6,6 +6,7 @@
 Ошибки:
 RuntimeError — секция запуска не согласована с конфигом: нет [tool_launcher],
     [sandbox] или [tool.<name>.sandbox], bwrap недоступен, workdir отсутствует.
+ZygoteStartError — зигота секции не поднялась за отведённые попытки (settle).
 """
 
 from __future__ import annotations
@@ -281,6 +282,11 @@ class SectionLaunchers(Protocol):
         пользователя и область на момент вызова."""
 
     @abstractmethod
+    def settle(self) -> None:
+        """Дожидается подъёма исполнителей, начатого launcher_of: сборка
+        инструментов зовёт его после всех секций, неудача — отказ старта."""
+
+    @abstractmethod
     def stop(self) -> None:
         """Гасит всё, что способ запуска держит между вызовами; зовётся на
         остановке процесса."""
@@ -304,6 +310,9 @@ class NoLaunchers(SectionLaunchers):
         )
         raise RuntimeError(msg)
 
+    def settle(self) -> None:
+        return
+
     def stop(self) -> None:
         return
 
@@ -320,6 +329,9 @@ class ZygoteLaunchers(SectionLaunchers):
         self._raw = raw
         interpreter = bind(raw, LauncherInterpreter.SECTION, LauncherInterpreter)
         self._zygotes = ZygoteRegistry(interpreter)
+
+    def settle(self) -> None:
+        self._zygotes.settle()
 
     def stop(self) -> None:
         self._zygotes.stop_all()
@@ -339,7 +351,7 @@ class ZygoteLaunchers(SectionLaunchers):
         profile = self.profile_of(spec)
         sandbox = self._plugin_sandbox(spec.section)
 
-        supervisor = self._zygotes.obtain(
+        supervisor = self._zygotes.prepare(
             spec.section,
             profile,
             tuple(spec.modules),
@@ -479,6 +491,9 @@ class ProcessLaunchers(SectionLaunchers):
         self, spec: LaunchSpec, contexts: CallContexts, ambient: CallAmbient
     ) -> ToolLauncher:
         return ProcessToolCaller(spec.section, self._cfg, contexts, ambient)
+
+    def settle(self) -> None:
+        return
 
     def stop(self) -> None:
         return
