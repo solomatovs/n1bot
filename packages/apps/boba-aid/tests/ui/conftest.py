@@ -13,7 +13,6 @@ from chat_ui import (
     BOOT_TIMEOUT_SEC,
     ChatOpener,
     OpenChat,
-    UserLayerReader,
     login_cookies,
     watch_sockets,
 )
@@ -45,16 +44,6 @@ def stand_database() -> str:
 @pytest.fixture(scope="session")
 def stand_db(stand_database: str) -> StandDatabase:
     return StandDatabase(StandApp.AID, stand_database)
-
-
-@pytest.fixture
-def clean_agent_settings(stand_db: StandDatabase) -> None:
-    stand_db.wipe_agent_user_layers()
-
-
-@pytest.fixture
-def user_layer(stand_db: StandDatabase) -> UserLayerReader:
-    return stand_db.agent_user_layer_of
 
 
 @pytest.fixture(autouse=True)

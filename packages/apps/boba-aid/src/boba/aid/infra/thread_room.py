@@ -41,7 +41,6 @@ from boba.identity.locks import LockMode
 from boba.mcp_client.client import McpCaller
 from boba.messaging import (
     CanvasChanged,
-    ChatSettingsChanged,
     Envelope,
     LockToken,
     Notice,
@@ -300,10 +299,6 @@ class ChatRoomSurface(RenderSurface):
         )
 
 
-SettingsRefresher = Callable[[WebsocketSession, str], Awaitable[None]]
-"""Обновляет вкладку после чужой правки настроек: (сессия, профиль)."""
-
-
 class UserRoom:
     """Подписка инстанса на область пользователя: по ThreadChanged все его вкладки на
     этом инстансе перечитывают список тредов событием first_interaction chainlit с
@@ -313,13 +308,7 @@ class UserRoom:
     EVENT: ClassVar[str] = "first_interaction"
     INTERACTION: ClassVar[str] = "boba:thread-list:{seq}"
     _JOINED: ClassVar[dict[UUID, Unsubscribe]] = {}
-    _SETTINGS: ClassVar[SettingsRefresher | None] = None
     _SEND: ClassVar[SocketSend] = SocketSend()
-
-    @classmethod
-    def on_settings(cls, refresher: SettingsRefresher) -> None:
-        """Кто обновляет вкладку после чужой правки настроек: ставит обвязка чата."""
-        cls._SETTINGS = refresher
 
     @classmethod
     def join(cls, user_id: UUID) -> None:
@@ -354,10 +343,6 @@ class UserRoom:
     @classmethod
     async def deliver(cls, user_id: UUID, envelope: Envelope) -> None:
         message = envelope.message
-        if isinstance(message, ChatSettingsChanged):
-            await cls._settings_changed(user_id, message)
-            return
-
         if isinstance(message, SignInRefreshRequested):
             await cls._refresh_requested(user_id)
             return
@@ -427,38 +412,6 @@ class UserRoom:
                 logger.warning(
                     "sign-in refresh signal failed for session %s of user %s: %s",
                     session.id,
-                    user_id,
-                    exc,
-                    exc_info=True,
-                )
-
-    @classmethod
-    async def _settings_changed(
-        cls, user_id: UUID, message: ChatSettingsChanged
-    ) -> None:
-        """Остальные вкладки пользователя того же профиля получают настройки."""
-        refresher = cls._SETTINGS
-        if refresher is None:
-            return
-
-        for session in session_source_ref().of_user(user_id):
-            socket = session.websocket
-            if socket is None:
-                continue
-
-            if socket.id == message.by_session:
-                continue
-
-            if not sio.manager.is_connected(socket.socket_id, "/"):
-                continue
-
-            # одна битая вкладка не должна оставить без настроек остальные
-            try:
-                await refresher(socket, message.profile)
-            except Exception as exc:
-                logger.warning(
-                    "settings refresh failed for session %s of user %s: %s",
-                    socket.id,
                     user_id,
                     exc,
                     exc_info=True,

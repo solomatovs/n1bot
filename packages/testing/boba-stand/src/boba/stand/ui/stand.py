@@ -983,7 +983,6 @@ class StandConfig(StandService):
                 "tools": ["*"],
                 "provider": "${llm.fake}",
                 "model": "fake-model-general",
-                "settings": ["*"],
                 "system_prompt": "You are the general stand assistant",
                 "sampling": {
                     "temperature": 0.1,
@@ -999,7 +998,6 @@ class StandConfig(StandService):
                 "tools": self._search_tools(),
                 "provider": "${llm.fake}",
                 "model": "fake-model-search",
-                "settings": [],
                 "system_prompt": "You are the search stand assistant",
                 "sampling": {
                     "temperature": 0.7,
