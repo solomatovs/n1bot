@@ -7,14 +7,17 @@
 Ошибки:
 AuthenticationError — у сессии нет токена входа либо он не принят (истёк,
     чужая подпись, порча): ход отказывается, пользователю нужен новый вход.
+InternalServiceError — bootstrap не поставил корень DI либо контейнеры сессий
+    не закрылись на остановке.
 """
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
 from abc import abstractmethod
-from collections.abc import Mapping, Sequence
+from collections.abc import Coroutine, Mapping, Sequence
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, ClassVar, Protocol
@@ -543,9 +546,38 @@ class SessionContainers:
 
     @classmethod
     async def close_all(cls) -> None:
-        """Закрывает контейнеры всех сессий на остановке приложения."""
-        for session_id in list(cls._BY_ID):
-            await cls.close(session_id)
+        """Закрывает контейнеры всех сессий на остановке приложения разом:
+        процессы агентов вкладок гаснут параллельно. Отказ одной сессии не
+        мешает закрыть остальные и поднимается после всех.
+
+        Ошибки:
+        InternalServiceError — контейнеры каких-то сессий не закрылись: сессия
+            и причина каждой.
+        """
+        sessions = list(cls._BY_ID)
+        closing: list[Coroutine[Any, Any, None]] = []
+        for session_id in sessions:
+            closing.append(cls.close(session_id))
+
+        outcomes = await asyncio.gather(*closing, return_exceptions=True)
+
+        failures: list[BaseException] = []
+        reasons: list[str] = []
+        for session_id, outcome in zip(sessions, outcomes, strict=True):
+            if outcome is None:
+                continue
+
+            failures.append(outcome)
+            reasons.append(f"session {session_id}: {outcome}")
+
+        if failures:
+            raise InternalServiceError(
+                internal_detail=(
+                    f"closing the session containers at shutdown: {len(failures)} "
+                    f"of {len(sessions)} did not close: {'; '.join(reasons)}"
+                ),
+                user_detail=None,
+            ) from failures[0]
 
 
 def session_source_ref() -> ChainlitSessions:

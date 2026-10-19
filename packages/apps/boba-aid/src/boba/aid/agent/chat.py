@@ -1341,8 +1341,8 @@ class ThreadAgents:
         return agent
 
     async def close_all(self) -> None:
-        """Закрывает агентов всех тредов вкладки; отказ одного не мешает
-        закрыть остальных и поднимается после всех.
+        """Закрывает агентов всех тредов вкладки разом; отказ одного не
+        мешает закрыть остальных и поднимается после всех.
 
         Ошибки:
         AgentProcessError — агенты каких-то тредов не закрылись: тред и причина
@@ -1351,15 +1351,24 @@ class ThreadAgents:
         agents = list(self._agents.values())
         self._agents.clear()
 
-        failures: list[AcpClientError] = []
-        reasons: list[str] = []
+        closing: list[Coroutine[Any, Any, None]] = []
         for agent in agents:
             self._index.forget(agent)
-            try:
-                await agent.close()
-            except AcpClientError as exc:
-                failures.append(exc)
-                reasons.append(f"thread {agent.thread_id}: {exc}")
+            closing.append(agent.close())
+
+        outcomes = await asyncio.gather(*closing, return_exceptions=True)
+
+        failures: list[AcpClientError] = []
+        reasons: list[str] = []
+        for agent, outcome in zip(agents, outcomes, strict=True):
+            if outcome is None:
+                continue
+
+            if not isinstance(outcome, AcpClientError):
+                raise outcome
+
+            failures.append(outcome)
+            reasons.append(f"thread {agent.thread_id}: {outcome}")
 
         if failures:
             msg = (
