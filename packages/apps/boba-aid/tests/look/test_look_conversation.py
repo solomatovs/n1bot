@@ -14,7 +14,7 @@
 from __future__ import annotations
 
 import io
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from enum import StrEnum
 from pathlib import Path
 from typing import ClassVar
@@ -76,23 +76,23 @@ class TalkQuestion(StrEnum):
     PARTITIONS = "Подумай, как разбить таблицу на партиции"
 
 
-class TalkText:
-    """Тексты ответов и рассуждений книги: по смыслу вопроса."""
+class TalkText(StrEnum):
+    """Тексты ответов книги: по смыслу вопроса."""
 
-    STATUS: ClassVar[str] = "Выгрузка закончилась в 06:10, ошибок нет."
-    COMPARE: ClassVar[str] = (
+    STATUS = "Выгрузка закончилась в 06:10, ошибок нет."
+    COMPARE = (
         "Дешевле в поддержке ночной пакет: один процесс, понятный перезапуск и "
         "никаких дежурств. Поток изменений окупится, только если данные нужны "
         "в течение дня."
     )
-    WHY: ClassVar[str] = (
+    WHY = (
         "В проде у таблицы есть колонка с типом, которого нет на стенде: "
         "`SELECT *` тянет её и падает на приведении. Перечислите колонки явно."
     )
-    FILES: ClassVar[str] = "Файлы получены: картинка, отчёт на одну страницу и таблица."
-    DAY: ClassVar[str] = "Вчера оформили 1 284 заказа."
-    WEEK: ClassVar[str] = "За неделю оформили 8 917 заказов."
-    REPORT: ClassVar[str] = "\n".join(
+    FILES = "Файлы получены: картинка, отчёт на одну страницу и таблица."
+    DAY = "Вчера оформили 1 284 заказа."
+    WEEK = "За неделю оформили 8 917 заказов."
+    REPORT = "\n".join(
         (
             "# Отчёт по продажам за III квартал",
             "## Итоги",
@@ -138,52 +138,29 @@ class TalkText:
             "---",
         )
     )
-    MARGIN: ClassVar[str] = "\n".join(
+    MARGIN = "\n".join(
         (
             "Маржа — доля цены, которая остаётся после себестоимости: "
             "$m = (p - c) / p$, где $p$ — цена, $c$ — себестоимость.",
             "",
             "Суммарная маржа портфеля:",
             "",
-            "$$\\sum_i m_i$$",
+            "$$",
+            "\\sum_i m_i",
+            "$$",
             "",
             "При ценах $5 и $10 и себестоимости $4 маржа — 20 % и 60 %.",
             "",
             "Строка <b>не жирный</b> остаётся текстом.",
         )
     )
-    STORAGE: ClassVar[str] = "Хранилище доступно, свободно 120 ГБ."
-    LOOKING: ClassVar[str] = "Смотрю подключения."
-    CONNECTIONS: ClassVar[str] = (
-        "Подключения выше: пока ни одного, их можно добавить в настройках."
-    )
-    PARTITIONS: ClassVar[str] = (
+    STORAGE = "Хранилище доступно, свободно 120 ГБ."
+    LOOKING = "Смотрю подключения."
+    CONNECTIONS = "Подключения выше: пока ни одного, их можно добавить в настройках."
+    PARTITIONS = (
         "Разбейте таблицу по месяцам даты заказа: запросы отчётов читают один "
         "месяц, а старые партиции можно отсоединять целиком."
     )
-
-    @staticmethod
-    def words(count: int, seed: str) -> str:
-        """Связный текст из count слов: повторяется фраза seed."""
-        source = seed.split(" ")
-        picked: list[str] = []
-        for index in range(count):
-            picked.append(source[index % len(source)])
-
-        return " ".join(picked)
-
-    @staticmethod
-    def history() -> str:
-        """Сорок абзацев истории проекта — ответ на три экрана."""
-        paragraphs: list[str] = []
-        for number in range(1, 41):
-            paragraphs.append(
-                f"**Этап {number}.** Команда перенесла {number * 3} отчётов на новую "
-                f"витрину и закрыла {number} старых выгрузок; пользователи получили "
-                "данные раньше, а ночные сбои стали реже."
-            )
-
-        return "\n\n".join(paragraphs)
 
 
 class TalkBook:
@@ -214,6 +191,8 @@ class TalkBook:
 
     def replies(self) -> list[Reply]:
         connections = ReplyCall(tool=self.TOOL, arguments={}, intent=self.INTENT)
+        steps = self.words(80, self.STEPS_SEED)
+        plan = self.words(400, self.PLAN_SEED)
         return [
             self._plain(TalkQuestion.STATUS, TalkText.STATUS),
             self._plain(TalkQuestion.COMPARE, TalkText.COMPARE),
@@ -223,12 +202,12 @@ class TalkBook:
             self._plain(TalkQuestion.WEEK, TalkText.WEEK),
             self._plain(TalkQuestion.REPORT, TalkText.REPORT),
             self._plain(TalkQuestion.MARGIN, TalkText.MARGIN),
-            self._plain(TalkQuestion.HISTORY, TalkText.history()),
+            self._plain(TalkQuestion.HISTORY, self.history()),
             Reply(
                 question=TalkQuestion.STEPS,
                 turns=[
                     ReplyTurn(
-                        content=TalkText.words(80, self.STEPS_SEED),
+                        content=steps,
                         hold=True,
                         hold_after_tokens=self.STEPS_TOKENS,
                     )
@@ -238,7 +217,7 @@ class TalkBook:
                 question=TalkQuestion.PLAN,
                 turns=[
                     ReplyTurn(
-                        content=TalkText.words(400, self.PLAN_SEED),
+                        content=plan,
                         hold=True,
                         hold_after_tokens=self.PLAN_TOKENS,
                     )
@@ -269,7 +248,28 @@ class TalkBook:
         ]
 
     def thinking(self) -> str:
-        return TalkText.words(60, self.THINKING_SEED)
+        return self.words(60, self.THINKING_SEED)
+
+    def words(self, count: int, seed: str) -> str:
+        """Связный текст из count слов: повторяется фраза seed."""
+        source = seed.split(" ")
+        picked: list[str] = []
+        for index in range(count):
+            picked.append(source[index % len(source)])
+
+        return " ".join(picked)
+
+    def history(self) -> str:
+        """Сорок абзацев истории проекта — ответ на три экрана."""
+        paragraphs: list[str] = []
+        for number in range(1, 41):
+            paragraphs.append(
+                f"**Этап {number}.** Перенесено отчётов на новую витрину: "
+                f"{number * 3}, закрыто старых выгрузок: {number}. Пользователи "
+                "получили данные раньше, а ночные сбои стали реже."
+            )
+
+        return "\n\n".join(paragraphs)
 
     def streamed(self, text: str, count: int) -> str:
         """Начало text, которое поток отдал до паузы после count слов."""
@@ -307,17 +307,19 @@ class TalkFixes:
             "было: после перезагрузки страницы пропадали пометка «остановлено "
             "пользователем» у ответа и сообщение об ошибке хода; стало: обе "
             "пометки — часть истории, кадр после перезагрузки совпадает с живым "
-            "пиксель в пиксель (тест сверяет это сам)"
+            "пиксель в пиксель (тест сверяет это сам); ошибку хода после "
+            "перезагрузки покажут кадры группы ошибок"
         ),
     )
     ATTACHMENTS: ClassVar[LookFix] = LookFix(
         code="Вложения вопроса",
         summary=(
             "было: все вложения — одинаковые плашки-ссылки, клик скачивал файл, "
-            "картинки не видно; стало: картинка — миниатюрой над вопросом (клик "
-            "открывает её крупно), файл, который умеет показать панель справа "
-            "(PDF, текст, журнал), — кнопкой «открыть в панели», как файлы в "
-            "ответах, остальное (таблица CSV) — плашкой для скачивания"
+            "картинки не видно; стало: картинка — превью над вопросом шириной "
+            "до 300 px, как картинки chainlit (клик открывает её крупно), файл, "
+            "который умеет показать панель справа (PDF, текст, журнал), — "
+            "кнопкой «открыть в панели», как файлы в ответах, остальное "
+            "(таблица CSV) — плашкой chainlit для скачивания"
         ),
     )
     SCROLL: ClassVar[LookFix] = LookFix(
@@ -326,6 +328,17 @@ class TalkFixes:
             "было: круглая кнопка «↓» висела над лентой, хотя ниже было только "
             "пустое место под последним вопросом, и закрывала содержимое; "
             "стало: кнопка видна, только если ниже ленты есть непрочитанное"
+        ),
+    )
+    SPACER: ClassVar[LookFix] = LookFix(
+        code="Пустое место под последним вопросом",
+        summary=(
+            "было: место под последним вопросом считалось до того, как "
+            "догрузятся картинка вложения или карточка приложения, и потом не "
+            "менялось: лента то упиралась в конец раньше вопроса, то оставляла "
+            "лишнее пустое место, а кадр с тем же содержимым выходил то на 8, "
+            "то на 24 px выше; стало: место пересчитывается, когда вопрос или "
+            "лента под ним меняют высоту, положение ленты одно и то же"
         ),
     )
     DONE: ClassVar[LookFix] = LookFix(
@@ -362,8 +375,11 @@ class TalkLook:
         GROUP,
         "qu2-long",
         "Многострочный вопрос с длинным абзацем",
-        "переносы строк вопроса сохранены, пузырь не шире 70 % ленты, длинный "
-        "абзац переносится по словам; прокрутки вбок нет",
+        "вопрос размечен как markdown: «1)» и «2)» — нумерованный список, "
+        "строка после списка дописана ко второму пункту, пустая строка "
+        "отделяет абзац; пузырь не шире 70 % ленты, длинный абзац переносится "
+        "по словам; прокрутки вбок нет; на узком окне ниже есть текст — видна "
+        "кнопка «↓»",
         (TalkFixes.PLAIN,),
     )
     MARKDOWN: ClassVar[LookState] = LookState(
@@ -385,10 +401,11 @@ class TalkLook:
         GROUP,
         "qu4-attached",
         "Отправленный вопрос с вложениями",
-        "над пузырём вопроса: кнопка «report.pdf» со значком панели (откроет "
-        "PDF справа), миниатюра картинки, плашка «table.csv» для скачивания; "
+        "над пузырём вопроса сверху вниз: кнопка «report.pdf» со значком "
+        "панели (откроет PDF справа), превью картинки шириной до 300 px (клик "
+        "открывает её крупно), плашка «table.csv» с иконкой — скачивание; "
         "ответ ниже",
-        (TalkFixes.ATTACHMENTS,),
+        (TalkFixes.ATTACHMENTS, TalkFixes.SPACER),
     )
     EDITING: ClassVar[LookState] = LookState(
         GROUP,
@@ -454,7 +471,7 @@ class TalkLook:
         GROUP,
         "an9-long-end",
         "Длинный ответ прокручен до конца",
-        "последние этапы ответа и поле ввода; кнопки «↓» нет",
+        "последние этапы ответа, лента прокручена до конца; кнопки «↓» нет",
         (TalkFixes.SCROLL,),
     )
     STREAMING: ClassVar[LookState] = LookState(
@@ -525,8 +542,9 @@ class TalkLook:
         GROUP,
         "tr7-thinking",
         "Модель размышляет: пятнадцать слов рассуждения",
-        "строка хода «Работаю…», в ней шаг «Размышления» с кружком «идёт»; "
-        "мигающий кружок в конце ленты",
+        "строка хода «Работаю…» раскрыта, в ней шаг «Размышления» с кружком "
+        "«идёт» и первыми пятнадцатью словами рассуждения; мигающий кружок в "
+        "конце ленты",
         (TalkFixes.CONTAINER,),
     )
     THOUGHT: ClassVar[LookState] = LookState(
@@ -556,11 +574,11 @@ class TalkLook:
         "[contains(concat(' ', @class, ' '), ' overflow-y-auto ')][1]"
     )
     """Сама область прокрутки сообщений."""
-    TOP: ClassVar[str] = "(node) => node.scrollIntoView({block: 'start'})"
     END: ClassVar[str] = "(node) => { node.scrollTop = node.scrollHeight; }"
     LOGIN_USER: ClassVar[str] = "admin"
     UPLOAD: ClassVar[str] = "#upload-button-input"
     COMPOSER_BOX: ClassVar[str] = "#message-composer"
+    ATTACHMENTS: ClassVar[str] = "#attachments > *"
     STOP: ClassVar[str] = "#stop-button"
     EDIT: ClassVar[str] = ".edit-message"
     EDIT_INPUT: ClassVar[str] = "#edit-chat-input"
@@ -573,11 +591,6 @@ class TalkLook:
     """Высота окна кадра ответа-документа целиком."""
     TURN_SEC: ClassVar[float] = 120.0
     HELD_SEC: ClassVar[float] = 60.0
-
-    @staticmethod
-    def tall(size: LookSize) -> ViewportSize:
-        """Окно той же ширины, в которое ответ-документ входит целиком."""
-        return {"width": size.viewport["width"], "height": TalkLook.TALL}
 
 
 class TalkFeed:
@@ -641,7 +654,7 @@ class TalkFeed:
     def feed(self, question: TalkQuestion) -> Locator:
         """Лента с кнопкой «↓», прокрученная к вопросу хода."""
         asked = self.asked(question)
-        asked.evaluate(TalkLook.TOP)
+        asked.evaluate(LookPages.TOP)
         return asked.locator(TalkLook.FEED)
 
     def to_end(self, question: TalkQuestion) -> Locator:
@@ -649,6 +662,35 @@ class TalkFeed:
         asked = self.asked(question)
         asked.locator(TalkLook.SCROLLER).evaluate(TalkLook.END)
         return asked.locator(TalkLook.FEED)
+
+    def tall(self, size: LookSize) -> ViewportSize:
+        """Окно той же ширины, в которое ответ-документ входит целиком."""
+        return {"width": size.viewport["width"], "height": TalkLook.TALL}
+
+    def attached(self, names: Sequence[str]) -> Locator:
+        """Плашки вложений поля ввода, когда загружены все names: у картинки
+        имя — подпись миниатюры, у прочих — текст плашки."""
+        composer = self._page.locator(TalkLook.COMPOSER_BOX)
+        plates = composer.locator(TalkLook.ATTACHMENTS)
+        expect(plates).to_have_count(len(names), timeout=30_000)
+        for name in names:
+            plate = plates.filter(has=self._page.get_by_alt_text(name))
+            named = plates.filter(has_text=name)
+            expect(plate.or_(named)).to_have_count(1, timeout=30_000)
+
+        return composer
+
+    def editing(self, answer: TalkText) -> Locator:
+        """Лента с полем правки вопроса, прокрученная к нему: пузыря вопроса
+        на время правки нет, лента находится от ответа хода."""
+        edited = self._page.locator(Selector.of_type(StepKind.USER.value)).filter(
+            has=self._page.locator(TalkLook.EDIT_INPUT)
+        )
+        edited.evaluate(LookPages.TOP)
+        answered = self._page.locator(
+            Selector.of_type(StepKind.ASSISTANT.value), has_text=answer
+        ).last
+        return answered.locator(TalkLook.FEED)
 
     def answer(self) -> Locator:
         return self._page.locator(Selector.of_type(StepKind.ASSISTANT.value)).last
@@ -723,13 +765,14 @@ class TalkFiles:
         return [str(chart), str(report), str(table)]
 
     def _chart(self) -> bytes:
-        """Столбчатый график 64×48: три столбца на белом."""
-        image = Image.new("RGB", (64, 48), (255, 255, 255))
+        """Столбчатый график 480×300: три столбца на белом, размер обычного
+        снимка экрана, а не значка."""
+        image = Image.new("RGB", (480, 300), (255, 255, 255))
         draw = ImageDraw.Draw(image)
         for index, color in enumerate(self.BARS):
-            left = 8 + index * 18
-            top = 40 - (index + 1) * 10
-            draw.rectangle((left, top, left + 12, 44), fill=color)
+            left = 60 + index * 130
+            top = 250 - (index + 1) * 70
+            draw.rectangle((left, top, left + 90, 270), fill=color)
 
         out = io.BytesIO()
         image.save(out, format="PNG")
@@ -789,10 +832,7 @@ def test_user_question_look(
         look.frame(feed.feed(TalkQuestion.WHY), TalkLook.MARKDOWN, theme, size)
 
         page.set_input_files(TalkLook.UPLOAD, files)
-        composer = page.locator(TalkLook.COMPOSER_BOX)
-        for name in TalkFiles.NAMES:
-            expect(composer.get_by_text(name)).to_be_visible(timeout=30_000)
-
+        composer = feed.attached(TalkFiles.NAMES)
         page.locator(Selector.INPUT.value).fill(TalkQuestion.FILES.value)
         page.wait_for_load_state("networkidle")
         look_pages.settle(page)
@@ -812,7 +852,7 @@ def test_user_question_look(
         asked.locator(TalkLook.EDIT).click(force=True)
         page.locator(TalkLook.EDIT_INPUT).fill(TalkQuestion.WEEK.value)
         look_pages.settle(page)
-        look.frame(asked.locator(TalkLook.FEED), TalkLook.EDITING, theme, size)
+        look.frame(feed.editing(TalkText.DAY), TalkLook.EDITING, theme, size)
         feed.chat.log.clear()
         page.locator(TalkLook.CONFIRM_EDIT).click()
         feed.chat.await_idle(TalkLook.TURN_SEC)
@@ -840,7 +880,7 @@ def test_model_answer_look(
         look_pages.settle(page)
         document = feed.answer()
         # документ выше окна: кадр целиком — на высоком окне, затем окно прежнее
-        page.set_viewport_size(TalkLook.tall(size))
+        page.set_viewport_size(feed.tall(size))
         look.frame(document, TalkLook.DOCUMENT, theme, size)
         page.set_viewport_size(size.viewport)
         look.frame(
@@ -867,7 +907,7 @@ def test_model_answer_look(
         look.frame(end, TalkLook.HISTORY_END, theme, size)
 
         streamed = book.streamed(
-            TalkText.words(80, TalkBook.STEPS_SEED), TalkBook.STEPS_TOKENS
+            book.words(80, TalkBook.STEPS_SEED), TalkBook.STEPS_TOKENS
         )
         feed.ask_held(TalkQuestion.STEPS)
         expect(feed.answer()).to_contain_text(streamed, timeout=30_000)
@@ -876,7 +916,7 @@ def test_model_answer_look(
         feed.release(TalkQuestion.STEPS)
 
         stopped = book.streamed(
-            TalkText.words(400, TalkBook.PLAN_SEED), TalkBook.PLAN_TOKENS
+            book.words(400, TalkBook.PLAN_SEED), TalkBook.PLAN_TOKENS
         )
         feed.ask_held(TalkQuestion.PLAN)
         expect(feed.answer()).to_contain_text(stopped, timeout=30_000)
@@ -914,6 +954,8 @@ def test_turn_look(
 
         reasoning = book.streamed(book.thinking(), TalkBook.THINKING_TOKENS)
         feed.ask_held(TalkQuestion.PARTITIONS)
+        feed.open_last(StepKind.RUN)
+        feed.open_last(StepKind.LLM)
         thought = page.locator(Selector.of_type(StepKind.LLM.value)).last
         expect(thought).to_contain_text(reasoning, timeout=30_000)
         look_pages.settle(page)

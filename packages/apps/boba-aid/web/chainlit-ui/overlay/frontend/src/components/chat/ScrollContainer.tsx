@@ -60,33 +60,42 @@ export default function ScrollContainer({
     [messages]
   );
 
+  // boba: высота спейсера отдельно от прокрутки — её зовёт и наблюдатель
+  // размеров; отдаёт высоту сообщений после последнего вопроса
+  const fitSpacer = useCallback((): number => {
+    if (!ref.current || !lastUserMessageRef.current) return 0;
+
+    const containerHeight = ref.current.clientHeight;
+    const lastMessageHeight = lastUserMessageRef.current.offsetHeight;
+
+    // Calculate the height of all elements after the last user message
+    let afterMessagesHeight = 0;
+    let currentElement = lastUserMessageRef.current.nextElementSibling;
+
+    // Iterate through all siblings after the last user message
+    while (currentElement && currentElement !== spacerRef.current) {
+      afterMessagesHeight += (currentElement as HTMLElement).offsetHeight;
+      currentElement = currentElement.nextElementSibling;
+    }
+
+    // Position the last user message at the top with some padding
+    // Subtract both the message height and the height of any messages after it
+    const newSpacerHeight =
+      containerHeight - lastMessageHeight - afterMessagesHeight - 32;
+
+    // Only set a positive spacer height
+    if (spacerRef.current) {
+      spacerRef.current.style.height = `${Math.max(0, newSpacerHeight)}px`;
+    }
+    return afterMessagesHeight;
+  }, []);
+
   // Calculate and update spacer height
   const updateSpacerHeight = useCallback(() => {
     if (!ref.current) return;
 
     if (autoScrollUserMessage && lastUserMessageRef.current) {
-      const containerHeight = ref.current.clientHeight;
-      const lastMessageHeight = lastUserMessageRef.current.offsetHeight;
-
-      // Calculate the height of all elements after the last user message
-      let afterMessagesHeight = 0;
-      let currentElement = lastUserMessageRef.current.nextElementSibling;
-
-      // Iterate through all siblings after the last user message
-      while (currentElement && currentElement !== spacerRef.current) {
-        afterMessagesHeight += (currentElement as HTMLElement).offsetHeight;
-        currentElement = currentElement.nextElementSibling;
-      }
-
-      // Position the last user message at the top with some padding
-      // Subtract both the message height and the height of any messages after it
-      const newSpacerHeight =
-        containerHeight - lastMessageHeight - afterMessagesHeight - 32;
-
-      // Only set a positive spacer height
-      if (spacerRef.current) {
-        spacerRef.current.style.height = `${Math.max(0, newSpacerHeight)}px`;
-      }
+      const afterMessagesHeight = fitSpacer();
 
       // Scroll to position the message at the top
       if (afterMessagesHeight === 0) {
@@ -97,7 +106,12 @@ export default function ScrollContainer({
     } else if (autoScrollAssistantMessage && autoScrollRef?.current) {
       ref.current.scrollTop = ref.current.scrollHeight;
     }
-  }, [autoScrollUserMessage, autoScrollAssistantMessage, autoScrollRef]);
+  }, [
+    autoScrollUserMessage,
+    autoScrollAssistantMessage,
+    autoScrollRef,
+    fitSpacer
+  ]);
 
   // boba: пересчёт спейсера читает offsetHeight всех сообщений после последнего
   // вопроса — forced layout; на каждый токен это делалось синхронно. Теперь не
@@ -126,6 +140,30 @@ export default function ScrollContainer({
     const step = inner?.closest('[data-step-type="user_message"]');
     lastUserMessageRef.current = (step as HTMLDivElement | null) ?? null;
   }, [lastUserMessageId]);
+
+  // boba: вопрос и лента под ним растут и без новых сообщений — догружается
+  // картинка или элемент вложения; высота спейсера следует за ними, иначе она
+  // остаётся от прежней и прокрутка к вопросу упирается в конец ленты.
+  // Прокрутку наблюдатель не трогает: её ведут сообщения и пользователь
+  useEffect(() => {
+    const step = lastUserMessageRef.current;
+    if (!autoScrollUserMessage || !step) return;
+
+    let frame = 0;
+    const observer = new ResizeObserver(() => {
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        fitSpacer();
+      });
+    });
+    observer.observe(step);
+    if (step.parentElement) observer.observe(step.parentElement);
+    return () => {
+      observer.disconnect();
+      cancelAnimationFrame(frame);
+    };
+  }, [autoScrollUserMessage, lastUserMessageId, fitSpacer]);
 
   useEffect(() => {
     if (!ref.current) return;
