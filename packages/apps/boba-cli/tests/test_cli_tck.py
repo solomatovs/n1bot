@@ -133,22 +133,29 @@ class TckReport(BaseModel):
 
 
 class TckPart(StrEnum):
-    """Часть набора TCK — выражение `-k` по именам модулей conformance.
+    """Часть набора TCK — выражение `-k` по модулям и тестам conformance.
 
-    Части идут одновременно, каждая своим процессом acp-tck. Последняя часть
-    берёт всё, что не попало в остальные, поэтому объединение частей — весь
-    набор TCK при любом его составе, в том числе после обновления TCK.
+    Части идут одновременно, каждая своим процессом acp-tck; длительность
+    набора — длительность самой долгой части, поэтому части подобраны
+    примерно равными. Последняя часть берёт всё, что не попало в остальные,
+    поэтому объединение частей — весь набор TCK при любом его составе, в том
+    числе после обновления TCK.
     """
 
-    SESSION_CAPABILITIES = "test_session_capabilities.py"
-    BATCH_AND_CANCEL = "test_batch.py or test_cancel.py"
-    PATCHES = "test_patches.py or test_authentication.py or test_session.py"
-    INITIALIZE = "test_extensibility.py or test_initialize.py or test_transport.py"
-    PROMPT = "test_prompt.py or test_session_config.py or test_jsonrpc.py"
-    INFORMATIONAL = "test_informational.py"
+    CONCURRENT_PROMPT = "test_concurrent_prompt_behaviour"
     """Отдельно: ACP-INFO-CONCURRENT-201 ждёт ответ на первый вопрос весь
     --timeout, потому что TCK читает его мимо уже принятых строк."""
 
+    SESSION_LISTING = "test_session_capabilities.py and (list or delete or close)"
+    SESSION_RESUME = "test_session_capabilities.py and not (list or delete or close)"
+    CANCEL = "test_cancel.py"
+    EXTENSIBILITY = "test_extensibility.py"
+    INITIALIZE = "test_initialize.py or test_session.py"
+    BATCH = "test_batch.py or test_diagnostics.py"
+    PATCHES = "test_patches.py or test_enums.py"
+    JSONRPC = "test_jsonrpc.py or test_transport.py"
+    PROMPT = "test_prompt.py or test_permission.py or test_prompt_capabilities.py"
+    SESSION_CONFIG = "test_session_config.py or test_client_capabilities.py"
     REST = "rest"
 
     def expression(self) -> str:
@@ -264,6 +271,9 @@ class TckStand:
     AGENT_MODULE = "boba.cli.app"
     SETTING_SOURCES = "user"
     PROTOCOL_VERSION = "2"
+    RESPONSE_TIMEOUT_SEC = "20"
+    """Срок ответа агента; quiet_period TCK — min(2, timeout / 10), так что
+    ожидание тишины остаётся 2 с, а ACP-INFO-CONCURRENT-201 ждёт 20 с."""
     CANCEL_QUESTION: ClassVar[str] = "tck: a long answer to cancel"
     """Вопрос тестов отмены TCK: книга ответов отвечает на него медленно."""
 
@@ -311,7 +321,7 @@ class TckStand:
             "--agent-cwd",
             str(self.agent_cwd()),
             "--timeout",
-            "30",
+            self.RESPONSE_TIMEOUT_SEC,
             "--test-timeout",
             "120",
             "--cancel-prompt",
