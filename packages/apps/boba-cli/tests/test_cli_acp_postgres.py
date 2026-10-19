@@ -11,16 +11,12 @@ Kerberos из кэша тестового стенда: пути к кэшу и 
 
 from __future__ import annotations
 
-import uuid
-from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
 import pytest
 from acp.exceptions import RequestError
 from acp.experimental.v2 import schema as acp_schema
-from omegaconf import DictConfig
-from psycopg import sql
 from psycopg.conninfo import make_conninfo
 from test_cli_acp import (
     AcpClient,
@@ -34,13 +30,11 @@ from test_cli_acp import (
 )
 
 from boba.agent.history import SessionId, StoredLine
-from boba.config import bind
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
 from boba.db.postgres.connection.auth import KeytabAuth
 from boba.history.postgres import PostgresHistoryStore
 from boba.krb import KerberosEnv, KerberosWorkspace
-from boba.stand.database import TestDatabase
 from boba.stand.ui.fake_llm import ScenarioName
 from boba.transport.acp.protocol import (
     AcpErrorCode,
@@ -51,39 +45,11 @@ from boba.transport.acp.protocol import (
 pytestmark = pytest.mark.anyio
 
 
-@pytest.fixture
-async def postgres(raw_config: DictConfig) -> PostgresConfig:
-    cfg = bind(raw_config, path="postgres", model=PostgresConfig)
-    database = await TestDatabase.ensure(cfg)
-
-    return TestDatabase.config_of(cfg, database)
-
-
-@pytest.fixture
-async def pool(postgres: PostgresConfig) -> AsyncIterator[AsyncPostgresPool]:
-    opened = AsyncPostgresPool(postgres)
-    await opened.open()
-    try:
-        yield opened
-    finally:
-        await opened.close()
-
-
-@pytest.fixture
-async def schema(pool: AsyncPostgresPool) -> AsyncIterator[str]:
-    """Своя схема истории на тест; после теста сносится."""
-    name = f"acp_hist_{uuid.uuid4().hex[:12]}"
-    yield name
-    async with pool.connection() as conn:
-        await conn.execute(
-            sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(name))
-        )
-
-
 class PostgresStand:
     """Настройки процесса для истории в Postgres стенда: строка подключения
     без пароля (вход билетом Kerberos) и окружение libkrb5 с кэшем билета,
-    который стенд уже получил по keytab."""
+    который стенд уже получил по keytab. Фикстура stand в conftest.py отдаёт
+    его этим тестам и тесту бинарника (test_cli_binary.py)."""
 
     def __init__(self, postgres: PostgresConfig, schema: str) -> None:
         self._postgres = postgres
@@ -131,10 +97,24 @@ class PostgresStand:
     def store(self, pool: AsyncPostgresPool) -> PostgresHistoryStore:
         return PostgresHistoryStore(self._postgres, self._schema, pool)
 
+    async def human_prompts(
+        self, store: PostgresHistoryStore, session_id: str
+    ) -> list[str]:
+        """Вопросы человека в записях сессии по порядку."""
+        found: list[str] = []
+        async for line in store.read(SessionId(value=session_id)):
+            assert isinstance(line, StoredLine)
+            raw = line.raw
+            if raw.get("type") != "user":
+                continue
 
-@pytest.fixture
-def stand(postgres: PostgresConfig, schema: str) -> PostgresStand:
-    return PostgresStand(postgres, schema)
+            origin = raw.get("origin")
+            if not isinstance(origin, dict) or origin.get("kind") != "human":
+                continue
+
+            found.append(str(raw["message"]["content"]))
+
+        return found
 
 
 class Pair:
@@ -205,11 +185,11 @@ class TestTwoProcesses:
 
             await pair.observer_conn.close_session(session_id=session_id)
             store = stand.store(pool)
-            human = await self.human_prompts(store, session_id)
+            human = await stand.human_prompts(store, session_id)
             assert human == [self.PROMPT, ScenarioName.ANSWER.value]
 
             await pair.delete(session_id)
-            assert await self.human_prompts(store, session_id) == []
+            assert await stand.human_prompts(store, session_id) == []
             assert (await pair.observer_conn.list_sessions()).sessions == []
             await pair.delete(session_id)
         finally:
@@ -284,23 +264,6 @@ class TestTwoProcesses:
 
         assert back.value.code == AcpErrorCode.RESOURCE_NOT_FOUND
 
-    @staticmethod
-    async def human_prompts(store: PostgresHistoryStore, session_id: str) -> list[str]:
-        found: list[str] = []
-        async for line in store.read(SessionId(value=session_id)):
-            assert isinstance(line, StoredLine)
-            raw = line.raw
-            if raw.get("type") != "user":
-                continue
-
-            origin = raw.get("origin")
-            if not isinstance(origin, dict) or origin.get("kind") != "human":
-                continue
-
-            found.append(str(raw["message"]["content"]))
-
-        return found
-
 
 class TestForkOfAHeldSession:
     PROMPT = call({"name": "mcp__stand__add", "arguments": {"a": 1, "b": 1}})[0].text
@@ -371,7 +334,7 @@ class TestForkOfAHeldSession:
             assert held.value.code == AcpErrorCode.INTERNAL_ERROR
 
             store = stand.store(pool)
-            human = TestTwoProcesses.human_prompts
+            human = stand.human_prompts
             assert await human(store, session_id) == [
                 self.PROMPT,
                 ScenarioName.ANSWER.value,

@@ -372,7 +372,10 @@ RUN mkdir -p /opt/bin-site && { [ -z "${NUITKA_VERSION}" ] || { \
 
 # boba одним файлом: Nuitka и patchelf из индекса pypi образа; бинарник самодостаточен —
 # gssapi (через транспорт http), данные пакетов и, по флагу BIN_ONNX, рантайм
-# onnxruntime-genai входят целиком; libpython линкуется статически. onnxruntime_genai
+# onnxruntime-genai входят целиком; libpython линкуется статически. Данные пакетов boba
+# называет опись boba.cli.package_data по RECORD дерева колёс: она же даёт флаги Nuitka
+# и едет в бинарник, а `boba self-check` в конце шага проверяет по ней, что все файлы
+# внутри, — пропущенный каталог данных роняет сборку. onnxruntime_genai
 # находит onnxruntime через find_spec, не импортом, поэтому пакет onnxruntime с его
 # библиотеками включается явно. Локальные модели внутрь не попадают: веса лежат в
 # каталоге models/ релиза. Без NUITKA_VERSION стадия отдаёт пустой /out
@@ -399,15 +402,17 @@ RUN [ -z "${NUITKA_VERSION}" ] || { onnx=""; \
         onnx="--include-package=onnxruntime_genai --include-package-data=onnxruntime_genai \
               --include-package=onnxruntime"; \
     fi; \
-    python3 -m nuitka --onefile --static-libpython=yes --output-filename=boba --update-check=never \
+    python3 -m boba.cli.package_data /opt/bin-site /tmp/package_data.json > /tmp/package_data.flags \
+    && python3 -m nuitka --onefile --static-libpython=yes --output-filename=boba --update-check=never \
         --output-dir=/tmp/nuitka --jobs=${JOBS} \
         --user-package-configuration-file=/tmp/nuitka-boba.yml \
         --include-package=gssapi --nofollow-import-to=gssapi.tests --include-distribution-metadata=boba-cli \
-        --include-package-data=boba.agent --include-package-data=boba.history.postgres ${onnx} \
+        $(cat /tmp/package_data.flags) ${onnx} \
         /opt/bin-site/boba/cli/app.py \
     && install -m 0755 /tmp/nuitka/boba /out/boba \
-    && rm -rf /tmp/nuitka \
-    && /out/boba --help > /dev/null; }
+    && rm -rf /tmp/nuitka /tmp/package_data.json /tmp/package_data.flags \
+    && /out/boba --help > /dev/null \
+    && /out/boba self-check; }
 
 
 # бинарник для make boba-bin: make забирает /boba через docker cp

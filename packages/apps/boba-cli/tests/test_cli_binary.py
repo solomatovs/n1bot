@@ -1,8 +1,9 @@
 """Собранный бинарник `release/<версия>/bin/boba`: сценарий ACP через него —
 рукопожатие, сессия с регистрацией MCP-over-ACP, ход с инструментом,
-разрешение; время старта и размер, отсутствие исходного текста внутри.
-Локальную модель onnx проверяет `bin/boba-onnx` — сборка с рантаймом
-onnxruntime-genai.
+разрешение; история в Postgres стенда, как у чата в проде, — сессия, ход,
+возобновление с воспроизведением и второй ход; самопроверка данных пакетов;
+время старта и размер, отсутствие исходного текста внутри. Локальную модель
+onnx проверяет `bin/boba-onnx` — сборка с рантаймом onnxruntime-genai.
 
 Тесты проверяют артефакт, а не код, и в обычный прогон не входят: маркер
 binary — после `make -C build boba-bin`, binary_onnx — после
@@ -26,11 +27,16 @@ from test_cli_acp import (
     AcpClient,
     AcpProcess,
     FakeModel,
+    FeedView,
     StandRegistration,
     Steps,
+    call,
     handshake,
 )
+from test_cli_acp_postgres import PostgresStand
 
+from boba.db.postgres import AsyncPostgresPool
+from boba.stand.ui.fake_llm import ScenarioName
 from boba.transport.acp.protocol import StopReason
 
 pytestmark = [pytest.mark.anyio, pytest.mark.integration]
@@ -129,6 +135,81 @@ class TestBinary:
         data = path.read_bytes()
         for snippet in self.SOURCE_SNIPPETS:
             assert snippet not in data
+
+    @pytest.mark.binary
+    def test_self_check_finds_the_package_data(self, release_bin: ReleaseBin) -> None:
+        """Опись сборки внутри, и все её файлы доступны: шаблоны агента и схема
+        истории Postgres."""
+        path = release_bin.path(ReleaseBinary.BOBA)
+        completed = subprocess.run(
+            [str(path), "self-check"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+
+        assert completed.returncode == 0, completed.stderr[-2000:]
+        assert "package data files present" in completed.stdout
+        assert "boba.history.postgres" in completed.stdout
+        assert "boba.agent" in completed.stdout
+
+    @pytest.mark.binary
+    async def test_postgres_history_session_resumes_through_the_binary(  # noqa: PLR0913 — фикстуры стенда
+        self,
+        model: FakeModel,
+        registration: StandRegistration,
+        stand: PostgresStand,
+        pool: AsyncPostgresPool,
+        release_bin: ReleaseBin,
+        tmp_path: Path,
+    ) -> None:
+        """История в Postgres стенда так, как её отдаёт агенту чат: строка libpq
+        без пароля, вход билетом Kerberos из окружения. Бинарник создаёт схему
+        истории своими файлами, ведёт ход с инструментом, после закрытия
+        сессии возобновляет её с той же лентой и ведёт второй ход; записи обоих
+        вопросов — в Postgres."""
+        path = release_bin.path(ReleaseBinary.BOBA)
+        boba = AcpProcess(tmp_path, model, [str(path)], stand.environment())
+        prompt = call({"name": "mcp__stand__add", "arguments": {"a": 2, "b": 3}})
+        view = FeedView()
+        client = AcpClient()
+        conn = await boba.start(client, registration, stand.settings(boba))
+        try:
+            await handshake(conn)
+            session = await conn.new_session(
+                cwd=str(tmp_path), mcp_servers=[StandRegistration.STAND]
+            )
+            session_id = session.session_id
+            _, first = await boba.turn(client, session_id, prompt)
+            assert first.stop_reason == StopReason.END_TURN
+
+            live = client.updates_of(session_id)
+            await conn.close_session(session_id=session_id)
+            await conn.resume_session(
+                cwd=str(tmp_path),
+                session_id=session_id,
+                mcp_servers=[StandRegistration.STAND],
+                replay_from=schema.ReplayFromStartVariant(),
+            )
+            replayed = client.updates_of(session_id)[len(live) :]
+            assert view.render(replayed) == view.render(live)
+
+            answer = [schema.TextContentBlock(text=ScenarioName.ANSWER.value)]
+            _, second = await boba.turn(client, session_id, answer)
+            assert second.stop_reason == StopReason.END_TURN
+
+            await conn.close_session(session_id=session_id)
+            human = await stand.human_prompts(stand.store(pool), session_id)
+            assert human == [prompt[0].text, ScenarioName.ANSWER.value]
+        finally:
+            await conn.close()
+            await boba.close_stdin()
+            code = await boba.wait()
+            await boba.kill()
+
+        assert code == 0
+        boba.assert_stdout_is_frames_only()
 
     @pytest.mark.binary
     async def test_acp_scenario_runs_through_the_binary(
