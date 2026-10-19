@@ -1,7 +1,13 @@
 """Проверка собранного образа приложения boba (make test): интерпретатор, пакеты boba-*,
 консольные точки входа; у приложения с песочницей — образы корней плагинов и модели
-рядом с релизом, у чата — файлы ассетов, названные конфигом chainlit, и ход агента boba
-с моделью проверки.
+рядом с релизом, у чата — файлы ассетов, названные конфигом chainlit, самопроверка
+агента boba (`boba self-check`: данные пакетов внутри бинарника) и его ход с моделью
+проверки.
+
+Ход идёт с историей в памяти: в контейнере проверки нет сети, и postgres, где лежит
+история агента в проде, недоступен. Файлы схемы истории postgres внутри бинарника
+проверяет самопроверка; подключение, запись и возобновление сессии в postgres —
+тест бинарника test_cli_binary.py (маркер binary) на базе стенда.
 
 Скрипт идёт на stdin интерпретатора образа с окружением conf/boba.env, без сети:
   python3 - --app aid|mcp --base /app/boba --names <app/packages.txt> \
@@ -239,19 +245,51 @@ class TurnOutcome:
 
 
 class AgentTurn:
-    """Ход агента чата так, как его запускает чат: команда из BOBA_AGENT_COMMAND в
-    окружении BareEnv, ACP v2 по stdio — initialize, session/new, session/prompt и поток
-    session/update до state_update idle. Модель — CheckModel в потоке этого процесса;
-    уведомления, пришедшие раньше ответа на запрос, ждут разбора в очереди."""
+    """Агент чата так, как его запускает чат: команда из BOBA_AGENT_COMMAND в
+    окружении BareEnv. self_check() зовёт `self-check` бинарника; run() ведёт ход —
+    ACP v2 по stdio: initialize, session/new, session/prompt и поток session/update до
+    state_update idle. Модель — CheckModel в потоке этого процесса; уведомления,
+    пришедшие раньше ответа на запрос, ждут разбора в очереди."""
 
     PROTOCOL: ClassVar[int] = 2
     DEADLINE_SEC: ClassVar[float] = 120.0
+    SELF_CHECK_SEC: ClassVar[float] = 60.0
     LOG_TAIL: ClassVar[int] = 1500
 
     def __init__(self, command: str) -> None:
         self._command = command
         self._ids = itertools.count(1)
         self._backlog: list[Mapping[str, Any]] = []
+
+    def self_check(self) -> str:
+        argv = [self._command, "self-check"]
+        try:
+            done = subprocess.run(
+                argv,
+                env=self._bare_env(),
+                capture_output=True,
+                text=True,
+                timeout=self.SELF_CHECK_SEC,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise ImageCheckError(
+                f"{self._command} self-check did not finish in "
+                f"{self.SELF_CHECK_SEC:.0f} s"
+            ) from exc
+        except OSError as exc:
+            raise ImageCheckError(
+                f"{self._command} self-check did not start: {exc}"
+            ) from exc
+
+        if done.returncode != 0:
+            tail = done.stderr[-self.LOG_TAIL :]
+            raise ImageCheckError(
+                f"{self._command} self-check exited with {done.returncode}, expected "
+                f"0: {tail}"
+            )
+
+        return done.stdout.strip()
 
     def run(self, workdir: Path) -> TurnOutcome:
         server = ThreadingHTTPServer(("127.0.0.1", 0), CheckModel)
@@ -506,8 +544,11 @@ class ImageCheck:
             )
 
     def _agent(self) -> None:
-        self._report.section("ход агента чата в окружении SDK ACP")
-        self._report.check(f"ход агента {self._options.agent}", self._agent_turn)
+        self._report.section("агент чата в окружении SDK ACP")
+        self._report.check(f"самопроверка {self._options.agent}", self._turn.self_check)
+        self._report.check(
+            f"ход агента {self._options.agent} (история в памяти)", self._agent_turn
+        )
 
     def _import(self, module: str) -> str:
         importlib.import_module(module)

@@ -947,6 +947,7 @@ boba-bin: version-check
 	$(call image-copy,$$(cat "$$tmp/boba.iid"),/boba,$(BIN_FILE))
 	chmod 0755 "$(BIN_FILE)"
 	"$(BIN_FILE)" --help > /dev/null
+	"$(BIN_FILE)" self-check
 	echo ">>> агент: $(BIN_FILE) ($$(du -h "$(BIN_FILE)" | cut -f1))"
 
 # --- по приложению: образ, проверка, деревья ---------------------------------------
