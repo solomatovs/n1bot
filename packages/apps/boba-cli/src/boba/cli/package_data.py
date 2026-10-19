@@ -2,23 +2,24 @@
 самопроверка по ней.
 
 Стадия boba-bin запускает модуль интерпретатором над деревом колёс
-(`python3 -m boba.cli.package_data <опись>`): PackageDataSurvey читает RECORD
-установленных дистрибутивов boba-*, пишет опись их файлов данных и печатает
-флаги Nuitka, которые кладут в бинарник эти файлы и саму опись. Команда
+(`python3 -m boba.cli.package_data <дерево> <опись>`): PackageDataSurvey читает
+RECORD дистрибутивов boba-*, установленных в дерево, пишет опись их файлов
+данных и печатает флаги Nuitka, которые кладут в бинарник эти файлы и саму
+опись. Команда
 `boba self-check` бинарника (PackageDataCheck) читает опись из своих данных и
 проверяет, что каждый файл описи доступен через importlib.resources так же,
 как его читает код пакета.
 
 Ошибки:
-PackageDataError — опись не собрана или не читается, файл данных лежит вне
-    обычного пакета, либо файлы описи в бинарнике недоступны.
+PackageDataError — опись не собрана или не читается, либо файлы описи в
+    бинарнике недоступны.
 """
 
 from __future__ import annotations
 
 import sys
 from collections.abc import Iterable, Iterator, Sequence
-from enum import StrEnum
+from enum import IntEnum, StrEnum
 from importlib import metadata, resources
 from importlib.machinery import all_suffixes
 from pathlib import Path, PurePosixPath
@@ -47,6 +48,19 @@ class ManifestFile(StrEnum):
     PACKAGE = "boba.cli"
     NAME = "package_data.json"
     ENCODING = "utf-8"
+
+
+class WheelLayout(StrEnum):
+    """Имена дерева установки, по которым опись отличает данные пакета от
+    кода, метаданных и файлов для проверки типов."""
+
+    DIST_PREFIX = "boba-"
+    INIT = "__init__.py"
+    CACHE = "__pycache__"
+    PARENT = ".."
+    METADATA_SUFFIX = ".dist-info"
+    TYPED_MARKER = "py.typed"
+    STUB_SUFFIX = ".pyi"
 
 
 class NuitkaFlag(StrEnum):
@@ -88,30 +102,28 @@ class PackageDataManifest(BaseModel):
 class PackageDataSurvey:
     """Опись данных пакетов дерева колёс для сборки бинарника.
 
-    Источник — RECORD каждого установленного дистрибутива boba-*: всё, что
-    колесо кладёт в каталог обычного пакета и что не модуль Python, — данные,
-    которые код читает через importlib.resources. Создаётся входом модуля в
-    стадии boba-bin; отдаёт опись и флаги Nuitka по ней."""
-
-    PREFIX: ClassVar[str] = "boba-"
-    INIT: ClassVar[str] = "__init__.py"
-    CACHE: ClassVar[str] = "__pycache__"
-    PARENT: ClassVar[str] = ".."
-    METADATA_SUFFIX: ClassVar[str] = ".dist-info"
+    Источник — RECORD каждого дистрибутива boba-*, установленного в дерево
+    колёс (только в него: дистрибутивы интерпретатора и `.egg-info`
+    исходников в опись не попадают): всё, что колесо кладёт в каталог
+    обычного пакета и что не модуль Python и не файл для проверки типов, —
+    данные, которые код читает через importlib.resources. Создаётся входом
+    модуля (SurveyEntry) в стадии boba-bin; отдаёт опись и флаги Nuitka по ней."""
 
     def __init__(self) -> None:
-        self._code_suffixes = tuple(all_suffixes())
+        self._skipped_suffixes = (*all_suffixes(), WheelLayout.STUB_SUFFIX.value)
 
-    def manifest(self) -> PackageDataManifest:
+    def manifest(self, site: Path) -> PackageDataManifest:
         """Ошибки:
-        PackageDataError — в дереве нет дистрибутивов boba-* с данными.
+        PackageDataError — в дереве нет дистрибутивов boba-* с данными или
+            у дистрибутива нет RECORD.
         """
-        found = sorted(self._resources(), key=PackageResource.render)
+        found = sorted(self._resources(site), key=PackageResource.render)
         if not found:
+            prefix = WheelLayout.DIST_PREFIX.value
             msg = (
-                f"package data survey: the installed distributions {self.PREFIX}* "
-                f"under {sys.path} carry no data files in their RECORD, expected at "
-                "least the templates of boba-agent; is the wheel tree installed?"
+                f"package data survey: the distributions {prefix}* installed in "
+                f"{site} carry no data files in their RECORD, expected at "
+                "least the templates of boba-agent; is the wheel tree installed there?"
             )
             raise PackageDataError(msg)
 
@@ -128,17 +140,17 @@ class PackageDataSurvey:
 
         yield f"{NuitkaFlag.DATA_FILE.value}{written}={destination}"
 
-    def _resources(self) -> Iterator[PackageResource]:
-        for dist in metadata.distributions():
+    def _resources(self, site: Path) -> Iterator[PackageResource]:
+        for dist in metadata.distributions(path=[str(site)]):
             name = dist.metadata["Name"]
-            if not name.lower().startswith(self.PREFIX):
+            if not name.lower().startswith(WheelLayout.DIST_PREFIX.value):
                 continue
 
             files = dist.files
             if files is None:
                 msg = (
-                    f"package data survey: distribution {name} has no RECORD, "
-                    "expected it installed from a wheel"
+                    f"package data survey: distribution {name} in {site} has "
+                    "no RECORD, expected it installed from a wheel"
                 )
                 raise PackageDataError(msg)
 
@@ -165,16 +177,19 @@ class PackageDataSurvey:
             )
 
     def _data_candidate(self, path: PurePosixPath) -> bool:
-        if self.PARENT in path.parts:
+        if WheelLayout.PARENT.value in path.parts:
             return False
 
-        if self.CACHE in path.parts:
+        if WheelLayout.CACHE.value in path.parts:
             return False
 
-        if path.parts[0].endswith(self.METADATA_SUFFIX):
+        if path.parts[0].endswith(WheelLayout.METADATA_SUFFIX.value):
             return False
 
-        return not path.name.endswith(self._code_suffixes)
+        if path.name == WheelLayout.TYPED_MARKER.value:
+            return False
+
+        return not path.name.endswith(self._skipped_suffixes)
 
     def _anchor(
         self, path: PurePosixPath, recorded: set[PurePosixPath]
@@ -182,7 +197,7 @@ class PackageDataSurvey:
         """Ближайший обычный пакет над файлом; None — файл не в пакете
         (скрипт, `.pth`, файл верхнего уровня)."""
         for parent in path.parents:
-            if parent / self.INIT in recorded:
+            if parent / WheelLayout.INIT.value in recorded:
                 return parent
 
         return None
@@ -244,40 +259,60 @@ class PackageDataCheck:
                 yield f"{resource.render()} (package not in the binary: {exc})"
                 continue
 
-            if root.joinpath(resource.path).is_file():
+            parts = PurePosixPath(resource.path).parts
+            if root.joinpath(*parts).is_file():
                 continue
 
             yield f"{resource.render()} (no file under {root})"
 
 
+class SurveyExit(IntEnum):
+    """Коды выхода входа модуля."""
+
+    OK = 0
+    FAILED = 1
+    USAGE = 2
+
+
 class SurveyEntry:
-    """Вход модуля в стадии boba-bin: опись в файл аргумента, флаги Nuitka
-    построчно в stdout."""
+    """Вход модуля в стадии boba-bin: дерево колёс и путь описи — аргументами;
+    опись в файл, флаги Nuitka построчно в stdout."""
+
+    USAGE: ClassVar[str] = (
+        "usage: python3 -m boba.cli.package_data <site-packages dir> <manifest.json>\n"
+    )
 
     def __init__(self) -> None:
         self._survey = PackageDataSurvey()
 
     def run(self, argv: Sequence[str]) -> int:
-        if len(argv) != 1:
-            sys.stderr.write(
-                "usage: python3 -m boba.cli.package_data <manifest.json>\n"
-            )
-            return 2
+        match argv:
+            case [site, written]:
+                return self._write(Path(site), Path(written))
+            case _:
+                sys.stderr.write(self.USAGE)
+                return SurveyExit.USAGE
 
-        written = Path(argv[0])
+    def _write(self, site: Path, written: Path) -> int:
         try:
-            manifest = self._survey.manifest()
+            manifest = self._survey.manifest(site)
         except PackageDataError as exc:
             sys.stderr.write(f"{exc}\n")
-            return 1
+            return SurveyExit.FAILED
 
-        written.write_text(
-            manifest.model_dump_json(indent=2), encoding=ManifestFile.ENCODING.value
-        )
+        text = manifest.model_dump_json(indent=2)
+        try:
+            written.write_text(text, encoding=ManifestFile.ENCODING.value)
+        except OSError as exc:
+            sys.stderr.write(
+                f"package data survey: writing the manifest {written} failed: {exc}\n"
+            )
+            return SurveyExit.FAILED
+
         for flag in self._survey.flags(manifest, written):
             sys.stdout.write(f"{flag}\n")
 
-        return 0
+        return SurveyExit.OK
 
 
 if __name__ == "__main__":

@@ -1,16 +1,25 @@
 """Фикстуры стенда `boba acp`, общие для тестов команды, бинарника и
-истории в Postgres: фейковая модель и регистрация MCP-over-ACP клиента; опция
-`--acp-tck` — путь к исполняемому файлу acp-tck для test_cli_tck.py, опция
-`--boba-bin` — каталог bin собранного выпуска для test_cli_binary.py."""
+истории в Postgres: фейковая модель, регистрация MCP-over-ACP клиента, база
+стенда со своей схемой истории на тест; опция `--acp-tck` — путь к
+исполняемому файлу acp-tck для test_cli_tck.py, опция `--boba-bin` — каталог
+bin собранного выпуска для test_cli_binary.py."""
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
 
 import pytest
+from omegaconf import DictConfig
+from psycopg import sql
 from test_cli_acp import FakeModel, StandRegistration
+from test_cli_acp_postgres import PostgresStand
 
+from boba.config import bind
+from boba.db.postgres import AsyncPostgresPool
+from boba.db.postgres.connection import PostgresConfig
+from boba.stand.database import TestDatabase
 from boba.stand.ui.fake_llm import ScenarioName
 
 
@@ -74,3 +83,37 @@ async def answering_model() -> AsyncIterator[FakeModel]:
 @pytest.fixture
 def registration() -> StandRegistration:
     return StandRegistration([StandRegistration.STAND], 0)
+
+
+@pytest.fixture
+async def postgres(raw_config: DictConfig) -> PostgresConfig:
+    cfg = bind(raw_config, path="postgres", model=PostgresConfig)
+    database = await TestDatabase.ensure(cfg)
+
+    return TestDatabase.config_of(cfg, database)
+
+
+@pytest.fixture
+async def pool(postgres: PostgresConfig) -> AsyncIterator[AsyncPostgresPool]:
+    opened = AsyncPostgresPool(postgres)
+    await opened.open()
+    try:
+        yield opened
+    finally:
+        await opened.close()
+
+
+@pytest.fixture
+async def schema(pool: AsyncPostgresPool) -> AsyncIterator[str]:
+    """Своя схема истории на тест; после теста сносится."""
+    name = f"acp_hist_{uuid.uuid4().hex[:12]}"
+    yield name
+    async with pool.connection() as conn:
+        await conn.execute(
+            sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(name))
+        )
+
+
+@pytest.fixture
+def stand(postgres: PostgresConfig, schema: str) -> PostgresStand:
+    return PostgresStand(postgres, schema)

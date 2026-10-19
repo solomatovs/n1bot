@@ -1,4 +1,5 @@
-"""Вход процесса агента: команда `boba acp --settings <файл>`.
+"""Вход процесса агента: команда `boba acp --settings <файл>` и самопроверка
+собранного бинарника `boba self-check` (boba.cli.package_data).
 
 Разбирает аргументы, собирает действующие настройки (Settings), на старте
 проверяет профили моделей (ModelCatalog), хранилище истории и скиллы и отдаёт
@@ -13,7 +14,8 @@
 
 Ошибки:
 SystemExit — настройки, профиль модели, хранилище или скиллы не годятся
-    для запуска; текст называет причину, код выхода 1.
+    для запуска либо самопроверка не нашла данных пакетов в бинарнике; текст
+    называет причину, код выхода 1.
 """
 
 from __future__ import annotations
@@ -27,6 +29,7 @@ import signal
 import sys
 from asyncio.streams import FlowControlMixin
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from enum import StrEnum
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
@@ -70,6 +73,7 @@ from boba.cli.acp_server import (
     SessionRefusedError,
     SessionSummary,
 )
+from boba.cli.package_data import PackageDataCheck, PackageDataError
 from boba.cli.settings import (
     Arguments,
     EffectiveSettings,
@@ -98,6 +102,7 @@ __all__ = [
     "ArgumentParser",
     "Command",
     "Installed",
+    "Invocation",
     "ModelCatalog",
     "cli",
     "main",
@@ -110,6 +115,16 @@ class Command(StrEnum):
     """Команды `boba`."""
 
     ACP = "acp"
+    SELF_CHECK = "self-check"
+
+
+@dataclass(frozen=True)
+class Invocation:
+    """Разобранная командная строка: команда и параметры запуска; у
+    `self-check` параметров нет, они остаются пустыми."""
+
+    command: Command
+    arguments: Arguments
 
 
 class Installed:
@@ -134,8 +149,9 @@ class Installed:
 
 
 class ArgumentParser:
-    """Командная строка `boba acp …` → Arguments (план, раздел 5.21). Секретов
-    в аргументах нет: ключи и строки подключения живут в файле `--settings`."""
+    """Командная строка `boba acp …` или `boba self-check` → Invocation (план,
+    раздел 5.21). Секретов в аргументах нет: ключи и строки подключения живут
+    в файле `--settings`."""
 
     PROG: ClassVar[str] = "boba"
 
@@ -155,9 +171,22 @@ class ArgumentParser:
             ),
         )
         self._define(acp)
+        commands.add_parser(
+            Command.SELF_CHECK.value,
+            help="check that the package data of this build is inside, then exit",
+            description=(
+                "Check that every package data file named by the build manifest "
+                "is reachable inside this binary. Reads nothing outside it, "
+                "writes one line to stdout; exit 1 names the missing files."
+            ),
+        )
 
-    def parse(self, argv: Sequence[str]) -> Arguments:
+    def parse(self, argv: Sequence[str]) -> Invocation:
         space = self._parser.parse_args(list(argv))
+        command = Command(space.command)
+        if command is Command.SELF_CHECK:
+            return Invocation(command=command, arguments=Arguments())
+
         sources: list[SettingsSource] = []
         for name in str(space.setting_sources).split(","):
             cleaned = name.strip()
@@ -172,7 +201,7 @@ class ArgumentParser:
                     f"--setting-sources: unknown source {cleaned!r}, expected {known}"
                 )
 
-        return Arguments(
+        arguments = Arguments(
             model=space.model,
             system_prompt=space.system_prompt,
             system_prompt_file=space.system_prompt_file,
@@ -186,6 +215,8 @@ class ArgumentParser:
             history_root=space.history_root,
             record_requests=bool(space.record_requests),
         )
+
+        return Invocation(command=command, arguments=arguments)
 
     @staticmethod
     def _define(parser: argparse.ArgumentParser) -> None:
@@ -740,20 +771,29 @@ class AgentProcess:
 
 async def main(argv: Sequence[str] | None = None) -> None:
     """Ошибки:
-    SystemExit — запуск не состоялся.
+    SystemExit — запуск не состоялся или самопроверка не прошла.
     """
     logging.basicConfig(level=logging.INFO, format=LOG_FORMAT, stream=sys.stderr)
     if argv is None:
         argv = sys.argv[1:]
 
-    arguments = ArgumentParser().parse(argv)
+    invocation = ArgumentParser().parse(argv)
+    if invocation.command is Command.SELF_CHECK:
+        try:
+            checked = PackageDataCheck().run()
+        except PackageDataError as exc:
+            raise SystemExit(str(exc)) from exc
+
+        sys.stdout.write(f"{checked}\n")
+        return
+
     installed = Installed().version()
     output_fd = os.dup(sys.stdout.fileno())
     os.dup2(sys.stderr.fileno(), sys.stdout.fileno())
 
     stop = ProcessStop()
     process = AgentProcess(
-        arguments,
+        invocation.arguments,
         dict(os.environ),
         Path.home(),
         Path.cwd(),
