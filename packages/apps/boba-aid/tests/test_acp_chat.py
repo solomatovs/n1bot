@@ -25,7 +25,7 @@ import stat
 import sys
 import time
 from collections.abc import AsyncIterator, Iterator
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar
 from uuid import uuid4
 
@@ -301,6 +301,7 @@ class ChatSocket:
     OWN_STEPS: ClassVar[tuple[str, ...]] = ("on_chat_start", "on_chat_resume")
     """Шаги самого chainlit вокруг обработчиков: в ленте треда их нет."""
     TASK_END_GRACE_SEC: ClassVar[float] = 0.5
+    CACHE_KEY: ClassVar[str] = "chainlitKey"
 
     def __init__(self, app: StandProcess, cookie: str, thread_id: str) -> None:
         self._app = app
@@ -578,6 +579,36 @@ class ChatSocket:
                 found.extend(payload.get("elements") or [])
 
         return found
+
+    def attachments(self, step_id: str) -> list[dict[str, Any]]:
+        """Элементы шага step_id по порядку номеров, как их нарисовала вкладка;
+        без chainlitKey — ключа кеша файлов, своего у каждого инстанса."""
+        found: list[dict[str, Any]] = []
+        for element in self.elements():
+            if element.get("forId") != step_id:
+                continue
+
+            shown = dict(element)
+            shown.pop(self.CACHE_KEY, None)
+            found.append(shown)
+
+        return found
+
+    async def wait_attachments(
+        self, step_id: str, count: int, timeout_sec: float = TURN_TIMEOUT_SEC
+    ) -> None:
+        """Ждёт, пока у шага step_id не станет count элементов."""
+        deadline = time.monotonic() + timeout_sec
+        while len(self.attachments(step_id)) < count:
+            if time.monotonic() > deadline:
+                msg = (
+                    f"step {step_id} of thread {self.thread_id} got "
+                    f"{self.attachments(step_id)} instead of {count} elements in "
+                    f"{timeout_sec}s: {self.names()}"
+                )
+                raise AssertionError(msg)
+
+            await asyncio.sleep(0.05)
 
     async def settings(self, form: dict[str, Any]) -> None:
         """Форма панели настроек, как её шлёт кнопка Confirm."""
@@ -1620,8 +1651,10 @@ class TestTabsOfOneThread:
     async def test_a_tab_stops_the_turn_of_another_and_asks_about_a_file(
         self, app: StandProcess, other_app: StandProcess, cookie: str, llm_port: int
     ) -> None:
-        """Вопрос в первой вкладке, Stop и вопрос с файлом во второй: ход
-        второй вкладки идёт, модель получает ссылку на файл."""
+        """Вопрос в первой вкладке, Stop и вопрос с файлами во второй: ход
+        второй вкладки идёт, модель получает ссылки на файлы, первая вкладка
+        рисует вложения вопроса так же, как вторая: csv — скачиванием, txt —
+        карточкой канваса."""
         first = ChatSocket(app, cookie, str(uuid4()))
         await first.open()
         other = ChatSocket(other_app, cookie, first.thread_id)
@@ -1634,19 +1667,62 @@ class TestTabsOfOneThread:
             await first.wait_task_end()
 
             mark = len(other.events)
-            file_id = other.upload(
+            table = other.upload(
                 "note.csv", b"the,file\nof,the second tab\n", "text/csv"
             )
+            note = other.upload("note.txt", b"shown text", ContentMime.PLAIN.value)
             text = f"what is in this file {uuid4().hex}? {ScenarioName.ANSWER.value}"
-            await other.send(text, (file_id,))
+            await other.send(text, (table, note))
             refusals = await self._reply(other, mark)
 
             assert not refusals, (refusals, app.tail(60), other_app.tail(60))
             request = LlmRequests(llm_port).with_text(text)
             assert "[@note.csv](" in json.dumps(request["messages"])
+            assert "[@note.txt](" in json.dumps(request["messages"])
+
+            asked = other.messages("user_message", since=mark)[-1]
+            question = str(asked.get("id"))
+            drawn = other.attachments(question)
+            names: list[str] = []
+            for element in drawn:
+                names.append(str(element.get("name")))
+
+            assert names == ["note.csv", CanvasElement.LINK.value], drawn
+
+            await first.wait_attachments(question, len(drawn))
+            seen = self._in_thread(first.attachments(question), first.thread_id)
+            sent = self._in_thread(drawn, other.thread_id)
+            assert seen == sent, json.dumps([seen, sent], indent=1)
         finally:
             await other.end_session()
             await first.end_session()
+
+    @staticmethod
+    def _in_thread(
+        elements: list[dict[str, Any]], thread_id: str
+    ) -> list[dict[str, Any]]:
+        """Элементы с путём карточки от каталога треда: у второго инстанса
+        стенда свой boba-mcp, и workspace сервера файлов у него другой."""
+        found: list[dict[str, Any]] = []
+        for element in elements:
+            shown = dict(element)
+            props = shown.get("props")
+            if not isinstance(props, dict):
+                found.append(shown)
+                continue
+
+            path = props.get("path")
+            if path is None:
+                found.append(shown)
+                continue
+
+            parts = PurePosixPath(str(path)).parts
+            at = parts.index(thread_id)
+            tail = PurePosixPath(*parts[at:])
+            shown["props"] = {**props, "path": str(tail)}
+            found.append(shown)
+
+        return found
 
     async def test_a_question_during_the_turn_of_another_tab_is_refused(
         self, app: StandProcess, other_app: StandProcess, cookie: str

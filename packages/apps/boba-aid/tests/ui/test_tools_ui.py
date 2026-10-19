@@ -39,7 +39,7 @@ from boba.aid.rendering.chat_view import (
     StepText,
     ToolStepLabel,
 )
-from boba.canvas.canvas import CanvasErrorKind
+from boba.canvas.canvas import CanvasElement, CanvasErrorKind
 from boba.canvas.diagram import DiagramPrompt
 from boba.config import bind
 from boba.confluence.html import MarkdownRender, SectionsRender
@@ -2707,6 +2707,7 @@ class TestSecondTab:
     WAIT_SEC: ClassVar[float] = 15.0
     NAME: ClassVar[str] = "second-tab.mmd"
     UPLOAD_INPUT: ClassVar[str] = "#upload-button-input"
+    CACHE_KEY: ClassVar[str] = "chainlitKey"
 
     def test_diagram_card_reaches_a_second_tab(
         self, feed: ToolFeed, open_chat: Any, sandbox_stand: StandProcess
@@ -2753,7 +2754,8 @@ class TestSecondTab:
         tmp_path: Path,
     ) -> None:
         """Вложение к вопросу уходит с TurnStarted: вторая вкладка треда получает
-        элемент, а не только текст.
+        тот же элемент, что и отправившая (txt — карточкой канваса), а не только
+        текст.
         """
         feed.chat.ask(ScenarioName.ANSWER.value)
         feed.chat.await_idle()
@@ -2776,13 +2778,21 @@ class TestSecondTab:
         feed.chat.await_idle()
 
         deadline = time.monotonic() + self.WAIT_SEC
-        while note.name not in self._element_names(second):
+        while not self._attached(second, note.name):
             if time.monotonic() > deadline:
                 raise AssertionError(
                     f"no attachment in the second tab\n{second.log.describe()}"
                 )
 
             second.page.wait_for_timeout(100)
+
+        shown = self._attached(second, note.name)
+        assert len(shown) == 1, shown
+        assert shown[0].get("name") == CanvasElement.LINK.value, shown
+
+        question = str(shown[0].get("forId"))
+        drawn = self._of_step(self._attached(feed.chat, note.name), question)
+        assert drawn == shown, (drawn, shown)
 
     def test_edited_question_keeps_its_attachment_for_the_model(
         self, feed: ToolFeed, llm_port: int, tmp_path: Path
@@ -2827,15 +2837,45 @@ class TestSecondTab:
         return content
 
     @staticmethod
-    def _element_names(chat: ChatPage) -> list[str]:
-        names: list[str] = []
+    def _attached(chat: ChatPage, name: str) -> list[dict[str, Any]]:
+        """Элементы вкладки, которые показывают файл name: вложение — по имени,
+        карточка канваса — по подписи; без chainlitKey — ключа кеша файлов
+        процесса."""
+        found: list[dict[str, Any]] = []
         for frame in chat.log.of_event(ChatEvent.ELEMENT):
             if not isinstance(frame.payload, dict):
                 continue
 
-            names.append(str(frame.payload.get("name")))
+            shown = dict(frame.payload)
+            shown.pop(TestSecondTab.CACHE_KEY, None)
+            props = shown.get("props")
+            label = None
+            if isinstance(props, dict):
+                label = props.get("label")
 
-        return names
+            if shown.get("name") == name:
+                found.append(shown)
+                continue
+
+            if label == name:
+                found.append(shown)
+
+        return found
+
+    @staticmethod
+    def _of_step(
+        elements: Sequence[dict[str, Any]], step_id: str
+    ) -> list[dict[str, Any]]:
+        """Элементы шага step_id: вкладка, приславшая файл, получает и свой
+        элемент загрузки chainlit у сообщения композера."""
+        found: list[dict[str, Any]] = []
+        for element in elements:
+            if element.get("forId") != step_id:
+                continue
+
+            found.append(element)
+
+        return found
 
     @staticmethod
     def _cards(chat: ChatPage) -> list[str]:
