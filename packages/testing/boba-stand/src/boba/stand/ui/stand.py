@@ -438,6 +438,8 @@ class StandFiles:
         """
         doc = app.document()
         doc["postgres"]["dbname"] = database
+        if "postgres_history" in doc:
+            doc["postgres_history"]["dbname"] = database
 
         self.workdir.mkdir(parents=True, exist_ok=True)
         self.write(doc)
@@ -743,10 +745,14 @@ class StandConfig(StandService):
     """Порт сервиса boba-mcp стенда чата."""
 
     agent_history: dict[str, Any] = field(
-        default_factory=lambda: {"kind": "postgres", "schema": "boba"}
+        default_factory=lambda: {
+            "kind": "postgres",
+            "schema": "boba",
+            "postgres": "${postgres_history}",
+        }
     )
     """Секция [agent.history] чата: по умолчанию Postgres стенда подключением
-    процесса [postgres] (kerberos), схема boba в базе стенда."""
+    истории [postgres_history] рабочего конфига, схема boba в базе стенда."""
 
     agent_process: dict[str, Any] = field(
         default_factory=lambda: {
@@ -876,6 +882,7 @@ class StandConfig(StandService):
 
         private_dir = self.workdir / "agents"
         private_dir.mkdir(parents=True, exist_ok=True)
+        doc["postgres_history"]["dbname"] = self.db_name
         doc["agent"] = {
             "public_url": self.base_url,
             "seal_ttl_sec": 600,

@@ -21,6 +21,11 @@ from pydantic import (
     field_validator,
 )
 
+from boba.db.postgres.connection import (
+    LibpqConnection,
+    PostgresAuthError,
+    PostgresConfig,
+)
 from boba.mcp_client.client import HttpLocation, ProxyAuth
 
 __all__ = [
@@ -144,18 +149,35 @@ class AgentServiceConfig(BaseModel):
 
 
 class PostgresAgentHistory(BaseModel):
-    """История агента в Postgres по подключению процесса [postgres] (роль с
-    паролем, доверием pg_hba либо билетом Kerberos) в своей схеме.
+    """История агента в Postgres своим подключением ([postgres_history]: своя
+    роль с паролем, доверием pg_hba либо своим принципалом Kerberos) в своей
+    схеме. Подключение чата [postgres] истории не касается.
 
     Агент принимает строку libpq: её и окружение libkrb5 собирает
-    LibpqConnection (boba-db-postgres); что подключение процесса ею выразимо,
-    проверяет AppConfig.
+    LibpqConnection (boba-db-postgres); что вход ею выразим, проверяет модель.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
 
     kind: Literal[AgentHistoryKind.POSTGRES]
     db_schema: str = Field(alias="schema", min_length=1)
+    postgres: PostgresConfig = Field(
+        description=(
+            "Подключение истории ([postgres_history]): строкой libpq оно уходит "
+            "агенту в файл настроек."
+        )
+    )
+
+    @field_validator("postgres")
+    @classmethod
+    def _fits_libpq(cls, value: PostgresConfig) -> PostgresConfig:
+        try:
+            LibpqConnection(value).auth()
+        except PostgresAuthError as exc:
+            msg = f"[agent.history].postgres: {exc}"
+            raise ValueError(msg) from exc
+
+        return value
 
 
 class MemoryAgentHistory(BaseModel):

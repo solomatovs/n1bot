@@ -403,16 +403,14 @@ class SettingsFileBuilder:
     добавляются политика запуска `allowBypass` (режим сессии чат выставляет
     по ACP), история, срок вызова инструментов — наибольший
     `call_timeout_sec` серверов профиля [mcp.servers.*] — и окружение
-    libkrb5 истории ключом `env`. Строка подключения истории — подключение
-    процесса [postgres]. Файл — единственный канал настроек запуска агента:
-    argv называет только его, окружение ребёнка — минимальный набор SDK."""
+    libkrb5 истории ключом `env`. Строка подключения истории — её собственное
+    подключение [agent.history].postgres. Файл — единственный канал настроек
+    запуска агента: argv называет только его, окружение ребёнка — минимальный
+    набор SDK."""
 
-    def __init__(
-        self, config: AgentConfig, postgres: PostgresConfig, servers: McpServersConfig
-    ) -> None:
-        self._config = config
+    def __init__(self, config: AgentConfig, servers: McpServersConfig) -> None:
         self._servers = servers
-        self._libpq = LibpqConnection(postgres)
+        self._history = self._history_file(config.history)
 
     def build(
         self,
@@ -426,7 +424,7 @@ class SettingsFileBuilder:
             model=chat.model_name,
             models={chat.model_name: chat.model},
             permissions=PermissionsFile(allow_bypass=True),
-            history=self._history(),
+            history=self._history,
             mcp=mcp,
             env=env,
             system_prompt_file=WorkdirFile.SYSTEM_PROMPT.value,
@@ -458,12 +456,14 @@ class SettingsFileBuilder:
 
         return McpFile(call_timeout_sec=max(limits))
 
-    def _history(self) -> PostgresHistoryFile | MemoryHistoryFile:
-        history = self._config.history
+    @staticmethod
+    def _history_file(
+        history: AgentHistoryConfig,
+    ) -> PostgresHistoryFile | MemoryHistoryFile:
         if isinstance(history, PostgresAgentHistory):
             return PostgresHistoryFile(
                 kind=AgentHistoryKind.POSTGRES,
-                dsn=self._libpq.dsn(),
+                dsn=LibpqConnection(history.postgres).dsn(),
                 schema=history.db_schema,
             )
 
@@ -475,23 +475,25 @@ class SettingsFileBuilder:
 
 
 class HistoryEnvironment:
-    """Окружение libkrb5 для процесса агента с kerberos-ролью истории: путь к
-    кэшу билета и к krb5.conf рабочего каталога процесса aid; билет в кэше
-    обновляется до запуска. У парольной роли окружение пустое.
+    """Окружение libkrb5 для процесса агента с kerberos-ролью истории (свой
+    принципал [agent.history].postgres.auth): путь к кэшу билета и к
+    krb5.conf рабочего каталога процесса aid; билет в кэше обновляется до
+    запуска. У парольной роли окружение пустое.
     Едет ключом `env` файла настроек: агент ставит его себе на старте, потому
     что libpq читает KRB5CCNAME/KRB5_CONFIG из окружения сам; это пути к
     файлам того же пользователя, не секреты.
     """
 
-    def __init__(self, history: AgentHistoryConfig, postgres: PostgresConfig) -> None:
-        self._history = history
-        self._libpq = LibpqConnection(postgres)
+    def __init__(self, history: AgentHistoryConfig) -> None:
+        self._libpq: LibpqConnection | None = None
+        if isinstance(history, PostgresAgentHistory):
+            self._libpq = LibpqConnection(history.postgres)
 
     async def prepare(self) -> Mapping[str, str]:
         """Ошибки:
         PostgresError — билет роли истории не получен.
         """
-        if not isinstance(self._history, PostgresAgentHistory):
+        if self._libpq is None:
             return {}
 
         return await self._libpq.environment()

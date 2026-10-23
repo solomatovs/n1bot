@@ -154,7 +154,6 @@ class ServiceModeStand:
         self._servers = McpServers(NO_SERVERS)
         self.launcher = AgentLauncher(
             self.config,
-            history.postgres(),
             NO_SERVERS,
             table,
             self._relays.registrations,

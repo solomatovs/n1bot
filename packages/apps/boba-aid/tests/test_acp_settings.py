@@ -244,7 +244,6 @@ class TestChatLayer:
         history = AgentHistoryStand(stand)
         launcher = AgentLauncher(
             AgentStand(tmp_path / "agents", history.history()).config(),
-            history.postgres(),
             NO_SERVERS,
             table,
             relays.registrations,
@@ -305,7 +304,7 @@ class TestHistoryDsn:
             )
 
         history = PostgresAgentHistory.model_validate(
-            {"kind": "postgres", "schema": "agent"}
+            {"kind": "postgres", "schema": "agent", "postgres": test_postgres}
         )
         dsn = LibpqConnection(test_postgres).dsn().get_secret_value()
         assert f"user={auth.principal.partition('@')[0]}" in dsn
@@ -313,7 +312,7 @@ class TestHistoryDsn:
         assert f"dbname={test_postgres.dbname}" in dsn
         assert "gssencmode=require" in dsn
 
-        environment = await HistoryEnvironment(history, test_postgres).prepare()
+        environment = await HistoryEnvironment(history).prepare()
         assert set(environment) == {KerberosEnv.CCACHE, KerberosEnv.CONFIG}
         assert Path(environment[KerberosEnv.CONFIG]).is_file()
         ccache = environment[KerberosEnv.CCACHE]
@@ -321,7 +320,7 @@ class TestHistoryDsn:
 
     async def test_password_role_needs_no_environment(self, stand: Stand) -> None:
         history = AgentHistoryStand(stand)
-        environment = HistoryEnvironment(history.history(), history.postgres())
+        environment = HistoryEnvironment(history.history())
         assert await environment.prepare() == {}
 
 
@@ -337,7 +336,7 @@ class TestSettingsFile:
         config = AgentStand(tmp_path / "agents", history).config(
             "http://127.0.0.1:8000/boba"
         )
-        builder = SettingsFileBuilder(config, history_stand.postgres(), NO_SERVERS)
+        builder = SettingsFileBuilder(config, NO_SERVERS)
         chat = model.chat_settings("Answer briefly")
 
         document = builder.build(chat, None, {})
@@ -379,9 +378,7 @@ class TestAgentHandshake:
         history = AgentHistoryStand(stand)
         agent_stand = AgentStand(tmp_path / "agents", history.history())
         chat = model.chat_settings()
-        builder = SettingsFileBuilder(
-            agent_stand.config(), history.postgres(), NO_SERVERS
-        )
+        builder = SettingsFileBuilder(agent_stand.config(), NO_SERVERS)
         document = builder.build(chat, None, {})
         workdir = AgentWorkdirs(tmp_path / "agents").create("thread-2")
         workdir.write(document, chat.system_prompt)
@@ -453,7 +450,6 @@ class TestRetiredServers:
         agent_stand = AgentStand(tmp_path / "agents", history.history())
         launcher = AgentLauncher(
             agent_stand.config(),
-            history.postgres(),
             servers_config,
             table,
             relays.registrations,
@@ -569,7 +565,6 @@ class TestForkCut:
         )
         launcher = AgentLauncher(
             config.model_copy(update={"process": foreign}),
-            history.postgres(),
             NO_SERVERS,
             table,
             relays.registrations,
@@ -652,7 +647,6 @@ class ChatLaunch:
         config = AgentStand(self._root / "agents", self._history.history()).config()
         launcher = AgentLauncher(
             config.model_copy(update={"model": model}),
-            self._history.postgres(),
             filed,
             self._table,
             self._relays.registrations,
@@ -974,7 +968,6 @@ class TestFailedLaunch:
         servers = McpServers(NO_SERVERS)
         launcher = AgentLauncher(
             config.model_copy(update={"process": missing}),
-            history.postgres(),
             NO_SERVERS,
             table,
             relays.registrations,
@@ -1006,9 +999,7 @@ class TestFailedLaunch:
             request_timeout_sec=1.0,
             stop_timeout_sec=5.0,
         )
-        builder = SettingsFileBuilder(
-            agent_stand.config(), history.postgres(), NO_SERVERS
-        )
+        builder = SettingsFileBuilder(agent_stand.config(), NO_SERVERS)
         chat = FakeModel().chat_settings()
         workdir = AgentWorkdirs(tmp_path / "agents").create("thread-silent")
         workdir.write(builder.build(chat, None, {}), chat.system_prompt)
