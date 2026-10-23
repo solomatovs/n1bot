@@ -39,6 +39,7 @@ from acp_stand import AppsHost, OrdersBook, SandboxHost
 from chat_ui import BOOT_TIMEOUT_SEC, OpenChat
 from playwright.sync_api import (
     Browser,
+    ConsoleMessage,
     Error,
     FloatRect,
     FrameLocator,
@@ -1951,7 +1952,10 @@ class AppUnderTest:
     def __init__(self, chat: ChatPage, llm_port: int, cases: Sequence[AppCase]) -> None:
         self.chat = chat
         self.errors: list[str] = []
+        self.console: list[str] = []
         chat.page.on("pageerror", self._failed)
+        chat.page.on("console", self._logged)
+        chat.page.on("requestfailed", self._refused)
         replies: list[Reply] = []
         for case in cases:
             replies.append(case.reply())
@@ -1961,9 +1965,39 @@ class AppUnderTest:
     def _failed(self, error: Error) -> None:
         self.errors.append(str(error))
 
+    def _logged(self, message: ConsoleMessage) -> None:
+        """Сообщения консоли всех кадров страницы, включая iframe приложения."""
+        if message.type not in ("error", "warning"):
+            return
+
+        where = message.location.get("url", "")
+        self.console.append(f"{message.type} {where}: {message.text}")
+
+    def _refused(self, request: Request) -> None:
+        failure = request.failure
+        self.console.append(f"request failed {request.url}: {failure}")
+
     @property
     def page(self) -> Page:
         return self.chat.page
+
+    def drawn(self, app: FrameLocator, count: int) -> Locator:
+        """Строки таблицы приложения, когда их стало count; иначе — ошибка с
+        консолью всех кадров и упавшими запросами."""
+        rows = self.rows(app)
+        deadline = time.monotonic() + self.WAIT_MS / 1000
+        while rows.count() != count:
+            if time.monotonic() > deadline:
+                shown = "\n".join(self.console[-30:])
+                msg = (
+                    f"the app draws {count} rows, got {rows.count()}; console and "
+                    f"failed requests:\n{shown}"
+                )
+                raise AssertionError(msg)
+
+            self.page.wait_for_timeout(200)
+
+        return rows
 
     def ask(self, case: AppCase) -> Locator:
         """Ход с вызовом инструмента case: карточка его приложения."""
@@ -2149,8 +2183,7 @@ class TestFastmcpApps:
         case = self._table(server, apps_slot)
         apps = AppUnderTest(open_chat(fastmcp_stand, ""), llm_port, [case])
         app = apps.app(apps.ask(case))
-        rows = apps.rows(app)
-        expect(rows).to_have_count(5, timeout=AppUnderTest.WAIT_MS)
+        rows = apps.drawn(app, 5)
         before: dict[str, int] = {}
         if case.stats_url:
             before = apps.stats(case)
@@ -2192,7 +2225,7 @@ class TestFastmcpApps:
         apps = AppUnderTest(chat, llm_port, [case])
         app = apps.app(apps.ask(case))
 
-        expect(apps.rows(app)).to_have_count(5, timeout=AppUnderTest.WAIT_MS)
+        apps.drawn(app, 5)
         if case.renderer:
             from_stand = [url for url in loaded if url.startswith(case.renderer)]
             assert from_stand, loaded[-20:]
