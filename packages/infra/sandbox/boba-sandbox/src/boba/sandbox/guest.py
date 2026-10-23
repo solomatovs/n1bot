@@ -760,10 +760,6 @@ class MaskFile(StrEnum):
     MODULES = "/proc/modules"
     BOOT_ID = "/proc/sys/kernel/random/boot_id"
 
-    def staged(self, root: str) -> str:
-        """Путь нейтральной копии на staging-tmpfs; basename уникален в enum."""
-        return os.path.join(root, self.name.lower())
-
 
 class StagingDir:
     """Каталог staging для нейтральных файлов /proc, уникальный на вызов.
@@ -802,6 +798,16 @@ class HostMask:
     HOSTNAME: ClassVar[str] = "localhost"
     COMM: ClassVar[str] = "init"
 
+    CONFIG_BINDS: ClassVar[tuple[str, ...]] = (
+        "/etc/resolv.conf",
+        "/etc/hosts",
+        "/etc/krb5.conf",
+    )
+    """Файлы, которые сетевые секции монтируют биндом с хоста: в mountinfo у
+    бинда поле root — путь на хосте (${env.krb}/krb5.conf и т.п.). Это данные,
+    не живые точки, поэтому исполнитель копирует содержимое в свою tmpfs,
+    снимает хостовый бинд и кладёт копию поверх — источник становится tmpfs."""
+
     CPU_MODEL: ClassVar[str] = "Common x86_64 Processor"
     CPU_FLAGS: ClassVar[str] = (
         "fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat "
@@ -817,37 +823,60 @@ class HostMask:
         self._staging = StagingDir()
 
     def apply(self) -> None:
-        """Нейтральные имя хоста, comm и файлы /proc поверх настоящих."""
+        """Нейтральные имя хоста, comm, файлы /proc и бинды конфигов."""
         Isolation.set_hostname(self.HOSTNAME)
         Isolation.set_comm(self.COMM)
-        self._mask_proc()
+        self._mask()
 
-    def _mask_proc(self) -> None:
+    def _mask(self) -> None:
         root = self._staging.path
         os.mkdir(root)
         Isolation.mount(
             "tmpfs", root, "tmpfs", MountFlag.NOSUID | MountFlag.NODEV, "size=1048576"
         )
         for target in MaskFile:
-            self._place(target)
+            self._place(target.value, self._content(target).encode())
+
+        for path in self.CONFIG_BINDS:
+            self._neutralize_bind(path)
 
         Isolation.detach(root)
         os.rmdir(root)
 
-    def _place(self, target: MaskFile) -> None:
-        """Нейтральную копию файла на staging — поверх настоящего bind'ом.
+    def _staged(self, target: str) -> str:
+        """Путь копии на staging: точка в имени уникальна по полному пути."""
+        return os.path.join(self._staging.path, target.strip("/").replace("/", "_"))
+
+    def _place(self, target: str, content: bytes) -> None:
+        """Нейтральную копию на staging — поверх настоящего файла bind'ом.
 
         Отсутствующий у ядра файл пропускается: bind поверх несуществующей
         точки отказал бы, а подменять нечего.
         """
-        if not os.path.exists(target.value):
+        if not os.path.exists(target):
             return
 
-        staged = target.staged(self._staging.path)
-        with open(staged, "w") as handle:
-            handle.write(self._content(target))
+        staged = self._staged(target)
+        with open(staged, "wb") as handle:
+            handle.write(content)
 
-        Isolation.mount(staged, target.value, "", MountFlag.BIND, "")
+        Isolation.mount(staged, target, "", MountFlag.BIND, "")
+
+    def _neutralize_bind(self, path: str) -> None:
+        """Хостовый бинд конфига заменить копией его содержимого на tmpfs.
+
+        Сначала читаем содержимое (пока виден хостовый бинд), снимаем бинд,
+        затем кладём копию поверх: иначе bind лёг бы стопкой на хостовый, и
+        тот остался бы в mountinfo со своим host-путём.
+        """
+        if not os.path.ismount(path):
+            return
+
+        with open(path, "rb") as handle:
+            content = handle.read()
+
+        Isolation.detach(path)
+        self._place(path, content)
 
     def _content(self, target: MaskFile) -> str:
         builders = {
