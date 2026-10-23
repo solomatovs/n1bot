@@ -87,18 +87,22 @@ class FakeModel:
     """FakeLlmApp под uvicorn в цикле теста; `estimate_usage` — учёт токенов
     по знакам, как у настоящего провайдера, нужен сценариям сжатия;
     `unmarked` — сценарий для вопроса без маркера (чужие клиенты и TCK шлют
-    обычный текст); `token_delay_sec` — пауза между кусками выдачи."""
+    обычный текст); `token_delay_sec` — пауза между кусками выдачи;
+    `stream_arguments` — аргументы вызовов идут кусками по кадру, как у
+    настоящей модели."""
 
     def __init__(
         self,
         estimate_usage: bool = False,
         unmarked: ScenarioName | None = None,
         token_delay_sec: float = 0.0,
+        stream_arguments: bool = False,
     ) -> None:
         self.app = FakeLlmApp(
             token_delay_sec=token_delay_sec,
             estimate_usage=estimate_usage,
             unmarked=unmarked,
+            stream_arguments=stream_arguments,
         )
         self.port = StandPorts().free()
         self._server = uvicorn.Server(
@@ -1318,6 +1322,58 @@ class TestConversation:
             await boba.close_stdin()
 
         assert await boba.wait() == 0
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "the agent waits for the whole tool_use block and sends one tool_call "
+            "with the full rawInput; it does not stream the growing arguments as "
+            "pending tool_call_update frames, so an app gets no partial input"
+        ),
+    )
+    async def test_partial_tool_input_streams_as_tool_call_updates(
+        self, registration: StandRegistration, tmp_path: Path
+    ) -> None:
+        """Модель отдаёт аргументы вызова кусками: агент шлёт ожидающие
+        (pending) обновления вызова с растущим rawInput до начала исполнения,
+        последнее — полные аргументы."""
+        streaming = FakeModel(token_delay_sec=0.05, stream_arguments=True)
+        await streaming.start()
+        boba = AcpProcess(tmp_path, streaming)
+        client = AcpClient()
+        try:
+            conn = await boba.start(client, registration)
+            await handshake(conn)
+            session = await conn.new_session(
+                cwd=str(tmp_path), mcp_servers=[StandRegistration.STAND]
+            )
+            _, idle = await boba.turn(
+                client,
+                session.session_id,
+                call({"name": "mcp__stand__add", "arguments": {"a": 1, "b": 2}}),
+            )
+            await conn.close()
+            await boba.close_stdin()
+        finally:
+            await boba.kill()
+            await streaming.stop()
+
+        assert idle.stop_reason == StopReason.END_TURN
+        start = client.of(schema.SessionToolCallUpdate)[0]
+        pending: list[dict[str, Any]] = []
+        for update in client.calls_of(start.tool_call_id):
+            if update.status != ToolStatus.PENDING:
+                break
+
+            assert isinstance(update.raw_input, dict), update
+            pending.append(update.raw_input)
+
+        sizes = [len(json.dumps(seen, sort_keys=True)) for seen in pending]
+        assert len(pending) >= 2, pending
+        assert sizes == sorted(sizes), sizes
+        assert sizes[0] < sizes[-1], sizes
+        assert pending[-1]["a"] == 1, pending[-1]
+        assert pending[-1]["b"] == 2, pending[-1]
 
     async def test_resource_link_reaches_the_model_and_comes_back_in_the_replay(
         self,

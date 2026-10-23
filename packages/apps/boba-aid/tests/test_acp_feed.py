@@ -694,6 +694,38 @@ class TestToolApps:
         assert _id(CALL, StepRole.APP_MESSAGE) not in recorded.last()
         assert step.get(StepField.OUTPUT) == "1 orders are shown by their app"
 
+    @pytest.mark.anyio
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "the feed passes the arguments of a call once as the prop input and "
+            "has no prop input_partial, so a pending tool_call_update with a "
+            "growing rawInput never reaches the app card"
+        ),
+    )
+    async def test_partial_tool_input_streams_to_the_app_card(
+        self,
+        runtime_stand: StandRefs,
+        storage: LocalStorageClient,
+        recorded: FakeEmitter,
+    ) -> None:
+        """Агент стримит аргументы вызова: ожидающие (pending) обновления с
+        растущим rawInput дописывают карточке prop input_partial, по которому
+        мост шлёт приложению ui/notifications/tool-input-partial."""
+        updates = await self._started(runtime_stand, storage, self.SANDBOX)
+        grown = {"rows": [*self.ROWS, {"id": 8, "customer": "Globex"}]}
+        partial = schema.SessionToolCallUpdate(
+            tool_call_id=CALL, status="pending", raw_input=grown
+        )
+
+        await updates.apply(partial)
+
+        apps = self._apps(recorded)
+        partials = [app["props"].get("input_partial") for app in apps]
+
+        assert partials[0] == {"rows": self.ROWS}, apps[0]["props"]
+        assert partials[-1] == grown, apps[-1]["props"]
+
 
 class TestQuestionRecords:
     """Вопрос агента пользователю в ленте: вызов AskUserQuestion — своё
