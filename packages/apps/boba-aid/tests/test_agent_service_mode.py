@@ -50,7 +50,7 @@ from boba.transport.http import HttpTransportConfig
 
 pytestmark = pytest.mark.anyio
 
-SCHEMA = StandNames().of("agent_service_mode")
+SCHEMA = StandNames().of_tree("agent_service_mode")
 CIPHER_KEY = b"0123456789abcdef0123456789abcdef"
 NO_SERVERS = McpServersConfig(servers={})
 MODEL = "fake-model"

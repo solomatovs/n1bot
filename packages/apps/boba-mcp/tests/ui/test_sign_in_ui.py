@@ -656,7 +656,7 @@ class TestDeployedService:
         )
         token = sign_in.token(deployed.login, deployed.roles, deployed.endpoint)
 
-        tools = asyncio.run(_listed(deployed.endpoint, token))
+        tools = run_blocking(_listed(deployed.endpoint, token))
 
         assert TOOL in tools, tools
 
