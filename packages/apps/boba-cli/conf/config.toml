@@ -58,6 +58,7 @@
     path                 = "/acp"
     public_url           = "${env.public_url}"
     shutdown_timeout_sec = 10
+    idle_sec             = 1800
     [agent.history]
         schema   = "boba"
         postgres = "${postgres_history}"

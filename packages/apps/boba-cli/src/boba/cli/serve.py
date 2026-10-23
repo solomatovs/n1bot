@@ -21,17 +21,19 @@ SystemExit — конфиг не прочитан либо служба не п�
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import logging.config
 import os
-from collections.abc import AsyncGenerator, Mapping, Sequence
-from contextlib import asynccontextmanager
+import time
+from collections.abc import AsyncGenerator, Iterator, Mapping, Sequence
+from contextlib import aclosing, asynccontextmanager, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import uvicorn
 from acp.connection import Connection
@@ -177,6 +179,9 @@ class ServeSection(BaseModel):
     path: str = Field(min_length=1, pattern=r"^/")
     public_url: str = Field(min_length=1)
     shutdown_timeout_sec: int = Field(gt=0)
+    idle_sec: float = Field(gt=0)
+    """Подключение HTTP без запросов и ходов дольше idle_sec закрывается
+    вместе с сессиями: клиент ушёл, не закрыв его."""
     history: ServeHistory
     settings: SettingsLayer
     """Слой настроек агента: права, лимиты, сессии, серверы MCP, промпт.
@@ -390,6 +395,10 @@ class ServeConnection(AgentProtocolConnection):
         self._store = store
         self._closed = False
 
+    def busy(self) -> bool:
+        """Идёт ли ход хотя бы в одной сессии подключения."""
+        return self._agent.busy()
+
     async def close(self) -> None:
         if self._closed:
             return
@@ -409,6 +418,17 @@ class Admission:
 
     caller: Caller
     connection: ServeConnection | None = None
+
+
+@dataclass
+class HttpActivity:
+    """Движение подключения HTTP: когда кончился последний запрос и сколько
+    запросов (POST в работе, открытые потоки GET) идут сейчас. По нему
+    AcpEndpoint закрывает подключение, брошенное клиентом."""
+
+    connection: ServeConnection
+    last: float
+    running: int
 
 
 class ServeRouter(AgentProtocolRouter):
@@ -491,17 +511,23 @@ class AcpEndpoint:
     Создаётся сборкой службы над AcpServer SDK и роутером службы. Запрос
     открытия подключения (initialize по HTTP, рукопожатие WebSocket) идёт в
     SDK под входом вошедшего; остальные запросы HTTP принимаются только от
-    того же пользователя, что открыл подключение.
+    того же пользователя, что открыл подключение. Подключение HTTP без
+    запросов и ходов дольше idle_sec закрывает watch().
     """
 
-    def __init__(self, router: ServeRouter, callers: CallerTokens) -> None:
+    TICK_SEC: ClassVar[float] = 1.0
+
+    def __init__(
+        self, router: ServeRouter, callers: CallerTokens, idle_sec: float
+    ) -> None:
         self._router = router
         self._server = AcpServer(router)
         self._callers = callers
+        self._idle_sec = idle_sec
         self._owners: dict[str, str] = {}
         """Кто открыл каждое подключение HTTP: запросы чужого подключения
         отвергаются как неизвестные."""
-        self._opened: dict[str, ServeConnection] = {}
+        self._opened: dict[str, HttpActivity] = {}
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         request = Request(scope, receive)
@@ -568,18 +594,20 @@ class AcpEndpoint:
             return response
 
         self._owners[opened] = caller.login
-        self._opened[opened] = connection
+        self._opened[opened] = HttpActivity(
+            connection=connection, last=time.monotonic(), running=0
+        )
 
         return response
 
     async def _deleted(self, connection_id: str) -> Response:
         """Клиент закрыл подключение: его сессии закрываются."""
         self._owners.pop(connection_id, None)
-        connection = self._opened.pop(connection_id, None)
+        activity = self._opened.pop(connection_id, None)
         response = await self._server.handle_delete(connection_id=connection_id)
-        if connection is not None:
-            self._router.forget(connection)
-            await connection.close()
+        if activity is not None:
+            self._router.forget(activity.connection)
+            await activity.connection.close()
 
         return response
 
@@ -588,12 +616,13 @@ class AcpEndpoint:
         if message is None:
             return JSONResponse({"error": "the body is not JSON"}, 400)
 
-        return await self._server.handle_post(
-            message,
-            content_type=request.headers.get("content-type"),
-            connection_id=connection_id,
-            session_id=request.headers.get(SESSION_ID_HEADER),
-        )
+        async with self._working(connection_id):
+            return await self._server.handle_post(
+                message,
+                content_type=request.headers.get("content-type"),
+                connection_id=connection_id,
+                session_id=request.headers.get(SESSION_ID_HEADER),
+            )
 
     def _stream(self, request: Request, connection_id: str) -> Response:
         accept = request.headers.get("accept", "")
@@ -608,13 +637,65 @@ class AcpEndpoint:
         if refused is not None:
             return refused
 
+        frames = self._server.open_stream(
+            connection_id=connection_id, session_id=session_id
+        )
+
         return StreamingResponse(
-            self._server.open_stream(
-                connection_id=connection_id, session_id=session_id
-            ),
+            self._streamed(connection_id, frames),
             media_type=CONTENT_TYPE_SSE,
             headers={"Cache-Control": "no-cache"},
         )
+
+    async def _streamed(
+        self, connection_id: str, frames: AsyncGenerator[bytes, None]
+    ) -> AsyncGenerator[bytes, None]:
+        """Поток GET подключения: пока он открыт, подключение не брошено."""
+        async with self._working(connection_id), aclosing(frames):
+            async for frame in frames:
+                yield frame
+
+    @asynccontextmanager
+    async def _working(self, connection_id: str) -> AsyncGenerator[None, None]:
+        activity = self._opened.get(connection_id)
+        if activity is None:
+            yield
+            return
+
+        activity.running += 1
+        try:
+            yield
+        finally:
+            activity.running -= 1
+            activity.last = time.monotonic()
+
+    async def watch(self) -> None:
+        """Закрывает подключения HTTP, брошенные клиентом: без запросов и
+        ходов дольше idle_sec. Идёт задачей приложения до его конца."""
+        while True:
+            await asyncio.sleep(self.TICK_SEC)
+            for connection_id in list(self._abandoned()):
+                logger.info(
+                    "connection %s of %r is idle for %.0fs: closing it",
+                    connection_id,
+                    self._owners.get(connection_id),
+                    self._idle_sec,
+                )
+                await self._deleted(connection_id)
+
+    def _abandoned(self) -> Iterator[str]:
+        now = time.monotonic()
+        for connection_id, activity in self._opened.items():
+            if activity.running > 0:
+                continue
+
+            if activity.connection.busy():
+                continue
+
+            if now - activity.last < self._idle_sec:
+                continue
+
+            yield connection_id
 
     @staticmethod
     async def _message(request: Request) -> object | None:
@@ -677,7 +758,7 @@ class ServeHost:
         provider = auth.resource(ServeMark.RESOURCE, [])
         metadata = build_resource_metadata_url(AnyHttpUrl(self.resource()))
         router = ServeRouter(self._agents)
-        endpoint = AcpEndpoint(router, CallerTokens())
+        endpoint = AcpEndpoint(router, CallerTokens(), section.idle_sec)
         guarded = RequireAuthMiddleware(endpoint, [], metadata)
         routes: list[BaseRoute] = [
             Route(ServeMark.HEALTH, self._health, methods=["GET"]),
@@ -689,9 +770,14 @@ class ServeHost:
 
         @asynccontextmanager
         async def lifespan(app: Starlette) -> AsyncGenerator[None, None]:
+            watch = asyncio.create_task(endpoint.watch())
             try:
                 yield
             finally:
+                watch.cancel()
+                with suppress(asyncio.CancelledError):
+                    await watch
+
                 await endpoint.close()
 
         return Starlette(

@@ -6,7 +6,9 @@ ACP → initialize → session/new с выбором профиля агента
 initialize и auth/login; инструмент клиента по MCP-over-ACP (mcp/message
 туда и обратно); профили только по ролям; чужая сессия не видна и не
 открывается; session/close и закрытие подключения закрывают сессии; предел
-сессий; session/cancel доходит до сессии посреди хода; без токена — 401 и
+сессий; подключение HTTP, брошенное клиентом без DELETE, закрывается по
+простою, а живое с открытым потоком — нет; session/cancel доходит до сессии
+посреди хода; без токена — 401 и
 отказ рукопожатия, токен без профилей — 403."""
 
 from __future__ import annotations
@@ -33,7 +35,7 @@ from psycopg import sql
 from pydantic import AnyUrl
 from websockets.exceptions import InvalidStatus
 
-from boba.cli.serve import ServeMark
+from boba.cli.serve import ServeHistory, ServeMark
 from boba.config import bind
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
@@ -305,13 +307,15 @@ class Stands:
         )
         self.started: list[AgentServiceStand] = []
 
-    async def start(self, max_sessions: int = 8) -> AgentServiceStand:
+    async def start(
+        self, max_sessions: int = 8, idle_sec: float = 600.0
+    ) -> AgentServiceStand:
         stand = AgentServiceStand(
             self._process.krb,
-            self._history.postgres,
-            self._history.schema,
+            ServeHistory(schema=self._history.schema, postgres=self._history.postgres),
             self._history.layer(max_sessions),
             self._profiles,
+            idle_sec,
         )
         await stand.start()
         self.started.append(stand)
@@ -517,6 +521,31 @@ class TestSessions:
         await connected.close()
 
         await stand.sessions_drop_to(0)
+
+    async def test_abandoned_http_connection_is_closed(
+        self, stands: Stands, tmp_path: Path
+    ) -> None:
+        stand = await stands.start(idle_sec=1.0)
+        client = httpx2.AsyncClient(
+            headers={"Authorization": f"Bearer {await stand.token('alice', 'dev')}"},
+            timeout=httpx2.Timeout(None),
+        )
+        connected = Connected(
+            create_http_stream(stand.url(), client=client), StandTools()
+        )
+        try:
+            await connected.initialize()
+            opened = await connected.new_session(tmp_path)
+            await asyncio.sleep(3.0)
+            assert stand.host.sessions() == 1
+
+            idle = await connected.turn(opened.session_id, ScenarioName.ANSWER.value)
+            assert idle.stop_reason == StopReason.END_TURN
+
+            await client.aclose()
+            await stand.sessions_drop_to(0)
+        finally:
+            await connected.close()
 
     async def test_limit_of_sessions_refuses_a_session(
         self, stands: Stands, tmp_path: Path

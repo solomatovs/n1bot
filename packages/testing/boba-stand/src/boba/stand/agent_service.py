@@ -14,8 +14,7 @@ from typing import Any, ClassVar
 
 import uvicorn
 
-from boba.cli.serve import ServeConfig, ServeHost
-from boba.db.postgres.connection import PostgresConfig
+from boba.cli.serve import ServeConfig, ServeHistory, ServeHost
 from boba.krb import KerberosWorkspaceConfig
 from boba.stand.service_signin import ServiceSignIn
 from boba.stand.ui.stand import StandPorts
@@ -59,7 +58,8 @@ class AgentServiceStand:
     же процесса, вход — proxy клиента CLIENT_ID под ключом PROXY_SECRET.
     history — подключение истории (своя схема стенда), settings — слой
     настроек агента без истории и моделей (права, сессии), profiles —
-    [agent.profiles]."""
+    [agent.profiles], idle_sec — простой, после которого служба закрывает
+    брошенное подключение HTTP."""
 
     CLIENT_ID: ClassVar[str] = "stand-chat"
     CLIENT_SECRET: ClassVar[str] = "stand-agent-client-secret"  # noqa: S105 — ключ стенда
@@ -72,10 +72,10 @@ class AgentServiceStand:
     def __init__(
         self,
         krb: KerberosWorkspaceConfig,
-        postgres: PostgresConfig,
-        schema: str,
+        history: ServeHistory,
         settings: Mapping[str, Any],
         profiles: ServiceProfiles,
+        idle_sec: float,
     ) -> None:
         self.port = StandPorts().free()
         self.public_url = f"http://127.0.0.1:{self.port}"
@@ -102,7 +102,8 @@ class AgentServiceStand:
                     "path": self.PATH,
                     "public_url": self.public_url,
                     "shutdown_timeout_sec": 2,
-                    "history": {"schema": schema, "postgres": postgres},
+                    "idle_sec": idle_sec,
+                    "history": history,
                     "settings": dict(settings),
                     "profiles": profiles.section(),
                     "clients": {self.CLIENT_ID: {"secret": self.CLIENT_SECRET}},
