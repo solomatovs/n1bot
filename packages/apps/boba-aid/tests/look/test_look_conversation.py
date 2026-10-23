@@ -37,6 +37,7 @@ from playwright.sync_api import (
     Page,
     ViewportSize,
     WebSocket,
+    WebSocketRoute,
     expect,
 )
 
@@ -301,6 +302,15 @@ class TalkFixes:
             "шагом (размышления, вызов) — одинаково вживую и после перезагрузки"
         ),
     )
+    LOADING: ClassVar[LookFix] = LookFix(
+        code="Загрузка истории — не ход",
+        summary=(
+            "было: пока тред открывался, лента была пустой, а у поля ввода "
+            "стояла кнопка «Стоп», как будто идёт ход; стало: под уже "
+            "пришедшими сообщениями крутится значок «Загружаем беседу…», "
+            "отправка неактивна, «Стоп» нет"
+        ),
+    )
     RELOAD: ClassVar[LookFix] = LookFix(
         code="После перезагрузки — то же, что вживую",
         summary=(
@@ -563,6 +573,22 @@ class TalkLook:
         (TalkFixes.THOUGHT,),
     )
 
+    LOADING: ClassVar[LookState] = LookState(
+        GROUP,
+        "tl1-history-loading",
+        "Тред открыт заново, история ещё загружается",
+        "вопрос и ответ из истории, под ними по центру крутящийся значок и "
+        "«Загружаем беседу…»; кружка ожидания и строки хода нет",
+        (TalkFixes.LOADING,),
+    )
+    LOADING_COMPOSER: ClassVar[LookState] = LookState(
+        GROUP,
+        "tl2-history-loading-composer",
+        "Поле ввода, пока история треда загружается",
+        "кнопка отправки неактивна (стрелка, бледная), кнопки «Стоп» нет",
+        (TalkFixes.LOADING,),
+    )
+
     FEED: ClassVar[str] = (
         "xpath=ancestor::div"
         "[contains(concat(' ', @class, ' '), ' overflow-y-auto ')][2]"
@@ -580,6 +606,11 @@ class TalkLook:
     COMPOSER_BOX: ClassVar[str] = "#message-composer"
     ATTACHMENTS: ClassVar[str] = "#attachments > *"
     STOP: ClassVar[str] = "#stop-button"
+    HISTORY_LOADING: ClassVar[str] = "#history-loading"
+    SOCKETS: ClassVar[str] = "**/ws/socket.io/**"
+    HISTORY_LOADED: ClassVar[str] = '"history_loaded"'
+    """Событие конца загрузки истории в кадре socket.io: кадр с ним тест
+    вида не пропускает вкладке, и загрузка на экране не кончается."""
     EDIT: ClassVar[str] = ".edit-message"
     EDIT_INPUT: ClassVar[str] = "#edit-chat-input"
     CONFIRM_EDIT: ClassVar[str] = ".confirm-edit"
@@ -734,6 +765,25 @@ class TalkFeed:
         )
         self._page.locator(Selector.INPUT.value).wait_for(timeout=60_000)
         self._page.wait_for_load_state("networkidle")
+
+    def reload_loading(self) -> None:
+        """Тот же тред, открытый заново, но конец загрузки истории вкладке не
+        приходит: сокет идёт через перехват, который выбрасывает событие
+        history_loaded, — экран остаётся в состоянии загрузки."""
+        self._page.route_web_socket(TalkLook.SOCKETS, self._hold_loading)
+        self.reload()
+
+    @staticmethod
+    def _hold_loading(socket: WebSocketRoute) -> None:
+        server = socket.connect_to_server()
+
+        def from_server(message: str | bytes) -> None:
+            if isinstance(message, str) and TalkLook.HISTORY_LOADED in message:
+                return
+
+            socket.send(message)
+
+        server.on_message(from_server)
 
     def check_clean(self) -> None:
         if self.errors:
@@ -1000,6 +1050,31 @@ def test_turn_look(
         feed.open_last(StepKind.RUN)
         look_pages.settle(page)
         look.frame(feed.feed(TalkQuestion.CONNECTIONS), TalkLook.OPENED, theme, size)
+        feed.check_clean()
+
+    look.verify()
+
+
+def test_history_loading_look(
+    look: LookCheck,
+    look_pages: LookPages,
+    talk_stand: StandProcess,
+    talk_book: ReplyBookClient,
+) -> None:
+    for theme, size, feed in talk_frames(look_pages, talk_stand, talk_book):
+        page = feed.page
+        feed.ask(TalkQuestion.STATUS)
+        feed.shown(TalkText.STATUS)
+
+        feed.reload_loading()
+        feed.shown(TalkText.STATUS)
+        expect(page.locator(TalkLook.HISTORY_LOADING)).to_be_visible()
+        expect(page.locator(Selector.SUBMIT.value)).to_be_disabled()
+        expect(page.locator(TalkLook.STOP)).to_have_count(0)
+        look_pages.settle(page)
+        look.frame(feed.feed(TalkQuestion.STATUS), TalkLook.LOADING, theme, size)
+        composer = page.locator(TalkLook.COMPOSER_BOX)
+        look.frame(composer, TalkLook.LOADING_COMPOSER, theme, size)
         feed.check_clean()
 
     look.verify()
