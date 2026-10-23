@@ -3,11 +3,20 @@
 Вложение — запись, которой агент сообщает модели что-то помимо слов
 пользователя (план, раздел 5.17); текст фиксируется один раз в `rendered`
 по шаблонам пакета. Снимок `prompt_snapshot` модели не отправляется: по нему
-сборщик берёт системный промпт, инструменты и режим подачи вложений. Свёртка
-Announced считает по разговору, что модели уже объявлено. Инструкции
-серверов MCP идут вложением `mcp_instructions_delta`, а не системным
-промптом: смена инструкций посреди сессии не переписывает начало запроса
+сборщик берёт системный промпт, инструменты, которые уходят полным
+определением, и режим подачи вложений. Свёртка Announced считает по
+разговору, что модели уже объявлено. Инструкции серверов MCP идут вложением
+`mcp_instructions_delta`, а не системным промптом: смена инструкций посреди
+сессии не переписывает начало запроса
 (docs/prompt_assembly/texts/attachments/mcp_instructions_delta.md).
+
+Отложенные инструменты (docs/prompt_assembly/specs/07_system_tools.md,
+раздел 2.3) объявляются только именами во вложении `deferred_tools_delta`;
+модель загружает их инструментом ToolSearch, ссылки на загруженные лежат в
+его результатах (`tool_reference`) и в границе сжатия
+(`preCompactDiscoveredTools`). Определения загруженных, которые ушли в
+запрос, пишутся записью `deferred_tools_record`: по истории запрос
+собирается заново байт в байт.
 
 ContextAttachments строит записи, но в сессию их не кладёт: родителя
 называет вызывающий. Так сжатие собирает всю пачку — границу, дату,
@@ -33,8 +42,10 @@ from boba.agent.records import (
     AttachmentRecord,
     AttachmentRole,
     ChainRecord,
+    CompactBoundaryRecord,
     OriginKind,
     RenderedMessage,
+    UserRecord,
 )
 from boba.agent.tags import AgentTag
 from boba.agent.template import AgentTemplate, AgentTemplateFile
@@ -46,6 +57,8 @@ __all__ = [
     "ConnectedServer",
     "ContextAttachments",
     "DateAttachment",
+    "DeferredToolsDeltaAttachment",
+    "DeferredToolsRecordAttachment",
     "EnvironmentAttachment",
     "EnvironmentChange",
     "EnvironmentField",
@@ -60,7 +73,7 @@ __all__ = [
     "SkillListingAttachment",
     "SnapshotSkill",
     "SnapshotTool",
-    "ToolsDeltaAttachment",
+    "ToolPoolChange",
 ]
 
 
@@ -71,7 +84,8 @@ class AttachmentKind(StrEnum):
     MODEL = "model"
     DATE = "date"
     ENVIRONMENT = "environment"
-    TOOLS_DELTA = "tools_delta"
+    DEFERRED_TOOLS_DELTA = "deferred_tools_delta"
+    DEFERRED_TOOLS_RECORD = "deferred_tools_record"
     MCP_INSTRUCTIONS_DELTA = "mcp_instructions_delta"
     SKILL_LISTING = "skill_listing"
     QUEUED_COMMAND = "queued_command"
@@ -201,16 +215,74 @@ class EnvironmentAttachment(PayloadModel):
     changes: Sequence[EnvironmentChange] | None = None
 
 
-class ToolsDeltaAttachment(PayloadModel):
-    """Изменение списка инструментов относительно объявленного; readded —
-    добавленные, которые этот разговор уже объявлял и потом снимал: их
-    строк в added_lines нет."""
+class DeferredToolsDeltaAttachment(PayloadModel):
+    """Изменение набора инструментов относительно объявленного, одними
+    именами: added — отложенные, которые стали доступны через ToolSearch
+    (readded среди них — те, что разговор уже объявлял и потом снимал: их
+    строк в added_lines нет); surfaced — инструменты с полным определением,
+    появившиеся посреди сессии; removed — снятые. tool_search_absent —
+    отложенных не осталось, ToolSearch в запросе нет."""
 
-    type: str = AttachmentKind.TOOLS_DELTA.value
+    type: str = AttachmentKind.DEFERRED_TOOLS_DELTA.value
     added_names: Sequence[str] = ()
-    removed_names: Sequence[str] = ()
     added_lines: Sequence[str] = ()
+    removed_names: Sequence[str] = ()
     readded_names: Sequence[str] = ()
+    surfaced_names: Sequence[str] = ()
+    tool_search_absent: bool = False
+
+
+class DeferredToolsRecordAttachment(PayloadModel):
+    """Определения загруженных отложенных инструментов, которые впервые ушли
+    в запрос; модели не отправляется."""
+
+    type: str = AttachmentKind.DEFERRED_TOOLS_RECORD.value
+    entries: Sequence[SnapshotTool]
+
+
+@dataclass(frozen=True)
+class ToolPoolChange:
+    """Что изменилось в наборе инструментов относительно объявленного:
+    отложенные новые (readded среди них — вернувшиеся), снятые, новые с
+    полным определением; search — отложенные после изменения есть."""
+
+    added: Sequence[str]
+    removed: Sequence[str]
+    readded: frozenset[str]
+    surfaced: Sequence[str]
+    search: bool
+
+    def empty(self) -> bool:
+        if self.added:
+            return False
+
+        if self.removed:
+            return False
+
+        return not self.surfaced
+
+
+class ToolWording(StrEnum):
+    """Слова текста о снятых и вернувшихся инструментах: с поиском
+    инструментов и без него (docs/prompt_assembly/texts/attachments/
+    deferred_tools_delta.md, toolSearchAbsent)."""
+
+    TOOL = "tool"
+    DEFERRED_TOOL = "deferred tool"
+    DO_NOT_CALL = "Do not call them"
+    DO_NOT_SEARCH = "Do not search for them — ToolSearch will return no match"
+    LOAD_AS_BEFORE = " Load via ToolSearch as before."
+    NO_LOAD = ""
+
+
+@dataclass(frozen=True)
+class Wording:
+    """Слова одного вложения: вид инструмента, совет о снятых и хвост
+    о вернувшихся."""
+
+    kind: ToolWording
+    advice: ToolWording
+    load: ToolWording
 
 
 class McpInstructionsAttachment(PayloadModel):
@@ -275,13 +347,9 @@ class Announced:
 
         return attachment.snapshot
 
-    def tool_names(self) -> frozenset[str] | None:
-        """Имена инструментов, известные модели: последний снимок плюс
-        разницы после него; None — снимка в разговоре нет."""
-        snapshot_at = self._last_index(AttachmentKind.PROMPT_SNAPSHOT)
-        if snapshot_at is None:
-            return None
-
+    def inline_names(self) -> frozenset[str] | None:
+        """Инструменты, которые уходят полным определением: последний
+        снимок; None — снимка в разговоре нет."""
         snapshot = self.snapshot()
         if snapshot is None:
             return None
@@ -290,18 +358,26 @@ class Announced:
         for tool in snapshot.tools:
             names.add(tool.name)
 
-        for record in self._conversation[snapshot_at + 1 :]:
-            if not isinstance(record, AttachmentRecord):
-                continue
-
-            if record.attachment.type != AttachmentKind.TOOLS_DELTA.value:
-                continue
-
-            delta = ToolsDeltaAttachment.model_validate(record.attachment.model_dump())
-            names.update(delta.added_names)
-            names.difference_update(delta.removed_names)
-
         return frozenset(names)
+
+    def deferred_pool(self) -> frozenset[str]:
+        """Отложенные инструменты, объявленные модели: свёртка вложений
+        deferred_tools_delta разговора."""
+        pool: set[str] = set()
+        for delta in self._tool_deltas():
+            pool.update(delta.added_names)
+            pool.difference_update(delta.removed_names)
+
+        return frozenset(pool)
+
+    def tool_names(self) -> frozenset[str]:
+        """Все инструменты, известные модели: с полным определением и
+        отложенные."""
+        inline = self.inline_names()
+        if inline is None:
+            return self.deferred_pool()
+
+        return inline | self.deferred_pool()
 
     def withdrawn_tools(self) -> frozenset[str]:
         """Имена, которые разговор объявлял и потом снял разницей, а заново
@@ -309,9 +385,83 @@ class Announced:
         withdrawn: set[str] = set()
         for delta in self._tool_deltas():
             withdrawn.difference_update(delta.added_names)
+            withdrawn.difference_update(delta.surfaced_names)
             withdrawn.update(delta.removed_names)
 
         return frozenset(withdrawn)
+
+    def discovered(self) -> Sequence[str]:
+        """Загруженные отложенные инструменты в порядке загрузки: список
+        границы сжатия, затем ссылки tool_reference в результатах."""
+        return list(dict.fromkeys(self._discovered_names()))
+
+    def recorded(self) -> Mapping[str, SnapshotTool]:
+        """Определения загруженных отложенных, записанные разговором по
+        имени; позднее определение заменяет раннее."""
+        definitions: dict[str, SnapshotTool] = {}
+        for record in self._of_kind(AttachmentKind.DEFERRED_TOOLS_RECORD):
+            entries = DeferredToolsRecordAttachment.model_validate(
+                record.attachment.model_dump()
+            )
+            for tool in entries.entries:
+                definitions[tool.name] = tool
+
+        return definitions
+
+    def deferred_loaded(self) -> Sequence[SnapshotTool]:
+        """Отложенные инструменты, которые уходят в запрос: загруженные,
+        объявленные и записанные, в порядке загрузки."""
+        pool = self.deferred_pool()
+        definitions = self.recorded()
+        loaded: list[SnapshotTool] = []
+        for name in self.discovered():
+            if name not in pool:
+                continue
+
+            tool = definitions.get(name)
+            if tool is None:
+                continue
+
+            loaded.append(tool)
+
+        return loaded
+
+    def deferred_unrecorded(self) -> Sequence[str]:
+        """Загруженные и объявленные отложенные, чьих определений разговор
+        ещё не записал, в порядке загрузки."""
+        pool = self.deferred_pool()
+        definitions = self.recorded()
+        missing: list[str] = []
+        for name in self.discovered():
+            if name not in pool:
+                continue
+
+            if name in definitions:
+                continue
+
+            missing.append(name)
+
+        return missing
+
+    def _discovered_names(self) -> Iterator[str]:
+        for record in self._conversation:
+            if isinstance(record, CompactBoundaryRecord):
+                yield from record.compact_metadata.pre_compact_discovered_tools
+                continue
+
+            if not isinstance(record, UserRecord):
+                continue
+
+            for result in record.message.tool_results():
+                yield from result.references()
+
+    def _of_kind(self, kind: AttachmentKind) -> Iterator[AttachmentRecord]:
+        for record in self._conversation:
+            if not isinstance(record, AttachmentRecord):
+                continue
+
+            if record.attachment.type == kind.value:
+                yield record
 
     def instructions(self) -> Mapping[str, str]:
         """Объявленные инструкции серверов MCP по имени сервера: свёртка
@@ -336,15 +486,11 @@ class Announced:
 
         return announced
 
-    def _tool_deltas(self) -> Iterator[ToolsDeltaAttachment]:
-        for record in self._conversation:
-            if not isinstance(record, AttachmentRecord):
-                continue
-
-            if record.attachment.type != AttachmentKind.TOOLS_DELTA.value:
-                continue
-
-            yield ToolsDeltaAttachment.model_validate(record.attachment.model_dump())
+    def _tool_deltas(self) -> Iterator[DeferredToolsDeltaAttachment]:
+        for record in self._of_kind(AttachmentKind.DEFERRED_TOOLS_DELTA):
+            yield DeferredToolsDeltaAttachment.model_validate(
+                record.attachment.model_dump()
+            )
 
     def skill_names(self) -> frozenset[str]:
         """Имена скиллов, уже перечисленных модели в этом разговоре."""
@@ -362,19 +508,6 @@ class Announced:
             names.update(listing.names)
 
         return frozenset(names)
-
-    def _is_kind(self, record: ChainRecord, kind: AttachmentKind) -> bool:
-        if not isinstance(record, AttachmentRecord):
-            return False
-
-        return record.attachment.type == kind.value
-
-    def _last_index(self, kind: AttachmentKind) -> int | None:
-        for index in range(len(self._conversation) - 1, -1, -1):
-            if self._is_kind(self._conversation[index], kind):
-                return index
-
-        return None
 
     def _last(self, kind: AttachmentKind) -> AttachmentRecord | None:
         for record in reversed(self._conversation):
@@ -517,48 +650,60 @@ class ContextAttachments:
 
         return self._system(parent, attachment.payload(), text)
 
-    def tools_delta(
-        self,
-        parent: str | None,
-        added: Sequence[SnapshotTool],
-        removed: Sequence[str],
-        readded: frozenset[str],
+    def deferred_delta(
+        self, parent: str | None, change: ToolPoolChange
     ) -> AttachmentRecord:
-        """Разница списка инструментов (docs/prompt_assembly, deferred_tools_delta
-        без поиска инструментов): новые — с описанием; вернувшиеся (readded) —
+        """Разница набора инструментов одними именами (docs/prompt_assembly,
+        deferred_tools_delta): новые с полным определением — «стали
+        доступны»; новые отложенные — списком для ToolSearch; вернувшиеся —
         числом и именами, инструменты MCP — как вернувшиеся с сервером;
         снятые — по имени, инструменты MCP — как ушедшие с сервером."""
         lines: list[str] = []
-        for tool in added:
-            if tool.name in readded:
+        for name in change.added:
+            if name in change.readded:
                 continue
 
-            lines.append(tool.text())
+            lines.append(name)
 
+        wording = self._wording(change.search)
         sections: list[str] = []
-        if lines:
+        if change.surfaced:
             sections.append(
-                self._templates.read(AgentTemplateFile.TOOLS_ADDED).format(
-                    lines="\n".join(lines)
+                self._templates.read(AgentTemplateFile.TOOLS_SURFACED).format(
+                    names="\n".join(change.surfaced)
                 )
             )
 
-        returned = sorted(readded)
-        sections.extend(self._readded(returned))
-        sections.extend(self._removed(removed))
+        if lines:
+            sections.append(
+                self._templates.read(AgentTemplateFile.DEFERRED_ADDED).format(
+                    names="\n".join(lines)
+                )
+            )
 
-        added_names: list[str] = []
-        for tool in added:
-            added_names.append(tool.name)
+        returned = sorted(change.readded)
+        sections.extend(self._readded(returned, wording))
+        sections.extend(self._removed(change.removed, wording))
 
-        attachment = ToolsDeltaAttachment(
-            added_names=added_names,
-            removed_names=list(removed),
+        attachment = DeferredToolsDeltaAttachment(
+            added_names=list(change.added),
             added_lines=lines,
+            removed_names=list(change.removed),
             readded_names=returned,
+            surfaced_names=list(change.surfaced),
+            tool_search_absent=not change.search,
         )
 
         return self._system(parent, attachment.payload(), "\n\n".join(sections))
+
+    def deferred_record(
+        self, parent: str | None, entries: Sequence[SnapshotTool]
+    ) -> AttachmentRecord:
+        """Определения загруженных отложенных инструментов без `rendered`:
+        модели запись не отправляется, по ней собирается запрос."""
+        attachment = DeferredToolsRecordAttachment(entries=entries)
+
+        return self._silent(parent, attachment.payload())
 
     def instructions(
         self,
@@ -639,42 +784,65 @@ class ContextAttachments:
     def _server_name(server: ConnectedServer) -> str:
         return server.name
 
-    def _readded(self, names: Sequence[str]) -> Iterator[str]:
+    def _readded(self, names: Sequence[str], wording: Wording) -> Iterator[str]:
         """Разделы о вернувшихся инструментах: сначала инструменты MCP, затем
         прочие."""
         servers = list(self._picked(names, True))
         own = list(self._picked(names, False))
         if servers:
             yield self._templates.read(AgentTemplateFile.TOOLS_READDED_MCP).format(
-                subject=self._counted(len(servers)), names=self._grouped(servers)
+                subject=self._counted(len(servers), wording.kind),
+                names=self._grouped(servers),
+                load=wording.load,
             )
 
         if own:
             yield self._templates.read(AgentTemplateFile.TOOLS_READDED).format(
-                subject=self._counted(len(own)), names=", ".join(own)
+                subject=self._counted(len(own), wording.kind),
+                names=", ".join(own),
+                load=wording.load,
             )
 
-    def _removed(self, names: Sequence[str]) -> Iterator[str]:
+    def _removed(self, names: Sequence[str], wording: Wording) -> Iterator[str]:
         """Разделы о снятых инструментах и замыкающая строка о фоновом
         контексте; без снятых — ничего."""
         servers = list(self._picked(names, True))
         own = list(self._picked(names, False))
         if len(servers) > self.LISTED_UP_TO:
             yield self._templates.read(AgentTemplateFile.TOOLS_REMOVED_MCP_MANY).format(
-                count=len(servers), names=self._grouped(servers)
+                count=len(servers),
+                kind=wording.kind,
+                names=self._grouped(servers),
+                advice=wording.advice,
             )
         elif servers:
             yield self._templates.read(AgentTemplateFile.TOOLS_REMOVED_MCP).format(
-                names="\n".join(servers)
+                kind=wording.kind, names="\n".join(servers), advice=wording.advice
             )
 
         if own:
             yield self._templates.read(AgentTemplateFile.TOOLS_REMOVED).format(
-                names="\n".join(own)
+                kind=wording.kind, names="\n".join(own), advice=wording.advice
             )
 
         if names:
             yield self._templates.read(AgentTemplateFile.AMBIENT)
+
+    @staticmethod
+    def _wording(search: bool) -> Wording:
+        """Слова разделов: с ToolSearch речь об отложенных инструментах."""
+        if search:
+            return Wording(
+                kind=ToolWording.DEFERRED_TOOL,
+                advice=ToolWording.DO_NOT_SEARCH,
+                load=ToolWording.LOAD_AS_BEFORE,
+            )
+
+        return Wording(
+            kind=ToolWording.TOOL,
+            advice=ToolWording.DO_NOT_CALL,
+            load=ToolWording.NO_LOAD,
+        )
 
     def _picked(self, names: Sequence[str], of_servers: bool) -> Iterator[str]:
         """Имена инструментов серверов MCP (of_servers) либо прочие, в
@@ -703,11 +871,11 @@ class ContextAttachments:
         return ", ".join(shown)
 
     @staticmethod
-    def _counted(count: int) -> str:
+    def _counted(count: int, kind: ToolWording) -> str:
         if count == 1:
-            return "1 tool is"
+            return f"1 {kind} is"
 
-        return f"{count} tools are"
+        return f"{count} {kind}s are"
 
     def skill_listing(
         self,

@@ -4,12 +4,17 @@
 `tools/call` в форме MCP; реализует его вход процесса над серверами MCP
 сессии. Собственные инструменты агента (вопрос пользователю) живут рядом
 с инструментами сервера и зовутся по имени (план, раздел 5.12) и отвечают
-тем же результатом tools/call. ToolRunner ведёт пачку вызовов по разделу
+тем же результатом tools/call. Инструменты сервера отложены, кроме
+названных администратором в списке «всегда загружать»; собственный
+инструмент откладывается своим признаком. Отложенный модель видит одним
+именем и загружает инструментом ToolSearch (docs/prompt_assembly/specs/
+07_system_tools.md, раздел 2.3). ToolRunner ведёт пачку вызовов по разделу
 5.13, шаг 8: каждый вызов проходит разрешения (раздел 5.6), вопросы
 наружу идут по очереди; разрешённые вызовы уходят серверу одним
 `submit`; результаты собираются в порядке вызовов; отмена посреди пачки
-даёт результаты-отказы по таблице раздела 5.14. Результат длиннее предела
-обрезается, пустой заменяется заглушкой.
+даёт результаты-отказы по таблице раздела 5.14. Вызов отложенного
+инструмента, который модель не загрузила, — ошибка вызова с подсказкой.
+Результат длиннее предела обрезается, пустой заменяется заглушкой.
 
 Ошибки:
 ToolsError — имя инструмента предложено дважды: собственным инструментом и
@@ -20,15 +25,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from abc import abstractmethod
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
-from enum import StrEnum
+from enum import IntEnum, StrEnum
 from typing import Any, ClassVar, Protocol, Self
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from boba.agent.attachments import ConnectedServer, SnapshotTool
+from boba.agent.attachments import Announced, ConnectedServer, SnapshotTool
 from boba.agent.control import (
     AllowAnswer,
     CanUseToolRequest,
@@ -83,11 +89,16 @@ __all__ = [
     "AskUserQuestionTool",
     "BatchOutcome",
     "CallResult",
+    "DeferredCatalog",
     "McpServerSet",
     "OwnTool",
     "PlannedCall",
     "Questioner",
+    "ToolMatcher",
     "ToolRunner",
+    "ToolSearchInput",
+    "ToolSearchOutput",
+    "ToolSearchTool",
     "ToolServer",
     "ToolTexts",
     "ToolsError",
@@ -142,12 +153,14 @@ class CallResult:
     """Результат вызова для записи `user`: текст модели, ответ tools/call
     (его JSON — `toolUseResult`) и причина отказа, если это отказ. Вызов,
     оборванный концом хода, ответа не получил: reply None, для модели это
-    ошибка."""
+    ошибка. references — инструменты, которые результат загрузил (ToolSearch):
+    они ложатся в результат ссылками tool_reference."""
 
     call: PlannedCall
     text: str
     reply: ToolReply | None
     denial: ToolDenialKind | None = None
+    references: Sequence[str] = ()
 
     @property
     def is_error(self) -> bool:
@@ -222,6 +235,12 @@ class OwnTool(Protocol):
 
     @property
     def hints(self) -> ToolHints: ...
+
+    @property
+    def deferred(self) -> bool:
+        """Отложен ли инструмент: модель видит одно имя и загружает
+        определение инструментом ToolSearch."""
+        ...
 
     def card(self) -> SnapshotTool: ...
 
@@ -480,6 +499,10 @@ class AskUserQuestionTool(OwnTool):
     @property
     def hints(self) -> ToolHints:
         return self.HINTS
+
+    @property
+    def deferred(self) -> bool:
+        return False
 
     def card(self) -> SnapshotTool:
         return SnapshotTool(
