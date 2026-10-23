@@ -51,9 +51,7 @@ from boba.aid.agent.client import (
 from boba.aid.agent.config import (
     AgentCommandConfig,
     AgentConfig,
-    AgentModelConfig,
     PostgresAgentHistory,
-    ReasoningReturn,
 )
 from boba.aid.agent.settings import (
     AgentProviderKind,
@@ -65,6 +63,7 @@ from boba.aid.agent.settings import (
 )
 from boba.aid.rendering.acp_view import SessionUpdate
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
+from boba.chat.profiles import ReasoningReturn
 from boba.core.mcp_names import McpToolNames
 from boba.db.postgres.connection import PostgresConfig
 from boba.db.postgres.connection.auth import PasswordAuth
@@ -238,11 +237,6 @@ class AgentStand:
             public_url=public_url,
             seal_ttl_sec=600,
             question_timeout_sec=600,
-            model=AgentModelConfig(
-                context_window=32000,
-                max_output_tokens=4096,
-                reasoning_return=ReasoningReturn.NEVER,
-            ),
         )
 
 

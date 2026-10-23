@@ -896,11 +896,6 @@ class StandConfig(StandService):
                 "stop_timeout_sec": 10,
             },
             "history": dict(self.agent_history),
-            "model": {
-                "context_window": 200000,
-                "max_output_tokens": 4096,
-                "reasoning_return": "turn",
-            },
         }
 
     @staticmethod
@@ -946,11 +941,18 @@ class StandConfig(StandService):
 
     def _use_fake_llm(self, doc: MutableMapping[str, Any]) -> None:
         """Провайдер стенда: fake llm процесса тестов вместо секций [llm] конфига."""
-        doc["http"] = {"dump": {"enable": False}}
+        doc["agent_http"] = {"dump": {"enable": False}}
+        doc["model_limits"] = {
+            "fake": {
+                "context_window": 200000,
+                "max_output_tokens": 4096,
+                "reasoning_return": "turn",
+            }
+        }
         doc["llm"] = {
             "fake": {
                 "kind": "openai",
-                "transport": "${http}",
+                "transport": "${agent_http}",
                 "connection": {
                     "scheme": "http",
                     "host": StandUrl.HOST,
@@ -990,6 +992,7 @@ class StandConfig(StandService):
                 "tools": ["*"],
                 "provider": "${llm.fake}",
                 "model": "fake-model-general",
+                "limits": "${model_limits.fake}",
                 "system_prompt": "You are the general stand assistant",
                 "sampling": {
                     "temperature": 0.1,
@@ -1005,6 +1008,7 @@ class StandConfig(StandService):
                 "tools": self._search_tools(),
                 "provider": "${llm.fake}",
                 "model": "fake-model-search",
+                "limits": "${model_limits.fake}",
                 "system_prompt": "You are the search stand assistant",
                 "sampling": {
                     "temperature": 0.7,

@@ -23,7 +23,6 @@ from boba.aid.agent.config import (
     AgentHistoryKind,
     MemoryAgentHistory,
     PostgresAgentHistory,
-    ReasoningReturn,
 )
 from boba.aid.agent.settings import (
     AgentProviderKind,
@@ -34,6 +33,7 @@ from boba.aid.agent.settings import (
     ProviderFile,
     SettingsFileBuilder,
 )
+from boba.chat.profiles import ReasoningReturn
 from boba.db.postgres.connection import PostgresConfig
 from boba.db.postgres.connection.auth import PasswordAuth
 from boba.mcp_client.client import McpServersConfig

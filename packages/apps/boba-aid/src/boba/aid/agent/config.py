@@ -33,11 +33,9 @@ __all__ = [
     "AgentConfig",
     "AgentHistoryConfig",
     "AgentHistoryKind",
-    "AgentModelConfig",
     "AgentServiceConfig",
     "MemoryAgentHistory",
     "PostgresAgentHistory",
-    "ReasoningReturn",
 ]
 
 
@@ -47,15 +45,6 @@ class AgentHistoryKind(StrEnum):
 
     POSTGRES = "postgres"
     MEMORY = "memory"
-
-
-class ReasoningReturn(StrEnum):
-    """Возврат рассуждений прошлых ответов модели: значения — ключ
-    `reasoningReturn` профиля модели в файле настроек агента."""
-
-    NEVER = "never"
-    TURN = "turn"
-    ALWAYS = "always"
 
 
 class AgentCommandConfig(BaseModel):
@@ -197,23 +186,6 @@ AgentHistoryConfig = Annotated[
 ]
 
 
-class AgentModelConfig(BaseModel):
-    """Секция [agent.model]: что агент знает о модели профилей сверх профиля
-    чата — окно, потолок ответа и возврат рассуждений."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    context_window: int = Field(gt=0, description="Окно контекста модели, токены.")
-    max_output_tokens: int = Field(gt=0, description="Потолок ответа модели.")
-    reasoning_return: ReasoningReturn = Field(
-        description=(
-            "Возвращать ли модели её рассуждения прошлых ответов: never, turn "
-            "(в пределах хода — так требуют thinking-модели вроде deepseek при "
-            "вызове инструмента), always."
-        )
-    )
-
-
 class AgentConfig(BaseModel):
     """Секция [agent]: всё, что чат aid знает об агенте и о себе для него."""
 
@@ -248,4 +220,3 @@ class AgentConfig(BaseModel):
             "ответом cancel, ход идёт дальше."
         ),
     )
-    model: AgentModelConfig

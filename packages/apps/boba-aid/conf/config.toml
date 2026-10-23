@@ -46,7 +46,7 @@
 
 [llm.main]
     kind      = "openai"
-    transport = "${http}"
+    transport = "${agent_http}"
     [llm.main.connection]
         host              = "${site.llm_host}"
         path              = "${site.llm_path}"
@@ -56,6 +56,11 @@
         retry_backoff_sec = 1.0
         retry_statuses    = { 429 = 5 }
         auth              = { method = "bearer", token = "${site.llm_token}" }
+
+[model_limits.main]
+    context_window    = 128000
+    max_output_tokens = 8192
+    reasoning_return  = "turn"
 
 [profiles.general]
     display_name            = "Общий"
@@ -67,6 +72,7 @@
     provider                = "${llm.main}"
     model                   = "${site.models.general}"
     system_prompt           = "Ты ассистент BOBA"
+    limits                  = "${model_limits.main}"
     [profiles.general.sampling]
         temperature      = 1.0
         top_p            = 0.95
@@ -84,6 +90,7 @@
     provider              = "${llm.main}"
     model                 = "${site.models.search}"
     system_prompt         = "Ты поисковый ассистент BOBA: ищешь ответы в Confluence и базе знаний и отвечаешь со ссылками на источники"
+    limits                  = "${model_limits.main}"
     [profiles.search.sampling]
         temperature      = 1.0
         top_p            = 0.95
@@ -91,7 +98,7 @@
         max_tokens       = 4096
         reasoning_effort = "low"
 
-[http]
+[agent_http]
     dump                      = { enable = false, path = "${env.data}/dump" }
     trust_env                 = true
     proxy                     = ""
@@ -155,10 +162,6 @@
         kind     = "postgres"
         schema   = "boba"
         postgres = "${postgres_history}"
-    [agent.model]
-        context_window    = 128000
-        max_output_tokens = 8192
-        reasoning_return  = "turn"
 
 [service.boba_mcp]
     scheme = "${env.mcp_scheme}"

@@ -60,6 +60,11 @@
     kind      = "fastembed"
     cache_dir = "${env.models}/fastembed"
 
+[model_limits.main]
+    context_window    = 128000
+    max_output_tokens = 8192
+    reasoning_return  = "turn"
+
 [profiles.general]
     display_name          = "General"
     description           = "Профиль общего назначения: доступны все инструменты"
@@ -69,6 +74,7 @@
     provider              = "${llm.main}"
     model                 = "${site.llm_model}"
     system_prompt         = "${site.llm_prompt}"
+    limits                = "${model_limits.main}"
     [profiles.general.sampling]
         temperature = 0
 
@@ -81,6 +87,7 @@
     provider              = "${llm.ollama}"
     model                 = "${site.models.ollama}"
     system_prompt         = "${site.llm_prompt}"
+    limits                = "${model_limits.main}"
     [profiles.ollama.sampling]
         think = "low"
         [profiles.ollama.sampling.options]
@@ -116,6 +123,7 @@
     model                 = "${site.llm_model}"
     system_prompt         = "Ты поисковый ассистент BOBA: ищешь ответы в Confluence и базе знаний и отвечаешь со ссылками на источники"
     provider              = "${llm.main}"
+    limits                = "${model_limits.main}"
     [profiles.search.sampling]
         temperature = 0
 
