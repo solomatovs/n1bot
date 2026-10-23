@@ -346,7 +346,7 @@ class TestRunTool:
         if state["markers"] != ["solo"]:
             raise AssertionError(f"чужие файлы в /tmp: {state}")
 
-        if state["init"] != "python3" or state["pid"] > 8:
+        if state["init"] != "init" or state["pid"] > 8:
             raise AssertionError(f"тело не в своём pid ns: {state}")
 
         if state["userns_max"] != "0":
@@ -822,7 +822,8 @@ class TestShell:
         caller = self._caller(zygote_stand, tmp_path)
 
         # bash — ребёнок исполнителя (тот ещё гасит fuse2fs после команды),
-        # поэтому init своего pid ns — python-исполнитель, а bash рядом с ним
+        # поэтому init своего pid ns — python-исполнитель; его comm подменён
+        # на init, чтобы pid 1 выглядел как на голом железе
         outcome = ShellRun.call_text(
             caller,
             "echo init=$(cat /proc/1/comm); echo procs=$(ls /proc | grep -c '^[0-9]');"
@@ -830,8 +831,8 @@ class TestShell:
         )
 
         stdout = outcome.stdout
-        if "init=python3" not in stdout:
-            raise AssertionError(f"init pid ns — не исполнитель: {stdout!r}")
+        if "init=init" not in stdout:
+            raise AssertionError(f"pid 1 не замаскирован под init: {stdout!r}")
 
         procs = int(stdout.split("procs=")[1].split()[0])
         # исполнитель, тело bash-тула, сам bash, subshell и утилиты echo
