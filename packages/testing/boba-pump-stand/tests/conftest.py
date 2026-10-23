@@ -9,7 +9,7 @@
 
 from __future__ import annotations
 
-from enum import IntEnum, nonmember
+from enum import Enum
 from pathlib import Path
 from typing import ClassVar
 
@@ -69,15 +69,18 @@ class StandOrder:
         return self._places[name]
 
 
-class CrowdedOracle(IntEnum):
+class CrowdedOracle(Enum):
     """Выпуски Oracle стенда, чей листенер отбивает параллельные сессии
-    (ORA-12516), и на сервер такого выпуска сразу идут не больше LANES групп.
-    У 12.2 запас процессов съедают простаивающие PX-процессы экземпляра; у
-    Free 23 листенер не успевает за всплеском соединений десятка процессов."""
+    (ORA-12516), и сколько групп сразу идёт на сервер выпуска (lanes). У 12.2
+    запас процессов съедают простаивающие PX-процессы экземпляра; у Free 23
+    листенер не успевает за всплеском соединений десятка процессов."""
 
-    ENTERPRISE_12 = 12
-    FREE_23 = 23
-    LANES = nonmember(3)
+    ENTERPRISE_12 = (12, 2)
+    FREE_23 = (23, 3)
+
+    def __init__(self, release: int, lanes: int) -> None:
+        self.release = release
+        self.lanes = lanes
 
 
 class StandGroups:
@@ -85,7 +88,7 @@ class StandGroups:
     одних серверов делят модульные фикстуры и таблицы друг друга, поэтому
     идут одним процессом; имена объектов у процессов свои, и группы разных
     пар серверов, в том числе на одном Oracle, расходятся по процессам.
-    Группы тесного Oracle (CrowdedOracle) сведены в LANES дорожек по месту
+    Группы тесного Oracle (CrowdedOracle) сведены в его lanes дорожек по месту
     второго сервера пары в списке стенда: модули обходят все серверы, и
     дорожки выходят почти равными."""
 
@@ -94,7 +97,9 @@ class StandGroups:
 
     def __init__(self, order: StandOrder) -> None:
         self._order = order
-        self._crowded = frozenset(CrowdedOracle)
+        self._crowded: dict[int, CrowdedOracle] = {}
+        for crowded in CrowdedOracle:
+            self._crowded[crowded.release] = crowded
 
     def of(self, item: pytest.Item) -> str:
         module = item.nodeid.split(self.SEPARATOR, 1)[0]
@@ -104,6 +109,7 @@ class StandGroups:
 
         servers: list[str] = [module]
         crowded: list[str] = []
+        lanes: list[int] = []
         place = 0
         for value in callspec.params.values():
             if isinstance(value, (PgSource, ChSource, OraSource)):
@@ -116,12 +122,13 @@ class StandGroups:
             if not isinstance(value, OraSource):
                 continue
 
-            if value.release in self._crowded:
+            if release := self._crowded.get(value.release):
                 crowded.append(value.name)
+                lanes.append(release.lanes)
 
         if not crowded:
             return self.SEPARATOR.join(servers)
 
-        lane = place % CrowdedOracle.LANES
+        lane = place % min(lanes)
 
         return self.SEPARATOR.join((self.ORACLE, *crowded, str(lane)))

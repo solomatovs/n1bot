@@ -1318,10 +1318,11 @@ class TestHistory:
         again = ChatSocket(app, cookie, asking.thread_id)
         await again.open(resumed=True)
         try:
-            assert [m.get("output") for m in again.messages("user_message")] == [
+            questions = [m.get("output") for m in again.messages("user_message")]
+            assert questions == [
                 f"zero {ScenarioName.ANSWER.value}",
                 f"edited {ScenarioName.ANSWER.value}",
-            ]
+            ], (questions, again.trace(), app.tail(80))
         finally:
             await again.end_session()
 
