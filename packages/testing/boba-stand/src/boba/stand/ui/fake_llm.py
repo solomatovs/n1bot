@@ -303,14 +303,16 @@ class ToolCallSpec:
     """Вызов инструмента, который провайдер попросит выполнить.
 
     Подпись вызова intent обязательна у каждого инструмента приложения, и
-    настоящая модель её заполняет; фейк ведёт себя так же — дописывает
-    подпись, если сценарий её не задал. Вызов с literal=True уходит на
-    провод как есть: так стенд отдаёт битые и оборванные аргументы. Вызов
+    настоящая модель её заполняет; фейк ведёт себя так же — OfferedTools
+    дописывает подпись (signed), если сценарий её не задал, а в схеме
+    предложенного инструмента поле intent есть. Вызов с literal=True уходит
+    на провод как есть: так стенд отдаёт битые и оборванные аргументы. Вызов
     с dictated=True назван тестом (`scenario:call`): имя уходит как есть,
     стенд не ищет его среди предложенных инструментов. Подпись называет
     инструмент без сервера — так же, как его подписывает шаг ленты. Вызов с
-    unsigned=True идёт без подписи: у инструментов чужих серверов поля intent
-    в схеме нет, и лишний аргумент сервер отвергает.
+    unsigned=True идёт без подписи: у инструментов чужих серверов и
+    собственных инструментов агента поля intent в схеме нет, и лишний
+    аргумент они отвергают.
     """
 
     call_id: str
@@ -338,11 +340,25 @@ class ToolCallSpec:
 
         if self.unsigned:
             parsed.pop(self.INTENT_FIELD, None)
-        elif self.INTENT_FIELD not in parsed:
-            tool = self.names.tool_of(self.name)
-            parsed[self.INTENT_FIELD] = f"stand call of {tool}"
 
         self.arguments = json.dumps(parsed, ensure_ascii=False)
+
+    def signed(self) -> ToolCallSpec:
+        """Тот же вызов с подписью intent, если сценарий её не задал."""
+        if self.literal:
+            return self
+
+        if self.unsigned:
+            return self
+
+        parsed = json.loads(self.arguments)
+        if self.INTENT_FIELD in parsed:
+            return self
+
+        tool = self.names.tool_of(self.name)
+        parsed[self.INTENT_FIELD] = f"stand call of {tool}"
+
+        return replace(self, arguments=json.dumps(parsed, ensure_ascii=False))
 
     def arguments_wire(self) -> Any:
         """Аргументы для нативного формата ollama: объект, если они JSON-объект,
@@ -416,7 +432,12 @@ class OfferedTools:
 
     def __init__(self, payload: Mapping[str, Any], names: McpToolNames) -> None:
         self._names = names
-        self._offered = list(self._listed(payload))
+        self._offered: list[str] = []
+        self._signable: set[str] = set()
+        for name, signable in self._listed(payload):
+            self._offered.append(name)
+            if signable:
+                self._signable.add(name)
 
     def named(self, tool: str) -> str:
         if tool in self._offered:
@@ -433,14 +454,19 @@ class OfferedTools:
         return found[0]
 
     def script(self, script: TurnScript) -> TurnScript:
-        """Тот же ответ с вызовами под предложенными именами."""
+        """Тот же ответ с вызовами под предложенными именами и подписью
+        intent у тех, в чьей схеме это поле есть."""
         calls: list[ToolCallSpec] = []
         for call in script.tool_calls:
-            if call.dictated:
-                calls.append(call)
-                continue
+            name = call.name
+            if not call.dictated:
+                name = self.named(call.name)
 
-            calls.append(replace(call, name=self.named(call.name)))
+            resolved = replace(call, name=name)
+            if name in self._signable:
+                resolved = resolved.signed()
+
+            calls.append(resolved)
 
         return replace(script, tool_calls=calls)
 
@@ -455,7 +481,8 @@ class OfferedTools:
         return replace(played, script=self.script(played.script))
 
     @staticmethod
-    def _listed(payload: Mapping[str, Any]) -> Iterator[str]:
+    def _listed(payload: Mapping[str, Any]) -> Iterator[tuple[str, bool]]:
+        """Имена предложенных инструментов и признак поля intent в схеме."""
         tools = payload.get("tools")
         if not tools:
             return
@@ -466,8 +493,20 @@ class OfferedTools:
                 continue
 
             name = function.get("name")
-            if isinstance(name, str):
-                yield name
+            if not isinstance(name, str):
+                continue
+
+            parameters = function.get("parameters")
+            if not isinstance(parameters, dict):
+                yield name, False
+                continue
+
+            properties = parameters.get("properties")
+            if not isinstance(properties, dict):
+                yield name, False
+                continue
+
+            yield name, ToolCallSpec.INTENT_FIELD in properties
 
 
 @dataclass
