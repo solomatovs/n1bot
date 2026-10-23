@@ -19,7 +19,7 @@ class TestDatabase:
     @classmethod
     async def ensure(cls, postgres: PostgresConfig) -> str:
         """Создаёт базу, если её нет, и отдаёт имя."""
-        name = StandNames().of(cls.NAME)
+        name = StandNames().of_tree(cls.NAME)
 
         maintenance = AsyncPostgresPool(postgres)
         await maintenance.open()

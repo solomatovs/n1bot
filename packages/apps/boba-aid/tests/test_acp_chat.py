@@ -86,7 +86,7 @@ def chainlit_context() -> None:
 
 @pytest.fixture(scope="module")
 def stand_database() -> str:
-    return StandDatabase(StandApp.AID, StandNames().of(DB_NAME)).prepare()
+    return StandDatabase(StandApp.AID, StandNames().of_tree(DB_NAME)).prepare()
 
 
 @pytest.fixture(scope="module")

@@ -98,7 +98,7 @@ from boba.transport.http import HttpTransportConfig
 
 pytestmark = pytest.mark.anyio
 
-SCHEMA = StandNames().of("acp_settings")
+SCHEMA = StandNames().of_tree("acp_settings")
 NO_SERVERS = McpServersConfig(servers={})
 CIPHER_KEY = b"0123456789abcdef0123456789abcdef"
 
