@@ -256,6 +256,7 @@ class TestChatLayer:
                 "tools": [],
                 "provider": OnnxProvider(kind="onnx", model_dir="/nonexistent"),
                 "model": "local",
+                "limits": SignInStand.limits(),
             }
         )
         with pytest.raises(AgentSettingsError, match="remote provider"):
