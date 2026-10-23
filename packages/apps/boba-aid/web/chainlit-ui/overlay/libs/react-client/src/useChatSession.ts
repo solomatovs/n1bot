@@ -131,14 +131,10 @@ const useChatSession = () => {
     [flushSteps]
   );
 
-  // boba: профиль, с которым подключается сокет, читается в момент подключения:
-  // выравнивание профиля под тред (resume_thread) не пересоздаёт подключение и не
-  // запускает повторное воспроизведение; смена профиля пользователем меняет и
-  // сессию (clear), а с ней переподключается сокет
-  const chatProfileRef = useRef(chatProfile);
-
+  // boba: профиль треда, выставленный после resume_thread, попадает и в auth
+  // живого сокета: переподключение socket.io после обрыва сети восстанавливает
+  // тред с его профилем, а не с тем, что был до открытия треда
   useEffect(() => {
-    chatProfileRef.current = chatProfile;
     if (session?.socket) {
       session.socket.auth['chatProfile'] = chatProfile
         ? encodeURIComponent(chatProfile)
@@ -195,9 +191,7 @@ const useChatSession = () => {
           sessionId,
           threadId: idToResume || '',
           userEnv: JSON.stringify(userEnv),
-          chatProfile: chatProfileRef.current
-            ? encodeURIComponent(chatProfileRef.current)
-            : ''
+          chatProfile: chatProfile ? encodeURIComponent(chatProfile) : ''
         }
       });
       live.current = { key, socket };
@@ -568,7 +562,7 @@ const useChatSession = () => {
         }
       });
     },
-    [setSession, sessionId, idToResume, flushSteps, queueStep]
+    [setSession, sessionId, idToResume, chatProfile, flushSteps, queueStep]
   );
 
   // boba: у каждого _connect свой debounce; отложенный вызов прежнего не
