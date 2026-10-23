@@ -277,7 +277,6 @@ APP_MODEL_FILES  = $(foreach model,$(APP_MODELS),$(MODEL_FILES_$(model)))
 # mountinfo тела нет пути хоста. Образ лежит рядом с каталогом, процессный режим читает
 # сам каталог
 MODEL_IMAGES    := fastembed rapidocr
-MODEL_IMAGE_FILES := $(MODEL_IMAGES:%=$(MODELS_DIR)/%.ext4)
 APP_MODEL_IMAGES = $(if $(APP_SANDBOX),$(filter $(MODEL_IMAGES),$(APP_MODELS)))
 # всё, что качает fetch: входы образов, модели, колесо oracledb для .venv хоста
 INPUTS          := $(IMAGE_INPUTS) $(RAPIDOCR_FILES) $(FASTEMBED_STAMPS) $(ORACLEDB_WHEEL) \
@@ -429,16 +428,20 @@ docker run --rm -i --network none -e MKE2FS_CONFIG=/tools/mke2fs.conf -e PATH=/t
 endef
 
 # образ данных песочницы $(1) из уже скачанного каталога весов $(MODELS_DIR)/$(1): ext4
-# рядом с каталогом; в сеть не ходит, источник монтируется в контейнер read-only
+# рядом с каталогом; в сеть не ходит, источник монтируется в контейнер read-only.
+# Пересобирается, когда образа нет или в каталоге модели либо в скрипте есть файл новее
 define model-image
-$(call check,$(SANDBOX_TOOLS),запусти: make sandbox)
-echo "== образ данных $(1): $(MODELS_DIR)/$(1) -> $(MODELS_DIR)/$(1).ext4 =="
-stage=
-trap 'rm -rf "$$stage"' EXIT
-stage=$$(mktemp -d "$(STAGE_TEMPLATE)")
-$(call mke2fs-run,mkmodels.sh,$$stage,/out/$(1).ext4 /src $(1) 16,-v "$(MODELS_DIR)/$(1):/src:ro") < /dev/null
-chmod 0644 "$$stage/$(1).ext4"
-mv -f "$$stage/$(1).ext4" "$(MODELS_DIR)/$(1).ext4"
+image="$(MODELS_DIR)/$(1).ext4"
+if [ -e "$$image" ] && [ -z "$$(find "$(MODELS_DIR)/$(1)" "$(SCRIPTS_DIR)/mkmodels.sh" -newer "$$image" -print -quit)" ]; then
+    echo "    $$image: модель не менялась, образ готов"
+else
+    echo "== образ данных $(1): $(MODELS_DIR)/$(1) -> $$image =="
+    stage=$$(mktemp -d "$(STAGE_TEMPLATE)")
+    $(call mke2fs-run,mkmodels.sh,$$stage,/out/$(1).ext4 /src $(1) 16,-v "$(MODELS_DIR)/$(1):/src:ro") < /dev/null
+    chmod 0644 "$$stage/$(1).ext4"
+    mv -f "$$stage/$(1).ext4" "$$image"
+    rm -rf "$$stage"
+fi
 endef
 
 # в интернет ходит только fetch (и all, который начинается с него): цель, которой не
@@ -875,16 +878,16 @@ plugin-rootfs-all: version-check
 	    $(MAKE) -f "$(MAKEFILE)" plugin-rootfs PLUGIN=$$name
 	done
 
-# образы данных песочницы: веса моделей ext4-файлом из уже скачанного, пересобираются,
-# когда меняются файлы модели или скрипт
+# образы данных песочницы: веса моделей ext4-файлом из уже скачанного; входы проверяются,
+# а не делаются — модели кладёт fetch
 .PHONY: models-image
-models-image: version-check $(MODEL_IMAGE_FILES)
-
-$(MODELS_DIR)/fastembed.ext4: $(FASTEMBED_STAMPS) $(SCRIPTS_DIR)/mkmodels.sh
-	@$(call model-image,fastembed)
-
-$(MODELS_DIR)/rapidocr.ext4: $(RAPIDOCR_FILES) $(SCRIPTS_DIR)/mkmodels.sh
-	@$(call model-image,rapidocr)
+models-image: version-check
+	@$(call check,$(SANDBOX_TOOLS),запусти: make sandbox)
+	$(call check,$(foreach model,$(MODEL_IMAGES),$(MODEL_FILES_$(model))),запусти: make fetch)
+	stage=
+	trap 'rm -rf "$$stage"' EXIT
+	$(foreach model,$(MODEL_IMAGES),$(call model-image,$(model))
+	)
 
 # --- тестовые образы -------------------------------------------------------------
 
