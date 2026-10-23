@@ -159,6 +159,8 @@ class SignalType:
     """Метки window_message: по ним скрипты страницы отличают свой сигнал от чужого."""
 
     SIGNIN_REFRESH: ClassVar[str] = "boba:signin-refresh"
+    COMPOSER_RESTORE: ClassVar[str] = "boba:composer-restore"
+    """Тексты вопросов, снятых остановкой хода, — обратно в поле ввода."""
 
 
 class CatchUp(BaseModel):

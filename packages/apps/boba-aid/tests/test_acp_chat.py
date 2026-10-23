@@ -37,6 +37,7 @@ from boba.aid.agent.settings import WorkdirFile
 from boba.aid.chat.ui_text import UiText
 from boba.aid.domain.fields import ThreadMetaField
 from boba.aid.rendering.chat_view import StepText
+from boba.aid.rendering.renderer import SignalType
 from boba.canvas.canvas import CanvasAction, CanvasElement, CanvasKind
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
@@ -360,6 +361,12 @@ class ChatSocket:
     ) -> None:
         """Строка лога о конце возврата этой вкладки к треду после байта since."""
         marker = self.RESUMED.format(thread=self.thread_id, session=self.session_id)
+        await self.wait_log(marker, since, timeout_sec)
+
+    async def wait_log(
+        self, marker: str, since: int = 0, timeout_sec: float = TURN_TIMEOUT_SEC
+    ) -> None:
+        """Строка лога приложения с marker после байта since."""
         expected = marker.encode()
         deadline = time.monotonic() + timeout_sec
         while time.monotonic() < deadline:
@@ -1626,6 +1633,152 @@ class TestHistory:
         assert await rows.chat_settings_rows(tab.thread_id) == 0
         assert await rows.history_rows(session_id) == 0
         await tab.close()
+
+
+class TestQueuedQuestions:
+    """Вопрос во время хода уходит в очередь сессии агента: ход не
+    прерывается, вопрос получает свой ход агента после текущего ответа;
+    остановка хода снимает его и возвращает текст в поле ввода."""
+
+    HELD: ClassVar[str] = "Describe the migration steps slowly"
+    HELD_ANSWER: ClassVar[str] = "Copy the schema, move the data and compare counts."
+    QUEUED: ClassVar[str] = "And how long will it take?"
+    QUEUED_ANSWER: ClassVar[str] = "About an hour on the stand."
+    LATER: ClassVar[str] = "Then check the indexes"
+    HELD_TOKENS: ClassVar[int] = 3
+
+    def _book(self, llm_port: int) -> ReplyBookClient:
+        book = ReplyBookClient(StandUrl.of(llm_port))
+        book.register(
+            [
+                Reply(
+                    question=self.HELD,
+                    turns=[
+                        ReplyTurn(
+                            content=self.HELD_ANSWER,
+                            hold=True,
+                            hold_after_tokens=self.HELD_TOKENS,
+                        )
+                    ],
+                ),
+                Reply(
+                    question=self.QUEUED,
+                    turns=[ReplyTurn(content=self.QUEUED_ANSWER)],
+                ),
+            ]
+        )
+
+        return book
+
+    def _questions(self, tab: ChatSocket) -> list[tuple[str, str]]:
+        """Вопросы ленты по порядку появления: id шага и текст."""
+        found: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for payload in tab.messages("user_message"):
+            step_id = str(payload.get("id"))
+            if step_id in seen:
+                continue
+
+            seen.add(step_id)
+            found.append((step_id, str(payload.get("output"))))
+
+        return found
+
+    def _deleted(self, tab: ChatSocket) -> set[str]:
+        found: set[str] = set()
+        for event, payload in tab.events:
+            if event == "delete_message" and isinstance(payload, dict):
+                found.add(str(payload.get("id")))
+
+        return found
+
+    def _restored(self, tab: ChatSocket) -> list[list[str]]:
+        found: list[list[str]] = []
+        for event, payload in tab.events:
+            if event != "window_message" or not isinstance(payload, dict):
+                continue
+
+            if payload.get("type") == SignalType.COMPOSER_RESTORE:
+                found.append(list(payload["texts"]))
+
+        return found
+
+    async def test_a_question_during_the_turn_waits_for_its_own_turn(
+        self, app: StandProcess, cookie: str, llm_port: int
+    ) -> None:
+        book = self._book(llm_port)
+        tab = ChatSocket(app, cookie, str(uuid4()))
+        await tab.open()
+        try:
+            await tab.send(self.HELD)
+            await asyncio.to_thread(book.await_held, self.HELD, TURN_TIMEOUT_SEC)
+            sent = await tab.send(self.QUEUED)
+            await tab.wait_log(f"question {sent} goes to the queue")
+            assert self.HELD in book.held(), app.tail(40)
+            assert not self._questions(tab)[1:], tab.frames()
+
+            book.release(self.HELD)
+            await tab.wait_task_end()
+
+            assert not tab.errors(), (tab.errors(), app.tail(80))
+            assert sent in self._deleted(tab), tab.frames()
+            live = self._questions(tab)
+            texts = [text for _, text in live]
+            assert texts == [self.HELD, self.QUEUED], tab.frames()
+            assert sent not in {step_id for step_id, _ in live}, live
+            answers = [str(m.get("output")) for m in tab.messages()]
+            held_at = next(i for i, a in enumerate(answers) if self.HELD_ANSWER in a)
+            queued_at = next(
+                i for i, a in enumerate(answers) if self.QUEUED_ANSWER in a
+            )
+            assert held_at < queued_at, answers
+            live_steps = tab.step_ids()
+        finally:
+            await tab.end_session()
+
+        again = ChatSocket(app, cookie, tab.thread_id)
+        await again.open(resumed=True)
+        try:
+            assert not again.errors(), (again.errors(), app.tail(60))
+            assert self._questions(again) == live, again.frames()
+            replayed = again.step_ids()
+            for kind in ("user_message", "assistant_message"):
+                assert live_steps.get(kind) == replayed.get(kind), (
+                    kind,
+                    again.frames(),
+                )
+        finally:
+            await again.end_session()
+
+    async def test_stop_withdraws_queued_questions_back_to_the_input(
+        self, app: StandProcess, cookie: str, llm_port: int
+    ) -> None:
+        book = self._book(llm_port)
+        tab = ChatSocket(app, cookie, str(uuid4()))
+        await tab.open()
+        try:
+            await tab.send(self.HELD)
+            await asyncio.to_thread(book.await_held, self.HELD, TURN_TIMEOUT_SEC)
+            first = await tab.send(self.QUEUED)
+            second = await tab.send(self.LATER)
+            await tab.wait_log(f"question {second} goes to the queue")
+            await tab.stop()
+            await tab.wait_task_end()
+            book.release(self.HELD)
+
+            assert not tab.errors(), (tab.errors(), app.tail(80))
+            assert self._restored(tab) == [[self.QUEUED, self.LATER]], tab.trace()
+            assert {first, second} <= self._deleted(tab), tab.frames()
+            texts = [text for _, text in self._questions(tab)]
+            assert texts == [self.HELD], tab.frames()
+
+            mark = len(tab.events)
+            await tab.send(f"again {ScenarioName.ANSWER.value}")
+            await tab.wait_task_end()
+            assert not tab.errors(), (tab.errors(), app.tail(80))
+            assert tab.messages(since=mark), tab.trace()[mark:]
+        finally:
+            await tab.end_session()
 
 
 class TestTabsOfOneThread:
