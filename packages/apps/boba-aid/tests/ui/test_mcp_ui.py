@@ -2220,16 +2220,6 @@ class TestFastmcpApps:
         if case.stats_url:
             assert apps.stats(case) == before, "the search calls no tool"
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "filtering the Prefab table changes the height of the app: the card "
-            "measures its body with a ResizeObserver, every measurement builds a "
-            "new hostContext and sends host-context-changed to the app, the app "
-            "answers size-changed, and the cycle ends in React error #185 "
-            "(maximum update depth exceeded) on the chat page"
-        ),
-    )
     def test_prefab_filter_leaves_the_chat_page_without_errors(
         self,
         fastmcp_stand: StandProcess,
