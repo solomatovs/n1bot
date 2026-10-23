@@ -54,6 +54,7 @@ from boba.mcp_client.client import (
     McpClientIdentity,
     McpServerApps,
     McpServerConfig,
+    McpServerLimits,
     McpServers,
     McpServersConfig,
     McpToolServer,
@@ -90,8 +91,7 @@ SERVER = Path(__file__).with_name("standard_server.py")
 def _config(endpoint: HttpEndpoint | StdioCommand) -> McpServerConfig:
     return McpServerConfig(
         endpoint=endpoint,
-        connect_timeout_sec=20.0,
-        call_timeout_sec=60.0,
+        limits=McpServerLimits(connect_timeout_sec=20.0, call_timeout_sec=60.0),
     )
 
 
@@ -114,7 +114,8 @@ async def _tools_of(port: McpToolServer) -> list[str]:
 
 def _legacy(slot: AppsSlot, server: AppServer) -> HttpEndpoint:
     return HttpEndpoint(
-        scheme="http", host=slot.host, port=server.value, path=slot.PATH
+        service=HttpLocation(scheme="http", host=slot.host, port=server.value, path=""),
+        path=slot.PATH,
     )
 
 
@@ -209,7 +210,8 @@ def http_port(request: pytest.FixtureRequest) -> Iterator[int]:
 @pytest.fixture
 async def http(http_port: int) -> AsyncIterator[McpToolServer]:
     endpoint = HttpEndpoint(
-        scheme="http", host="127.0.0.1", port=http_port, path="/mcp"
+        service=HttpLocation(scheme="http", host="127.0.0.1", port=http_port, path=""),
+        path="/mcp",
     )
     server = McpToolServer("standard", _config(endpoint))
     for _ in range(100):
@@ -553,8 +555,14 @@ class TestUnreachableServer:
 class TestPublicServers:
     """Чужие реализации MCP в сети; без сети тесты падают с причиной."""
 
-    DEEPWIKI = HttpEndpoint(scheme="https", host="mcp.deepwiki.com", path="/mcp")
-    CONTEXT7 = HttpEndpoint(scheme="https", host="mcp.context7.com", path="/mcp")
+    DEEPWIKI = HttpEndpoint(
+        service=HttpLocation(scheme="https", host="mcp.deepwiki.com", path=""),
+        path="/mcp",
+    )
+    CONTEXT7 = HttpEndpoint(
+        service=HttpLocation(scheme="https", host="mcp.context7.com", path=""),
+        path="/mcp",
+    )
 
     @staticmethod
     async def _reachable(endpoint: HttpEndpoint) -> None:
@@ -776,8 +784,7 @@ class TestServerApps:
         first = McpServerConfig.model_validate(
             {
                 "endpoint": endpoint,
-                "connect_timeout_sec": 1.0,
-                "call_timeout_sec": 1.0,
+                "limits": {"connect_timeout_sec": 1.0, "call_timeout_sec": 1.0},
                 "apps": {"sandbox_url": "https://apps.example.com/one/sandbox.html"},
             }
         )
@@ -874,9 +881,9 @@ class BobaMcpStand:
         token = self._sign_in.token("alice", "dev", f"{self._public}{path}")
 
         return HttpEndpoint(
-            scheme="http",
-            host="127.0.0.1",
-            port=self.port,
+            service=HttpLocation(
+                scheme="http", host="127.0.0.1", port=self.port, path=""
+            ),
             path=path,
             auth=BearerAuth(token=SecretStr(token)),
         )
@@ -1789,22 +1796,15 @@ class BobaMcpService:
         )
 
     def endpoint(self) -> HttpEndpoint:
+        service = HttpLocation(scheme="http", host=self.HOST, port=self.port, path="")
         auth = ProxyAuth(
-            issuer=HttpLocation(
-                scheme="http", host=self.HOST, port=self.port, path="/"
-            ),
+            issuer=service,
             client_id=self.CLIENT,
             client_secret=self._client.secret,
             secret=self._proxy.secret,
         )
 
-        return HttpEndpoint(
-            scheme="http",
-            host=self.HOST,
-            port=self.port,
-            path=f"/mcp/{self.PROFILE}",
-            auth=auth,
-        )
+        return HttpEndpoint(service=service, path=f"/mcp/{self.PROFILE}", auth=auth)
 
     def stop(self) -> None:
         self._process.terminate()
@@ -2018,8 +2018,9 @@ class TestFailureStand:
     ) -> McpToolServer:
         config = McpServerConfig(
             endpoint=endpoint,
-            connect_timeout_sec=20.0,
-            call_timeout_sec=call_timeout_sec,
+            limits=McpServerLimits(
+                connect_timeout_sec=20.0, call_timeout_sec=call_timeout_sec
+            ),
         )
         server = McpToolServer("standard", config)
         await server.described(OWN)

@@ -71,6 +71,7 @@ def _profiles() -> ChatProfiles:
             "tools": ["echo"],
             "provider": SignInStand.provider(),
             "model": "fake",
+            "limits": SignInStand.limits(),
             "system_prompt": "stand",
         }
     )

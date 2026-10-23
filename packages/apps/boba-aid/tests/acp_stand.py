@@ -51,9 +51,7 @@ from boba.aid.agent.client import (
 from boba.aid.agent.config import (
     AgentCommandConfig,
     AgentConfig,
-    AgentModelConfig,
     PostgresAgentHistory,
-    ReasoningReturn,
 )
 from boba.aid.agent.settings import (
     AgentProviderKind,
@@ -65,16 +63,19 @@ from boba.aid.agent.settings import (
 )
 from boba.aid.rendering.acp_view import SessionUpdate
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
+from boba.chat.profiles import ReasoningReturn
 from boba.core.mcp_names import McpToolNames
 from boba.db.postgres.connection import PostgresConfig
 from boba.db.postgres.connection.auth import PasswordAuth
 from boba.identity.context import CallContexts
 from boba.mcp_client.client import (
     McpServerConfig,
+    McpServerLimits,
     McpServers,
     McpServersConfig,
     StdioCommand,
 )
+from boba.runtime.config import ValueCipherConfig
 from boba.stand.names import StandNames
 from boba.stand.site import Stand
 from boba.stand.ui.fake_llm import (
@@ -199,16 +200,19 @@ class AgentHistoryStand:
         )
 
     def schema(self) -> str:
-        return StandNames().of(self.SCHEMA)
+        return StandNames().of_tree(self.SCHEMA)
 
     def history(self) -> PostgresAgentHistory:
         return PostgresAgentHistory.model_validate(
-            {"kind": "postgres", "schema": self.schema()}
+            {"kind": "postgres", "schema": self.schema(), "postgres": self.postgres()}
         )
 
 
 class AgentStand:
     """Конфиг [agent] под тест: модуль агента интерпретатором теста."""
+
+    SETTINGS_CIPHER: ClassVar[str] = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
+    """Ключ шифрования слоя чата стенда: 32 байта в base64."""
 
     def __init__(self, private_dir: Path, history: PostgresAgentHistory) -> None:
         self._private_dir = private_dir
@@ -237,10 +241,8 @@ class AgentStand:
             public_url=public_url,
             seal_ttl_sec=600,
             question_timeout_sec=600,
-            model=AgentModelConfig(
-                context_window=32000,
-                max_output_tokens=4096,
-                reasoning_return=ReasoningReturn.NEVER,
+            settings_table=ValueCipherConfig.model_validate(
+                {"cipher": self.SETTINGS_CIPHER}
             ),
         )
 
@@ -414,9 +416,7 @@ class Agents:
         self._model = model
         history = AgentHistoryStand(stand)
         self._stand = AgentStand(root, history.history())
-        self._builder = SettingsFileBuilder(
-            self._stand.config(), history.postgres(), servers
-        )
+        self._builder = SettingsFileBuilder(self._stand.config(), servers)
         self._servers = McpServers(servers)
         credentials = KerberosCredentialSource(None, NoRefresh())
         relay = RelayStand(NoConnectionStore(), lambda: credentials, CallContexts())
@@ -486,7 +486,8 @@ def standard() -> McpServerConfig:
     endpoint = StdioCommand(command=sys.executable, args=(str(script), "stdio"))
 
     return McpServerConfig(
-        endpoint=endpoint, connect_timeout_sec=20.0, call_timeout_sec=60.0
+        endpoint=endpoint,
+        limits=McpServerLimits(connect_timeout_sec=20.0, call_timeout_sec=60.0),
     )
 
 
@@ -543,13 +544,10 @@ class SandboxHost:
         """Секция [mcp.servers.<имя>] сервера по HTTP на host:port с
         песочницей этого хоста."""
         return {
-            "connect_timeout_sec": 30.0,
-            "call_timeout_sec": 60.0,
+            "limits": {"connect_timeout_sec": 30.0, "call_timeout_sec": 60.0},
             "endpoint": {
                 "transport": "streamable-http",
-                "scheme": "http",
-                "host": host,
-                "port": port,
+                "service": {"scheme": "http", "host": host, "port": port, "path": ""},
                 "path": "/mcp",
             },
             "apps": {"sandbox_url": self.sandbox_url},

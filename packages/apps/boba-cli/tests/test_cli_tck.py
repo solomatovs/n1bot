@@ -364,15 +364,19 @@ class TckRun:
             cwd=str(self.stand.agent_cwd()),
         )
         assert process.stdout is not None
+        # kill опрашивает процесс (Popen.poll) и уводит статус от наблюдателя asyncio,
+        # тот отдаёт код 255: убивается только часть, не уложившаяся в срок
         try:
-            raw = await asyncio.wait_for(process.stdout.read(), self.CEILING_SEC)
+            async with asyncio.timeout(self.CEILING_SEC):
+                raw = await process.stdout.read()
+                code = await process.wait()
         finally:
             if process.returncode is None:
                 process.kill()
 
         self.output = raw.decode("utf-8", errors="replace")
 
-        return await process.wait()
+        return code
 
 
 class TckSuite:
