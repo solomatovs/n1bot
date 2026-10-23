@@ -155,14 +155,16 @@ class SessionThreads:
     """Потоки сессий процесса с пределом их числа.
 
     Создаёт вход ACP (AcpAgent): каждая открытая сессия получает свой поток
-    под своим именем; сверх предела открытие отказывает.
+    под своим номером; сверх предела открытие отказывает. Поток учитывается
+    объектом, а не id сессии: одну сессию могут держать два соединения
+    (хозяин и наблюдатель), и у каждого свой поток.
     """
 
     PREFIX: ClassVar[str] = "acp-session-"
 
     def __init__(self, limit: int) -> None:
         self._limit = limit
-        self._open: dict[str, LoopThread] = {}
+        self._open: set[LoopThread] = set()
         self._numbers = count(1)
 
     def open(self, session_id: str) -> LoopThread:
@@ -181,19 +183,19 @@ class SessionThreads:
 
         thread = LoopThread(f"{self.PREFIX}{next(self._numbers)}")
         thread.start()
-        self._open[session_id] = thread
+        self._open.add(thread)
 
         return thread
 
-    async def stop(self, session_id: str) -> None:
-        thread = self._open.pop(session_id, None)
-        if thread is None:
+    async def stop(self, thread: LoopThread) -> None:
+        if thread not in self._open:
             return
 
+        self._open.remove(thread)
         await thread.stop()
 
-    def opened(self) -> Sequence[str]:
-        return list(self._open)
+    def opened(self) -> int:
+        return len(self._open)
 
 
 class ThreadedHistoryStore(HistoryStore):
