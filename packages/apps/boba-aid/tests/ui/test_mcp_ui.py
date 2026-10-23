@@ -1961,8 +1961,15 @@ class AppUnderTest:
 
     def _failed(self, error: Error) -> None:
         """Ошибка страницы чата со стеком: по минифицированному стеку видна
-        цепочка функций."""
-        self.errors.append(f"{error.message}\n{error.stack}")
+        цепочка функций. Playwright отдаёт ошибки всех кадров, а ошибка
+        внутри окна приложения — дело сервера, не чата: по стеку без скрипта
+        чата она идёт в консоль диагностики, не в ошибки страницы."""
+        stack = str(error.stack or "")
+        if stack and self.chat.base_url not in stack:
+            self.console.append(f"app error: {error.message}\n{stack}")
+            return
+
+        self.errors.append(f"{error.message}\n{stack}")
 
     def _logged(self, message: ConsoleMessage) -> None:
         """Консоль кадров приложения — страницы-прокси и iframe рендерера;
