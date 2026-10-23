@@ -23,6 +23,7 @@ import time
 import tomllib
 import webbrowser
 from collections.abc import Iterator, Sequence
+from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -36,6 +37,7 @@ from playwright.sync_api import Browser, Page, expect
 
 from boba.db.postgres.connection import PostgresConfig
 from boba.stand.database import TestDatabase
+from boba.stand.service_signin import ServiceSignIn
 from boba.stand.ui.database import run_blocking
 from boba.stand.ui.stand import (
     REPO_ROOT,
@@ -56,7 +58,6 @@ LOGIN_FIELD = 'input[name="login"]'
 PASSWORD_FIELD = 'input[name="password"]'
 SUBMIT = 'form button[type="submit"]'
 ALERT = '[role="alert"]'
-SSO_LINK = 'a[href*="/login/sso"]'
 
 
 class SignInSession:
@@ -550,62 +551,156 @@ class TestLastingSession:
             raise AssertionError("the renewal asks for no browser")
 
 
+@dataclass(frozen=True)
+class DeployedService:
+    """Развёрнутый за nginx сервис и вход в него клиента чата.
+
+    Собирает фикстура deployed из site.toml контейнера compose и общего
+    конфига пакета: публичный адрес с префиксом, адрес endpoint'а, ключи
+    клиента чата ([mcp.clients] сервиса и [auth.proxy].secret) и
+    пользователь из сопоставления ролей чата, от имени которого чат входит.
+    """
+
+    public: str
+    endpoint: str
+    client_id: str
+    client_secret: str
+    proxy_secret: str
+    login: str
+    roles: str
+
+    def origin(self) -> str:
+        url = httpx.URL(self.public)
+
+        return f"{url.scheme}://{url.netloc.decode()}"
+
+    def known(self, suffix: str, address: str) -> str:
+        """Адрес документа .well-known от корня хоста для адреса address."""
+        return f"{self.origin()}/.well-known/{suffix}{httpx.URL(address).path}"
+
+
+@pytest.fixture
+def deployed() -> DeployedService:
+    site_path = REPO_ROOT / "compose" / "mcp" / "conf" / "site.toml"
+    with site_path.open("rb") as handle:
+        site = tomllib.load(handle)
+
+    with StandApp.MCP.files().config.open("rb") as handle:
+        common = tomllib.load(handle)
+
+    public = str(site["env"]["public_url"]).rstrip("/")
+    try:
+        health = httpx.get(f"{public}/health", timeout=10.0)
+    except httpx.HTTPError as exc:
+        pytest.fail(f"the deployed service at {public} is not reachable: {exc}")
+
+    if health.status_code != httpx.codes.OK:
+        pytest.fail(f"the deployed service at {public} answers {health.status_code}")
+
+    clients = list(common["mcp"]["clients"])
+    if len(clients) != 1:
+        pytest.fail(f"[mcp.clients] of the service names one chat client: {clients}")
+
+    login = ""
+    roles: list[str] = []
+    for name, granted in site["site"]["proxy"]["local_roles"].items():
+        if granted:
+            login = name
+            roles = list(granted)
+            break
+
+    if not login:
+        pytest.fail(
+            f"{site_path}: [site.proxy.local_roles] of the deployed config names "
+            "no user with roles"
+        )
+
+    return DeployedService(
+        public=public,
+        endpoint=f"{public}{common['mcp']['path']}/{ENDPOINT}",
+        client_id=clients[0],
+        client_secret=str(site["site"]["mcp_client"]["secret"]),
+        proxy_secret=str(site["site"]["proxy_secret"]),
+        login=login,
+        roles=",".join(roles),
+    )
+
+
 class TestDeployedService:
-    """Тот же вход против развёрнутого сервиса через nginx: публичный адрес
-    с префиксом, HTTPS, метаданные от корня хоста."""
+    """Развёрнутый сервис через nginx: публичный адрес с префиксом, HTTPS,
+    метаданные от корня хоста. Входит в него только чат (proxy): людской
+    вход сервис отклоняет на странице входа."""
 
-    SITE: Path = REPO_ROOT / "compose" / "mcp" / "conf" / "site.toml"
-    """Специфика развёрнутого сервиса: тест ходит к контейнеру compose."""
+    def test_metadata_names_the_public_issuer(self, deployed: DeployedService) -> None:
+        server = httpx.get(
+            deployed.known("oauth-authorization-server", deployed.public),
+            timeout=10.0,
+        ).json()
+        resource = httpx.get(
+            deployed.known("oauth-protected-resource", deployed.endpoint),
+            timeout=10.0,
+        ).json()
 
-    def test_sign_in_through_nginx(
-        self, opened: OpenedLinks, login_page: LoginPage
+        assert server["issuer"] == deployed.public, server
+        assert server["token_endpoint"] == f"{deployed.public}/token", server
+        assert ServiceSignIn.GRANT in server["grant_types_supported"], server
+        assert resource["resource"] == deployed.endpoint, resource
+        assert resource["authorization_servers"] == [deployed.public], resource
+
+    def test_chat_assertion_reaches_the_tools(self, deployed: DeployedService) -> None:
+        sign_in = ServiceSignIn(
+            deployed.public,
+            deployed.client_id,
+            deployed.client_secret,
+            deployed.proxy_secret,
+        )
+        token = sign_in.token(deployed.login, deployed.roles, deployed.endpoint)
+
+        tools = asyncio.run(_listed(deployed.endpoint, token))
+
+        assert TOOL in tools, tools
+
+    def test_people_sign_in_is_refused_by_name(
+        self, deployed: DeployedService, login_page: LoginPage
     ) -> None:
-        with self.SITE.open("rb") as handle:
-            deployed = tomllib.load(handle)
+        redirect = "http://127.0.0.1:9/callback"
+        verifier = secrets.token_urlsafe(48)
+        digest = hashlib.sha256(verifier.encode()).digest()
+        challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
+        registered = httpx.post(
+            f"{deployed.public}/register",
+            json={
+                "redirect_uris": [redirect],
+                "token_endpoint_auth_method": "none",
+                "grant_types": ["authorization_code", "refresh_token"],
+                "response_types": ["code"],
+            },
+            timeout=10.0,
+        )
+        query = httpx.QueryParams(
+            {
+                "response_type": "code",
+                "client_id": registered.json()["client_id"],
+                "redirect_uri": redirect,
+                "code_challenge": challenge,
+                "code_challenge_method": "S256",
+                "state": "deployed-state",
+                "resource": deployed.endpoint,
+            }
+        )
 
-        public = str(deployed["env"]["public_url"]).rstrip("/")
-        try:
-            health = httpx.get(f"{public}/health", timeout=10.0)
-        except httpx.HTTPError as exc:
-            pytest.fail(f"the deployed service at {public} is not reachable: {exc}")
+        login_page.open(f"{deployed.public}/authorize?{query}")
 
-        if health.status_code != httpx.codes.OK:
-            pytest.fail(
-                f"the deployed service at {public} answers {health.status_code}"
-            )
+        assert "no sign-in method for people" in login_page.alert(), login_page.dom()
+        assert 'name="password"' not in login_page.dom()
+        assert "/login/sso" not in login_page.dom()
 
-        users = deployed["site"]["local_auth"]["users"]
-        roles = deployed["site"]["local_auth"]["roles"]
-        login = ""
-        for name in users:
-            if roles.get(name):
-                login = name
-                break
 
-        if not login:
-            pytest.fail(
-                f"{self.SITE}: the deployed config has no local user with roles "
-                "in [site.local_auth]"
-            )
+async def _listed(endpoint: str, token: str) -> Sequence[str]:
+    """Инструменты endpoint'а для клиента с токеном доступа token."""
+    names: list[str] = []
+    async with Client(StreamableHttpTransport(endpoint, auth=token)) as client:
+        for tool in await client.list_tools():
+            names.append(tool.name)
 
-        with StandApp.MCP.files().config.open("rb") as handle:
-            common = tomllib.load(handle)
-
-        url = f"{public}{common['mcp']['path']}/{ENDPOINT}"
-        session = SignInSession(url, MemoryStore(), StandPorts().free())
-        session.start()
-        address = opened.next()
-        if not address.startswith(f"{public}/authorize?"):
-            raise AssertionError(f"the client opens the public authorize: {address}")
-
-        login_page.open(address)
-        login_page.shows_the_form()
-        if SSO_LINK and "/login/sso" not in login_page.dom():
-            raise AssertionError("the deployed page links the kerberos sign-in")
-
-        login_page.sign_in(login, str(users[login]))
-        login_page.returned_to_the_client()
-
-        tools = session.tools()
-        if TOOL not in tools:
-            raise AssertionError(f"the deployed service gives the tools: {tools}")
+    return names
