@@ -20,6 +20,8 @@ from boba.aid.infra.bootstrap import SandboxCors
 from boba.aid.infra.config import AppConfig
 from boba.config import bind
 from boba.config.section import ConfigError
+from boba.mcp_client.client import McpServerApps
+from boba.stand.signin import SignInStand
 
 
 @pytest.fixture(autouse=True)
@@ -66,6 +68,29 @@ class TestAppsSandbox:
         config = AppConfig.model_validate(app)
 
         assert any(server.apps for server in config.mcp.servers.values())
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "no server of profile general has a section [mcp.servers.<name>.apps]: "
+            "the deployment has no second host name for the sandbox origin, so "
+            "the chat draws no apps of boba_general (plan item 5)"
+        ),
+    )
+    def test_prod_profile_general_serves_apps_from_their_own_origin(
+        self, raw_config: DictConfig
+    ) -> None:
+        """Профиль general: каждый его сервер рисует приложения из песочницы
+        на своём источнике, отличном от источника чата."""
+        config = bind(raw_config, path="app", model=AppConfig)
+        chat = McpServerApps.model_validate({"sandbox_url": config.agent.public_url})
+        general = config.profiles[SignInStand.PROFILE]
+
+        assert general.mcp, "profile general names its mcp servers"
+        for name in general.mcp:
+            apps = config.mcp.servers[name].apps
+            assert apps is not None, f"[mcp.servers.{name}] has a section apps"
+            assert apps.origin() != chat.origin(), (name, apps.origin())
 
 
 class TestSandboxCors:

@@ -26,11 +26,13 @@ import socket
 import subprocess
 import sys
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
+from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar
 from urllib.parse import urlencode, urlsplit, urlunsplit
+from uuid import uuid4
 
 import pytest
 from acp_stand import AppsHost, OrdersBook, SandboxHost
@@ -42,6 +44,8 @@ from playwright.sync_api import (
     FrameLocator,
     Locator,
     Page,
+    Request,
+    Route,
     expect,
 )
 
@@ -1608,6 +1612,8 @@ class ExampleBook(StrEnum):
     MESSAGE_ANSWER = "Got the message of the app."
     CONTEXT = "Current app state info"
     """Текст ui/update-model-context приложения отладки."""
+    PARTIAL = "Вызови отладку с длинным вводом"
+    PARTIAL_ANSWER = "Отладка с длинным вводом показана."
 
 
 class ExampleApp:
@@ -1619,11 +1625,13 @@ class ExampleApp:
     WAIT_MS: ClassVar[float] = 60_000
     POLL_MS: ClassVar[float] = 200
 
-    def __init__(self, chat: ChatPage, llm_port: int) -> None:
+    def __init__(
+        self, chat: ChatPage, llm_port: int, extra: Sequence[Reply] = ()
+    ) -> None:
         self.chat = chat
         self.errors: list[str] = []
         chat.page.on("pageerror", self._failed)
-        ReplyBookClient(StandUrl.of(llm_port)).register(self._book())
+        ReplyBookClient(StandUrl.of(llm_port)).register([*self._book(), *extra])
 
     def _failed(self, error: Error) -> None:
         self.errors.append(str(error))
@@ -1829,3 +1837,519 @@ class TestExampleApps:
         assert counts["ontoolcancelled"] == 1, counts
         assert counts["ontoolresult"] == 0, counts
         example.check_clean()
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "ui/message of an app goes to the model as a plain user question "
+            "without a note of its source, so the model cannot tell the text of "
+            "the app of debug-tool of server debug from the words of the user"
+        ),
+    )
+    def test_message_of_the_app_reaches_the_model_marked_with_its_source(
+        self, example_stand: StandProcess, open_chat: OpenChat, llm_port: int
+    ) -> None:
+        """Текст ui/message — от недоверенного кода: в сообщении модели рядом
+        с ним названы инструмент и сервер приложения."""
+        example = ExampleApp(open_chat(example_stand, ""), llm_port)
+        app = example.app(example.ask(ExampleBook.DEBUG, ExampleBook.DEBUG_ANSWER))
+
+        app.locator("#message-text").fill(ExampleBook.MESSAGE.value)
+        app.locator("#send-message-text-btn").click()
+        example.page.get_by_text(ExampleBook.MESSAGE_ANSWER.value).last.wait_for(
+            timeout=ExampleApp.WAIT_MS
+        )
+
+        reply = example.page.request.get(StandUrl.of(llm_port, "/requests"))
+        carrying: list[str] = []
+        for payload in reply.json()["requests"]:
+            for message in payload.get("messages", []):
+                rendered = json.dumps(message, ensure_ascii=False)
+                if ExampleBook.MESSAGE.value in rendered:
+                    carrying.append(rendered)
+
+        assert carrying, "ui/message of the app reaches the model"
+        marked = carrying[-1]
+        assert "debug-tool" in marked, marked
+        assert "debug" in marked.replace("debug-tool", ""), marked
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "the agent does not stream partial tool input, so the app never "
+            "receives ui/notifications/tool-input-partial while the model is "
+            "still writing the arguments"
+        ),
+    )
+    def test_generative_draft_appears_before_the_result(
+        self, example_stand: StandProcess, open_chat: OpenChat, llm_port: int
+    ) -> None:
+        """Модель отдаёт длинные аргументы кусками: приложение получает
+        tool-input-partial раньше итога — так рисуется черновик генерации.
+        Приложение отладки считает колбэки, поэтому черновик меряется им."""
+        words = " ".join(f"word{index}" for index in range(80))
+        slow = ReplyCall(
+            tool="mcp__debug__debug-tool",
+            arguments={"contentType": "text", "largeInput": words},
+            intent="Долгий ввод",
+        )
+        partial = Reply(
+            question=ExampleBook.PARTIAL.value,
+            turns=[
+                ReplyTurn(calls=[slow]),
+                ReplyTurn(content=ExampleBook.PARTIAL_ANSWER.value),
+            ],
+            token_delay_sec=0.05,
+            stream_arguments=True,
+        )
+        example = ExampleApp(open_chat(example_stand, ""), llm_port, extra=[partial])
+        card = example.ask(ExampleBook.PARTIAL, ExampleBook.PARTIAL_ANSWER)
+        app = example.app(card)
+        example.logged(app, "ontoolresult")
+
+        counts = example.callbacks(app)
+        log = "\n".join(app.locator("#event-log").all_inner_texts())
+
+        assert counts["ontoolinputpartial"] >= 1, counts
+        assert log.index("ontoolinputpartial:") < log.index("ontoolresult:"), log
+        example.check_clean()
+
+
+@dataclass(frozen=True)
+class AppCase:
+    """Ход с приложением сервера стенда: сервер в конфиге чата, вопрос книги
+    фейковой модели, вызов инструмента и ответ после итога; stats_url —
+    счётчик вызовов сервера (пусто — сервер его не ведёт), renderer —
+    источник, с которого приложение грузит рендерер (пусто — не сверяется)."""
+
+    server: str
+    question: str
+    answer: str
+    tool: str
+    arguments: dict[str, Any]
+    stats_url: str = ""
+    renderer: str = ""
+
+    def reply(self) -> Reply:
+        call = ReplyCall(tool=self.tool, arguments=self.arguments, intent=self.question)
+
+        return Reply(
+            question=self.question,
+            turns=[ReplyTurn(calls=[call]), ReplyTurn(content=self.answer)],
+        )
+
+
+class AppUnderTest:
+    """Приложение сервера стенда глазами теста: книга ответов по ходам
+    cases, карточка хода в ленте, само приложение в странице-прокси
+    песочницы, строки таблицы Prefab и счётчик вызовов сервера. Ошибки
+    страницы чата копятся с открытия: их не должно быть."""
+
+    CARD: ClassVar[str] = "[data-mcp-app]"
+    WAIT_MS: ClassVar[float] = 60_000
+
+    def __init__(self, chat: ChatPage, llm_port: int, cases: Sequence[AppCase]) -> None:
+        self.chat = chat
+        self.errors: list[str] = []
+        chat.page.on("pageerror", self._failed)
+        replies: list[Reply] = []
+        for case in cases:
+            replies.append(case.reply())
+
+        ReplyBookClient(StandUrl.of(llm_port)).register(replies)
+
+    def _failed(self, error: Error) -> None:
+        self.errors.append(str(error))
+
+    @property
+    def page(self) -> Page:
+        return self.chat.page
+
+    def ask(self, case: AppCase) -> Locator:
+        """Ход с вызовом инструмента case: карточка его приложения."""
+        self.chat.ask(case.question)
+        self.chat.await_idle(timeout_sec=120.0)
+        self.page.get_by_text(case.answer).last.wait_for(timeout=self.WAIT_MS)
+
+        return self.page.locator(self.CARD).last
+
+    def app(self, card: Locator) -> FrameLocator:
+        """Приложение в странице-прокси песочницы карточки."""
+        app = card.frame_locator("iframe").first.frame_locator("iframe")
+        app.locator("body").wait_for(timeout=self.WAIT_MS)
+
+        return app
+
+    def proxy(self, card: Locator) -> Locator:
+        """iframe приложения внутри страницы-прокси."""
+        return card.frame_locator("iframe").first.locator("iframe").first
+
+    @staticmethod
+    def rows(app: FrameLocator) -> Locator:
+        """Строки таблицы Prefab в приложении."""
+        return app.locator("table tbody tr")
+
+    def stats(self, case: AppCase) -> dict[str, int]:
+        """Вызовы инструментов сервера по его счётчику."""
+        reply = self.page.request.get(case.stats_url)
+        counts: dict[str, int] = {}
+        for name, count in reply.json().items():
+            counts[str(name)] = int(count)
+
+        return counts
+
+    def offered(self, llm_port: int) -> list[str]:
+        """Инструменты, предложенные модели последним запросом."""
+        reply = self.page.request.get(StandUrl.of(llm_port, "/requests"))
+        requests = reply.json()["requests"]
+        names: list[str] = []
+        for tool in requests[-1].get("tools", []):
+            names.append(str(tool["function"]["name"]))
+
+        return names
+
+    def check_clean(self) -> None:
+        if self.errors:
+            raise AssertionError(f"the chat page raised errors: {self.errors}")
+
+
+@pytest.fixture(scope="module")
+def fastmcp_stand(  # noqa: PLR0913 — стенд собирается из фикстур модуля
+    stand_workdir: Path,
+    llm_port: int,
+    fake_llm: None,
+    stand_database: str,
+    apps_slot: AppsSlot,
+    boba_mcp_stand: BobaMcpStand,
+) -> Iterator[StandProcess]:
+    """Стенд чата с серверами fastmcp[apps] контейнера boba-testapps —
+    prefab, notes, genui — и с boba-mcp под именем boba; у каждого своя
+    песочница на своём источнике. Виды отображения проверяются одинаково
+    против чужого сервера и против своего."""
+    servers: dict[str, dict[str, Any]] = {}
+    hosts: list[SandboxHost] = []
+    for name, port in (
+        ("prefab", AppServer.PREFAB),
+        ("notes", AppServer.NOTES),
+        ("genui", AppServer.GENUI),
+    ):
+        host = SandboxHost(stand_workdir / f"sandbox-{name}")
+        hosts.append(host)
+        servers[name] = host.drawn(apps_slot.host, port.value)
+
+    own = SandboxHost(stand_workdir / "sandbox-boba")
+    hosts.append(own)
+    servers["boba"] = {
+        **boba_mcp_stand.server(),
+        "apps": {"sandbox_url": own.sandbox_url},
+    }
+    config = StandConfig(
+        workdir=stand_workdir / "chat-fastmcp",
+        app=StandApp.AID,
+        app_port=StandPorts().free(),
+        llm_port=llm_port,
+        db_name=stand_database,
+        url_prefix="/boba-fastmcp",
+        mcp_servers=servers,
+    )
+    process = StandProcess(config=config, log_path=stand_workdir / "fastmcp.log")
+    try:
+        process.start(boot_timeout_sec=BOOT_TIMEOUT_SEC)
+        yield process
+    finally:
+        process.stop()
+        for host in hosts:
+            host.stop()
+
+
+class TestFastmcpApps:
+    """Виды интерфейсов fastmcp в harness без правок хоста: Prefab (таблица
+    с поиском, рендерер статикой стенда без CDN), FastMCPApp (форма зовёт
+    backend, список перерисован), генерация, разрешения и рамка ресурса,
+    потолок размера ресурса. Те же проверки против boba-mcp: его стенд
+    должен отвечать инструментами fake_sales (таблица продаж: 5 строк,
+    Acme одна) и fake_notes (доска с формой и backend save) с объявлением
+    вида."""
+
+    BOBA_REASON: ClassVar[str] = (
+        "boba-mcp declares no app: its stand has neither fake_sales with a Prefab "
+        "table nor fake_notes with a backend, ToolCard carries no _meta.ui and "
+        "the server serves no ui:// resources (plan items 6-10)"
+    )
+    SERVERS: ClassVar[list[Any]] = [
+        pytest.param("prefab", id="fastmcp"),
+        pytest.param(
+            "boba",
+            id="boba-mcp",
+            marks=pytest.mark.xfail(strict=True, reason=BOBA_REASON),
+        ),
+    ]
+    CHART: ClassVar[str] = (
+        "from prefab_ui.components.charts import BarChart, ChartSeries\n"
+        "from prefab_ui.app import PrefabApp\n"
+        "with PrefabApp() as app:\n"
+        "    BarChart(\n"
+        "        data=[{'month': 'Jan', 'sales': 10}, {'month': 'Feb', 'sales': 25}],\n"
+        "        series=[ChartSeries(data_key='sales')],\n"
+        "    )\n"
+    )
+
+    @staticmethod
+    def _table(server: str, apps_slot: AppsSlot) -> AppCase:
+        tools = {"prefab": "mcp__prefab__sales", "boba": "mcp__boba__fake_sales"}
+        stats = ""
+        renderer = ""
+        if server == "prefab":
+            stats = f"http://{apps_slot.host}:{AppServer.PREFAB.value}/stats"
+            renderer = apps_slot.renderer_url()
+
+        return AppCase(
+            server=server,
+            question=f"Покажи продажи по клиентам ({server})",
+            answer="Продажи — в таблице выше.",
+            tool=tools[server],
+            arguments={"region": "All"},
+            stats_url=stats,
+            renderer=renderer,
+        )
+
+    @staticmethod
+    def _notes(server: str) -> AppCase:
+        tools = {"prefab": "mcp__notes__notes_board", "boba": "mcp__boba__fake_notes"}
+
+        return AppCase(
+            server=server,
+            question=f"Открой доску заметок ({server})",
+            answer="Доска заметок — выше.",
+            tool=tools[server],
+            arguments={},
+        )
+
+    @staticmethod
+    def _clipboard() -> AppCase:
+        return AppCase(
+            server="prefab",
+            question="Покажи текст для копирования",
+            answer="Текст — в карточке выше.",
+            tool="mcp__prefab__clipboard",
+            arguments={},
+        )
+
+    @pytest.mark.parametrize("server", SERVERS)
+    def test_prefab_table_renders_and_filters_without_the_server(
+        self,
+        fastmcp_stand: StandProcess,
+        open_chat: OpenChat,
+        llm_port: int,
+        apps_slot: AppsSlot,
+        server: str,
+    ) -> None:
+        """Карточка Prefab показывает строки таблицы; поиск фильтрует их в
+        браузере — счётчик вызовов сервера не растёт."""
+        case = self._table(server, apps_slot)
+        apps = AppUnderTest(open_chat(fastmcp_stand, ""), llm_port, [case])
+        app = apps.app(apps.ask(case))
+        rows = apps.rows(app)
+        expect(rows).to_have_count(5, timeout=AppUnderTest.WAIT_MS)
+        before: dict[str, int] = {}
+        if case.stats_url:
+            before = apps.stats(case)
+
+        app.get_by_placeholder("Filter...").fill("Acme")
+
+        expect(rows).to_have_count(1, timeout=AppUnderTest.WAIT_MS)
+        assert "Acme" in rows.first.inner_text()
+        if case.stats_url:
+            assert apps.stats(case) == before, "the search calls no tool"
+
+        apps.check_clean()
+
+    @pytest.mark.parametrize("server", SERVERS)
+    def test_app_loads_with_cdn_blocked(
+        self,
+        fastmcp_stand: StandProcess,
+        open_chat: OpenChat,
+        llm_port: int,
+        apps_slot: AppsSlot,
+        server: str,
+    ) -> None:
+        """Закрытый контур: без cdn.jsdelivr.net и fonts.googleapis.com
+        карточка Prefab всё равно рисуется — рендерер грузится статикой с
+        источника стенда."""
+        case = self._table(server, apps_slot)
+        chat = open_chat(fastmcp_stand, "")
+        loaded: list[str] = []
+
+        def abort(route: Route) -> None:
+            route.abort()
+
+        def seen(request: Request) -> None:
+            loaded.append(request.url)
+
+        chat.page.route("**/cdn.jsdelivr.net/**", abort)
+        chat.page.route("**/fonts.googleapis.com/**", abort)
+        chat.page.on("request", seen)
+        apps = AppUnderTest(chat, llm_port, [case])
+        app = apps.app(apps.ask(case))
+
+        expect(apps.rows(app)).to_have_count(5, timeout=AppUnderTest.WAIT_MS)
+        if case.renderer:
+            from_stand = [url for url in loaded if url.startswith(case.renderer)]
+            assert from_stand, loaded[-20:]
+
+        apps.check_clean()
+
+    @pytest.mark.parametrize("server", SERVERS)
+    def test_fastmcpapp_form_saves_through_the_backend_and_rerenders(
+        self,
+        fastmcp_stand: StandProcess,
+        open_chat: OpenChat,
+        llm_port: int,
+        server: str,
+    ) -> None:
+        """Форма доски зовёт backend save по имени из tools/list, список
+        перерисован ответом backend'а; модели backend не предложен."""
+        case = self._notes(server)
+        apps = AppUnderTest(open_chat(fastmcp_stand, ""), llm_port, [case])
+        app = apps.app(apps.ask(case))
+        rows = apps.rows(app)
+        rows.first.wait_for(timeout=AppUnderTest.WAIT_MS)
+        before = rows.count()
+        note = f"note-{uuid4().hex[:6]}"
+
+        app.get_by_placeholder("New note").fill(note)
+        app.get_by_role("button", name="Save").click()
+
+        expect(rows).to_have_count(before + 1, timeout=AppUnderTest.WAIT_MS)
+        expect(app.get_by_text(note)).to_be_visible(timeout=AppUnderTest.WAIT_MS)
+        offered = apps.offered(llm_port)
+        assert case.tool in offered, offered
+        backend = [
+            name
+            for name in offered
+            if name.startswith(f"mcp__{server}__") and "save" in name
+        ]
+        assert not backend, offered
+        apps.check_clean()
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "the stand has no Deno and no Pyodide offline: prefab_ui.sandbox cannot "
+            "start, generate_prefab_ui answers with an error and the chart is never "
+            "drawn (plan item 11)"
+        ),
+    )
+    def test_generative_ui_result_is_drawn(
+        self, fastmcp_stand: StandProcess, open_chat: OpenChat, llm_port: int
+    ) -> None:
+        """Модель зовёт generate_prefab_ui с кодом графика: карточка рисует
+        график тем же рендерером."""
+        case = AppCase(
+            server="genui",
+            question="Нарисуй продажи по месяцам",
+            answer="График — выше.",
+            tool="mcp__genui__generate_prefab_ui",
+            arguments={"code": self.CHART},
+        )
+        apps = AppUnderTest(open_chat(fastmcp_stand, ""), llm_port, [case])
+        app = apps.app(apps.ask(case))
+
+        expect(app.locator("svg").first).to_be_visible(timeout=AppUnderTest.WAIT_MS)
+        apps.check_clean()
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "the chat reads neither _meta.ui.permissions nor prefersBorder of the "
+            "resource and [mcp.servers.<name>.apps] has no permissions allowlist, "
+            "so the stand refuses the config, the inner iframe would get no allow "
+            "attribute and the card would keep its border (plan item 2)"
+        ),
+    )
+    def test_app_permissions_and_border_follow_the_resource(  # noqa: PLR0913 — свой стенд из фикстур модуля
+        self,
+        stand_workdir: Path,
+        llm_port: int,
+        fake_llm: None,
+        stand_database: str,
+        apps_slot: AppsSlot,
+        open_chat: OpenChat,
+    ) -> None:
+        """Разрешение clipboardWrite из списка секции apps сервера попадает
+        в allow внутреннего iframe; prefersBorder=false снимает рамку
+        карточки."""
+        host = SandboxHost(stand_workdir / "sandbox-permitted")
+        server = host.drawn(apps_slot.host, AppServer.PREFAB.value)
+        server["apps"]["permissions"] = ["clipboardWrite"]
+        config = StandConfig(
+            workdir=stand_workdir / "chat-permitted",
+            app=StandApp.AID,
+            app_port=StandPorts().free(),
+            llm_port=llm_port,
+            db_name=stand_database,
+            url_prefix="/boba-permitted",
+            mcp_servers={"prefab": server},
+        )
+        process = StandProcess(config=config, log_path=stand_workdir / "permitted.log")
+        try:
+            process.start(boot_timeout_sec=BOOT_TIMEOUT_SEC)
+            case = self._clipboard()
+            apps = AppUnderTest(open_chat(process, ""), llm_port, [case])
+            card = apps.ask(case)
+            apps.app(card)
+            allow = apps.proxy(card).get_attribute("allow")
+            border = card.evaluate("(el) => getComputedStyle(el).borderTopWidth")
+        finally:
+            process.stop()
+            host.stop()
+
+        assert allow is not None, "the inner iframe carries allow"
+        assert "clipboard-write" in allow, allow
+        assert border == "0px", border
+
+    def test_permissions_of_the_resource_stay_out_of_allow_without_the_config(
+        self, fastmcp_stand: StandProcess, open_chat: OpenChat, llm_port: int
+    ) -> None:
+        """Запрет по умолчанию: ресурс просит clipboardWrite, в конфиге
+        сервера разрешений нет — внутренний iframe без allow."""
+        case = self._clipboard()
+        apps = AppUnderTest(open_chat(fastmcp_stand, ""), llm_port, [case])
+        card = apps.ask(case)
+        app = apps.app(card)
+
+        expect(app.get_by_text("copy me")).to_be_visible(timeout=AppUnderTest.WAIT_MS)
+        assert apps.proxy(card).get_attribute("allow") is None
+        apps.check_clean()
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "the chat has no ceiling on the size of a ui:// resource: the 12 MB page "
+            "of tool huge is relayed to the browser and drawn instead of an error "
+            "card (plan: размер и число ресурсов ui:// на карточку ограничены)"
+        ),
+    )
+    def test_resource_over_the_ceiling_is_an_error_card_and_the_chat_stays_alive(
+        self,
+        fastmcp_stand: StandProcess,
+        open_chat: OpenChat,
+        llm_port: int,
+        apps_slot: AppsSlot,
+    ) -> None:
+        huge = AppCase(
+            server="prefab",
+            question="Открой огромную страницу",
+            answer="Страница — выше.",
+            tool="mcp__prefab__huge",
+            arguments={},
+        )
+        table = self._table("prefab", apps_slot)
+        apps = AppUnderTest(open_chat(fastmcp_stand, ""), llm_port, [huge, table])
+
+        card = apps.ask(huge)
+        card.locator("[data-mcp-app-error]").wait_for(timeout=AppUnderTest.WAIT_MS)
+
+        app = apps.app(apps.ask(table))
+        expect(apps.rows(app)).to_have_count(5, timeout=AppUnderTest.WAIT_MS)
+        apps.check_clean()
