@@ -152,12 +152,16 @@ class JsonlHistorySettings(SettingsModel):
 
 class PostgresHistorySettings(SettingsModel):
     """Журнал в Postgres: строка подключения libpq значением либо именем
-    переменной окружения, таблица — в схеме из обязательного ключа `schema`."""
+    переменной окружения, таблица — в схеме из обязательного ключа `schema`.
+    `owner` — логин пользователя, от имени которого работает процесс: его
+    ставит служба агента, и процесс видит только сессии этого пользователя;
+    без ключа (запуск по stdio) процессу видны все сессии."""
 
     kind: Literal[HistoryKind.POSTGRES]
     dsn: SecretStr | None = None
     dsn_env: str | None = Field(default=None, min_length=1)
     db_schema: str = Field(min_length=1, alias="schema")
+    owner: str | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
     def _one_dsn_source(self) -> PostgresHistorySettings:
