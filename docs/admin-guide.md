@@ -491,7 +491,7 @@ $ make -C build site-keys APP=mcp
 [site]
     aid_database  — postgres.dbname
     auth_secret  — keys.session
-    confluence.host  — tool.confluence.confluence.host
+    confluence.host  — confluence.host
     mcp_client.secret  — keys.mcp_client
     mcp_proxy_secret  — keys.mcp_proxy
     pg_host  — postgres.host
