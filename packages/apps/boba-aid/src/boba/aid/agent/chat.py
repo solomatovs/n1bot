@@ -8,6 +8,7 @@
 AcpClientError и наследники — процесс или ответ агента (client.py).
 AgentSettingsError — профиль чата не годится агенту (settings.py).
 DataUnavailableError — таблицы чата недоступны.
+PostgresError — билет kerberos-роли истории для процесса агента не получен.
 """
 
 from __future__ import annotations
@@ -64,7 +65,6 @@ from boba.aid.rendering.renderer import ThreadRewinds
 from boba.canvas.keys import ObjectKey
 from boba.chat.profiles import SelectedProfile
 from boba.chat.threads import DataLayerError, ThreadUpsert
-from boba.db.postgres.connection import PostgresConfig
 from boba.identity.errors import InternalServiceError
 from boba.mcp_client.client import McpCaller, McpServersConfig
 from boba.runtime.threads import ThreadsTable
@@ -477,7 +477,7 @@ class AgentLinks(Protocol):
 
         Ошибки:
         AgentProcessError — агент не запустился или не ответил.
-        KerberosError — билет истории по keytab не получен.
+        PostgresError — билет роли истории не получен.
         """
 
 
@@ -487,20 +487,19 @@ class ProcessLinks(AgentLinks):
     получает окружение libkrb5 ключом `env` файла. Приватный каталог
     удаляется при любом несостоявшемся запуске. Создаёт AgentLauncher."""
 
-    def __init__(  # noqa: PLR0913 — запуск собирается конфигом и входами процесса
+    def __init__(
         self,
         config: AgentConfig,
         process: AgentCommandConfig,
-        postgres: PostgresConfig,
         servers: McpServersConfig,
         relay: McpRelay,
         version: str,
     ) -> None:
         self._relay = relay
         self._version = version
-        self._files = SettingsFileBuilder(config, postgres, servers)
+        self._files = SettingsFileBuilder(config, servers)
         self._workdirs = AgentWorkdirs(Path(process.private_dir))
-        self._environment = HistoryEnvironment(config.history, postgres)
+        self._environment = HistoryEnvironment(config.history)
         program = process.program()
         self._command = AgentCommand(
             executable=program[0],
@@ -591,10 +590,9 @@ class AgentLauncher:
     Запросы mcp/message агента отвечает общий ретранслятор (McpRelay).
     """
 
-    def __init__(  # noqa: PLR0913 — запуск собирается конфигом, подключением и входами процесса
+    def __init__(  # noqa: PLR0913 — запуск собирается конфигом и входами процесса
         self,
         config: AgentConfig,
-        postgres: PostgresConfig,
         servers: McpServersConfig,
         table: AgentSettingsTable,
         registrations: McpRegistrations,
@@ -602,16 +600,15 @@ class AgentLauncher:
         version: str,
     ) -> None:
         self._table = table
-        self._specs = ProfileModelSpecs(config.model)
+        self._specs = ProfileModelSpecs()
         self._registrations = registrations
         self._relay = relay
-        self._files = SettingsFileBuilder(config, postgres, servers)
-        self._links = self._chosen(config, postgres, servers, relay, version)
+        self._files = SettingsFileBuilder(config, servers)
+        self._links = self._chosen(config, servers, relay, version)
 
     @staticmethod
     def _chosen(
         config: AgentConfig,
-        postgres: PostgresConfig,
         servers: McpServersConfig,
         relay: McpRelay,
         version: str,
@@ -620,7 +617,7 @@ class AgentLauncher:
         if isinstance(process, AgentServiceConfig):
             return ServiceLinks(process, relay, version)
 
-        return ProcessLinks(config, process, postgres, servers, relay, version)
+        return ProcessLinks(config, process, servers, relay, version)
 
     async def prepare(self, identity: ThreadIdentity) -> AgentLaunch:
         """Слой чата треда по профилю, сохранённый для удаления треда: то, что
@@ -695,7 +692,7 @@ class AgentLauncher:
 
         Ошибки:
         AgentProcessError — агент не запустился или не ответил.
-        KerberosError — билет истории по keytab не получен.
+        PostgresError — билет роли истории не получен.
         """
         launch = AgentLaunch(chat=chat, mcp=mcp)
 

@@ -620,7 +620,7 @@ def deployed() -> DeployedService:
         endpoint=f"{public}{common['mcp']['path']}/{ENDPOINT}",
         client_id=clients[0],
         client_secret=str(site["site"]["mcp_client"]["secret"]),
-        proxy_secret=str(site["site"]["proxy_secret"]),
+        proxy_secret=str(site["site"]["mcp_proxy_secret"]),
         login=login,
         roles=",".join(roles),
     )

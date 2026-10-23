@@ -5,7 +5,7 @@
 [app]
     schema          = "aid"
     postgres        = "${postgres}"
-    keys            = "${keys}"
+    connections     = "${connections}"
     krb             = "${krb}"
     aid             = "${aid}"
     session         = "${session}"
@@ -26,7 +26,11 @@
     encryption = "${site.database_encryption_key}"
     session    = "${site.auth_secret}"
     proxy      = "${site.proxy_secret}"
+    mcp_proxy  = "${site.mcp_proxy_secret}"
     mcp_client = "${site.mcp_client.secret}"
+
+[connections]
+    cipher = "${keys.encryption}"
 
 [ldap]
     server        = "${site.ldap_url}"
@@ -45,7 +49,7 @@
 
 [llm.main]
     kind      = "openai"
-    transport = "${http}"
+    transport = "${agent_http}"
     [llm.main.connection]
         host              = "${site.llm_host}"
         path              = "${site.llm_path}"
@@ -55,6 +59,11 @@
         retry_backoff_sec = 1.0
         retry_statuses    = { 429 = 5 }
         auth              = { method = "bearer", token = "${site.llm_token}" }
+
+[model_limits.main]
+    context_window    = 128000
+    max_output_tokens = 8192
+    reasoning_return  = "turn"
 
 [profiles.general]
     display_name            = "Общий"
@@ -66,6 +75,7 @@
     provider                = "${llm.main}"
     model                   = "${site.models.general}"
     system_prompt           = "Ты ассистент BOBA"
+    limits                  = "${model_limits.main}"
     [profiles.general.sampling]
         temperature      = 1.0
         top_p            = 0.95
@@ -83,6 +93,7 @@
     provider              = "${llm.main}"
     model                 = "${site.models.search}"
     system_prompt         = "Ты поисковый ассистент BOBA: ищешь ответы в Confluence и базе знаний и отвечаешь со ссылками на источники"
+    limits                  = "${model_limits.main}"
     [profiles.search.sampling]
         temperature      = 1.0
         top_p            = 0.95
@@ -90,7 +101,7 @@
         max_tokens       = 4096
         reasoning_effort = "low"
 
-[http]
+[agent_http]
     dump                      = { enable = false, path = "${env.data}/dump" }
     trust_env                 = true
     proxy                     = ""
@@ -129,10 +140,22 @@
         reconnect_timeout = 300
         num_workers       = 3
 
+[postgres_history]
+    host             = "${site.pg_host}"
+    hostaddr         = "${site.pg_addr}"
+    port             = "${site.pg_port}"
+    dbname           = "${site.aid_database}"
+    sslmode          = "${site.pg_sslmode}"
+    application_name = "boba-agent"
+    connect_timeout  = 10
+    auth             = "${site.history_auth.${site.history_auth_method}}"
+
 [agent]
     public_url   = "http://127.0.0.1:${env.port}${env.url_prefix}"
     seal_ttl_sec = 600
     question_timeout_sec = 3600
+    [agent.settings_table]
+        cipher = "${keys.encryption}"
     [agent.process]
         command             = "${env.agent_command}"
         args                = ["acp", "--setting-sources", ""]
@@ -141,56 +164,50 @@
         request_timeout_sec = 120
         stop_timeout_sec    = 10
     [agent.history]
-        kind   = "postgres"
-        schema = "boba"
-    [agent.model]
-        context_window    = 128000
-        max_output_tokens = 8192
-        reasoning_return  = "turn"
+        kind     = "postgres"
+        schema   = "boba"
+        postgres = "${postgres_history}"
+
+[service.boba_mcp]
+    scheme = "${env.mcp_scheme}"
+    host   = "${env.mcp_host}"
+    port   = "${env.mcp_port}"
+    path   = "${env.mcp_prefix}"
+
+[mcp_limits.boba]
+    connect_timeout_sec = 20.0
+    call_timeout_sec    = 86400.0
 
 [mcp.servers.boba_base]
-    connect_timeout_sec  = 20.0
-    call_timeout_sec     = 86400.0
+    limits = "${mcp_limits.boba}"
     [mcp.servers.boba_base.endpoint]
         transport = "streamable-http"
-        scheme    = "${env.mcp_scheme}"
-        host      = "${env.mcp_host}"
-        port      = "${env.mcp_port}"
-        path      = "${env.mcp_prefix}/mcp/base"
+        service   = "${service.boba_mcp}"
+        path      = "/mcp/base"
         auth      = "${mcp_auth.boba}"
 
 [mcp.servers.boba_general]
-    connect_timeout_sec  = 20.0
-    call_timeout_sec     = 86400.0
+    limits = "${mcp_limits.boba}"
     [mcp.servers.boba_general.endpoint]
         transport = "streamable-http"
-        scheme    = "${env.mcp_scheme}"
-        host      = "${env.mcp_host}"
-        port      = "${env.mcp_port}"
-        path      = "${env.mcp_prefix}/mcp/general"
+        service   = "${service.boba_mcp}"
+        path      = "/mcp/general"
         auth      = "${mcp_auth.boba}"
 
 [mcp.servers.boba_search]
-    connect_timeout_sec  = 20.0
-    call_timeout_sec     = 86400.0
+    limits = "${mcp_limits.boba}"
     [mcp.servers.boba_search.endpoint]
         transport = "streamable-http"
-        scheme    = "${env.mcp_scheme}"
-        host      = "${env.mcp_host}"
-        port      = "${env.mcp_port}"
-        path      = "${env.mcp_prefix}/mcp/search"
+        service   = "${service.boba_mcp}"
+        path      = "/mcp/search"
         auth      = "${mcp_auth.boba}"
 
 [mcp_auth.boba]
     auth          = "proxy"
     client_id     = "boba-chat"
     client_secret = "${keys.mcp_client}"
-    secret        = "${keys.proxy}"
-    [mcp_auth.boba.issuer]
-        scheme = "${env.mcp_scheme}"
-        host   = "${env.mcp_host}"
-        port   = "${env.mcp_port}"
-        path   = "${env.mcp_issuer_path}"
+    secret        = "${keys.mcp_proxy}"
+    issuer        = "${service.boba_mcp}"
 
 [auth.kerberos]
     type                = "kerberos"
