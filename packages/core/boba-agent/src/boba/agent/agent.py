@@ -48,6 +48,7 @@ from boba.agent.history import (
 )
 from boba.agent.ids import Clock, IdMint, SystemClock
 from boba.agent.loader import HistoryLoader, LoadReport
+from boba.agent.mcp import ToolHints
 from boba.agent.permissions import (
     AutoClassifier,
     ModeCeiling,
@@ -72,13 +73,13 @@ from boba.agent.tools import (
     OwnTool,
     ToolRunner,
     ToolsError,
+    ToolServer,
     ToolTexts,
 )
 from boba.agent.turn import ContextUsage, TurnLoop
 from boba.agent.writer import HistoryWriter, RecordKeeper, RequestRecorder
 from boba.cancellation import RunCancellation, StopReason
 from boba.llm.chat import ChatModel
-from boba.toolkit.dag import ToolHints, ToolServer
 
 logger = logging.getLogger(__name__)
 

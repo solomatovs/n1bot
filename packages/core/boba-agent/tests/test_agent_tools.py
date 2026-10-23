@@ -248,7 +248,7 @@ class TestCalls:
         assert len({u.id for u in uses}) == 4
         sources = [r.source_tool_assistant_uuid for r in result_records(chain)]
         assert sources == [r.uuid for r in chain if isinstance(r, AssistantRecord)][1:5]
-        assert [c.tool for c in tools.calls] == [
+        assert [c.name for c in tools.calls] == [
             "mcp__stand__sleep",
             "mcp__stand__lookup",
             "mcp__stand__empty",
@@ -397,7 +397,11 @@ class TestPermissions:
 
         record = result_records(session.records())[0]
         assert record.tool_denial_kind is ToolDenialKind.USER_REJECTED
-        assert record.tool_use_result == "User rejected tool use"
+        assert record.tool_use_result == {
+            "content": [{"type": "text", "text": "User rejected tool use"}],
+            "isError": True,
+            "resultType": "complete",
+        }
         text = record.message.tool_results()[0].text()
         assert text.startswith("The user doesn't want to proceed with this tool use.")
         assert text.endswith("the user said: not now")
@@ -428,7 +432,7 @@ class TestPermissions:
         await served.close()
 
         assert len(sink.questions()) == 1
-        assert [c.tool for c in tools.calls] == ["mcp__stand__drop", "mcp__stand__drop"]
+        assert [c.name for c in tools.calls] == ["mcp__stand__drop", "mcp__stand__drop"]
         rules = [r for r in session.service() if isinstance(r, PermissionRuleRecord)]
         assert len(rules) == 1
         assert rules[0].rule == rule
@@ -441,7 +445,7 @@ class TestPermissions:
         await resumed.agent.settled()
         await resumed.close()
 
-        assert [c.tool for c in tools.calls] == [
+        assert [c.name for c in tools.calls] == [
             "mcp__stand__drop",
             "mcp__stand__drop",
             "mcp__stand__drop",
@@ -462,7 +466,7 @@ class TestPermissions:
         await served.close()
 
         assert sink.questions() == []
-        assert [c.tool for c in tools.calls] == ["mcp__stand__note"]
+        assert [c.name for c in tools.calls] == ["mcp__stand__note"]
 
         again = Collected()
         resumed = Served(
@@ -484,7 +488,7 @@ class TestPermissions:
         await resumed.agent.settled()
         await resumed.close()
 
-        assert [c.tool for c in tools.calls] == ["mcp__stand__note", "mcp__stand__note"]
+        assert [c.name for c in tools.calls] == ["mcp__stand__note", "mcp__stand__note"]
 
     async def test_bypass_is_lowered_on_resume_without_the_right(
         self, agents: StandAgents
@@ -554,7 +558,7 @@ class TestPermissions:
         await served.close()
 
         assert sink.questions() == []
-        assert [c.tool for c in tools.calls] == [
+        assert [c.name for c in tools.calls] == [
             "mcp__stand__note",
             "mcp__stand__lookup",
         ]
@@ -586,7 +590,7 @@ class TestPermissions:
         assert text.startswith(
             "The permission classifier could not decide on the call of mcp__stand__note"
         )
-        assert [c.tool for c in tools.calls] == [
+        assert [c.name for c in tools.calls] == [
             "mcp__stand__note",
             "mcp__stand__lookup",
         ]
@@ -648,7 +652,8 @@ class TestAskUserQuestion:
             "with these answers in mind."
         )
         assert record.message.tool_results()[0].is_error is None
-        assert record.tool_use_result == {
+        assert record.tool_use_result["isError"] is False
+        assert record.tool_use_result["structuredContent"] == {
             "questions": self.QUESTION["questions"],
             "answers": {"Which one?": "A"},
             "picks": {"Which one?": {"labels": ["A"]}},
@@ -688,7 +693,7 @@ class TestAskUserQuestion:
             "carefully — they may request clarification, changes, or that you not "
             "proceed — and follow what they actually say."
         )
-        assert record.tool_use_result["picks"] == {
+        assert record.tool_use_result["structuredContent"]["picks"] == {
             "Which ones?": {"labels": ["A"], "other": "only on Monday"}
         }
 
@@ -725,13 +730,19 @@ class TestAskUserQuestion:
             .startswith("The user doesn't want to proceed")
         )
         assert first.tool_use_result == {
-            "questions": self.QUESTION["questions"],
-            "outcome": "decline",
+            "content": [{"type": "text", "text": "User rejected tool use"}],
+            "structuredContent": {
+                "questions": self.QUESTION["questions"],
+                "outcome": "decline",
+            },
+            "isError": True,
+            "resultType": "complete",
         }
         assert second.message.tool_results()[0].text() == (
             "The user did not answer the questions."
         )
-        assert second.tool_use_result == {
+        assert second.tool_use_result["isError"] is False
+        assert second.tool_use_result["structuredContent"] == {
             "questions": self.MULTI["questions"],
             "outcome": "cancel",
         }

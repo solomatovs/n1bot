@@ -89,9 +89,6 @@ __all__ = [
     "ToolServer",
     "ToolServers",
     "ToolServersError",
-    "ToolUseResult",
-    "ToolUseResultKey",
-    "ToolUseResults",
     "WorkflowField",
     "WorkflowNodeResult",
     "WorkflowResult",
@@ -558,58 +555,6 @@ class NodeOutcome(BaseModel):
             return False
 
         return self.artifact.ok
-
-    def use_result(self) -> ToolUseResult:
-        """Итог в форме записи истории: ответ сервера MCP как пришёл, а без
-        него — результат семейства."""
-        artifact: Any = self.artifact.model_dump(mode="json", exclude_none=True)
-        if self.reply is not None:
-            artifact = self.reply
-
-        return ToolUseResult(artifact=artifact)
-
-
-class ToolUseResultKey(StrEnum):
-    """Ключи записи `toolUseResult` итога вызова в истории агента."""
-
-    ARTIFACT = "artifact"
-    JOURNAL = "journal"
-    MEDIA = "media"
-
-
-class ToolUseResult(BaseModel):
-    """Итог вызова, каким его хранит история агента и несёт `rawOutput`
-    уведомления `tool_call_update`: ответ сервера MCP либо результат
-    семейства словарём (artifact). Адрес журнала (journal) и типы
-    содержимого аргументов (media) есть только в записях скрипта миграции
-    истории. Пишет агент по NodeOutcome.use_result; читает лента чата
-    (ToolUseResults)."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    artifact: Any = None
-    journal: JournalAddress | None = None
-    media: Mapping[str, Mapping[str, str]] | None = None
-
-
-class ToolUseResults:
-    """Разбор `rawOutput` в ToolUseResult: запись с ключами ToolUseResultKey
-    проверяется моделью, любое другое значение (текст отказа, результат
-    стороннего инструмента) становится артефактом как есть.
-
-    Ошибки:
-    ValidationError — запись с ключами итога не проходит модель.
-    """
-
-    def of(self, raw: Any) -> ToolUseResult:
-        if not isinstance(raw, Mapping):
-            return ToolUseResult(artifact=raw)
-
-        known = {key.value for key in ToolUseResultKey}
-        if not set(raw) <= known:
-            return ToolUseResult(artifact=raw)
-
-        return ToolUseResult.model_validate(raw)
 
 
 class NodeOutcomes:

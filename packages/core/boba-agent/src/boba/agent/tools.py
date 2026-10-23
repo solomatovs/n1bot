@@ -1,18 +1,19 @@
 """Инструменты агента и исполнение вызовов одного ответа модели.
 
-Порт сервера инструментов — `ToolServer` из boba.toolkit; собственные
-инструменты агента (вопрос пользователю) живут рядом с инструментами
-сервера и зовутся по имени (план, раздел 5.12). ToolRunner ведёт пачку
-вызовов по разделу 5.13, шаг 8: каждый вызов проходит разрешения (раздел
-5.6), вопросы наружу идут по очереди; разрешённые вызовы уходят серверу
-одним `submit`; результаты собираются в
-порядке вызовов; отмена посреди пачки даёт результаты-отказы по таблице
-раздела 5.14. Результат длиннее предела обрезается, пустой заменяется
-заглушкой.
+Порт сервера инструментов — `ToolServer`: карточки для модели и вызовы
+`tools/call` в форме MCP; реализует его вход процесса над серверами MCP
+сессии. Собственные инструменты агента (вопрос пользователю) живут рядом
+с инструментами сервера и зовутся по имени (план, раздел 5.12) и отвечают
+тем же результатом tools/call. ToolRunner ведёт пачку вызовов по разделу
+5.13, шаг 8: каждый вызов проходит разрешения (раздел 5.6), вопросы
+наружу идут по очереди; разрешённые вызовы уходят серверу одним
+`submit`; результаты собираются в порядке вызовов; отмена посреди пачки
+даёт результаты-отказы по таблице раздела 5.14. Результат длиннее предела
+обрезается, пустой заменяется заглушкой.
 
 Ошибки:
-ToolsError — имя собственного инструмента совпало с именем инструмента
-    сервера: с таким набором агент не стартует.
+ToolsError — имя инструмента предложено дважды: собственным инструментом и
+    сервером либо двумя серверами; с таким набором агент не стартует.
 """
 
 from __future__ import annotations
@@ -21,11 +22,12 @@ import asyncio
 import logging
 from abc import abstractmethod
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, ClassVar, Protocol, Self
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic_core import ErrorDetails
 
 from boba.agent.attachments import ConnectedServer, SnapshotTool
 from boba.agent.control import (
@@ -42,6 +44,7 @@ from boba.agent.events import (
     ToolStartedEvent,
 )
 from boba.agent.ids import Clock
+from boba.agent.mcp import ToolCard, ToolHints, ToolReplies, ToolReply
 from boba.agent.permissions import (
     Allowed,
     Asked,
@@ -65,8 +68,6 @@ from boba.agent.tags import AgentTag
 from boba.agent.template import AgentTemplate, AgentTemplateFile
 from boba.agent.writer import RecordKeeper
 from boba.cancellation import RunCancellation, StopReason, ToolStopped
-from boba.toolkit.dag import DagNode, NodeOutcome, ToolCard, ToolHints, ToolServer
-from boba.toolkit.failure import ValidationText
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +87,9 @@ __all__ = [
     "OwnTool",
     "PlannedCall",
     "Questioner",
+    "SchemaErrors",
     "ToolRunner",
+    "ToolServer",
     "ToolTexts",
     "ToolsError",
 ]
@@ -94,6 +97,77 @@ __all__ = [
 
 class ToolsError(Exception):
     """Набор инструментов противоречив: имена совпали."""
+
+
+class SchemaErrors:
+    """Текст ошибки валидации без разобранных данных: в них ездят секреты.
+
+    str(ValidationError) печатает input_value целиком, а он уходит и в
+    чат, и в журнал. Наружу идут только адрес поля, формулировка и код
+    ошибки; хвост длинного списка сворачивается.
+    """
+
+    SEPARATOR: ClassVar[str] = "; "
+    MAX_ERRORS: ClassVar[int] = 5
+    ROOT: ClassVar[str] = "<root>"
+    PATH_SEPARATOR: ClassVar[str] = "."
+
+    def text(self, error: ValidationError) -> str:
+        reports = error.errors(
+            include_url=False, include_input=False, include_context=False
+        )
+
+        lines: list[str] = []
+        for report in reports[: self.MAX_ERRORS]:
+            lines.append(self._one(report))
+
+        hidden = len(reports) - len(lines)
+        if hidden > 0:
+            lines.append(f"and {hidden} more")
+
+        return self.SEPARATOR.join(lines)
+
+    def _one(self, report: ErrorDetails) -> str:
+        location = self._location(report["loc"])
+
+        return f"{location}: {report['msg']} [{report['type']}]"
+
+    def _location(self, loc: Sequence[int | str]) -> str:
+        if not loc:
+            return self.ROOT
+
+        parts: list[str] = []
+        for item in loc:
+            parts.append(str(item))
+
+        return self.PATH_SEPARATOR.join(parts)
+
+
+class ToolServer(Protocol):
+    """Порт сервера инструментов для агента.
+
+    Агент знает исполнение только через него: берёт карточки инструментов,
+    которые сервер отдаёт модели, и шлёт вызовы. Вызов — блок `tool_use`
+    ответа модели с аргументами, прошедшими разрешения; итог — ответ
+    tools/call как пришёл (ToolReply). Реализует вход процесса агента над
+    серверами MCP сессии и стенд тестов.
+    """
+
+    @abstractmethod
+    def tools(self) -> Sequence[ToolCard]:
+        """Карточки инструментов, которые сервер отдаёт модели."""
+
+    @abstractmethod
+    async def submit(
+        self, calls: Sequence[ToolUseBlock]
+    ) -> Sequence[asyncio.Future[ToolReply]]:
+        """Принять вызовы одного ответа модели; итог каждого — своё ожидание.
+
+        Ожидания идут в порядке вызовов и кончаются независимо: быстрый
+        вызов отвечает, не дожидаясь медленного соседа. Отмена ожидания
+        останавливает его вызов. Сбой вызова — ответ с isError, а не
+        исключение; наверх идёт только отмена.
+        """
 
 
 @dataclass(frozen=True)
@@ -110,14 +184,17 @@ class PlannedCall:
 
 @dataclass(frozen=True)
 class CallResult:
-    """Результат вызова для записи `user`: текст, признак ошибки, структурный
-    итог для `toolUseResult` и причина отказа, если это отказ."""
+    """Результат вызова для записи `user`: текст модели, ответ tools/call
+    (его JSON — `toolUseResult`) и причина отказа, если это отказ."""
 
     call: PlannedCall
     text: str
-    is_error: bool
-    artifact: Any
+    reply: ToolReply
     denial: ToolDenialKind | None = None
+
+    @property
+    def is_error(self) -> bool:
+        return self.reply.result.is_error
 
 
 @dataclass(frozen=True)
@@ -426,6 +503,7 @@ class AskUserQuestionTool(OwnTool):
     def __init__(self, templates: AgentTemplate, texts: ToolTexts) -> None:
         self._templates = templates
         self._texts = texts
+        self._errors = SchemaErrors()
 
     @property
     def name(self) -> str:
@@ -450,7 +528,7 @@ class AskUserQuestionTool(OwnTool):
         except ValidationError as exc:
             text = (
                 f"The {self.NAME} call was not shown to the user: its arguments do "
-                f"not match the tool schema: {ValidationText.of(exc)}"
+                f"not match the tool schema: {self._errors.text(exc)}"
             )
             return self._texts.failed(call, text)
 
@@ -460,11 +538,10 @@ class AskUserQuestionTool(OwnTool):
         )
         answer = await questioner.ask(request)
         if isinstance(answer, DenyAnswer):
-            rejected = self._texts.rejected(call, answer.message)
             output = AskUserQuestionOutput(
                 questions=asked.questions, outcome=AskOutcome.DECLINE
             )
-            return replace(rejected, artifact=self._dumped(output))
+            return self._texts.rejected(call, answer.message, self._dumped(output))
 
         answers = self._answers(answer, asked)
         if not answers:
@@ -472,9 +549,7 @@ class AskUserQuestionTool(OwnTool):
             output = AskUserQuestionOutput(
                 questions=asked.questions, outcome=AskOutcome.CANCEL
             )
-            return CallResult(
-                call=call, text=text, is_error=False, artifact=self._dumped(output)
-            )
+            return self._texts.answered(call, text, self._dumped(output))
 
         listed: list[str] = []
         picks: dict[str, AskPick] = {}
@@ -498,9 +573,7 @@ class AskUserQuestionTool(OwnTool):
             outcome=AskOutcome.ACCEPT,
         )
 
-        return CallResult(
-            call=call, text=text, is_error=False, artifact=self._dumped(output)
-        )
+        return self._texts.answered(call, text, self._dumped(output))
 
     def _answers(
         self, answer: AllowAnswer, asked: AskUserQuestionInput
@@ -631,18 +704,31 @@ class AgentTools:
                 )
                 raise ToolsError(msg)
 
+            if card.name in cards:
+                msg = (
+                    f"The tool server offers a tool named '{card.name}' twice. "
+                    "Rename or drop one of them: the agent cannot route calls "
+                    "between the two."
+                )
+                raise ToolsError(msg)
+
             cards[card.name] = card
 
         return cards
 
 
 class ToolTexts:
-    """Тексты результатов: обрезка, пустой результат, отказы."""
+    """Тексты и ответы результатов: обрезка, пустой результат, отказы.
+
+    Каждый результат несёт ответ tools/call: у вызова сервера — как пришёл,
+    у отказа и собственного инструмента — собранный здесь (ToolReplies).
+    """
 
     def __init__(self, templates: AgentTemplate, limit: int, agent_name: str) -> None:
         self._templates = templates
         self._limit = limit
         self._agent = agent_name
+        self._replies = ToolReplies()
 
     def bounded(self, text: str, tool: str) -> str:
         """Пустой результат — заглушка; длиннее предела — обрезка с пометкой."""
@@ -663,13 +749,19 @@ class ToolTexts:
             tool=call.name
         )
 
-        return CallResult(call=call, text=text, is_error=True, artifact=text)
+        return self.failed(call, text)
 
     def denied(self, call: PlannedCall, text: str) -> CallResult:
-        return CallResult(call=call, text=text, is_error=True, artifact=text)
+        return self.failed(call, text)
 
-    def rejected(self, call: PlannedCall, message: str) -> CallResult:
-        """Отказ пользователя: с его пояснением или без."""
+    def rejected(
+        self,
+        call: PlannedCall,
+        message: str,
+        structured: Mapping[str, Any] | None = None,
+    ) -> CallResult:
+        """Отказ пользователя: с его пояснением или без; structured — итог
+        собственного инструмента, который отказ сопровождает."""
         if message.strip():
             text = self._templates.read(AgentTemplateFile.USER_REJECTED_SAID).format(
                 message=message
@@ -677,11 +769,12 @@ class ToolTexts:
         else:
             text = self._templates.read(AgentTemplateFile.USER_REJECTED)
 
+        shown = self._templates.read(AgentTemplateFile.USER_REJECTED_RESULT)
+
         return CallResult(
             call=call,
             text=text,
-            is_error=True,
-            artifact=self._templates.read(AgentTemplateFile.USER_REJECTED_RESULT),
+            reply=self._replies.made(shown, structured, True),
             denial=ToolDenialKind.USER_REJECTED,
         )
 
@@ -692,22 +785,27 @@ class ToolTexts:
         return CallResult(
             call=call,
             text=text,
-            is_error=True,
-            artifact=text,
+            reply=self._replies.refused(text),
             denial=ToolDenialKind.INTERRUPTED,
         )
 
     def failed(self, call: PlannedCall, error: str) -> CallResult:
-        return CallResult(call=call, text=error, is_error=True, artifact=error)
+        return CallResult(call=call, text=error, reply=self._replies.refused(error))
 
-    def of_outcome(self, call: PlannedCall, outcome: NodeOutcome) -> CallResult:
-        text = self.bounded(outcome.content, call.name)
-        # журнал не хранит null, поэтому и в памяти итог лежит без них
-        artifact = outcome.use_result().model_dump(mode="json", exclude_none=True)
-
+    def answered(
+        self, call: PlannedCall, text: str, structured: Mapping[str, Any] | None
+    ) -> CallResult:
+        """Удачный итог собственного инструмента: текст модели и его
+        structuredContent."""
         return CallResult(
-            call=call, text=text, is_error=not outcome.ok(), artifact=artifact
+            call=call, text=text, reply=self._replies.made(text, structured, False)
         )
+
+    def of_reply(self, call: PlannedCall, reply: ToolReply) -> CallResult:
+        """Итог вызова сервера: текст модели по блокам ответа."""
+        text = self._replies.text(reply, call.name, call.block.id)
+
+        return CallResult(call=call, text=self.bounded(text, call.name), reply=reply)
 
 
 @dataclass
@@ -875,16 +973,14 @@ class ToolRunner:
 
             return
 
-        nodes: list[DagNode] = []
+        approved: list[ToolUseBlock] = []
         for _, call, arguments in running.submitted:
-            nodes.append(
-                DagNode(key=call.block.id, tool=call.name, args=dict(arguments))
-            )
+            approved.append(call.block.model_copy(update={"input": dict(arguments)}))
             await self._started(call)
 
         running.at_server = True
         try:
-            futures = await server.submit(nodes)
+            futures = await server.submit(approved)
         except Exception as exc:
             logger.warning("tools: the tool server refused the batch: %s", exc)
             for index, call, _ in running.submitted:
@@ -897,8 +993,8 @@ class ToolRunner:
             settled = await asyncio.gather(*futures, return_exceptions=True)
 
         for (index, call, _), outcome in zip(running.submitted, settled, strict=True):
-            if isinstance(outcome, NodeOutcome):
-                running.results[index] = self._texts.of_outcome(call, outcome)
+            if isinstance(outcome, ToolReply):
+                running.results[index] = self._texts.of_reply(call, outcome)
                 continue
 
             if isinstance(outcome, asyncio.CancelledError):
@@ -913,7 +1009,7 @@ class ToolRunner:
         await self._keeper.emit(ToolStartedEvent(tool_use_id=call.block.id))
 
     def _canceller(
-        self, futures: Sequence[asyncio.Future[NodeOutcome]]
+        self, futures: Sequence[asyncio.Future[ToolReply]]
     ) -> Callable[[], None]:
         def cancel_all() -> None:
             for future in futures:

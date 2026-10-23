@@ -674,7 +674,7 @@ class TestStagesOnPostgres:
         await resumed.close()
 
         assert not again.questions()
-        assert [c.tool for c in tools.calls] == [
+        assert [c.name for c in tools.calls] == [
             "mcp__stand__drop",
             "mcp__stand__drop",
             "mcp__stand__note",
