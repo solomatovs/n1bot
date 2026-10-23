@@ -140,16 +140,29 @@ class PlannedCall:
 @dataclass(frozen=True)
 class CallResult:
     """Результат вызова для записи `user`: текст модели, ответ tools/call
-    (его JSON — `toolUseResult`) и причина отказа, если это отказ."""
+    (его JSON — `toolUseResult`) и причина отказа, если это отказ. Вызов,
+    оборванный концом хода, ответа не получил: reply None, для модели это
+    ошибка."""
 
     call: PlannedCall
     text: str
-    reply: ToolReply
+    reply: ToolReply | None
     denial: ToolDenialKind | None = None
 
     @property
     def is_error(self) -> bool:
+        if self.reply is None:
+            return True
+
         return self.reply.result.is_error
+
+    @property
+    def stored(self) -> Any:
+        """Значение `toolUseResult`: ответ как пришёл; None — ответа не было."""
+        if self.reply is None:
+            return None
+
+        return self.reply.raw
 
 
 @dataclass(frozen=True)
@@ -734,14 +747,20 @@ class ToolTexts:
         )
 
     def interrupted(self, call: PlannedCall) -> CallResult:
-        """Ход закончен ради элемента `now`: вызов не доработал."""
+        """Ход закончен ради элемента `now`: вызов не доработал, ответа нет."""
         text = self._templates.read(AgentTemplateFile.TURN_ABORTED)
 
         return CallResult(
-            call=call,
-            text=text,
-            reply=self._replies.refused(text),
-            denial=ToolDenialKind.INTERRUPTED,
+            call=call, text=text, reply=None, denial=ToolDenialKind.INTERRUPTED
+        )
+
+    def stopped(self, call: PlannedCall) -> CallResult:
+        """Ход остановлен раньше ответа на вызов: модели — отказ
+        пользователя, ответа нет."""
+        text = self._templates.read(AgentTemplateFile.USER_REJECTED)
+
+        return CallResult(
+            call=call, text=text, reply=None, denial=ToolDenialKind.USER_REJECTED
         )
 
     def failed(self, call: PlannedCall, error: str) -> CallResult:
@@ -977,7 +996,7 @@ class ToolRunner:
         if running.at_server and running.aborted is StopReason.SUPERSEDED:
             return self._texts.interrupted(call)
 
-        return self._texts.rejected(call, "")
+        return self._texts.stopped(call)
 
     def _reason(self, cancellation: RunCancellation) -> StopReason:
         reason = cancellation.reason

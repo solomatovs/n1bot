@@ -897,6 +897,7 @@ class TestQueueMidTurn:
         ]
         record = result_records(session.records())[0]
         assert record.tool_denial_kind is ToolDenialKind.INTERRUPTED
+        assert record.tool_use_result is None
         assert (
             record.message.tool_results()[0]
             .text()
@@ -1017,6 +1018,7 @@ class TestCancellation:
         assert served.agent.outcomes == [TurnOutcome.SHUTDOWN]
         record = result_records(session.records())[0]
         assert record.tool_denial_kind is ToolDenialKind.USER_REJECTED
+        assert record.tool_use_result is None
         last = session.chain()[-1]
         assert isinstance(last, UserRecord)
         assert last.interrupted_by_shutdown is True

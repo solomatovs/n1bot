@@ -1871,7 +1871,9 @@ class TestQueueAndCancel:
 
             assert idle.stop_reason == StopReason.CANCELLED
             start = client.of(schema.SessionToolCallUpdate)[0]
-            assert client.calls_of(start.tool_call_id)[-1].status == ToolStatus.FAILED
+            ended = client.calls_of(start.tool_call_id)[-1]
+            assert ended.status == ToolStatus.CANCELLED
+            assert ended.raw_output is None
             async with asyncio.timeout(READ_TIMEOUT_SEC):
                 while not registration.cancelled:
                     await asyncio.sleep(0.05)
@@ -1905,7 +1907,9 @@ class TestQueueAndCancel:
             idle = await client.idle(session.session_id)
 
             assert idle.stop_reason == StopReason.CANCELLED
-            assert client.calls_of(asked.tool_call_id)[-1].status == ToolStatus.FAILED
+            withdrawn = client.calls_of(asked.tool_call_id)[-1]
+            assert withdrawn.status == ToolStatus.CANCELLED
+            assert withdrawn.raw_output is None
 
             client.hold.set()
             await asyncio.sleep(0.2)

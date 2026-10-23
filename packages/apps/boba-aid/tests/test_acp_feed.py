@@ -691,6 +691,32 @@ class TestToolApps:
         assert "result" not in apps[-1]["props"]
 
     @pytest.mark.anyio
+    async def test_cancelled_call_without_a_reply_cancels_the_app(
+        self,
+        runtime_stand: StandRefs,
+        storage: LocalStorageClient,
+        recorded: FakeEmitter,
+    ) -> None:
+        """Агент кончает оборванный вызов статусом cancelled без rawOutput:
+        приложение получает отмену остановкой, а не итог."""
+        updates = await self._started(runtime_stand, storage, self.SANDBOX)
+        text = schema.TextContentBlock(text="The user doesn't want to proceed")
+        cancelled = schema.SessionToolCallUpdate(
+            tool_call_id=CALL,
+            status="cancelled",
+            content=[schema.ContentToolCallContent(content=text)],
+        )
+
+        await updates.apply(cancelled)
+
+        apps = self._apps(recorded)
+        step = recorded.last()[_id(CALL, StepRole.TOOL)]
+
+        assert apps[-1]["props"]["cancelled"] == AppCancel.STOPPED.value
+        assert "result" not in apps[-1]["props"]
+        assert not step.get(StepField.IS_ERROR)
+
+    @pytest.mark.anyio
     async def test_server_without_apps_draws_only_the_blocks(
         self,
         runtime_stand: StandRefs,

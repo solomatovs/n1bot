@@ -222,7 +222,6 @@ class HistoryLoader:
             session_id=session.id.value,
             version=self._version,
             message=UserMessage(content=[block]),
-            tool_use_result=text,
             source_tool_assistant_uuid=dangling.assistant_uuid,
             tool_denial_kind=ToolDenialKind.INTERRUPTED,
         )
