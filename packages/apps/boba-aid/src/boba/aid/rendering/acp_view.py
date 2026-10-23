@@ -846,8 +846,9 @@ class UpdateView:
         name: str,
     ) -> None:
         """Итог вызова инструмента name шагу step: ответ сервера MCP из
-        `rawOutput`; без него — текст уведомления, а у сорванного вызова —
-        отказ; rawOutput другого вида — как есть."""
+        `rawOutput`; без него отменённый вызов — остановка, сорванный —
+        отказ, прочий — текст уведомления; rawOutput другого вида — как
+        есть."""
         call_id = update.tool_call_id
         reply = self._reply(update)
         if reply is not None:
@@ -862,6 +863,10 @@ class UpdateView:
             if cards := self._rounds(reply, call_id):
                 await self._view.questions_answered(cards, call_id)
 
+            return
+
+        if status is ToolStatus.CANCELLED:
+            await self._view.tool_stopped(step)
             return
 
         if status is not ToolStatus.COMPLETED:
