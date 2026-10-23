@@ -48,6 +48,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from fastmcp.server.auth import (
     AccessToken,
     OAuthProvider,
+    RemoteAuthProvider,
     TokenVerifier,
 )
 from fastmcp.server.auth.auth import TokenHandler
@@ -103,6 +104,7 @@ __all__ = [
     "RegisteredClients",
     "ResourceTokens",
     "SealedValues",
+    "ServiceAuth",
     "ServiceTokens",
     "TokenClaim",
     "TokenClaims",
@@ -1090,3 +1092,60 @@ class LoginPages:
             status_code=400,
             headers=self.HEADERS,
         )
+
+
+class ServiceAuth:
+    """Вход службы целиком: сервер авторизации, страницы входа и проверяющие
+    токена её ресурсов.
+
+    Создаётся сборкой процесса службы (boba-mcp, служба агента) с её именем
+    на странице входа и ресурсами по именам; сборка приложения берёт
+    провайдер авторизации на каждый ресурс и маршруты входа для корня.
+    """
+
+    def __init__(
+        self,
+        public_url: str,
+        server: AuthServer,
+        tokens: ServiceTokens,
+        service: str,
+        resources: Mapping[str, str],
+    ) -> None:
+        self._public_url = public_url
+        self._server = server
+        self._pages = LoginPages(server, public_url, service)
+        self._tokens = tokens
+        self._resources = dict(resources)
+
+    def published(self) -> str:
+        """Префикс пути, под которым служба видна клиентам: путь публичного
+        адреса; без прокси — пустой."""
+        return urlsplit(self._public_url).path.rstrip("/")
+
+    def resource(self, name: str, scopes: Sequence[str]) -> RemoteAuthProvider:
+        """Провайдер авторизации ресурса name: принимает только токен этого
+        ресурса с областями scopes и объявляет сервер авторизации в
+        метаданных ресурса (RFC 9728)."""
+        return RemoteAuthProvider(
+            token_verifier=ResourceTokens(self._tokens, self._resources[name], scopes),
+            authorization_servers=[AnyHttpUrl(self._public_url)],
+            base_url=self._public_url,
+        )
+
+    def routes(self) -> list[Route]:
+        """Маршруты входа для корня приложения: сервер авторизации, его
+        метаданные по пути издателя и страницы входа."""
+        routes = self._server.get_routes()
+        taken: set[str] = set()
+        for route in routes:
+            taken.add(route.path)
+
+        for route in self._server.get_well_known_routes():
+            if route.path in taken:
+                continue
+
+            routes.append(route)
+
+        routes.extend(self._pages.routes())
+
+        return routes

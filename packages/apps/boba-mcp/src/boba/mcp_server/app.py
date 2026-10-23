@@ -29,7 +29,7 @@ from boba.connection_broker.sealed import ServerConnection
 from boba.connections.sealed import SealKeys
 from boba.identity.context import CallContexts
 from boba.identity.run import Runs
-from boba.mcp_server.auth import ServiceAuth, ServiceMark
+from boba.mcp_server.auth import ServiceMark
 from boba.mcp_server.server import (
     EndpointCatalog,
     McpEndpoint,
@@ -40,6 +40,7 @@ from boba.oauth.server import (
     AuthServer,
     RegisteredClients,
     SealedValues,
+    ServiceAuth,
     ServiceTokens,
     TrustedClient,
 )
@@ -249,7 +250,7 @@ class McpHost:
             list(resources.values()),
         )
 
-        return ServiceAuth(public_url, server, tokens, resources)
+        return ServiceAuth(public_url, server, tokens, ServiceMark.NAME, resources)
 
     def _clients(self, section: McpSection, sealed: SealedValues) -> RegisteredClients:
         """Клиенты OAuth: доверенные из [mcp.clients] и регистрирующиеся сами."""

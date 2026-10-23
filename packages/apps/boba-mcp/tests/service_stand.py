@@ -42,7 +42,7 @@ from boba.connections.sealed import OfferedSource, SealKeys
 from boba.identity.admission import RoleMappingConfig
 from boba.identity.context import CallContexts
 from boba.identity.run import Runs
-from boba.mcp_server.auth import ServiceAuth, ServiceMark
+from boba.mcp_server.auth import ServiceMark
 from boba.mcp_server.server import (
     ConnectionOfferRule,
     EndpointCatalog,
@@ -55,6 +55,7 @@ from boba.oauth.server import (
     AuthServer,
     RegisteredClients,
     SealedValues,
+    ServiceAuth,
     ServiceTokens,
     TrustedClient,
 )
@@ -283,6 +284,7 @@ class ServiceStand:
             public_url,
             server,
             tokens,
+            ServiceMark.NAME,
             {
                 PROFILE: f"{public_url}/mcp/{PROFILE}",
                 NARROW: f"{public_url}/mcp/{NARROW}",
