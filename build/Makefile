@@ -621,7 +621,7 @@ define HELP
                         его --testapps-image <образ>; TESTAPPS_PIP_INDEX=<url> — индекс pypi контура
 
 Образы — APP=$(subst $(space),|,$(APPS)) либо <цель>-<приложение>, без APP — оба:
-  build                 boba-<приложение>:$(BOBA_TAG) и :latest; в aid — агент bin/boba (Nuitka),
+  build                 boba-<приложение>:$(BOBA_TAG) и :latest; в aid — агент bin/boba.dist (Nuitka),
                         в mcp — образы корней плагинов и workspace из runtime/sandbox
   test                  build, затем проверка в образе без сети: пакеты, точки входа, у mcp —
                         образы плагинов и модели, у aid — ход агента; итог — RESULT: ALL OK
