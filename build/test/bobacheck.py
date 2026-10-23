@@ -63,7 +63,8 @@ class App(StrEnum):
 
     @property
     def runs_agent(self) -> bool:
-        """Приложение запускает агента boba: чат на вкладку, служба на сессию."""
+        """В образе приложения есть агент boba: чат запускает его на тред,
+        служба агента и есть он сам (`boba serve`)."""
         return self is not App.MCP
 
 

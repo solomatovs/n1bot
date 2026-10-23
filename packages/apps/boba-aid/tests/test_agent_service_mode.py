@@ -1,8 +1,8 @@
 """Агент чата в режиме службы: [agent.process] называет адрес службы агента
-(boba-agent-service на стенде в цикле теста) и вход proxy; вкладка входит в
+(`boba serve` на стенде в цикле теста) и вход proxy; вкладка входит в
 службу от имени своего пользователя, профиль агента выбирается настройкой
-сессии `model` по имени профиля чата, ход идёт процессом службы, закрытие
-вкладки гасит его. Удаление треда удаляет сессию через службу от имени
+сессии `model` по имени профиля чата, ход идёт сессией службы, закрытие
+вкладки закрывает её. Удаление треда удаляет сессию через службу от имени
 пользователя треда, сохранённого со слоем чата; профиль, которого служба не
 предлагает, — отказ с понятной причиной."""
 
@@ -36,7 +36,7 @@ from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.chat.profiles import ChatProfileConfig, SelectedProfile
 from boba.connections.secrets import SecretCipher
 from boba.db.postgres import AsyncPostgresPool, PostgresSchema
-from boba.db.postgres.connection import LibpqConnection, PostgresConfig
+from boba.db.postgres.connection import PostgresConfig
 from boba.identity.context import CallContexts
 from boba.mcp_client.client import HttpLocation, McpServers, McpServersConfig, ProxyAuth
 from boba.runtime.config import ProcessConfig
@@ -95,21 +95,15 @@ async def service(
     """Служба агента с историей в Postgres стенда (роль с паролем) и
     профилем агента, названным как профиль чата стенда."""
     history = AgentHistoryStand(stand)
-    dsn = LibpqConnection(history.postgres()).dsn().get_secret_value()
     layer: dict[str, Any] = {
-        "history": {
-            "kind": "postgres",
-            "dsn": dsn,
-            "schema": history.schema(),
-            "pool": {"minSize": 1, "maxSize": 4, "timeoutSec": 30},
-        },
         "permissions": {"defaultMode": "bypassPermissions", "allowBypass": True},
+        "sessions": {"maxOpen": 4},
     }
     profiles = ServiceProfiles(model.base_url()).add(
         SignInStand.PROFILE, ["dev"], MODEL
     )
     served = AgentServiceStand(
-        process_config.krb, tmp_path / "service", layer, profiles, 4, 600.0
+        process_config.krb, history.postgres(), history.schema(), layer, profiles
     )
     await served.start()
     try:
@@ -233,17 +227,16 @@ class TestServiceMode:
             assert updates.finished, updates.updates
             session_id = agent.session_id
             assert session_id is not None
-            assert service.host.quota().taken() == 1
         finally:
             await agent.close()
 
-        await service.processes_drop_to(0)
+        await service.sessions_drop_to(0)
 
         deleter = ThreadDeleter(mode.launcher, table, ThreadAgentsIndex())
         meta = {ThreadMetaField.AGENT_SESSION: session_id}
         await deleter.thread_deleted(identity.thread_id, meta)
 
-        await service.processes_drop_to(0)
+        await service.sessions_drop_to(0)
 
     async def test_profile_the_service_does_not_offer_is_refused(
         self, mode: ServiceModeStand, threads: ThreadsTable

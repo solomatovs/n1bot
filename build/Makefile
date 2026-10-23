@@ -68,11 +68,13 @@ PARTS_mcp        :=
 BUILD_ARGS_mcp    =
 WEB_mcp          :=
 
-# boba-agent-service — агент по ACP по сети: служба запускает бинарник boba-bin на
-# сессию; песочницы, моделей и фронта нет
-PACKAGES_agent    = boba-agent-service
-IMPORTS_agent    := boba.agent_service.app
-MODULE_agent     := boba.agent_service
+# агент как служба — `boba serve` пакета boba-cli: агент сам слушает ACP по сети,
+# сессии — потоки одного процесса; образ запускает бинарник boba-bin, установка без
+# Docker — модуль интерпретатором; песочницы, моделей и фронта нет
+PACKAGES_agent    = boba-cli
+IMPORTS_agent    := boba.cli.serve
+MODULE_agent     := boba.cli.app serve
+CONF_agent       := boba-cli
 STAGE_agent      := runtime-agent
 HEALTH_agent     := /health
 PORT_agent       := 8660
@@ -98,8 +100,9 @@ APP_PREFIX        = $(PREFIX_$(APP))
 APP_SANDBOX       = $(SANDBOX_$(APP))
 APP_MODELS        = $(MODELS_$(APP))
 APP_BUILD_ARGS    = $(BUILD_ARGS_$(APP))
-# общий конфиг приложения и его плагины: в пакете приложения, в git
-APP_CONF          = $(SRC_DIR)/packages/apps/boba-$(APP)/conf
+# общий конфиг приложения и его плагины: в пакете приложения, в git; CONF_<app> —
+# пакет, если он назван не по приложению
+APP_CONF          = $(SRC_DIR)/packages/apps/$(or $(CONF_$(APP)),boba-$(APP))/conf
 
 ifneq ($(APP),)
 ifeq ($(filter $(APP),$(APPS)),)

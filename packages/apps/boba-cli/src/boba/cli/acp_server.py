@@ -3505,6 +3505,9 @@ class ObserverSession:
 
 
 HeldSession: TypeAlias = AcpSession | ObserverSession
+AuthMethod: TypeAlias = (
+    schema.TerminalAuthMethod | schema.AgentAuthMethod | schema.OtherAuthMethod
+)
 
 
 @dataclass
@@ -3527,8 +3530,6 @@ class AcpAgent(AcpAgentProtocol):
     """
 
     # SDK считает метод протокола неподдержанным
-    login = AcpAgentProtocol.login
-    logout = AcpAgentProtocol.logout
     list_providers = AcpAgentProtocol.list_providers
     set_provider = AcpAgentProtocol.set_provider
     disable_provider = AcpAgentProtocol.disable_provider
@@ -3551,11 +3552,16 @@ class AcpAgent(AcpAgentProtocol):
         info: schema.Implementation,
         limits: McpClientJson,
         threads: SessionThreads,
+        auth_methods: Sequence[schema.AgentAuthMethod],
     ) -> None:
         self._assembly = assembly
         self._info = info
         self._limits = limits
         self._threads = threads
+        self._auth_methods = list(auth_methods)
+        """Способы входа, которые вход объявляет в initialize: у `boba serve`
+        — токен службы, проверенный транспортом до подключения; у stdio их
+        нет."""
         self._link: ClientLink | None = None
         self._elicits = False
         """Клиент объявил формы `elicitation.form` в initialize."""
@@ -3610,11 +3616,40 @@ class AcpAgent(AcpAgentProtocol):
             ),
         )
 
+        methods: list[AuthMethod] | None = None
+        if self._auth_methods:
+            methods = list(self._auth_methods)
+
         return schema.InitializeResponse(
             protocol_version=AcpVersion.V2,
             info=self._info,
             capabilities=schema.AgentCapabilities(session=session),
+            auth_methods=methods,
         )
+
+    async def login(self, method_id: str, **kwargs: Any) -> schema.LoginAuthResponse:
+        """Вход объявленным способом: подключение уже вошло токеном, который
+        проверил транспорт, — вход принимается сразу.
+
+        Ошибки:
+        RequestError — такого способа вход не объявлял (-32602).
+        """
+        for method in self._auth_methods:
+            if method.method_id == method_id:
+                return schema.LoginAuthResponse()
+
+        offered: list[str] = []
+        for method in self._auth_methods:
+            offered.append(method.method_id)
+
+        details = f"auth method {method_id!r} is not offered; offered: {offered}"
+        raise RequestError.invalid_params({ErrorDataKey.DETAILS.value: details})
+
+    async def logout(self, **kwargs: Any) -> schema.LogoutAuthResponse:
+        """Выход: сессии подключения закрываются."""
+        await self.close_all()
+
+        return schema.LogoutAuthResponse()
 
     async def new_session(
         self,

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "boba-cli"
 version = "0.0.26.dev4"
-description = "Boba cli: процесс агента — команда boba acp, разбор параметров запуска, Agent Client Protocol через стандартные потоки."
+description = "Boba cli: процесс агента — команды boba acp (Agent Client Protocol через стандартные потоки) и boba serve (агент как служба по сети с входом OAuth)."
 requires-python = ">=3.11,<4"
 dependencies = [
     "boba-core==0.0.26.dev4",
@@ -19,10 +19,20 @@ dependencies = [
     "boba-llm-http==0.0.26.dev4",
     "boba-llm-onnx==0.0.26.dev4",
     "boba-transport-acp==0.0.26.dev4",
+    "boba-access==0.0.26.dev4",
+    "boba-auth==0.0.26.dev4",
+    "boba-identity==0.0.26.dev4",
+    "boba-ldap==0.0.26.dev4",
+    "boba-oauth==0.0.26.dev4",
+    "boba-runtime==0.0.26.dev4",
+    "fastmcp-slim[server]>=4.0,<5",
     "httpx>=0.28,<1",
+    "mcp>=2.3,<3",
     "mcp-types>=2.3,<3",
     "psycopg>=3.3,<4",
     "pydantic>=2.12,<3",
+    "starlette>=1.0,<2",
+    "uvicorn[standard]>=0.35,<1",
 ]
 
 [project.scripts]
@@ -33,9 +43,10 @@ dev = [
     "boba-stand==0.0.26.dev4",
     "boba-config==0.0.26.dev4",
     "boba-krb==0.0.26.dev4",
-    "uvicorn>=0.35,<1",
+    "httpx2>=2.10,<3",
     "omegaconf>=2.3,<3",
     "pytest>=9.1,<10",
+    "websockets>=15,<16",
 ]
 
 [tool.setuptools.packages.find]
