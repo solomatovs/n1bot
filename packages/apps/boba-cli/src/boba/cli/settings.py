@@ -630,6 +630,12 @@ class Settings:
 
         return self._effective(layer)
 
+    def effective_of(self, layer: SettingsLayer) -> EffectiveSettings:
+        """Действующие настройки одного готового слоя поверх нижнего слоя по
+        умолчанию, без файлов и аргументов: так их собирает `boba serve` из
+        своего конфига."""
+        return self._effective(self._merge.merged(self._defaults(), layer))
+
     def layer_of(self, document: Mapping[str, Any], what: str) -> SettingsLayer:
         try:
             return SettingsLayer.model_validate(document)

@@ -19,8 +19,7 @@ services:
         ipv4_address: ${BOBA_ADDRESS}
     env_file: ./conf/boba.env
     command:
-      - -m
-      - boba.agent_service
+      - serve
       - --config
       - /app/boba/conf/config.toml
       - --site

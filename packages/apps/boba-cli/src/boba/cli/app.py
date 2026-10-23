@@ -121,6 +121,7 @@ class Command(StrEnum):
     """Команды `boba`."""
 
     ACP = "acp"
+    SERVE = "serve"
     SELF_CHECK = "self-check"
     SETTINGS_SCHEMA = "settings-schema"
 
@@ -137,6 +138,21 @@ class Invocation:
 
     command: Command
     arguments: Arguments
+
+
+class ServeFlag(StrEnum):
+    """Флаги `boba serve`: общий конфиг службы и специфика установки."""
+
+    CONFIG = "--config"
+    SITE = "--site"
+
+
+@dataclass(frozen=True)
+class ServeInvocation:
+    """Командная строка `boba serve`: файлы конфига службы."""
+
+    config: Path
+    site: Path
 
 
 class Installed:
@@ -161,9 +177,10 @@ class Installed:
 
 
 class ArgumentParser:
-    """Командная строка `boba acp …`, `boba self-check` или
-    `boba settings-schema` → Invocation (план, раздел 5.21). Секретов в
-    аргументах нет: ключи и строки подключения живут в файле `--settings`."""
+    """Командная строка `boba acp …`, `boba serve --config … --site …`,
+    `boba self-check` или `boba settings-schema` → Invocation (план, раздел
+    5.21). Секретов в аргументах нет: ключи и строки подключения живут в
+    файле `--settings` и в конфиге службы."""
 
     PROG: ClassVar[str] = "boba"
 
@@ -183,6 +200,20 @@ class ArgumentParser:
             ),
         )
         self._define(acp)
+        serve = commands.add_parser(
+            Command.SERVE.value,
+            help="serve the Agent Client Protocol over the network as a service",
+            description=(
+                "Serve the Agent Client Protocol over streamable HTTP and "
+                "WebSocket with OAuth sign-in; sessions of all connections run "
+                "in this process. The config is config.toml of the service and "
+                "site.toml of the installation."
+            ),
+        )
+        serve.add_argument(
+            ServeFlag.CONFIG, required=True, type=Path, help="config.toml"
+        )
+        serve.add_argument(ServeFlag.SITE, required=True, type=Path, help="site.toml")
         commands.add_parser(
             Command.SELF_CHECK.value,
             help="check that the package data of this build is inside, then exit",
@@ -202,9 +233,12 @@ class ArgumentParser:
             ),
         )
 
-    def parse(self, argv: Sequence[str]) -> Invocation:
+    def parse(self, argv: Sequence[str]) -> Invocation | ServeInvocation:
         space = self._parser.parse_args(list(argv))
         command = Command(space.command)
+        if command is Command.SERVE:
+            return ServeInvocation(config=space.config, site=space.site)
+
         if not command.serves:
             return Invocation(command=command, arguments=Arguments())
 
@@ -831,7 +865,7 @@ class AgentProcess:
 
         info = schema.Implementation(name=self.NAME, version=self._version)
         threads = SessionThreads(settings.sessions.max_open)
-        agent = AcpAgent(assembly, info, settings.mcp, threads)
+        agent = AcpAgent(assembly, info, settings.mcp, threads, ())
         reader, writer = await self._streams.open()
         side = AgentSide(agent.attach, info, BatchTransport(reader, writer))
         self._stop.on_stop(self._stopper(agent))
@@ -917,6 +951,13 @@ async def main(argv: Sequence[str] | None = None) -> None:
         argv = sys.argv[1:]
 
     invocation = ArgumentParser().parse(argv)
+    if isinstance(invocation, ServeInvocation):
+        # сеть и вход грузит только служба: `boba acp` по stdio стартует без них
+        from boba.cli.serve import ServeEntry  # noqa: PLC0415
+
+        await ServeEntry(invocation.config, invocation.site).run()
+        return
+
     if invocation.command is Command.SELF_CHECK:
         try:
             checked = PackageDataCheck().run()

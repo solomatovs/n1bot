@@ -1,14 +1,13 @@
-"""Служба агента целиком на стенде: вход proxy → токен ресурса ACP →
-initialize → session/new с выбором профиля агента настройкой `model` →
-ход на фейковой модели → ответ, по WebSocket и по streamable HTTP. Процесс
-агента — `python -m boba.cli.app acp` по stdio, история — в Postgres стенда
+"""Служба агента `boba serve` целиком на стенде: вход proxy → токен ресурса
+ACP → initialize → session/new с выбором профиля агента настройкой `model` →
+ход на фейковой модели → ответ, по WebSocket и по streamable HTTP. Сессии —
+потоки процесса службы, история — в Postgres стенда своим подключением
 (вход билетом Kerberos из кэша стенда). Проверяется: способ входа службы в
 initialize и auth/login; инструмент клиента по MCP-over-ACP (mcp/message
 туда и обратно); профили только по ролям; чужая сессия не видна и не
-открывается; session/close и закрытие подключения гасят процессы; предел
-процессов; session/cancel доходит до процесса сессии посреди хода; простой
-закрывает подключение; без токена — 401 и отказ
-рукопожатия, токен без профилей — 403."""
+открывается; session/close и закрытие подключения закрывают сессии; предел
+сессий; session/cancel доходит до сессии посреди хода; без токена — 401 и
+отказ рукопожатия, токен без профилей — 403."""
 
 from __future__ import annotations
 
@@ -31,16 +30,13 @@ from mcp_types.jsonrpc import ErrorData
 from mcp_types.methods import parse_client_request
 from omegaconf import DictConfig
 from psycopg import sql
-from psycopg.conninfo import make_conninfo
 from pydantic import AnyUrl
 from websockets.exceptions import InvalidStatus
 
-from boba.agent_service.app import ServiceMark
+from boba.cli.serve import ServeMark
 from boba.config import bind
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
-from boba.db.postgres.connection.auth import KeytabAuth
-from boba.krb import KerberosEnv, KerberosWorkspace
 from boba.runtime.config import ProcessConfig
 from boba.stand.agent import FakeServer
 from boba.stand.agent_service import AgentServiceStand, ServiceProfiles
@@ -78,7 +74,7 @@ class StandTools:
     отвечает на mcp/message сам моделями mcp_types."""
 
     SERVER: ClassVar[schema.AcpMcpServer] = schema.AcpMcpServer(
-        name="stand", server_id="stand:agent-service"
+        name="stand", server_id="stand:agent-serve"
     )
     WIRE: ClassVar[Mapping[str, Any]] = {
         "mode": "json",
@@ -214,49 +210,20 @@ class StandClient(Client):
 
 
 class HistoryStand:
-    """История агента в Postgres стенда: своя схема на тест, строка
-    подключения без пароля и окружение libkrb5 с кэшем, который стенд
-    получил по keytab при открытии пула."""
+    """История агента в Postgres стенда: своя схема на тест и подключение
+    стенда (вход билетом по keytab) с пулом службы."""
 
     def __init__(self, postgres: PostgresConfig, schema_name: str) -> None:
-        self._postgres = postgres
+        pool = postgres.pool.model_copy(update={"min_size": 1, "max_size": 4})
+        self.postgres = postgres.model_copy(update={"pool": pool})
         self.schema = schema_name
 
-    def keytab(self) -> KeytabAuth:
-        auth = self._postgres.auth
-        if not isinstance(auth, KeytabAuth):
-            got = type(auth).__name__
-            pytest.fail(
-                f"the stand Postgres must be entered with a keytab: expected "
-                f"KeytabAuth in [postgres].auth of the stand config, got {got}"
-            )
-
-        return auth
-
-    def layer(self) -> dict[str, Any]:
-        """Ключи history и env базового слоя службы."""
-        auth = self.keytab()
-        dsn = make_conninfo(
-            host=self._postgres.host,
-            hostaddr=self._postgres.hostaddr,
-            port=self._postgres.port,
-            dbname=self._postgres.dbname,
-            user=auth.principal.partition("@")[0],
-            sslmode=self._postgres.sslmode,
-        )
-
+    @staticmethod
+    def layer(max_sessions: int) -> dict[str, Any]:
+        """Слой настроек агента службы: права и предел сессий."""
         return {
-            "history": {
-                "kind": "postgres",
-                "dsn": dsn,
-                "schema": self.schema,
-                "pool": {"minSize": 1, "maxSize": 4, "timeoutSec": 30},
-            },
-            "env": {
-                KerberosEnv.CCACHE: KerberosWorkspace.ccache_for(auth),
-                KerberosEnv.CONFIG: KerberosWorkspace.krb5_config(),
-            },
             "permissions": {"defaultMode": "bypassPermissions", "allowBypass": True},
+            "sessions": {"maxOpen": max_sessions},
         }
 
 
@@ -328,7 +295,6 @@ class Stands:
         process: ProcessConfig,
         history: HistoryStand,
         model: FakeServer,
-        root: Path,
     ) -> None:
         self._process = process
         self._history = history
@@ -337,19 +303,15 @@ class Stands:
             .add(Profile.MAIN, ["dev", "analyst"], Profile.MAIN_MODEL)
             .add(Profile.SPARE, ["dev"], Profile.SPARE_MODEL)
         )
-        self._root = root
         self.started: list[AgentServiceStand] = []
 
-    async def start(
-        self, max_processes: int = 8, idle_sec: float = 600.0
-    ) -> AgentServiceStand:
+    async def start(self, max_sessions: int = 8) -> AgentServiceStand:
         stand = AgentServiceStand(
             self._process.krb,
-            self._root / f"agents-{len(self.started)}",
-            self._history.layer(),
+            self._history.postgres,
+            self._history.schema,
+            self._history.layer(max_sessions),
             self._profiles,
-            max_processes,
-            idle_sec,
         )
         await stand.start()
         self.started.append(stand)
@@ -364,7 +326,7 @@ async def stands(
     model: FakeServer,
     tmp_path: Path,
 ) -> AsyncIterator[Stands]:
-    made = Stands(process_config, history, model, tmp_path)
+    made = Stands(process_config, history, model)
     try:
         yield made
     finally:
@@ -424,8 +386,8 @@ class TestTurns:
             assert initialized.auth_methods is not None
             method = initialized.auth_methods[0]
             assert isinstance(method, schema.AgentAuthMethod)
-            assert method.method_id == ServiceMark.AUTH_METHOD
-            await connected.conn.login(method_id=ServiceMark.AUTH_METHOD)
+            assert method.method_id == ServeMark.AUTH_METHOD
+            await connected.conn.login(method_id=ServeMark.AUTH_METHOD)
 
             opened = await connected.new_session(tmp_path)
             current, offered = model_choice(opened)
@@ -447,7 +409,7 @@ class TestTurns:
         finally:
             await connected.close()
 
-        await stand.processes_drop_to(0)
+        await stand.sessions_drop_to(0)
 
     async def test_streamable_http_turn(
         self, stands: Stands, model: FakeServer, tmp_path: Path
@@ -468,11 +430,11 @@ class TestTurns:
             assert model.requests()[-1]["model"] == Profile.MAIN_MODEL
 
             await connected.conn.close_session(session_id=opened.session_id)
-            await stand.processes_drop_to(0)
+            await stand.sessions_drop_to(0)
         finally:
             await connected.close()
 
-    async def test_cancel_reaches_the_process_of_the_session(
+    async def test_cancel_reaches_the_session(
         self, stands: Stands, model: FakeServer, tmp_path: Path
     ) -> None:
         stand = await stands.start()
@@ -540,8 +502,8 @@ class TestOwners:
             await again.close()
 
 
-class TestProcesses:
-    async def test_closing_the_connection_stops_its_processes(
+class TestSessions:
+    async def test_closing_the_connection_closes_its_sessions(
         self, stands: Stands, tmp_path: Path
     ) -> None:
         stand = await stands.start()
@@ -550,16 +512,16 @@ class TestProcesses:
         first = await connected.new_session(tmp_path)
         second = await connected.new_session(tmp_path)
         assert first.session_id != second.session_id
-        assert stand.host.quota().taken() == 2
+        assert stand.host.sessions() == 2
 
         await connected.close()
 
-        await stand.processes_drop_to(0)
+        await stand.sessions_drop_to(0)
 
-    async def test_limit_of_processes_refuses_a_session(
+    async def test_limit_of_sessions_refuses_a_session(
         self, stands: Stands, tmp_path: Path
     ) -> None:
-        stand = await stands.start(max_processes=1)
+        stand = await stands.start(max_sessions=1)
         connected = await websocket(stand, await stand.token("alice", "dev"))
         try:
             await connected.initialize()
@@ -567,23 +529,34 @@ class TestProcesses:
             with pytest.raises(RequestError) as refused:
                 await connected.new_session(tmp_path)
 
-            assert "limit of 1 agent processes" in str(refused.value.data)
+            assert "its limit is 1" in str(refused.value.data)
         finally:
             await connected.close()
 
-    async def test_idle_connection_is_closed(
-        self, stands: Stands, tmp_path: Path
+    async def test_sessions_of_two_users_run_side_by_side(
+        self, stands: Stands, model: FakeServer, tmp_path: Path
     ) -> None:
-        stand = await stands.start(idle_sec=2.0)
-        connected = await websocket(stand, await stand.token("alice", "dev"))
+        stand = await stands.start()
+        alice = await websocket(stand, await stand.token("alice", "dev"))
+        carol = http(stand, await stand.token("carol", "analyst"))
         try:
-            await connected.initialize()
-            opened = await connected.new_session(tmp_path)
-            await connected.turn(opened.session_id, ScenarioName.ANSWER.value)
-            await stand.processes_drop_to(0)
-            assert not connected.conn.connected()
+            await alice.initialize()
+            await carol.initialize()
+            first = await alice.new_session(tmp_path)
+            second = await carol.new_session(tmp_path)
+            turns = await asyncio.gather(
+                alice.turn(first.session_id, ScenarioName.ANSWER.value),
+                carol.turn(second.session_id, ScenarioName.ANSWER.value),
+            )
+            for idle in turns:
+                assert idle.stop_reason == StopReason.END_TURN
+
+            assert stand.host.sessions() == 2
         finally:
-            await connected.close()
+            await alice.close()
+            await carol.close()
+
+        await stand.sessions_drop_to(0)
 
 
 class TestRefusals:
@@ -605,7 +578,7 @@ class TestRefusals:
         assert refused.value.response.status_code == httpx2.codes.FORBIDDEN
 
     async def test_token_without_profiles_is_forbidden(self, stands: Stands) -> None:
-        stand = await stands.start(max_processes=1)
+        stand = await stands.start(max_sessions=1)
         token = await stand.token("eve", "nobody")
         async with httpx2.AsyncClient() as client:
             reply = await client.post(
@@ -616,4 +589,4 @@ class TestRefusals:
 
         assert reply.status_code == httpx2.codes.FORBIDDEN
         assert "no agent profile" in reply.text
-        assert stand.host.quota().taken() == 0
+        assert stand.host.sessions() == 0
