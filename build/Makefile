@@ -1,4 +1,4 @@
-# Сборка boba: образы boba-aid и boba-mcp, образы корней плагинов, агент boba одним файлом,
+# Сборка boba: образы boba-aid и boba-mcp, образы корней плагинов, агент boba каталогом,
 # деревья запуска. Образы собирает классический сборщик docker (DOCKER_BUILDKIT=0).
 # Сеть: в интернет ходит только fetch. Остальные цели — только в реестры через прокси:
 # apt-зеркало из sources.list образов dmp/*, pypi из conf/pip.conf и conf/uv.toml, npm из
@@ -46,8 +46,8 @@ SANDBOX_aid      :=
 MODELS_aid       :=
 PARTS_aid        := app_root/public app_root/public/page.js app_root/public/vendor \
                     app_root/ui/index.html app_root/ui/index.js app_root/mcp-apps/sandbox.html \
-                    app_root/mcp-apps/fonts/inter/files bin/boba
-# агент чата — бинарник boba-bin в bin/boba; локальную модель чат агенту не отдаёт,
+                    app_root/mcp-apps/fonts/inter/files bin/boba.dist/boba
+# агент чата — каталог boba-bin bin/boba.dist; локальную модель чат агенту не отдаёт,
 # поэтому рантайм onnxruntime-genai в него не входит
 BUILD_ARGS_aid    = $(BIN_TOOL_ARGS) --build-arg BIN_ONNX=
 # фронт на хосте нужен только отладке чата: образ собирает его сам
@@ -81,7 +81,7 @@ PORT_agent       := 8660
 PREFIX_agent     :=
 SANDBOX_agent    :=
 MODELS_agent     :=
-PARTS_agent      := bin/boba
+PARTS_agent      := bin/boba.dist/boba
 BUILD_ARGS_agent  = $(BIN_TOOL_ARGS) --build-arg BIN_ONNX=
 WEB_agent        :=
 
@@ -175,13 +175,14 @@ PRUNE_KEEP      ?= 20GB
 empty           :=
 space           := $(empty) $(empty)
 
-# --- агент boba одним файлом -------------------------------------------------------
+# --- агент boba каталогом standalone -----------------------------------------------
 
-# 1 — агент boba-bin с рантаймом onnxruntime-genai (отдельная компиляция Nuitka, файл
-# bin/boba-onnx), а fetch качает модели onnx-genai. Пусто — без него, как в образе aid:
+# 1 — агент boba-bin с рантаймом onnxruntime-genai (отдельная компиляция Nuitka, каталог
+# bin/boba-onnx.dist), а fetch качает модели onnx-genai. Пусто — без него, как в образе aid:
 # профиль модели onnx агент отвергает на старте
 BIN_ONNX           ?=
-BIN_FILE            = $(RELEASE_DIR)/$(VERSION)/bin/boba$(if $(BIN_ONNX),-onnx)
+BIN_DIST            = $(RELEASE_DIR)/$(VERSION)/bin/boba$(if $(BIN_ONNX),-onnx).dist
+BIN_FILE            = $(BIN_DIST)/boba
 NUITKA_VERSION     ?= 4.3
 PATCHELF_VERSION   ?= 0.19.1.0
 ZSTANDARD_VERSION  ?= 0.25.0
@@ -624,8 +625,8 @@ define HELP
                         в mcp — образы корней плагинов и workspace из runtime/sandbox
   test                  build, затем проверка в образе без сети: пакеты, точки входа, у mcp —
                         образы плагинов и модели, у aid — ход агента; итог — RESULT: ALL OK
-  boba-bin              агент отдельным файлом -> release/$(VERSION)/bin/boba; BIN_ONNX=1 —
-                        bin/boba-onnx с рантаймом onnxruntime-genai (вторая компиляция Nuitka)
+  boba-bin              агент каталогом -> release/$(VERSION)/bin/boba.dist; BIN_ONNX=1 —
+                        bin/boba-onnx.dist с рантаймом onnxruntime-genai (вторая компиляция Nuitka)
 
 Деревья запуска (тоже по APP):
   dev                   compose/<приложение>: boba.env, data, .env, юнит песочницы (mcp), владельцы
@@ -954,24 +955,24 @@ offline-check: version-check
 	fi
 	exit $$verdict
 
-# --- агент boba одним файлом -----------------------------------------------------
+# --- агент boba каталогом standalone ---------------------------------------------
 
 # стадия boba-bin компилирует boba-cli Nuitka внутри образа base; образ aid берёт ту же
 # стадию с BIN_ONNX= — при пустом BIN_ONNX здесь компиляция одна на обе цели
 .PHONY: boba-bin
 boba-bin: version-check
 	@$(call check,$(SANDBOX_INPUTS),запусти: make fetch)
-	echo "== агент boba одним файлом: Nuitka $(NUITKA_VERSION), JOBS=$(JOBS), BIN_ONNX=$(BIN_ONNX) =="
+	echo "== агент boba каталогом: Nuitka $(NUITKA_VERSION), JOBS=$(JOBS), BIN_ONNX=$(BIN_ONNX) =="
 	tmp=
 	trap 'rm -rf "$$tmp"' EXIT
 	tmp=$$(mktemp -d)
 	$(call docker-image,boba-bin-out,$$tmp/boba.iid,$(BIN_ARGS))
-	mkdir -p "$(dir $(BIN_FILE))"
-	$(call image-copy,$$(cat "$$tmp/boba.iid"),/boba,$(BIN_FILE))
-	chmod 0755 "$(BIN_FILE)"
+	mkdir -p "$(dir $(BIN_DIST))"
+	rm -rf "$(BIN_DIST)"
+	$(call image-copy,$$(cat "$$tmp/boba.iid"),/boba.dist,$(BIN_DIST))
 	"$(BIN_FILE)" --help > /dev/null
 	"$(BIN_FILE)" self-check
-	echo ">>> агент: $(BIN_FILE) ($$(du -h "$(BIN_FILE)" | cut -f1))"
+	echo ">>> агент: $(BIN_FILE) ($$(du -sh "$(BIN_DIST)" | cut -f1))"
 
 # --- по приложению: образ, проверка, деревья ---------------------------------------
 
