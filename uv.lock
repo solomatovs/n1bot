@@ -438,6 +438,7 @@ version = "0.0.26.dev4"
 source = { editable = "packages/core/boba-agent" }
 dependencies = [
     { name = "boba-cancellation", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-core", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-llm", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "mcp-types", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "pydantic", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -460,6 +461,7 @@ dev = [
 requires-dist = [
     { name = "boba-cancellation", editable = "packages/core/boba-cancellation" },
     { name = "boba-config", marker = "extra == 'dev'", editable = "packages/infra/config/boba-config" },
+    { name = "boba-core", editable = "packages/core/boba-core" },
     { name = "boba-history-jsonl", marker = "extra == 'dev'", editable = "packages/infra/history/boba-history-jsonl" },
     { name = "boba-llm", editable = "packages/core/boba-llm" },
     { name = "boba-llm-http", marker = "extra == 'dev'", editable = "packages/infra/llm/boba-llm-http" },
@@ -482,7 +484,6 @@ dependencies = [
     { name = "agent-client-protocol", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "anyio", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-access", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-    { name = "boba-agent", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-auth", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-cancellation", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-canvas", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -534,6 +535,7 @@ dev = [
     { name = "boba-text", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "gssapi", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "httpx", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "jsonschema", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "krb5", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "pillow", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "playwright", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -547,7 +549,6 @@ requires-dist = [
     { name = "agent-client-protocol", specifier = "==1.0.0rc3" },
     { name = "anyio", specifier = ">=4,<5" },
     { name = "boba-access", editable = "packages/core/boba-access" },
-    { name = "boba-agent", editable = "packages/core/boba-agent" },
     { name = "boba-auth", editable = "packages/services/boba-auth" },
     { name = "boba-cancellation", editable = "packages/core/boba-cancellation" },
     { name = "boba-canvas", editable = "packages/core/boba-canvas" },
@@ -584,6 +585,7 @@ requires-dist = [
     { name = "fastmcp-slim", extras = ["server"], specifier = ">=4.0,<5" },
     { name = "gssapi", marker = "extra == 'dev'", specifier = ">=1.9,<2" },
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.28,<1" },
+    { name = "jsonschema", marker = "extra == 'dev'", specifier = ">=4,<5" },
     { name = "krb5", marker = "extra == 'dev'", specifier = ">=0.7,<1" },
     { name = "literalai", specifier = ">=0.1.201,<0.2" },
     { name = "mcp", specifier = ">=2.3,<3" },
@@ -806,6 +808,7 @@ dependencies = [
     { name = "agent-client-protocol", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-agent", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-cancellation", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-core", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-db-postgres", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-history-jsonl", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-history-postgres", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -835,6 +838,7 @@ requires-dist = [
     { name = "boba-agent", editable = "packages/core/boba-agent" },
     { name = "boba-cancellation", editable = "packages/core/boba-cancellation" },
     { name = "boba-config", marker = "extra == 'dev'", editable = "packages/infra/config/boba-config" },
+    { name = "boba-core", editable = "packages/core/boba-core" },
     { name = "boba-db-postgres", editable = "packages/infra/db/boba-db-postgres" },
     { name = "boba-history-jsonl", editable = "packages/infra/history/boba-history-jsonl" },
     { name = "boba-history-postgres", editable = "packages/infra/history/boba-history-postgres" },
@@ -1017,11 +1021,13 @@ dependencies = [
 
 [package.optional-dependencies]
 dev = [
+    { name = "boba-stand", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "pytest", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "boba-stand", marker = "extra == 'dev'", editable = "packages/testing/boba-stand" },
     { name = "pydantic", specifier = ">=2.12,<3" },
     { name = "pydantic-core", specifier = ">=2.41,<3" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.1,<10" },

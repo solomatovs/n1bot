@@ -542,7 +542,7 @@ argv, ни в лог, ни в трейсбек. Для этого в `RedisServe
 ```python
 from pydantic import SecretStr
 
-from boba.toolkit.types import SecretRevealing
+from boba.core.secrets import SecretRevealing
 
 
 class RedisServer(BaseModel):

@@ -15,13 +15,9 @@ from enum import StrEnum
 from typing import Annotated, Any, ClassVar, Literal
 
 from pydantic import (
-    BaseModel,
     ConfigDict,
     Field,
     SecretStr,
-    SerializationInfo,
-    SerializerFunctionWrapHandler,
-    field_serializer,
     model_validator,
 )
 from pydantic.alias_generators import to_camel
@@ -29,6 +25,7 @@ from pydantic.json_schema import models_json_schema
 
 from boba.agent.profile import CompactionSettings, ReasoningReturn, TurnLimits
 from boba.agent.records import PermissionMode
+from boba.core.secrets import SecretRevealing
 
 __all__ = [
     "CompactionJson",
@@ -78,39 +75,14 @@ class SecretKey(StrEnum):
     DSN = "dsn"
 
 
-class SettingsModel(BaseModel):
+class SettingsModel(SecretRevealing):
     """Основа моделей файла настроек: ключи файлов — camelCase (имена полей
     тоже принимаются), лишние ключи — ошибка; revealed() даёт дамп с
-    открытыми секретами для записи файла: обычный дамп пишет SecretStr
-    звёздочками, под ключом контекста REVEAL_CONTEXT поле отдаёт значение."""
+    открытыми секретами для записи файла (SecretRevealing ядра)."""
 
     model_config = ConfigDict(
         alias_generator=to_camel, populate_by_name=True, extra="forbid", frozen=True
     )
-
-    REVEAL_CONTEXT: ClassVar[str] = "reveal_secrets"
-
-    def revealed(self) -> dict[str, Any]:
-        return self.model_dump(mode="json", context={self.REVEAL_CONTEXT: True})
-
-    @field_serializer("*", mode="wrap")
-    def _revealing(
-        self,
-        value: Any,
-        handler: SerializerFunctionWrapHandler,
-        info: SerializationInfo,
-    ) -> Any:
-        if not isinstance(value, SecretStr):
-            return handler(value)
-
-        context = info.context
-        if not isinstance(context, Mapping):
-            return handler(value)
-
-        if not context.get(self.REVEAL_CONTEXT):
-            return handler(value)
-
-        return value.get_secret_value()
 
 
 class ProviderSettings(SettingsModel):
