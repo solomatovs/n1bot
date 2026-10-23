@@ -1,15 +1,20 @@
-"""Настройки агента: модели файла настроек, слой чата в Postgres, сборка
-файла из слоя чата и приватный каталог процесса.
+"""Настройки агента: модель файла настроек глазами чата, слой чата в
+Postgres, сборка файла из слоя чата и приватный каталог процесса.
+
+Файл настроек — договор запуска агента: чат пишет в него то, чему в ACP
+нет пути, — провайдера и модель профиля, системный промпт, хранилище
+истории, сроки серверов MCP, политику запуска `permissions.allowBypass` и
+окружение libkrb5. Схема файла принадлежит агенту и публикуется им командой
+`boba settings-schema`; модели этого модуля — собственная запись чата по тем
+же ключам (camelCase), её сверяет со схемой контрактный тест. Режим
+разрешений и профиль модели сессии чат выставляет по ACP (`configOptions`,
+`session/set_config_option`), серверы MCP объявляет в методах сессии.
 
 Слой чата собирается из профиля чата и конфига [agent] при каждом запуске
 агента треда и сохраняется в таблицу `agent_chat_settings` схемы чата: по нему
 удаление треда поднимает короткий процесс `session/delete`. Пользователь
 настроек агента не меняет. Секреты в таблице шифруются SecretCipher, в файле
 лежат открыто под правами 0600.
-
-Серверов MCP и области вызовов в файле нет: серверы процесс получает
-объявлениями type "acp" в методах сессии, вызовы исполняет ретранслятор
-чата (relay.py).
 
 Ошибки:
 AgentSettingsError — профиль чата нельзя превратить в профиль модели агента.
@@ -25,7 +30,7 @@ import tempfile
 from collections.abc import Mapping, Sequence
 from enum import IntEnum, StrEnum
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar, Literal
 from uuid import UUID
 
 from psycopg.types.json import Jsonb
@@ -33,28 +38,23 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    SecretStr,
+    SerializationInfo,
+    SerializerFunctionWrapHandler,
     ValidationError,
+    field_serializer,
 )
+from pydantic.alias_generators import to_camel
 
-from boba.agent.records import PermissionMode
-from boba.agent.settings import (
-    HistoryKind,
-    McpClientJson,
-    MemoryHistorySettings,
-    ModelSettings,
-    PermissionSettings,
-    PostgresHistorySettings,
-    ProviderKind,
-    ProviderSettings,
-    SettingsLayer,
-)
 from boba.aid.agent.config import (
     AgentConfig,
     AgentHistoryConfig,
+    AgentHistoryKind,
     AgentModelConfig,
     LibpqConnection,
     MemoryAgentHistory,
     PostgresAgentHistory,
+    ReasoningReturn,
 )
 from boba.chat.profiles import ChatProfileConfig
 from boba.connections.secrets import SecretCipher
@@ -64,17 +64,26 @@ from boba.krb import KerberosWorkspace
 from boba.krb.credentials import ClientCredentials, KerberosEnv
 from boba.mcp_client.client import McpServersConfig
 from boba.runtime.table import PgTable
+from boba.toolkit.types import SecretReveal
 from boba.transport.http import HttpTransportConfig
 from boba.transport.http.connection import BearerAuth, HttpConnection
 
 __all__ = [
+    "AgentProviderKind",
     "AgentSettingsError",
     "AgentSettingsTable",
     "AgentWorkdir",
     "AgentWorkdirs",
     "ChatAgentSettings",
     "HistoryEnvironment",
+    "McpFile",
+    "MemoryHistoryFile",
+    "ModelFile",
+    "PermissionsFile",
+    "PostgresHistoryFile",
     "ProfileModelSpecs",
+    "ProviderFile",
+    "SettingsFile",
     "SettingsFileBuilder",
     "WorkdirFile",
 ]
@@ -100,6 +109,118 @@ class PrivateMode(IntEnum):
     FILE = 0o600
 
 
+class AgentProviderKind(StrEnum):
+    """Виды провайдеров модели, которые чат отдаёт агенту: удалённые по http."""
+
+    OPENAI = "openai"
+    OLLAMA = "ollama"
+
+
+class FileModel(BaseModel):
+    """Основа моделей файла настроек агента: ключи файла — camelCase по
+    договору запуска, имена полей тоже принимаются (так читается слой чата
+    из таблицы), лишние ключи сохранённой строки отбрасываются. document()
+    даёт дамп ключами файла с открытыми секретами: обычный дамп пишет
+    SecretStr звёздочками, под ключом контекста SecretReveal поле отдаёт
+    значение."""
+
+    model_config = ConfigDict(
+        alias_generator=to_camel, populate_by_name=True, extra="ignore", frozen=True
+    )
+
+    def document(self) -> dict[str, Any]:
+        return self.model_dump(
+            mode="json", by_alias=True, context={SecretReveal.REVEAL_CONTEXT: True}
+        )
+
+    @field_serializer("*", mode="wrap")
+    def _revealing(
+        self,
+        value: Any,
+        handler: SerializerFunctionWrapHandler,
+        info: SerializationInfo,
+    ) -> Any:
+        if not isinstance(value, SecretStr):
+            return handler(value)
+
+        context = info.context
+        if not isinstance(context, Mapping):
+            return handler(value)
+
+        if not context.get(SecretReveal.REVEAL_CONTEXT):
+            return handler(value)
+
+        return value.get_secret_value()
+
+
+class ProviderFile(FileModel):
+    """Ключ `provider` профиля модели: вид, адрес, ключ и поведение запросов
+    — срок, проверка TLS, повторы и таблица транспорта процесса ключами
+    HttpTransportConfig."""
+
+    kind: AgentProviderKind
+    base_url: str = Field(min_length=1)
+    api_key: SecretStr | None = None
+    timeout_sec: float = Field(gt=0)
+    ssl_verify: bool
+    retry_attempts: int = Field(ge=1)
+    retry_backoff_sec: float = Field(ge=0)
+    retry_statuses: Mapping[int, int]
+    retry_after_max_sec: float = Field(ge=0)
+    transport: Mapping[str, Any]
+
+
+class ModelFile(FileModel):
+    """Ключ `models.<имя>`: профиль модели агента, собранный из профиля чата
+    и [agent.model]."""
+
+    provider: ProviderFile
+    model: str = Field(min_length=1)
+    sampling: Mapping[str, Any]
+    context_window: int = Field(gt=0)
+    max_output_tokens: int = Field(gt=0)
+    reasoning_return: ReasoningReturn
+
+
+class PermissionsFile(FileModel):
+    """Ключ `permissions`: потолок режимов разрешений процесса — право
+    включить bypassPermissions. Сам режим сессии идёт по ACP."""
+
+    allow_bypass: bool
+
+
+class PostgresHistoryFile(FileModel):
+    """Ключ `history` вида postgres: строка libpq и схема журнала."""
+
+    kind: Literal[AgentHistoryKind.POSTGRES]
+    dsn: SecretStr
+    db_schema: str = Field(alias="schema", min_length=1)
+
+
+class MemoryHistoryFile(FileModel):
+    """Ключ `history` вида memory: журнал только в памяти процесса."""
+
+    kind: Literal[AgentHistoryKind.MEMORY]
+
+
+class McpFile(FileModel):
+    """Ключ `mcp`: срок одного вызова tools/call серверов сессии."""
+
+    call_timeout_sec: float = Field(gt=0)
+
+
+class SettingsFile(FileModel):
+    """Файл настроек процесса агента целиком, как его пишет чат."""
+
+    model: str = Field(min_length=1)
+    models: Mapping[str, ModelFile]
+    permissions: PermissionsFile
+    history: PostgresHistoryFile | MemoryHistoryFile = Field(discriminator="kind")
+    mcp: McpFile | None
+    env: Mapping[str, str]
+    system_prompt_file: str = Field(min_length=1)
+
+
 class ChatAgentSettings(BaseModel):
     """Слой чата: профиль модели агента и системный промпт профиля одного
     треда. Из него собирается файл настроек процесса; лишние ключи
@@ -108,7 +229,7 @@ class ChatAgentSettings(BaseModel):
     model_config = ConfigDict(frozen=True, extra="ignore")
 
     model_name: str = Field(min_length=1)
-    model: ModelSettings
+    model: ModelFile
     system_prompt: str
 
 
@@ -118,7 +239,7 @@ class RemoteProviderView(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    kind: ProviderKind
+    kind: AgentProviderKind
     connection: HttpConnection
     transport: HttpTransportConfig
 
@@ -135,7 +256,7 @@ class ProfileModelSpecs:
 
     def chat_settings(self, name: str, profile: ChatProfileConfig) -> ChatAgentSettings:
         """Ошибки:
-        AgentSettingsError — провайдер профиля не удалённый или без адреса.
+        AgentSettingsError — провайдер профиля не удалённый по http или без адреса.
         """
         return ChatAgentSettings(
             model_name=name,
@@ -143,27 +264,23 @@ class ProfileModelSpecs:
             system_prompt=profile.system_prompt,
         )
 
-    def model(self, name: str, profile: ChatProfileConfig) -> ModelSettings:
+    def model(self, name: str, profile: ChatProfileConfig) -> ModelFile:
         """Ошибки:
         AgentSettingsError — провайдер профиля не удалённый или без адреса.
         """
+        remote: list[str] = []
+        for kind in AgentProviderKind:
+            remote.append(kind.value)
+
         try:
             view = RemoteProviderView.model_validate(profile.provider.model_dump())
         except ValidationError as exc:
             msg = (
                 f"chat profile {name!r}: provider kind {profile.provider.kind!r} "
                 "cannot be handed to the agent, expected a remote provider "
-                f"(openai or ollama) with an http connection: {exc}"
+                f"({remote}) with an http connection: {exc}"
             )
             raise AgentSettingsError(msg) from exc
-
-        if not view.kind.remote:
-            msg = (
-                f"chat profile {name!r}: provider kind {view.kind.value!r} runs in "
-                "the process of the agent, expected a remote provider (openai or "
-                "ollama) with an http connection"
-            )
-            raise AgentSettingsError(msg)
 
         base_url = str(view.connection.public_url())
         if not base_url:
@@ -175,7 +292,7 @@ class ProfileModelSpecs:
             api_key = view.connection.auth.token
 
         connection = view.connection
-        provider = ProviderSettings(
+        provider = ProviderFile(
             kind=view.kind,
             base_url=base_url,
             api_key=api_key,
@@ -188,7 +305,7 @@ class ProfileModelSpecs:
             transport=view.transport.model_dump(mode="json"),
         )
 
-        return ModelSettings(
+        return ModelFile(
             provider=provider,
             model=profile.model,
             sampling=dict(profile.sampling),
@@ -286,13 +403,13 @@ class AgentSettingsTable(PgTable):
 
 
 class SettingsFileBuilder:
-    """Слой файла настроек агента из слоя чата и конфига: история и режим
-    разрешений bypassPermissions добавляются к профилю модели чата, срок
-    вызова инструментов — наибольший `call_timeout_sec` серверов профиля
-    [mcp.servers.*], окружение
-    libkrb5 истории — ключом `env`. Строка подключения истории — подключение
-    процесса [postgres]. Файл — единственный канал настроек агента: argv
-    называет только его, окружение ребёнка — минимальный набор SDK."""
+    """Файл настроек агента из слоя чата и конфига: к профилю модели чата
+    добавляются политика запуска `allowBypass` (режим сессии чат выставляет
+    по ACP), история, срок вызова инструментов — наибольший
+    `call_timeout_sec` серверов профиля [mcp.servers.*] — и окружение
+    libkrb5 истории ключом `env`. Строка подключения истории — подключение
+    процесса [postgres]. Файл — единственный канал настроек запуска агента:
+    argv называет только его, окружение ребёнка — минимальный набор SDK."""
 
     def __init__(
         self, config: AgentConfig, postgres: PostgresConfig, servers: McpServersConfig
@@ -304,27 +421,22 @@ class SettingsFileBuilder:
     def build(
         self,
         chat: ChatAgentSettings,
-        mcp: McpClientJson | None,
+        mcp: McpFile | None,
         env: Mapping[str, str],
-    ) -> SettingsLayer:
-        """Слой файла процесса агента по слою чата; mcp None — процесс не
-        зовёт инструментов серверов (короткий процесс удаления сессии)."""
-        permissions = PermissionSettings(
-            default_mode=PermissionMode.BYPASS_PERMISSIONS, allow_bypass=True
-        )
-        model = chat.model.revealed()
-
-        return SettingsLayer(
+    ) -> SettingsFile:
+        """Файл процесса агента по слою чата; mcp None — процесс не зовёт
+        инструментов серверов (короткий процесс удаления сессии)."""
+        return SettingsFile(
             model=chat.model_name,
-            models={chat.model_name: model},
-            permissions=permissions,
+            models={chat.model_name: chat.model},
+            permissions=PermissionsFile(allow_bypass=True),
             history=self._history(),
             mcp=mcp,
             env=env,
             system_prompt_file=WorkdirFile.SYSTEM_PROMPT.value,
         )
 
-    def mcp(self, names: Sequence[str]) -> McpClientJson | None:
+    def mcp(self, names: Sequence[str]) -> McpFile | None:
         """Сроки серверов MCP агента: вызов не обрывается раньше, чем его
         оборвал бы ретранслятор чата у самого терпеливого сервера профиля;
         None — у профиля нет серверов [mcp.servers.*].
@@ -348,19 +460,19 @@ class SettingsFileBuilder:
         if not limits:
             return None
 
-        return McpClientJson(call_timeout_sec=max(limits))
+        return McpFile(call_timeout_sec=max(limits))
 
-    def _history(self) -> PostgresHistorySettings | MemoryHistorySettings:
+    def _history(self) -> PostgresHistoryFile | MemoryHistoryFile:
         history = self._config.history
         if isinstance(history, PostgresAgentHistory):
-            return PostgresHistorySettings(
-                kind=HistoryKind.POSTGRES,
+            return PostgresHistoryFile(
+                kind=AgentHistoryKind.POSTGRES,
                 dsn=self._libpq.dsn(),
                 schema=history.db_schema,
             )
 
         if isinstance(history, MemoryAgentHistory):
-            return MemoryHistorySettings(kind=HistoryKind.MEMORY)
+            return MemoryHistoryFile(kind=AgentHistoryKind.MEMORY)
 
         msg = f"[agent.history] of kind {history.kind!r} has no file form"
         raise AgentSettingsError(msg)
@@ -418,9 +530,10 @@ class AgentWorkdir:
     def stderr_path(self) -> Path:
         return self.path / WorkdirFile.STDERR.value
 
-    def write(self, layer: SettingsLayer, system_prompt: str) -> None:
-        """Файл настроек с открытыми секретами и промпт с правами 0600."""
-        text = json.dumps(layer.revealed(), ensure_ascii=False, indent=2)
+    def write(self, settings: SettingsFile, system_prompt: str) -> None:
+        """Файл настроек ключами договора с открытыми секретами и промпт с
+        правами 0600."""
+        text = json.dumps(settings.document(), ensure_ascii=False, indent=2)
         self._write_private(self.settings_path, text)
         self._write_private(self.prompt_path, system_prompt)
 

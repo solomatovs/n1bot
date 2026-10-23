@@ -28,7 +28,6 @@ from acp.experimental.v2 import schema
 from chainlit.session import WebsocketSession
 from pydantic import AliasPath, AnyUrl, BaseModel, ConfigDict, Field
 
-from boba.agent.settings import McpClientJson
 from boba.aid.agent.client import (
     AcpClientError,
     AgentClient,
@@ -48,6 +47,7 @@ from boba.aid.agent.settings import (
     AgentWorkdirs,
     ChatAgentSettings,
     HistoryEnvironment,
+    McpFile,
     ProfileModelSpecs,
     SettingsFileBuilder,
 )
@@ -440,7 +440,7 @@ class AgentLaunch:
     AgentLauncher.prepare до остановки прежнего процесса."""
 
     chat: ChatAgentSettings
-    mcp: McpClientJson | None
+    mcp: McpFile | None
 
 
 @dataclass(frozen=True)
@@ -559,7 +559,7 @@ class AgentLauncher:
         self,
         thread_id: str,
         chat: ChatAgentSettings,
-        mcp: McpClientJson | None,
+        mcp: McpFile | None,
         servers: Sequence[schema.AcpMcpServer],
         client: AgentClient,
     ) -> AgentProcess:
@@ -609,7 +609,8 @@ class ThreadAgent:
     Создаётся реестром ThreadAgents; живёт пока открыта вкладка. Сессия
     открывается `session/new` на первом вопросе или `session/resume` с
     воспроизведением при возврате к треду; правка вопроса ветвит сессию
-    `session/fork`. Ход кончается idle агента (AskedQuestions.ending) либо
+    `session/fork`; режим разрешений открытой сессии процесс выставляет по
+    ACP (AgentProcess). Ход кончается idle агента (AskedQuestions.ending) либо
     выходом процесса. Вышедший процесс заменяется новым перед следующим ходом:
     запуск, смена процесса и начало хода идут под одним замком вкладки.
 
