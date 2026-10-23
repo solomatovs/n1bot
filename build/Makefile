@@ -595,9 +595,10 @@ define HELP
                         проверку с целью, стадией и хостом. Итог — release/offline-check/report.txt
 
 Тестовые образы (не поставка):
-  testapps              boba-testapps:$(BOBA_TAG) и :latest — серверы MCP прежних редакций для
-                        тестов клиента: примеры MCP Apps и свой сервер на TypeScript SDK 1.x;
-                        TESTAPPS_TAGS=<образ> — свой тег, тесты берут его --testapps-image <образ>
+  testapps              boba-testapps:$(BOBA_TAG) и :latest — серверы MCP для тестов клиента:
+                        примеры MCP Apps, свой сервер на TypeScript SDK 1.x и серверы fastmcp[apps]
+                        с рендерером Prefab статикой; TESTAPPS_TAGS=<образ> — свой тег, тесты берут
+                        его --testapps-image <образ>; TESTAPPS_PIP_INDEX=<url> — индекс pypi контура
 
 Образы — APP=$(subst $(space),|,$(APPS)) либо <цель>-<приложение>, без APP — оба:
   build                 boba-<приложение>:$(BOBA_TAG) и :latest; в aid — агент bin/boba (Nuitka),
@@ -836,17 +837,20 @@ plugin-rootfs-all: version-check
 
 # --- тестовые образы -------------------------------------------------------------
 
-# серверы MCP прежних редакций для тестов клиента; контекст — их каталог, пакеты npm ci
-# берёт из реестра образа nodejs
+# серверы MCP для тестов клиента; контекст — их каталог, пакеты npm ci и dist рендерера
+# Prefab берёт из реестра образа nodejs, пакеты python — pip из pypi (TESTAPPS_PIP_INDEX —
+# индекс закрытого контура) в дерево python образа PYTHON_IMAGE
 TESTAPPS_DIR        := $(SRC_DIR)/tests/services/testapps
 TESTAPPS_NODE_IMAGE ?= dmp/nodejs:22
+TESTAPPS_PIP_INDEX  ?=
 TESTAPPS_TAGS       ?= boba-testapps:$(BOBA_TAG) boba-testapps:latest
 
 .PHONY: testapps
 testapps:
-	@echo "== тестовые серверы MCP: $(TESTAPPS_TAGS) от $(TESTAPPS_NODE_IMAGE) =="
+	@echo "== тестовые серверы MCP: $(TESTAPPS_TAGS) от $(TESTAPPS_NODE_IMAGE) и $(PYTHON_IMAGE) =="
 	$(DOCKER_BUILD) -f "$(BASE_DIR)/testapps.Dockerfile" $(NO_CACHE_OPT) $(PROXY_ARGS) $(CACHE_SCOPE_ARG) \
-	    --build-arg NODE_IMAGE=$(TESTAPPS_NODE_IMAGE) \
+	    --build-arg NODE_IMAGE=$(TESTAPPS_NODE_IMAGE) --build-arg PYTHON_IMAGE=$(PYTHON_IMAGE) \
+	    --build-arg PIP_INDEX_URL=$(TESTAPPS_PIP_INDEX) \
 	    $(addprefix --tag ,$(TESTAPPS_TAGS)) "$(TESTAPPS_DIR)"
 
 # --- проверка закрытого контура ---------------------------------------------------
