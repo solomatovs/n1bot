@@ -1133,10 +1133,10 @@ class FakeTransport(SignalTransport):
         self.sent: list[dict[str, Any]] = []
         self.dead = False
 
-    def alive(self, thread_id: str) -> bool:
+    def alive(self, scope_id: str) -> bool:
         return not self.dead
 
-    async def send(self, thread_id: str, signal: CanvasSignal) -> None:
+    async def send(self, scope_id: str, signal: CanvasSignal) -> None:
         self.sent.append(signal.payload())
 
     async def signaled(self, size: int) -> dict[str, Any]:

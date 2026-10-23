@@ -9,9 +9,9 @@ from boba.toolkit.template import FieldTemplate, TemplateError
 
 class TestFieldTemplate:
     def test_fields_in_order_without_repeats(self) -> None:
-        template = FieldTemplate.parse("/{user_id}/{thread_id}/{user_id}")
+        template = FieldTemplate.parse("/{user_id}/{scope_id}/{user_id}")
 
-        assert template.fields() == ("user_id", "thread_id")
+        assert template.fields() == ("user_id", "scope_id")
 
     def test_render_and_missing_value(self) -> None:
         template = FieldTemplate.parse("{username}@REALM")
@@ -61,9 +61,9 @@ class TestFieldTemplate:
             FieldTemplate.parse("plain").extract("plain", "a")
 
     def test_only_and_having(self) -> None:
-        template = FieldTemplate.parse("/{user_id}/{thread_id}")
+        template = FieldTemplate.parse("/{user_id}/{scope_id}")
 
-        assert template.only(("user_id", "thread_id")) is template
+        assert template.only(("user_id", "scope_id")) is template
         assert template.having("user_id") is template
 
         with pytest.raises(TemplateError):

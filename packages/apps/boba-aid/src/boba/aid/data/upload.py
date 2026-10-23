@@ -37,7 +37,7 @@ from boba.aid.canvas.remote import RemoteJournals
 from boba.aid.domain.fields import FileField
 from boba.aid.infra.session import ChainlitSession, session_source_ref
 from boba.canvas.canvas import CanvasRegistry
-from boba.canvas.keys import ObjectKey, ThreadDir
+from boba.canvas.keys import ObjectKey, ScopeDir
 from boba.canvas.storage import (
     StorageError,
     StorageFullError,
@@ -525,7 +525,7 @@ class CanvasServing:
         self,
         request: Request,
         thread_id: str,
-        dir: ThreadDir,  # noqa: A002
+        dir: ScopeDir,  # noqa: A002
         name: str,
         current_user: Annotated[PersistedUser, Depends(PersistedSignIn())],
         mime: Annotated[str, Query(min_length=1)],
@@ -534,7 +534,7 @@ class CanvasServing:
         try:
             key = ObjectKey(
                 user_id=str(current_user.id),
-                thread_id=thread_id,
+                scope_id=thread_id,
                 name=name,
                 dir=dir,
             )

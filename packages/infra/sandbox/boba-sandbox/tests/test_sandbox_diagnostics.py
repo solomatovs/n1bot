@@ -94,7 +94,7 @@ def _caller(
 ) -> ZygoteToolCaller:
     """Зигота теста: у теста свои лимиты — своя секция."""
     return zygote_stand.caller(
-        section, profile, path_vars=lambda: {"user_id": "7", "thread_id": "t1"}
+        section, profile, path_vars=lambda: {"user_id": "7", "scope_id": "t1"}
     )
 
 

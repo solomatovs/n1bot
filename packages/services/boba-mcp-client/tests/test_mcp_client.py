@@ -39,7 +39,7 @@ from pydantic import BaseModel, ConfigDict, SecretStr, ValidationError
 from standard_server import StandardServer
 
 from boba.auth.config import ProxyAuthConfig
-from boba.canvas.keys import ObjectKey, ThreadDir, WorkspaceMount
+from boba.canvas.keys import ObjectKey, ScopeDir, WorkspaceMount
 from boba.canvas.storage import StorageNotFoundError
 from boba.config import bind
 from boba.connections.sealed import ConnectionSeal, SealedConnection, SealFeature
@@ -964,7 +964,7 @@ class TestWorkspaceFiles:
             raise AssertionError("the server declares its files")
 
         payload = bytes(range(256)) * 2048
-        key = ObjectKey(user_id="-", thread_id=self.SCOPE, name="data.bin")
+        key = ObjectKey(user_id="-", scope_id=self.SCOPE, name="data.bin")
         stored = await files.upload(key, self._source(payload, 50000))
         stat = await files.stat(key)
         async with await files.open(key, ReadWindow(offset=100, length=1000)) as part:
@@ -992,7 +992,7 @@ class TestWorkspaceFiles:
         if files is None:
             raise AssertionError("the server declares its files")
 
-        key = ObjectKey(user_id="-", thread_id=self.SCOPE, name="ghost.bin")
+        key = ObjectKey(user_id="-", scope_id=self.SCOPE, name="ghost.bin")
         with pytest.raises(StorageNotFoundError, match="404"):
             await files.stat(key)
         with pytest.raises(StorageNotFoundError, match="404"):
@@ -1010,9 +1010,9 @@ class TestWorkspaceFiles:
             raise AssertionError("the server declares its files")
 
         scope = str(uuid4())
-        upload = ObjectKey(user_id="-", thread_id=scope, name="a.txt")
+        upload = ObjectKey(user_id="-", scope_id=scope, name="a.txt")
         diagram = ObjectKey(
-            user_id="-", thread_id=scope, name="d.mmd", dir=ThreadDir.MERMAID
+            user_id="-", scope_id=scope, name="d.mmd", dir=ScopeDir.MERMAID
         )
         await files.upload(upload, self._source(b"attached", 4))
         await files.upload(diagram, self._source(b"graph TD", 4))

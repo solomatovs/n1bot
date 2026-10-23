@@ -488,10 +488,11 @@ class CanvasRoomTransport(SignalTransport):
     треда, откуда рендерер шлёт window_message вкладкам.
     """
 
-    def alive(self, thread_id: str) -> bool:
-        return bool(ThreadRoom.sessions(thread_id))
+    def alive(self, scope_id: str) -> bool:
+        return bool(ThreadRoom.sessions(scope_id))
 
-    async def send(self, thread_id: str, signal: CanvasSignal) -> None:
+    async def send(self, scope_id: str, signal: CanvasSignal) -> None:
+        thread_id = scope_id
         sessions = ThreadRoom.sessions(thread_id)
         if not sessions:
             return

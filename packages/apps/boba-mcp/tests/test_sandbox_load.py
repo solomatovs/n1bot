@@ -632,7 +632,7 @@ class LoadStand:
         profile = self.profile(**overrides)
 
         def path_vars() -> dict[str, str]:
-            return {"user_id": user_id, "thread_id": thread_id}
+            return {"user_id": user_id, "scope_id": thread_id}
 
         section = f"bash-{sorted(overrides.items())}"
         supervisor = self._zygotes.registry().obtain(section, profile, (), self.ZYGOTE)
@@ -1210,7 +1210,7 @@ command = sys.argv[3]
 
 
 def path_vars():
-    return {"user_id": user_id, "thread_id": "t1"}
+    return {"user_id": user_id, "scope_id": "t1"}
 
 
 print("ready", flush=True)

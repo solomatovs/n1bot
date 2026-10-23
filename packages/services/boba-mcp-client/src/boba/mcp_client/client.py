@@ -1613,7 +1613,7 @@ class McpFiles:
 
     def _url(self, key: ObjectKey) -> str:
         route = FilesFeature.ROUTE.format(
-            scope=key.thread_id, dir=key.dir.value, name=key.name
+            scope=key.scope_id, dir=key.dir.value, name=key.name
         )
 
         return "/".join((self._root.url(), quote(route)))

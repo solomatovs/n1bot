@@ -1533,7 +1533,7 @@ class ChatView:
         workspace = await self._storage.workspace(self._user_key, self._thread_id)
 
         return CanvasScope(
-            user_id=self._user_key, thread_id=self._thread_id, workspace=workspace
+            user_id=self._user_key, scope_id=self._thread_id, workspace=workspace
         )
 
     async def _mounted(

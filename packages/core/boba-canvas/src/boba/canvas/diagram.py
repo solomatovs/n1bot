@@ -49,7 +49,7 @@ class DiagramPrompt(StrEnum):
 
     NAME = (
         "Имя файла диаграммы с расширением .mmd, например 'orders.mmd'. "
-        "Файл ляжет в '/workspace/<thread_id>/mermaid/'."
+        "Файл ляжет в '/workspace/<scope_id>/mermaid/'."
     )
     SPEC = (
         "Спека mermaid. Первая строка — тип диаграммы: erDiagram, flowchart, "

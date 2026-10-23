@@ -17,7 +17,7 @@ from aid_stand import NoTabs, OwnerRows, ServiceProcess
 
 from boba.aid.data.remote_storage import FileOwners, RemoteStorageClient
 from boba.aid.rendering.acp_view import ServerCards, ToolMedia
-from boba.canvas.keys import ObjectKey, ThreadDir
+from boba.canvas.keys import ObjectKey, ScopeDir
 from boba.canvas.storage import StorageError, StorageNotFoundError
 from boba.chat.profiles import ChatProfileConfig, ChatProfiles
 from boba.identity.api import StoredUser
@@ -97,7 +97,7 @@ class TestRemoteStorage:
     ) -> None:
         storage = _storage(servers, _signed_in("files"))
         payload = bytes(range(256)) * 1000
-        key = ObjectKey(user_id=str(USER), thread_id=THREAD, name="data.bin")
+        key = ObjectKey(user_id=str(USER), scope_id=THREAD, name="data.bin")
 
         await storage.upload_stream(key.render(), _source(payload))
         stat = await storage.stat(key.render())
@@ -116,7 +116,7 @@ class TestRemoteStorage:
     async def test_missing_file_is_not_found(self, servers: McpServers) -> None:
         storage = _storage(servers, _signed_in("files"))
         key = ObjectKey(
-            user_id=str(USER), thread_id=THREAD, name="ghost.mmd", dir=ThreadDir.MERMAID
+            user_id=str(USER), scope_id=THREAD, name="ghost.mmd", dir=ScopeDir.MERMAID
         )
 
         with pytest.raises(StorageNotFoundError):
@@ -126,7 +126,7 @@ class TestRemoteStorage:
         self, servers: McpServers
     ) -> None:
         storage = _storage(servers, _signed_in("bare"))
-        key = ObjectKey(user_id=str(USER), thread_id=THREAD, name="data.bin")
+        key = ObjectKey(user_id=str(USER), scope_id=THREAD, name="data.bin")
 
         with pytest.raises(StorageError, match="names an mcp server"):
             await storage.stat(key.render())
@@ -134,7 +134,7 @@ class TestRemoteStorage:
     async def test_unknown_owner_is_refused(self, servers: McpServers) -> None:
         storage = _storage(servers, _signed_in("files"))
         stranger = "99999999-2222-4333-8444-555555555555"
-        key = ObjectKey(user_id=stranger, thread_id=THREAD, name="data.bin")
+        key = ObjectKey(user_id=stranger, scope_id=THREAD, name="data.bin")
 
         with pytest.raises(StorageError, match="no users row"):
             await storage.stat(key.render())
@@ -145,7 +145,7 @@ class TestRemoteStorage:
         """Тред удаляется одной операцией сервиса: файлы его каталогов и
         журналы вызовов, которые шли в нём; журналы другого треда целы."""
         storage = _storage(servers, _signed_in("files"))
-        key = ObjectKey(user_id=str(USER), thread_id=THREAD, name="gone.bin")
+        key = ObjectKey(user_id=str(USER), scope_id=THREAD, name="gone.bin")
         await storage.upload_stream(key.render(), _source(b"gone"))
         caller = McpCaller(login="alice", roles=frozenset({"dev"}))
         port = await servers.port("boba", caller)
@@ -153,7 +153,7 @@ class TestRemoteStorage:
         own = await self._journaled(port, THREAD, journals)
         other = await self._journaled(port, OTHER, journals)
 
-        await storage.delete_thread(str(USER), THREAD)
+        await storage.delete_scope(str(USER), THREAD)
 
         with pytest.raises(StorageNotFoundError):
             await storage.stat(key.render())

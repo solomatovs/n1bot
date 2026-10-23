@@ -1002,7 +1002,7 @@ class McpRelay:
 
         scope = CanvasScope(
             user_id=str(registration.user_id),
-            thread_id=registration.thread_id,
+            scope_id=registration.thread_id,
             workspace=workspace,
         )
 

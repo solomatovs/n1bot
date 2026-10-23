@@ -47,7 +47,7 @@ from boba.aid.rendering.chat_view import (
 )
 from boba.aid.rendering.renderer import ChatRenderer, NoSurface
 from boba.canvas.canvas import CanvasAction, CanvasElement, CanvasRegistry
-from boba.canvas.keys import ObjectKey, ThreadDir, WorkspaceKey
+from boba.canvas.keys import ObjectKey, ScopeDir, WorkspaceKey
 from boba.identity.context import Scope
 from boba.mcp_adapter import JournalUris
 from boba.mcp_client.client import McpServerApps
@@ -1441,8 +1441,8 @@ class TestResultsFromRawOutput:
         monkeypatch.setattr(chainlit_data, "_data_layer_initialized", True)
         spec = ObjectKey(
             user_id=seeded.user.id,
-            thread_id=seeded.thread_id,
-            dir=ThreadDir.MERMAID,
+            scope_id=seeded.thread_id,
+            dir=ScopeDir.MERMAID,
             name="a.mmd",
         )
         await StorageSeed().put(seeded.layer.storage, spec.render(), self.SPEC)
@@ -1962,7 +1962,7 @@ class TestBlockDrawings:
         assert await get_bytes(storage, image.render()) == body
 
         name = PurePosixPath(urlsplit(attached[1]).path).name
-        audio = ObjectKey(user_id="u-1", thread_id=THREAD, name=name)
+        audio = ObjectKey(user_id="u-1", scope_id=THREAD, name=name)
         assert attached == (
             name,
             CanvasFileUrl.path(audio, "audio/mpeg"),

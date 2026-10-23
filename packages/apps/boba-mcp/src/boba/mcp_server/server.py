@@ -613,7 +613,7 @@ class FileUploadTool(Tool):
             subject = self._subjects.current()
             scope = self._scopes.of(subject, arguments)
             key = ObjectKey(
-                user_id=subject.user_key, thread_id=scope.id, name=request.name
+                user_id=subject.user_key, scope_id=scope.id, name=request.name
             )
         except ValidationError as exc:
             return self._refused(
@@ -623,7 +623,7 @@ class FileUploadTool(Tool):
         except CallScopeError as exc:
             return self._refused(f"file_upload: {exc}")
 
-        address = self._routes.address(key.thread_id, key.name)
+        address = self._routes.address(key.scope_id, key.name)
         text = (
             f"upload the file body with HTTP PUT to {address} of this server "
             f"(same bearer token); tools read it at {key.in_workspace()}"
