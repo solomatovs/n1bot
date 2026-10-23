@@ -536,29 +536,29 @@ class ServiceStand(StandService):
 
     def server(self, endpoint: str) -> dict[str, Any]:
         """Секция [mcp.servers.<имя>] чата для endpoint'а сервиса."""
-        location = {
+        service = {
             "scheme": StandUrl.SCHEME.value,
             "host": StandUrl.HOST.value,
             "port": self.app_port,
+            "path": "",
         }
 
         return {
-            "connect_timeout_sec": 30.0,
-            "call_timeout_sec": 120.0,
+            "limits": {"connect_timeout_sec": 30.0, "call_timeout_sec": 120.0},
             "endpoint": {
                 "transport": "streamable-http",
-                **location,
+                "service": service,
                 "path": f"/mcp/{endpoint}",
-                "auth": self._auth(location),
+                "auth": self._auth(service),
             },
         }
 
-    def _auth(self, location: Mapping[str, Any]) -> dict[str, Any]:
+    def _auth(self, service: Mapping[str, Any]) -> dict[str, Any]:
         """Секция auth endpoint'а по способу входа агента стенда."""
         entries: dict[StandAgentAuth, dict[str, Any]] = {
             StandAgentAuth.PROXY: {
                 "auth": StandAgentAuth.PROXY.value,
-                "issuer": {**location, "path": "/"},
+                "issuer": dict(service),
                 "client_id": self.CLIENT_ID,
                 "client_secret": self.CLIENT_SECRET,
                 "secret": self.PROXY_SECRET,

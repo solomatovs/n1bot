@@ -242,9 +242,10 @@ key 'site.…' not found`, ниже `full_key: …`).
 | `llm_host`, `llm_path`, `llm_token`, `llm_ssl_verify`, `[site.models].general`, `[site.models].search` | как у dev: сервер модели и имена моделей профилей |
 | `auth_secret` | как у dev — тогда действующие cookie входа остаются действительными; новое значение разлогинит всех, данные не пострадают |
 | `database_encryption_key` | **обязательно то же значение, что у dev**: им зашифрованы секреты соединений пользователей в базе. С другим ключом они не расшифруются, и инструмента перешифрования нет |
-| `proxy_secret`, `[site.mcp_client].secret` | **новые ключи**, общие с сервисом: сгенерировать по разу (`openssl rand -hex 32` для каждого) и записать одно и то же значение в site.toml чата и сервиса |
+| `proxy_secret` | **новый ключ** входа proxy в сам чат (nginx или другой доверенный сайт): сгенерировать `openssl rand -hex 32` |
+| `mcp_proxy_secret`, `[site.mcp_client].secret` | **новые ключи**, общие с сервисом: сгенерировать по разу (`openssl rand -hex 32` для каждого) и записать одно и то же значение в site.toml чата и сервиса |
 | `[site.proxy].allowed_clients`, `[site.proxy.local_roles]` | **новые ключи** входа proxy: кто вправе входить в чат по доверенному заголовку и какие локальные роли им даются (раздел 14 руководства). Если таких клиентов нет — пустой список и пустая таблица |
-| `[env]`: `mcp_scheme`, `mcp_host`, `mcp_port`, `mcp_prefix`, `mcp_issuer_path` | **новые ключи**: адрес сервиса boba-mcp глазами чата (ниже) |
+| `[env]`: `mcp_scheme`, `mcp_host`, `mcp_port`, `mcp_prefix` | **новые ключи**: адрес сервиса boba-mcp глазами чата (ниже) |
 | `[env]`: `messaging_provider`, `instance_id`, `host`, `listen_host`, `data`, `models`, `app_root`, `krb` | `messaging_provider = "postgres"` у compose; `listen_host = "0.0.0.0"`; пути — от `${env.base}`, который в контейнере равен `/app/boba`: `data = "${env.base}/data"`, `app_root = "${env.base}/app_root"`, `krb = "${env.base}/conf/krb"` (таблица «Чем различаются site.toml трёх случаев» в разделе 5 руководства) |
 | `[env]`: `port`, `url_prefix`, `agent_command` | в site.toml писать не нужно: их задаёт `conf/boba.env` переменными `BOBA_PORT`, `BOBA_URL_PREFIX`, `BOBA_AGENT_COMMAND`, который порождает `make dev` |
 
@@ -269,13 +270,14 @@ key 'site.…' not found`, ниже `full_key: …`).
 Ключей входа пользователей (`ldap_*`, `krb_domain`, `local_auth`) у сервиса
 нет: пользователей он принимает только от чата, по подписанному утверждению.
 
-### Адрес сервиса: пять ключей чата и `public_url` сервиса
+### Адрес сервиса: четыре ключа чата и `public_url` сервиса
 
 Чат находит сервис по ключам `[env]` своего site.toml: `mcp_scheme`,
-`mcp_host`, `mcp_port` и `mcp_prefix` складываются в адрес серверов
-инструментов (`<scheme>://<host>:<port><prefix>/mcp/<имя>`), а
-`mcp_scheme://mcp_host:mcp_port` вместе с `mcp_issuer_path` — в адрес издателя
-токенов. Сервис объявляет себя издателем под адресом из своего `public_url`.
+`mcp_host`, `mcp_port` и `mcp_prefix` составляют секцию `[service.boba_mcp]`
+общего конфига — адрес сервиса. Серверы инструментов — маршруты под ним
+(`<scheme>://<host>:<port><prefix>/mcp/<имя>`), а сам адрес сервиса —
+издатель токенов (пустой префикс — корень `/`). Сервис объявляет себя
+издателем под адресом из своего `public_url`.
 Эти адреса обязаны совпадать буква в букву, иначе первый же вызов инструмента
 кончится ошибкой `Authorization server metadata issuer mismatch` в логе чата.
 
@@ -284,15 +286,15 @@ key 'site.…' not found`, ниже `full_key: …`).
 разделе 8 руководства:
 
 - у чата: `mcp_scheme = "http"`, `mcp_host = "boba-mcp"`, `mcp_port = 8650`,
-  `mcp_prefix = ""`, `mcp_issuer_path = "/"`;
+  `mcp_prefix = ""`;
 - у сервиса: `public_url = "http://boba-mcp:8650"`.
 
 Если сервис должен быть доступен и снаружи — например, другим клиентам MCP, —
 `public_url` ставят равным публичному адресу за nginx
 (`https://boba.example.com/boba-mcp`), а ключи чата приводят к нему же:
 `mcp_scheme = "https"`, `mcp_host = "boba.example.com"`, `mcp_port = 443`,
-`mcp_prefix = "/boba-mcp"` и `mcp_issuer_path = "/boba-mcp"` — без
-завершающего слэша, ровно путь из `public_url`. Чат сравнивает адрес издателя
+`mcp_prefix = "/boba-mcp"` — без завершающего слэша, ровно путь из
+`public_url`. Чат сравнивает адрес издателя
 из метаданных сервиса со своим буква в букву; стандартный порт 443 в адрес не
 попадает, а лишний слэш в конце уже даёт расхождение.
 

@@ -38,7 +38,13 @@ from boba.connections.secrets import SecretCipher
 from boba.db.postgres import AsyncPostgresPool, PostgresSchema
 from boba.db.postgres.connection import LibpqConnection, PostgresConfig
 from boba.identity.context import CallContexts
-from boba.mcp_client.client import HttpLocation, McpServers, McpServersConfig, ProxyAuth
+from boba.mcp_client.client import (
+    HttpLocation,
+    HttpRoute,
+    McpServers,
+    McpServersConfig,
+    ProxyAuth,
+)
 from boba.runtime.config import ProcessConfig
 from boba.runtime.threads import ThreadsTable
 from boba.stand.agent_service import AgentServiceStand, ServiceProfiles
@@ -129,15 +135,12 @@ class ServiceModeStand:
     ) -> None:
         history = AgentHistoryStand(stand)
         location = HttpLocation(
-            scheme="http", host="127.0.0.1", port=service.port, path=service.PATH
-        )
-        issuer = HttpLocation(
-            scheme="http", host="127.0.0.1", port=service.port, path="/"
+            scheme="http", host="127.0.0.1", port=service.port, path=""
         )
         mode = AgentServiceConfig(
-            endpoint=location,
+            endpoint=HttpRoute(service=location, path=service.PATH),
             auth=ProxyAuth(
-                issuer=issuer,
+                issuer=location,
                 client_id=service.CLIENT_ID,
                 client_secret=SecretStr(service.CLIENT_SECRET),
                 secret=SecretStr(service.PROXY_SECRET),

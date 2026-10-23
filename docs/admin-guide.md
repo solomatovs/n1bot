@@ -493,23 +493,23 @@ $ make -C build site-keys APP=mcp
     auth_secret  — keys.session
     confluence.host  — tool.confluence.confluence.host
     mcp_client.secret  — keys.mcp_client
+    mcp_proxy_secret  — keys.mcp_proxy
     pg_host  — postgres.host
-    proxy_secret  — keys.proxy
     ...
 ```
 
 Каждая строка — ключ и поле общего конфига, которое на него ссылается. Ключ с
 точкой (`confluence.host`) — поле `host` таблицы `[site.confluence]`. Секреты
 общий конфиг сначала собирает в свою секцию `[keys]`, а рабочие секции берут их
-оттуда ссылками `${keys.*}`, поэтому у `auth_secret` и `proxy_secret` стоят
-поля `keys.*`.
+оттуда ссылками `${keys.*}`, поэтому у `auth_secret` и `mcp_proxy_secret`
+стоят поля `keys.*`.
 
 Пропущенный ключ обнаруживается при старте: приложение завершается и называет и
 ключ, и поле, которому он понадобился.
 
 ```
-boba-mcp failed: InterpolationKeyError: Interpolation key 'site.proxy_secret' not found
-    full_key: keys.proxy
+boba-mcp failed: InterpolationKeyError: Interpolation key 'site.mcp_proxy_secret' not found
+    full_key: keys.mcp_proxy
 ```
 
 Пример site.toml сервиса boba-mcp в контейнере (значения выдуманы):
@@ -540,8 +540,8 @@ boba-mcp failed: InterpolationKeyError: Interpolation key 'site.proxy_secret' no
     pg_sslmode     = "disable"
     pg_auth_method = "kerberos"
 
-    auth_secret  = "..."
-    proxy_secret = "..."
+    auth_secret      = "..."
+    mcp_proxy_secret = "..."
 
     [site.pg_auth.kerberos]
         method    = "kerberos_keytab"
@@ -586,14 +586,14 @@ boba-mcp failed: InterpolationKeyError: Interpolation key 'site.proxy_secret' no
 секцию `[keys]`, и рабочие секции берут их оттуда ссылками `${keys.*}`. Кому
 какой секрет нужен и что должно совпадать:
 
-- общие: `proxy_secret` и секрет клиента (`[site.mcp_client].secret`) обязаны
-  быть одинаковыми у чата и boba-mcp. Первым чат подписывает утверждение о
+- общие: `mcp_proxy_secret` и секрет клиента (`[site.mcp_client].secret`)
+  обязаны быть одинаковыми у чата и boba-mcp. Первым чат подписывает утверждение о
   пользователе, вторым представляется сервису как клиент `boba-chat`. При
   расхождении сервис отказывает в обмене утверждения на токен, и ни один
   инструмент boba-mcp в чате не работает (тексты отказов — в разделе 14);
 - свой у каждого приложения: `auth_secret`. У чата он подписывает cookie
   входа, у boba-mcp — токены доступа, которые сервис выдаёт сам. Чат
-  предъявляет сервису только утверждение под `proxy_secret`, секрет клиента и
+  предъявляет сервису только утверждение под `mcp_proxy_secret`, секрет клиента и
   полученный в обмен токен сервиса, поэтому `auth_secret` чата и сервиса друг
   с другом никак не связаны. Лучше задавать разные: утечка одного не даёт
   подделать вход в другое приложение. Одинаковым он должен быть только у
@@ -722,7 +722,7 @@ site.toml ключа нет. Бинарнику не нужны ни `PYTHONPATH
 уходят модели в пределах хода, этого требуют thinking-модели вроде deepseek,
 когда ход вызывает инструмент; `never` для них даёт отказ 400
 «reasoning_content ... must be passed back»). Там же срок вызова инструмента —
-наибольший `call_timeout_sec` серверов профиля, потолок режимов разрешений
+наибольший `limits.call_timeout_sec` серверов профиля, потолок режимов разрешений
 (`allowBypass`), место истории из `[agent.history]` и окружение libkrb5 для
 истории с kerberos-ролью: агент ставит его себе на старте. Сам режим
 разрешений сессии чат выставляет по ACP после каждого открытия сессии:
@@ -777,8 +777,26 @@ agent process 'boba' (pid ...): agent '...' does not declare capabilities.sessio
 No such file or directory; check [env].agent_command`.
 
 Серверы MCP описываются в общем конфиге чата секциями `[mcp.servers.<имя>]`:
-адрес (`endpoint`), вход (`auth`; для boba-mcp это `[mcp_auth.boba]` — вход
-proxy клиентом `boba-chat`), сроки подключения и вызова. Профиль подключает
+адрес (`endpoint`: сервис `service` и путь под ним `path`), вход (`auth`; для
+boba-mcp это `[mcp_auth.boba]` — вход proxy клиентом `boba-chat`), сроки
+подключения и вызова (`limits`: `connect_timeout_sec`, `call_timeout_sec`).
+Общее у серверов одного сервиса — отдельные секции, которые записи берут
+целиком ссылкой: адрес boba-mcp `[service.boba_mcp]` (схема, хост, порт и
+префикс из `[env].mcp_*`; он же издатель входа proxy), сроки
+`[mcp_limits.boba]`, вход `[mcp_auth.boba]`:
+
+```toml
+[mcp.servers.boba_base]
+    limits = "${mcp_limits.boba}"
+    [mcp.servers.boba_base.endpoint]
+        transport = "streamable-http"
+        service   = "${service.boba_mcp}"
+        path      = "/mcp/base"
+        auth      = "${mcp_auth.boba}"
+```
+
+Чужой сервер описывается так же: `service` — его схема, хост, порт и
+пустой путь `""`, `path` — путь endpoint'а. Профиль подключает
 сервер, называя его имя в `mcp`; имя, которого нет в `[mcp.servers]`, — отказ
 старта: `[profiles.<имя>].mcp names server '...' that is not declared in
 [mcp.servers], declared: [...]`. Версию протокола клиент чата согласует
@@ -791,7 +809,7 @@ proxy клиентом `boba-chat`), сроки подключения и выз
 серверы прежних редакций — официальные примеры MCP Apps, deepwiki и другие.
 Вопрос пользователю (elicitation) такой сервер задаёт посреди вызова, и
 пользователь видит его той же панелью, что и вопрос сервера 2026-07-28; вызов
-к серверу ждёт ответа не дольше своего `call_timeout_sec`: если ответа нет
+к серверу ждёт ответа не дольше своего `limits.call_timeout_sec`: если ответа нет
 раньше, сервер получает отказ `cancel`, а поздний ответ — ошибку вызова
 `... names no call the relay holds open ...`. Поэтому серверу, который
 спрашивает пользователя, ставят `call_timeout_sec` с запасом на ответ
@@ -805,7 +823,7 @@ the client`, следующий вызов открывает новую сес�
 ни одной версии, даёт `negotiating the protocol by server/discover and then
 initialize was refused with MCP error ...; the client speaks [...]`. Молчащий
 stdio-сервер прежней редакции SDK ждёт на пробе `server/discover` до 10 с,
-поэтому `connect_timeout_sec` у такого сервера — больше 10.
+поэтому `limits.connect_timeout_sec` у такого сервера — больше 10.
 
 Сервер профиля, который не подключился (лежит, отказал во входе, не нашёл с
 клиентом общей версии), не останавливает чат: агент открывает сессию без его
@@ -895,25 +913,30 @@ nginx с префиксом, например `https://boba.example.com/boba-age
 команды называет адрес ACP службы и вход proxy:
 
 ```toml
+[keys]
+    agent_proxy = "${site.agent_proxy_secret}"
+
+[service.boba_agent]
+    scheme = "https"
+    host   = "boba.example.com"
+    path   = "/boba-agent"
+
 [agent.process]
     start_timeout_sec   = 60
     request_timeout_sec = 120
     [agent.process.endpoint]
-        scheme = "https"
-        host   = "boba.example.com"
-        path   = "/boba-agent/acp"
+        service = "${service.boba_agent}"
+        path    = "/acp"
     [agent.process.auth]
         auth          = "proxy"
         client_id     = "boba-chat"
         client_secret = "${site.agent_client.secret}"
-        secret        = "${keys.proxy}"
-        [agent.process.auth.issuer]
-            scheme = "https"
-            host   = "boba.example.com"
-            path   = "/boba-agent"
+        secret        = "${keys.agent_proxy}"
+        issuer        = "${service.boba_agent}"
 ```
 
-`issuer` — `public_url` службы, `client_secret` — тот же секрет, что у
+`[service.boba_agent]` — адрес службы, её `public_url`: он же `issuer`, а
+путь ACP идёт под ним; `client_secret` — тот же секрет, что у
 службы в `[agent.clients.boba-chat]`, `secret` — ключ утверждений
 `[auth.proxy]` службы. Вкладка входит в службу от имени своего пользователя
 (логин и роли), открывает в ней сессию треда и выбирает профиль агента с
@@ -1582,7 +1605,7 @@ VS Code запускает отладку от того пользователя
 
 Отладочный чат ходит в отладочный сервис: в его site.toml стоят
 `mcp_scheme = "http"`, `mcp_host = "localhost"`, `mcp_port = 8651`,
-`mcp_prefix = ""` и `mcp_issuer_path = "/"`. Имя `localhost` здесь существенно:
+`mcp_prefix = ""`. Имя `localhost` здесь существенно:
 сервис объявляет себя издателем токенов под адресом из `public_url`, и клиент
 обязан называть его так же. Чтобы отлаживать чат против сервиса в контейнере,
 в эти ключи записывают адрес контейнера.
@@ -2324,8 +2347,8 @@ nginx -s reload
 
 Секреты лежат в секции `[site]` файла site.toml каждого приложения. Общий
 конфиг собирает их в свою секцию `[keys]`, а рабочие секции берут их оттуда
-ссылками `${keys.*}`. `proxy_secret` и `[site.mcp_client].secret` у чата и
-boba-mcp общие и обязаны совпадать. `auth_secret` у каждого приложения свой и
+ссылками `${keys.*}`. `mcp_proxy_secret` и `[site.mcp_client].secret` у чата и
+boba-mcp общие и обязаны совпадать; `proxy_secret` — вход proxy в сам чат. `auth_secret` у каждого приложения свой и
 с секретом другого не связан. `database_encryption_key` есть только у чата
 (раздел 5, «Секреты и keytab»).
 
@@ -2333,7 +2356,7 @@ boba-mcp общие и обязаны совпадать. `auth_secret` у ка�
 
 | Что | Чем подписано или зашифровано | Ключ чьего конфига |
 |---|---|---|
-| утверждение о пользователе при входе proxy | HS256, `proxy_secret` | общий, проверяет `[auth.proxy].secret` сервиса |
+| утверждение о пользователе при входе proxy | HS256, `mcp_proxy_secret` | общий, проверяет `[auth.proxy].secret` сервиса |
 | представление клиентом `boba-chat` при обмене | секрет клиента в теле запроса | общий, проверяет `[mcp.clients.boba-chat].secret` сервиса |
 | токен доступа к endpoint'у (вызовы, `resources/read`, `subscriptions/listen`) | выпущен и проверяется сервисом | `auth_secret` сервиса; чат хранит его как есть |
 | запечатанное соединение пользователя | JWE на открытом ключе сервиса | ключевая пара сервиса, созданная при старте, не из конфига |
@@ -2366,7 +2389,7 @@ SSO. У нескольких узлов boba-mcp он должен быть од
 
 `auth_secret` чата и `auth_secret` сервиса — независимые ключи: каждое
 приложение и подписывает, и проверяет им только своё, а чат предъявляет
-сервису утверждение под `proxy_secret` и полученный в обмен токен сервиса.
+сервису утверждение под `mcp_proxy_secret` и полученный в обмен токен сервиса.
 Совпадать они не должны; разные секреты безопаснее, потому что утечка
 одного не даёт выпустить вход в другое приложение. Стенд тестов поднимает
 чат и сервис с разными `auth_secret` и проверяет на нём вход, вызовы
@@ -2392,25 +2415,34 @@ python3 -c "import secrets; print(secrets.token_urlsafe(48))"
 недействительными его токены; чат входит на сервис заново сам, при следующем
 вызове.
 
-### `proxy_secret` и секрет клиента
+### `proxy_secret`, `mcp_proxy_secret`, `agent_proxy_secret` и секрет клиента
 
-Куда подставляются: `proxy_secret` — в `[keys].proxy`, откуда его берут
-`[auth.proxy].secret` чата и boba-mcp и `[mcp_auth.boba].secret` чата; секрет
-клиента — в `[keys].mcp_client`, откуда его берут
+Вход proxy — подписанное утверждение «этот запрос идёт от такого-то
+пользователя с такими-то ролями». У каждого входа свой ключ, чтобы утечка
+одного не открывала другие:
+
+| ключ site.toml | секция `[keys]` | кто подписывает → кто проверяет | где берётся ссылкой |
+|---|---|---|---|
+| `proxy_secret` | `[keys].proxy` чата | nginx или доверенный сайт → чат | `[auth.proxy].secret` чата |
+| `mcp_proxy_secret` | `[keys].mcp_proxy` чата и boba-mcp | чат → boba-mcp | `[mcp_auth.boba].secret` чата, `[auth.proxy].secret` boba-mcp |
+| `agent_proxy_secret` | `[keys].agent_proxy` чата и службы агента | чат → служба агента (режим службы) | `[agent.process.auth].secret` чата, ключ входа proxy службы |
+
+Секрет клиента — в `[keys].mcp_client`, откуда его берут
 `[mcp_auth.boba].client_secret` чата и `[mcp.clients.boba-chat].secret`
 boba-mcp.
 
 Что делают. Секретом клиента чат представляется сервису boba-mcp как
-зарегистрированный клиент `boba-chat`. Ключом `proxy_secret` он подписывает
-утверждение «этот запрос идёт от такого-то пользователя с такими-то ролями»;
-сервис проверяет подпись и исполняет инструмент от имени этого пользователя.
-Тем же ключом подписывают вход внешние сайты (вход proxy ниже).
+зарегистрированный клиент `boba-chat`. Ключом `mcp_proxy_secret` он
+подписывает утверждение о пользователе для boba-mcp; сервис проверяет подпись
+и исполняет инструмент от имени этого пользователя. Ключом `proxy_secret`
+подписывают вход в сам чат внешние сайты (вход proxy ниже).
 
-Оба ключа общие: значение в site.toml чата и в site.toml сервиса обязано
-быть одним и тем же. Расхождение видно при первом подключении чата к
+`mcp_proxy_secret` и секрет клиента общие: значение в site.toml чата и в
+site.toml сервиса обязано быть одним и тем же; так же `agent_proxy_secret` у
+чата и службы агента. Расхождение видно при первом подключении чата к
 сервису — в логе чата и в ошибке вызова инструмента boba-mcp:
 
-- разный `proxy_secret` — `mcp server 'boba_general': ... Token exchange
+- разный `mcp_proxy_secret` — `mcp server 'boba_general': ... Token exchange
   failed (401): {"error":"invalid_grant","error_description":"identity
   assertion of client 'boba-chat' for ...: expected an HS256 JWT under
   [auth.proxy].secret, got Signature verification failed"}`; тот же текст

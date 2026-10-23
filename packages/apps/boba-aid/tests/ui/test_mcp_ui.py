@@ -51,7 +51,12 @@ from playwright.sync_api import (
 )
 
 from boba.aid.chat.ui_text import UiText
-from boba.mcp_client.client import HttpEndpoint, McpServerConfig
+from boba.mcp_client.client import (
+    HttpEndpoint,
+    HttpLocation,
+    McpServerConfig,
+    McpServerLimits,
+)
 from boba.stand.apps_slot import AppServer, AppsSlot
 from boba.stand.ui.chat_page import ChatPage, Selector, StepKind
 from boba.stand.ui.fake_llm import (
@@ -116,23 +121,17 @@ class BobaMcpStand:
 
     def server(self) -> dict[str, Any]:
         """Секция [mcp.servers.<имя>] чата для этого сервера."""
+        service = {"scheme": "http", "host": "127.0.0.1", "port": self.port, "path": ""}
+
         return {
-            "connect_timeout_sec": 30.0,
-            "call_timeout_sec": 60.0,
+            "limits": {"connect_timeout_sec": 30.0, "call_timeout_sec": 60.0},
             "endpoint": {
                 "transport": "streamable-http",
-                "scheme": "http",
-                "host": "127.0.0.1",
-                "port": self.port,
+                "service": service,
                 "path": "/mcp/service",
                 "auth": {
                     "auth": "proxy",
-                    "issuer": {
-                        "scheme": "http",
-                        "host": "127.0.0.1",
-                        "port": self.port,
-                        "path": "/",
-                    },
+                    "issuer": service,
                     "client_id": "stand-chat",
                     "client_secret": "stand-client-secret",
                     "secret": self.PROXY_SECRET,
@@ -1285,9 +1284,9 @@ def handshake_stand(  # noqa: PLR0913 — стенд собирается из �
     2025-11-25 на TypeScript SDK 1.x в контейнере boba-testapps дважды: со
     сроком вызова 120 с (legacy) и 3 с (brief)."""
     endpoint = HttpEndpoint(
-        scheme="http",
-        host=apps_slot.host,
-        port=AppServer.LEGACY.value,
+        service=HttpLocation(
+            scheme="http", host=apps_slot.host, port=AppServer.LEGACY.value, path=""
+        ),
         path=apps_slot.PATH,
     )
     servers: dict[str, Any] = {
@@ -1296,8 +1295,9 @@ def handshake_stand(  # noqa: PLR0913 — стенд собирается из �
     for name, call_timeout_sec in (("legacy", 120.0), ("brief", 3.0)):
         config = McpServerConfig(
             endpoint=endpoint,
-            connect_timeout_sec=20.0,
-            call_timeout_sec=call_timeout_sec,
+            limits=McpServerLimits(
+                connect_timeout_sec=20.0, call_timeout_sec=call_timeout_sec
+            ),
         )
         servers[name] = config.model_dump(mode="json", exclude_none=True)
 
