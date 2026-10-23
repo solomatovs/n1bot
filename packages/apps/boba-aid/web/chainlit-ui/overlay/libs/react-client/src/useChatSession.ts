@@ -1,5 +1,5 @@
 import { debounce } from 'lodash';
-import { useCallback, useContext, useEffect, useRef } from 'react';
+import { useCallback, useContext, useEffect, useMemo, useRef } from 'react';
 import {
   useRecoilState,
   useRecoilValue,
@@ -129,6 +129,12 @@ const useChatSession = () => {
     }
   }, [currentThreadId]);
 
+  // boba: App зовёт connect на каждое изменение своих зависимостей — и когда
+  // профиль треда из resume_thread перезагружает конфиг. Сессию этого треда
+  // сервер уже восстановил с профилем треда, поэтому живой сокет той же сессии
+  // и того же треда не пересоздаётся; clear() меняет sessionId — сокет новый
+  const live = useRef<{ key: string; socket: ReturnType<typeof io> }>();
+
   const _connect = useCallback(
     async ({
       transports,
@@ -137,6 +143,9 @@ const useChatSession = () => {
       transports?: string[];
       userEnv: Record<string, string>;
     }) => {
+      const key = JSON.stringify([sessionId, idToResume || '', userEnv]);
+      if (live.current?.key === key && live.current.socket.active) return;
+
       const { protocol, host, pathname } = new URL(client.httpEndpoint);
       const uri = `${protocol}//${host}`;
       const path =
@@ -162,6 +171,7 @@ const useChatSession = () => {
           chatProfile: chatProfile ? encodeURIComponent(chatProfile) : ''
         }
       });
+      live.current = { key, socket };
       setSession((old) => {
         old?.socket?.removeAllListeners();
         old?.socket?.close();
@@ -531,7 +541,11 @@ const useChatSession = () => {
     [setSession, sessionId, idToResume, chatProfile, flushTokens, queueToken]
   );
 
-  const connect = useCallback(debounce(_connect, 200), [_connect]);
+  // boba: у каждого _connect свой debounce; отложенный вызов прежнего не
+  // отменялся, и после clear() уходили два подключения — первый сокет
+  // закрывался вторым, не успев открыться
+  const connect = useMemo(() => debounce(_connect, 200), [_connect]);
+  useEffect(() => () => connect.cancel(), [connect]);
 
   const disconnect = useCallback(() => {
     if (session?.socket) {

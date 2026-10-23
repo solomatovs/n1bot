@@ -1856,6 +1856,9 @@ class TestWorkspaceFiles:
             raise AssertionError("the file is read back as written")
         if ranged.status_code != 206 or ranged.content != payload[10:20]:
             raise AssertionError(f"a range answers 206: {ranged.status_code}")
+        for served in (whole, ranged):
+            if served.headers.get("x-content-type-options") != "nosniff":
+                raise AssertionError(f"the body is not sniffed: {served.headers}")
         if head.headers.get("content-length") != str(len(payload)):
             raise AssertionError(f"HEAD names the size: {head.headers}")
         if not head.headers.get("etag"):
@@ -2118,6 +2121,8 @@ class TestJournalFile:
             raise AssertionError(f"the caller gets the channel: {mine.status_code}")
         if part.status_code != 206 or part.content != mine.content[:4]:
             raise AssertionError(f"a range answers 206: {part.status_code}")
+        if mine.headers.get("x-content-type-options") != "nosniff":
+            raise AssertionError(f"the journal is not sniffed: {mine.headers}")
         if foreign.status_code != 404:
             raise AssertionError(f"another user gets no journal: {foreign.status_code}")
         if anonymous.status_code != 401:
