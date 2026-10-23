@@ -34,6 +34,7 @@ from boba.aid.agent.settings import AgentSettingsTable
 from boba.aid.domain.fields import ThreadMetaField
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.chat.profiles import ChatProfileConfig, SelectedProfile
+from boba.cli.serve import ServeHistory
 from boba.connections.secrets import SecretCipher
 from boba.db.postgres import AsyncPostgresPool, PostgresSchema
 from boba.db.postgres.connection import PostgresConfig
@@ -103,7 +104,11 @@ async def service(
         SignInStand.PROFILE, ["dev"], MODEL
     )
     served = AgentServiceStand(
-        process_config.krb, history.postgres(), history.schema(), layer, profiles
+        process_config.krb,
+        ServeHistory(schema=history.schema(), postgres=history.postgres()),
+        layer,
+        profiles,
+        600.0,
     )
     await served.start()
     try:

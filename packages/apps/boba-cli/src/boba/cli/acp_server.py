@@ -3354,7 +3354,7 @@ class AcpSession:
         RequestError — ход идёт (-32603), профиля нет (-32602), профиль не
             годится (-32603).
         """
-        if self._busy():
+        if self.busy():
             details = (
                 f"session {self._session_id} is busy: a turn is in progress; switch "
                 "the model while the session is idle"
@@ -3372,7 +3372,8 @@ class AcpSession:
                 {ErrorDataKey.DETAILS.value: str(exc)}
             ) from exc
 
-    def _busy(self) -> bool:
+    def busy(self) -> bool:
+        """Ход идёт или ждёт в очереди."""
         if self.agent.session.state is not SessionState.IDLE:
             return True
 
@@ -3498,6 +3499,10 @@ class ObserverSession:
         return AcpSession(
             self._session_id, opened, self._relay, self._mapping, self._mcp
         )
+
+    def busy(self) -> bool:
+        """Наблюдатель хода не ведёт."""
+        return False
 
     async def close(self) -> None:
         """Наблюдатель держит только серверы MCP сессии."""
@@ -3913,6 +3918,16 @@ class AcpAgent(AcpAgentProtocol):
             held = hosted.held
             if isinstance(held, AcpSession):
                 hosted.thread.soon(partial(held.cancel, reason))
+
+    def busy(self) -> bool:
+        """Идёт ли ход хотя бы в одной сессии входа."""
+        states = self._session_busy()
+
+        return any(states)
+
+    def _session_busy(self) -> Iterator[bool]:
+        for hosted in self._sessions.values():
+            yield hosted.held.busy()
 
     async def close_all(self) -> None:
         for session_id, hosted in list(self._sessions.items()):
