@@ -283,7 +283,7 @@ class ServeAgents:
         await self._providers.aclose()
 
     def opened_sessions(self) -> int:
-        return len(self._threads.opened())
+        return self._threads.opened()
 
     def agent(self, caller: Caller) -> tuple[AcpAgent, OpenedStore]:
         """Вход ACP вошедшего и его хранилище: хранилище закрывается вместе

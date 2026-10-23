@@ -3672,7 +3672,7 @@ class AcpAgent(AcpAgentProtocol):
         try:
             session = await thread.run(self._new(session_id, directory, servers))
         except BaseException:
-            await self._threads.stop(session_id)
+            await self._threads.stop(thread)
             raise
 
         self._sessions[session_id] = HostedSession(thread=thread, held=session)
@@ -3924,7 +3924,7 @@ class AcpAgent(AcpAgentProtocol):
         try:
             await hosted.thread.run(hosted.held.close())
         finally:
-            await self._threads.stop(session_id)
+            await self._threads.stop(hosted.thread)
 
     async def resume_session(
         self,
@@ -4037,7 +4037,7 @@ class AcpAgent(AcpAgentProtocol):
         try:
             held = await thread.run(self._stored(stored, directory, servers))
         except BaseException:
-            await self._threads.stop(session_id)
+            await self._threads.stop(thread)
             raise
 
         hosted = HostedSession(thread=thread, held=held)
@@ -4361,7 +4361,7 @@ class AcpAgent(AcpAgentProtocol):
                 self._forked(target, directory, servers, copied > 0)
             )
         except BaseException:
-            await self._threads.stop(target.value)
+            await self._threads.stop(thread)
             raise
 
         self._sessions[target.value] = HostedSession(thread=thread, held=session)
