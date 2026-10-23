@@ -57,7 +57,9 @@ __all__ = [
     "CallRequest",
     "ChildLimits",
     "CoreWindow",
+    "HostMask",
     "Isolation",
+    "MaskFile",
     "ZygoteArgs",
     "ZygoteMain",
     "ZygoteProtocolError",
@@ -156,6 +158,7 @@ class MountFlag(IntEnum):
 
     NOSUID = 0x2
     NODEV = 0x4
+    BIND = 0x1000
     REC = 0x4000
     PRIVATE = 0x40000
     DETACH = 0x2
@@ -693,6 +696,28 @@ class Isolation:
             msg = f"prctl(PR_CAPBSET_DROP, {cap}) failed: {os.strerror(code)}"
             raise OSError(code, msg)
 
+    PR_SET_NAME: ClassVar[int] = 15
+
+    @classmethod
+    def set_comm(cls, name: str) -> None:
+        """Имя процесса (/proc/<pid>/comm и ps): исполнитель зовётся как init."""
+        buffer = name.encode()[:15] + b"\x00"
+        rc = cls.libc().prctl(cls.PR_SET_NAME, buffer, 0, 0, 0)
+        if rc != 0:
+            code = ctypes.get_errno()
+            msg = f"prctl(PR_SET_NAME, {name!r}) failed: {os.strerror(code)}"
+            raise OSError(code, msg)
+
+    @classmethod
+    def set_hostname(cls, name: str) -> None:
+        """Имя хоста в UTS-namespace вызова: его видит тело через uname/hostname."""
+        raw = name.encode()
+        rc = cls.libc().sethostname(raw, len(raw))
+        if rc != 0:
+            code = ctypes.get_errno()
+            msg = f"sethostname({name!r}) failed: {os.strerror(code)}"
+            raise OSError(code, msg)
+
     @classmethod
     def enter_call_namespaces(cls, mounts: CallMounts) -> None:
         """Своё дерево монтирований вызова; NEWPID ставит вызывающий.
@@ -715,6 +740,214 @@ class Isolation:
                 MountFlag.NOSUID | MountFlag.NODEV,
                 f"size={mounts.tmp_bytes}",
             )
+
+
+class MaskFile(StrEnum):
+    """Файлы /proc, по которым тело узнало бы хост; их закрывает HostMask.
+
+    Значение — абсолютный путь, имя — basename нейтральной копии на staging.
+    """
+
+    VERSION = "/proc/version"
+    CPUINFO = "/proc/cpuinfo"
+    MEMINFO = "/proc/meminfo"
+    STAT = "/proc/stat"
+    LOADAVG = "/proc/loadavg"
+    UPTIME = "/proc/uptime"
+    DISKSTATS = "/proc/diskstats"
+    SWAPS = "/proc/swaps"
+    PARTITIONS = "/proc/partitions"
+    MODULES = "/proc/modules"
+    BOOT_ID = "/proc/sys/kernel/random/boot_id"
+
+    def staged(self, root: str) -> str:
+        """Путь нейтральной копии на staging-tmpfs: basename уникален в enum."""
+        return os.path.join(root, self.name.lower())
+
+
+class HostMask:
+    """Закрывает нейтральной копией файлы /proc, выдающие машину снаружи.
+
+    Тело инструмента читает /proc обычным open, поэтому хост подменяется
+    bind-монтированием заранее подготовленных файлов — статический аналог
+    LXCFS без демона. Копии кладутся на приватный tmpfs, монтируются поверх
+    настоящих файлов и их источник отцепляется, чтобы staging не был виден.
+    Значения согласованы с лимитами вызова: процессоров столько, сколько
+    видит тело через affinity, памяти — сколько даёт RLIMIT_AS, так что
+    nproc/free не противоречат подмене.
+
+    Создаёт и применяет его исполнитель вызова (ZygoteMain._grandchild) до
+    сброса capabilities: bind и sethostname требуют CAP_SYS_ADMIN в userns
+    песочницы, которого у тела уже нет.
+    """
+
+    HOSTNAME: ClassVar[str] = "localhost"
+    COMM: ClassVar[str] = "init"
+    STAGING: ClassVar[str] = "/dev/.host"
+    """Каталог staging на tmpfs /dev: исполнитель отцепляет его после bind'а."""
+
+    CPU_MODEL: ClassVar[str] = "Common x86_64 Processor"
+    CPU_FLAGS: ClassVar[str] = (
+        "fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat "
+        "pse36 clflush mmx fxsr sse sse2 ht syscall nx lm constant_tsc rep_good "
+        "nopl cpuid pni pclmulqdq ssse3 cx16 sse4_1 sse4_2 x2apic popcnt aes "
+        "xsave avx hypervisor lahf_lm"
+    )
+    BOGOMIPS: ClassVar[str] = "4000.00"
+
+    def __init__(self, cpu_count: int, mem_total_kb: int) -> None:
+        self._cpu_count = max(1, cpu_count)
+        self._mem_total_kb = max(1, mem_total_kb)
+
+    def apply(self) -> None:
+        """Нейтральные имя хоста, comm и файлы /proc поверх настоящих."""
+        Isolation.set_hostname(self.HOSTNAME)
+        Isolation.set_comm(self.COMM)
+        self._mask_proc()
+
+    def _mask_proc(self) -> None:
+        os.makedirs(self.STAGING, exist_ok=True)
+        Isolation.mount(
+            "tmpfs",
+            self.STAGING,
+            "tmpfs",
+            MountFlag.NOSUID | MountFlag.NODEV,
+            "size=1048576",
+        )
+        for target in MaskFile:
+            self._place(target)
+
+        Isolation.detach(self.STAGING)
+        os.rmdir(self.STAGING)
+
+    def _place(self, target: MaskFile) -> None:
+        """Нейтральную копию файла на staging — поверх настоящего bind'ом.
+
+        Отсутствующий у ядра файл пропускается: bind поверх несуществующей
+        точки отказал бы, а подменять нечего.
+        """
+        if not os.path.exists(target.value):
+            return
+
+        staged = target.staged(self.STAGING)
+        with open(staged, "w") as handle:
+            handle.write(self._content(target))
+
+        Isolation.mount(staged, target.value, "", MountFlag.BIND, "")
+
+    def _content(self, target: MaskFile) -> str:
+        builders = {
+            MaskFile.VERSION: self._version,
+            MaskFile.CPUINFO: self._cpuinfo,
+            MaskFile.MEMINFO: self._meminfo,
+            MaskFile.STAT: self._stat,
+            MaskFile.LOADAVG: self._loadavg,
+            MaskFile.UPTIME: self._uptime,
+            MaskFile.DISKSTATS: self._empty,
+            MaskFile.SWAPS: self._swaps,
+            MaskFile.PARTITIONS: self._partitions,
+            MaskFile.MODULES: self._empty,
+            MaskFile.BOOT_ID: self._boot_id,
+        }
+        return builders[target]()
+
+    def _version(self) -> str:
+        """Версия ядра тела = uname.release (без фингерпринта сборки)."""
+        release = os.uname().release
+        return (
+            f"Linux version {release} (builder@localhost) "
+            f"(gcc (GCC) 12.0.0) #1 SMP PREEMPT_DYNAMIC\n"
+        )
+
+    def _cpuinfo(self) -> str:
+        blocks: list[str] = []
+        for index in range(self._cpu_count):
+            blocks.append(self._cpu_block(index))
+
+        return "\n".join(blocks) + "\n"
+
+    def _cpu_block(self, index: int) -> str:
+        return (
+            f"processor\t: {index}\n"
+            "vendor_id\t: GenuineIntel\n"
+            "cpu family\t: 6\n"
+            "model\t\t: 63\n"
+            f"model name\t: {self.CPU_MODEL}\n"
+            "stepping\t: 2\n"
+            "cpu MHz\t\t: 2000.000\n"
+            "cache size\t: 4096 KB\n"
+            "physical id\t: 0\n"
+            f"siblings\t: {self._cpu_count}\n"
+            f"core id\t\t: {index}\n"
+            f"cpu cores\t: {self._cpu_count}\n"
+            "fpu\t\t: yes\n"
+            "fpu_exception\t: yes\n"
+            "cpuid level\t: 13\n"
+            "wp\t\t: yes\n"
+            f"flags\t\t: {self.CPU_FLAGS}\n"
+            f"bogomips\t: {self.BOGOMIPS}\n"
+            "clflush size\t: 64\n"
+            "cache_alignment\t: 64\n"
+            "address sizes\t: 46 bits physical, 48 bits virtual\n"
+        )
+
+    def _meminfo(self) -> str:
+        total = self._mem_total_kb
+        free = total // 2
+        return (
+            f"MemTotal:       {total:>8} kB\n"
+            f"MemFree:        {free:>8} kB\n"
+            f"MemAvailable:   {free:>8} kB\n"
+            "Buffers:               0 kB\n"
+            f"Cached:         {free:>8} kB\n"
+            "SwapCached:            0 kB\n"
+            "SwapTotal:             0 kB\n"
+            "SwapFree:              0 kB\n"
+            "Shmem:                 0 kB\n"
+            "Slab:                  0 kB\n"
+            "SReclaimable:          0 kB\n"
+            "SUnreclaim:            0 kB\n"
+        )
+
+    def _stat(self) -> str:
+        lines = ["cpu  0 0 0 0 0 0 0 0 0 0"]
+        for index in range(self._cpu_count):
+            lines.append(f"cpu{index} 0 0 0 0 0 0 0 0 0 0")
+
+        lines.append("intr 0")
+        lines.append("ctxt 0")
+        lines.append("btime 1700000000")
+        lines.append(f"processes {self._cpu_count}")
+        lines.append("procs_running 1")
+        lines.append("procs_blocked 0")
+        return "\n".join(lines) + "\n"
+
+    @staticmethod
+    def _loadavg() -> str:
+        return "0.00 0.00 0.00 1/1 1\n"
+
+    @staticmethod
+    def _uptime() -> str:
+        return "3600.00 3600.00\n"
+
+    @staticmethod
+    def _swaps() -> str:
+        return "Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n"
+
+    @staticmethod
+    def _partitions() -> str:
+        return "major minor  #blocks  name\n\n"
+
+    @staticmethod
+    def _empty() -> str:
+        return ""
+
+    @staticmethod
+    def _boot_id() -> str:
+        raw = os.urandom(16).hex()
+        return (
+            f"{raw[0:8]}-{raw[8:12]}-{raw[12:16]}-{raw[16:20]}-{raw[20:32]}\n"
+        )
 
 
 class ZygoteMain:
@@ -1193,6 +1426,11 @@ class ZygoteMain:
         request.limits.apply()
 
         if request.isolate:
+            self._mask_host(request).apply()
+
+        timing.mark("mask")
+
+        if request.isolate:
             Isolation.drop_capabilities()
 
         if request.cwd:
@@ -1218,6 +1456,22 @@ class ZygoteMain:
         timing.report(request.call_id, phase="teardown")
 
         os._exit(code)
+
+    DEFAULT_MEM_KB: ClassVar[int] = 4 * 1024 * 1024
+    """MemTotal подмены, когда профиль не задал лимит памяти процесса."""
+
+    @classmethod
+    def _mask_host(cls, request: CallRequest) -> HostMask:
+        """Подмена хоста по лимитам вызова: процессоров и памяти — как у тела."""
+        cpu_count = request.limits.cpu_cores
+        if cpu_count <= 0:
+            cpu_count = len(os.sched_getaffinity(0))
+
+        mem_kb = request.limits.max_memory_bytes // 1024
+        if mem_kb <= 0:
+            mem_kb = cls.DEFAULT_MEM_KB
+
+        return HostMask(cpu_count=cpu_count, mem_total_kb=mem_kb)
 
     def _run_body(self, request: CallRequest, argv: list[str]) -> int:
         """Тело своим процессом — только когда после него надо гасить демон.
