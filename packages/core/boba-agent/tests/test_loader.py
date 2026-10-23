@@ -218,6 +218,7 @@ class TestTruncatedJournal:
         stub = report.repaired[0]
         assert isinstance(stub, UserRecord)
         assert stub.tool_denial_kind is ToolDenialKind.INTERRUPTED
+        assert stub.tool_use_result is None
         results = stub.message.tool_results()
         assert len(results) == 1
         assert results[0].is_error is True

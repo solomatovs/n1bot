@@ -808,10 +808,14 @@ class AcpMapping:
         self, block: ToolResultBlock, stored: Any
     ) -> schema.SessionToolCallUpdate:
         """Итог вызова: текст модели содержимым, ответ tools/call как он
-        записан в `toolUseResult` — `rawOutput`."""
+        записан в `toolUseResult` — `rawOutput`. Без записанного ответа
+        вызов оборван концом хода — `cancelled` без `rawOutput`."""
         status = ToolStatus.COMPLETED
         if block.is_error:
             status = ToolStatus.FAILED
+
+        if stored is None:
+            status = ToolStatus.CANCELLED
 
         text = schema.TextContentBlock(text=block.text())
 
