@@ -316,25 +316,11 @@ class ChatSocket:
     async def open(self, resumed: bool = False) -> None:
         """Подключение вкладки; resumed — тред уже есть, chainlit зовёт
         on_chat_resume и завершает его событием resume_thread."""
-        base = StandUrl.of(self._app.config.app_port)
         logged = 0
         if self._app.log_path.is_file():
             logged = self._app.log_path.stat().st_size
 
-        await self._sio.connect(
-            base,
-            socketio_path=f"{self._app.config.url_prefix}{self.SOCKET_PATH}",
-            headers={"Cookie": self._cookie},
-            auth={
-                "sessionId": self.session_id,
-                "clientType": self.CLIENT_TYPE,
-                "threadId": self.thread_id,
-                "chatProfile": PROFILE,
-                "userEnv": "{}",
-            },
-            transports=["websocket"],
-            wait_timeout=30,
-        )
+        await self._connect()
         await self._sio.emit("connection_successful")
         # task_end на connection_successful приходит сразу; on_chat_start идёт
         # задачей со своим task_start/task_end вокруг шага run с его именем,
@@ -354,6 +340,30 @@ class ChatSocket:
 
         await self.wait_step_done(self.CHAT_START_STEP)
         await self.wait_task_end()
+
+    async def reconnect(self) -> None:
+        """Сокет вкладки вернулся после обрыва: chainlit восстанавливает ту же
+        сессию по её id без on_chat_start и on_chat_resume."""
+        await self._connect()
+        await self._sio.emit("connection_successful")
+        await self.wait_task_end()
+
+    async def _connect(self) -> None:
+        base = StandUrl.of(self._app.config.app_port)
+        await self._sio.connect(
+            base,
+            socketio_path=f"{self._app.config.url_prefix}{self.SOCKET_PATH}",
+            headers={"Cookie": self._cookie},
+            auth={
+                "sessionId": self.session_id,
+                "clientType": self.CLIENT_TYPE,
+                "threadId": self.thread_id,
+                "chatProfile": PROFILE,
+                "userEnv": "{}",
+            },
+            transports=["websocket"],
+            wait_timeout=30,
+        )
 
     async def _wait_resumed(
         self, since: int, timeout_sec: float = TURN_TIMEOUT_SEC
@@ -892,6 +902,39 @@ class TestConversation:
         while time.monotonic() < deadline and pid in agents.of_thread(tab.thread_id):
             await asyncio.sleep(0.2)
 
+        mark = len(tab.events)
+        await tab.send(f"second {ScenarioName.ANSWER.value}")
+        await tab.wait_task_end()
+
+        assert not tab.errors(), (tab.errors(), app.tail(80))
+        replaced = await agents.await_thread(tab.thread_id, other_than=pid)
+        assert replaced != pid
+        answers = tab.messages(since=mark)
+        assert any("plain streamed answer" in str(m.get("output")) for m in answers), (
+            tab.trace()[mark:],
+            app.tail(60),
+        )
+
+    async def test_a_dropped_tab_lets_the_agent_go_and_gets_a_new_one_back(
+        self, app: StandProcess, tab: ChatSocket
+    ) -> None:
+        """Сокет вкладки оборвался: сессия chainlit ждёт реконнекта, а процесс
+        агента уходит сразу; вернувшаяся вкладка спрашивает в той же сессии,
+        и отвечает новый процесс."""
+        agents = AgentProcesses(app)
+        await tab.send(f"first {ScenarioName.ANSWER.value}")
+        await tab.wait_task_end()
+        assert not tab.errors(), (tab.errors(), app.tail(80))
+        pid = await agents.await_thread(tab.thread_id)
+
+        await tab.close()
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline and pid in agents.of_thread(tab.thread_id):
+            await asyncio.sleep(0.2)
+
+        assert pid not in agents.of_thread(tab.thread_id), app.tail(60)
+
+        await tab.reconnect()
         mark = len(tab.events)
         await tab.send(f"second {ScenarioName.ANSWER.value}")
         await tab.wait_task_end()
