@@ -24,8 +24,10 @@ SessionRelay переводит в уведомления по таблице Ac
 uuid записи `user`), ход описывают `state_update`: `running` на первом
 событии хода и `idle` со `stopReason` в конце. Сбой после вставки вопроса
 кончает ход `idle` с `stopReason: "error"`, а не ошибкой ответа. Второй
-`prompt` в идущем ходе встаёт в очередь ядра; `session/cancel` прерывает ход
-и очищает очередь.
+`prompt` в идущем ходе встаёт в очередь ядра и получает ответ, когда его
+собственный ход вставил запись `user`; вопросы очереди не склеиваются.
+`session/cancel` прерывает ход и очищает очередь, снятые вопросы отвечают
+-32800, как и при `session/close` до вставки.
 
 Сессию, которую держит другой процесс, `resume` открывает наблюдателем
 (ObserverSession): историю он отдаёт, а `prompt` отвечает -32603 «held by
@@ -2756,9 +2758,34 @@ class SessionRelay(EventSink):
         self._detached = False
         self._titled = False
         self._running = False
+        self._inserting: dict[str, asyncio.Future[None]] = {}
+        """Вопрос `session/prompt` в очереди → ожидание его записи `user`."""
 
     def attach(self, agent: Agent) -> None:
         self._agent = agent
+
+    def insertion(self, message_id: str) -> asyncio.Future[None]:
+        """Ожидание вставки вопроса message_id: его решает запись `user` с
+        этим uuid, отказ — refuse."""
+        inserted: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        self._inserting[message_id] = inserted
+
+        return inserted
+
+    def refuse(self, message_id: str, error: RequestError) -> None:
+        """Вопрос message_id снят до вставки: его запрос получит error."""
+        inserted = self._inserting.pop(message_id, None)
+        if inserted is None:
+            return
+
+        if inserted.done():
+            return
+
+        inserted.set_exception(error)
+
+    def refuse_all(self, error: RequestError) -> None:
+        for message_id in list(self._inserting):
+            self.refuse(message_id, error)
 
     @property
     def elicits(self) -> bool:
@@ -2902,6 +2929,7 @@ class SessionRelay(EventSink):
             return updates
 
         if isinstance(record, UserRecord):
+            self._inserted(record.uuid)
             return list(self._mapping.user_updates(record))
 
         if isinstance(record, CompactBoundaryRecord):
@@ -3106,6 +3134,16 @@ class SessionRelay(EventSink):
     def withdraw_all(self) -> None:
         for request_id in list(self._asks):
             self.withdraw(request_id)
+
+    def _inserted(self, message_id: str) -> None:
+        inserted = self._inserting.pop(message_id, None)
+        if inserted is None:
+            return
+
+        if inserted.done():
+            return
+
+        inserted.set_result(None)
 
 
 class OpenedSession(Protocol):
@@ -3325,18 +3363,27 @@ class AcpSession:
         logger.error(
             "session %s: the agent stopped serving: %s", self._session_id, failure
         )
+        details = (
+            f"session {self._session_id} stopped serving prompts before this one "
+            f"was inserted: {failure}"
+        )
+        self._relay.refuse_all(
+            RequestError.internal_error({ErrorDataKey.DETAILS.value: details})
+        )
         update = self._mapping.idle_error(type(failure).__name__, str(failure))
         self._reports.append(asyncio.create_task(self._relay.failed(update)))
 
     async def prompt(self, asked: QueueEntry) -> schema.PromptResponse:
-        """Ставит вопрос в очередь ядра; `messageId` ответа — uuid записи
-        `user`, которую напишет его ход. Вопрос-команду промпта сервера
-        раскрывает SessionMcp.
+        """Ставит вопрос в очередь ядра и отвечает, когда его ход вставил
+        запись `user`: `messageId` ответа — её uuid. Вопрос идёт своим ходом,
+        без склейки с соседями. Вопрос-команду промпта сервера раскрывает
+        SessionMcp.
 
         Ошибки:
         RequestError — очередь не приняла элемент или аргументы команды не
             годятся (-32602), обслуживание сессии остановилось либо сервер не
-            отдал промпт (-32603).
+            отдал промпт (-32603), вопрос снят до вставки отменой хода или
+            закрытием сессии (-32800).
         """
         asked = await self._mcp.expanded(asked)
         if self._serving.done():
@@ -3354,13 +3401,15 @@ class AcpSession:
         if len(agent.queue) > 0:
             priority = QueuePriority.LATER
 
-        entry = asked.model_copy(update={"priority": priority})
+        entry = asked.model_copy(update={"priority": priority, "alone": True})
         try:
             item = agent.queue.enqueue(entry)
         except QueueRefusedError as exc:
             raise RequestError.invalid_params(
                 {ErrorDataKey.DETAILS.value: str(exc)}
             ) from exc
+
+        await self._relay.insertion(item.id)
 
         return schema.PromptResponse(message_id=item.id)
 
@@ -3373,10 +3422,27 @@ class AcpSession:
         await self._opened.agent.writer.flush(strict=True)
 
     def cancel(self, reason: CoreStopReason) -> None:
-        """Прерывает ход и очищает очередь."""
+        """Прерывает ход и очищает очередь: вопросы из неё не вставлены, их
+        запросы получают -32800."""
+        for item in self.agent.queue.items():
+            details = (
+                f"the prompt {item.id} of session {self._session_id} was removed "
+                "from the queue by session/cancel before it was inserted"
+            )
+            self._relay.refuse(
+                item.id,
+                RequestError.request_cancelled({ErrorDataKey.DETAILS.value: details}),
+            )
+
         self.agent.interrupt(reason, cancel_queued=True)
 
     async def close(self) -> None:
+        details = (
+            f"session {self._session_id} was closed before the prompt was inserted"
+        )
+        self._relay.refuse_all(
+            RequestError.request_cancelled({ErrorDataKey.DETAILS.value: details})
+        )
         self._relay.withdraw_all()
         await self._mcp.close()
         await self._opened.close()
