@@ -46,7 +46,7 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, RootModel, Validat
 
 from boba.agent.records import LinkText
 from boba.agent.tags import AgentTag
-from boba.toolkit.mcp import McpToolNames
+from boba.core.mcp_names import McpToolNames
 
 __all__ = [
     "FailureName",

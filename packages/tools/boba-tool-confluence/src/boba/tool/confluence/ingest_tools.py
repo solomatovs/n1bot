@@ -39,6 +39,7 @@ from boba.confluence.models import (
 )
 from boba.confluence.parsing import JsonNode
 from boba.confluence.rest import CflUrlBuilder
+from boba.core.secrets import SecretRevealing
 from boba.doc.bridge import AsyncPipe
 from boba.doc.document import DocumentHint
 from boba.indexing import (
@@ -72,7 +73,6 @@ from boba.toolkit.facade import Injected, tool, warmup
 from boba.toolkit.ports import DownloadProgress, ToolProgress
 from boba.toolkit.result import MarkdownResult, TableResult
 from boba.toolkit.timing import Elapsed
-from boba.toolkit.types import SecretRevealing
 
 logger = logging.getLogger("boba.tool.confluence.ingest")
 

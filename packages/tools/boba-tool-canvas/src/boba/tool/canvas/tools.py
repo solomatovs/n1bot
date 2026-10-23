@@ -1,4 +1,4 @@
-"""Tools канваса: файлы workspace треда для показа, вложения и диаграмм.
+"""Tools канваса: файлы workspace области для показа, вложения и диаграмм.
 
 Тела работают с файлами в смонтированном /workspace и возвращают результат
 по форме данных: CanvasResult — файл для панели, FileResult — вложение.
@@ -7,7 +7,7 @@
 знают.
 
 Ошибки:
-своих не выпускает: отказ (путь вне треда, нет файла, плохая спека) —
+своих не выпускает: отказ (путь вне области, нет файла, плохая спека) —
     ErrorResult с error_kind.
 """
 
@@ -26,7 +26,7 @@ from boba.canvas.diagram import (
     DiagramSpecError,
     MermaidSpec,
 )
-from boba.canvas.keys import ObjectKey, ThreadDir, WorkspaceRoot
+from boba.canvas.keys import ObjectKey, ScopeDir, WorkspaceRoot
 from boba.identity.context import Scope, Subject
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, tool
@@ -62,8 +62,8 @@ class CanvasPrompt(StrEnum):
     """Тексты фасада: описания параметров и оговорки для LLM."""
 
     PATH = (
-        "Путь к файлу в workspace треда: '/workspace/<thread_id>/mermaid/<имя>.mmd' "
-        "или '/workspace/<thread_id>/upload/<имя>'. Файл должен существовать. "
+        "Путь к файлу в workspace области: '/workspace/<scope_id>/mermaid/<имя>.mmd' "
+        "или '/workspace/<scope_id>/upload/<имя>'. Файл должен существовать. "
         "Поддерживаются диаграммы mermaid (.mmd), изображения "
         "(.png/.jpg/.jpeg/.gif/.svg/.webp), .pdf, текст (.txt/.md/.log), "
         "видео (.mp4/.webm/.mov) и аудио (.mp3/.wav/.ogg/.m4a/.flac) — "
@@ -75,27 +75,27 @@ class CanvasPrompt(StrEnum):
         "comes back to you as a tool error"
     )
     FILE_PATH = (
-        "Путь к файлу в каталогах треда: '/workspace/<thread_id>/upload/<имя>' "
-        "или '/workspace/<thread_id>/mermaid/<имя>'. Файл из другого места "
+        "Путь к файлу в каталогах области: '/workspace/<scope_id>/upload/<имя>' "
+        "или '/workspace/<scope_id>/mermaid/<имя>'. Файл из другого места "
         "workspace сначала перенеси туда через bash."
     )
 
 
-class ThreadFiles:
-    """Файлы треда в смонтированном workspace для тел канваса: ключ по пути
+class ScopeFiles:
+    """Файлы области в смонтированном workspace для тел канваса: ключ по пути
     аргумента в области CanvasScope и проверка, что файл лежит на диске."""
 
     def __init__(self, subject: Subject, scope: Scope, root: WorkspaceRoot) -> None:
         root.apply()
         self._scope = CanvasScope(
-            user_id=subject.user_key, thread_id=scope.id, workspace=root.path
+            user_id=subject.user_key, scope_id=scope.id, workspace=root.path
         )
 
     def existing(self, path: str) -> ObjectKey:
         """Ключ файла по пути из аргумента.
 
         Ошибки:
-        CanvasError — путь вне каталогов треда (BAD_PATH) или файла нет на
+        CanvasError — путь вне каталогов области (BAD_PATH) или файла нет на
             диске (FILE_NOT_FOUND).
         """
         key = self._scope.key(path)
@@ -107,13 +107,13 @@ class ThreadFiles:
         return key
 
     def diagram(self, name: str) -> ObjectKey:
-        """Ключ спеки в каталоге mermaid/ треда; имя приводится к безопасному."""
+        """Ключ спеки в каталоге mermaid/ области; имя приводится к безопасному."""
         return ObjectKey.build(
             self._scope.user_id,
-            self._scope.thread_id,
+            self._scope.scope_id,
             name,
             DiagramMarker.FALLBACK_NAME,
-            dir_thread=ThreadDir.MERMAID,
+            scope_dir=ScopeDir.MERMAID,
         )
 
 
@@ -127,7 +127,7 @@ async def canvas_open(
     """Показать файл workspace (диаграмму, изображение, pdf, текст) в
     панели справа от чата и оставить ссылку на него в переписке."""
     try:
-        key = ThreadFiles(subject, scope, root).existing(path)
+        key = ScopeFiles(subject, scope, root).existing(path)
     except CanvasError as e:
         return e.failure()
 
@@ -145,7 +145,7 @@ async def send_file(
 ) -> FileResult | ErrorResult:
     """Отправить пользователю файл из workspace вложением в чат."""
     try:
-        key = ThreadFiles(subject, scope, root).existing(path)
+        key = ScopeFiles(subject, scope, root).existing(path)
     except CanvasError as e:
         return e.failure()
 
@@ -186,7 +186,7 @@ async def diagram_save(  # noqa: PLR0913 — контекст вызова и к
     except DiagramSpecError as e:
         return ErrorResult(message=str(e), error_kind=CanvasErrorKind.INVALID_SPEC)
 
-    key = ThreadFiles(subject, scope, root).diagram(name)
+    key = ScopeFiles(subject, scope, root).diagram(name)
     target = Path(key.in_workspace())
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(parsed.text, encoding=DiagramMarker.ENCODING)

@@ -41,10 +41,12 @@ from typing import (
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
+from boba.core.secrets import SecretReveal
+from boba.core.validation import ValidationText
 from boba.toolkit.calls import FieldMarks
 from boba.toolkit.closing import ProcessClosers
 from boba.toolkit.facade import PayloadTool, ToolFacadeError
-from boba.toolkit.failure import FailurePacker, InvokeErrorKind, ValidationText
+from boba.toolkit.failure import FailurePacker, InvokeErrorKind
 from boba.toolkit.frames import ToolIo
 from boba.toolkit.launcher import PayloadFailureError
 from boba.toolkit.ports import (
@@ -65,7 +67,6 @@ from boba.toolkit.protocol import (
 )
 from boba.toolkit.result import FailureResult, ToolResultBase
 from boba.toolkit.timing import Elapsed
-from boba.toolkit.types import SecretReveal
 
 __all__ = [
     "ArgumentTooLargeError",

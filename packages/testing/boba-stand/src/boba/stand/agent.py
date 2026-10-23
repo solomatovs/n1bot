@@ -23,7 +23,7 @@ from boba.agent.attachments import ConnectedServer, EnvironmentSnapshot
 from boba.agent.events import AgentEvent, ControlRequestEvent, EventSink
 from boba.agent.history import HistoryStore, SessionId
 from boba.agent.ids import Clock, SystemClock
-from boba.agent.mcp import McpToolNames, ToolCard, ToolHints, ToolReplies, ToolReply
+from boba.agent.mcp import ToolCard, ToolHints, ToolReplies, ToolReply
 from boba.agent.profile import (
     CompactionSettings,
     ModelProfile,
@@ -35,6 +35,7 @@ from boba.agent.session import Session
 from boba.agent.skills import Skill
 from boba.agent.tools import McpServerSet, ToolServer
 from boba.connections.sealed import ConnectionOffer, SealedParamSchema
+from boba.core.mcp_names import McpToolNames
 from boba.history.jsonl import JsonlHistoryStore
 from boba.llm.chat import ChatModel
 from boba.llm.http.ollama import OllamaProvider

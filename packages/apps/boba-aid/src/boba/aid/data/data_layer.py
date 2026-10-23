@@ -470,7 +470,7 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership, FeedRows):
             return
 
         try:
-            await self._storage.delete_thread(str(owner), str(stored.id))
+            await self._storage.delete_scope(str(owner), str(stored.id))
         except StorageError as exc:
             msg = (
                 f"deleting the files of thread {stored.id} of user {owner} "

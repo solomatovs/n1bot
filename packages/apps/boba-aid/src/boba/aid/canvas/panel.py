@@ -179,7 +179,7 @@ class FileWatch:
             return
 
         CanvasWatch.show(
-            self.key.thread_id, self.key.in_workspace(), nonce, self.source, self.seen
+            self.key.scope_id, self.key.in_workspace(), nonce, self.source, self.seen
         )
 
 
@@ -659,7 +659,7 @@ class StreamActions:
     ) -> dict[str, Any]:
         storage = PanelStorage.client()
         workspace = await storage.workspace(user_id, thread_id)
-        scope = CanvasScope(user_id=user_id, thread_id=thread_id, workspace=workspace)
+        scope = CanvasScope(user_id=user_id, scope_id=thread_id, workspace=workspace)
         try:
             key = scope.key(request.path)
         except CanvasError as exc:
@@ -741,7 +741,7 @@ class StreamActions:
             return None
 
         workspace = await PanelStorage.client().workspace(user_id, thread_id)
-        scope = CanvasScope(user_id=user_id, thread_id=thread_id, workspace=workspace)
+        scope = CanvasScope(user_id=user_id, scope_id=thread_id, workspace=workspace)
         key = scope.key(request.path)
         viewer = CanvasRegistry.viewer_for(request.mime)
         if viewer is None:

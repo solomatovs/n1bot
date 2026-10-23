@@ -8,6 +8,7 @@ version = "0.0.26.dev4"
 description = "Boba cli: процесс агента — команда boba acp, разбор параметров запуска, Agent Client Protocol через стандартные потоки."
 requires-python = ">=3.11,<4"
 dependencies = [
+    "boba-core==0.0.26.dev4",
     "agent-client-protocol==1.0.0rc3",
     "boba-agent==0.0.26.dev4",
     "boba-cancellation==0.0.26.dev4",

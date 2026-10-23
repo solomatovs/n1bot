@@ -195,26 +195,26 @@ class RemoteStorageClient(StorageClient):
         mime: str,
     ) -> dict[str, Any]:
         key = ObjectKey.parse(object_key)
-        host = await self._host(key.user_id, key.thread_id)
+        host = await self._host(key.user_id, key.scope_id)
         await host.files.upload(key, source)
 
         return self._uploaded(object_key)
 
     async def _stat(self, object_key: str) -> FileStat:
         key = ObjectKey.parse(object_key)
-        host = await self._host(key.user_id, key.thread_id)
+        host = await self._host(key.user_id, key.scope_id)
 
         return await host.files.stat(key)
 
     async def _open_stream(self, object_key: str, window: ReadWindow) -> OpenedStream:
         key = ObjectKey.parse(object_key)
-        host = await self._host(key.user_id, key.thread_id)
+        host = await self._host(key.user_id, key.scope_id)
 
         return await host.files.open(key, window)
 
     async def _delete_file(self, object_key: str) -> bool:
         key = ObjectKey.parse(object_key)
-        host = await self._host(key.user_id, key.thread_id)
+        host = await self._host(key.user_id, key.scope_id)
 
         return await host.files.delete(key)
 
@@ -225,21 +225,21 @@ class RemoteStorageClient(StorageClient):
         )
         raise StorageError(msg)
 
-    async def _delete_thread(self, user_id: str, thread_id: str) -> None:
+    async def _delete_scope(self, user_id: str, scope_id: str) -> None:
         """Область треда одной операцией сервиса; у пользователя без
         хранилища файлов нет — удалять нечего."""
         try:
-            host = await self._host(user_id, thread_id)
+            host = await self._host(user_id, scope_id)
         except StorageAbsentError as exc:
             logger.info(
-                "thread %s of user %s: no file storage, nothing to delete: %s",
-                thread_id,
+                "scope %s of user %s: no file storage, nothing to delete: %s",
+                scope_id,
                 user_id,
                 exc,
             )
             return
 
-        await host.files.delete_scope(thread_id)
+        await host.files.delete_scope(scope_id)
 
     async def _host(self, user_id: str, thread_id: str) -> FilesHost:
         """Хранилище файлов треда: первый сервер профиля владельца, объявивший

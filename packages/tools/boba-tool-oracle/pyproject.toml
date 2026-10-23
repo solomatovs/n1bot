@@ -8,6 +8,7 @@ version = "0.0.26.dev4"
 description = "Oracle-инструменты: запрос, описание словаря через all_* и насосы перекачки потоком Arrow; соединение и запрос идут из песочницы."
 requires-python = ">=3.11,<4"
 dependencies = [
+    "boba-core==0.0.26.dev4",
     "boba-toolkit==0.0.26.dev4",
     "boba-db-oracle==0.0.26.dev4",
     "pydantic>=2.12,<3",

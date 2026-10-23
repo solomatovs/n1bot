@@ -93,35 +93,35 @@ class WatchProbeError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class CanvasScope:
-    """Чьи файлы показывает панель: пользователь, тред и каталог workspace,
-    под которым их видит песочница сервера файлов треда. Строят его лента
-    (ChatView), обработчики действий панели по сессии чата и ретранслятор по
-    регистрации сервера — каталог каждый берёт у хранилища треда либо из
-    описания сервера; key переводит путь workspace в ключ файла этой
-    области, file — имя файла треда."""
+    """Чьи файлы показывает панель: пользователь, область вызывающего и
+    каталог workspace, под которым их видит песочница сервера файлов области.
+    Строят его лента (ChatView), обработчики действий панели по сессии чата и
+    ретранслятор по регистрации сервера — каталог каждый берёт у хранилища
+    области либо из описания сервера; key переводит путь workspace в ключ
+    файла этой области, file — имя файла области."""
 
     user_id: str
-    thread_id: str
+    scope_id: str
     workspace: str
 
     def key(self, path: str) -> WorkspaceKey:
-        """Ключ файла по пути в workspace треда.
+        """Ключ файла по пути в workspace области.
 
         Ошибки:
-        CanvasError — путь вне каталогов треда (BAD_PATH).
+        CanvasError — путь вне каталогов области (BAD_PATH).
         """
         try:
             return WorkspaceKey.located(
-                self.workspace, self.user_id, self.thread_id, path
+                self.workspace, self.user_id, self.scope_id, path
             )
         except ValueError as exc:
             raise CanvasError(CanvasErrorKind.BAD_PATH, str(exc)) from exc
 
     def file(self, name: str) -> WorkspaceKey:
-        """Ключ вложения треда с именем name."""
+        """Ключ вложения области с именем name."""
         return WorkspaceKey(
             user_id=self.user_id,
-            thread_id=self.thread_id,
+            scope_id=self.scope_id,
             name=name,
             workspace=self.workspace,
         )
@@ -457,15 +457,15 @@ class CanvasRegistry:
 
 
 class SignalTransport(Protocol):
-    """Доставка сигналов слежения во все живые сокеты треда."""
+    """Доставка сигналов слежения во все живые сокеты области."""
 
     @abstractmethod
-    def alive(self, thread_id: str) -> bool:
-        """Есть ли у треда живые сокеты; без них слежение не нужно."""
+    def alive(self, scope_id: str) -> bool:
+        """Есть ли у области живые сокеты; без них слежение не нужно."""
         ...
 
     @abstractmethod
-    async def send(self, thread_id: str, signal: CanvasSignal) -> None: ...
+    async def send(self, scope_id: str, signal: CanvasSignal) -> None: ...
 
 
 class CanvasSignal(BaseModel):
@@ -490,7 +490,7 @@ class CanvasSignal(BaseModel):
 
 
 class CanvasWatch:
-    """Слежение за показами панели: сторож на каждый показ (nonce) треда шлёт
+    """Слежение за показами панели: сторож на каждый показ (nonce) области шлёт
     фронту сигналы об изменении файла.
 
     Сервер ставит сторожа при показе (show), экземпляры панели держат его
@@ -498,13 +498,13 @@ class CanvasWatch:
     сокета (hold) и снимают уходом (leave). Уход прежнего экземпляра и
     объявление пересозданного приходят в любом порядке, поэтому сторож
     снимается, только когда показ не держит никто; неудержанных сторожей
-    треда снимает следующий показ. Сторож кончается и сам — без подключённых
-    вкладок треда или с исчерпанным источником, — а отказ опроса
+    области снимает следующий показ. Сторож кончается и сам — без подключённых
+    вкладок области или с исчерпанным источником, — а отказ опроса
     (WatchProbeError) уходит в лог и повторяется следующим тактом.
     """
 
     POLL_SEC: ClassVar[float] = 1.0
-    """Период опроса файловых источников и проверки живости треда."""
+    """Период опроса файловых источников и проверки живости области."""
 
     COALESCE_SEC: ClassVar[float] = 0.3
     """Пауза после пробуждения: болтливый инструмент не заливает сокет."""
@@ -514,16 +514,16 @@ class CanvasWatch:
 
     def __init__(
         self,
-        thread_id: str,
+        scope_id: str,
         path: str,
         nonce: str,
         source: WatchSource,
         seen: str,
     ) -> None:
-        self._thread_id = thread_id
+        self._scope_id = scope_id
         self._path = path
         self._nonce = nonce
-        self._key = (thread_id, nonce)
+        self._key = (scope_id, nonce)
         self._source = source
         self._seen = seen
         self._holders: set[str] = set()
@@ -542,14 +542,14 @@ class CanvasWatch:
     @classmethod
     def reset(cls) -> None:
         """Сброс: пользуются тесты, приложению это не нужно."""
-        for thread_id, _ in list(cls._WATCHES):
-            cls.drop(thread_id)
+        for scope_id, _ in list(cls._WATCHES):
+            cls.drop(scope_id)
         cls._TRANSPORT = None
 
     @classmethod
     def show(
         cls,
-        thread_id: str,
+        scope_id: str,
         path: str,
         nonce: str,
         source: WatchSource,
@@ -557,13 +557,13 @@ class CanvasWatch:
     ) -> None:
         """Следить за показом nonce файла path; seen — версия, отданная
         фронту, пустая — неизвестна, и сигнал шлёт первый опрос. Показ под
-        слежением второго сторожа не получает; неудержанные сторожа треда
+        слежением второго сторожа не получает; неудержанные сторожа области
         снимаются."""
         if cls._TRANSPORT is None:
             return
 
         for key, known in list(cls._WATCHES.items()):
-            if key[0] != thread_id:
+            if key[0] != scope_id:
                 continue
 
             if known._holders:
@@ -574,19 +574,19 @@ class CanvasWatch:
 
             cls._drop(key)
 
-        if (thread_id, nonce) in cls._WATCHES:
+        if (scope_id, nonce) in cls._WATCHES:
             return
 
-        watch = cls(thread_id, path, nonce, source, seen)
+        watch = cls(scope_id, path, nonce, source, seen)
         cls._WATCHES[watch._key] = watch
         watch._task = asyncio.create_task(watch._run())
 
     @classmethod
-    def hold(cls, thread_id: str, nonce: str, holder: str, seen: str) -> bool:
+    def hold(cls, scope_id: str, nonce: str, holder: str, seen: str) -> bool:
         """Экземпляр панели holder держит показ nonce с версией seen: True —
         за показом следят, и версия новее seen придёт сигналом; False —
         сторожа нет, его ставит show."""
-        watch = cls._WATCHES.get((thread_id, nonce))
+        watch = cls._WATCHES.get((scope_id, nonce))
         if watch is None:
             return False
 
@@ -595,10 +595,10 @@ class CanvasWatch:
         return True
 
     @classmethod
-    def leave(cls, thread_id: str, nonce: str, holder: str) -> None:
+    def leave(cls, scope_id: str, nonce: str, holder: str) -> None:
         """Экземпляр панели holder ушёл с показа nonce: слежение снимается,
         когда показ больше никто не держит; другие показы не трогаются."""
-        key = (thread_id, nonce)
+        key = (scope_id, nonce)
         watch = cls._WATCHES.get(key)
         if watch is None:
             return
@@ -610,20 +610,20 @@ class CanvasWatch:
         cls._drop(key)
 
     @classmethod
-    def drop(cls, thread_id: str) -> None:
-        """Снимает все сторожа треда."""
+    def drop(cls, scope_id: str) -> None:
+        """Снимает все сторожа области."""
         for key in list(cls._WATCHES):
-            if key[0] != thread_id:
+            if key[0] != scope_id:
                 continue
 
             cls._drop(key)
 
     @classmethod
-    def watching(cls, thread_id: str) -> tuple[str, ...]:
-        """Пути показов треда под слежением в порядке постановки."""
+    def watching(cls, scope_id: str) -> tuple[str, ...]:
+        """Пути показов области под слежением в порядке постановки."""
         paths: list[str] = []
         for key, watch in cls._WATCHES.items():
-            if key[0] != thread_id:
+            if key[0] != scope_id:
                 continue
 
             paths.append(watch._path)
@@ -651,11 +651,11 @@ class CanvasWatch:
             raise
         except Exception as exc:
             logger.warning(
-                "canvas watch of %s (show %s) in thread %s stopped by an "
+                "canvas watch of %s (show %s) in scope %s stopped by an "
                 "unexpected error: %s",
                 self._path,
                 self._nonce,
-                self._thread_id,
+                self._scope_id,
                 exc,
                 exc_info=True,
             )
@@ -670,8 +670,8 @@ class CanvasWatch:
     ) -> None:
         """Такты слежения, пока сторож нужен; причина конца — в лог."""
         while self._current():
-            if not transport.alive(self._thread_id):
-                self._ended("the thread has no connected tab")
+            if not transport.alive(self._scope_id):
+                self._ended("the scope has no connected tab")
                 return
 
             try:
@@ -697,7 +697,7 @@ class CanvasWatch:
         """Сигнал на смену версии; True — источник исчерпан, сигнал дослан."""
         if probe.revision != self._seen:
             self._seen = probe.revision
-            await transport.send(self._thread_id, self._signal(probe))
+            await transport.send(self._scope_id, self._signal(probe))
 
         return probe.final
 
@@ -707,11 +707,11 @@ class CanvasWatch:
             return
 
         logger.warning(
-            "canvas watch of %s (show %s) in thread %s: probing failed, it is "
+            "canvas watch of %s (show %s) in scope %s: probing failed, it is "
             "retried every %.1fs while the show is held: %s",
             self._path,
             self._nonce,
-            self._thread_id,
+            self._scope_id,
             self.POLL_SEC,
             exc,
         )
@@ -721,21 +721,21 @@ class CanvasWatch:
             return
 
         logger.info(
-            "canvas watch of %s (show %s) in thread %s: probing recovered after "
+            "canvas watch of %s (show %s) in scope %s: probing recovered after "
             "%d failed attempts",
             self._path,
             self._nonce,
-            self._thread_id,
+            self._scope_id,
             self._failures,
         )
         self._failures = 0
 
     def _ended(self, reason: str) -> None:
         logger.info(
-            "canvas watch of %s (show %s) in thread %s ended: %s",
+            "canvas watch of %s (show %s) in scope %s ended: %s",
             self._path,
             self._nonce,
-            self._thread_id,
+            self._scope_id,
             reason,
         )
 

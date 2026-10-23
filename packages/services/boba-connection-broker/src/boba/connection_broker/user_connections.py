@@ -44,12 +44,12 @@ from boba.connections.whitelist import (
     AmbiguousConnectionError,
     ConnectionWhitelist,
 )
+from boba.core.secrets import SecretReveal
 from boba.identity.context import CallContexts
 from boba.identity.errors import RefusalError
 from boba.kerberos import TicketAuth
 from boba.toolkit.entry import ToolArgv
 from boba.toolkit.facade import NotLogged
-from boba.toolkit.types import SecretReveal
 from boba.toolrun.hosted import HostedTool, ToolSchema
 from boba.toolrun.injected import AsyncInjected, ToolConfigError
 from boba.toolrun.wrapping import ToolBody

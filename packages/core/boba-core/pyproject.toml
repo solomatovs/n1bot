@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-core"
+version = "0.0.26.dev4"
+description = "Boba core: нейтральные соглашения, общие для harness, серверов MCP и агента — текст ошибки валидации без входных данных, раскрытие секретов при дампе, форма имён инструментов серверов MCP."
+requires-python = ">=3.11,<4"
+dependencies = [
+    "pydantic>=2.12,<3",
+    "pydantic-core>=2.41,<3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "boba-stand==0.0.26.dev4",
+    "pytest>=9.1,<10",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true

@@ -343,7 +343,7 @@ class ChainlitSession(Session, LiveSignIn):
         user_id, thread_id = owner
         workspace = await storage.workspace(user_id, thread_id)
 
-        return CanvasScope(user_id=user_id, thread_id=thread_id, workspace=workspace)
+        return CanvasScope(user_id=user_id, scope_id=thread_id, workspace=workspace)
 
     @staticmethod
     def metadata_of(user: cl.User | cl.PersistedUser | None) -> Mapping[str, object]:

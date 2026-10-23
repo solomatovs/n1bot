@@ -76,6 +76,7 @@ from boba.cancellation import RunCancellation, StopReason, ToolStopped
 from boba.canvas.keys import ObjectKey
 from boba.connection_broker.sealed import SealedConnectionParams
 from boba.connections.sealed import OfferedSource, SealFeature
+from boba.core.validation import ValidationText
 from boba.identity.context import (
     CallContext,
     HumanInitiator,
@@ -109,7 +110,6 @@ from boba.mcp_server.files import (
 from boba.runtime.storage import LocalStorageConfig, StorageFactory
 from boba.toolkit.channels import JournalChannels, ToolChannel
 from boba.toolkit.dag import CallDag, DagNode, ToolServer
-from boba.toolkit.failure import ValidationText
 from boba.toolkit.ports import ProgressReport
 from boba.toolkit.result import ContentMime, ErrorResult
 from boba.toolkit.wire import (
@@ -613,7 +613,7 @@ class FileUploadTool(Tool):
             subject = self._subjects.current()
             scope = self._scopes.of(subject, arguments)
             key = ObjectKey(
-                user_id=subject.user_key, thread_id=scope.id, name=request.name
+                user_id=subject.user_key, scope_id=scope.id, name=request.name
             )
         except ValidationError as exc:
             return self._refused(
@@ -623,7 +623,7 @@ class FileUploadTool(Tool):
         except CallScopeError as exc:
             return self._refused(f"file_upload: {exc}")
 
-        address = self._routes.address(key.thread_id, key.name)
+        address = self._routes.address(key.scope_id, key.name)
         text = (
             f"upload the file body with HTTP PUT to {address} of this server "
             f"(same bearer token); tools read it at {key.in_workspace()}"

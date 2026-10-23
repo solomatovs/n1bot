@@ -41,9 +41,9 @@ from pydantic import (
 )
 
 from boba.connections.marks import ConnectionRefusal
+from boba.core.validation import ValidationText
 from boba.identity.errors import RefusalError
 from boba.toolkit.calls import SchemaMark
-from boba.toolkit.failure import ValidationText
 
 __all__ = [
     "ConnectionOffer",

@@ -68,6 +68,8 @@ from boba.cancellation import RunCancellation, StopReason
 from boba.canvas.canvas import CanvasScope
 from boba.connection_broker.sealing import CallSealing, McpServerInfo
 from boba.connections.stored import ConnectionStoreError
+from boba.core.mcp_names import McpToolNames
+from boba.core.validation import ValidationText
 from boba.identity.context import (
     CallContext,
     CallContexts,
@@ -94,8 +96,7 @@ from boba.mcp_client.client import (
 from boba.messaging import JournalOpened, LockToken, MessageBus, MessageBusError
 from boba.toolkit.chain import StreamPlanError
 from boba.toolkit.dag import DagNode, ToolServer, ToolServersError
-from boba.toolkit.failure import InvokeErrorKind, ValidationText
-from boba.toolkit.mcp import McpToolNames
+from boba.toolkit.failure import InvokeErrorKind
 from boba.toolkit.wire import JournalNotice
 from boba.toolrun.hosted import DirectCalls
 from boba.toolrun.injected import ToolConfigError
@@ -1002,7 +1003,7 @@ class McpRelay:
 
         scope = CanvasScope(
             user_id=str(registration.user_id),
-            thread_id=registration.thread_id,
+            scope_id=registration.thread_id,
             workspace=workspace,
         )
 

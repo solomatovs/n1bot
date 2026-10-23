@@ -531,7 +531,7 @@ async def _store(thread_id: str, files: Mapping[str, bytes]) -> None:
             raise AssertionError(f"mcp server {server!r} offers no file storage")
 
         for name, blob in files.items():
-            key = ObjectKey(user_id=owner, thread_id=thread_id, name=name)
+            key = ObjectKey(user_id=owner, scope_id=thread_id, name=name)
             await asyncio.wait_for(remote.upload(key, StorageSeed().chunks(blob)), 120)
     finally:
         await servers.stop()

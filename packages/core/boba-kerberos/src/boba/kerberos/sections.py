@@ -24,8 +24,8 @@ from pydantic import (
     model_validator,
 )
 
+from boba.core.secrets import SecretRevealing
 from boba.kerberos.errors import KerberosError
-from boba.toolkit.types import SecretRevealing
 
 __all__ = [
     "CcacheKind",

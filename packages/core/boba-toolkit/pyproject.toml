@@ -8,6 +8,7 @@ version = "0.0.26.dev4"
 description = "Основание инструментов: песочница bwrap, workspace-образы, отмена хода и контракт результата."
 requires-python = ">=3.11,<4"
 dependencies = [
+    "boba-core==0.0.26.dev4",
     "boba-cancellation==0.0.26.dev4",
     "mcp-types>=2.3,<3",
     "pydantic-core>=2.41,<3",

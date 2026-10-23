@@ -499,7 +499,7 @@ class TestBashTool:
         self, zygote_stand: ZygoteStand, tmp_path: Path
     ) -> None:
         """Бинды зиготы статичны: пути на вызов живут только в rw_images."""
-        template = f"{tmp_path}/{{user_id}}/{{thread_id}}"
+        template = f"{tmp_path}/{{user_id}}/{{scope_id}}"
         profile_dto = _profile(
             ro=_PYTHON_BINDS,
             rw=(template,),

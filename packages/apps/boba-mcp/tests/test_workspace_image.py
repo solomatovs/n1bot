@@ -133,7 +133,7 @@ def build_template() -> Path:
 
 
 def _image_tpl(tmp_path: Path) -> str:
-    """Образ общий на пользователя: {thread_id} в пути отсутствует."""
+    """Образ общий на пользователя: {scope_id} в пути отсутствует."""
     return f"{tmp_path}/ws/{{user_id}}.ext4"
 
 
@@ -208,7 +208,7 @@ def _bash(
     return zygote_stand.caller(
         section,
         profile_dto,
-        path_vars=lambda: {"user_id": "7", "thread_id": thread_id},
+        path_vars=lambda: {"user_id": "7", "scope_id": thread_id},
     )
 
 
@@ -292,7 +292,7 @@ class TestObjectKey:
         return client
 
     def test_key_splits_into_image_and_rel(self) -> None:
-        """Образ на пользователя, thread_id остаётся частью пути внутри."""
+        """Образ на пользователя, scope_id остаётся частью пути внутри."""
         if not (
             self._client()._image_and_rel("7/t1/upload/report.pdf")
             == (

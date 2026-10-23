@@ -27,6 +27,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "boba-core==0.0.26.dev4",
     "boba-stream-pg-to-pg==0.0.26.dev4",
     "boba-stream-ch-to-ch==0.0.26.dev4",
     "boba-stream-pg-to-ch==0.0.26.dev4",

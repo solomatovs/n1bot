@@ -8,6 +8,7 @@ version = "0.0.26.dev4"
 description = "Boba stand core: помощники тестов, которым хватает домена — фейки, контекст вызова, аудит зависимостей."
 requires-python = ">=3.11,<4"
 dependencies = [
+    "boba-core==0.0.26.dev4",
     "boba-cancellation==0.0.26.dev4",
     "boba-identity==0.0.26.dev4",
     "boba-toolkit==0.0.26.dev4",

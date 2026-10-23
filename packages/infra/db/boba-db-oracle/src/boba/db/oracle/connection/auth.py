@@ -22,7 +22,7 @@ from pydantic import (
     field_serializer,
 )
 
-from boba.toolkit.types import SecretRevealing
+from boba.core.secrets import SecretRevealing
 
 __all__ = [
     "NetProtocol",

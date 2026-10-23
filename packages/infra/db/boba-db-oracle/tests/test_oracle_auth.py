@@ -6,6 +6,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
+from boba.core.secrets import SecretRevealing
 from boba.db.oracle.connection import (
     NetProtocol,
     OracleAuthMethod,
@@ -13,7 +14,6 @@ from boba.db.oracle.connection import (
     PasswordAuth,
     WalletAuth,
 )
-from boba.toolkit.types import SecretRevealing
 
 PROFILE = {
     "host": "db1",

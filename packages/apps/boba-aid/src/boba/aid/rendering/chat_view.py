@@ -50,9 +50,9 @@ from boba.canvas.canvas import (
     CanvasScope,
 )
 from boba.canvas.storage import StorageError, StorageNotFoundError
+from boba.core.mcp_names import McpToolNames
 from boba.runtime.storage import StorageClient
 from boba.toolkit.calls import CallViews, ToolCallBase, ToolCallModels, ToolIntent
-from boba.toolkit.mcp import McpToolNames
 from boba.toolkit.result import (
     BlockAudience,
     ContentMime,
@@ -1533,7 +1533,7 @@ class ChatView:
         workspace = await self._storage.workspace(self._user_key, self._thread_id)
 
         return CanvasScope(
-            user_id=self._user_key, thread_id=self._thread_id, workspace=workspace
+            user_id=self._user_key, scope_id=self._thread_id, workspace=workspace
         )
 
     async def _mounted(
