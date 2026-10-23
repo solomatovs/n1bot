@@ -568,7 +568,7 @@ class ServiceLinks(AgentLinks):
 
         service = AgentService(
             self._service,
-            McpCaller(login=owner.login, roles=owner.roles),
+            McpCaller(login=owner.login, roles=frozenset(owner.roles)),
             launch.chat.model_name,
             client,
             self._relay,
@@ -632,7 +632,7 @@ class AgentLauncher:
         DataUnavailableError — слой настроек не записан.
         """
         profile = identity.profile
-        owner = AgentOwner(login=identity.login, roles=identity.roles)
+        owner = AgentOwner(login=identity.login, roles=tuple(sorted(identity.roles)))
         chat = self._specs.chat_settings(profile.name, profile.config, owner)
         mcp = self._files.mcp(profile.config.mcp)
         await self._table.save_chat_layer(

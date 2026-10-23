@@ -210,7 +210,7 @@ class AgentOwner(BaseModel):
     model_config = ConfigDict(frozen=True, extra="ignore")
 
     login: str = Field(min_length=1)
-    roles: frozenset[str]
+    roles: tuple[str, ...]
 
 
 class ChatAgentSettings(BaseModel):
