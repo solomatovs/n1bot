@@ -1,5 +1,5 @@
 - article: Покажи пример отчёта по продажам за квартал
-- img "Avatar for Ассистент-BOBA"
+- img "Avatar for AID"
 - heading "Отчёт по продажам за III квартал" [level=1]
 - heading "Итоги" [level=2]
 - article:
@@ -69,7 +69,7 @@
     - /url: "#%D0%B8%D1%82%D0%BE%D0%B3%D0%B8"
   - text: .
 - article: Как считается маржа?
-- img "Avatar for Ассистент-BOBA"
+- img "Avatar for AID"
 - article:
   - text: "Маржа — доля цены, которая остаётся после себестоимости:"
   - math: m = ( p − c ) / p

@@ -476,8 +476,10 @@ class TestRetiredServers:
             relays.registrations.of(first)
 
             # вышедший процесс заменяется новым перед следующим ходом
-            os.kill(agent.process.pid, signal.SIGKILL)
-            await agent.process.exited()
+            process = agent.process
+            assert isinstance(process, AgentProcess)
+            os.kill(process.pid, signal.SIGKILL)
+            await process.exited()
             await agent.ask(Question(key="draft", text=ScenarioName.ANSWER.value))
             assert updates.finished, updates.updates
             second = agent.process._servers[0].server_id

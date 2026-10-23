@@ -1,5 +1,11 @@
 import { cn } from '@/lib/utils';
-import { PropsWithChildren, useEffect, useMemo, useState } from 'react';
+import {
+  PropsWithChildren,
+  ReactNode,
+  useEffect,
+  useMemo,
+  useState
+} from 'react';
 
 import type { IStep } from '@chainlit/react-client';
 
@@ -28,6 +34,16 @@ export default function Step({
   const hasContent = step.input || step.output || step.steps?.length;
   const isError = step.isError;
   const stepName = step.name;
+  // boba: подпись контейнера хода — текущее действие хода; длинная обрезается
+  // по ширине ленты, целиком — во всплывающей подсказке
+  let label: ReactNode = stepName;
+  if (step.type === 'run') {
+    label = (
+      <span className="truncate min-w-0" title={stepName}>
+        {stepName}
+      </span>
+    );
+  }
 
   const [openValue, setOpenValue] = useState<string>(
     step.defaultOpen ? step.id : ''
@@ -57,11 +73,11 @@ export default function Step({
         >
           {using ? (
             <>
-              <Translator path="chat.messages.status.using" /> {stepName}
+              <Translator path="chat.messages.status.using" /> {label}
             </>
           ) : (
             <>
-              <Translator path="chat.messages.status.used" /> {stepName}
+              <Translator path="chat.messages.status.used" /> {label}
             </>
           )}
         </p>
@@ -81,7 +97,7 @@ export default function Step({
         <AccordionItem value={step.id} className="border-none">
           <AccordionTrigger
             className={cn(
-              'flex items-center gap-1 justify-start transition-none p-0 hover:no-underline',
+              'flex items-center gap-1 justify-start transition-none p-0 hover:no-underline min-w-0',
               isError && 'text-red-500',
               !using && !isError && 'text-muted-foreground hover:text-foreground',
               using && 'loading-shimmer'
@@ -90,11 +106,11 @@ export default function Step({
           >
             {using ? (
               <>
-                <Translator path="chat.messages.status.using" /> {stepName}
+                <Translator path="chat.messages.status.using" /> {label}
               </>
             ) : (
               <>
-                <Translator path="chat.messages.status.used" /> {stepName}
+                <Translator path="chat.messages.status.used" /> {label}
               </>
             )}
           </AccordionTrigger>
