@@ -12,10 +12,10 @@ dependencies = [
     "fastmcp-slim[server]>=4.0,<5",
     "mcp-types>=2.3,<3",
     "mcp>=2.3,<3",
-    "joserfc>=1.0,<2",
     "boba-runtime==0.0.26.dev4",
     "boba-mcp-adapter==0.0.26.dev4",
     "boba-auth==0.0.26.dev4",
+    "boba-oauth==0.0.26.dev4",
     "boba-access==0.0.26.dev4",
     "boba-cancellation==0.0.26.dev4",
     "boba-canvas==0.0.26.dev4",
@@ -26,7 +26,6 @@ dependencies = [
     "boba-connection-broker==0.0.26.dev4",
     "starlette>=1.0,<2",
     "uvicorn[standard]>=0.35,<1",
-    "cryptography>=45.0.1",
     "pydantic>=2.12,<3",
 ]
 

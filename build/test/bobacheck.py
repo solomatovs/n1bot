@@ -1,8 +1,8 @@
 """Проверка собранного образа приложения boba (make test): интерпретатор, пакеты boba-*,
 консольные точки входа; у приложения с песочницей — образы корней плагинов и модели
-рядом с релизом, у чата — файлы ассетов, названные конфигом chainlit, самопроверка
-агента boba (`boba self-check`: данные пакетов внутри бинарника) и его ход с моделью
-проверки.
+рядом с релизом, у чата — файлы ассетов, названные конфигом chainlit; у чата и
+службы агента — самопроверка агента boba (`boba self-check`: данные пакетов внутри
+бинарника) и его ход с моделью проверки.
 
 Ход идёт с историей в памяти: в контейнере проверки нет сети, и postgres, где лежит
 история агента в проде, недоступен. Файлы схемы истории postgres внутри бинарника
@@ -10,7 +10,7 @@
 тест бинарника test_cli_binary.py (маркер binary) на базе стенда.
 
 Скрипт идёт на stdin интерпретатора образа с окружением conf/boba.env, без сети:
-  python3 - --app aid|mcp --base /app/boba --names <app/packages.txt> \
+  python3 - --app aid|mcp|agent --base /app/boba --names <app/packages.txt> \
     [--sandbox --ocr <модель>...]
 Последняя строка вывода — RESULT: ALL OK либо RESULT: FAIL со списком проваленных
 проверок.
@@ -51,12 +51,20 @@ class App(StrEnum):
 
     AID = "aid"
     MCP = "mcp"
+    AGENT = "agent"
 
     @property
     def third_party(self) -> tuple[str, ...]:
         if self is App.AID:
             return ("pydantic", "fastapi", "chainlit")
+        if self is App.AGENT:
+            return ("pydantic", "fastmcp", "acp")
         return ("pydantic", "fastmcp")
+
+    @property
+    def runs_agent(self) -> bool:
+        """Приложение запускает агента boba: чат на вкладку, служба на сессию."""
+        return self is not App.MCP
 
 
 class SandboxOnly(StrEnum):
@@ -129,11 +137,11 @@ class OptionsParser:
             )
 
         agent = ""
-        if app is App.AID:
+        if app.runs_agent:
             agent = os.environ.get(self.AGENT_VAR, "")
-        if app is App.AID and not agent:
+        if app.runs_agent and not agent:
             self._parser.error(
-                f"у чата нет {self.AGENT_VAR} в окружении: проверь conf/boba.env"
+                f"у {app.value} нет {self.AGENT_VAR} в окружении: проверь conf/boba.env"
             )
 
         return Options(
@@ -465,7 +473,7 @@ class AgentTurn:
 
 class ImageCheck:
     """Проверка образа приложения по разделам: каждый пишет строки в Report, итог —
-    код выхода make test. Ход агента ведёт AgentTurn, только у чата."""
+    код выхода make test. Ход агента ведёт AgentTurn — у чата и службы агента."""
 
     TOOLS_GROUP: ClassVar[str] = "boba.tools"
     END_TURN: ClassVar[str] = "end_turn"
@@ -488,6 +496,7 @@ class ImageCheck:
             self._sandbox()
         if self._options.app is App.AID:
             self._assets()
+        if self._options.app.runs_agent:
             self._agent()
         return self._report.result()
 
