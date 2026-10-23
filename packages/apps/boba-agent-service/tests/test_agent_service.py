@@ -14,17 +14,15 @@ from __future__ import annotations
 
 import asyncio
 import json
-import sys
 import time
 import uuid
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping
 from pathlib import Path
 from typing import Any, ClassVar
 
 import httpx2
 import mcp_types as mt
 import pytest
-import uvicorn
 from acp.exceptions import RequestError
 from acp.experimental.v2 import Client, schema
 from acp.http import create_http_stream
@@ -37,7 +35,7 @@ from psycopg.conninfo import make_conninfo
 from pydantic import AnyUrl
 from websockets.exceptions import InvalidStatus
 
-from boba.agent_service.app import AgentServiceConfig, AgentServiceHost, ServiceMark
+from boba.agent_service.app import ServiceMark
 from boba.config import bind
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
@@ -45,10 +43,9 @@ from boba.db.postgres.connection.auth import KeytabAuth
 from boba.krb import KerberosEnv, KerberosWorkspace
 from boba.runtime.config import ProcessConfig
 from boba.stand.agent import FakeServer
+from boba.stand.agent_service import AgentServiceStand, ServiceProfiles
 from boba.stand.database import TestDatabase
-from boba.stand.service_signin import ServiceSignIn
 from boba.stand.ui.fake_llm import FailureName, ScenarioName
-from boba.stand.ui.stand import StandPorts
 from boba.transport.acp.protocol import (
     AcpErrorCode,
     AcpVersion,
@@ -64,10 +61,6 @@ from boba.transport.acp.protocol import (
 pytestmark = pytest.mark.anyio
 
 WAIT_SEC = 60.0
-PROXY_SECRET = "stand-agent-proxy-secret"
-CLIENT_ID = "stand-chat"
-CLIENT_SECRET = "stand-agent-client-secret"
-API_KEY = "sk-agent-service-stand"
 
 
 class Profile:
@@ -178,36 +171,12 @@ class StandClient(Client):
     ) -> schema.CancelElicitationResponse:
         return schema.CancelElicitationResponse()
 
-    async def complete_elicitation(self, elicitation_id: str, **kwargs: Any) -> None:
-        return None
-
-    async def connect_mcp(
-        self, server_id: str, **kwargs: Any
-    ) -> schema.ConnectMcpResponse:
-        raise RequestError.method_not_found("mcp/connect")
-
-    async def mcp_message(
-        self,
-        connection_id: str,
-        method: str,
-        params: dict[str, Any] | None = None,
-        **kwargs: Any,
-    ) -> Any:
-        raise RequestError.method_not_found("mcp/message")
-
-    async def notify_mcp(
-        self,
-        connection_id: str,
-        method: str,
-        params: dict[str, Any] | None = None,
-        **kwargs: Any,
-    ) -> None:
-        return None
-
-    async def disconnect_mcp(
-        self, connection_id: str, **kwargs: Any
-    ) -> schema.DisconnectMcpResponse:
-        raise RequestError.method_not_found("mcp/disconnect")
+    # SDK считает метод протокола, оставленный как есть, неподдержанным
+    connect_mcp = Client.connect_mcp
+    mcp_message = Client.mcp_message
+    notify_mcp = Client.notify_mcp
+    disconnect_mcp = Client.disconnect_mcp
+    complete_elicitation = Client.complete_elicitation
 
     def texts(self, session_id: str) -> str:
         found: list[str] = []
@@ -286,126 +255,6 @@ class HistoryStand:
         }
 
 
-class ServiceStand:
-    """Служба агента в цикле теста: конфиг собран из стенда, процессы агента
-    — модуль boba.cli.app из venv, вход — proxy доверенного клиента."""
-
-    def __init__(  # noqa: PLR0913 — стенд собирается всеми своими частями
-        self,
-        process: ProcessConfig,
-        history: HistoryStand,
-        model: FakeServer,
-        workdir: Path,
-        max_processes: int,
-        idle_sec: float,
-    ) -> None:
-        self.port = StandPorts().free()
-        self.public_url = f"http://127.0.0.1:{self.port}"
-        base_url = f"http://127.0.0.1:{model.port}/v1"
-        config = AgentServiceConfig.model_validate(
-            {
-                "schema": "agent_service_stand",
-                "krb": process.krb.model_dump(),
-                "auth": [
-                    {"type": "proxy", "secret": PROXY_SECRET, "roles": {"header": {}}}
-                ],
-                "session": {
-                    "auth_secret": "stand-agent-session-secret",
-                    "session_ttl_sec": 300,
-                    "session_max_sec": 3600,
-                    "generation": "stand",
-                },
-                "agent": {
-                    "host": "127.0.0.1",
-                    "port": self.port,
-                    "path": "/acp",
-                    "public_url": self.public_url,
-                    "shutdown_timeout_sec": 2,
-                    "process": {
-                        "command": sys.executable,
-                        "args": ["-m", "boba.cli.app", "acp", "--setting-sources", ""],
-                        "workdir": str(workdir),
-                        "stop_timeout_sec": 5,
-                        "max_processes": max_processes,
-                        "idle_sec": idle_sec,
-                    },
-                    "settings": history.layer(),
-                    "profiles": {
-                        Profile.MAIN: self._profile(
-                            ["dev", "analyst"], Profile.MAIN_MODEL, base_url
-                        ),
-                        Profile.SPARE: self._profile(
-                            ["dev"], Profile.SPARE_MODEL, base_url
-                        ),
-                    },
-                    "clients": {CLIENT_ID: {"secret": CLIENT_SECRET}},
-                },
-            }
-        )
-        self.host = AgentServiceHost(config)
-        self._sign_in = ServiceSignIn(
-            self.public_url, CLIENT_ID, CLIENT_SECRET, PROXY_SECRET
-        )
-        self._server: uvicorn.Server | None = None
-        self._task: asyncio.Task[None] | None = None
-
-    @staticmethod
-    def _profile(roles: Sequence[str], model: str, base_url: str) -> dict[str, Any]:
-        return {
-            "roles": list(roles),
-            "model": {
-                "provider": {"kind": "openai", "baseUrl": base_url, "apiKey": API_KEY},
-                "model": model,
-                "contextWindow": 32000,
-                "maxOutputTokens": 4096,
-            },
-        }
-
-    def url(self) -> str:
-        return f"{self.public_url}/acp"
-
-    def ws_url(self) -> str:
-        return f"ws://127.0.0.1:{self.port}/acp"
-
-    async def start(self) -> None:
-        await self.host.start()
-        self._server = uvicorn.Server(
-            uvicorn.Config(
-                self.host.app(),
-                host="127.0.0.1",
-                port=self.port,
-                log_level="warning",
-                timeout_graceful_shutdown=2,
-            )
-        )
-        self._task = asyncio.create_task(self._server.serve())
-        while not self._server.started:
-            if self._task.done():
-                await self._task
-
-            await asyncio.sleep(0.02)
-
-    async def stop(self) -> None:
-        if self._server is not None:
-            self._server.should_exit = True
-
-        if self._task is not None:
-            await self._task
-
-        await self.host.stop()
-
-    async def token(self, login: str, roles: str) -> str:
-        """Токен ресурса ACP по утверждению доверенного клиента."""
-        return await asyncio.to_thread(self._sign_in.token, login, roles, self.url())
-
-    async def processes_drop_to(self, wanted: int) -> None:
-        deadline = time.monotonic() + WAIT_SEC
-        while self.host.quota().taken() != wanted:
-            taken = self.host.quota().taken()
-            assert time.monotonic() < deadline, f"{taken} processes, want {wanted}"
-            await asyncio.sleep(0.1)
-
-
 class Connected:
     """Подключение клиента к службе: транспорт SDK, соединение ACP v2,
     клиент и сервер инструментов."""
@@ -478,19 +327,22 @@ class Stands:
     ) -> None:
         self._process = process
         self._history = history
-        self._model = model
+        self._profiles = (
+            ServiceProfiles(f"http://127.0.0.1:{model.port}/v1")
+            .add(Profile.MAIN, ["dev", "analyst"], Profile.MAIN_MODEL)
+            .add(Profile.SPARE, ["dev"], Profile.SPARE_MODEL)
+        )
         self._root = root
-        self.started: list[ServiceStand] = []
+        self.started: list[AgentServiceStand] = []
 
     async def start(
         self, max_processes: int = 8, idle_sec: float = 600.0
-    ) -> ServiceStand:
-        workdir = self._root / f"agents-{len(self.started)}"
-        stand = ServiceStand(
-            self._process,
-            self._history,
-            self._model,
-            workdir,
+    ) -> AgentServiceStand:
+        stand = AgentServiceStand(
+            self._process.krb,
+            self._root / f"agents-{len(self.started)}",
+            self._history.layer(),
+            self._profiles,
             max_processes,
             idle_sec,
         )
@@ -515,7 +367,7 @@ async def stands(
             await stand.stop()
 
 
-async def websocket(stand: ServiceStand, token: str) -> Connected:
+async def websocket(stand: AgentServiceStand, token: str) -> Connected:
     transport = await create_websocket_stream(
         stand.ws_url(), headers={"Authorization": f"Bearer {token}"}
     )
@@ -523,7 +375,7 @@ async def websocket(stand: ServiceStand, token: str) -> Connected:
     return Connected(transport, StandTools())
 
 
-def http(stand: ServiceStand, token: str) -> Connected:
+def http(stand: AgentServiceStand, token: str) -> Connected:
     client = httpx2.AsyncClient(
         headers={"Authorization": f"Bearer {token}"}, timeout=httpx2.Timeout(None)
     )

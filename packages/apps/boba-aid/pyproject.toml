@@ -35,6 +35,7 @@ dependencies = [
     "boba-transport-http==0.0.26.dev4",
     "boba-transport-acp==0.0.26.dev4",
     "agent-client-protocol==1.0.0rc3",
+    "httpx2>=2.10,<3",
     "mcp>=2.3,<3",
     "anyio>=4,<5",
     "psycopg>=3.3,<4",

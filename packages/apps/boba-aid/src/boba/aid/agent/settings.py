@@ -66,6 +66,7 @@ from boba.transport.http import HttpTransportConfig
 from boba.transport.http.connection import BearerAuth, HttpConnection
 
 __all__ = [
+    "AgentOwner",
     "AgentProviderKind",
     "AgentSettingsError",
     "AgentSettingsTable",
@@ -202,16 +203,29 @@ class SettingsFile(FileModel):
     system_prompt_file: str = Field(min_length=1)
 
 
+class AgentOwner(BaseModel):
+    """Пользователь треда глазами службы агента: логин и роли, с которыми
+    чат входит в службу от его имени (вход proxy)."""
+
+    model_config = ConfigDict(frozen=True, extra="ignore")
+
+    login: str = Field(min_length=1)
+    roles: frozenset[str]
+
+
 class ChatAgentSettings(BaseModel):
     """Слой чата: профиль модели агента и системный промпт профиля одного
-    треда. Из него собирается файл настроек процесса; лишние ключи
-    сохранённой строки при чтении отбрасываются."""
+    треда и его пользователь. Из него собирается файл настроек процесса, а в
+    режиме службы — вход в неё при удалении треда; лишние ключи сохранённой
+    строки при чтении отбрасываются. owner None — строка записана до режима
+    службы: процессу владелец не нужен."""
 
     model_config = ConfigDict(frozen=True, extra="ignore")
 
     model_name: str = Field(min_length=1)
     model: ModelFile
     system_prompt: str
+    owner: AgentOwner | None = None
 
 
 class RemoteProviderView(BaseModel):
@@ -235,7 +249,9 @@ class ProfileModelSpecs:
     def __init__(self, model: AgentModelConfig) -> None:
         self._model = model
 
-    def chat_settings(self, name: str, profile: ChatProfileConfig) -> ChatAgentSettings:
+    def chat_settings(
+        self, name: str, profile: ChatProfileConfig, owner: AgentOwner
+    ) -> ChatAgentSettings:
         """Ошибки:
         AgentSettingsError — провайдер профиля не удалённый по http или без адреса.
         """
@@ -243,6 +259,7 @@ class ProfileModelSpecs:
             model_name=name,
             model=self.model(name, profile),
             system_prompt=profile.system_prompt,
+            owner=owner,
         )
 
     def model(self, name: str, profile: ChatProfileConfig) -> ModelFile:
