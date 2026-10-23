@@ -12,34 +12,31 @@ from __future__ import annotations
 import shlex
 from collections.abc import Sequence
 from enum import StrEnum
-from typing import Annotated, Any, Literal
+from typing import Annotated, Literal
 
-from psycopg.conninfo import make_conninfo
 from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
-    SecretStr,
     field_validator,
 )
 
-from boba.db.postgres.connection import PostgresConfig
-from boba.db.postgres.connection.auth import PasswordAuth, PostgresKerberos, TrustAuth
-from boba.kerberos import KerberosPasswordAuth, KeytabAuth
-from boba.mcp_client.client import HttpLocation, ProxyAuth
+from boba.db.postgres.connection import (
+    LibpqConnection,
+    PostgresAuthError,
+    PostgresConfig,
+)
+from boba.mcp_client.client import HttpRoute, ProxyAuth
+from boba.runtime.config import ValueCipherConfig
 
 __all__ = [
     "AgentCommandConfig",
     "AgentConfig",
     "AgentHistoryConfig",
     "AgentHistoryKind",
-    "AgentModelConfig",
     "AgentServiceConfig",
-    "DsnKey",
-    "LibpqConnection",
     "MemoryAgentHistory",
     "PostgresAgentHistory",
-    "ReasoningReturn",
 ]
 
 
@@ -49,15 +46,6 @@ class AgentHistoryKind(StrEnum):
 
     POSTGRES = "postgres"
     MEMORY = "memory"
-
-
-class ReasoningReturn(StrEnum):
-    """Возврат рассуждений прошлых ответов модели: значения — ключ
-    `reasoningReturn` профиля модели в файле настроек агента."""
-
-    NEVER = "never"
-    TURN = "turn"
-    ALWAYS = "always"
 
 
 class AgentCommandConfig(BaseModel):
@@ -128,8 +116,11 @@ class AgentServiceConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    endpoint: HttpLocation = Field(
-        description="Адрес ACP службы: схема, хост, порт и путь ([agent].path службы)."
+    endpoint: HttpRoute = Field(
+        description=(
+            "Адрес ACP службы: сервис [service.boba_agent] (схема, хост, порт и "
+            "префикс) и путь ACP под ним ([agent].path службы)."
+        )
     )
     auth: ProxyAuth = Field(
         description=(
@@ -150,103 +141,36 @@ class AgentServiceConfig(BaseModel):
     )
 
 
-class DsnKey(StrEnum):
-    """Поля PostgresConfig, которые уходят в строку подключения libpq агента."""
-
-    HOST = "host"
-    HOSTADDR = "hostaddr"
-    PORT = "port"
-    DBNAME = "dbname"
-    SSLMODE = "sslmode"
-    CONNECT_TIMEOUT = "connect_timeout"
-
-
-class DsnAuthKey(StrEnum):
-    """Ключи libpq роли и пароля в строке подключения."""
-
-    USER = "user"
-    PASSWORD = "password"  # noqa: S105 — имя ключа libpq
-
-
 class PostgresAgentHistory(BaseModel):
-    """История агента в Postgres по подключению процесса [postgres] (роль с
-    паролем, доверием pg_hba либо билетом Kerberos) в своей схеме.
+    """История агента в Postgres своим подключением ([postgres_history]: своя
+    роль с паролем, доверием pg_hba либо своим принципалом Kerberos) в своей
+    схеме. Подключение чата [postgres] истории не касается.
 
     Агент принимает строку libpq: её и окружение libkrb5 собирает
-    LibpqConnection; что подключение процесса ею выразимо, проверяет AppConfig.
+    LibpqConnection (boba-db-postgres); что вход ею выразим, проверяет модель.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
 
     kind: Literal[AgentHistoryKind.POSTGRES]
     db_schema: str = Field(alias="schema", min_length=1)
-
-
-class LibpqConnection:
-    """Подключение процесса [postgres] глазами агента: строка libpq файла
-    настроек и kerberos-вариант входа для окружения libkrb5.
-
-    Агент принимает строку libpq: пароль идёт в ней, kerberos-роль входит
-    билетом из кэша, путь к которому процесс получает переменными libkrb5
-    (KRB5CCNAME, KRB5_CONFIG). Строят его сборка файла настроек
-    (SettingsFileBuilder), окружение процесса агента (HistoryEnvironment) и
-    проверка AppConfig на старте.
-    """
-
-    def __init__(self, postgres: PostgresConfig) -> None:
-        self._postgres = postgres
-
-    def auth(self) -> PasswordAuth | TrustAuth | KeytabAuth | KerberosPasswordAuth:
-        """Авторизация, выразимая строкой libpq и окружением libkrb5.
-
-        Ошибки:
-        ValueError — у подключения сертификатная, делегированная или билетная
-            авторизация.
-        """
-        auth = self._postgres.auth
-        if isinstance(auth, PasswordAuth | TrustAuth):
-            return auth
-
-        if isinstance(auth, KeytabAuth | KerberosPasswordAuth):
-            return auth
-
-        msg = (
-            f"[postgres] auth {auth.method!r} cannot be handed to the agent "
-            "history as a libpq connection string; expected method 'password', "
-            "'trust', 'kerberos_keytab' or 'kerberos_password'"
+    postgres: PostgresConfig = Field(
+        description=(
+            "Подключение истории ([postgres_history]): строкой libpq оно уходит "
+            "агенту в файл настроек."
         )
-        raise ValueError(msg)
+    )
 
-    def kerberos_auth(self) -> KeytabAuth | KerberosPasswordAuth | None:
-        """Kerberos-вариант авторизации; None — роль входит паролем или доверием."""
-        auth = self.auth()
-        if isinstance(auth, KeytabAuth | KerberosPasswordAuth):
-            return auth
+    @field_validator("postgres")
+    @classmethod
+    def _fits_libpq(cls, value: PostgresConfig) -> PostgresConfig:
+        try:
+            LibpqConnection(value).auth()
+        except PostgresAuthError as exc:
+            msg = f"[agent.history].postgres: {exc}"
+            raise ValueError(msg) from exc
 
-        return None
-
-    def dsn(self) -> SecretStr:
-        """Строка подключения libpq: с паролем у парольной роли, без пароля у
-        kerberos-роли (её имя — короткое имя принципала); уходит в файл 0600."""
-        parts: dict[str, Any] = {}
-        for key in DsnKey:
-            value = getattr(self._postgres, key.value)
-            if value is None:
-                continue
-
-            parts[key.value] = value
-
-        auth = self.auth()
-        if isinstance(auth, PasswordAuth | TrustAuth):
-            parts[DsnAuthKey.USER.value] = auth.user
-
-        if isinstance(auth, PasswordAuth):
-            parts[DsnAuthKey.PASSWORD.value] = auth.password.get_secret_value()
-
-        if isinstance(auth, KeytabAuth | KerberosPasswordAuth):
-            parts[DsnAuthKey.USER.value] = PostgresKerberos.role_of(auth.principal)
-
-        return SecretStr(make_conninfo(**parts))
+        return value
 
 
 class MemoryAgentHistory(BaseModel):
@@ -261,23 +185,6 @@ class MemoryAgentHistory(BaseModel):
 AgentHistoryConfig = Annotated[
     PostgresAgentHistory | MemoryAgentHistory, Field(discriminator="kind")
 ]
-
-
-class AgentModelConfig(BaseModel):
-    """Секция [agent.model]: что агент знает о модели профилей сверх профиля
-    чата — окно, потолок ответа и возврат рассуждений."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    context_window: int = Field(gt=0, description="Окно контекста модели, токены.")
-    max_output_tokens: int = Field(gt=0, description="Потолок ответа модели.")
-    reasoning_return: ReasoningReturn = Field(
-        description=(
-            "Возвращать ли модели её рассуждения прошлых ответов: never, turn "
-            "(в пределах хода — так требуют thinking-модели вроде deepseek при "
-            "вызове инструмента), always."
-        )
-    )
 
 
 class AgentConfig(BaseModel):
@@ -306,6 +213,12 @@ class AgentConfig(BaseModel):
             "инструментов, в секундах: сервер отвергает значение старше срока."
         ),
     )
+    settings_table: ValueCipherConfig = Field(
+        description=(
+            "Секция [agent.settings_table]: шифрование секретов слоя чата "
+            "настроек агента в таблице agent_chat_settings."
+        )
+    )
     question_timeout_sec: int = Field(
         gt=0,
         description=(
@@ -314,4 +227,3 @@ class AgentConfig(BaseModel):
             "ответом cancel, ход идёт дальше."
         ),
     )
-    model: AgentModelConfig

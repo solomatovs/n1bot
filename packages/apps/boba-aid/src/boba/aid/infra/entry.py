@@ -97,7 +97,7 @@ class AppEntry:
 
     SECTION: ClassVar[str] = "app.aid"
 
-    SESSION_SECTION: ClassVar[str] = "session"
+    SESSION_SECTION: ClassVar[str] = "app.session"
 
     def run(self) -> None:
         files = self.config_files()
@@ -134,7 +134,7 @@ class AppEntry:
         return ChainlitFiles(root, Path(aid.files_dir).resolve())
 
     def export_env(self, files: ConfigFiles) -> None:
-        """Секции [aid] и [session] -> переменные окружения chainlit."""
+        """Секции [app].aid и [app].session -> переменные окружения chainlit."""
         raw = AppLayers.compose(files)
         aid = self._section(files, raw)
         if not aid.root:
