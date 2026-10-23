@@ -94,7 +94,6 @@ from boba.mcp_adapter import (
 from boba.mcp_server.auth import (
     CallScopeError,
     CallScopes,
-    ServiceAuth,
     TokenSubjects,
 )
 from boba.mcp_server.files import (
@@ -107,6 +106,7 @@ from boba.mcp_server.files import (
     RouteCallers,
     ServerRefusal,
 )
+from boba.oauth.server import ServiceAuth
 from boba.runtime.storage import LocalStorageConfig, StorageFactory
 from boba.toolkit.channels import JournalChannels, ToolChannel
 from boba.toolkit.dag import CallDag, DagNode, ToolServer
@@ -1105,7 +1105,7 @@ class McpEndpoints:
         slots = RunLimitMiddleware(limits, self.OPERATIONS)
         for profile in sorted(registry.access.profiles()):
             path = f"{base_path}/{profile}"
-            provider = auth.endpoint(profile)
+            provider = auth.resource(profile, [profile])
             server = McpServer(
                 registry,
                 runs,
