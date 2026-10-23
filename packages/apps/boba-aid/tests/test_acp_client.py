@@ -124,11 +124,20 @@ class TestTurn:
         properties = form.requested_schema.properties
         assert properties is not None
         assert sorted(properties) == ["q1", "q1.other"]
+        answered = (
+            'Your questions have been answered: "Which one?"="B". '
+            "You can now continue with these answers in mind."
+        )
         assert calls[-1].raw_output == {
-            "questions": asked["questions"],
-            "answers": {"Which one?": "B"},
-            "picks": {"Which one?": {"labels": ["B"]}},
-            "outcome": "accept",
+            "content": [{"type": "text", "text": answered}],
+            "structuredContent": {
+                "questions": asked["questions"],
+                "answers": {"Which one?": "B"},
+                "picks": {"Which one?": {"labels": ["B"]}},
+                "outcome": "accept",
+            },
+            "isError": False,
+            "resultType": "complete",
         }
 
     async def test_cancel_stops_the_turn_with_cancelled(self, agents: Agents) -> None:
