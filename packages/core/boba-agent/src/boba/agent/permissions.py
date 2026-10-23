@@ -24,6 +24,7 @@ from typing import Any, ClassVar
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
+from boba.agent.mcp import ToolHints
 from boba.agent.records import (
     PermissionBehavior,
     PermissionMode,
@@ -36,7 +37,6 @@ from boba.agent.records import (
 from boba.agent.template import AgentTemplate, AgentTemplateFile
 from boba.llm.chat import ChatModel, LlmError, ToolSpec
 from boba.llm.schema import SchemaReply
-from boba.toolkit.dag import ToolHints
 
 logger = logging.getLogger(__name__)
 

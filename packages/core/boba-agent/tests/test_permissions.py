@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import pytest
 
+from boba.agent.mcp import ToolHints
 from boba.agent.permissions import (
     Allowed,
     Asked,
@@ -27,7 +28,6 @@ from boba.agent.records import (
     ServiceRecord,
 )
 from boba.agent.template import AgentTemplate
-from boba.toolkit.dag import ToolHints
 
 STAMP = "2026-10-10T10:00:00.000Z"
 SESSION = "p-1"

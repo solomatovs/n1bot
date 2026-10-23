@@ -797,12 +797,19 @@ class TestQuestionRecords:
     ) -> None:
         updates = self._updates(storage)
         output = {
-            "questions": self.ASKED["questions"],
-            "answers": {"Which checks should run?": "UI tests, smoke"},
-            "picks": {
-                "Which checks should run?": {"labels": ["UI tests"], "other": "smoke"}
+            "content": [{"type": "text", "text": "answered"}],
+            "structuredContent": {
+                "questions": self.ASKED["questions"],
+                "answers": {"Which checks should run?": "UI tests, smoke"},
+                "picks": {
+                    "Which checks should run?": {
+                        "labels": ["UI tests"],
+                        "other": "smoke",
+                    }
+                },
+                "outcome": "accept",
             },
-            "outcome": "accept",
+            "isError": False,
         }
 
         await updates.apply(_call(CALL, "AskUserQuestion", self.ASKED))
@@ -849,7 +856,14 @@ class TestQuestionRecords:
         """Отказ — запись decline без ответов, вызов неудачен; вызов,
         оборванный концом хода, — запись без ответа, тоже неудачен."""
         updates = self._updates(storage)
-        declined = {"questions": self.ASKED["questions"], "outcome": "decline"}
+        declined = {
+            "content": [{"type": "text", "text": "User rejected tool use"}],
+            "structuredContent": {
+                "questions": self.ASKED["questions"],
+                "outcome": "decline",
+            },
+            "isError": True,
+        }
         failed = schema.SessionToolCallUpdate(
             tool_call_id=CALL,
             status="failed",

@@ -708,7 +708,7 @@ class TestResume:
 
         assert len(boundaries(session.records())) >= 2
         assert len(sink.questions()) == 1
-        assert [c.tool for c in tools.calls] == [
+        assert [c.name for c in tools.calls] == [
             "mcp__stand__drop",
             "mcp__stand__large",
             "mcp__stand__large",
@@ -725,7 +725,7 @@ class TestResume:
         await resumed.close()
 
         assert not again.questions()
-        assert [c.tool for c in tools.calls][-2:] == [
+        assert [c.name for c in tools.calls][-2:] == [
             "mcp__stand__drop",
             "mcp__stand__note",
         ]

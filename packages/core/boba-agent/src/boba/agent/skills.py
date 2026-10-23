@@ -20,9 +20,9 @@ from typing import Any, ClassVar
 from pydantic import BaseModel, ConfigDict, Field
 
 from boba.agent.attachments import SnapshotSkill, SnapshotTool
+from boba.agent.mcp import ToolHints, ToolReplies
 from boba.agent.template import AgentTemplate, AgentTemplateFile
 from boba.agent.tools import CallResult, OwnTool, PlannedCall, Questioner
-from boba.toolkit.dag import ToolHints
 
 __all__ = ["Skill", "SkillTool", "SkillsDir", "SkillsError"]
 
@@ -159,6 +159,7 @@ class SkillTool(OwnTool):
 
     def __init__(self, skills: Sequence[Skill], templates: AgentTemplate) -> None:
         self._templates = templates
+        self._replies = ToolReplies()
         self._skills: dict[str, Skill] = {}
         for skill in skills:
             self._skills[skill.name] = skill
@@ -187,7 +188,7 @@ class SkillTool(OwnTool):
             text = self._templates.read(AgentTemplateFile.NO_SUCH_SKILL).format(
                 skill=requested
             )
-            return CallResult(call=call, text=text, is_error=True, artifact=text)
+            return CallResult(call=call, text=text, reply=self._replies.refused(text))
 
         parts = [
             self._templates.read(AgentTemplateFile.SKILL_LAUNCHED).format(
@@ -200,6 +201,8 @@ class SkillTool(OwnTool):
             parts.append(self.ARGS_LINE.format(args=args))
 
         text = "\n\n".join(parts)
-        artifact = {"skill": skill.name, "args": args}
+        launched = {"skill": skill.name, "args": args}
 
-        return CallResult(call=call, text=text, is_error=False, artifact=artifact)
+        return CallResult(
+            call=call, text=text, reply=self._replies.made(text, launched, False)
+        )

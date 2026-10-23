@@ -825,7 +825,7 @@ class TurnLoop:
                 session_id=self._session.id.value,
                 version=self._version,
                 message=UserMessage(content=[block]),
-                tool_use_result=result.artifact,
+                tool_use_result=result.reply.raw,
                 source_tool_assistant_uuid=result.call.assistant_uuid,
                 tool_denial_kind=result.denial,
             )
