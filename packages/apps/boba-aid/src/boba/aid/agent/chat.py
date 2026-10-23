@@ -600,7 +600,7 @@ class AgentLauncher:
         version: str,
     ) -> None:
         self._table = table
-        self._specs = ProfileModelSpecs(config.model)
+        self._specs = ProfileModelSpecs()
         self._registrations = registrations
         self._relay = relay
         self._files = SettingsFileBuilder(config, servers)

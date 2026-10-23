@@ -48,12 +48,10 @@ from boba.aid.agent.config import (
     AgentConfig,
     AgentHistoryConfig,
     AgentHistoryKind,
-    AgentModelConfig,
     MemoryAgentHistory,
     PostgresAgentHistory,
-    ReasoningReturn,
 )
-from boba.chat.profiles import ChatProfileConfig
+from boba.chat.profiles import ChatProfileConfig, ReasoningReturn
 from boba.connections.secrets import SecretCipher
 from boba.core.secrets import SecretReveal
 from boba.db.postgres import PostgresPool
@@ -152,7 +150,7 @@ class ProviderFile(FileModel):
 
 class ModelFile(FileModel):
     """Ключ `models.<имя>`: профиль модели агента, собранный из профиля чата
-    и [agent.model]."""
+    и его пределов модели."""
 
     provider: ProviderFile
     model: str = Field(min_length=1)
@@ -239,13 +237,11 @@ class RemoteProviderView(BaseModel):
 
 class ProfileModelSpecs:
     """Профиль модели агента из профиля чата: адрес, ключ, срок, TLS и
-    повторы — из соединения провайдера, транспорт — из его секции [http],
-    окно, потолок ответа и возврат рассуждений — из [agent.model].
+    повторы — из соединения провайдера, транспорт — из его секции
+    ([agent_http]), окно, потолок ответа и возврат рассуждений — из пределов
+    профиля ([model_limits.<имя>]).
 
     Создаёт его запуск агента (AgentLauncher)."""
-
-    def __init__(self, model: AgentModelConfig) -> None:
-        self._model = model
 
     def chat_settings(
         self, name: str, profile: ChatProfileConfig, owner: AgentOwner
@@ -305,9 +301,9 @@ class ProfileModelSpecs:
             provider=provider,
             model=profile.model,
             sampling=dict(profile.sampling),
-            context_window=self._model.context_window,
-            max_output_tokens=self._model.max_output_tokens,
-            reasoning_return=self._model.reasoning_return,
+            context_window=profile.limits.context_window,
+            max_output_tokens=profile.limits.max_output_tokens,
+            reasoning_return=profile.limits.reasoning_return,
         )
 
 
