@@ -364,9 +364,9 @@ class ProfileUploads:
     """Доступность загрузки файлов в профиле для пользователя.
 
     Создаётся обработчиком set_chat_profiles на один запрос настроек. Файлы
-    пользователя лежат на первом MCP-сервере профиля; если сервера нет, он
-    недоступен или хранилища файлов не объявил, кнопка загрузки в этом
-    профиле скрыта.
+    пользователя лежат на первом MCP-сервере профиля, объявившем расширение
+    файлов; если такого сервера нет или сервер профиля недоступен, кнопка
+    загрузки в этом профиле скрыта.
     """
 
     def __init__(self, servers: McpServers, user: cl.User | None) -> None:
@@ -392,12 +392,12 @@ class ProfileUploads:
             login=Login(user.identifier), roles=ChainlitSession.roles_of(user)
         )
         try:
-            files = await self._servers.files(profile.mcp[0], caller)
+            host = await self._servers.files_host(profile.mcp, caller)
         except McpClientError as exc:
             logger.warning("file upload is hidden for %s: %s", caller.login, exc)
             return False
 
-        return files is not None
+        return host is not None
 
 
 @cl.on_chat_start

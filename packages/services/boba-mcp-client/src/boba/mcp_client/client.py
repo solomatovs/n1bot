@@ -141,11 +141,18 @@ from boba.canvas.storage import (
 from boba.connections.sealed import SealFeature
 from boba.toolkit.dag import NestedCallsFeature, ServerFeature
 from boba.toolkit.mcp import McpToolNames
-from boba.toolkit.wire import FilesFeature, JournalFeature, JournalNotice, JournalRead
+from boba.toolkit.wire import (
+    FilesFeature,
+    JournalFeature,
+    JournalNotice,
+    JournalRead,
+    ScopeFeature,
+)
 from boba.workspace.launcher import ReadWindow
 
 __all__ = [
     "BearerAuth",
+    "FilesHost",
     "HttpEndpoint",
     "HttpLocation",
     "JournalHeard",
@@ -1454,16 +1461,29 @@ class RelayedFile:
     release: Callable[[], Awaitable[None]]
 
 
+@dataclass(frozen=True)
+class FilesHost:
+    """Сервер, объявивший расширение файлов (FilesFeature), как хранилище
+    файлов пользователя: имя сервера, клиент его маршрута файлов и каталог
+    workspace, под которым инструменты сервера видят файлы. Собирает порт
+    McpToolServer.files_host из объявления сервера."""
+
+    server: str
+    files: McpFiles
+    workspace: str
+
+
 class McpFiles:
-    """Файлы пользователя на сервере boba-mcp под одним маршрутом: файлы
+    """Файлы пользователя на сервере MCP под одним маршрутом: файлы
     workspace либо журналы вызовов.
 
-    Создаётся портом McpToolServer, когда сервер объявил расширение
-    (FilesFeature, JournalFeature), из адреса сервера, пути маршрута и
-    пользователя, чьим именем идёт подключение. Байты идут потоком в обе стороны: запись
-    шлёт чанки источника телом PUT, чтение отдаёт чанки ответа GET окном
-    Range. Владельца workspace сервер берёт из токена входа, поэтому из
-    ключа файла на сервер уходят только область, каталог и имя.
+    Создаётся портом McpToolServer, когда сервер объявил расширение файлов
+    (FilesFeature) или журнала (JournalFeature), из адреса сервера, пути
+    маршрута из объявления и пользователя, чьим именем идёт подключение.
+    Байты идут потоком в обе стороны: запись шлёт чанки источника телом PUT,
+    чтение отдаёт чанки ответа GET окном Range. Владельца workspace сервер
+    берёт из токена входа, поэтому из ключа файла на сервер уходят только
+    область, каталог и имя.
 
     Ошибки те же, что у хранилища: StorageNotFoundError — файла нет,
     StorageFullError — в workspace нет места, StorageError — прочий отказ.
@@ -1739,13 +1759,14 @@ class CachedMethod(StrEnum):
 @dataclass(frozen=True)
 class McpDescription:
     """Описание сервера: ответ server/discover (у сервера прежней редакции —
-    собранный из его initialize) со сроком свежести и расширения boba,
-    которые из него следуют.
+    собранный из его initialize) со сроком свежести и объявленные в нём
+    расширения com.boba/*, которые клиент умеет исполнять.
 
     Создаёт порт (McpToolServer.described, ChatToolPort чата) на каждое
-    обращение из ответа, который тот взял из кэша или у сервера. Расширение
-    с настройками не по модели считается необъявленным: такой сервер
-    работает как сервер без расширения, причина — в логе.
+    обращение из ответа, который тот взял из кэша или у сервера. Любой
+    сервер, объявивший расширение по его модели, получает его исполнение;
+    расширение с настройками не по модели считается необъявленным: такой
+    сервер работает как сервер без расширения, причина — в логе.
     """
 
     FEATURE_PREFIX: ClassVar[str] = "com.boba/"
@@ -1755,7 +1776,7 @@ class McpDescription:
 
     def features(self) -> Mapping[str, Mapping[str, object]]:
         """Расширения com.boba/*, объявленные сервером: идентификатор →
-        настройки; у стороннего сервера их нет."""
+        настройки; у сервера без них — пусто."""
         extensions = self.result.capabilities.extensions
         if not extensions:
             return {}
@@ -1776,6 +1797,11 @@ class McpDescription:
     def files(self) -> FilesFeature | None:
         """Расширение файлов workspace; None — сервер его не объявил."""
         return self._feature(FilesFeature)
+
+    def scope(self) -> ScopeFeature | None:
+        """Расширение области вызова: пометка параметра, в который клиент
+        ставит свою область; None — сервер его не объявил."""
+        return self._feature(ScopeFeature)
 
     def nested_calls(self) -> NestedCallsFeature | None:
         """Инструмент сервера со вложенными вызовами и форма его узлов;
@@ -1909,10 +1935,12 @@ class McpToolServer(McpToolPort):
     OWN_EXTENSIONS: ClassVar[Mapping[str, Mapping[str, Any]]] = {
         JournalFeature.ID: {},
         SealFeature.ID: {},
+        ScopeFeature.ID: {},
     }
     """Расширения, которые чат объявляет любому серверу: журнал вызовов он
     читает и слушает сам, соединения пользователя запечатывает ключом
-    сервера, и сервер по этому предлагает их."""
+    сервера, и сервер по этому предлагает их, область вызова ставит в
+    помеченный сервером параметр сам."""
     NOT_FOUND: ClassVar[frozenset[int]] = frozenset({mt.INVALID_PARAMS, -32002})
     """Коды «ресурса нет» resources/read: -32602 и прежний -32002, которого
     в константах SDK нет."""
@@ -1980,12 +2008,11 @@ class McpToolServer(McpToolPort):
 
         Ошибки: те же, что у described.
         """
-        described = await self.described(McpServers.OWN)
-        declared = described.files()
-        if declared is None:
+        host = await self.files_host()
+        if host is None:
             return None
 
-        return self._files_at(declared.path)
+        return host.files
 
     async def workspace(self) -> str | None:
         """Каталог workspace, под которым песочница сервера видит файлы
@@ -2000,6 +2027,23 @@ class McpToolServer(McpToolPort):
             return None
 
         return declared.workspace
+
+    async def files_host(self) -> FilesHost | None:
+        """Сервер как хранилище файлов по объявленному им расширению файлов;
+        None — сервер его не объявил либо он не по HTTP.
+
+        Ошибки: те же, что у described.
+        """
+        described = await self.described(McpServers.OWN)
+        declared = described.files()
+        if declared is None:
+            return None
+
+        files = self._files_at(declared.path)
+        if files is None:
+            return None
+
+        return FilesHost(server=self._name, files=files, workspace=declared.workspace)
 
     async def journal_files(self) -> McpFiles | None:
         """Журналы вызовов сервера целыми файлами: канал журнала лежит по
@@ -2777,6 +2821,27 @@ class McpServers:
         port = await self.port(server, caller)
 
         return await port.files()
+
+    async def files_host(
+        self, servers: Sequence[str], caller: McpCaller
+    ) -> FilesHost | None:
+        """Первый из серверов servers, объявивший расширение файлов, как
+        хранилище файлов caller; None — ни один не назван в [mcp.servers]
+        либо ни один файлов не объявил.
+
+        Ошибки:
+        McpClientError — сервер из списка недоступен.
+        """
+        for server in servers:
+            if server not in self._configs:
+                continue
+
+            port = await self.port(server, caller)
+            host = await port.files_host()
+            if host is not None:
+                return host
+
+        return None
 
     async def workspace(self, server: str, caller: McpCaller) -> str | None:
         """Каталог workspace сервера server для caller; None — сервер не

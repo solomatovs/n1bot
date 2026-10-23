@@ -92,7 +92,6 @@ from boba.mcp_client.client import (
     QuestionHeard,
 )
 from boba.messaging import JournalOpened, LockToken, MessageBus, MessageBusError
-from boba.toolkit.calls import SchemaMark
 from boba.toolkit.chain import StreamPlanError
 from boba.toolkit.dag import DagNode, ToolServer, ToolServersError
 from boba.toolkit.failure import InvokeErrorKind, ValidationText
@@ -705,12 +704,14 @@ class McpRelay:
     треда сообщением JournalOpened шины (bus). Ответ на вызов уходит как
     есть, кроме файлов, которые сервер просит показать сразу: их открывает
     панель канваса треда (CanvasOpener.reply), и отказ показа — диаграмма не
-    отрисовалась — становится isError того же вызова (8.2). Параметры треда
-    (пометка SchemaMark.THREAD) агент в списке не видит: на вызове
-    ретранслятор ставит в них тред регистрации. Инструменты только для
-    интерфейса (_meta.ui.visibility без "model") и инструменты, которые
-    без задачи не исполняются (execution.taskSupport "required"), агенту не
-    видны и не вызываются. Приложения MCP Apps серверов с секцией apps зовут
+    отрисовалась — становится isError того же вызова (8.2). У сервера,
+    объявившего расширение области вызова (ScopeFeature), параметры с его
+    пометкой агент в списке не видит: на вызове ретранслятор ставит в них
+    тред регистрации; сервер без расширения показывает их агенту как есть.
+    Инструменты только для интерфейса (_meta.ui.visibility без "model") и
+    инструменты, которые без задачи не исполняются (execution.taskSupport
+    "required"), агенту не видны и не вызываются. Приложения MCP Apps
+    серверов с секцией apps зовут
     инструменты с "app" в visibility (app_call) и читают ресурсы сервера
     (app_read) тем же путём от имени пользователя вкладки и от личности
     чата; их ответ приложение получает как есть, файлы показа открывает
@@ -921,16 +922,22 @@ class McpRelay:
         params: mt.PaginatedRequestParams | None,
     ) -> mt.ListToolsResult:
         """Инструменты сервера для модели из списка порта со сроком
-        свежести и областью кэша сервера; параметры треда в схеме спрятаны."""
+        свежести и областью кэша сервера; параметры области вызова сервера с
+        расширением ScopeFeature в схеме спрятаны."""
         request = ctx.lifespan_context
         registration = self._registrations.of(request.server_id)
         port = await self._port_of(request)
         listed = await port.tools(request.client)
+        described = await port.described(request.client)
+        scoping = described.scope()
 
         tools: list[mt.Tool] = []
         for tool in self._offered(listed.tools, registration.server, "model"):
-            threads = list(SchemaMark.THREAD.params(tool.input_schema))
-            schema = compress_schema(dict(tool.input_schema), prune_params=threads)
+            hidden: list[str] = []
+            if scoping is not None:
+                hidden = list(scoping.params(tool.input_schema))
+
+            schema = compress_schema(dict(tool.input_schema), prune_params=hidden)
             tools.append(tool.model_copy(update={"input_schema": schema}))
 
         return mt.ListToolsResult(
@@ -1277,8 +1284,9 @@ class McpRelay:
         """Вызов инструмента клиента client, видимого стороне audience, по
         списку и описанию сервера из кэша порта: соединения запечатаны, у
         вызова со вложенными вызовами — и в узлах, тред регистрации — в
-        параметрах с пометкой SchemaMark.THREAD, отказ запечатывания —
-        isError с причиной; вопросы сервера прежней редакции — questions.
+        параметрах с пометкой области, которую сервер объявил расширением
+        ScopeFeature, отказ запечатывания — isError с причиной; вопросы
+        сервера прежней редакции — questions.
 
         Ошибки:
         MCPError — инструмента у сервера нет либо он не для audience.
@@ -1299,11 +1307,12 @@ class McpRelay:
         if params.arguments is not None:
             asked = dict(params.arguments)
 
-        for name in SchemaMark.THREAD.params(tool.input_schema):
-            asked[name] = registration.thread_id
+        described = await port.described(client)
+        if scoping := described.scope():
+            for name in scoping.params(tool.input_schema):
+                asked[name] = registration.thread_id
 
         full = self._names.full(registration.server, tool.name)
-        described = await port.described(client)
         server = McpServerInfo(name=registration.server, features=described.features())
         try:
             with self._contexts.applied(context):

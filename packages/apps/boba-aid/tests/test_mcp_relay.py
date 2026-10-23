@@ -587,6 +587,32 @@ class TestMcpRelay:
         assert called.error.code == mt.INVALID_PARAMS
         assert "'refresh_orders'" in called.error.message
 
+    async def test_scope_mark_of_a_server_without_the_extension_is_left_alone(
+        self, relay: McpRelay, relay_stand: RelayStand, tab: TabSession
+    ) -> None:
+        """Сервер помечает параметр как область вызова, но расширения
+        com.boba/scope не объявляет: агент видит параметр в списке, и
+        ретранслятор ничего в него не ставит — договор есть только по
+        объявленному расширению."""
+        server_id = self._server_id(relay_stand, tab, "standard")
+        call = {"name": "area", "arguments": {}}
+
+        listed, _ = await self._answer(
+            relay, self._message(server_id, "tools/list", {})
+        )
+        called, _ = await self._answer(
+            relay, self._message(server_id, "tools/call", call)
+        )
+
+        assert isinstance(listed, McpResultOutcome), listed
+        tools = mt.ListToolsResult.model_validate(listed.result).tools
+        area = next(tool for tool in tools if tool.name == "area")
+        assert "scope_id" in area.input_schema["properties"], area
+        assert isinstance(called, McpResultOutcome), called
+        reply = mt.CallToolResult.model_validate(called.result)
+        assert not reply.is_error, reply
+        assert "area ''" in str(reply.content), reply
+
     async def test_progress_reaches_the_agent_under_its_token(
         self, relay: McpRelay, relay_stand: RelayStand, tab: TabSession
     ) -> None:
@@ -1305,8 +1331,9 @@ class TestRelaySealing:
         call_stand: CallStand,
         tab: TabSession,
     ) -> None:
-        """Параметр треда агент в списке не видит, а вызов идёт в треде
-        вкладки: ретранслятор ставит его в параметр с пометкой x-boba-thread."""
+        """Параметр области агент в списке не видит, а вызов идёт в треде
+        вкладки: сервер объявил расширение области вызова, и ретранслятор
+        ставит тред в параметр с объявленной пометкой x-boba-scope."""
         credentials = KerberosCredentialSource(None, NoRefresh())
         stand = RelayStand(
             NoConnectionStore(), lambda: credentials, call_stand.contexts
@@ -1352,7 +1379,7 @@ class TestRelaySealing:
         assert isinstance(listed, McpResultOutcome), listed
         tools = mt.ListToolsResult.model_validate(listed.result).tools
         scoped = next(tool for tool in tools if tool.name == "fake_scope")
-        assert CallFields.THREAD not in scoped.input_schema["properties"], scoped
+        assert CallFields.SCOPE not in scoped.input_schema["properties"], scoped
         assert isinstance(called, McpResultOutcome), called
         answer = mt.CallToolResult.model_validate(called.result)
         assert not answer.is_error, answer

@@ -307,7 +307,7 @@ class WorkflowTool:
         card = self._schemas.card(
             self.NAME,
             self.DESCRIPTION.strip(),
-            self._fields.threaded(self._fields.extended(WorkflowCall)),
+            self._fields.scoped(self._fields.extended(WorkflowCall)),
             None,
         )
 

@@ -87,6 +87,7 @@ from boba.toolkit.wire import (
     JournalNotice,
     JournalRead,
     ResultWire,
+    ScopeFeature,
 )
 from boba.toolrun.call_id import CallFields
 from boba.toolrun.hosted import ToolSchema
@@ -215,22 +216,23 @@ class TestToolList:
         if "cfg" in properties:
             raise AssertionError("the injected config is not shown to the client")
 
-    async def test_thread_parameter_is_marked_in_the_tools_of_a_workspace(
+    async def test_scope_parameter_is_marked_in_the_tools_of_a_workspace(
         self, stand: ServiceStand, url: str, dev_token: str
     ) -> None:
         """Инструменты, которые работают в workspace, и связка несут
-        необязательный thread_id с пометкой x-boba-thread."""
+        необязательный scope_id с пометкой x-boba-scope, которую сервер
+        объявил расширением области вызова."""
         async with _client(url, dev_token) as client:
             listed = await client.list_tools()
 
         schemas = {tool.name: tool.input_schema for tool in listed}
         for name in ("fake_scope", "fake_echo", WorkflowTool.NAME, FileUploadTool.NAME):
-            marked = SchemaMark.THREAD.params(schemas[name])
-            if marked != {CallFields.THREAD: True}:
-                raise AssertionError(f"{name} carries the thread: {schemas[name]}")
+            marked = SchemaMark.SCOPE.params(schemas[name])
+            if marked != {CallFields.SCOPE: True}:
+                raise AssertionError(f"{name} carries the scope: {schemas[name]}")
 
-            if CallFields.THREAD in schemas[name].get("required", []):
-                raise AssertionError(f"the thread of {name} is optional")
+            if CallFields.SCOPE in schemas[name].get("required", []):
+                raise AssertionError(f"the scope of {name} is optional")
 
     async def test_weaker_role_sees_fewer_tools(
         self, stand: ServiceStand, url: str, weak_token: str
@@ -368,13 +370,11 @@ class TestCall:
     async def test_scope_of_the_client_is_the_scope_of_the_call(
         self, stand: ServiceStand, url: str, dev_token: str
     ) -> None:
-        """Тред из аргумента thread_id доходит до тела областью вызова:
-        вызовы одного разговора видят одни и те же файлы."""
+        """Область из аргумента scope_id доходит до тела областью вызова:
+        вызовы одной области видят одни и те же файлы."""
         scope = "0b6f6f0e-51d4-4a4b-9f6c-1d6c5f1f7a10"
         async with _client(url, dev_token) as client:
-            result = await client.call_tool_mcp(
-                "fake_scope", {CallFields.THREAD: scope}
-            )
+            result = await client.call_tool_mcp("fake_scope", {CallFields.SCOPE: scope})
 
         if _text(result) != scope:
             raise AssertionError(f"the body runs in the client's scope: {result}")
@@ -395,9 +395,7 @@ class TestCall:
         self, stand: ServiceStand, url: str, dev_token: str
     ) -> None:
         async with _client(url, dev_token) as client:
-            result = await client.call_tool_mcp(
-                "fake_scope", {CallFields.THREAD: "a/b"}
-            )
+            result = await client.call_tool_mcp("fake_scope", {CallFields.SCOPE: "a/b"})
 
         if not result.is_error:
             raise AssertionError(f"a scope with a separator is refused: {result}")
@@ -412,7 +410,7 @@ class TestCall:
             arguments = {
                 "seconds": 1.0,
                 "marker": str(tmp_path / name),
-                CallFields.THREAD: scope,
+                CallFields.SCOPE: scope,
             }
             async with _client(url, dev_token) as client:
                 return await client.call_tool_mcp("fake_sleep", arguments)
@@ -442,9 +440,14 @@ class TestCall:
             FilesFeature.ID,
             JournalFeature.ID,
             NestedCallsFeature.ID,
+            ScopeFeature.ID,
         ):
             if feature not in declared:
                 raise AssertionError(f"{feature} is declared: {sorted(declared)}")
+
+        scoping = ScopeFeature.model_validate(declared[ScopeFeature.ID])
+        if scoping.mark != SchemaMark.SCOPE.value:
+            raise AssertionError(f"the scope extension names the mark: {scoping}")
 
         nested = NestedCallsFeature.model_validate(declared[NestedCallsFeature.ID])
         if nested != CallDag().feature():
@@ -872,7 +875,7 @@ class TestProgress:
 
         schema = next(tool for tool in listed if tool.name == "fake_progress")
         properties = sorted(schema.input_schema["properties"])
-        if properties != ["intent", "pause", "steps", CallFields.THREAD]:
+        if properties != sorted(["intent", "pause", "steps", CallFields.SCOPE]):
             raise AssertionError(f"the model sees its own arguments: {properties}")
 
 
@@ -2029,7 +2032,7 @@ class TestWorkspaceFiles:
         async with _client(url, dev_token) as client:
             result = await client.call_tool_mcp(
                 FileUploadTool.NAME,
-                {"name": "report.csv", CallFields.THREAD: self.SCOPE},
+                {"name": "report.csv", CallFields.SCOPE: self.SCOPE},
             )
             declared = client.session.server_capabilities
 
@@ -2183,10 +2186,10 @@ class TestConnectionOffers:
         if expected not in text:
             raise AssertionError(f"the refusal names the offer: {text}")
 
-    async def test_plain_client_sees_server_names_and_the_thread(
+    async def test_plain_client_sees_server_names_and_the_scope(
         self, stand: ServiceStand, offers: str
     ) -> None:
-        """Клиент без расширений видит enum имён сервера и параметр thread_id,
+        """Клиент без расширений видит enum имён сервера и параметр scope_id,
         а список инструментов помечен личным со сроком свежести: он зависит
         от ролей токена и возможностей запроса, а реестр собран на старте."""
         token = await self._token(stand, True)
@@ -2204,8 +2207,8 @@ class TestConnectionOffers:
         if properties["connection"]["enum"] != [ServiceStand.DWH]:
             raise AssertionError(f"the server names are an enum: {properties}")
 
-        if SchemaMark.THREAD.value not in properties[CallFields.THREAD]:
-            raise AssertionError(f"the thread parameter is shown: {properties}")
+        if SchemaMark.SCOPE.value not in properties[CallFields.SCOPE]:
+            raise AssertionError(f"the scope parameter is shown: {properties}")
 
 
 class TestJournalFile:

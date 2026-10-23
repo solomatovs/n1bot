@@ -7,7 +7,7 @@
 
 Здесь же модели границы клиент—сервер: адрес окна журнала (JournalRead),
 уведомление об открытом журнале вызова (JournalNotice) и настройки
-расширений сервера (JournalFeature, FilesFeature).
+расширений сервера (JournalFeature, FilesFeature, ScopeFeature).
 
 Ошибки:
 ValidationError — настройки расширения не проходят свою модель.
@@ -23,6 +23,7 @@ from urllib.parse import quote, urlunsplit
 import mcp_types as mt
 from pydantic import BaseModel, ConfigDict, Field
 
+from boba.toolkit.calls import SchemaMark
 from boba.toolkit.channels import JournalChannel
 from boba.toolkit.dag import NodeOutcome, ServerFeature
 from boba.toolkit.result import BlockAudience, ContentOut
@@ -33,6 +34,7 @@ __all__ = [
     "JournalNotice",
     "JournalRead",
     "ResultWire",
+    "ScopeFeature",
     "WireResult",
 ]
 
@@ -112,6 +114,30 @@ class FilesFeature(ServerFeature):
     path: str = Field(min_length=1)
     upload: str = Field(min_length=1)
     workspace: str = Field(min_length=1)
+
+
+class ScopeFeature(ServerFeature):
+    """Настройки расширения сервера «область вызова».
+
+    Сервер объявляет их в своём описании словарём settings(); клиент
+    разбирает объявление этой же моделью из описания сервера и объявляет
+    расширение в своих возможностях пустыми настройками. mark — ключ JSON
+    Schema, которым сервер помечает параметр области вызова в схемах своих
+    инструментов. Область — непрозрачный для сервера идентификатор, который
+    клиент даёт вызовам, работающим над одними файлами: клиент с расширением
+    прячет помеченный параметр от модели и ставит в него свою область сам,
+    клиент без расширения показывает параметр модели как есть. Пустое
+    значение — у сервера область по умолчанию, личная у каждого вызывающего.
+    """
+
+    ID: ClassVar[str] = "com.boba/scope"
+
+    mark: str = Field(min_length=1)
+
+    def params(self, schema: Mapping[str, Any]) -> Mapping[str, object]:
+        """Параметры схемы инструмента schema с пометкой области: имя →
+        значение пометки."""
+        return SchemaMark.marked(schema, self.mark)
 
 
 class JournalRead(BaseModel):
