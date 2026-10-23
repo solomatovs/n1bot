@@ -85,8 +85,8 @@ markers = [
     "load: нагрузка и аварийные завершения песочницы; минуты и десятки процессов. Запускать вручную: `pytest -m load`. По умолчанию исключаются.",
     "failif(condition, reason): обязательное окружение теста с подписью skipif. При истинном условии тест не пропускается, а падает с причиной.",
     "perf: замер времени на живом хосте с абсолютными порогами; в полном прогоне идёт отдельной фазой в одиночку, когда параллельные наборы закончились.",
-    "binary: проверка собранного бинарника release/<версия>/bin/boba, а не кода. В обычный прогон не входит; запускать `pytest -m binary` после `make -C build boba-bin`.",
-    "binary_onnx: проверка бинарника boba-onnx с рантаймом onnxruntime-genai. Запускать `pytest -m binary_onnx` после `make -C build boba-bin BIN_ONNX=1`.",
+    "binary: проверка собранного агента release/<версия>/bin/boba.dist, а не кода. В обычный прогон не входит; запускать `pytest -m binary` после `make -C build boba-bin`.",
+    "binary_onnx: проверка агента boba-onnx.dist с рантаймом onnxruntime-genai. Запускать `pytest -m binary_onnx` после `make -C build boba-bin BIN_ONNX=1`.",
 ]
 
 [tool.pyright]
