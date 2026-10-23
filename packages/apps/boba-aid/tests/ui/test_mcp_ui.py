@@ -1960,7 +1960,9 @@ class AppUnderTest:
         ReplyBookClient(StandUrl.of(llm_port)).register(replies)
 
     def _failed(self, error: Error) -> None:
-        self.errors.append(str(error))
+        """Ошибка страницы чата со стеком: по минифицированному стеку видна
+        цепочка функций."""
+        self.errors.append(f"{error.message}\n{error.stack}")
 
     def _logged(self, message: ConsoleMessage) -> None:
         """Консоль кадров приложения — страницы-прокси и iframe рендерера;
