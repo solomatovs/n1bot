@@ -46,7 +46,7 @@ SANDBOX_aid      :=
 MODELS_aid       :=
 PARTS_aid        := app_root/public app_root/public/page.js app_root/public/vendor \
                     app_root/ui/index.html app_root/ui/index.js app_root/mcp-apps/sandbox.html \
-                    app_root/mcp-apps/fonts/inter/files bin/boba.dist/boba
+                    app_root/mcp-apps/fonts/inter/files bin/boba.dist/boba.bin
 # агент чата — каталог boba-bin bin/boba.dist; локальную модель чат агенту не отдаёт,
 # поэтому рантайм onnxruntime-genai в него не входит
 BUILD_ARGS_aid    = $(BIN_TOOL_ARGS) --build-arg BIN_ONNX=
@@ -81,7 +81,7 @@ PORT_agent       := 8660
 PREFIX_agent     :=
 SANDBOX_agent    :=
 MODELS_agent     :=
-PARTS_agent      := bin/boba.dist/boba
+PARTS_agent      := bin/boba.dist/boba.bin
 BUILD_ARGS_agent  = $(BIN_TOOL_ARGS) --build-arg BIN_ONNX=
 WEB_agent        :=
 
@@ -182,7 +182,7 @@ space           := $(empty) $(empty)
 # профиль модели onnx агент отвергает на старте
 BIN_ONNX           ?=
 BIN_DIST            = $(RELEASE_DIR)/$(VERSION)/bin/boba$(if $(BIN_ONNX),-onnx).dist
-BIN_FILE            = $(BIN_DIST)/boba
+BIN_FILE            = $(BIN_DIST)/boba.bin
 NUITKA_VERSION     ?= 4.3
 PATCHELF_VERSION   ?= 0.19.1.0
 ZSTANDARD_VERSION  ?= 0.25.0
