@@ -561,8 +561,8 @@ class StreamServing:
     Журнал лежит у MCP-сервера, который исполнял вызов: адрес журнала даёт
     реестр RemoteJournals (из памяти живого вызова либо из истории треда),
     файл читается клиентом MCP от имени вошедшего, и ответ сервера — статус,
-    заголовки тела, чанки — уходит браузеру как есть. Чужой журнал сервер не
-    отдаёт.
+    заголовки тела, чанки — уходит браузеру как есть, с запретом угадывать
+    вид тела. Чужой журнал сервер не отдаёт.
     """
 
     BAD_GATEWAY: ClassVar[int] = 502
@@ -628,10 +628,11 @@ class StreamServing:
             msg = f"{stream}: {e}"
             raise HTTPException(status_code=self.BAD_GATEWAY, detail=msg) from e
 
+        headers = dict(relayed.headers)
+        headers[FileHeader.CONTENT_TYPE_OPTIONS] = StreamedFile.NOSNIFF
+
         return StreamingResponse(
-            self._body(relayed),
-            status_code=relayed.status,
-            headers=dict(relayed.headers),
+            self._body(relayed), status_code=relayed.status, headers=headers
         )
 
     @staticmethod
