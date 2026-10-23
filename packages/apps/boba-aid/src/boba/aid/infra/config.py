@@ -15,11 +15,11 @@ from pydantic import (
 from boba.access import RoleConfig
 from boba.aid.agent.config import (
     AgentConfig,
-    LibpqConnection,
     PostgresAgentHistory,
 )
 from boba.auth.config import AuthConfig
 from boba.chat.profiles import ChatProfileConfig
+from boba.db.postgres.connection import LibpqConnection, PostgresAuthError
 from boba.krb import KerberosWorkspaceConfig
 from boba.mcp_client.client import McpServerApps, McpServersConfig
 from boba.runtime.config import RuntimeConfig
@@ -247,8 +247,13 @@ class AppConfig(RuntimeConfig):
     def _history_fits_libpq(self) -> Self:
         """История агента в Postgres идёт по подключению процесса строкой
         libpq: вход [postgres], которого так не передать, — отказ на старте."""
-        if isinstance(self.agent.history, PostgresAgentHistory):
+        if not isinstance(self.agent.history, PostgresAgentHistory):
+            return self
+
+        try:
             LibpqConnection(self.postgres).auth()
+        except PostgresAuthError as exc:
+            raise ValueError(f"[agent.history]: {exc}") from exc
 
         return self
 

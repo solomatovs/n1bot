@@ -29,14 +29,14 @@ from boba.aid.agent.chat import (
     ThreadIdentity,
 )
 from boba.aid.agent.client import AgentProcessError
-from boba.aid.agent.config import AgentConfig, AgentServiceConfig, LibpqConnection
+from boba.aid.agent.config import AgentConfig, AgentServiceConfig
 from boba.aid.agent.settings import AgentSettingsTable
 from boba.aid.domain.fields import ThreadMetaField
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.chat.profiles import ChatProfileConfig, SelectedProfile
 from boba.connections.secrets import SecretCipher
 from boba.db.postgres import AsyncPostgresPool, PostgresSchema
-from boba.db.postgres.connection import PostgresConfig
+from boba.db.postgres.connection import LibpqConnection, PostgresConfig
 from boba.identity.context import CallContexts
 from boba.mcp_client.client import HttpLocation, McpServers, McpServersConfig, ProxyAuth
 from boba.runtime.config import ProcessConfig

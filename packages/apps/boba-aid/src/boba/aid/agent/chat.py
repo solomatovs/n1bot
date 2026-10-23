@@ -8,6 +8,7 @@
 AcpClientError и наследники — процесс или ответ агента (client.py).
 AgentSettingsError — профиль чата не годится агенту (settings.py).
 DataUnavailableError — таблицы чата недоступны.
+PostgresError — билет kerberos-роли истории для процесса агента не получен.
 """
 
 from __future__ import annotations
@@ -477,7 +478,7 @@ class AgentLinks(Protocol):
 
         Ошибки:
         AgentProcessError — агент не запустился или не ответил.
-        KerberosError — билет истории по keytab не получен.
+        PostgresError — билет роли истории не получен.
         """
 
 
@@ -695,7 +696,7 @@ class AgentLauncher:
 
         Ошибки:
         AgentProcessError — агент не запустился или не ответил.
-        KerberosError — билет истории по keytab не получен.
+        PostgresError — билет роли истории не получен.
         """
         launch = AgentLaunch(chat=chat, mcp=mcp)
 
