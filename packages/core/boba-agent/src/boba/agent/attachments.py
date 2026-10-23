@@ -26,6 +26,7 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
 
 from boba.agent.ids import Clock, IdMint
+from boba.agent.mcp import McpToolNames
 from boba.agent.profile import ModelProfile
 from boba.agent.queue import QueueItem, QueueKind
 from boba.agent.records import (
@@ -38,7 +39,6 @@ from boba.agent.records import (
 )
 from boba.agent.tags import AgentTag
 from boba.agent.template import AgentTemplate, AgentTemplateFile
-from boba.toolkit.mcp import McpToolNames
 
 __all__ = [
     "Announced",

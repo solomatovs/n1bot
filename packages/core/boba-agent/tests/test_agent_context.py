@@ -25,9 +25,16 @@ from boba.agent.attachments import (
 )
 from boba.agent.events import RecordEvent
 from boba.agent.history import SessionId
+from boba.agent.mcp import ToolCard, ToolHints, ToolReplies, ToolReply
 from boba.agent.profile import ModelProfile
 from boba.agent.queue import QueueEntry, QueueKind
-from boba.agent.records import AttachmentRecord, Record, RecordCodec, UserRecord
+from boba.agent.records import (
+    AttachmentRecord,
+    Record,
+    RecordCodec,
+    ToolUseBlock,
+    UserRecord,
+)
 from boba.agent.session import SessionError, SessionState
 from boba.agent.skills import Skill, SkillsDir, SkillsError, SkillTool
 from boba.agent.tools import ToolsError
@@ -43,8 +50,6 @@ from boba.stand.agent import (
     StandTools,
 )
 from boba.stand.ui.fake_llm import ScenarioName
-from boba.toolkit.dag import DagNode, NodeOutcome, NodeOutcomes, ToolCard, ToolHints
-from boba.toolkit.result import MarkdownResult
 
 pytestmark = pytest.mark.anyio
 
@@ -92,16 +97,14 @@ class ExtraTools(StandTools):
                 name="extra",
                 description="stand tool extra",
                 parameters={"type": "object", "properties": {}},
-                views=None,
-                output=None,
                 hints=ToolHints(read_only=True),
             ),
         ]
-        self._extra_outcomes = NodeOutcomes()
+        self._extra_replies = ToolReplies()
 
-    async def _run(self, call: DagNode) -> NodeOutcome:
-        if call.tool == "extra":
-            return self._extra_outcomes.of(call, MarkdownResult(text="extra"), False)
+    async def _run(self, call: ToolUseBlock) -> ToolReply:
+        if call.name == "extra":
+            return self._extra_replies.made("extra", None, False)
 
         return await super()._run(call)
 
