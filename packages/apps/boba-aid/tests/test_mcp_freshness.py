@@ -28,7 +28,12 @@ from aid_stand import TabSession
 from drifting_server import DriftingFile
 
 from boba.aid.agent.client import AgentProcess
-from boba.mcp_client.client import McpServerConfig, McpServersConfig, StdioCommand
+from boba.mcp_client.client import (
+    McpServerConfig,
+    McpServerLimits,
+    McpServersConfig,
+    StdioCommand,
+)
 from boba.stand.signin import SignInStand
 from boba.stand.site import Stand
 from boba.stand.ui.fake_llm import ScenarioName
@@ -64,7 +69,8 @@ class DriftingState:
             command=sys.executable, args=(str(SCRIPT), str(self.root))
         )
         config = McpServerConfig(
-            endpoint=endpoint, connect_timeout_sec=20.0, call_timeout_sec=60.0
+            endpoint=endpoint,
+            limits=McpServerLimits(connect_timeout_sec=20.0, call_timeout_sec=60.0),
         )
 
         return McpServersConfig(servers={SERVER: config})

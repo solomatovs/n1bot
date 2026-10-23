@@ -244,13 +244,15 @@ def ghosted(
     который не отвечает: на его порту никто не слушает."""
     workdir = tmp_path_factory.mktemp("acp-chat-ghost")
     ghost = {
-        "connect_timeout_sec": 5.0,
-        "call_timeout_sec": 5.0,
+        "limits": {"connect_timeout_sec": 5.0, "call_timeout_sec": 5.0},
         "endpoint": {
             "transport": "streamable-http",
-            "scheme": "http",
-            "host": StandUrl.HOST.value,
-            "port": StandPorts().free(),
+            "service": {
+                "scheme": "http",
+                "host": StandUrl.HOST.value,
+                "port": StandPorts().free(),
+                "path": "",
+            },
             "path": "/mcp",
         },
     }

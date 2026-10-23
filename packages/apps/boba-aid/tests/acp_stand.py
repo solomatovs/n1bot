@@ -71,6 +71,7 @@ from boba.db.postgres.connection.auth import PasswordAuth
 from boba.identity.context import CallContexts
 from boba.mcp_client.client import (
     McpServerConfig,
+    McpServerLimits,
     McpServers,
     McpServersConfig,
     StdioCommand,
@@ -484,7 +485,8 @@ def standard() -> McpServerConfig:
     endpoint = StdioCommand(command=sys.executable, args=(str(script), "stdio"))
 
     return McpServerConfig(
-        endpoint=endpoint, connect_timeout_sec=20.0, call_timeout_sec=60.0
+        endpoint=endpoint,
+        limits=McpServerLimits(connect_timeout_sec=20.0, call_timeout_sec=60.0),
     )
 
 
@@ -541,13 +543,10 @@ class SandboxHost:
         """Секция [mcp.servers.<имя>] сервера по HTTP на host:port с
         песочницей этого хоста."""
         return {
-            "connect_timeout_sec": 30.0,
-            "call_timeout_sec": 60.0,
+            "limits": {"connect_timeout_sec": 30.0, "call_timeout_sec": 60.0},
             "endpoint": {
                 "transport": "streamable-http",
-                "scheme": "http",
-                "host": host,
-                "port": port,
+                "service": {"scheme": "http", "host": host, "port": port, "path": ""},
                 "path": "/mcp",
             },
             "apps": {"sandbox_url": self.sandbox_url},

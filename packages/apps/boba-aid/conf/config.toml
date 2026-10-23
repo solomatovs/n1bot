@@ -26,6 +26,7 @@
     encryption = "${site.database_encryption_key}"
     session    = "${site.auth_secret}"
     proxy      = "${site.proxy_secret}"
+    mcp_proxy  = "${site.mcp_proxy_secret}"
     mcp_client = "${site.mcp_client.secret}"
 
 [ldap]
@@ -159,49 +160,46 @@
         max_output_tokens = 8192
         reasoning_return  = "turn"
 
+[service.boba_mcp]
+    scheme = "${env.mcp_scheme}"
+    host   = "${env.mcp_host}"
+    port   = "${env.mcp_port}"
+    path   = "${env.mcp_prefix}"
+
+[mcp_limits.boba]
+    connect_timeout_sec = 20.0
+    call_timeout_sec    = 86400.0
+
 [mcp.servers.boba_base]
-    connect_timeout_sec  = 20.0
-    call_timeout_sec     = 86400.0
+    limits = "${mcp_limits.boba}"
     [mcp.servers.boba_base.endpoint]
         transport = "streamable-http"
-        scheme    = "${env.mcp_scheme}"
-        host      = "${env.mcp_host}"
-        port      = "${env.mcp_port}"
-        path      = "${env.mcp_prefix}/mcp/base"
+        service   = "${service.boba_mcp}"
+        path      = "/mcp/base"
         auth      = "${mcp_auth.boba}"
 
 [mcp.servers.boba_general]
-    connect_timeout_sec  = 20.0
-    call_timeout_sec     = 86400.0
+    limits = "${mcp_limits.boba}"
     [mcp.servers.boba_general.endpoint]
         transport = "streamable-http"
-        scheme    = "${env.mcp_scheme}"
-        host      = "${env.mcp_host}"
-        port      = "${env.mcp_port}"
-        path      = "${env.mcp_prefix}/mcp/general"
+        service   = "${service.boba_mcp}"
+        path      = "/mcp/general"
         auth      = "${mcp_auth.boba}"
 
 [mcp.servers.boba_search]
-    connect_timeout_sec  = 20.0
-    call_timeout_sec     = 86400.0
+    limits = "${mcp_limits.boba}"
     [mcp.servers.boba_search.endpoint]
         transport = "streamable-http"
-        scheme    = "${env.mcp_scheme}"
-        host      = "${env.mcp_host}"
-        port      = "${env.mcp_port}"
-        path      = "${env.mcp_prefix}/mcp/search"
+        service   = "${service.boba_mcp}"
+        path      = "/mcp/search"
         auth      = "${mcp_auth.boba}"
 
 [mcp_auth.boba]
     auth          = "proxy"
     client_id     = "boba-chat"
     client_secret = "${keys.mcp_client}"
-    secret        = "${keys.proxy}"
-    [mcp_auth.boba.issuer]
-        scheme = "${env.mcp_scheme}"
-        host   = "${env.mcp_host}"
-        port   = "${env.mcp_port}"
-        path   = "${env.mcp_issuer_path}"
+    secret        = "${keys.mcp_proxy}"
+    issuer        = "${service.boba_mcp}"
 
 [auth.kerberos]
     type                = "kerberos"

@@ -912,7 +912,8 @@ class TestLaunchConfig:
     async def test_tool_call_is_cut_by_the_deadline_of_the_profile_servers(
         self, chat_launch: ChatLaunch, model: FakeModel, standard: McpServerConfig
     ) -> None:
-        brief = standard.model_copy(update={"call_timeout_sec": 1.0})
+        limits = standard.limits.model_copy(update={"call_timeout_sec": 1.0})
+        brief = standard.model_copy(update={"limits": limits})
         filed = McpServersConfig(servers={"standard": brief})
         relayed = McpServersConfig(servers={"standard": standard})
         name = McpToolNames().full("standard", "sleep_for")

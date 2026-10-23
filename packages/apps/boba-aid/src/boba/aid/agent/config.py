@@ -26,7 +26,7 @@ from boba.db.postgres.connection import (
     PostgresAuthError,
     PostgresConfig,
 )
-from boba.mcp_client.client import HttpLocation, ProxyAuth
+from boba.mcp_client.client import HttpRoute, ProxyAuth
 
 __all__ = [
     "AgentCommandConfig",
@@ -126,8 +126,11 @@ class AgentServiceConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    endpoint: HttpLocation = Field(
-        description="Адрес ACP службы: схема, хост, порт и путь ([agent].path службы)."
+    endpoint: HttpRoute = Field(
+        description=(
+            "Адрес ACP службы: сервис [service.boba_agent] (схема, хост, порт и "
+            "префикс) и путь ACP под ним ([agent].path службы)."
+        )
     )
     auth: ProxyAuth = Field(
         description=(

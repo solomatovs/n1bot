@@ -13,7 +13,7 @@
 
 [keys]
     session    = "${site.auth_secret}"
-    proxy      = "${site.proxy_secret}"
+    mcp_proxy  = "${site.mcp_proxy_secret}"
     mcp_client = "${site.mcp_client.secret}"
 
 [mcp]
@@ -128,7 +128,7 @@
 
 [auth.proxy]
     type          = "proxy"
-    secret        = "${keys.proxy}"
+    secret        = "${keys.mcp_proxy}"
     max_skew_sec  = 60
     require_roles = true
     [auth.proxy.roles.header]

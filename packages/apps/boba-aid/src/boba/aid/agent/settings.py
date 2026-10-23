@@ -402,7 +402,7 @@ class SettingsFileBuilder:
     """Файл настроек агента из слоя чата и конфига: к профилю модели чата
     добавляются политика запуска `allowBypass` (режим сессии чат выставляет
     по ACP), история, срок вызова инструментов — наибольший
-    `call_timeout_sec` серверов профиля [mcp.servers.*] — и окружение
+    `limits.call_timeout_sec` серверов профиля [mcp.servers.*] — и окружение
     libkrb5 истории ключом `env`. Строка подключения истории — её собственное
     подключение [agent.history].postgres. Файл — единственный канал настроек
     запуска агента: argv называет только его, окружение ребёнка — минимальный
@@ -449,7 +449,7 @@ class SettingsFileBuilder:
                 )
                 raise AgentSettingsError(msg)
 
-            limits.append(server.call_timeout_sec)
+            limits.append(server.limits.call_timeout_sec)
 
         if not limits:
             return None
