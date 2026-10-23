@@ -138,6 +138,10 @@
     application_name = "boba-agent"
     connect_timeout  = 10
     auth             = "${site.history_auth.${site.history_auth_method}}"
+    [postgres_history.pool]
+        min_size = 2
+        max_size = 8
+        timeout  = 30
 
 [agent]
     public_url   = "http://127.0.0.1:${env.port}${env.url_prefix}"

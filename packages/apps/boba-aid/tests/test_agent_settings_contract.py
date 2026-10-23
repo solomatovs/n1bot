@@ -45,6 +45,7 @@ POSTGRES = PostgresConfig.model_validate(
         "port": 5432,
         "dbname": "boba",
         "connect_timeout": 10,
+        "pool": {"min_size": 2, "max_size": 5, "timeout": 7.0},
         "auth": PasswordAuth(
             method="password", user="boba", password=SecretStr("pw-secret")
         ),
@@ -152,6 +153,7 @@ class TestSettingsContract:
             "kind": AgentHistoryKind.POSTGRES.value,
             "dsn": document["history"]["dsn"],
             "schema": "boba",
+            "pool": {"minSize": 2, "maxSize": 5, "timeoutSec": 7.0},
         }
         assert "password=pw-secret" in document["history"]["dsn"]
         assert document["permissions"] == {"allowBypass": True}

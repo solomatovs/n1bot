@@ -232,7 +232,7 @@ class SessionLocks:
     что число соединений истории — пул плюс одно. Обрыв соединения
     обнаруживается на ближайшем обращении: оно закрывается, замки его
     поколения считаются потерянными, следующий захват открывает новое.
-    Создаёт и держит PostgresHistoryStore.
+    Создаёт процесс, держат его хранилища истории процесса.
     """
 
     def __init__(self, postgres: PostgresConfig) -> None:
@@ -407,7 +407,9 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
     по конфигу подключения при первом обращении, как у остальных таблиц.
     Раскладку записи по колонкам и сборку обратно ведёт RecordFrames.
     owner — логин владельца сессий процесса (ключ `history.owner`); None —
-    процесс без владельца, ему видны все сессии.
+    процесс без владельца, ему видны все сессии. Замки сессий (locks) общие
+    у всех хранилищ одного процесса: хранилища разных владельцев одного
+    процесса делят соединение замков и реестр захваченных сессий.
     """
 
     LABEL: ClassVar[str] = "history"
@@ -421,13 +423,14 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
         postgres: PostgresConfig,
         db_schema: str,
         owner: str | None,
+        locks: SessionLocks,
         pool: PostgresPool | None = None,
     ) -> None:
         super().__init__(postgres, db_schema, pool)
         self._config = postgres
         self._owner = owner
         self._frames = RecordFrames()
-        self._locks = SessionLocks(postgres)
+        self._locks = locks
         self._held: dict[str, HeldSession] = {}
         self._ready = False
 
@@ -543,9 +546,10 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
         await self._locks.give(held.grant)
 
     async def close(self) -> None:
-        """Соединение замков закрыто: все сессии процесса отпущены."""
-        self._held.clear()
-        await self._locks.close()
+        """Сессии этого хранилища отпущены; соединение замков закрывает
+        процесс (SessionLocks.close), когда закрыты все его хранилища."""
+        for key in list(self._held):
+            await self._locks.give(self._held.pop(key).grant)
 
     async def list(self, cursor: str | None, limit: int) -> StoredPage:
         await self._prepare()
