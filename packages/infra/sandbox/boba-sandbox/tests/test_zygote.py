@@ -521,7 +521,7 @@ class TestIsolated:
             if seen["markers"] != [f"m{index}"]:
                 raise AssertionError(f"вызов {index} видит чужие файлы: {seen}")
 
-            if seen["init"] != "python3" or seen["pid"] > 8:
+            if seen["init"] != "init" or seen["pid"] > 8:
                 raise AssertionError(f"тело не в своём pid ns: {seen}")
 
             if int(seen["cap_eff"], 16) != 0:
