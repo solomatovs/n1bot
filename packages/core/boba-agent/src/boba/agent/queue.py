@@ -115,6 +115,9 @@ class QueueEntry(BaseModel):
     """Идентификатор от отправителя: по нему он отзывает элемент, и он же
     становится uuid записи `user`, которую ход пишет по этому элементу; без
     него идентификатор чеканит очередь."""
+    alone: bool = False
+    """Элемент не склеивается с соседями: отправитель знает его id как id
+    своего сообщения, и запись `user` с этим uuid обязана появиться."""
 
 
 class QueueItem(BaseModel):
@@ -132,11 +135,19 @@ class QueueItem(BaseModel):
     source: QueueSource
     is_meta: bool = False
     unrecorded: bool = False
+    alone: bool = False
 
     def compatible_with(self, other: QueueItem) -> bool:
         """Совместимые сообщения уходят одним ходом: тот же вид prompt,
-        источник, приоритет и служебный признак."""
+        источник, приоритет и служебный признак; элемент alone — всегда
+        своим ходом."""
         if self.kind is not QueueKind.PROMPT or other.kind is not QueueKind.PROMPT:
+            return False
+
+        if self.alone:
+            return False
+
+        if other.alone:
             return False
 
         if self.source is not other.source:
@@ -234,6 +245,7 @@ class InputQueue:
             source=entry.source,
             is_meta=entry.is_meta,
             unrecorded=entry.unrecorded,
+            alone=entry.alone,
         )
         self._items.append(item)
         if not item.unrecorded:
