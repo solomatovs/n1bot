@@ -32,6 +32,11 @@ def _profile(**kw) -> ChatProfileConfig:
         "description": "test profile",
         "provider": BACKEND,
         "model": "test-model",
+        "limits": {
+            "context_window": 32000,
+            "max_output_tokens": 4096,
+            "reasoning_return": "never",
+        },
     }
     base.update(kw)
     return ChatProfileConfig.model_validate(base)

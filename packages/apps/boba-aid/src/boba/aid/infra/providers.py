@@ -226,8 +226,8 @@ def agent_settings_table(
     storage_ready: Annotated[None, Depends(harness_storage)],
 ) -> AgentSettingsTable:
     """Слой чата настроек агента в схеме чата; секреты строк — под ключом
-    [keys].encryption."""
-    cipher = SecretCipher(app_config.keys.encryption.get_secret_value())
+    [agent.settings_table].cipher."""
+    cipher = SecretCipher(app_config.agent.settings_table.cipher.get_secret_value())
     return AgentSettingsTable(app_config.postgres, app_config.db_schema, cipher, pool)
 
 

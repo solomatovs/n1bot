@@ -93,7 +93,7 @@ class StepText(StrEnum):
     даёт ChatView.label."""
 
     CONTAINER = "aid.feed.working"
-    """Контейнер идущего хода."""
+    """Контейнер идущего хода до его первого шага."""
 
     DONE = "aid.feed.done"
     """Контейнер законченного хода без шагов."""
@@ -110,6 +110,13 @@ class StepText(StrEnum):
 
     NO_ROWS = "aid.feed.noRows"
     """Пустая таблица результата."""
+
+    QUESTION = "aid.question.title.one"
+    """Вопрос пользователю — подпись контейнера хода, пока вопрос его текущее
+    действие: как заголовок панели вопроса."""
+
+    QUESTIONS = "aid.question.title.many"
+    """То же для нескольких вопросов разом."""
 
 
 class StepKind(StrEnum):
@@ -307,6 +314,10 @@ class TurnDraft:
     container: Step | None = None
     steps: int = 0
     """Шаги хода под контейнером: их число — в подписи законченного хода."""
+
+    current: str | None = None
+    """Id шага текущего действия хода: его подпись несёт контейнер, пока ход
+    идёт."""
 
     answer: Message | None = None
     answers: int = 0
@@ -604,6 +615,12 @@ class TurnPulse:
 
         return self._step
 
+    @property
+    def live(self) -> bool:
+        """Ход идёт: от start до stop. Воспроизведение истории пульс не
+        запускает."""
+        return self._live
+
     async def start(self) -> None:
         """Ход начался: кружок держится до его конца."""
         self._live = True
@@ -722,7 +739,11 @@ class ChatView:
     ход открыт, их дописывают токен за токеном, и лишь закрытие уходит в sink.
 
     Пока ход не закончен, в конце ленты держится кружок ожидания (TurnPulse) —
-    независимо от того, думает модель, зовёт инструмент или молчит.
+    независимо от того, думает модель, зовёт инструмент или молчит. Подпись
+    контейнера идущего хода — подпись шага его текущего действия: она
+    меняется с началом шага и со сменой его статуса, а не с токенами; конец
+    хода ставит итоговую. Воспроизведение истории хода не ведёт, и его
+    контейнер сразу получает итоговую подпись.
 
     Итог вызова — ответ сервера MCP: блоки для человека рисуются реестром по
     виду блока и MIME ресурса (таблица, блок кода, график, вьювер канваса
@@ -841,6 +862,9 @@ class ChatView:
             name = self.label(StepText.DONE_STEPS, count=self._turn.steps)
 
         step.name = name
+        ended = utc_now()
+        step.start = ended
+        step.end = ended
         await self._sink.put(step)
 
     def rebuilt(self) -> None:
@@ -1045,25 +1069,68 @@ class ChatView:
         message.parent_id = None
         return message
 
-    async def container(self) -> Step:
+    async def container(self, label: str) -> Step:
         """Контейнер хода: появляется с первым шагом под ним — вживую и при
         воспроизведении истории одинаково; ход из одного ответа контейнера
-        не имеет."""
+        не имеет. label — подпись того первого шага: идущий ход сразу
+        показывает его в контейнере, воспроизведение — общую подпись хода.
+
+        Пока ход идёт (start есть, end нет), фронт рисует контейнер мерцающим,
+        как идущий шаг; свёрнутым он остаётся и после конца хода."""
         if self._turn.container is not None:
             return self._turn.container
 
+        name = self.label(StepText.CONTAINER)
+        if self._pulse.live:
+            name = label
+
         step = self._step(
-            self.label(StepText.CONTAINER),
+            name,
             StepKind.RUN,
             parent_id=None,
             step_id=self.derive_id(self._thread_id, self._turn.key, StepRole.PROCESS),
         )
+        step.start = utc_now()
+        step.auto_collapse = False
         # корневой шаг грузит аватар по имени, а имя контейнера меняется со счётчиком
         step.metadata = {StepMeta.AVATAR_NAME.value: self._assistant_name}
         await self._sink.put(step)
         await self._pulse.bump()
         self._turn.container = step
         return step
+
+    async def follow(self, step: Step) -> None:
+        """Шаг step — текущее действие хода: контейнер подписан его
+        подписью, пока не начнётся другой шаг."""
+        await self._current(step.id, step.name)
+
+    async def _current(self, step_id: str, name: str) -> None:
+        self._turn.current = step_id
+        await self._labelled(name)
+
+    async def _relabel(self, step_id: str, name: str) -> None:
+        """Шаг step_id сменил статус: подпись name уходит в контейнер, если
+        этот шаг — текущее действие хода."""
+        if step_id != self._turn.current:
+            return
+
+        await self._labelled(name)
+
+    async def _labelled(self, name: str) -> None:
+        """Подпись name контейнеру идущего хода; та же подпись кадра не
+        шлёт."""
+        if not self._pulse.live:
+            return
+
+        container = self._turn.container
+        if container is None:
+            return
+
+        if container.name == name:
+            return
+
+        container.name = name
+        await self._sink.put(container)
 
     async def await_model(self) -> None:
         """Ход ждёт модель: в конце ленты встаёт кружок ожидания, так что
@@ -1087,6 +1154,7 @@ class ChatView:
         step.name = StepStatus.DONE.title(self.label(StepText.THINKING))
         step.end = utc_now()
         await self._sink.put(step)
+        await self._relabel(step.id, step.name)
 
     async def _open_thinking(self, key: str | None) -> Step:
         """Шаг не уходит в sink сразу: его откроет первый же stream_token."""
@@ -1097,6 +1165,7 @@ class ChatView:
             StepRole.THINKING,
         )
         step.start = utc_now()
+        await self.follow(step)
 
         return step
 
@@ -1178,7 +1247,7 @@ class ChatView:
         if element_id := self.derive_id(self._thread_id, key, StepRole.APP):
             element.id = element_id
 
-        parent = await self._parent()
+        parent = await self.container(self.label(StepText.CONTAINER))
         message = self._step(
             self._assistant_name,
             StepKind.ASSISTANT,
@@ -1216,6 +1285,7 @@ class ChatView:
 
         await self._sink.put(step)
         await self._pulse.hold()
+        await self._current(step.id, self._asking(card, StepStatus.IDLE))
 
         return step
 
@@ -1227,6 +1297,21 @@ class ChatView:
 
         await self._sink.put(step)
         await self._pulse.resume()
+
+        status = StepStatus.DONE
+        if card.failed:
+            status = StepStatus.FAILED
+
+        await self._relabel(step.id, self._asking(card, status))
+
+    def _asking(self, card: QuestionCard, status: StepStatus) -> str:
+        """Подпись вопроса card в контейнере хода — заголовок его панели со
+        статусным знаком."""
+        title = StepText.QUESTION
+        if len(card.items) > 1:
+            title = StepText.QUESTIONS
+
+        return status.title(self.label(title))
 
     async def questions_answered(self, cards: Sequence[QuestionCard], key: str) -> None:
         """Записи ответов на вопросы сервера MCP, заданные в вызове key, —
@@ -1335,6 +1420,7 @@ class ChatView:
             step.language = self._raw_language(reply)
             step.name = StepStatus.DONE.title(label)
             await self._sink.put(step)
+            await self._relabel(step.id, step.name)
             await self._app_settled(step, AppProp.CANCELLED, AppCancel.NO_RESULT.value)
             return
 
@@ -1350,6 +1436,7 @@ class ChatView:
 
         step.output = "\n\n".join(shown)
         await self._sink.put(step)
+        await self._relabel(step.id, step.name)
 
         result = reply.model_dump(mode="json", by_alias=True, exclude_none=True)
         await self._app_settled(step, AppProp.RESULT, result)
@@ -1683,6 +1770,7 @@ class ChatView:
         step.start = ended
         step.end = ended
         await self._sink.put(step)
+        await self._relabel(step.id, step.name)
         await self._app_settled(step, AppProp.CANCELLED, AppCancel.STOPPED.value)
 
     @staticmethod
@@ -1718,6 +1806,7 @@ class ChatView:
         step.start = ended
         step.end = ended
         await self._sink.put(step)
+        await self._relabel(step.id, step.name)
         await self._app_settled(step, AppProp.CANCELLED, markdown)
 
     async def _element(
@@ -1757,7 +1846,7 @@ class ChatView:
         key: str | None,
         role: StepRole,
     ) -> Step:
-        parent = await self._parent()
+        parent = await self.container(name)
         self._turn.steps += 1
         return self._step(
             name,
@@ -1765,10 +1854,6 @@ class ChatView:
             parent_id=parent.id,
             step_id=self.derive_id(self._thread_id, key, role),
         )
-
-    async def _parent(self) -> Step:
-        """Родитель очередного шага: контейнер хода."""
-        return await self.container()
 
     def _step(
         self,

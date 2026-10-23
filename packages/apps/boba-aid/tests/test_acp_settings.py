@@ -58,9 +58,7 @@ from boba.aid.agent.client import (
     AgentProcessError,
 )
 from boba.aid.agent.config import (
-    AgentModelConfig,
     PostgresAgentHistory,
-    ReasoningReturn,
 )
 from boba.aid.agent.settings import (
     AgentSettingsError,
@@ -71,7 +69,7 @@ from boba.aid.agent.settings import (
     SettingsFileBuilder,
 )
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
-from boba.chat.profiles import ChatProfileConfig, SelectedProfile
+from boba.chat.profiles import ChatProfileConfig, ReasoningReturn, SelectedProfile
 from boba.connections.secrets import SecretCipher
 from boba.core.mcp_names import McpToolNames
 from boba.db.postgres import AsyncPostgresPool, PostgresSchema
@@ -101,7 +99,7 @@ from boba.transport.http import HttpTransportConfig
 
 pytestmark = pytest.mark.anyio
 
-SCHEMA = StandNames().of("acp_settings")
+SCHEMA = StandNames().of_tree("acp_settings")
 NO_SERVERS = McpServersConfig(servers={})
 CIPHER_KEY = b"0123456789abcdef0123456789abcdef"
 
@@ -129,13 +127,7 @@ async def table(
 
 @pytest.fixture
 def specs() -> ProfileModelSpecs:
-    model = AgentModelConfig(
-        context_window=32000,
-        max_output_tokens=4096,
-        reasoning_return=ReasoningReturn.NEVER,
-    )
-
-    return ProfileModelSpecs(model)
+    return ProfileModelSpecs()
 
 
 class TestChatLayer:
@@ -264,6 +256,7 @@ class TestChatLayer:
                 "tools": [],
                 "provider": OnnxProvider(kind="onnx", model_dir="/nonexistent"),
                 "model": "local",
+                "limits": SignInStand.limits(),
             }
         )
         with pytest.raises(AgentSettingsError, match="remote provider"):
@@ -637,7 +630,6 @@ class ChatLaunch:
     def agent(
         self,
         profile: ChatProfileConfig,
-        model: AgentModelConfig,
         filed: McpServersConfig,
         relayed: McpServersConfig,
         updates: RecordingUpdates,
@@ -646,7 +638,7 @@ class ChatLaunch:
         self._servers.append(servers)
         config = AgentStand(self._root / "agents", self._history.history()).config()
         launcher = AgentLauncher(
-            config.model_copy(update={"model": model}),
+            config,
             filed,
             self._table,
             self._relays.registrations,
@@ -749,11 +741,6 @@ class TestLaunchConfig:
     чата и [agent] доходят до настоящего `boba --stdio` файлом настроек и
     действуют на его запросы к модели и серверам."""
 
-    MODEL: ClassVar[AgentModelConfig] = AgentModelConfig(
-        context_window=32000,
-        max_output_tokens=4096,
-        reasoning_return=ReasoningReturn.NEVER,
-    )
     NO_SERVERS: ClassVar[McpServersConfig] = McpServersConfig(servers={})
 
     def _profile(
@@ -800,9 +787,7 @@ class TestLaunchConfig:
         )
         profile = self._profile(connection, HttpTransportConfig())
         updates = RecordingUpdates()
-        agent = chat_launch.agent(
-            profile, self.MODEL, self.NO_SERVERS, self.NO_SERVERS, updates
-        )
+        agent = chat_launch.agent(profile, self.NO_SERVERS, self.NO_SERVERS, updates)
         await agent.start()
 
         await agent.ask(Question(key="draft", text=FailureName.HANG.value))
@@ -821,7 +806,6 @@ class TestLaunchConfig:
         accepted = RecordingUpdates()
         agent = chat_launch.agent(
             self._profile(trusting, HttpTransportConfig()),
-            self.MODEL,
             self.NO_SERVERS,
             self.NO_SERVERS,
             accepted,
@@ -839,7 +823,6 @@ class TestLaunchConfig:
         refused = RecordingUpdates()
         agent = chat_launch.agent(
             self._profile(checking, HttpTransportConfig()),
-            self.MODEL,
             self.NO_SERVERS,
             self.NO_SERVERS,
             refused,
@@ -859,7 +842,6 @@ class TestLaunchConfig:
         updates = RecordingUpdates()
         agent = chat_launch.agent(
             self._profile(self._connection(model), transport),
-            self.MODEL,
             self.NO_SERVERS,
             self.NO_SERVERS,
             updates,
@@ -886,9 +868,10 @@ class TestLaunchConfig:
     ) -> None:
         spec = {"name": "no_such_tool", "arguments": {}}
         updates = RecordingUpdates()
+        profile = self._profile(self._connection(model), HttpTransportConfig())
+        limits = profile.limits.model_copy(update={"reasoning_return": policy})
         agent = chat_launch.agent(
-            self._profile(self._connection(model), HttpTransportConfig()),
-            self.MODEL.model_copy(update={"reasoning_return": policy}),
+            profile.model_copy(update={"limits": limits}),
             self.NO_SERVERS,
             self.NO_SERVERS,
             updates,
@@ -912,7 +895,8 @@ class TestLaunchConfig:
     async def test_tool_call_is_cut_by_the_deadline_of_the_profile_servers(
         self, chat_launch: ChatLaunch, model: FakeModel, standard: McpServerConfig
     ) -> None:
-        brief = standard.model_copy(update={"call_timeout_sec": 1.0})
+        limits = standard.limits.model_copy(update={"call_timeout_sec": 1.0})
+        brief = standard.model_copy(update={"limits": limits})
         filed = McpServersConfig(servers={"standard": brief})
         relayed = McpServersConfig(servers={"standard": standard})
         name = McpToolNames().full("standard", "sleep_for")
@@ -922,7 +906,6 @@ class TestLaunchConfig:
             self._profile(
                 self._connection(model), HttpTransportConfig(), ("standard",)
             ),
-            self.MODEL,
             filed,
             relayed,
             updates,

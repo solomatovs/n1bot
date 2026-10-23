@@ -347,6 +347,10 @@ class UpdateView:
     `tool_call_update`. idle хода — его конец: остановка дописывается к
     ответу, сбой встаёт шагом ошибки; живой ход получает idle из шины,
     история — из воспроизведения агента.
+
+    Текущее действие хода для подписи контейнера: начатый вызов, у связки —
+    её первый узел, а дальше узел, о котором сервер сообщил ход работы или
+    открытый журнал.
     """
 
     def __init__(
@@ -496,8 +500,9 @@ class UpdateView:
     async def journal_opened(self, opened: JournalOpened) -> None:
         """Сервер открыл журнал идущего вызова: адрес запоминается, шагу
         вызова (у связки — подшагу узла по ключу узла от автора) встаёт
-        кнопка журнала. Вызова без шага в этой ленте, связки без такого узла
-        — ничего: кнопку даст ссылка в итоге вызова."""
+        кнопка журнала, а узел становится текущим действием хода. Вызова без
+        шага в этой ленте, связки без такого узла — ничего: кнопку даст
+        ссылка в итоге вызова."""
         name = self._called.get(opened.call_id)
         if name is None:
             return
@@ -523,6 +528,8 @@ class UpdateView:
         address = JournalAddress(server=opened.server, run=opened.run, call=opened.call)
         self._journals.remember(self._thread_id, key, address)
         await self._view.tool_journaled(step, tool, key)
+        if opened.node is not None:
+            await self._view.follow(step)
 
     def _reply(self, update: schema.SessionToolCallUpdate) -> mt.CallToolResult | None:
         """Ответ сервера MCP в `rawOutput` конечного уведомления; None —
@@ -652,13 +659,18 @@ class UpdateView:
 
         group = await self._nodes_of(name, call_id, args)
         if group is None:
-            await self._step_of(name, args, call_id)
+            step = await self._step_of(name, args, call_id)
+            await self._view.follow(step)
             return None
 
+        steps: list[Step] = []
         for node in group[1]:
-            await self._step_of(node.tool, node.args, node.key)
+            step = await self._step_of(node.tool, node.args, node.key)
+            steps.append(step)
 
         self._groups[call_id] = group
+        if steps:
+            await self._view.follow(steps[0])
 
         return group
 
@@ -752,6 +764,7 @@ class UpdateView:
 
         if step := self._steps.get(node.key):
             await self._view.tool_progressed(step, progress)
+            await self._view.follow(step)
 
     def _node_of(
         self,
