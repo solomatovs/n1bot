@@ -199,7 +199,7 @@ class AgentHistoryStand:
         )
 
     def schema(self) -> str:
-        return StandNames().of(self.SCHEMA)
+        return StandNames().of_tree(self.SCHEMA)
 
     def history(self) -> PostgresAgentHistory:
         return PostgresAgentHistory.model_validate(
