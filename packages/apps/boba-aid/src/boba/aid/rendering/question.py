@@ -2,8 +2,10 @@
 
 Панель висящего вопроса строится по форме `elicitation/create` агента,
 сообщение вопроса в ленте — по вводу собственного инструмента агента
-AskUserQuestion (пока ждёт ответа) и по итогу вызова, запись вопросов
-сервера MCP — по раундам в результате вызова (ElicitationRound). Поле
+AskUserQuestion (пока ждёт ответа) и по итогу вызова — результату
+tools/call в `rawOutput`, чей structuredContent разбирается
+AskUserQuestionOutput; запись вопросов сервера MCP — по раундам в
+результате вызова (ElicitationRound). Поле
 формы — вопрос: варианты одиночного и множественного выбора, логическое поле
 (варианты «да»/«нет» подписывает элемент по переводам), строка и число —
 полем своего ответа; парное поле «Other»
@@ -19,6 +21,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from enum import StrEnum
 from typing import Any, TypeAlias
 
+import mcp_types as mt
 from acp.experimental.v2 import schema
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -170,11 +173,13 @@ class QuestionCards:
 
     def asked(self, raw_input: Any, raw_output: Any, failed: bool) -> QuestionCard:
         """Запись ответа на AskUserQuestion: вопросы — из ввода вызова,
-        исход и выбор — из итога; итог не AskUserQuestionOutput (вызов
-        оборван) — вопрос без ответа; failed — вызов кончился неудачей."""
+        исход и выбор — из structuredContent итога; итог не результат
+        tools/call с AskUserQuestionOutput (вызов оборван) — вопрос без
+        ответа; failed — вызов кончился неудачей."""
         items = list(self._asked_items(raw_input))
         try:
-            output = AskUserQuestionOutput.model_validate(raw_output)
+            reply = mt.CallToolResult.model_validate(raw_output)
+            output = AskUserQuestionOutput.model_validate(reply.structured_content)
         except ValidationError:
             return QuestionCard(state=QuestionState.CANCEL, items=items, failed=failed)
 

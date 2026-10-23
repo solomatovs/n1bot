@@ -611,11 +611,11 @@ as $$
     end
 $$;
 
--- Адрес журнала вызова в toolUseResult: новое приложение принимает его
--- только целым — сервер, запуск и идентификатор вызова строками. Адрес без
--- идентификатора вызова (его писали промежуточные выпуски) по журналу
--- сервера не находится, поэтому не переносится: шаг вызова остаётся без
--- кнопки журнала, а заметка перевода называет такой итог.
+-- Адрес журнала вызова из response_metadata.boba_journal сообщения dev:
+-- годится только целый — сервер, запуск и идентификатор вызова строками.
+-- Адрес без идентификатора вызова (его писали промежуточные выпуски) по
+-- журналу сервера не находится, поэтому не переносится: шаг вызова
+-- остаётся без кнопки журнала, а заметка перевода называет такой итог.
 create function history_migrate.journal(address jsonb)
 returns jsonb
 language sql
@@ -629,6 +629,41 @@ as $$
             and jsonb_typeof(address -> 'call') = 'string' and address ->> 'call' <> ''
         then address
     end
+$$;
+
+-- Ссылки на каналы журнала вызова в итоге: по блоку resource_link на каналы
+-- tool_stdout и tool_stderr, как их дописывает к результату tools/call сервер
+-- boba-mcp по расширению журнала — uri boba-journal://{run}/{node}/{channel},
+-- имя блока — канал, mimeType text/plain, блок адресован человеку (audience
+-- user). Адрес не целый — ссылок нет.
+create function history_migrate.journal_links(address jsonb)
+returns jsonb
+language sql
+immutable
+as $$
+    select coalesce(
+        (
+            select
+                jsonb_agg(
+                    jsonb_build_object(
+                        'type', 'resource_link',
+                        'uri', 'boba-journal://'
+                            || history_migrate.url_segment(history_migrate.journal(address) ->> 'run') || '/'
+                            || history_migrate.url_segment(history_migrate.journal(address) ->> 'call') || '/'
+                            || channel,
+                        'name', channel,
+                        'mimeType', 'text/plain',
+                        'annotations', jsonb_build_object('audience', jsonb_build_array('user'))
+                    )
+                    order by ord
+                )
+            from
+                unnest(array['tool_stdout', 'tool_stderr']) with ordinality as channels(channel, ord)
+            where
+                history_migrate.journal(address) is not null
+        ),
+        '[]'::jsonb
+    )
 $$;
 
 -- SHA-1 значения байтов: uuid версии 5 строится на нём, а встроенного
@@ -878,8 +913,12 @@ from
 -- последняя названная в треде, а у подготовки хода стоит <synthetic>. Ответ
 -- с пометкой error становится синтетической записью об ошибке модели, ответ
 -- с пометкой stopped — оборванным ответом и маркером прерывания за ним.
--- Итог инструмента даёт запись user с блоком tool_result, а его артефакт,
--- адрес журнала и типы содержимого уходят в toolUseResult. Время всех
+-- Итог инструмента даёт запись user с блоком tool_result и toolUseResult —
+-- результатом tools/call в форме MCP, как его пишет агент: текст итога
+-- одним блоком text, ссылки resource_link на каналы журнала вызова по его
+-- адресу, isError по статусу. Артефакт результата dev (модель семейства
+-- boba) и типы содержимого аргументов не переносятся: лента рисует итог по
+-- блокам, аргументы — обычным JSON. Время всех
 -- записей треда — время его последнего checkpoint'а, потому что своего
 -- времени у сообщений нет. Ключи со значением null в документ не пишутся,
 -- кроме parentUuid и stop_sequence: так записи пишет сам агент.
@@ -1242,23 +1281,12 @@ tool_unit as (
                     end
                 )
             )
-        ) || coalesce(
-            (
-                select
-                    jsonb_build_object('toolUseResult', jsonb_strip_nulls(jsonb_object_agg(key, value)))
-                from (
-                    values
-                        ('artifact', t.m -> 'artifact'),
-                        ('journal', history_migrate.journal(t.m -> 'response_metadata' -> 'boba_journal')),
-                        ('media', t.m -> 'response_metadata' -> 'boba_call_media')
-                ) as parts(key, value)
-                where
-                    value is not null
-                    and value <> 'null'::jsonb
-                having
-                    count(*) > 0
-            ),
-            '{}'::jsonb
+        ) || jsonb_build_object(
+            'toolUseResult', jsonb_build_object(
+                'content', jsonb_build_array(jsonb_build_object('type', 'text', 'text', t.body_text))
+                    || history_migrate.journal_links(t.m -> 'response_metadata' -> 'boba_journal'),
+                'isError', coalesce(t.m ->> 'status' = 'error', false)
+            )
         ) as body
     from
         message as t
@@ -1897,8 +1925,9 @@ select count(*) > 0 as failed from history_migrate.problems \gset
 -- само при старте.
 --
 -- Удаляются таблицы, которых в новом приложении нет: elements (вложения
--- вопросов теперь ссылки resource_link в истории агента, файлы итогов
--- инструментов — в их rawOutput) и чекпойнты langgraph вместе с их схемой.
+-- вопросов теперь ссылки resource_link в истории агента, итог инструмента —
+-- результат tools/call в toolUseResult) и чекпойнты langgraph вместе с их
+-- схемой.
 
 alter table :"chainlit_schema".users alter column created_at set default now();
 
