@@ -24,6 +24,7 @@ from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
 from typing import ClassVar, Protocol
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 import httpx
@@ -802,6 +803,49 @@ class TestServerApps:
 
         assert self.SANDBOX.origin() == "http://localhost:8123"
         assert signed.origin() == "https://apps.example.com"
+
+    async def test_prefab_tool_names_its_renderer_and_structured_view(
+        self, apps_slot: AppsSlot
+    ) -> None:
+        """Инструмент Prefab сервера fastmcp[apps]: tools/list несёт
+        _meta.ui.resourceUri рендерера, ресурс читается типом приложения с
+        CSP только на источник статики стенда — ни CDN, ни шрифтов извне, —
+        итог вызова несёт view в structuredContent и текст для модели."""
+        server = await self._open(_legacy(apps_slot, AppServer.PREFAB), self.SANDBOX)
+        try:
+            listed = await server.tools(OWN)
+            sales = next(tool for tool in listed.tools if tool.name == "sales")
+            assert sales.meta is not None, sales
+            uri = sales.meta["ui"]["resourceUri"]
+            read = await server.read_resource(
+                OWN, mt.ReadResourceRequestParams(uri=uri), None
+            )
+            reply = await server.call(
+                OWN, _call("sales", region="North"), None, None, None, None
+            )
+        finally:
+            await server.close()
+
+        assert uri.startswith("ui://prefab/tool/"), uri
+        assert uri.endswith("/renderer.html"), uri
+        assert isinstance(read, mt.ReadResourceResult)
+        page = read.contents[0]
+        assert page.mime_type == APP_MIME_TYPE
+        assert isinstance(page, mt.TextResourceContents)
+        assert apps_slot.renderer_url() in page.text
+        assert page.meta is not None
+        domains: list[str] = []
+        for listed_domains in page.meta["ui"]["csp"].values():
+            domains.extend(listed_domains)
+        assert domains, page.meta
+        for domain in domains:
+            assert urlsplit(domain).hostname == apps_slot.host, domains
+
+        assert isinstance(reply, mt.CallToolResult), reply
+        text = McpResults().result("sales", "c1", reply).llm_view()
+        assert text == "2 sales rows are shown by their table"
+        assert reply.structured_content is not None
+        assert reply.structured_content["view"]["type"] == "Div", reply
 
 
 class BobaMcpStand:

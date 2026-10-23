@@ -19,11 +19,14 @@ from boba.stand.site import StandError
 
 class AppServer(IntEnum):
     """Серверы MCP контейнера boba-testapps по портам, на пути /mcp: примеры
-    MCP Apps из npm (2025-11-25, без сессий) и свой сервер на TypeScript SDK
+    MCP Apps из npm (2025-11-25, без сессий), свой сервер на TypeScript SDK
     1.x с сессиями в четырёх редакциях — LEGACY знает все версии
     рукопожатия SDK, OLDER только 2025-06-18, DUAL — две эпохи более поздней
     редакции (2027-01-01 с конвертом и рукопожатие 2025-06-18, 2025-03-26),
-    AHEAD — только 2027-01-01 без рукопожатия."""
+    AHEAD — только 2027-01-01 без рукопожатия — и серверы fastmcp[apps]:
+    PREFAB (инструменты с видами Prefab и свой HTML), NOTES (FastMCPApp со
+    входом для модели и backend для приложения), GENUI (провайдер
+    генерации)."""
 
     SEGMENTS = 3101
     DEBUG = 3105
@@ -31,6 +34,17 @@ class AppServer(IntEnum):
     OLDER = 3111
     DUAL = 3112
     AHEAD = 3113
+    PREFAB = 3120
+    NOTES = 3121
+    GENUI = 3122
+
+
+class AppStatic(IntEnum):
+    """Статика контейнера boba-testapps по портам: RENDERER — dist рендерера
+    Prefab (@prefecthq/prefab-ui), который серверы fastmcp[apps] называют в
+    своих ресурсах ui:// вместо CDN."""
+
+    RENDERER = 3124
 
 
 class AppsDocker(StrEnum):
@@ -108,8 +122,16 @@ class AppsSlot:
         for server in AppServer:
             self._listening(server)
 
+        for static in AppStatic:
+            self._listening(static)
+
     def stop(self) -> None:
         self._docker("rm", "-f", self._name)
+
+    def renderer_url(self) -> str:
+        """Источник рендерера Prefab, с которого серверы fastmcp[apps] велят
+        браузеру грузить renderer.js и renderer.css."""
+        return f"http://{self.host}:{AppStatic.RENDERER.value}"
 
     def stdio(self) -> tuple[str, ...]:
         """Команда своего сервера по stdio: контейнер без сети на вызов."""
@@ -157,7 +179,7 @@ class AppsSlot:
 
         return True
 
-    def _listening(self, server: AppServer) -> None:
+    def _listening(self, server: AppServer | AppStatic) -> None:
         deadline = time.monotonic() + self.BOOT_SEC
         while True:
             try:
