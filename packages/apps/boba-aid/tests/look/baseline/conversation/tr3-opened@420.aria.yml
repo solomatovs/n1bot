@@ -1,20 +1,20 @@
 - article: Проверь доступность хранилища
-- img "Avatar for Ассистент-BOBA"
+- img "Avatar for AID"
 - article: Хранилище доступно, свободно 120 ГБ.
 - article: Подумай, как разбить таблицу на партиции
-- img "Avatar for Ассистент-BOBA"
+- img "Avatar for AID"
 - 'heading "Завершено · шагов: 1" [level=3]':
   - 'button "Завершено · шагов: 1"'
-- img "Avatar for Ассистент-BOBA"
+- img "Avatar for AID"
 - article: "Разбейте таблицу по месяцам даты заказа: запросы отчётов читают один месяц, а старые партиции можно отсоединять целиком."
 - article: Какие подключения мне доступны?
-- img "Avatar for Ассистент-BOBA"
+- img "Avatar for AID"
 - article: Смотрю подключения.
-- img "Avatar for Ассистент-BOBA"
+- img "Avatar for AID"
 - 'heading "Завершено · шагов: 1" [level=3]':
   - 'button "Завершено · шагов: 1" [expanded]'
 - region:
   - heading "✔ connection_list · Смотрю подключения · 0 мс" [level=3]:
     - button "✔ connection_list · Смотрю подключения · 0 мс"
-- img "Avatar for Ассистент-BOBA"
+- img "Avatar for AID"
 - article: "Подключения выше: пока ни одного, их можно добавить в настройках."
