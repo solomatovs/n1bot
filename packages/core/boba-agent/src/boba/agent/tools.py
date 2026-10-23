@@ -27,7 +27,6 @@ from enum import StrEnum
 from typing import Any, ClassVar, Protocol, Self
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
-from pydantic_core import ErrorDetails
 
 from boba.agent.attachments import ConnectedServer, SnapshotTool
 from boba.agent.control import (
@@ -68,6 +67,7 @@ from boba.agent.tags import AgentTag
 from boba.agent.template import AgentTemplate, AgentTemplateFile
 from boba.agent.writer import RecordKeeper
 from boba.cancellation import RunCancellation, StopReason, ToolStopped
+from boba.core.validation import ValidationText
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +87,6 @@ __all__ = [
     "OwnTool",
     "PlannedCall",
     "Questioner",
-    "SchemaErrors",
     "ToolRunner",
     "ToolServer",
     "ToolTexts",
@@ -97,50 +96,6 @@ __all__ = [
 
 class ToolsError(Exception):
     """Набор инструментов противоречив: имена совпали."""
-
-
-class SchemaErrors:
-    """Текст ошибки валидации без разобранных данных: в них ездят секреты.
-
-    str(ValidationError) печатает input_value целиком, а он уходит и в
-    чат, и в журнал. Наружу идут только адрес поля, формулировка и код
-    ошибки; хвост длинного списка сворачивается.
-    """
-
-    SEPARATOR: ClassVar[str] = "; "
-    MAX_ERRORS: ClassVar[int] = 5
-    ROOT: ClassVar[str] = "<root>"
-    PATH_SEPARATOR: ClassVar[str] = "."
-
-    def text(self, error: ValidationError) -> str:
-        reports = error.errors(
-            include_url=False, include_input=False, include_context=False
-        )
-
-        lines: list[str] = []
-        for report in reports[: self.MAX_ERRORS]:
-            lines.append(self._one(report))
-
-        hidden = len(reports) - len(lines)
-        if hidden > 0:
-            lines.append(f"and {hidden} more")
-
-        return self.SEPARATOR.join(lines)
-
-    def _one(self, report: ErrorDetails) -> str:
-        location = self._location(report["loc"])
-
-        return f"{location}: {report['msg']} [{report['type']}]"
-
-    def _location(self, loc: Sequence[int | str]) -> str:
-        if not loc:
-            return self.ROOT
-
-        parts: list[str] = []
-        for item in loc:
-            parts.append(str(item))
-
-        return self.PATH_SEPARATOR.join(parts)
 
 
 class ToolServer(Protocol):
@@ -503,7 +458,7 @@ class AskUserQuestionTool(OwnTool):
     def __init__(self, templates: AgentTemplate, texts: ToolTexts) -> None:
         self._templates = templates
         self._texts = texts
-        self._errors = SchemaErrors()
+        self._errors = ValidationText()
 
     @property
     def name(self) -> str:
@@ -528,7 +483,7 @@ class AskUserQuestionTool(OwnTool):
         except ValidationError as exc:
             text = (
                 f"The {self.NAME} call was not shown to the user: its arguments do "
-                f"not match the tool schema: {self._errors.text(exc)}"
+                f"not match the tool schema: {self._errors.of(exc)}"
             )
             return self._texts.failed(call, text)
 

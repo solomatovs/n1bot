@@ -9,6 +9,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any, ClassVar
 
 from pydantic import BaseModel, SecretStr
+from pydantic.fields import FieldInfo
 
 __all__ = [
     "SecretReveal",
@@ -21,7 +22,8 @@ class SecretReveal:
 
     Pydantic дампит SecretStr звёздочками и контекст не смотрит, поэтому
     после дампа значения модели обходятся параллельно с дампом, и каждое
-    голое SecretStr на любой глубине заменяется открытой строкой. Поле с
+    голое SecretStr на любой глубине заменяется открытой строкой; дамп
+    by_alias находится по alias поля. Поле с
     явным field_serializer не трогается: у него своя политика (пароль
     kerberos не уезжает никогда, keytab роняет дамп).
     """
@@ -48,14 +50,30 @@ class SecretReveal:
 
         explicit = cls._explicit_fields(type(model))
 
-        for name in type(model).model_fields:
+        for name, field in type(model).model_fields.items():
             if name in explicit:
                 continue
 
-            if name not in dumped:
+            key = cls._key_of(name, field, dumped)
+            if key is None:
                 continue
 
-            cls._reveal(getattr(model, name), dumped, name)
+            cls._reveal(getattr(model, name), dumped, key)
+
+    @staticmethod
+    def _key_of(name: str, field: FieldInfo, dumped: dict[str, object]) -> str | None:
+        """Ключ поля в дампе: имя поля либо его alias при дампе by_alias."""
+        if name in dumped:
+            return name
+
+        alias = field.serialization_alias
+        if alias is None:
+            alias = field.alias
+
+        if alias is not None and alias in dumped:
+            return alias
+
+        return None
 
     @classmethod
     def _reveal(cls, value: object, parent: Any, key: object) -> None:
