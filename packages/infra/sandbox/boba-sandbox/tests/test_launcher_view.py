@@ -196,7 +196,7 @@ class TestZygoteLayer:
         zygote_stand: ZygoteStand, section: str, profile: SandboxProfile
     ) -> ZygoteToolCaller:
         return zygote_stand.caller(
-            section, profile, path_vars=lambda: {"user_id": "7", "thread_id": "t1"}
+            section, profile, path_vars=lambda: {"user_id": "7", "scope_id": "t1"}
         )
 
     def test_outer_layer_mounts_exactly_the_view(

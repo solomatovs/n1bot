@@ -461,7 +461,7 @@ def _journal_source(
     if journal is None:
         raise AssertionError("journal is not None")
 
-    key = StreamKey(user_id=USER, thread_id=THREAD, call_id=call_id)
+    key = StreamKey(user_id=USER, run_id=THREAD, call_id=call_id)
     return JournalWatchSource(journal, key, STDOUT, live)
 
 
@@ -985,7 +985,7 @@ class TestChannelAccess:
         if journal is None:
             raise AssertionError("journal is not None")
 
-        key = StreamKey(user_id=USER, thread_id=THREAD, call_id=CALL_ID)
+        key = StreamKey(user_id=USER, run_id=THREAD, call_id=CALL_ID)
         if WrapChannel.STDERR not in journal.channels_of(key):
             raise AssertionError("WrapChannel.STDERR in journal.channels_of(key)")
 

@@ -28,6 +28,7 @@ __all__ = [
     "JournalText",
     "JournalWindow",
     "LogName",
+    "RunUsage",
     "StreamJournalError",
     "StreamKey",
     "StreamMeta",
@@ -35,7 +36,6 @@ __all__ = [
     "StreamSlice",
     "StreamStat",
     "StreamStorePort",
-    "ThreadUsage",
     "VaultUsage",
     "WindowAlign",
 ]
@@ -78,8 +78,8 @@ class LogName(BaseModel):
 class JournalFile(StrEnum):
     """Суффиксы файлов журнала; сборка и разбор путей — только здесь.
 
-    Лог вызова: {thread}/{call_id}.{tool}.{channel}.log — файл на канал.
-    Сайдкар с итогом один на вызов: {thread}/{call_id}.meta.json. Разбор
+    Лог вызова: {run_id}/{call_id}.{tool}.{channel}.log — файл на канал.
+    Сайдкар с итогом один на вызов: {run_id}/{call_id}.meta.json. Разбор
     имени идёт по сегментам с конца; срезом суффикса call_id не берётся.
     """
 
@@ -89,7 +89,7 @@ class JournalFile(StrEnum):
 
     @classmethod
     def rel_log(
-        cls, thread_id: str, call_id: str, tool: str, channel: JournalChannel
+        cls, run_id: str, call_id: str, tool: str, channel: JournalChannel
     ) -> str:
         if "." in call_id or "." in tool:
             msg = (
@@ -98,16 +98,16 @@ class JournalFile(StrEnum):
             )
             raise ValueError(msg)
 
-        return f"{thread_id}/{call_id}.{tool}.{channel.value}{cls.LOG}"
+        return f"{run_id}/{call_id}.{tool}.{channel.value}{cls.LOG}"
 
     @classmethod
-    def rel_meta(cls, thread_id: str, call_id: str) -> str:
-        return f"{thread_id}/{call_id}{cls.META}"
+    def rel_meta(cls, run_id: str, call_id: str) -> str:
+        return f"{run_id}/{call_id}{cls.META}"
 
     @classmethod
-    def call_prefix(cls, thread_id: str, call_id: str) -> str:
+    def call_prefix(cls, run_id: str, call_id: str) -> str:
         """Префикс всех файлов вызова: единица защиты и вытеснения."""
-        return f"{thread_id}/{call_id}."
+        return f"{run_id}/{call_id}."
 
     @classmethod
     def is_log(cls, name: str) -> bool:
@@ -147,7 +147,7 @@ class JournalText(StrEnum):
 
 
 class StreamKey(BaseModel):
-    """Адрес журнала одного вызова: {thread_id}/{call_id} в томе пользователя.
+    """Адрес журнала одного вызова: {run_id}/{call_id} в томе пользователя.
 
     call_id приходит из протокола LLM-провайдера — в путь допускаются только
     безопасные символы, всё прочее отвергается на границе. Точка в call_id
@@ -158,12 +158,12 @@ class StreamKey(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     user_id: str = Field(min_length=1)
-    thread_id: str = Field(min_length=1)
+    run_id: str = Field(min_length=1)
     call_id: str = Field(min_length=1, max_length=255)
 
     SEGMENT: ClassVar[PathSegment] = PathSegment()
 
-    @field_validator("user_id", "thread_id", "call_id")
+    @field_validator("user_id", "run_id", "call_id")
     @classmethod
     def _safe_segment(cls, value: str) -> str:
         return cls.SEGMENT.checked(value, "journal path segment")
@@ -178,19 +178,19 @@ class StreamKey(BaseModel):
         return value
 
     def rel_log(self, tool: str, channel: JournalChannel) -> str:
-        return JournalFile.rel_log(self.thread_id, self.call_id, tool, channel)
+        return JournalFile.rel_log(self.run_id, self.call_id, tool, channel)
 
     def rel_meta(self) -> str:
-        return JournalFile.rel_meta(self.thread_id, self.call_id)
+        return JournalFile.rel_meta(self.run_id, self.call_id)
 
     def call_prefix(self) -> str:
-        return JournalFile.call_prefix(self.thread_id, self.call_id)
+        return JournalFile.call_prefix(self.run_id, self.call_id)
 
 
 class StreamMeta(BaseModel):
     """Сайдкар журнала: имя инструмента, область запуска и итог записи.
 
-    scope — id области (тред), в которой шёл запуск: по нему удаление
+    scope — id области вызывающего, в которой шёл запуск: по нему удаление
     области находит журналы своих запусков.
     """
 
@@ -295,12 +295,12 @@ class WindowAlign:
         return data, end
 
 
-class ThreadUsage(BaseModel):
-    """Занятость журналов одного треда."""
+class RunUsage(BaseModel):
+    """Занятость журналов одного запуска."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    thread_id: str
+    run_id: str
     bytes_used: int
     calls: int
     last_write_at: float
@@ -313,7 +313,7 @@ class VaultUsage(BaseModel):
 
     total_bytes: int
     free_bytes: int
-    threads: tuple[ThreadUsage, ...]
+    runs: tuple[RunUsage, ...]
 
 
 class CallLogUsage(BaseModel):
@@ -325,7 +325,7 @@ class CallLogUsage(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    thread_id: str
+    run_id: str
     call_id: str
     rel_files: tuple[str, ...]
     bytes_used: int
@@ -333,7 +333,7 @@ class CallLogUsage(BaseModel):
 
     @property
     def prefix(self) -> str:
-        return JournalFile.call_prefix(self.thread_id, self.call_id)
+        return JournalFile.call_prefix(self.run_id, self.call_id)
 
 
 class JournalWindow(IntEnum):
@@ -394,8 +394,8 @@ class StreamStorePort(Protocol):
 
     def channels_of(self, key: StreamKey) -> tuple[JournalChannel, ...]: ...
 
-    def owner_of(self, thread_id: str) -> str | None:
-        """Пользователь, в чьём томе лежат журналы треда; None — таких нет."""
+    def owner_of(self, run_id: str) -> str | None:
+        """Пользователь, в чьём томе лежат журналы запуска run_id; None — таких нет."""
         ...
 
     def usage(self, user_id: str) -> VaultUsage: ...

@@ -20,7 +20,7 @@ from boba.canvas.canvas import (
     WatchProbeError,
 )
 from boba.canvas.diagram import DiagramEntry, DiagramSpecError, MermaidSpec
-from boba.canvas.keys import ThreadDir, WorkspaceKey
+from boba.canvas.keys import ScopeDir, WorkspaceKey
 from boba.runtime.config import AppLayers
 from boba.runtime.storage import LocalStorageClient, LocalStorageConfig
 from boba.toolkit.result import ContentMime
@@ -141,14 +141,12 @@ def files(
     return DiagramFiles()
 
 
-async def _stored(
-    name: str, text: str, dir_thread: ThreadDir = ThreadDir.MERMAID
-) -> None:
+async def _stored(name: str, text: str, scope_dir: ScopeDir = ScopeDir.MERMAID) -> None:
     """Спека в storage тем путём, каким её кладёт тело diagram_save."""
     storage = AttachmentDataLayer.require().storage
     await put_bytes(
         storage,
-        object_key=f"{UUID(int=7)}/{THREAD}/{dir_thread.value}/{name}",
+        object_key=f"{UUID(int=7)}/{THREAD}/{scope_dir.value}/{name}",
         data=text,
     )
 
@@ -174,9 +172,9 @@ class TestSaveAndView:
 
         key = WorkspaceKey(
             user_id=str(UUID(int=7)),
-            thread_id=THREAD,
+            scope_id=THREAD,
             name="orders.mmd",
-            dir=ThreadDir.MERMAID,
+            dir=ScopeDir.MERMAID,
             workspace=MOUNT,
         )
         opened = await MermaidViewer(files).open(key, ContentMime.MERMAID, push)
@@ -198,7 +196,7 @@ class TestSaveAndView:
         self, files: DiagramFiles, http_context: None, fast_verdict: None
     ) -> None:
         """Пользовательский .mmd из upload/ показывается тем же вьювером."""
-        await _stored("mine.mmd", ER_SPEC, ThreadDir.UPLOAD)
+        await _stored("mine.mmd", ER_SPEC, ScopeDir.UPLOAD)
 
         shown: list[Any] = []
 
@@ -207,9 +205,9 @@ class TestSaveAndView:
 
         key = WorkspaceKey(
             user_id=str(UUID(int=7)),
-            thread_id=THREAD,
+            scope_id=THREAD,
             name="mine.mmd",
-            dir=ThreadDir.UPLOAD,
+            dir=ScopeDir.UPLOAD,
             workspace=MOUNT,
         )
         await MermaidViewer(files).open(key, ContentMime.MERMAID, push)
@@ -229,9 +227,9 @@ class TestSaveAndView:
     async def test_read_missing_file(self, files: DiagramFiles) -> None:
         key = WorkspaceKey(
             user_id=str(UUID(int=7)),
-            thread_id=THREAD,
+            scope_id=THREAD,
             name="no.mmd",
-            dir=ThreadDir.MERMAID,
+            dir=ScopeDir.MERMAID,
             workspace=MOUNT,
         )
 
@@ -251,9 +249,9 @@ class TestEntry:
         """Файл не mermaid: текст едет как есть, метаданных нет, подпись — имя."""
         key = WorkspaceKey(
             user_id=str(UUID(int=7)),
-            thread_id=THREAD,
+            scope_id=THREAD,
             name="a.mmd",
-            dir=ThreadDir.MERMAID,
+            dir=ScopeDir.MERMAID,
             workspace=MOUNT,
         )
 
@@ -270,9 +268,9 @@ class TestEntry:
         """Заголовок разобран — тип известен; синтаксис тела проверяет браузер."""
         key = WorkspaceKey(
             user_id=str(UUID(int=7)),
-            thread_id=THREAD,
+            scope_id=THREAD,
             name="a.mmd",
-            dir=ThreadDir.MERMAID,
+            dir=ScopeDir.MERMAID,
             workspace=MOUNT,
         )
 
@@ -294,9 +292,9 @@ class TestEntry:
 
         key = WorkspaceKey(
             user_id=str(UUID(int=7)),
-            thread_id=THREAD,
+            scope_id=THREAD,
             name="bin.mmd",
-            dir=ThreadDir.MERMAID,
+            dir=ScopeDir.MERMAID,
             workspace=MOUNT,
         )
 
@@ -318,9 +316,9 @@ class TestEntry:
 
         key = WorkspaceKey(
             user_id=str(UUID(int=7)),
-            thread_id=THREAD,
+            scope_id=THREAD,
             name="huge.mmd",
-            dir=ThreadDir.MERMAID,
+            dir=ScopeDir.MERMAID,
             workspace=MOUNT,
         )
 
@@ -342,9 +340,9 @@ class TestWatchSource:
         await _stored("orders.mmd", ER_SPEC)
         key = WorkspaceKey(
             user_id=str(UUID(int=7)),
-            thread_id=THREAD,
+            scope_id=THREAD,
             name="orders.mmd",
-            dir=ThreadDir.MERMAID,
+            dir=ScopeDir.MERMAID,
             workspace=MOUNT,
         )
 
@@ -374,9 +372,9 @@ class TestWatchSource:
         следующем такте, а не снимет слежение."""
         missing = WorkspaceKey(
             user_id=str(UUID(int=7)),
-            thread_id=THREAD,
+            scope_id=THREAD,
             name="absent.mmd",
-            dir=ThreadDir.MERMAID,
+            dir=ScopeDir.MERMAID,
             workspace=MOUNT,
         )
         broken = MermaidViewer(files).watch_source(missing)
@@ -443,9 +441,9 @@ class TestViewerVerdict:
         await _stored("orders.mmd", ER_SPEC)
         key = WorkspaceKey(
             user_id=str(UUID(int=7)),
-            thread_id=THREAD,
+            scope_id=THREAD,
             name="orders.mmd",
-            dir=ThreadDir.MERMAID,
+            dir=ScopeDir.MERMAID,
             workspace=MOUNT,
         )
 

@@ -20,7 +20,7 @@ from boba.canvas.journal import (
 from boba.runtime.journal import DirVault, StreamJournal, StreamRecorder
 from boba.toolkit.channels import ToolChannel
 
-KEY = StreamKey(user_id="7", thread_id="t-1", call_id="call-1")
+KEY = StreamKey(user_id="7", run_id="t-1", call_id="call-1")
 SCOPE = "thread-1"
 
 STDOUT = ToolChannel.STDOUT
@@ -46,20 +46,20 @@ class TestKey:
 
     def test_traversal_is_refused(self) -> None:
         with pytest.raises(ValidationError):
-            StreamKey(user_id="7", thread_id="t", call_id="../../etc/passwd")
+            StreamKey(user_id="7", run_id="t", call_id="../../etc/passwd")
 
     def test_dot_names_are_refused(self) -> None:
         for name in (".", ".."):
             with pytest.raises(ValidationError):
-                StreamKey(user_id="7", thread_id=name, call_id="c")
+                StreamKey(user_id="7", run_id=name, call_id="c")
 
     def test_dot_inside_call_id_is_refused(self) -> None:
         """Точка внутри call_id сделала бы имя файла неразложимым."""
         with pytest.raises(ValidationError):
-            StreamKey(user_id="7", thread_id="t-1", call_id="call_uKx7pB2qX.0")
+            StreamKey(user_id="7", run_id="t-1", call_id="call_uKx7pB2qX.0")
 
     def test_rel_log_carries_tool_and_channel(self) -> None:
-        key = StreamKey(user_id="7", thread_id="t-1", call_id="call_uKx7pB2qX0")
+        key = StreamKey(user_id="7", run_id="t-1", call_id="call_uKx7pB2qX0")
         if key.rel_log("bash", STDOUT) != "t-1/call_uKx7pB2qX0.bash.tool_stdout.log":
             raise AssertionError('key.rel_log("bash", STDOUT) == ( "t-1/call_uKx7pB2q…')
 
@@ -343,18 +343,18 @@ class TestWindowChains:
 
 
 class TestUsageAndPurge:
-    """Занятость тома по тредам и адресная уборка."""
+    """Занятость тома по запускам и адресная уборка."""
 
     @staticmethod
     def _fill(
-        journal: StreamJournal, thread_id: str, body: bytes, scope: str = SCOPE
+        journal: StreamJournal, run_id: str, body: bytes, scope: str = SCOPE
     ) -> None:
-        key = StreamKey(user_id="7", thread_id=thread_id, call_id="c-1")
+        key = StreamKey(user_id="7", run_id=run_id, call_id="c-1")
         recorder = journal.recorder(key, scope, "bash", STDOUT, _wake, frozenset())
         recorder.feed(body)
         recorder.close("rc=0")
 
-    def test_usage_lists_threads_oldest_first(self, tmp_path: Path) -> None:
+    def test_usage_lists_runs_oldest_first(self, tmp_path: Path) -> None:
         journal = _journal(tmp_path)
         self._fill(journal, "t-old", b"x" * 100)
         old_log = tmp_path / "vault" / "7" / "t-old" / "c-1.bash.tool_stdout.log"
@@ -365,17 +365,17 @@ class TestUsageAndPurge:
 
         if usage.total_bytes <= 0:
             raise AssertionError("usage.total_bytes > 0")
-        names = [entry.thread_id for entry in usage.threads]
+        names = [entry.run_id for entry in usage.runs]
         if names != ["t-old", "t-new"]:
             raise AssertionError('names == ["t-old", "t-new"]')
-        by_name = {entry.thread_id: entry for entry in usage.threads}
+        by_name = {entry.run_id: entry for entry in usage.runs}
         if by_name["t-new"].bytes_used <= 5000:
             raise AssertionError('by_name["t-new"].bytes_used > 5000')
         if by_name["t-new"].calls != 1:
             raise AssertionError('by_name["t-new"].calls == 1')
 
     def test_channels_of_one_call_count_as_one(self, tmp_path: Path) -> None:
-        """Три файла каналов одного вызова — один вызов в учёте треда."""
+        """Три файла каналов одного вызова — один вызов в учёте запуска."""
         journal = _journal(tmp_path)
         for channel in (STDOUT, STDERR, ToolChannel.RESULT):
             recorder = journal.recorder(KEY, SCOPE, "bash", channel, _wake, frozenset())
@@ -384,7 +384,7 @@ class TestUsageAndPurge:
 
         usage = journal.usage("7")
 
-        by_name = {entry.thread_id: entry for entry in usage.threads}
+        by_name = {entry.run_id: entry for entry in usage.runs}
         if by_name["t-1"].calls != 1:
             raise AssertionError('by_name["t-1"].calls == 1')
 
@@ -394,7 +394,7 @@ class TestUsageAndPurge:
         self._fill(journal, "t-1", b"z" * 3000)
         self._fill(journal, "t-2", b"z" * 10)
         self._fill(journal, "t-other", b"o" * 10, "thread-other")
-        other = StreamKey(user_id="7", thread_id="t-other", call_id="c-1")
+        other = StreamKey(user_id="7", run_id="t-other", call_id="c-1")
 
         freed = journal.purge_scope("7", SCOPE)
 
@@ -419,7 +419,7 @@ class TestUsageAndPurge:
         self._fill(journal, "t-old", b"a" * 100)
         self._fill(journal, "t-protected", b"b" * 100)
 
-        key = StreamKey(user_id="7", thread_id="t-cur", call_id="c-2")
+        key = StreamKey(user_id="7", run_id="t-cur", call_id="c-2")
         journal.recorder(
             key, SCOPE, "bash", STDOUT, _wake, frozenset({"t-protected/c-1."})
         )
@@ -435,7 +435,7 @@ class TestUsageAndPurge:
     def test_eviction_takes_the_call_with_all_channels(self, tmp_path: Path) -> None:
         """Вызов вытесняется целиком: все каналы и сайдкар, не один файл."""
         journal = _journal(tmp_path)
-        old_key = StreamKey(user_id="7", thread_id="t-1", call_id="c-old")
+        old_key = StreamKey(user_id="7", run_id="t-1", call_id="c-old")
         for channel in (STDOUT, STDERR):
             recorder = journal.recorder(
                 old_key, SCOPE, "bash", channel, _wake, frozenset()
@@ -444,7 +444,7 @@ class TestUsageAndPurge:
             recorder.close("rc=0")
 
         rotating = StreamJournal(DirVault(str(tmp_path / "vault")), reserve_bytes=2**60)
-        fresh_key = StreamKey(user_id="7", thread_id="t-1", call_id="c-new")
+        fresh_key = StreamKey(user_id="7", run_id="t-1", call_id="c-new")
         rotating.recorder(fresh_key, SCOPE, "bash", STDOUT, _wake, frozenset())
 
         root = tmp_path / "vault" / "7" / "t-1"
@@ -460,12 +460,12 @@ class TestUsageAndPurge:
     def test_closed_call_of_current_thread_is_evictable(self, tmp_path: Path) -> None:
         """Защищён живой вызов, не тред: старый закрытый лог треда уходит."""
         journal = StreamJournal(DirVault(str(tmp_path / "vault")), reserve_bytes=2**60)
-        old_key = StreamKey(user_id="7", thread_id="t-1", call_id="c-old")
+        old_key = StreamKey(user_id="7", run_id="t-1", call_id="c-old")
         recorder = journal.recorder(old_key, SCOPE, "bash", STDOUT, _wake, frozenset())
         recorder.feed(b"a" * 100)
         recorder.close("rc=0")
 
-        fresh_key = StreamKey(user_id="7", thread_id="t-1", call_id="c-new")
+        fresh_key = StreamKey(user_id="7", run_id="t-1", call_id="c-new")
         journal.recorder(fresh_key, SCOPE, "bash", STDOUT, _wake, frozenset())
 
         root = tmp_path / "vault" / "7"

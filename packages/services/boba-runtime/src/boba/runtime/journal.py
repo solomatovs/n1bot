@@ -1,6 +1,6 @@
 """Журнал вывода инструментов: модели, порты и файловая реализация.
 
-Файл на канал вызова в томе пользователя: {thread}/{call_id}.{tool}.{channel}.log
+Файл на канал вызова в томе пользователя: {run_id}/{call_id}.{tool}.{channel}.log
 плюс сайдкар {call_id}.meta.json с итогом; чтение — окнами по смещению.
 Единица учёта и вытеснения — вызов целиком: все его файлы вместе.
 Модуль не знает про chainlit: им пользуются слой данных и панель.
@@ -25,6 +25,7 @@ from boba.canvas.journal import (
     JournalFile,
     JournalText,
     JournalWindow,
+    RunUsage,
     StreamJournalError,
     StreamKey,
     StreamMeta,
@@ -32,7 +33,6 @@ from boba.canvas.journal import (
     StreamSlice,
     StreamStat,
     StreamStorePort,
-    ThreadUsage,
     VaultUsage,
     WindowAlign,
 )
@@ -304,7 +304,7 @@ class StreamJournal(StreamStorePort):
     """Журналы вызовов в служебном томе: запись рекордером, чтение окнами.
 
     Перед открытием нового журнала держится резерв места: старейшие по
-    записи треды вытесняются, пока резерв не появится; защищённые треды
+    записи запуски вытесняются, пока резерв не появится; защищённые запуски
     (текущий и с живыми потоками) ротация не трогает. Общий потолок держит
     точка монтирования под корнем журналов: её размер и есть квота.
     """
@@ -318,8 +318,8 @@ class StreamJournal(StreamStorePort):
         self._reserve = reserve_bytes
         self._segment = PathSegment()
 
-    def owner_of(self, thread_id: str) -> str | None:
-        segment = self._segment.checked(thread_id, "stream journal run id")
+    def owner_of(self, run_id: str) -> str | None:
+        segment = self._segment.checked(run_id, "stream journal run id")
         for user_id in self._vault.users():
             root = self._vault.root_for(user_id)
             if os.path.isdir(VaultPath.inside(root, segment)):
@@ -336,10 +336,10 @@ class StreamJournal(StreamStorePort):
         on_data: Callable[[], None],
         protected_prefixes: frozenset[str],
     ) -> StreamRecorder:
-        """Открыть журнал канала на запись; каталог треда создаётся здесь.
+        """Открыть журнал канала на запись; каталог запуска создаётся здесь.
 
         scope — id области запуска: сайдкар его помнит для purge_scope.
-        protected_prefixes — префиксы {thread}/{call_id}. живых вызовов,
+        protected_prefixes — префиксы {run_id}/{call_id}. живых вызовов,
         вытеснять их файлы нельзя; открываемый вызов защищён всегда. Место
         кончилось — старейшие закрытые вызовы вытесняются до успеха.
         """
@@ -368,8 +368,8 @@ class StreamJournal(StreamStorePort):
     ) -> StreamRecorder:
         """Открыть рекордер, вытесняя старые вызовы при ENOSPC до успеха.
 
-        Каталог треда создаётся в цикле: вытеснение могло снести опустевший
-        каталог того же треда, куда пишем.
+        Каталог запуска создаётся в цикле: вытеснение могло снести опустевший
+        каталог того же запуска, куда пишем.
         """
         log_path = VaultPath.inside(root, key.rel_log(meta.tool_name, channel))
         meta_path = VaultPath.inside(root, key.rel_meta())
@@ -389,7 +389,7 @@ class StreamJournal(StreamStorePort):
                 if freed < 0:
                     msg = (
                         f"stream journal: vault {root} is full and no unprotected "
-                        f"thread is left to evict, cannot open {log_path}: {exc}"
+                        f"run is left to evict, cannot open {log_path}: {exc}"
                     )
                     raise StreamJournalError(msg) from exc
 
@@ -400,16 +400,16 @@ class StreamJournal(StreamStorePort):
                 )
 
     def usage(self, user_id: str) -> VaultUsage:
-        """Занятость тома: место и журналы по тредам, старые первыми."""
+        """Занятость тома: место и журналы по запускам, старые первыми."""
         root = self._vault.root_for(user_id)
         space = os.statvfs(root)
 
-        threads = sorted(self._thread_usages(root), key=lambda t: t.last_write_at)
+        runs = sorted(self._run_usages(root), key=lambda t: t.last_write_at)
 
         return VaultUsage(
             total_bytes=space.f_blocks * space.f_frsize,
             free_bytes=space.f_bavail * space.f_frsize,
-            threads=tuple(threads),
+            runs=tuple(runs),
         )
 
     def purge_scope(self, user_id: str, scope: str) -> int:
@@ -420,22 +420,22 @@ class StreamJournal(StreamStorePort):
         freed = 0
         for run in self._runs_of(root, scope):
             freed += run.bytes_used
-            path = VaultPath.inside(root, run.thread_id)
+            path = VaultPath.inside(root, run.run_id)
             try:
                 shutil.rmtree(path)
             except OSError as exc:
                 msg = (
-                    f"stream journal: removing run {run.thread_id} of scope "
+                    f"stream journal: removing run {run.run_id} of scope "
                     f"{scope} in {root} failed: {exc}"
                 )
                 raise StreamJournalError(msg) from exc
 
         return freed
 
-    def _runs_of(self, root: str, scope: str) -> Iterator[ThreadUsage]:
+    def _runs_of(self, root: str, scope: str) -> Iterator[RunUsage]:
         """Каталоги запусков области scope: хоть один сайдкар называет её."""
-        for usage in self._thread_usages(root):
-            run_path = VaultPath.inside(root, usage.thread_id)
+        for usage in self._run_usages(root):
+            run_path = VaultPath.inside(root, usage.run_id)
             for _, name, _ in self._call_files(run_path):
                 if not JournalFile.is_meta(name):
                     continue
@@ -477,9 +477,9 @@ class StreamJournal(StreamStorePort):
         self._remove_call(root, victim)
 
         logger.info(
-            "stream journal evicted call %s of thread %s (%d bytes)",
+            "stream journal evicted call %s of run %s (%d bytes)",
             victim.call_id,
-            victim.thread_id,
+            victim.run_id,
             victim.bytes_used,
         )
         return victim.bytes_used
@@ -494,7 +494,7 @@ class StreamJournal(StreamStorePort):
             yield entry
 
     def _remove_call(self, root: str, entry: CallLogUsage) -> None:
-        """Снести все файлы вызова; опустевший каталог треда убрать."""
+        """Снести все файлы вызова; опустевший каталог запуска убрать."""
         for rel in entry.rel_files:
             try:
                 os.remove(VaultPath.inside(root, rel))
@@ -510,14 +510,14 @@ class StreamJournal(StreamStorePort):
                 )
 
         try:
-            os.rmdir(VaultPath.inside(root, entry.thread_id))
+            os.rmdir(VaultPath.inside(root, entry.run_id))
         except OSError:
             return
 
     @staticmethod
-    def _call_files(thread_path: str) -> Iterator[tuple[str, str, os.stat_result]]:
-        """Файлы каталога треда: (call_id, имя, stat); чужие имена — мимо."""
-        for file_entry in os.scandir(thread_path):
+    def _call_files(run_path: str) -> Iterator[tuple[str, str, os.stat_result]]:
+        """Файлы каталога запуска: (call_id, имя, stat); чужие имена — мимо."""
+        for file_entry in os.scandir(run_path):
             if not file_entry.is_file(follow_symlinks=False):
                 continue
 
@@ -532,12 +532,12 @@ class StreamJournal(StreamStorePort):
     @classmethod
     def _call_logs(cls, root: str) -> Iterator[CallLogUsage]:
         """Файлы каждого вызова одной записью: единица учёта — вызов."""
-        for thread_entry in os.scandir(root):
-            if not thread_entry.is_dir(follow_symlinks=False):
+        for run_entry in os.scandir(root):
+            if not run_entry.is_dir(follow_symlinks=False):
                 continue
 
             grouped: dict[str, list[tuple[str, os.stat_result]]] = {}
-            for call_id, name, stat in cls._call_files(thread_entry.path):
+            for call_id, name, stat in cls._call_files(run_entry.path):
                 grouped.setdefault(call_id, []).append((name, stat))
 
             for call_id, files in grouped.items():
@@ -545,12 +545,12 @@ class StreamJournal(StreamStorePort):
                 used = 0
                 last_write = 0.0
                 for name, stat in files:
-                    rel_files.append(f"{thread_entry.name}/{name}")
+                    rel_files.append(f"{run_entry.name}/{name}")
                     used += stat.st_size
                     last_write = max(last_write, stat.st_mtime)
 
                 yield CallLogUsage(
-                    thread_id=thread_entry.name,
+                    run_id=run_entry.name,
                     call_id=call_id,
                     rel_files=tuple(sorted(rel_files)),
                     bytes_used=used,
@@ -563,15 +563,15 @@ class StreamJournal(StreamStorePort):
         return space.f_bavail * space.f_frsize
 
     @staticmethod
-    def _thread_usages(root: str) -> Iterator[ThreadUsage]:
-        for thread_entry in os.scandir(root):
-            if not thread_entry.is_dir(follow_symlinks=False):
+    def _run_usages(root: str) -> Iterator[RunUsage]:
+        for run_entry in os.scandir(root):
+            if not run_entry.is_dir(follow_symlinks=False):
                 continue
 
             used = 0
             call_ids: set[str] = set()
             last_write = 0.0
-            for file_entry in os.scandir(thread_entry.path):
+            for file_entry in os.scandir(run_entry.path):
                 if not file_entry.is_file(follow_symlinks=False):
                     continue
                 stat = file_entry.stat()
@@ -581,8 +581,8 @@ class StreamJournal(StreamStorePort):
                     call_ids.add(JournalFile.parse_log(file_entry.name).call_id)
             calls = len(call_ids)
 
-            yield ThreadUsage(
-                thread_id=thread_entry.name,
+            yield RunUsage(
+                run_id=run_entry.name,
                 bytes_used=used,
                 calls=calls,
                 last_write_at=last_write,
@@ -647,9 +647,9 @@ class StreamJournal(StreamStorePort):
         Пустой кортеж — журнала вызова нет вовсе либо его вытеснила ротация.
         """
         root = self._vault.root_for(key.user_id)
-        thread_path = VaultPath.inside(root, key.thread_id)
+        run_path = VaultPath.inside(root, key.run_id)
 
-        written = set(self._written_channels(thread_path, key.call_id))
+        written = set(self._written_channels(run_path, key.call_id))
 
         found: list[JournalChannel] = []
         for channel in JournalChannels.order():
@@ -661,10 +661,10 @@ class StreamJournal(StreamStorePort):
         return tuple(found)
 
     @staticmethod
-    def _written_channels(thread_path: str, call_id: str) -> Iterator[str]:
+    def _written_channels(run_path: str, call_id: str) -> Iterator[str]:
         """Имена каналов из файлов вызова; каталога нет — ничего не записано."""
         try:
-            entries = list(os.scandir(thread_path))
+            entries = list(os.scandir(run_path))
         except OSError:
             return
 

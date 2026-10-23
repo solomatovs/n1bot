@@ -31,7 +31,7 @@ import aiofiles
 import aiofiles.os
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from boba.canvas.keys import DirKey, ObjectKey, ThreadDir, WorkspaceMount
+from boba.canvas.keys import DirKey, ObjectKey, ScopeDir, WorkspaceMount
 from boba.canvas.storage import (
     FileStat,
     LauncherRead,
@@ -79,7 +79,7 @@ class LocalStorageConfig(BaseModel):
 
     kind: Literal["local", "image"] = Field(
         default="local",
-        description="local — файлы на диске; image — внутри per-thread ext4-образа.",
+        description="local — файлы на диске; image — внутри ext4-образа пользователя.",
     )
     files_dir: str = Field(
         default="",
@@ -164,7 +164,7 @@ class StorageClient(ABC):
     * delete_file — False, когда объекта нет; StorageError на отказе;
     * list_dir — пустая последовательность, когда каталога нет;
       StorageError на отказе;
-    * delete_thread — тред без файлов не ошибка; StorageError на отказе.
+    * delete_scope — область без файлов не ошибка; StorageError на отказе.
 
     Реализации пишут операции в защищённых методах и публичные не
     переопределяют — иначе ошибка уйдёт мимо границы.
@@ -184,8 +184,8 @@ class StorageClient(ABC):
         """Хранилище без долгоживущих ресурсов: закрывать нечего."""
         return
 
-    async def workspace(self, user_id: str, thread_id: str) -> str:
-        """Каталог workspace, под которым песочница видит файлы треда: у
+    async def workspace(self, user_id: str, scope_id: str) -> str:
+        """Каталог workspace, под которым песочница видит файлы области: у
         хранилища процесса — точка workspace его песочницы; хранилище на
         сервере файлов отвечает каталогом, который объявил сервер.
 
@@ -244,10 +244,10 @@ class StorageClient(ABC):
         with StorageGuard(StorageOp.LIST, prefix):
             return await self._list_dir(prefix)
 
-    async def delete_thread(self, user_id: str, thread_id: str) -> None:
-        """Все файлы треда пользователя во всех каталогах треда."""
-        with StorageGuard(StorageOp.DELETE, f"thread {thread_id} of user {user_id}"):
-            await self._delete_thread(user_id, thread_id)
+    async def delete_scope(self, user_id: str, scope_id: str) -> None:
+        """Все файлы области пользователя во всех её каталогах."""
+        with StorageGuard(StorageOp.DELETE, f"scope {scope_id} of user {user_id}"):
+            await self._delete_scope(user_id, scope_id)
 
     async def _guarded_chunks(
         self, object_key: str, chunks: AsyncGenerator[bytes, None]
@@ -279,11 +279,11 @@ class StorageClient(ABC):
     @abstractmethod
     async def _list_dir(self, prefix: str) -> Sequence[str]: ...
 
-    async def _delete_thread(self, user_id: str, thread_id: str) -> None:
+    async def _delete_scope(self, user_id: str, scope_id: str) -> None:
         """Каталог за каталогом: листинг и удаление каждого файла; хранилище,
-        которое удаляет область треда одной операцией, переопределяет."""
-        for dir_thread in ThreadDir:
-            dir_key = DirKey.of(user_id, thread_id, dir_thread)
+        которое удаляет область одной операцией, переопределяет."""
+        for scope_dir in ScopeDir:
+            dir_key = DirKey.of(user_id, scope_id, scope_dir)
             for name in await self._list_dir(dir_key.render()):
                 await self._delete_file(dir_key.file(name).render())
 
@@ -406,7 +406,7 @@ class LocalStorageClient(ConfiguredStorageClient):
 
 
 class ImageStorageClient(ConfiguredStorageClient):
-    """Хранит вложения внутри per-thread ext4-образа: fuse2fs на одну операцию.
+    """Хранит вложения внутри ext4-образа пользователя: fuse2fs на одну операцию.
 
     Каждая операция — цепочка лаунчера (LauncherChain) над образом
     пользователя: внешний слой видит интерпретатор, бинари, шаблон и каталог
@@ -551,7 +551,7 @@ class ImageStorageClient(ConfiguredStorageClient):
         key = DirKey.parse(prefix)
         image = self._workspace().image_of(key.user_id)
 
-        op = [LauncherMode.LIST.value, key.in_thread()]
+        op = [LauncherMode.LIST.value, key.in_scope()]
         rc, out, err = await self._op(image, op)
         if rc == LauncherExit.NOT_FOUND:
             return ()
@@ -581,8 +581,8 @@ class ImageStorageClient(ConfiguredStorageClient):
 
     def _image_and_rel(self, object_key: str) -> tuple[str, str]:
         key = ObjectKey.parse(object_key)
-        # образ общий на пользователя: thread_id остаётся частью пути внутри
-        return self._workspace().image_of(key.user_id), key.in_thread()
+        # образ общий на пользователя: scope_id остаётся частью пути внутри
+        return self._workspace().image_of(key.user_id), key.in_scope()
 
     async def _spawn(
         self,

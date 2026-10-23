@@ -120,7 +120,7 @@ class TestNetworkProfiles:
     """Сетевой профиль без резолвера — тихо сломанный инструмент."""
 
     LABEL: ClassVar[str] = "net:probe"
-    PATH_VARS: ClassVar[dict[str, str]] = {"user_id": "0", "thread_id": "probe"}
+    PATH_VARS: ClassVar[dict[str, str]] = {"user_id": "0", "scope_id": "probe"}
 
     @classmethod
     def _run(

@@ -44,7 +44,7 @@ class TestSandboxPathVars:
         with call_stand.contexts.applied(_context(UUID(int=18))):
             values = CallSurface(call_stand.contexts).sandbox_path_vars()
 
-        if values != {"user_id": str(UUID(int=18)), "thread_id": THREAD_ID}:
+        if values != {"user_id": str(UUID(int=18)), "scope_id": THREAD_ID}:
             raise AssertionError(f"оба значения из контекста, дано {values!r}")
 
     async def test_workspace_path_renders_from_the_context(

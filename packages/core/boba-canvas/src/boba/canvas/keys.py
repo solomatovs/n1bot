@@ -1,4 +1,5 @@
-"""Ключи хранилища: каталоги треда и рабочего каталога, ключ объекта, свойства элемента.
+"""Ключи хранилища: каталоги области вызывающего и рабочего каталога, ключ
+объекта, свойства элемента.
 
 Ошибки: своих не выпускает; неразборный ключ — ValueError.
 """
@@ -26,15 +27,15 @@ __all__ = [
     "KeyField",
     "KeySegment",
     "ObjectKey",
-    "ThreadDir",
+    "ScopeDir",
     "WorkspaceKey",
     "WorkspaceMount",
     "WorkspaceRoot",
 ]
 
 
-class ThreadDir(StrEnum):
-    """Каталоги треда: вложения пользователя и спеки диаграмм."""
+class ScopeDir(StrEnum):
+    """Каталоги области: вложения пользователя и спеки диаграмм."""
 
     UPLOAD = "upload"
     MERMAID = "mermaid"
@@ -93,7 +94,7 @@ class KeyField(StrEnum):
     """Поля ключа: ими же именуются сегменты при разборе строки."""
 
     USER_ID = "user_id"
-    THREAD_ID = "thread_id"
+    SCOPE_ID = "scope_id"
     DIR = "dir"
     NAME = "name"
     WORKSPACE = "workspace"
@@ -125,31 +126,31 @@ class ObjectKey(KeySegment):
     """Адрес вложения: ключ хранилища и путь того же файла в песочнице."""
 
     SEGMENTS: ClassVar[int] = 4
-    THREAD_SEGMENTS: ClassVar[int] = 3
+    SCOPE_SEGMENTS: ClassVar[int] = 3
     MAX_NAME_BYTES: ClassVar[int] = 255
     """Предел ext4 на длину имени файла."""
 
     user_id: str
-    thread_id: str
+    scope_id: str
     name: str
-    dir: ThreadDir = ThreadDir.UPLOAD
-    """Каталог треда: upload — вложения, mermaid — спеки диаграмм."""
+    dir: ScopeDir = ScopeDir.UPLOAD
+    """Каталог области: upload — вложения, mermaid — спеки диаграмм."""
 
     @classmethod
     def build(
         cls,
         user_id: object,
-        thread_id: object,
+        scope_id: object,
         name: object,
         element_id: object,
         *,
-        dir_thread: ThreadDir = ThreadDir.UPLOAD,
+        scope_dir: ScopeDir = ScopeDir.UPLOAD,
     ) -> Self:
         return cls(
             user_id=str(user_id),
-            thread_id=str(thread_id),
+            scope_id=str(scope_id),
             name=cls.safe_name(name, element_id),
-            dir=dir_thread,
+            dir=scope_dir,
         )
 
     @classmethod
@@ -159,11 +160,11 @@ class ObjectKey(KeySegment):
         if len(parts) != cls.SEGMENTS:
             msg = (
                 f"invalid object_key {raw!r}: expected {cls.SEGMENTS} segments "
-                f"user_id/thread_id/dir/name, got {len(parts)}"
+                f"user_id/scope_id/dir/name, got {len(parts)}"
             )
             raise ValueError(msg)
 
-        order = (KeyField.USER_ID, KeyField.THREAD_ID, KeyField.DIR, KeyField.NAME)
+        order = (KeyField.USER_ID, KeyField.SCOPE_ID, KeyField.DIR, KeyField.NAME)
         fields = dict(zip(order, parts, strict=True))
 
         try:
@@ -173,19 +174,19 @@ class ObjectKey(KeySegment):
             raise ValueError(msg) from e
 
     def render(self) -> str:
-        return self.SEPARATOR.join((self.user_id, self.in_thread()))
+        return self.SEPARATOR.join((self.user_id, self.in_scope()))
 
-    def in_thread(self) -> str:
+    def in_scope(self) -> str:
         """Путь файла внутри образа пользователя."""
-        return self.SEPARATOR.join((self.thread_id, self.dir, self.name))
+        return self.SEPARATOR.join((self.scope_id, self.dir, self.name))
 
     def in_workspace(self) -> str:
         """Путь файла так, как его видит песочница."""
-        return self.SEPARATOR.join((WorkspaceMount.path(), self.in_thread()))
+        return self.SEPARATOR.join((WorkspaceMount.path(), self.in_scope()))
 
     def dir_key(self) -> DirKey:
         """Каталог, в котором лежит файл."""
-        return DirKey(user_id=self.user_id, thread_id=self.thread_id, dir=self.dir)
+        return DirKey(user_id=self.user_id, scope_id=self.scope_id, dir=self.dir)
 
     @classmethod
     def safe_name(cls, name: object, element_id: object) -> str:
@@ -220,12 +221,12 @@ class ObjectKey(KeySegment):
 
 
 class WorkspaceKey(ObjectKey):
-    """Ключ файла треда вместе с каталогом workspace, под которым его видит
-    песочница сервера файлов треда: путь показа (in_workspace) — под этим
+    """Ключ файла области вместе с каталогом workspace, под которым его видит
+    песочница сервера файлов области: путь показа (in_workspace) — под этим
     каталогом, а не под точкой процесса (WorkspaceMount).
 
     Строит его область канваса (CanvasScope) по пути в workspace либо по
-    имени файла треда; ключ хранилища (render) тот же, что у ObjectKey.
+    имени файла области; ключ хранилища (render) тот же, что у ObjectKey.
     """
 
     PATHS: ClassVar[frozenset[str]] = frozenset({KeyField.WORKSPACE.value})
@@ -234,9 +235,9 @@ class WorkspaceKey(ObjectKey):
 
     @classmethod
     def located(
-        cls, workspace: str, user_id: object, thread_id: object, path: str
+        cls, workspace: str, user_id: object, scope_id: object, path: str
     ) -> Self:
-        """Ключ по пути в workspace треда; вне каталогов треда — ValueError."""
+        """Ключ по пути в workspace области; вне каталогов области — ValueError."""
         rel = path.strip()
 
         mount = cls.SEPARATOR.join((workspace, ""))
@@ -244,10 +245,10 @@ class WorkspaceKey(ObjectKey):
             rel = rel[len(mount) :]
 
         parts = rel.split(cls.SEPARATOR)
-        if len(parts) != cls.THREAD_SEGMENTS:
-            raise ValueError(cls._outside(workspace, thread_id, path))
+        if len(parts) != cls.SCOPE_SEGMENTS:
+            raise ValueError(cls._outside(workspace, scope_id, path))
 
-        order = (KeyField.THREAD_ID, KeyField.DIR, KeyField.NAME)
+        order = (KeyField.SCOPE_ID, KeyField.DIR, KeyField.NAME)
         fields: dict[str, str] = dict(zip(order, parts, strict=True))
         fields[KeyField.USER_ID] = str(user_id)
         fields[KeyField.WORKSPACE] = workspace
@@ -255,43 +256,44 @@ class WorkspaceKey(ObjectKey):
         try:
             key = cls.model_validate(fields)
         except ValidationError as e:
-            raise ValueError(cls._outside(workspace, thread_id, path)) from e
+            raise ValueError(cls._outside(workspace, scope_id, path)) from e
 
-        if key.thread_id != str(thread_id):
-            raise ValueError(cls._outside(workspace, thread_id, path))
+        if key.scope_id != str(scope_id):
+            raise ValueError(cls._outside(workspace, scope_id, path))
 
         return key
 
     @classmethod
-    def _outside(cls, workspace: str, thread_id: object, path: str) -> str:
+    def _outside(cls, workspace: str, scope_id: object, path: str) -> str:
         """Текст ошибки называет ожидаемый путь."""
         name = os.path.basename(path.strip())
         if not name:
             name = "<file name>"
 
-        dirs = "|".join(sorted(ThreadDir))
-        expected = cls.SEPARATOR.join((workspace, str(thread_id), f"{{{dirs}}}", name))
+        dirs = "|".join(sorted(ScopeDir))
+        expected = cls.SEPARATOR.join((workspace, str(scope_id), f"{{{dirs}}}", name))
         return (
-            f"file is outside the thread attachments dir: {path!r}; "
+            f"file is outside the scope attachments dir: {path!r}; "
             f"expected {expected!r}"
         )
 
     def in_workspace(self) -> str:
-        return self.SEPARATOR.join((self.workspace, self.in_thread()))
+        return self.SEPARATOR.join((self.workspace, self.in_scope()))
 
 
 class DirKey(KeySegment):
-    """Адрес каталога треда: префикс в хранилище и путь того же каталога в песочнице."""
+    """Адрес каталога области: префикс в хранилище и путь того же каталога в
+    песочнице."""
 
     SEGMENTS: ClassVar[int] = 3
 
     user_id: str
-    thread_id: str
-    dir: ThreadDir
+    scope_id: str
+    dir: ScopeDir
 
     @classmethod
-    def of(cls, user_id: object, thread_id: object, dir_thread: ThreadDir) -> Self:
-        return cls(user_id=str(user_id), thread_id=str(thread_id), dir=dir_thread)
+    def of(cls, user_id: object, scope_id: object, scope_dir: ScopeDir) -> Self:
+        return cls(user_id=str(user_id), scope_id=str(scope_id), dir=scope_dir)
 
     @classmethod
     def parse(cls, raw: str) -> Self:
@@ -300,11 +302,11 @@ class DirKey(KeySegment):
         if len(parts) != cls.SEGMENTS:
             msg = (
                 f"invalid dir key {raw!r}: expected {cls.SEGMENTS} segments "
-                f"user_id/thread_id/dir, got {len(parts)}"
+                f"user_id/scope_id/dir, got {len(parts)}"
             )
             raise ValueError(msg)
 
-        order = (KeyField.USER_ID, KeyField.THREAD_ID, KeyField.DIR)
+        order = (KeyField.USER_ID, KeyField.SCOPE_ID, KeyField.DIR)
         fields = dict(zip(order, parts, strict=True))
 
         try:
@@ -314,21 +316,21 @@ class DirKey(KeySegment):
             raise ValueError(msg) from e
 
     def render(self) -> str:
-        return self.SEPARATOR.join((self.user_id, self.in_thread()))
+        return self.SEPARATOR.join((self.user_id, self.in_scope()))
 
-    def in_thread(self) -> str:
+    def in_scope(self) -> str:
         """Путь каталога внутри образа пользователя."""
-        return self.SEPARATOR.join((self.thread_id, self.dir))
+        return self.SEPARATOR.join((self.scope_id, self.dir))
 
     def in_workspace(self) -> str:
         """Путь каталога так, как его видит песочница."""
-        return self.SEPARATOR.join((WorkspaceMount.path(), self.in_thread()))
+        return self.SEPARATOR.join((WorkspaceMount.path(), self.in_scope()))
 
     def file(self, name: str) -> ObjectKey:
         """Ключ файла в этом каталоге; имя приходит из листинга, не от LLM."""
         return ObjectKey(
             user_id=self.user_id,
-            thread_id=self.thread_id,
+            scope_id=self.scope_id,
             name=name,
             dir=self.dir,
         )

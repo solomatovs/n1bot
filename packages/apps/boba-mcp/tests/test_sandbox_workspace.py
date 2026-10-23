@@ -124,9 +124,9 @@ class TestBindSpec:
             raise AssertionError('(spec.host, spec.target) == ("/srv/data", "/srv/dat…')
 
     def test_parse_with_target(self) -> None:
-        spec = BindSpec.parse("/srv/ws/{user_id}/{thread_id}:/workspace")
-        if spec.host != "/srv/ws/{user_id}/{thread_id}":
-            raise AssertionError('spec.host == "/srv/ws/{user_id}/{thread_id}"')
+        spec = BindSpec.parse("/srv/ws/{user_id}/{scope_id}:/workspace")
+        if spec.host != "/srv/ws/{user_id}/{scope_id}":
+            raise AssertionError('spec.host == "/srv/ws/{user_id}/{scope_id}"')
         if spec.target != "/workspace":
             raise AssertionError('spec.target == "/workspace"')
 
@@ -139,15 +139,15 @@ class TestBindSpec:
             BindSpec.parse("/srv/data:relative/path")
 
     def test_render_substitutes_both_sides(self) -> None:
-        spec = BindSpec.parse("/srv/ws/{user_id}/{thread_id}:/workspace")
-        rendered = spec.render({"user_id": "7", "thread_id": "t1"})
+        spec = BindSpec.parse("/srv/ws/{user_id}/{scope_id}:/workspace")
+        rendered = spec.render({"user_id": "7", "scope_id": "t1"})
         if rendered.host != "/srv/ws/7/t1":
             raise AssertionError('rendered.host == "/srv/ws/7/t1"')
         if rendered.target != "/workspace":
             raise AssertionError('rendered.target == "/workspace"')
 
     def test_missing_variable_fails_loudly(self) -> None:
-        spec = BindSpec.parse("/srv/ws/{thread_id}")
+        spec = BindSpec.parse("/srv/ws/{scope_id}")
         with pytest.raises(RuntimeError, match="no user session"):
             spec.render({})
 
@@ -156,26 +156,26 @@ class TestBindSpec:
         spec = BindSpec.parse("/srv/ws/{user_id}.ext4")
 
         with pytest.raises(RuntimeError) as caught:
-            spec.render({"thread_id": "t1"})
+            spec.render({"scope_id": "t1"})
 
         message = str(caught.value)
         if "no user session" in message:
             raise AssertionError(f"причина названа неверно: {message}")
 
-        if "known: thread_id" not in message:
+        if "known: scope_id" not in message:
             raise AssertionError(f"отказ перечисляет, что есть: {message}")
 
 
 class TestProfileRender:
-    TEMPLATE = "/srv/ws/{user_id}/{thread_id}:/workspace"
+    TEMPLATE = "/srv/ws/{user_id}/{scope_id}:/workspace"
 
     def _rendered_host(self, user: str, thread: str) -> str:
         profile = _profile(rw=(self.TEMPLATE,), cwd="/workspace")
-        rendered = profile.render({"user_id": user, "thread_id": thread})
+        rendered = profile.render({"user_id": user, "scope_id": thread})
 
         return rendered.mounts.rw[0].host
 
-    def test_threads_of_one_user_are_isolated(self) -> None:
+    def test_scopes_of_one_user_are_isolated(self) -> None:
         if self._rendered_host("7", "t1") == self._rendered_host("7", "t2"):
             raise AssertionError('self._rendered_host("7", "t1") != self._rendered_ho…')
 
@@ -184,8 +184,8 @@ class TestProfileRender:
             raise AssertionError('self._rendered_host("7", "t1") != self._rendered_ho…')
 
     def test_cwd_is_rendered(self) -> None:
-        profile = _profile(cwd="/srv/ws/{user_id}/{thread_id}")
-        rendered = profile.render({"user_id": "7", "thread_id": "t1"})
+        profile = _profile(cwd="/srv/ws/{user_id}/{scope_id}")
+        rendered = profile.render({"user_id": "7", "scope_id": "t1"})
         if rendered.run.cwd != "/srv/ws/7/t1":
             raise AssertionError('rendered.run.cwd == "/srv/ws/7/t1"')
 

@@ -12,7 +12,7 @@ from typing import ClassVar
 from urllib.parse import quote, unquote, urlencode
 
 from boba.canvas.canvas import CanvasScope
-from boba.canvas.keys import ObjectKey, ThreadDir, WorkspaceKey
+from boba.canvas.keys import ObjectKey, ScopeDir, WorkspaceKey
 from boba.toolkit.channels import JournalChannel
 
 __all__ = [
@@ -68,7 +68,7 @@ class CanvasFileUrl:
     def path(cls, key: ObjectKey, mime: str) -> str:
         name = quote(key.name, safe="")
         route = cls.ROUTE.format(
-            thread_id=key.thread_id,
+            thread_id=key.scope_id,
             dir=key.dir.value,
             name=name,
         )
@@ -94,17 +94,17 @@ class CanvasFileUrl:
         if tail[1] != route[1]:
             raise ValueError(expected)
 
-        if tail[2] != scope.thread_id:
+        if tail[2] != scope.scope_id:
             msg = (
                 f"canvas file link {path!r}: expected a file of thread "
-                f"{scope.thread_id}, got thread {tail[2]}"
+                f"{scope.scope_id}, got thread {tail[2]}"
             )
             raise ValueError(msg)
 
         return WorkspaceKey(
             user_id=scope.user_id,
-            thread_id=tail[2],
-            dir=ThreadDir(tail[3]),
+            scope_id=tail[2],
+            dir=ScopeDir(tail[3]),
             name=unquote(tail[4]),
             workspace=scope.workspace,
         )
