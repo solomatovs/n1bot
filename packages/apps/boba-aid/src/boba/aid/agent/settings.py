@@ -19,6 +19,7 @@ Postgres, сборка файла из слоя чата и приватный �
 Ошибки:
 AgentSettingsError — профиль чата нельзя превратить в профиль модели агента.
 DataUnavailableError — таблица настроек недоступна (PgTable).
+PostgresError — билет kerberos-роли истории не получен.
 """
 
 from __future__ import annotations
@@ -48,7 +49,6 @@ from boba.aid.agent.config import (
     AgentHistoryConfig,
     AgentHistoryKind,
     AgentModelConfig,
-    LibpqConnection,
     MemoryAgentHistory,
     PostgresAgentHistory,
     ReasoningReturn,
@@ -57,9 +57,7 @@ from boba.chat.profiles import ChatProfileConfig
 from boba.connections.secrets import SecretCipher
 from boba.core.secrets import SecretReveal
 from boba.db.postgres import PostgresPool
-from boba.db.postgres.connection import PostgresConfig
-from boba.krb import KerberosWorkspace
-from boba.krb.credentials import ClientCredentials, KerberosEnv
+from boba.db.postgres.connection import LibpqConnection, PostgresConfig
 from boba.mcp_client.client import McpServersConfig
 from boba.runtime.table import PgTable
 from boba.transport.http import HttpTransportConfig
@@ -479,7 +477,7 @@ class SettingsFileBuilder:
 class HistoryEnvironment:
     """Окружение libkrb5 для процесса агента с kerberos-ролью истории: путь к
     кэшу билета и к krb5.conf рабочего каталога процесса aid; билет в кэше
-    обновляется по keytab до запуска. У парольной роли окружение пустое.
+    обновляется до запуска. У парольной роли окружение пустое.
     Едет ключом `env` файла настроек: агент ставит его себе на старте, потому
     что libpq читает KRB5CCNAME/KRB5_CONFIG из окружения сам; это пути к
     файлам того же пользователя, не секреты.
@@ -489,24 +487,14 @@ class HistoryEnvironment:
         self._history = history
         self._libpq = LibpqConnection(postgres)
 
-    async def prepare(self) -> dict[str, str]:
+    async def prepare(self) -> Mapping[str, str]:
         """Ошибки:
-        KerberosError — билет по keytab не получен.
+        PostgresError — билет роли истории не получен.
         """
         if not isinstance(self._history, PostgresAgentHistory):
             return {}
 
-        auth = self._libpq.kerberos_auth()
-        if auth is None:
-            return {}
-
-        credentials = ClientCredentials.of(auth)
-        await credentials.ensure_async()
-
-        return {
-            KerberosEnv.CCACHE: KerberosWorkspace.ccache_for(auth),
-            KerberosEnv.CONFIG: KerberosWorkspace.krb5_config(),
-        }
+        return await self._libpq.environment()
 
 
 class AgentWorkdir:

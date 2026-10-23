@@ -59,7 +59,6 @@ from boba.aid.agent.client import (
 )
 from boba.aid.agent.config import (
     AgentModelConfig,
-    LibpqConnection,
     PostgresAgentHistory,
     ReasoningReturn,
 )
@@ -76,7 +75,11 @@ from boba.chat.profiles import ChatProfileConfig, SelectedProfile
 from boba.connections.secrets import SecretCipher
 from boba.core.mcp_names import McpToolNames
 from boba.db.postgres import AsyncPostgresPool, PostgresSchema
-from boba.db.postgres.connection import PostgresConfig
+from boba.db.postgres.connection import (
+    LibpqConnection,
+    PostgresAuthError,
+    PostgresConfig,
+)
 from boba.db.postgres.connection.auth import CertificateAuth
 from boba.identity.context import CallContexts
 from boba.kerberos import KeytabAuth
@@ -277,7 +280,7 @@ class TestHistoryDsn:
         assert f"user={stand.pg_probe_user}" in dsn
         assert f"password={stand.pg_probe_password.get_secret_value()}" in dsn
         assert f"dbname={stand.pg_probe_database}" in dsn
-        assert "gssencmode" not in dsn
+        assert "gssencmode=disable" in dsn
 
     def test_certificate_auth_is_refused(self, test_postgres: PostgresConfig) -> None:
         certificate = test_postgres.model_copy(
@@ -287,7 +290,7 @@ class TestHistoryDsn:
                 )
             }
         )
-        with pytest.raises(ValueError, match="cannot be handed to the agent"):
+        with pytest.raises(PostgresAuthError, match="cannot be handed to another"):
             LibpqConnection(certificate).auth()
 
     async def test_kerberos_role_renders_a_dsn_without_password_and_libkrb5_env(
@@ -308,6 +311,7 @@ class TestHistoryDsn:
         assert f"user={auth.principal.partition('@')[0]}" in dsn
         assert "password" not in dsn
         assert f"dbname={test_postgres.dbname}" in dsn
+        assert "gssencmode=require" in dsn
 
         environment = await HistoryEnvironment(history, test_postgres).prepare()
         assert set(environment) == {KerberosEnv.CCACHE, KerberosEnv.CONFIG}
