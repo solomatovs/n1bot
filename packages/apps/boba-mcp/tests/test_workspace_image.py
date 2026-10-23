@@ -1017,8 +1017,8 @@ class TestLiveImage:
         self, zygote_stand: ZygoteStand, tmp_path: Path, template: Path
     ) -> None:
         payload = _invoke(_bash(zygote_stand, tmp_path, template), "uname -n")
-        if payload.stdout.strip() != "sandbox":
-            raise AssertionError('payload.stdout.strip() == "sandbox"')
+        if payload.stdout.strip() != "localhost":
+            raise AssertionError('payload.stdout.strip() == "localhost"')
 
     def test_memory_limit_visible(
         self, zygote_stand: ZygoteStand, tmp_path: Path, template: Path
