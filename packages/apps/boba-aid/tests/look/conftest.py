@@ -129,7 +129,7 @@ def look_llm_port() -> Iterator[int]:
 def look_stands(
     tmp_path_factory: pytest.TempPathFactory, look_llm_port: int
 ) -> Iterator[LookStand]:
-    database = StandDatabase(StandApp.AID, StandNames().of(LookStand.DATABASE))
+    database = StandDatabase(StandApp.AID, StandNames().of_tree(LookStand.DATABASE))
     stands = LookStand(
         tmp_path_factory.mktemp("look-stand"), look_llm_port, database.prepare()
     )

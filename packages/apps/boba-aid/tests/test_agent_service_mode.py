@@ -29,16 +29,22 @@ from boba.aid.agent.chat import (
     ThreadIdentity,
 )
 from boba.aid.agent.client import AgentProcessError
-from boba.aid.agent.config import AgentConfig, AgentServiceConfig, LibpqConnection
+from boba.aid.agent.config import AgentConfig, AgentServiceConfig
 from boba.aid.agent.settings import AgentSettingsTable
 from boba.aid.domain.fields import ThreadMetaField
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.chat.profiles import ChatProfileConfig, SelectedProfile
 from boba.connections.secrets import SecretCipher
 from boba.db.postgres import AsyncPostgresPool, PostgresSchema
-from boba.db.postgres.connection import PostgresConfig
+from boba.db.postgres.connection import LibpqConnection, PostgresConfig
 from boba.identity.context import CallContexts
-from boba.mcp_client.client import HttpLocation, McpServers, McpServersConfig, ProxyAuth
+from boba.mcp_client.client import (
+    HttpLocation,
+    HttpRoute,
+    McpServers,
+    McpServersConfig,
+    ProxyAuth,
+)
 from boba.runtime.config import ProcessConfig
 from boba.runtime.threads import ThreadsTable
 from boba.stand.agent_service import AgentServiceStand, ServiceProfiles
@@ -50,7 +56,7 @@ from boba.transport.http import HttpTransportConfig
 
 pytestmark = pytest.mark.anyio
 
-SCHEMA = StandNames().of("agent_service_mode")
+SCHEMA = StandNames().of_tree("agent_service_mode")
 CIPHER_KEY = b"0123456789abcdef0123456789abcdef"
 NO_SERVERS = McpServersConfig(servers={})
 MODEL = "fake-model"
@@ -129,15 +135,12 @@ class ServiceModeStand:
     ) -> None:
         history = AgentHistoryStand(stand)
         location = HttpLocation(
-            scheme="http", host="127.0.0.1", port=service.port, path=service.PATH
-        )
-        issuer = HttpLocation(
-            scheme="http", host="127.0.0.1", port=service.port, path="/"
+            scheme="http", host="127.0.0.1", port=service.port, path=""
         )
         mode = AgentServiceConfig(
-            endpoint=location,
+            endpoint=HttpRoute(service=location, path=service.PATH),
             auth=ProxyAuth(
-                issuer=issuer,
+                issuer=location,
                 client_id=service.CLIENT_ID,
                 client_secret=SecretStr(service.CLIENT_SECRET),
                 secret=SecretStr(service.PROXY_SECRET),
@@ -154,7 +157,6 @@ class ServiceModeStand:
         self._servers = McpServers(NO_SERVERS)
         self.launcher = AgentLauncher(
             self.config,
-            history.postgres(),
             NO_SERVERS,
             table,
             self._relays.registrations,

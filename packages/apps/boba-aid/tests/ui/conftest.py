@@ -38,7 +38,7 @@ TOKEN_DELAY_SEC = 0.03
 
 @pytest.fixture(scope="session")
 def stand_database() -> str:
-    return StandDatabase(StandApp.AID, StandNames().of(DB_NAME)).prepare()
+    return StandDatabase(StandApp.AID, StandNames().of_tree(DB_NAME)).prepare()
 
 
 @pytest.fixture(scope="session")

@@ -8,6 +8,7 @@
 AcpClientError и наследники — процесс или ответ агента (client.py).
 AgentSettingsError — профиль чата не годится агенту (settings.py).
 DataUnavailableError — таблицы чата недоступны.
+PostgresError — билет kerberos-роли истории для процесса агента не получен.
 """
 
 from __future__ import annotations
@@ -64,7 +65,6 @@ from boba.aid.rendering.renderer import ThreadRewinds
 from boba.canvas.keys import ObjectKey
 from boba.chat.profiles import SelectedProfile
 from boba.chat.threads import DataLayerError, ThreadUpsert
-from boba.db.postgres.connection import PostgresConfig
 from boba.identity.errors import InternalServiceError
 from boba.mcp_client.client import McpCaller, McpServersConfig
 from boba.runtime.threads import ThreadsTable
@@ -573,7 +573,7 @@ class AgentLinks(Protocol):
 
         Ошибки:
         AgentProcessError — агент не запустился или не ответил.
-        KerberosError — билет истории по keytab не получен.
+        PostgresError — билет роли истории не получен.
         """
 
 
@@ -583,20 +583,19 @@ class ProcessLinks(AgentLinks):
     получает окружение libkrb5 ключом `env` файла. Приватный каталог
     удаляется при любом несостоявшемся запуске. Создаёт AgentLauncher."""
 
-    def __init__(  # noqa: PLR0913 — запуск собирается конфигом и входами процесса
+    def __init__(
         self,
         config: AgentConfig,
         process: AgentCommandConfig,
-        postgres: PostgresConfig,
         servers: McpServersConfig,
         relay: McpRelay,
         version: str,
     ) -> None:
         self._relay = relay
         self._version = version
-        self._files = SettingsFileBuilder(config, postgres, servers)
+        self._files = SettingsFileBuilder(config, servers)
         self._workdirs = AgentWorkdirs(Path(process.private_dir))
-        self._environment = HistoryEnvironment(config.history, postgres)
+        self._environment = HistoryEnvironment(config.history)
         program = process.program()
         self._command = AgentCommand(
             executable=program[0],
@@ -687,10 +686,9 @@ class AgentLauncher:
     Запросы mcp/message агента отвечает общий ретранслятор (McpRelay).
     """
 
-    def __init__(  # noqa: PLR0913 — запуск собирается конфигом, подключением и входами процесса
+    def __init__(  # noqa: PLR0913 — запуск собирается конфигом и входами процесса
         self,
         config: AgentConfig,
-        postgres: PostgresConfig,
         servers: McpServersConfig,
         table: AgentSettingsTable,
         registrations: McpRegistrations,
@@ -698,16 +696,15 @@ class AgentLauncher:
         version: str,
     ) -> None:
         self._table = table
-        self._specs = ProfileModelSpecs(config.model)
+        self._specs = ProfileModelSpecs()
         self._registrations = registrations
         self._relay = relay
-        self._files = SettingsFileBuilder(config, postgres, servers)
-        self._links = self._chosen(config, postgres, servers, relay, version)
+        self._files = SettingsFileBuilder(config, servers)
+        self._links = self._chosen(config, servers, relay, version)
 
     @staticmethod
     def _chosen(
         config: AgentConfig,
-        postgres: PostgresConfig,
         servers: McpServersConfig,
         relay: McpRelay,
         version: str,
@@ -716,7 +713,7 @@ class AgentLauncher:
         if isinstance(process, AgentServiceConfig):
             return ServiceLinks(process, relay, version)
 
-        return ProcessLinks(config, process, postgres, servers, relay, version)
+        return ProcessLinks(config, process, servers, relay, version)
 
     async def prepare(self, identity: ThreadIdentity) -> AgentLaunch:
         """Слой чата треда по профилю, сохранённый для удаления треда: то, что
@@ -791,7 +788,7 @@ class AgentLauncher:
 
         Ошибки:
         AgentProcessError — агент не запустился или не ответил.
-        KerberosError — билет истории по keytab не получен.
+        PostgresError — билет роли истории не получен.
         """
         launch = AgentLaunch(chat=chat, mcp=mcp)
 
@@ -812,7 +809,9 @@ class StartedTurn:
 class ThreadAgent:
     """Агент одной вкладки треда: процесс, сессия агента и текущий ход.
 
-    Создаётся реестром ThreadAgents; живёт пока открыта вкладка. Сессия
+    Создаётся реестром ThreadAgents; живёт пока открыта вкладка, а процесс —
+    пока вкладка подключена: отключённая вкладка его отпускает (release), и
+    следующее дело вкладки запускает новый. Сессия
     открывается `session/new` на первом вопросе или `session/resume` с
     воспроизведением при возврате к треду; правка вопроса ветвит сессию
     `session/fork`; режим разрешений открытой сессии процесс выставляет по
@@ -852,6 +851,8 @@ class ThreadAgent:
         self._closed.set()
         self._gate = asyncio.Lock()
         self._restart_pending = False
+        self._detached = False
+        """Вкладка отключилась: процесс останавливается, как только нет хода."""
         self._contexts: dict[str, Sequence[PromptBlock]] = {}
 
     @property
@@ -912,6 +913,18 @@ class ThreadAgent:
             self._session_id,
         )
 
+    async def _revive(self) -> None:
+        """Процесс, отпущенный отключённой вкладкой, запускается заново перед
+        делом вкладки; сессия откроется ходом без воспроизведения ленты."""
+        if self._launched is not None:
+            return
+
+        if not self._detached:
+            return
+
+        self._detached = False
+        await self._launch(await self._launcher.prepare(self._identity))
+
     async def _launch(self, launch: AgentLaunch) -> None:
         """Новый процесс по заготовке: файл настроек из слоя чата в свежем
         приватном каталоге, новые регистрации серверов, рукопожатие."""
@@ -928,6 +941,7 @@ class ThreadAgent:
             неизвестной сессии.
         """
         async with self._gate:
+            await self._revive()
             try:
                 return await self._resume(replay=True)
             finally:
@@ -981,6 +995,7 @@ class ThreadAgent:
         InternalServiceError, DataUnavailableError — тред не прочитан.
         """
         async with self._gate:
+            await self._revive()
             await self._close_session(self.process)
             self._session_id = None
             await self._renderer.cleared()
@@ -1051,6 +1066,7 @@ class ThreadAgent:
     async def _begin(self, question: Question) -> StartedTurn:
         """Начало хода под замком вкладки: вышедший процесс заменяется,
         вопрос уходит агенту под замком области треда."""
+        await self._revive()
         if self._exited():
             logger.warning(
                 "thread %s: the agent process exited, a new one starts",
@@ -1232,10 +1248,15 @@ class ThreadAgent:
 
     async def _released(self) -> None:
         """Сессия хода закрыта у процесса под замком вкладки; процесс уже
-        закрыт вместе с вкладкой — закрывать нечего."""
+        закрыт вместе с вкладкой — закрывать нечего, а вкладка, отключившаяся
+        по ходу, отпускает его целиком."""
         async with self._gate:
             launched = self._launched
             if launched is None:
+                return
+
+            if self._detached:
+                await self._close_process()
                 return
 
             await self._close_session(launched.process)
@@ -1267,6 +1288,20 @@ class ThreadAgent:
             return
 
         self._launcher.stopped(launched)
+
+    async def release(self) -> None:
+        """Вкладка отключилась: процесс без хода останавливается сразу, с
+        ходом — по его концу. Вернувшаяся вкладка запустит новый первым же
+        делом (_revive); закрытый агент (close) остаётся закрытым."""
+        async with self._gate:
+            if self._launched is None:
+                return
+
+            self._detached = True
+            if self._active is not None:
+                return
+
+            await self._close_process()
 
     async def close(self) -> None:
         """Закрытие сессии у агента (замок отпущен) и остановка процесса."""
@@ -1493,9 +1528,17 @@ class ThreadAgentsIndex(ThreadRewinds):
         return len(agents)
 
 
+class TabAgentsStep(StrEnum):
+    """Шаг над всеми агентами вкладки: начало текста его отказа."""
+
+    CLOSE = "closing"
+    RELEASE = "releasing"
+
+
 class ThreadAgents:
-    """Агенты вкладки chainlit по тредам: один процесс на открытый тред;
-    закрывается с DI-контейнером сессии."""
+    """Агенты вкладки chainlit по тредам: один процесс на открытый тред,
+    пока вкладка подключена (release на отключении); закрывается с
+    DI-контейнером сессии."""
 
     def __init__(
         self,
@@ -1558,7 +1601,32 @@ class ThreadAgents:
             self._index.forget(agent)
             closing.append(agent.close())
 
-        outcomes = await asyncio.gather(*closing, return_exceptions=True)
+        await self._settled(TabAgentsStep.CLOSE, agents, closing)
+
+    async def release(self) -> None:
+        """Вкладка отключилась: агенты её тредов разом отпускают процессы
+        (ThreadAgent.release) и остаются в реестре до конца сессии.
+
+        Ошибки:
+        AgentProcessError — процессы каких-то тредов не остановились: тред и
+            причина каждого.
+        """
+        agents = list(self._agents.values())
+
+        releasing: list[Coroutine[Any, Any, None]] = []
+        for agent in agents:
+            releasing.append(agent.release())
+
+        await self._settled(TabAgentsStep.RELEASE, agents, releasing)
+
+    async def _settled(
+        self,
+        step: TabAgentsStep,
+        agents: Sequence[ThreadAgent],
+        steps: Sequence[Coroutine[Any, Any, None]],
+    ) -> None:
+        """Ждёт шагов всех агентов; отказы собираются в одну ошибку после всех."""
+        outcomes = await asyncio.gather(*steps, return_exceptions=True)
 
         failures: list[AcpClientError] = []
         reasons: list[str] = []
@@ -1574,8 +1642,8 @@ class ThreadAgents:
 
         if failures:
             msg = (
-                f"closing the agents of the tab: {len(failures)} of {len(agents)} "
-                f"did not close: {'; '.join(reasons)}"
+                f"{step.value} the agents of the tab: {len(failures)} of "
+                f"{len(agents)} failed: {'; '.join(reasons)}"
             )
             raise AgentProcessError(msg) from failures[0]
 

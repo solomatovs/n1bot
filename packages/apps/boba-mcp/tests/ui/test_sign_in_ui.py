@@ -620,7 +620,7 @@ def deployed() -> DeployedService:
         endpoint=f"{public}{common['mcp']['path']}/{ENDPOINT}",
         client_id=clients[0],
         client_secret=str(site["site"]["mcp_client"]["secret"]),
-        proxy_secret=str(site["site"]["proxy_secret"]),
+        proxy_secret=str(site["site"]["mcp_proxy_secret"]),
         login=login,
         roles=",".join(roles),
     )
@@ -656,7 +656,7 @@ class TestDeployedService:
         )
         token = sign_in.token(deployed.login, deployed.roles, deployed.endpoint)
 
-        tools = asyncio.run(_listed(deployed.endpoint, token))
+        tools = run_blocking(_listed(deployed.endpoint, token))
 
         assert TOOL in tools, tools
 

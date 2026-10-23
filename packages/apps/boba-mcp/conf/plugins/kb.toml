@@ -13,26 +13,8 @@ collection       = "kb_confluence"
 db_schema        = "ix"
 max_result_chars = 200000
 
-[tables]
-    pg_schema         = "${app.schema}"
-    chunks_table      = "kb_chunks"
-    collections_table = "kb_collections"
-    sources_table     = "kb_sources"
-
-[fastembed_cache]
-    sandbox = "/var/cache/fastembed"
-    process = "${env.models}/fastembed"
-
-[fastembed]
-    kind      = "fastembed"
-    cache_dir = "${tool.kb.fastembed_cache.${env.tool_launcher}}"
-
-[embedding]
-    provider       = "${tool.kb.fastembed}"
-    model          = "${site.models.embedding}"
-    dim            = 1024
-    batch_size     = 8
-    progress_every = 1
+tables           = "${kb_tables}"
+embedding        = "${embedding.main}"
 
 [sandbox]
     network = true

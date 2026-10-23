@@ -438,6 +438,8 @@ class StandFiles:
         """
         doc = app.document()
         doc["postgres"]["dbname"] = database
+        if "postgres_history" in doc:
+            doc["postgres_history"]["dbname"] = database
 
         self.workdir.mkdir(parents=True, exist_ok=True)
         self.write(doc)
@@ -534,29 +536,29 @@ class ServiceStand(StandService):
 
     def server(self, endpoint: str) -> dict[str, Any]:
         """Секция [mcp.servers.<имя>] чата для endpoint'а сервиса."""
-        location = {
+        service = {
             "scheme": StandUrl.SCHEME.value,
             "host": StandUrl.HOST.value,
             "port": self.app_port,
+            "path": "",
         }
 
         return {
-            "connect_timeout_sec": 30.0,
-            "call_timeout_sec": 120.0,
+            "limits": {"connect_timeout_sec": 30.0, "call_timeout_sec": 120.0},
             "endpoint": {
                 "transport": "streamable-http",
-                **location,
+                "service": service,
                 "path": f"/mcp/{endpoint}",
-                "auth": self._auth(location),
+                "auth": self._auth(service),
             },
         }
 
-    def _auth(self, location: Mapping[str, Any]) -> dict[str, Any]:
+    def _auth(self, service: Mapping[str, Any]) -> dict[str, Any]:
         """Секция auth endpoint'а по способу входа агента стенда."""
         entries: dict[StandAgentAuth, dict[str, Any]] = {
             StandAgentAuth.PROXY: {
                 "auth": StandAgentAuth.PROXY.value,
-                "issuer": {**location, "path": "/"},
+                "issuer": dict(service),
                 "client_id": self.CLIENT_ID,
                 "client_secret": self.CLIENT_SECRET,
                 "secret": self.PROXY_SECRET,
@@ -743,10 +745,14 @@ class StandConfig(StandService):
     """Порт сервиса boba-mcp стенда чата."""
 
     agent_history: dict[str, Any] = field(
-        default_factory=lambda: {"kind": "postgres", "schema": "boba"}
+        default_factory=lambda: {
+            "kind": "postgres",
+            "schema": "boba",
+            "postgres": "${postgres_history}",
+        }
     )
     """Секция [agent.history] чата: по умолчанию Postgres стенда подключением
-    процесса [postgres] (kerberos), схема boba в базе стенда."""
+    истории [postgres_history] рабочего конфига, схема boba в базе стенда."""
 
     agent_process: dict[str, Any] = field(
         default_factory=lambda: {
@@ -876,10 +882,12 @@ class StandConfig(StandService):
 
         private_dir = self.workdir / "agents"
         private_dir.mkdir(parents=True, exist_ok=True)
+        doc["postgres_history"]["dbname"] = self.db_name
         doc["agent"] = {
             "public_url": self.base_url,
             "seal_ttl_sec": 600,
             "question_timeout_sec": 600,
+            "settings_table": {"cipher": "${keys.encryption}"},
             "process": {
                 "command": self.agent_process["command"],
                 "args": self.agent_process["args"],
@@ -889,11 +897,6 @@ class StandConfig(StandService):
                 "stop_timeout_sec": 10,
             },
             "history": dict(self.agent_history),
-            "model": {
-                "context_window": 200000,
-                "max_output_tokens": 4096,
-                "reasoning_return": "turn",
-            },
         }
 
     @staticmethod
@@ -939,11 +942,18 @@ class StandConfig(StandService):
 
     def _use_fake_llm(self, doc: MutableMapping[str, Any]) -> None:
         """Провайдер стенда: fake llm процесса тестов вместо секций [llm] конфига."""
-        doc["http"] = {"dump": {"enable": False}}
+        doc["agent_http"] = {"dump": {"enable": False}}
+        doc["model_limits"] = {
+            "fake": {
+                "context_window": 200000,
+                "max_output_tokens": 4096,
+                "reasoning_return": "turn",
+            }
+        }
         doc["llm"] = {
             "fake": {
                 "kind": "openai",
-                "transport": "${http}",
+                "transport": "${agent_http}",
                 "connection": {
                     "scheme": "http",
                     "host": StandUrl.HOST,
@@ -983,6 +993,7 @@ class StandConfig(StandService):
                 "tools": ["*"],
                 "provider": "${llm.fake}",
                 "model": "fake-model-general",
+                "limits": "${model_limits.fake}",
                 "system_prompt": "You are the general stand assistant",
                 "sampling": {
                     "temperature": 0.1,
@@ -998,6 +1009,7 @@ class StandConfig(StandService):
                 "tools": self._search_tools(),
                 "provider": "${llm.fake}",
                 "model": "fake-model-search",
+                "limits": "${model_limits.fake}",
                 "system_prompt": "You are the search stand assistant",
                 "sampling": {
                     "temperature": 0.7,
