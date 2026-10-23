@@ -1,0 +1,39 @@
+services:
+  agent:
+    init: true
+    user: "${BOBA_USER}"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 8g
+    cpus: 4
+    pids_limit: 1024
+    restart: unless-stopped
+    stop_grace_period: 30s
+    image: boba-agent:0.0.26.dev4
+    hostname: boba-agent
+    container_name: boba-agent
+    networks:
+      default:
+        ipv4_address: ${BOBA_ADDRESS}
+    env_file: ./conf/boba.env
+    command:
+      - -m
+      - boba.agent_service
+      - --config
+      - /app/boba/conf/config.toml
+      - --site
+      - /app/boba/conf/site.toml
+    volumes:
+      - ./conf/site.toml:/app/boba/conf/site.toml:ro
+      - ./conf/krb:/app/boba/conf/krb:ro
+      - ./conf/krb/krb5.conf:/etc/krb5.conf:ro
+      - ./data:/app/boba/data:rw
+    ports:
+      - "8660"
+
+networks:
+  default:
+    name: ${BOBA_NETWORK}
+    external: ${BOBA_NETWORK_EXTERNAL}

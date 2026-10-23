@@ -202,7 +202,12 @@ class Stores:
         self._pool = pool
 
     def new(self) -> PostgresHistoryStore:
-        return PostgresHistoryStore(self._postgres, self._schema, self._pool)
+        """Хранилище процесса без владельца: видит все сессии."""
+        return PostgresHistoryStore(self._postgres, self._schema, None, self._pool)
+
+    def owned(self, owner: str) -> PostgresHistoryStore:
+        """Хранилище процесса, запущенного службой от имени owner."""
+        return PostgresHistoryStore(self._postgres, self._schema, owner, self._pool)
 
 
 @pytest.fixture
@@ -479,6 +484,92 @@ class TestContract:
             await store.release(lease)
 
 
+async def written(store: HistoryStore, session_id: SessionId, text: str) -> None:
+    """Сессия с одной записью вопроса, заведённая хранилищем store."""
+    journal = Journal(session_id)
+    journal.user(text)
+    lease = await store.acquire(session_id)
+    try:
+        await store.append(lease, list(journal.records()))
+    finally:
+        await store.release(lease)
+
+
+async def listed(store: HistoryStore) -> list[str]:
+    page = await store.list(None, 10)
+
+    return [s.session.value for s in page.sessions]
+
+
+class TestOwners:
+    """Хранилище с владельцем заводит сессии на него и видит только их; чужая
+    сессия и сессия без владельца для него не существуют. Хранилище без
+    владельца видит все."""
+
+    ALICE = SessionId(value="owner-alice")
+    BOB = SessionId(value="owner-bob")
+    NOBODY = SessionId(value="owner-nobody")
+
+    async def test_each_owner_sees_only_own_sessions(self, stores: Stores) -> None:
+        alice = stores.owned("alice")
+        bob = stores.owned("bob")
+        nobody = stores.new()
+        await written(alice, self.ALICE, "of alice")
+        await written(bob, self.BOB, "of bob")
+        await written(nobody, self.NOBODY, "of nobody")
+
+        assert await listed(alice) == [self.ALICE.value]
+        assert await listed(bob) == [self.BOB.value]
+        assert await listed(nobody) == [
+            self.ALICE.value,
+            self.BOB.value,
+            self.NOBODY.value,
+        ]
+        assert await read_all(alice, self.BOB) == []
+        assert await read_all(alice, self.NOBODY) == []
+        assert len(await read_all(nobody, self.ALICE)) == 1
+
+        _, report = await loaded(alice, self.BOB)
+        assert report.stored_seq == 0
+
+    async def test_foreign_session_is_not_found_for_every_operation(
+        self, stores: Stores
+    ) -> None:
+        alice = stores.owned("alice")
+        bob = stores.owned("bob")
+        await written(alice, self.ALICE, "of alice")
+        await written(stores.new(), self.NOBODY, "of nobody")
+
+        for foreign in (self.ALICE, self.NOBODY):
+            with pytest.raises(SessionNotFoundError, match="among the sessions of"):
+                await bob.acquire(foreign)
+
+            with pytest.raises(SessionNotFoundError, match="nothing to branch"):
+                await bob.copy(foreign, SessionId(value="owner-stolen"), None)
+
+            await bob.delete(foreign)
+
+        assert await listed(stores.new()) == [self.ALICE.value, self.NOBODY.value]
+        assert await listed(bob) == []
+
+    async def test_copy_belongs_to_the_owner_of_the_store(self, stores: Stores) -> None:
+        alice = stores.owned("alice")
+        branch = SessionId(value="owner-alice-branch")
+        await written(alice, self.ALICE, "of alice")
+
+        assert await alice.copy(self.ALICE, branch, None) == 1
+
+        assert await listed(alice) == [self.ALICE.value, branch.value]
+        bob = stores.owned("bob")
+        assert await listed(bob) == []
+        await written(bob, self.BOB, "of bob")
+        with pytest.raises(HistoryError, match="already has records"):
+            await bob.copy(self.BOB, branch, None)
+
+        await alice.delete(branch)
+        assert await listed(alice) == [self.ALICE.value]
+
+
 class TestAgent:
     async def test_two_turns_and_resume_keep_the_request_prefix(
         self,
@@ -737,8 +828,9 @@ class TestStagesOnPostgres:
 
 class TestCutoverTable:
     """Перенос чата на агента (build/scripts/migrations/2026-10-16-chat-agent-cutover)
-    создаёт таблицы истории своим SQL до первого обращения агента: определения
-    в history_tables.sql обязаны совпадать с тем, что создаёт хранилище."""
+    создаёт таблицы истории своим SQL до первого обращения агента: это
+    раскладка выпуска 2026-10-16, и хранилище обязано довести её на месте до
+    той, что создаёт само."""
 
     SCRIPT: ClassVar[Path] = (
         REPO_ROOT
@@ -766,9 +858,23 @@ class TestCutoverTable:
         "order by t.relname, k.contype, columns"
     )
 
-    async def test_script_tables_match_the_store(
-        self, store: PostgresHistoryStore, schema: str, pool: AsyncPostgresPool
+    LEGACY_ROWS: ClassVar[LiteralString] = (
+        "insert into session (id, created_at) "
+        "values ('legacy-1', '2026-10-10T09:00:00Z'); "
+        "insert into history (session_id, seq, type, recorded_at, record) "
+        "values ('legacy-1', 1, 'user', '2026-10-10T09:00:00Z', '{}')"
+    )
+
+    async def test_script_tables_migrate_in_place_to_the_store(
+        self,
+        store: PostgresHistoryStore,
+        schema: str,
+        pool: AsyncPostgresPool,
+        postgres: PostgresConfig,
     ) -> None:
+        """Таблицы скрипта переноса — раскладка прежнего выпуска без владельца:
+        хранилище доводит их на месте до своей, строки остаются, их владелец
+        неизвестен, и сессия видна только процессу без владельца."""
         cutover = f"{schema}_cutover"
         await store.list(None, 1)
         async with pool.connection() as conn:
@@ -783,17 +889,35 @@ class TestCutoverTable:
                         )
                     )
                     await conn.execute(self.SCRIPT.read_bytes())
+                    await conn.execute(self.LEGACY_ROWS)
 
+                legacy = await self._layout(conn, cutover)
+                await self.prepared(postgres, cutover, pool)
                 expected = await self._layout(conn, schema)
                 built = await self._layout(conn, cutover)
+                unowned = await listed(
+                    PostgresHistoryStore(postgres, cutover, None, pool)
+                )
+                owned = await listed(
+                    PostgresHistoryStore(postgres, cutover, "alice", pool)
+                )
             finally:
                 await conn.execute(
                     sql.SQL("drop schema {} cascade").format(sql.Identifier(cutover))
                 )
 
         assert built == expected
-        assert len(expected[0]) == 7
+        assert len(legacy[0]) == 7
+        assert len(expected[0]) == 8
         assert len(expected[1]) >= 3
+        assert unowned == ["legacy-1"]
+        assert owned == []
+
+    async def prepared(
+        self, postgres: PostgresConfig, cutover: str, pool: AsyncPostgresPool
+    ) -> None:
+        """Первое обращение хранилища к схеме переноса применяет файлы схемы."""
+        await PostgresHistoryStore(postgres, cutover, None, pool).list(None, 1)
 
     async def _layout(
         self, conn: AsyncConnection[Any], schema: str
