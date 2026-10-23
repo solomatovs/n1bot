@@ -25,6 +25,7 @@ from typing import Any
 
 import pytest
 
+from boba.core.secrets import SecretReveal
 from boba.identity.run import Runs
 from boba.pump_stand import ClickHouseSide, PostgresSide, PumpStand
 from boba.stand.toolstand import ToolStand
@@ -36,7 +37,6 @@ from boba.toolkit.dag import DagNode, WorkflowResult
 from boba.toolkit.result import (
     FailureResult,
 )
-from boba.toolkit.types import SecretReveal
 from boba.toolrun.hosted import DirectCalls
 from boba.toolrun.stream_calls import StreamGroupsConfig, WorkflowTool
 from boba.toolrun.streams import CallJournals

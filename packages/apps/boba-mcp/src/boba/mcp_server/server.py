@@ -76,6 +76,7 @@ from boba.cancellation import RunCancellation, StopReason, ToolStopped
 from boba.canvas.keys import ObjectKey
 from boba.connection_broker.sealed import SealedConnectionParams
 from boba.connections.sealed import OfferedSource, SealFeature
+from boba.core.validation import ValidationText
 from boba.identity.context import (
     CallContext,
     HumanInitiator,
@@ -109,7 +110,6 @@ from boba.mcp_server.files import (
 from boba.runtime.storage import LocalStorageConfig, StorageFactory
 from boba.toolkit.channels import JournalChannels, ToolChannel
 from boba.toolkit.dag import CallDag, DagNode, ToolServer
-from boba.toolkit.failure import ValidationText
 from boba.toolkit.ports import ProgressReport
 from boba.toolkit.result import ContentMime, ErrorResult
 from boba.toolkit.wire import (

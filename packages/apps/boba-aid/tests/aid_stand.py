@@ -65,6 +65,7 @@ from boba.connection_broker.store import ConnectionStore
 from boba.connection_broker.tickets import CredentialsRef
 from boba.connection_broker.tools import ConnectionTools
 from boba.connection_broker.user_connections import ArmedConnections, StoreRef
+from boba.core.mcp_names import McpToolNames
 from boba.db.postgres import AsyncPostgresPool, PostgresSchema
 from boba.identity.api import StoredUser, UserRows
 from boba.identity.context import (
@@ -112,7 +113,7 @@ from boba.toolkit.channels import JournalChannel
 from boba.toolkit.dag import (
     JournalAddress,
 )
-from boba.toolkit.mcp import McpResults, McpToolNames
+from boba.toolkit.mcp import McpResults
 from boba.toolkit.result import ToolResultBase
 from boba.transport.acp.protocol import McpErrorOutcome, McpMessage, McpVersion
 from boba.workspace.binaries import TrustedBinaries

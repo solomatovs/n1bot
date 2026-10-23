@@ -48,13 +48,13 @@ from boba.canvas.transfer import (
     TransferFormat,
     UploadPolicy,
 )
+from boba.core.validation import ValidationText
 from boba.identity.errors import AuthenticationError
 from boba.identity.session import Login
 from boba.mcp_client.client import McpCaller, McpClientError, McpServers, RelayedFile
 from boba.runtime.served import StreamedFile
 from boba.runtime.storage import StorageClient
 from boba.toolkit.channels import JournalChannels, ToolChannel
-from boba.toolkit.failure import ValidationText
 from boba.toolkit.result import ContentMime
 from boba.toolkit.wire import JournalRead
 

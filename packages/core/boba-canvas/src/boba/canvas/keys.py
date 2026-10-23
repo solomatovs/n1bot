@@ -19,8 +19,8 @@ from pydantic import (
     field_validator,
 )
 
+from boba.core.validation import ValidationText
 from boba.identity.context import PathSegment
-from boba.toolkit.failure import ValidationText
 
 __all__ = [
     "DirKey",

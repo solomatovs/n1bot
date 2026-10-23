@@ -12,8 +12,8 @@ from pydantic import SecretStr
 
 from boba.connections.marks import ConnectionRefusal
 from boba.connections.sealed import ConnectionSeal, SealedConnection, SealKeys
+from boba.core.secrets import SecretReveal
 from boba.identity.errors import RefusalError
-from boba.toolkit.types import SecretReveal
 from boba.transport.http.connection import HttpConnection
 
 NOW = datetime(2026, 10, 3, 12, 0, tzinfo=UTC)

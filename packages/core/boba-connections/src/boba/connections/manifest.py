@@ -20,7 +20,7 @@ from pydantic import ValidationError
 from pydantic.json_schema import models_json_schema
 
 from boba.connections.base import ConnectionBase
-from boba.toolkit.failure import ValidationText
+from boba.core.validation import ValidationText
 
 __all__ = [
     "AddressHook",

@@ -61,6 +61,7 @@ from boba.canvas.journal import StreamJournalError, StreamKey, StreamSlice
 from boba.canvas.keys import ObjectKey, ScopeDir, WorkspaceMount
 from boba.canvas.storage import StorageFullError, StorageNotFoundError
 from boba.canvas.transfer import ContentDisposition, FileHeader, UploadPolicy
+from boba.core.validation import ValidationText
 from boba.identity.context import Scope, Subject
 from boba.mcp_adapter import JournalUris
 from boba.mcp_server.auth import TokenSubjects
@@ -71,7 +72,6 @@ from boba.runtime.storage import (
     StorageClient,
 )
 from boba.toolkit.channels import JournalChannels
-from boba.toolkit.failure import ValidationText
 from boba.toolkit.result import ContentMime
 from boba.toolkit.wire import FilesFeature, JournalFeature, JournalRead
 from boba.toolrun.streams import CallJournals

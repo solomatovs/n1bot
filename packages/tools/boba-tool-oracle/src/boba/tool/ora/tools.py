@@ -27,6 +27,7 @@ from typing import Annotated, Any, ClassVar, Final
 
 from pydantic import Field
 
+from boba.core.secrets import SecretRevealing
 from boba.db.oracle import (
     OraLiterals,
     OraQuery,
@@ -74,7 +75,6 @@ from boba.toolkit.transfer import (
     TransferProgress,
     UnknownTypeStrategy,
 )
-from boba.toolkit.types import SecretRevealing
 from boba.toolkit.window import RowLimit, RowOffset, RowPage, RowWindow
 
 OraConnection = Annotated[OracleConfig, UserConnection]

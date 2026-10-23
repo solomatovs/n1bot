@@ -20,10 +20,10 @@ from boba.aid.rendering.acp_view import ServerCards, ToolMedia
 from boba.canvas.keys import ObjectKey, ScopeDir
 from boba.canvas.storage import StorageError, StorageNotFoundError
 from boba.chat.profiles import ChatProfileConfig, ChatProfiles
+from boba.core.mcp_names import McpToolNames
 from boba.identity.api import StoredUser
 from boba.identity.session import Login, UserMetadataField
 from boba.mcp_client.client import McpCaller, McpServers, McpToolServer
-from boba.toolkit.mcp import McpToolNames
 from boba.toolrun.call_id import CallFields
 from boba.workspace.launcher import ReadWindow
 

@@ -29,6 +29,7 @@ from pydantic import (
     field_serializer,
 )
 
+from boba.core.secrets import SecretRevealing
 from boba.db.clickhouse.errors import ClickHouseError
 from boba.kerberos import (
     DelegatedAuth,
@@ -39,7 +40,6 @@ from boba.kerberos import (
     TicketAuth,
 )
 from boba.krb import ClientCredentials, KerberosCredentials, SpnegoNegotiate
-from boba.toolkit.types import SecretRevealing
 
 __all__ = [
     "CertificateAuth",

@@ -27,11 +27,11 @@ from uuid import UUID
 import psycopg
 from pydantic import BaseModel, ConfigDict, Field
 
+from boba.core.secrets import SecretRevealing
 from boba.db.postgres import PayloadPostgres, PgQueryBuilder, PostgresSchema
 from boba.db.postgres.connection import PostgresConfig
 from boba.identity.context import Scope, ScopeKind
 from boba.toolkit.manifest import PluginStorage
-from boba.toolkit.types import SecretRevealing
 
 logger = logging.getLogger(__name__)
 
