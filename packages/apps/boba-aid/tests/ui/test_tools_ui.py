@@ -2453,13 +2453,13 @@ class TestCanvasTools:
         expected = f"/workspace/{saved_diagram.thread_id}/{{mermaid|upload}}/{name}"
         outside = ProbeText.OUTSIDE_PATH.value
         message = (
-            f"file is outside the thread attachments dir: {outside!r}; "
+            f"file is outside the scope attachments dir: {outside!r}; "
             f"expected {expected!r}"
         )
         result = ErrorResult(message=message, error_kind=CanvasErrorKind.BAD_PATH)
         canvas_feed.call(
             call,
-            ToolExpect.of(result, dom=["outside the thread attachments dir"]),
+            ToolExpect.of(result, dom=["outside the scope attachments dir"]),
         )
 
     def test_send_file(

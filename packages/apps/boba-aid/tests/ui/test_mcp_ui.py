@@ -363,7 +363,7 @@ class TestMcpToolInTheFeed:
         output = str(step.get(StepField.OUTPUT.value))
         expected = (
             "for the user\n\nfor the model\n\n"
-            "/report.csv is not shown: file is outside the thread attachments dir"
+            "/report.csv is not shown: file is outside the scope attachments dir"
         )
         if not output.startswith(expected):
             raise AssertionError(f"the blocks are drawn in order: {output!r}")
