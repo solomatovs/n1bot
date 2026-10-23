@@ -172,6 +172,10 @@ class SkillTool(OwnTool):
     def hints(self) -> ToolHints:
         return self.HINTS
 
+    @property
+    def deferred(self) -> bool:
+        return False
+
     def card(self) -> SnapshotTool:
         return SnapshotTool(
             name=self.NAME,

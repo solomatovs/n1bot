@@ -46,6 +46,8 @@
             allowBypass = true
         [agent.settings.mcp]
             callTimeoutSec = 86400
+        [agent.settings.tools]
+            alwaysLoad = []
     [agent.profiles.general]
         roles = ["*"]
         [agent.profiles.general.model]

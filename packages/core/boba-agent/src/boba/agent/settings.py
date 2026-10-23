@@ -44,6 +44,7 @@ __all__ = [
     "SettingsLayer",
     "SettingsModel",
     "SettingsSchema",
+    "ToolsJson",
 ]
 
 
@@ -228,6 +229,16 @@ class McpClientJson(SettingsModel):
     input_rounds: int = Field(default=3, gt=0)
 
 
+class ToolsJson(SettingsModel):
+    """Ключ `tools`: инструменты, которые модель получает полным определением
+    с первого запроса, — полные имена, как их видит модель
+    (`mcp__<сервер>__<инструмент>`). Остальные инструменты серверов отложены:
+    модель видит их имена и загружает ToolSearch. Пустой список — всё через
+    ToolSearch."""
+
+    always_load: Sequence[str]
+
+
 class SettingsLayer(SettingsModel):
     """Один слой `settings.json`; каждый ключ необязателен. Профили `models`
     лежат сырыми таблицами: слой вправе дополнить профиль одним полем, а
@@ -240,6 +251,7 @@ class SettingsLayer(SettingsModel):
     compaction: CompactionJson | None = None
     limits: LimitsJson | None = None
     mcp: McpClientJson | None = None
+    tools: ToolsJson | None = None
     env: Mapping[str, str] = Field(default_factory=dict)
     system_prompt_file: str | None = None
     skills_dir: str | None = None
