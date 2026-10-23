@@ -1,23 +1,26 @@
 """Реализация порта истории агента над Postgres (план, раздел 5.15).
 
-Записи сессии лежат в таблице `history_records` по порядку seq, запись —
-документ журнала как jsonb. Захват сессии — advisory lock сеанса по ключу
-из идентификатора сессии на выделенном соединении, которое живёт до
-release: второй процесс на ту же сессию получает отказ. Дозапись пачки —
-одна транзакция с `on conflict do nothing`: повтор пачки дублей не создаёт,
-отказ посреди пачки не оставляет ни одной записи. Список сессий — группировка
-записей по идентификатору с временем последней записи; удаление сессии —
-одна транзакция под транзакционным advisory lock того же ключа, так что
-сессию работающего процесса удалить нельзя. Копия (ветвление) — одна
-транзакция `insert … select` строк источника до записи среза под новым
-идентификатором с `sessionId` цели в документе; замок источника не
-берётся. Схема и таблица создаются файлами schema/*.sql пакета под замком
-DDL, раскладка таблицы сверяется с ожидаемой.
+Сессия — строка таблицы `session`, её записи — строки таблицы `history` по
+порядку seq. Каркас, который есть у каждой записи (сессия, seq, вид, время),
+лежит колонками, остальное содержимое записи — документом jsonb; при чтении
+документ собирается обратно таким, каким он лёг бы строкой журнала JSONL.
+Захват сессии — advisory lock сеанса по ключу из идентификатора сессии на
+выделенном соединении, которое живёт до release: второй процесс на ту же
+сессию получает отказ. Дозапись пачки — одна транзакция: строку сессии
+заводит первая пачка, записи идут с `on conflict do nothing`, поэтому повтор
+пачки дублей не создаёт, а отказ посреди пачки не оставляет ни одной записи.
+Список сессий — строки `session` со временем последней записи; удаление
+сессии — удаление её строки под транзакционным advisory lock того же ключа,
+записи уходят каскадом, а сессию работающего процесса удалить нельзя. Копия
+(ветвление) — одна транзакция `insert … select` записей источника до записи
+среза под новым идентификатором; замок источника не берётся. Схема и таблицы
+создаются файлами schema/*.sql пакета под замком DDL, раскладка таблиц
+сверяется с ожидаемой.
 
 Ошибки:
-HistoryError — база недоступна или отказала, пачка не по порядку seq, у
-    цели копии уже есть записи; причина нижнего слоя — в тексте и в
-    `from exc`.
+HistoryError — база недоступна или отказала, пачка не по порядку seq или с
+    записью чужой сессии, у цели копии уже есть записи; причина нижнего
+    слоя — в тексте и в `from exc`.
 SessionHeldError — сессию держит другой процесс (подвид HistoryError).
 SessionNotFoundError — у источника копии нет записей (подвид HistoryError).
 RecordNotFoundError — записи среза копии в источнике нет (подвид
@@ -27,7 +30,13 @@ RecordNotFoundError — записи среза копии в источнике
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
+from collections.abc import (
+    AsyncIterator,
+    Iterable,
+    Iterator,
+    Mapping,
+    Sequence,
+)
 from dataclasses import dataclass
 from enum import StrEnum
 from importlib.resources import files
@@ -61,14 +70,28 @@ from boba.db.postgres import (
 )
 from boba.db.postgres.connection import PostgresConfig
 
-__all__ = ["HistoryColumn", "HistoryTable", "PostgresHistoryStore"]
+__all__ = [
+    "HistoryColumn",
+    "HistoryTable",
+    "PostgresHistoryStore",
+    "RecordFrames",
+    "SessionColumn",
+]
 
 
 class HistoryTable(StrEnum):
     """Имена объектов схемы истории."""
 
-    RECORDS = "history_records"
+    SESSION = "session"
+    HISTORY = "history"
     LOCK_PREFIX = "boba.history."
+
+
+class SessionColumn(StrEnum):
+    """Колонки таблицы сессий."""
+
+    ID = "id"
+    CREATED_AT = "created_at"
 
 
 class HistoryColumn(StrEnum):
@@ -77,8 +100,17 @@ class HistoryColumn(StrEnum):
     SESSION_ID = "session_id"
     SEQ = "seq"
     TYPE = "type"
+    RECORDED_AT = "recorded_at"
     RECORD = "record"
-    CREATED_AT = "created_at"
+
+
+class FrameKey(StrEnum):
+    """Ключи каркаса в документе записи: в таблице они лежат колонками."""
+
+    TYPE = RecordCodec.TYPE
+    SEQ = LineKey.SEQ.value
+    SESSION_ID = LineKey.SESSION_ID.value
+    TIMESTAMP = LineKey.TIMESTAMP.value
 
 
 class ListColumn(StrEnum):
@@ -88,17 +120,76 @@ class ListColumn(StrEnum):
     UPDATED_AT = "updated_at"
 
 
-class LockColumn(StrEnum):
-    """Колонка пробы замка при удалении."""
+class ProbeColumn(StrEnum):
+    """Колонки служебных выборок: проба замка, наличие сессии, seq среза."""
 
     ACQUIRED = "acquired"
-
-
-class CopyColumn(StrEnum):
-    """Колонки выборок копии сессии."""
-
-    LAST_SEQ = "last_seq"
+    PRESENT = "present"
     CUT_SEQ = "cut_seq"
+
+
+@dataclass(frozen=True)
+class HistoryRow:
+    """Запись, разложенная для таблицы history: каркас и остальной документ."""
+
+    seq: int
+    type: str
+    recorded_at: str
+    record: Mapping[str, Any]
+
+
+class RecordFrames:
+    """Раскладка записи журнала по колонкам таблицы history и сборка обратно.
+
+    PostgresHistoryStore держит каркас записи (сессию, seq, вид, время)
+    колонками, а остальное — документом record. Этот класс снимает каркас с
+    документа при записи и возвращает его при чтении, так что загрузчик агента
+    получает тот же документ, что и из журнала JSONL, и о раскладке таблицы
+    не знает.
+    """
+
+    def __init__(self) -> None:
+        self._codec = RecordCodec()
+
+    def split(self, session: SessionId, record: Record) -> HistoryRow:
+        """Ошибки:
+        HistoryError — запись принадлежит другой сессии.
+        """
+        if record.session_id != session.value:
+            msg = (
+                f"Cannot append to session '{session.value}': record seq "
+                f"{record.seq} carries sessionId '{record.session_id}', and the "
+                "history keeps one session id per row."
+            )
+            raise HistoryError(msg)
+
+        document = json.loads(self._codec.line(record))
+        for key in FrameKey:
+            document.pop(key.value)
+
+        return HistoryRow(
+            seq=record.seq,
+            type=record.type.value,
+            recorded_at=record.timestamp,
+            record=document,
+        )
+
+    def join(self, row: Mapping[str, Any]) -> HistoryLine:
+        number = int(str(row[HistoryColumn.SEQ.value]))
+        record = row[HistoryColumn.RECORD.value]
+        if not isinstance(record, Mapping):
+            return BrokenLine(
+                number=number,
+                reason=f"the record is not a JSON object but {type(record).__name__}",
+            )
+
+        document: dict[str, Any] = dict(record)
+        document[FrameKey.TYPE.value] = row[HistoryColumn.TYPE.value]
+        document[FrameKey.SEQ.value] = number
+        document[FrameKey.SESSION_ID.value] = row[HistoryColumn.SESSION_ID.value]
+        document[FrameKey.TIMESTAMP.value] = row[HistoryColumn.RECORDED_AT.value]
+
+        return StoredLine(number=number, raw=document)
 
 
 @dataclass
@@ -111,13 +202,16 @@ class HeldSession:
 
 
 class PostgresHistoryStore(PostgresTable, HistoryStore):
-    """Реализация HistoryStore над таблицей `history_records` схемы Postgres.
+    """Реализация HistoryStore над таблицами `session` и `history` схемы Postgres.
 
     Создаёт вход процесса по настройке `history` вида `postgres`; пул берётся
     по конфигу подключения при первом обращении, как у остальных таблиц.
+    Раскладку записи по колонкам и сборку обратно ведёт RecordFrames.
     """
 
     LABEL: ClassVar[str] = "history"
+    STAMP: ClassVar[str] = 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
+    """Время записи в UTC шаблоном to_char: так его пишет часовой агента."""
 
     def __init__(
         self,
@@ -127,7 +221,7 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
     ) -> None:
         super().__init__(postgres, db_schema, pool)
         self._config = postgres
-        self._codec = RecordCodec()
+        self._frames = RecordFrames()
         self._held: dict[str, HeldSession] = {}
         self._ready = False
 
@@ -157,23 +251,29 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
         if not fresh:
             return
 
-        rows: list[dict[str, Any]] = []
-        for record in fresh:
-            rows.append(
-                {
-                    HistoryColumn.SESSION_ID.value: held.session.value,
-                    HistoryColumn.SEQ.value: record.seq,
-                    HistoryColumn.TYPE.value: record.type.value,
-                    HistoryColumn.RECORD.value: Jsonb(self._document(record)),
-                }
-            )
+        rows = list(self._rows_of(held.session, fresh))
 
+        opening = (
+            self._query()
+            .add(
+                """
+                insert into {schema}.session (id, created_at)
+                values (%(session_id)s, %(created_at)s)
+                on conflict (id) do nothing
+                """,
+                session_id=held.session.value,
+                created_at=fresh[0].timestamp,
+            )
+            .build()
+        )
         query = (
             self._query()
             .add(
                 """
-                insert into {schema}.history_records (session_id, seq, type, record)
-                values (%(session_id)s, %(seq)s, %(type)s, %(record)s)
+                insert into {schema}.history
+                    (session_id, seq, type, recorded_at, record)
+                values
+                    (%(session_id)s, %(seq)s, %(type)s, %(recorded_at)s, %(record)s)
                 on conflict (session_id, seq) do nothing
                 """
             )
@@ -181,6 +281,7 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
         )
         action = f"appending {len(fresh)} record(s) to session '{held.session.value}'"
         async with self._transaction(action) as cur:
+            await cur.execute(opening.text, opening.params)
             await cur.executemany(query.text, rows)
 
         held.last_seq = fresh[-1].seq
@@ -192,24 +293,26 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
             .add(
                 """
                 select
+                    session_id,
                     seq,
+                    type,
+                    to_char(recorded_at at time zone 'UTC', %(stamp)s) as recorded_at,
                     record
                 from
-                    {schema}.history_records
+                    {schema}.history
                 where
                     session_id = %(session_id)s
                 order by
                     seq
                 """,
+                stamp=self.STAMP,
                 session_id=session.value,
             )
             .build()
         )
         rows = await self._rows(query, f"reading session '{session.value}'")
         for row in rows:
-            yield self._line(
-                row[HistoryColumn.SEQ.value], row[HistoryColumn.RECORD.value]
-            )
+            yield self._frames.join(row)
 
     async def release(self, lease: SessionLease) -> None:
         held = self._held.pop(lease.key, None)
@@ -231,20 +334,30 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
             .add(
                 """
                 select
-                    session_id,
-                    max(record ->> %(stamp)s) as updated_at
+                    s.id as session_id,
+                    to_char(tail.recorded_at at time zone 'UTC', %(stamp)s)
+                        as updated_at
                 from
-                    {schema}.history_records
+                    {schema}.session as s
+                    cross join lateral (
+                        select
+                            h.recorded_at
+                        from
+                            {schema}.history as h
+                        where
+                            h.session_id = s.id
+                        order by
+                            h.seq desc
+                        limit 1
+                    ) as tail
                 """,
-                stamp=LineKey.TIMESTAMP.value,
+                stamp=self.STAMP,
             )
-            .when(cursor is not None, "where session_id > %(cursor)s", cursor=cursor)
+            .when(cursor is not None, "where s.id > %(cursor)s", cursor=cursor)
             .add(
                 """
-                group by
-                    session_id
                 order by
-                    session_id
+                    s.id
                 limit %(limit)s
                 """,
                 limit=limit + 1,
@@ -261,11 +374,13 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
                 )
             )
 
-        next_cursor: str | None = None
-        if len(rows) > limit and sessions:
-            next_cursor = sessions[-1].session.value
+        if len(rows) <= limit:
+            return StoredPage(sessions=sessions, next_cursor=None)
 
-        return StoredPage(sessions=sessions, next_cursor=next_cursor)
+        if not sessions:
+            return StoredPage(sessions=sessions, next_cursor=None)
+
+        return StoredPage(sessions=sessions, next_cursor=sessions[-1].session.value)
 
     async def delete(self, session: SessionId) -> None:
         await self._prepare()
@@ -283,9 +398,9 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
             .add(
                 """
                 delete from
-                    {schema}.history_records
+                    {schema}.session
                 where
-                    session_id = %(session_id)s
+                    id = %(session_id)s
                 """,
                 session_id=session.value,
             )
@@ -295,7 +410,11 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
         async with self._transaction(action) as cur:
             await cur.execute(probe.text, probe.params)
             row = await cur.fetchone()
-            if row is None or not row[LockColumn.ACQUIRED.value]:
+            acquired = False
+            if row is not None:
+                acquired = bool(row[ProbeColumn.ACQUIRED.value])
+
+            if not acquired:
                 msg = (
                     f"Session '{session.value}' cannot be deleted: a running agent "
                     "process holds its lock in Postgres. Close that session first."
@@ -310,8 +429,7 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
         await self._prepare()
         action = f"copying session '{source.value}' to '{target.value}'"
         async with self._transaction(action) as cur:
-            source_last = await self._max_seq(cur, source)
-            if source_last == 0:
+            if not await self._exists(cur, source):
                 msg = (
                     f"Session '{source.value}' cannot be copied: it has no records "
                     "in Postgres, there is nothing to branch."
@@ -322,12 +440,10 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
             if up_to is not None:
                 end = await self._seq_of(cur, source, up_to)
 
-            target_last = await self._max_seq(cur, target)
-            if target_last != 0:
+            if await self._exists(cur, target):
                 msg = (
                     f"Session '{target.value}' cannot receive the copy of "
-                    f"'{source.value}': it already has records up to seq "
-                    f"{target_last} in Postgres."
+                    f"'{source.value}': it already has records in Postgres."
                 )
                 raise HistoryError(msg)
 
@@ -335,40 +451,67 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
                 self._query()
                 .add(
                     """
-                    insert into {schema}.history_records (session_id, seq, type, record)
+                    with copied as (
+                        select
+                            seq,
+                            type,
+                            recorded_at,
+                            record
+                        from
+                            {schema}.history
+                        where
+                            session_id = %(source)s
+                    """,
+                    source=source.value,
+                )
+                .when(end is not None, "and seq < %(end)s", end=end)
+                .add(
+                    """
+                    ),
+                    opened as (
+                        insert into {schema}.session (id, created_at)
+                        select
+                            %(target)s,
+                            min(recorded_at)
+                        from
+                            copied
+                        having
+                            count(*) > 0
+                    )
+                    insert into {schema}.history
+                        (session_id, seq, type, recorded_at, record)
                     select
                         %(target)s,
                         seq,
                         type,
-                        jsonb_set(record, %(path)s, to_jsonb(%(target)s::text))
+                        recorded_at,
+                        record
                     from
-                        {schema}.history_records
-                    where
-                        session_id = %(source)s
+                        copied
                     """,
                     target=target.value,
-                    path=[LineKey.SESSION_ID.value],
-                    source=source.value,
                 )
-                .when(end is not None, "and seq < %(end)s", end=end)
-                .add("order by seq")
                 .build()
             )
             await cur.execute(query.text, query.params)
 
             return cur.rowcount
 
-    async def _max_seq(self, cur: Cursor, session: SessionId) -> int:
+    async def _exists(self, cur: Cursor, session: SessionId) -> bool:
+        """Есть ли строка сессии: её заводит первая запись, удаление уносит."""
         query = (
             self._query()
             .add(
                 """
                 select
-                    coalesce(max(seq), 0) as last_seq
-                from
-                    {schema}.history_records
-                where
-                    session_id = %(session_id)s
+                    exists (
+                        select
+                            1
+                        from
+                            {schema}.session
+                        where
+                            id = %(session_id)s
+                    ) as present
                 """,
                 session_id=session.value,
             )
@@ -377,9 +520,9 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
         await cur.execute(query.text, query.params)
         row = await cur.fetchone()
         if row is None:
-            return 0
+            return False
 
-        return int(row[CopyColumn.LAST_SEQ.value])
+        return bool(row[ProbeColumn.PRESENT.value])
 
     async def _seq_of(self, cur: Cursor, session: SessionId, uuid: str) -> int:
         """Ошибки:
@@ -392,7 +535,7 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
                 select
                     seq as cut_seq
                 from
-                    {schema}.history_records
+                    {schema}.history
                 where
                     session_id = %(session_id)s
                     and record ->> %(key)s = %(uuid)s
@@ -412,7 +555,7 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
             )
             raise RecordNotFoundError(msg)
 
-        return int(row[CopyColumn.CUT_SEQ.value])
+        return int(row[ProbeColumn.CUT_SEQ.value])
 
     def _failure(self, action: str, exc: Exception) -> Exception:
         return HistoryError(self._detail(action, exc))
@@ -432,8 +575,13 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
         finally:
             await conn.close()
 
+        session_columns = [column.value for column in SessionColumn]
+        history_columns = [column.value for column in HistoryColumn]
         await self._check_layouts(
-            {HistoryTable.RECORDS.value: [column.value for column in HistoryColumn]}
+            {
+                HistoryTable.SESSION.value: session_columns,
+                HistoryTable.HISTORY.value: history_columns,
+            }
         )
         self._ready = True
 
@@ -458,7 +606,11 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
         )
         cur = await conn.execute(query.text, query.params)
         row = await cur.fetchone()
-        if row is None or not row[0]:
+        acquired = False
+        if row is not None:
+            acquired = bool(row[0])
+
+        if not acquired:
             msg = (
                 f"Session '{session.value}' is already in use by another process: its "
                 "lock in Postgres is held. Stop that process or use another session."
@@ -488,7 +640,7 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
                 select
                     coalesce(max(seq), 0)
                 from
-                    {schema}.history_records
+                    {schema}.history
                 where
                     session_id = %(session_id)s
                 """,
@@ -541,17 +693,16 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
             last = record.seq
             yield record
 
-    def _document(self, record: Record) -> Mapping[str, Any]:
-        """Документ записи — ровно то, что лежало бы строкой журнала JSONL."""
-        return json.loads(self._codec.line(record))
-
-    @staticmethod
-    def _line(seq: object, document: object) -> HistoryLine:
-        number = int(str(seq))
-        if isinstance(document, Mapping):
-            return StoredLine(number=number, raw=document)
-
-        return BrokenLine(
-            number=number,
-            reason=f"the record is not a JSON object but {type(document).__name__}",
-        )
+    def _rows_of(
+        self, session: SessionId, records: Iterable[Record]
+    ) -> Iterator[Mapping[str, Any]]:
+        """Параметры вставки в history: по строке на запись."""
+        for record in records:
+            row = self._frames.split(session, record)
+            yield {
+                HistoryColumn.SESSION_ID.value: session.value,
+                HistoryColumn.SEQ.value: row.seq,
+                HistoryColumn.TYPE.value: row.type,
+                HistoryColumn.RECORDED_AT.value: row.recorded_at,
+                HistoryColumn.RECORD.value: Jsonb(row.record),
+            }

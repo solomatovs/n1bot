@@ -1,10 +1,10 @@
 """Хранилище истории в Postgres на настоящей базе стенда: контракт порта
-(повтор пачки без дублей, занятая сессия, откат пачки целиком, порядок
-чтения, список сессий страницами, удаление под замком, копия до среза под
-новой сессией), агент на стенде
-модели с этим хранилищем и возобновление, обрыв на каждой записи даёт тот
-же восстановленный список, что JSONL; возобновление журнала в десятки
-мегабайт — под меткой integration."""
+(повтор пачки без дублей, каркас записи колонками и документ без него,
+занятая сессия, откат пачки целиком, порядок чтения, список сессий
+страницами, удаление под замком, копия до среза под новой сессией), агент
+на стенде модели с этим хранилищем и возобновление, обрыв на каждой записи
+даёт тот же восстановленный список, что JSONL; возобновление журнала в
+десятки мегабайт — под меткой integration."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ import json
 import time
 import uuid
 from collections.abc import AsyncIterator, Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, ClassVar, LiteralString
 
@@ -391,6 +392,54 @@ class TestContract:
         listed = [s.session.value for s in (await store.list(None, 10)).sessions]
         assert listed == ["history-pg-1", "history-pg-branch", "history-pg-whole"]
 
+    async def test_rows_keep_the_frame_in_columns(
+        self, store: PostgresHistoryStore, pool: AsyncPostgresPool, schema: str
+    ) -> None:
+        """Сессия, seq, вид и время лежат колонками, в record их нет; строку
+        сессии заводит первая пачка со временем первой записи; запись чужой
+        сессии не принимается."""
+        journal = Journal(SESSION)
+        journal.user("one", stamp="2026-10-10T09:00:00.250Z")
+        journal.assistant("two")
+        foreign = journal.user("three").model_copy(update={"session_id": "stranger"})
+        records = list(journal.records())
+
+        lease = await store.acquire(SESSION)
+        try:
+            await store.append(lease, records[:2])
+            with pytest.raises(HistoryError, match="carries sessionId 'stranger'"):
+                await store.append(lease, [foreign])
+        finally:
+            await store.release(lease)
+
+        async with pool.connection() as conn, conn.cursor(row_factory=tuple_row) as cur:
+            await cur.execute(
+                sql.SQL("select id, created_at from {}.session").format(
+                    sql.Identifier(schema)
+                )
+            )
+            sessions = await cur.fetchall()
+            await cur.execute(
+                sql.SQL(
+                    "select session_id, seq, type, recorded_at, record "
+                    "from {}.history order by seq"
+                ).format(sql.Identifier(schema))
+            )
+            rows = await cur.fetchall()
+
+        first = datetime(2026, 10, 10, 9, 0, 0, 250_000, tzinfo=UTC)
+        assert sessions == [(SESSION.value, first)]
+        assert [row[:4] for row in rows] == [
+            (SESSION.value, 1, "user", first),
+            (SESSION.value, 2, "assistant", datetime(2026, 10, 10, 12, tzinfo=UTC)),
+        ]
+        for row in rows:
+            assert not {"type", "seq", "sessionId", "timestamp"} & set(row[4])
+
+        documents = await read_all(store, SESSION)
+        assert documents == [json.loads(RecordCodec().line(r)) for r in records[:2]]
+        assert documents[0]["timestamp"] == "2026-10-10T09:00:00.250Z"
+
     async def test_failed_batch_leaves_no_record(
         self, store: PostgresHistoryStore
     ) -> None:
@@ -506,7 +555,11 @@ class TestAgent:
                 "\n".join(lines[:kept]) + "\n", encoding="utf-8"
             )
             cut_session = SessionId(value=f"cut-{kept}")
-            records = [codec.parse(json.loads(line)) for line in lines[:kept]]
+            moved = {"session_id": cut_session.value}
+            records = [
+                codec.parse(json.loads(line)).model_copy(update=moved)
+                for line in lines[:kept]
+            ]
             lease = await store.acquire(cut_session)
             try:
                 await store.append(lease, records)
@@ -517,9 +570,10 @@ class TestAgent:
             from_pg, pg_report = await loaded(stores.new(), cut_session)
             stored = jsonl_report.stored_seq
             assert pg_report.stored_seq == stored, kept
-            assert (
-                list(from_pg.records())[:stored] == list(from_jsonl.records())[:stored]
-            )
+            expected = [
+                r.model_copy(update=moved) for r in from_jsonl.records()[:stored]
+            ]
+            assert list(from_pg.records())[:stored] == expected
             assert kinds(from_pg.records()[stored:]) == kinds(
                 from_jsonl.records()[stored:]
             ), kept
@@ -683,29 +737,36 @@ class TestStagesOnPostgres:
 
 class TestCutoverTable:
     """Перенос чата на агента (build/scripts/migrations/2026-10-16-chat-agent-cutover)
-    создаёт таблицу истории своим SQL до первого обращения агента: определение
-    в history_records.sql обязано совпадать с тем, что создаёт хранилище."""
+    создаёт таблицы истории своим SQL до первого обращения агента: определения
+    в history_tables.sql обязаны совпадать с тем, что создаёт хранилище."""
 
     SCRIPT: ClassVar[Path] = (
         REPO_ROOT
-        / "build/scripts/migrations/2026-10-16-chat-agent-cutover/history_records.sql"
+        / "build/scripts/migrations/2026-10-16-chat-agent-cutover/history_tables.sql"
     )
     COLUMNS: ClassVar[LiteralString] = (
-        "select column_name, data_type, is_nullable, column_default "
+        "select table_name, column_name, data_type, is_nullable, column_default "
         "from information_schema.columns "
-        "where table_schema = %s and table_name = 'history_records' "
-        "order by column_name"
+        "where table_schema = %s and table_name in ('session', 'history') "
+        "order by table_name, column_name"
     )
-    KEY: ClassVar[LiteralString] = (
-        "select a.attname "
-        "from pg_index i "
-        "join pg_attribute a on a.attrelid = i.indrelid and a.attnum = any(i.indkey) "
-        "where i.indrelid = format('%%I.history_records', %s::text)::regclass "
-        "and i.indisprimary "
-        "order by a.attname"
+    CONSTRAINTS: ClassVar[LiteralString] = (
+        "select t.relname, k.contype, k.confdeltype, coalesce(r.relname, ''), "
+        "coalesce(r.relnamespace = t.relnamespace, true), "
+        "array("
+        "select a.attname from unnest(k.conkey) with ordinality as c(attnum, n) "
+        "join pg_attribute a on a.attrelid = k.conrelid and a.attnum = c.attnum "
+        "order by c.n"
+        ") as columns "
+        "from pg_constraint k "
+        "join pg_class t on t.oid = k.conrelid "
+        "join pg_namespace s on s.oid = t.relnamespace "
+        "left join pg_class r on r.oid = k.confrelid "
+        "where s.nspname = %s and t.relname in ('session', 'history') "
+        "order by t.relname, k.contype, columns"
     )
 
-    async def test_script_table_matches_the_store(
+    async def test_script_tables_match_the_store(
         self, store: PostgresHistoryStore, schema: str, pool: AsyncPostgresPool
     ) -> None:
         cutover = f"{schema}_cutover"
@@ -731,6 +792,8 @@ class TestCutoverTable:
                 )
 
         assert built == expected
+        assert len(expected[0]) == 7
+        assert len(expected[1]) >= 3
 
     async def _layout(
         self, conn: AsyncConnection[Any], schema: str
@@ -738,7 +801,7 @@ class TestCutoverTable:
         async with conn.cursor(row_factory=tuple_row) as cur:
             await cur.execute(self.COLUMNS, (schema,))
             columns = await cur.fetchall()
-            await cur.execute(self.KEY, (schema,))
-            key = await cur.fetchall()
+            await cur.execute(self.CONSTRAINTS, (schema,))
+            constraints = await cur.fetchall()
 
-        return columns, key
+        return columns, constraints
