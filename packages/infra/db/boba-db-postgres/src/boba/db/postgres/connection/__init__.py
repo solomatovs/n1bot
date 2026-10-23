@@ -15,6 +15,7 @@ from boba.db.postgres.connection.auth import (
 from boba.db.postgres.connection.config import (
     CopyOptions,
     CopySession,
+    LibpqConnection,
     PostgresConfig,
     PostgresOptionsConfig,
     PostgresPoolConfig,
@@ -24,6 +25,7 @@ __all__ = [
     "CertificateAuth",
     "CopyOptions",
     "CopySession",
+    "LibpqConnection",
     "PasswordAuth",
     "PostgresAuth",
     "PostgresAuthBase",

@@ -24,6 +24,7 @@ from boba.mcp_client.client import (
     McpCaller,
     McpClientError,
     McpServerConfig,
+    McpServerLimits,
     McpServers,
     McpToolServer,
     NoAuth,
@@ -58,15 +59,19 @@ class AuthStand(FakeServiceProcess):
     def server(self, auth: McpAuthEntry) -> McpToolServer:
         endpoint = HttpEndpoint.model_validate(
             {
-                "scheme": "http",
-                "host": self.HOST,
-                "port": self.port,
+                "service": {
+                    "scheme": "http",
+                    "host": self.HOST,
+                    "port": self.port,
+                    "path": "",
+                },
                 "path": self.ENDPOINT,
                 "auth": auth,
             }
         )
         config = McpServerConfig(
-            endpoint=endpoint, connect_timeout_sec=20.0, call_timeout_sec=60.0
+            endpoint=endpoint,
+            limits=McpServerLimits(connect_timeout_sec=20.0, call_timeout_sec=60.0),
         )
 
         return McpToolServer("boba", config)
