@@ -317,12 +317,12 @@ runtime/
 | `base` | образ сборки `boba-base` с компилятором и uv; его зовёт `fetch` | демон Docker | минуты в первый раз, секунды повторно |
 | `sandbox` | собирает `bwrap` и `fuse2fs`, делает шаблон `workspace.ext4` | `runtime/third`, `runtime/sandbox` | несколько минут, 1 ГБ |
 | `plugin-rootfs-all` | образ корня файловой системы на каждый плагин инструментов, всегда заново | `runtime/sandbox/plugins/<пакет>/rootfs.ext4` | 20–40 минут, 7–8 ГБ |
-| `build APP=<приложение>` | образ `boba-<приложение>:<версия>`; фронт чата образ собирает сам, стадия `boba-bin` кладёт в образ aid агента одним файлом `bin/boba` (Nuitka); в образ mcp уезжают образы корней плагинов и workspace | демон Docker | aid — минуты, первая компиляция агента — 15–40 минут; mcp — 5–10 минут |
+| `build APP=<приложение>` | образ `boba-<приложение>:<версия>`; фронт чата образ собирает сам, стадия `boba-bin` кладёт в образ aid агента каталогом `bin/boba.dist` (Nuitka standalone, исполняемый `bin/boba.dist/boba`); в образ mcp уезжают образы корней плагинов и workspace | демон Docker | aid — минуты, первая компиляция агента — 15–40 минут; mcp — 5–10 минут |
 | `test APP=<приложение>` | `build`, затем проверка образа без сети: пакеты, точки входа, у mcp — образы плагинов и модели, у aid — файлы, которые .chainlit/config.toml называет в custom_css и default_avatar_file_url, и ход агента с моделью проверки | — | секунды после сборки; печатает `RESULT: ALL OK` |
 | `dev APP=<приложение>` | готовит дерево `compose/<приложение>` | `compose/<приложение>` | секунды |
 | `debug APP=<приложение>` | готовит дерево `debug/<приложение>` и цели VS Code; для aid собирает фронт на хосте (`web`) | `debug/<приложение>`, `.vscode`, `assets` пакета чата | секунды, фронт — минуты в первый раз |
 | `release APP=<приложение>` | дерево установки без Docker из готового образа | `release/<версия>/<экземпляр>` | до минуты; mcp 11 ГБ |
-| `boba-bin` | агент отдельным файлом (его берут тесты `test_cli_binary.py`); `BIN_ONNX=1` — файл `boba-onnx` с рантаймом onnxruntime-genai, тогда `fetch` качает и модели onnx-genai (3,9 ГБ) | `release/<версия>/bin` | без `BIN_ONNX` — из кэша сборки aid; с ним — вторая компиляция |
+| `boba-bin` | агент каталогом `bin/boba.dist` (его берут тесты `test_cli_binary.py`); `BIN_ONNX=1` — каталог `boba-onnx.dist` с рантаймом onnxruntime-genai, тогда `fetch` качает и модели onnx-genai (3,9 ГБ) | `release/<версия>/bin` | без `BIN_ONNX` — из кэша сборки aid; с ним — вторая компиляция |
 
 Цели `build`, `test`, `dev`, `debug`, `release`, `install` и `site-keys` без
 `APP` идут по обоим приложениям; `make all` выполняет `fetch sandbox
@@ -672,14 +672,18 @@ Chainlit держит вложения сессий в каталоге `.files`
 На каждую открытую вкладку треда чат запускает процесс агента — команду из
 `[agent.process]` общего конфига: программа `command = "${env.agent_command}"`
 строкой оболочки, за ней `args = ["acp", "--setting-sources", ""]` и
-`--settings <файл>`, который добавляет чат. В образе и релизе агент — один
-файл `bin/boba`, собранный Nuitka из boba-cli (стадия `boba-bin`); путь к нему
-даёт `BOBA_AGENT_COMMAND=${BOBA_BASE}/bin/boba` в `conf/boba.env`, поэтому в
+`--settings <файл>`, который добавляет чат. В образе и релизе агент — каталог
+`bin/boba.dist`, собранный Nuitka из boba-cli в режиме standalone (стадия
+`boba-bin`): исполняемый `bin/boba.dist/boba` рядом со своими библиотеками,
+без распаковки на запуске и без записи на диск, поэтому годится и для корня
+только на чтение; путь к нему даёт
+`BOBA_AGENT_COMMAND=${BOBA_BASE}/bin/boba.dist/boba` в `conf/boba.env`, поэтому в
 site.toml ключа нет. Бинарнику не нужны ни `PYTHONPATH`, ни
 `LD_LIBRARY_PATH`: SDK ACP оставляет процессу агента только `HOME`, `LOGNAME`,
 `PATH`, `SHELL`, `TERM` и `USER`. Установка, обновлённая поверх прежней,
-сохраняет свой `conf/boba.env` — в него строку `BOBA_AGENT_COMMAND` нужно
-дописать руками. В отладке `agent_command` задаёт site.toml:
+сохраняет свой `conf/boba.env` — в нём строку `BOBA_AGENT_COMMAND` нужно
+дописать или поправить руками: агент теперь каталог, путь —
+`bin/boba.dist/boba`, а не прежний файл `bin/boba`. В отладке `agent_command` задаёт site.toml:
 `"${env.base}/../../.venv/bin/python -m boba.cli.app"`.
 
 С агентом чат говорит по протоколу ACP версии 2 через stdin и stdout
@@ -801,7 +805,7 @@ boba-mcp принимает клиентов обеих редакций на о
 ### Служба агента
 
 Агент запускается не только дочерним процессом чата (`boba acp` по stdio,
-процесс на тред), но и службой: тот же бинарник `bin/boba` командой
+процесс на тред), но и службой: тот же агент `bin/boba.dist/boba` командой
 `boba serve --config <config.toml> --site <site.toml>` сам слушает сеть (образ
 `boba-agent`, дерево `compose/agent`, общий конфиг —
 `packages/apps/boba-cli/conf/config.toml`). Служба принимает клиентов ACP
@@ -911,7 +915,7 @@ cd compose/agent && docker compose up -d agent
 ```
 
 `make all` собирает и проверяет службу вместе с остальными приложениями.
-Образ службы запускает бинарник `bin/boba serve` от непривилегированного
+Образ службы запускает `bin/boba.dist/boba serve` от непривилегированного
 пользователя (`cap_drop: ALL`, `no-new-privileges`); писать ему нужно только в
 `data`. Контейнеру `boba-agent` нужны связи с nginx (вход и модель), с Postgres
 (`postgres-17:5432`), а чату и nginx — с ним (`boba-agent:8660`); в карте
