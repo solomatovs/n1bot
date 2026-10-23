@@ -5,12 +5,7 @@ tools               = ["web_fetch_page", "web_grep_page", "web_address"]
 
 transport = "${http}"
 
-[ocr]
-    provider   = "rapidocr"
-    models_dir = "/var/cache/rapidocr"
-    language   = "eslav"
-    text_score = 0.5
-    threads    = 2
+ocr                 = "${ocr}"
 
 [sandbox]
     network = true

@@ -493,25 +493,25 @@ $ make -C build site-keys APP=mcp
 [site]
     aid_database  — postgres.dbname
     auth_secret  — keys.session
-    confluence.host  — tool.confluence.confluence.host
+    confluence.host  — confluence.host
     mcp_client.secret  — keys.mcp_client
+    mcp_proxy_secret  — keys.mcp_proxy
     pg_host  — postgres.host
-    proxy_secret  — keys.proxy
     ...
 ```
 
 Каждая строка — ключ и поле общего конфига, которое на него ссылается. Ключ с
 точкой (`confluence.host`) — поле `host` таблицы `[site.confluence]`. Секреты
 общий конфиг сначала собирает в свою секцию `[keys]`, а рабочие секции берут их
-оттуда ссылками `${keys.*}`, поэтому у `auth_secret` и `proxy_secret` стоят
-поля `keys.*`.
+оттуда ссылками `${keys.*}`, поэтому у `auth_secret` и `mcp_proxy_secret`
+стоят поля `keys.*`.
 
 Пропущенный ключ обнаруживается при старте: приложение завершается и называет и
 ключ, и поле, которому он понадобился.
 
 ```
-boba-mcp failed: InterpolationKeyError: Interpolation key 'site.proxy_secret' not found
-    full_key: keys.proxy
+boba-mcp failed: InterpolationKeyError: Interpolation key 'site.mcp_proxy_secret' not found
+    full_key: keys.mcp_proxy
 ```
 
 Пример site.toml сервиса boba-mcp в контейнере (значения выдуманы):
@@ -542,8 +542,8 @@ boba-mcp failed: InterpolationKeyError: Interpolation key 'site.proxy_secret' no
     pg_sslmode     = "disable"
     pg_auth_method = "kerberos"
 
-    auth_secret  = "..."
-    proxy_secret = "..."
+    auth_secret      = "..."
+    mcp_proxy_secret = "..."
 
     [site.pg_auth.kerberos]
         method    = "kerberos_keytab"
@@ -588,14 +588,14 @@ boba-mcp failed: InterpolationKeyError: Interpolation key 'site.proxy_secret' no
 секцию `[keys]`, и рабочие секции берут их оттуда ссылками `${keys.*}`. Кому
 какой секрет нужен и что должно совпадать:
 
-- общие: `proxy_secret` и секрет клиента (`[site.mcp_client].secret`) обязаны
-  быть одинаковыми у чата и boba-mcp. Первым чат подписывает утверждение о
+- общие: `mcp_proxy_secret` и секрет клиента (`[site.mcp_client].secret`)
+  обязаны быть одинаковыми у чата и boba-mcp. Первым чат подписывает утверждение о
   пользователе, вторым представляется сервису как клиент `boba-chat`. При
   расхождении сервис отказывает в обмене утверждения на токен, и ни один
   инструмент boba-mcp в чате не работает (тексты отказов — в разделе 14);
 - свой у каждого приложения: `auth_secret`. У чата он подписывает cookie
   входа, у boba-mcp — токены доступа, которые сервис выдаёт сам. Чат
-  предъявляет сервису только утверждение под `proxy_secret`, секрет клиента и
+  предъявляет сервису только утверждение под `mcp_proxy_secret`, секрет клиента и
   полученный в обмен токен сервиса, поэтому `auth_secret` чата и сервиса друг
   с другом никак не связаны. Лучше задавать разные: утечка одного не даёт
   подделать вход в другое приложение. Одинаковым он должен быть только у
@@ -639,24 +639,47 @@ Keytab — тоже секрет: владелец — пользователь,
 | Схема | Чья | Что в ней | Где задаётся |
 |---|---|---|---|
 | `aid` | чат | пользователи, треды, оценки ответов, соединения пользователей, роли и гранты, настройки агента, шина сообщений `live_*` | `[app].schema` общего конфига чата |
-| `boba` | агент | история бесед (`history_records`) | `[agent.history].schema` общего конфига чата |
+| `boba` | агент | история бесед (`session`, `history`) | `[agent.history].schema` общего конфига чата |
 | `mcp` | boba-mcp и его плагины | база знаний `kb_*`, описания `node` и `edge` | `[app].schema` общего конфига сервиса; файлы плагинов берут его ссылкой `${app.schema}` |
 | `ix` | индексаторы | индексы базы знаний; плагин `kb` сервиса их читает | конфиги индексаторов |
 
 Чат держит один пул соединений по `[app].postgres` — ссылке на свою секцию
-`[postgres]`, и этим пулом пользуются все его таблицы. Агент ходит в базу сам,
-по тому же подключению: чат передаёт ему строку подключения в файле
-настроек. Поэтому вход `[postgres]` чата должен выражаться строкой libpq —
-паролем, доверием `pg_hba` либо kerberos по keytab или паролю; иначе чат не
-стартует: `[postgres] auth '...' cannot be handed to the agent history as a
-libpq connection string; expected method 'password', 'trust',
-'kerberos_keytab' or 'kerberos_password'`. У boba-mcp секцию `[postgres]`
-подключают плагины, которым нужна база (`connection = "${postgres}"` в их
-файлах).
+`[postgres]`, и этим пулом пользуются все его таблицы. Агент ходит в базу сам
+и своей ролью: подключение истории — отдельная секция `[postgres_history]`
+общего конфига чата, и `[agent.history]` берёт её целиком ссылкой
+`postgres = "${postgres_history}"`. Сервер и база у неё те же ключи `pg_*` и
+`aid_database`, а вход — свой: `auth = "${site.history_auth.${site.history_auth_method}}"`,
+то есть таблица `[site.history_auth.password]` (роль истории с паролем) или
+`[site.history_auth.kerberos]` (свой принципал и keytab, имя роли — короткое
+имя принципала). Чат передаёт агенту подключение истории строкой libpq в
+файле настроек, поэтому её вход должен выражаться строкой — паролем,
+доверием `pg_hba` либо kerberos по keytab или паролю; иначе чат не стартует:
+`[agent.history].postgres: postgres connection to ...: auth '...' cannot be
+handed to another process as a libpq connection string; expected method
+'password', 'trust', 'kerberos_keytab' or 'kerberos_password'`. С kerberos
+чат получает билет роли истории по её keytab в свой каталог кэшей и передаёт
+агенту путь к кэшу и `krb5.conf`. У boba-mcp секцию `[postgres]` подключают
+плагины, которым нужна база (`connection = "${postgres}"` в их файлах).
+
+| Роль (если разведены) | Кто входит | Чем владеет | Ключи site.toml |
+|---|---|---|---|
+| роль чата (`boba-svc`) | чат, boba-mcp | схемы `aid`, `mcp` | `pg_auth_method`, `[site.pg_auth.*]` |
+| роль истории (`boba_history`) | агент | схема `boba` с `session` и `history` | `history_auth_method`, `[site.history_auth.*]` |
+
+На стенде разработки и в развёртывании по умолчанию роль одна: ключи
+`[site.history_auth.*]` повторяют `[site.pg_auth.*]` (учётка `boba-svc`).
+Развести роли — по желанию администратора: тогда роль чата прав на схему
+`boba` не имеет и не должна быть суперпользователем или членом роли истории.
+Роли заводит администратор кластера; схему `boba` роли истории отдаёт
+необязательный шаг `history-owner.sql` перехода с dev (раздел 6, «Переход с
+dev на новую версию»). В режиме процесса агента секрет роли
+истории всё равно лежит у чата — он пишет его процессу агента в файл `0600`;
+полностью история отделена от чата в режиме службы агента.
 
 Таблицы приложения создают при старте сами и сами применяют свои миграции на
-месте; таблицу истории агент создаёт при первом обращении. Роли приложения
-поэтому нужно право создавать схемы и таблицы в базе; расширения базы
+месте; таблицы истории агент создаёт и доводит при первом обращении. Роли чата
+поэтому нужно право создавать схемы и таблицы в базе, роли истории — владеть
+схемой `boba` (или право создать её в новой базе); расширения базы
 администратор ставит заранее (раздел 1).
 
 ### Вложения чата
@@ -699,22 +722,24 @@ site.toml ключа нет. Бинарнику не нужны ни `PYTHONPATH
 печатает JSON Schema файла (ключи camelCase), и тест чата сверяет с ней файл,
 который чат пишет своей моделью. В файле модель профиля чата: адрес, токен,
 срок запроса, проверка TLS и повторы провайдера из `[llm.<имя>].connection`,
-транспорт из его секции `[http]`; окно, потолок ответа и возврат рассуждений
-из `[agent.model]` (`reasoning_return = "turn"` — рассуждения прошлых ответов
+транспорт из его секции `[agent_http]` (свой транспорт агента: сам чат к
+модели не ходит); окно, потолок ответа и возврат рассуждений — из пределов
+модели профиля `limits = "${model_limits.main}"`, секции `[model_limits.main]`
+(`reasoning_return = "turn"` — рассуждения прошлых ответов
 уходят модели в пределах хода, этого требуют thinking-модели вроде deepseek,
 когда ход вызывает инструмент; `never` для них даёт отказ 400
 «reasoning_content ... must be passed back»). Там же срок вызова инструмента —
-наибольший `call_timeout_sec` серверов профиля, потолок режимов разрешений
+наибольший `limits.call_timeout_sec` серверов профиля, потолок режимов разрешений
 (`allowBypass`), место истории из `[agent.history]` и окружение libkrb5 для
 истории с kerberos-ролью: агент ставит его себе на старте. Сам режим
 разрешений сессии чат выставляет по ACP после каждого открытия сессии:
 находит в `configOptions` ответа настройку категории `mode` и включает
 `bypassPermissions` запросом `session/set_config_option`; агент без такой
 настройки работает в своём режиме, а его вопросы разрешений чат отвечает
-согласием. Дамп HTTP-обмена с моделью (`[http].dump`) пишет
+согласием. Дамп HTTP-обмена с моделью (`[agent_http].dump`) пишет
 заголовки как есть, вместе с токеном; в общем конфиге он выключен. История с
 `kind = "postgres"` хранится в схеме `boba` по
-подключению `[postgres]` чата (раздел «Схемы хранения» выше); с
+подключению `[postgres_history]` своей ролью (раздел «Схемы хранения» выше); с
 `kind = "memory"` она живёт только в памяти процесса, и после перезапуска
 вкладки беседа начинается пустой. Адресов серверов MCP, учёток и токенов входа
 на них в файле нет.
@@ -759,8 +784,26 @@ agent process 'boba' (pid ...): agent '...' does not declare capabilities.sessio
 No such file or directory; check [env].agent_command`.
 
 Серверы MCP описываются в общем конфиге чата секциями `[mcp.servers.<имя>]`:
-адрес (`endpoint`), вход (`auth`; для boba-mcp это `[mcp_auth.boba]` — вход
-proxy клиентом `boba-chat`), сроки подключения и вызова. Профиль подключает
+адрес (`endpoint`: сервис `service` и путь под ним `path`), вход (`auth`; для
+boba-mcp это `[mcp_auth.boba]` — вход proxy клиентом `boba-chat`), сроки
+подключения и вызова (`limits`: `connect_timeout_sec`, `call_timeout_sec`).
+Общее у серверов одного сервиса — отдельные секции, которые записи берут
+целиком ссылкой: адрес boba-mcp `[service.boba_mcp]` (схема, хост, порт и
+префикс из `[env].mcp_*`; он же издатель входа proxy), сроки
+`[mcp_limits.boba]`, вход `[mcp_auth.boba]`:
+
+```toml
+[mcp.servers.boba_base]
+    limits = "${mcp_limits.boba}"
+    [mcp.servers.boba_base.endpoint]
+        transport = "streamable-http"
+        service   = "${service.boba_mcp}"
+        path      = "/mcp/base"
+        auth      = "${mcp_auth.boba}"
+```
+
+Чужой сервер описывается так же: `service` — его схема, хост, порт и
+пустой путь `""`, `path` — путь endpoint'а. Профиль подключает
 сервер, называя его имя в `mcp`; имя, которого нет в `[mcp.servers]`, — отказ
 старта: `[profiles.<имя>].mcp names server '...' that is not declared in
 [mcp.servers], declared: [...]`. Версию протокола клиент чата согласует
@@ -773,7 +816,7 @@ proxy клиентом `boba-chat`), сроки подключения и выз
 серверы прежних редакций — официальные примеры MCP Apps, deepwiki и другие.
 Вопрос пользователю (elicitation) такой сервер задаёт посреди вызова, и
 пользователь видит его той же панелью, что и вопрос сервера 2026-07-28; вызов
-к серверу ждёт ответа не дольше своего `call_timeout_sec`: если ответа нет
+к серверу ждёт ответа не дольше своего `limits.call_timeout_sec`: если ответа нет
 раньше, сервер получает отказ `cancel`, а поздний ответ — ошибку вызова
 `... names no call the relay holds open ...`. Поэтому серверу, который
 спрашивает пользователя, ставят `call_timeout_sec` с запасом на ответ
@@ -787,7 +830,7 @@ the client`, следующий вызов открывает новую сес�
 ни одной версии, даёт `negotiating the protocol by server/discover and then
 initialize was refused with MCP error ...; the client speaks [...]`. Молчащий
 stdio-сервер прежней редакции SDK ждёт на пробе `server/discover` до 10 с,
-поэтому `connect_timeout_sec` у такого сервера — больше 10.
+поэтому `limits.connect_timeout_sec` у такого сервера — больше 10.
 
 Сервер профиля, который не подключился (лежит, отказал во входе, не нашёл с
 клиентом общей версии), не останавливает чат: агент открывает сессию без его
@@ -877,25 +920,30 @@ nginx с префиксом, например `https://boba.example.com/boba-age
 команды называет адрес ACP службы и вход proxy:
 
 ```toml
+[keys]
+    agent_proxy = "${site.agent_proxy_secret}"
+
+[service.boba_agent]
+    scheme = "https"
+    host   = "boba.example.com"
+    path   = "/boba-agent"
+
 [agent.process]
     start_timeout_sec   = 60
     request_timeout_sec = 120
     [agent.process.endpoint]
-        scheme = "https"
-        host   = "boba.example.com"
-        path   = "/boba-agent/acp"
+        service = "${service.boba_agent}"
+        path    = "/acp"
     [agent.process.auth]
         auth          = "proxy"
         client_id     = "boba-chat"
         client_secret = "${site.agent_client.secret}"
-        secret        = "${keys.proxy}"
-        [agent.process.auth.issuer]
-            scheme = "https"
-            host   = "boba.example.com"
-            path   = "/boba-agent"
+        secret        = "${keys.agent_proxy}"
+        issuer        = "${service.boba_agent}"
 ```
 
-`issuer` — `public_url` службы, `client_secret` — тот же секрет, что у
+`[service.boba_agent]` — адрес службы, её `public_url`: он же `issuer`, а
+путь ACP идёт под ним; `client_secret` — тот же секрет, что у
 службы в `[agent.clients.boba-chat]`, `secret` — ключ утверждений
 `[auth.proxy]` службы. Вкладка входит в службу от имени своего пользователя
 (логин и роли), открывает в ней сессию треда и выбирает профиль агента с
@@ -903,7 +951,7 @@ nginx с префиксом, например `https://boba.example.com/boba-age
 `[agent.profiles.general]`, выданный ролям пользователя, иначе ход
 отказывает `session ...: the agent service offers model profiles [...], the
 chat profile 'general' is not among them ...`. Модель, промпт и историю в
-этом режиме задаёт служба; `[agent.history]` и `[agent.model]` чата
+этом режиме задаёт служба; `[agent.history]` и пределы модели профилей чата
 по-прежнему нужны слою чата, который хранит пользователя треда: по нему
 удаление треда удаляет сессию агента через службу от имени владельца.
 Подключение, которое служба закрыла (простой, выход процесса), чат
@@ -1307,7 +1355,8 @@ docker compose up -d --force-recreate mcp
 три скрипта каталога `build/scripts/migrations/2026-10-16-chat-agent-cutover`:
 `dump.sh` снимает копию таблиц со старой базы, `restore.sh` накатывает её в
 новую пустую базу, `migrate.sql` переводит беседы и оценки и раскладывает
-таблицы по схемам. Старая база при этом только читается, поэтому отката не
+таблицы по схемам, а по желанию `history-owner.sql` под администратором отдаёт
+схему `boba` отдельной роли истории агента и снимает с неё права роли чата. Старая база при этом только читается, поэтому отката не
 нужно: если что-то пошло не так, новую базу удаляют и повторяют.
 
 После базы файлы пользователей переносятся к сервису boba-mcp скриптом
@@ -1563,7 +1612,7 @@ VS Code запускает отладку от того пользователя
 
 Отладочный чат ходит в отладочный сервис: в его site.toml стоят
 `mcp_scheme = "http"`, `mcp_host = "localhost"`, `mcp_port = 8651`,
-`mcp_prefix = ""` и `mcp_issuer_path = "/"`. Имя `localhost` здесь существенно:
+`mcp_prefix = ""`. Имя `localhost` здесь существенно:
 сервис объявляет себя издателем токенов под адресом из `public_url`, и клиент
 обязан называть его так же. Чтобы отлаживать чат против сервиса в контейнере,
 в эти ключи записывают адрес контейнера.
@@ -1786,7 +1835,8 @@ cgroup, у которого включены контроллеры для по�
 **Журналы.** Контейнеры пишут в stdout: `docker logs -f <контейнер>`. Юниты —
 в журнал пользователя: `journalctl --user -u boba-<экземпляр>.service`.
 Запросы к языковой модели приложение складывает в `data/dump`, если это
-включено в `[http].dump` общего конфига; каталог растёт, его чистят по
+включено в `[agent_http].dump` общего конфига чата (`[http].dump` у
+boba-mcp); каталог растёт, его чистят по
 возрасту.
 
 **Что и в каком порядке перезапускать.**
@@ -2052,11 +2102,12 @@ directory; check [env].agent_command`.** Программы агента нет 
 ([agent.process].request_timeout_sec), got no answer`.** Агент жив, но не
 ответил на метод сессии; хвост его stderr приложен к тексту.
 
-**`[postgres] auth '...' cannot be handed to the agent history as a libpq
-connection string`** при старте чата. История агента идёт в базу по
-подключению `[postgres]` чата строкой libpq, а выбранный способ входа так не
-передать (раздел 5, «Схемы хранения»): нужен пароль, доверие или kerberos по
-keytab или паролю, либо история `kind = "memory"`.
+**`[agent.history].postgres: postgres connection to ...: auth '...' cannot be
+handed to another process as a libpq connection string`** при старте чата.
+История агента идёт в базу по подключению `[postgres_history]` строкой libpq,
+а способ входа `site.history_auth_method` так не передать (раздел 5, «Схемы
+хранения»): нужен пароль, доверие или kerberos по keytab или паролю, либо
+история `kind = "memory"`.
 
 **Вызов инструмента с соединением кончился отказом `mcp__<сервер>__<инструмент>:
 ...`, в логе чата `mcp relay: sealing refused: ...`.** Чат не смог
@@ -2304,8 +2355,8 @@ nginx -s reload
 
 Секреты лежат в секции `[site]` файла site.toml каждого приложения. Общий
 конфиг собирает их в свою секцию `[keys]`, а рабочие секции берут их оттуда
-ссылками `${keys.*}`. `proxy_secret` и `[site.mcp_client].secret` у чата и
-boba-mcp общие и обязаны совпадать. `auth_secret` у каждого приложения свой и
+ссылками `${keys.*}`. `mcp_proxy_secret` и `[site.mcp_client].secret` у чата и
+boba-mcp общие и обязаны совпадать; `proxy_secret` — вход proxy в сам чат. `auth_secret` у каждого приложения свой и
 с секретом другого не связан. `database_encryption_key` есть только у чата
 (раздел 5, «Секреты и keytab»).
 
@@ -2313,7 +2364,7 @@ boba-mcp общие и обязаны совпадать. `auth_secret` у ка�
 
 | Что | Чем подписано или зашифровано | Ключ чьего конфига |
 |---|---|---|
-| утверждение о пользователе при входе proxy | HS256, `proxy_secret` | общий, проверяет `[auth.proxy].secret` сервиса |
+| утверждение о пользователе при входе proxy | HS256, `mcp_proxy_secret` | общий, проверяет `[auth.proxy].secret` сервиса |
 | представление клиентом `boba-chat` при обмене | секрет клиента в теле запроса | общий, проверяет `[mcp.clients.boba-chat].secret` сервиса |
 | токен доступа к endpoint'у (вызовы, `resources/read`, `subscriptions/listen`) | выпущен и проверяется сервисом | `auth_secret` сервиса; чат хранит его как есть |
 | запечатанное соединение пользователя | JWE на открытом ключе сервиса | ключевая пара сервиса, созданная при старте, не из конфига |
@@ -2346,7 +2397,7 @@ SSO. У нескольких узлов boba-mcp он должен быть од
 
 `auth_secret` чата и `auth_secret` сервиса — независимые ключи: каждое
 приложение и подписывает, и проверяет им только своё, а чат предъявляет
-сервису утверждение под `proxy_secret` и полученный в обмен токен сервиса.
+сервису утверждение под `mcp_proxy_secret` и полученный в обмен токен сервиса.
 Совпадать они не должны; разные секреты безопаснее, потому что утечка
 одного не даёт выпустить вход в другое приложение. Стенд тестов поднимает
 чат и сервис с разными `auth_secret` и проверяет на нём вход, вызовы
@@ -2372,25 +2423,34 @@ python3 -c "import secrets; print(secrets.token_urlsafe(48))"
 недействительными его токены; чат входит на сервис заново сам, при следующем
 вызове.
 
-### `proxy_secret` и секрет клиента
+### `proxy_secret`, `mcp_proxy_secret`, `agent_proxy_secret` и секрет клиента
 
-Куда подставляются: `proxy_secret` — в `[keys].proxy`, откуда его берут
-`[auth.proxy].secret` чата и boba-mcp и `[mcp_auth.boba].secret` чата; секрет
-клиента — в `[keys].mcp_client`, откуда его берут
+Вход proxy — подписанное утверждение «этот запрос идёт от такого-то
+пользователя с такими-то ролями». У каждого входа свой ключ, чтобы утечка
+одного не открывала другие:
+
+| ключ site.toml | секция `[keys]` | кто подписывает → кто проверяет | где берётся ссылкой |
+|---|---|---|---|
+| `proxy_secret` | `[keys].proxy` чата | nginx или доверенный сайт → чат | `[auth.proxy].secret` чата |
+| `mcp_proxy_secret` | `[keys].mcp_proxy` чата и boba-mcp | чат → boba-mcp | `[mcp_auth.boba].secret` чата, `[auth.proxy].secret` boba-mcp |
+| `agent_proxy_secret` | `[keys].agent_proxy` чата и службы агента | чат → служба агента (режим службы) | `[agent.process.auth].secret` чата, ключ входа proxy службы |
+
+Секрет клиента — в `[keys].mcp_client`, откуда его берут
 `[mcp_auth.boba].client_secret` чата и `[mcp.clients.boba-chat].secret`
 boba-mcp.
 
 Что делают. Секретом клиента чат представляется сервису boba-mcp как
-зарегистрированный клиент `boba-chat`. Ключом `proxy_secret` он подписывает
-утверждение «этот запрос идёт от такого-то пользователя с такими-то ролями»;
-сервис проверяет подпись и исполняет инструмент от имени этого пользователя.
-Тем же ключом подписывают вход внешние сайты (вход proxy ниже).
+зарегистрированный клиент `boba-chat`. Ключом `mcp_proxy_secret` он
+подписывает утверждение о пользователе для boba-mcp; сервис проверяет подпись
+и исполняет инструмент от имени этого пользователя. Ключом `proxy_secret`
+подписывают вход в сам чат внешние сайты (вход proxy ниже).
 
-Оба ключа общие: значение в site.toml чата и в site.toml сервиса обязано
-быть одним и тем же. Расхождение видно при первом подключении чата к
+`mcp_proxy_secret` и секрет клиента общие: значение в site.toml чата и в
+site.toml сервиса обязано быть одним и тем же; так же `agent_proxy_secret` у
+чата и службы агента. Расхождение видно при первом подключении чата к
 сервису — в логе чата и в ошибке вызова инструмента boba-mcp:
 
-- разный `proxy_secret` — `mcp server 'boba_general': ... Token exchange
+- разный `mcp_proxy_secret` — `mcp server 'boba_general': ... Token exchange
   failed (401): {"error":"invalid_grant","error_description":"identity
   assertion of client 'boba-chat' for ...: expected an HS256 JWT under
   [auth.proxy].secret, got Signature verification failed"}`; тот же текст
@@ -2405,7 +2465,9 @@ site.toml чата и сервиса, затем перезапуск обоих
 
 ### `database_encryption_key`
 
-Куда подставляется: `[keys].encryption` чата. У boba-mcp этого ключа нет.
+Куда подставляется: `[keys].encryption` чата, откуда его берут ссылкой
+`[connections].cipher` (соединения пользователей) и `[agent.settings_table].cipher`
+(настройки агента треда). У boba-mcp этого ключа нет.
 
 Что делает: шифрует секреты сохранённых соединений пользователей (пароли,
 токены, keytab) и секреты настроек агента перед записью в базу чата. Шифр

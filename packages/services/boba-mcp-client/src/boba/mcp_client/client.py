@@ -155,6 +155,7 @@ __all__ = [
     "FilesHost",
     "HttpEndpoint",
     "HttpLocation",
+    "HttpRoute",
     "JournalHeard",
     "JournalLinks",
     "LocalAuth",
@@ -165,6 +166,7 @@ __all__ = [
     "McpClientIdentity",
     "McpServerApps",
     "McpServerConfig",
+    "McpServerLimits",
     "McpServers",
     "McpServersConfig",
     "McpToolPort",
@@ -218,21 +220,60 @@ class McpCaller:
 
 
 class HttpLocation(BaseModel):
-    """Адрес HTTP частями, как у HTTP-соединений."""
+    """Адрес HTTP частями, как у HTTP-соединений. Им описывается и сервис
+    целиком (секция [service.<имя>] конфига: схема, хост, порт и префикс
+    приложения, пустой — корень), и издатель входа proxy; маршрут на сервисе
+    — HttpRoute."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
+
+    ROOT: ClassVar[str] = "/"
 
     scheme: Literal["http", "https"]
     host: str = Field(min_length=1)
     port: int | None = Field(default=None, gt=0, lt=65536)
-    path: str = Field(min_length=1)
+    path: str = Field(
+        pattern=r"^(/.*)?$",
+        description="Путь от корня хоста: пустой или с ведущим «/».",
+    )
 
     def url(self) -> str:
+        """Адрес строкой; пустой путь — корень хоста «/»."""
+        path = self.path
+        if not path:
+            path = self.ROOT
+
         return str(
-            httpx2.URL(
-                scheme=self.scheme, host=self.host, port=self.port, path=self.path
-            )
+            httpx2.URL(scheme=self.scheme, host=self.host, port=self.port, path=path)
         )
+
+    def under(self, path: str) -> HttpLocation:
+        """Адрес под этим: path продолжает путь базы."""
+        base = self.path.rstrip(self.ROOT)
+
+        return self.model_copy(update={"path": f"{base}{path}"})
+
+    def at(self, path: str) -> HttpLocation:
+        """Тот же хост с другим путём от корня."""
+        return self.model_copy(update={"path": path})
+
+
+class HttpRoute(BaseModel):
+    """Маршрут на HTTP-сервисе: адрес сервиса (service — объект
+    [service.<имя>] конфига, общий у всех маршрутов сервиса) и путь под его
+    префиксом. Основа адресов серверов MCP (HttpAddress) и адреса ACP службы
+    агента в конфиге чата."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    service: HttpLocation
+    path: str = Field(pattern=r"^/", description="Путь под префиксом сервиса.")
+
+    def location(self) -> HttpLocation:
+        return self.service.under(self.path)
+
+    def url(self) -> str:
+        return self.location().url()
 
 
 class McpAuthEntry(BaseModel):
@@ -763,8 +804,8 @@ class HttpRefusals:
             self._current.reset(token)
 
 
-class HttpAddress(HttpLocation):
-    """Адрес HTTP-сервера MCP: место и способ авторизации."""
+class HttpAddress(HttpRoute):
+    """Адрес HTTP-сервера MCP: маршрут на сервисе и способ авторизации."""
 
     auth: McpAuth = NoAuth()
 
@@ -886,21 +927,31 @@ class McpServerApps(BaseModel):
         return {"mimeTypes": [APP_MIME_TYPE]}
 
 
+class McpServerLimits(BaseModel):
+    """Сроки сервера MCP: подключение с инициализацией и один вызов. Секция
+    [mcp_limits.<имя>] конфига, общая у серверов одного сервиса: записи
+    [mcp.servers.*] берут её целиком ссылкой."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    connect_timeout_sec: float = Field(gt=0)
+    call_timeout_sec: float = Field(gt=0)
+
+
 class McpServerConfig(BaseModel):
     """Один MCP-сервер в конфиге клиента: секция [mcp.servers.<имя>].
 
     Адрес сервера (endpoint) и способ авторизации в нём. Сервер подключён
     тем сессиям, чей профиль клиента его называет; набор инструментов решает
-    сам сервер. Сроки — на подключение с инициализацией и на один вызов.
-    Секция apps есть только у сервера, чьи приложения клиент рисует; без неё
-    сервер показывает итоги блоками content.
+    сам сервер. Сроки (limits) — на подключение с инициализацией и на один
+    вызов. Секция apps есть только у сервера, чьи приложения клиент рисует;
+    без неё сервер показывает итоги блоками content.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     endpoint: McpEndpoint
-    connect_timeout_sec: float = Field(gt=0)
-    call_timeout_sec: float = Field(gt=0)
+    limits: McpServerLimits
     apps: McpServerApps | None = None
 
     def on_behalf_of(self, caller: McpCaller) -> McpServerConfig:
@@ -1506,9 +1557,7 @@ class McpFiles:
 
     def __init__(self, server: str, endpoint: HttpAddress, path: str) -> None:
         self._server = server
-        self._root = HttpLocation(
-            scheme=endpoint.scheme, host=endpoint.host, port=endpoint.port, path=path
-        )
+        self._root = endpoint.service.at(path)
         auth = endpoint.auth.httpx_auth(endpoint.url())
         self._http = create_mcp_http_client(auth=auth)
         # сжатый прокси ответ идёт без Content-Length и не тем окном Range
@@ -2274,7 +2323,7 @@ class McpToolServer(McpToolPort):
     def _connection(self, identity: McpClientIdentity) -> McpConnection:
         return McpConnection(
             self._config.endpoint,
-            self._config.connect_timeout_sec,
+            self._config.limits.connect_timeout_sec,
             identity,
             self._refusals,
         )
@@ -2629,7 +2678,7 @@ class McpToolServer(McpToolPort):
             return await session.call_tool(
                 params.name,
                 params.arguments,
-                read_timeout_seconds=self._config.call_timeout_sec,
+                read_timeout_seconds=self._config.limits.call_timeout_sec,
                 input_responses=params.input_responses,
                 request_state=params.request_state,
                 meta=params.meta,
@@ -2670,7 +2719,7 @@ class McpToolServer(McpToolPort):
                 return await session.send_request(
                     sent,
                     result,
-                    request_read_timeout_seconds=self._config.call_timeout_sec,
+                    request_read_timeout_seconds=self._config.limits.call_timeout_sec,
                 )
 
         return await self._exchange(identity, request.method, send)

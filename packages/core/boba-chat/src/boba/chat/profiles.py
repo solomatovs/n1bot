@@ -24,8 +24,10 @@ __all__ = [
     "ChatProfileConfig",
     "ChatProfiles",
     "ChatSettings",
+    "ModelLimits",
     "ProfileRefusal",
     "ProfilesSection",
+    "ReasoningReturn",
     "RolesSection",
     "SelectedProfile",
 ]
@@ -43,8 +45,40 @@ class ChatSettings(ChatModelConfig):
     )
 
 
+class ReasoningReturn(StrEnum):
+    """Возврат модели её рассуждений прошлых ответов: значения — ключ
+    `reasoningReturn` профиля модели в файле настроек агента."""
+
+    NEVER = "never"
+    TURN = "turn"
+    ALWAYS = "always"
+
+
+class ModelLimits(BaseModel):
+    """Пределы модели: окно контекста, потолок ответа и возврат рассуждений.
+    Секция [model_limits.<имя>] конфига, общая у профилей одной модели:
+    профиль берёт её целиком ссылкой `limits = "${model_limits.<имя>}"`.
+    Профиль модели агента собирается из неё и профиля чата."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    context_window: int = Field(gt=0, description="Окно контекста модели, токены.")
+    max_output_tokens: int = Field(gt=0, description="Потолок ответа модели.")
+    reasoning_return: ReasoningReturn = Field(
+        description=(
+            "Возвращать ли модели её рассуждения прошлых ответов: never, turn "
+            "(в пределах хода — так требуют thinking-модели вроде deepseek при "
+            "вызове инструмента), always."
+        )
+    )
+
+
 class ChatProfileConfig(ChatSettings, ProfileGrant):
     """Секция [profiles.<name>]: режим работы бота, выбираемый пользователем."""
+
+    limits: ModelLimits = Field(
+        description="Пределы модели профиля ссылкой `${model_limits.<имя>}`."
+    )
 
     display_name: Annotated[
         str,
