@@ -71,7 +71,7 @@ SRC_PACKAGES = _src_packages()
 class SandboxLayout:
     """Монтирования и env: код пакетов кладётся поверх собранного site."""
 
-    DATA_BINDS: ClassVar[dict[str, tuple[tuple[str, str], ...]]] = {
+    DATA_IMAGES: ClassVar[dict[str, tuple[tuple[str, str], ...]]] = {
         "boba-tool-knowledge": (("fastembed", "/var/cache/fastembed"),),
         "boba-tool-confluence": (
             ("fastembed", "/var/cache/fastembed"),
@@ -79,23 +79,28 @@ class SandboxLayout:
         ),
         "boba-tool-doc": (("rapidocr", "/var/cache/rapidocr"),),
     }
-    """Данные моделей по пакетам: рантайм монтирует их биндами ([sandbox].binds
-    секций), образ несёт только пустые точки — и только у пакетов, в замыкании
-    которых объявлены data-пути; бинд в чужой rootfs уронил бы bwrap."""
+    """Веса моделей по пакетам: рантайм монтирует их ext4-образами данных
+    ([sandbox].images секций), как в бою; корень несёт только пустые точки — и
+    только у пакетов, в замыкании которых объявлены data-пути."""
 
     @staticmethod
-    def ro_binds(docs_dir: Path | None, package: str = "") -> list[str]:
-        """Код репозитория поверх кода образа плюс данные моделей пакета."""
+    def ro_binds(docs_dir: Path | None) -> list[str]:
+        """Код репозитория поверх кода образа плюс каталог документов теста."""
         binds = [f"{REPO / 'packages'}:/usr/src"]
-
-        models = RUNTIME.models
-        for name, guest in SandboxLayout.DATA_BINDS.get(package, ()):
-            binds.append(f"{models / name}:{guest}")
 
         if docs_dir is not None:
             binds.append(f"{docs_dir}:/workspace")
 
         return binds
+
+    @staticmethod
+    def images(package: str) -> list[str]:
+        """Образы весов моделей пакета: собирает make models-image."""
+        images: list[str] = []
+        for name, guest in SandboxLayout.DATA_IMAGES.get(package, ()):
+            images.append(f"{RUNTIME.model_image(name)}:{guest}")
+
+        return images
 
     @staticmethod
     def python_path() -> str:
@@ -175,7 +180,8 @@ def sandbox_profile(
         },
         "rootfs": str(RUNTIME.plugin_rootfs(package)),
         "mounts": {
-            "ro": tuple(SandboxLayout.ro_binds(docs_dir, package)),
+            "ro": tuple(SandboxLayout.ro_binds(docs_dir)),
+            "images": tuple(SandboxLayout.images(package)),
             "rw": (),
             "tmp": "256M",
         },

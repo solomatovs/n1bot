@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 
-from boba.sandbox.profile import BindSpec, SandboxMount, SandboxProfile
+from boba.sandbox.profile import BindSpec, SandboxLayout, SandboxMount, SandboxProfile
 from boba.workspace.binaries import SandboxBinary
 from boba.workspace.launcher import LayerPath, LayerSources
 
@@ -78,6 +78,11 @@ class ZygoteArgv:
         for spec in self._rw_binds():
             argv += ["--bind-try", spec.host, spec.target]
 
+        # образ данных уже смонтирован внешним слоем; точка обязана быть в
+        # корне, поэтому бинд без -try: её отсутствие — ошибка сборки образа
+        for mount, target in self._data_mounts():
+            argv += ["--ro-bind", mount, target]
+
         argv += ["--clearenv"]
         for name, value in env.items():
             argv += ["--setenv", name, value]
@@ -98,6 +103,26 @@ class ZygoteArgv:
             rw.append(spec.host)
 
         return LayerSources(ro=tuple(ro), rw=tuple(rw))
+
+    def data_images(self) -> tuple[tuple[str, str], ...]:
+        """Образы данных для внешнего слоя: пары (образ на хосте, точка в слое).
+
+        Тот же перечень, по которому argv пишет бинды точек во вложенный слой:
+        второго списка образов нет.
+        """
+        pairs: list[tuple[str, str]] = []
+        for index, spec in enumerate(self._profile.mounts.images):
+            pairs.append((spec.host, SandboxLayout.data_image_mount(index)))
+
+        return tuple(pairs)
+
+    def _data_mounts(self) -> tuple[tuple[str, str], ...]:
+        """Пары (точка во внешнем слое, точка в корне) образов данных."""
+        pairs: list[tuple[str, str]] = []
+        for index, spec in enumerate(self._profile.mounts.images):
+            pairs.append((SandboxLayout.data_image_mount(index), spec.target))
+
+        return tuple(pairs)
 
     def _ro_binds(self) -> tuple[BindSpec, ...]:
         setup = self._profile.setup_binds()

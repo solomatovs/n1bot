@@ -301,6 +301,7 @@ class RuntimeLayout(StrEnum):
     PLUGINS = "plugins"
     ROOTFS = "rootfs.ext4"
     WORKSPACE = "workspace.ext4"
+    IMAGE_SUFFIX = ".ext4"
     SHELL_PLUGIN = "boba-tool-shell"
     BIN = "bin"
 
@@ -351,6 +352,11 @@ class StandRuntime:
     def plugin_rootfs(self, package: str) -> Path:
         """Образ корня пакета: make plugin-rootfs PLUGIN=<пакет>."""
         return self.sandbox / RuntimeLayout.PLUGINS / package / RuntimeLayout.ROOTFS
+
+    def model_image(self, name: str) -> Path:
+        """Образ весов модели name: make models-image кладёт его рядом с
+        каталогом модели."""
+        return self.models / f"{name}{RuntimeLayout.IMAGE_SUFFIX}"
 
     @property
     def workspace_template(self) -> Path:

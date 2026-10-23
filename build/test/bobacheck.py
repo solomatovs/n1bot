@@ -11,7 +11,7 @@
 
 Скрипт идёт на stdin интерпретатора образа с окружением conf/boba.env, без сети:
   python3 - --app aid|mcp|agent --base /app/boba --names <app/packages.txt> \
-    [--sandbox --ocr <модель>...]
+    [--sandbox --ocr <модель>... --model-images <модель>...]
 Последняя строка вывода — RESULT: ALL OK либо RESULT: FAIL со списком проваленных
 проверок.
 """
@@ -102,13 +102,15 @@ class BareEnv(StrEnum):
 @dataclass(frozen=True)
 class Options:
     """Разобранный вызов проверки: приложение, корень релиза в образе, список пакетов
-    boba из образа, файлы моделей OCR и команда агента (только у чата)."""
+    boba из образа, файлы моделей OCR, модели с образами данных песочницы и команда
+    агента (только у чата)."""
 
     app: App
     base: Path
     names: Sequence[str]
     sandbox: bool
     ocr: Sequence[str]
+    model_images: Sequence[str]
     agent: str
 
 
@@ -125,6 +127,7 @@ class OptionsParser:
         self._parser.add_argument("--names", required=True, type=Path)
         self._parser.add_argument("--sandbox", action="store_true")
         self._parser.add_argument("--ocr", nargs="+", default=[])
+        self._parser.add_argument("--model-images", nargs="+", default=[])
 
     def parse(self, argv: Sequence[str]) -> Options:
         args = self._parser.parse_args(argv)
@@ -150,6 +153,7 @@ class OptionsParser:
             names=self._names(names_file),
             sandbox=args.sandbox,
             ocr=tuple(args.ocr),
+            model_images=tuple(args.model_images),
             agent=agent,
         )
 
@@ -544,6 +548,7 @@ class ImageCheck:
         self._report.check("образы корней плагинов", self._plugin_images)
         self._report.check("веса эмбеддера fastembed", self._embed_weights)
         self._report.check("модели OCR", self._ocr_models)
+        self._report.check("образы данных моделей", self._model_images)
 
     def _assets(self) -> None:
         self._report.section("ассеты chainlit, названные в .chainlit/config.toml")
@@ -638,6 +643,35 @@ class ImageCheck:
                 raise ImageCheckError(f"нет модели {name} в {root}")
 
         return f"моделей: {len(self._options.ocr)}"
+
+    EXT4_MAGIC_AT: ClassVar[int] = 1080
+    EXT4_MAGIC: ClassVar[bytes] = b"\x53\xef"
+
+    def _model_images(self) -> str:
+        """Образы весов рядом с каталогами моделей: песочница монтирует их вместо
+        каталогов, и без файла секция не поднимется."""
+        if not self._options.model_images:
+            raise ImageCheckError(
+                "образы данных не названы: make test передаёт их аргументом "
+                "--model-images"
+            )
+
+        for name in self._options.model_images:
+            image = self._models_dir / f"{name}.ext4"
+            if not image.is_file():
+                raise ImageCheckError(f"нет образа данных {image}: make models-image")
+
+            with image.open("rb") as handle:
+                handle.seek(self.EXT4_MAGIC_AT)
+                magic = handle.read(len(self.EXT4_MAGIC))
+
+            if magic != self.EXT4_MAGIC:
+                raise ImageCheckError(
+                    f"{image}: expected an ext4 superblock magic 0xEF53 at byte "
+                    f"{self.EXT4_MAGIC_AT}, got {magic.hex()}"
+                )
+
+        return f"образов: {len(self._options.model_images)}"
 
     def _asset_file(self, asset: ChainlitAsset) -> str:
         config = self._app_root / ".chainlit" / "config.toml"
