@@ -11,16 +11,7 @@ max_text_chars  = 6000
 
 transport       = "${http}"
 
-[confluence]
-    host              = "${site.confluence.host}"
-    path              = "${site.confluence.path}"
-    port              = "${site.confluence.port}"
-    timeout_sec       = 30.0
-    ssl_verify        = false
-    retry_attempts    = 3
-    retry_backoff_sec = 1.0
-    retry_after_max_sec = 60.0
-    retry_statuses    = { 429 = 5, 401 = 3 }
+confluence      = "${confluence}"
 
 [sandbox]
     network = true

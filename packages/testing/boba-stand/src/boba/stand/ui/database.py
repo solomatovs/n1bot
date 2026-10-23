@@ -149,7 +149,7 @@ class StandDatabase:
         self._postgres = postgres.model_copy(update={"dbname": name, "pool": pool})
         runtime = bind(self._built, path=RuntimeConfig.SECTION, model=RuntimeConfig)
         self._schema = runtime.db_schema
-        self._cipher = SecretCipher(runtime.keys.encryption.get_secret_value())
+        self._cipher = SecretCipher(runtime.connections.cipher.get_secret_value())
         self._types = ConnectionTypes.discover()
 
     @property
