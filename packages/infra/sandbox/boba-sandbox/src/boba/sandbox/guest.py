@@ -761,8 +761,26 @@ class MaskFile(StrEnum):
     BOOT_ID = "/proc/sys/kernel/random/boot_id"
 
     def staged(self, root: str) -> str:
-        """Путь нейтральной копии на staging-tmpfs: basename уникален в enum."""
+        """Путь нейтральной копии на staging-tmpfs; basename уникален в enum."""
         return os.path.join(root, self.name.lower())
+
+
+class StagingDir:
+    """Каталог staging для нейтральных файлов /proc, уникальный на вызов.
+
+    /dev у детей одной зиготы — одна tmpfs: общее имя каталога давало гонку,
+    где rmdir одного вызова убирал каталог у другого посреди записи. Суффикс
+    разводит вызовы по своим каталогам в этой общей tmpfs.
+    """
+
+    PREFIX: ClassVar[str] = "/dev/.host-"
+
+    def __init__(self) -> None:
+        self._path = f"{self.PREFIX}{os.urandom(6).hex()}"
+
+    @property
+    def path(self) -> str:
+        return self._path
 
 
 class HostMask:
@@ -783,8 +801,6 @@ class HostMask:
 
     HOSTNAME: ClassVar[str] = "localhost"
     COMM: ClassVar[str] = "init"
-    STAGING: ClassVar[str] = "/dev/.host"
-    """Каталог staging на tmpfs /dev: исполнитель отцепляет его после bind'а."""
 
     CPU_MODEL: ClassVar[str] = "Common x86_64 Processor"
     CPU_FLAGS: ClassVar[str] = (
@@ -798,6 +814,7 @@ class HostMask:
     def __init__(self, cpu_count: int, mem_total_kb: int) -> None:
         self._cpu_count = max(1, cpu_count)
         self._mem_total_kb = max(1, mem_total_kb)
+        self._staging = StagingDir()
 
     def apply(self) -> None:
         """Нейтральные имя хоста, comm и файлы /proc поверх настоящих."""
@@ -806,19 +823,16 @@ class HostMask:
         self._mask_proc()
 
     def _mask_proc(self) -> None:
-        os.makedirs(self.STAGING, exist_ok=True)
+        root = self._staging.path
+        os.mkdir(root)
         Isolation.mount(
-            "tmpfs",
-            self.STAGING,
-            "tmpfs",
-            MountFlag.NOSUID | MountFlag.NODEV,
-            "size=1048576",
+            "tmpfs", root, "tmpfs", MountFlag.NOSUID | MountFlag.NODEV, "size=1048576"
         )
         for target in MaskFile:
             self._place(target)
 
-        Isolation.detach(self.STAGING)
-        os.rmdir(self.STAGING)
+        Isolation.detach(root)
+        os.rmdir(root)
 
     def _place(self, target: MaskFile) -> None:
         """Нейтральную копию файла на staging — поверх настоящего bind'ом.
@@ -829,7 +843,7 @@ class HostMask:
         if not os.path.exists(target.value):
             return
 
-        staged = target.staged(self.STAGING)
+        staged = target.staged(self._staging.path)
         with open(staged, "w") as handle:
             handle.write(self._content(target))
 
