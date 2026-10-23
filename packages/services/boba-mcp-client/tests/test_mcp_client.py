@@ -1995,7 +1995,6 @@ class TestFailureStand:
         "add",
         "answers",
         "archive_orders",
-        "area",
         "ask",
         "blocks",
         "broken",
