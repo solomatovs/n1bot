@@ -27,6 +27,7 @@ from boba.db.postgres.connection import (
     PostgresConfig,
 )
 from boba.mcp_client.client import HttpRoute, ProxyAuth
+from boba.runtime.config import ValueCipherConfig
 
 __all__ = [
     "AgentCommandConfig",
@@ -211,6 +212,12 @@ class AgentConfig(BaseModel):
             "Срок годности соединения, запечатанного ретранслятором для сервера "
             "инструментов, в секундах: сервер отвергает значение старше срока."
         ),
+    )
+    settings_table: ValueCipherConfig = Field(
+        description=(
+            "Секция [agent.settings_table]: шифрование секретов слоя чата "
+            "настроек агента в таблице agent_chat_settings."
+        )
     )
     question_timeout_sec: int = Field(
         gt=0,
