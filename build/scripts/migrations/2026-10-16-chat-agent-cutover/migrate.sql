@@ -4,9 +4,9 @@
 --
 -- Что делает:
 --   * переводит беседы тредов из чекпойнтов langgraph в историю агента
---     (таблица history_records, сессия на тред с тем же id) и пишет каждому
---     треду чата ключ threads.meta.agent_session, по которому чат находит
---     сессию треда;
+--     (таблицы session и history, сессия на тред с тем же id) и пишет
+--     каждому треду чата ключ threads.meta.agent_session, по которому чат
+--     находит сессию треда;
 --   * переводит оценки ответов (feedbacks.for_id) на id шагов, которые новый
 --     чат рисует при воспроизведении беседы агентом;
 --   * приводит таблицы чата к раскладке, которую создаёт новое приложение;
@@ -1275,15 +1275,18 @@ select * from interrupt_unit
 union all
 select * from tool_unit;
 
+-- Записи собираются сразу в раскладке таблицы history: сессия, seq, вид и
+-- время — колонками, остальное — документом record без этих четырёх ключей.
 create table history_migrate.records (
-    session_id text    not null,
-    seq        integer not null,
-    type       text    not null,
-    record     jsonb   not null,
+    session_id  text        not null,
+    seq         integer     not null,
+    type        text        not null,
+    recorded_at timestamptz not null,
+    record      jsonb       not null,
     primary key (session_id, seq)
 );
 
-insert into history_migrate.records (session_id, seq, type, record)
+insert into history_migrate.records (session_id, seq, type, recorded_at, record)
 with ordered as (
     select
         u.*,
@@ -1314,7 +1317,7 @@ sourced as (
 stamped as (
     select distinct on (thread_id)
         thread_id,
-        to_char((stamp::timestamptz) at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as ts
+        date_trunc('milliseconds', stamp::timestamptz) as ts
     from
         history_migrate.source_messages
     order by
@@ -1324,16 +1327,14 @@ select
     s.thread_id,
     s.seq,
     s.type,
+    m.ts,
     jsonb_build_object(
         'uuid', s.uuid,
         'parentUuid', s.parent_uuid,
-        'timestamp', m.ts,
-        'sessionId', s.thread_id,
         'isSidechain', false,
-        'version', :'version',
-        'seq', s.seq
+        'version', :'version'
     )
-    || s.body
+    || (s.body - 'type')
     || case
         when s.source_uuid is not null then jsonb_build_object('sourceToolAssistantUUID', s.source_uuid)
         else '{}'::jsonb
@@ -1432,14 +1433,22 @@ where
 
 -- 5. Загрузка.
 --
--- Таблицу истории создаёт хранилище агента (PostgresHistoryStore) при первом
--- обращении, а перенос пишет в неё раньше, поэтому создаёт её сам тем же
--- определением из history_records.sql рядом; совпадение определения с кодом
--- хранилища проверяет тест boba-history-postgres. Комментарии к таблице агент
--- допишет сам при первом обращении. Если агент уже вёл историю в старой
--- базе, её схема сначала переименовывается в схему агента. Переносится только
--- сессия, у которой в истории ещё нет ни одной записи: сессию, которую агент
--- уже вёл, перенос не трогает.
+-- Таблицы истории (session и history) создаёт хранилище агента
+-- (PostgresHistoryStore) при первом обращении, а перенос пишет в них раньше,
+-- поэтому создаёт их сам теми же определениями из history_tables.sql рядом;
+-- совпадение определений с кодом хранилища проверяет тест
+-- boba-history-postgres. Комментарии к таблицам агент допишет сам при первом
+-- обращении.
+--
+-- Если агент уже вёл историю в старой базе, её схема сначала
+-- переименовывается в схему агента. Агент прежнего выпуска держал всю запись
+-- одной таблицей history_records, документом вместе с сессией, seq, видом и
+-- временем; её строки раскладываются по session и history так же, как пишет
+-- хранилище, а сама таблица удаляется, когда число строк сошлось. Строка,
+-- у которой ключи документа расходятся с колонками или нет времени,
+-- останавливает перенос: при раскладке часть записи пропала бы. Беседа
+-- треда переносится только в сессию, которой в истории ещё нет: сессию,
+-- которую агент уже вёл, перенос не трогает.
 
 select
     format('alter schema %I rename to %I', :'history_schema', :'boba_schema')
@@ -1451,8 +1460,65 @@ where
 create schema if not exists :"boba_schema";
 
 set local search_path to :"boba_schema";
-\ir history_records.sql
+\ir history_tables.sql
 reset search_path;
+
+select to_regclass(format('%I.history_records', :'boba_schema')) is not null as has_old_history \gset
+\if :has_old_history
+select
+    count(*) as old_history_inconsistent
+from
+    :"boba_schema".history_records
+where
+    record ->> 'sessionId' is distinct from session_id
+    or record ->> 'seq' is distinct from seq::text
+    or record ->> 'type' is distinct from type
+    or record ->> 'timestamp' is null
+\gset
+select :old_history_inconsistent > 0 as old_history_broken \gset
+\if :old_history_broken
+    \echo 'Rows of the old agent history table history_records whose document keys disagree with their columns or lack a timestamp:' :old_history_inconsistent
+    do $$ begin raise exception 'The old agent history table history_records cannot be split without losing data (count above), so nothing was changed.'; end $$;
+\endif
+
+insert into :"boba_schema".session (id, created_at)
+select
+    session_id,
+    min((record ->> 'timestamp')::timestamptz)
+from
+    :"boba_schema".history_records
+group by
+    session_id;
+
+insert into :"boba_schema".history (session_id, seq, type, recorded_at, record)
+select
+    session_id,
+    seq,
+    type,
+    (record ->> 'timestamp')::timestamptz,
+    record - array['type', 'seq', 'sessionId', 'timestamp']
+from
+    :"boba_schema".history_records;
+
+select
+    (select count(*) from :"boba_schema".history_records) as old_history_records,
+    (
+        select
+            count(*)
+        from
+            :"boba_schema".history as h
+        where
+            exists (select 1 from :"boba_schema".history_records as o where o.session_id = h.session_id)
+    ) as old_history_converted
+\gset
+\echo 'Records of the old agent history table history_records:' :old_history_records ', converted:' :old_history_converted
+select :old_history_records <> :old_history_converted as old_history_lost \gset
+\if :old_history_lost
+    do $$ begin raise exception 'Converting the old agent history table history_records lost records (counts above), so nothing was changed.'; end $$;
+\endif
+
+drop table :"boba_schema".history_records;
+\endif
 
 create table history_migrate.loaded (
     session_id text    primary key,
@@ -1470,18 +1536,30 @@ where
         select
             1
         from
-            :"boba_schema".history_records as h
+            :"boba_schema".session as s
         where
-            h.session_id = r.session_id
+            s.id = r.session_id
     )
 group by
     r.session_id;
 
-insert into :"boba_schema".history_records (session_id, seq, type, record)
+insert into :"boba_schema".session (id, created_at)
+select
+    r.session_id,
+    min(r.recorded_at)
+from
+    history_migrate.records as r
+    join history_migrate.loaded as l
+        on l.session_id = r.session_id
+group by
+    r.session_id;
+
+insert into :"boba_schema".history (session_id, seq, type, recorded_at, record)
 select
     r.session_id,
     r.seq,
     r.type,
+    r.recorded_at,
     r.record
 from
     history_migrate.records as r
@@ -1651,9 +1729,10 @@ where
 -- 8. Сверка.
 --
 -- Каждая проверка ниже ищет нарушение, которого при верном переносе быть
--- не может: вопрос или итог инструмента без своей записи, документ в истории,
--- отличный от собранного, seq не подряд, parentUuid не на предыдущую запись,
--- sessionId или seq документа не те, что в колонках. Если найдено хоть одно,
+-- не может: вопрос или итог инструмента без своей записи, сессия без строки
+-- в session, запись в истории, отличная от собранной, seq не подряд,
+-- parentUuid не на предыдущую запись, ключ каркаса (type, seq, sessionId,
+-- timestamp), оставшийся в документе вместо колонки. Если найдено хоть одно,
 -- перенос откатывается целиком. Заметки перевода и треды без строки в threads
 -- только выводятся.
 
@@ -1707,10 +1786,19 @@ union all
 select
     l.session_id,
     null,
-    format('The history holds %s records of the session, %s of them different from the %s built ones.', count(h.seq), count(h.seq) filter (where h.record <> r.record), l.records)
+    'The session has no row in the session table.'
 from
     history_migrate.loaded as l
-    left join :"boba_schema".history_records as h
+where
+    not exists (select 1 from :"boba_schema".session as s where s.id = l.session_id)
+union all
+select
+    l.session_id,
+    null,
+    format('The history holds %s records of the session, %s of them different from the %s built ones.', count(h.seq), count(h.seq) filter (where (h.type, h.recorded_at, h.record) is distinct from (r.type, r.recorded_at, r.record)), l.records)
+from
+    history_migrate.loaded as l
+    left join :"boba_schema".history as h
         on h.session_id = l.session_id
     left join history_migrate.records as r
         on r.session_id = h.session_id
@@ -1720,7 +1808,7 @@ group by
     l.records
 having
     count(h.seq) <> l.records
-    or count(h.seq) filter (where h.record is distinct from r.record) > 0
+    or count(h.seq) filter (where (h.type, h.recorded_at, h.record) is distinct from (r.type, r.recorded_at, r.record)) > 0
 union all
 select
     session_id,
@@ -1732,12 +1820,11 @@ from (
         h.seq,
         case
             when h.seq <> row_number() over w then 'The seq of the record does not follow the previous one.'
-            when h.record ->> 'seq' <> h.seq::text then 'The seq inside the record differs from the seq column.'
-            when h.record ->> 'sessionId' <> h.session_id then 'The sessionId inside the record differs from the session_id column.'
+            when h.record ?| array['type', 'seq', 'sessionId', 'timestamp'] then 'The record document keeps a key that belongs in the columns (type, seq, sessionId or timestamp).'
             when h.record ->> 'parentUuid' is distinct from lag(h.record ->> 'uuid') over w then 'The parentUuid of the record does not name the previous record.'
         end as problem
     from
-        :"boba_schema".history_records as h
+        :"boba_schema".history as h
         join history_migrate.loaded as l
             on l.session_id = h.session_id
     window w as (partition by h.session_id order by h.seq)
@@ -1804,11 +1891,10 @@ select count(*) > 0 as failed from history_migrate.problems \gset
 -- Таблица users, заведённая выпуском раньше dev, могла остаться без
 -- умолчания у created_at: умолчание ставится, как в определении приложения.
 -- Ключ llm в users.meta хранил выбор семплинга пользователя по профилям
--- (temperature, reasoning_effort); новое приложение его не читает, слой
--- пользователя агента живёт в agent_user_settings и семплинга не несёт,
--- поэтому ключ удаляется. Таблицы шины (live_*), настроек агента
--- (agent_user_settings, agent_chat_settings) приложение создаёт само при
--- старте.
+-- (temperature, reasoning_effort); новое приложение его не читает: модель
+-- и её настройки задаёт профиль чата, поэтому ключ удаляется. Таблицы шины
+-- (live_*) и настроек агента треда (agent_chat_settings) приложение создаёт
+-- само при старте.
 --
 -- Удаляются таблицы, которых в новом приложении нет: elements (вложения
 -- вопросов теперь ссылки resource_link в истории агента, файлы итогов

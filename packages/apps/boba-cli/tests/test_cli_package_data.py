@@ -79,7 +79,7 @@ class InstalledTree:
 
 
 class TestPackageData:
-    SCHEMA: ClassVar[str] = "schema/10_history_records.sql"
+    SCHEMA: ClassVar[str] = "schema/10_history.sql"
 
     def test_survey_names_the_data_and_self_check_finds_it(
         self, tmp_path: Path
