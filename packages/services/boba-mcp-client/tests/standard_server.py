@@ -289,6 +289,7 @@ class StandardServer:
         self._mcp.tool()(self.bump)
         self._mcp.tool()(self.pid)
         self._mcp.tool()(self.region)
+        self._mcp.tool()(self.area)
         self._mcp.tool()(self.retitle)
         self._mcp.tool()(self.retire_modern)
         self._mcp.resource(self.NOTES, mime_type="text/plain")(self.notes)
@@ -512,6 +513,16 @@ class StandardServer:
     ) -> str:
         """Echoes the region the client mirrors into the Mcp-Param-Region header."""
         return f"region {region}"
+
+    def area(
+        self,
+        scope_id: Annotated[
+            str, Field(default="", json_schema_extra={"x-boba-scope": True})
+        ],
+    ) -> str:
+        """Echoes the scope parameter: the server marks it like boba-mcp does
+        but declares no com.boba/scope extension, so the mark means nothing."""
+        return f"area {scope_id!r}"
 
     def retitle(self, text: str) -> str:
         """Replaces the instructions server/discover gives."""

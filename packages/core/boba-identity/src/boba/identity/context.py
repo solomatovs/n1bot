@@ -93,12 +93,14 @@ class PathSegment:
 
 
 class ScopeKind(StrEnum):
-    """Что за область: тред чата, запуск workflow, запуск задания."""
+    """Что за область: тред чата, запуск workflow, запуск задания, лента
+    пользователя, область, названная вызывающим через API."""
 
     CHAT = "chat"
     WORKFLOW = "workflow"
     JOB = "job"
     USER = "user"
+    CALLER = "caller"
 
 
 class Scope(BaseModel):
@@ -137,6 +139,12 @@ class Scope(BaseModel):
     @classmethod
     def chat(cls, thread_id: str) -> Scope:
         return cls(kind=ScopeKind.CHAT, id=thread_id)
+
+    @classmethod
+    def caller(cls, scope_id: str) -> Scope:
+        """Область, которую вызывающий назвал сервису сам: непрозрачный id,
+        под которым лежат файлы и журналы его вызовов."""
+        return cls(kind=ScopeKind.CALLER, id=scope_id)
 
     @classmethod
     def job(cls, job_id: str) -> Scope:

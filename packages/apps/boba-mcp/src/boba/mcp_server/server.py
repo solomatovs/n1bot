@@ -118,6 +118,7 @@ from boba.toolkit.wire import (
     JournalNotice,
     JournalRead,
     McpContent,
+    ScopeFeature,
 )
 from boba.toolrun.call_id import CallFields
 from boba.toolrun.hosted import DirectCalls
@@ -545,7 +546,7 @@ class CallProgress(StreamFeed):
 class FileUploadRequest(BaseModel):
     """Аргументы file_upload: имя файла в каталоге вложений области. Схему
     вызова и проверку аргументов FileUploadTool собирает из неё с
-    параметром треда (CallFields.threaded)."""
+    параметром области вызова (CallFields.scoped)."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -592,14 +593,14 @@ class FileUploadTool(Tool):
     _replies: McpReplies = PrivateAttr()
 
     def __init__(self, routes: FileRoutes, subjects: TokenSubjects) -> None:
-        threaded = CallFields().threaded(FileUploadRequest)
+        scoped = CallFields().scoped(FileUploadRequest)
         super().__init__(
             name=self.NAME,
             description=self.DESCRIPTION,
-            parameters=threaded.model_json_schema(),
+            parameters=scoped.model_json_schema(),
             meta=dict(McpEndpoints.OPERATION_META),
         )
-        self._request = threaded
+        self._request = scoped
         self._routes = routes
         self._subjects = subjects
         self._scopes = CallScopes()
@@ -906,6 +907,7 @@ class McpServer(Middleware):
         self._listing = JournalListing(listed, self._subjects)
         upload = FileUploadTool(self._files, self._subjects)
         self._features = self._features_of(registry)
+        self._features[ScopeFeature.ID] = CallFields().feature().settings()
         self._features[FilesFeature.ID] = self._files.feature(upload.name).settings()
         self._journaled = journals.active()
         if self._journaled:
@@ -925,7 +927,8 @@ class McpServer(Middleware):
     def _features_of(registry: ToolRegistry) -> dict[str, dict[str, Any]]:
         """Возможности сервера для объявления при подключении клиента: те,
         что объявляет порт над всеми инструментами реестра (инструмент-связка,
-        ключ запечатывания соединений)."""
+        ключ запечатывания соединений); область вызова, файлы и журнал
+        endpoint добавляет сам."""
         declared: dict[str, dict[str, Any]] = {}
         port = registry.server(registry.tools, DirectCalls())
         for feature, settings in port.features().items():

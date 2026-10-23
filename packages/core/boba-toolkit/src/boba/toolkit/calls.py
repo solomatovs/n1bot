@@ -145,17 +145,19 @@ class SchemaMark(StrEnum):
     что делать с аргументом.
 
     MEDIA — стандартный тип содержимого строки (показ кода, запечатанное
-    соединение). THREAD и CONNECTION — свои пометки x-boba-…: параметр
-    треда, который harness прячет от модели и заполняет сам, и
-    параметр-соединение со значением вида соединения. Клиент, который
-    пометку не знает, её не замечает. CONTENT, CONST, ENUM, ANY_OF и
-    DESCRIPTION — стандартные ключи, которыми схема параметра-соединения
-    говорит, что предложено на его месте (SealedParamSchema). Единственный
-    читатель параметров с ключом и у сервера, и у клиента — params().
+    соединение). SCOPE и CONNECTION — свои пометки x-boba-…: параметр
+    области вызова, который клиент с расширением ScopeFeature прячет от
+    модели и заполняет сам, и параметр-соединение со значением вида
+    соединения. Клиент, который пометку не знает, её не замечает. CONTENT,
+    CONST, ENUM, ANY_OF и DESCRIPTION — стандартные ключи, которыми схема
+    параметра-соединения говорит, что предложено на его месте
+    (SealedParamSchema). Единственный читатель параметров с ключом и у
+    сервера, и у клиента — params(); по ключу, объявленному сервером, —
+    marked().
     """
 
     MEDIA = "contentMediaType"
-    THREAD = "x-boba-thread"
+    SCOPE = "x-boba-scope"
     CONNECTION = "x-boba-connection"
     CONTENT = "contentSchema"
     CONST = "const"
@@ -167,8 +169,13 @@ class SchemaMark(StrEnum):
 
     def params(self, schema: Mapping[str, Any]) -> Mapping[str, object]:
         """Параметры схемы инструмента schema с этим ключом: имя → значение."""
+        return self.marked(schema, self.value)
+
+    @staticmethod
+    def marked(schema: Mapping[str, Any], key: str) -> Mapping[str, object]:
+        """Параметры схемы инструмента schema с ключом key: имя → значение."""
         marked: dict[str, object] = {}
-        declared = schema.get(self.PROPERTIES)
+        declared = schema.get(SchemaMark.PROPERTIES)
         if not isinstance(declared, Mapping):
             return marked
 
@@ -176,10 +183,10 @@ class SchemaMark(StrEnum):
             if not isinstance(described, Mapping):
                 continue
 
-            if self.value not in described:
+            if key not in described:
                 continue
 
-            marked[str(name)] = described[self.value]
+            marked[str(name)] = described[key]
 
         return marked
 
