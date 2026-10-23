@@ -1643,17 +1643,14 @@ class ExampleApp:
         segments = ReplyCall(
             tool="mcp__segments__get-customer-data",
             arguments={"segment": "All"},
-            intent="Сегменты клиентов",
         )
         debug = ReplyCall(
             tool="mcp__debug__debug-tool",
             arguments={"contentType": "text", "includeStructuredContent": True},
-            intent="Контекст хоста",
         )
         slow = ReplyCall(
             tool="mcp__debug__debug-tool",
             arguments={"contentType": "text", "delayMs": 60000},
-            intent="Долгая отладка",
         )
         in_context = "\n".join((ExampleBook.MESSAGE, ExampleBook.CONTEXT))
         answered = [ReplyTurn(content=ExampleBook.MESSAGE_ANSWER)]
@@ -1892,7 +1889,6 @@ class TestExampleApps:
         slow = ReplyCall(
             tool="mcp__debug__debug-tool",
             arguments={"contentType": "text", "largeInput": words},
-            intent="Долгий ввод",
         )
         partial = Reply(
             question=ExampleBook.PARTIAL.value,
@@ -1919,7 +1915,8 @@ class TestExampleApps:
 @dataclass(frozen=True)
 class AppCase:
     """Ход с приложением сервера стенда: сервер в конфиге чата, вопрос книги
-    фейковой модели, вызов инструмента и ответ после итога; stats_url —
+    фейковой модели, вызов инструмента без подписи intent (чужие серверы
+    такого поля в схеме не имеют) и ответ после итога; stats_url —
     счётчик вызовов сервера (пусто — сервер его не ведёт), renderer —
     источник, с которого приложение грузит рендерер (пусто — не сверяется)."""
 
@@ -1932,7 +1929,7 @@ class AppCase:
     renderer: str = ""
 
     def reply(self) -> Reply:
-        call = ReplyCall(tool=self.tool, arguments=self.arguments, intent=self.question)
+        call = ReplyCall(tool=self.tool, arguments=self.arguments)
 
         return Reply(
             question=self.question,
