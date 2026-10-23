@@ -7,9 +7,9 @@
 Адрес файла — область (scope), каталог области и имя; владелец — вошедший
 по токену, чужой workspace по адресу недостижим. DELETE по адресу самой
 области удаляет область целиком — файлы её каталогов и журналы вызовов её
-запусков: так чат удаляет тред. Каналы журнала вызова — ресурсы MCP: окна
-читает resources/read, журналы идущих вызовов перечисляет resources/list,
-рост и смену списка сообщают потоки subscriptions/listen.
+запусков: так клиент закрывает свою область. Каналы журнала вызова —
+ресурсы MCP: окна читает resources/read, журналы идущих вызовов перечисляет
+resources/list, рост и смену списка сообщают потоки subscriptions/listen.
 
 Ошибки:
 HTTPException 400 — адрес не называет файл каталога области или область.
@@ -678,7 +678,7 @@ class FileRoutes:
         запусков; область без файлов и журналов — успех."""
         subject = await self._callers.of(request)
         try:
-            scope = Scope.chat(str(request.path_params[FilePart.SCOPE.value]))
+            scope = Scope.caller(str(request.path_params[FilePart.SCOPE.value]))
         except ValidationError as exc:
             msg = (
                 f"DELETE {request.url.path}: the address does not name a scope: "
@@ -713,7 +713,7 @@ class FileRoutes:
         subject = await self._callers.of(request)
         params = request.path_params
         try:
-            scope = Scope.chat(str(params[FilePart.SCOPE.value]))
+            scope = Scope.caller(str(params[FilePart.SCOPE.value]))
 
             return ObjectKey(
                 user_id=subject.user_key,

@@ -3,12 +3,12 @@
 Тело, которому нужно знать, от чьего имени, в какой области и над каким
 workspace идёт вызов, объявляет параметр моделью контекста:
 `subject: Annotated[Subject, Injected]` (пользователь, роли),
-`scope: Annotated[Scope, Injected]` (тред, задача),
+`scope: Annotated[Scope, Injected]` (область вызова: тред, задача),
 `root: Annotated[WorkspaceRoot, Injected]` (корень workspace запуска).
 Хост подставляет значение на каждый вызов, как соединения субъекта; оно
 уезжает телу каналом конфига вместе с остальными injected-параметрами.
 Каждый инструмент хоста работает в workspace области вызова, поэтому в его
-схему ставится параметр треда (CallFields.threaded): по нему сервер выбирает
+схему ставится параметр области (CallFields.scoped): по нему сервер выбирает
 область.
 
 Ошибки:
@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 class CallContextValues(ParamSource):
     """Реализация ParamSource значениями контекста вызова: снимает параметр
     со схемы и подставляет его на каждый вызов; в схему ставит параметр
-    треда, из которого сервер берёт область вызова.
+    области, из которого сервер берёт область вызова.
 
     Создаёт его загрузчик инструментов из держателя контекста процесса и
     ставит первым из источников: контексту нечего взять из toml, и поле
@@ -77,7 +77,7 @@ class CallContextValues(ParamSource):
         schema = tool.args_schema
         params = self._context_params(ToolArgv.injected_fields(schema))
         if not params:
-            tool.args_schema = self._fields.threaded(schema)
+            tool.args_schema = self._fields.scoped(schema)
             return
 
         for param, model in params.items():
@@ -87,7 +87,7 @@ class CallContextValues(ParamSource):
             )
 
         bound = self._schemas.rebuild(schema, {}, params)
-        tool.args_schema = self._fields.threaded(bound)
+        tool.args_schema = self._fields.scoped(bound)
 
     def _context_params(self, fields: dict[str, Any]) -> dict[str, type]:
         params: dict[str, type] = {}

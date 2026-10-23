@@ -72,12 +72,12 @@ class TestToolSchema:
         "type": "string",
     }
 
-    THREAD: ClassVar[dict[str, Any]] = {
+    SCOPE: ClassVar[dict[str, Any]] = {
         "default": "",
-        "description": CallFields.THREAD_DESCRIPTION,
-        "title": "Thread Id",
+        "description": CallFields.SCOPE_DESCRIPTION,
+        "title": "Scope Id",
         "type": "string",
-        SchemaMark.THREAD.value: True,
+        SchemaMark.SCOPE.value: True,
     }
 
     ECHO: ClassVar[dict[str, Any]] = {
@@ -95,7 +95,7 @@ class TestToolSchema:
                 "title": "Repeat",
                 "type": "integer",
             },
-            CallFields.THREAD: THREAD,
+            CallFields.SCOPE: SCOPE,
             "intent": INTENT,
         },
         "required": ["text", "repeat"],
@@ -108,7 +108,7 @@ class TestToolSchema:
         "count",
         "size",
         "fail_midway",
-        CallFields.THREAD,
+        CallFields.SCOPE,
         "out",
         "pipe_bytes",
         "intent",
@@ -127,8 +127,8 @@ class TestToolSchema:
             raise AssertionError(f"the schema of fake_echo: {echo.input_schema}")
 
         own = [key for key in json.dumps(published).split('"') if "x-boba" in key]
-        if own != [SchemaMark.THREAD.value]:
-            raise AssertionError(f"the only own mark is the thread: {own}")
+        if own != [SchemaMark.SCOPE.value]:
+            raise AssertionError(f"the only own mark is the scope: {own}")
         if list(echo.input_schema["properties"]) != list(self.ECHO["properties"]):
             raise AssertionError(
                 f"the order of the arguments is kept: {echo.input_schema}"

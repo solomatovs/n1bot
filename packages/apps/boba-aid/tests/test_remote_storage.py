@@ -166,7 +166,7 @@ class TestRemoteStorage:
     async def _journaled(port: McpToolServer, thread_id: str, journals: Path) -> Path:
         """Вызов инструмента сервиса в треде thread_id; итог — каталог
         журнала его запуска у сервиса."""
-        arguments = {"text": "hi", "repeat": 1, CallFields.THREAD: thread_id}
+        arguments = {"text": "hi", "repeat": 1, CallFields.SCOPE: thread_id}
         params = mt.CallToolRequestParams(name="fake_echo", arguments=arguments)
         reply = await port.call(McpServers.OWN, params, None, None, None, None)
         if not isinstance(reply, mt.CallToolResult) or reply.is_error:
