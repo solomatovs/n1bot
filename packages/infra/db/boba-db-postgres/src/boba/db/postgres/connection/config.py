@@ -1,10 +1,18 @@
-"""PostgresConfig: полная libpq-модель + опции сессии + параметры пула."""
+"""PostgresConfig: полная libpq-модель + опции сессии + параметры пула;
+LibpqConnection — тот же профиль строкой libpq для чужого процесса.
+
+Ошибки:
+PostgresAuthError — вход профиля не выразить строкой libpq.
+PostgresError — билет kerberos-роли для чужого процесса не получен.
+"""
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from enum import StrEnum
 from typing import Annotated, Any, ClassVar, Literal, Self
 
+from psycopg.conninfo import make_conninfo
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -17,14 +25,31 @@ from pydantic import (
 
 from boba.connections.base import ClientIdentity, ConnectionBase
 from boba.db.postgres.connection.auth import (
+    PasswordAuth,
     PostgresAuth,
+    PostgresAuthError,
     PostgresAuthSession,
     PostgresKerberos,
     PostgresLibpq,
+    TrustAuth,
 )
-from boba.kerberos import KerberosAuthBase, KerberosDump, TicketAuth
+from boba.db.postgres.errors import PostgresError
+from boba.kerberos import (
+    KerberosAuthBase,
+    KerberosDump,
+    KerberosError,
+    KerberosPasswordAuth,
+    KeytabAuth,
+    TicketAuth,
+)
+from boba.krb import ClientCredentials, KerberosEnv, KerberosWorkspace
 
-__all__ = ["PostgresConfig", "PostgresOptionsConfig", "PostgresPoolConfig"]
+__all__ = [
+    "LibpqConnection",
+    "PostgresConfig",
+    "PostgresOptionsConfig",
+    "PostgresPoolConfig",
+]
 
 
 class PostgresPoolConfig(BaseModel):
@@ -252,9 +277,10 @@ class PostgresConfig(ConnectionBase):
 
     model_config = ConfigDict(extra="ignore")
 
-    # не connect-параметры: конструктор пула, строка '-c k=v', способ авторизации
-    NOT_CONNECT_FIELDS: ClassVar[frozenset[str]] = frozenset(
-        {"pool", "options", "auth"}
+    # не ключи libpq: конструктор пула, строка '-c k=v', способ авторизации,
+    # поведение connect() psycopg
+    NOT_LIBPQ_FIELDS: ClassVar[frozenset[str]] = frozenset(
+        {"pool", "options", "auth", "autocommit", "prepare_threshold"}
     )
 
     KIND: ClassVar[str] = "postgres"
@@ -474,10 +500,20 @@ class PostgresConfig(ConnectionBase):
 
     def conn_settings(self) -> dict[str, Any]:
         "kwargs для connect(): libpq-ключи + autocommit/prepare_threshold + opts"
+        conn = self.libpq_settings()
+        conn["autocommit"] = self.autocommit
+        if self.prepare_threshold is not None:
+            conn["prepare_threshold"] = self.prepare_threshold
+
+        return conn
+
+    def libpq_settings(self) -> dict[str, Any]:
+        """Ключи libpq профиля: поля соединения, ключи варианта авторизации и
+        серверные опции сессии строкой options; без поведения connect() psycopg."""
         conn: dict[str, Any] = {}
 
         for name in PostgresConfig.model_fields:
-            if name in self.NOT_CONNECT_FIELDS:
+            if name in self.NOT_LIBPQ_FIELDS:
                 continue
 
             if name in self.common_fields():
@@ -507,3 +543,78 @@ class PostgresConfig(ConnectionBase):
             if (value := getattr(self.pool, name)) is not None:
                 res[name] = value
         return res
+
+
+class LibpqConnection:
+    """Профиль PostgresConfig глазами чужого процесса, который принимает
+    подключение только строкой libpq: строка и окружение libkrb5 его
+    kerberos-роли.
+
+    Пароль едет в строке, kerberos-роль входит билетом из кэша, путь к
+    которому процесс получает переменными KRB5CCNAME и KRB5_CONFIG: libpq
+    читает их из окружения сам. Так чат передаёт процессу агента
+    подключение его истории; модель секции истории проверяет этим же
+    объектом, что вход выразим строкой.
+    """
+
+    def __init__(self, postgres: PostgresConfig) -> None:
+        self._postgres = postgres
+
+    def auth(self) -> PasswordAuth | TrustAuth | KeytabAuth | KerberosPasswordAuth:
+        """Вход профиля, выразимый строкой libpq и окружением libkrb5.
+
+        Ошибки:
+        PostgresAuthError — у профиля сертификатный, делегированный или
+            билетный вход.
+        """
+        auth = self._postgres.auth
+        if isinstance(auth, PasswordAuth | TrustAuth):
+            return auth
+
+        if isinstance(auth, KeytabAuth | KerberosPasswordAuth):
+            return auth
+
+        msg = (
+            f"postgres connection to {self._postgres.where()}: auth "
+            f"{auth.method!r} cannot be handed to another process as a libpq "
+            "connection string; expected method 'password', 'trust', "
+            "'kerberos_keytab' or 'kerberos_password'"
+        )
+        raise PostgresAuthError(msg)
+
+    def dsn(self) -> SecretStr:
+        """Строка подключения libpq: ключи профиля и его входа, у парольной
+        роли — с паролем; секрет, место ей — файл 0600.
+
+        Ошибки:
+        PostgresAuthError — вход профиля не выразить строкой.
+        """
+        self.auth()
+
+        return SecretStr(make_conninfo(**self._postgres.libpq_settings()))
+
+    async def environment(self) -> Mapping[str, str]:
+        """Окружение libkrb5 kerberos-роли: билет в её кэше обновлён по
+        keytab или паролю; у парольной роли и доверия окружение пустое.
+
+        Ошибки:
+        PostgresAuthError — вход профиля не выразить строкой.
+        PostgresError — билет роли не получен или рабочий каталог kerberos
+            процесса не настроен.
+        """
+        auth = self.auth()
+        if not isinstance(auth, KeytabAuth | KerberosPasswordAuth):
+            return {}
+
+        try:
+            credentials = ClientCredentials.of(auth)
+            await credentials.ensure_async()
+            config = KerberosWorkspace.krb5_config()
+        except KerberosError as exc:
+            msg = (
+                f"postgres connection to {self._postgres.where()}: the ticket of "
+                f"{auth.principal} for another process was not obtained: {exc}"
+            )
+            raise PostgresError(msg) from exc
+
+        return {KerberosEnv.CCACHE: credentials.ccache, KerberosEnv.CONFIG: config}

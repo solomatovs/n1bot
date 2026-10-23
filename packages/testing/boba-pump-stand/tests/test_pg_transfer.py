@@ -1849,6 +1849,7 @@ class TestDescribeCost:
     BUDGET_SECONDS: ClassVar[float] = 0.5
 
     @ON_NEWEST
+    @pytest.mark.perf
     async def test_describe_neither_plans_nor_reads(
         self, postgres: PostgresSide
     ) -> None:
@@ -1932,6 +1933,7 @@ class TestCopyOutLoop:
         return elapsed
 
     @ON_NEWEST
+    @pytest.mark.perf
     async def test_million_rows_keep_up_with_psql(self, postgres: PostgresSide) -> None:
         select = self.SELECT.format(rows=self.ROWS)
         sink = WideSink()

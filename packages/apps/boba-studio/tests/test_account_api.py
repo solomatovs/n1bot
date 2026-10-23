@@ -32,6 +32,7 @@ def _profile(default: bool, roles: list[str]) -> ChatProfileConfig:
             "tools": ["echo"],
             "provider": SignInStand.provider(),
             "model": "fake",
+            "limits": SignInStand.limits(),
             "system_prompt": "stand",
         }
     )
