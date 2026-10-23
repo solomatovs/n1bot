@@ -288,7 +288,6 @@ def agent_launcher(
     настроек, рукопожатие; mcp/message процессов отвечает ретранслятор."""
     return AgentLauncher(
         config,
-        app_config.postgres,
         app_config.mcp,
         table,
         registrations,

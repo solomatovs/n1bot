@@ -129,6 +129,16 @@
         reconnect_timeout = 300
         num_workers       = 3
 
+[postgres_history]
+    host             = "${site.pg_host}"
+    hostaddr         = "${site.pg_addr}"
+    port             = "${site.pg_port}"
+    dbname           = "${site.aid_database}"
+    sslmode          = "${site.pg_sslmode}"
+    application_name = "boba-agent"
+    connect_timeout  = 10
+    auth             = "${site.history_auth.${site.history_auth_method}}"
+
 [agent]
     public_url   = "http://127.0.0.1:${env.port}${env.url_prefix}"
     seal_ttl_sec = 600
@@ -141,8 +151,9 @@
         request_timeout_sec = 120
         stop_timeout_sec    = 10
     [agent.history]
-        kind   = "postgres"
-        schema = "boba"
+        kind     = "postgres"
+        schema   = "boba"
+        postgres = "${postgres_history}"
     [agent.model]
         context_window    = 128000
         max_output_tokens = 8192
