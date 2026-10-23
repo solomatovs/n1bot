@@ -186,7 +186,7 @@ class NotesServer:
         saved = CallTool(
             "save",
             arguments={"text": "{{ text }}"},
-            on_success=[SetState("notes", "$result.notes"), SetState("text", "")],
+            on_success=[SetState("notes", "{{ $result.notes }}"), SetState("text", "")],
         )
         state = {"notes": self._rows(), "text": ""}
         with PrefabApp(state=state) as board, Column(gap=4):
