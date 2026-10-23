@@ -31,6 +31,7 @@ import httpx
 import pytest
 import socketio
 from acp_stand import ProcFiles
+from omegaconf import DictConfig
 from psycopg import sql
 
 from boba.aid.agent.settings import WorkdirFile
@@ -38,6 +39,7 @@ from boba.aid.chat.ui_text import UiText
 from boba.aid.domain.fields import ThreadMetaField
 from boba.aid.rendering.chat_view import StepText
 from boba.canvas.canvas import CanvasAction, CanvasElement, CanvasKind
+from boba.config import bind
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
 from boba.runtime.config import RuntimeConfig
@@ -720,12 +722,19 @@ class AgentProcesses:
 
 
 class ChatRows:
-    """Строки базы стенда: metadata треда и записи истории агента."""
+    """Строки базы стенда: metadata треда ролью чата и записи истории агента
+    ролью истории ([postgres_history])."""
 
     def __init__(
-        self, postgres: PostgresConfig, schema: str, database: str, history_schema: str
+        self,
+        postgres: PostgresConfig,
+        history: PostgresConfig,
+        schema: str,
+        database: str,
+        history_schema: str,
     ) -> None:
         self._postgres = TestDatabase.config_of(postgres, database)
+        self._history = TestDatabase.config_of(history, database)
         self._schema = schema
         self._history_schema = history_schema
 
@@ -751,7 +760,7 @@ class ChatRows:
 
     async def history_rows(self, session_id: str) -> int:
         """Записи сессии в истории агента (схема [agent.history] стенда)."""
-        pool = AsyncPostgresPool(self._postgres)
+        pool = AsyncPostgresPool(self._history)
         await pool.open()
         try:
             async with pool.connection() as conn:
@@ -768,6 +777,24 @@ class ChatRows:
         assert row is not None
 
         return int(row[0])
+
+    async def chat_reaches_history(self) -> bool:
+        """Есть ли у роли чата доступ к схеме истории агента."""
+        pool = AsyncPostgresPool(self._postgres)
+        await pool.open()
+        try:
+            async with pool.connection() as conn:
+                cursor = await conn.execute(
+                    "select has_schema_privilege(current_user, %s, 'usage')",
+                    (self._history_schema,),
+                )
+                row = await cursor.fetchone()
+        finally:
+            await pool.close()
+
+        assert row is not None
+
+        return bool(row[0])
 
     async def chat_settings_rows(self, thread_id: str) -> int:
         pool = AsyncPostgresPool(self._postgres)
@@ -793,14 +820,20 @@ class ChatRows:
 @pytest.fixture
 def rows(
     stand_postgres: PostgresConfig,
+    raw_config: DictConfig,
     runtime_config: RuntimeConfig,
     stand_database: str,
     app: StandProcess[StandConfig],
 ) -> ChatRows:
     history_schema = app.config.agent_history["schema"]
+    history = bind(raw_config, path="postgres_history", model=PostgresConfig)
 
     return ChatRows(
-        stand_postgres, runtime_config.db_schema, stand_database, history_schema
+        stand_postgres,
+        history,
+        runtime_config.db_schema,
+        stand_database,
+        history_schema,
     )
 
 
@@ -979,6 +1012,7 @@ class TestHistory:
         assert meta is not None
         session_id = meta[ThreadMetaField.AGENT_SESSION]
         assert await rows.history_rows(session_id) > 0
+        assert not await rows.chat_reaches_history()
         await tab.end_session()
 
         again = ChatSocket(app, cookie, tab.thread_id)

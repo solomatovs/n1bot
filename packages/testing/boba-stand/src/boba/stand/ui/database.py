@@ -15,7 +15,7 @@ from typing import Any, ClassVar
 from uuid import UUID
 
 from omegaconf import OmegaConf
-from psycopg import sql
+from psycopg import AsyncCursor, sql
 from psycopg.errors import InsufficientPrivilege
 
 from boba.config import bind
@@ -72,6 +72,62 @@ def run_blocking(work: Coroutine[Any, Any, Any]) -> Any:
     """Гонит корутину в своём потоке: у сессии pytest может быть живой event loop."""
     with ThreadPoolExecutor(max_workers=1) as runner:
         return runner.submit(asyncio.run, work).result()
+
+
+class StandHistory:
+    """История агента стенда своей ролью: подключение [postgres_history] и
+    схема [agent.history] конфига чата. Роль истории входит в базу стенда и
+    сама создаёт схему истории: владелец базы — роль чата — даёт ей connect и
+    create, схему прежних прогонов под другой ролью сносит; прав на схему
+    истории у роли чата нет. Держит StandDatabase; у приложения без истории
+    агента (без [postgres_history]) ничего не делает."""
+
+    POSTGRES: ClassVar[str] = "postgres_history"
+    SCHEMA: ClassVar[str] = "agent.history.schema"
+    USER: ClassVar[str] = "user"
+
+    def __init__(self, built: Any) -> None:
+        self._role = ""
+        self._schema = ""
+        if OmegaConf.select(built, self.POSTGRES) is None:
+            return
+
+        history = bind(built, self.POSTGRES, PostgresConfig)
+        self._role = str(history.libpq_settings()[self.USER])
+        self._schema = str(OmegaConf.select(built, self.SCHEMA))
+
+    async def admit(self, cur: AsyncCursor[Any], database: str) -> None:
+        if not self._role:
+            return
+
+        grant = (
+            PgQueryBuilder()
+            .add(
+                "grant connect, create on database {db} to {role}",
+                db=sql.Identifier(database),
+                role=sql.Identifier(self._role),
+            )
+            .build()
+        )
+        await cur.execute(grant.text, grant.params)
+
+        await cur.execute(
+            "select pg_get_userbyid(nspowner) from pg_namespace where nspname = %s",
+            (self._schema,),
+        )
+        owner = await cur.fetchone()
+        if owner is None:
+            return
+
+        if owner[0] == self._role:
+            return
+
+        drop = (
+            PgQueryBuilder()
+            .add("drop schema {schema} cascade", schema=sql.Identifier(self._schema))
+            .build()
+        )
+        await cur.execute(drop.text, drop.params)
 
 
 class StandOracle:
@@ -151,6 +207,7 @@ class StandDatabase:
         self._schema = runtime.db_schema
         self._cipher = SecretCipher(runtime.keys.encryption.get_secret_value())
         self._types = ConnectionTypes.discover()
+        self._history = StandHistory(self._built)
 
     @property
     def schema(self) -> str:
@@ -175,6 +232,8 @@ class StandDatabase:
                     .build()
                 )
                 await cur.execute(query.text, query.params)
+
+            await self._history.admit(cur, self._name)
 
     async def _ensure_database(self) -> None:
         maintenance = AsyncPostgresPool(self._maintenance)
