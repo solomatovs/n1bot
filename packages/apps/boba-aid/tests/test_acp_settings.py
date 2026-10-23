@@ -1,6 +1,7 @@
 """Настройки агента: слой чата из профиля в Postgres стенда с шифрованием
-секретов, файл настроек по форме агента в приватном каталоге 0700/0600 без
-серверов MCP, хуков и области вызовов, строка подключения истории, и
+секретов, файл настроек ключами договора запуска в приватном каталоге
+0700/0600 без серверов MCP, хуков, режима сессии и области вызовов, строка
+подключения истории, и
 рукопожатие настоящего `boba acp` v2 по этому файлу — секреты не попадают в
 argv и окружение ребёнка, каталог удаляется с процессом."""
 
@@ -41,7 +42,6 @@ from cryptography.x509.oid import NameOID
 from psycopg import sql
 from psycopg.types.json import Jsonb
 
-from boba.agent.profile import ReasoningReturn
 from boba.aid.agent.chat import (
     AgentLaunch,
     AgentLauncher,
@@ -61,6 +61,7 @@ from boba.aid.agent.config import (
     AgentModelConfig,
     LibpqConnection,
     PostgresAgentHistory,
+    ReasoningReturn,
 )
 from boba.aid.agent.settings import (
     AgentSettingsError,
@@ -348,16 +349,15 @@ class TestSettingsFile:
         assert body["model"] == chat.model_name
         provider = body["models"][chat.model_name]["provider"]
         assert provider["kind"] == "openai"
-        assert provider["base_url"] == model.base_url()
-        assert provider["api_key"] == API_KEY
-        assert body["models"][chat.model_name]["context_window"] == 32000
-        assert body["permissions"]["default_mode"] == "bypassPermissions"
-        assert body["permissions"]["allow_bypass"] is True
+        assert provider["baseUrl"] == model.base_url()
+        assert provider["apiKey"] == API_KEY
+        assert body["models"][chat.model_name]["contextWindow"] == 32000
+        assert body["permissions"] == {"allowBypass": True}
         assert body["history"]["kind"] == "postgres"
-        assert body["history"]["db_schema"] == history.db_schema
+        assert body["history"]["schema"] == history.db_schema
         dsn = LibpqConnection(history_stand.postgres()).dsn().get_secret_value()
         assert body["history"]["dsn"] == dsn
-        assert body["system_prompt_file"] == "system_prompt.txt"
+        assert body["systemPromptFile"] == "system_prompt.txt"
         assert body["mcp"] is None
         assert "mcpServers" not in body
         assert "hooks" not in body

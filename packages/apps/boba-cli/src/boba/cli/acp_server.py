@@ -680,6 +680,12 @@ class AcpMapping:
     def tool_call(
         self, block: ToolUseBlock, hints: ToolHints | None
     ) -> schema.SessionToolCallUpdate:
+        """Первое уведомление вызова; у вопроса пользователю (AskUserQuestion)
+        в `_meta` — признак MetaKey.QUESTION, по нему клиент рисует вопрос."""
+        meta: dict[str, Any] | None = None
+        if block.name == AskUserQuestionTool.NAME:
+            meta = {MetaKey.QUESTION.value: True}
+
         return schema.SessionToolCallUpdate(
             tool_call_id=block.id,
             name=block.name,
@@ -687,6 +693,7 @@ class AcpMapping:
             kind=self.tool_kind(hints),
             status=ToolStatus.PENDING,
             raw_input=dict(block.input),
+            field_meta=meta,
         )
 
     def tool_results(

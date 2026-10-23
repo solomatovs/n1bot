@@ -1,5 +1,6 @@
-"""Вход процесса агента: команда `boba acp --settings <файл>` и самопроверка
-собранного бинарника `boba self-check` (boba.cli.package_data).
+"""Вход процесса агента: команда `boba acp --settings <файл>`, самопроверка
+собранного бинарника `boba self-check` (boba.cli.package_data) и публикация
+схемы файла настроек `boba settings-schema` (JSON Schema слоя на stdout).
 
 Разбирает аргументы, собирает действующие настройки (Settings), на старте
 проверяет профили моделей (ModelCatalog), хранилище истории и скиллы и отдаёт
@@ -22,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
 import os
 import platform
@@ -58,6 +60,7 @@ from boba.agent.session import Session, SessionError
 from boba.agent.settings import (
     MemoryHistorySettings,
     PostgresHistorySettings,
+    SettingsSchema,
 )
 from boba.agent.skills import Skill, SkillsDir, SkillsError
 from boba.agent.template import AgentTemplate
@@ -117,12 +120,18 @@ class Command(StrEnum):
 
     ACP = "acp"
     SELF_CHECK = "self-check"
+    SETTINGS_SCHEMA = "settings-schema"
+
+    @property
+    def serves(self) -> bool:
+        """Команда поднимает процесс ACP; остальные печатают и выходят."""
+        return self is Command.ACP
 
 
 @dataclass(frozen=True)
 class Invocation:
     """Разобранная командная строка: команда и параметры запуска; у
-    `self-check` параметров нет, они остаются пустыми."""
+    `self-check` и `settings-schema` параметров нет, они остаются пустыми."""
 
     command: Command
     arguments: Arguments
@@ -150,9 +159,9 @@ class Installed:
 
 
 class ArgumentParser:
-    """Командная строка `boba acp …` или `boba self-check` → Invocation (план,
-    раздел 5.21). Секретов в аргументах нет: ключи и строки подключения живут
-    в файле `--settings`."""
+    """Командная строка `boba acp …`, `boba self-check` или
+    `boba settings-schema` → Invocation (план, раздел 5.21). Секретов в
+    аргументах нет: ключи и строки подключения живут в файле `--settings`."""
 
     PROG: ClassVar[str] = "boba"
 
@@ -181,11 +190,20 @@ class ArgumentParser:
                 "writes one line to stdout; exit 1 names the missing files."
             ),
         )
+        commands.add_parser(
+            Command.SETTINGS_SCHEMA.value,
+            help="print the JSON Schema of a settings.json layer, then exit",
+            description=(
+                "Print the JSON Schema (draft 2020-12) of one settings.json layer "
+                "to stdout: the contract of the file a launcher writes for this "
+                "agent. Reads nothing."
+            ),
+        )
 
     def parse(self, argv: Sequence[str]) -> Invocation:
         space = self._parser.parse_args(list(argv))
         command = Command(space.command)
-        if command is Command.SELF_CHECK:
+        if not command.serves:
             return Invocation(command=command, arguments=Arguments())
 
         sources: list[SettingsSource] = []
@@ -790,6 +808,11 @@ async def main(argv: Sequence[str] | None = None) -> None:
             raise SystemExit(str(exc)) from exc
 
         sys.stdout.write(f"{checked}\n")
+        return
+
+    if invocation.command is Command.SETTINGS_SCHEMA:
+        document = json.dumps(SettingsSchema().document(), indent=2, ensure_ascii=False)
+        sys.stdout.write(f"{document}\n")
         return
 
     installed = Installed().version()

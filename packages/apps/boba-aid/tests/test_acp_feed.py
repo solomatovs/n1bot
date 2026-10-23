@@ -90,7 +90,7 @@ from boba.toolkit.result import (
     VisualResult,
 )
 from boba.toolkit.wire import JournalFeature, JournalRead, McpContent, ResultWire
-from boba.transport.acp.protocol import IdleErrorUpdate
+from boba.transport.acp.protocol import IdleErrorUpdate, MetaKey
 
 APP_ROOT = Path(__file__).resolve().parents[1] / "assets"
 """Корень приложения пакета: его переводы chainlit несут подписи ленты и панели."""
@@ -252,6 +252,18 @@ def _call(call_id: str, name: str, args: dict[str, Any]) -> SessionUpdate:
         title=f"{name} {args}",
         status="pending",
         raw_input=dict(args),
+    )
+
+
+def _asked_call(call_id: str, args: dict[str, Any]) -> SessionUpdate:
+    """Первое уведомление вызова, который агент пометил вопросом пользователю."""
+    return schema.SessionToolCallUpdate(
+        tool_call_id=call_id,
+        name="AskUserQuestion",
+        title=f"AskUserQuestion {args}",
+        status="pending",
+        raw_input=dict(args),
+        field_meta={MetaKey.QUESTION.value: True},
     )
 
 
@@ -728,8 +740,9 @@ class TestToolApps:
 
 
 class TestQuestionRecords:
-    """Вопрос агента пользователю в ленте: вызов AskUserQuestion — своё
-    сообщение основной ленты (не шаг контейнера хода) с элементом Question:
+    """Вопрос агента пользователю в ленте: вызов с признаком вопроса в
+    `_meta` (MetaKey.QUESTION) — своё сообщение основной ленты (не шаг
+    контейнера хода) с элементом Question:
     пока ждёт — висящий вопрос по вводу, после итога — запись ответа тем же
     элементом; вопросы сервера MCP в вызове — такими же сообщениями по
     раундам из `_meta` результата. Живой ход и воспроизведение рисуют их
@@ -812,7 +825,7 @@ class TestQuestionRecords:
             "isError": False,
         }
 
-        await updates.apply(_call(CALL, "AskUserQuestion", self.ASKED))
+        await updates.apply(_asked_call(CALL, self.ASKED))
         pending = recorded.last()[_id(CALL, StepRole.QUESTION)]
         await updates.apply(_done(CALL, "answered", output))
         message = recorded.last()[_id(CALL, StepRole.QUESTION)]
@@ -874,9 +887,9 @@ class TestQuestionRecords:
             ],
             raw_output=declined,
         )
-        await updates.apply(_call(CALL, "AskUserQuestion", self.ASKED))
+        await updates.apply(_asked_call(CALL, self.ASKED))
         await updates.apply(failed)
-        await updates.apply(_call(SECOND_CALL, "AskUserQuestion", self.ASKED))
+        await updates.apply(_asked_call(SECOND_CALL, self.ASKED))
         await updates.finish_turn()
 
         assert _id(CALL, StepRole.QUESTION) in recorded.last()
