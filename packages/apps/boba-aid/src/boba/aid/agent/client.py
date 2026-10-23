@@ -1,16 +1,20 @@
-"""ACP-клиент чата aid на v2: процесс агента, соединение ClientConnection по
-его stdio, методы сессии; уведомления, вопросы разрешений и формы
-`elicitation/create` агента уходят приёмнику с явным интерфейсом
-SessionUpdates, который заменяет рендерер ленты, а запросы mcp/message —
-ретранслятору (McpRelay). Клиент объявляет агенту формы (`elicitation.form`).
-Режим разрешений каждой открытой сессии (`session/new|resume|fork`) клиент
-выставляет по ACP: настройка категории mode из `configOptions` ответа и
-`session/set_config_option` (SessionModeSelector).
+"""ACP-клиент чата aid на v2: соединение ClientConnection с агентом — по
+stdio своего процесса (AgentProcess) или по сети со службой агента
+(AgentService, streamable HTTP с входом proxy), — методы сессии;
+уведомления, вопросы разрешений и формы `elicitation/create` агента уходят
+приёмнику с явным интерфейсом SessionUpdates, который заменяет рендерер
+ленты, а запросы mcp/message — ретранслятору (McpRelay). Клиент объявляет
+агенту формы (`elicitation.form`). Режим разрешений каждой открытой сессии
+(`session/new|resume|fork`) клиент выставляет по ACP: настройка категории
+mode из `configOptions` ответа и `session/set_config_option`
+(SessionModeSelector); в службе он прежде выбирает профиль агента настройкой
+категории model (SessionProfileSelector).
 
 Ошибки:
-AgentProcessError — процесс не запустился, не прошёл рукопожатие (чужая
-    версия ACP, нет серверов type "acp"), не ответил на метод сессии в срок,
-    умер или соединение с ним закрыто.
+AgentProcessError — процесс не запустился или вход в службу не состоялся, не
+    прошёл рукопожатие (чужая версия ACP, нет серверов type "acp"), не
+    ответил на метод сессии в срок, умер или соединение с ним закрыто;
+    служба не предлагает профиль чата.
 AgentRequestError — агент ответил ошибкой JSON-RPC: метод, код, текст, data.
 """
 
@@ -28,14 +32,20 @@ from pathlib import Path
 from typing import Any, ClassVar, Protocol, TypeAlias, TypeVar
 from uuid import UUID
 
+import httpx2
 from acp.exceptions import RequestError
 from acp.experimental.v2 import Client, schema
+from acp.http import create_http_stream
+from acp.http.client import AcpHttpStatusError
 from acp.transports import spawn_stdio_transport
+from mcp.client.auth.exceptions import OAuthFlowError
 from pydantic import AnyUrl, BaseModel, ValidationError
 
+from boba.aid.agent.config import AgentServiceConfig
 from boba.aid.agent.relay import ClientName, McpRelay
 from boba.aid.agent.settings import AgentWorkdir, WorkdirFile
 from boba.aid.rendering.acp_view import SessionUpdate
+from boba.mcp_client.client import McpCaller, McpClientError
 from boba.transport.acp.protocol import (
     AcpVersion,
     ClientConnection,
@@ -50,14 +60,17 @@ __all__ = [
     "AcpModeOption",
     "AgentClient",
     "AgentCommand",
+    "AgentLink",
     "AgentProcess",
     "AgentProcessError",
     "AgentRequestError",
+    "AgentService",
     "ConfigOption",
     "ElicitationReply",
     "ModeChange",
     "PromptBlock",
     "SessionModeSelector",
+    "SessionProfileSelector",
     "SessionUpdates",
 ]
 
@@ -284,7 +297,7 @@ class SessionModeSelector:
         if option.current_value == AcpModeOption.BYPASS.value:
             return None
 
-        values = list(self._values(option))
+        values = list(self.values(option))
         if AcpModeOption.BYPASS.value not in values:
             logger.warning(
                 "session %s: the agent offers permission modes %s without %r; "
@@ -315,7 +328,7 @@ class SessionModeSelector:
         return None
 
     @staticmethod
-    def _values(option: schema.SelectSessionConfigOption) -> Iterator[str]:
+    def values(option: schema.SelectSessionConfigOption) -> Iterator[str]:
         """Значения настройки: варианты списком или группами."""
         for item in option.options:
             if isinstance(item, schema.SessionConfigSelectOption):
@@ -344,132 +357,95 @@ class AgentCommand:
         return [*self.args, self.SETTINGS_FLAG, str(settings_path)]
 
 
-class AgentProcess:
-    """Процесс агента ACP v2 одной вкладки: запуск из приватного каталога,
-    соединение ClientConnection по его stdio, методы сессии, остановка и
-    удаление каталога.
+class AgentLink:
+    """Соединение чата с агентом ACP v2 одной вкладки: рукопожатие и методы
+    сессии поверх ClientConnection SDK.
 
-    Создаётся запуском агента (AgentLauncher) с объявлениями серверов
-    процесса: их получает каждая сессия процесса, и каждой открытой сессии
-    клиент выставляет режим разрешений по ACP. Процессом управляет
-    spawn_stdio_transport SDK; stderr агента пишется в журнал приватного
-    каталога и читается при отказе. Запросы mcp/message агента отдаются
-    ретранслятору вместе с отправкой уведомлений этого соединения.
+    Базовый класс: его наследуют AgentProcess (свой процесс агента по stdio)
+    и AgentService (служба агента по сети); наследник открывает соединение,
+    называет рабочий каталог сессий и знает, жив ли собеседник. Запросы
+    mcp/message агента уходят ретранслятору вместе с отправкой уведомлений
+    этого соединения; режим разрешений каждой открытой сессии выставляется
+    по ACP.
     """
 
-    LINE_LIMIT: ClassVar[int] = 16 * 1024 * 1024
-    LOG_TAIL_LINES: ClassVar[int] = 20
+    LINK_ERRORS: ClassVar[tuple[type[Exception], ...]] = (ConnectionError,)
+    """Обрыв соединения с агентом: его транспорт бросает такие ошибки."""
 
-    def __init__(  # noqa: PLR0913 — процесс собирается всеми своими входами
+    def __init__(
         self,
-        command: AgentCommand,
-        workdir: AgentWorkdir,
         client: Client,
         relay: McpRelay,
         servers: Sequence[schema.AcpMcpServer],
         version: str,
+        request_timeout_sec: float,
     ) -> None:
-        self._command = command
-        self._workdir = workdir
         self._client = client
         self._relay = relay
         self._servers = list(servers)
         self._version = version
+        self._request_timeout_sec = request_timeout_sec
         self._mode = SessionModeSelector()
         self._stack = AsyncExitStack()
-        self._process: Process | None = None
         self._connection: ClientConnection | None = None
         self._forks_by_message = False
         """Агент объявил срез ветки session/fork по messageId вопроса."""
 
-    @property
-    def workdir(self) -> AgentWorkdir:
-        return self._workdir
+    @abstractmethod
+    def label(self) -> str:
+        """Кто на том конце: процесс с pid или служба с адресом."""
 
-    @property
-    def pid(self) -> int:
-        return self._require_process().pid
-
+    @abstractmethod
     def alive(self) -> bool:
-        """Процесс не вышел и его вывод не кончился: агент, закрывший stdout,
-        ответить уже не сможет, хотя процесс ещё жив."""
-        if self._process is None:
-            return False
+        """Собеседник ещё ответит."""
 
-        if self._process.returncode is not None:
-            return False
+    @abstractmethod
+    async def ended(self) -> None:
+        """Возвращается, когда собеседник ушёл: процесс вышел или служба
+        закрыла соединение."""
 
-        if self._connection is None:
-            return False
+    @abstractmethod
+    def log_tail(self) -> str:
+        """Что известно о причине отказа собеседника."""
 
-        return self._connection.connected()
-
-    async def exited(self) -> int:
-        """Код выхода процесса, когда он завершится."""
-        return await self._require_process().wait()
-
+    @abstractmethod
     async def start(self) -> schema.InitializeResponse:
-        """Запуск и рукопожатие v2; процесс, не ответивший в срок, говорящий
-        на чужой версии или без серверов type "acp", гасится.
+        """Соединение и рукопожатие.
 
         Ошибки:
-        AgentProcessError — запуск или initialize не состоялись.
+        AgentProcessError — соединение не открылось или рукопожатие не прошло.
         """
-        executable = self._command.executable
-        stderr_path = self._workdir.stderr_path
-        try:
-            stderr = stderr_path.open("ab")
-        except OSError as exc:
-            self._workdir.remove()
-            msg = (
-                f"agent process {executable!r}: opening its stderr log "
-                f"{stderr_path} failed: {exc}"
-            )
-            raise AgentProcessError(msg) from exc
 
-        with stderr:
-            try:
-                stdout, stdin, process = await self._stack.enter_async_context(
-                    spawn_stdio_transport(
-                        executable,
-                        *self._command.argv(self._workdir.settings_path),
-                        cwd=self._workdir.path,
-                        stderr=stderr.fileno(),
-                        limit=self.LINE_LIMIT,
-                        shutdown_timeout=self._command.stop_timeout_sec,
-                    )
-                )
-            except OSError as exc:
-                self._workdir.remove()
-                msg = (
-                    f"agent process {executable!r} did not start from "
-                    f"{self._workdir.path}: {exc}; check [env].agent_command"
-                )
-                raise AgentProcessError(msg) from exc
+    @abstractmethod
+    async def close(self) -> None:
+        """Соединение закрывается, ресурсы наследника освобождаются."""
 
-        self._process = process
-        self._connection = ClientConnection(self._client, self._answer, stdin, stdout)
-        # соединение закрывается раньше процесса: выход из стека — в обратном порядке
-        self._stack.push_async_callback(self._connection.close)
+    @abstractmethod
+    def _cwd(self) -> str:
+        """Рабочий каталог сессий (cwd методов session/*)."""
+
+    async def _handshake(
+        self, connection: ClientConnection, start_timeout_sec: float
+    ) -> schema.InitializeResponse:
+        """Рукопожатие v2 в срок; агент без серверов type "acp" не годится.
+
+        Ошибки:
+        AgentProcessError — срок вышел, версия чужая или нет mcp.acp.
+        """
+        self._connection = connection
         try:
-            response = await asyncio.wait_for(
-                self._initialize(), self._command.start_timeout_sec
-            )
+            response = await asyncio.wait_for(self._initialize(), start_timeout_sec)
         except TimeoutError as exc:
             msg = (
-                f"agent process {executable!r} (pid {process.pid}) did not answer "
-                f"initialize within {self._command.start_timeout_sec}s: "
-                f"{self.log_tail()}"
+                f"{self.label()} did not answer initialize within "
+                f"{start_timeout_sec}s: {self.log_tail()}"
             )
-            await self.close()
             raise AgentProcessError(msg) from exc
         except AcpClientError as exc:
             msg = (
-                f"agent process {executable!r} failed the ACP handshake, this "
-                f"chat speaks ACP version {AcpVersion.V2.value}: {exc}: "
-                f"{self.log_tail()}"
+                f"{self.label()} failed the ACP handshake, this chat speaks ACP "
+                f"version {AcpVersion.V2.value}: {exc}: {self.log_tail()}"
             )
-            await self.close()
             raise AgentProcessError(msg) from exc
 
         session = None
@@ -488,36 +464,29 @@ class AgentProcess:
 
         if acp is None:
             msg = (
-                f"agent process {executable!r} (pid {process.pid}): agent "
-                f"{response.info.name!r} does not declare "
+                f"{self.label()}: agent {response.info.name!r} does not declare "
                 "capabilities.session.mcp.acp in initialize, expected it to take "
                 "the MCP servers of the chat as servers of type 'acp'"
             )
-            await self.close()
             raise AgentProcessError(msg)
 
         logger.info(
-            "agent process started: pid=%s agent=%s/%s",
-            process.pid,
-            response.info.name,
-            response.info.version,
+            "%s: agent=%s/%s", self.label(), response.info.name, response.info.version
         )
 
         return response
 
     async def open_session(self) -> schema.NewSessionResponse:
-        """Новая сессия в приватном каталоге с серверами процесса; id и
-        настройки (`configOptions`) выдаёт агент, режим разрешений по ним
-        выставляет клиент."""
+        """Новая сессия с серверами соединения; id и настройки
+        (`configOptions`) выдаёт агент, режим разрешений по ним выставляет
+        клиент."""
         connection = self._require_connection()
 
         opened = await self._request(
             "session/new",
-            connection.new_session(
-                cwd=str(self._workdir.path), mcp_servers=list(self._servers)
-            ),
+            connection.new_session(cwd=self._cwd(), mcp_servers=list(self._servers)),
         )
-        await self._select_mode(opened.session_id, opened.config_options)
+        await self._configure(opened.session_id, opened.config_options)
 
         return opened
 
@@ -535,12 +504,12 @@ class AgentProcess:
             "session/resume",
             connection.resume_session(
                 session_id=session_id,
-                cwd=str(self._workdir.path),
+                cwd=self._cwd(),
                 mcp_servers=list(self._servers),
                 replay_from=replay_from,
             ),
         )
-        await self._select_mode(session_id, resumed.config_options)
+        await self._configure(session_id, resumed.config_options)
 
         return resumed
 
@@ -638,19 +607,19 @@ class AgentProcess:
             "session/fork",
             connection.fork_session(
                 session_id=session_id,
-                cwd=str(self._workdir.path),
+                cwd=self._cwd(),
                 mcp_servers=list(self._servers),
                 **meta,
             ),
         )
-        await self._select_mode(forked.session_id, forked.config_options)
+        await self._configure(forked.session_id, forked.config_options)
 
         return forked
 
-    async def _select_mode(
+    async def _configure(
         self, session_id: str, options: Sequence[ConfigOption] | None
     ) -> None:
-        """Режим разрешений открытой сессии по её `configOptions`.
+        """Настройки открытой сессии по её `configOptions`: режим разрешений.
 
         Ошибки:
         AgentRequestError — агент отказал в `session/set_config_option`.
@@ -664,31 +633,6 @@ class AgentProcess:
         logger.info(
             "session %s: permission mode %r set over ACP", session_id, change.value
         )
-
-    async def close(self) -> None:
-        """Соединение закрывается, процесс гасит SDK (конец ввода, ожидание,
-        terminate и kill); каталог с файлом настроек удаляется в любом исходе."""
-        try:
-            await self._stack.aclose()
-        finally:
-            self._workdir.remove()
-
-        if self._process is not None:
-            logger.info(
-                "agent process exited: pid=%s code=%s",
-                self._process.pid,
-                self._process.returncode,
-            )
-
-    def log_tail(self) -> str:
-        """Хвост stderr агента: причина отказа без него не видна."""
-        path = self._workdir.stderr_path
-        if not path.is_file():
-            return ""
-
-        text = path.read_text(encoding=WorkdirFile.ENCODING.value, errors="replace")
-
-        return "\n".join(text.splitlines()[-self.LOG_TAIL_LINES :])
 
     async def _answer(self, message: McpMessage) -> McpOutcome:
         return await self._relay.answer(message, self._require_connection().notify)
@@ -724,13 +668,13 @@ class AgentProcess:
         AgentProcessError — агент не ответил в срок, соединение закрыто или
             ответ не по схеме.
         """
-        limit = self._command.request_timeout_sec
+        limit = self._request_timeout_sec
         try:
             async with asyncio.timeout(limit):
                 return await self._answer_of(method, call)
         except TimeoutError as exc:
             msg = (
-                f"{method}: expected the agent to answer within {limit}s "
+                f"{method}: expected {self.label()} to answer within {limit}s "
                 f"([agent.process].request_timeout_sec), got no answer: "
                 f"{self.log_tail()}"
             )
@@ -747,28 +691,328 @@ class AgentProcess:
             return await call
         except RequestError as exc:
             raise AgentRequestError(method, exc.code, str(exc), exc.data) from exc
-        except ConnectionError as exc:
-            msg = f"{method}: the agent connection is closed: {exc}: {self.log_tail()}"
+        except self.LINK_ERRORS as exc:
+            msg = (
+                f"{method}: the connection to {self.label()} is closed: {exc}: "
+                f"{self.log_tail()}"
+            )
             raise AgentProcessError(msg) from exc
         except ValidationError as exc:
             msg = f"{method}: the agent answered off the ACP v2 schema: {exc}"
             raise AgentProcessError(msg) from exc
 
-    def _require_process(self) -> Process:
-        if self._process is None:
-            raise AgentProcessError(self._unstarted("its pid and exit"))
-
-        return self._process
-
     def _require_connection(self) -> ClientConnection:
         if self._connection is None:
-            raise AgentProcessError(self._unstarted("an ACP request"))
+            msg = (
+                f"{self.label()}: an ACP request needs an open connection, got "
+                "none: start() was not called"
+            )
+            raise AgentProcessError(msg)
 
         return self._connection
 
-    def _unstarted(self, wanted: str) -> str:
-        """Текст отказа процессу, к которому обратились до запуска."""
+
+class AgentProcess(AgentLink):
+    """Реализация AgentLink своим процессом агента одной вкладки: запуск из
+    приватного каталога, соединение ClientConnection по его stdio,
+    остановка и удаление каталога.
+
+    Создаётся запуском агента (AgentLauncher) в режиме процесса с
+    объявлениями серверов процесса. Процессом управляет
+    spawn_stdio_transport SDK; stderr агента пишется в журнал приватного
+    каталога и читается при отказе.
+    """
+
+    LINE_LIMIT: ClassVar[int] = 16 * 1024 * 1024
+    LOG_TAIL_LINES: ClassVar[int] = 20
+
+    def __init__(  # noqa: PLR0913 — процесс собирается всеми своими входами
+        self,
+        command: AgentCommand,
+        workdir: AgentWorkdir,
+        client: Client,
+        relay: McpRelay,
+        servers: Sequence[schema.AcpMcpServer],
+        version: str,
+    ) -> None:
+        super().__init__(client, relay, servers, version, command.request_timeout_sec)
+        self._command = command
+        self._workdir = workdir
+        self._process: Process | None = None
+
+    @property
+    def workdir(self) -> AgentWorkdir:
+        return self._workdir
+
+    @property
+    def pid(self) -> int:
+        return self._require_process().pid
+
+    def label(self) -> str:
+        if self._process is None:
+            return f"agent process {self._command.executable!r} (not started)"
+
+        return f"agent process {self._command.executable!r} (pid {self._process.pid})"
+
+    def alive(self) -> bool:
+        """Процесс не вышел и его вывод не кончился: агент, закрывший stdout,
+        ответить уже не сможет, хотя процесс ещё жив."""
+        if self._process is None:
+            return False
+
+        if self._process.returncode is not None:
+            return False
+
+        if self._connection is None:
+            return False
+
+        return self._connection.connected()
+
+    async def exited(self) -> int:
+        """Код выхода процесса, когда он завершится."""
+        return await self._require_process().wait()
+
+    async def ended(self) -> None:
+        await self.exited()
+
+    def _cwd(self) -> str:
+        return str(self._workdir.path)
+
+    async def start(self) -> schema.InitializeResponse:
+        """Запуск и рукопожатие v2; процесс, не ответивший в срок, говорящий
+        на чужой версии или без серверов type "acp", гасится.
+
+        Ошибки:
+        AgentProcessError — запуск или initialize не состоялись.
+        """
+        executable = self._command.executable
+        stderr_path = self._workdir.stderr_path
+        try:
+            stderr = stderr_path.open("ab")
+        except OSError as exc:
+            self._workdir.remove()
+            msg = (
+                f"agent process {executable!r}: opening its stderr log "
+                f"{stderr_path} failed: {exc}"
+            )
+            raise AgentProcessError(msg) from exc
+
+        with stderr:
+            try:
+                stdout, stdin, process = await self._stack.enter_async_context(
+                    spawn_stdio_transport(
+                        executable,
+                        *self._command.argv(self._workdir.settings_path),
+                        cwd=self._workdir.path,
+                        stderr=stderr.fileno(),
+                        limit=self.LINE_LIMIT,
+                        shutdown_timeout=self._command.stop_timeout_sec,
+                    )
+                )
+            except OSError as exc:
+                self._workdir.remove()
+                msg = (
+                    f"agent process {executable!r} did not start from "
+                    f"{self._workdir.path}: {exc}; check [env].agent_command"
+                )
+                raise AgentProcessError(msg) from exc
+
+        self._process = process
+        connection = ClientConnection(self._client, self._answer, stdin, stdout)
+        # соединение закрывается раньше процесса: выход из стека — в обратном порядке
+        self._stack.push_async_callback(connection.close)
+        try:
+            return await self._handshake(connection, self._command.start_timeout_sec)
+        except AgentProcessError:
+            await self.close()
+            raise
+
+    async def close(self) -> None:
+        """Соединение закрывается, процесс гасит SDK (конец ввода, ожидание,
+        terminate и kill); каталог с файлом настроек удаляется в любом исходе."""
+        try:
+            await self._stack.aclose()
+        finally:
+            self._workdir.remove()
+
+        if self._process is not None:
+            logger.info(
+                "agent process exited: pid=%s code=%s",
+                self._process.pid,
+                self._process.returncode,
+            )
+
+    def log_tail(self) -> str:
+        """Хвост stderr агента: причина отказа без него не видна."""
+        path = self._workdir.stderr_path
+        if not path.is_file():
+            return ""
+
+        text = path.read_text(encoding=WorkdirFile.ENCODING.value, errors="replace")
+
+        return "\n".join(text.splitlines()[-self.LOG_TAIL_LINES :])
+
+    def _require_process(self) -> Process:
+        if self._process is None:
+            msg = (
+                f"agent process {self._command.executable!r} in "
+                f"{self._workdir.path}: its pid and exit need a started process, "
+                "got none: start() was not called"
+            )
+            raise AgentProcessError(msg)
+
+        return self._process
+
+
+class SessionProfileSelector:
+    """Профиль агента открытой сессии в службе агента: настройка категории
+    model из `configOptions` получает имя профиля чата. Создаёт AgentService,
+    запрос шлёт он."""
+
+    CATEGORY: ClassVar[str] = "model"
+
+    def __init__(self, profile: str) -> None:
+        self._profile = profile
+
+    def change(
+        self, session_id: str, options: Sequence[ConfigOption] | None
+    ) -> ModeChange | None:
+        """Смена профиля, которую стоит запросить; None — он уже выбран.
+
+        Ошибки:
+        AgentProcessError — служба не предлагает профиль чата.
+        """
+        option = self._option(options)
+        if option is None:
+            raise AgentProcessError(self._missing(session_id, []))
+
+        offered = list(SessionModeSelector.values(option))
+        if self._profile not in offered:
+            raise AgentProcessError(self._missing(session_id, offered))
+
+        if option.current_value == self._profile:
+            return None
+
+        return ModeChange(config_id=option.config_id, value=self._profile)
+
+    def _missing(self, session_id: str, offered: Sequence[str]) -> str:
         return (
-            f"agent process {self._command.executable!r} in {self._workdir.path}: "
-            f"{wanted} needs a started process, got none: start() was not called"
+            f"session {session_id}: the agent service offers model profiles "
+            f"{list(offered)}, the chat profile {self._profile!r} is not among "
+            f"them; declare [agent.profiles.{self._profile}] in the service and "
+            "grant it to the roles of the user"
         )
+
+    def _option(
+        self, options: Sequence[ConfigOption] | None
+    ) -> schema.SelectSessionConfigOption | None:
+        if options is None:
+            return None
+
+        for option in options:
+            if not isinstance(option, schema.SelectSessionConfigOption):
+                continue
+
+            if option.category == self.CATEGORY:
+                return option
+
+        return None
+
+
+class AgentService(AgentLink):
+    """Реализация AgentLink службой агента (boba-agent-service): соединение
+    ACP по streamable HTTP SDK с входом proxy от имени пользователя вкладки.
+
+    Создаётся запуском агента (AgentLauncher) в режиме службы. Процесс
+    агента под каждую сессию запускает служба, профили моделей и историю
+    держит она; чат выбирает профиль агента настройкой сессии `model` по
+    имени профиля чата. Токен службы получает штатный провайдер OAuth
+    (ProxyAuth) по отказу 401 и обновляет его сам.
+    """
+
+    LINK_ERRORS: ClassVar[tuple[type[Exception], ...]] = (
+        ConnectionError,
+        AcpHttpStatusError,
+        httpx2.HTTPError,
+        McpClientError,
+        OAuthFlowError,
+    )
+    """Обрыв соединения, отказ HTTP и несостоявшийся вход в службу."""
+    WATCH_SEC: ClassVar[float] = 1.0
+    CWD: ClassVar[str] = "/"
+    """Рабочий каталог сессий: каталогов чата у службы нет."""
+
+    def __init__(  # noqa: PLR0913 — соединение собирается всеми своими входами
+        self,
+        config: AgentServiceConfig,
+        caller: McpCaller,
+        profile: str,
+        client: Client,
+        relay: McpRelay,
+        servers: Sequence[schema.AcpMcpServer],
+        version: str,
+    ) -> None:
+        super().__init__(client, relay, servers, version, config.request_timeout_sec)
+        self._config = config
+        self._caller = caller
+        self._url = config.endpoint.url()
+        self._profile = SessionProfileSelector(profile)
+
+    def label(self) -> str:
+        return f"agent service {self._url} [user={self._caller.login}]"
+
+    def alive(self) -> bool:
+        if self._connection is None:
+            return False
+
+        return self._connection.connected()
+
+    async def ended(self) -> None:
+        while self.alive():
+            await asyncio.sleep(self.WATCH_SEC)
+
+    def log_tail(self) -> str:
+        return "the agent service log names the cause"
+
+    def _cwd(self) -> str:
+        return self.CWD
+
+    async def start(self) -> schema.InitializeResponse:
+        """Ошибки:
+        AgentProcessError — вход, соединение или рукопожатие не состоялись.
+        """
+        auth = self._config.auth.on_behalf_of(self._caller).httpx_auth(self._url)
+        http = httpx2.AsyncClient(auth=auth, timeout=httpx2.Timeout(None))
+        self._stack.push_async_callback(http.aclose)
+        transport = create_http_stream(self._url, client=http)
+        connection = ClientConnection(self._client, self._answer, transport, None)
+        self._stack.push_async_callback(connection.close)
+        try:
+            return await self._handshake(connection, self._config.start_timeout_sec)
+        except AgentProcessError:
+            await self.close()
+            raise
+
+    async def close(self) -> None:
+        await self._stack.aclose()
+
+    async def _configure(
+        self, session_id: str, options: Sequence[ConfigOption] | None
+    ) -> None:
+        """Профиль агента по имени профиля чата, затем режим разрешений.
+
+        Ошибки:
+        AgentProcessError — службы не предлагает профиль, не ответила или ушла.
+        AgentRequestError — служба отказала в `session/set_config_option`.
+        """
+        change = self._profile.change(session_id, options)
+        if change is not None:
+            changed = await self.set_config_option(
+                session_id, change.config_id, change.value
+            )
+            options = changed.config_options
+            logger.info(
+                "session %s: agent profile %r selected", session_id, change.value
+            )
+
+        await super()._configure(session_id, options)

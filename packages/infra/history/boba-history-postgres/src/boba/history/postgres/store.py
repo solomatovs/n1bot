@@ -14,8 +14,16 @@
 записи уходят каскадом, а сессию работающего процесса удалить нельзя. Копия
 (ветвление) — одна транзакция `insert … select` записей источника до записи
 среза под новым идентификатором; замок источника не берётся. Схема и таблицы
-создаются файлами schema/*.sql пакета под замком DDL, раскладка таблиц
+создаются файлами schema/*.sql пакета под замком DDL (колонка владельца
+добавляется к таблицам прежнего выпуска на месте), раскладка таблиц
 сверяется с ожидаемой.
+
+Хранилище с владельцем (логин пользователя, от имени которого работает
+процесс) заводит сессии на него и видит только его сессии: чужая сессия и
+сессия без владельца для него не существуют — чтение пусто, в списке её нет,
+захват, копия и удаление отвечают как на сессию без записей. Хранилище без
+владельца (процесс, запущенный по stdio) видит все сессии и заводит новые
+без владельца.
 
 Ошибки:
 HistoryError — база недоступна или отказала, пачка не по порядку seq или с
@@ -92,6 +100,7 @@ class SessionColumn(StrEnum):
 
     ID = "id"
     CREATED_AT = "created_at"
+    OWNER = "owner"
 
 
 class HistoryColumn(StrEnum):
@@ -207,6 +216,8 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
     Создаёт вход процесса по настройке `history` вида `postgres`; пул берётся
     по конфигу подключения при первом обращении, как у остальных таблиц.
     Раскладку записи по колонкам и сборку обратно ведёт RecordFrames.
+    owner — логин владельца сессий процесса (ключ `history.owner`); None —
+    процесс без владельца, ему видны все сессии.
     """
 
     LABEL: ClassVar[str] = "history"
@@ -217,16 +228,19 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
         self,
         postgres: PostgresConfig,
         db_schema: str,
+        owner: str | None,
         pool: PostgresPool | None = None,
     ) -> None:
         super().__init__(postgres, db_schema, pool)
         self._config = postgres
+        self._owner = owner
         self._frames = RecordFrames()
         self._held: dict[str, HeldSession] = {}
         self._ready = False
 
     async def acquire(self, session: SessionId) -> SessionLease:
         await self._prepare()
+        await self._check_owner(session)
         conn = await self._dedicated()
         try:
             await self._lock(conn, session)
@@ -257,12 +271,13 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
             self._query()
             .add(
                 """
-                insert into {schema}.session (id, created_at)
-                values (%(session_id)s, %(created_at)s)
+                insert into {schema}.session (id, created_at, owner)
+                values (%(session_id)s, %(created_at)s, %(owner)s)
                 on conflict (id) do nothing
                 """,
                 session_id=held.session.value,
                 created_at=fresh[0].timestamp,
+                owner=self._owner,
             )
             .build()
         )
@@ -293,20 +308,27 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
             .add(
                 """
                 select
-                    session_id,
-                    seq,
-                    type,
-                    to_char(recorded_at at time zone 'UTC', %(stamp)s) as recorded_at,
-                    record
+                    h.session_id,
+                    h.seq,
+                    h.type,
+                    to_char(h.recorded_at at time zone 'UTC', %(stamp)s)
+                        as recorded_at,
+                    h.record
                 from
-                    {schema}.history
+                    {schema}.history as h
+                    join {schema}.session as s on s.id = h.session_id
                 where
-                    session_id = %(session_id)s
-                order by
-                    seq
+                    h.session_id = %(session_id)s
                 """,
                 stamp=self.STAMP,
                 session_id=session.value,
+            )
+            .when(self._owned(), "and s.owner = %(owner)s", owner=self._owner)
+            .add(
+                """
+                order by
+                    h.seq
+                """
             )
             .build()
         )
@@ -350,10 +372,13 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
                             h.seq desc
                         limit 1
                     ) as tail
+                where
+                    true
                 """,
                 stamp=self.STAMP,
             )
-            .when(cursor is not None, "where s.id > %(cursor)s", cursor=cursor)
+            .when(self._owned(), "and s.owner = %(owner)s", owner=self._owner)
+            .when(cursor is not None, "and s.id > %(cursor)s", cursor=cursor)
             .add(
                 """
                 order by
@@ -404,6 +429,7 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
                 """,
                 session_id=session.value,
             )
+            .when(self._owned(), "and owner = %(owner)s", owner=self._owner)
             .build()
         )
         action = f"deleting session '{session.value}'"
@@ -429,7 +455,7 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
         await self._prepare()
         action = f"copying session '{source.value}' to '{target.value}'"
         async with self._transaction(action) as cur:
-            if not await self._exists(cur, source):
+            if not await self._exists(cur, source, self._owned()):
                 msg = (
                     f"Session '{source.value}' cannot be copied: it has no records "
                     "in Postgres, there is nothing to branch."
@@ -440,7 +466,7 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
             if up_to is not None:
                 end = await self._seq_of(cur, source, up_to)
 
-            if await self._exists(cur, target):
+            if await self._exists(cur, target, False):
                 msg = (
                     f"Session '{target.value}' cannot receive the copy of "
                     f"'{source.value}': it already has records in Postgres."
@@ -469,10 +495,11 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
                     """
                     ),
                     opened as (
-                        insert into {schema}.session (id, created_at)
+                        insert into {schema}.session (id, created_at, owner)
                         select
                             %(target)s,
-                            min(recorded_at)
+                            min(recorded_at),
+                            %(owner)s
                         from
                             copied
                         having
@@ -490,6 +517,7 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
                         copied
                     """,
                     target=target.value,
+                    owner=self._owner,
                 )
                 .build()
             )
@@ -497,8 +525,9 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
 
             return cur.rowcount
 
-    async def _exists(self, cur: Cursor, session: SessionId) -> bool:
-        """Есть ли строка сессии: её заводит первая запись, удаление уносит."""
+    async def _exists(self, cur: Cursor, session: SessionId, owned: bool) -> bool:
+        """Есть ли строка сессии: её заводит первая запись, удаление уносит;
+        owned — только среди сессий владельца хранилища."""
         query = (
             self._query()
             .add(
@@ -511,9 +540,14 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
                             {schema}.session
                         where
                             id = %(session_id)s
-                    ) as present
                 """,
                 session_id=session.value,
+            )
+            .when(owned, "and owner = %(owner)s", owner=self._owner)
+            .add(
+                """
+                    ) as present
+                """
             )
             .build()
         )
@@ -523,6 +557,54 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
             return False
 
         return bool(row[ProbeColumn.PRESENT.value])
+
+    def _owned(self) -> bool:
+        """Хранилище видит только сессии своего владельца."""
+        return self._owner is not None
+
+    async def _check_owner(self, session: SessionId) -> None:
+        """Захват сессии, заведённой на другого владельца или без него,
+        отвечает так же, как на сессию без записей: чужая сессия не видна.
+
+        Ошибки:
+        SessionNotFoundError — сессия есть, но принадлежит не владельцу хранилища.
+        HistoryError — база отказала.
+        """
+        if not self._owned():
+            return
+
+        query = (
+            self._query()
+            .add(
+                """
+                select
+                    exists (
+                        select
+                            1
+                        from
+                            {schema}.session
+                        where
+                            id = %(session_id)s
+                            and owner is distinct from %(owner)s
+                    ) as present
+                """,
+                session_id=session.value,
+                owner=self._owner,
+            )
+            .build()
+        )
+        action = f"checking the owner of session '{session.value}'"
+        row = await self._row(query, action)
+        foreign = False
+        if row is not None:
+            foreign = bool(row[ProbeColumn.PRESENT.value])
+
+        if foreign:
+            msg = (
+                f"Session '{session.value}' is not found among the sessions of "
+                f"'{self._owner}': it has no records this process may open."
+            )
+            raise SessionNotFoundError(msg)
 
     async def _seq_of(self, cur: Cursor, session: SessionId, uuid: str) -> int:
         """Ошибки:

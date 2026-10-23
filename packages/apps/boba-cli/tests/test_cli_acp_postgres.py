@@ -5,9 +5,11 @@
 заголовком и каталогом; `session/delete` при занятом замке отвергается, без
 замка удаляет записи, повтор — успех; `session/fork` сессии, которую держит
 другой процесс, даёт наблюдателю свою сессию с той же беседой, и ход в ней
-идёт при занятом замке исходной. Процесс входит в Postgres билетом
-Kerberos из кэша тестового стенда: пути к кэшу и krb5.conf едут окружением,
-секретов в окружении нет."""
+идёт при занятом замке исходной. Процесс с владельцем (`history.owner`, его
+пишет служба агента) не видит сессий другого владельца: список пуст,
+возобновление и ветка отвечают «нет такой сессии», удаление её не трогает.
+Процесс входит в Postgres билетом Kerberos из кэша тестового стенда: пути к
+кэшу и krb5.conf едут окружением, секретов в окружении нет."""
 
 from __future__ import annotations
 
@@ -82,20 +84,27 @@ class PostgresStand:
             sslmode=self._postgres.sslmode,
         )
 
-    def settings(self, process: AcpProcess) -> Document:
+    def settings(self, process: AcpProcess, owner: str | None) -> Document:
+        """Файл настроек процесса; owner — логин владельца сессий процесса,
+        как его пишет служба агента, None — процесс без владельца (stdio)."""
         document = process.settings_document(
             mode="bypassPermissions", allow_bypass=True
         )
-        document["history"] = {
+        history: Document = {
             "kind": "postgres",
             "dsn": self.dsn(),
             "schema": self._schema,
         }
+        if owner is not None:
+            history["owner"] = owner
+
+        document["history"] = history
 
         return document
 
     def store(self, pool: AsyncPostgresPool) -> PostgresHistoryStore:
-        return PostgresHistoryStore(self._postgres, self._schema, pool)
+        """Хранилище без владельца: видит сессии всех процессов."""
+        return PostgresHistoryStore(self._postgres, self._schema, None, pool)
 
     async def human_prompts(
         self, store: PostgresHistoryStore, session_id: str
@@ -119,11 +128,18 @@ class PostgresStand:
 
 class Pair:
     """Два процесса над одной сессией: держатель и наблюдатель, их клиенты,
-    регистрации и соединения."""
+    регистрации и соединения; owners — владельцы сессий держателя и
+    наблюдателя (None — процесс без владельца)."""
 
     POOL_CLOSED: ClassVar[str] = "AsyncPostgresPool closed"
 
-    def __init__(self, stand: PostgresStand, model: FakeModel, tmp_path: Path) -> None:
+    def __init__(
+        self,
+        stand: PostgresStand,
+        model: FakeModel,
+        tmp_path: Path,
+        owners: tuple[str | None, str | None],
+    ) -> None:
         (tmp_path / "a").mkdir()
         (tmp_path / "b").mkdir()
         self.holder = AcpProcess(tmp_path / "a", model, environment=stand.environment())
@@ -135,6 +151,7 @@ class Pair:
         self.holder_registration = StandRegistration([StandRegistration.STAND], 0)
         self.observer_registration = StandRegistration([StandRegistration.STAND], 0)
         self._stand = stand
+        self._owners = owners
         self.holder_conn: Any = None
         self.observer_conn: Any = None
 
@@ -142,12 +159,12 @@ class Pair:
         self.holder_conn = await self.holder.start(
             self.holder_client,
             self.holder_registration,
-            self._stand.settings(self.holder),
+            self._stand.settings(self.holder, self._owners[0]),
         )
         self.observer_conn = await self.observer.start(
             self.observer_client,
             self.observer_registration,
-            self._stand.settings(self.observer),
+            self._stand.settings(self.observer, self._owners[1]),
         )
         await handshake(self.holder_conn)
         await handshake(self.observer_conn)
@@ -180,7 +197,7 @@ class TestTwoProcesses:
         model: FakeModel,
         tmp_path: Path,
     ) -> None:
-        pair = Pair(stand, model, tmp_path)
+        pair = Pair(stand, model, tmp_path, (None, None))
         await pair.start()
         try:
             session_id = await self.holder_turn(pair, tmp_path)
@@ -283,7 +300,7 @@ class TestForkOfAHeldSession:
         model: FakeModel,
         tmp_path: Path,
     ) -> None:
-        pair = Pair(stand, model, tmp_path)
+        pair = Pair(stand, model, tmp_path, (None, None))
         replay = acp_schema.ReplayFromStartVariant()
         await pair.start()
         try:
@@ -360,5 +377,55 @@ class TestForkOfAHeldSession:
             await pair.observer_conn.close_session(session_id=session_id)
             await pair.delete(session_id)
             await pair.delete(branch_id)
+        finally:
+            await pair.stop()
+
+
+class TestOwners:
+    async def test_session_of_alice_is_invisible_to_bob(
+        self,
+        stand: PostgresStand,
+        pool: AsyncPostgresPool,
+        model: FakeModel,
+        tmp_path: Path,
+    ) -> None:
+        pair = Pair(stand, model, tmp_path, ("alice", "bob"))
+        await pair.start()
+        try:
+            session = await pair.holder_conn.new_session(
+                cwd=str(tmp_path), mcp_servers=[StandRegistration.STAND]
+            )
+            session_id = session.session_id
+            _, idle = await pair.holder.turn(
+                pair.holder_client,
+                session_id,
+                [acp_schema.TextContentBlock(text=ScenarioName.ANSWER.value)],
+            )
+            assert idle.stop_reason == StopReason.END_TURN
+            await pair.holder_conn.close_session(session_id=session_id)
+
+            assert (await pair.observer_conn.list_sessions()).sessions == []
+            with pytest.raises(RequestError) as resumed:
+                await pair.observer_conn.resume_session(
+                    cwd=str(tmp_path),
+                    session_id=session_id,
+                    mcp_servers=[StandRegistration.STAND],
+                )
+
+            assert resumed.value.code == AcpErrorCode.RESOURCE_NOT_FOUND
+            with pytest.raises(RequestError) as forked:
+                await pair.observer_conn.fork_session(
+                    session_id=session_id,
+                    cwd=str(tmp_path),
+                    mcp_servers=[StandRegistration.STAND],
+                )
+
+            assert forked.value.code == AcpErrorCode.RESOURCE_NOT_FOUND
+            await pair.delete(session_id)
+
+            listed = await pair.holder_conn.list_sessions()
+            assert [s.session_id for s in listed.sessions] == [session_id]
+            human = await stand.human_prompts(stand.store(pool), session_id)
+            assert human == [ScenarioName.ANSWER.value]
         finally:
             await pair.stop()

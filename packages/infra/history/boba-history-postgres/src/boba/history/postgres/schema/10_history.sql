@@ -3,6 +3,10 @@ create table if not exists {schema}.session (
     created_at timestamptz not null
 );
 
+alter table {schema}.session add column if not exists owner text;
+
+create index if not exists session_owner_id_idx on {schema}.session (owner, id);
+
 create table if not exists {schema}.history (
     session_id  text        not null references {schema}.session on delete cascade,
     seq         integer     not null,
@@ -20,6 +24,9 @@ comment on column {schema}.session.id is
 
 comment on column {schema}.session.created_at is
 'Время первой записи сессии.';
+
+comment on column {schema}.session.owner is
+'Логин пользователя, которому принадлежит сессия. Процесс агента, запущенный службой от имени пользователя, заводит сессии на него и видит, открывает, ветвит и удаляет только их. Пустое значение означает, что владелец неизвестен: сессию завёл процесс, запущенный по stdio без владельца, или она появилась раньше этой колонки. Такие сессии не видны ни одному пользователю службы, их видят только процессы без владельца; передать сессию пользователю можно, записав его логин в эту колонку.';
 
 comment on table {schema}.history is
 'История сессий агента: по строке на запись журнала в порядке seq внутри сессии. Общие для всех записей поля лежат колонками, всё остальное содержимое записи лежит в record.';
