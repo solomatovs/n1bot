@@ -45,8 +45,10 @@ from boba.identity.context import DelegatedTicket, NoUserCredential, Scope
 from boba.identity.errors import AuthenticationError, RefusalError
 from boba.mcp_client.client import (
     HttpEndpoint,
+    HttpLocation,
     McpServerApps,
     McpServerConfig,
+    McpServerLimits,
     McpServers,
     McpServersConfig,
     StdioCommand,
@@ -143,15 +145,16 @@ class TestMcpRelay:
 
     def _legacy(self, apps_slot: AppsSlot, call_timeout_sec: float) -> McpServers:
         endpoint = HttpEndpoint(
-            scheme="http",
-            host=apps_slot.host,
-            port=AppServer.LEGACY.value,
+            service=HttpLocation(
+                scheme="http", host=apps_slot.host, port=AppServer.LEGACY.value, path=""
+            ),
             path=apps_slot.PATH,
         )
         legacy = McpServerConfig(
             endpoint=endpoint,
-            connect_timeout_sec=20.0,
-            call_timeout_sec=call_timeout_sec,
+            limits=McpServerLimits(
+                connect_timeout_sec=20.0, call_timeout_sec=call_timeout_sec
+            ),
         )
 
         return McpServers(McpServersConfig(servers={"legacy": legacy}))
@@ -789,7 +792,8 @@ class TestMcpRelay:
         BACKEND_FAILED, а не ответ MCP, и не считает сервер живым."""
         endpoint = StdioCommand(command="/nonexistent/mcp-server")
         ghost = McpServerConfig(
-            endpoint=endpoint, connect_timeout_sec=5.0, call_timeout_sec=5.0
+            endpoint=endpoint,
+            limits=McpServerLimits(connect_timeout_sec=5.0, call_timeout_sec=5.0),
         )
         servers = McpServers(McpServersConfig(servers={"ghost": ghost}))
         try:
@@ -981,15 +985,14 @@ class TestAppRequests:
         """Ретранслятор над сервером notes контейнера boba-testapps —
         FastMCPApp на fastmcp[apps] с секцией apps."""
         endpoint = HttpEndpoint(
-            scheme="http",
-            host=apps_slot.host,
-            port=AppServer.NOTES.value,
+            service=HttpLocation(
+                scheme="http", host=apps_slot.host, port=AppServer.NOTES.value, path=""
+            ),
             path=apps_slot.PATH,
         )
         notes = McpServerConfig(
             endpoint=endpoint,
-            connect_timeout_sec=20.0,
-            call_timeout_sec=60.0,
+            limits=McpServerLimits(connect_timeout_sec=20.0, call_timeout_sec=60.0),
             apps=self.SANDBOX,
         )
         servers = McpServers(McpServersConfig(servers={"notes": notes}))

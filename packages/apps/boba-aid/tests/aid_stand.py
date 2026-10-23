@@ -205,14 +205,14 @@ class ServiceProcess:
         raise AssertionError(f"the service did not listen on port {self.port}")
 
     def servers(self) -> McpServersConfig:
-        location = {"scheme": "http", "host": "127.0.0.1", "port": self.port}
+        service = {"scheme": "http", "host": "127.0.0.1", "port": self.port, "path": ""}
         endpoint = {
             "transport": "streamable-http",
-            **location,
+            "service": service,
             "path": "/mcp/service",
             "auth": {
                 "auth": "proxy",
-                "issuer": {**location, "path": "/"},
+                "issuer": service,
                 "client_id": "stand-chat",
                 "client_secret": "stand-client-secret",
                 "secret": self.SECRET,
@@ -220,8 +220,7 @@ class ServiceProcess:
         }
         server = {
             "endpoint": endpoint,
-            "connect_timeout_sec": 30.0,
-            "call_timeout_sec": 60.0,
+            "limits": {"connect_timeout_sec": 30.0, "call_timeout_sec": 60.0},
         }
 
         return McpServersConfig.model_validate({"servers": {"boba": server}})
@@ -234,14 +233,16 @@ class ServiceProcess:
         server = {
             "endpoint": {
                 "transport": "streamable-http",
-                "scheme": "http",
-                "host": "127.0.0.1",
-                "port": self.port,
+                "service": {
+                    "scheme": "http",
+                    "host": "127.0.0.1",
+                    "port": self.port,
+                    "path": "",
+                },
                 "path": path,
                 "auth": {"auth": "bearer", "token": token},
             },
-            "connect_timeout_sec": 30.0,
-            "call_timeout_sec": 60.0,
+            "limits": {"connect_timeout_sec": 30.0, "call_timeout_sec": 60.0},
         }
 
         return McpServersConfig.model_validate({"servers": {name: server}})

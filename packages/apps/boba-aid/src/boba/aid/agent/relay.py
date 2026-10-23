@@ -1037,7 +1037,7 @@ class McpRelay:
                 f"requestState {state!r} names no call the relay holds open for "
                 "an answer of the user; the call to the server ended before the "
                 "answer came: it was stopped or ran out of call_timeout_sec of "
-                f"[mcp.servers.{registration.server}]; call the tool again"
+                f"[mcp.servers.{registration.server}].limits; call the tool again"
             )
             raise MCPError(code=mt.INVALID_PARAMS, message=msg)
 

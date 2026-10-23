@@ -4,12 +4,7 @@ max_text_chars          = 200000
 search_context_chars    = 80
 tools                   = ["read_document", "document_outline", "search_document"]
 
-[ocr]
-    provider   = "rapidocr"
-    models_dir = "/var/cache/rapidocr"
-    language   = "eslav"
-    text_score = 0.5
-    threads    = 2
+ocr                     = "${ocr}"
 
 [sandbox]
     workspace = true
