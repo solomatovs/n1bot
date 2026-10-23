@@ -1990,9 +1990,12 @@ class AppUnderTest:
         while rows.count() != count:
             if time.monotonic() > deadline:
                 shown = "\n".join(self.console[-60:])
+                body = app.locator("body").inner_html()[:3000]
+                tree = app.locator("body").aria_snapshot()[:1500]
                 msg = (
                     f"the app draws {count} rows, got {rows.count()}; console and "
-                    f"failed requests:\n{shown}"
+                    f"failed requests:\n{shown}\nbody of the app:\n{body}\n"
+                    f"aria:\n{tree}\nresults the cards got:\n{self.results()}"
                 )
                 raise AssertionError(msg)
 
@@ -2023,6 +2026,27 @@ class AppUnderTest:
     def rows(app: FrameLocator) -> Locator:
         """Строки таблицы Prefab в приложении."""
         return app.locator("table tbody tr")
+
+    def results(self) -> list[str]:
+        """Итоги вызовов (prop result) карточек ToolApp по журналу сокета:
+        ключи и первые знаки structuredContent."""
+        found: list[str] = []
+        for frame in self.chat.log.of_event(ChatEvent.ELEMENT):
+            if not isinstance(frame.payload, dict):
+                continue
+
+            if frame.payload.get("name") != "ToolApp":
+                continue
+
+            props = frame.payload.get("props")
+            if not isinstance(props, dict) or "result" not in props:
+                continue
+
+            result = props["result"]
+            structured = json.dumps(result.get("structuredContent"))[:300]
+            found.append(f"{sorted(result)}: structuredContent={structured}")
+
+        return found
 
     def stats(self, case: AppCase) -> dict[str, int]:
         """Вызовы инструментов сервера по его счётчику."""
@@ -2289,7 +2313,8 @@ class TestFastmcpApps:
         apps = AppUnderTest(open_chat(fastmcp_stand, ""), llm_port, [case])
         app = apps.app(apps.ask(case))
 
-        expect(app.locator("svg").first).to_be_visible(timeout=AppUnderTest.WAIT_MS)
+        chart = app.locator(".recharts-surface").first
+        expect(chart).to_be_visible(timeout=AppUnderTest.WAIT_MS)
         apps.check_clean()
 
     @pytest.mark.xfail(
