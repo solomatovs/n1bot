@@ -108,6 +108,15 @@ class TabText(StrEnum):
         return texts.text(self.value, **values)
 
 
+class TabEvent(StrEnum):
+    """События сокета, которые aid шлёт вкладке сверх событий chainlit; их
+    принимает overlay фронта (useChatSession)."""
+
+    HISTORY_LOADED = "history_loaded"
+    """История треда воспроизведена (или не загрузилась): вкладка снимает
+    индикатор загрузки, который поставила на first_interaction возврата."""
+
+
 class TabAgent:
     """Агент треда вкладки в обработчиках chainlit: поднять под тред,
     загрузить историю, провести ход. Отказы пути агента (FAILURES) уходят в
@@ -758,7 +767,10 @@ class ThreadResume:
     """Возврат вкладки к треду: комнаты, агент вкладки и воспроизведение
     истории `session/resume` после того, как chainlit отдал вкладке тред (шагов
     в нём нет: их рисует воспроизведение). Ход треда, идущий где-то ещё,
-    вкладка догоняет.
+    вкладка догоняет. Агент поднимается тоже после отдачи треда, вне задачи
+    chainlit вокруг on_chat_resume: иначе вкладка всё это время видит «идёт
+    ход» (кнопку Stop) вместо загрузки. Конец загрузки вкладка узнаёт событием
+    TabEvent.HISTORY_LOADED при любом исходе.
 
     Создаёт его обработчик on_chat_resume на один возврат.
     """
@@ -784,13 +796,18 @@ class ThreadResume:
         )
 
         socket = ThreadRoom.websocket()
-        agent = await self._tab.start(current_session())
+        current = current_session()
 
         async def after_resume() -> None:
-            if agent is not None:
-                await self._tab.load(agent)
+            try:
+                agent = await self._tab.start(current)
+                if agent is not None:
+                    await self._tab.load(agent)
 
-            await self._follow_live_turn(socket, thread_id)
+                await self._follow_live_turn(socket, thread_id)
+            finally:
+                await current.emit(TabEvent.HISTORY_LOADED.value, {})
+
             logger.info("resume thread %s: session %s is ready", thread_id, socket.id)
 
         ResumeEmitter(socket, after_resume).install()
