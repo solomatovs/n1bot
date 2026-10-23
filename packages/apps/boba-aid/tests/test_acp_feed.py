@@ -376,6 +376,19 @@ def _declared(*features: ServerFeature) -> mt.ServerCapabilities:
     return mt.ServerCapabilities(extensions=extensions)
 
 
+def _labels(recorded: FakeEmitter) -> list[str]:
+    """Подписи контейнера хода QUESTION по кадрам ленты, по порядку."""
+    container = _id(QUESTION, StepRole.PROCESS)
+    names: list[str] = []
+    for _, step in recorded.frames:
+        if step.get(StepField.ID) != container:
+            continue
+
+        names.append(str(step.get(StepField.NAME)))
+
+    return names
+
+
 def _view(
     runtime_stand: StandRefs, storage: LocalStorageClient, journals: RemoteJournals
 ) -> UpdateView:
@@ -568,6 +581,102 @@ class TestUpdateViewIds:
 
         step = recorded.last()[_id(CALL, StepRole.TOOL)]
         assert "rows copied — 50 of 200" in str(step.get(StepField.OUTPUT))
+
+
+class TestContainerLabel:
+    """Подпись контейнера идущего хода — подпись шага его текущего действия:
+    меняется с началом шага и со сменой его статуса, по кадру на смену;
+    конец хода ставит итоговую. Воспроизведение истории промежуточных
+    подписей не шлёт."""
+
+    THINKING: ClassVar[str] = TEXTS.text(StepText.THINKING.value)
+    TWELVE_MS: ClassVar[str] = TEXTS.text("aid.feed.elapsedMs", ms=12)
+
+    def _turn(self) -> list[SessionUpdate]:
+        """Рассуждение, вызов с итогом, второй вызов — ещё идёт."""
+        return [
+            _thought("let me ", MESSAGE),
+            _thought("think", MESSAGE),
+            _call(CALL, "mcp__boba__pg_query", {"sql": "select 1", "intent": "count"}),
+            schema.SessionToolCallUpdate(tool_call_id=CALL, status="in_progress"),
+            _done(CALL, "1", _result(MarkdownResult(text="one row", elapsed_ms=12))),
+            _call(SECOND_CALL, "mcp__boba__bash", {"cmd": "ls", "intent": "list"}),
+        ]
+
+    @pytest.mark.anyio
+    async def test_live_turn_shows_its_current_action(
+        self,
+        runtime_stand: StandRefs,
+        storage: LocalStorageClient,
+        recorded: FakeEmitter,
+    ) -> None:
+        updates = _view(runtime_stand, storage, RemoteJournals())
+        updates.begin_turn(QUESTION)
+        await updates.view.await_model()
+        for update in self._turn():
+            await updates.apply(update)
+
+        running = recorded.last()[_id(QUESTION, StepRole.PROCESS)]
+        assert running.get("start") is not None, "a running container shimmers"
+        assert running.get("end") is None
+
+        failed = mt.CallToolResult(
+            content=[mt.TextContent(text="no such dir")], is_error=True
+        )
+        await updates.apply(
+            _done(SECOND_CALL, "x", failed.model_dump(mode="json", by_alias=True))
+        )
+        await updates.finish_turn()
+
+        assert _labels(recorded) == [
+            f"○ {self.THINKING}",
+            f"✔ {self.THINKING}",
+            "○ pg_query · count",
+            f"✔ pg_query · count · {self.TWELVE_MS}",
+            "○ bash · list",
+            "✖ bash · list",
+            TEXTS.text(StepText.DONE_STEPS.value, count=3),
+        ]
+        ended = recorded.last()[_id(QUESTION, StepRole.PROCESS)]
+        assert ended.get("end") is not None, "a finished container stops shimmering"
+
+    @pytest.mark.anyio
+    async def test_stopped_call_ends_the_turn_with_the_final_label(
+        self,
+        runtime_stand: StandRefs,
+        storage: LocalStorageClient,
+        recorded: FakeEmitter,
+    ) -> None:
+        updates = _view(runtime_stand, storage, RemoteJournals())
+        updates.begin_turn(QUESTION)
+        await updates.view.await_model()
+        await updates.apply(_call(CALL, "mcp__boba__bash", {"cmd": "sleep 9"}))
+        await updates.finish_turn()
+
+        assert _labels(recorded) == [
+            "○ bash",
+            "⊘ bash",
+            TEXTS.text(StepText.DONE_STEPS.value, count=1),
+        ]
+
+    @pytest.mark.anyio
+    async def test_replay_draws_only_the_final_label(
+        self,
+        runtime_stand: StandRefs,
+        storage: LocalStorageClient,
+        recorded: FakeEmitter,
+    ) -> None:
+        updates = _view(runtime_stand, storage, RemoteJournals())
+        await updates.apply(_question())
+        for update in self._turn():
+            await updates.apply(update)
+
+        await updates.finish_turn()
+
+        assert _labels(recorded) == [
+            TEXTS.text(StepText.CONTAINER.value),
+            TEXTS.text(StepText.DONE_STEPS.value, count=3),
+        ]
 
 
 class TestToolApps:
@@ -886,6 +995,33 @@ class TestQuestionRecords:
         }
 
     @pytest.mark.anyio
+    async def test_pending_question_is_the_current_action_of_the_turn(
+        self,
+        runtime_stand: StandRefs,
+        storage: LocalStorageClient,
+        recorded: FakeEmitter,
+    ) -> None:
+        updates = self._updates(storage)
+        await updates.view.await_model()
+        await updates.apply(_thought("which checks?", MESSAGE))
+        await updates.apply(_asked_call(CALL, self.ASKED))
+        output = {
+            "content": [{"type": "text", "text": "answered"}],
+            "structuredContent": {"picks": {}, "outcome": "accept"},
+            "isError": False,
+        }
+        await updates.apply(_done(CALL, "answered", output))
+
+        question = TEXTS.text(StepText.QUESTION.value)
+        thinking = TEXTS.text(StepText.THINKING.value)
+        assert _labels(recorded) == [
+            f"○ {thinking}",
+            f"✔ {thinking}",
+            f"○ {question}",
+            f"✔ {question}",
+        ]
+
+    @pytest.mark.anyio
     async def test_declined_and_interrupted_questions(
         self,
         runtime_stand: StandRefs,
@@ -1122,6 +1258,36 @@ class TestNestedCallSteps:
         sink = steps[_id(f"{CALL}_1", StepRole.TOOL)]
         assert "connecting to clickhouse" in str(sink.get(StepField.OUTPUT))
         assert "connecting to clickhouse" not in str(source.get(StepField.OUTPUT))
+
+    @pytest.mark.anyio
+    async def test_container_shows_the_running_node(
+        self,
+        runtime_stand: StandRefs,
+        storage: LocalStorageClient,
+        recorded: FakeEmitter,
+    ) -> None:
+        """Узлы связки встают разом: текущий — первый, затем узел, о котором
+        сервер сообщил ход работы или журнал."""
+        updates = self._updates(runtime_stand, storage, RemoteJournals(), True)
+        updates.begin_turn(QUESTION)
+        await updates.view.await_model()
+        await updates.apply(_call(CALL, "mcp__boba__workflow", {"nodes": self.NODES}))
+        text = schema.TextContentBlock(text="connecting to clickhouse")
+        progress = schema.SessionToolCallUpdate(
+            tool_call_id=CALL,
+            status="in_progress",
+            content=[schema.ContentToolCallContent(content=text)],
+            field_meta={CallDag.PROGRESS_NODE: "sink"},
+        )
+        await updates.apply(progress)
+        await updates.apply(progress)
+        await updates.journal_opened(_journal_opened(CALL, "srv-call_0", "src"))
+
+        assert _labels(recorded) == [
+            "○ pg_stream_out · copy orders out",
+            "○ ch_stream_in · load orders",
+            "○ pg_stream_out · copy orders out",
+        ]
 
     @pytest.mark.anyio
     async def test_journal_of_a_node_gives_its_step_the_button(

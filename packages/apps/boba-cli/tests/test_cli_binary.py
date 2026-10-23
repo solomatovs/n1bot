@@ -174,7 +174,7 @@ class TestBinary:
         prompt = call({"name": "mcp__stand__add", "arguments": {"a": 2, "b": 3}})
         view = FeedView()
         client = AcpClient()
-        conn = await boba.start(client, registration, stand.settings(boba))
+        conn = await boba.start(client, registration, stand.settings(boba, None))
         try:
             await handshake(conn)
             session = await conn.new_session(

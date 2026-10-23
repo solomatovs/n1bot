@@ -31,7 +31,7 @@ RELEASE_DIR     := $(SRC_DIR)/release
 
 # приложения сборки; цели build, test, dev, debug, release, install и site-keys работают
 # по одному приложению (APP=<имя> либо <цель>-<имя>), без APP — по всем
-APPS            := aid mcp
+APPS            := aid mcp agent
 APP             ?=
 
 # чат инструментов не исполняет: песочницы, cgroup и моделей у него нет
@@ -68,9 +68,25 @@ PARTS_mcp        :=
 BUILD_ARGS_mcp    =
 WEB_mcp          :=
 
+# boba-agent-service — агент по ACP по сети: служба запускает бинарник boba-bin на
+# сессию; песочницы, моделей и фронта нет
+PACKAGES_agent    = boba-agent-service
+IMPORTS_agent    := boba.agent_service.app
+MODULE_agent     := boba.agent_service
+STAGE_agent      := runtime-agent
+HEALTH_agent     := /health
+PORT_agent       := 8660
+PREFIX_agent     :=
+SANDBOX_agent    :=
+MODELS_agent     :=
+PARTS_agent      := bin/boba
+BUILD_ARGS_agent  = $(BIN_TOOL_ARGS) --build-arg BIN_ONNX=
+WEB_agent        :=
+
 # лимиты пользовательского юнита установки без Docker: те же, что у контейнера compose
 UNIT_LIMITS_aid      := 4G 400% 512
 UNIT_LIMITS_mcp      := 16G 800% 2048
+UNIT_LIMITS_agent    := 8G 400% 1024
 
 APP_PACKAGES      = $(PACKAGES_$(APP))
 APP_IMPORTS       = $(IMPORTS_$(APP))
