@@ -718,7 +718,7 @@ class TestContainerAvatar:
         )
         view.begin_turn(TURN)
 
-        await view.container()
+        await view.container(view.label(StepText.CONTAINER))
 
         containers = [
             step
