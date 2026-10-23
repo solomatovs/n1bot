@@ -123,13 +123,13 @@ class TestBinary:
         path = release_bin.path(ReleaseBinary.BOBA)
         started = time.monotonic()
         completed = subprocess.run(
-            [str(path), "acp", "--help"], check=True, capture_output=True, timeout=60
+            [str(path), "--help"], check=True, capture_output=True, timeout=60
         )
         elapsed = time.monotonic() - started
         size = path.stat().st_size
 
         assert b"--settings" in completed.stdout
-        print(f"\n./boba acp --help: {elapsed:.2f} s, size {size / 1_000_000:.1f} MB")
+        print(f"\n./boba --help: {elapsed:.2f} s, size {size / 1_000_000:.1f} MB")
         assert elapsed < self.HELP_CEILING_SEC
 
         data = path.read_bytes()

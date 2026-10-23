@@ -149,7 +149,7 @@
     question_timeout_sec = 3600
     [agent.process]
         command             = "${env.agent_command}"
-        args                = ["acp", "--setting-sources", ""]
+        args                = ["--stdio", "--setting-sources", ""]
         private_dir         = "${env.data}/agents"
         start_timeout_sec   = 30
         request_timeout_sec = 120

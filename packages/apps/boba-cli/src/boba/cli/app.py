@@ -1,6 +1,9 @@
-"""Вход процесса агента: команда `boba acp --settings <файл>`, самопроверка
-собранного бинарника `boba self-check` (boba.cli.package_data) и публикация
-схемы файла настроек `boba settings-schema` (JSON Schema слоя на stdout).
+"""Вход процесса агента: ACP по стандартным потокам `boba --stdio --settings
+<файл>`, служба `boba serve` (boba.cli.serve), самопроверка собранного
+бинарника `boba self-check` (boba.cli.package_data) и публикация схемы файла
+настроек `boba settings-schema` (JSON Schema слоя на stdout). `boba` без
+режима — интерактивный режим для человека; его ещё нет, процесс говорит об
+этом и выходит с кодом 2.
 
 Разбирает аргументы, собирает действующие настройки (Settings), на старте
 проверяет профили моделей (ModelCatalog), хранилище истории и скиллы и отдаёт
@@ -16,7 +19,7 @@
 Ошибки:
 SystemExit — настройки, профиль модели, хранилище или скиллы не годятся
     для запуска либо самопроверка не нашла данных пакетов в бинарнике; текст
-    называет причину, код выхода 1.
+    называет причину, код выхода 1. Без режима — код выхода 2.
 """
 
 from __future__ import annotations
@@ -36,7 +39,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
-from typing import BinaryIO, ClassVar
+from typing import BinaryIO, ClassVar, NoReturn
 
 from acp.experimental.v2 import schema
 
@@ -118,23 +121,27 @@ LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 
 
 class Command(StrEnum):
-    """Команды `boba`."""
+    """Режимы `boba`: подкоманды serve, self-check, settings-schema, ключ
+    --stdio и интерактивный режим — `boba` без режима."""
 
-    ACP = "acp"
+    STDIO = "--stdio"
     SERVE = "serve"
     SELF_CHECK = "self-check"
     SETTINGS_SCHEMA = "settings-schema"
+    INTERACTIVE = "interactive"
 
     @property
     def serves(self) -> bool:
-        """Команда поднимает процесс ACP; остальные печатают и выходят."""
-        return self is Command.ACP
+        """Режим поднимает процесс ACP по стандартным потокам; остальные
+        печатают и выходят."""
+        return self is Command.STDIO
 
 
 @dataclass(frozen=True)
 class Invocation:
-    """Разобранная командная строка: команда и параметры запуска; у
-    `self-check` и `settings-schema` параметров нет, они остаются пустыми."""
+    """Разобранная командная строка: режим и параметры запуска; у
+    служебных подкоманд и интерактивного режима параметров нет, они
+    остаются пустыми."""
 
     command: Command
     arguments: Arguments
@@ -153,6 +160,28 @@ class ServeInvocation:
 
     config: Path
     site: Path
+
+
+class InteractiveMode:
+    """Интерактивный режим для человека — `boba` без режима. Его ещё нет:
+    refuse говорит об этом, подсказывает режимы запуска и выходит с кодом 2.
+    Зовёт его main."""
+
+    NOT_READY: ClassVar[str] = (
+        "boba: the interactive mode is not available yet.\n"
+        "  boba --stdio [--settings FILE ...]     serve the Agent Client Protocol "
+        "on stdin/stdout for a launcher\n"
+        "  boba serve --config FILE --site FILE   run the agent as a network service\n"
+        "  boba --help                            all options"
+    )
+    EXIT_CODE: ClassVar[int] = 2
+
+    def refuse(self) -> NoReturn:
+        """Ошибки:
+        SystemExit — всегда, код 2.
+        """
+        sys.stderr.write(f"{self.NOT_READY}\n")
+        raise SystemExit(self.EXIT_CODE)
 
 
 class Installed:
@@ -177,9 +206,10 @@ class Installed:
 
 
 class ArgumentParser:
-    """Командная строка `boba acp …`, `boba serve --config … --site …`,
-    `boba self-check` или `boba settings-schema` → Invocation (план, раздел
-    5.21). Секретов в аргументах нет: ключи и строки подключения живут в
+    """Командная строка `boba --stdio …`, `boba serve --config … --site …`,
+    `boba self-check`, `boba settings-schema` или `boba` без режима →
+    Invocation. Ключи запуска ACP (--settings, --model, …) действуют только
+    с --stdio. Секретов в аргументах нет: ключи и строки подключения живут в
     файле `--settings` и в конфиге службы."""
 
     PROG: ClassVar[str] = "boba"
@@ -187,19 +217,22 @@ class ArgumentParser:
     def __init__(self) -> None:
         self._parser = argparse.ArgumentParser(
             prog=self.PROG,
-            description="Boba agent process: an Agent Client Protocol server on stdio.",
-        )
-        commands = self._parser.add_subparsers(dest="command", required=True)
-        acp = commands.add_parser(
-            Command.ACP.value,
-            help="serve the Agent Client Protocol over stdin/stdout",
             description=(
-                "Serve the Agent Client Protocol: JSON-RPC frames on stdin and "
-                "stdout, logs on stderr. Settings come from settings.json layers "
-                "and the arguments below."
+                "Boba agent. --stdio serves the Agent Client Protocol on "
+                "stdin/stdout for a launcher (JSON-RPC frames on stdin and "
+                "stdout, logs on stderr; settings come from settings.json layers "
+                "and the options below); serve runs the agent as a network "
+                "service. Without a mode boba starts the interactive mode, "
+                "which is not available yet."
             ),
         )
-        self._define(acp)
+        self._parser.add_argument(
+            Command.STDIO.value,
+            action="store_true",
+            help="serve the Agent Client Protocol over stdin/stdout",
+        )
+        self._define(self._parser)
+        commands = self._parser.add_subparsers(dest="command")
         serve = commands.add_parser(
             Command.SERVE.value,
             help="serve the Agent Client Protocol over the network as a service",
@@ -235,7 +268,7 @@ class ArgumentParser:
 
     def parse(self, argv: Sequence[str]) -> Invocation | ServeInvocation:
         space = self._parser.parse_args(list(argv))
-        command = Command(space.command)
+        command = self._command(space)
         if command is Command.SERVE:
             return ServeInvocation(config=space.config, site=space.site)
 
@@ -272,6 +305,23 @@ class ArgumentParser:
         )
 
         return Invocation(command=command, arguments=arguments)
+
+    def _command(self, space: argparse.Namespace) -> Command:
+        """Режим строки: подкоманда, --stdio или интерактивный без них;
+        --stdio вместе с подкомандой — ошибка разбора (код 2)."""
+        if space.command is None:
+            if space.stdio:
+                return Command.STDIO
+
+            return Command.INTERACTIVE
+
+        if space.stdio:
+            self._parser.error(
+                f"{Command.STDIO.value} serves ACP on stdin/stdout by itself and "
+                f"does not combine with the command {space.command!r}"
+            )
+
+        return Command(space.command)
 
     @staticmethod
     def _define(parser: argparse.ArgumentParser) -> None:
@@ -796,7 +846,8 @@ class StdioStreams:
 
 
 class AgentProcess:
-    """Один запуск `boba acp`: настройки, проверка частей, вход ACP, остановка."""
+    """Один запуск `boba --stdio`: настройки, проверка частей, вход ACP,
+    остановка."""
 
     NAME: ClassVar[str] = "boba"
     STORE_THREAD: ClassVar[str] = "history-store"
@@ -952,7 +1003,7 @@ async def main(argv: Sequence[str] | None = None) -> None:
 
     invocation = ArgumentParser().parse(argv)
     if isinstance(invocation, ServeInvocation):
-        # сеть и вход грузит только служба: `boba acp` по stdio стартует без них
+        # сеть и вход грузит только служба: `boba --stdio` стартует без них
         from boba.cli.serve import ServeEntry  # noqa: PLC0415
 
         await ServeEntry(invocation.config, invocation.site).run()
@@ -971,6 +1022,9 @@ async def main(argv: Sequence[str] | None = None) -> None:
         document = json.dumps(SettingsSchema().document(), indent=2, ensure_ascii=False)
         sys.stdout.write(f"{document}\n")
         return
+
+    if invocation.command is Command.INTERACTIVE:
+        InteractiveMode().refuse()
 
     installed = Installed().version()
     output_fd = os.dup(sys.stdout.fileno())

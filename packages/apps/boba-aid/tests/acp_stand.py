@@ -1,4 +1,4 @@
-"""Стенд клиента ACP: фейковая модель в цикле теста, процессы `boba acp` по
+"""Стенд клиента ACP: фейковая модель в цикле теста, процессы `boba --stdio` по
 файлу настроек с ретранслятором стенда, запоминающий приёмник потока,
 обычный сервер MCP по stdio, он же по HTTP с хостом песочницы своих
 приложений MCP Apps, и подключение истории агента ролью с паролем из
@@ -217,7 +217,7 @@ class AgentStand:
     def command(self) -> AgentCommand:
         return AgentCommand(
             executable=sys.executable,
-            args=("-m", AGENT_MODULE, "acp", "--setting-sources", ""),
+            args=("-m", AGENT_MODULE, "--stdio", "--setting-sources", ""),
             start_timeout_sec=60.0,
             request_timeout_sec=60.0,
             stop_timeout_sec=10.0,
@@ -227,7 +227,7 @@ class AgentStand:
         return AgentConfig(
             process=AgentCommandConfig(
                 command=shlex.join([sys.executable, "-m", AGENT_MODULE]),
-                args=["acp", "--setting-sources", ""],
+                args=["--stdio", "--setting-sources", ""],
                 private_dir=str(self._private_dir),
                 start_timeout_sec=60.0,
                 request_timeout_sec=60.0,
