@@ -447,6 +447,18 @@ async def on_chat_start(
         await TabAgent(agents, registry).start(session)
 
 
+@cl.on_chat_end
+@chainlit_error_ctx_handler
+@di_inject
+async def on_chat_end(
+    agents: Annotated[ThreadAgents, Depends(thread_agents, scope="session")],
+):
+    """Сокет вкладки оборвался: сессия chainlit ждёт реконнекта до
+    session_timeout, а процессы агентов её тредов отпускаются сразу —
+    вернувшаяся вкладка запустит новые первым же делом."""
+    await agents.release()
+
+
 @cl.on_logout
 @di_inject
 def on_logout(

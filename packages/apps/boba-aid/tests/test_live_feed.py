@@ -195,12 +195,18 @@ async def test_turn_on_one_instance_is_rendered_on_another(
         await _until(rendered, f"viewer rendered the turn: {sink.steps}")
         assert renderer.turn_alive
         assert "hits" in _outputs(sink)
+        container = renderer.view.container_step
+        assert container is not None
+        assert container.name == "✔ kb_probe", "the container shows the last action"
 
         # вкладка подключилась посреди хода на другом инстансе: догон по replay
         late, late_sink = _renderer(runtime_stand, storage, thread_id, viewer)
         assert (await late.catch_up(viewer.bus)).alive is True
         assert "hits" in _outputs(late_sink)
         assert late.turn_alive
+        resumed = late.resume_steps()[0]
+        assert resumed.get(StepField.NAME) == container.name
+        assert resumed.get(StepField.ID) == container.id
 
         def late_answered() -> bool:
             # токены ответа уходят пачкой по таймеру склейки

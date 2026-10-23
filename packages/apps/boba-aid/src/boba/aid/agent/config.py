@@ -26,18 +26,17 @@ from boba.db.postgres.connection import (
     PostgresAuthError,
     PostgresConfig,
 )
-from boba.mcp_client.client import HttpLocation, ProxyAuth
+from boba.mcp_client.client import HttpRoute, ProxyAuth
+from boba.runtime.config import ValueCipherConfig
 
 __all__ = [
     "AgentCommandConfig",
     "AgentConfig",
     "AgentHistoryConfig",
     "AgentHistoryKind",
-    "AgentModelConfig",
     "AgentServiceConfig",
     "MemoryAgentHistory",
     "PostgresAgentHistory",
-    "ReasoningReturn",
 ]
 
 
@@ -47,15 +46,6 @@ class AgentHistoryKind(StrEnum):
 
     POSTGRES = "postgres"
     MEMORY = "memory"
-
-
-class ReasoningReturn(StrEnum):
-    """Возврат рассуждений прошлых ответов модели: значения — ключ
-    `reasoningReturn` профиля модели в файле настроек агента."""
-
-    NEVER = "never"
-    TURN = "turn"
-    ALWAYS = "always"
 
 
 class AgentCommandConfig(BaseModel):
@@ -126,8 +116,11 @@ class AgentServiceConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    endpoint: HttpLocation = Field(
-        description="Адрес ACP службы: схема, хост, порт и путь ([agent].path службы)."
+    endpoint: HttpRoute = Field(
+        description=(
+            "Адрес ACP службы: сервис [service.boba_agent] (схема, хост, порт и "
+            "префикс) и путь ACP под ним ([agent].path службы)."
+        )
     )
     auth: ProxyAuth = Field(
         description=(
@@ -194,23 +187,6 @@ AgentHistoryConfig = Annotated[
 ]
 
 
-class AgentModelConfig(BaseModel):
-    """Секция [agent.model]: что агент знает о модели профилей сверх профиля
-    чата — окно, потолок ответа и возврат рассуждений."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    context_window: int = Field(gt=0, description="Окно контекста модели, токены.")
-    max_output_tokens: int = Field(gt=0, description="Потолок ответа модели.")
-    reasoning_return: ReasoningReturn = Field(
-        description=(
-            "Возвращать ли модели её рассуждения прошлых ответов: never, turn "
-            "(в пределах хода — так требуют thinking-модели вроде deepseek при "
-            "вызове инструмента), always."
-        )
-    )
-
-
 class AgentConfig(BaseModel):
     """Секция [agent]: всё, что чат aid знает об агенте и о себе для него."""
 
@@ -237,6 +213,12 @@ class AgentConfig(BaseModel):
             "инструментов, в секундах: сервер отвергает значение старше срока."
         ),
     )
+    settings_table: ValueCipherConfig = Field(
+        description=(
+            "Секция [agent.settings_table]: шифрование секретов слоя чата "
+            "настроек агента в таблице agent_chat_settings."
+        )
+    )
     question_timeout_sec: int = Field(
         gt=0,
         description=(
@@ -245,4 +227,3 @@ class AgentConfig(BaseModel):
             "ответом cancel, ход идёт дальше."
         ),
     )
-    model: AgentModelConfig

@@ -11,7 +11,12 @@ from typing import ClassVar
 
 from pydantic import SecretStr
 
-from boba.chat.profiles import ChatProfileConfig, ChatProfiles
+from boba.chat.profiles import (
+    ChatProfileConfig,
+    ChatProfiles,
+    ModelLimits,
+    ReasoningReturn,
+)
 from boba.ldap import Ldap3Directory
 from boba.llm.http.openai import OpenAiProvider
 from boba.runtime.signin import SignInAssembly
@@ -44,6 +49,14 @@ class SignInStand:
         )
 
     @classmethod
+    def limits(cls) -> ModelLimits:
+        return ModelLimits(
+            context_window=32000,
+            max_output_tokens=4096,
+            reasoning_return=ReasoningReturn.NEVER,
+        )
+
+    @classmethod
     def profile(
         cls, *, default: bool = True, roles: list[str] | None = None
     ) -> ChatProfileConfig:
@@ -59,6 +72,7 @@ class SignInStand:
                 "tools": ["echo"],
                 "provider": cls.provider(),
                 "model": "fake",
+                "limits": cls.limits(),
                 "system_prompt": "stand",
             }
         )
