@@ -1947,8 +1947,11 @@ class AppUnderTest:
     CARD: ClassVar[str] = "[data-mcp-app]"
     WAIT_MS: ClassVar[float] = 60_000
 
-    def __init__(self, chat: ChatPage, llm_port: int, cases: Sequence[AppCase]) -> None:
+    def __init__(
+        self, chat: ChatPage, llm_port: int, cases: Sequence[AppCase], wait_ms: float
+    ) -> None:
         self.chat = chat
+        self.wait_ms = wait_ms
         self.errors: list[str] = []
         self.console: list[str] = []
         chat.page.on("pageerror", self._failed)
@@ -1993,7 +1996,7 @@ class AppUnderTest:
         """Строки таблицы приложения, когда их стало count; иначе — ошибка с
         консолью всех кадров и упавшими запросами."""
         rows = self.rows(app)
-        deadline = time.monotonic() + self.WAIT_MS / 1000
+        deadline = time.monotonic() + self.wait_ms / 1000
         while rows.count() != count:
             if time.monotonic() > deadline:
                 shown = "\n".join(self.console[-60:])
@@ -2014,14 +2017,14 @@ class AppUnderTest:
         """Ход с вызовом инструмента case: карточка его приложения."""
         self.chat.ask(case.question)
         self.chat.await_idle(timeout_sec=120.0)
-        self.page.get_by_text(case.answer).last.wait_for(timeout=self.WAIT_MS)
+        self.page.get_by_text(case.answer).last.wait_for(timeout=self.wait_ms)
 
         return self.page.locator(self.CARD).last
 
     def app(self, card: Locator) -> FrameLocator:
         """Приложение в странице-прокси песочницы карточки."""
         app = card.frame_locator("iframe").first.frame_locator("iframe")
-        app.locator("body").wait_for(timeout=self.WAIT_MS)
+        app.locator("body").wait_for(timeout=self.wait_ms)
 
         return app
 
@@ -2128,6 +2131,7 @@ def fastmcp_stand(  # noqa: PLR0913 — стенд собирается из ф�
             host.stop()
 
 
+@pytest.mark.xdist_group("fastmcp")
 class TestFastmcpApps:
     """Виды интерфейсов fastmcp в harness без правок хоста: Prefab (таблица
     с поиском, рендерер статикой стенда без CDN), FastMCPApp (форма зовёт
@@ -2159,6 +2163,19 @@ class TestFastmcpApps:
         "        series=[ChartSeries(data_key='sales')],\n"
         "    )\n"
     )
+
+    MISSING_MS: ClassVar[float] = 15_000
+    """Сколько ждать отрисовки, которой по xfail ещё нет: тот же ход у
+    рабочего вида рисуется за 3–5 с, и заработавший вид успеет — strict
+    покажет XPASS."""
+
+    @pytest.fixture
+    def wait_ms(self, request: pytest.FixtureRequest) -> float:
+        """Ожидание отрисовки теста: xfail-случаю короткое, остальным полное."""
+        if request.node.get_closest_marker("xfail") is None:
+            return AppUnderTest.WAIT_MS
+
+        return self.MISSING_MS
 
     @staticmethod
     def _table(server: str, apps_slot: AppsSlot) -> AppCase:
@@ -2202,19 +2219,20 @@ class TestFastmcpApps:
         )
 
     @pytest.mark.parametrize("server", SERVERS)
-    def test_prefab_table_renders_and_filters_without_the_server(
+    def test_prefab_table_renders_and_filters_without_the_server(  # noqa: PLR0913 — ожидание отрисовки фикстурой по xfail
         self,
         fastmcp_stand: StandProcess,
         open_chat: OpenChat,
         llm_port: int,
         apps_slot: AppsSlot,
         server: str,
+        wait_ms: float,
     ) -> None:
         """Карточка Prefab показывает строки таблицы; поиск фильтрует их в
         браузере — счётчик вызовов сервера не растёт. Чистота страницы чата
         при фильтрации — отдельный тест: там известная петля обновлений."""
         case = self._table(server, apps_slot)
-        apps = AppUnderTest(open_chat(fastmcp_stand, ""), llm_port, [case])
+        apps = AppUnderTest(open_chat(fastmcp_stand, ""), llm_port, [case], wait_ms)
         app = apps.app(apps.ask(case))
         rows = apps.drawn(app, 5)
         before: dict[str, int] = {}
@@ -2223,7 +2241,7 @@ class TestFastmcpApps:
 
         app.get_by_placeholder("Filter...").fill("Acme")
 
-        expect(rows).to_have_count(1, timeout=AppUnderTest.WAIT_MS)
+        expect(rows).to_have_count(1, timeout=apps.wait_ms)
         assert "Acme" in rows.first.inner_text()
         if case.stats_url:
             assert apps.stats(case) == before, "the search calls no tool"
@@ -2234,30 +2252,32 @@ class TestFastmcpApps:
         open_chat: OpenChat,
         llm_port: int,
         apps_slot: AppsSlot,
+        wait_ms: float,
     ) -> None:
         """Фильтрация таблицы приложения не роняет ошибок на страницу чата.
         Ошибка внутри кадра рендерера (prefab-ui 0.20.2 зацикливается на
         сбросе страницы таблицы при фильтре, React error #185 в renderer.js)
         — дело сервера: она идёт в диагностику, а не в ошибки страницы."""
         case = self._table("prefab", apps_slot)
-        apps = AppUnderTest(open_chat(fastmcp_stand, ""), llm_port, [case])
+        apps = AppUnderTest(open_chat(fastmcp_stand, ""), llm_port, [case], wait_ms)
         app = apps.app(apps.ask(case))
         rows = apps.drawn(app, 5)
 
         app.get_by_placeholder("Filter...").fill("Acme")
-        expect(rows).to_have_count(1, timeout=AppUnderTest.WAIT_MS)
+        expect(rows).to_have_count(1, timeout=apps.wait_ms)
         apps.page.wait_for_timeout(2_000)
 
         apps.check_clean()
 
     @pytest.mark.parametrize("server", SERVERS)
-    def test_app_loads_with_cdn_blocked(
+    def test_app_loads_with_cdn_blocked(  # noqa: PLR0913 — ожидание отрисовки фикстурой по xfail
         self,
         fastmcp_stand: StandProcess,
         open_chat: OpenChat,
         llm_port: int,
         apps_slot: AppsSlot,
         server: str,
+        wait_ms: float,
     ) -> None:
         """Закрытый контур: без cdn.jsdelivr.net и fonts.googleapis.com
         карточка Prefab всё равно рисуется — рендерер грузится статикой с
@@ -2275,7 +2295,7 @@ class TestFastmcpApps:
         chat.page.route("**/cdn.jsdelivr.net/**", abort)
         chat.page.route("**/fonts.googleapis.com/**", abort)
         chat.page.on("request", seen)
-        apps = AppUnderTest(chat, llm_port, [case])
+        apps = AppUnderTest(chat, llm_port, [case], wait_ms)
         app = apps.app(apps.ask(case))
 
         apps.drawn(app, 5)
@@ -2292,22 +2312,23 @@ class TestFastmcpApps:
         open_chat: OpenChat,
         llm_port: int,
         server: str,
+        wait_ms: float,
     ) -> None:
         """Форма доски зовёт backend save по имени из tools/list, список
         перерисован ответом backend'а; модели backend не предложен."""
         case = self._notes(server)
-        apps = AppUnderTest(open_chat(fastmcp_stand, ""), llm_port, [case])
+        apps = AppUnderTest(open_chat(fastmcp_stand, ""), llm_port, [case], wait_ms)
         app = apps.app(apps.ask(case))
         rows = apps.rows(app)
-        rows.first.wait_for(timeout=AppUnderTest.WAIT_MS)
+        rows.first.wait_for(timeout=apps.wait_ms)
         before = rows.count()
         note = f"note-{uuid4().hex[:6]}"
 
         app.get_by_placeholder("New note").fill(note)
         app.get_by_role("button", name="Save").click()
 
-        expect(rows).to_have_count(before + 1, timeout=AppUnderTest.WAIT_MS)
-        expect(app.get_by_text(note)).to_be_visible(timeout=AppUnderTest.WAIT_MS)
+        expect(rows).to_have_count(before + 1, timeout=apps.wait_ms)
+        expect(app.get_by_text(note)).to_be_visible(timeout=apps.wait_ms)
         offered = apps.offered(llm_port)
         assert case.tool in offered, offered
         backend = [
@@ -2327,7 +2348,11 @@ class TestFastmcpApps:
         ),
     )
     def test_generative_ui_result_is_drawn(
-        self, fastmcp_stand: StandProcess, open_chat: OpenChat, llm_port: int
+        self,
+        fastmcp_stand: StandProcess,
+        open_chat: OpenChat,
+        llm_port: int,
+        wait_ms: float,
     ) -> None:
         """Модель зовёт generate_prefab_ui с кодом графика: карточка рисует
         график тем же рендерером."""
@@ -2338,11 +2363,11 @@ class TestFastmcpApps:
             tool="mcp__genui__generate_prefab_ui",
             arguments={"code": self.CHART},
         )
-        apps = AppUnderTest(open_chat(fastmcp_stand, ""), llm_port, [case])
+        apps = AppUnderTest(open_chat(fastmcp_stand, ""), llm_port, [case], wait_ms)
         app = apps.app(apps.ask(case))
 
         chart = app.locator(".recharts-surface").first
-        expect(chart).to_be_visible(timeout=AppUnderTest.WAIT_MS)
+        expect(chart).to_be_visible(timeout=apps.wait_ms)
         apps.check_clean()
 
     @pytest.mark.xfail(
@@ -2362,6 +2387,7 @@ class TestFastmcpApps:
         stand_database: str,
         apps_slot: AppsSlot,
         open_chat: OpenChat,
+        wait_ms: float,
     ) -> None:
         """Разрешение clipboardWrite из списка секции apps сервера попадает
         в allow внутреннего iframe; prefersBorder=false снимает рамку
@@ -2382,7 +2408,7 @@ class TestFastmcpApps:
         try:
             process.start(boot_timeout_sec=BOOT_TIMEOUT_SEC)
             case = self._clipboard()
-            apps = AppUnderTest(open_chat(process, ""), llm_port, [case])
+            apps = AppUnderTest(open_chat(process, ""), llm_port, [case], wait_ms)
             card = apps.ask(case)
             apps.app(card)
             allow = apps.proxy(card).get_attribute("allow")
@@ -2396,16 +2422,20 @@ class TestFastmcpApps:
         assert border == "0px", border
 
     def test_permissions_of_the_resource_stay_out_of_allow_without_the_config(
-        self, fastmcp_stand: StandProcess, open_chat: OpenChat, llm_port: int
+        self,
+        fastmcp_stand: StandProcess,
+        open_chat: OpenChat,
+        llm_port: int,
+        wait_ms: float,
     ) -> None:
         """Запрет по умолчанию: ресурс просит clipboardWrite, в конфиге
         сервера разрешений нет — внутренний iframe без allow."""
         case = self._clipboard()
-        apps = AppUnderTest(open_chat(fastmcp_stand, ""), llm_port, [case])
+        apps = AppUnderTest(open_chat(fastmcp_stand, ""), llm_port, [case], wait_ms)
         card = apps.ask(case)
         app = apps.app(card)
 
-        expect(app.get_by_text("copy me")).to_be_visible(timeout=AppUnderTest.WAIT_MS)
+        expect(app.get_by_text("copy me")).to_be_visible(timeout=apps.wait_ms)
         assert apps.proxy(card).get_attribute("allow") is None
         apps.check_clean()
 
@@ -2423,6 +2453,7 @@ class TestFastmcpApps:
         open_chat: OpenChat,
         llm_port: int,
         apps_slot: AppsSlot,
+        wait_ms: float,
     ) -> None:
         huge = AppCase(
             server="prefab",
@@ -2432,11 +2463,13 @@ class TestFastmcpApps:
             arguments={},
         )
         table = self._table("prefab", apps_slot)
-        apps = AppUnderTest(open_chat(fastmcp_stand, ""), llm_port, [huge, table])
+        apps = AppUnderTest(
+            open_chat(fastmcp_stand, ""), llm_port, [huge, table], wait_ms
+        )
 
         card = apps.ask(huge)
-        card.locator("[data-mcp-app-error]").wait_for(timeout=AppUnderTest.WAIT_MS)
+        card.locator("[data-mcp-app-error]").wait_for(timeout=apps.wait_ms)
 
         app = apps.app(apps.ask(table))
-        expect(apps.rows(app)).to_have_count(5, timeout=AppUnderTest.WAIT_MS)
+        expect(apps.rows(app)).to_have_count(5, timeout=apps.wait_ms)
         apps.check_clean()
