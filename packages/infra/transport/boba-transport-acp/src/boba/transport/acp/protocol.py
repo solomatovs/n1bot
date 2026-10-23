@@ -155,12 +155,15 @@ class MetaKey(StrEnum):
     `session/fork` (id вопроса), и в `capabilities.session.fork._meta` ответа
     initialize (true — агент режет ветку по нему). Форма `elicitation/create`
     своего вопроса агента: у поля вопроса — ключ парного поля «Other» со
-    своим текстом, у варианта — предпросмотр. Вопрос сервера MCP: имя сервера
-    и инструмента в `_meta` запроса, раунды вопросов вызова — в `_meta`
-    результата tools/call.
+    своим текстом, у варианта — предпросмотр; уведомление tool_call этого
+    вызова несёт в `_meta` признак вопроса пользователю (true), по нему
+    клиент отличает вопрос от вызова инструмента и вживую, и в истории.
+    Вопрос сервера MCP: имя сервера и инструмента в `_meta` запроса, раунды
+    вопросов вызова — в `_meta` результата tools/call.
     """
 
     UP_TO_MESSAGE_ID = "boba/upToMessageId"
+    QUESTION = "boba/question"
     OTHER = "boba/other"
     PREVIEW = "boba/preview"
     SERVER = "boba/server"

@@ -3,6 +3,9 @@
 `elicitation/create` агента уходят приёмнику с явным интерфейсом
 SessionUpdates, который заменяет рендерер ленты, а запросы mcp/message —
 ретранслятору (McpRelay). Клиент объявляет агенту формы (`elicitation.form`).
+Режим разрешений каждой открытой сессии (`session/new|resume|fork`) клиент
+выставляет по ACP: настройка категории mode из `configOptions` ответа и
+`session/set_config_option` (SessionModeSelector).
 
 Ошибки:
 AgentProcessError — процесс не запустился, не прошёл рукопожатие (чужая
@@ -17,9 +20,10 @@ import asyncio
 import logging
 from abc import abstractmethod
 from asyncio.subprocess import Process
-from collections.abc import Awaitable, Mapping, Sequence
+from collections.abc import Awaitable, Iterator, Mapping, Sequence
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import Any, ClassVar, Protocol, TypeAlias, TypeVar
 from uuid import UUID
@@ -43,13 +47,17 @@ from boba.transport.acp.protocol import (
 
 __all__ = [
     "AcpClientError",
+    "AcpModeOption",
     "AgentClient",
     "AgentCommand",
     "AgentProcess",
     "AgentProcessError",
     "AgentRequestError",
+    "ConfigOption",
     "ElicitationReply",
+    "ModeChange",
     "PromptBlock",
+    "SessionModeSelector",
     "SessionUpdates",
 ]
 
@@ -228,6 +236,96 @@ class AgentClient(Client):
     complete_elicitation = Client.complete_elicitation
 
 
+ConfigOption: TypeAlias = (
+    schema.SelectSessionConfigOption
+    | schema.BooleanSessionConfigOption
+    | schema.OtherSessionConfigOption
+)
+
+
+class AcpModeOption(StrEnum):
+    """Настройка режима разрешений ACP: категория `configOptions`, по которой
+    чат находит настройку у любого агента, и режим, который чат включает."""
+
+    CATEGORY = "mode"
+    BYPASS = "bypassPermissions"
+
+
+@dataclass(frozen=True)
+class ModeChange:
+    """Смена настройки сессии: id настройки и значение для
+    `session/set_config_option`."""
+
+    config_id: str
+    value: str
+
+
+class SessionModeSelector:
+    """Решение о режиме разрешений открытой сессии по `configOptions` ответа
+    агента: у настройки категории mode, предлагающей bypassPermissions, он
+    включается, если ещё не действует; агент без такой настройки или без
+    этого режима остаётся в своём — его вопросы разрешений чат отвечает
+    согласием (TurnRenderer.permission). Файл настроек даёт лишь потолок
+    режимов (allowBypass). Создаёт AgentProcess, запрос шлёт он."""
+
+    def change(
+        self, session_id: str, options: Sequence[ConfigOption] | None
+    ) -> ModeChange | None:
+        """Смена режима, которую стоит запросить; None — менять нечего."""
+        option = self._mode_option(options)
+        if option is None:
+            logger.info(
+                "session %s: the agent declares no permission mode option; "
+                "its own mode stays",
+                session_id,
+            )
+            return None
+
+        if option.current_value == AcpModeOption.BYPASS.value:
+            return None
+
+        values = list(self._values(option))
+        if AcpModeOption.BYPASS.value not in values:
+            logger.warning(
+                "session %s: the agent offers permission modes %s without %r; "
+                "its mode %r stays and permission questions are answered by the chat",
+                session_id,
+                values,
+                AcpModeOption.BYPASS.value,
+                option.current_value,
+            )
+            return None
+
+        return ModeChange(config_id=option.config_id, value=AcpModeOption.BYPASS.value)
+
+    @staticmethod
+    def _mode_option(
+        options: Sequence[ConfigOption] | None,
+    ) -> schema.SelectSessionConfigOption | None:
+        if options is None:
+            return None
+
+        for option in options:
+            if not isinstance(option, schema.SelectSessionConfigOption):
+                continue
+
+            if option.category == AcpModeOption.CATEGORY.value:
+                return option
+
+        return None
+
+    @staticmethod
+    def _values(option: schema.SelectSessionConfigOption) -> Iterator[str]:
+        """Значения настройки: варианты списком или группами."""
+        for item in option.options:
+            if isinstance(item, schema.SessionConfigSelectOption):
+                yield item.value
+                continue
+
+            for nested in item.options:
+                yield nested.value
+
+
 @dataclass(frozen=True)
 class AgentCommand:
     """Команда запуска агента: исполняемый файл и аргументы до `--settings`,
@@ -252,7 +350,8 @@ class AgentProcess:
     удаление каталога.
 
     Создаётся запуском агента (AgentLauncher) с объявлениями серверов
-    процесса: их получает каждая сессия процесса. Процессом управляет
+    процесса: их получает каждая сессия процесса, и каждой открытой сессии
+    клиент выставляет режим разрешений по ACP. Процессом управляет
     spawn_stdio_transport SDK; stderr агента пишется в журнал приватного
     каталога и читается при отказе. Запросы mcp/message агента отдаются
     ретранслятору вместе с отправкой уведомлений этого соединения.
@@ -276,6 +375,7 @@ class AgentProcess:
         self._relay = relay
         self._servers = list(servers)
         self._version = version
+        self._mode = SessionModeSelector()
         self._stack = AsyncExitStack()
         self._process: Process | None = None
         self._connection: ClientConnection | None = None
@@ -407,15 +507,19 @@ class AgentProcess:
 
     async def open_session(self) -> schema.NewSessionResponse:
         """Новая сессия в приватном каталоге с серверами процесса; id и
-        настройки (`configOptions`) выдаёт агент."""
+        настройки (`configOptions`) выдаёт агент, режим разрешений по ним
+        выставляет клиент."""
         connection = self._require_connection()
 
-        return await self._request(
+        opened = await self._request(
             "session/new",
             connection.new_session(
                 cwd=str(self._workdir.path), mcp_servers=list(self._servers)
             ),
         )
+        await self._select_mode(opened.session_id, opened.config_options)
+
+        return opened
 
     async def resume_session(
         self, session_id: str, replay: bool
@@ -427,13 +531,30 @@ class AgentProcess:
         if replay:
             replay_from = schema.ReplayFromStartVariant()
 
-        return await self._request(
+        resumed = await self._request(
             "session/resume",
             connection.resume_session(
                 session_id=session_id,
                 cwd=str(self._workdir.path),
                 mcp_servers=list(self._servers),
                 replay_from=replay_from,
+            ),
+        )
+        await self._select_mode(session_id, resumed.config_options)
+
+        return resumed
+
+    async def set_config_option(
+        self, session_id: str, config_id: str, value: str
+    ) -> schema.SetSessionConfigOptionResponse:
+        """Настройка сессии `session/set_config_option`: ответ — полный список
+        настроек после смены."""
+        connection = self._require_connection()
+
+        return await self._request(
+            "session/set_config_option",
+            connection.set_config_option(
+                config_id=config_id, session_id=session_id, value=value
             ),
         )
 
@@ -513,7 +634,7 @@ class AgentProcess:
         # SDK кладёт лишние именованные аргументы метода в _meta запроса
         meta: dict[str, Any] = {MetaKey.UP_TO_MESSAGE_ID.value: up_to_message_id}
 
-        return await self._request(
+        forked = await self._request(
             "session/fork",
             connection.fork_session(
                 session_id=session_id,
@@ -521,6 +642,27 @@ class AgentProcess:
                 mcp_servers=list(self._servers),
                 **meta,
             ),
+        )
+        await self._select_mode(forked.session_id, forked.config_options)
+
+        return forked
+
+    async def _select_mode(
+        self, session_id: str, options: Sequence[ConfigOption] | None
+    ) -> None:
+        """Режим разрешений открытой сессии по её `configOptions`.
+
+        Ошибки:
+        AgentRequestError — агент отказал в `session/set_config_option`.
+        AgentProcessError — агент не ответил в срок или умер.
+        """
+        change = self._mode.change(session_id, options)
+        if change is None:
+            return
+
+        await self.set_config_option(session_id, change.config_id, change.value)
+        logger.info(
+            "session %s: permission mode %r set over ACP", session_id, change.value
         )
 
     async def close(self) -> None:

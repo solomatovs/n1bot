@@ -1,15 +1,17 @@
 """Карточка вопроса агента пользователю — свойства элемента Question.
 
 Панель висящего вопроса строится по форме `elicitation/create` агента,
-сообщение вопроса в ленте — по вводу собственного инструмента агента
-AskUserQuestion (пока ждёт ответа) и по итогу вызова — результату
-tools/call в `rawOutput`, чей structuredContent разбирается
-AskUserQuestionOutput; запись вопросов сервера MCP — по раундам в
-результате вызова (ElicitationRound). Поле
-формы — вопрос: варианты одиночного и множественного выбора, логическое поле
-(варианты «да»/«нет» подписывает элемент по переводам), строка и число —
-полем своего ответа; парное поле «Other»
-своего вопроса агента вопросом не считается, его ключ — у поля вопроса.
+сообщение вопроса в ленте — по вводу вызова, который агент пометил вопросом
+пользователю (`_meta` MetaKey.QUESTION): `rawInput` читается моделью
+AskedInput, итог вызова — результат tools/call в `rawOutput`, чей
+structuredContent читается AskedOutput; обе модели — чатовая запись JSON
+вопроса по договору с агентом (docs/developer-guide), ключи сверх них
+отбрасываются. Запись вопросов сервера MCP — по раундам в результате вызова
+(ElicitationRound). Поле формы — вопрос: варианты одиночного и
+множественного выбора, логическое поле (варианты «да»/«нет» подписывает
+элемент по переводам), строка и число — полем своего ответа; парное поле
+«Other» своего вопроса агента вопросом не считается, его ключ — у поля
+вопроса.
 
 Ошибки: своих не выпускает; ввод и итог не по схеме дают запись без выбора.
 """
@@ -19,20 +21,20 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterator, Mapping, Sequence
 from enum import StrEnum
-from typing import Any, TypeAlias
+from typing import Any, Literal, TypeAlias
 
 import mcp_types as mt
 from acp.experimental.v2 import schema
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from boba.agent.tools import (
-    AskQuestion,
-    AskUserQuestionInput,
-    AskUserQuestionOutput,
-)
 from boba.transport.acp.protocol import ElicitationRound, MetaKey
 
 __all__ = [
+    "AskedInput",
+    "AskedOption",
+    "AskedOutput",
+    "AskedPick",
+    "AskedQuestion",
     "CardAnswer",
     "CardItem",
     "CardOption",
@@ -74,6 +76,56 @@ class QuestionKind(StrEnum):
     TEXT = "text"
     NUMBER = "number"
     INTEGER = "integer"
+
+
+class AskedOption(BaseModel):
+    """Вариант ответа в `rawInput` вопроса: метка, описание, предпросмотр."""
+
+    model_config = ConfigDict(frozen=True, extra="ignore")
+
+    label: str
+    description: str = ""
+    preview: str = ""
+
+
+class AskedQuestion(BaseModel):
+    """Вопрос в `rawInput`: текст (он же ключ ответа), метка вкладки,
+    варианты и признак множественного выбора (`multiSelect`)."""
+
+    model_config = ConfigDict(frozen=True, extra="ignore", populate_by_name=True)
+
+    question: str
+    header: str
+    options: Sequence[AskedOption] = ()
+    multi_select: bool = Field(default=False, alias="multiSelect")
+
+
+class AskedInput(BaseModel):
+    """`rawInput` вызова-вопроса: вопросы пользователю."""
+
+    model_config = ConfigDict(frozen=True, extra="ignore")
+
+    questions: Sequence[AskedQuestion] = Field(min_length=1)
+
+
+class AskedPick(BaseModel):
+    """Выбор по одному вопросу в structuredContent итога: метки вариантов и
+    свой текст «Other»; other None — свой текст не вводился."""
+
+    model_config = ConfigDict(frozen=True, extra="ignore")
+
+    labels: Sequence[str] = ()
+    other: str | None = None
+
+
+class AskedOutput(BaseModel):
+    """structuredContent итога вызова-вопроса: выбор по тексту вопроса и
+    исход — accept, decline, cancel."""
+
+    model_config = ConfigDict(frozen=True, extra="ignore")
+
+    picks: Mapping[str, AskedPick] = Field(default_factory=dict)
+    outcome: Literal[QuestionState.ACCEPT, QuestionState.DECLINE, QuestionState.CANCEL]
 
 
 class CardOption(BaseModel):
@@ -143,8 +195,8 @@ class QuestionCard(BaseModel):
 
 class QuestionCards:
     """Строит карточки вопроса: висящий вопрос по форме агента (AgentFeed),
-    запись ответа по итогу AskUserQuestion и по раундам вопросов сервера MCP
-    (UpdateView)."""
+    запись ответа по вводу и итогу вызова-вопроса агента и по раундам
+    вопросов сервера MCP (UpdateView)."""
 
     def pending(
         self, request: schema.CreateFormSessionElicitationRequest
@@ -165,21 +217,20 @@ class QuestionCards:
         return QuestionCard(state=QuestionState.PENDING, items=items, source=source)
 
     def asking(self, raw_input: Any) -> QuestionCard:
-        """Вопрос AskUserQuestion, который ждёт ответа: вопросы — из ввода
-        вызова."""
+        """Вопрос агента, который ждёт ответа: вопросы — из ввода вызова."""
         return QuestionCard(
             state=QuestionState.PENDING, items=list(self._asked_items(raw_input))
         )
 
     def asked(self, raw_input: Any, raw_output: Any, failed: bool) -> QuestionCard:
-        """Запись ответа на AskUserQuestion: вопросы — из ввода вызова,
-        исход и выбор — из structuredContent итога; итог не результат
-        tools/call с AskUserQuestionOutput (вызов оборван) — вопрос без
-        ответа; failed — вызов кончился неудачей."""
+        """Запись ответа на вопрос агента: вопросы — из ввода вызова, исход
+        и выбор — из structuredContent итога; итог не результат tools/call с
+        исходом вопроса (вызов оборван) — вопрос без ответа; failed — вызов
+        кончился неудачей."""
         items = list(self._asked_items(raw_input))
         try:
             reply = mt.CallToolResult.model_validate(raw_output)
-            output = AskUserQuestionOutput.model_validate(reply.structured_content)
+            output = AskedOutput.model_validate(reply.structured_content)
         except ValidationError:
             return QuestionCard(state=QuestionState.CANCEL, items=items, failed=failed)
 
@@ -188,18 +239,20 @@ class QuestionCards:
             answers[text] = CardAnswer(picked=pick.labels, typed=pick.other)
 
         return QuestionCard(
-            state=QuestionState(output.outcome.value),
+            state=output.outcome,
             items=items,
             answers=answers,
             failed=failed,
         )
 
     def _asked_items(self, raw_input: Any) -> Iterator[CardItem]:
-        """Вопросы ввода AskUserQuestion; ввод не по схеме — без вопросов."""
+        """Вопросы ввода вызова-вопроса; ввод не по схеме — без вопросов."""
         try:
-            asked = AskUserQuestionInput.model_validate(raw_input)
+            asked = AskedInput.model_validate(raw_input)
         except ValidationError as exc:
-            logger.warning("AskUserQuestion input is drawn without questions: %s", exc)
+            logger.warning(
+                "the question input of the agent is drawn without questions: %s", exc
+            )
             return
 
         for question in asked.questions:
@@ -226,7 +279,7 @@ class QuestionCards:
             failed=asked.action != QuestionState.ACCEPT.value,
         )
 
-    def _asked_item(self, question: AskQuestion) -> CardItem:
+    def _asked_item(self, question: AskedQuestion) -> CardItem:
         kind = QuestionKind.CHOICE
         if question.multi_select:
             kind = QuestionKind.MULTI

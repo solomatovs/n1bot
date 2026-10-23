@@ -2,7 +2,8 @@
 
 Файл — API процесса агента: его пишет harness (чат) и пользователь, читает
 вход процесса (boba-cli), который сливает слои в действующие настройки.
-Модели общие для обеих сторон, поэтому живут в ядре агента.
+Harness моделей агента не импортирует: форму файла он сверяет с JSON Schema,
+которую процесс печатает командой `boba settings-schema` (SettingsSchema).
 
 Ошибки: своих не выпускает; разбор — pydantic.ValidationError.
 """
@@ -24,6 +25,7 @@ from pydantic import (
     model_validator,
 )
 from pydantic.alias_generators import to_camel
+from pydantic.json_schema import models_json_schema
 
 from boba.agent.profile import CompactionSettings, ReasoningReturn, TurnLimits
 from boba.agent.records import PermissionMode
@@ -44,6 +46,7 @@ __all__ = [
     "SecretKey",
     "SettingsLayer",
     "SettingsModel",
+    "SettingsSchema",
 ]
 
 
@@ -283,3 +286,33 @@ class SettingsLayer(SettingsModel):
                 continue
 
             yield f"models.{name}.{SecretKey.PROVIDER.value}.{SecretKey.API_KEY.value}"
+
+
+class SettingsSchema:
+    """JSON Schema одного слоя `settings.json`, которую процесс публикует
+    командой `boba settings-schema`: слой целиком, профили `models` —
+    полными ModelSettings. По ней harness сверяет файл, который пишет своей
+    моделью, не импортируя моделей агента. Создаёт вход процесса (boba-cli)."""
+
+    DIALECT: ClassVar[str] = "https://json-schema.org/draft/2020-12/schema"
+    TITLE: ClassVar[str] = "boba settings.json layer"
+    REF_TEMPLATE: ClassVar[str] = "#/$defs/{model}"
+    DEFS: ClassVar[str] = "$defs"
+
+    def document(self) -> dict[str, Any]:
+        refs, shared = models_json_schema(
+            [(SettingsLayer, "validation"), (ModelSettings, "validation")],
+            ref_template=self.REF_TEMPLATE,
+        )
+        definitions: dict[str, Any] = shared[self.DEFS]
+        layer: dict[str, Any] = definitions[SettingsLayer.__name__]
+        layer["properties"]["models"]["additionalProperties"] = refs[
+            (ModelSettings, "validation")
+        ]
+
+        return {
+            "$schema": self.DIALECT,
+            "title": self.TITLE,
+            **refs[(SettingsLayer, "validation")],
+            self.DEFS: definitions,
+        }

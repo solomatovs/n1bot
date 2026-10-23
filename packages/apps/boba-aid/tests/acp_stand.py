@@ -36,8 +36,6 @@ from aid_stand import NoConnectionStore, RelayStand
 from chainlit.session import WebsocketSession
 from pydantic import JsonValue, SecretStr
 
-from boba.agent.profile import ReasoningReturn
-from boba.agent.settings import ModelSettings, ProviderKind, ProviderSettings
 from boba.aid.agent.chat import (
     AskedQuestions,
     Question,
@@ -55,10 +53,14 @@ from boba.aid.agent.config import (
     AgentConfig,
     AgentModelConfig,
     PostgresAgentHistory,
+    ReasoningReturn,
 )
 from boba.aid.agent.settings import (
+    AgentProviderKind,
     AgentWorkdirs,
     ChatAgentSettings,
+    ModelFile,
+    ProviderFile,
     SettingsFileBuilder,
 )
 from boba.aid.rendering.acp_view import SessionUpdate
@@ -142,16 +144,24 @@ class FakeModel:
     ) -> ChatAgentSettings:
         return ChatAgentSettings(
             model_name=MODEL_NAME,
-            model=ModelSettings(
-                provider=ProviderSettings(
-                    kind=ProviderKind.OPENAI,
+            model=ModelFile(
+                provider=ProviderFile(
+                    kind=AgentProviderKind.OPENAI,
                     base_url=self.base_url(),
                     api_key=SecretStr(API_KEY),
+                    timeout_sec=120.0,
+                    ssl_verify=True,
+                    retry_attempts=1,
+                    retry_backoff_sec=1.0,
+                    retry_statuses={},
+                    retry_after_max_sec=60.0,
+                    transport={},
                 ),
                 model="fake-model",
                 sampling={},
                 context_window=32000,
                 max_output_tokens=4096,
+                reasoning_return=ReasoningReturn.NEVER,
             ),
             system_prompt=system_prompt,
         )
