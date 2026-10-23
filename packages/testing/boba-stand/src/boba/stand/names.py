@@ -8,11 +8,17 @@ StandSuite в pytest_configure — раньше импорта модулей т
 подставляются в SQL: корневой conftest выводит её из пути пакета, conftest
 набора может задать свою короткую.
 
+Базы и схемы, которые прогон не пересоздаёт, а доводит до раскладки своего
+кода (базы приложения, схемы истории агента), получают ещё и метку дерева —
+каталога, из которого запущен pytest: worktree с разными миграциями не
+ломают такие объекты друг другу (of_tree).
+
 Ошибок наружу нет.
 """
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from enum import StrEnum
 from pathlib import Path
@@ -39,12 +45,16 @@ class StandNames:
 
     _suite: ClassVar[str] = ""
     _worker: ClassVar[str] = ""
+    _tree: ClassVar[str] = ""
 
     def use_suite(self, suite: str) -> None:
         StandNames._suite = suite
 
     def use_worker(self, worker: str) -> None:
         StandNames._worker = worker
+
+    def use_tree(self, tree: str) -> None:
+        StandNames._tree = tree
 
     def of(self, name: str) -> str:
         parts = [name]
@@ -56,6 +66,14 @@ class StandNames:
 
         return self.SEPARATOR.join(parts)
 
+    def of_tree(self, name: str) -> str:
+        """Имя с меткой набора, процесса и дерева: ui_test_aid_gw3_ptspeed."""
+        labeled = self.of(name)
+        if not StandNames._tree:
+            return labeled
+
+        return self.SEPARATOR.join((labeled, StandNames._tree))
+
 
 class StandSuite:
     """Метка процесса pytest в именах стенда: набор объявляет conftest пакета,
@@ -66,9 +84,13 @@ class StandSuite:
         self._names = StandNames()
 
     TESTS_DIR: ClassVar[str] = "tests"
+    TREE_DROPPED: ClassVar[re.Pattern[str]] = re.compile(r"[^a-z0-9_]")
+    """Что в имени каталога дерева не годится для имени объекта postgres."""
 
     def configure(self, suite: str) -> None:
         self._names.use_suite(suite)
+        tree = self._config.rootpath.name.lower()
+        self._names.use_tree(self.TREE_DROPPED.sub(self._names.SEPARATOR, tree))
 
         workerinput: dict[str, Any] | None = getattr(self._config, "workerinput", None)
         if workerinput is None:
