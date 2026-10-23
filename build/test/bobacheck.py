@@ -340,7 +340,7 @@ class AgentTurn:
         log_path = workdir / "agent.log"
         argv = [
             self._command,
-            "acp",
+            "--stdio",
             "--setting-sources",
             "",
             "--settings",

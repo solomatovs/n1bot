@@ -1,4 +1,4 @@
-"""Вход ACP v2: агент `boba acp` над ядром boba-agent на SDK acp.experimental.v2.
+"""Вход ACP v2: агент `boba --stdio` над ядром boba-agent на SDK acp.experimental.v2.
 
 Сервер JSON-RPC по stdio на стороне агента AgentSide (boba-transport-acp):
 `initialize` с `capabilities.session.mcp.acp`, `session/new`,
