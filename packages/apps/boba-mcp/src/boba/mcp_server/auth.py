@@ -18,30 +18,20 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from enum import StrEnum
-from urllib.parse import urlsplit
 from uuid import NAMESPACE_URL, uuid5
 
-from fastmcp.server.auth import AccessToken, RemoteAuthProvider
+from fastmcp.server.auth import AccessToken
 from fastmcp.server.dependencies import get_access_token
-from pydantic import AnyHttpUrl, ValidationError
-from starlette.routing import Route
+from pydantic import ValidationError
 
 from boba.identity.context import Credential, Scope, Subject
 from boba.identity.signin import SignInMetadata
-from boba.oauth.server import (
-    AuthServer,
-    LoginPages,
-    ResourceTokens,
-    ServiceTokens,
-    TokenClaims,
-    TokenClaimsError,
-)
+from boba.oauth.server import TokenClaims, TokenClaimsError
 from boba.toolrun.call_id import CallFields
 
 __all__ = [
     "CallScopeError",
     "CallScopes",
-    "ServiceAuth",
     "ServiceMark",
     "TokenSubjects",
 ]
@@ -156,55 +146,3 @@ class CallScopes:
                 f"expects one path segment, got {sent!r}: {exc}"
             )
             raise CallScopeError(msg) from exc
-
-
-class ServiceAuth:
-    """Вход сервиса целиком: сервер авторизации, страницы входа и проверяющие
-    токена endpoint'ов.
-
-    Создаётся сборкой процесса; сборка endpoint'ов (McpEndpoints) берёт у
-    него провайдер авторизации на каждый endpoint и маршруты входа для корня
-    приложения.
-    """
-
-    def __init__(
-        self,
-        public_url: str,
-        server: AuthServer,
-        tokens: ServiceTokens,
-        resources: Mapping[str, str],
-    ) -> None:
-        self._public_url = public_url
-        self._server = server
-        self._pages = LoginPages(server, public_url, ServiceMark.NAME)
-        self._tokens = tokens
-        self._resources = dict(resources)
-
-    def published(self) -> str:
-        """Префикс пути, под которым сервис виден клиентам: путь публичного
-        адреса; без прокси — пустой."""
-        return urlsplit(self._public_url).path.rstrip("/")
-
-    def endpoint(self, name: str) -> RemoteAuthProvider:
-        """Провайдер авторизации одного endpoint'а: его отдают в
-        FastMCP(auth=…); объявляет сервер авторизации в метаданных ресурса."""
-        return RemoteAuthProvider(
-            token_verifier=ResourceTokens(self._tokens, self._resources[name], [name]),
-            authorization_servers=[AnyHttpUrl(self._public_url)],
-            base_url=self._public_url,
-        )
-
-    def routes(self) -> list[Route]:
-        """Маршруты входа для корня приложения: сервер авторизации, его
-        метаданные по пути издателя и страницы входа."""
-        routes = self._server.get_routes()
-        taken = {route.path for route in routes}
-        for route in self._server.get_well_known_routes():
-            if route.path in taken:
-                continue
-
-            routes.append(route)
-
-        routes.extend(self._pages.routes())
-
-        return routes
