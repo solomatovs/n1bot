@@ -418,7 +418,7 @@ class TestNoTokenExchangeInTheChat:
         assert session_jwt not in text
         assert "mcpServers" not in document, document
         assert "hooks" not in document, document
-        assert document["mcp"]["call_timeout_sec"] == 120.0, document
+        assert document["mcp"]["callTimeoutSec"] == 120.0, document
 
         log = "\n".join(_lines_since(app, since))
         assert "mcp token issued" not in log, log[-2000:]
