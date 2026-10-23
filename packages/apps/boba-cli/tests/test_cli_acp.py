@@ -1649,13 +1649,15 @@ class TestMcpOverAcp:
             assert gone.status == ToolStatus.FAILED
             assert "got ACP error -33002" in result_text(gone)
             assert isinstance(gone.raw_output, dict)
-            assert gone.raw_output["error_kind"] == "mcp_transport_error"
+            assert gone.raw_output["isError"] is True
+            assert "got ACP error -33002" in gone.raw_output["content"][0]["text"]
 
             assert retired.status == ToolStatus.FAILED
             assert "error -32602: Unknown tool: retired" in result_text(retired)
             assert '"tool": "retired"' in result_text(retired)
             assert isinstance(retired.raw_output, dict)
-            assert retired.raw_output["error_kind"] == "mcp_tool_error"
+            assert retired.raw_output["isError"] is True
+            assert "error -32602" in retired.raw_output["content"][0]["text"]
 
             assert broken.status == ToolStatus.FAILED
             assert result_text(broken) == StandRegistration.FAILURE
@@ -2226,7 +2228,9 @@ class TestQuestions:
 
         done = client.calls_of(call_update.tool_call_id)[-1]
         assert done.status == ToolStatus.COMPLETED
-        assert done.raw_output == {
+        assert isinstance(done.raw_output, dict)
+        assert done.raw_output["isError"] is False
+        assert done.raw_output["structuredContent"] == {
             "questions": self.ASKED["questions"],
             "answers": {
                 "Which layout should the report page use?": "Single column",
@@ -2268,8 +2272,13 @@ class TestQuestions:
         done = client.calls_of(call_update.tool_call_id)[-1]
         assert done.status == ToolStatus.FAILED
         assert done.raw_output == {
-            "questions": self.ASKED["questions"],
-            "outcome": "decline",
+            "content": [{"type": "text", "text": "User rejected tool use"}],
+            "structuredContent": {
+                "questions": self.ASKED["questions"],
+                "outcome": "decline",
+            },
+            "isError": True,
+            "resultType": "complete",
         }
         returned = model.app.requests[-1]["messages"][-1]
         assert (

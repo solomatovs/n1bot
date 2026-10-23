@@ -23,16 +23,17 @@ from boba.agent.attachments import ConnectedServer, EnvironmentSnapshot
 from boba.agent.events import AgentEvent, ControlRequestEvent, EventSink
 from boba.agent.history import HistoryStore, SessionId
 from boba.agent.ids import Clock, SystemClock
+from boba.agent.mcp import McpToolNames, ToolCard, ToolHints, ToolReplies, ToolReply
 from boba.agent.profile import (
     CompactionSettings,
     ModelProfile,
     ReasoningReturn,
     TurnLimits,
 )
-from boba.agent.records import PermissionMode
+from boba.agent.records import PermissionMode, ToolUseBlock
 from boba.agent.session import Session
 from boba.agent.skills import Skill
-from boba.agent.tools import McpServerSet
+from boba.agent.tools import McpServerSet, ToolServer
 from boba.connections.sealed import ConnectionOffer, SealedParamSchema
 from boba.history.jsonl import JsonlHistoryStore
 from boba.llm.chat import ChatModel
@@ -46,16 +47,6 @@ from boba.llm.providers import (
 )
 from boba.stand.ui.fake_llm import FakeLlmApp
 from boba.stand.ui.stand import StandPorts
-from boba.toolkit.dag import (
-    DagNode,
-    NodeOutcome,
-    NodeOutcomes,
-    ToolCard,
-    ToolHints,
-    ToolServer,
-)
-from boba.toolkit.mcp import McpToolNames
-from boba.toolkit.result import ErrorResult, MarkdownResult
 from boba.transport.http import HttpTransportConfig
 from boba.transport.http.connection import (
     BearerAuth,
@@ -198,9 +189,9 @@ class StandArg(StrEnum):
 
 
 class StandTools(ToolServer):
-    """Реализация ToolServer в процессе теста: инструменты с пометками,
-    задержкой, большим и пустым результатом; вызовы считаются. Карточки
-    идут под полными именами сервера MCP с именем SERVER."""
+    """Реализация ToolServer агента в процессе теста: инструменты с
+    пометками, задержкой, большим и пустым результатом; вызовы считаются.
+    Карточки идут под полными именами сервера MCP с именем SERVER."""
 
     SERVER: ClassVar[str] = StandServer.NAME.value
     """Имя стенда как сервера MCP в полных именах инструментов."""
@@ -221,16 +212,10 @@ class StandTools(ToolServer):
         "required": [StandArg.CONNECTION.value, StandArg.STATEMENT.value],
     }
 
-    def __init__(
-        self, features: Mapping[str, Mapping[str, object]] | None = None
-    ) -> None:
-        self._outcomes = NodeOutcomes()
+    def __init__(self) -> None:
+        self._replies = ToolReplies()
         self._names = McpToolNames()
-        self.calls: list[DagNode] = []
-        self._features: dict[str, Mapping[str, object]] = {}
-        if features is not None:
-            self._features = dict(features)
-
+        self.calls: list[ToolUseBlock] = []
         self._cards = [
             self._card(StandToolName.LOOKUP, ToolHints(read_only=True)),
             self._card(StandToolName.NOTE, ToolHints(destructive=False)),
@@ -258,42 +243,36 @@ class StandTools(ToolServer):
             name=name.full,
             description=f"stand tool {name.value}",
             parameters=dict(parameters),
-            views=None,
-            output=None,
             hints=hints,
         )
 
     def tools(self) -> Sequence[ToolCard]:
         return self._cards
 
-    def features(self) -> Mapping[str, Mapping[str, object]]:
-        return self._features
-
     async def submit(
-        self, calls: Sequence[DagNode]
-    ) -> Sequence[asyncio.Future[NodeOutcome]]:
-        pending: list[asyncio.Future[NodeOutcome]] = []
+        self, calls: Sequence[ToolUseBlock]
+    ) -> Sequence[asyncio.Future[ToolReply]]:
+        pending: list[asyncio.Future[ToolReply]] = []
         for call in calls:
             self.calls.append(call)
             pending.append(asyncio.ensure_future(self._run(call)))
 
         return pending
 
-    async def _run(self, call: DagNode) -> NodeOutcome:
-        name = StandToolName(self._names.tool_of(call.tool))
+    async def _run(self, call: ToolUseBlock) -> ToolReply:
+        name = StandToolName(self._names.tool_of(call.name))
         if name is StandToolName.SLEEP:
             await asyncio.sleep(self._number(call, "seconds"))
-            return self._outcomes.of(call, MarkdownResult(text="slept"), False)
+            return self._replies.made("slept", None, False)
 
         if name is StandToolName.BROKEN:
-            failure = ErrorResult(message="stand tool failed", error_kind="stand")
-            return self._outcomes.refused(call, failure)
+            return self._replies.refused("stand tool failed")
 
         text = self._text_of(name, call)
 
-        return self._outcomes.of(call, MarkdownResult(text=text), False)
+        return self._replies.made(text, None, False)
 
-    def _text_of(self, name: StandToolName, call: DagNode) -> str:
+    def _text_of(self, name: StandToolName, call: ToolUseBlock) -> str:
         """Текст результата инструментов, которые отвечают сразу."""
         if name is StandToolName.LARGE:
             size = int(self._number(call, "size"))
@@ -314,21 +293,21 @@ class StandTools(ToolServer):
         return f"{name.value} done"
 
     @staticmethod
-    def _text(call: DagNode, key: str, default: str) -> str:
-        value = call.args.get(key, default)
+    def _text(call: ToolUseBlock, key: str, default: str) -> str:
+        value = call.input.get(key, default)
         if isinstance(value, str):
             return value
 
-        msg = f"stand tool {call.tool}: argument {key} must be a string, got {value!r}"
+        msg = f"stand tool {call.name}: argument {key} must be a string, got {value!r}"
         raise TypeError(msg)
 
     @staticmethod
-    def _number(call: DagNode, key: str) -> float:
-        value = call.args.get(key, 0)
+    def _number(call: ToolUseBlock, key: str) -> float:
+        value = call.input.get(key, 0)
         if isinstance(value, int | float):
             return float(value)
 
-        msg = f"stand tool {call.tool}: argument {key} must be a number, got {value!r}"
+        msg = f"stand tool {call.name}: argument {key} must be a number, got {value!r}"
         raise TypeError(msg)
 
 

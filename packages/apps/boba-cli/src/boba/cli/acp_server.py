@@ -106,6 +106,16 @@ from boba.agent.history import (
     SessionNotFoundError,
 )
 from boba.agent.ids import IdMint
+from boba.agent.mcp import (
+    Audience,
+    McpToolNameError,
+    McpToolNames,
+    ToolCard,
+    ToolCards,
+    ToolHints,
+    ToolReplies,
+    ToolReply,
+)
 from boba.agent.permissions import PermissionModeError
 from boba.agent.queue import QueueEntry, QueueKind, QueuePriority, QueueRefusedError
 from boba.agent.records import (
@@ -131,35 +141,11 @@ from boba.agent.tools import (
     AskUserQuestionInput,
     AskUserQuestionTool,
     McpServerSet,
+    SchemaErrors,
+    ToolServer,
 )
 from boba.agent.turn import ContextUsage
 from boba.cancellation import StopReason as CoreStopReason
-from boba.toolkit.calls import ToolIntent
-from boba.toolkit.dag import (
-    DagNode,
-    NodeOutcome,
-    NodeOutcomes,
-    ToolCard,
-    ToolHints,
-    ToolServer,
-    ToolServers,
-    ToolServersError,
-    ToolUseResults,
-)
-from boba.toolkit.failure import InvokeErrorKind, ValidationText
-from boba.toolkit.mcp import (
-    McpFailure,
-    McpResults,
-    McpToolNameError,
-    McpToolNames,
-    McpToolStubs,
-)
-from boba.toolkit.result import (
-    BlockAudience,
-    ErrorResult,
-    FailureResult,
-    MarkdownResult,
-)
 from boba.transport.acp.protocol import (
     AcpErrorCode,
     AcpTransportError,
@@ -635,7 +621,6 @@ class AcpMapping:
 
     def __init__(self) -> None:
         self._titles = ToolTitles()
-        self._uses = ToolUseResults()
         self._templates = AgentTemplate()
 
     def idle(
@@ -816,8 +801,8 @@ class AcpMapping:
     def _tool_result(
         self, block: ToolResultBlock, stored: Any
     ) -> schema.SessionToolCallUpdate:
-        """Итог вызова: текст модели содержимым, ответ сервера как пришёл —
-        `rawOutput`."""
+        """Итог вызова: текст модели содержимым, ответ tools/call как он
+        записан в `toolUseResult` — `rawOutput`."""
         status = ToolStatus.COMPLETED
         if block.is_error:
             status = ToolStatus.FAILED
@@ -828,7 +813,7 @@ class AcpMapping:
             tool_call_id=block.tool_use_id,
             status=status,
             content=[schema.ContentToolCallContent(content=text)],
-            raw_output=self._uses.of(stored).artifact,
+            raw_output=stored,
         )
 
     def tool_started(self, event: ToolStartedEvent) -> schema.SessionToolCallUpdate:
@@ -1160,7 +1145,7 @@ class PromptText:
             if block.annotations is not None:
                 audience = block.annotations.audience
 
-            if BlockAudience.USER.reads(audience):
+            if Audience.USER.reads(audience):
                 parts.append(block.text)
                 continue
 
@@ -1349,8 +1334,8 @@ class AcpToolServer(ToolServer):
     subscriptions/listen: смена делает список устаревшим, а смена промптов
     перечитывает их сразу; кончившийся поток поднимает следующее удачное
     перечитывание. Вызов — `tools/call` запросом mcp/message через
-    AgentSide; текст для модели собирает McpResults, ответ сервера как
-    пришёл ложится в NodeOutcome.reply, ход вызова идёт в приёмник сессии
+    AgentSide; ответ сервера как пришёл ложится в ToolReply, текст для
+    модели по нему собирает агент, ход вызова идёт в приёмник сессии
     через CallProgressRelay. ask() — любой другой запрос MCP (ресурсы,
     промпты). Каждый запрос несёт в _meta версию протокола, clientInfo
     агента и его clientCapabilities: формы (elicitation.form) агент
@@ -1379,10 +1364,9 @@ class AcpToolServer(ToolServer):
         self._mapping = mapping
         self._prompted = prompted
         self._ids = IdMint()
-        self._stubs = McpToolStubs()
-        self._results = McpResults()
+        self._cards_of = ToolCards()
+        self._replies = ToolReplies()
         self._names = McpToolNames()
-        self._outcomes = NodeOutcomes()
         self._cards: list[ToolCard] = []
         self._prompts: list[mt.Prompt] = []
         self._for_model = False
@@ -1557,7 +1541,7 @@ class AcpToolServer(ToolServer):
         if annotations is None:
             return True
 
-        return BlockAudience.MODEL.reads(annotations.audience)
+        return Audience.MODEL.reads(annotations.audience)
 
     def tools(self) -> Sequence[ToolCard]:
         """Инструменты подключённого сервера; отключённый — без инструментов."""
@@ -1565,9 +1549,6 @@ class AcpToolServer(ToolServer):
             return ()
 
         return self._cards
-
-    def features(self) -> Mapping[str, Mapping[str, object]]:
-        return {}
 
     async def ask(
         self,
@@ -1726,7 +1707,7 @@ class AcpToolServer(ToolServer):
         for page in listed.pages:
             for tool in page.tools:
                 try:
-                    card = self._stubs.card(self._server.name, tool)
+                    card = self._cards_of.card(self._server.name, tool)
                 except McpToolNameError as exc:
                     msg = f"{self._label} lists a tool that is refused: {exc}"
                     raise McpRequestError(msg) from exc
@@ -1960,53 +1941,49 @@ class AcpToolServer(ToolServer):
         return reply.completion.values
 
     async def submit(
-        self, calls: Sequence[DagNode]
-    ) -> Sequence[asyncio.Future[NodeOutcome]]:
-        pending: list[asyncio.Future[NodeOutcome]] = []
+        self, calls: Sequence[ToolUseBlock]
+    ) -> Sequence[asyncio.Future[ToolReply]]:
+        pending: list[asyncio.Future[ToolReply]] = []
         for call in calls:
             pending.append(asyncio.ensure_future(self._call(call)))
 
         return pending
 
-    async def _call(self, node: DagNode) -> NodeOutcome:
+    async def _call(self, call: ToolUseBlock) -> ToolReply:
         """Вызов `tools/call` с раундами ввода: просьбу сервера о вводе
         (input_required) агент задаёт пользователю формами и повторяет вызов
         с ответами и тем же requestState, но не больше `mcp.input_rounds`
         раз; раунды вопросов ложатся в `_meta` результата. Наружу идёт только
-        отмена (контракт NodeBody)."""
-        meta = mt.RequestParamsMeta(progress_token=node.key)
+        отмена (контракт ToolServer)."""
+        meta = mt.RequestParamsMeta(progress_token=call.id)
         meta.update(self._meta)
         params = mt.CallToolRequestParams(
-            name=self._names.tool_of(node.tool), arguments=dict(node.args), _meta=meta
+            name=self._names.tool_of(call.name), arguments=dict(call.input), _meta=meta
         )
         rounds: list[ElicitationRound] = []
         asked = 0
         while True:
-            reply = await self._requested(node, params)
-            if isinstance(reply, NodeOutcome):
+            reply = await self._requested(call, params)
+            if isinstance(reply, ToolReply):
                 return reply
 
             required = reply.parsed
             if isinstance(required, mt.CallToolResult):
-                return self._finished(node, reply, rounds)
+                return self._finished(reply.raw, required, rounds)
 
             limit = self._limits.input_rounds
             if asked >= limit:
-                failure = ErrorResult(
-                    message=(
-                        f"{self._what(node)} asked for user input more than {limit} "
-                        "times in one call (settings mcp.input_rounds); the call "
-                        "is stopped, call the tool again with arguments that need "
-                        "less input"
-                    ),
-                    error_kind=McpFailure.TOOL_ERROR,
+                return self._replies.refused(
+                    f"{self._what(call)} asked for user input more than {limit} "
+                    "times in one call (settings mcp.input_rounds); the call "
+                    "is stopped, call the tool again with arguments that need "
+                    "less input"
                 )
-                return self._outcomes.refused(node, failure)
 
             asked += 1
-            answered = await self._answers(node, required, rounds)
-            if isinstance(answered, ErrorResult):
-                return self._outcomes.refused(node, answered)
+            answered = await self._answers(call, required, rounds)
+            if isinstance(answered, ToolReply):
+                return answered
 
             params = params.model_copy(
                 update={
@@ -2015,28 +1992,27 @@ class AcpToolServer(ToolServer):
                 }
             )
 
-    def _what(self, node: DagNode) -> str:
+    def _what(self, call: ToolUseBlock) -> str:
         return (
-            f"calling tool {node.tool!r} (call {node.key}) on MCP server "
+            f"calling tool {call.name!r} (call {call.id}) on MCP server "
             f"'{self._server.name}' (serverId '{self._server.server_id}')"
         )
 
     async def _requested(
-        self, node: DagNode, params: mt.CallToolRequestParams
-    ) -> CallReply | NodeOutcome:
-        """Один запрос `tools/call`: ответ сервера либо итог-отказ, если
-        ответа нет или он не по схеме."""
+        self, call: ToolUseBlock, params: mt.CallToolRequestParams
+    ) -> CallReply | ToolReply:
+        """Один запрос `tools/call`: ответ сервера либо отказ, если ответа
+        нет или он не по схеме."""
         request = mt.CallToolRequest(params=params)
-        what = self._what(node)
-        outcome = await self._sent(node, request)
-        if isinstance(outcome, NodeOutcome):
+        what = self._what(call)
+        outcome = await self._sent(call, request)
+        if isinstance(outcome, ToolReply):
             return outcome
 
         if isinstance(outcome, McpErrorOutcome):
             # отказ вызову может значить, что список инструментов сменился
             self._fresh.pop(McpListing.TOOLS, None)
-            error = self._results.error(node.tool, node.key, outcome.error)
-            return self._outcomes.refused(node, error)
+            return self._replies.error(call.name, call.id, outcome.error)
 
         shown = repr(outcome.result)[:200]
         try:
@@ -2044,29 +2020,20 @@ class AcpToolServer(ToolServer):
                 request.method, McpVersion.V2026_07_28, outcome.result
             )
         except (ValidationError, KeyError, ValueError) as exc:
-            failure = ErrorResult(
-                message=f"{what} expected a tools/call result, got {shown}: {exc}",
-                error_kind=McpFailure.TRANSPORT,
+            return self._replies.refused(
+                f"{what} expected a tools/call result, got {shown}: {exc}"
             )
-            return self._outcomes.refused(node, failure)
 
         if isinstance(parsed, mt.CallToolResult | mt.InputRequiredResult):
             return CallReply(raw=outcome.result, parsed=parsed)
 
-        failure = ErrorResult(
-            message=(
-                f"{what} expected a tools/call result, got "
-                f"{type(parsed).__name__}: {shown}"
-            ),
-            error_kind=McpFailure.TRANSPORT,
+        return self._replies.refused(
+            f"{what} expected a tools/call result, got {type(parsed).__name__}: {shown}"
         )
-        built = self._outcomes.refused(node, failure)
-
-        return built.model_copy(update={"reply": outcome.result})
 
     async def _sent(
-        self, node: DagNode, request: mt.CallToolRequest
-    ) -> McpOutcome | NodeOutcome:
+        self, call: ToolUseBlock, request: mt.CallToolRequest
+    ) -> McpOutcome | ToolReply:
         """Запрос mcp/message с ходом вызова в срок `call_timeout_sec`; итог —
         исход MCP либо отказ, если ответа нет. Без ответа все ответы сервера
         устаревают: доступность проверит начало следующего хода."""
@@ -2075,62 +2042,40 @@ class AcpToolServer(ToolServer):
             request_id=self._ids.request_id(),
             **request.model_dump(mode="json", by_alias=True, exclude_none=True),
         )
-        relay = CallProgressRelay(self._sink, node.key)
+        relay = CallProgressRelay(self._sink, call.id)
         limit = self._limits.call_timeout_sec
-        what = self._what(node)
+        what = self._what(call)
         try:
             async with asyncio.timeout(limit):
                 return await self._side.request(message, relay.accept)
         except TimeoutError:
             self._fresh.clear()
-            failure = ErrorResult(
-                message=(
-                    f"{what} expected a tools/call result within {limit} s, got none"
-                ),
-                error_kind=McpFailure.TRANSPORT,
+            return self._replies.refused(
+                f"{what} expected a tools/call result within {limit} s, got none"
             )
-            return self._outcomes.refused(node, failure)
         except RequestError as exc:
             self._fresh.clear()
-            failure = ErrorResult(
-                message=(
-                    f"{what} expected a tools/call result, got ACP error {exc.code} "
-                    f"{exc}: {exc.data!r}"
-                ),
-                error_kind=McpFailure.TRANSPORT,
+            return self._replies.refused(
+                f"{what} expected a tools/call result, got ACP error {exc.code} "
+                f"{exc}: {exc.data!r}"
             )
-            return self._outcomes.refused(node, failure)
         except AcpTransportError as exc:
             self._fresh.clear()
-            failure = ErrorResult(
-                message=f"{what} expected a tools/call result, got no answer: {exc}",
-                error_kind=McpFailure.TRANSPORT,
+            return self._replies.refused(
+                f"{what} expected a tools/call result, got no answer: {exc}"
             )
-            return self._outcomes.refused(node, failure)
 
     def _finished(
-        self, node: DagNode, reply: CallReply, rounds: Sequence[ElicitationRound]
-    ) -> NodeOutcome:
-        """Итог вызова по результату сервера; ответ сервера ложится как
-        пришёл, с раундами вопросов в `_meta`."""
-        family = self._results.result(node.tool, node.key, reply.parsed)
-        if isinstance(family, FailureResult):
-            built = self._outcomes.refused(node, family)
-        else:
-            built = self._outcomes.of(node, family, False)
-
-        return built.model_copy(update={"reply": self._with_rounds(reply, rounds)})
-
-    @staticmethod
-    def _with_rounds(reply: CallReply, rounds: Sequence[ElicitationRound]) -> Any:
-        """Ответ сервера как пришёл; с раундами вопросов — тот же результат с
-        раундами в `_meta`."""
+        self, raw: Any, result: mt.CallToolResult, rounds: Sequence[ElicitationRound]
+    ) -> ToolReply:
+        """Итог вызова по результату сервера: ответ как пришёл, с раундами
+        вопросов в `_meta`."""
         if not rounds:
-            return reply.raw
+            return self._replies.received(raw, result)
 
         meta: dict[str, Any] = {}
-        if reply.parsed.meta is not None:
-            meta.update(reply.parsed.meta)
+        if result.meta is not None:
+            meta.update(result.meta)
 
         dumped: list[dict[str, Any]] = []
         for asked in rounds:
@@ -2139,22 +2084,22 @@ class AcpToolServer(ToolServer):
             )
 
         meta[MetaKey.ELICITATIONS.value] = dumped
-        shown = reply.parsed.model_copy(update={"meta": meta})
+        shown = result.model_copy(update={"meta": meta})
 
-        return shown.model_dump(mode="json", by_alias=True, exclude_none=True)
+        return self._replies.received(self._replies.dumped(shown), shown)
 
     async def _answers(
         self,
-        node: DagNode,
+        call: ToolUseBlock,
         required: mt.InputRequiredResult,
         rounds: list[ElicitationRound],
-    ) -> dict[str, mt.InputResponse] | ErrorResult:
+    ) -> dict[str, mt.InputResponse] | ToolReply:
         """Ответы пользователя на просьбы сервера по их ключам: каждая форма
         уходит клиенту `elicitation/create` с именем сервера и инструмента в
         `_meta`. Выборку (sampling), корни (roots) и форму-ссылку агент не
-        выполняет — вызов кончается ошибкой с причиной."""
-        what = self._what(node)
-        tool = self._names.tool_of(node.tool)
+        выполняет — вызов кончается отказом с причиной."""
+        what = self._what(call)
+        tool = self._names.tool_of(call.name)
         meta = {MetaKey.SERVER.value: self._server.name, MetaKey.TOOL.value: tool}
         requests: Mapping[str, mt.InputRequest] = {}
         if required.input_requests is not None:
@@ -2163,37 +2108,28 @@ class AcpToolServer(ToolServer):
         responses: dict[str, mt.InputResponse] = {}
         for key, request in requests.items():
             if not isinstance(request, mt.ElicitRequest):
-                return ErrorResult(
-                    message=(
-                        f"{what} asked the client for {request.method} (input "
-                        f"request {key!r}); this agent answers only elicitation "
-                        "forms, sampling and roots are not supported"
-                    ),
-                    error_kind=McpFailure.TOOL_ERROR,
+                return self._replies.refused(
+                    f"{what} asked the client for {request.method} (input "
+                    f"request {key!r}); this agent answers only elicitation "
+                    "forms, sampling and roots are not supported"
                 )
 
             form = request.params
             if not isinstance(form, mt.ElicitRequestFormParams):
-                return ErrorResult(
-                    message=(
-                        f"{what} asked the user to open a URL (input request "
-                        f"{key!r}); this agent declared form elicitation only"
-                    ),
-                    error_kind=McpFailure.TOOL_ERROR,
+                return self._replies.refused(
+                    f"{what} asked the user to open a URL (input request "
+                    f"{key!r}); this agent declared form elicitation only"
                 )
 
             try:
                 requested = self._mapping.server_form(form.requested_schema)
             except ValidationError as exc:
-                return ErrorResult(
-                    message=(
-                        f"{what} asked a form (input request {key!r}) that the "
-                        f"client cannot show: {exc}"
-                    ),
-                    error_kind=McpFailure.TOOL_ERROR,
+                return self._replies.refused(
+                    f"{what} asked a form (input request {key!r}) that the "
+                    f"client cannot show: {exc}"
                 )
 
-            answer = await self._relay.elicit(node.key, form.message, requested, meta)
+            answer = await self._relay.elicit(call.id, form.message, requested, meta)
             content: dict[str, FormValue] = {}
             if isinstance(answer, schema.AcceptElicitationResponse):
                 if answer.content is not None:
@@ -2231,12 +2167,11 @@ class ResourceToolName(StrEnum):
 
 
 class ResourceListArgs(BaseModel):
-    """Аргументы list_mcp_resources: подпись вызова (ToolIntent) и сервер;
-    пусто — все серверы с ресурсами."""
+    """Аргументы list_mcp_resources: сервер; пусто — все серверы с
+    ресурсами."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    intent: str = Field(description=ToolIntent.DESCRIPTION)
     server: str = Field(
         default="",
         description="Name of the MCP server; empty lists every server with resources.",
@@ -2244,12 +2179,11 @@ class ResourceListArgs(BaseModel):
 
 
 class ResourceReadArgs(BaseModel):
-    """Аргументы read_mcp_resource: подпись вызова (ToolIntent), сервер и
-    uri ресурса или раскрытого шаблона."""
+    """Аргументы read_mcp_resource: сервер и uri ресурса или раскрытого
+    шаблона."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    intent: str = Field(description=ToolIntent.DESCRIPTION)
     server: str = Field(min_length=1, description="Name of the MCP server.")
     uri: str = Field(
         min_length=1,
@@ -2261,7 +2195,7 @@ class McpResourceTools(ToolServer):
     """Реализация ToolServer: ресурсы серверов MCP сессии собственными
     инструментами агента для модели.
 
-    Создаётся SessionMcp на сессию с серверами; инструменты у неё есть,
+    Создаётся SessionMcp над живым списком её серверов; инструменты у неё есть,
     пока хоть один подключённый сервер отдаёт модели ресурсы (audience без
     assistant — для человека, как журнал вызова, модели не идёт): признак
     сервер обновляет в начале хода. list_mcp_resources отдаёт модели ресурсы и шаблоны
@@ -2274,12 +2208,9 @@ class McpResourceTools(ToolServer):
     """
 
     def __init__(self, servers: Sequence[AcpToolServer]) -> None:
-        self._servers: dict[str, AcpToolServer] = {}
-        for server in servers:
-            self._servers[server.name] = server
-
-        self._outcomes = NodeOutcomes()
-        self._results = McpResults()
+        self._servers = servers
+        self._replies = ToolReplies()
+        self._errors = SchemaErrors()
         hints = ToolHints(read_only=True, destructive=False)
         self._cards = (
             ToolCard(
@@ -2290,8 +2221,6 @@ class McpResourceTools(ToolServer):
                     "   - server — name of one server; empty lists all servers"
                 ),
                 parameters=ResourceListArgs.model_json_schema(),
-                views=None,
-                output=None,
                 hints=hints,
             ),
             ToolCard(
@@ -2302,56 +2231,44 @@ class McpResourceTools(ToolServer):
                     "   - uri — URI of a listed resource or of an expanded template"
                 ),
                 parameters=ResourceReadArgs.model_json_schema(),
-                views=None,
-                output=None,
                 hints=hints,
             ),
         )
 
     def tools(self) -> Sequence[ToolCard]:
         """Инструменты ресурсов, если хоть один сервер отдаёт модели ресурсы."""
-        for server in self._servers.values():
+        for server in self._servers:
             if server.for_model():
                 return self._cards
 
         return ()
 
-    def features(self) -> Mapping[str, Mapping[str, object]]:
-        return {}
-
     async def submit(
-        self, calls: Sequence[DagNode]
-    ) -> Sequence[asyncio.Future[NodeOutcome]]:
-        pending: list[asyncio.Future[NodeOutcome]] = []
+        self, calls: Sequence[ToolUseBlock]
+    ) -> Sequence[asyncio.Future[ToolReply]]:
+        pending: list[asyncio.Future[ToolReply]] = []
         for call in calls:
             pending.append(asyncio.ensure_future(self._call(call)))
 
         return pending
 
-    async def _call(self, node: DagNode) -> NodeOutcome:
-        """Один вызов; наружу идёт только отмена (контракт NodeBody)."""
+    async def _call(self, call: ToolUseBlock) -> ToolReply:
+        """Один вызов; наружу идёт только отмена (контракт ToolServer)."""
         try:
-            if node.tool == ResourceToolName.LIST.value:
-                listed = ResourceListArgs.model_validate(node.args)
+            if call.name == ResourceToolName.LIST.value:
+                listed = ResourceListArgs.model_validate(call.input)
                 text = await self._listed(listed)
             else:
-                read = ResourceReadArgs.model_validate(node.args)
+                read = ResourceReadArgs.model_validate(call.input)
                 text = await self._read(read)
         except ValidationError as exc:
-            failure = ErrorResult(
-                message=(
-                    f"{node.tool}: the arguments are invalid: {ValidationText.of(exc)}"
-                ),
-                error_kind=InvokeErrorKind.INVALID_REQUEST,
+            return self._replies.refused(
+                f"{call.name}: the arguments are invalid: {self._errors.text(exc)}"
             )
-            return self._outcomes.refused(node, failure)
         except McpRequestError as exc:
-            failure = ErrorResult(
-                message=f"{node.tool}: {exc}", error_kind=McpFailure.TRANSPORT
-            )
-            return self._outcomes.refused(node, failure)
+            return self._replies.refused(f"{call.name}: {exc}")
 
-        return self._outcomes.of(node, MarkdownResult(text=text), False)
+        return self._replies.made(text, None, False)
 
     async def _listed(self, args: ResourceListArgs) -> str:
         """Ресурсы и шаблоны серверов для модели строками.
@@ -2360,7 +2277,7 @@ class McpResourceTools(ToolServer):
         McpRequestError — сервера нет в сессии, ресурсов для модели у него нет
             либо он не ответил.
         """
-        servers = list(self._servers.values())
+        servers = list(self._servers)
         if args.server:
             servers = [self._server(args.server)]
 
@@ -2412,11 +2329,15 @@ class McpResourceTools(ToolServer):
         """Ошибки:
         McpRequestError — сервера нет в сессии либо ресурсов у него нет.
         """
-        server = self._servers.get(name)
+        server = self._named(name)
         if server is None:
+            names: list[str] = []
+            for known in self._servers:
+                names.append(known.name)
+
             msg = (
                 f"server {name!r} is not an MCP server of the session; expected one "
-                f"of {sorted(self._servers)}"
+                f"of {sorted(names)}"
             )
             raise McpRequestError(msg)
 
@@ -2425,6 +2346,13 @@ class McpResourceTools(ToolServer):
             raise McpRequestError(msg)
 
         return server
+
+    def _named(self, name: str) -> AcpToolServer | None:
+        for server in self._servers:
+            if server.name == name:
+                return server
+
+        return None
 
     @staticmethod
     def _line(server: str, resource: mt.Resource) -> str:
@@ -2458,15 +2386,16 @@ class InputReplies:
     )
 
 
-class SessionMcp(McpServerSet):
+class SessionMcp(McpServerSet, ToolServer):
     """MCP-серверы одной сессии ACP: регистрации `type: "acp"` клиента;
-    реализация McpServerSet ядра.
+    реализация McpServerSet и ToolServer ядра.
 
     Создаётся AcpAgent на `session/new|resume|fork` до сборки агента и живёт
-    с сессией. Отдаёт сборке инструменты для модели (tools: серверы и
-    McpResourceTools), а ядру — свежесть серверов в начале хода и
-    подключённые серверы с их инструкциями: инструкции модель получает
-    вложением хода, а не системным промптом. Промпты серверов — команды
+    с сессией. Как ToolServer отдаёт модели инструменты серверов и
+    McpResourceTools и ведёт вызов тому серверу, чей это инструмент; как
+    McpServerSet — свежесть серверов в начале хода и подключённые серверы
+    с их инструкциями: инструкции модель получает вложением хода, а не
+    системным промптом. Промпты серверов — команды
     сессии: их список уходит клиенту `available_commands_update` при
     открытии и при смене промптов, а вопрос `/<команда> <аргументы>`
     раскрывается prompts/get в служебный контекст вопроса. Сервер, который
@@ -2479,8 +2408,9 @@ class SessionMcp(McpServerSet):
     def __init__(self, relay: SessionRelay) -> None:
         self._relay = relay
         self._servers: list[AcpToolServer] = []
+        self._resources = McpResourceTools(self._servers)
         self._names = McpToolNames()
-        self._results = McpResults()
+        self._replies = ToolReplies()
         self._announcing: asyncio.Task[None] | None = None
         self._notices: list[schema.SessionNotice] = []
 
@@ -2497,19 +2427,75 @@ class SessionMcp(McpServerSet):
         )
         self._notices.append(notice)
 
-    def tools(self) -> ToolServer | None:
-        """Инструменты для модели; без серверов — None.
+    def tools(self) -> Sequence[ToolCard]:
+        """Инструменты серверов и инструменты ресурсов; имена, которые
+        предложены дважды, отвергает агент."""
+        offered: list[ToolCard] = []
+        for server in self._offering():
+            offered.extend(server.tools())
 
-        Ошибки:
-        ToolServersError — два сервера назвали одно имя.
-        """
-        if not self._servers:
-            return None
+        return offered
 
-        offered: list[ToolServer] = list(self._servers)
-        offered.append(McpResourceTools(self._servers))
+    async def submit(
+        self, calls: Sequence[ToolUseBlock]
+    ) -> Sequence[asyncio.Future[ToolReply]]:
+        """Вызовы пакета к одному серверу уходят ему одним пакетом; вызов
+        инструмента, которого нет ни у кого, получает отказ со списком."""
+        routed: dict[int, list[int]] = {}
+        pending: dict[int, asyncio.Future[ToolReply]] = {}
+        servers = list(self._offering())
+        for position, call in enumerate(calls):
+            owner = self._owner(servers, call.name)
+            if owner is None:
+                pending[position] = self._settled(self._unknown(servers, call.name))
+                continue
 
-        return ToolServers(offered)
+            routed.setdefault(owner, []).append(position)
+
+        for owner, positions in routed.items():
+            batch: list[ToolUseBlock] = []
+            for position in positions:
+                batch.append(calls[position])
+
+            accepted = await servers[owner].submit(batch)
+            for position, future in zip(positions, accepted, strict=True):
+                pending[position] = future
+
+        ordered: list[asyncio.Future[ToolReply]] = []
+        for position in range(len(calls)):
+            ordered.append(pending[position])
+
+        return ordered
+
+    def _offering(self) -> Iterator[ToolServer]:
+        yield from self._servers
+        yield self._resources
+
+    @staticmethod
+    def _owner(servers: Sequence[ToolServer], name: str) -> int | None:
+        for index, server in enumerate(servers):
+            for card in server.tools():
+                if card.name == name:
+                    return index
+
+        return None
+
+    def _unknown(self, servers: Sequence[ToolServer], name: str) -> ToolReply:
+        known: list[str] = []
+        for server in servers:
+            for card in server.tools():
+                known.append(card.name)
+
+        return self._replies.refused(
+            f"tool {name!r} does not exist; the available tools are {sorted(known)}"
+        )
+
+    @staticmethod
+    def _settled(reply: ToolReply) -> asyncio.Future[ToolReply]:
+        done: asyncio.Future[ToolReply] = asyncio.get_running_loop().create_future()
+        done.set_result(reply)
+
+        return done
 
     async def refreshed(self) -> None:
         """Устаревшее у серверов — заново, у всех разом; сменились промпты
@@ -2618,7 +2604,7 @@ class SessionMcp(McpServerSet):
             )
             raise RequestError.internal_error({ErrorDataKey.DETAILS.value: details})
 
-        context = [*asked.context, self._results.prompt(reply)]
+        context = [*asked.context, self._replies.prompt(reply)]
 
         return asked.model_copy(update={"context": context})
 
@@ -3566,7 +3552,7 @@ class AcpAgent(AcpAgentProtocol):
                 opened = await self._assembly.open(
                     SessionId(value=session_id),
                     directory,
-                    mcp.tools(),
+                    mcp,
                     mcp,
                     relay,
                     resume=False,
@@ -3603,8 +3589,6 @@ class AcpAgent(AcpAgentProtocol):
         запрос. Сервер, который не открылся, сессия не берёт: ход идёт без
         его инструментов, клиент получает пометку (SessionMcp.unavailable).
 
-        Ошибки:
-        RequestError — имена инструментов серверов совпали (-32603).
         """
         side = self._linked().side
         client = mt.Implementation(name=self._info.name, version=self._info.version)
@@ -3629,13 +3613,6 @@ class AcpAgent(AcpAgentProtocol):
                     continue
 
                 mcp.add(tool_server)
-
-            try:
-                mcp.tools()
-            except ToolServersError as exc:
-                raise RequestError.internal_error(
-                    {ErrorDataKey.DETAILS.value: str(exc)}
-                ) from exc
 
             owned.pop_all()
 
@@ -3885,12 +3862,11 @@ class AcpAgent(AcpAgentProtocol):
         SessionNotFoundError, SessionRefusedError, SessionOpenError,
         HistoryError — от сборки.
         """
-        tools = mcp.tools()
         try:
             opened = await self._assembly.open(
                 stored,
                 directory,
-                tools,
+                mcp,
                 mcp,
                 relay,
                 resume=True,
@@ -3903,7 +3879,7 @@ class AcpAgent(AcpAgentProtocol):
                 exc,
             )
             observed = await self._assembly.observe(
-                stored, directory, tools, mcp, relay, self._elicits
+                stored, directory, mcp, mcp, relay, self._elicits
             )
 
             return ObserverSession(stored.value, observed, relay, self._mapping, mcp)
@@ -4233,7 +4209,7 @@ class AcpAgent(AcpAgentProtocol):
             opened = await self._assembly.open(
                 target,
                 directory,
-                mcp.tools(),
+                mcp,
                 mcp,
                 relay,
                 resume=resume,
