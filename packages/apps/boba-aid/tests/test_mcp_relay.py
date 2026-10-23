@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import secrets
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from importlib.resources import files
 from typing import Any, ClassVar
@@ -947,6 +947,105 @@ class TestAppRequests:
         assert answered["contents"][0]["_meta"]["ui"]["csp"] == {
             "resourceDomains": ["https://cdn.example.com"]
         }
+
+    @pytest.fixture
+    async def notes_relay(
+        self, relay_stand: RelayStand, apps_slot: AppsSlot
+    ) -> AsyncIterator[McpRelay]:
+        """Ретранслятор над сервером notes контейнера boba-testapps —
+        FastMCPApp на fastmcp[apps] с секцией apps."""
+        endpoint = HttpEndpoint(
+            scheme="http",
+            host=apps_slot.host,
+            port=AppServer.NOTES.value,
+            path=apps_slot.PATH,
+        )
+        notes = McpServerConfig(
+            endpoint=endpoint,
+            connect_timeout_sec=20.0,
+            call_timeout_sec=60.0,
+            apps=self.SANDBOX,
+        )
+        servers = McpServers(McpServersConfig(servers={"notes": notes}))
+        try:
+            yield relay_stand.relay(servers)
+        finally:
+            await servers.stop()
+
+    @staticmethod
+    def _tool_calls(node: Any) -> Iterator[str]:
+        """Имена инструментов в действиях toolCall представления Prefab."""
+        if isinstance(node, dict):
+            if node.get("action") == "toolCall":
+                yield str(node["tool"])
+
+            for value in node.values():
+                yield from TestAppRequests._tool_calls(value)
+
+        if isinstance(node, list):
+            for item in node:
+                yield from TestAppRequests._tool_calls(item)
+
+    async def _as_model(
+        self, relay: McpRelay, server_id: str, method: str, params: dict[str, Any]
+    ) -> McpOutcome:
+        heard: asyncio.Queue[McpMessage] = asyncio.Queue()
+        message = McpMessage(
+            server_id=server_id,
+            request_id=f"mcp:{uuid4().hex}",
+            method=method,
+            params={**params, "_meta": TestMcpRelay.ENVELOPE},
+        )
+
+        return await relay.answer(message, heard.put)
+
+    async def test_fastmcpapp_backend_tool_is_called_by_the_app_under_its_listed_name_and_hidden_from_the_model(  # noqa: E501 — имя теста называет проверку целиком
+        self, notes_relay: McpRelay, relay_stand: RelayStand, tab: TabSession
+    ) -> None:
+        """FastMCPApp: модель видит только вход notes_board и зовёт его; в
+        представлении действие toolCall названо именем из tools/list; этим
+        именем приложение зовёт backend save, а модели он не виден и
+        недоступен."""
+        registration = tab.registration(uuid4(), SignInStand.PROFILE)
+        server_id = relay_stand.registrations.register(registration, ["notes"])[0]
+        listed = await self._as_model(
+            notes_relay, server_id.server_id, "tools/list", {}
+        )
+        opened = await self._as_model(
+            notes_relay,
+            server_id.server_id,
+            "tools/call",
+            {"name": "notes_board", "arguments": {}},
+        )
+        assert isinstance(listed, McpResultOutcome), listed
+        assert isinstance(opened, McpResultOutcome), opened
+        names = [
+            tool.name for tool in mt.ListToolsResult.model_validate(listed.result).tools
+        ]
+        board = mt.CallToolResult.model_validate(opened.result)
+        actions = set(self._tool_calls(board.structured_content))
+
+        assert names == ["notes_board"], names
+        assert len(actions) == 1, board.structured_content
+        save = actions.pop()
+
+        app = replace(registration, server="notes", servers=frozenset({"notes"}))
+        saved = await notes_relay.app_call(
+            app, mt.CallToolRequestParams(name=save, arguments={"text": "eggs"})
+        )
+        refused = await self._as_model(
+            notes_relay,
+            server_id.server_id,
+            "tools/call",
+            {"name": save, "arguments": {"text": "by the model"}},
+        )
+
+        assert not saved.is_error, saved
+        assert saved.structured_content is not None
+        assert {"text": "eggs"} in saved.structured_content["notes"], saved
+        assert isinstance(refused, McpErrorOutcome), refused
+        assert refused.error.code == mt.INVALID_PARAMS
+        assert f"{save!r}" in refused.error.message
 
 
 @pytest.fixture

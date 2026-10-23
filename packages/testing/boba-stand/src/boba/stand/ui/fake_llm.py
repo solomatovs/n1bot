@@ -308,7 +308,9 @@ class ToolCallSpec:
     провод как есть: так стенд отдаёт битые и оборванные аргументы. Вызов
     с dictated=True назван тестом (`scenario:call`): имя уходит как есть,
     стенд не ищет его среди предложенных инструментов. Подпись называет
-    инструмент без сервера — так же, как его подписывает шаг ленты.
+    инструмент без сервера — так же, как его подписывает шаг ленты. Вызов с
+    unsigned=True идёт без подписи: у инструментов чужих серверов поля intent
+    в схеме нет, и лишний аргумент сервер отвергает.
     """
 
     call_id: str
@@ -316,6 +318,7 @@ class ToolCallSpec:
     arguments: str
     literal: bool = False
     dictated: bool = False
+    unsigned: bool = False
     names: McpToolNames = field(default_factory=McpToolNames, repr=False, compare=False)
 
     INTENT_FIELD: ClassVar[str] = "intent"
@@ -333,7 +336,9 @@ class ToolCallSpec:
             )
             raise ScenarioError(msg)
 
-        if self.INTENT_FIELD not in parsed:
+        if self.unsigned:
+            parsed.pop(self.INTENT_FIELD, None)
+        elif self.INTENT_FIELD not in parsed:
             tool = self.names.tool_of(self.name)
             parsed[self.INTENT_FIELD] = f"stand call of {tool}"
 
@@ -1084,7 +1089,7 @@ class OpenAiWire:
     async def _stream(
         self, played: Played, usage: UsageCounts, pace: StreamPace
     ) -> AsyncIterator[bytes]:
-        for index, chunk in enumerate(self._chunks(played, usage)):
+        for index, chunk in enumerate(self._chunks(played, usage, pace)):
             await pace.before(index)
             yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n".encode()
             await asyncio.sleep(pace.delay_sec)
@@ -1094,7 +1099,9 @@ class OpenAiWire:
 
         yield b"data: [DONE]\n\n"
 
-    def _chunks(self, played: Played, usage: UsageCounts) -> Iterator[dict[str, Any]]:
+    def _chunks(
+        self, played: Played, usage: UsageCounts, pace: StreamPace
+    ) -> Iterator[dict[str, Any]]:
         script = played.script
         for token in self._split.tokens(script.reasoning):
             yield self._delta({"role": "assistant", "content": "", "reasoning": token})
@@ -1109,12 +1116,9 @@ class OpenAiWire:
             yield self._delta({"role": "assistant", "content": token})
 
         for index, call in enumerate(script.tool_calls):
-            delta = {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [self._call(index, call)],
-            }
-            yield self._delta(delta)
+            for part in self._call_deltas(index, call, pace.argument_tokens):
+                delta = {"role": "assistant", "content": "", "tool_calls": [part]}
+                yield self._delta(delta)
 
         final = self._delta({"role": "assistant", "content": ""}, played.finish.value)
         if not played.has(FailureName.NO_USAGE):
@@ -1129,6 +1133,24 @@ class OpenAiWire:
             "type": "function",
             "function": {"name": call.name, "arguments": call.arguments},
         }
+
+    def _call_deltas(
+        self, index: int, call: ToolCallSpec, argument_tokens: bool
+    ) -> Iterator[dict[str, Any]]:
+        """Дельты одного вызова: целиком либо, как у настоящей модели,
+        имя с первым куском аргументов и далее по куску на кадр."""
+        tokens = list(self._split.tokens(call.arguments))
+        tail = tokens[1:]
+        if not argument_tokens or not tail:
+            yield self._call(index, call)
+            return
+
+        head = self._call(index, call)
+        head["function"]["arguments"] = tokens[0]
+        yield head
+
+        for token in tail:
+            yield {"index": index, "function": {"arguments": token}}
 
     @staticmethod
     def _usage(usage: UsageCounts) -> dict[str, int]:
@@ -1262,13 +1284,15 @@ class OllamaWire:
 class ReplyCall(BaseModel):
     """Вызов инструмента в ходе книги ответов: имя, каким его видит модель
     (`diagram_save` или полное `mcp__standard__blocks`), аргументы и подпись
-    вызова — она обязательна, как у настоящей модели."""
+    вызова. Подпись intent — поле схемы инструментов boba, настоящая модель
+    её заполняет; у инструмента чужого сервера этого поля нет, и подпись не
+    задаётся (None) — лишний аргумент такой сервер отвергает."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     tool: str = Field(min_length=1)
     arguments: Mapping[str, JsonValue]
-    intent: str = Field(min_length=1)
+    intent: str | None = Field(default=None, min_length=1)
 
 
 class ReplyTurn(BaseModel):
@@ -1301,6 +1325,8 @@ class Reply(BaseModel):
     question: str = Field(min_length=1)
     turns: Sequence[ReplyTurn] = Field(min_length=1)
     token_delay_sec: float = Field(default=0.0, ge=0)
+    stream_arguments: bool = False
+    """Аргументы вызовов идут кусками-токенами по кадру потока (OpenAI)."""
 
 
 class ReplyList(RootModel[Sequence[Reply]]):
@@ -1462,12 +1488,16 @@ class ReplyBook:
         for number, turn in enumerate(self._replies[question].turns):
             calls: list[ToolCallSpec] = []
             for index, call in enumerate(turn.calls):
-                arguments = {**call.arguments, ToolCallSpec.INTENT_FIELD: call.intent}
+                arguments = dict(call.arguments)
+                if call.intent is not None:
+                    arguments[ToolCallSpec.INTENT_FIELD] = call.intent
+
                 calls.append(
                     ToolCallSpec(
                         call_id=f"{stem}_{number}_{index}",
                         name=call.tool,
                         arguments=json.dumps(arguments, ensure_ascii=False),
+                        unsigned=call.intent is None,
                     )
                 )
 
@@ -1560,6 +1590,9 @@ class StreamPace:
     hold_at: int
     question: str
     holds: ReplyHolds
+    argument_tokens: bool = False
+    """Аргументы вызовов уходят кусками-токенами по кадру, как у настоящей
+    модели; только протокол OpenAI — ollama шлёт вызов целым объектом."""
 
     async def before(self, index: int) -> None:
         if not self.hold:
@@ -1637,6 +1670,9 @@ class FakeLlmApp:
 
     unmarked: ScenarioName | None = None
     """Сценарий для сообщения без маркера; None — такое сообщение отвергается."""
+
+    stream_arguments: bool = False
+    """Аргументы вызовов сценариев идут кусками-токенами по кадру (OpenAI)."""
 
     requests: list[dict[str, Any]] = field(default_factory=list)
     _openai: OpenAiWire = field(init=False, repr=False)
@@ -1785,6 +1821,7 @@ class FakeLlmApp:
             hold_at=0,
             question=question,
             holds=self._holds,
+            argument_tokens=self.stream_arguments,
         )
         return self._answer(wire, payload, played, pace)
 
@@ -1808,12 +1845,14 @@ class FakeLlmApp:
         tokens = self._tokens(played.script)
         hold_at = min(turn.hold_after_tokens, tokens)
 
+        reply = self._book.reply(question)
         pace = StreamPace(
-            delay_sec=self._book.reply(question).token_delay_sec,
+            delay_sec=reply.token_delay_sec,
             hold=turn.hold,
             hold_at=hold_at,
             question=question,
             holds=self._holds,
+            argument_tokens=reply.stream_arguments,
         )
         return self._answer(wire, payload, played, pace)
 

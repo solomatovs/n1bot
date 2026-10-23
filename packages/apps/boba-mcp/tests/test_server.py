@@ -20,6 +20,7 @@ from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, ClassVar
+from urllib.parse import urlsplit
 from uuid import NAMESPACE_URL, uuid5
 
 import httpx
@@ -30,6 +31,7 @@ from fastmcp.client.transports import StreamableHttpTransport
 from mcp.client.extension import ClientExtension, NotificationBinding, advertise
 from mcp.client.session import IncomingMessage
 from mcp.client.subscriptions import listen
+from mcp.server.apps import APP_MIME_TYPE
 from mcp.server.auth.provider import IdentityAssertionParams, TokenError
 from mcp.shared.auth import JWT_BEARER_GRANT_TYPE, OAuthClientInformationFull
 from mcp.shared.exceptions import MCPError
@@ -240,8 +242,85 @@ class TestToolList:
         if names != ["fake_echo", FileUploadTool.NAME]:
             raise AssertionError(f"role weak is granted one tool: {names}")
 
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "no tool of the service declares an app: the stand has no fake_sales, "
+            "ToolCard and ToolHints carry no _meta.ui, McpTool passes no meta to "
+            "fastmcp and the service serves no ui:// resources (plan items 6-7)"
+        ),
+    )
+    async def test_tool_declares_its_app_and_the_server_serves_the_renderer(
+        self, stand: ServiceStand, url: str, dev_token: str
+    ) -> None:
+        """Инструмент стенда fake_sales объявлен с видом prefab: tools/list
+        несёт _meta.ui.resourceUri, ресурс читается типом приложения и его
+        CSP не называет внешних доменов."""
+        async with _client(url, dev_token) as client:
+            listed = await client.list_tools()
+            drawn = [tool.name for tool in listed if self._resource_of(tool)]
+            if "fake_sales" not in drawn:
+                raise AssertionError(
+                    f"fake_sales declares its app in _meta.ui: {drawn}"
+                )
+
+            sales = next(tool for tool in listed if tool.name == "fake_sales")
+            read = await client.read_resource(self._resource_of(sales))
+
+        page = read[0]
+        if page.mime_type != APP_MIME_TYPE:
+            raise AssertionError(f"the resource is an app page: {page.mime_type}")
+
+        if not isinstance(page, mt.TextResourceContents):
+            raise AssertionError(f"the resource is text: {type(page).__name__}")
+
+        if "<html" not in page.text:
+            raise AssertionError(f"the resource is the renderer: {page.text[:200]}")
+
+        csp = (page.meta or {}).get("ui", {}).get("csp", {})
+        for domains in csp.values():
+            for domain in domains:
+                host = str(urlsplit(domain).hostname)
+                if host.endswith(("jsdelivr.net", "googleapis.com", "gstatic.com")):
+                    raise AssertionError(f"the CSP names no CDN: {csp}")
+
+    @staticmethod
+    def _resource_of(tool: mt.Tool) -> str:
+        """Адрес ресурса приложения инструмента из _meta.ui; пусто — нет."""
+        meta = tool.meta or {}
+        ui = meta.get("ui")
+        if not isinstance(ui, dict):
+            return ""
+
+        return str(ui.get("resourceUri", ""))
+
 
 class TestCall:
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "no result kind carries a Prefab view: the stand has no fake_sales tool "
+            "and the result family has no AppResult whose sent() puts view and "
+            "state into structuredContent (plan items 8-9)"
+        ),
+    )
+    async def test_sandboxed_tool_returns_a_prefab_view(
+        self, stand: ServiceStand, url: str, dev_token: str
+    ) -> None:
+        """Тело fake_sales отвечает AppResult с таблицей: tools/call несёт view
+        в structuredContent, content — текст для модели."""
+        async with _client(url, dev_token) as client:
+            result = await client.call_tool_mcp("fake_sales", {"region": "North"})
+
+        shown = _shown(result)
+        if shown is None or "view" not in shown:
+            raise AssertionError(f"the result carries the view: {shown}")
+
+        if _text(result) != "2 sales rows are shown by their table":
+            raise AssertionError(
+                f"the content is the text for the model: {_text(result)}"
+            )
+
     async def test_result_carries_text_model_and_status(
         self, stand: ServiceStand, url: str, dev_token: str
     ) -> None:
