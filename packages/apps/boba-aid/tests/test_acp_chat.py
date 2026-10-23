@@ -847,7 +847,8 @@ class TestConversation:
     ) -> None:
         """Настройки агента задаёт только профиль: панели настроек вкладка не
         получает ни при старте, ни после хода, открывшего сессию, а файл
-        настроек процесса несёт модель профиля и режим bypassPermissions."""
+        настроек процесса несёт модель профиля и потолок allowBypass; сам
+        режим bypassPermissions чат включает по ACP."""
         agents = AgentProcesses(app)
         pid = await agents.await_thread(tab.thread_id)
 
@@ -858,8 +859,7 @@ class TestConversation:
         assert "chat_settings" not in tab.names(), tab.trace()
         settings = agents.of_thread(tab.thread_id)[pid]
         body = json.loads(settings.read_text(encoding="utf-8"))
-        assert body["permissions"]["default_mode"] == "bypassPermissions"
-        assert body["permissions"]["allow_bypass"] is True
+        assert body["permissions"] == {"allowBypass": True}
         assert body["model"] == PROFILE
         assert body["models"][PROFILE]["model"] == "fake-model-general"
 

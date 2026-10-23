@@ -1,5 +1,7 @@
 """Секция [agent] конфига aid: команда запуска агента ACP, хранилище его
-истории и адрес чата aid глазами агента.
+истории и адрес чата aid глазами агента. Значения, которые уходят в файл
+настроек агента (вид истории, возврат рассуждений), — своими enum'ами по
+договору запуска, моделей агента чат не импортирует.
 
 Ошибки: своих не выпускает; разбор — pydantic при загрузке AppConfig.
 """
@@ -20,8 +22,6 @@ from pydantic import (
     field_validator,
 )
 
-from boba.agent.profile import ReasoningReturn
-from boba.agent.settings import HistoryKind
 from boba.db.postgres.connection import PostgresConfig
 from boba.db.postgres.connection.auth import PasswordAuth, PostgresKerberos, TrustAuth
 from boba.kerberos import KerberosPasswordAuth, KeytabAuth
@@ -30,12 +30,31 @@ __all__ = [
     "AgentCommandConfig",
     "AgentConfig",
     "AgentHistoryConfig",
+    "AgentHistoryKind",
     "AgentModelConfig",
     "DsnKey",
     "LibpqConnection",
     "MemoryAgentHistory",
     "PostgresAgentHistory",
+    "ReasoningReturn",
 ]
+
+
+class AgentHistoryKind(StrEnum):
+    """Виды хранилища истории агента, которые чат умеет описать в файле
+    настроек: значения — ключ `history.kind` договора запуска."""
+
+    POSTGRES = "postgres"
+    MEMORY = "memory"
+
+
+class ReasoningReturn(StrEnum):
+    """Возврат рассуждений прошлых ответов модели: значения — ключ
+    `reasoningReturn` профиля модели в файле настроек агента."""
+
+    NEVER = "never"
+    TURN = "turn"
+    ALWAYS = "always"
 
 
 class AgentCommandConfig(BaseModel):
@@ -126,7 +145,7 @@ class PostgresAgentHistory(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
 
-    kind: Literal[HistoryKind.POSTGRES]
+    kind: Literal[AgentHistoryKind.POSTGRES]
     db_schema: str = Field(alias="schema", min_length=1)
 
 
@@ -203,7 +222,7 @@ class MemoryAgentHistory(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    kind: Literal[HistoryKind.MEMORY]
+    kind: Literal[AgentHistoryKind.MEMORY]
 
 
 AgentHistoryConfig = Annotated[
