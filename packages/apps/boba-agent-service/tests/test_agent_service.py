@@ -246,7 +246,12 @@ class HistoryStand:
         )
 
         return {
-            "history": {"kind": "postgres", "dsn": dsn, "schema": self.schema},
+            "history": {
+                "kind": "postgres",
+                "dsn": dsn,
+                "schema": self.schema,
+                "pool": {"minSize": 1, "maxSize": 4, "timeoutSec": 30},
+            },
             "env": {
                 KerberosEnv.CCACHE: KerberosWorkspace.ccache_for(auth),
                 KerberosEnv.CONFIG: KerberosWorkspace.krb5_config(),

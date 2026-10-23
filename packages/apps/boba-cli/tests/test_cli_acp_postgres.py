@@ -94,6 +94,7 @@ class PostgresStand:
             "kind": "postgres",
             "dsn": self.dsn(),
             "schema": self._schema,
+            "pool": {"minSize": 1, "maxSize": 4, "timeoutSec": 30},
         }
         if owner is not None:
             history["owner"] = owner

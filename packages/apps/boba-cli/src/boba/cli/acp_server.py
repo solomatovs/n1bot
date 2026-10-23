@@ -61,11 +61,19 @@ import logging
 import shlex
 import time
 from abc import abstractmethod
-from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
-from contextlib import AsyncExitStack
+from collections.abc import (
+    AsyncGenerator,
+    Awaitable,
+    Callable,
+    Iterator,
+    Mapping,
+    Sequence,
+)
+from contextlib import AsyncExitStack, aclosing
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
+from functools import partial
 from pathlib import Path
 from typing import Any, ClassVar, Generic, Protocol, TypeAlias, TypeVar
 
@@ -143,6 +151,7 @@ from boba.agent.tools import (
 )
 from boba.agent.turn import ContextUsage
 from boba.cancellation import StopReason as CoreStopReason
+from boba.cli.threads import LoopCall, LoopThread, SessionLimitError, SessionThreads
 from boba.core.mcp_names import McpToolNameError, McpToolNames
 from boba.core.validation import ValidationText
 from boba.transport.acp.protocol import (
@@ -725,23 +734,15 @@ class AcpMapping:
 
         yield schema.UserMessageUpdate(message_id=record.uuid, content=content)
 
-    def replay(
-        self, conversation: Sequence[ChainRecord], hints: ToolHintSource
-    ) -> Sequence[Update]:
-        """Беседа из записей → уведомления по порядку записей: сообщения
-        целиком (`user_message`, `agent_thought`, `agent_message`), вызовы и
-        их итоги — как в живом ходе. Конец хода остановкой или отказом модели
-        — тот же idle, что вживую: маркер остановки — `cancelled`, запись об
-        отказе модели — idle с ошибкой; прочие синтетические записи агента
-        (заглушки) не воспроизводятся, оборванный ответ — воспроизводится;
-        служебные сообщения, вложения и границы сжатия в ленту не идут."""
-        updates: list[Update] = []
-        for record in conversation:
-            updates.extend(self._replayed(record, hints))
-
-        return updates
-
-    def _replayed(self, record: ChainRecord, hints: ToolHintSource) -> Iterator[Update]:
+    def replayed(self, record: ChainRecord, hints: ToolHintSource) -> Iterator[Update]:
+        """Запись беседы → её уведомления: сообщения целиком (`user_message`,
+        `agent_thought`, `agent_message`), вызовы и их итоги — как в живом
+        ходе. Конец хода остановкой или отказом модели — тот же idle, что
+        вживую: маркер остановки — `cancelled`, запись об отказе модели —
+        idle с ошибкой; прочие синтетические записи агента (заглушки) не
+        воспроизводятся, оборванный ответ — воспроизводится; служебные
+        сообщения, пересказы сжатия, вложения и границы сжатия в ленту не
+        идут."""
         if isinstance(record, UserRecord):
             yield from self.user_updates(record)
             if self._interrupted(record):
@@ -1229,14 +1230,86 @@ class McpServerSpecs:
         return accepted
 
 
-@dataclass(frozen=True)
 class ClientLink:
     """Связь агента с клиентом: сторона агента (mcp/message, idle с ошибкой)
-    и соединение SDK (уведомления и запрос разрешения). Создаёт
-    AcpAgent.attach, держат SessionRelay и AcpToolServer."""
+    и соединение SDK (уведомления, разрешения, формы) живут в главном цикле
+    процесса, а зовут их сессии из своих потоков — каждый вызов уходит в
+    главный цикл (LoopCall), а уведомления хода вызова mcp/message
+    возвращаются в цикл сессии, которая его послала. Создаёт AcpAgent.attach,
+    держат SessionRelay и AcpToolServer."""
 
-    side: AgentSide
-    connection: AgentSideConnection
+    def __init__(
+        self, side: AgentSide, connection: AgentSideConnection, home: LoopCall
+    ) -> None:
+        self._side = side
+        self._connection = connection
+        self._home = home
+
+    async def mcp_request(
+        self,
+        message: McpMessage,
+        receiver: Callable[[McpMessage], Awaitable[None]] | None,
+    ) -> McpOutcome:
+        """Запрос mcp/message клиенту; уведомления его хода получает receiver
+        в цикле того, кто спросил.
+
+        Ошибки:
+        AcpTransportError, RequestError — как у AgentSide.request.
+        """
+        relayed: Callable[[McpMessage], Awaitable[None]] | None = None
+        if receiver is not None:
+            relayed = self._relayed(receiver, LoopCall(asyncio.get_running_loop()))
+
+        return await self._home.run(self._side.request(message, relayed))
+
+    async def idle_error(self, notification: IdleErrorNotification) -> None:
+        await self._home.run(self._side.send_update(notification))
+
+    async def session_update(self, session_id: str, update: Update) -> None:
+        await self._home.run(self._connection.session_update(session_id, update))
+
+    async def create_elicitation(
+        self,
+        message: str,
+        session_id: str,
+        tool_call_id: str,
+        requested: schema.ElicitationSchema,
+        meta: Mapping[str, Any],
+    ) -> ElicitationAnswer:
+        asked = self._connection.create_elicitation(
+            message=message,
+            mode="form",
+            session_id=session_id,
+            tool_call_id=tool_call_id,
+            requested_schema=requested,
+            **meta,
+        )
+
+        return await self._home.run(asked)
+
+    async def request_permission(
+        self, session_id: str, ask: PermissionAsk
+    ) -> schema.RequestPermissionResponse:
+        asked = self._connection.request_permission(
+            session_id=session_id,
+            title=ask.title,
+            options=list(ask.options),
+            subject=ask.subject,
+        )
+
+        return await self._home.run(asked)
+
+    @staticmethod
+    def _relayed(
+        receiver: Callable[[McpMessage], Awaitable[None]], caller: LoopCall
+    ) -> Callable[[McpMessage], Awaitable[None]]:
+        async def received(message: McpMessage) -> None:
+            await receiver(message)
+
+        async def relayed(message: McpMessage) -> None:
+            await caller.run(received(message))
+
+        return relayed
 
 
 class CallProgressRelay:
@@ -1358,7 +1431,7 @@ class AcpToolServer(ToolServer):
 
     def __init__(  # noqa: PLR0913 — сервер собирается всеми частями сессии
         self,
-        side: AgentSide,
+        link: ClientLink,
         server: schema.AcpMcpServer,
         relay: SessionRelay,
         limits: McpClientJson,
@@ -1366,7 +1439,7 @@ class AcpToolServer(ToolServer):
         client: mt.Implementation,
         prompted: Callable[[], Awaitable[None]],
     ) -> None:
-        self._side = side
+        self._link = link
         self._server = server
         self._sink: EventSink = relay
         self._relay = relay
@@ -1588,7 +1661,7 @@ class AcpToolServer(ToolServer):
         limit = self._limits.list_timeout_sec
         try:
             async with asyncio.timeout(limit):
-                outcome = await self._side.request(message, None)
+                outcome = await self._link.mcp_request(message, None)
         except TimeoutError as exc:
             msg = f"{what} expected an answer within {limit} s, got none"
             raise McpUnreachableError(msg) from exc
@@ -1832,7 +1905,7 @@ class AcpToolServer(ToolServer):
         в лог, а списки устаревают: смену без потока увидит начало хода,
         которое поднимет и сам поток."""
         try:
-            outcome = await self._side.request(message, self._heard)
+            outcome = await self._link.mcp_request(message, self._heard)
         except (RequestError, AcpTransportError) as exc:
             self._expire_lists()
             logger.warning(
@@ -2057,7 +2130,7 @@ class AcpToolServer(ToolServer):
         what = self._what(call)
         try:
             async with asyncio.timeout(limit):
-                return await self._side.request(message, relay.accept)
+                return await self._link.mcp_request(message, relay.accept)
         except TimeoutError:
             self._fresh.clear()
             return self._replies.refused(
@@ -2765,11 +2838,6 @@ class SessionRelay(EventSink):
         """Клиент объявил формы `elicitation.form`."""
         return self._elicits
 
-    async def replay(self, updates: Sequence[Update]) -> None:
-        """Воспроизведение беседы: уведомления уходят по порядку тем же
-        путём, что живые."""
-        await self._send_all(updates)
-
     async def notify(self, update: Update) -> None:
         """Уведомление вне хода: смена настроек сессии."""
         await self._send(update)
@@ -2933,10 +3001,10 @@ class SessionRelay(EventSink):
                 notification = IdleErrorNotification(
                     session_id=self._session_id, update=update
                 )
-                await self._link.side.send_update(notification)
+                await self._link.idle_error(notification)
                 return
 
-            await self._link.connection.session_update(self._session_id, update)
+            await self._link.session_update(self._session_id, update)
         except (ConnectionError, AcpTransportError) as exc:
             self._detached = True
             logger.warning(
@@ -3021,13 +3089,8 @@ class SessionRelay(EventSink):
 
         await self._send(schema.RequiresActionSessionStateUpdate())
         try:
-            response = await self._link.connection.create_elicitation(
-                message=message,
-                mode="form",
-                session_id=self._session_id,
-                tool_call_id=tool_call_id,
-                requested_schema=requested,
-                **meta,
+            response = await self._link.create_elicitation(
+                message, self._session_id, tool_call_id, requested, meta
             )
         except ConnectionError as exc:
             logger.warning(
@@ -3061,12 +3124,7 @@ class SessionRelay(EventSink):
         request = event.request
         ask = self._mapping.permission_request(request, self._hints(request.tool_name))
         try:
-            response = await self._link.connection.request_permission(
-                session_id=self._session_id,
-                title=ask.title,
-                options=list(ask.options),
-                subject=ask.subject,
-            )
+            response = await self._link.request_permission(self._session_id, ask)
             answer = self._mapping.permission_answer(response, request)
         except ConnectionError as exc:
             logger.warning(
@@ -3137,12 +3195,9 @@ class OpenedSession(Protocol):
 
 
 class ObservedSession(ToolHintSource, Protocol):
-    """Сессия, открытая без замка: её держит другой процесс. Беседа
-    прочитана из хранилища, инструменты подключены; `claim` открывает сессию
+    """Сессия, открытая без замка: её держит другой процесс. Записи в
+    хранилище есть, инструменты подключены; `claim` открывает сессию
     по-настоящему, когда замок свободен."""
-
-    @abstractmethod
-    def conversation(self) -> Sequence[ChainRecord]: ...
 
     @abstractmethod
     async def claim(self) -> OpenedSession:
@@ -3195,6 +3250,15 @@ class SessionAssembly(Protocol):
         """Ошибки:
         SessionNotFoundError — записей сессии нет.
         HistoryError — хранилище отказало при чтении.
+        """
+
+    @abstractmethod
+    def history(self, session_id: SessionId) -> AsyncGenerator[ChainRecord, None]:
+        """Записи цепочки сессии из хранилища потоком, по одной: из них
+        воспроизводится беседа.
+
+        Ошибки:
+        HistoryError — хранилище отказало.
         """
 
     @abstractmethod
@@ -3264,8 +3328,10 @@ class AcpSession:
     def model(self) -> str:
         return self._opened.model
 
-    def conversation(self) -> Sequence[ChainRecord]:
-        return self.agent.session.conversation()
+    @property
+    def hints(self) -> ToolHintSource:
+        """Пометки инструментов сессии: их знает агент ядра."""
+        return self.agent
 
     def set_mode(self, mode: PermissionMode) -> None:
         """Режим разрешений записью ядра; действует со следующей проверки.
@@ -3416,9 +3482,6 @@ class ObserverSession:
     def relay(self) -> SessionRelay:
         return self._relay
 
-    def conversation(self) -> Sequence[ChainRecord]:
-        return self._observed.conversation()
-
     @property
     def hints(self) -> ToolHintSource:
         return self._observed
@@ -3442,6 +3505,15 @@ class ObserverSession:
 
 
 HeldSession: TypeAlias = AcpSession | ObserverSession
+
+
+@dataclass
+class HostedSession:
+    """Открытая сессия процесса в своём потоке: поток и сама сессия;
+    наблюдатель, взявший замок, сменяется настоящей сессией на месте."""
+
+    thread: LoopThread
+    held: HeldSession
 
 
 class AcpAgent(AcpAgentProtocol):
@@ -3478,14 +3550,16 @@ class AcpAgent(AcpAgentProtocol):
         assembly: SessionAssembly,
         info: schema.Implementation,
         limits: McpClientJson,
+        threads: SessionThreads,
     ) -> None:
         self._assembly = assembly
         self._info = info
         self._limits = limits
+        self._threads = threads
         self._link: ClientLink | None = None
         self._elicits = False
         """Клиент объявил формы `elicitation.form` в initialize."""
-        self._sessions: dict[str, HeldSession] = {}
+        self._sessions: dict[str, HostedSession] = {}
         self._mapping = AcpMapping()
         self._options = SessionOptions()
         self._prompts = PromptText()
@@ -3494,8 +3568,10 @@ class AcpAgent(AcpAgentProtocol):
         self._ids = IdMint()
 
     def attach(self, side: AgentSide, connection: AgentSideConnection) -> AcpAgent:
-        """Фабрика агента для AgentSide: связь с клиентом и сам агент."""
-        self._link = ClientLink(side=side, connection=connection)
+        """Фабрика агента для AgentSide: связь с клиентом в главном цикле
+        процесса и сам агент."""
+        home = LoopCall(asyncio.get_running_loop())
+        self._link = ClientLink(side, connection, home)
 
         return self
 
@@ -3547,13 +3623,49 @@ class AcpAgent(AcpAgentProtocol):
         mcp_servers: list[McpServerBlock] | None = None,
         **kwargs: Any,
     ) -> schema.NewSessionResponse:
-        """Ошибки:
+        """Сессия открывается в своём потоке.
+
+        Ошибки:
         RequestError — `cwd` не абсолютный или серверы MCP не годятся
-            (-32602); инструменты или сессию открыть не удалось (-32603).
+            (-32602); инструменты или сессию открыть не удалось, процесс
+            держит предельное число сессий (-32603).
         """
         directory = self._directory(cwd)
         servers = self._specs.servers(self._blocks(mcp_servers))
         session_id = self._ids.uuid()
+        thread = self._thread_for(session_id)
+        try:
+            session = await thread.run(self._new(session_id, directory, servers))
+        except BaseException:
+            await self._threads.stop(session_id)
+            raise
+
+        self._sessions[session_id] = HostedSession(thread=thread, held=session)
+        logger.info(
+            "session %s: new, cwd %s, %d MCP server(s), thread %s",
+            session_id,
+            cwd,
+            len(servers),
+            thread.name,
+        )
+
+        return schema.NewSessionResponse(
+            session_id=session_id,
+            config_options=self._options.config_options(self._settings(session)),
+        )
+
+    async def _new(
+        self,
+        session_id: str,
+        directory: Path,
+        servers: Sequence[schema.AcpMcpServer],
+    ) -> AcpSession:
+        """Сборка новой сессии в цикле её потока.
+
+        Ошибки:
+        RequestError — сборка отвергла параметры (-32602) или не открыла
+            сессию (-32603).
+        """
         relay = SessionRelay(session_id, self._linked(), self._mapping, self._elicits)
         async with AsyncExitStack() as owned:
             mcp = await self._mcp(servers, relay)
@@ -3581,16 +3693,20 @@ class AcpAgent(AcpAgentProtocol):
 
         relay.attach(opened.agent)
         session = AcpSession(session_id, opened, relay, self._mapping, mcp)
-        self._sessions[session_id] = session
         mcp.announce_later()
-        logger.info(
-            "session %s: new, cwd %s, %d MCP server(s)", session_id, cwd, len(servers)
-        )
 
-        return schema.NewSessionResponse(
-            session_id=session_id,
-            config_options=self._options.config_options(self._settings(session)),
-        )
+        return session
+
+    def _thread_for(self, session_id: str) -> LoopThread:
+        """Ошибки:
+        RequestError — процесс держит предельное число сессий (-32603).
+        """
+        try:
+            return self._threads.open(session_id)
+        except SessionLimitError as exc:
+            raise RequestError.internal_error(
+                {ErrorDataKey.DETAILS.value: str(exc)}
+            ) from exc
 
     async def _mcp(
         self, servers: Sequence[schema.AcpMcpServer], relay: SessionRelay
@@ -3598,16 +3714,15 @@ class AcpAgent(AcpAgentProtocol):
         """Серверы MCP сессии: каждый согласован и отдал списки до ответа на
         запрос. Сервер, который не открылся, сессия не берёт: ход идёт без
         его инструментов, клиент получает пометку (SessionMcp.unavailable).
-
         """
-        side = self._linked().side
+        link = self._linked()
         client = mt.Implementation(name=self._info.name, version=self._info.version)
         mcp = SessionMcp(relay)
         async with AsyncExitStack() as owned:
             owned.push_async_callback(mcp.close)
             for server in servers:
                 tool_server = AcpToolServer(
-                    side,
+                    link,
                     server,
                     relay,
                     self._limits,
@@ -3650,61 +3765,64 @@ class AcpAgent(AcpAgentProtocol):
         RequestError — сессия неизвестна (-32002), блоки не годятся (-32602),
             сессию держит другой процесс (-32603).
         """
-        held = self._session(session_id)
+        hosted = self._session(session_id)
         asked = self._prompts.render(prompt)
-        if isinstance(held, ObserverSession):
-            held = await self._claim(session_id, held)
+        session = await self._claimed(session_id, hosted)
 
-        return await held.prompt(asked)
+        return await hosted.thread.run(session.prompt(asked))
 
-    async def _claim(self, session_id: str, observer: ObserverSession) -> AcpSession:
-        """Наблюдатель берёт замок: сессия открывается по-настоящему и
-        занимает его место.
+    async def _claimed(self, session_id: str, hosted: HostedSession) -> AcpSession:
+        """Сессия, которая ведёт ходы: наблюдатель берёт замок и открывает
+        сессию по-настоящему на своём месте.
 
         Ошибки:
         RequestError — сессию держит другой процесс (-32603), записи
             исчезли (-32002), сессию открыть не удалось (-32603).
         """
+        held = hosted.held
+        if isinstance(held, AcpSession):
+            return held
+
         try:
-            session = await observer.claim()
+            session = await hosted.thread.run(held.claim())
         except SessionHeldError as exc:
             raise self._held_by_other(session_id, str(exc)) from exc
         except SessionNotFoundError as exc:
-            self._sessions.pop(session_id, None)
-            await observer.close()
+            await self._closed(session_id, hosted)
             raise self._unknown(session_id) from exc
         except (SessionOpenError, HistoryError) as exc:
             raise RequestError.internal_error(
                 {ErrorDataKey.DETAILS.value: str(exc)}
             ) from exc
 
-        self._sessions[session_id] = session
+        hosted.held = session
         logger.info("session %s: the observer took the lock", session_id)
-        await self._announce_settings(session)
+        await hosted.thread.run(self._announce_settings(session))
 
         return session
 
     async def cancel_session(self, session_id: str, **kwargs: Any) -> None:
-        session = self._sessions.get(session_id)
-        if session is None:
+        hosted = self._sessions.get(session_id)
+        if hosted is None:
             logger.info("cancel: session %s is unknown; nothing to cancel", session_id)
             return
 
-        if isinstance(session, ObserverSession):
+        held = hosted.held
+        if isinstance(held, ObserverSession):
             logger.info("cancel: session %s is observed, no turn to cancel", session_id)
             return
 
-        session.cancel(CoreStopReason.USER_STOP)
+        hosted.thread.soon(partial(held.cancel, CoreStopReason.USER_STOP))
 
-    def _session(self, session_id: str) -> HeldSession:
+    def _session(self, session_id: str) -> HostedSession:
         """Ошибки:
         RequestError — сессия этому процессу неизвестна (-32002).
         """
-        session = self._sessions.get(session_id)
-        if session is None:
+        hosted = self._sessions.get(session_id)
+        if hosted is None:
             raise self._unknown(session_id)
 
-        return session
+        return hosted
 
     @staticmethod
     def _unknown(session_id: str) -> RequestError:
@@ -3756,14 +3874,22 @@ class AcpAgent(AcpAgentProtocol):
 
     def shutdown(self, reason: CoreStopReason) -> None:
         """Прерывает ходы всех сессий: процесс останавливается."""
-        for session in self._sessions.values():
-            if isinstance(session, AcpSession):
-                session.cancel(reason)
+        for hosted in self._sessions.values():
+            held = hosted.held
+            if isinstance(held, AcpSession):
+                hosted.thread.soon(partial(held.cancel, reason))
 
     async def close_all(self) -> None:
-        for session_id, session in list(self._sessions.items()):
-            await session.close()
-            self._sessions.pop(session_id, None)
+        for session_id, hosted in list(self._sessions.items()):
+            await self._closed(session_id, hosted)
+
+    async def _closed(self, session_id: str, hosted: HostedSession) -> None:
+        """Сессия закрыта в своём потоке, поток остановлен."""
+        self._sessions.pop(session_id, None)
+        try:
+            await hosted.thread.run(hosted.held.close())
+        finally:
+            await self._threads.stop(session_id)
 
     async def resume_session(
         self,
@@ -3776,10 +3902,10 @@ class AcpAgent(AcpAgentProtocol):
         | None = None,
         **kwargs: Any,
     ) -> schema.ResumeSessionResponse:
-        """Открывает сессию из хранилища; с `replayFrom: start` до ответа
-        воспроизводит всю беседу уведомлениями, за ней — заголовок и
-        заполненность. Ответ несёт настройки сессии; у наблюдателя агента нет,
-        его ответ без них.
+        """Открывает сессию из хранилища в её потоке; с `replayFrom: start`
+        до ответа воспроизводит всю беседу уведомлениями, за ней — заголовок
+        и заполненность. Ответ несёт настройки сессии; у наблюдателя агента
+        нет, его ответ без них.
 
         Ошибки:
         RequestError — сессия неизвестна (-32002), `cwd`, серверы или
@@ -3793,42 +3919,77 @@ class AcpAgent(AcpAgentProtocol):
             )
             raise RequestError.invalid_params({ErrorDataKey.DETAILS.value: details})
 
-        held = await self._open_stored(session_id, cwd, mcp_servers)
-        if isinstance(replay_from, schema.ReplayFromStartVariant):
-            conversation = held.conversation()
-            if isinstance(held, ObserverSession):
-                hints: ToolHintSource = held.hints
-            else:
-                hints = held.agent
-
-            await held.relay.replay(self._mapping.replay(conversation, hints))
-            logger.info(
-                "session %s: %d record(s) replayed", session_id, len(conversation)
-            )
+        hosted = await self._open_stored(session_id, cwd, mcp_servers)
+        held = hosted.held
+        replay = isinstance(replay_from, schema.ReplayFromStartVariant)
+        if replay:
+            await hosted.thread.run(self._replayed(session_id, held))
 
         logger.info("session %s: resumed", session_id)
         if isinstance(held, ObserverSession):
             return schema.ResumeSessionResponse()
 
-        if isinstance(replay_from, schema.ReplayFromStartVariant):
-            await held.relay.announce_loaded()
+        if replay:
+            await hosted.thread.run(held.relay.announce_loaded())
 
         return schema.ResumeSessionResponse(
             config_options=self._options.config_options(self._settings(held))
         )
+
+    async def _replayed(self, session_id: str, held: HeldSession) -> None:
+        """Беседа уведомлениями по порядку записей — в цикле потока сессии,
+        потоком: запись из хранилища → её уведомления → отправка, без
+        накопления. За сохранёнными записями у открытой сессии идут её ещё
+        не сохранённые (починка оборванного хода).
+
+        Ошибки:
+        RequestError — хранилище отказало (-32603).
+        """
+        stored = SessionId(value=session_id)
+        hints: ToolHintSource = held.hints
+        replayed = 0
+        last = 0
+        try:
+            async with aclosing(self._assembly.history(stored)) as records:
+                async for record in records:
+                    await self._replay_record(held, record, hints)
+                    replayed += 1
+                    last = record.seq
+        except HistoryError as exc:
+            raise RequestError.internal_error(
+                {ErrorDataKey.DETAILS.value: str(exc)}
+            ) from exc
+
+        if isinstance(held, AcpSession):
+            for record in held.agent.session.since(last):
+                if not isinstance(record, ChainRecord):
+                    continue
+
+                await self._replay_record(held, record, hints)
+                replayed += 1
+
+        logger.info("session %s: %d record(s) replayed", session_id, replayed)
+
+    async def _replay_record(
+        self, held: HeldSession, record: ChainRecord, hints: ToolHintSource
+    ) -> None:
+        for update in self._mapping.replayed(record, hints):
+            await held.relay.notify(update)
 
     async def _open_stored(
         self,
         session_id: str,
         cwd: str,
         mcp_servers: list[McpServerBlock] | None,
-    ) -> HeldSession:
+    ) -> HostedSession:
         """Сессия хранилища: уже открытая в этом процессе — как есть; иначе
-        открывается с замком, а при занятом замке — наблюдателем.
+        открывается в новом потоке с замком, а при занятом замке —
+        наблюдателем.
 
         Ошибки:
         RequestError — сессия неизвестна (-32002), параметры не годятся
-            (-32602), инструменты или сессию открыть не удалось (-32603).
+            (-32602), инструменты или сессию открыть не удалось, процесс
+            держит предельное число сессий (-32603).
         """
         directory = self._directory(cwd)
         servers = self._specs.servers(self._blocks(mcp_servers))
@@ -3837,14 +3998,38 @@ class AcpAgent(AcpAgentProtocol):
             return known
 
         stored = self._stored_id(session_id)
-        relay = SessionRelay(session_id, self._linked(), self._mapping, self._elicits)
+        thread = self._thread_for(session_id)
+        try:
+            held = await thread.run(self._stored(stored, directory, servers))
+        except BaseException:
+            await self._threads.stop(session_id)
+            raise
+
+        hosted = HostedSession(thread=thread, held=held)
+        self._sessions[session_id] = hosted
+
+        return hosted
+
+    async def _stored(
+        self,
+        stored: SessionId,
+        directory: Path,
+        servers: Sequence[schema.AcpMcpServer],
+    ) -> HeldSession:
+        """Сборка сохранённой сессии в цикле её потока.
+
+        Ошибки:
+        RequestError — сессия неизвестна (-32002), параметры не годятся
+            (-32602), инструменты или сессию открыть не удалось (-32603).
+        """
+        relay = SessionRelay(stored.value, self._linked(), self._mapping, self._elicits)
         async with AsyncExitStack() as owned:
             mcp = await self._mcp(servers, relay)
             owned.push_async_callback(mcp.close)
             try:
                 held = await self._held(stored, directory, mcp, relay)
             except SessionNotFoundError as exc:
-                raise self._unknown(session_id) from exc
+                raise self._unknown(stored.value) from exc
             except SessionRefusedError as exc:
                 raise RequestError.invalid_params(
                     {ErrorDataKey.DETAILS.value: str(exc)}
@@ -3856,7 +4041,6 @@ class AcpAgent(AcpAgentProtocol):
 
             owned.pop_all()
 
-        self._sessions[session_id] = held
         mcp.announce_later()
 
         return held
@@ -3977,10 +4161,13 @@ class AcpAgent(AcpAgentProtocol):
         RequestError — сессию держит другой процесс или хранилище отказало
             (-32603).
         """
-        held = self._sessions.get(session_id)
-        if isinstance(held, AcpSession):
-            self._sessions.pop(session_id, None)
-            await held.close()
+        hosted = self._sessions.get(session_id)
+        observed: HostedSession | None = None
+        if hosted is not None:
+            if isinstance(hosted.held, AcpSession):
+                await self._closed(session_id, hosted)
+            else:
+                observed = hosted
 
         try:
             stored = SessionId(value=session_id)
@@ -3989,9 +4176,8 @@ class AcpAgent(AcpAgentProtocol):
             return schema.DeleteSessionResponse()
 
         await self._delete_stored(session_id, stored)
-        if isinstance(held, ObserverSession):
-            self._sessions.pop(session_id, None)
-            await held.close()
+        if observed is not None:
+            await self._closed(session_id, observed)
 
         logger.info("session %s: deleted", session_id)
 
@@ -4022,14 +4208,14 @@ class AcpAgent(AcpAgentProtocol):
     ) -> schema.SetSessionConfigOptionResponse:
         """`mode` — режим разрешений ядра, `model` — профиль модели для
         следующих ходов; ответ — полное состояние настроек, оно же уходит
-        `config_option_update`.
+        `config_option_update`. Смена идёт в цикле потока сессии.
 
         Ошибки:
         RequestError — сессия неизвестна (-32002), настройки или значения
             нет, значение не строка (-32602), ход идёт или профиль не
             годится, сессию держит другой процесс (-32603).
         """
-        session = self._settable(session_id)
+        hosted, session = self._settable(session_id)
         option = self._option_id(config_id)
         if not isinstance(value, str):
             details = (
@@ -4038,12 +4224,21 @@ class AcpAgent(AcpAgentProtocol):
             )
             raise RequestError.invalid_params({ErrorDataKey.DETAILS.value: details})
 
+        return await hosted.thread.run(self._configured(session, option, value))
+
+    async def _configured(
+        self, session: AcpSession, option: ConfigOptionId, value: str
+    ) -> schema.SetSessionConfigOptionResponse:
         if option is ConfigOptionId.MODE:
             await self._set_mode(session, value)
         else:
             name = self._options.parse_model(value, self._settings(session))
             await session.set_model(name)
-            logger.info("session %s: model profile switched to %s", session_id, name)
+            logger.info(
+                "session %s: model profile switched to %s",
+                session.agent.session.id.value,
+                name,
+            )
 
         await self._announce_settings(session)
 
@@ -4063,19 +4258,20 @@ class AcpAgent(AcpAgentProtocol):
             mode.value,
         )
 
-    def _settable(self, session_id: str) -> AcpSession:
+    def _settable(self, session_id: str) -> tuple[HostedSession, AcpSession]:
         """Сессия, настройки которой можно менять: у наблюдателя агента нет.
 
         Ошибки:
         RequestError — сессия неизвестна (-32002), её держит другой
             процесс (-32603).
         """
-        held = self._session(session_id)
+        hosted = self._session(session_id)
+        held = hosted.held
         if isinstance(held, ObserverSession):
             details = "its settings can be changed only by the process that holds it"
             raise self._held_by_other(session_id, details)
 
-        return held
+        return hosted, held
 
     @staticmethod
     def _option_id(config_id: str) -> ConfigOptionId:
@@ -4101,36 +4297,39 @@ class AcpAgent(AcpAgentProtocol):
     ) -> schema.ForkSessionResponse:
         """Ветвит сессию хранилища: её записи копируются под новый
         идентификатор (его чеканит агент), и новая сессия открывается как
-        обычная — с замком, инструментами серверов запроса и починкой
-        оборванного хода загрузчиком. Исходная сессия не меняется, её замок
-        не нужен; сессию, которую ведёт этот процесс, перед копией сбрасывает
-        в хранилище. Точка среза — расширение `_meta["boba/upToMessageId"]`
-        (ForkMeta): ветка от `messageId` вопроса — беседа до этого вопроса;
-        срез на первом вопросе даёт пустую сессию. Ответ — `sessionId` новой
-        сессии с её настройками, как у `session/new`.
+        обычная в своём потоке — с замком, инструментами серверов запроса и
+        починкой оборванного хода загрузчиком. Исходная сессия не меняется,
+        её замок не нужен; сессию, которую ведёт этот процесс, перед копией
+        сбрасывает в хранилище. Точка среза — расширение
+        `_meta["boba/upToMessageId"]` (ForkMeta): ветка от `messageId`
+        вопроса — беседа до этого вопроса; срез на первом вопросе даёт
+        пустую сессию. Ответ — `sessionId` новой сессии с её настройками, как
+        у `session/new`.
 
         Ошибки:
         RequestError — сессия неизвестна (-32002); `cwd`, серверы или
             `_meta` не годятся, записи среза в сессии нет (-32602);
-            хранилище, инструменты или сборка отказали (-32603).
+            хранилище, инструменты или сборка отказали, процесс держит
+            предельное число сессий (-32603).
         """
         directory = self._directory(cwd)
         servers = self._specs.servers(self._blocks(mcp_servers))
         meta = self._fork_meta(kwargs)
         source = self._stored_id(session_id)
         target = SessionId(value=self._ids.uuid())
-        relay = SessionRelay(target.value, self._linked(), self._mapping, self._elicits)
         up_to = meta.up_to_message_id
-        async with AsyncExitStack() as owned:
-            mcp = await self._mcp(servers, relay)
-            owned.push_async_callback(mcp.close)
-            await self._flushed(session_id)
-            copied = await self._copied(session_id, source, target, up_to)
-            session = await self._opened_fork(target, directory, mcp, relay, copied > 0)
-            owned.pop_all()
+        await self._flushed(session_id)
+        copied = await self._copied(session_id, source, target, up_to)
+        thread = self._thread_for(target.value)
+        try:
+            session = await thread.run(
+                self._forked(target, directory, servers, copied > 0)
+            )
+        except BaseException:
+            await self._threads.stop(target.value)
+            raise
 
-        self._sessions[target.value] = session
-        mcp.announce_later()
+        self._sessions[target.value] = HostedSession(thread=thread, held=session)
         logger.info(
             "session %s: forked from %s, %d record(s) copied, cut at %s",
             target.value,
@@ -4158,18 +4357,22 @@ class AcpAgent(AcpAgentProtocol):
             ) from exc
 
     async def _flushed(self, session_id: str) -> None:
-        """Сессия, которую ведёт этот процесс, сбрасывается в хранилище,
-        чтобы копия видела все её записи.
+        """Сессия, которую ведёт этот процесс, сбрасывается в хранилище в
+        своём потоке, чтобы копия видела все её записи.
 
         Ошибки:
         RequestError — хранилище отказало (-32603).
         """
-        held = self._sessions.get(session_id)
+        hosted = self._sessions.get(session_id)
+        if hosted is None:
+            return
+
+        held = hosted.held
         if not isinstance(held, AcpSession):
             return
 
         try:
-            await held.flush()
+            await hosted.thread.run(held.flush())
         except HistoryError as exc:
             raise RequestError.internal_error(
                 {ErrorDataKey.DETAILS.value: str(exc)}
@@ -4199,46 +4402,53 @@ class AcpAgent(AcpAgentProtocol):
                 {ErrorDataKey.DETAILS.value: str(exc)}
             ) from exc
 
-    async def _opened_fork(
+    async def _forked(
         self,
         target: SessionId,
         directory: Path,
-        mcp: SessionMcp,
-        relay: SessionRelay,
+        servers: Sequence[schema.AcpMcpServer],
         resume: bool,
     ) -> AcpSession:
-        """Новая сессия над скопированными записями; если открыть её не
-        удалось, копия удаляется из хранилища, чтобы ветка не осталась
-        сиротой.
+        """Новая сессия над скопированными записями в цикле её потока; если
+        открыть её не удалось, копия удаляется из хранилища, чтобы ветка не
+        осталась сиротой.
 
         Ошибки:
         RequestError — параметры не годятся (-32602), сессию открыть не
             удалось (-32603).
         """
-        try:
-            opened = await self._assembly.open(
-                target,
-                directory,
-                mcp,
-                mcp,
-                relay,
-                resume=resume,
-                questions=self._elicits,
-            )
-        except SessionRefusedError as exc:
-            await self._dropped_fork(target, exc)
-            raise RequestError.invalid_params(
-                {ErrorDataKey.DETAILS.value: str(exc)}
-            ) from exc
-        except (SessionOpenError, HistoryError) as exc:
-            await self._dropped_fork(target, exc)
-            raise RequestError.internal_error(
-                {ErrorDataKey.DETAILS.value: str(exc)}
-            ) from exc
+        relay = SessionRelay(target.value, self._linked(), self._mapping, self._elicits)
+        async with AsyncExitStack() as owned:
+            mcp = await self._mcp(servers, relay)
+            owned.push_async_callback(mcp.close)
+            try:
+                opened = await self._assembly.open(
+                    target,
+                    directory,
+                    mcp,
+                    mcp,
+                    relay,
+                    resume=resume,
+                    questions=self._elicits,
+                )
+            except SessionRefusedError as exc:
+                await self._dropped_fork(target, exc)
+                raise RequestError.invalid_params(
+                    {ErrorDataKey.DETAILS.value: str(exc)}
+                ) from exc
+            except (SessionOpenError, HistoryError) as exc:
+                await self._dropped_fork(target, exc)
+                raise RequestError.internal_error(
+                    {ErrorDataKey.DETAILS.value: str(exc)}
+                ) from exc
+
+            owned.pop_all()
 
         relay.attach(opened.agent)
+        session = AcpSession(target.value, opened, relay, self._mapping, mcp)
+        mcp.announce_later()
 
-        return AcpSession(target.value, opened, relay, self._mapping, mcp)
+        return session
 
     async def _dropped_fork(self, target: SessionId, cause: Exception) -> None:
         """Ошибки:
@@ -4258,14 +4468,13 @@ class AcpAgent(AcpAgentProtocol):
     async def close_session(
         self, session_id: str, **kwargs: Any
     ) -> schema.CloseSessionResponse:
-        """Гасит ход сессии и отпускает замок.
+        """Гасит ход сессии, отпускает замок и останавливает её поток.
 
         Ошибки:
         RequestError — сессия неизвестна (-32002).
         """
-        held = self._session(session_id)
-        self._sessions.pop(session_id, None)
-        await held.close()
+        hosted = self._session(session_id)
+        await self._closed(session_id, hosted)
         logger.info("session %s: closed", session_id)
 
         return schema.CloseSessionResponse()
