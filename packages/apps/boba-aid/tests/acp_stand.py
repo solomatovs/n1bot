@@ -75,6 +75,7 @@ from boba.mcp_client.client import (
     McpServersConfig,
     StdioCommand,
 )
+from boba.runtime.config import ValueCipherConfig
 from boba.stand.names import StandNames
 from boba.stand.site import Stand
 from boba.stand.ui.fake_llm import (
@@ -210,6 +211,9 @@ class AgentHistoryStand:
 class AgentStand:
     """Конфиг [agent] под тест: модуль агента интерпретатором теста."""
 
+    SETTINGS_CIPHER: ClassVar[str] = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
+    """Ключ шифрования слоя чата стенда: 32 байта в base64."""
+
     def __init__(self, private_dir: Path, history: PostgresAgentHistory) -> None:
         self._private_dir = private_dir
         self._history = history
@@ -237,6 +241,9 @@ class AgentStand:
             public_url=public_url,
             seal_ttl_sec=600,
             question_timeout_sec=600,
+            settings_table=ValueCipherConfig.model_validate(
+                {"cipher": self.SETTINGS_CIPHER}
+            ),
         )
 
 

@@ -54,7 +54,6 @@ __all__ = [
     "ConfigLayoutError",
     "ConfigLocator",
     "EnvOverride",
-    "KeysConfig",
     "LocalMessagingConfig",
     "MessagingConfig",
     "PostgresMessagingConfig",
@@ -65,6 +64,7 @@ __all__ = [
     "SessionConfig",
     "StreamJournalConfig",
     "TokenConfig",
+    "ValueCipherConfig",
 ]
 
 
@@ -500,21 +500,20 @@ MessagingConfig = Annotated[
 """Discriminated union по provider — точная диагностика ошибок валидации."""
 
 
-class KeysConfig(BaseModel):
-    """Секция [keys]: общие ключи процесса. Код читает только ключ шифрования
-    значений в таблицах (соединения, настройки агента); остальные ключи —
-    секрет сессии, подпись proxy, секрет клиента MCP — секции берут ссылками
-    ${keys.*}."""
+class ValueCipherConfig(BaseModel):
+    """Ключ шифрования секретов в строках таблицы: секция хранилища, которое
+    шифрует значения, — [connections] (соединения пользователей) и
+    [agent.settings_table] чата (настройки агента треда). Ключ приходит
+    ссылкой `cipher = "${keys.encryption}"` и проверяется здесь, на границе
+    конфига; по нему хранилище создаёт SecretCipher."""
 
-    model_config = ConfigDict(frozen=True, hide_input_in_errors=True)
+    model_config = ConfigDict(frozen=True, extra="forbid", hide_input_in_errors=True)
 
-    encryption: Secret[Annotated[Base64Bytes, Field(min_length=32, max_length=32)]] = (
-        Field(
-            description=(
-                "Ключ шифрования значений: 32 байта в base64; смена ключа делает "
-                "сохранённые секреты нечитаемыми."
-            ),
-        )
+    cipher: Secret[Annotated[Base64Bytes, Field(min_length=32, max_length=32)]] = Field(
+        description=(
+            "Ключ шифрования значений: 32 байта в base64; смена ключа делает "
+            "сохранённые секреты нечитаемыми."
+        ),
     )
 
 
@@ -746,7 +745,9 @@ class RuntimeConfig(ProcessConfig):
             "единственный пул, его получают все таблицы приложения."
         ),
     )
-    keys: KeysConfig
+    connections: ValueCipherConfig = Field(
+        description="Секция [connections]: шифрование соединений пользователей."
+    )
     profiles: dict[str, ChatProfileConfig]
     roles: dict[str, RoleConfig]
     session: SessionConfig
