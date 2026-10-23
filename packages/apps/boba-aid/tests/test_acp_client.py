@@ -148,7 +148,7 @@ class TestTurn:
         spec = {"name": "no_such_tool", "arguments": {}}
         text = f"{ScenarioName.LOOP.value} {json.dumps(spec)}"
 
-        ending = agents.questions[process].ending(session_id)
+        ending = agents.questions[process].ending(session_id).settled
         await process.prompt(session_id, [_text(text)])
         await asyncio.wait_for(updates.first_update.wait(), 30)
         await process.cancel(session_id)

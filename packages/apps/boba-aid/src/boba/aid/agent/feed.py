@@ -6,7 +6,11 @@
 переводчиком UpdateView. Ключ хода — messageId, который агент дал вопросу:
 получив его, держатель один раз снимает в своей вкладке шаг вопроса с
 прежним id; вопрос с вложениями всем вкладкам рисует рендерер треда по
-TurnStarted. Воспроизведение `session/resume` своего процесса рисуется тем
+TurnStarted. Вопрос, заданный по ходу, ждёт в очереди сессии агента: ход
+вкладки длится и через следующие ходы агента, их вопросы рисует эхо
+`user_message`, а шаг вопроса во вкладке-держателе снимается при вставке;
+снятые остановкой вопросы возвращаются в поле ввода вкладки сигналом
+страницы. Воспроизведение `session/resume` своего процесса рисуется тем
 же переводчиком прямо в вкладке, без шины: история есть у каждого процесса
 агента. Файлы и ссылки итогов рисует лента. Вопрос агента пользователю
 (форма `elicitation/create`) держатель показывает в своей вкладке панелью
@@ -74,7 +78,7 @@ from boba.aid.rendering.acp_view import (
 from boba.aid.rendering.chat_view import ChatView, LiveSink
 from boba.aid.rendering.errors import show_error
 from boba.aid.rendering.question import QuestionCards
-from boba.aid.rendering.renderer import RenderSurface, TabSurfaces
+from boba.aid.rendering.renderer import RenderSurface, SignalType, TabSurfaces
 from boba.aid.rendering.tool import ChatElements
 from boba.cancellation import RunCancellation
 from boba.identity.context import Scope
@@ -567,10 +571,6 @@ class AgentFeed(TurnRenderer):
 
             return
 
-        # конец живого хода публикует turn_finished, после всех его уведомлений
-        if isinstance(update, schema.IdleSessionStateUpdate):
-            return
-
         await turn.feed.agent_update(update)
 
     async def _notice(self, notice: schema.SessionNotice) -> None:
@@ -641,10 +641,33 @@ class AgentFeed(TurnRenderer):
 
         ending = self._replay.ending(idle)
         try:
-            await turn.feed.agent_update(idle)
             await turn.feed.finished(ending.outcome, ending.note)
         finally:
             await self._release(turn)
+
+    async def inserted(self, question: Question) -> None:
+        with self._tab.entered():
+            await self._tab.emitter.delete_step(StepDict(id=question.key))
+
+    async def withdrawn(self, questions: Sequence[Question]) -> None:
+        if not questions:
+            return
+
+        texts: list[str] = []
+        with self._tab.entered():
+            for question in questions:
+                await self._tab.emitter.delete_step(StepDict(id=question.key))
+                texts.append(question.text)
+
+            payload = {"type": SignalType.COMPOSER_RESTORE, "texts": texts}
+            await self._tab.emitter.send_window_message(payload)
+
+        logger.info(
+            "thread %s: %d queued question(s) withdrawn by the stop went back to "
+            "the input",
+            self.thread_id,
+            len(questions),
+        )
 
     async def abandon(self, session_id: str) -> None:
         """Ход сорвался без ответа агента: ленты закрывают его как сбой."""
