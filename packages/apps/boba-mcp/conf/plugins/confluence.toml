@@ -21,7 +21,7 @@ confluence      = "${confluence}"
         "${env.krb}/krb5.conf:/etc/krb5.conf"
     ]
     images  = [
-        "${env.sandbox}/models/rapidocr.ext4:/var/cache/rapidocr"
+        "${env.models}/rapidocr.ext4:/var/cache/rapidocr"
     ]
     [sandbox.limits]
         process_memory_bytes = 4294967296
