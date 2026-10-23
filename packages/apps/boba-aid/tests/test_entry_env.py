@@ -39,7 +39,8 @@ def keep_environ() -> Iterator[None]:
 
 CONFIG = """
 [app]
-    aid = "${aid}"
+    aid     = "${aid}"
+    session = "${session}"
 
 [session]
     auth_secret     = "<auth_secret>"
