@@ -1,5 +1,6 @@
-"""Секция [agent] конфига aid: команда запуска агента ACP, хранилище его
-истории и адрес чата aid глазами агента. Значения, которые уходят в файл
+"""Секция [agent] конфига aid: как достучаться до агента ACP — своим
+процессом по команде или службой агента по адресу с входом proxy, —
+хранилище его истории и адрес чата aid глазами агента. Значения, которые уходят в файл
 настроек агента (вид истории, возврат рассуждений), — своими enum'ами по
 договору запуска, моделей агента чат не импортирует.
 
@@ -25,6 +26,7 @@ from pydantic import (
 from boba.db.postgres.connection import PostgresConfig
 from boba.db.postgres.connection.auth import PasswordAuth, PostgresKerberos, TrustAuth
 from boba.kerberos import KerberosPasswordAuth, KeytabAuth
+from boba.mcp_client.client import HttpLocation, ProxyAuth
 
 __all__ = [
     "AgentCommandConfig",
@@ -32,6 +34,7 @@ __all__ = [
     "AgentHistoryConfig",
     "AgentHistoryKind",
     "AgentModelConfig",
+    "AgentServiceConfig",
     "DsnKey",
     "LibpqConnection",
     "MemoryAgentHistory",
@@ -115,6 +118,36 @@ class AgentCommandConfig(BaseModel):
     def program(self) -> tuple[str, ...]:
         """Программа агента словами: исполняемый файл и его первые аргументы."""
         return tuple(shlex.split(self.command))
+
+
+class AgentServiceConfig(BaseModel):
+    """Агент — служба boba-agent-service по адресу ACP (streamable HTTP):
+    процессы агента, профили моделей и историю держит служба. Чат входит в
+    неё proxy от имени пользователя вкладки и выбирает профиль агента
+    настройкой сессии `model` по имени профиля чата."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    endpoint: HttpLocation = Field(
+        description="Адрес ACP службы: схема, хост, порт и путь ([agent].path службы)."
+    )
+    auth: ProxyAuth = Field(
+        description=(
+            "Вход proxy в службу: издатель (public_url службы), клиент OAuth "
+            "([agent.clients] службы) и ключ утверждений ([auth.proxy] службы); "
+            "логин и роли подставляются пользователем вкладки."
+        )
+    )
+    start_timeout_sec: float = Field(
+        gt=0, description="Сколько ждать входа и рукопожатия initialize."
+    )
+    request_timeout_sec: float = Field(
+        gt=0,
+        description=(
+            "Сколько ждать ответа службы на метод сессии; ход ответа не ждёт — "
+            "его конец приходит idle."
+        ),
+    )
 
 
 class DsnKey(StrEnum):
@@ -252,7 +285,12 @@ class AgentConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    process: AgentCommandConfig
+    process: AgentCommandConfig | AgentServiceConfig = Field(
+        description=(
+            "Агент: свой процесс по команде (command, args, private_dir) либо "
+            "служба агента по адресу (endpoint, auth)."
+        )
+    )
     history: AgentHistoryConfig
     public_url: str = Field(
         min_length=1,

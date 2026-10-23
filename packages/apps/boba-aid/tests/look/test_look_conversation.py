@@ -74,6 +74,7 @@ class TalkQuestion(StrEnum):
     STORAGE = "Проверь доступность хранилища"
     CONNECTIONS = "Какие подключения мне доступны?"
     PARTITIONS = "Подумай, как разбить таблицу на партиции"
+    SOURCES = "Какие источники данных подключены?"
 
 
 class TalkText(StrEnum):
@@ -161,6 +162,8 @@ class TalkText(StrEnum):
         "Разбейте таблицу по месяцам даты заказа: запросы отчётов читают один "
         "месяц, а старые партиции можно отсоединять целиком."
     )
+    CHECKING = "Проверяю источники."
+    SOURCES = "Источников пока нет: подключения добавляются в настройках."
 
 
 class TalkBook:
@@ -169,13 +172,18 @@ class TalkBook:
     двадцати (его останавливает пользователь), проверки хранилища — до
     первого токена, рассуждения о партициях — после пятнадцати слов, а
     ответ после вызова подключений — до первого токена, пока тест снимает
-    кружок под шагом вызова."""
+    кружок под шагом вызова; так же ждёт ответ после вызова с длинной
+    подписью, пока тест снимает строку идущего хода."""
 
     STEPS_TOKENS: ClassVar[int] = 12
     PLAN_TOKENS: ClassVar[int] = 20
     THINKING_TOKENS: ClassVar[int] = 15
     TOOL: ClassVar[str] = "connection_list"
     INTENT: ClassVar[str] = "Смотрю подключения"
+    LONG_INTENT: ClassVar[str] = (
+        "Перебираю все подключения пользователя по профилям и серверам, чтобы "
+        "найти базы, хранилища и сервисы с их адресами и сроками билетов"
+    )
     STEPS_SEED: ClassVar[str] = (
         "Сначала заморозьте схему, затем перенесите справочники, после них — "
         "факты по месяцам, сверьте суммы и переключите отчёты."
@@ -191,6 +199,7 @@ class TalkBook:
 
     def replies(self) -> list[Reply]:
         connections = ReplyCall(tool=self.TOOL, arguments={}, intent=self.INTENT)
+        sources = ReplyCall(tool=self.TOOL, arguments={}, intent=self.LONG_INTENT)
         steps = self.words(80, self.STEPS_SEED)
         plan = self.words(400, self.PLAN_SEED)
         return [
@@ -232,6 +241,13 @@ class TalkBook:
                 turns=[
                     ReplyTurn(content=TalkText.LOOKING, calls=[connections]),
                     ReplyTurn(content=TalkText.CONNECTIONS, hold=True),
+                ],
+            ),
+            Reply(
+                question=TalkQuestion.SOURCES,
+                turns=[
+                    ReplyTurn(content=TalkText.CHECKING, calls=[sources]),
+                    ReplyTurn(content=TalkText.SOURCES, hold=True),
                 ],
             ),
             Reply(
@@ -347,6 +363,17 @@ class TalkFixes:
             "было: строка хода и после конца подписана «process...» — "
             "троеточие говорило «ещё идёт»; стало: идущий ход — «Работаю…», "
             "законченный — «Завершено · шагов: N»"
+        ),
+    )
+    CURRENT: ClassVar[LookFix] = LookFix(
+        code="Строка идущего хода — его текущее действие",
+        summary=(
+            "было: пока ход идёт, свёрнутая строка хода неизменно подписана "
+            "«Работаю…» — что происходит, видно, только если её раскрыть; "
+            "стало: строка подписана текущим действием хода так же, как его "
+            "шаг (размышления, вызов с подписью и статусом, вопрос), и мерцает, "
+            "как идущий вызов; длинная подпись обрезается многоточием по ширине "
+            "строки; по концу хода — «Завершено · шагов: N» без мерцания"
         ),
     )
     THOUGHT: ClassVar[LookFix] = LookFix(
@@ -510,9 +537,20 @@ class TalkLook:
         GROUP,
         "tr5-pulse-after-tool",
         "Вызов отработал, модель думает над ответом",
-        "текст «Смотрю подключения.», под ним строка хода «Работаю…», ниже "
-        "мигающий кружок — ход ещё идёт",
-        (TalkFixes.DONE,),
+        "текст «Смотрю подключения.», под ним свёрнутая строка хода с "
+        "текущим действием «✓ connection_list · Смотрю подключения · 0 мс» "
+        "(мерцание идущего хода в кадре заморожено), ниже мигающий кружок — "
+        "ход ещё идёт",
+        (TalkFixes.DONE, TalkFixes.CURRENT),
+    )
+    RUNNING_LONG: ClassVar[LookState] = LookState(
+        GROUP,
+        "tr10-running-long",
+        "Ход идёт, подпись вызова длиннее строки",
+        "текст «Проверяю источники.», под ним свёрнутая строка хода в одну "
+        "строку: «✓ connection_list · Перебираю все подключения…» обрезана "
+        "многоточием у края ленты, прокрутки вбок нет; ниже мигающий кружок",
+        (TalkFixes.CURRENT,),
     )
     DONE: ClassVar[LookState] = LookState(
         GROUP,
@@ -542,10 +580,10 @@ class TalkLook:
         GROUP,
         "tr7-thinking",
         "Модель размышляет: пятнадцать слов рассуждения",
-        "строка хода «Работаю…» раскрыта, в ней шаг «Размышления» с кружком "
-        "«идёт» и первыми пятнадцатью словами рассуждения; мигающий кружок в "
-        "конце ленты",
-        (TalkFixes.CONTAINER,),
+        "строка хода «○ Размышления» — подпись текущего шага — раскрыта, в ней "
+        "шаг «Размышления» с кружком «идёт» и первыми пятнадцатью словами "
+        "рассуждения; мигающий кружок в конце ленты",
+        (TalkFixes.CONTAINER, TalkFixes.CURRENT),
     )
     THOUGHT: ClassVar[LookState] = LookState(
         GROUP,
@@ -1000,6 +1038,28 @@ def test_turn_look(
         feed.open_last(StepKind.RUN)
         look_pages.settle(page)
         look.frame(feed.feed(TalkQuestion.CONNECTIONS), TalkLook.OPENED, theme, size)
+        feed.check_clean()
+
+    look.verify()
+
+
+def test_running_turn_look(
+    look: LookCheck,
+    look_pages: LookPages,
+    talk_stand: StandProcess,
+    talk_book: ReplyBookClient,
+) -> None:
+    for theme, size, feed in talk_frames(look_pages, talk_stand, talk_book):
+        page = feed.page
+        feed.ask_held(TalkQuestion.SOURCES)
+        feed.shown(TalkText.CHECKING)
+        running = page.locator(Selector.of_type(StepKind.RUN.value)).last
+        expect(running).to_contain_text(TalkBook.LONG_INTENT, timeout=30_000)
+        feed.pulse()
+        look_pages.settle(page)
+        look.frame(feed.feed(TalkQuestion.SOURCES), TalkLook.RUNNING_LONG, theme, size)
+        feed.release(TalkQuestion.SOURCES)
+        feed.shown(TalkText.SOURCES)
         feed.check_clean()
 
     look.verify()

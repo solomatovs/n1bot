@@ -1,0 +1,118 @@
+[krb]
+    config     = "${site.krb_config}"
+    ccache_dir = "${env.data}/krb/cache"
+
+[app]
+    schema  = "agent"
+    krb     = "${krb}"
+    session = "${session}"
+    agent   = "${agent}"
+    auth    = ["${auth.ldap}", "${auth.local}", "${auth.proxy}"]
+
+[keys]
+    session      = "${site.auth_secret}"
+    proxy        = "${site.proxy_secret}"
+    agent_client = "${site.agent_client.secret}"
+
+[ldap]
+    server        = "${site.ldap_url}"
+    base_dn       = "${site.ldap_base_dn}"
+    bind_dn       = "${site.ldap_bind_user}"
+    bind_password = "${site.ldap_bind_password}"
+    [ldap.mapping]
+        member_of = "${site.ldap_roles.memberof}"
+        dn        = "${site.ldap_roles.dn}"
+
+[agent]
+    host                 = "${env.listen_host}"
+    port                 = "${env.port}"
+    path                 = "/acp"
+    public_url           = "${env.public_url}"
+    shutdown_timeout_sec = 10
+    [agent.process]
+        command          = "${env.agent_command}"
+        args             = ["acp", "--setting-sources", ""]
+        workdir          = "${env.data}/agents"
+        stop_timeout_sec = 10
+        max_processes    = 32
+        idle_sec         = 1800
+    [agent.settings]
+        [agent.settings.history]
+            kind   = "postgres"
+            dsn    = "host=${site.pg_host} hostaddr=${site.pg_addr} port=${site.pg_port} dbname=${site.aid_database} user=${site.pg_auth.password.user} password=${site.pg_auth.password.password} sslmode=${site.pg_sslmode}"
+            schema = "boba"
+        [agent.settings.permissions]
+            defaultMode = "bypassPermissions"
+            allowBypass = true
+        [agent.settings.mcp]
+            callTimeoutSec = 86400
+    [agent.profiles.general]
+        roles = ["*"]
+        [agent.profiles.general.model]
+            model           = "${site.models.general}"
+            contextWindow   = 128000
+            maxOutputTokens = 8192
+            reasoningReturn = "turn"
+            [agent.profiles.general.model.provider]
+                kind            = "openai"
+                baseUrl         = "${site.llm_base_url}"
+                apiKey          = "${site.llm_token}"
+                sslVerify       = "${site.llm_ssl_verify}"
+                timeoutSec      = 600
+                retryAttempts   = 3
+                retryBackoffSec = 1.0
+                retryStatuses   = { 429 = 5 }
+            [agent.profiles.general.model.sampling]
+                temperature      = 1.0
+                top_p            = 0.95
+                presence_penalty = 0.0
+                max_tokens       = 16000
+                reasoning_effort = "low"
+    [agent.profiles.search]
+        roles = ["*"]
+        [agent.profiles.search.model]
+            model           = "${site.models.search}"
+            contextWindow   = 128000
+            maxOutputTokens = 8192
+            reasoningReturn = "turn"
+            [agent.profiles.search.model.provider]
+                kind            = "openai"
+                baseUrl         = "${site.llm_base_url}"
+                apiKey          = "${site.llm_token}"
+                sslVerify       = "${site.llm_ssl_verify}"
+                timeoutSec      = 600
+                retryAttempts   = 3
+                retryBackoffSec = 1.0
+                retryStatuses   = { 429 = 5 }
+    [agent.clients.boba-chat]
+        secret = "${keys.agent_client}"
+
+[auth.ldap]
+    type             = "ldap"
+    server           = "${ldap.server}"
+    base_dn          = "${ldap.base_dn}"
+    user_filter      = "(sAMAccountName={username})"
+    bind_dn_template = '${site.ldap_netbios}\{username}'
+    [auth.ldap.roles]
+        directory = "${ldap.mapping}"
+
+[auth.local]
+    type          = "local"
+    users         = "${site.local_auth.users}"
+    require_roles = true
+    [auth.local.roles.local]
+        mapping = "${site.local_auth.roles}"
+
+[auth.proxy]
+    type          = "proxy"
+    secret        = "${keys.proxy}"
+    max_skew_sec  = 60
+    require_roles = true
+    [auth.proxy.roles.header]
+        name = "X-Remote-Roles"
+
+[session]
+    auth_secret     = "${keys.session}"
+    session_ttl_sec = 3600
+    session_max_sec = 28800
+    generation      = ""
