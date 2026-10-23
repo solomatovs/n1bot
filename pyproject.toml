@@ -48,6 +48,7 @@ pythonpath = [
     "packages/core/boba-toolkit/src",
     "packages/apps/boba-aid/src",
     "packages/apps/boba-mcp/src",
+    "packages/apps/boba-agent-service/src",
     "packages/tools/boba-tool-shell/src",
     "packages/tools/boba-tool-canvas/src",
     "packages/tools/boba-tool-chart/src",
@@ -148,6 +149,7 @@ extraPaths = [
     "packages/core/boba-toolkit/src",
     "packages/apps/boba-aid/src",
     "packages/apps/boba-mcp/src",
+    "packages/apps/boba-agent-service/src",
     "packages/tools/boba-tool-shell/src",
     "packages/tools/boba-tool-canvas/src",
     "packages/tools/boba-tool-chart/src",
@@ -252,6 +254,7 @@ members = [
     "packages/core/*",
     "packages/apps/boba-aid",
     "packages/apps/boba-mcp",
+    "packages/apps/boba-agent-service",
     "packages/apps/boba-cli",
     "packages/apps/ix/*",
     "packages/tools/*",
@@ -279,6 +282,7 @@ boba-connection-broker = { workspace = true }
 boba-mcp-client = { workspace = true }
 boba-mcp-adapter = { workspace = true }
 boba-mcp = { workspace = true }
+boba-agent-service = { workspace = true }
 boba-tool-describer = { workspace = true }
 boba-runtime = { workspace = true }
 boba-auth = { workspace = true }
