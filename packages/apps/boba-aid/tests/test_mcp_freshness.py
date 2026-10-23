@@ -6,10 +6,10 @@
 свежести 0, поэтому агент перечитывает описание и списки в начале каждого
 хода и объявляет модели разницу вложениями дословно по docs/prompt_assembly
 (texts/attachments/deferred_tools_delta.md, mcp_instructions_delta.md):
-инструмент, появившийся молча, ресурсы для модели, сервер, который
-пропал, — и он же, вернувшийся. Инструкции, сменившиеся у сервера, агент
-объявляет после перезапуска чата, когда новый ретранслятор согласует сервер
-заново и сессия возобновляется.
+инструмент, появившийся молча, — именем среди отложенных, ресурсы для
+модели, сервер, который пропал, — и он же, вернувшийся. Инструкции,
+сменившиеся у сервера, агент объявляет после перезапуска чата, когда новый
+ретранслятор согласует сервер заново и сессия возобновляется.
 """
 
 from __future__ import annotations
@@ -112,28 +112,38 @@ class DriftingTexts:
             "</system-reminder>"
         )
 
-    def added(self, lines: str) -> str:
+    def added(self, names: str) -> str:
         return (
-            "<system-reminder>\n"
-            f"The following tools are now available:\n{lines}\n"
-            "</system-reminder>"
+            "The following deferred tools are now available via ToolSearch. Their "
+            "schemas are NOT loaded — calling them directly will fail with "
+            "InputValidationError. Use ToolSearch with query "
+            f'"select:<name>[,<name>...]" to load tool schemas before calling '
+            f"them:\n{names}\n"
+        )
+
+    def deferred_gone(self, names: str) -> str:
+        """Сервер снял инструмент, отложенные остались: ToolSearch ещё есть."""
+        return (
+            "The following deferred tools are no longer available (their MCP "
+            "server disconnected). Do not search for them — ToolSearch will "
+            f"return no match:\n{names}\n\n"
         )
 
     def server_tools_gone(self, names: str) -> str:
+        """Сервер ушёл целиком: отложенных не осталось, ToolSearch снят."""
         return (
-            "<system-reminder>\n"
             "The following tools are no longer available (their MCP server "
             f"disconnected). Do not call them:\n{names}\n\n"
-            f"{self.AMBIENT}\n"
+            "The following tools are no longer available in this session. Do not "
+            f"call them:\nToolSearch\n\n{self.AMBIENT}\n"
             "</system-reminder>"
         )
 
     def server_tools_back(self) -> str:
         return (
-            "<system-reminder>\n"
-            "5 tools are available again (MCP server reconnected — names announced "
-            "earlier in this conversation): mcp__drifting__* (5).\n"
-            "</system-reminder>"
+            "5 deferred tools are available again (MCP server reconnected — names "
+            "announced earlier in this conversation): mcp__drifting__* (5). Load "
+            "via ToolSearch as before."
         )
 
 
@@ -143,10 +153,7 @@ class TestFreshnessThroughRelay:
 
     FIRST: ClassVar[str] = "Use echo to repeat a text; drift moves the tool extra."
     SECOND: ClassVar[str] = "Echo is the only tool to trust; ignore extra."
-    RESOURCES: ClassVar[str] = (
-        "The following tools are now available:\n"
-        "list_mcp_resources: List the resources and resource templates"
-    )
+    RESOURCES: ClassVar[str] = "them:\nlist_mcp_resources\nread_mcp_resource\n"
 
     @pytest.fixture
     def state(self, tmp_path: Path) -> DriftingState:
@@ -198,27 +205,23 @@ class TestFreshnessThroughRelay:
     async def test_tool_that_appears_silently_is_announced_next_turn(
         self, agents: Agents, model: FakeModel
     ) -> None:
-        """Сервер без listChanged добавил инструмент — модель видит его в
-        следующем ходе с описанием; убрал — видит снятым."""
+        """Сервер без listChanged добавил инструмент — модель видит его имя
+        среди отложенных в следующем ходе; убрал — видит снятым."""
         process, session_id = await self._session(agents, "drift")
         requests = ModelRequests(model)
         texts = DriftingTexts()
 
         await agents.turn(process, session_id, self._call("mcp__drifting__drift", {}))
-        before = requests.offered_names()
+        before = requests.read()
         await agents.turn(process, session_id, ScenarioName.ANSWER.value)
-        added = requests.saw(
-            texts.added("mcp__drifting__extra: Appears only after drift.")
-        )
-        offered = requests.offered_names()
+        added = requests.saw(texts.added("mcp__drifting__extra"))
         await agents.turn(process, session_id, self._call("mcp__drifting__drift", {}))
         await agents.turn(process, session_id, ScenarioName.ANSWER.value)
-        gone = requests.saw(texts.server_tools_gone("mcp__drifting__extra"))
+        gone = requests.saw(texts.deferred_gone("mcp__drifting__extra"))
         after = requests.offered_names()
 
         assert "mcp__drifting__extra" not in before, before
         assert added, requests.read()
-        assert "mcp__drifting__extra" in offered, offered
         assert gone, requests.read()
         assert "mcp__drifting__extra" not in after, after
 
@@ -231,14 +234,14 @@ class TestFreshnessThroughRelay:
         requests = ModelRequests(model)
 
         await agents.turn(process, session_id, self._call("mcp__drifting__publish", {}))
-        before = requests.offered_names()
+        before = requests.read()
         read = {"server": SERVER, "uri": "drifting://notes"}
         await agents.turn(process, session_id, self._call("read_mcp_resource", read))
         offered = requests.offered_names()
         notes = requests.tool_result()
 
         assert "read_mcp_resource" not in before, before
-        assert "list_mcp_resources" in offered, offered
+        assert "read_mcp_resource" in offered, offered
         assert requests.saw(self.RESOURCES), requests.read()
         assert "the notes of the drifting server" in notes, notes
 
@@ -264,6 +267,7 @@ class TestFreshnessThroughRelay:
         await agents.turn(process, session_id, ScenarioName.ANSWER.value)
         tools_back = requests.saw(texts.server_tools_back())
         back = requests.offered_names()
+        reloaded = requests.saw("ready to use:\nToolSearch")
 
         assert first, requests.read()
         assert tools_gone, requests.read()
@@ -271,7 +275,8 @@ class TestFreshnessThroughRelay:
         assert "mcp__drifting__echo" not in while_down, while_down
         assert tools_back, requests.read()
         assert requests.read().count("# MCP Server Instructions") == 2
-        assert "mcp__drifting__echo" in back, back
+        assert "ToolSearch" in back, back
+        assert reloaded, requests.read()
 
     async def test_instructions_changed_live_reach_the_next_turn(
         self, agents: Agents, model: FakeModel

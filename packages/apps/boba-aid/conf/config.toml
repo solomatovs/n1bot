@@ -167,6 +167,8 @@
         kind     = "postgres"
         schema   = "boba"
         postgres = "${postgres_history}"
+    [agent.tools]
+        always_load = []
 
 [service.boba_mcp]
     scheme = "${env.mcp_scheme}"

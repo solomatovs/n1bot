@@ -426,6 +426,14 @@ class Announced:
 
         return loaded
 
+    def loaded_names(self) -> frozenset[str]:
+        """Имена отложенных инструментов, которые уходят в запрос."""
+        names: set[str] = set()
+        for tool in self.deferred_loaded():
+            names.add(tool.name)
+
+        return frozenset(names)
+
     def deferred_unrecorded(self) -> Sequence[str]:
         """Загруженные и объявленные отложенные, чьих определений разговор
         ещё не записал, в порядке загрузки."""

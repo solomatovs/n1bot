@@ -61,6 +61,7 @@ from boba.agent.settings import (
     ProviderSettings,
     SecretKey,
     SettingsLayer,
+    ToolsJson,
 )
 from boba.db.postgres.connection import PostgresConfig
 from boba.llm.providers import ChatModelConfig, LlmProvidersError
@@ -347,6 +348,7 @@ class EffectiveSettings(BaseModel):
     compaction: CompactionSettings
     limits: TurnLimits
     mcp: McpClientJson
+    tools: ToolsJson
     env: Mapping[str, str]
     system_prompt: Sequence[str]
     skills_dir: str | None
@@ -743,6 +745,10 @@ class Settings:
         if mcp is None:
             mcp = McpClientJson()
 
+        tools = layer.tools
+        if tools is None:
+            tools = ToolsJson(always_load=())
+
         agent_name = layer.agent_name
         if agent_name is None:
             agent_name = EffectiveSettings.DEFAULT_AGENT_NAME
@@ -755,6 +761,7 @@ class Settings:
             compaction=compaction,
             limits=limits,
             mcp=mcp,
+            tools=tools,
             env=layer.env,
             system_prompt=list(self._system_prompt(layer)),
             skills_dir=layer.skills_dir,

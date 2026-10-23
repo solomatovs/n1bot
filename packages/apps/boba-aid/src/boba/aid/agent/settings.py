@@ -79,6 +79,7 @@ __all__ = [
     "ProviderFile",
     "SettingsFile",
     "SettingsFileBuilder",
+    "ToolsFile",
     "WorkdirFile",
 ]
 
@@ -187,6 +188,13 @@ class McpFile(FileModel):
     call_timeout_sec: float = Field(gt=0)
 
 
+class ToolsFile(FileModel):
+    """Ключ `tools`: инструменты, которые модель получает полным определением
+    с первого запроса, — из [agent.tools]; остальные отложены до ToolSearch."""
+
+    always_load: Sequence[str]
+
+
 class SettingsFile(FileModel):
     """Файл настроек процесса агента целиком, как его пишет чат."""
 
@@ -195,6 +203,7 @@ class SettingsFile(FileModel):
     permissions: PermissionsFile
     history: PostgresHistoryFile | MemoryHistoryFile = Field(discriminator="kind")
     mcp: McpFile | None
+    tools: ToolsFile
     env: Mapping[str, str]
     system_prompt_file: str = Field(min_length=1)
 
@@ -397,7 +406,8 @@ class AgentSettingsTable(PgTable):
 class SettingsFileBuilder:
     """Файл настроек агента из слоя чата и конфига: к профилю модели чата
     добавляются политика запуска `allowBypass` (режим сессии чат выставляет
-    по ACP), история, срок вызова инструментов — наибольший
+    по ACP), история, инструменты «всегда загружать» [agent.tools], срок
+    вызова инструментов — наибольший
     `limits.call_timeout_sec` серверов профиля [mcp.servers.*] — и окружение
     libkrb5 истории ключом `env`. Строка подключения истории — её собственное
     подключение [agent.history].postgres. Файл — единственный канал настроек
@@ -407,6 +417,7 @@ class SettingsFileBuilder:
     def __init__(self, config: AgentConfig, servers: McpServersConfig) -> None:
         self._servers = servers
         self._history = self._history_file(config.history)
+        self._tools = ToolsFile(always_load=config.tools.always_load)
 
     def build(
         self,
@@ -422,6 +433,7 @@ class SettingsFileBuilder:
             permissions=PermissionsFile(allow_bypass=True),
             history=self._history,
             mcp=mcp,
+            tools=self._tools,
             env=env,
             system_prompt_file=WorkdirFile.SYSTEM_PROMPT.value,
         )

@@ -1494,8 +1494,9 @@ class TestMcpOverAcp:
     TTL_MS: ClassVar[int] = 8000
     DROPPED: ClassVar[str] = (
         "<system-reminder>\n"
-        "The following tools are no longer available (their MCP server "
-        "disconnected). Do not call them:\n"
+        "The following deferred tools are no longer available (their MCP server "
+        "disconnected). Do not search for them — ToolSearch will return no "
+        "match:\n"
         "mcp__stand__large\n\n"
         "This is ambient context — do not narrate it to the user unless they ask "
         "or it is directly relevant to their request.\n"
@@ -1565,7 +1566,11 @@ class TestMcpOverAcp:
         for tool in RegisteredTool:
             expected.append(f"mcp__stand__{tool.value}")
 
-        assert sorted(offered) == sorted(expected)
+        assert "ToolSearch" in offered
+        assert set(offered).isdisjoint(expected), offered
+        announced = json.dumps(model.app.requests[0]["messages"], ensure_ascii=False)
+        deferred = "\\n".join(sorted(expected))
+        assert f"before calling them:\\n{deferred}\\n" in announced, announced
 
     async def test_answers_stay_fresh_for_their_ttl_in_a_long_session(
         self, boba: AcpProcess, model: FakeModel, tmp_path: Path
@@ -1590,7 +1595,9 @@ class TestMcpOverAcp:
             await boba.turn(client, session.session_id, question)
             fresh_for = time.monotonic() - started
             within = registration.received[opened:]
-            offered_within = self._offered(model)
+            offered_within = json.dumps(
+                model.app.requests[-1]["messages"], ensure_ascii=False
+            )
             await asyncio.sleep(self.TTL_MS / 1000)
             await boba.turn(client, session.session_id, question)
             after = registration.received[opened + len(within) :]
