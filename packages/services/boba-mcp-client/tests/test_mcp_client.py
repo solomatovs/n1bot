@@ -79,7 +79,7 @@ from boba.toolkit.result import (
     MarkdownResult,
 )
 from boba.toolkit.types import SecretReveal
-from boba.toolkit.wire import JournalFeature, JournalNotice, JournalRead
+from boba.toolkit.wire import JournalFeature, JournalNotice, JournalRead, ScopeFeature
 from boba.workspace.launcher import ReadWindow
 
 pytestmark = pytest.mark.anyio
@@ -923,7 +923,7 @@ class TestScopeOfTheCall:
         self, dag: McpToolServer
     ) -> None:
         reply = await dag.call(
-            OWN, _call("fake_scope", thread_id=self.THREAD), None, None, None, None
+            OWN, _call("fake_scope", scope_id=self.THREAD), None, None, None, None
         )
         text = McpResults().result("fake_scope", "c1", reply).llm_view()
 
@@ -1928,7 +1928,7 @@ class TestBobaMcpService:
 
         await service.call(
             OWN,
-            _call("bash", command="echo kept > note.txt", thread_id=first),
+            _call("bash", command="echo kept > note.txt", scope_id=first),
             None,
             None,
             None,
@@ -1936,7 +1936,7 @@ class TestBobaMcpService:
         )
         again = await service.call(
             OWN,
-            _call("bash", command="cat note.txt", thread_id=first),
+            _call("bash", command="cat note.txt", scope_id=first),
             None,
             None,
             None,
@@ -1944,7 +1944,7 @@ class TestBobaMcpService:
         )
         apart = await service.call(
             OWN,
-            _call("bash", command="cat note.txt", thread_id=other),
+            _call("bash", command="cat note.txt", scope_id=other),
             None,
             None,
             None,
@@ -1967,6 +1967,7 @@ class TestFailureStand:
     STANDARD_TOOLS: ClassVar[list[str]] = [
         "add",
         "archive_orders",
+        "area",
         "ask",
         "blocks",
         "broken",
@@ -1994,6 +1995,7 @@ class TestFailureStand:
         "add",
         "answers",
         "archive_orders",
+        "area",
         "ask",
         "blocks",
         "broken",
@@ -2271,7 +2273,7 @@ class TestStandardEdition:
         assert declared["info"] == {"name": "boba-cli", "version": "9.9"}
         assert declared["capabilities"]["elicitation"] == {"form": {}}
         assert sorted(declared["capabilities"]["extensions"]) == sorted(
-            [JournalFeature.ID, SealFeature.ID]
+            [JournalFeature.ID, SealFeature.ID, ScopeFeature.ID]
         )
         assert mine["info"] == McpServers.OWN.info.model_dump(exclude_none=True)
         assert "elicitation" not in mine["capabilities"]
@@ -2430,7 +2432,7 @@ class TestHandshakeEdition:
         assert sorted(declared["capabilities"]) == ["elicitation", "extensions"]
         assert declared["capabilities"]["elicitation"] == {"form": {}}
         assert sorted(declared["capabilities"]["extensions"]) == sorted(
-            [JournalFeature.ID, SealFeature.ID]
+            [JournalFeature.ID, SealFeature.ID, ScopeFeature.ID]
         )
         assert sorted(declared["meta"]) == sorted(["progressToken", self.TRACE])
         assert "expected one such call open on the session, got 0" in str(unasked.value)

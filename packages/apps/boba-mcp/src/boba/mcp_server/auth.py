@@ -23,7 +23,7 @@ endpoint'ами, выданными ролям вошедшего, — и рес
 
 Ошибки:
 TokenClaimsError — токен принят, но логина и ролей вызывающего в нём нет.
-CallScopeError — тред вызова (аргумент thread_id) не строка или не годится
+CallScopeError — область вызова (аргумент scope_id) не строка или не годится
     сегментом пути.
 AuthorizeError — запрос авторизации не принят (по контракту OAuthProvider).
 TokenError — код авторизации или утверждение не приняты (по контракту
@@ -210,40 +210,42 @@ class TokenSubjects:
 
 
 class CallScopeError(Exception):
-    """Клиент прислал вызов, который не принять: тред не годится сегментом
-    пути."""
+    """Клиент прислал вызов, который не принять: область не годится
+    сегментом пути."""
 
 
 class CallScopes:
-    """Область вызова по аргументу треда (CallFields.THREAD).
+    """Область вызова по аргументу области (CallFields.SCOPE).
 
     Создаётся CallContextMiddleware и FileUploadTool. Область — место файлов
-    и описаний вызова в workspace пользователя; клиент с собственными
-    разговорами (чат) присылает в ней id разговора, чтобы вызовы одного
-    разговора видели файлы друг друга. Вызов без треда получает область по
-    умолчанию — id самого пользователя, то есть свою у каждого пользователя.
+    и описаний вызова в workspace пользователя; её идентификатор для сервиса
+    непрозрачен: клиент даёт одну область вызовам, которые должны видеть
+    файлы друг друга. Клиент с расширением области (ScopeFeature) ставит
+    аргумент сам, остальные показывают его модели. Вызов без области получает
+    область по умолчанию — id самого пользователя, то есть свою у каждого
+    пользователя.
     """
 
     def of(self, subject: Subject, arguments: Mapping[str, object]) -> Scope:
         """Область вызова субъекта subject по его аргументам arguments: нет
-        треда или он пуст — область по умолчанию; тред не строка или негодный
-        id — CallScopeError."""
-        sent = arguments.get(CallFields.THREAD, "")
+        области или она пуста — область по умолчанию; область не строка или
+        негодный id — CallScopeError."""
+        sent = arguments.get(CallFields.SCOPE, "")
         if not isinstance(sent, str):
             msg = (
-                f"resolving the scope of the call: argument {CallFields.THREAD!r} "
+                f"resolving the scope of the call: argument {CallFields.SCOPE!r} "
                 f"expects a string, got {type(sent).__name__}"
             )
             raise CallScopeError(msg)
 
         if not sent:
-            return Scope.chat(str(subject.user_id))
+            return Scope.caller(str(subject.user_id))
 
         try:
-            return Scope.chat(sent)
+            return Scope.caller(sent)
         except ValidationError as exc:
             msg = (
-                f"resolving the scope of the call: argument {CallFields.THREAD!r} "
+                f"resolving the scope of the call: argument {CallFields.SCOPE!r} "
                 f"expects one path segment, got {sent!r}: {exc}"
             )
             raise CallScopeError(msg) from exc

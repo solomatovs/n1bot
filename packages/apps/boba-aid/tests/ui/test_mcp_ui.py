@@ -448,9 +448,10 @@ class TestOwnServerInTheFeed:
     def test_body_of_boba_mcp_runs_in_the_scope_of_the_thread(
         self, mcp_stand: StandProcess, open_chat: OpenChat
     ) -> None:
-        """Область вызова — тред чата: ретранслятор ставит его в параметр
-        thread_id каждого вызова, поэтому инструменты видят workspace треда —
-        файлы, загруженные пользователем, и то, что открывает панель канваса."""
+        """Область вызова — тред чата: сервер объявил расширение области
+        вызова, и ретранслятор ставит тред в помеченный параметр scope_id
+        каждого вызова, поэтому инструменты видят workspace треда — файлы,
+        загруженные пользователем, и то, что открывает панель канваса."""
         chat = open_chat(mcp_stand, "")
 
         step = FeedCalls(chat).ask("mcp__boba__fake_scope", {})
