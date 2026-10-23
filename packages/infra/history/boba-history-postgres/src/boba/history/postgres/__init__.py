@@ -5,6 +5,6 @@
 advisory lock соединения.
 """
 
-from boba.history.postgres.store import PostgresHistoryStore
+from boba.history.postgres.store import PostgresHistoryStore, SessionLocks
 
-__all__ = ["PostgresHistoryStore"]
+__all__ = ["PostgresHistoryStore", "SessionLocks"]

@@ -92,7 +92,7 @@ from boba.cli.settings import (
 from boba.cli.threads import LoopThread, SessionThreads, ThreadedHistoryStore
 from boba.db.postgres import AsyncPostgresPool
 from boba.history.jsonl import JsonlHistoryStore
-from boba.history.postgres import PostgresHistoryStore
+from boba.history.postgres import PostgresHistoryStore, SessionLocks
 from boba.llm.chat import ChatModel, LlmError
 from boba.llm.http.ollama import MANIFEST as OLLAMA
 from boba.llm.http.openai import MANIFEST as OPENAI
@@ -316,12 +316,6 @@ class ModelCatalog:
 
         self._models: dict[str, ChatModel] = {}
 
-    def names(self) -> Sequence[str]:
-        return list(self._profiles)
-
-    def has(self, name: str) -> bool:
-        return name in self._profiles
-
     def profile(self, name: str) -> ModelProfile:
         """Ошибки:
         SettingsError — профиля с таким именем нет.
@@ -435,9 +429,9 @@ class AssembledSession(OpenedSession):
         return self._model
 
     async def set_model(self, name: str) -> None:
-        if not self._catalog.has(name):
-            known = list(self._catalog.names())
-            msg = f"the model profile '{name}' is not defined; known: {known}"
+        if name not in self._settings.models:
+            known = list(self._settings.models)
+            msg = f"the model profile '{name}' is not available; known: {known}"
             raise SessionRefusedError(msg)
 
         previous = list(self._agent.system_prompt)
@@ -586,7 +580,8 @@ class AgentAssembly(SessionAssembly):
         return AssembledSession(agent, self._catalog, models, settings, settings.model)
 
     def models(self) -> Sequence[str]:
-        return self._catalog.names()
+        """Профили сессий этой сборки: у `boba serve` — выданные вошедшему."""
+        return list(self._settings.models)
 
     async def observe(  # noqa: PLR0913 — наблюдатель собирается всеми частями сессии
         self,
@@ -728,6 +723,19 @@ class AgentAssembly(SessionAssembly):
         )
 
 
+@dataclass(frozen=True)
+class OpenedStore:
+    """Хранилище истории процесса и замки сессий, которые процесс закрывает
+    на выходе после хранилища."""
+
+    store: HistoryStore
+    locks: Sequence[SessionLocks]
+
+    async def close(self) -> None:
+        for locks in self.locks:
+            await locks.close()
+
+
 class StdioStreams:
     """Потоки asyncio над стандартным вводом и отданным протоколу дескриптором
     вывода: ввод читается каналом, вывод пишется с учётом противодавления."""
@@ -798,16 +806,17 @@ class AgentProcess:
         try:
             settings = self._settings.effective()
             os.environ.update(settings.env)
-            store = self._store(settings)
+            opened = self._store(settings)
         except SettingsError as exc:
             raise SystemExit(str(exc)) from exc
 
         self._store_thread.start()
-        threaded = ThreadedHistoryStore(store, self._store_thread)
+        threaded = ThreadedHistoryStore(opened.store, self._store_thread)
         try:
             await self._serve(settings, threaded)
         finally:
             await threaded.close()
+            await self._store_thread.run(opened.close())
             await self._store_thread.run(AsyncPostgresPool.close_all())
             await self._store_thread.stop()
 
@@ -871,19 +880,23 @@ class AgentProcess:
             self._version,
         )
 
-    def _store(self, settings: EffectiveSettings) -> HistoryStore:
+    def _store(self, settings: EffectiveSettings) -> OpenedStore:
         """Ошибки:
         SettingsError — строка подключения Postgres не задана или не годится.
         """
         history = settings.history
         if isinstance(history, PostgresHistorySettings):
             postgres = PostgresBuilder(self._env).config(history)
-            return PostgresHistoryStore(postgres, history.db_schema, history.owner)
+            locks = SessionLocks(postgres)
+            store = PostgresHistoryStore(
+                postgres, history.db_schema, history.owner, locks
+            )
+            return OpenedStore(store=store, locks=(locks,))
 
         if isinstance(history, MemoryHistorySettings):
-            return MemoryHistoryStore()
+            return OpenedStore(store=MemoryHistoryStore(), locks=())
 
-        return JsonlHistoryStore(Path(history.root))
+        return OpenedStore(store=JsonlHistoryStore(Path(history.root)), locks=())
 
     def _skills(self, settings: EffectiveSettings) -> Sequence[Skill]:
         """Ошибки:
