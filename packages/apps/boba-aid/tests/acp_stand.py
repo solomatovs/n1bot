@@ -203,7 +203,7 @@ class AgentHistoryStand:
 
     def history(self) -> PostgresAgentHistory:
         return PostgresAgentHistory.model_validate(
-            {"kind": "postgres", "schema": self.schema()}
+            {"kind": "postgres", "schema": self.schema(), "postgres": self.postgres()}
         )
 
 
@@ -414,9 +414,7 @@ class Agents:
         self._model = model
         history = AgentHistoryStand(stand)
         self._stand = AgentStand(root, history.history())
-        self._builder = SettingsFileBuilder(
-            self._stand.config(), history.postgres(), servers
-        )
+        self._builder = SettingsFileBuilder(self._stand.config(), servers)
         self._servers = McpServers(servers)
         credentials = KerberosCredentialSource(None, NoRefresh())
         relay = RelayStand(NoConnectionStore(), lambda: credentials, CallContexts())
