@@ -20,6 +20,7 @@ from typing import Annotated, Any, ClassVar, Final
 
 from pydantic import Field
 
+from boba.core.secrets import SecretRevealing
 from boba.db.clickhouse.address import ChAddresses
 from boba.db.clickhouse.connection import ClickHouseConfig
 from boba.db.clickhouse.query import ChQuery, ChQueryBuilder
@@ -64,7 +65,6 @@ from boba.toolkit.transfer import (
     TransferProgress,
     UnknownTypeStrategy,
 )
-from boba.toolkit.types import SecretRevealing
 from boba.toolkit.window import RowLimit, RowOffset, RowPage, RowWindow
 
 ChConnection = Annotated[ClickHouseConfig, UserConnection]

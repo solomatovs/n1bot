@@ -23,6 +23,7 @@ from typing import Annotated, ClassVar, Final, Literal
 
 from pydantic import BaseModel, Field, SecretStr
 
+from boba.core.secrets import SecretRevealing
 from boba.toolkit.entry import EntryFlag, ToolMain
 from boba.toolkit.facade import Injected, tool
 from boba.toolkit.ports import (
@@ -33,7 +34,6 @@ from boba.toolkit.ports import (
     StreamGroup,
 )
 from boba.toolkit.result import MarkdownResult
-from boba.toolkit.types import SecretRevealing
 
 
 class FakeConfig(SecretRevealing):

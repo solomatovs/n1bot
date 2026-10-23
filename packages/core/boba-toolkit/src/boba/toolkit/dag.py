@@ -50,6 +50,7 @@ from pydantic import (
     model_validator,
 )
 
+from boba.core.validation import ValidationText
 from boba.toolkit.calls import FieldView
 from boba.toolkit.chain import (
     StreamInput,
@@ -58,7 +59,7 @@ from boba.toolkit.chain import (
     StreamPlan,
     StreamPlanError,
 )
-from boba.toolkit.failure import InvokeErrorKind, ValidationText
+from boba.toolkit.failure import InvokeErrorKind
 from boba.toolkit.ports import PortDecl, StreamSpec
 from boba.toolkit.result import (
     BlockAudience,

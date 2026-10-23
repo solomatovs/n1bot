@@ -8,10 +8,10 @@ from typing import ClassVar, Final
 
 from pydantic import Field
 
+from boba.core.secrets import SecretRevealing
 from boba.db.pgvector.config import PostgresStoreConfig
 from boba.db.postgres.connection import PostgresConfig
 from boba.llm.providers import EmbeddingModelConfig, LlmProviders, LlmProviderTypes
-from boba.toolkit.types import SecretRevealing
 
 __all__ = [
     "LLM",

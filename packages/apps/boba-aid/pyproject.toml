@@ -8,6 +8,7 @@ version = "0.0.26.dev4"
 description = "Aid: the chat web UI of the Boba agent."
 requires-python = ">=3.11,<4"
 dependencies = [
+    "boba-core==0.0.26.dev4",
     "boba-auth==0.0.26.dev4",
     "boba-messaging==0.0.26.dev4",
     "boba-runtime==0.0.26.dev4",

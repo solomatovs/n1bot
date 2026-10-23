@@ -28,6 +28,7 @@ import psycopg
 from psycopg.rows import dict_row
 from pydantic import Field
 
+from boba.core.secrets import SecretRevealing
 from boba.db.postgres import PayloadPostgres
 from boba.db.postgres.address import PgAddresses
 from boba.db.postgres.connection import CopyOptions, PostgresConfig
@@ -75,7 +76,6 @@ from boba.toolkit.transfer import (
     TransferProgress,
     UnknownTypeStrategy,
 )
-from boba.toolkit.types import SecretRevealing
 from boba.toolkit.window import RowLimit, RowOffset, RowPage, RowWindow
 
 PgConnection = Annotated[PostgresConfig, UserConnection]

@@ -32,10 +32,10 @@ from pydantic import ValidationError
 from typing_extensions import TypeVar
 
 from boba.config import bind
+from boba.core.mcp_names import McpToolNames
 from boba.runtime.config import AppLayers, ConfigFiles
 from boba.runtime.launchers import EnvPaths
 from boba.stand.ui.toml_text import TomlText
-from boba.toolkit.mcp import McpToolNames
 
 __all__ = [
     "StandAgentAuth",

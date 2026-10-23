@@ -7,8 +7,8 @@ import pytest
 from pydantic import SecretStr, ValidationError
 
 from boba.connections.base import ClientIdentity
+from boba.core.secrets import SecretRevealing
 from boba.db.oracle.connection import OracleConfig, PasswordAuth
-from boba.toolkit.types import SecretRevealing
 
 RAW = {
     "host": "oracle.example.com",

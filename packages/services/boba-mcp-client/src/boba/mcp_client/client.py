@@ -139,8 +139,8 @@ from boba.canvas.storage import (
     StorageNotFoundError,
 )
 from boba.connections.sealed import SealFeature
+from boba.core.mcp_names import McpToolNames
 from boba.toolkit.dag import NestedCallsFeature, ServerFeature
-from boba.toolkit.mcp import McpToolNames
 from boba.toolkit.wire import (
     FilesFeature,
     JournalFeature,

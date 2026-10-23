@@ -14,6 +14,7 @@ from pydantic import (
 )
 
 from boba.connections.base import ClientIdentity, ConnectionBase
+from boba.core.secrets import SecretRevealing
 from boba.db.clickhouse.connection.auth import (
     ClickHouseAuth,
     ClickHouseAuthSession,
@@ -21,7 +22,6 @@ from boba.db.clickhouse.connection.auth import (
     ClickHouseLibch,
 )
 from boba.kerberos import KerberosAuthBase, KerberosDump, TicketAuth
-from boba.toolkit.types import SecretRevealing
 
 __all__ = ["ClickHouseConfig", "ClickHouseSettingsConfig"]
 

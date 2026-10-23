@@ -43,6 +43,7 @@ from boba.canvas.keys import ObjectKey, ScopeDir, WorkspaceMount
 from boba.canvas.storage import StorageNotFoundError
 from boba.config import bind
 from boba.connections.sealed import ConnectionSeal, SealedConnection, SealFeature
+from boba.core.secrets import SecretReveal
 from boba.db.postgres.connection import PostgresConfig
 from boba.mcp_client.client import (
     BearerAuth,
@@ -78,7 +79,6 @@ from boba.toolkit.result import (
     FailureResult,
     MarkdownResult,
 )
-from boba.toolkit.types import SecretReveal
 from boba.toolkit.wire import JournalFeature, JournalNotice, JournalRead, ScopeFeature
 from boba.workspace.launcher import ReadWindow
 

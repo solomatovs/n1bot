@@ -63,6 +63,7 @@ from boba.aid.agent.settings import (
 )
 from boba.aid.rendering.acp_view import SessionUpdate
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
+from boba.core.mcp_names import McpToolNames
 from boba.db.postgres.connection import PostgresConfig
 from boba.db.postgres.connection.auth import PasswordAuth
 from boba.identity.context import CallContexts
@@ -82,7 +83,6 @@ from boba.stand.ui.fake_llm import (
     ReplyTurn,
 )
 from boba.stand.ui.stand import REPO_ROOT, StandPorts
-from boba.toolkit.mcp import McpToolNames
 
 API_KEY = "sk-aid-acp-test-secret"
 MODEL_NAME = "stand-model"

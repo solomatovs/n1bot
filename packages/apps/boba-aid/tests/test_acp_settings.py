@@ -73,6 +73,7 @@ from boba.aid.agent.settings import (
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.chat.profiles import ChatProfileConfig, SelectedProfile
 from boba.connections.secrets import SecretCipher
+from boba.core.mcp_names import McpToolNames
 from boba.db.postgres import AsyncPostgresPool, PostgresSchema
 from boba.db.postgres.connection import PostgresConfig
 from boba.db.postgres.connection.auth import CertificateAuth
@@ -86,7 +87,6 @@ from boba.stand.names import StandNames
 from boba.stand.signin import SignInStand
 from boba.stand.site import Stand
 from boba.stand.ui.fake_llm import FailureName, ScenarioName
-from boba.toolkit.mcp import McpToolNames
 from boba.transport.acp.protocol import (
     AcpErrorCode,
     IdleErrorUpdate,

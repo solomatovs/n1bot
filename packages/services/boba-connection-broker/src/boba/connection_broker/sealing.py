@@ -34,8 +34,8 @@ from boba.connections.sealed import (
     SealFeature,
     SealKey,
 )
+from boba.core.validation import ValidationText
 from boba.identity.errors import RefusalError
-from boba.toolkit.failure import ValidationText
 
 __all__ = ["CallSealing", "McpServerInfo"]
 

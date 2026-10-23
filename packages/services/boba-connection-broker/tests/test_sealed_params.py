@@ -30,11 +30,11 @@ from boba.connections.sealed import (
     SealKey,
     SealKeys,
 )
+from boba.core.secrets import SecretReveal
 from boba.identity.errors import RefusalError
 from boba.stand_core.context import CallStand
 from boba.toolkit.calls import SchemaMark
 from boba.toolkit.entry import ToolArgv
-from boba.toolkit.types import SecretReveal
 from boba.toolrun.injected import StaticConfig
 
 pytestmark = pytest.mark.anyio
