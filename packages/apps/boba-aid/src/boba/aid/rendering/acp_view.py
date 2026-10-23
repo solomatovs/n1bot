@@ -17,9 +17,10 @@
 записи списка узлов в structuredContent (NestedCallsOutput). У инструмента
 с приложением MCP Apps (секция apps сервера и _meta.ui.resourceUri) под
 контейнером хода встаёт карточка приложения с аргументами и итогом
-вызова, а шаг остаётся фактом вызова. Вызов
-собственного инструмента агента AskUserQuestion — своё сообщение основной
-ленты с элементом Question: пока вопрос ждёт ответа — строка «Question(s)» с
+вызова, а шаг остаётся фактом вызова. Вызов, который агент пометил
+вопросом пользователю (`_meta` MetaKey.QUESTION первого уведомления), —
+своё сообщение основной ленты с элементом Question: пока вопрос ждёт
+ответа — строка «Question(s)» с
 мигающей точкой, после итога — запись ответа той же панелью только для
 чтения; вопросы сервера MCP, заданные в вызове (раунды в `_meta`
 результата), — такими же записями рядом с итогом вызова.
@@ -42,7 +43,6 @@ from chainlit.step import Step
 from mcp.shared.exceptions import MCPError
 from pydantic import TypeAdapter, ValidationError
 
-from boba.agent.tools import AskUserQuestionTool
 from boba.aid.rendering.chat_view import ChatView, StepText
 from boba.aid.rendering.question import QuestionCard, QuestionCards
 from boba.aid.rendering.tool import AppMeta, ToolAppView
@@ -370,8 +370,8 @@ class UpdateView:
         self._answer_id: str | None = None
         self._steps: dict[str, Step] = {}
         self._asked: dict[str, Mapping[str, Any]] = {}
-        """Идущий вызов AskUserQuestion → его ввод: по нему рисуется запись
-        ответа."""
+        """Идущий вызов-вопрос пользователю → его ввод: по нему рисуется
+        запись ответа."""
         self._called: dict[str, str] = {}
         """Идущий вызов → имя его инструмента: агент называет инструмент
         только в первом уведомлении вызова."""
@@ -609,7 +609,7 @@ class UpdateView:
 
         group = self._groups.get(call_id)
         if group is None and call_id not in self._steps:
-            group = await self._opened(name, call_id, self._args(update.raw_input))
+            group = await self._opened(update, name, self._args(update.raw_input))
 
         asked = self._asked.get(call_id)
         if asked is not None:
@@ -637,11 +637,12 @@ class UpdateView:
         await self._nodes_result(update, name, group, status)
 
     async def _opened(
-        self, name: str, call_id: str, args: Mapping[str, Any]
+        self, update: schema.SessionToolCallUpdate, name: str, args: Mapping[str, Any]
     ) -> tuple[NestedCallsFeature, Sequence[DagNode]] | None:
         """Шаги нового вызова: вопрос пользователю, подшаги узлов вызова со
         вложенными вызовами либо один шаг; итог — узлы вызова или None."""
-        if name == AskUserQuestionTool.NAME:
+        call_id = update.tool_call_id
+        if self._asks_user(update):
             self._asked[call_id] = args
             await self._close_thinking()
             self._answer_id = None
@@ -667,8 +668,8 @@ class UpdateView:
         status: ToolStatus,
         asked: Mapping[str, Any],
     ) -> None:
-        """Вызов AskUserQuestion: ход работы не рисуется, конечный статус —
-        запись ответа по вводу и итогу вызова."""
+        """Вызов-вопрос пользователю: ход работы не рисуется, конечный
+        статус — запись ответа по вводу и итогу вызова."""
         if not status.terminal:
             return
 
@@ -1012,6 +1013,14 @@ class UpdateView:
             return update.title
 
         return self._view.label(StepText.TOOL)
+
+    @staticmethod
+    def _asks_user(update: schema.SessionToolCallUpdate) -> bool:
+        """Агент пометил вызов вопросом пользователю в `_meta` уведомления."""
+        if update.field_meta is None:
+            return False
+
+        return update.field_meta.get(MetaKey.QUESTION.value) is True
 
     @staticmethod
     def _args(raw_input: Any) -> Mapping[str, Any]:
