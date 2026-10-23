@@ -248,7 +248,7 @@ class ServeAgents:
 
     Создаёт ServeHost: настройки агента из [agent] (все профили, история
     строкой libpq общего LibpqConnection), каталог моделей, поток хранилища
-    истории с соединением замков, потоки сессий. agent(caller) собирает вход
+    истории со своим пулом и соединением замков, потоки сессий. agent(caller) собирает вход
     ACP вошедшего: хранилище с его владельцем над общими пулом и замками,
     профили — выданные его ролям, по умолчанию — первый из них в порядке
     [agent.profiles].
@@ -275,15 +275,18 @@ class ServeAgents:
         self._environment = Environment(env)
         self._cwd = cwd
         self._locks = SessionLocks(section.history.postgres)
+        self._pool = AsyncPostgresPool(section.history.postgres)
         self._store_thread = LoopThread(ServeMark.STORE_THREAD.value)
         self._threads = SessionThreads(self._settings.sessions.max_open)
 
-    def start(self) -> None:
+    async def start(self) -> None:
+        """Поток хранилища запущен, пул истории открыт в его цикле."""
         self._store_thread.start()
+        await self._store_thread.run(self._pool.open())
 
     async def stop(self) -> None:
         await self._store_thread.run(self._locks.close())
-        await self._store_thread.run(AsyncPostgresPool.close_all())
+        await self._store_thread.run(self._pool.close())
         await self._store_thread.stop()
         await self._providers.aclose()
 
@@ -300,7 +303,7 @@ class ServeAgents:
         settings = self._granted(caller)
         history = self._section.history
         store = PostgresHistoryStore(
-            history.postgres, history.db_schema, caller.login, self._locks
+            history.postgres, history.db_schema, caller.login, self._locks, self._pool
         )
         threaded = ThreadedHistoryStore(store, self._store_thread)
         assembly = AgentAssembly(
@@ -784,8 +787,8 @@ class ServeHost:
             routes=routes, middleware=provider.get_middleware(), lifespan=lifespan
         )
 
-    def start(self) -> None:
-        self._agents.start()
+    async def start(self) -> None:
+        await self._agents.start()
 
     def sessions(self) -> int:
         """Сколько сессий служба держит открытыми сейчас."""
@@ -875,7 +878,7 @@ class ServeHost:
     async def serve(self) -> None:
         """Слушает адрес [agent] до остановки процесса."""
         section = self._config.agent
-        self.start()
+        await self.start()
         try:
             listener = SignalledServer(
                 uvicorn.Config(

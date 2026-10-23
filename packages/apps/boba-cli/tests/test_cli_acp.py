@@ -31,7 +31,7 @@ import signal
 import stat
 import sys
 import time
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, ClassVar, TypeVar
@@ -967,15 +967,6 @@ class AcpProcess:
                 return
 
             self.stderr.append(raw.decode("utf-8", errors="replace").rstrip("\n"))
-
-
-@pytest.fixture
-async def boba(model: FakeModel, tmp_path: Path) -> AsyncIterator[AcpProcess]:
-    process = AcpProcess(tmp_path, model)
-    try:
-        yield process
-    finally:
-        await process.kill()
 
 
 async def handshake(
