@@ -408,10 +408,15 @@ export default function ToolApp() {
 
   const styles = useMemo(() => hostStyles(dark, props.sandbox_url), [dark, props.sandbox_url]);
 
+  // высота тела входит в контекст только на весь экран: в ленте её задаёт
+  // само приложение (size-changed), и новый контекст на каждую смену высоты
+  // гонял бы приложение по кругу host-context-changed → size-changed
+  let height = null;
+  if (mode === FULLSCREEN) height = size.height;
   const hostContext = useMemo(() => {
     let containerDimensions = { width: size.width };
-    if (mode === FULLSCREEN) {
-      containerDimensions = { width: size.width, height: size.height };
+    if (height !== null) {
+      containerDimensions = { width: size.width, height };
     }
     return {
       theme: dark ? "dark" : "light",
@@ -429,7 +434,7 @@ export default function ToolApp() {
       },
       toolInfo: { id: props.call_id, tool: props.tool },
     };
-  }, [dark, styles, mode, size]);
+  }, [dark, styles, mode, size.width, height]);
 
   const latest = useRef(hostContext);
   latest.current = hostContext;
