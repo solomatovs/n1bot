@@ -46,7 +46,6 @@ dependencies = [
     "boba-history-jsonl==0.0.26.dev4",
     "fastapi>=0.116,<1",
     "httpx>=0.28,<1",
-    "mcp-types>=2.3,<3",
     "typing-extensions>=4.12,<5",
     "playwright>=1.47,<2",
     "pydantic>=2.12,<3",
@@ -56,6 +55,11 @@ dependencies = [
     "psycopg>=3.3,<4",
     "omegaconf>=2.3,<3",
     "jsonschema>=4.23,<5",
+]
+
+[project.optional-dependencies]
+dev = [
+    "mcp-types>=2.3,<3",
 ]
 
 [tool.setuptools.package-data]
