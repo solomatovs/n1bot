@@ -7,11 +7,11 @@ from typing import Annotated, ClassVar, Literal
 import pytest
 from pydantic import BaseModel, Field, SecretStr, SerializationInfo, field_serializer
 
+from boba.core.secrets import SecretRevealing
 from boba.toolkit.entry import ToolAddress, ToolArgv, ToolEntryError
 from boba.toolkit.facade import Injected, PayloadTool, UserConnection, tool
 from boba.toolkit.protocol import ToolCommand
 from boba.toolkit.result import MarkdownResult
-from boba.toolkit.types import SecretRevealing
 
 PASSWORD = "connection-secret-value"
 TOKEN = "section-secret-value"

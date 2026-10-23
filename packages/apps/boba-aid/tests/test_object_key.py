@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from boba.canvas.keys import ObjectKey, ThreadDir, WorkspaceKey, WorkspaceMount
+from boba.canvas.keys import ObjectKey, ScopeDir, WorkspaceKey, WorkspaceMount
 
 USER = "7"
 THREAD = "11111111-1111-1111-1111-111111111111"
@@ -34,10 +34,10 @@ class TestPaths:
         if key.render() != f"{USER}/{THREAD}/upload/{NAME}":
             raise AssertionError('key.render() == f"{USER}/{THREAD}/upload/{NAME}"')
 
-    def test_in_thread_is_path_inside_image(self) -> None:
+    def test_in_scope_is_path_inside_image(self) -> None:
         key = ObjectKey.build(USER, THREAD, NAME, "el-1")
-        if key.in_thread() != f"{THREAD}/upload/{NAME}":
-            raise AssertionError('key.in_thread() == f"{THREAD}/upload/{NAME}"')
+        if key.in_scope() != f"{THREAD}/upload/{NAME}":
+            raise AssertionError('key.in_scope() == f"{THREAD}/upload/{NAME}"')
 
     def test_in_workspace_is_path_inside_sandbox(self) -> None:
         key = ObjectKey.build(USER, THREAD, NAME, "el-1")
@@ -113,21 +113,21 @@ class TestMermaidDir:
 
     def test_render_is_storage_key(self) -> None:
         key = ObjectKey.build(
-            USER, THREAD, self.SPEC, "el-1", dir_thread=ThreadDir.MERMAID
+            USER, THREAD, self.SPEC, "el-1", scope_dir=ScopeDir.MERMAID
         )
         if key.render() != f"{USER}/{THREAD}/mermaid/{self.SPEC}":
             raise AssertionError('key.render() == f"{USER}/{THREAD}/mermaid/{self.SPE…')
 
     def test_in_workspace_points_to_mermaid_dir(self) -> None:
         key = ObjectKey.build(
-            USER, THREAD, self.SPEC, "el-1", dir_thread=ThreadDir.MERMAID
+            USER, THREAD, self.SPEC, "el-1", scope_dir=ScopeDir.MERMAID
         )
         if key.in_workspace() != f"{MOUNT}/{THREAD}/mermaid/{self.SPEC}":
             raise AssertionError('key.in_workspace() == f"{MOUNT}/{THREAD}/…')
 
     def test_parse_round_trip(self) -> None:
         key = ObjectKey.build(
-            USER, THREAD, self.SPEC, "el-1", dir_thread=ThreadDir.MERMAID
+            USER, THREAD, self.SPEC, "el-1", scope_dir=ScopeDir.MERMAID
         )
         if ObjectKey.parse(key.render()) != key:
             raise AssertionError("ObjectKey.parse(key.render()) == key")
@@ -135,15 +135,15 @@ class TestMermaidDir:
     def test_from_workspace_accepts_mermaid_path(self) -> None:
         path = f"{MOUNT}/{THREAD}/mermaid/{self.SPEC}"
         key = WorkspaceKey.located(MOUNT, USER, THREAD, path)
-        if key.dir != ThreadDir.MERMAID:
-            raise AssertionError("key.dir == ThreadDir.MERMAID")
+        if key.dir != ScopeDir.MERMAID:
+            raise AssertionError("key.dir == ScopeDir.MERMAID")
         if key.render() != f"{USER}/{THREAD}/mermaid/{self.SPEC}":
             raise AssertionError('key.render() == f"{USER}/{THREAD}/mermaid/{self.SPE…')
 
     def test_build_defaults_to_upload(self) -> None:
         key = ObjectKey.build(USER, THREAD, NAME, "el-1")
-        if key.dir != ThreadDir.UPLOAD:
-            raise AssertionError("key.dir == ThreadDir.UPLOAD")
+        if key.dir != ScopeDir.UPLOAD:
+            raise AssertionError("key.dir == ScopeDir.UPLOAD")
 
     def test_unknown_dir_rejected_in_parse(self) -> None:
         with pytest.raises(ValueError, match="invalid object_key"):

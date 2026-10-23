@@ -58,9 +58,10 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
 from boba.canvas.journal import StreamJournalError, StreamKey, StreamSlice
-from boba.canvas.keys import ObjectKey, ThreadDir, WorkspaceMount
+from boba.canvas.keys import ObjectKey, ScopeDir, WorkspaceMount
 from boba.canvas.storage import StorageFullError, StorageNotFoundError
 from boba.canvas.transfer import ContentDisposition, FileHeader, UploadPolicy
+from boba.core.validation import ValidationText
 from boba.identity.context import Scope, Subject
 from boba.mcp_adapter import JournalUris
 from boba.mcp_server.auth import TokenSubjects
@@ -71,7 +72,6 @@ from boba.runtime.storage import (
     StorageClient,
 )
 from boba.toolkit.channels import JournalChannels
-from boba.toolkit.failure import ValidationText
 from boba.toolkit.result import ContentMime
 from boba.toolkit.wire import FilesFeature, JournalFeature, JournalRead
 from boba.toolrun.streams import CallJournals
@@ -527,7 +527,7 @@ class JournalRoutes:
             raise HTTPException(status_code=404, detail=msg)
 
         try:
-            key = StreamKey(user_id=subject.user_key, thread_id=run, call_id=node)
+            key = StreamKey(user_id=subject.user_key, run_id=run, call_id=node)
             root = store.vault_root(key.user_id)
         except (ValueError, StreamJournalError) as exc:
             msg = f"GET {request.url.path}: no journal of call {node!r}: {exc}"
@@ -601,7 +601,7 @@ class FileRoutes:
     def address(self, scope: str, name: str) -> str:
         """Путь маршрута, куда клиент шлёт файл вложением области scope."""
         route = FilesFeature.ROUTE.format(
-            scope=scope, dir=ThreadDir.UPLOAD.value, name=name
+            scope=scope, dir=ScopeDir.UPLOAD.value, name=name
         )
 
         return f"{self._published}/{route}"
@@ -686,7 +686,7 @@ class FileRoutes:
             )
             raise HTTPException(status_code=400, detail=msg) from exc
 
-        await self._storage.delete_thread(subject.user_key, scope.id)
+        await self._storage.delete_scope(subject.user_key, scope.id)
 
         freed = 0
         if store := self._journals.store:
@@ -717,9 +717,9 @@ class FileRoutes:
 
             return ObjectKey(
                 user_id=subject.user_key,
-                thread_id=scope.id,
+                scope_id=scope.id,
                 name=str(params[FilePart.NAME.value]),
-                dir=ThreadDir(str(params[FilePart.DIR.value])),
+                dir=ScopeDir(str(params[FilePart.DIR.value])),
             )
         except ValidationError as exc:
             msg = (
@@ -728,7 +728,7 @@ class FileRoutes:
             )
             raise HTTPException(status_code=400, detail=msg) from exc
         except ValueError as exc:
-            dirs = sorted(ThreadDir)
+            dirs = sorted(ScopeDir)
             msg = (
                 f"{request.method} {request.url.path}: expected one of the scope "
                 f"dirs {dirs}: {exc}"

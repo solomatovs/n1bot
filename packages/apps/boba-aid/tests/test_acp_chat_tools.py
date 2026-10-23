@@ -39,6 +39,7 @@ import boba.aid.agent
 from boba.aid.agent.client import AgentProcess
 from boba.aid.rendering.chat_view import StepStatus
 from boba.canvas.canvas import CanvasAction, CanvasElement, CanvasKind
+from boba.core.mcp_names import McpToolNames
 from boba.db.postgres.connection import PostgresConfig
 from boba.mcp_client.client import McpServerConfig, McpServersConfig
 from boba.runtime.config import RuntimeConfig
@@ -56,7 +57,6 @@ from boba.stand.ui.stand import (
     StandProcess,
     StandUrl,
 )
-from boba.toolkit.mcp import McpToolNames
 
 pytestmark = pytest.mark.anyio
 

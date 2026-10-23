@@ -15,7 +15,7 @@ from boba.aid.data.data_layer import PostgresDataLayer
 from boba.aid.data.remote_storage import FileOwners, RemoteStorageClient
 from boba.aid.domain.fields import ThreadMetaField
 from boba.aid.infra.config import AppConfig
-from boba.canvas.keys import ObjectKey, ThreadDir
+from boba.canvas.keys import ObjectKey, ScopeDir
 from boba.chat.profiles import ChatProfileConfig, ChatProfiles
 from boba.chat.threads import DataRejectedError, ThreadUpsert
 from boba.db.postgres import AsyncPostgresPool
@@ -306,9 +306,9 @@ async def test_delete_thread_removes_its_files(seeded: Seed, files_dir: Path):
     треда."""
     layer = seeded.layer
     stored: list[Path] = []
-    for dir_thread in ThreadDir:
+    for scope_dir in ScopeDir:
         key = ObjectKey.build(
-            seeded.user.id, seeded.thread_id, "gone.txt", "el", dir_thread=dir_thread
+            seeded.user.id, seeded.thread_id, "gone.txt", "el", scope_dir=scope_dir
         )
         path = files_dir / key.render()
         path.parent.mkdir(parents=True, exist_ok=True)

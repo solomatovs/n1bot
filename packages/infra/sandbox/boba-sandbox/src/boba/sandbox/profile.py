@@ -37,9 +37,9 @@ class BindSpec(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    VARS: ClassVar[tuple[str, ...]] = ("user_id", "thread_id")
+    VARS: ClassVar[tuple[str, ...]] = ("user_id", "scope_id")
 
-    host: str = Field(description="Host-путь; допускает {user_id}/{thread_id}.")
+    host: str = Field(description="Host-путь; допускает {user_id}/{scope_id}.")
     target: str = Field(description="Точка монтирования внутри песочницы.")
 
     @classmethod
@@ -161,7 +161,7 @@ class WorkspaceSpec(BaseModel):
     USER_VAR: ClassVar[str] = "{user_id}"
     """Что делает образ персональным; без него копия была бы общей."""
 
-    THREAD_VAR: ClassVar[str] = "{thread_id}"
+    SCOPE_VAR: ClassVar[str] = "{scope_id}"
     """Образ один на пользователя: вложения видны во всех его чатах."""
 
     template: str = Field(
@@ -195,10 +195,10 @@ class WorkspaceSpec(BaseModel):
 
     @model_validator(mode="after")
     def _image_is_personal(self) -> Self:
-        if self.THREAD_VAR in self.mount.host:
+        if self.SCOPE_VAR in self.mount.host:
             msg = (
                 f"sandbox: workspace.mount {self.mount.host!r} has "
-                f"{self.THREAD_VAR}: the image is one per user, not per thread"
+                f"{self.SCOPE_VAR}: the image is one per user, not per scope"
             )
             raise ValueError(msg)
 
@@ -393,13 +393,13 @@ class MountsSpec(BaseModel):
     ro: tuple[BindSpec, ...] = Field(
         description=(
             "Host-пути read-only, формат `host[:target]`; несуществующие "
-            "пропускаются. Рендерятся {user_id}/{thread_id}. Видны телу."
+            "пропускаются. Рендерятся {user_id}/{scope_id}. Видны телу."
         ),
     )
     rw: tuple[BindSpec, ...] = Field(
         description=(
             "Host-пути read-write, формат `host[:target]`. Рендерятся "
-            "{user_id}/{thread_id}. Видны телу."
+            "{user_id}/{scope_id}. Видны телу."
         ),
     )
     tmp: int = Field(
@@ -591,7 +591,7 @@ class RunSpec(BaseModel):
     cwd: str = Field(
         description=(
             "Рабочая директория внутри песочницы; поддерживает "
-            "{user_id}/{thread_id}. Пустая — корень."
+            "{user_id}/{scope_id}. Пустая — корень."
         ),
     )
 
@@ -698,7 +698,7 @@ class SandboxProfile(BaseModel):
         return self
 
     def render(self, variables: Mapping[str, str]) -> Self:
-        """Профиль с подставленными значениями {user_id}/{thread_id}."""
+        """Профиль с подставленными значениями {user_id}/{scope_id}."""
         update: dict[str, Any] = {
             "ro": self._render_binds(self.mounts.ro, variables),
             "rw": self._render_binds(self.mounts.rw, variables),

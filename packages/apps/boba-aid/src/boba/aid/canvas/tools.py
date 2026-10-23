@@ -120,7 +120,7 @@ class CanvasOpener:
         if not shown:
             return reply
 
-        context = self._surfaces.live(scope.thread_id).context()
+        context = self._surfaces.live(scope.scope_id).context()
         if context is None:
             return reply
 

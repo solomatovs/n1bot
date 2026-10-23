@@ -8,6 +8,7 @@ version = "0.0.26.dev4"
 description = "Boba mcp: MCP-сервер с инструментами boba — endpoint на профиль, вход boba, исполнение в песочнице, журналы вызовов."
 requires-python = ">=3.11,<4"
 dependencies = [
+    "boba-core==0.0.26.dev4",
     "fastmcp-slim[server]>=4.0,<5",
     "mcp-types>=2.3,<3",
     "mcp>=2.3,<3",

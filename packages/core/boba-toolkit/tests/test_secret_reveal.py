@@ -7,10 +7,10 @@ from typing import Annotated, ClassVar
 
 from pydantic import BaseModel, Field, SecretStr, SerializationInfo, field_serializer
 
+from boba.core.secrets import SecretRevealing
 from boba.toolkit.entry import ToolAddress, ToolArgv
 from boba.toolkit.facade import Injected, tool
 from boba.toolkit.result import MarkdownResult
-from boba.toolkit.types import SecretRevealing
 
 MASK = "**********"
 

@@ -448,7 +448,7 @@ class CallJournals:
             return None
 
         try:
-            key = StreamKey(user_id=user_id, thread_id=run_id, call_id=call_id)
+            key = StreamKey(user_id=user_id, run_id=run_id, call_id=call_id)
             scope = run.context.scope.id
             stream = ToolStream(key, scope, tool_name, store, self.live_prefixes)
         except (StreamJournalError, ValidationError) as exc:
@@ -483,7 +483,7 @@ class CallJournals:
     def recorded_slice(
         self,
         user_id: str,
-        thread_id: str,
+        run_id: str,
         call_id: str,
         offset: int,
         channel: JournalChannel,
@@ -493,12 +493,12 @@ class CallJournals:
         def read(store: StreamStorePort, key: StreamKey) -> StreamSlice | None:
             return store.slice_at(key, offset, channel)
 
-        return self._recorded(user_id, thread_id, call_id, read)
+        return self._recorded(user_id, run_id, call_id, read)
 
     def recorded_slice_before(
         self,
         user_id: str,
-        thread_id: str,
+        run_id: str,
         call_id: str,
         end: int,
         channel: JournalChannel,
@@ -508,28 +508,28 @@ class CallJournals:
         def read(store: StreamStorePort, key: StreamKey) -> StreamSlice | None:
             return store.slice_before(key, end, channel)
 
-        return self._recorded(user_id, thread_id, call_id, read)
+        return self._recorded(user_id, run_id, call_id, read)
 
-    def owner_of(self, thread_id: str) -> str | None:
-        """Пользователь, чьи вызовы писали журналы области thread_id; None —
-        журналов области нет либо журнал выключен."""
+    def owner_of(self, run_id: str) -> str | None:
+        """Пользователь, чьи вызовы писали журналы запуска run_id; None —
+        журналов запуска нет либо журнал выключен."""
         store = self._store
         if store is None:
             return None
 
         try:
-            return store.owner_of(thread_id)
+            return store.owner_of(run_id)
         except (StreamJournalError, ValueError) as exc:
             logger.warning(
                 "stream journal: looking up the owner of %s failed: %s",
-                thread_id,
+                run_id,
                 exc,
                 exc_info=True,
             )
             return None
 
     def recorded_channels(
-        self, user_id: str, thread_id: str, call_id: str
+        self, user_id: str, run_id: str, call_id: str
     ) -> tuple[JournalChannel, ...]:
         """Каналы вызова с записью, доступные пользователю.
 
@@ -542,14 +542,14 @@ class CallJournals:
             return ()
 
         try:
-            key = StreamKey(user_id=user_id, thread_id=thread_id, call_id=call_id)
+            key = StreamKey(user_id=user_id, run_id=run_id, call_id=call_id)
             written = store.channels_of(key)
         except (StreamJournalError, ValidationError) as exc:
             logger.warning(
-                "stream journal: listing channels of call %s in thread %s of "
+                "stream journal: listing channels of call %s in run %s of "
                 "user %s failed: %s",
                 call_id,
-                thread_id,
+                run_id,
                 user_id,
                 exc,
                 exc_info=True,
@@ -612,7 +612,7 @@ class CallJournals:
     def _recorded(
         self,
         user_id: str,
-        thread_id: str,
+        run_id: str,
         call_id: str,
         read: Callable[[StreamStorePort, StreamKey], StreamSlice | None],
     ) -> StreamSlice | None:
@@ -621,13 +621,13 @@ class CallJournals:
             return None
 
         try:
-            key = StreamKey(user_id=user_id, thread_id=thread_id, call_id=call_id)
+            key = StreamKey(user_id=user_id, run_id=run_id, call_id=call_id)
             return read(store, key)
         except (StreamJournalError, ValidationError) as exc:
             logger.warning(
-                "stream journal: reading call %s in thread %s of user %s failed: %s",
+                "stream journal: reading call %s in run %s of user %s failed: %s",
                 call_id,
-                thread_id,
+                run_id,
                 user_id,
                 exc,
                 exc_info=True,

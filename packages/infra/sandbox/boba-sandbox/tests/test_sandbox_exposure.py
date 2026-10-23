@@ -110,7 +110,7 @@ def caller_of(
         caller = zygote_stand.caller(
             key,
             section.profile,
-            path_vars=lambda: {"user_id": USER, "thread_id": "exposure"},
+            path_vars=lambda: {"user_id": USER, "scope_id": "exposure"},
         )
         made[key] = caller
         return caller
@@ -292,7 +292,7 @@ class TestChannelCapStopsTheFlood:
         caller = zygote_stand.caller(
             f"exposure-flood-{uuid4().hex[:6]}",
             profile,
-            path_vars=lambda: {"user_id": USER, "thread_id": "exposure"},
+            path_vars=lambda: {"user_id": USER, "scope_id": "exposure"},
         )
 
         flood = f"head -c {self.LIMIT * 8} /dev/zero | tr '\\0' 'A'"

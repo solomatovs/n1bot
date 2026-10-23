@@ -46,9 +46,9 @@ from boba.aid.infra.session import (
 )
 from boba.aid.infra.thread_room import ChatRoomSurface, ThreadLive, ThreadRoom
 from boba.aid.rendering.renderer import ChatRenderers
+from boba.core.validation import ValidationText
 from boba.identity.errors import InternalServiceError
 from boba.runtime import providers as runtime
-from boba.toolkit.failure import ValidationText
 
 __all__ = ["SocketEvents"]
 

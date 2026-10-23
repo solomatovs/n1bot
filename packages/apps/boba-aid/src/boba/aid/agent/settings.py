@@ -39,10 +39,7 @@ from pydantic import (
     ConfigDict,
     Field,
     SecretStr,
-    SerializationInfo,
-    SerializerFunctionWrapHandler,
     ValidationError,
-    field_serializer,
 )
 from pydantic.alias_generators import to_camel
 
@@ -58,13 +55,13 @@ from boba.aid.agent.config import (
 )
 from boba.chat.profiles import ChatProfileConfig
 from boba.connections.secrets import SecretCipher
+from boba.core.secrets import SecretReveal
 from boba.db.postgres import PostgresPool
 from boba.db.postgres.connection import PostgresConfig
 from boba.krb import KerberosWorkspace
 from boba.krb.credentials import ClientCredentials, KerberosEnv
 from boba.mcp_client.client import McpServersConfig
 from boba.runtime.table import PgTable
-from boba.toolkit.types import SecretReveal
 from boba.transport.http import HttpTransportConfig
 from boba.transport.http.connection import BearerAuth, HttpConnection
 
@@ -128,29 +125,13 @@ class FileModel(BaseModel):
         alias_generator=to_camel, populate_by_name=True, extra="ignore", frozen=True
     )
 
-    def document(self) -> dict[str, Any]:
-        return self.model_dump(
+    def document(self) -> dict[str, object]:
+        dump = self.model_dump(
             mode="json", by_alias=True, context={SecretReveal.REVEAL_CONTEXT: True}
         )
+        SecretReveal.apply(self, dump)
 
-    @field_serializer("*", mode="wrap")
-    def _revealing(
-        self,
-        value: Any,
-        handler: SerializerFunctionWrapHandler,
-        info: SerializationInfo,
-    ) -> Any:
-        if not isinstance(value, SecretStr):
-            return handler(value)
-
-        context = info.context
-        if not isinstance(context, Mapping):
-            return handler(value)
-
-        if not context.get(SecretReveal.REVEAL_CONTEXT):
-            return handler(value)
-
-        return value.get_secret_value()
+        return dump
 
 
 class ProviderFile(FileModel):

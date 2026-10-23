@@ -8,6 +8,7 @@ version = "0.0.26.dev4"
 description = "Инструменты Confluence: чтение страниц и вложений, индексация их в базу знаний — всё в песочнице."
 requires-python = ">=3.11,<4"
 dependencies = [
+    "boba-core==0.0.26.dev4",
     "boba-toolkit==0.0.26.dev4",
     "boba-confluence==0.0.26.dev4",
     "boba-db-pgvector==0.0.26.dev4",

@@ -27,6 +27,7 @@ from typing import Annotated, BinaryIO, ClassVar, Final
 import httpx
 from pydantic import ConfigDict, Field
 
+from boba.core.secrets import SecretRevealing
 from boba.doc.bridge import AsyncPipe
 from boba.doc.config import DocSection
 from boba.doc.document import DocumentHint, DocumentKind
@@ -36,7 +37,6 @@ from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, UserConnection, tool
 from boba.toolkit.ports import DownloadProgress, ToolProgress
 from boba.toolkit.result import MarkdownResult, ResultTooLargeError, TableResult
-from boba.toolkit.types import SecretRevealing
 from boba.transport.http import (
     HttpRequest,
     HttpTransport,

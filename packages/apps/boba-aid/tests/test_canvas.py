@@ -180,7 +180,7 @@ class TestRegistry:
 class TestPanel:
     @pytest.mark.anyio
     async def test_open_without_viewer_names_the_file(self, http_context: None) -> None:
-        key = CanvasScope(user_id=USER, thread_id=THREAD, workspace=MOUNT).file(
+        key = CanvasScope(user_id=USER, scope_id=THREAD, workspace=MOUNT).file(
             "notes.txt"
         )
 
@@ -229,7 +229,7 @@ class TestRefusal:
 
     @pytest.mark.anyio
     async def test_path_outside_thread(self) -> None:
-        scope = CanvasScope(user_id=USER, thread_id=THREAD, workspace=MOUNT)
+        scope = CanvasScope(user_id=USER, scope_id=THREAD, workspace=MOUNT)
 
         with pytest.raises(CanvasError) as failure:
             await CanvasOpener(ThreadSurfaces()).show(
@@ -289,7 +289,7 @@ class TestShow:
         opened = await CanvasOpener(ThreadSurfaces()).show(
             f"/workspace/{THREAD}/mermaid/a.mmd",
             ContentMime.MERMAID.value,
-            CanvasScope(user_id=USER, thread_id=THREAD, workspace=MOUNT),
+            CanvasScope(user_id=USER, scope_id=THREAD, workspace=MOUNT),
         )
 
         if opened.label != "a.mmd":
@@ -331,12 +331,12 @@ class TestShow:
         await CanvasOpener(ThreadSurfaces()).show(
             f"/workspace/{THREAD}/upload/a.png",
             "image/png",
-            CanvasScope(user_id=USER, thread_id=THREAD, workspace=MOUNT),
+            CanvasScope(user_id=USER, scope_id=THREAD, workspace=MOUNT),
         )
         await CanvasOpener(ThreadSurfaces()).show(
             f"/workspace/{THREAD}/upload/b.png",
             "image/png",
-            CanvasScope(user_id=USER, thread_id=THREAD, workspace=MOUNT),
+            CanvasScope(user_id=USER, scope_id=THREAD, workspace=MOUNT),
         )
 
         if [e.props["label"] for e in shown] != ["a.png", "b.png"]:
@@ -378,7 +378,7 @@ class TestShow:
             await CanvasOpener(ThreadSurfaces()).show(
                 f"/workspace/{THREAD}/upload/a.png",
                 "image/png",
-                CanvasScope(user_id=USER, thread_id=THREAD, workspace=MOUNT),
+                CanvasScope(user_id=USER, scope_id=THREAD, workspace=MOUNT),
             )
             await transport.signaled(len(revised))
         finally:
@@ -412,7 +412,7 @@ class TestShow:
             await CanvasOpener(ThreadSurfaces()).show(
                 f"/workspace/{THREAD}/upload/a.png",
                 "image/png",
-                CanvasScope(user_id=USER, thread_id=THREAD, workspace=MOUNT),
+                CanvasScope(user_id=USER, scope_id=THREAD, workspace=MOUNT),
             )
             await storage.delete_file(object_key)
             while "probing failed" not in caplog.text:
@@ -494,7 +494,7 @@ class TestFileViewers:
     ) -> None:
         """Тело файла не поднимается в память: элемент несёт ссылку на роут."""
         await put_bytes(storage, f"{USER}/{THREAD}/upload/график.png", self.PNG)
-        key = CanvasScope(user_id=USER, thread_id=THREAD, workspace=MOUNT).file(
+        key = CanvasScope(user_id=USER, scope_id=THREAD, workspace=MOUNT).file(
             "график.png"
         )
 
@@ -524,7 +524,7 @@ class TestFileViewers:
         молча превращалась в битый img.
         """
         await put_bytes(storage, f"{USER}/{THREAD}/upload/график.png", self.PNG)
-        key = CanvasScope(user_id=USER, thread_id=THREAD, workspace=MOUNT).file(
+        key = CanvasScope(user_id=USER, scope_id=THREAD, workspace=MOUNT).file(
             "график.png"
         )
 
@@ -563,7 +563,7 @@ class TestFileViewers:
         opened = await CanvasOpener(ThreadSurfaces()).show(
             f"/workspace/{THREAD}/upload/график.png",
             "image/png",
-            CanvasScope(user_id=USER, thread_id=THREAD, workspace=MOUNT),
+            CanvasScope(user_id=USER, scope_id=THREAD, workspace=MOUNT),
         )
 
         if opened.label != "график.png":
@@ -673,7 +673,7 @@ class TestLogViewer:
     ) -> None:
         body = TestStorageWindows._body(TestStorageWindows.LINES)
         await put_bytes(storage, f"{USER}/{THREAD}/upload/run.log", body)
-        key = CanvasScope(user_id=USER, thread_id=THREAD, workspace=MOUNT).file(
+        key = CanvasScope(user_id=USER, scope_id=THREAD, workspace=MOUNT).file(
             "run.log"
         )
 
@@ -696,7 +696,7 @@ class TestLogViewer:
 
     @pytest.mark.anyio
     async def test_missing_file_is_refused(self, storage: LocalStorageClient) -> None:
-        key = CanvasScope(user_id=USER, thread_id=THREAD, workspace=MOUNT).file(
+        key = CanvasScope(user_id=USER, scope_id=THREAD, workspace=MOUNT).file(
             "absent.log"
         )
 
@@ -710,7 +710,7 @@ class TestLogViewer:
     async def test_watch_source_sees_appends(self, storage: LocalStorageClient) -> None:
         object_key = f"{USER}/{THREAD}/upload/run.log"
         await put_bytes(storage, object_key, b"first\n")
-        key = CanvasScope(user_id=USER, thread_id=THREAD, workspace=MOUNT).file(
+        key = CanvasScope(user_id=USER, scope_id=THREAD, workspace=MOUNT).file(
             "run.log"
         )
 
@@ -797,7 +797,7 @@ class TestActionsWithoutCallContext:
             request.path,
             request.mime,
             watch=True,
-            scope=CanvasScope(user_id=USER, thread_id=THREAD, workspace=MOUNT),
+            scope=CanvasScope(user_id=USER, scope_id=THREAD, workspace=MOUNT),
         )
         described = content.props()
 

@@ -26,10 +26,10 @@ from pydantic import (
     model_validator,
 )
 
+from boba.core.validation import ValidationText
 from boba.identity.context import DelegatedTicket
 from boba.identity.session import Login
 from boba.identity.signin import SignedIn, SignInMetadata
-from boba.toolkit.failure import ValidationText
 
 __all__ = [
     "ClaimKey",

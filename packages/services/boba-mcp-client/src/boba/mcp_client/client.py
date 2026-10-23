@@ -139,8 +139,8 @@ from boba.canvas.storage import (
     StorageNotFoundError,
 )
 from boba.connections.sealed import SealFeature
+from boba.core.mcp_names import McpToolNames
 from boba.toolkit.dag import NestedCallsFeature, ServerFeature
-from boba.toolkit.mcp import McpToolNames
 from boba.toolkit.wire import (
     FilesFeature,
     JournalFeature,
@@ -1613,7 +1613,7 @@ class McpFiles:
 
     def _url(self, key: ObjectKey) -> str:
         route = FilesFeature.ROUTE.format(
-            scope=key.thread_id, dir=key.dir.value, name=key.name
+            scope=key.scope_id, dir=key.dir.value, name=key.name
         )
 
         return "/".join((self._root.url(), quote(route)))
@@ -1889,7 +1889,7 @@ class McpToolPort(Protocol):
         как есть.
 
         params — запрос на имя инструмента на сервере, с ответами на прежний
-        input_required, если они есть; тред вызова — среди его аргументов.
+        input_required, если они есть; область вызова — среди его аргументов.
         card — карточка инструмента из списка, по которому вызов собран: по
         ней сессия зеркалит параметры x-mcp-header и проверяет итог; None —
         карточки у вызывающего нет. progress получает уведомления сервера о

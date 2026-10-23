@@ -46,6 +46,7 @@ from pydantic import TypeAdapter, ValidationError
 from boba.aid.rendering.chat_view import ChatView, StepText
 from boba.aid.rendering.question import QuestionCard, QuestionCards
 from boba.aid.rendering.tool import AppMeta, ToolAppView
+from boba.core.mcp_names import McpToolNames
 from boba.mcp_client.client import (
     JournalLinks,
     McpCaller,
@@ -65,7 +66,6 @@ from boba.toolkit.dag import (
     NestedCallsOutput,
     NodeStatus,
 )
-from boba.toolkit.mcp import McpToolNames
 from boba.toolkit.wire import ResultWire
 from boba.transport.acp.protocol import (
     ElicitationRound,

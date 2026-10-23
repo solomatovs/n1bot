@@ -200,9 +200,9 @@ async def send_file(
     return FileResult(path=key.in_workspace(), name=key.name, mime=ContentMime.of_name(key.name))
 ```
 
-`ThreadFiles` зовёт `root.apply()` и строит ключ через `CanvasScope.key` из
-`boba-canvas`, а тот принимает только пути своего треда: `/workspace/<thread_id>/upload/...` в
-песочнице, `<workdir>/<thread_id>/upload/...` в режиме `process`. Всё, что
+`ScopeFiles` зовёт `root.apply()` и строит ключ через `CanvasScope.key` из
+`boba-canvas`, а тот принимает только пути своей области: `/workspace/<scope_id>/upload/...` в
+песочнице, `<workdir>/<scope_id>/upload/...` в режиме `process`. Всё, что
 тело делает с чатом, умещается в возврате `FileResult`: хост отдаёт его
 ссылкой на файл, а чат показывает её вложением к шагу.
 
@@ -542,7 +542,7 @@ argv, ни в лог, ни в трейсбек. Для этого в `RedisServe
 ```python
 from pydantic import SecretStr
 
-from boba.toolkit.types import SecretRevealing
+from boba.core.secrets import SecretRevealing
 
 
 class RedisServer(BaseModel):

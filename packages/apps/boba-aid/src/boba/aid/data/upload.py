@@ -37,7 +37,7 @@ from boba.aid.canvas.remote import RemoteJournals
 from boba.aid.domain.fields import FileField
 from boba.aid.infra.session import ChainlitSession, session_source_ref
 from boba.canvas.canvas import CanvasRegistry
-from boba.canvas.keys import ObjectKey, ThreadDir
+from boba.canvas.keys import ObjectKey, ScopeDir
 from boba.canvas.storage import (
     StorageError,
     StorageFullError,
@@ -48,13 +48,13 @@ from boba.canvas.transfer import (
     TransferFormat,
     UploadPolicy,
 )
+from boba.core.validation import ValidationText
 from boba.identity.errors import AuthenticationError
 from boba.identity.session import Login
 from boba.mcp_client.client import McpCaller, McpClientError, McpServers, RelayedFile
 from boba.runtime.served import StreamedFile
 from boba.runtime.storage import StorageClient
 from boba.toolkit.channels import JournalChannels, ToolChannel
-from boba.toolkit.failure import ValidationText
 from boba.toolkit.result import ContentMime
 from boba.toolkit.wire import JournalRead
 
@@ -525,7 +525,7 @@ class CanvasServing:
         self,
         request: Request,
         thread_id: str,
-        dir: ThreadDir,  # noqa: A002
+        dir: ScopeDir,  # noqa: A002
         name: str,
         current_user: Annotated[PersistedUser, Depends(PersistedSignIn())],
         mime: Annotated[str, Query(min_length=1)],
@@ -534,7 +534,7 @@ class CanvasServing:
         try:
             key = ObjectKey(
                 user_id=str(current_user.id),
-                thread_id=thread_id,
+                scope_id=thread_id,
                 name=name,
                 dir=dir,
             )

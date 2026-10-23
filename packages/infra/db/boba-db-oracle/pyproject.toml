@@ -8,6 +8,7 @@ version = "0.0.26.dev4"
 description = "Boba Oracle: тип соединения OracleConfig (пароль или wallet), адреса объектов, thin-клиент python-oracledb."
 requires-python = ">=3.11,<4"
 dependencies = [
+    "boba-core==0.0.26.dev4",
     "pydantic>=2.12,<3",
     "boba-toolkit==0.0.26.dev4",
     "boba-connections==0.0.26.dev4",

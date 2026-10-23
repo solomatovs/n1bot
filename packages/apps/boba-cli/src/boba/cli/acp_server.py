@@ -108,8 +108,6 @@ from boba.agent.history import (
 from boba.agent.ids import IdMint
 from boba.agent.mcp import (
     Audience,
-    McpToolNameError,
-    McpToolNames,
     ToolCard,
     ToolCards,
     ToolHints,
@@ -141,11 +139,12 @@ from boba.agent.tools import (
     AskUserQuestionInput,
     AskUserQuestionTool,
     McpServerSet,
-    SchemaErrors,
     ToolServer,
 )
 from boba.agent.turn import ContextUsage
 from boba.cancellation import StopReason as CoreStopReason
+from boba.core.mcp_names import McpToolNameError, McpToolNames
+from boba.core.validation import ValidationText
 from boba.transport.acp.protocol import (
     AcpErrorCode,
     AcpTransportError,
@@ -2217,7 +2216,7 @@ class McpResourceTools(ToolServer):
     def __init__(self, servers: Sequence[AcpToolServer]) -> None:
         self._servers = servers
         self._replies = ToolReplies()
-        self._errors = SchemaErrors()
+        self._errors = ValidationText()
         hints = ToolHints(read_only=True, destructive=False)
         self._cards = (
             ToolCard(
@@ -2270,7 +2269,7 @@ class McpResourceTools(ToolServer):
                 text = await self._read(read)
         except ValidationError as exc:
             return self._replies.refused(
-                f"{call.name}: the arguments are invalid: {self._errors.text(exc)}"
+                f"{call.name}: the arguments are invalid: {self._errors.of(exc)}"
             )
         except McpRequestError as exc:
             return self._replies.refused(f"{call.name}: {exc}")
