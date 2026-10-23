@@ -4,9 +4,14 @@
 порядку seq. Каркас, который есть у каждой записи (сессия, seq, вид, время),
 лежит колонками, остальное содержимое записи — документом jsonb; при чтении
 документ собирается обратно таким, каким он лёг бы строкой журнала JSONL.
-Захват сессии — advisory lock сеанса по ключу из идентификатора сессии на
-выделенном соединении, которое живёт до release: второй процесс на ту же
-сессию получает отказ. Дозапись пачки — одна транзакция: строку сессии
+Захват сессии — advisory lock сеанса по ключу из идентификатора сессии; замки
+всех сессий процесса живут на одном соединении вне пула (SessionLocks), а
+повторный захват сессии, которую уже держит этот процесс, отказывает по
+реестру захваченных: второй процесс и вторая сессия процесса на тот же
+идентификатор получают отказ. Обрыв соединения замков теряет замки: дозапись
+захваченных на нём сессий отказывает, следующий захват открывает новое
+соединение. Записи сессии читаются потоком порциями, без выборки целиком.
+Дозапись пачки — одна транзакция: строку сессии
 заводит первая пачка, записи идут с `on conflict do nothing`, поэтому повтор
 пачки дублей не создаёт, а отказ посреди пачки не оставляет ни одной записи.
 Список сессий — строки `session` со временем последней записи; удаление
@@ -37,9 +42,10 @@ RecordNotFoundError — записи среза копии в источнике
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import (
-    AsyncIterator,
+    AsyncGenerator,
     Iterable,
     Iterator,
     Mapping,
@@ -51,6 +57,7 @@ from importlib.resources import files
 from typing import Any, ClassVar
 
 import psycopg
+from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from boba.agent.history import (
@@ -77,13 +84,16 @@ from boba.db.postgres import (
     PostgresTable,
 )
 from boba.db.postgres.connection import PostgresConfig
+from boba.db.postgres.query import PgQuery, PgQueryBuilder
 
 __all__ = [
     "HistoryColumn",
     "HistoryTable",
+    "LockGrant",
     "PostgresHistoryStore",
     "RecordFrames",
     "SessionColumn",
+    "SessionLocks",
 ]
 
 
@@ -135,6 +145,7 @@ class ProbeColumn(StrEnum):
     ACQUIRED = "acquired"
     PRESENT = "present"
     CUT_SEQ = "cut_seq"
+    LAST_SEQ = "last_seq"
 
 
 @dataclass(frozen=True)
@@ -201,12 +212,191 @@ class RecordFrames:
         return StoredLine(number=number, raw=document)
 
 
-@dataclass
-class HeldSession:
-    """Захваченная сессия: соединение с замком и последний сохранённый seq."""
+@dataclass(frozen=True)
+class LockGrant:
+    """Замок сессии, взятый на соединении замков поколения generation:
+    после обрыва соединение открывается заново под следующим поколением, и
+    замки прежнего поколения потеряны."""
 
     session: SessionId
-    conn: psycopg.AsyncConnection[Any]
+    generation: int
+
+
+class SessionLocks:
+    """Замки сессий процесса на одном соединении вне пула.
+
+    Advisory lock сеанса живёт, пока живо соединение, и на одном соединении
+    берётся повторно без отказа, поэтому сессии, захваченные этим процессом,
+    помнит реестр: второй захват той же сессии отказывает по нему, а замок
+    в Postgres отказывает другим процессам. Соединение одно на процесс, так
+    что число соединений истории — пул плюс одно. Обрыв соединения
+    обнаруживается на ближайшем обращении: оно закрывается, замки его
+    поколения считаются потерянными, следующий захват открывает новое.
+    Создаёт и держит PostgresHistoryStore.
+    """
+
+    def __init__(self, postgres: PostgresConfig) -> None:
+        self._postgres = postgres
+        self._conn: psycopg.AsyncConnection[Any] | None = None
+        self._generation = 0
+        self._held: dict[str, int] = {}
+        self._guard = asyncio.Lock()
+
+    async def take(self, session: SessionId) -> LockGrant:
+        """Ошибки:
+        SessionHeldError — сессию держит другая сессия этого процесса или
+            другой процесс.
+        HistoryError — соединение замков не открылось или запрос отказал.
+        """
+        if session.value in self._held:
+            msg = (
+                f"Session '{session.value}' is already open in this agent process; "
+                "close it there before opening it again."
+            )
+            raise SessionHeldError(msg)
+
+        statement = self._statement("select pg_try_advisory_lock", session)
+        async with self._guard:
+            conn = await self._connection()
+            action = f"locking session '{session.value}'"
+            row = await self._fetched(conn, statement, action)
+            generation = self._generation
+
+        if not bool(row):
+            msg = (
+                f"Session '{session.value}' is already in use by another process: its "
+                "lock in Postgres is held. Stop that process or use another session."
+            )
+            raise SessionHeldError(msg)
+
+        self._held[session.value] = generation
+
+        return LockGrant(session=session, generation=generation)
+
+    async def confirm(self, grant: LockGrant) -> None:
+        """Замок сессии ещё держится: соединение его поколения живо и отвечает.
+
+        Ошибки:
+        HistoryError — замок потерян вместе с соединением замков.
+        """
+        session = grant.session.value
+        if self._held.get(session) != grant.generation:
+            raise HistoryError(self._lost(grant, "it was released"))
+
+        async with self._guard:
+            conn = self._conn
+            if conn is None or conn.closed or grant.generation != self._generation:
+                raise HistoryError(self._lost(grant, "the lock connection was closed"))
+
+            try:
+                await conn.execute("select 1")
+            except psycopg.Error as exc:
+                await self._drop()
+                raise HistoryError(self._lost(grant, str(exc))) from exc
+
+    async def give(self, grant: LockGrant) -> None:
+        """Отпускает замок; замок потерянного поколения отпускать незачем.
+
+        Ошибки:
+        HistoryError — запрос снятия замка отказал (соединение закрывается,
+            и замок уходит вместе с ним).
+        """
+        session = grant.session.value
+        if self._held.get(session) != grant.generation:
+            return
+
+        del self._held[session]
+        statement = self._statement("select pg_advisory_unlock", grant.session)
+        async with self._guard:
+            conn = self._conn
+            if conn is None or conn.closed or grant.generation != self._generation:
+                return
+
+            await self._fetched(conn, statement, f"releasing session '{session}'")
+
+    async def close(self) -> None:
+        """Закрывает соединение замков: все замки процесса отпущены."""
+        async with self._guard:
+            self._held.clear()
+            await self._drop()
+
+    async def _connection(self) -> psycopg.AsyncConnection[Any]:
+        """Ошибки:
+        HistoryError — соединение замков не открылось.
+        """
+        conn = self._conn
+        if conn is not None and not conn.closed:
+            return conn
+
+        try:
+            conn = await AsyncPostgresPool.dedicated(self._postgres)
+        except (psycopg.Error, PostgresError) as exc:
+            msg = f"history: opening the lock connection of the sessions failed: {exc}"
+            raise HistoryError(msg) from exc
+
+        self._conn = conn
+        self._generation += 1
+
+        return conn
+
+    async def _fetched(
+        self, conn: psycopg.AsyncConnection[Any], statement: PgQuery, action: str
+    ) -> object:
+        """Первое значение ответа; отказ закрывает соединение замков.
+
+        Ошибки:
+        HistoryError — запрос отказал.
+        """
+        try:
+            cur = await conn.execute(statement.text, statement.params)
+            row = await cur.fetchone()
+        except psycopg.Error as exc:
+            await self._drop()
+            msg = f"history: {action} on the lock connection failed: {exc}"
+            raise HistoryError(msg) from exc
+
+        if row is None:
+            return None
+
+        return row[0]
+
+    async def _drop(self) -> None:
+        conn = self._conn
+        self._conn = None
+        if conn is None:
+            return
+
+        await conn.close()
+
+    @staticmethod
+    def key(session: SessionId) -> str:
+        """Ключ advisory lock сессии: его же берёт удаление сессии."""
+        return HistoryTable.LOCK_PREFIX.value + session.value
+
+    def _statement(self, function: str, session: SessionId) -> PgQuery:
+        return (
+            PgQueryBuilder()
+            .add(
+                f"{function}(hashtextextended(%(key)s, 0))",
+                key=self.key(session),
+            )
+            .build()
+        )
+
+    @staticmethod
+    def _lost(grant: LockGrant, reason: str) -> str:
+        return (
+            f"Session '{grant.session.value}' lost its lock in Postgres ({reason}); "
+            "its records are not written any more. Reopen the session."
+        )
+
+
+@dataclass
+class HeldSession:
+    """Захваченная сессия: её замок и последний сохранённый seq."""
+
+    session: SessionId
+    grant: LockGrant
     last_seq: int
 
 
@@ -223,6 +413,8 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
     LABEL: ClassVar[str] = "history"
     STAMP: ClassVar[str] = 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
     """Время записи в UTC шаблоном to_char: так его пишет часовой агента."""
+    READ_CHUNK: ClassVar[int] = 64
+    """Строк за одну порцию потокового чтения записей сессии."""
 
     def __init__(
         self,
@@ -235,26 +427,23 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
         self._config = postgres
         self._owner = owner
         self._frames = RecordFrames()
+        self._locks = SessionLocks(postgres)
         self._held: dict[str, HeldSession] = {}
         self._ready = False
 
     async def acquire(self, session: SessionId) -> SessionLease:
         await self._prepare()
         await self._check_owner(session)
-        conn = await self._dedicated()
+        grant = await self._locks.take(session)
         try:
-            await self._lock(conn, session)
-            last_seq = await self._last_seq(conn, session)
+            last_seq = await self._last_seq(session)
         except HistoryError:
-            await conn.close()
+            await self._locks.give(grant)
             raise
-        except Exception as exc:
-            await conn.close()
-            raise self._failure(f"acquiring session '{session.value}'", exc) from exc
 
         lease = SessionLease(session=session, key=self._lease_key(session))
         self._held[lease.key] = HeldSession(
-            session=session, conn=conn, last_seq=last_seq
+            session=session, grant=grant, last_seq=last_seq
         )
 
         return lease
@@ -264,6 +453,8 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
         fresh = list(self._fresh(held, records))
         if not fresh:
             return
+
+        await self._locks.confirm(held.grant)
 
         rows = list(self._rows_of(held.session, fresh))
 
@@ -301,7 +492,7 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
 
         held.last_seq = fresh[-1].seq
 
-    async def read(self, session: SessionId) -> AsyncIterator[HistoryLine]:
+    async def read(self, session: SessionId) -> AsyncGenerator[HistoryLine, None]:
         await self._prepare()
         query = (
             self._query()
@@ -332,22 +523,29 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
             )
             .build()
         )
-        rows = await self._rows(query, f"reading session '{session.value}'")
-        for row in rows:
-            yield self._frames.join(row)
+        action = f"reading session '{session.value}'"
+        async with self._guarded(action):
+            pool = await self._pool()
+            async with (
+                pool.connection() as conn,
+                conn.transaction(),
+                conn.cursor(row_factory=dict_row) as cur,
+            ):
+                rows = cur.stream(query.text, query.params, size=self.READ_CHUNK)
+                async for row in rows:
+                    yield self._frames.join(row)
 
     async def release(self, lease: SessionLease) -> None:
         held = self._held.pop(lease.key, None)
         if held is None:
             return
 
-        try:
-            await self._unlock(held.conn, held.session)
-        except psycopg.Error as exc:
-            msg = f"Could not release session '{held.session.value}' in Postgres: {exc}"
-            raise HistoryError(msg) from exc
-        finally:
-            await held.conn.close()
+        await self._locks.give(held.grant)
+
+    async def close(self) -> None:
+        """Соединение замков закрыто: все сессии процесса отпущены."""
+        self._held.clear()
+        await self._locks.close()
 
     async def list(self, cursor: str | None, limit: int) -> StoredPage:
         await self._prepare()
@@ -414,7 +612,7 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
             .add(
                 "select pg_try_advisory_xact_lock(hashtextextended(%(key)s, 0)) "
                 "as acquired",
-                key=self._lock_key(session),
+                key=self._locks.key(session),
             )
             .build()
         )
@@ -668,59 +866,20 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
         self._ready = True
 
     async def _dedicated(self) -> psycopg.AsyncConnection[Any]:
-        """Соединение замка вне пула: замок сеанса живёт, пока живо оно."""
-        async with self._guarded("opening the lock connection"):
+        """Соединение вне пула для файлов схемы: DDL идёт под своим замком."""
+        async with self._guarded("opening the schema connection"):
             return await AsyncPostgresPool.dedicated(self._config)
 
-    async def _lock(
-        self, conn: psycopg.AsyncConnection[Any], session: SessionId
-    ) -> None:
+    async def _last_seq(self, session: SessionId) -> int:
         """Ошибки:
-        SessionHeldError — сессию держит другой процесс.
+        HistoryError — база отказала.
         """
-        query = (
-            self._query()
-            .add(
-                "select pg_try_advisory_lock(hashtextextended(%(key)s, 0))",
-                key=self._lock_key(session),
-            )
-            .build()
-        )
-        cur = await conn.execute(query.text, query.params)
-        row = await cur.fetchone()
-        acquired = False
-        if row is not None:
-            acquired = bool(row[0])
-
-        if not acquired:
-            msg = (
-                f"Session '{session.value}' is already in use by another process: its "
-                "lock in Postgres is held. Stop that process or use another session."
-            )
-            raise SessionHeldError(msg)
-
-    async def _unlock(
-        self, conn: psycopg.AsyncConnection[Any], session: SessionId
-    ) -> None:
-        query = (
-            self._query()
-            .add(
-                "select pg_advisory_unlock(hashtextextended(%(key)s, 0))",
-                key=self._lock_key(session),
-            )
-            .build()
-        )
-        await conn.execute(query.text, query.params)
-
-    async def _last_seq(
-        self, conn: psycopg.AsyncConnection[Any], session: SessionId
-    ) -> int:
         query = (
             self._query()
             .add(
                 """
                 select
-                    coalesce(max(seq), 0)
+                    coalesce(max(seq), 0) as last_seq
                 from
                     {schema}.history
                 where
@@ -730,16 +889,12 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
             )
             .build()
         )
-        cur = await conn.execute(query.text, query.params)
-        row = await cur.fetchone()
+        action = f"reading the last seq of session '{session.value}'"
+        row = await self._row(query, action)
         if row is None:
             return 0
 
-        return int(row[0])
-
-    @staticmethod
-    def _lock_key(session: SessionId) -> str:
-        return HistoryTable.LOCK_PREFIX.value + session.value
+        return int(row[ProbeColumn.LAST_SEQ.value])
 
     @staticmethod
     def _lease_key(session: SessionId) -> str:

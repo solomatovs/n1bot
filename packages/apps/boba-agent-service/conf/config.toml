@@ -41,6 +41,10 @@
             kind   = "postgres"
             dsn    = "host=${site.pg_host} hostaddr=${site.pg_addr} port=${site.pg_port} dbname=${site.aid_database} user=${site.pg_auth.password.user} password=${site.pg_auth.password.password} sslmode=${site.pg_sslmode}"
             schema = "boba"
+            [agent.settings.history.pool]
+                minSize    = 2
+                maxSize    = 8
+                timeoutSec = 30
         [agent.settings.permissions]
             defaultMode = "bypassPermissions"
             allowBypass = true

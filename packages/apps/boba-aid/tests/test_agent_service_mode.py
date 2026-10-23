@@ -97,7 +97,12 @@ async def service(
     history = AgentHistoryStand(stand)
     dsn = LibpqConnection(history.postgres()).dsn().get_secret_value()
     layer: dict[str, Any] = {
-        "history": {"kind": "postgres", "dsn": dsn, "schema": history.schema()},
+        "history": {
+            "kind": "postgres",
+            "dsn": dsn,
+            "schema": history.schema(),
+            "pool": {"minSize": 1, "maxSize": 4, "timeoutSec": 30},
+        },
         "permissions": {"defaultMode": "bypassPermissions", "allowBypass": True},
     }
     profiles = ServiceProfiles(model.base_url()).add(

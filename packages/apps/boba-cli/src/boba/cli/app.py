@@ -30,7 +30,8 @@ import platform
 import signal
 import sys
 from asyncio.streams import FlowControlMixin
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncGenerator, Mapping, Sequence
+from contextlib import aclosing
 from dataclasses import dataclass
 from enum import StrEnum
 from importlib.metadata import PackageNotFoundError, version
@@ -56,7 +57,7 @@ from boba.agent.mcp import ToolHints
 from boba.agent.permissions import PermissionModeError
 from boba.agent.profile import ModelProfile, ProfileError
 from boba.agent.records import ChainRecord
-from boba.agent.session import Session, SessionError
+from boba.agent.session import SessionError
 from boba.agent.settings import (
     MemoryHistorySettings,
     PostgresHistorySettings,
@@ -88,6 +89,7 @@ from boba.cli.settings import (
     SettingsError,
     SettingsSource,
 )
+from boba.cli.threads import LoopThread, SessionThreads, ThreadedHistoryStore
 from boba.db.postgres import AsyncPostgresPool
 from boba.history.jsonl import JsonlHistoryStore
 from boba.history.postgres import PostgresHistoryStore
@@ -289,9 +291,11 @@ class Environment:
 
 class ModelCatalog:
     """Профили `models.<имя>` файла настроек: профиль ядра для каждого
-    собирается на старте, модель провайдера — при первом обращении и
-    хранится, потому что провайдер может грузить веса. Создаёт вход
-    процесса; сборка берёт отсюда модель сессии и модель при переключении.
+    собирается на старте. Модель локального провайдера (веса в памяти)
+    одна на процесс и хранится здесь; модель удалённого провайдера живёт
+    клиентом http в цикле своей сессии, поэтому её даёт SessionModels
+    сессии. Создаёт вход процесса; сборка берёт отсюда профили и модели
+    сессий.
     """
 
     def __init__(
@@ -333,8 +337,15 @@ class ModelCatalog:
 
         return found
 
+    def local(self, name: str) -> bool:
+        """Провайдер профиля локальный: модель одна на процесс."""
+        return not self._settings.models[name].provider.kind.remote
+
     def model(self, name: str) -> ChatModel:
-        """Ошибки:
+        """Модель профиля на провайдерах процесса: локальная — общая всем
+        сессиям, удалённая — для проверки на старте.
+
+        Ошибки:
         SettingsError — профиля нет, либо его провайдер не собрался: в этой
             сборке нет его рантайма или веса модели не загрузились.
         """
@@ -342,9 +353,20 @@ class ModelCatalog:
         if ready is not None:
             return ready
 
+        model = self.built(name, self._providers)
+        self._models[name] = model
+
+        return model
+
+    def built(self, name: str, providers: LlmProviders) -> ChatModel:
+        """Модель профиля name на провайдерах providers.
+
+        Ошибки:
+        SettingsError — профиля нет либо его провайдер не собрался.
+        """
         profile = self.profile(name)
         try:
-            model = self._providers.chat(profile.chat)
+            return providers.chat(profile.chat)
         except (LlmError, LlmProvidersError) as exc:
             kind = self._settings.models[name].provider.kind.value
             msg = (
@@ -354,18 +376,54 @@ class ModelCatalog:
             )
             raise SettingsError(msg) from exc
 
+
+class SessionModels:
+    """Модели одной сессии: клиенты удалённых провайдеров создаются в цикле
+    её потока и закрываются вместе с ней; локальные модели берутся общими у
+    каталога процесса. Создаёт сборка на каждую открываемую сессию, держит
+    AssembledSession."""
+
+    def __init__(self, catalog: ModelCatalog, types: LlmProviderTypes) -> None:
+        self._catalog = catalog
+        self._providers = LlmProviders(types)
+        self._models: dict[str, ChatModel] = {}
+
+    def model(self, name: str) -> ChatModel:
+        """Ошибки:
+        SettingsError — профиля нет либо его провайдер не собрался.
+        """
+        if self._catalog.local(name):
+            return self._catalog.model(name)
+
+        ready = self._models.get(name)
+        if ready is not None:
+            return ready
+
+        model = self._catalog.built(name, self._providers)
         self._models[name] = model
 
         return model
 
+    async def close(self) -> None:
+        await self._providers.aclose()
+
 
 class AssembledSession(OpenedSession):
-    """Реализация OpenedSession: агент и действующий профиль модели из
-    каталога."""
+    """Реализация OpenedSession: агент, его модели и действующий профиль из
+    каталога; смена профиля меняет модель и системный промпт сессии."""
 
-    def __init__(self, agent: Agent, catalog: ModelCatalog, model: str) -> None:
+    def __init__(
+        self,
+        agent: Agent,
+        catalog: ModelCatalog,
+        models: SessionModels,
+        settings: EffectiveSettings,
+        model: str,
+    ) -> None:
         self._agent = agent
         self._catalog = catalog
+        self._models = models
+        self._settings = settings
         self._model = model
 
     @property
@@ -382,25 +440,34 @@ class AssembledSession(OpenedSession):
             msg = f"the model profile '{name}' is not defined; known: {known}"
             raise SessionRefusedError(msg)
 
+        previous = list(self._agent.system_prompt)
         try:
             profile = self._catalog.profile(name)
-            model = self._catalog.model(name)
+            model = self._models.model(name)
+            self._agent.set_system_prompt(self._settings.system_prompt_of(name))
             self._agent.set_model(profile, model)
         except SessionError as exc:
+            self._agent.set_system_prompt(previous)
             raise SessionBusyError(str(exc)) from exc
         except (SettingsError, ProfileError, HistoryError) as exc:
+            self._agent.set_system_prompt(previous)
             msg = f"the model profile '{name}' cannot be used in this session: {exc}"
             raise SessionOpenError(msg) from exc
 
         self._model = name
 
     async def close(self) -> None:
-        await self._agent.close()
+        try:
+            await self._agent.close()
+        finally:
+            await self._models.close()
 
 
 class AssembledObserver(ObservedSession):
-    """Реализация ObservedSession: беседа, прочитанная без замка, и
-    инструменты, над которыми `claim` поднимает агента, когда замок свободен."""
+    """Реализация ObservedSession: сессия с записями в хранилище, открытая
+    без замка, и инструменты, над которыми `claim` поднимает агента, когда
+    замок свободен. Беседу наблюдателя воспроизведение читает из хранилища
+    потоком; сам наблюдатель её не держит."""
 
     def __init__(  # noqa: PLR0913 — наблюдатель хранит всё для позднего открытия
         self,
@@ -410,7 +477,6 @@ class AssembledObserver(ObservedSession):
         tools: ToolServer | None,
         servers: McpServerSet,
         sink: EventSink,
-        conversation: Sequence[ChainRecord],
         questions: bool,
     ) -> None:
         self._assembly = assembly
@@ -419,11 +485,7 @@ class AssembledObserver(ObservedSession):
         self._tools = tools
         self._servers = servers
         self._sink = sink
-        self._conversation = list(conversation)
         self._questions = questions
-
-    def conversation(self) -> Sequence[ChainRecord]:
-        return self._conversation
 
     def tool_hints(self, name: str) -> ToolHints | None:
         """Пометки инструмента по карточке; None — такого инструмента нет."""
@@ -437,7 +499,7 @@ class AssembledObserver(ObservedSession):
         return None
 
     async def claim(self) -> OpenedSession:
-        agent = await self._assembly.attach_agent(
+        return await self._assembly.open(
             self._session_id,
             self._cwd,
             self._tools,
@@ -446,8 +508,6 @@ class AssembledObserver(ObservedSession):
             resume=True,
             questions=self._questions,
         )
-
-        return self._assembly.assembled(agent)
 
 
 class AgentAssembly(SessionAssembly):
@@ -471,6 +531,7 @@ class AgentAssembly(SessionAssembly):
         self,
         settings: EffectiveSettings,
         catalog: ModelCatalog,
+        types: LlmProviderTypes,
         store: HistoryStore,
         skills: Sequence[Skill],
         environment: Environment,
@@ -479,6 +540,7 @@ class AgentAssembly(SessionAssembly):
     ) -> None:
         self._settings = settings
         self._catalog = catalog
+        self._types = types
         self._store = store
         self._skills = list(skills)
         self._environment = environment
@@ -500,15 +562,28 @@ class AgentAssembly(SessionAssembly):
         resume: bool,
         questions: bool,
     ) -> OpenedSession:
-        agent = await self.attach_agent(
-            session_id, cwd, tools, servers, sink, resume, questions
-        )
+        """Агент ядра над инструментами сессии на профиле `model` настроек со
+        своими моделями сессии; с хранилищем `memory` возобновление
+        становится открытием заново.
 
-        return self.assembled(agent)
+        Ошибки:
+        SessionHeldError — сессию держит другой процесс.
+        SessionNotFoundError — возобновляемой сессии нет в хранилище.
+        SessionOpenError — профиль, режим, инструменты, хранилище или
+            модель не дали открыть сессию.
+        """
+        models = SessionModels(self._catalog, self._types)
+        try:
+            agent = await self._attached(
+                session_id, cwd, tools, servers, sink, resume, questions, models
+            )
+        except BaseException:
+            await models.close()
+            raise
 
-    def assembled(self, agent: Agent) -> AssembledSession:
-        """Открытая сессия над агентом: действующий профиль — `model` настроек."""
-        return AssembledSession(agent, self._catalog, self._settings.model)
+        settings = self._settings
+
+        return AssembledSession(agent, self._catalog, models, settings, settings.model)
 
     def models(self) -> Sequence[str]:
         return self._catalog.names()
@@ -522,11 +597,12 @@ class AgentAssembly(SessionAssembly):
         sink: EventSink,
         questions: bool,
     ) -> ObservedSession:
-        conversation = await self._conversation(session_id)
+        await self._present(session_id)
 
-        return AssembledObserver(
-            self, session_id, cwd, tools, servers, sink, conversation, questions
-        )
+        return AssembledObserver(self, session_id, cwd, tools, servers, sink, questions)
+
+    def history(self, session_id: SessionId) -> AsyncGenerator[ChainRecord, None]:
+        return self._loader.records(session_id)
 
     async def sessions(self, cursor: str | None) -> SessionPage:
         page = await self._store.list(cursor, self.PAGE_SIZE)
@@ -556,7 +632,7 @@ class AgentAssembly(SessionAssembly):
     ) -> int:
         return await self._store.copy(source, target, up_to)
 
-    async def attach_agent(  # noqa: PLR0913 — агент собирается всеми частями сессии
+    async def _attached(  # noqa: PLR0913 — агент собирается всеми частями сессии
         self,
         session_id: SessionId,
         cwd: Path,
@@ -565,20 +641,19 @@ class AgentAssembly(SessionAssembly):
         sink: EventSink,
         resume: bool,
         questions: bool,
+        models: SessionModels,
     ) -> Agent:
-        """Агент ядра над инструментами сессии; с хранилищем `memory`
-        возобновление становится открытием заново.
-
-        Ошибки:
-        SessionHeldError — сессию держит другой процесс.
-        SessionNotFoundError — возобновляемой сессии нет в хранилище.
-        SessionOpenError — профиль, режим, инструменты, хранилище или
-            модель не дали открыть сессию.
-        """
+        """Ошибки: как у open."""
         if self._stateless:
             resume = False
 
-        agent = Agent(self._parts(cwd, tools, servers, sink, questions))
+        try:
+            parts = self._parts(cwd, tools, servers, sink, questions, models)
+        except SettingsError as exc:
+            msg = f"session {session_id.value} cannot be opened: {exc}"
+            raise SessionOpenError(msg) from exc
+
+        agent = Agent(parts)
         try:
             await agent.open(session_id, resume=resume)
         except (SessionHeldError, SessionNotFoundError):
@@ -596,43 +671,47 @@ class AgentAssembly(SessionAssembly):
 
         return agent
 
-    async def _conversation(self, session_id: SessionId) -> Sequence[ChainRecord]:
-        """Беседа сессии из хранилища как есть, без замка и починки.
+    async def _present(self, session_id: SessionId) -> None:
+        """У сессии есть записи в хранилище: читается первая из них.
 
         Ошибки:
         SessionNotFoundError — записей сессии нет.
         HistoryError — хранилище отказало.
         """
-        session = Session(session_id)
-        await self._loader.restore(session)
-        if session.last_seq == 0:
-            msg = (
-                f"Session '{session_id.value}' has no records in the history store, "
-                "there is nothing to observe."
-            )
-            raise SessionNotFoundError(msg)
+        async with aclosing(self._loader.records(session_id)) as records:
+            async for _ in records:
+                return
 
-        return session.conversation()
+        msg = (
+            f"Session '{session_id.value}' has no records in the history store, "
+            "there is nothing to observe."
+        )
+        raise SessionNotFoundError(msg)
 
-    def _parts(
+    def _parts(  # noqa: PLR0913 — части агента сессии перечислены все
         self,
         cwd: Path,
         tools: ToolServer | None,
         servers: McpServerSet,
         sink: EventSink,
         questions: bool,
+        models: SessionModels,
     ) -> AgentParts:
-        """Части агента сессии: системный промпт — промпт настроек;
-        инструкции серверов MCP сессии ход объявляет вложением."""
+        """Части агента сессии: системный промпт — промпт профиля `model`
+        настроек; инструкции серверов MCP сессии ход объявляет вложением.
+
+        Ошибки:
+        SettingsError — модель профиля не собралась.
+        """
         settings = self._settings
 
         return AgentParts(
             profile=self._catalog.profile(settings.model),
             limits=settings.limits,
             compaction=settings.compaction,
-            system_prompt=settings.system_prompt,
+            system_prompt=settings.system_prompt_of(settings.model),
             store=self._store,
-            model=self._catalog.model(settings.model),
+            model=models.model(settings.model),
             sink=sink,
             version=self._version,
             tools=tools,
@@ -678,6 +757,7 @@ class AgentProcess:
     """Один запуск `boba acp`: настройки, проверка частей, вход ACP, остановка."""
 
     NAME: ClassVar[str] = "boba"
+    STORE_THREAD: ClassVar[str] = "history-store"
 
     def __init__(  # noqa: PLR0913 — вход процесса получает все границы разом
         self,
@@ -699,7 +779,9 @@ class AgentProcess:
         self._environment = Environment(env)
         # состав провайдеров объявлен явно (план, раздел 5.20): в одном файле
         # метаданных дистрибутивов и их entry points нет
-        self._providers = LlmProviders(LlmProviderTypes.declare([OPENAI, OLLAMA, ONNX]))
+        self._types = LlmProviderTypes.declare([OPENAI, OLLAMA, ONNX])
+        self._providers = LlmProviders(self._types)
+        self._store_thread = LoopThread(self.STORE_THREAD)
 
     async def run(self) -> None:
         """Всё проверяется до чтения ввода: настройки, профиль, хранилище,
@@ -716,12 +798,31 @@ class AgentProcess:
         try:
             settings = self._settings.effective()
             os.environ.update(settings.env)
-            assembly = self._assembly(settings)
+            store = self._store(settings)
+        except SettingsError as exc:
+            raise SystemExit(str(exc)) from exc
+
+        self._store_thread.start()
+        threaded = ThreadedHistoryStore(store, self._store_thread)
+        try:
+            await self._serve(settings, threaded)
+        finally:
+            await threaded.close()
+            await self._store_thread.run(AsyncPostgresPool.close_all())
+            await self._store_thread.stop()
+
+    async def _serve(self, settings: EffectiveSettings, store: HistoryStore) -> None:
+        """Ошибки:
+        SystemExit — профиль, модель или скиллы не собрались.
+        """
+        try:
+            assembly = self._assembly(settings, store)
         except SettingsError as exc:
             raise SystemExit(str(exc)) from exc
 
         info = schema.Implementation(name=self.NAME, version=self._version)
-        agent = AcpAgent(assembly, info, settings.mcp)
+        threads = SessionThreads(settings.sessions.max_open)
+        agent = AcpAgent(assembly, info, settings.mcp, threads)
         reader, writer = await self._streams.open()
         side = AgentSide(agent.attach, info, BatchTransport(reader, writer))
         self._stop.on_stop(self._stopper(agent))
@@ -730,7 +831,6 @@ class AgentProcess:
         finally:
             await agent.close_all()
             await self._providers.aclose()
-            await AsyncPostgresPool.close_all()
 
     @staticmethod
     def _stopper(agent: AcpAgent) -> StopAction:
@@ -743,7 +843,9 @@ class AgentProcess:
 
         return stop
 
-    def _assembly(self, settings: EffectiveSettings) -> AgentAssembly:
+    def _assembly(
+        self, settings: EffectiveSettings, store: HistoryStore
+    ) -> AgentAssembly:
         """Профили каталога собираются все, модель — только выбранная: она
         нужна первой сессии, остальные поднимаются при переключении.
 
@@ -761,7 +863,8 @@ class AgentProcess:
         return AgentAssembly(
             settings,
             catalog,
-            self._store(settings),
+            self._types,
+            store,
             skills,
             self._environment,
             self._cwd,
