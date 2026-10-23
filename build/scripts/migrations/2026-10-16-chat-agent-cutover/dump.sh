@@ -8,10 +8,11 @@
 #   схема чата ([data_layer].schema, она же [connections].db_schema чата):
 #     users, threads — boba-runtime UsersTable и ThreadsTable;
 #     feedbacks, elements — boba-runtime FeedbacksTable и ElementsTable;
-#     agent_user_settings, agent_chat_settings — boba-aid AgentSettingsTable;
+#     agent_chat_settings — boba-aid AgentSettingsTable;
 #     connections, roles, grants — boba-connection-broker ConnectionStore;
 #   схема истории агента ([agent.history].schema): history_records —
-#     boba-history-postgres PostgresHistoryStore (есть, если агент уже работал);
+#     PostgresHistoryStore прежнего выпуска (есть, если агент уже работал);
+#     migrate.sql раскладывает её по таблицам session и history;
 #   схема чекпойнтов langgraph: checkpoints, checkpoint_blobs, checkpoint_writes —
 #     источник перевода беседы в migrate.sql;
 #   схема базы знаний ([tool.kb]): kb_collections, kb_chunks, kb_sources и
@@ -94,7 +95,6 @@ tables=(
     "$CHAT_SCHEMA.threads"
     "$CHAT_SCHEMA.feedbacks"
     "$CHAT_SCHEMA.elements"
-    "$CHAT_SCHEMA.agent_user_settings"
     "$CHAT_SCHEMA.agent_chat_settings"
     "$CHAT_SCHEMA.connections"
     "$CHAT_SCHEMA.roles"
