@@ -42,6 +42,7 @@ pythonpath = [
     "packages/services/boba-mcp-adapter/src",
     "packages/services/boba-runtime/src",
     "packages/services/boba-auth/src",
+    "packages/services/boba-oauth/src",
     "packages/core/boba-indexing/src",
     "packages/infra/config/boba-config/src",
     "packages/core/boba-toolkit/src",
@@ -141,6 +142,7 @@ extraPaths = [
     "packages/services/boba-mcp-adapter/src",
     "packages/services/boba-runtime/src",
     "packages/services/boba-auth/src",
+    "packages/services/boba-oauth/src",
     "packages/core/boba-indexing/src",
     "packages/infra/config/boba-config/src",
     "packages/core/boba-toolkit/src",
@@ -280,6 +282,7 @@ boba-mcp = { workspace = true }
 boba-tool-describer = { workspace = true }
 boba-runtime = { workspace = true }
 boba-auth = { workspace = true }
+boba-oauth = { workspace = true }
 boba-indexing       = { workspace = true }
 boba-toolkit        = { workspace = true }
 boba-tool-shell     = { workspace = true }
