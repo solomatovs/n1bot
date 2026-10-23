@@ -361,7 +361,9 @@ class TestSecretsInFile:
 
     def test_postgres_history_needs_dsn_or_dsn_env(self, tmp_path: Path) -> None:
         path = tmp_path / "settings.json"
-        write_private(path, {"history": {"kind": "postgres", "schema": "boba"}})
+        pool = {"minSize": 1, "maxSize": 4, "timeoutSec": 30}
+        history = {"kind": "postgres", "schema": "boba", "pool": pool}
+        write_private(path, {"history": history})
 
         with pytest.raises(SettingsError, match="'dsn'"):
             settings(tmp_path, Arguments(settings=(str(path),))).effective()

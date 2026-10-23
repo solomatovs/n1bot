@@ -81,6 +81,7 @@ import mcp_types as mt
 from acp.exceptions import RequestError
 from acp.experimental.v2 import Agent as AcpAgentProtocol
 from acp.experimental.v2 import AgentSideConnection, schema
+from acp.experimental.v2.meta import AGENT_METHODS
 from mcp_types.methods import parse_server_notification, parse_server_result
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
@@ -3637,8 +3638,12 @@ class AcpAgent(AcpAgentProtocol):
         проверил транспорт, — вход принимается сразу.
 
         Ошибки:
-        RequestError — такого способа вход не объявлял (-32602).
+        RequestError — вход не объявлял способов (-32601), такого способа
+            вход не объявлял (-32602).
         """
+        if not self._auth_methods:
+            raise RequestError.method_not_found(AGENT_METHODS["auth_login"])
+
         for method in self._auth_methods:
             if method.method_id == method_id:
                 return schema.LoginAuthResponse()
@@ -3651,7 +3656,14 @@ class AcpAgent(AcpAgentProtocol):
         raise RequestError.invalid_params({ErrorDataKey.DETAILS.value: details})
 
     async def logout(self, **kwargs: Any) -> schema.LogoutAuthResponse:
-        """Выход: сессии подключения закрываются."""
+        """Выход: сессии подключения закрываются.
+
+        Ошибки:
+        RequestError — вход не объявлял способов (-32601).
+        """
+        if not self._auth_methods:
+            raise RequestError.method_not_found(AGENT_METHODS["auth_logout"])
+
         await self.close_all()
 
         return schema.LogoutAuthResponse()

@@ -124,7 +124,7 @@ class AgentServiceStand:
         return f"ws://127.0.0.1:{self.port}{self.PATH}"
 
     async def start(self) -> None:
-        self.host.start()
+        await self.host.start()
         server = uvicorn.Server(
             uvicorn.Config(
                 self.host.app(),

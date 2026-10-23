@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 from omegaconf import DictConfig
 from psycopg import sql
-from test_cli_acp import FakeModel, StandRegistration
+from test_cli_acp import AcpProcess, FakeModel, StandRegistration
 from test_cli_acp_postgres import PostgresStand
 
 from boba.config import bind
@@ -66,6 +66,16 @@ async def model() -> AsyncIterator[FakeModel]:
         yield fake
     finally:
         await fake.stop()
+
+
+@pytest.fixture
+async def boba(model: FakeModel, tmp_path: Path) -> AsyncIterator[AcpProcess]:
+    """Процесс `boba acp` над фейковой моделью; убивается после теста."""
+    process = AcpProcess(tmp_path, model)
+    try:
+        yield process
+    finally:
+        await process.kill()
 
 
 @pytest.fixture
