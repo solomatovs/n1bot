@@ -13,7 +13,7 @@
 
 [keys]
     session    = "${site.auth_secret}"
-    proxy      = "${site.proxy_secret}"
+    mcp_proxy  = "${site.mcp_proxy_secret}"
     mcp_client = "${site.mcp_client.secret}"
 
 [mcp]
@@ -128,7 +128,7 @@
 
 [auth.proxy]
     type          = "proxy"
-    secret        = "${keys.proxy}"
+    secret        = "${keys.mcp_proxy}"
     max_skew_sec  = 60
     require_roles = true
     [auth.proxy.roles.header]
@@ -151,6 +151,45 @@
     channel_limit_bytes = 67108864
     stderr_tail_bytes   = 4096
     kill_grace_sec      = 5
+
+[confluence]
+    host                = "${site.confluence.host}"
+    path                = "${site.confluence.path}"
+    port                = "${site.confluence.port}"
+    timeout_sec         = 30.0
+    ssl_verify          = false
+    retry_attempts      = 3
+    retry_backoff_sec   = 1.0
+    retry_after_max_sec = 60.0
+    retry_statuses      = { 429 = 5, 401 = 3 }
+
+[ocr]
+    provider   = "rapidocr"
+    models_dir = "/var/cache/rapidocr"
+    language   = "eslav"
+    text_score = 0.5
+    threads    = 2
+
+[kb_tables]
+    pg_schema         = "${app.schema}"
+    chunks_table      = "kb_chunks"
+    collections_table = "kb_collections"
+    sources_table     = "kb_sources"
+
+[fastembed_cache]
+    sandbox = "/var/cache/fastembed"
+    process = "${env.models}/fastembed"
+
+[fastembed]
+    kind      = "fastembed"
+    cache_dir = "${fastembed_cache.${env.tool_launcher}}"
+
+[embedding.main]
+    provider       = "${fastembed}"
+    model          = "${site.models.embedding}"
+    dim            = 1024
+    batch_size     = 8
+    progress_every = 1
 
 [session]
     auth_secret     = "${keys.session}"

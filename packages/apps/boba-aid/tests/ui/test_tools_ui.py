@@ -832,11 +832,14 @@ class ConfluenceSite:
         self._rest = CflRestBuilder()
         profile = config.confluence
         self._profile = profile
+        # клиент живёт весь модуль: соединение, простоявшее между тестами,
+        # сервер уже закрыл, и запрос по нему обрывался без ответа
         self._client = httpx.Client(
             timeout=profile.timeout_sec,
             verify=profile.ssl_verify,
             follow_redirects=True,
             auth=HttpxAuth().of(profile),
+            limits=httpx.Limits(max_keepalive_connections=0),
         )
 
     @classmethod
@@ -2761,13 +2764,11 @@ class TestSecondTab:
         feed.chat.await_idle()
         thread_id = feed.chat.log.thread_id()
         assert thread_id
+        answer = feed.chat.log.last_step(StepKind.ASSISTANT.value)
+        assert answer is not None, feed.chat.log.describe()
 
         second: ChatPage = open_chat(sandbox_stand)
-        second.page.goto(
-            f"{sandbox_stand.config.base_url}/thread/{thread_id}",
-            wait_until="domcontentloaded",
-        )
-        second.page.wait_for_timeout(1000)
+        second.open_thread(thread_id, str(answer[StepField.ID.value]))
         second.log.clear()
 
         note = tmp_path / "tab-note.txt"

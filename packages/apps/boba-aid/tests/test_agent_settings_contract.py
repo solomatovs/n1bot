@@ -23,7 +23,6 @@ from boba.aid.agent.config import (
     AgentHistoryKind,
     MemoryAgentHistory,
     PostgresAgentHistory,
-    ReasoningReturn,
 )
 from boba.aid.agent.settings import (
     AgentProviderKind,
@@ -34,6 +33,7 @@ from boba.aid.agent.settings import (
     ProviderFile,
     SettingsFileBuilder,
 )
+from boba.chat.profiles import ReasoningReturn
 from boba.db.postgres.connection import PostgresConfig
 from boba.db.postgres.connection.auth import PasswordAuth
 from boba.mcp_client.client import McpServersConfig
@@ -50,7 +50,9 @@ POSTGRES = PostgresConfig.model_validate(
         ),
     }
 )
-HISTORY = PostgresAgentHistory.model_validate({"kind": "postgres", "schema": "boba"})
+HISTORY = PostgresAgentHistory.model_validate(
+    {"kind": "postgres", "schema": "boba", "postgres": POSTGRES}
+)
 
 
 @pytest.fixture(autouse=True)
@@ -118,7 +120,7 @@ def _written(
     tmp_path: Path, config: AgentConfig, mcp: McpFile | None
 ) -> dict[str, Any]:
     """Документ файла настроек, как его записал бы запуск агента треда."""
-    builder = SettingsFileBuilder(config, POSTGRES, McpServersConfig(servers={}))
+    builder = SettingsFileBuilder(config, McpServersConfig(servers={}))
     chat = _chat("Answer briefly")
     env = {"KRB5CCNAME": "FILE:/run/boba/krb5cc", "KRB5_CONFIG": "/etc/boba/krb5.conf"}
     workdir = AgentWorkdirs(tmp_path / "agents").create("thread-contract")

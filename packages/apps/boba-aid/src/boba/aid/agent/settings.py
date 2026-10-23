@@ -19,6 +19,7 @@ Postgres, сборка файла из слоя чата и приватный �
 Ошибки:
 AgentSettingsError — профиль чата нельзя превратить в профиль модели агента.
 DataUnavailableError — таблица настроек недоступна (PgTable).
+PostgresError — билет kerberos-роли истории не получен.
 """
 
 from __future__ import annotations
@@ -47,19 +48,14 @@ from boba.aid.agent.config import (
     AgentConfig,
     AgentHistoryConfig,
     AgentHistoryKind,
-    AgentModelConfig,
-    LibpqConnection,
     MemoryAgentHistory,
     PostgresAgentHistory,
-    ReasoningReturn,
 )
-from boba.chat.profiles import ChatProfileConfig
+from boba.chat.profiles import ChatProfileConfig, ReasoningReturn
 from boba.connections.secrets import SecretCipher
 from boba.core.secrets import SecretReveal
 from boba.db.postgres import PostgresPool
-from boba.db.postgres.connection import PostgresConfig
-from boba.krb import KerberosWorkspace
-from boba.krb.credentials import ClientCredentials, KerberosEnv
+from boba.db.postgres.connection import LibpqConnection, PostgresConfig
 from boba.mcp_client.client import McpServersConfig
 from boba.runtime.table import PgTable
 from boba.transport.http import HttpTransportConfig
@@ -154,7 +150,7 @@ class ProviderFile(FileModel):
 
 class ModelFile(FileModel):
     """Ключ `models.<имя>`: профиль модели агента, собранный из профиля чата
-    и [agent.model]."""
+    и его пределов модели."""
 
     provider: ProviderFile
     model: str = Field(min_length=1)
@@ -241,13 +237,11 @@ class RemoteProviderView(BaseModel):
 
 class ProfileModelSpecs:
     """Профиль модели агента из профиля чата: адрес, ключ, срок, TLS и
-    повторы — из соединения провайдера, транспорт — из его секции [http],
-    окно, потолок ответа и возврат рассуждений — из [agent.model].
+    повторы — из соединения провайдера, транспорт — из его секции
+    ([agent_http]), окно, потолок ответа и возврат рассуждений — из пределов
+    профиля ([model_limits.<имя>]).
 
     Создаёт его запуск агента (AgentLauncher)."""
-
-    def __init__(self, model: AgentModelConfig) -> None:
-        self._model = model
 
     def chat_settings(
         self, name: str, profile: ChatProfileConfig, owner: AgentOwner
@@ -307,9 +301,9 @@ class ProfileModelSpecs:
             provider=provider,
             model=profile.model,
             sampling=dict(profile.sampling),
-            context_window=self._model.context_window,
-            max_output_tokens=self._model.max_output_tokens,
-            reasoning_return=self._model.reasoning_return,
+            context_window=profile.limits.context_window,
+            max_output_tokens=profile.limits.max_output_tokens,
+            reasoning_return=profile.limits.reasoning_return,
         )
 
 
@@ -404,17 +398,15 @@ class SettingsFileBuilder:
     """Файл настроек агента из слоя чата и конфига: к профилю модели чата
     добавляются политика запуска `allowBypass` (режим сессии чат выставляет
     по ACP), история, срок вызова инструментов — наибольший
-    `call_timeout_sec` серверов профиля [mcp.servers.*] — и окружение
-    libkrb5 истории ключом `env`. Строка подключения истории — подключение
-    процесса [postgres]. Файл — единственный канал настроек запуска агента:
-    argv называет только его, окружение ребёнка — минимальный набор SDK."""
+    `limits.call_timeout_sec` серверов профиля [mcp.servers.*] — и окружение
+    libkrb5 истории ключом `env`. Строка подключения истории — её собственное
+    подключение [agent.history].postgres. Файл — единственный канал настроек
+    запуска агента: argv называет только его, окружение ребёнка — минимальный
+    набор SDK."""
 
-    def __init__(
-        self, config: AgentConfig, postgres: PostgresConfig, servers: McpServersConfig
-    ) -> None:
-        self._config = config
+    def __init__(self, config: AgentConfig, servers: McpServersConfig) -> None:
         self._servers = servers
-        self._libpq = LibpqConnection(postgres)
+        self._history = self._history_file(config.history)
 
     def build(
         self,
@@ -428,7 +420,7 @@ class SettingsFileBuilder:
             model=chat.model_name,
             models={chat.model_name: chat.model},
             permissions=PermissionsFile(allow_bypass=True),
-            history=self._history(),
+            history=self._history,
             mcp=mcp,
             env=env,
             system_prompt_file=WorkdirFile.SYSTEM_PROMPT.value,
@@ -453,19 +445,21 @@ class SettingsFileBuilder:
                 )
                 raise AgentSettingsError(msg)
 
-            limits.append(server.call_timeout_sec)
+            limits.append(server.limits.call_timeout_sec)
 
         if not limits:
             return None
 
         return McpFile(call_timeout_sec=max(limits))
 
-    def _history(self) -> PostgresHistoryFile | MemoryHistoryFile:
-        history = self._config.history
+    @staticmethod
+    def _history_file(
+        history: AgentHistoryConfig,
+    ) -> PostgresHistoryFile | MemoryHistoryFile:
         if isinstance(history, PostgresAgentHistory):
             return PostgresHistoryFile(
                 kind=AgentHistoryKind.POSTGRES,
-                dsn=self._libpq.dsn(),
+                dsn=LibpqConnection(history.postgres).dsn(),
                 schema=history.db_schema,
             )
 
@@ -477,36 +471,28 @@ class SettingsFileBuilder:
 
 
 class HistoryEnvironment:
-    """Окружение libkrb5 для процесса агента с kerberos-ролью истории: путь к
-    кэшу билета и к krb5.conf рабочего каталога процесса aid; билет в кэше
-    обновляется по keytab до запуска. У парольной роли окружение пустое.
+    """Окружение libkrb5 для процесса агента с kerberos-ролью истории (свой
+    принципал [agent.history].postgres.auth): путь к кэшу билета и к
+    krb5.conf рабочего каталога процесса aid; билет в кэше обновляется до
+    запуска. У парольной роли окружение пустое.
     Едет ключом `env` файла настроек: агент ставит его себе на старте, потому
     что libpq читает KRB5CCNAME/KRB5_CONFIG из окружения сам; это пути к
     файлам того же пользователя, не секреты.
     """
 
-    def __init__(self, history: AgentHistoryConfig, postgres: PostgresConfig) -> None:
-        self._history = history
-        self._libpq = LibpqConnection(postgres)
+    def __init__(self, history: AgentHistoryConfig) -> None:
+        self._libpq: LibpqConnection | None = None
+        if isinstance(history, PostgresAgentHistory):
+            self._libpq = LibpqConnection(history.postgres)
 
-    async def prepare(self) -> dict[str, str]:
+    async def prepare(self) -> Mapping[str, str]:
         """Ошибки:
-        KerberosError — билет по keytab не получен.
+        PostgresError — билет роли истории не получен.
         """
-        if not isinstance(self._history, PostgresAgentHistory):
+        if self._libpq is None:
             return {}
 
-        auth = self._libpq.kerberos_auth()
-        if auth is None:
-            return {}
-
-        credentials = ClientCredentials.of(auth)
-        await credentials.ensure_async()
-
-        return {
-            KerberosEnv.CCACHE: KerberosWorkspace.ccache_for(auth),
-            KerberosEnv.CONFIG: KerberosWorkspace.krb5_config(),
-        }
+        return await self._libpq.environment()
 
 
 class AgentWorkdir:

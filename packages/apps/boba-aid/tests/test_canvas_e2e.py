@@ -86,7 +86,7 @@ class E2eStand:
             for name in self.DATA_DIRS:
                 (data / name).mkdir(parents=True, exist_ok=True)
 
-        database = StandDatabase(StandApp.AID, StandNames().of(self.DB_NAME))
+        database = StandDatabase(StandApp.AID, StandNames().of_tree(self.DB_NAME))
         name = database.prepare()
 
         for app in (StandApp.AID, StandApp.MCP):

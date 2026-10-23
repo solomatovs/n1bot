@@ -19,7 +19,7 @@ from boba.access import GrantCheck, ToolGrants
 from boba.auth import AuthService, JwtTokens, SignIns
 from boba.auth.credentials import KerberosCredentialSource
 from boba.auth.sso import SpnegoGate
-from boba.chat.profiles import ChatProfiles, RolesSection
+from boba.chat.profiles import ChatProfiles
 from boba.config import bind
 from boba.connection_broker.sealed import SealedConnectionParams, ServerConnection
 from boba.connection_broker.store import ConnectionStore
@@ -403,16 +403,14 @@ def connection_types() -> ConnectionTypes:
 
 async def connection_store(
     config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
-    raw: Annotated[DictConfig, Depends(get_raw_config)],
     types: Annotated[ConnectionTypes, Depends(connection_types)],
     pool: Annotated[AsyncPostgresPool, Depends(postgres_pool)],
 ) -> ConnectionStore:
     """Хранилище соединений; роли из [roles] попадают в таблицу roles на старте."""
-    cipher = SecretCipher(config.keys.encryption.get_secret_value())
+    cipher = SecretCipher(config.connections.cipher.get_secret_value())
     store = ConnectionStore(pool, config.db_schema, cipher, types)
 
-    roles = bind(raw, "roles", RolesSection).root
-    await store.sync_roles(roles)
+    await store.sync_roles(config.roles)
 
     return store
 
