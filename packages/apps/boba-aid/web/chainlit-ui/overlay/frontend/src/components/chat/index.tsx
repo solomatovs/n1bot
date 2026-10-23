@@ -41,26 +41,14 @@ const Chat = () => {
   const uploadFileRef = useRef(uploadFile);
   const navigate = useNavigate();
 
-  // Update file upload MIME types to use standard format following Mozilla's guidelines: @see https://developer.mozilla.org/en-US/docs/Web/HTML/Element/input/file#unique_file_type_specifiers
-  // Instead of using '*/*' which may cause MIME type warnings, we specify exact MIME type categories:
-  // - 'application/*' - for general files
-  // - 'audio/*' - for audio files
-  // - 'image/*' - for image files
-  // - 'text/*' - for text files
-  // - 'video/*' - for video files
-  // This provides better type safety and clearer file type expectations.
+  // boba: accept без значения в конфиге — любые файлы, как и на сервере
+  // chainlit; список категорий отсекал файлы без MIME или вне этих категорий
   const fileSpec = useMemo(
     () => ({
       max_size_mb:
         config?.features?.spontaneous_file_upload?.max_size_mb || 500,
       max_files: config?.features?.spontaneous_file_upload?.max_files || 20,
-      accept: config?.features?.spontaneous_file_upload?.accept || {
-        'application/*': [], // All application files
-        'audio/*': [], // All audio files
-        'image/*': [], // All image files
-        'text/*': [], // All text files
-        'video/*': [] // All video files
-      }
+      accept: config?.features?.spontaneous_file_upload?.accept
     }),
     [config]
   );

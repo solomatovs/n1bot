@@ -27,6 +27,7 @@ class FileHeader(StrEnum):
     CONTENT_DISPOSITION = "Content-Disposition"
     ACCEPT_RANGES = "Accept-Ranges"
     RANGE = "Range"
+    CONTENT_TYPE_OPTIONS = "X-Content-Type-Options"
 
 
 class ContentDisposition(StrEnum):

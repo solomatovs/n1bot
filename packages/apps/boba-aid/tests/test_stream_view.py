@@ -1384,6 +1384,8 @@ class TestStreamDownload:
             raise AssertionError('"attachment" in whole.headers["content-disposition"]')
         if f"{CALL_ID}.tool_stdout.log" not in whole.headers["content-disposition"]:
             raise AssertionError('f"{CALL_ID}.tool_stdout.log" in whole.headers["cont…')
+        if whole.headers["x-content-type-options"] != "nosniff":
+            raise AssertionError(f"the journal is not sniffed: {whole.headers}")
 
         if part.status_code != 206:
             raise AssertionError("part.status_code == 206")

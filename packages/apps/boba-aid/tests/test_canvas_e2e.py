@@ -2190,6 +2190,10 @@ async def test_canvas_route_downloads_what_the_browser_would_run(
         if not disposition.startswith(f"{kind};"):
             raise AssertionError(f"{name}: expected {kind}, got {disposition!r}")
 
+        sniffing = response.headers.get("x-content-type-options", "")
+        if sniffing != "nosniff":
+            raise AssertionError(f"{name}: expected nosniff, got {sniffing!r}")
+
 
 async def test_uploaded_html_is_downloaded(panel: CanvasPage) -> None:
     """Вложение пользователя с html и pdf отдаётся скачиванием, тело — как
@@ -2226,6 +2230,10 @@ async def test_uploaded_html_is_downloaded(panel: CanvasPage) -> None:
         disposition = response.headers.get("content-disposition", "")
         if not disposition.startswith(f"{kind};"):
             raise AssertionError(f"{name}: expected {kind}, got {disposition!r}")
+
+        sniffing = response.headers.get("x-content-type-options", "")
+        if sniffing != "nosniff":
+            raise AssertionError(f"{name}: expected nosniff, got {sniffing!r}")
 
 
 async def test_link_mime_wins_over_the_file_name(panel: CanvasPage) -> None:
