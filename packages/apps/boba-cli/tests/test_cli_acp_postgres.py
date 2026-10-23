@@ -19,7 +19,6 @@ from typing import Any, ClassVar
 import pytest
 from acp.exceptions import RequestError
 from acp.experimental.v2 import schema as acp_schema
-from psycopg.conninfo import make_conninfo
 from test_cli_acp import (
     AcpClient,
     AcpProcess,
@@ -33,7 +32,7 @@ from test_cli_acp import (
 
 from boba.agent.history import SessionId, StoredLine
 from boba.db.postgres import AsyncPostgresPool
-from boba.db.postgres.connection import PostgresConfig
+from boba.db.postgres.connection import LibpqConnection, PostgresConfig
 from boba.db.postgres.connection.auth import KeytabAuth
 from boba.history.postgres import PostgresHistoryStore
 from boba.krb import KerberosEnv, KerberosWorkspace
@@ -72,17 +71,7 @@ class PostgresStand:
         }
 
     def dsn(self) -> str:
-        auth = self._postgres.auth
-        assert isinstance(auth, KeytabAuth)
-
-        return make_conninfo(
-            host=self._postgres.host,
-            hostaddr=self._postgres.hostaddr,
-            port=self._postgres.port,
-            dbname=self._postgres.dbname,
-            user=auth.principal.partition("@")[0],
-            sslmode=self._postgres.sslmode,
-        )
+        return LibpqConnection(self._postgres).dsn().get_secret_value()
 
     def settings(self, process: AcpProcess, owner: str | None) -> Document:
         """Файл настроек процесса; owner — логин владельца сессий процесса,
