@@ -29,19 +29,20 @@ from boba.connection_broker.sealed import ServerConnection
 from boba.connections.sealed import SealKeys
 from boba.identity.context import CallContexts
 from boba.identity.run import Runs
-from boba.mcp_server.auth import (
-    AuthServer,
-    McpClient,
-    RegisteredClients,
-    SealedValues,
-    ServiceAuth,
-    ServiceTokens,
-)
+from boba.mcp_server.auth import ServiceMark
 from boba.mcp_server.server import (
     EndpointCatalog,
     McpEndpoint,
     McpEndpoints,
     RunLimits,
+)
+from boba.oauth.server import (
+    AuthServer,
+    RegisteredClients,
+    SealedValues,
+    ServiceAuth,
+    ServiceTokens,
+    TrustedClient,
 )
 from boba.runtime import providers
 from boba.runtime.config import ConfigArguments, ConfigFiles, ProcessConfig
@@ -78,7 +79,7 @@ class McpSection(BaseModel):
     него строятся метаданные OAuth, адреса входа и издатель токена. Вне
     localhost — только https."""
     endpoints: dict[str, McpEndpoint] = Field(min_length=1)
-    clients: dict[str, McpClient]
+    clients: dict[str, TrustedClient]
     """Доверенные клиенты OAuth по client_id: им разрешён вход proxy."""
 
 
@@ -226,6 +227,7 @@ class McpHost:
             session.session_ttl_sec,
             session.session_max_sec,
             generation,
+            ServiceMark.TOKEN_SALT,
         )
         assertions = None
         if proxy := self._config.proxy():
@@ -233,7 +235,7 @@ class McpHost:
                 proxy.secret.get_secret_value(), proxy.max_skew_sec
             )
 
-        sealed = SealedValues(session.auth_secret)
+        sealed = SealedValues(session.auth_secret, ServiceMark.SEALED_SALT)
         resources: dict[str, str] = {}
         for name in section.endpoints:
             resources[name] = f"{public_url}{section.path}/{name}"
@@ -248,7 +250,7 @@ class McpHost:
             list(resources.values()),
         )
 
-        return ServiceAuth(public_url, server, tokens, resources)
+        return ServiceAuth(public_url, server, tokens, ServiceMark.NAME, resources)
 
     def _clients(self, section: McpSection, sealed: SealedValues) -> RegisteredClients:
         """Клиенты OAuth: доверенные из [mcp.clients] и регистрирующиеся сами."""

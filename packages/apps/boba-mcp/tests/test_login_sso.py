@@ -33,14 +33,15 @@ from boba.auth.sso import SpnegoGate
 from boba.config import bind
 from boba.krb import KerberosEnv
 from boba.ldap import Ldap3Directory
-from boba.mcp_server.auth import (
+from boba.mcp_server.auth import ServiceMark
+from boba.mcp_server.server import EndpointCatalog
+from boba.oauth.server import (
     AuthServer,
     LoginPages,
     RegisteredClients,
     SealedValues,
     ServiceTokens,
 )
-from boba.mcp_server.server import EndpointCatalog
 from boba.runtime.signin import SignInAssembly
 from boba.stand.site import Stand, StandLayers
 from boba.stand.ui.stand import StandApp
@@ -95,10 +96,10 @@ def server(chat_config: DictConfig, krb5_env: None) -> AuthServer:
     return AuthServer(
         PUBLIC,
         sign_ins,
-        ServiceTokens(PUBLIC, SECRET, 300, 3600, "stand"),
+        ServiceTokens(PUBLIC, SECRET, 300, 3600, "stand", ServiceMark.TOKEN_SALT),
         None,
-        RegisteredClients(SealedValues(SECRET), {}),
-        SealedValues(SECRET),
+        RegisteredClients(SealedValues(SECRET, ServiceMark.SEALED_SALT), {}),
+        SealedValues(SECRET, ServiceMark.SEALED_SALT),
         [f"{PUBLIC}/mcp/{ENDPOINT}"],
     )
 
@@ -106,7 +107,7 @@ def server(chat_config: DictConfig, krb5_env: None) -> AuthServer:
 @pytest.fixture
 async def browser(server: AuthServer) -> AsyncIterator[httpx.AsyncClient]:
     """Браузер у страниц входа сервиса: запросы идут в приложение напрямую."""
-    app = Starlette(routes=LoginPages(server, PUBLIC).routes())
+    app = Starlette(routes=LoginPages(server, PUBLIC, ServiceMark.NAME).routes())
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url=PUBLIC) as http:
         yield http
