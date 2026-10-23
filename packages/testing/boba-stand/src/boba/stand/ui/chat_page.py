@@ -76,6 +76,28 @@ class ChatPage:
         self._await(Selector.INPUT.value)
         self._await_chat_start()
 
+    def open_thread(
+        self, thread_id: str, last_step_id: str, timeout_sec: float = 30.0
+    ) -> None:
+        """Вкладка переходит в тред и ждёт, пока воспроизведение истории дойдёт
+        до шага last_step_id: всё, что придёт после, — новое, а не повтор."""
+        self.log.clear()
+        self.page.goto(
+            f"{self.base_url}/thread/{thread_id}", wait_until="domcontentloaded"
+        )
+        deadline = time.monotonic() + timeout_sec
+        while time.monotonic() < deadline:
+            if self.log.index_of(ChatEvent.NEW_MESSAGE, last_step_id) >= 0:
+                return
+
+            self.page.wait_for_timeout(100)
+
+        msg = (
+            f"chat page: thread {thread_id} did not replay step {last_step_id} "
+            f"within {timeout_sec}s\n{self.log.describe()}"
+        )
+        raise ChatPageError(msg)
+
     def _await_chat_start(self, timeout_sec: float = 30.0) -> None:
         """Свой ход chainlit рисует на старте сессии: тест ждёт его окончания.
 
