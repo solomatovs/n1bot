@@ -407,7 +407,7 @@ RUN [ -z "${NUITKA_VERSION}" ] || { onnx=""; \
               --include-package=onnxruntime"; \
     fi; \
     python3 -m boba.cli.package_data /opt/bin-site /tmp/package_data.json > /tmp/package_data.flags \
-    && python3 -m nuitka --standalone --static-libpython=yes --output-filename=boba --update-check=never \
+    && python3 -m nuitka --standalone --static-libpython=yes --output-filename=boba.bin --update-check=never \
         --output-dir=/tmp/nuitka --jobs=${JOBS} \
         --user-package-configuration-file=/tmp/nuitka-boba.yml \
         --include-package=gssapi --nofollow-import-to=gssapi.tests --include-distribution-metadata=boba-cli \
@@ -415,8 +415,8 @@ RUN [ -z "${NUITKA_VERSION}" ] || { onnx=""; \
         /opt/bin-site/boba/cli/app.py \
     && mv /tmp/nuitka/app.dist /out/boba.dist \
     && rm -rf /tmp/nuitka /tmp/package_data.json /tmp/package_data.flags \
-    && /out/boba.dist/boba --help > /dev/null \
-    && /out/boba.dist/boba self-check; }
+    && /out/boba.dist/boba.bin --help > /dev/null \
+    && /out/boba.dist/boba.bin self-check; }
 
 
 # каталог агента для make boba-bin: make забирает /boba.dist через docker cp
@@ -550,7 +550,7 @@ RUN sed -i "1s|^#!.*python3.*|#!${BOBA_DIR}/third/bin/python3|" ${BOBA_DIR}/app/
 
 EXPOSE 8660
 USER ${BOBA_UID}:${BOBA_GID}
-ENTRYPOINT ["/app/boba/bin/boba.dist/boba"]
+ENTRYPOINT ["/app/boba/bin/boba.dist/boba.bin"]
 CMD ["serve", "--config", "/app/boba/conf/config.toml", "--site", "/app/boba/conf/site.toml"]
 
 

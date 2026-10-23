@@ -1,9 +1,9 @@
-"""Собранный агент `release/<версия>/bin/boba.dist/boba`: сценарий ACP через него —
+"""Собранный агент `release/<версия>/bin/boba.dist/boba.bin`: сценарий ACP через него —
 рукопожатие, сессия с регистрацией MCP-over-ACP, ход с инструментом,
 разрешение; история в Postgres стенда, как у чата в проде, — сессия, ход,
 возобновление с воспроизведением и второй ход; самопроверка данных пакетов;
 время старта и размер, отсутствие исходного текста внутри. Локальную модель
-onnx проверяет `bin/boba-onnx.dist/boba` — сборка с рантаймом onnxruntime-genai.
+onnx проверяет `bin/boba-onnx.dist/boba.bin` — сборка с рантаймом onnxruntime-genai.
 
 Тесты проверяют артефакт, а не код, и в обычный прогон не входят: маркер
 binary — после `make -C build boba-bin`, binary_onnx — после
@@ -45,8 +45,8 @@ pytestmark = [pytest.mark.anyio, pytest.mark.integration]
 class ReleaseBinary(StrEnum):
     """Бинарники выпуска в каталоге bin и команды, которые их собирают."""
 
-    BOBA = "boba.dist/boba"
-    ONNX = "boba-onnx.dist/boba"
+    BOBA = "boba.dist/boba.bin"
+    ONNX = "boba-onnx.dist/boba.bin"
 
     @property
     def build(self) -> str:
