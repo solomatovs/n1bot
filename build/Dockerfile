@@ -523,6 +523,32 @@ USER ${BOBA_UID}:${BOBA_GID}
 CMD ["-m", "boba.mcp_server", "--config", "/app/boba/conf/config.toml", "--site", "/app/boba/conf/site.toml"]
 
 
+# --- boba-agent-service: агент по ACP по сети --------------------------------------
+
+# образ службы агента: служба на python из app-site и агент одним файлом из стадии
+# boba-bin (его путь — BOBA_AGENT_COMMAND в boba.env), который служба запускает на
+# сессию. Песочницы и моделей нет: агент ходит к модели по сети, инструменты ему дают
+# клиенты по MCP-over-ACP. Общий конфиг внутри, site.toml и данные приходят деревом
+# compose/agent
+FROM runtime-os AS runtime-agent
+
+ARG BOBA_DIR=/app/boba
+ARG BOBA_UID=1000
+ARG BOBA_GID=1000
+
+COPY packages/apps/boba-agent-service/conf/  ${BOBA_DIR}/conf/
+COPY --from=boba-bin /out/                   ${BOBA_DIR}/bin/
+
+COPY --from=app-site /opt/app-site          ${BOBA_DIR}/app/
+COPY --from=app-site /opt/app-packages.txt  ${BOBA_DIR}/app/packages.txt
+# шебанги стадии сборки ведут на /usr/local/bin/python3, которого здесь нет
+RUN sed -i "1s|^#!.*python3.*|#!${BOBA_DIR}/third/bin/python3|" ${BOBA_DIR}/app/bin/*
+
+EXPOSE 8660
+USER ${BOBA_UID}:${BOBA_GID}
+CMD ["-m", "boba.agent_service", "--config", "/app/boba/conf/config.toml", "--site", "/app/boba/conf/site.toml"]
+
+
 # --- boba-aid: чат -------------------------------------------------------------------
 
 # UI chainlit (фронт + copilot) из исходников тега с overlay web/chainlit-ui поверх;

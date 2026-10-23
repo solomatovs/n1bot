@@ -798,6 +798,132 @@ boba-mcp принимает клиентов обеих редакций на о
 `initialize` он объявляет инструменты и ресурсы журналов без подписки и смены
 списка, без расширений boba (провод прежней редакции их не несёт).
 
+### Служба агента
+
+Агент запускается не только дочерним процессом чата, но и отдельной службой
+`boba-agent-service` (образ `boba-agent`, дерево `compose/agent`). Служба
+принимает клиентов ACP версии 2 по сети — streamable HTTP и WebSocket на одном
+адресе `[agent].path` (по умолчанию `/acp`) — и на каждую сессию запускает
+свой процесс агента, тот же бинарник `bin/boba`, что у чата, по stdio. Чат
+ходит в службу входом proxy, люди и другие клиенты — входом local, ldap или
+kerberos, как в boba-mcp.
+
+Договор службы:
+
+- **Вход.** Служба — сервер авторизации OAuth 2.1 (тот же, что у boba-mcp,
+  пакет `boba-oauth`): метаданные `/.well-known/oauth-authorization-server`,
+  `/authorize`, `/token`, `/register`, страница входа `/login`. Ресурс токена —
+  адрес ACP (`public_url` + `path`), его метаданные — по RFC 9728 на
+  `/.well-known/oauth-protected-resource<путь ресурса>`. Токен проверяется на
+  каждом HTTP-запросе и на рукопожатии WebSocket, ещё до того, как
+  запускается агент: без токена HTTP отвечает 401 со ссылкой на метаданные,
+  WebSocket закрывается кодом 1008; токен, в котором нет ни одного профиля
+  агента (роли пользователя не дают ни одного `[agent.profiles.*]`), — 403.
+  Запрос с идентификатором чужого подключения (`Acp-Connection-Id`) получает
+  404. В ответе `initialize` служба объявляет способ входа
+  `{"type": "agent", "methodId": "boba-oauth"}` с адресом метаданных в
+  описании; `auth/login` с ним проходит сразу (вход уже проверен транспортом),
+  `auth/logout` закрывает подключение.
+- **Процессы.** Подключение держит свободный процесс для `initialize`,
+  `session/list`, `session/delete` и методов без сессии; `session/new`,
+  `session/resume` и `session/fork` забирают его или запускают новый, и дальше
+  этот процесс обслуживает только свою сессию. `session/close` гасит процесс
+  сессии; закрытие подключения гасит все его процессы; подключение без
+  сообщений, без запросов в работе и без идущего хода дольше
+  `[agent.process].idle_sec` служба закрывает сама. Процесс открытой сессии,
+  вышедший сам, закрывает подключение целиком: клиент переподключается и
+  продолжает сессию `session/resume`. Всего процессов у службы не больше
+  `max_processes`; сверх предела открытие сессии получает ошибку
+  `... the service already runs its limit of N agent processes ...`.
+  Сообщения перекладываются как есть, со своими id запросов в обе стороны:
+  отмена `$/cancel_request` и `session/cancel` доходят до процесса сессии,
+  уведомления `mcp/message` клиента — процессу, чей запрос `mcp/message`
+  идёт.
+- **Профили.** Профиль агента `[agent.profiles.<имя>]` — роли, которым он
+  выдан, и профиль модели агента (`model`: провайдер с адресом и ключом,
+  модель, окно, потолок ответа — ключи `models.<имя>` файла настроек, схема
+  `boba settings-schema`). Процессу служба пишет файл настроек в приватный
+  каталог `0700` под `[agent.process].workdir`: базовый слой
+  `[agent.settings]` (история, системный промпт, права, лимиты, окружение),
+  профили, выданные ролям вошедшего, первый из них по порядку конфига — по
+  умолчанию, и владельца истории `history.owner` — логин вошедшего. Клиент
+  выбирает профиль стандартной настройкой сессии ACP категории `model`
+  (`configOptions`, `session/set_config_option`). Ключи провайдера клиенту не
+  показываются и от клиента не приходят.
+- **Сессии принадлежат пользователю.** История службы — только Postgres
+  (`[agent.settings.history] kind = "postgres"`). Таблица `session` хранит
+  владельца (колонка `owner`, хранилище добавляет её к прежней раскладке само
+  при первом обращении): процесс службы видит, продолжает, ветвит и удаляет
+  только сессии своего пользователя. Сессии без владельца — заведённые
+  процессами чата по stdio или до появления колонки — службе не видны;
+  передать такую сессию пользователю можно, записав его логин в
+  `session.owner`.
+
+Ключи site.toml службы перечисляет `make site-keys APP=agent`: кроме общих
+(`auth_secret`, `proxy_secret`, `krb_config`, ldap, local, Postgres чата
+`pg_*`, `aid_database`, `pg_auth.password`) это `agent_client.secret` —
+секрет доверенного клиента `boba-chat` (`[agent.clients]`), `llm_base_url`,
+`llm_token`, `llm_ssl_verify` и `models.general`, `models.search` профилей.
+История лежит в базе чата в той же схеме `boba`, что у процессов чата, поэтому
+сессии чата видны службе после того, как им назначен владелец. Строка
+подключения истории собирается из роли с паролем `[site.pg_auth.password]`.
+Секция `[env]`: `port = 8660`, `listen_host`, `public_url` (адрес службы за
+nginx с префиксом, например `https://boba.example.com/boba-agent`), `data`;
+`agent_command` даёт `conf/boba.env`.
+
+Чат в режиме службы. Секция `[agent.process]` общего конфига чата вместо
+команды называет адрес ACP службы и вход proxy:
+
+```toml
+[agent.process]
+    start_timeout_sec   = 60
+    request_timeout_sec = 120
+    [agent.process.endpoint]
+        scheme = "https"
+        host   = "boba.example.com"
+        path   = "/boba-agent/acp"
+    [agent.process.auth]
+        auth          = "proxy"
+        client_id     = "boba-chat"
+        client_secret = "${site.agent_client.secret}"
+        secret        = "${keys.proxy}"
+        [agent.process.auth.issuer]
+            scheme = "https"
+            host   = "boba.example.com"
+            path   = "/boba-agent"
+```
+
+`issuer` — `public_url` службы, `client_secret` — тот же секрет, что у
+службы в `[agent.clients.boba-chat]`, `secret` — ключ утверждений
+`[auth.proxy]` службы. Вкладка входит в службу от имени своего пользователя
+(логин и роли), открывает в ней сессию треда и выбирает профиль агента с
+именем профиля чата: профиль чата `general` ждёт у службы
+`[agent.profiles.general]`, выданный ролям пользователя, иначе ход
+отказывает `session ...: the agent service offers model profiles [...], the
+chat profile 'general' is not among them ...`. Модель, промпт и историю в
+этом режиме задаёт служба; `[agent.history]` и `[agent.model]` чата
+по-прежнему нужны слою чата, который хранит пользователя треда: по нему
+удаление треда удаляет сессию агента через службу от имени владельца.
+Подключение, которое служба закрыла (простой, выход процесса), чат
+восстанавливает перед следующим вопросом: новое подключение и
+`session/resume`.
+
+Развёртывание:
+
+```sh
+make -C build build-agent test-agent      # образ boba-agent:<версия> и его проверка без сети
+make -C build dev-agent                   # дерево compose/agent: conf/boba.env, data, .env
+# conf/site.toml пишет администратор по make site-keys APP=agent
+cd compose/agent && docker compose up -d agent
+```
+
+`make all` собирает и проверяет службу вместе с остальными приложениями.
+Контейнеру `boba-agent` нужны связи с nginx (вход и модель), с Postgres чата
+(`postgres-17:5432`), а чату и nginx — с ним (`boba-agent:8660`); в карте
+связей контейнеров это четыре строки (`nginx -> boba-agent:8660`,
+`boba-agent -> nginx:443 postgres-17:5432`, `aid -> boba-agent:8660`,
+`aid2 -> boba-agent:8660`).
+
 ### Соединения сервера
 
 Соединение пользователя — его база, его учётка — приходит на boba-mcp
@@ -1958,7 +2084,8 @@ nginx.
 
 ## 13. Nginx перед boba
 
-Приложения развёрнуты на своих префиксах (например, `/boba/` и `/boba-mcp/`).
+Приложения развёрнуты на своих префиксах (например, `/boba/`, `/boba-mcp/` и
+`/boba-agent/`).
 Чат ожидает путь целиком, без срезания префикса: его
 задаёт ключ `url_prefix` site.toml. Сервис boba-mcp слушает без префикса, а
 префикс входит в его `public_url`, поэтому nginx срезает его сам. Nginx перед
@@ -2001,6 +2128,22 @@ server {
     resolver 127.0.0.53 valid=5s;
     set $mcp http://boba-mcp.internal:8650;
     proxy_pass $mcp;
+
+    include /etc/nginx/conf.d/options/boba-headers.conf;
+  }
+  location /boba-agent/ {
+    resolver 127.0.0.53 valid=5s;
+    set $agent http://boba-agent.internal:8660;
+    rewrite ^/boba-agent/(.*)$ /$1 break;
+    proxy_pass $agent;
+
+    include /etc/nginx/conf.d/options/boba-headers.conf;
+  }
+
+  location ~ ^/\.well-known/(oauth-protected-resource|oauth-authorization-server|openid-configuration)/boba-agent(/|$) {
+    resolver 127.0.0.53 valid=5s;
+    set $agent http://boba-agent.internal:8660;
+    proxy_pass $agent;
 
     include /etc/nginx/conf.d/options/boba-headers.conf;
   }
@@ -2079,6 +2222,11 @@ proxy_read_timeout 86400s;
   Срезать префикс привычной записью `proxy_pass http://адрес/;` с переменной
   нельзя: путь из переменной nginx подставляет вместо всего пути запроса.
   Поэтому там, где префикс надо убрать, стоит `rewrite`.
+- **Два `location` у службы агента.** Устроены так же, как у boba-mcp:
+  служба слушает без префикса (`public_url` его содержит), а метаданные
+  ресурса ACP клиенты ищут от корня хоста. Адрес ACP один на оба транспорта:
+  streamable HTTP держит долгий поток SSE (`proxy_buffering off`), WebSocket
+  требует `Upgrade` — обе вещи даёт `boba-headers.conf`.
 - **Два `location` у boba-mcp.** Сервис слушает без префикса, поэтому первый
   блок префикс срезает строкой `rewrite`. Второй нужен клиентам MCP: метаданные
   авторизации они ищут от корня хоста, по пути
