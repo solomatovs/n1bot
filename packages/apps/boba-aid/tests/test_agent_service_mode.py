@@ -59,8 +59,10 @@ FOREIGN_PROFILE = "absent"
 
 
 @pytest.fixture(autouse=True)
-def chainlit_context() -> None:
-    """Контекст chainlit этим тестам не нужен: они живут ниже обработчиков."""
+def chainlit_context(auth_token: str) -> None:
+    """Контекст chainlit этим тестам не нужен: они живут ниже обработчиков.
+    Секрет токенов chainlit ставит auth_token: вход вкладки подписывает им
+    токен, и без него тест зависел бы от порядка прогона."""
 
 
 @pytest.fixture
