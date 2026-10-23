@@ -775,7 +775,7 @@ class AgentProcess:
         history = settings.history
         if isinstance(history, PostgresHistorySettings):
             postgres = PostgresBuilder(self._env).config(history)
-            return PostgresHistoryStore(postgres, history.db_schema)
+            return PostgresHistoryStore(postgres, history.db_schema, history.owner)
 
         if isinstance(history, MemoryHistorySettings):
             return MemoryHistoryStore()
