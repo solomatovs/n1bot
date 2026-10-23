@@ -1,8 +1,8 @@
 """Образы корней плагинов: точки монтирования данных обязаны быть в образе.
 
-Рантайм монтирует веса эмбеддера и модели OCR биндами, а корень плагина
-read-only: нет пустого каталога в образе — bwrap не создаст его и секция не
-поднимется. Сборщик такие каталоги создаёт, тест проверяет результат.
+Рантайм монтирует веса эмбеддера и модели OCR образами данных, а корень
+плагина read-only: нет пустого каталога в образе — bwrap не создаст его и
+секция не поднимется. Сборщик такие каталоги создаёт, тест проверяет результат.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from boba.stand.zygote import RUNTIME, PrivateImageMount, SandboxStand
 
 FUSE2FS = SandboxStand.FUSE2FS
 
-PACKAGES = sorted(SandboxLayout.DATA_BINDS)
+PACKAGES = sorted(SandboxLayout.DATA_IMAGES)
 
 needs_images = pytest.mark.failif(
     not FUSE2FS.exists()
@@ -68,7 +68,7 @@ class TestPluginDataMountpoints:
         )
 
         guests: list[str] = []
-        for _, guest in SandboxLayout.DATA_BINDS[package]:
+        for _, guest in SandboxLayout.DATA_IMAGES[package]:
             guests.append(guest)
 
         missing = image.missing(guests)

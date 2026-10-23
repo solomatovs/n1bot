@@ -94,7 +94,9 @@ class PluginSandbox(BaseModel):
     profile — полный профиль, отключает сборку. Семантические ключи: network
     включает сеть (по умолчанию её нет), workspace — образ рабочего каталога,
     binds — явные строки host:guest хостовых файлов (resolv.conf, hosts,
-    krb5.conf), пути развёртывания — интерполяциями ${env.*}. Таблицы
+    krb5.conf), images — ext4-образы данных образ:точка (веса моделей), их
+    fuse2fs монтирует read-only с нейтральным источником; пути развёртывания —
+    интерполяциями ${env.*}. Таблицы
     host/isolation/limits/run/zygote накладываются на собранный дефолт
     полями профиля.
     """
@@ -105,6 +107,7 @@ class PluginSandbox(BaseModel):
     network: bool = False
     workspace: bool = False
     binds: tuple[str, ...] = ()
+    images: tuple[str, ...] = ()
     host: dict[str, Any] = Field(default_factory=dict)
     isolation: dict[str, Any] = Field(default_factory=dict)
     limits: dict[str, Any] = Field(default_factory=dict)
@@ -120,6 +123,7 @@ class PluginSandbox(BaseModel):
             "network": self.network,
             "workspace": self.workspace,
             "binds": self.binds,
+            "images": self.images,
             "host": self.host,
             "isolation": self.isolation,
             "limits": self.limits,
@@ -451,6 +455,7 @@ class ZygoteLaunchers(SectionLaunchers):
             ro.append(entry)
 
         data["mounts"]["ro"] = ro
+        data["mounts"]["images"] = self._images(spec.section, needs.images)
 
         if needs.workspace:
             data["mounts"]["workspace"] = SandboxDefaults.workspace(env)
@@ -467,6 +472,23 @@ class ZygoteLaunchers(SectionLaunchers):
                 data[key] = SandboxDefaults.merged(data[key], override)
 
         return SandboxProfile.model_validate(data)
+
+
+    @staticmethod
+    def _images(section: str, entries: tuple[str, ...]) -> list[str]:
+        """Образы данных секции: каждая запись — явная пара образ:точка."""
+        images: list[str] = []
+        for entry in entries:
+            if ":" not in entry:
+                msg = (
+                    f"plugin {section!r}: data image {entry!r} must be an "
+                    "explicit image:guest pair"
+                )
+                raise RuntimeError(msg)
+
+            images.append(entry)
+
+        return images
 
 
 class ProcessLaunchers(SectionLaunchers):

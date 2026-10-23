@@ -1347,7 +1347,10 @@ class ZygoteSpawner:
 
         return self._chain.argv(
             images=(),
-            ro_images=((self._profile.rootfs, SandboxMount.ROOTFS.value),),
+            ro_images=(
+                (self._profile.rootfs, SandboxMount.ROOTFS.value),
+                *self._nested.data_images(),
+            ),
             template="",
             op=[LauncherMode.RUN.value, shlex.join(inner_argv)],
             limits=ResourceLimits(),

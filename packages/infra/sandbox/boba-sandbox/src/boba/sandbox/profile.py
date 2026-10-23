@@ -379,6 +379,15 @@ class SandboxLayout:
         """Путь образа пользователя внутри песочницы: каталог образов фиксирован."""
         return SandboxMount.SETUP_IMAGES.under(os.path.basename(image_host))
 
+    DATA_IMAGE_PREFIX: ClassVar[str] = "/tmp/boba-image-"  # noqa: S108  # nosec B108
+    """Точка образа данных во внешнем слое цепочки: рядом с корнем, на той же
+    tmpfs /tmp, и только там — во вложенный слой её приносит бинд."""
+
+    @classmethod
+    def data_image_mount(cls, index: int) -> str:
+        """Точка index-го образа данных профиля во внешнем слое цепочки."""
+        return f"{cls.DATA_IMAGE_PREFIX}{index}"
+
 
 class MountsSpec(BaseModel):
     """Что песочница монтирует и что из этого доезжает до тела инструмента.
@@ -416,8 +425,18 @@ class MountsSpec(BaseModel):
             "монтирования. Отсутствие — у секции нет своего workspace."
         ),
     )
+    images: tuple[BindSpec, ...] = Field(
+        default=(),
+        description=(
+            "Ext4-образы данных read-only, формат `образ:точка`, например "
+            "`/app/boba/models/fastembed.ext4:/var/cache/fastembed`. "
+            "Монтируются fuse2fs один раз на жизнь зиготы, как корень: в "
+            "mountinfo тела источник нейтрален, пути хоста нет. Точка обязана "
+            "существовать в образе корня. Отсутствие — образов данных нет."
+        ),
+    )
 
-    @field_validator("ro", "rw", mode="before")
+    @field_validator("ro", "rw", "images", mode="before")
     @classmethod
     def _parse_binds(cls, value: object) -> object:
         if not isinstance(value, (list, tuple)):
@@ -437,6 +456,23 @@ class MountsSpec(BaseModel):
     def _parse_size(cls, value: object) -> object:
         if isinstance(value, str):
             return TmpfsSpec.parse_size(value)
+
+        return value
+
+    @field_validator("images", mode="after")
+    @classmethod
+    def _images_are_static(cls, value: tuple[BindSpec, ...]) -> tuple[BindSpec, ...]:
+        """Образ данных общий на зиготу: переменные вызова в нём некуда подставить."""
+        for spec in value:
+            if "{" not in spec.host and "{" not in spec.target:
+                continue
+
+            msg = (
+                f"sandbox: data image {spec.host}:{spec.target} has a per-call "
+                "variable, but data images are mounted once per zygote; name a "
+                "fixed image path"
+            )
+            raise ValueError(msg)
 
         return value
 

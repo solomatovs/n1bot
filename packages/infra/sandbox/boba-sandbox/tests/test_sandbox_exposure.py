@@ -20,6 +20,8 @@ from uuid import uuid4
 import pytest
 from omegaconf import DictConfig
 
+from boba.config import bind
+from boba.runtime.launchers import EnvPaths
 from boba.runtime.plugins import EntryPointPlugins
 from boba.sandbox import SandboxProfile
 from boba.sandbox.zygote import (
@@ -28,7 +30,7 @@ from boba.sandbox.zygote import (
 )
 from boba.stand.sandbox import section_profile
 from boba.stand.shell import ShellRun
-from boba.stand.zygote import ZygoteStand
+from boba.stand.zygote import SandboxStand, ZygoteStand
 from boba.toolkit.launcher import ChannelOverflowError
 
 needs_bwrap = pytest.mark.failif(shutil.which("bwrap") is None, reason="нет bubblewrap")
@@ -152,6 +154,70 @@ class TestImagesAreHidden:
 
         if exposed:
             raise AssertionError("тело видит файлы образов:\n" + "\n".join(exposed))
+
+
+class TestMountinfoHasNoHostPaths:
+    """Дефект: таблица монтирования тела выдавала раскладку развёртывания.
+
+    Источник fuse-корня был путём rootfs.ext4 на хосте, у биндов resolv.conf,
+    hosts, krb5.conf и каталогов весов моделей поле root несло host-путь
+    (${env.krb}/krb5.conf, ${env.models}/fastembed). Тело не должно видеть ни
+    одного пути [env] развёртывания. Исключение — бинд кода bash-тула, который
+    кладёт сам стенд (SandboxStand.with_shell): в бою его нет.
+    """
+
+    def test_no_section_sees_a_deployment_path(
+        self,
+        raw_config: DictConfig,
+        sections: list[SandboxSection],
+        caller_of: CallerFactory,
+    ) -> None:
+        markers = self._deployment_paths(raw_config)
+
+        exposed: list[str] = []
+        for section in sections:
+            caller = caller_of(section)
+            outcome = ShellRun.call_text(
+                caller, "cat /proc/self/mountinfo; cat /proc/mounts"
+            )
+
+            for line in outcome.stdout.splitlines():
+                if self._stand_overlay(line):
+                    continue
+
+                for marker in markers:
+                    if marker not in line:
+                        continue
+
+                    exposed.append(f"{section.name}: {line[:200]}")
+
+        if exposed:
+            listed = "\n".join(exposed)
+            raise AssertionError(f"тело видит пути развёртывания:\n{listed}")
+
+    @staticmethod
+    def _deployment_paths(raw_config: DictConfig) -> list[str]:
+        env = bind(raw_config, "env", EnvPaths)
+        values = (env.base, env.data, env.sandbox, env.third, env.models, env.krb)
+
+        markers: list[str] = []
+        for value in values:
+            if value:
+                markers.append(value)
+
+        return markers
+
+    @staticmethod
+    def _stand_overlay(line: str) -> bool:
+        """Строка бинда кода bash-тула стенда: точка монтирования — SHELL_GUEST."""
+        fields = line.split()
+        if len(fields) < 5:
+            return False
+
+        if fields[4] == SandboxStand.SHELL_GUEST:
+            return True
+
+        return fields[1] == SandboxStand.SHELL_GUEST
 
 
 class TestKeytabStaysOutside:

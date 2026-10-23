@@ -257,7 +257,7 @@ WantedBy=multi-user.target
 |---|---|---|---|
 | `packages/` | код приложений, их общие конфиги (`apps/boba-<приложение>/conf`) и статика | разработчик | да |
 | `build/` | `Makefile`, `Dockerfile`, сценарии и образцы (`conf/`); `build/src` — скачанные артефакты сборки | разработчик; `build/src` — `make fetch` | да, кроме `build/src` |
-| `runtime/` | то, что подкладывается приложению для работы: модели, бинарники и библиотеки песочницы, её образы | сборка (`make fetch`, `sandbox`, `plugin-rootfs-all`) | нет |
+| `runtime/` | то, что подкладывается приложению для работы: модели, бинарники и библиотеки песочницы, её образы | сборка (`make fetch`, `sandbox`, `models-image`, `plugin-rootfs-all`) | нет |
 | `compose/<приложение>/` | случай запуска в Docker: `docker-compose.yml`, `.env`, `conf/` (специфика машины), `data/` | администратор — `conf` и `.env`; контейнер — `data` | только `docker-compose.yml` |
 | `debug/<приложение>/` | случай запуска на хосте под отладчиком и для тестов: `conf/`, `data/` | администратор — `conf`; процесс на хосте — `data` | нет |
 
@@ -266,6 +266,7 @@ WantedBy=multi-user.target
 ```
 runtime/
   models/    fastembed/  rapidocr/  (onnx-genai/ — только с BIN_ONNX=1)
+             fastembed.ext4  rapidocr.ext4  — те же веса образами данных для песочницы
   third/     bin/bwrap  bin/fuse2fs  lib/libstdc++.so.6  lib/libgcc_s.so.1
   sandbox/   workspace.ext4  plugins/<пакет>/rootfs.ext4  tools/
 ```
@@ -316,6 +317,7 @@ runtime/
 | `fetch` | скачивает исходники bwrap, libfuse, e2fsprogs, uv, фронт chainlit, шрифты; модели OCR и эмбеддера; собирает колесо python-oracledb | `build/src`, `runtime/models` | модели — около 2 ГБ, время зависит от сети |
 | `base` | образ сборки `boba-base` с компилятором и uv; его зовёт `fetch` | демон Docker | минуты в первый раз, секунды повторно |
 | `sandbox` | собирает `bwrap` и `fuse2fs`, делает шаблон `workspace.ext4` | `runtime/third`, `runtime/sandbox` | несколько минут, 1 ГБ |
+| `models-image` | ext4-образы весов fastembed и rapidocr из уже скачанных моделей, без сети; песочница монтирует их вместо каталогов, чтобы телу инструмента не был виден путь на хосте; пересобираются, когда меняются файлы моделей | `runtime/models/<модель>.ext4` | минута, 2,2 ГБ |
 | `plugin-rootfs-all` | образ корня файловой системы на каждый плагин инструментов, всегда заново | `runtime/sandbox/plugins/<пакет>/rootfs.ext4` | 20–40 минут, 7–8 ГБ |
 | `build APP=<приложение>` | образ `boba-<приложение>:<версия>`; фронт чата образ собирает сам, стадия `boba-bin` кладёт в образ aid агента одним файлом `bin/boba` (Nuitka); в образ mcp уезжают образы корней плагинов и workspace | демон Docker | aid — минуты, первая компиляция агента — 15–40 минут; mcp — 5–10 минут |
 | `test APP=<приложение>` | `build`, затем проверка образа без сети: пакеты, точки входа, у mcp — образы плагинов и модели, у aid — файлы, которые .chainlit/config.toml называет в custom_css и default_avatar_file_url, и ход агента с моделью проверки | — | секунды после сборки; печатает `RESULT: ALL OK` |
