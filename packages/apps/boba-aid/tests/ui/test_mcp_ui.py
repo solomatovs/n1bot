@@ -1966,11 +1966,12 @@ class AppUnderTest:
         self.errors.append(str(error))
 
     def _logged(self, message: ConsoleMessage) -> None:
-        """Сообщения консоли всех кадров страницы, включая iframe приложения."""
-        if message.type not in ("error", "warning"):
+        """Консоль кадров приложения — страницы-прокси и iframe рендерера;
+        сообщения самой страницы чата не нужны."""
+        where = str(message.location.get("url", ""))
+        if where.startswith(self.chat.base_url):
             return
 
-        where = message.location.get("url", "")
         self.console.append(f"{message.type} {where}: {message.text}")
 
     def _refused(self, request: Request) -> None:
@@ -1988,7 +1989,7 @@ class AppUnderTest:
         deadline = time.monotonic() + self.WAIT_MS / 1000
         while rows.count() != count:
             if time.monotonic() > deadline:
-                shown = "\n".join(self.console[-30:])
+                shown = "\n".join(self.console[-60:])
                 msg = (
                     f"the app draws {count} rows, got {rows.count()}; console and "
                     f"failed requests:\n{shown}"
