@@ -1770,7 +1770,7 @@ async def test_panel_follows_the_file_after_the_socket_reconnects(
     socket = panel.probe.socket
     path = panel.tool_view("reconnect.png")
     ended = re.compile(
-        rf"canvas watch of {re.escape(path)} .*ended: the thread has no connected tab"
+        rf"canvas watch of {re.escape(path)} .*ended: the scope has no connected tab"
     )
 
     log = app_server.app.tail()

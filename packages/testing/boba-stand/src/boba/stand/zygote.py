@@ -188,6 +188,7 @@ class SandboxStand:
 
     SRC_PACKAGES: ClassVar[tuple[str, ...]] = (
         "core/boba-cancellation",
+        "core/boba-core",
         "core/boba-toolkit",
         "infra/sandbox/boba-sandbox",
         SHELL_SRC,

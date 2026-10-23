@@ -57,6 +57,11 @@ dependencies = [
     "jsonschema>=4.23,<5",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "mcp-types>=2.3,<3",
+]
+
 [tool.setuptools.package-data]
 "boba.stand" = ["acp_schema/*.json"]
 
