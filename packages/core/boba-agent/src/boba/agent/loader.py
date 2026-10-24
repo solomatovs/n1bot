@@ -240,6 +240,7 @@ class HistoryLoader:
             version=self._version,
             content=self._templates.read(AgentTemplateFile.TURN_INTERRUPTED_NOTICE),
             level=NoticeLevel.WARNING,
+            detail="",
         )
 
     def _last_significant(

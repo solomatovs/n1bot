@@ -84,7 +84,7 @@ from boba.identity.locks import LockBusyError
 from boba.identity.run import Runs
 from boba.identity.session import Login
 from boba.identity.token import CookieSpec
-from boba.mcp_client.client import McpCaller, McpClientError, McpServers
+from boba.mcp_client.client import FilesHost, McpCaller, McpClientError, McpServers
 from boba.messaging import (
     MessageBus,
     StopRequested,
@@ -268,8 +268,9 @@ class TabAgent:
                 redraw,
             )
             await self._notices.toast(
-                f"The conversation was not redrawn after the failed edit: the "
-                f"thread was not read: {redraw.view_message().content}"
+                "The conversation couldn't be shown again after the failed edit. "
+                "Reload the page to see it.",
+                redraw.view_message().content,
             )
 
 
@@ -376,10 +377,11 @@ async def set_chat_profiles(
 class ProfileUploads:
     """Доступность загрузки файлов в профиле для пользователя.
 
-    Создаётся обработчиком set_chat_profiles на один запрос настроек. Файлы
-    пользователя лежат на первом MCP-сервере профиля, объявившем расширение
-    файлов; если такого сервера нет или сервер профиля недоступен, кнопка
-    загрузки в этом профиле скрыта.
+    Создаётся обработчиком set_chat_profiles на один запрос настроек и
+    on_chat_start на старт вкладки. Файлы пользователя лежат на первом
+    MCP-сервере профиля, объявившем расширение файлов; если такого сервера
+    нет или сервер профиля недоступен, кнопка загрузки в этом профиле
+    скрыта, а недоступность сервера вкладка узнаёт уведомлением (explain).
     """
 
     def __init__(self, servers: McpServers, user: cl.User | None) -> None:
@@ -394,23 +396,37 @@ class ProfileUploads:
         )
 
     async def enabled(self, profile: ChatProfileConfig) -> bool:
-        user = self._user
-        if user is None:
+        try:
+            host = await self._host(profile)
+        except McpClientError as exc:
+            logger.warning("file upload is hidden: %s", exc)
             return False
 
+        return host is not None
+
+    async def explain(self, profile: ChatProfileConfig, notices: TabNotices) -> None:
+        """Кнопка загрузки скрыта недоступным сервером профиля — вкладке
+        уведомление с причиной; доступный сервер или профиль без файлов
+        молчат."""
+        try:
+            await self._host(profile)
+        except McpClientError as exc:
+            logger.warning("file upload is hidden: %s", exc)
+            await notices.uploads_off(exc)
+
+    async def _host(self, profile: ChatProfileConfig) -> FilesHost | None:
+        user = self._user
+        if user is None:
+            return None
+
         if not profile.mcp:
-            return False
+            return None
 
         caller = McpCaller(
             login=Login(user.identifier), roles=ChainlitSession.roles_of(user)
         )
-        try:
-            host = await self._servers.files_host(profile.mcp, caller)
-        except McpClientError as exc:
-            logger.warning("file upload is hidden for %s: %s", caller.login, exc)
-            return False
 
-        return host is not None
+        return await self._servers.files_host(profile.mcp, caller)
 
 
 @cl.on_chat_start
@@ -419,6 +435,7 @@ class ProfileUploads:
 async def on_chat_start(
     registry: Annotated[ChatProfiles, Depends(chat_profiles_registry)],
     agents: Annotated[ThreadAgents, Depends(thread_agents, scope="session")],
+    servers: Annotated[McpServers, Depends(mcp_servers)],
 ):
     session = current_session()
 
@@ -449,6 +466,14 @@ async def on_chat_start(
     # процесс агента поднимается вместе с вкладкой: первый вопрос его не ждёт
     if session.thread_id:
         await TabAgent(agents, registry).start(session)
+
+    try:
+        selected = registry.resolve(session.chat_profile, session.sign_in)
+    except RefusalError:
+        return
+
+    uploads = ProfileUploads(servers, session.user)
+    await uploads.explain(selected.config, TabNotices())
 
 
 @cl.on_chat_end
@@ -545,7 +570,7 @@ async def on_canvas_open(
     try:
         await canvas.show(request.path, request.mime, scope)
     except RefusalError as exc:
-        await TabNotices().toast(f"Failed to open the canvas: {exc}")
+        await TabNotices().canvas_refused(exc)
 
 
 @cl.action_callback(CanvasAction.CONTENT)
@@ -571,7 +596,7 @@ async def on_canvas_content(
             request.path, request.mime, watch=not request.refresh, scope=scope
         )
     except RefusalError as exc:
-        await TabNotices().toast(f"Failed to open the canvas: {exc}")
+        await TabNotices().canvas_refused(exc)
         return {}
 
     return described.props()

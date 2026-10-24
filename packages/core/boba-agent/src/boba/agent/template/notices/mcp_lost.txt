@@ -1,1 +1,1 @@
-MCP server '{server}' stopped answering, its tools are left out of the session until it answers again: {cause}
+The MCP server '{server}' stopped answering, so its tools are unavailable for now. They will come back as soon as it answers again.

@@ -18,9 +18,11 @@ HTTP, SSE или stdio. Способ входа — свойство запис�
 проход страницы входа без человека (UnattendedLogin).
 
 Ошибки:
-McpClientError — сервер недоступен, не согласовал версию протокола,
-    отказал во входе, не ответил на запрос, забыл сессию клиента, ответил не
-    по схеме либо отказал в подписке.
+McpClientError — сервер не согласовал версию протокола, отказал во входе,
+    ответил не по схеме либо отказал в подписке.
+McpUnansweredError — подкласс McpClientError: сервер недоступен, не ответил
+    на запрос за срок, ответил не как сервер MCP или забыл сессию клиента;
+    короткая причина для человека — в brief.
 MCPError (mcp.shared.exceptions) — сервер ответил на запрос ошибкой MCP.
 """
 
@@ -175,6 +177,7 @@ __all__ = [
     "McpServersConfig",
     "McpToolPort",
     "McpToolServer",
+    "McpUnansweredError",
     "NoAuth",
     "ProgressHeard",
     "ProxyAuth",
@@ -201,6 +204,17 @@ Streams = tuple[ReadStream[SessionMessage | Exception], WriteStream[SessionMessa
 class McpClientError(Exception):
     """С MCP-сервером не удалось договориться: соединение, инициализация,
     список инструментов."""
+
+
+class McpUnansweredError(McpClientError):
+    """Сервер не ответил как сервер MCP: нет соединения, вышел срок, отказ
+    HTTP, страница не того вида, забытая сессия. brief — короткая причина
+    для человека (статус HTTP, «нет соединения»); полный текст — в
+    сообщении исключения для журнала."""
+
+    def __init__(self, message: str, brief: str) -> None:
+        super().__init__(message)
+        self.brief = brief
 
 
 @dataclass(frozen=True)
@@ -747,6 +761,15 @@ class ErrorCauses:
         return [f"{type(error).__name__}: {error}"]
 
 
+class Silence(StrEnum):
+    """Короткие причины для человека, когда сервер не ответил как сервер MCP."""
+
+    NO_CONNECTION = "no connection"
+    NO_ANSWER = "no answer in time"
+    BROKE_OFF = "the connection broke off"
+    HANDSHAKE = "the MCP handshake failed"
+
+
 class HttpRefusal:
     """Отказ HTTP одного запроса к серверу: последний ответ POST этого
     запроса со статусом от 400.
@@ -773,9 +796,12 @@ class HttpRefusal:
     )
     """Отказы, с которыми сервер MCP отдаёт ошибку JSON-RPC телом."""
 
+    HTML: ClassVar[str] = "text/html"
+
     def __init__(self, causes: ErrorCauses) -> None:
         self._causes = causes
         self._last: str | None = None
+        self._brief = ""
         self._bad_request = False
         self._forgotten = False
         self._foreign = False
@@ -789,6 +815,7 @@ class HttpRefusal:
         mcp_body = body.lower().startswith(self.MCP_BODIES)
         if response.status_code < HTTPStatus.BAD_REQUEST:
             self._last = None
+            self._brief = ""
             self._bad_request = False
             self._foreign = False
             if response.status_code == HTTPStatus.ACCEPTED:
@@ -798,6 +825,7 @@ class HttpRefusal:
                 return
 
             self._foreign = True
+            self._brief = self._page(response.status_code, body)
             self._last = (
                 f"{request.method} {request.url}: expected a reply of the MCP "
                 f"server, got HTTP {response.status_code} "
@@ -813,6 +841,7 @@ class HttpRefusal:
         self._foreign = True
         if mcp_body and response.status_code in self.ANSWERED_STATUSES:
             self._foreign = False
+        self._brief = f"HTTP {response.status_code} {response.reason_phrase}"
         self._last = (
             f"{request.method} {request.url}: expected a reply of the MCP server, "
             f"got HTTP {response.status_code} {response.reason_phrase} with body "
@@ -824,6 +853,7 @@ class HttpRefusal:
             return
 
         self._foreign = True
+        self._brief = self._silence(error)
         self._last = (
             f"{request.method} {request.url}: expected a reply of the MCP server, "
             f"got no answer: {type(error).__name__}: {error}"
@@ -835,6 +865,30 @@ class HttpRefusal:
             return "of no content type"
 
         return body
+
+    def _page(self, status: int, body: str) -> str:
+        if body.lower().startswith(self.HTML):
+            return f"a web page instead of an MCP reply (HTTP {status})"
+
+        return f"a reply {self._shown(body)} instead of an MCP reply (HTTP {status})"
+
+    @staticmethod
+    def _silence(error: httpx2.TransportError) -> str:
+        if isinstance(error, httpx2.ConnectError):
+            return Silence.NO_CONNECTION.value
+
+        if isinstance(error, httpx2.TimeoutException):
+            return Silence.NO_ANSWER.value
+
+        return Silence.BROKE_OFF.value
+
+    def brief(self, fallback: str) -> str:
+        """Короткая причина последнего отказа запроса для человека; без
+        отказа — fallback."""
+        if not self._brief:
+            return fallback
+
+        return self._brief
 
     def foreign(self) -> str:
         """Чем был последний ответ запроса, если это не ответ сервера MCP:
@@ -1465,7 +1519,8 @@ class McpConnection:
                 f"mcp {self._transport.label()}: the protocol was not negotiated "
                 f"within {self._connect_timeout_sec}s"
             )
-            raise McpClientError(msg) from exc
+            brief = f"no answer within {self._connect_timeout_sec:g} s"
+            raise McpUnansweredError(msg, brief) from exc
         except McpClientError:
             # неудачная попытка не запоминается: следующий open() подключается заново
             await self.close()
@@ -1527,7 +1582,8 @@ class McpConnection:
                         f"mcp {self._transport.label()}: connecting and "
                         f"initializing failed: {refusal.text(exc)}"
                     )
-                    ready.set_exception(McpClientError(msg))
+                    brief = refusal.brief(Silence.HANDSHAKE.value)
+                    ready.set_exception(McpUnansweredError(msg, brief))
                     return
 
                 raise
@@ -2542,6 +2598,9 @@ class McpToolServer(McpToolPort):
         """Открытая сессия подключения; неудача подключения называет сервер."""
         try:
             return await connection.open(version)
+        except McpUnansweredError as exc:
+            msg = f"mcp server {self._name!r}: {exc}"
+            raise McpUnansweredError(msg, exc.brief) from exc
         except McpClientError as exc:
             msg = f"mcp server {self._name!r}: {exc}"
             raise McpClientError(msg) from exc
@@ -2610,21 +2669,24 @@ class McpToolServer(McpToolPort):
                 "session of the client (HTTP 404 with Mcp-Session-Id); the next "
                 f"request opens a new session: {refusal.text(error)}"
             )
-            raise McpClientError(msg) from error
+            raise McpUnansweredError(msg, "the server forgot the session") from error
 
         if reason := refusal.foreign():
             await connection.close()
             msg = f"{self._label}: {action} got no answer of the MCP server: {reason}"
-            raise McpClientError(msg) from error
+            brief = refusal.brief(Silence.BROKE_OFF.value)
+            raise McpUnansweredError(msg, brief) from error
 
         if error.error.code == mt.CONNECTION_CLOSED:
             await connection.close()
             msg = f"{self._label}: {action} got no answer: {refusal.text(error)}"
-            raise McpClientError(msg) from error
+            brief = refusal.brief(Silence.BROKE_OFF.value)
+            raise McpUnansweredError(msg, brief) from error
 
         if error.error.code == mt.REQUEST_TIMEOUT:
             msg = f"{self._label}: {action} got no answer: {refusal.text(error)}"
-            raise McpClientError(msg) from error
+            brief = refusal.brief(Silence.NO_ANSWER.value)
+            raise McpUnansweredError(msg, brief) from error
 
     async def _discovered(
         self,

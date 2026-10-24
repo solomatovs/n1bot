@@ -296,7 +296,10 @@
             "elapsedMs": "{{ms}} ms",
             "elapsedSec": "{{sec}} s",
             "elapsedMin": "{{min}} m {{sec}} s",
-            "noRows": "(no rows)"
+            "noRows": "(no rows)",
+            "endedMaxTokens": "The model's answer reached its length limit and stopped here. Ask it to continue, or ask for a shorter answer.",
+            "endedMaxTurns": "The agent reached its limit of steps for one turn and stopped here. Send a message to let it continue.",
+            "endedEarly": "The turn ended earlier than expected ({{reason}}). Send your message again."
         },
         "canvas": {
             "download": "Download file",

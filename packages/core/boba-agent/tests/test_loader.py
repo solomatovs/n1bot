@@ -210,7 +210,7 @@ class TestTruncatedJournal:
         assert Reference().appended_types(cut.path) == expected
         assert len(notices) == 1, report.repaired
         assert notices[0].level is NoticeLevel.WARNING
-        assert notices[0].content.startswith("The turn was interrupted:")
+        assert notices[0].content.startswith("The previous turn was cut short:")
 
     @staticmethod
     def _split(

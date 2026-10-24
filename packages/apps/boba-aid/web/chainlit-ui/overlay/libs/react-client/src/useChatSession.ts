@@ -112,11 +112,12 @@ const AGENT_STATE_EVENT = 'agent_state';
 export interface IAgentState {
   available: boolean;
   text: string;
+  detail: string;
 }
 
 export const agentStateState = atom<IAgentState>({
   key: 'BobaAgentState',
-  default: { available: true, text: '' }
+  default: { available: true, text: '', detail: '' }
 });
 
 const useChatSession = () => {
@@ -235,7 +236,7 @@ const useChatSession = () => {
 
       // boba: пачка и состояние агента прежнего сокета принадлежат прежнему треду
       pendingSteps.current = [];
-      setAgentState({ available: true, text: '' });
+      setAgentState({ available: true, text: '', detail: '' });
 
       const socket = io(uri, {
         path,

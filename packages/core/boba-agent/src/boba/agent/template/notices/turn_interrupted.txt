@@ -1,1 +1,1 @@
-The turn was interrupted: the agent stopped before it finished. Tool calls left without a result are marked as interrupted; check whether they took effect before relying on them.
+The previous turn was cut short: the agent stopped before it finished. Tool calls that were still running are marked as interrupted, so check whether they took effect before relying on them.

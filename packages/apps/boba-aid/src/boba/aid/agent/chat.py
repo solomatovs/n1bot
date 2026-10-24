@@ -21,7 +21,7 @@ from collections.abc import Collection, Coroutine, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, ClassVar, Protocol
 from urllib.parse import urljoin
 from uuid import UUID
 
@@ -962,6 +962,12 @@ class ThreadAgent:
     ходы разводит замок области треда в приёмнике (TurnRenderer).
     """
 
+    NOT_EDITED: ClassVar[str] = (
+        "The question wasn't edited because the earlier conversation couldn't be "
+        "replaced, so everything stays as it was. Try again when no other tab of "
+        "this chat is answering."
+    )
+
     def __init__(
         self,
         identity: ThreadIdentity,
@@ -1176,9 +1182,14 @@ class ThreadAgent:
         """
         links = self._questions.links.get(question.key)
         if links is None:
+            logger.warning(
+                "thread %s: edited question %s is not in the loaded conversation",
+                self.thread_id,
+                question.key,
+            )
             msg = (
-                f"The question {question.key} of thread {self.thread_id} is not in "
-                "the conversation this tab has loaded; reload the thread to edit it."
+                "This question isn't in the conversation loaded in this tab, so it "
+                "can't be edited. Reload the chat and try again."
             )
             raise AcpClientError(msg)
 
@@ -1546,13 +1557,16 @@ class ThreadAgent:
         AgentRequestError — агент отказал в `session/fork`.
         """
         if not self.process.forks_by_message():
+            logger.warning(
+                "thread %s: question %s edited, but the agent does not declare %r "
+                "in capabilities.session.fork._meta",
+                self.thread_id,
+                question.key,
+                MetaKey.UP_TO_MESSAGE_ID.value,
+            )
             msg = (
-                f"The question {question.key} of thread {self.thread_id} was "
-                "edited, but the agent of this chat does not declare "
-                f"{MetaKey.UP_TO_MESSAGE_ID.value!r} in "
-                "capabilities.session.fork._meta, so it cannot branch the "
-                "conversation before the edited question; ask the question "
-                "anew as a new message instead of editing it."
+                "This agent can't branch a conversation, so questions can't be "
+                "edited here. Send the question again as a new message instead."
             )
             raise AcpClientError(msg)
 
@@ -1561,24 +1575,25 @@ class ThreadAgent:
         try:
             await self.process.delete_session(current)
         except AgentRequestError as refused:
+            logger.warning(
+                "thread %s: question %s not edited, session %s not deleted: %s",
+                self.thread_id,
+                question.key,
+                current,
+                refused,
+            )
             try:
                 await self.process.delete_session(forked)
             except AgentRequestError as dropped:
-                msg = (
-                    f"The question {question.key} of thread {self.thread_id} was "
-                    f"not edited: the session {current} could not be deleted "
-                    f"({refused}), and its branch {forked} could not be removed "
-                    f"either ({dropped})."
+                logger.error(
+                    "thread %s: branch %s not removed either: %s",
+                    self.thread_id,
+                    forked,
+                    dropped,
                 )
-                raise AcpClientError(msg) from dropped
+                raise AcpClientError(self.NOT_EDITED) from dropped
 
-            msg = (
-                f"The question {question.key} of thread {self.thread_id} was not "
-                f"edited: the session {current} could not be deleted ({refused}), "
-                "so the conversation stays as it was; edit the question again "
-                "when no other tab of this chat is answering or loading it."
-            )
-            raise AcpClientError(msg) from refused
+            raise AcpClientError(self.NOT_EDITED) from refused
 
         await self._meta.remember(self.thread_id, forked, self._identity.profile.name)
         self._session_id = forked

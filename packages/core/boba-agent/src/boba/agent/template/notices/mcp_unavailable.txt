@@ -1,1 +1,1 @@
-MCP server '{server}' is unavailable, its tools are left out of the session: {cause}
+The MCP server '{server}' isn't available right now, so its tools can't be used in this turn. It will be tried again with your next message.

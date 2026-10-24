@@ -1,1 +1,1 @@
-The agent stopped serving this session: {cause}
+The agent ran into a problem and stopped working on this conversation. Send your message again; if it keeps happening, let the administrator know.

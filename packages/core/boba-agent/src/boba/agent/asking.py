@@ -26,6 +26,8 @@ from boba.llm.chat import (
     LlmContextOverflowError,
     LlmError,
     LlmOutputLimitError,
+    LlmServiceError,
+    LlmTrouble,
 )
 
 __all__ = [
@@ -87,9 +89,13 @@ class Overflowed:
 
 @dataclass(frozen=True)
 class Errored:
-    """Обращение не состоялось: сеть, статус, мусорный ответ, поток без финала."""
+    """Обращение не состоялось: сеть, статус, мусорный ответ, поток без финала.
+    error — полный текст для журнала, trouble и detail — вид беды и короткая
+    причина для человека."""
 
     error: str
+    trouble: LlmTrouble
+    detail: str
 
 
 @dataclass(frozen=True)
@@ -132,8 +138,10 @@ class ModelAsk:
             return Overflowed(str(exc))
         except LlmOutputLimitError as exc:
             return OutputLimited(partial, str(exc))
+        except LlmServiceError as exc:
+            return Errored(str(exc), exc.trouble, exc.detail)
         except LlmError as exc:
-            return Errored(str(exc))
+            return Errored(str(exc), LlmTrouble.UNKNOWN, "")
 
         return Answered(reply)
 
@@ -172,7 +180,7 @@ class ModelAsk:
                 "The model stream ended without a final reply: the provider closed "
                 "the connection before the answer was complete."
             )
-            raise LlmError(msg)
+            raise LlmServiceError(msg, LlmTrouble.CUT, "the stream stopped early")
 
         return reply
 

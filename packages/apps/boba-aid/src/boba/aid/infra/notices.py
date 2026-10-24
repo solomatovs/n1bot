@@ -29,9 +29,10 @@ from boba.aid.agent.client import (
 from boba.aid.agent.settings import AgentSettingsError
 from boba.aid.infra.session import current_session
 from boba.aid.rendering.errors import show_error
+from boba.identity.errors import RefusalError
 from boba.identity.locks import LockBusyError
 from boba.identity.session import LogLine
-from boba.mcp_client.client import McpClientError
+from boba.mcp_client.client import McpClientError, McpUnansweredError
 
 __all__ = [
     "FailureChannel",
@@ -75,24 +76,34 @@ class FailureChannel(StrEnum):
 
 @dataclass(frozen=True)
 class FailureEntry:
-    """Запись каталога: способ показа и текст с подстановкой собеседника,
-    действия и причины."""
+    """Запись каталога: способ показа и слова человеку — что случилось и
+    что делать; собеседник, действие и причина уходят короткой подробностью
+    под текстом."""
 
     channel: FailureChannel
-    template: str
+    text: str
 
-    def render(self, failure: AgentFailure) -> str:
-        return self.template.format(
-            peer=failure.peer, action=failure.action, cause=failure.cause
-        )
+    def render(self, failure: AgentFailure) -> UserFailure:
+        detail = f"{failure.peer}, {failure.action}: {failure.cause}"
+
+        return UserFailure(channel=self.channel, text=self.text, detail=detail)
 
 
 @dataclass(frozen=True)
 class UserFailure:
-    """Сбой для вкладки: способ показа и текст по-английски."""
+    """Сбой для вкладки: способ показа, слова человеку по-английски и
+    короткая техническая подробность (пусто — её нет)."""
 
     channel: FailureChannel
     text: str
+    detail: str
+
+    def toast(self) -> str:
+        """Текст всплывающего уведомления: подробность — в скобках в конце."""
+        if not self.detail:
+            return self.text
+
+        return f"{self.text} ({self.detail})"
 
 
 class UserFailures:
@@ -103,64 +114,107 @@ class UserFailures:
     ENTRIES: ClassVar[Mapping[AgentFailureKind, FailureEntry]] = {
         AgentFailureKind.START_FAILED: FailureEntry(
             FailureChannel.AGENT_STATE,
-            "The {peer} could not be started: {cause}.",
+            "The agent couldn't be started, so the chat can't answer right now. "
+            "Try again with the button on the right; if it keeps failing, let the "
+            "administrator know.",
         ),
         AgentFailureKind.UNREACHABLE: FailureEntry(
             FailureChannel.AGENT_STATE,
-            "The {peer} is unreachable ({action}): {cause}.",
+            "The agent can't be reached right now, so the chat can't answer. "
+            "Try again in a moment with the button on the right; if it keeps "
+            "failing, let the administrator know.",
         ),
         AgentFailureKind.SIGN_IN_REFUSED: FailureEntry(
             FailureChannel.AGENT_STATE,
-            "The {peer} refused the sign-in of this chat ({action}): {cause}.",
+            "The agent didn't accept the sign-in of this chat, so the chat can't "
+            "answer. Reload the page to sign in again; if it keeps failing, let "
+            "the administrator know.",
         ),
         AgentFailureKind.BAD_ANSWER: FailureEntry(
             FailureChannel.AGENT_STATE,
-            "The {peer} answered {action} not by the agent protocol: {cause}.",
+            "The agent answered in a way the chat doesn't understand, so the chat "
+            "can't answer right now. Try again with the button on the right; if it "
+            "keeps failing, let the administrator know.",
         ),
         AgentFailureKind.NO_ANSWER: FailureEntry(
             FailureChannel.AGENT_STATE,
-            "The {peer} did not answer {action}: {cause}.",
+            "The agent didn't respond in time, so the chat can't answer right "
+            "now. Try again in a moment with the button on the right.",
         ),
         AgentFailureKind.CONNECTION_LOST: FailureEntry(
             FailureChannel.AGENT_STATE,
-            "The connection to the {peer} was lost during {action}: {cause}.",
+            "The connection to the agent was lost. Reconnect with the button on the "
+            "right; the answer that was in progress may need to be asked for again.",
         ),
         AgentFailureKind.REFUSED: FailureEntry(
             FailureChannel.TOAST,
-            "The {peer} refused {action}: {cause}.",
+            "The agent couldn't complete this request. Try again; if it keeps "
+            "failing, let the administrator know.",
         ),
         AgentFailureKind.PROFILE_MISSING: FailureEntry(
             FailureChannel.AGENT_STATE,
-            "The {peer} cannot serve the chat profile of this tab: {cause}.",
+            "The agent doesn't offer the chat profile of this tab, so the chat "
+            "can't answer. Pick another profile or ask the administrator.",
         ),
     }
+    BUSY: ClassVar[str] = (
+        "This chat is answering in another tab or window right now. Wait for "
+        "that answer to finish, then send your message again."
+    )
+    SETTINGS: ClassVar[str] = (
+        "The agent can't use the settings of this chat profile, so the chat "
+        "can't answer. Let the administrator know."
+    )
+    SERVERS: ClassVar[str] = (
+        "One of the MCP servers of this chat isn't answering, so its tools "
+        "can't be used right now. Try again in a moment."
+    )
+    UPLOADS: ClassVar[str] = (
+        "File uploads are turned off in this chat because one of its MCP "
+        "servers isn't answering, so the chat can't tell where to store files. "
+        "Reload the page to try again."
+    )
+    CANVAS: ClassVar[str] = "The file couldn't be opened in the side panel."
+    UNKNOWN: ClassVar[str] = (
+        "Something went wrong in the chat. Try again; if it keeps happening, "
+        "let the administrator know."
+    )
 
     def of(self, exc: Exception) -> UserFailure:
         """Сбой вкладки по исключению пути агента."""
         if isinstance(exc, AgentProcessError | AgentRequestError):
-            entry = self.ENTRIES[exc.failure.kind]
-            return UserFailure(channel=entry.channel, text=entry.render(exc.failure))
+            return self.ENTRIES[exc.failure.kind].render(exc.failure)
 
         if isinstance(exc, LockBusyError):
-            text = (
-                "This thread is busy: a turn of it is running in another tab or "
-                f"window ({exc}); ask again when it ends."
-            )
-            return UserFailure(channel=FailureChannel.TOAST, text=text)
+            return UserFailure(channel=FailureChannel.TOAST, text=self.BUSY, detail="")
 
         if isinstance(exc, AgentSettingsError):
-            text = f"The agent cannot use the chat profile of this tab: {exc}"
-            return UserFailure(channel=FailureChannel.AGENT_STATE, text=text)
+            return UserFailure(
+                channel=FailureChannel.AGENT_STATE, text=self.SETTINGS, detail=str(exc)
+            )
 
         if isinstance(exc, McpClientError):
-            text = f"The MCP servers of the chat profile did not answer: {exc}"
-            return UserFailure(channel=FailureChannel.TOAST, text=text)
+            return UserFailure(
+                channel=FailureChannel.TOAST, text=self.SERVERS, detail=self._brief(exc)
+            )
 
         if isinstance(exc, AcpClientError):
-            return UserFailure(channel=FailureChannel.TOAST, text=str(exc))
+            return UserFailure(channel=FailureChannel.TOAST, text=str(exc), detail="")
 
-        text = f"The chat failed: {type(exc).__name__}: {exc}"
-        return UserFailure(channel=FailureChannel.TOAST, text=text)
+        return UserFailure(channel=FailureChannel.TOAST, text=self.UNKNOWN, detail="")
+
+    def uploads_off(self, exc: McpClientError) -> UserFailure:
+        """Кнопка загрузки файлов скрыта: сервер профиля не ответил."""
+        return UserFailure(
+            channel=FailureChannel.TOAST, text=self.UPLOADS, detail=self._brief(exc)
+        )
+
+    @staticmethod
+    def _brief(exc: McpClientError) -> str:
+        if isinstance(exc, McpUnansweredError):
+            return exc.brief
+
+        return ""
 
 
 class TabNotices:
@@ -172,25 +226,40 @@ class TabNotices:
         self._failures = UserFailures()
 
     async def failed(self, exc: Exception) -> None:
-        """Сбой exc — вкладке способом из каталога."""
-        failure = self._failures.of(exc)
-        if failure.channel is FailureChannel.TOAST:
-            await show_error(failure.text)
-            return
+        """Сбой exc — вкладке способом из каталога; полный текст — в журнал."""
+        logger.warning("tab failure %s: %s", type(exc).__name__, LogLine.safe(str(exc)))
+        await self._show(self._failures.of(exc))
 
-        logger.warning(
-            "agent of the tab is unavailable: %s", LogLine.safe(failure.text)
+    async def uploads_off(self, exc: McpClientError) -> None:
+        """Кнопка загрузки скрыта недоступным сервером профиля."""
+        await self._show(self._failures.uploads_off(exc))
+
+    async def canvas_refused(self, exc: RefusalError) -> None:
+        """Панель не открыла файл: текст отказа уже для человека."""
+        failure = UserFailure(
+            channel=FailureChannel.TOAST, text=self._failures.CANVAS, detail=str(exc)
         )
-        await self._agent_state(available=False, text=failure.text)
+        await self._show(failure)
 
-    async def toast(self, text: str) -> None:
-        """Сбой вне хода, о котором агент не знает: всплывающим уведомлением."""
-        await show_error(text)
+    async def toast(self, text: str, detail: str) -> None:
+        """Сбой вне хода, о котором агент не знает: всплывающим уведомлением
+        со словами человеку и короткой подробностью."""
+        failure = UserFailure(channel=FailureChannel.TOAST, text=text, detail=detail)
+        await self._show(failure)
 
     async def agent_ready(self) -> None:
         """Агент вкладки отвечает: полоса снимается, поле ввода открыто."""
-        await self._agent_state(available=True, text="")
+        await self._agent_state(available=True, text="", detail="")
 
-    async def _agent_state(self, available: bool, text: str) -> None:
-        payload = {"available": available, "text": text}
+    async def _show(self, failure: UserFailure) -> None:
+        if failure.channel is FailureChannel.TOAST:
+            await show_error(failure.toast())
+            return
+
+        await self._agent_state(
+            available=False, text=failure.text, detail=failure.detail
+        )
+
+    async def _agent_state(self, available: bool, text: str, detail: str) -> None:
+        payload = {"available": available, "text": text, "detail": detail}
         await current_session().emit(TabEvent.AGENT_STATE.value, payload)
