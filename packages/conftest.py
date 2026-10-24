@@ -12,6 +12,7 @@ from typing import ClassVar
 import pytest
 
 from boba.stand.collection import ModuleGroups, Requirements
+from boba.stand.golden import GoldenOption
 from boba.stand.names import StandSuite
 from boba.stand.site import Stand
 
@@ -58,6 +59,17 @@ class LookOption(StrEnum):
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
+    golden = parser.getgroup("golden", "золотые снимки запросов к модели")
+    golden.addoption(
+        GoldenOption.UPDATE.value,
+        dest=GoldenOption.UPDATE.dest,
+        action="store_true",
+        default=False,
+        help=(
+            "переснять эталоны запросов тестов агента; прогон всё равно падает, "
+            "эталоны принимаются git"
+        ),
+    )
     group = parser.getgroup("look", "тесты вида aid")
     group.addoption(
         LookOption.UPDATE.value,

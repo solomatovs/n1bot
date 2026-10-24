@@ -3,11 +3,11 @@
 -- ошибкой и списком, если:
 --   * тред называет сессию агента (threads.meta.agent_session), а её нет в
 --     session или у неё нет ни одной записи в session_records;
---   * итог вызова инструмента в записи (toolUseResult) не ответ tools/call
---     (нет массива content) или у перенесённого итога его нет вовсе —
---     normalize.sql его не привёл;
---   * в старой таблице history_records, если она ещё есть, у сессии больше
---     записей, чем в session_records: часть истории не перенесена.
+--   * запись истории без вида kind, которого читает текущий выпуск, или
+--     результат инструмента без исхода status: запись в формате раннего
+--     выпуска, агент её не прочтёт;
+--   * итог вызова инструмента в записи (toolUseResult) не ответ tools/call:
+--     нет массива content.
 -- Затем выводит итог: треды, треды с сессией и без неё, сессии, записи,
 -- сессии без владельца и сессии, которых не называет ни один тред.
 --
@@ -55,6 +55,35 @@ select count(*) > 0 as has_lost from lost_sessions \gset
     do $$ begin raise exception 'Some threads name an agent session without history (listed above).'; end $$;
 \endif
 
+create temporary table unknown_kinds on commit drop as
+select
+    h.session_id,
+    h.seq,
+    h.type,
+    h.record ->> 'kind' as kind
+from
+    :"boba_schema".session_records as h
+where
+    h.record ->> 'kind' is null
+    or h.record ->> 'kind' not in (
+        'prompt', 'task_notification', 'meta', 'command', 'command_output',
+        'tool_result', 'interrupt', 'compact_summary', 'reply', 'no_response',
+        'attachment', 'api_error', 'informational', 'compaction',
+        'compact_boundary', 'harness_command', 'turn_end', 'queue_operation',
+        'permission_mode', 'permission_rule', 'api_request'
+    )
+    or (
+        h.record ->> 'kind' = 'tool_result'
+        and coalesce(h.record ->> 'status', '') not in ('completed', 'failed', 'cancelled')
+    );
+
+select count(*) > 0 as has_unknown_kinds from unknown_kinds \gset
+\if :has_unknown_kinds
+    \echo 'Records whose kind this release does not read (no kind, an unknown kind or a tool result without status):'
+    select * from unknown_kinds order by session_id, seq limit 50;
+    do $$ begin raise exception 'Some history records are in the format of an earlier release (listed above): the agent cannot read them; transfer the history again from dev.'; end $$;
+\endif
+
 create temporary table foreign_results on commit drop as
 select
     h.session_id,
@@ -63,48 +92,14 @@ select
 from
     :"boba_schema".session_records as h
 where
-    (
-        h.record ? 'toolUseResult'
-        and jsonb_typeof(h.record -> 'toolUseResult' -> 'content') is distinct from 'array'
-    )
-    or (
-        not h.record ? 'toolUseResult'
-        and h.record ->> 'version' = 'history-migrate-2026-10'
-        and jsonb_typeof(h.record -> 'message' -> 'content') = 'array'
-        and exists (
-            select 1
-            from jsonb_array_elements(h.record -> 'message' -> 'content') as b(block)
-            where b.block ->> 'type' = 'tool_result'
-        )
-    );
+    h.record ? 'toolUseResult'
+    and jsonb_typeof(h.record -> 'toolUseResult' -> 'content') is distinct from 'array';
 
 select count(*) > 0 as has_foreign from foreign_results \gset
 \if :has_foreign
     \echo 'Records whose toolUseResult is not a tools/call result:'
     select * from foreign_results order by session_id, seq limit 50;
-    do $$ begin raise exception 'Some tool results are not tools/call results (listed above): run normalize.sql.'; end $$;
-\endif
-
-select to_regclass(format('%I.history_records', :'boba_schema')) is not null as has_old_table \gset
-\if :has_old_table
-    create temporary table short_sessions on commit drop as
-    select
-        o.session_id,
-        count(*) as old_records,
-        (select count(*) from :"boba_schema".session_records as h where h.session_id = o.session_id) as new_records
-    from
-        :"boba_schema".history_records as o
-    group by
-        o.session_id
-    having
-        count(*) > (select count(*) from :"boba_schema".session_records as h where h.session_id = o.session_id);
-
-    select count(*) > 0 as has_short from short_sessions \gset
-    \if :has_short
-        \echo 'Sessions of history_records with fewer records in history:'
-        select * from short_sessions order by session_id;
-        do $$ begin raise exception 'Some sessions of history_records are not converted (listed above): run convert-history.sql.'; end $$;
-    \endif
+    do $$ begin raise exception 'Some tool results are not tools/call results (listed above): transfer the history again from dev.'; end $$;
 \endif
 
 \echo 'Chat history of the database:'

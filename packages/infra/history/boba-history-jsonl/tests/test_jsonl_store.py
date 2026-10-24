@@ -22,8 +22,8 @@ from boba.agent.history import (
 from boba.agent.records import (
     PermissionMode,
     PermissionModeRecord,
+    PromptRecord,
     UserMessage,
-    UserRecord,
 )
 from boba.history.jsonl import JsonlHistoryStore
 
@@ -42,8 +42,8 @@ def mode(seq: int) -> PermissionModeRecord:
     )
 
 
-def user(seq: int, text: str) -> UserRecord:
-    return UserRecord(
+def user(seq: int, text: str) -> PromptRecord:
+    return PromptRecord(
         uuid=f"u-{seq}",
         parent_uuid=None,
         timestamp=STAMP,
@@ -243,8 +243,8 @@ class TestRead:
             path.chmod(0o600)
 
 
-def stamped(session: SessionId, seq: int, stamp: str) -> UserRecord:
-    return UserRecord(
+def stamped(session: SessionId, seq: int, stamp: str) -> PromptRecord:
+    return PromptRecord(
         uuid=f"{session.value}-{seq}",
         parent_uuid=None,
         timestamp=stamp,

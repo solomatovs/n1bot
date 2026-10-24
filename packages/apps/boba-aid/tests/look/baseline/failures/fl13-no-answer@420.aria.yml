@@ -2,6 +2,7 @@
   - text: "The agent didn't respond in time, so the chat can't answer right now. Try again in a moment with the button on the right. agent process 'python', initialize: no answer within 8 s"
   - button "Повторить"
 - textbox "Введите сообщение здесь..."
-- img
+- button "Прикрепить файлы" [disabled]:
+  - img
 - button [disabled]:
   - img

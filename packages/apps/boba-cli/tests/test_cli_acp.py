@@ -31,7 +31,7 @@ import signal
 import stat
 import sys
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
@@ -48,11 +48,9 @@ from mcp_types.methods import parse_client_request
 from pydantic import AnyUrl, BaseModel, ConfigDict
 
 from boba.agent.records import (
-    AssistantMessage,
-    AssistantRecord,
-    ReplyStopReason,
-    Synthetic,
-    TextBlock,
+    NoticeLevel,
+    TurnEndRecord,
+    TurnOutcome,
     Usage,
 )
 from boba.cli.acp_server import (
@@ -627,6 +625,16 @@ class AcpClient(Client):
 
         return self.permissions[seen]
 
+    def take_idles(self, session_id: str) -> None:
+        """Все уже пришедшие `idle` сессии взяты: воспроизведение истории
+        кончает ими свои ходы, а следующий `idle` — конец нового хода."""
+        found = 0
+        for update in self.updates_of(session_id):
+            if isinstance(update, schema.IdleSessionStateUpdate):
+                found += 1
+
+        self._idles[session_id] = found
+
     async def idle(self, session_id: str) -> schema.IdleSessionStateUpdate:
         """Следующий ещё не взятый `idle` сессии: конец её очередного хода."""
         taken = self._idles.get(session_id, 0)
@@ -715,7 +723,7 @@ class FeedView:
         calls: dict[str, dict[str, Any]] = {}
         for update in updates:
             if isinstance(update, schema.UserMessageUpdate):
-                items.append(("user", update.message_id, self._text_of(update)))
+                items.append(("user", update.message_id, self.text_of(update)))
                 continue
 
             if isinstance(update, schema.AgentThoughtChunk | schema.AgentThoughtUpdate):
@@ -763,7 +771,7 @@ class FeedView:
         return [item[2] for item in rendered if item[0] == "user"]
 
     @staticmethod
-    def _text_of(
+    def text_of(
         update: schema.UserMessageUpdate
         | schema.AgentMessageUpdate
         | schema.AgentThoughtUpdate
@@ -791,7 +799,7 @@ class FeedView:
         | schema.AgentMessageUpdate
         | schema.AgentThoughtUpdate,
     ) -> None:
-        chunk = self._text_of(update)
+        chunk = self.text_of(update)
         if items and items[-1][0] == kind and items[-1][1] == update.message_id:
             items[-1] = (kind, update.message_id, items[-1][2] + chunk)
             return
@@ -827,6 +835,163 @@ def result_text(update: schema.SessionToolCallUpdate) -> str:
     assert isinstance(block, schema.TextContentBlock)
 
     return block.text
+
+
+class Timeline:
+    """Всё, что клиент нарисует по уведомлениям сессии, в порядке появления:
+    вопросы, сообщения (куски склеены, целое сообщение заменяет накопленное,
+    пустое — снимает его), вызовы с конечным состоянием, пометки, концы ходов
+    и сжатия с итоговой стадией. Живой ход и его воспроизведение обязаны
+    дать одну ленту."""
+
+    def render(self, updates: Sequence[Any]) -> list[tuple[Any, ...]]:
+        items: list[tuple[Any, ...]] = []
+        places: dict[tuple[str, str], int] = {}
+        for update in updates:
+            for key, item, whole in self._items(update):
+                self._place(items, places, key, item, whole)
+
+        return self._shown(items)
+
+    def _items(
+        self, update: Any
+    ) -> Iterator[tuple[tuple[str, str], tuple[Any, ...], bool]]:
+        """Элементы ленты уведомления: ключ места, элемент и заменяет ли он
+        прежний элемент на этом месте целиком."""
+        if isinstance(update, schema.UserMessageUpdate):
+            key = ("user", update.message_id)
+            yield key, (*key, FeedView.text_of(update)), True
+            return
+
+        if isinstance(update, schema.AgentThoughtChunk | schema.AgentMessageChunk):
+            key = (self._kind(update), update.message_id)
+            yield key, (*key, FeedView.text_of(update)), False
+            return
+
+        if isinstance(update, schema.AgentThoughtUpdate | schema.AgentMessageUpdate):
+            key = (self._kind(update), update.message_id)
+            yield key, (*key, FeedView.text_of(update)), True
+            return
+
+        if isinstance(update, schema.SessionToolCallUpdate):
+            key = ("tool", update.tool_call_id)
+            yield key, self._call(update), False
+            return
+
+        if isinstance(update, schema.SessionNotice):
+            key = ("notice", str(id(update)))
+            yield (
+                key,
+                ("notice", update.severity, update.title, update.description),
+                True,
+            )
+            return
+
+        if isinstance(update, schema.IdleSessionStateUpdate):
+            yield from self._idle(update)
+            return
+
+        if isinstance(update, schema.SessionCompactionUpdate):
+            key = ("compaction", update.compaction_id)
+            yield key, (*key, update.status, self._summary(update), update.error), True
+
+    @staticmethod
+    def _kind(
+        update: schema.AgentThoughtChunk
+        | schema.AgentThoughtUpdate
+        | schema.AgentMessageChunk
+        | schema.AgentMessageUpdate,
+    ) -> str:
+        if isinstance(update, schema.AgentThoughtChunk | schema.AgentThoughtUpdate):
+            return "thought"
+
+        return "agent"
+
+    @staticmethod
+    def _idle(
+        update: schema.IdleSessionStateUpdate,
+    ) -> Iterator[tuple[tuple[str, str], tuple[Any, ...], bool]]:
+        if update.stop_reason is None:
+            return
+
+        key = ("idle", str(id(update)))
+        yield key, ("idle", str(update.stop_reason)), True
+
+    @staticmethod
+    def _call(update: schema.SessionToolCallUpdate) -> tuple[Any, ...]:
+        text: str | None = None
+        if update.content:
+            text = result_text(update)
+
+        return (
+            "tool",
+            update.tool_call_id,
+            update.name,
+            update.title,
+            update.kind,
+            json.dumps(update.raw_input, sort_keys=True),
+            update.status,
+            text,
+            json.dumps(update.raw_output, sort_keys=True),
+        )
+
+    @staticmethod
+    def _summary(update: schema.SessionCompactionUpdate) -> str:
+        parts: list[str] = []
+        for block in update.summary or ():
+            if isinstance(block, schema.TextContentBlock):
+                parts.append(block.text)
+
+        return "".join(parts)
+
+    def _place(
+        self,
+        items: list[tuple[Any, ...]],
+        places: dict[tuple[str, str], int],
+        key: tuple[str, str],
+        item: tuple[Any, ...],
+        whole: bool,
+    ) -> None:
+        position = places.get(key)
+        if position is None:
+            places[key] = len(items)
+            items.append(item)
+            return
+
+        if whole:
+            items[position] = item
+            return
+
+        items[position] = self._merged(items[position], item)
+
+    @staticmethod
+    def _merged(earlier: tuple[Any, ...], later: tuple[Any, ...]) -> tuple[Any, ...]:
+        """Кусок сообщения дописывается; уведомление вызова меняет то, что
+        несёт: статус, текст, rawOutput."""
+        if earlier[0] != "tool":
+            return (*earlier[:2], earlier[2] + later[2])
+
+        merged = list(earlier)
+        merged[6] = later[6]
+        if later[7] is not None:
+            merged[7] = later[7]
+
+        if later[8] != "null":
+            merged[8] = later[8]
+
+        return tuple(merged)
+
+    @staticmethod
+    def _shown(items: Sequence[tuple[Any, ...]]) -> list[tuple[Any, ...]]:
+        """Сообщение, которое агент снял пустой заменой, в ленте не остаётся."""
+        shown: list[tuple[Any, ...]] = []
+        for item in items:
+            if item[0] in ("agent", "thought") and not item[2]:
+                continue
+
+            shown.append(item)
+
+        return shown
 
 
 class AcpProcess:
@@ -997,6 +1162,7 @@ class AcpProcess:
     ) -> tuple[schema.PromptResponse, schema.IdleSessionStateUpdate]:
         """Ход целиком: `session/prompt` и ожидание его `idle`."""
         assert self._connection is not None
+        client.take_idles(session_id)
         response = await self._connection.prompt(
             session_id=session_id, prompt=list(prompt)
         )
@@ -2264,9 +2430,8 @@ class TestRefusals:
             await second.close_stdin()
             await second.kill()
 
-        # штатный конец хода воспроизведение idle не повторяет
         assert replayed == (
-            ["user", "user", "notice", "user", "notice"],
+            kinds,
             notices,
         )
 
@@ -2774,7 +2939,7 @@ class TestLifecycle:
         await conn.close()
 
         records = boba.journal(session.session_id)
-        assert [r["type"] for r in records][-1] == "assistant"
+        assert [r["kind"] for r in records][-2:] == ["reply", "turn_end"]
 
     async def test_end_of_input_closes_the_sessions(
         self, boba: AcpProcess, registration: StandRegistration, tmp_path: Path
@@ -2892,6 +3057,58 @@ class TestHistory:
             if r["type"] == "user" and r.get("origin", {}).get("kind") == "human"
         ]
         assert human == [*self.PROMPTS, ScenarioName.ANSWER.value]
+
+    async def test_live_turns_and_their_replay_draw_the_same_feed(
+        self,
+        boba: AcpProcess,
+        registration: StandRegistration,
+        model: FakeModel,
+        tmp_path: Path,
+    ) -> None:
+        """Ход с вызовом, ход с оборванной попыткой и повтором, ход с
+        отказом модели после повторов, сжатие по команде и ответ после него:
+        воспроизведение даёт ту же ленту, что видел живой клиент, —
+        вопросы, сообщения, итоги вызовов, пометки, концы ходов и сжатия."""
+        client = AcpClient()
+        document = boba.settings_document(mode="bypassPermissions", allow_bypass=True)
+        document["limits"]["apiRetries"] = 1
+        conn = await boba.start(client, registration, document)
+        try:
+            await handshake(conn)
+            session = await conn.new_session(
+                cwd=str(tmp_path), mcp_servers=[StandRegistration.STAND]
+            )
+            session_id = session.session_id
+            large = {"name": "mcp__stand__large", "arguments": {"size": 2000}}
+            cut = f"{ScenarioName.ANSWER.value} {FailureName.CUT.value}"
+            down = f"{ScenarioName.ANSWER.value} {FailureName.STATUS_500.value}"
+            prompts = [
+                call({"name": "mcp__stand__add", "arguments": {"a": 2, "b": 3}}),
+                call(large),
+                [schema.TextContentBlock(text=cut)],
+                [schema.TextContentBlock(text=down)],
+                [schema.TextContentBlock(text="/compact keep the plan")],
+                [schema.TextContentBlock(text=ScenarioName.THINKING_ANSWER.value)],
+            ]
+            for prompt in prompts:
+                await boba.turn(client, session_id, prompt)
+
+            live = client.updates_of(session_id)
+        finally:
+            await conn.close()
+            await boba.close_stdin()
+
+        assert await boba.wait() == 0
+        replayed = await self.replayed(model, registration, tmp_path, session_id)
+
+        timeline = Timeline()
+        drawn = timeline.render(live)
+        assert timeline.render(replayed) == drawn
+        kinds = [item[0] for item in drawn]
+        assert kinds.count("user") == len(prompts)
+        assert "notice" in kinds
+        assert "idle" in kinds
+        assert "compaction" in kinds
 
     @staticmethod
     def turn_ends(
@@ -3125,7 +3342,7 @@ class TestHistory:
 
         replayed = await self.replayed(model, registration, tmp_path, session_id)
         kinds, notices = self.turn_ends(replayed)
-        assert kinds == ["user", "notice"], replayed
+        assert kinds == ["user", "notice", StopReason.END_TURN], replayed
         assert notices[0].severity == "warning", notices
         assert "interrupted" in notices[0].title, notices
         ends: list[schema.SessionToolCallUpdate] = []
@@ -3139,10 +3356,12 @@ class TestHistory:
         assert len(ends) == 1, replayed
         assert "Tool call interrupted" in result_text(ends[0])
         journal = boba.journal(session_id)
-        informational = [
-            line for line in journal if line.get("subtype") == "informational"
+        interrupted = [
+            line
+            for line in journal
+            if line.get("kind") == "turn_end" and line.get("outcome") == "interrupted"
         ]
-        assert len(informational) == 1, journal[-3:]
+        assert len(interrupted) == 1, journal[-3:]
 
     async def test_resume_restores_without_replay(
         self,
@@ -4606,30 +4825,40 @@ class TestFork:
         assert sorted((tmp_path / "history").glob("*.jsonl")) == journals
 
 
-class TestRefusalNotices:
-    """Отказ модели — пометка со словами человеку из текста записи и
-    короткой причиной из её error; запись прежних версий, где текст и error
-    совпадают, причину не повторяет."""
+class TestTurnEndNotices:
+    """Конец хода с отказом — пометка со словами человеку из записи turn_end
+    и её короткой причиной, затем idle исхода; причина, которая повторяет
+    слова, не повторяется."""
 
-    def _refusal(self, text: str, error: str | None) -> AssistantRecord:
-        message = AssistantMessage(
-            id="msg-1",
-            model=Synthetic.MODEL.value,
-            content=[TextBlock(text=text)],
-            stop_reason=ReplyStopReason.STOP_SEQUENCE,
-            usage=Usage(),
-        )
-        return AssistantRecord(
+    def _turn_end(self, text: str, detail: str) -> TurnEndRecord:
+        return TurnEndRecord(
             uuid="u-1",
             parent_uuid=None,
             timestamp="2026-10-24T00:00:00.000Z",
             session_id="s-1",
             version="0",
-            message=message,
-            request_id="r-1",
-            is_api_error_message=True,
-            error=error,
+            outcome=TurnOutcome.BLOCKING_LIMIT,
+            notice=text,
+            level=NoticeLevel.ERROR,
+            detail=detail,
+            error="",
+            usage=Usage(),
+            num_turns=1,
+            duration_ms=1,
         )
+
+    def _notices(self, record: TurnEndRecord) -> list[schema.SessionNotice]:
+        updates = list(AcpMapping().turn_ended(record))
+        idle = updates[-1]
+        assert isinstance(idle, schema.IdleSessionStateUpdate)
+        assert idle.stop_reason == StopReason.REFUSAL
+
+        notices: list[schema.SessionNotice] = []
+        for update in updates[:-1]:
+            assert isinstance(update, schema.SessionNotice)
+            notices.append(update)
+
+        return notices
 
     def test_refusal_text_and_detail_are_apart(self) -> None:
         text = (
@@ -4637,7 +4866,7 @@ class TestRefusalNotices:
             "shortening it automatically didn't help. Start a new chat to continue."
         )
         detail = "the summary request failed: HTTP 400 Bad Request"
-        notices = list(AcpMapping().notices(self._refusal(text, detail)))
+        notices = self._notices(self._turn_end(text, detail))
 
         assert len(notices) == 1, notices
         assert notices[0].severity == "error"
@@ -4646,15 +4875,15 @@ class TestRefusalNotices:
 
     def test_refusal_without_detail_has_no_description(self) -> None:
         text = "This conversation no longer fits in the model's memory."
-        notices = list(AcpMapping().notices(self._refusal(text, None)))
+        notices = self._notices(self._turn_end(text, ""))
 
         assert [(notice.title, notice.description) for notice in notices] == [
             (text, None)
         ]
 
-    def test_old_refusal_does_not_repeat_its_text(self) -> None:
+    def test_detail_that_repeats_the_text_is_dropped(self) -> None:
         error = "openai chat: POST http://model/v1: expected 2xx, got 500"
-        notices = list(AcpMapping().notices(self._refusal(error, error)))
+        notices = self._notices(self._turn_end(error, error))
 
         assert [(notice.title, notice.description) for notice in notices] == [
             (error, None)

@@ -39,7 +39,7 @@ from boba.agent.attachments import (
 from boba.agent.builder import RequestBuilder
 from boba.agent.compaction import SummaryInstruction
 from boba.agent.control import ControlQuestions, PermissionAnswer
-from boba.agent.events import EventSink, InitEvent, TurnOutcome
+from boba.agent.events import EventSink, InitEvent
 from boba.agent.history import (
     HistoryError,
     HistoryStore,
@@ -63,7 +63,7 @@ from boba.agent.profile import (
     TurnLimits,
 )
 from boba.agent.queue import InputQueue, QueueRemoveReason
-from boba.agent.records import PermissionMode, PermissionModeRecord
+from boba.agent.records import PermissionMode, PermissionModeRecord, TurnOutcome
 from boba.agent.session import Session, SessionError, SessionState
 from boba.agent.skills import Skill, SkillTool
 from boba.agent.template import AgentTemplate

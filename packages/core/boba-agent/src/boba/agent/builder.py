@@ -1,8 +1,10 @@
 """Сборщик запроса: разговор и снимок промпта → `ChatRequest` порта модели.
 
 Алгоритм — docs/prompt_assembly/specs/06_messages_algorithm.md, доведённый до
-формы `ChatTurn` (план, раздел 5.12): отбор записей, склейка ответа по
-`message.id`, перестановка вложений перед текстом пользователя, слияние
+формы `ChatTurn` (план, раздел 5.12). Что вносит в запрос каждая запись и
+где она встаёт, говорит сама запись (ChainRecord.to_request и placement);
+здесь — общий алгоритм: перестановка вложений перед текстом пользователя,
+склейка ответа по `message.id`, слияние
 соседних сообщений пользователя, два режима подачи системных вложений,
 починка пар вызов — результат, чистка и защита от подделки служебного
 блока (TagShield у текстов пользователя и результатов).
@@ -20,27 +22,25 @@ from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from typing import ClassVar
 
-import mcp_types as mt
-
-from boba.agent.attachments import Announced, AttachmentKind, PromptSnapshot
+from boba.agent.attachments import Announced
 from boba.agent.profile import ModelProfile, ReasoningReturn
 from boba.agent.records import (
-    AssistantRecord,
-    AttachmentRecord,
-    AttachmentRole,
+    AssistantBlock,
     ChainRecord,
-    LinkText,
+    Placement,
+    PromptSnapshot,
+    RequestFeed,
+    SnapshotTool,
     TextBlock,
     ThinkingBlock,
     ToolResultBlock,
     ToolUseBlock,
-    UserRecord,
 )
 from boba.agent.tags import AgentTag, TagShield
 from boba.agent.template import AgentTemplate, AgentTemplateFile
 from boba.llm.chat import ChatRequest, ChatRole, ChatTurn, ToolCall, ToolSpec
 
-__all__ = ["RequestBuilder"]
+__all__ = ["RequestBuilder", "RequestTexts"]
 
 
 @dataclass
@@ -81,12 +81,86 @@ class SystemTurn:
 Turn = UserTurn | AssistantTurn | SystemTurn
 
 
-class Feed:
-    """Накопитель сообщений в порядке подачи (шаги 4–5 разбора 06)."""
+class RequestTexts:
+    """Тексты записи, какими их видит модель: слова пользователя с
+    обезвреженными служебными тегами и результат инструмента — строки о
+    загруженных отложенных инструментах, обезвреженный текст, у ошибки —
+    обёртка tool_use_error. Им пользуются сборщик запроса и оценка окна,
+    чтобы окно считалось по тому же тексту, что уходит модели."""
 
-    def __init__(self) -> None:
+    TEXT_JOIN: ClassVar[str] = "\n"
+
+    def __init__(self, templates: AgentTemplate) -> None:
+        self._templates = templates
+        self._shield = TagShield([AgentTag.SYSTEM_REMINDER, AgentTag.TOOL_USE_ERROR])
+
+    def user(self, text: str) -> str:
+        return self._shield.shield(text)
+
+    def result(self, result: ToolResultBlock) -> str:
+        lines: list[str] = []
+        for name in result.references():
+            lines.append(
+                self._templates.read(AgentTemplateFile.TOOL_LOADED).format(name=name)
+            )
+
+        text = self._shield.shield(result.text())
+        if text:
+            lines.append(text)
+
+        joined = self.TEXT_JOIN.join(lines)
+        if result.is_error:
+            return AgentTag.TOOL_USE_ERROR.wrap(joined)
+
+        return joined
+
+
+class Feed(RequestFeed):
+    """Реализация RequestFeed сборщика: накопитель сообщений в порядке
+    подачи (шаги 4–5 разбора 06). Записи отдают сюда свои части, накопитель
+    склеивает их: блоки одного ответа — одним сообщением, тексты
+    пользователя — с обезвреженными служебными тегами, системные вложения —
+    напоминаниями в сообщении пользователя либо отдельным системным
+    сообщением в режиме system_turns. Создаёт сборщик на каждый запрос."""
+
+    def __init__(self, texts: RequestTexts, system_turns: bool) -> None:
+        self._texts = texts
+        self._system_turns = system_turns
         self.turns: list[Turn] = []
         self.pending_system: list[str] = []
+
+    def user_text(self, text: str) -> None:
+        self.last_user().texts.append(self._texts.user(text))
+
+    def context_text(self, text: str) -> None:
+        self.last_user().texts.append(text)
+
+    def reminder(self, text: str) -> None:
+        if self._system_turns:
+            self.pending_system.append(AgentTag.SYSTEM_REMINDER.unwrap_block(text))
+            return
+
+        self.last_user().reminders.append(text)
+
+    def tool_result(self, block: ToolResultBlock) -> None:
+        self.last_user().results.append(block)
+
+    def tool_definitions(self, tools: Sequence[SnapshotTool]) -> None:
+        """Определения загруженных отложенных уходят списком tools: его
+        сборщик берёт из свёртки Announced."""
+        return
+
+    def reply_block(self, message_id: str, block: AssistantBlock) -> None:
+        turn = self.assistant(message_id)
+        if isinstance(block, ThinkingBlock):
+            turn.thinking.append(block.thinking)
+            return
+
+        if isinstance(block, TextBlock):
+            turn.texts.append(block.text)
+            return
+
+        turn.calls.append(block)
 
     def last_user(self) -> UserTurn:
         if self.turns and isinstance(self.turns[-1], UserTurn):
@@ -147,14 +221,14 @@ class RequestBuilder:
     def __init__(self, profile: ModelProfile, templates: AgentTemplate) -> None:
         self._profile = profile
         self._templates = templates
-        self._shield = TagShield([AgentTag.SYSTEM_REMINDER, AgentTag.TOOL_USE_ERROR])
+        self._texts = RequestTexts(templates)
 
     def build(
         self, conversation: Sequence[ChainRecord], snapshot: PromptSnapshot
     ) -> ChatRequest:
-        feed = Feed()
-        for record in self._reordered(list(self._sendable(conversation))):
-            self._take(record, feed)
+        feed = Feed(self._texts, self._profile.system_turns)
+        for record in self._reordered(conversation):
+            record.to_request(feed)
 
         feed.flush_system()
         turns = self._repaired(self._cleaned(feed.turns))
@@ -190,39 +264,18 @@ class RequestBuilder:
 
         return request.model_copy(update={"tools": tools})
 
-    def _sendable(self, conversation: Sequence[ChainRecord]) -> Iterator[ChainRecord]:
-        for record in conversation:
-            if isinstance(record, UserRecord):
-                yield record
-                continue
-
-            if isinstance(record, AssistantRecord):
-                if record.is_api_error_message:
-                    continue
-
-                yield record
-                continue
-
-            if isinstance(record, AttachmentRecord):
-                if record.rendered is None:
-                    continue
-
-                if record.attachment.type == AttachmentKind.PROMPT_SNAPSHOT.value:
-                    continue
-
-                yield record
-
     def _reordered(self, records: Sequence[ChainRecord]) -> list[ChainRecord]:
         """Вложения встают сразу после ближайшего выше ответа или результата
         инструмента и перед текстом пользователя, за которым записаны."""
         reversed_out: list[ChainRecord] = []
         held: list[ChainRecord] = []
         for record in reversed(records):
-            if isinstance(record, AttachmentRecord):
+            placement = record.placement()
+            if placement is Placement.FLOATS:
                 held.insert(0, record)
                 continue
 
-            if self._stop_point(record) and held:
+            if placement is Placement.STOPS and held:
                 reversed_out.extend(reversed(held))
                 held = []
 
@@ -232,87 +285,6 @@ class RequestBuilder:
         reversed_out.reverse()
 
         return reversed_out
-
-    def _stop_point(self, record: ChainRecord) -> bool:
-        if isinstance(record, AssistantRecord):
-            return True
-
-        if isinstance(record, UserRecord):
-            return bool(record.message.tool_results())
-
-        return False
-
-    def _take(self, record: ChainRecord, feed: Feed) -> None:
-        if isinstance(record, UserRecord):
-            self._take_user(record, feed)
-            return
-
-        if isinstance(record, AttachmentRecord):
-            self._take_attachment(record, feed)
-            return
-
-        if isinstance(record, AssistantRecord):
-            self._take_assistant(record, feed)
-
-    def _take_user(self, record: UserRecord, feed: Feed) -> None:
-        content = record.message.content
-        if isinstance(content, str):
-            if content == "":
-                return
-
-            feed.last_user().texts.append(self._shield.shield(content))
-            return
-
-        if not content:
-            return
-
-        turn = feed.last_user()
-        for block in content:
-            if isinstance(block, ToolResultBlock):
-                turn.results.append(block)
-                continue
-
-            if isinstance(block, mt.ResourceLink):
-                turn.texts.append(LinkText.TEMPLATE.render(block))
-                continue
-
-            turn.texts.append(self._shield.shield(block.text))
-
-    def _take_attachment(self, record: AttachmentRecord, feed: Feed) -> None:
-        rendered = record.rendered
-        if rendered is None:
-            return
-
-        texts: list[str] = []
-        for message in rendered:
-            texts.append(message.content)
-
-        if record.rendered_role is AttachmentRole.USER:
-            # вложение с ролью user — слова пользователя, не напоминание
-            feed.last_user().texts.extend(texts)
-            return
-
-        if self._profile.system_turns:
-            for text in texts:
-                feed.pending_system.append(AgentTag.SYSTEM_REMINDER.unwrap_block(text))
-
-            return
-
-        feed.last_user().reminders.extend(texts)
-
-    def _take_assistant(self, record: AssistantRecord, feed: Feed) -> None:
-        turn = feed.assistant(record.message.id)
-        for block in record.message.content:
-            if isinstance(block, ThinkingBlock):
-                turn.thinking.append(block.thinking)
-                continue
-
-            if isinstance(block, TextBlock):
-                turn.texts.append(block.text)
-                continue
-
-            if isinstance(block, ToolUseBlock):
-                turn.calls.append(block)
 
     def _cleaned(self, turns: Sequence[Turn]) -> list[Turn]:
         """Пустые ответы и осиротевшие рассуждения — по таблице разбора 06, §6."""
@@ -474,7 +446,7 @@ class RequestBuilder:
             tools.append(
                 ChatTurn(
                     role=ChatRole.TOOL,
-                    content=self._result_text(result),
+                    content=self._texts.result(result),
                     tool_call_id=result.tool_use_id,
                     tool_references=result.references(),
                 )
@@ -494,24 +466,6 @@ class RequestBuilder:
             # слитые сообщения пользователя и вложения — отдельными частями
             # одного сообщения, как блоки в docs/prompt_assembly
             yield ChatTurn(role=ChatRole.USER, parts=texts)
-
-    def _result_text(self, result: ToolResultBlock) -> str:
-        lines: list[str] = []
-        for name in result.references():
-            lines.append(self._loaded_line(name))
-
-        text = self._shield.shield(result.text())
-        if text:
-            lines.append(text)
-
-        joined = self.TEXT_JOIN.join(lines)
-        if result.is_error:
-            return AgentTag.TOOL_USE_ERROR.wrap(joined)
-
-        return joined
-
-    def _loaded_line(self, name: str) -> str:
-        return self._templates.read(AgentTemplateFile.TOOL_LOADED).format(name=name)
 
     def _tools(
         self, conversation: Sequence[ChainRecord], snapshot: PromptSnapshot

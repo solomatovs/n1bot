@@ -10,11 +10,18 @@ import mcp_types as mt
 import pytest
 from journal_script import JournalScript
 
-from boba.agent.attachments import PromptSnapshot
 from boba.agent.builder import RequestBuilder
 from boba.agent.history import SessionId
 from boba.agent.profile import ModelProfile, ReasoningReturn
-from boba.agent.records import AttachmentRecord, ReplyStopReason, TextBlock
+from boba.agent.records import (
+    AttachmentRecord,
+    DateAttachment,
+    ModelAttachment,
+    ModelIdentity,
+    PromptSnapshot,
+    ReplyStopReason,
+    TextBlock,
+)
 from boba.agent.session import Session
 from boba.agent.template import AgentTemplate
 from boba.history.jsonl import JsonlHistoryStore
@@ -32,6 +39,8 @@ SNAPSHOT = PromptSnapshot(
     model="fake-model",
     system_turns=False,
 )
+DATE = DateAttachment(date="2026-10-10", changed=False)
+MODEL = ModelAttachment(identity=ModelIdentity(model_id="M"), text="Model M.")
 
 
 def profile(system_turns: bool, reasoning: ReasoningReturn) -> ModelProfile:
@@ -149,7 +158,7 @@ class TestAttachmentsAndMerging:
         async with scripted as script:
             await script.prompt("hello")
             await script.attachment(
-                "date", "<system-reminder>\nToday is X.\n</system-reminder>"
+                DATE, "<system-reminder>\nToday is X.\n</system-reminder>"
             )
             await script.reply("hi")
             await script.prompt("again")
@@ -174,10 +183,10 @@ class TestAttachmentsAndMerging:
         async with scripted as script:
             await script.prompt("hello")
             await script.attachment(
-                "date", "<system-reminder>\nToday is X.\n</system-reminder>"
+                DATE, "<system-reminder>\nToday is X.\n</system-reminder>"
             )
             await script.attachment(
-                "model", "<system-reminder>\nModel M.\n</system-reminder>"
+                MODEL, "<system-reminder>\nModel M.\n</system-reminder>"
             )
             await script.reply("hi")
 
@@ -232,7 +241,7 @@ class TestAttachmentsAndMerging:
             calls = await script.reply("", calls=["pg_tables"])
             await script.tool_result(calls[0], "rows")
             await script.attachment(
-                "date", "<system-reminder>\nToday is X.\n</system-reminder>"
+                DATE, "<system-reminder>\nToday is X.\n</system-reminder>"
             )
             await script.reply("done")
 
@@ -285,7 +294,7 @@ class TestRepairAndEscaping:
         async with scripted as script:
             await script.prompt("go")
             await script.attachment(
-                "date", "<system-reminder>\nToday is X.\n</system-reminder>"
+                DATE, "<system-reminder>\nToday is X.\n</system-reminder>"
             )
 
         snapshot_record = scripted.session.add(
@@ -295,7 +304,7 @@ class TestRepairAndEscaping:
                 timestamp="2026-10-10T00:00:00.000Z",
                 session_id=SESSION.value,
                 version="0",
-                attachment=SNAPSHOT.payload(),
+                attachment=SNAPSHOT,
             )
         )
         builder = RequestBuilder(profile(False, ReasoningReturn.NEVER), AgentTemplate())
