@@ -90,7 +90,7 @@ from boba.toolkit.result import (
     VisualResult,
 )
 from boba.toolkit.wire import JournalFeature, JournalRead, McpContent, ResultWire
-from boba.transport.acp.protocol import IdleErrorUpdate, MetaKey
+from boba.transport.acp.protocol import MetaKey
 
 APP_ROOT = Path(__file__).resolve().parents[1] / "assets"
 """Корень приложения пакета: его переводы chainlit несут подписи ленты и панели."""
@@ -1797,12 +1797,10 @@ class TestCodecAndResults:
         assert list(body["rawInput"]) == ["b", "a"]
         assert codec.decode(body) == start
 
-        failed = IdleErrorUpdate(
-            stop_reason="error", error=schema.Error(code=-32603, message="model down")
-        )
-        decoded = codec.decode(codec.encode(failed))
-        assert isinstance(decoded, IdleErrorUpdate), decoded
-        assert decoded.error == failed.error
+        notice = schema.SessionNotice(severity="warning", title="model retried")
+        assert codec.decode(codec.encode(notice)) == notice
+        withdrawn = schema.AgentMessageUpdate(message_id="m-1", content=[])
+        assert codec.decode(codec.encode(withdrawn)) == withdrawn
 
 
 class TestBlockDrawings:

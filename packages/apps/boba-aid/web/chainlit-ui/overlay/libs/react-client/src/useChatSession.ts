@@ -105,6 +105,21 @@ export const historyLoadingState = atom<boolean>({
   default: false
 });
 
+// boba: доступен ли агент вкладки (событие сокета agent_state сервера aid):
+// недоступный запирает поле ввода полосой с текстом сбоя и кнопкой повтора
+const AGENT_STATE_EVENT = 'agent_state';
+
+export interface IAgentState {
+  available: boolean;
+  text: string;
+  detail: string;
+}
+
+export const agentStateState = atom<IAgentState>({
+  key: 'BobaAgentState',
+  default: { available: true, text: '', detail: '' }
+});
+
 const useChatSession = () => {
   const client = useContext(ChainlitContext);
   const sessionId = useRecoilValue(sessionIdState);
@@ -136,6 +151,7 @@ const useChatSession = () => {
   const setThreadResumeError = useSetRecoilState(resumeThreadErrorState);
   const setFavoriteMessages = useSetRecoilState(favoriteMessagesState);
   const setHistoryLoading = useSetRecoilState(historyLoadingState);
+  const setAgentState = useSetRecoilState(agentStateState);
 
   const [currentThreadId, setCurrentThreadId] =
     useRecoilState(currentThreadIdState);
@@ -218,8 +234,9 @@ const useChatSession = () => {
         console.error(`Failed to set sticky session cookie: ${err}`);
       }
 
-      // boba: пачка прежнего сокета принадлежит прежнему треду
+      // boba: пачка и состояние агента прежнего сокета принадлежат прежнему треду
       pendingSteps.current = [];
+      setAgentState({ available: true, text: '', detail: '' });
 
       const socket = io(uri, {
         path,
@@ -403,6 +420,11 @@ const useChatSession = () => {
       socket.on(HISTORY_LOADED_EVENT, () => {
         flushSteps();
         setHistoryLoading(false);
+      });
+
+      socket.on(AGENT_STATE_EVENT, (state: IAgentState) => {
+        flushSteps();
+        setAgentState(state);
       });
 
       socket.on('new_message', (message: IStep) => {
@@ -605,7 +627,15 @@ const useChatSession = () => {
         }
       });
     },
-    [setSession, sessionId, idToResume, chatProfile, flushSteps, queueStep]
+    [
+      setSession,
+      sessionId,
+      idToResume,
+      chatProfile,
+      flushSteps,
+      queueStep,
+      setAgentState
+    ]
   );
 
   // boba: у каждого _connect свой debounce; отложенный вызов прежнего не

@@ -1,0 +1,7 @@
+- alert:
+  - text: "The agent can't be reached right now, so the chat can't answer. Try again in a moment with the button on the right; if it keeps failing, let the administrator know. agent service at http://127.0.0.1:0/acp, initialize: connecting failed: All connection attempts failed"
+  - button "Повторить"
+- textbox "Введите сообщение здесь..."
+- img
+- button [disabled]:
+  - img

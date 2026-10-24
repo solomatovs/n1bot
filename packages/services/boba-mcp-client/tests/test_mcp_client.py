@@ -58,6 +58,7 @@ from boba.mcp_client.client import (
     McpServers,
     McpServersConfig,
     McpToolServer,
+    McpUnansweredError,
     ProxyAuth,
     StdioCommand,
 )
@@ -544,6 +545,23 @@ class TestUnreachableServer:
 
         with pytest.raises(McpClientError, match=r"ghost|nonexistent"):
             await server.described(OWN)
+
+    async def test_closed_port_is_unanswered_with_a_short_reason(self) -> None:
+        """Сервер не слушает порт: полный текст называет адрес и причину
+        httpx для журнала, короткая причина для человека — «нет соединения»."""
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+
+        location = HttpLocation(scheme="http", host="127.0.0.1", port=port, path="")
+        endpoint = HttpEndpoint(service=location, path="/mcp")
+        server = McpToolServer("closed", _config(endpoint))
+
+        with pytest.raises(McpUnansweredError) as caught:
+            await server.described(OWN)
+
+        assert caught.value.brief == "no connection", caught.value
+        assert f"127.0.0.1:{port}" in str(caught.value), caught.value
 
     async def test_lost_session_fails_the_call_and_the_next_call_reconnects(
         self, http_port: int, http: McpToolServer

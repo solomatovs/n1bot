@@ -62,6 +62,7 @@ from boba.agent.permissions import (
     StaticRules,
 )
 from boba.agent.records import (
+    NoticeLevel,
     PermissionBehavior,
     PermissionRule,
     PermissionRuleOperation,
@@ -95,6 +96,7 @@ __all__ = [
     "OwnTool",
     "PlannedCall",
     "Questioner",
+    "ServerNotice",
     "ToolMatcher",
     "ToolRunner",
     "ToolSearchInput",
@@ -254,6 +256,18 @@ class OwnTool(Protocol):
         ...
 
 
+@dataclass(frozen=True)
+class ServerNotice:
+    """Смена состояния сервера MCP сессии для человека: сервер не открылся,
+    перестал отвечать или ответил снова. Отдаёт McpServerSet, ход пишет её
+    записью informational; detail — короткая техническая причина под
+    текстом, пусто — причины нет."""
+
+    level: NoticeLevel
+    text: str
+    detail: str
+
+
 class McpServerSet(Protocol):
     """Порт серверов MCP сессии для хода.
 
@@ -263,12 +277,14 @@ class McpServerSet(Protocol):
     инструкциями: из этого и из карточек ToolServer ход объявляет модели
     разницу инструментов и инструкций. Реализует вход процесса агента над
     серверами своей сессии; отказ сервера реализация не выпускает: сервер,
-    который не ответил, перестаёт быть подключённым.
+    который не ответил, перестаёт быть подключённым, и человек узнаёт об
+    этом пометкой хода (ServerNotice).
     """
 
     @abstractmethod
-    async def refreshed(self) -> None:
-        """Устаревшие ответы серверов перечитаны."""
+    async def refreshed(self) -> Sequence[ServerNotice]:
+        """Устаревшие ответы серверов перечитаны; итог — смены состояния
+        серверов с прошлого вызова, каждая отдаётся один раз."""
 
     @abstractmethod
     def connected(self) -> Sequence[ConnectedServer]:
@@ -645,12 +661,13 @@ class AgentTools(DeferredCatalog):
     def server(self) -> ToolServer | None:
         return self._server
 
-    async def refreshed(self) -> None:
-        """Устаревшее у серверов MCP сессии перечитано; без них — ничего."""
+    async def refreshed(self) -> Sequence[ServerNotice]:
+        """Устаревшее у серверов MCP сессии перечитано; итог — смены их
+        состояния; без серверов — ничего."""
         if self._servers is None:
-            return
+            return ()
 
-        await self._servers.refreshed()
+        return await self._servers.refreshed()
 
     def connected(self) -> Sequence[ConnectedServer]:
         """Подключённые серверы MCP с инструкциями; без них — пусто."""
