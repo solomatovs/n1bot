@@ -51,7 +51,7 @@ const Message = memo(
     // boba: карточка приложения MCP Apps — сообщение без аватара и кнопок:
     // рамка встаёт с края текста ответа, копировать и оценивать в ней нечего
     const isApp = Boolean(message.metadata?.mcpApp);
-    // boba: пометка агента и ошибка хода — строка с точкой в колонке аватара
+    // boba: пометка агента и ошибка хода — блок с рамкой цвета важности
     const notice = message.metadata?.agentNotice;
     // Only keep tool calls if Chain of Thought is tool_call
     const toolCallSkip =
