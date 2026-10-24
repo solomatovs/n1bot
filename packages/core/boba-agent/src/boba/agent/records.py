@@ -83,6 +83,7 @@ __all__ = [
     "EnvironmentChange",
     "EnvironmentField",
     "EnvironmentSnapshot",
+    "FeedSink",
     "HarnessCommandRecord",
     "HistoryFold",
     "InformationalRecord",
@@ -864,6 +865,55 @@ class TurnMark(StrEnum):
         return self in (TurnMark.ASKS, TurnMark.ANSWERS, TurnMark.STUB)
 
 
+class FeedSink(Protocol):
+    """Приёмник ленты беседы: запись отдаёт сюда то, что человек видит в
+    беседе, — одинаково вживую и при воспроизведении истории; запись,
+    которой человек не видит, ничего не отдаёт. Реализует отрисовщик ленты
+    входа процесса (FeedPainter протокола ACP)."""
+
+    @abstractmethod
+    def question(
+        self, message_id: str, text: str, links: Sequence[mt.ResourceLink]
+    ) -> None:
+        """Вопрос человека или вызов его команды с вложениями."""
+
+    @abstractmethod
+    def thought(self, message_id: str, text: str) -> None:
+        """Рассуждение модели."""
+
+    @abstractmethod
+    def message(self, message_id: str, text: str) -> None:
+        """Текст ответа модели."""
+
+    @abstractmethod
+    def tool_call(self, message_id: str, call: ToolUseBlock) -> None:
+        """Вызов инструмента в ответе модели."""
+
+    @abstractmethod
+    def tool_result(self, result: ToolResultBlock, record: ToolResultRecord) -> None:
+        """Итог вызова инструмента."""
+
+    @abstractmethod
+    def notice(self, level: NoticeLevel, text: str, detail: str) -> None:
+        """Пометка человеку посреди хода."""
+
+    @abstractmethod
+    def model_retry(self, record: ApiErrorRecord) -> None:
+        """Неудачная попытка запроса к модели перед повтором."""
+
+    @abstractmethod
+    def compaction(self, record: CompactionRecord) -> None:
+        """Стадия сжатия: начато, не удалось, прервано."""
+
+    @abstractmethod
+    def compacted(self, record: CompactSummaryRecord) -> None:
+        """Состоявшееся сжатие с его пересказом."""
+
+    @abstractmethod
+    def turn_ended(self, record: TurnEndRecord) -> None:
+        """Конец хода."""
+
+
 class HistoryFold:
     """Основа свёрток истории: проход по записям разговора, в котором каждая
     запись сама сообщает, что она объявила модели или сделала, — снимок
@@ -996,6 +1046,10 @@ class ChainRecord(WireModel):
     def carried(self) -> Self:
         """Копия записи для хвоста, перенесённого за границу сжатия."""
 
+    @abstractmethod
+    def feed(self, sink: FeedSink) -> None:
+        """Что запись показывает человеку в беседе."""
+
 
 class UserRecord(ChainRecord):
     """Основа записей `user`: сообщение роли user. Наследники — виды:
@@ -1072,6 +1126,10 @@ class UserRecord(ChainRecord):
     def carried(self) -> Self:
         return self
 
+    def feed(self, sink: FeedSink) -> None:
+        """Служебные сообщения пользователя человек не видит."""
+        return
+
 
 class PromptRecord(UserRecord):
     """Вопрос человека; uuid — идентификатор элемента очереди."""
@@ -1081,6 +1139,9 @@ class PromptRecord(UserRecord):
 
     def human_text(self) -> str | None:
         return self.message.text()
+
+    def feed(self, sink: FeedSink) -> None:
+        sink.question(self.uuid, self.message.text(), self.message.links())
 
 
 class TaskNotificationRecord(UserRecord):
@@ -1118,6 +1179,9 @@ class CommandRecord(UserRecord):
     def human_text(self) -> str | None:
         return self.message.text()
 
+    def feed(self, sink: FeedSink) -> None:
+        sink.question(self.uuid, self.message.text(), self.message.links())
+
 
 class CommandOutputRecord(UserRecord):
     """Вывод локальной команды тегом local-command-stdout: им кончается ход
@@ -1150,6 +1214,10 @@ class ToolResultRecord(UserRecord):
     def placement(self) -> Placement:
         return Placement.STOPS
 
+    def feed(self, sink: FeedSink) -> None:
+        for result in self.message.tool_results():
+            sink.tool_result(result, self)
+
 
 class InterruptRecord(UserRecord):
     """Маркер остановки хода пользователем или выключением агента: текст
@@ -1172,6 +1240,9 @@ class CompactSummaryRecord(UserRecord):
 
     def human_text(self) -> str | None:
         return None
+
+    def feed(self, sink: FeedSink) -> None:
+        sink.compacted(self)
 
 
 class AssistantRecord(ChainRecord):
@@ -1248,6 +1319,19 @@ class AssistantRecord(ChainRecord):
 
         return self.model_copy(update={"message": message})
 
+    def feed(self, sink: FeedSink) -> None:
+        message_id = self.message.id
+        for block in self.message.content:
+            if isinstance(block, ThinkingBlock):
+                sink.thought(message_id, block.thinking)
+                continue
+
+            if isinstance(block, TextBlock):
+                sink.message(message_id, block.text)
+                continue
+
+            sink.tool_call(message_id, block)
+
 
 class ReplyRecord(AssistantRecord):
     """Блок ответа модели; `is_aborted_mid_stream` — ответ оборван
@@ -1267,6 +1351,10 @@ class NoResponseRecord(AssistantRecord):
 
     def turn_mark(self) -> TurnMark:
         return TurnMark.STUB
+
+    def feed(self, sink: FeedSink) -> None:
+        """Заглушка нужна модели, человек её не видит."""
+        return
 
 
 class AttachmentRecord(ChainRecord):
@@ -1320,6 +1408,10 @@ class AttachmentRecord(ChainRecord):
     def carried(self) -> Self:
         return self
 
+    def feed(self, sink: FeedSink) -> None:
+        """Вложения — контекст модели, человек их не видит."""
+        return
+
 
 class SystemRecord(ChainRecord):
     """Основа записей `system`: пометки и события для журнала и ленты —
@@ -1362,6 +1454,9 @@ class SystemRecord(ChainRecord):
     def carried(self) -> Self:
         return self
 
+    def feed(self, sink: FeedSink) -> None:
+        return
+
 
 class ApiErrorRecord(SystemRecord):
     """Неудачная попытка запроса к модели, за которой следует повтор через
@@ -1381,6 +1476,9 @@ class ApiErrorRecord(SystemRecord):
     detail: str
     """Короткая техническая причина: статус и суть ответа провайдера."""
 
+    def feed(self, sink: FeedSink) -> None:
+        sink.model_retry(self)
+
 
 class InformationalRecord(SystemRecord):
     """Пометка для человека в беседе: сервер MCP пропал или вернулся, ход
@@ -1394,6 +1492,9 @@ class InformationalRecord(SystemRecord):
     level: NoticeLevel
     detail: str
     """Короткая техническая причина под текстом; пусто — причины нет."""
+
+    def feed(self, sink: FeedSink) -> None:
+        sink.notice(self.level, self.content, self.detail)
 
 
 class PreservedMessages(WireModel):
@@ -1440,6 +1541,9 @@ class CompactionRecord(SystemRecord):
     trigger: CompactTrigger
     command_uuid: str | None
     error: str
+
+    def feed(self, sink: FeedSink) -> None:
+        sink.compaction(self)
 
 
 class CompactBoundaryRecord(SystemRecord):
@@ -1499,6 +1603,9 @@ class TurnEndRecord(SystemRecord):
             return TurnMark.REFUSAL
 
         return TurnMark.END
+
+    def feed(self, sink: FeedSink) -> None:
+        sink.turn_ended(self)
 
 
 class ServiceRecord(WireModel):
