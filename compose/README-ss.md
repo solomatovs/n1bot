@@ -84,7 +84,7 @@ tools service» (boba-mcp), «Aid: aid + mcp» (оба процесса сраз
 aid (контейнер `aid`), `/boba-mcp/health` — boba-mcp новой версии,
 `/boba-studio/` — studio версии dev. Его конфигурация —
 `/mnt/store/ss/docker/compose/nginx/conf/conf.d/locations/boba.conf`
-(руководство, раздел 13).
+(руководство, раздел 14).
 
 Сетевые интерфейсы контейнерам выдаёт `lxc-user-nic`; число интерфейсов
 пользователя ограничено в `/etc/lxc/lxc-usernet`. Отказ `Quota reached` при
