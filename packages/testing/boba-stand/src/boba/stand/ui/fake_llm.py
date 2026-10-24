@@ -68,6 +68,7 @@ __all__ = [
     "Scenario",
     "ScenarioError",
     "ScenarioName",
+    "SummaryBook",
     "SummaryName",
     "ToolCallSpec",
     "TurnScript",
@@ -93,6 +94,7 @@ class FakeRoute(StrEnum):
     LINES = "/lines"
     RESET = "/reset"
     WINDOW = "/window"
+    SUMMARY_HOLD = "/summary/hold"
     REQUESTS = "/requests"
     REPLIES = "/replies"
     RELEASE = "/replies/release"
@@ -669,6 +671,10 @@ class SummaryBook:
         "an <analysis> block followed by a <summary> block"
     )
     """Фраза инструкции пересказа, по которой стенд узнаёт запрос."""
+
+    HOLD_KEY: ClassVar[str] = "summary"
+    """Ключ паузы запроса пересказа в паузах книги (`POST /summary/hold`):
+    отпускает её `POST /replies/release` с этим вопросом."""
 
     LONG_CHARS: ClassVar[int] = 60_000
     TOOL: ClassVar[str] = "lookup"
@@ -1772,6 +1778,10 @@ class ReplyHolds:
     def release(self, question: str) -> None:
         self._event(question).set()
 
+    def rearm(self, question: str) -> None:
+        """Вопрос снова держится до следующего отпускания."""
+        self._released[question] = asyncio.Event()
+
     def held(self) -> list[str]:
         return sorted(self._held)
 
@@ -1845,6 +1855,26 @@ class ReplyBookClient:
         response = httpx.post(url, json=body, timeout=self.TIMEOUT_SEC)
         self._expect_ok(f"POST {url}", response)
 
+    def limit_window(self, settings: WindowSettings) -> None:
+        """Окно модели стенда и учёт ответов по размеру (`PUT /window`)."""
+        url = f"{self._base_url}{FakeRoute.WINDOW.value}"
+        body = settings.model_dump(mode="json")
+        response = httpx.put(url, json=body, timeout=self.TIMEOUT_SEC)
+        self._expect_ok(f"PUT {url}", response)
+
+    def reset(self) -> None:
+        """Сброс стенда: журнал запросов, окно, пауза пересказа."""
+        url = f"{self._base_url}{FakeRoute.RESET.value}"
+        response = httpx.post(url, timeout=self.TIMEOUT_SEC)
+        self._expect_ok(f"POST {url}", response)
+
+    def hold_summary(self) -> None:
+        """Следующий запрос пересказа агента встанет на паузу: её ждут и
+        отпускают по ключу SummaryBook.HOLD_KEY."""
+        url = f"{self._base_url}{FakeRoute.SUMMARY_HOLD.value}"
+        response = httpx.post(url, timeout=self.TIMEOUT_SEC)
+        self._expect_ok(f"POST {url}", response)
+
     def held(self) -> Sequence[str]:
         url = f"{self._base_url}{FakeRoute.HELD.value}"
         response = httpx.get(url, timeout=self.TIMEOUT_SEC)
@@ -1900,6 +1930,7 @@ class FakeLlmApp:
     _summaries: SummaryBook = field(init=False, repr=False)
     _usage: UsageBook = field(init=False, repr=False)
     _window: PromptWindow = field(init=False, repr=False)
+    _summary_held: bool = field(init=False, repr=False, default=False)
     _names: McpToolNames = field(init=False, repr=False)
     _questions: ReplyQuestions = field(init=False, repr=False)
     _book: ReplyBook = field(init=False, repr=False)
@@ -1934,28 +1965,7 @@ class FakeLlmApp:
             """Многострочный текст: окно строк и grep web-инструментов."""
             return Response(FakePage.LINES.value, media_type=FakePage.LINES.media_type)
 
-        @app.post(FakeRoute.RESET.value)
-        async def reset() -> dict[str, str]:
-            """Сброс журнала запросов и окна: тест начинает с чистого листа."""
-            self.requests.clear()
-            self._usage = UsageBook(self.estimate_usage, UsageBook.CHARS_PER_TOKEN)
-            self._window = PromptWindow()
-            return {"status": "ok"}
-
-        @app.put(FakeRoute.WINDOW.value)
-        async def window(request: Request) -> Response:
-            """Окно модели: запрос больше окна получает 400 о переполнении."""
-            try:
-                settings = WindowSettings.model_validate(await request.json())
-            except ValidationError as exc:
-                route = FakeRoute.WINDOW.value
-                msg = f"fake llm: PUT {route} expects the window settings: {exc}"
-                return JSONResponse(
-                    {"detail": msg}, status_code=httpx.codes.UNPROCESSABLE_ENTITY
-                )
-
-            self.limit_window(settings)
-            return JSONResponse({"status": "ok"})
+        self._control_routes(app)
 
         @app.get(FakeRoute.REQUESTS.value)
         async def recorded() -> JSONResponse:
@@ -1973,6 +1983,41 @@ class FakeLlmApp:
             return await self._play(request, self._ollama)
 
         return app
+
+    def _control_routes(self, app: FastAPI) -> None:
+        """Управление стендом: сброс, окно модели, пауза пересказа."""
+
+        @app.post(FakeRoute.RESET.value)
+        async def reset() -> dict[str, str]:
+            """Сброс журнала запросов и окна: тест начинает с чистого листа."""
+            self.requests.clear()
+            self._usage = UsageBook(self.estimate_usage, UsageBook.CHARS_PER_TOKEN)
+            self._window = PromptWindow()
+            self._summary_held = False
+            self._holds.release(SummaryBook.HOLD_KEY)
+            return {"status": "ok"}
+
+        @app.post(FakeRoute.SUMMARY_HOLD.value)
+        async def summary_hold() -> dict[str, str]:
+            """Следующий запрос пересказа встанет на паузу до отпускания."""
+            self._holds.rearm(SummaryBook.HOLD_KEY)
+            self._summary_held = True
+            return {"status": "ok"}
+
+        @app.put(FakeRoute.WINDOW.value)
+        async def window(request: Request) -> Response:
+            """Окно модели: запрос больше окна получает 400 о переполнении."""
+            try:
+                settings = WindowSettings.model_validate(await request.json())
+            except ValidationError as exc:
+                route = FakeRoute.WINDOW.value
+                msg = f"fake llm: PUT {route} expects the window settings: {exc}"
+                return JSONResponse(
+                    {"detail": msg}, status_code=httpx.codes.UNPROCESSABLE_ENTITY
+                )
+
+            self.limit_window(settings)
+            return JSONResponse({"status": "ok"})
 
     def _reply_routes(self, app: FastAPI) -> None:
         """Маршруты книги ответов: книга целиком, отпускание паузы, паузы."""
@@ -2025,6 +2070,10 @@ class FakeLlmApp:
             return JSONResponse(
                 {"detail": msg}, status_code=httpx.codes.UNPROCESSABLE_ENTITY
             )
+
+        if question == SummaryBook.HOLD_KEY:
+            self._holds.release(question)
+            return JSONResponse({"status": "ok"})
 
         if not self._book.has(question):
             msg = f"fake llm: release of question {question!r} that is not in the book"
@@ -2129,6 +2178,10 @@ class FakeLlmApp:
         name = self._summaries.name(payload)
         if name is SummaryName.OVERFLOW:
             return wire.error(FailureName.OVERFLOW)
+
+        if self._summary_held:
+            self._summary_held = False
+            await self._holds.wait(SummaryBook.HOLD_KEY)
 
         if name is SummaryName.HANG:
             await asyncio.sleep(self.hang_sec)

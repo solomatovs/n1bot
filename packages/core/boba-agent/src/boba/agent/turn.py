@@ -55,6 +55,7 @@ from boba.agent.compaction import (
     Summarizer,
     SummaryAborted,
     SummaryFailure,
+    SummaryInstruction,
     SummaryJob,
     SummaryPressure,
     TokenEstimator,
@@ -75,6 +76,7 @@ from boba.agent.records import (
     AssistantBlock,
     AssistantMessage,
     AssistantRecord,
+    CompactTrigger,
     MessageOrigin,
     OriginKind,
     Record,
@@ -223,7 +225,7 @@ class TurnLoop:
             ContextMeter(estimator),
             self._compaction,
             profile,
-            self._templates.read(AgentTemplateFile.SUMMARIZE_INSTRUCTION),
+            SummaryInstruction(self._templates).text(""),
         )
         self._summarizer = Summarizer(
             self._asking,
@@ -282,20 +284,10 @@ class TurnLoop:
         started = time.monotonic()
         self._failures = 0
         progress = Progress()
-
-        await self._write_prompt(taken)
-        for item in taken.items:
-            for text in item.context:
-                await self._write_meta(text)
-
-        await self._absorb()
-        await self._announce_input()
-
-        while True:
-            progress.steps += 1
-            outcome = await self._step(progress, cancellation)
-            if outcome is not None:
-                break
+        if taken.head.kind is QueueKind.COMPACT:
+            outcome = await self._manual_compact(taken.head.text, cancellation)
+        else:
+            outcome = await self._turn(taken, progress, cancellation)
 
         duration = int((time.monotonic() - started) * self.MILLIS)
         prompt_ids: list[str] = []
@@ -317,6 +309,49 @@ class TurnLoop:
             prompt_ids=prompt_ids,
             error=error,
         )
+
+    async def _turn(
+        self, taken: Taken, progress: Progress, cancellation: RunCancellation
+    ) -> TurnOutcome:
+        """Ход по вопросу: запись вопроса, вложения ввода, шаги до исхода."""
+        await self._write_prompt(taken)
+        for item in taken.items:
+            for text in item.context:
+                await self._write_meta(text)
+
+        await self._absorb()
+        await self._announce_input()
+
+        while True:
+            progress.steps += 1
+            outcome = await self._step(progress, cancellation)
+            if outcome is not None:
+                return outcome
+
+    async def _manual_compact(
+        self, instructions: str, cancellation: RunCancellation
+    ) -> TurnOutcome:
+        """Сжатие по команде пользователя: вопроса в истории нет, модель
+        получает только пересказ; instructions — указания к пересказу.
+        Неудача — запись об ошибке с причиной, как у отказа модели."""
+        snapshot = self._snapshot_in_use()
+        fill = self._gate.measure(self._session.conversation(), snapshot)
+        pressure = SummaryPressure(
+            trigger=CompactTrigger.MANUAL,
+            last_resort=True,
+            excess=None,
+            instructions=instructions,
+        )
+        compacted = await self._compact(fill, snapshot, pressure, cancellation)
+        if isinstance(compacted, SummaryAborted):
+            return self._abort_outcome(compacted.reason)
+
+        if isinstance(compacted, NotSummarized):
+            text = self._templates.read(AgentTemplateFile.MANUAL_COMPACTION_FAILED)
+            await self._write_api_failure(text.format(detail=compacted.describe()))
+            return TurnOutcome.API_ERROR
+
+        return TurnOutcome.COMPLETED
 
     async def _step(
         self, progress: Progress, cancellation: RunCancellation
@@ -390,7 +425,10 @@ class TurnLoop:
 
         if decision is GateDecision.COMPACT:
             pressure = SummaryPressure(
-                last_resort=fill.level is FillLevel.BLOCKED, excess=None
+                trigger=CompactTrigger.AUTO,
+                last_resort=fill.level is FillLevel.BLOCKED,
+                excess=None,
+                instructions="",
             )
             compacted = await self._compact(fill, snapshot, pressure, cancellation)
             if isinstance(compacted, SummaryAborted):
@@ -466,7 +504,10 @@ class TurnLoop:
         snapshot = self._snapshot_in_use()
         fill = self._gate.measure(self._session.conversation(), snapshot)
         pressure = SummaryPressure(
-            last_resort=True, excess=self._overflow_signs.excess(asked.error)
+            trigger=CompactTrigger.AUTO,
+            last_resort=True,
+            excess=self._overflow_signs.excess(asked.error),
+            instructions="",
         )
         compacted = await self._compact(fill, snapshot, pressure, cancellation)
         if isinstance(compacted, SummaryAborted):
@@ -530,6 +571,7 @@ class TurnLoop:
         duration = int((time.monotonic() - started) * self.MILLIS)
         compact_job = CompactJob(
             compaction_id=compaction_id,
+            trigger=pressure.trigger,
             pre_tokens=fill.tokens,
             duration_ms=duration,
             today=self._attachments.today(),

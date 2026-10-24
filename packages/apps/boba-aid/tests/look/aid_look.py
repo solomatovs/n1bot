@@ -1292,10 +1292,14 @@ class LookStand:
         return process
 
     def served(
-        self, name: str, servers: Mapping[str, Mapping[str, object]]
+        self,
+        name: str,
+        servers: Mapping[str, Mapping[str, object]],
+        context_window: int = 200000,
     ) -> StandProcess:
-        """Стенд name с серверами MCP servers (секции [mcp.servers.<имя>]):
-        вход local, язык конфига assets; поднят по первому запросу."""
+        """Стенд name с серверами MCP servers (секции [mcp.servers.<имя>]) и
+        окном модели context_window: вход local, язык конфига assets; поднят
+        по первому запросу."""
         if running := self._served.get(name):
             return running
 
@@ -1311,6 +1315,7 @@ class LookStand:
             db_name=self._database,
             url_prefix="/boba-look",
             mcp_servers=mcp_servers,
+            context_window=context_window,
         )
         process = StandProcess(config=config, log_path=self._workdir / f"{name}.log")
         process.start(boot_timeout_sec=self.BOOT_TIMEOUT_SEC)

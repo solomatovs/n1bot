@@ -6,7 +6,8 @@
 распознать самому (неизвестный инструмент, пустой id, повтор id, без учёта,
 пустой ответ, теги <think>). Оборванный поток без финального чанка оба
 клиента считают ошибкой. Окно стенда отвергает запрос больше себя ошибкой
-переполнения, сброс стенда окно снимает.
+переполнения, сброс стенда окно снимает; запрос пересказа встаёт на паузу по
+заказу теста.
 """
 
 from __future__ import annotations
@@ -39,7 +40,9 @@ from boba.stand.ui.fake_llm import (
     FailureName,
     FakeLlmApp,
     FakeRoute,
+    ReplyBookClient,
     ScenarioName,
+    SummaryBook,
     UsageBook,
     WindowSettings,
 )
@@ -469,3 +472,27 @@ class TestWindow:
                 json=self.WINDOW.model_dump(mode="json"),
             )
             response.raise_for_status()
+
+
+class TestSummaryHold:
+    """Пауза запроса пересказа (`POST /summary/hold`): следующий запрос
+    пересказа стоит, пока тест его не отпустит; остальные идут как обычно."""
+
+    async def test_summary_request_waits_for_the_release(
+        self, clients: StandClients, stand_port: int
+    ) -> None:
+        book = ReplyBookClient(StandUrl.of(stand_port))
+        await asyncio.to_thread(book.hold_summary)
+        summary = f"Summarize. Reply with {SummaryBook.INSTRUCTION_MARK}."
+        asked = asyncio.create_task(clients.ask(Protocol.OPENAI, summary, True))
+        await asyncio.to_thread(book.await_held, SummaryBook.HOLD_KEY, 5.0)
+        plain = await clients.ask(Protocol.OPENAI, ScenarioName.ANSWER.value, True)
+
+        assert not asked.done()
+        assert plain.reply is not None, plain.error
+
+        await asyncio.to_thread(book.release, SummaryBook.HOLD_KEY)
+        outcome = await asked
+
+        assert outcome.reply is not None, outcome.error
+        assert "<summary>" in outcome.reply.content

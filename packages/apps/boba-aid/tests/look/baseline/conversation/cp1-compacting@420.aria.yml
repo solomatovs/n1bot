@@ -1,0 +1,14 @@
+- article: Выгрузи заказы и возвраты за квартал
+- img "Avatar for AID"
+- 'heading "Завершено · шагов: 3" [level=3]':
+  - 'button "Завершено · шагов: 3"'
+- img "Avatar for AID"
+- article: Выгружаю заказы и возвраты.
+- img "Avatar for AID"
+- article: "Выгрузил заказы и возвраты: по две страницы на таблицу."
+- article: Что из этого стоит проверить первым?
+- img "Avatar for AID"
+- heading "○ Сжимаю контекст…" [level=3]:
+  - button "○ Сжимаю контекст…"
+- img "Avatar for AID"
+- article

@@ -26,6 +26,8 @@ class AgentTemplateFile(StrEnum):
     """Файлы текстов относительно каталога texts пакета."""
 
     SUMMARIZE_INSTRUCTION = "compact/summarize_instruction.txt"
+    SUMMARIZE_CUSTOM = "compact/summarize_custom.txt"
+    SUMMARIZE_REMINDER = "compact/summarize_reminder.txt"
     SUMMARY_WRAPPER = "compact/summary_wrapper.txt"
     SUMMARY_HEAD_TRUNCATED = "compact/summary_head_truncated.txt"
     TRUNCATED_FOR_RETRY = "compact/truncated_for_retry.txt"
@@ -41,6 +43,7 @@ class AgentTemplateFile(StrEnum):
     THRASHING = "compact/thrashing.txt"
     COMPACTION_FAILED = "compact/compaction_failed.txt"
     THREAD_EXHAUSTED = "compact/thread_exhausted.txt"
+    MANUAL_COMPACTION_FAILED = "compact/manual_compaction_failed.txt"
     THREAD_EXHAUSTED_TITLE = "compact/thread_exhausted_title.txt"
 
     ENVIRONMENT = "attachments/environment.txt"

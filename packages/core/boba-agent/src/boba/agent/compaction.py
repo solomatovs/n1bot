@@ -95,6 +95,7 @@ __all__ = [
     "Summarizer",
     "SummaryAborted",
     "SummaryFailure",
+    "SummaryInstruction",
     "SummaryJob",
     "SummaryPressure",
     "TokenEstimator",
@@ -534,16 +535,40 @@ class SummaryAborted:
 SummaryOutcome = Summarized | NotSummarized | SummaryAborted
 
 
+class SummaryInstruction:
+    """Инструкция пересказа (docs/prompt_assembly/specs/04_compaction.md,
+    2.3): основа, указания пользователя к ручному сжатию блоком
+    «Additional Instructions:» и напоминание в конце. Создают цикл хода,
+    пересказ и проверка профиля."""
+
+    def __init__(self, templates: AgentTemplate) -> None:
+        self._templates = templates
+
+    def text(self, instructions: str) -> str:
+        parts = [self._templates.read(AgentTemplateFile.SUMMARIZE_INSTRUCTION)]
+        if instructions:
+            custom = self._templates.read(AgentTemplateFile.SUMMARIZE_CUSTOM)
+            parts.append(custom.format(instructions=instructions))
+
+        parts.append(self._templates.read(AgentTemplateFile.SUMMARIZE_REMINDER))
+
+        return "".join(parts)
+
+
 @dataclass(frozen=True)
 class SummaryPressure:
-    """Чем вызвано сжатие. last_resort — заполненность у предела или сервер
-    уже отверг запрос: если пересказывать по раундам нечего, разрешён
-    последний рубеж; excess — на сколько токенов основной запрос превысил
-    окно по словам сервера, None — сервер чисел не назвал или запроса не
-    было."""
+    """Чем вызвано сжатие. trigger — порог или переполнение (auto) либо
+    команда пользователя (manual); last_resort — заполненность у предела,
+    сервер уже отверг запрос или сжатие просил пользователь: если
+    пересказывать по раундам нечего, разрешён последний рубеж; excess — на
+    сколько токенов основной запрос превысил окно по словам сервера, None —
+    сервер чисел не назвал или запроса не было; instructions — указания
+    пользователя к пересказу, пусто — их нет."""
 
+    trigger: CompactTrigger
     last_resort: bool
     excess: int | None
+    instructions: str
 
 
 @dataclass(frozen=True)
@@ -601,6 +626,7 @@ class Summarizer:
         self._estimator = estimator
         self._grouper = RoundGrouper()
         self._signs = ContextOverflowSigns()
+        self._instruction = SummaryInstruction(templates)
         self._ids = ids
         self._clock = clock
         self._version = version
@@ -794,11 +820,12 @@ class Summarizer:
         начинается ответом модели, и перед ним встаёт пометка об усечении."""
         sent: list[ChainRecord] = []
         if dropped:
-            marker = self._user(job.session, AgentTemplateFile.TRUNCATED_FOR_RETRY)
-            sent.append(marker)
+            marker = self._templates.read(AgentTemplateFile.TRUNCATED_FOR_RETRY)
+            sent.append(self._user(job.session, marker))
 
         sent.extend(head)
-        sent.append(self._user(job.session, AgentTemplateFile.SUMMARIZE_INSTRUCTION))
+        instruction = self._instruction.text(job.pressure.instructions)
+        sent.append(self._user(job.session, instruction))
 
         return self._builder.summary(sent, job.conversation, job.snapshot)
 
@@ -846,11 +873,9 @@ class Summarizer:
 
         return text
 
-    def _user(self, session: Session, template: AgentTemplateFile) -> UserRecord:
+    def _user(self, session: Session, text: str) -> UserRecord:
         """Текст запроса пересказа — инструкция или пометка об усечении — как
         запись пользователя для сборщика; в сессию не попадает."""
-        text = self._templates.read(template)
-
         return UserRecord(
             uuid=self._ids.uuid(),
             parent_uuid=None,
@@ -968,6 +993,7 @@ class CompactJob:
     длительность и сегодняшняя дата."""
 
     compaction_id: str
+    trigger: CompactTrigger
     pre_tokens: int
     duration_ms: int
     today: str
@@ -1044,7 +1070,7 @@ class Compactor:
             version=self._version,
             logical_parent_uuid=summary.kept[-1].uuid,
             compact_metadata=CompactMetadata(
-                trigger=CompactTrigger.AUTO,
+                trigger=job.trigger,
                 pre_tokens=job.pre_tokens,
                 post_tokens=post_tokens,
                 duration_ms=job.duration_ms,
