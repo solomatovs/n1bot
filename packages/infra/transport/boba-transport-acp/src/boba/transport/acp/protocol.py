@@ -55,7 +55,6 @@ __all__ = [
     "AgentSide",
     "BatchTransport",
     "ClientConnection",
-    "CompactionTrigger",
     "ElicitationRound",
     "ErrorDataKey",
     "IdleErrorNotification",
@@ -161,8 +160,7 @@ class MetaKey(StrEnum):
     вызова несёт в `_meta` признак вопроса пользователю (true), по нему
     клиент отличает вопрос от вызова инструмента и вживую, и в истории.
     Вопрос сервера MCP: имя сервера и инструмента в `_meta` запроса, раунды
-    вопросов вызова — в `_meta` результата tools/call. Уведомление
-    `compaction_update` несёт, что запустило сжатие (CompactionTrigger).
+    вопросов вызова — в `_meta` результата tools/call.
     """
 
     UP_TO_MESSAGE_ID = "boba/upToMessageId"
@@ -172,16 +170,6 @@ class MetaKey(StrEnum):
     SERVER = "boba/server"
     TOOL = "boba/tool"
     ELICITATIONS = "boba/elicitations"
-    TRIGGER = "boba/trigger"
-
-
-class CompactionTrigger(StrEnum):
-    """Что запустило сжатие — значение MetaKey.TRIGGER `compaction_update`:
-    auto — порог заполненности или переполнение посреди хода, manual —
-    команда пользователя, у которой свой ход без вопроса."""
-
-    AUTO = "auto"
-    MANUAL = "manual"
 
 
 class ElicitationRound(BaseModel):

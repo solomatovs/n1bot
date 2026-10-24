@@ -281,10 +281,9 @@ class ChatRenderer:
         question = QuestionBody.model_validate(
             await self._payloads.get(message.question)
         )
-        if question.shown:
-            await self._updates.question(
-                question.text, message.key, question.author, question.links
-            )
+        await self._updates.question(
+            question.text, message.key, question.author, question.links
+        )
 
         await self._surface.task_start()
         await self._view.await_model()

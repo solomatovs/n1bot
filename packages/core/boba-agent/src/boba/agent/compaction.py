@@ -466,7 +466,6 @@ class SummaryFailure(StrEnum):
 
     TOO_FEW_GROUPS = "too_few_groups"
     TOOL_CALLS = "tool_calls"
-    NO_BLOCK = "no_summary_block"
     EMPTY = "empty_summary"
     OUTPUT_LIMIT = "output_limit"
     DOES_NOT_FIT = "does_not_fit"
@@ -481,9 +480,6 @@ class SummaryFailure(StrEnum):
             ),
             SummaryFailure.TOOL_CALLS: (
                 "the model answered the summary request with tool calls instead of text"
-            ),
-            SummaryFailure.NO_BLOCK: (
-                "the summary reply has no <summary> block to take the summary from"
             ),
             SummaryFailure.EMPTY: "the summary reply is empty",
             SummaryFailure.OUTPUT_LIMIT: (
@@ -864,12 +860,15 @@ class Summarizer:
         # <summary> словами, и первым блоком оказался бы кусок разбора
         reply_text = ReplyTag.ANALYSIS.without(reply.content)
         text = ReplyTag.SUMMARY.extract(reply_text)
+        detail = "the <summary> block is empty"
         if text is None:
-            return NotSummarized(SummaryFailure.NO_BLOCK, reply.content[:200])
+            # без блока пересказ — весь ответ без разбора, как у эталона
+            text = reply_text
+            detail = "the reply holds only the <analysis> block"
 
         text = text.strip()
         if not text:
-            return NotSummarized(SummaryFailure.EMPTY, "the <summary> block is empty")
+            return NotSummarized(SummaryFailure.EMPTY, detail)
 
         return text
 

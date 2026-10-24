@@ -159,7 +159,7 @@ async def test_turn_on_one_instance_is_rendered_on_another(
     )
     feed = TurnFeed(holder.bus, holder.payloads, scope, TURN, lock.token)
     try:
-        await feed.started(TURN, QuestionBody(shown=True, text="question"))
+        await feed.started(TURN, QuestionBody(text="question"))
         await feed.agent_update(
             schema.SessionToolCallUpdate(
                 tool_call_id=CALL,
@@ -275,7 +275,7 @@ async def test_reaper_closes_the_turn_of_a_dead_holder_and_resume_marks_it(
             scope, LockMode.EXCLUSIVE, LockPurpose.TURN, UUID(int=1)
         )
         feed = TurnFeed(holder.bus, holder.payloads, scope, TURN, lock.token)
-        await feed.started(TURN, QuestionBody(shown=True, text="question"))
+        await feed.started(TURN, QuestionBody(text="question"))
 
         await asyncio.sleep(2.5)
         stale = await viewer.locks.reap()

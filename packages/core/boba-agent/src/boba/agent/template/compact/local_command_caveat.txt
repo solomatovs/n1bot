@@ -1,0 +1,1 @@
+The command below was run directly in {agent}, not sent to you as a request, and its output goes straight to the user. It's recorded here as context for later messages.

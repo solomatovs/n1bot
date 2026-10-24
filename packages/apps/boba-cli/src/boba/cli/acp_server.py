@@ -141,8 +141,6 @@ from boba.agent.queue import QueueEntry, QueueKind, QueuePriority, QueueRefusedE
 from boba.agent.records import (
     AssistantRecord,
     ChainRecord,
-    CompactBoundaryRecord,
-    CompactTrigger,
     PermissionMode,
     Record,
     TextBlock,
@@ -155,6 +153,7 @@ from boba.agent.session import SessionState
 from boba.agent.settings import (
     McpClientJson,
 )
+from boba.agent.tags import LocalCommandText
 from boba.agent.template import AgentTemplate, AgentTemplateFile
 from boba.agent.tools import (
     AskOption,
@@ -175,7 +174,6 @@ from boba.transport.acp.protocol import (
     AcpTransportError,
     AcpVersion,
     AgentSide,
-    CompactionTrigger,
     ElicitationRound,
     ErrorDataKey,
     IdleErrorNotification,
@@ -706,6 +704,7 @@ class AcpMapping:
     def __init__(self) -> None:
         self._titles = ToolTitles()
         self._templates = AgentTemplate()
+        self._commands = LocalCommandText()
 
     def idle(
         self, result: ResultEvent
@@ -792,14 +791,15 @@ class AcpMapping:
     def user_updates(self, record: UserRecord) -> Iterator[Update]:
         """Запись `user`: итоги вызовов либо вопрос человека целым
         сообщением `user_message` с uuid записи как `messageId` — текст, за
-        ним ссылки на вложения блоками resource_link; служебные записи в
-        ленту не идут."""
+        ним ссылки на вложения блоками resource_link; запись вызова локальной
+        команды — текстом вызова, каким его набрал пользователь; служебные
+        записи в ленту не идут."""
         results = self.tool_results(record)
         if results:
             yield from results
             return
 
-        text = record.human_text()
+        text = self.prompt_text(record)
         if text is None:
             return
 
@@ -810,33 +810,31 @@ class AcpMapping:
 
         yield schema.UserMessageUpdate(message_id=record.uuid, content=content)
 
-    def replayed(
-        self,
-        record: ChainRecord,
-        hints: ToolHintSource,
-        triggers: Mapping[str, CompactTrigger],
-    ) -> Iterator[Update]:
+    def prompt_text(self, record: UserRecord) -> str | None:
+        """Текст вопроса человека, каким его видит клиент: запись вызова
+        локальной команды — текстом вызова; None — запись не вопрос."""
+        text = record.human_text()
+        if text is None:
+            return None
+
+        call = self._commands.parsed(text)
+        if call is None:
+            return text
+
+        return call.text()
+
+    def replayed(self, record: ChainRecord, hints: ToolHintSource) -> Iterator[Update]:
         """Запись беседы → её уведомления: сообщения целиком (`user_message`,
         `agent_thought`, `agent_message`), вызовы и их итоги — как в живом
         ходе. Конец хода остановкой или отказом модели — тот же idle, что
         вживую: маркер остановки — `cancelled`, запись об отказе модели —
         idle с ошибкой; прочие синтетические записи агента (заглушки) не
         воспроизводятся, оборванный ответ — воспроизводится; служебные
-        сообщения, вложения и границы сжатия в ленту не идут; пересказ —
-        состоявшимся сжатием с триггером его границы из triggers (uuid
-        пересказа → триггер)."""
+        сообщения, пересказы сжатия, вложения и границы сжатия в ленту не
+        идут."""
         if isinstance(record, UserRecord):
             if record.is_compact_summary:
-                trigger = triggers.get(record.uuid)
-                if trigger is None:
-                    msg = (
-                        f"The compaction summary {record.uuid} has no boundary "
-                        "before it in the replayed history. This is a bug: the "
-                        "boundary and the summary are written together."
-                    )
-                    raise RuntimeError(msg)
-
-                yield self.replayed_compaction(record, trigger)
+                yield self.replayed_compaction(record)
                 return
 
             yield from self.user_updates(record)
@@ -994,22 +992,15 @@ class AcpMapping:
         if event.error:
             error = event.error
 
-        trigger = CompactionTrigger(event.trigger.value)
-        meta = {MetaKey.TRIGGER.value: trigger.value}
-
         return schema.SessionCompactionUpdate(
             compaction_id=event.compaction_id,
             status=event.status.value,
             summary=summary,
             error=error,
-            field_meta=meta,
         )
 
-    def replayed_compaction(
-        self, record: UserRecord, trigger: CompactTrigger
-    ) -> schema.SessionCompactionUpdate:
-        """Пересказ из истории — то же состоявшееся сжатие, что вживую;
-        trigger — с границы этого сжатия."""
+    def replayed_compaction(self, record: UserRecord) -> schema.SessionCompactionUpdate:
+        """Пересказ из истории — то же состоявшееся сжатие, что вживую."""
         content = record.message.content
         if not isinstance(content, str):
             msg = (
@@ -1021,7 +1012,6 @@ class AcpMapping:
         event = CompactionEvent(
             compaction_id=record.uuid,
             status=CompactionStatus.COMPLETED,
-            trigger=trigger,
             summary=content,
             error="",
         )
@@ -2827,30 +2817,20 @@ class SessionRelay(EventSink):
         self._running = False
         self._inserting: dict[str, asyncio.Future[None]] = {}
         """Вопрос `session/prompt` в очереди → ожидание его записи `user`."""
-        self._echoes: dict[str, schema.UserMessageUpdate] = {}
-        """Команда в очереди → живое сообщение пользователя с её текстом:
-        записи `user` у команды нет, вставка — это сообщение."""
 
     def attach(self, agent: Agent) -> None:
         self._agent = agent
 
-    def insertion(
-        self, message_id: str, echo: schema.UserMessageUpdate | None
-    ) -> asyncio.Future[None]:
+    def insertion(self, message_id: str) -> asyncio.Future[None]:
         """Ожидание вставки вопроса message_id: его решает запись `user` с
-        этим uuid, отказ — refuse. echo — живое сообщение команды, у которой
-        записи `user` нет: вставка — начало её хода (сжатие начато) или его
-        конец, и echo уходит клиенту в этот момент; None — обычный вопрос."""
+        этим uuid, отказ — refuse."""
         inserted: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         self._inserting[message_id] = inserted
-        if echo is not None:
-            self._echoes[message_id] = echo
 
         return inserted
 
     def refuse(self, message_id: str, error: RequestError) -> None:
         """Вопрос message_id снят до вставки: его запрос получит error."""
-        self._echoes.pop(message_id, None)
         inserted = self._inserting.pop(message_id, None)
         if inserted is None:
             return
@@ -2884,13 +2864,7 @@ class SessionRelay(EventSink):
         await self._send(update)
 
     async def emit(self, event: AgentEvent) -> None:
-        if isinstance(event, CompactionEvent):
-            await self._command_inserted(event.compaction_id)
-
         if isinstance(event, ResultEvent):
-            for prompt_id in event.prompt_ids:
-                await self._command_inserted(prompt_id)
-
             await self._send_all(self._turn_summary())
             idle = self._mapping.idle(event)
             if isinstance(idle, IdleErrorUpdate):
@@ -2957,13 +2931,12 @@ class SessionRelay(EventSink):
 
         return self._mapping.title_update(title)
 
-    @staticmethod
-    def _first_prompt(conversation: Sequence[ChainRecord]) -> str | None:
+    def _first_prompt(self, conversation: Sequence[ChainRecord]) -> str | None:
         for record in conversation:
             if not isinstance(record, UserRecord):
                 continue
 
-            text = record.human_text()
+            text = self._mapping.prompt_text(record)
             if text is not None:
                 return text
 
@@ -3218,16 +3191,6 @@ class SessionRelay(EventSink):
         for request_id in list(self._asks):
             self.withdraw(request_id)
 
-    async def _command_inserted(self, message_id: str) -> None:
-        """Ход команды начался или кончился: её живое сообщение — клиенту,
-        вставка состоялась."""
-        echo = self._echoes.pop(message_id, None)
-        if echo is None:
-            return
-
-        await self._send(echo)
-        self._inserted(message_id)
-
     def _inserted(self, message_id: str) -> None:
         inserted = self._inserting.pop(message_id, None)
         if inserted is None:
@@ -3481,11 +3444,9 @@ class AcpSession:
         """Ставит вопрос в очередь ядра и отвечает, когда его ход вставил
         запись `user`: `messageId` ответа — её uuid. Вопрос идёт своим ходом,
         без склейки с соседями. Вопрос-команду промпта сервера раскрывает
-        SessionMcp. Команда сессии `/compact` — элемент очереди compact:
-        вопрос в историю не пишется, вставка — живое сообщение пользователя
-        с текстом команды (команда, исполненная агентом без модели,
-        docs ACP v2 prompt-lifecycle), её `messageId` — id элемента; ответ
-        приходит, когда ход команды начался или кончился.
+        SessionMcp. Команда сессии `/compact` — элемент очереди compact: её
+        вызов агент пишет в историю записью с uuid элемента, ответ приходит
+        с этой записью, как у вопроса.
 
         Ошибки:
         RequestError — очередь не приняла элемент или аргументы команды не
@@ -3493,14 +3454,12 @@ class AcpSession:
             отдал промпт (-32603), вопрос снят до вставки отменой хода или
             закрытием сессии (-32800).
         """
-        asked_text = asked.text
         command = self._commands.queued(asked)
         if command is not None:
             asked = command
 
         if command is None:
             asked = await self._mcp.expanded(asked)
-
         if self._serving.done():
             details = (
                 f"session {self._session_id} no longer serves prompts: its agent "
@@ -3524,12 +3483,7 @@ class AcpSession:
                 {ErrorDataKey.DETAILS.value: str(exc)}
             ) from exc
 
-        echo: schema.UserMessageUpdate | None = None
-        if command is not None:
-            text = schema.TextContentBlock(text=asked_text)
-            echo = schema.UserMessageUpdate(message_id=item.id, content=[text])
-
-        inserted = self._relay.insertion(item.id, echo)
+        inserted = self._relay.insertion(item.id)
         if priority is QueuePriority.LATER:
             logger.info(
                 "session %s: prompt %s waits in the queue behind the running turn",
@@ -4137,13 +4091,12 @@ class AcpAgent(AcpAgentProtocol):
         """
         stored = SessionId(value=session_id)
         hints: ToolHintSource = held.hints
-        triggers: dict[str, CompactTrigger] = {}
         replayed = 0
         last = 0
         try:
             async with aclosing(self._assembly.history(stored)) as records:
                 async for record in records:
-                    await self._replay_record(held, record, hints, triggers)
+                    await self._replay_record(held, record, hints)
                     replayed += 1
                     last = record.seq
         except HistoryError as exc:
@@ -4156,25 +4109,15 @@ class AcpAgent(AcpAgentProtocol):
                 if not isinstance(record, ChainRecord):
                     continue
 
-                await self._replay_record(held, record, hints, triggers)
+                await self._replay_record(held, record, hints)
                 replayed += 1
 
         logger.info("session %s: %d record(s) replayed", session_id, replayed)
 
     async def _replay_record(
-        self,
-        held: HeldSession,
-        record: ChainRecord,
-        hints: ToolHintSource,
-        triggers: dict[str, CompactTrigger],
+        self, held: HeldSession, record: ChainRecord, hints: ToolHintSource
     ) -> None:
-        """Уведомления записи; граница сжатия запоминает свой триггер за
-        пересказом, который идёт за ней."""
-        if isinstance(record, CompactBoundaryRecord):
-            metadata = record.compact_metadata
-            triggers[metadata.preserved_messages.anchor_uuid] = metadata.trigger
-
-        for update in self._mapping.replayed(record, hints, triggers):
+        for update in self._mapping.replayed(record, hints):
             await held.relay.notify(update)
 
     async def _open_stored(

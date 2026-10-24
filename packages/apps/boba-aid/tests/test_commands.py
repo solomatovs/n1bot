@@ -48,12 +48,7 @@ from boba.aid.agent.chat import (
     ThreadAgent,
     ThreadIdentity,
 )
-from boba.aid.agent.commands import (
-    CommandError,
-    CommandIcon,
-    MenuCommand,
-    RoutedText,
-)
+from boba.aid.agent.commands import CommandError, CommandIcon, MenuCommand
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.chat.profiles import ChatProfileConfig, SelectedProfile
 from boba.connection_broker.store import ConnectionStore
@@ -418,30 +413,6 @@ class TestMenu:
         names = await tab.updates.menu(lacks(extra), removed)
 
         assert f"mcp__{EXTENDED}__greet" in names, names
-
-    async def test_agent_command_call_is_marked_for_the_agent(
-        self, tab: CommandsTab
-    ) -> None:
-        """Вызов объявленной агентом команды помечен как команда агента —
-        лента не рисует его строку; необъявленное имя и обычный текст идут
-        агенту обычным вопросом."""
-        updates = RecordingUpdates()
-        registration = replace(tab.identity.registration(PLAIN), servers=frozenset())
-        menu = tab.menus.menu(registration, updates)
-        compact = schema.AvailableCommand(name="compact", description="compact")
-        await menu.start()
-        await menu.heard(schema.AvailableCommandsUpdate(available_commands=[compact]))
-
-        chosen = await menu.routed("q1", "keep the sql", "compact")
-        typed = await menu.routed("q2", "/compact now", None)
-        unknown = await menu.routed("q3", "/review the diff", None)
-        plain = await menu.routed("q4", "hello", None)
-        await menu.close()
-
-        assert chosen == RoutedText(text="/compact keep the sql", agent_command=True)
-        assert typed == RoutedText(text="/compact now", agent_command=True)
-        assert unknown == RoutedText(text="/review the diff", agent_command=False)
-        assert plain == RoutedText(text="hello", agent_command=False)
 
     async def test_agent_command_named_as_a_chat_command_is_left_out(
         self, tab: CommandsTab

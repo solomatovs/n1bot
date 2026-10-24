@@ -277,7 +277,7 @@ class SummaryName(StrEnum):
     """Вместо текста — вызов инструмента."""
 
     NO_BLOCK = "summary:no-block"
-    """Текст без блока <summary>."""
+    """Разбор <analysis> и текст без блока <summary>: пересказ — этот текст."""
 
     EMPTY = "summary:empty"
     LONG = "summary:long"
@@ -1615,7 +1615,8 @@ class ReplyQuestions:
     """Вопрос пользователя в запросе модели — ключ книги ответов.
 
     Берётся последнее сообщение пользователя с текстом; у сообщения частями —
-    текст частей `text`. Агент дописывает в то же сообщение свои служебные
+    текст частей `text`, склеенный так же, как его склеивает провайдер без
+    частей (WireText). Агент дописывает в то же сообщение свои служебные
     блоки `<system-reminder>` и ссылки на вложения вопроса (LinkText),
     поэтому ключ — только набранное пользователем: блоки и ссылки
     вырезаются, остаток проходит strip и NFC. Тем же правилом приводится
@@ -1623,14 +1624,15 @@ class ReplyQuestions:
     """
 
     FORM: ClassVar[Literal["NFC"]] = "NFC"
-    TEXT_PART: ClassVar[str] = "text"
-    PART_JOIN: ClassVar[str] = "\n\n"
     LINK: ClassVar[re.Pattern[str]] = re.compile(
         re.escape(LinkText.TEMPLATE.value)
         .replace(re.escape("{name}"), r"[^\]]*")
         .replace(re.escape("{uri}"), r"[^)]*")
     )
     """Ссылка на вложение вопроса в тексте, каким его видит модель."""
+
+    def __init__(self) -> None:
+        self._wire = WireText()
 
     def normal(self, text: str) -> str:
         return unicodedata.normalize(self.FORM, text.strip())
@@ -1645,33 +1647,16 @@ class ReplyQuestions:
             if message.get("role") != "user":
                 continue
 
-            typed = self._typed(self._text(message.get("content")))
+            text = self._wire.of(message.get("content"))
+            if text is None:
+                continue
+
+            typed = self._typed(text)
             question = self.normal(typed)
             if question:
                 return question
 
         return ""
-
-    def _text(self, content: object) -> str:
-        if isinstance(content, str):
-            return content
-
-        if not isinstance(content, list):
-            return ""
-
-        return self.PART_JOIN.join(self._text_parts(content))
-
-    def _text_parts(self, parts: Sequence[object]) -> Iterator[str]:
-        for part in parts:
-            if not isinstance(part, dict):
-                continue
-
-            if part.get("type") != self.TEXT_PART:
-                continue
-
-            text = part.get(self.TEXT_PART)
-            if isinstance(text, str):
-                yield text
 
     def _typed(self, text: str) -> str:
         """Текст без служебных блоков агента и ссылок на вложения; незакрытый

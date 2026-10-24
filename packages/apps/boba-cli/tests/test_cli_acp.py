@@ -2897,7 +2897,7 @@ class TestHistory:
                 session_id=session_id,
                 mcp_servers=[StandRegistration.STAND],
             )
-            assert client.unannounced() == []
+            assert client.turn_updates_of(session_id) == []
 
             _, idle = await second.turn(
                 client,
@@ -3225,11 +3225,12 @@ class TestSessionCommands:
 
 
 class TestCompactCommand:
-    """`/compact <указания>` — сжатие своим ходом без вопроса: ответ на
-    `session/prompt` с messageId, равным id сжатия, приходит с его началом
-    вместе с живым `user_message` этого id; `compaction_update` несёт
-    триггер manual; в историю пишется граница с триггером manual, а не
-    вопрос. Отмена сжатия и сжатие без того, что пересказывать, — тоже
+    """`/compact <указания>` — сжатие своим ходом: вызов агент пишет в
+    историю записями локальной команды (пометка, вызов с uuid = messageId
+    ответа, после пересказа — вывод), ответ на `session/prompt` и
+    `user_message` с текстом вызова приходят с записью вызова, до сжатия;
+    воспроизведение отдаёт тот же `user_message` перед состоявшимся
+    сжатием. Отмена сжатия и сжатие без того, что пересказывать, — тоже
     ответ на prompt и idle с причиной."""
 
     NOTE: ClassVar[str] = "keep the plan"
@@ -3256,6 +3257,20 @@ class TestCompactCommand:
         return found
 
     @staticmethod
+    def _marks(updates: Sequence[Any]) -> list[tuple[str, str]]:
+        """Вопросы и стадии сжатия по порядку: (вид, id)."""
+        marks: list[tuple[str, str]] = []
+        for update in updates:
+            if isinstance(update, schema.UserMessageUpdate):
+                marks.append(("user", update.message_id))
+                continue
+
+            if isinstance(update, schema.SessionCompactionUpdate):
+                marks.append((update.status, update.compaction_id))
+
+        return marks
+
+    @staticmethod
     def _echoes(client: AcpClient, session_id: str) -> list[schema.UserMessageUpdate]:
         found: list[schema.UserMessageUpdate] = []
         for update in client.updates_of(session_id):
@@ -3271,8 +3286,8 @@ class TestCompactCommand:
         document: dict[str, Any],
         tmp_path: Path,
         session_id: str,
-    ) -> list[schema.SessionCompactionUpdate]:
-        """Сжатия, которые новый процесс отдаёт при воспроизведении."""
+    ) -> list[Any]:
+        """Уведомления, которые новый процесс отдаёт при воспроизведении."""
         second_process = AcpProcess(tmp_path, model)
         loader = AcpClient()
         conn = await second_process.start(loader, registration, document)
@@ -3284,13 +3299,35 @@ class TestCompactCommand:
                 mcp_servers=[StandRegistration.STAND],
                 replay_from=schema.ReplayFromStartVariant(),
             )
-            replayed = loader.of(schema.SessionCompactionUpdate)
+            replayed = loader.turn_updates_of(session_id)
         finally:
             await conn.close()
             await second_process.close_stdin()
             await second_process.kill()
 
         return replayed
+
+    def _check_journal(self, records: Sequence[Document], called_id: str) -> None:
+        """Две ручные границы, запись вызова called_id с указаниями и вывод
+        команды после каждого сжатия."""
+        boundaries = [
+            r
+            for r in records
+            if r["type"] == "system" and r.get("subtype") == "compact_boundary"
+        ]
+        triggers = [b["compactMetadata"]["trigger"] for b in boundaries]
+        assert triggers == ["manual", "manual"]
+        by_uuid = {r.get("uuid"): r for r in records}
+        called = by_uuid[called_id]["message"]["content"]
+        assert called.startswith("<command-name>/compact</command-name>"), called
+        assert f"<command-args>{self.NOTE}</command-args>" in called
+        spoken = [
+            r["message"]["content"]
+            for r in records
+            if r["type"] == "user" and isinstance(r["message"]["content"], str)
+        ]
+        outputs = [t for t in spoken if t.startswith("<local-command-stdout>")]
+        assert len(outputs) == 2
 
     async def test_command_compacts_in_its_own_turn(
         self,
@@ -3324,15 +3361,19 @@ class TestCompactCommand:
         assert first_idle.stop_reason == StopReason.END_TURN
         assert second_idle.stop_reason == StopReason.END_TURN
         compactions = self._compactions(client, session_id)
-        seen = [(c.compaction_id, c.status) for c in compactions]
-        assert seen == [
-            (first.message_id, "in_progress"),
-            (first.message_id, "completed"),
-            (second.message_id, "in_progress"),
-            (second.message_id, "completed"),
-        ]
+        statuses = [c.status for c in compactions]
+        assert statuses == ["in_progress", "completed"] * 2
         for compaction in compactions:
-            assert compaction.field_meta == {MetaKey.TRIGGER.value: "manual"}
+            assert compaction.field_meta is None
+
+        live = self._marks(client.updates_of(session_id))
+        for asked, compaction in ((first, 1), (second, 3)):
+            at = live.index(("user", asked.message_id))
+            compaction_id = compactions[compaction].compaction_id
+            assert live[at + 1 : at + 3] == [
+                ("in_progress", compaction_id),
+                ("completed", compaction_id),
+            ], live
 
         echoes = self._echoes(client, session_id)
         first_echo = echoes[echoed - 3]
@@ -3351,28 +3392,21 @@ class TestCompactCommand:
         assert len(instructions) == 1
         assert f"Additional Instructions:\\n{self.NOTE}\\n" in instructions[0]
 
-        records = boba.journal(session_id)
-        boundaries = [
-            r
-            for r in records
-            if r["type"] == "system" and r.get("subtype") == "compact_boundary"
-        ]
-        triggers = [b["compactMetadata"]["trigger"] for b in boundaries]
-        assert triggers == ["manual", "manual"]
-        spoken = [
-            r["message"]["content"]
-            for r in records
-            if r["type"] == "user" and isinstance(r["message"]["content"], str)
-        ]
-        assert not [text for text in spoken if text.startswith("/compact")]
+        self._check_journal(boba.journal(session_id), second.message_id)
 
         replayed = await self._replayed(
             model, registration, document, tmp_path, session_id
         )
 
-        assert [c.status for c in replayed] == ["completed", "completed"]
-        for compaction in replayed:
-            assert compaction.field_meta == {MetaKey.TRIGGER.value: "manual"}
+        marks = self._marks(replayed)
+        first_at = marks.index(("user", first.message_id))
+        second_at = marks.index(("user", second.message_id))
+        assert marks[first_at + 1][0] == "completed", marks
+        assert marks[second_at + 1][0] == "completed", marks
+        for update in replayed:
+            if isinstance(update, schema.UserMessageUpdate):
+                if update.message_id == second.message_id:
+                    assert update.content == given
 
     async def test_cancel_during_the_command_answers_and_stops(
         self,
@@ -3382,7 +3416,7 @@ class TestCompactCommand:
     ) -> None:
         """Сжатие ждёт пересказа (`summary:hang`): ответ на prompt уже
         пришёл, отмена даёт compaction_update cancelled и idle cancelled,
-        границы в истории нет."""
+        границы в истории нет, вызов команды — есть."""
         client = AcpClient()
         document = boba.settings_document(mode="bypassPermissions", allow_bypass=True)
         conn = await boba.start(client, registration, document)
@@ -3397,6 +3431,8 @@ class TestCompactCommand:
             hang = [schema.TextContentBlock(text=f"/compact {SummaryName.HANG.value}")]
             async with asyncio.timeout(READ_TIMEOUT_SEC):
                 response = await conn.prompt(session_id=session_id, prompt=[*hang])
+                while not self._compactions(client, session_id):
+                    await asyncio.sleep(0.05)
 
             await conn.cancel_session(session_id=session_id)
             idle = await client.idle(session_id)
@@ -3406,16 +3442,13 @@ class TestCompactCommand:
 
         assert await boba.wait() == 0
         assert idle.stop_reason == StopReason.CANCELLED
-        seen = [
-            (c.compaction_id, c.status) for c in self._compactions(client, session_id)
-        ]
-        assert seen == [
-            (response.message_id, "in_progress"),
-            (response.message_id, "cancelled"),
-        ]
+        statuses = [c.status for c in self._compactions(client, session_id)]
+        assert statuses == ["in_progress", "cancelled"]
         records = boba.journal(session_id)
         subtypes = [r.get("subtype") for r in records if r["type"] == "system"]
         assert "compact_boundary" not in subtypes
+        uuids = [r["uuid"] for r in records if r["type"] == "user"]
+        assert response.message_id in uuids
 
     async def test_nothing_to_compact_answers_with_the_reason(
         self, boba: AcpProcess, registration: StandRegistration, tmp_path: Path

@@ -23,7 +23,10 @@
 ответа — строка «Question(s)» с
 мигающей точкой, после итога — запись ответа той же панелью только для
 чтения; вопросы сервера MCP, заданные в вызове (раунды в `_meta`
-результата), — такими же записями рядом с итогом вызова.
+результата), — такими же записями рядом с итогом вызова. Строку вызова
+команды, итог которой ход рисует своим шагом (`/compact` — шаг сжатия),
+лента не рисует ни вживую, ни при воспроизведении: агент отдаёт запись
+вызова тем же текстом, что набрал пользователь (QuestionLines).
 
 Ошибки:
 ValidationError — тело уведомления из шины не по схеме ACP v2.
@@ -47,6 +50,7 @@ from pydantic import TypeAdapter, ValidationError
 from boba.aid.rendering.chat_view import ChatView, StepText
 from boba.aid.rendering.question import QuestionCard, QuestionCards
 from boba.aid.rendering.tool import AppMeta, ToolAppView
+from boba.core.commands import CommandLines
 from boba.core.mcp_names import McpToolNames
 from boba.mcp_client.client import (
     JournalLinks,
@@ -69,7 +73,6 @@ from boba.toolkit.dag import (
 )
 from boba.toolkit.wire import ResultWire
 from boba.transport.acp.protocol import (
-    CompactionTrigger,
     ElicitationRound,
     IdleErrorUpdate,
     MetaKey,
@@ -328,6 +331,31 @@ class JournalRegistry(Protocol):
         """Адрес журнала вызова call_id треда."""
 
 
+class SilentCommand(StrEnum):
+    """Команды агента, строку вызова которых лента не рисует: итог такой
+    команды — свой шаг хода."""
+
+    COMPACT = "compact"
+
+
+class QuestionLines:
+    """Рисовать ли строку вопроса: вызов команды из SilentCommand — нет.
+    Решает по тексту вопроса: вживую это набранный вызов, в истории —
+    запись вызова, которую агент отдаёт тем же текстом. Держит его
+    переводчик ленты (UpdateView)."""
+
+    def __init__(self) -> None:
+        self._lines = CommandLines()
+        self._silent = frozenset(SilentCommand)
+
+    def shown(self, text: str) -> bool:
+        call = self._lines.parsed(text)
+        if call is None:
+            return True
+
+        return call.name not in self._silent
+
+
 class CompactionState(StrEnum):
     """Стадии compaction_update ACP, которые различает лента."""
 
@@ -376,6 +404,7 @@ class UpdateView:
         self._media = media
         self._names = McpToolNames()
         self._cards = QuestionCards()
+        self._lines = QuestionLines()
         self._round_list: TypeAdapter[list[ElicitationRound]] = TypeAdapter(
             list[ElicitationRound]
         )
@@ -429,7 +458,10 @@ class UpdateView:
         links: Sequence[schema.ResourceContentBlock] = (),
     ) -> None:
         """Вопрос пользователя: шаг с id, который вопросу дал агент, и его
-        вложения."""
+        вложения; строку вызова команды из SilentCommand — нет."""
+        if not self._lines.shown(text):
+            return
+
         await self._view.question(text, key, name=author, links=links)
 
     async def apply(self, update: SessionUpdate) -> None:
@@ -465,13 +497,8 @@ class UpdateView:
     async def _compaction(self, update: schema.SessionCompactionUpdate) -> None:
         """Сжатие разговора шагом хода: идёт — «сжимаю», состоялось — пересказ
         под шагом (история отдаёт сразу состоявшееся), не удалось или
-        прервано — шаг убирается: в истории его нет. Сжатие по команде
-        пользователя — свой ход без вопроса: вживую ключ хода и есть id
-        сжатия, в истории оно закрывает прежний ход и открывает свой."""
+        прервано — шаг убирается: в истории его нет."""
         key = update.compaction_id
-        if self._own_turn(update):
-            await self._begin_own_turn(key)
-
         step = self._compactions.pop(key, None)
         if update.status == CompactionState.IN_PROGRESS.value:
             if step is None:
@@ -490,23 +517,6 @@ class UpdateView:
             step = await self._view.compaction_started(key)
 
         await self._view.compaction_finished(step, self._summary_text(update))
-
-    def _own_turn(self, update: schema.SessionCompactionUpdate) -> bool:
-        """Сжатие по команде пользователя вне хода с его ключом."""
-        if update.compaction_id == self._turn_key:
-            return False
-
-        meta = update.field_meta
-        if meta is None:
-            return False
-
-        return meta.get(MetaKey.TRIGGER.value) == CompactionTrigger.MANUAL.value
-
-    async def _begin_own_turn(self, key: str) -> None:
-        if self._turn_key is not None:
-            await self.finish_turn()
-
-        self.begin_turn(key)
 
     @staticmethod
     def _summary_text(update: schema.SessionCompactionUpdate) -> str:
