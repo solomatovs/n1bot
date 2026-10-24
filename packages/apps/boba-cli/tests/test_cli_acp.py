@@ -1849,6 +1849,8 @@ class TestMcpOverAcp:
 
 
 class TestQueueAndCancel:
+    QUEUED_LOG: ClassVar[str] = "waits in the queue behind the running turn"
+
     async def test_queued_prompts_are_answered_on_insertion_each_its_own(
         self, boba: AcpProcess, registration: StandRegistration, tmp_path: Path
     ) -> None:
@@ -1937,7 +1939,10 @@ class TestQueueAndCancel:
                 prompt=[schema.TextContentBlock(text=ScenarioName.ANSWER.value)],
             )
             queued = asyncio.create_task(asked)
-            await asyncio.sleep(0.2)
+            async with asyncio.timeout(READ_TIMEOUT_SEC):
+                while not any(self.QUEUED_LOG in line for line in boba.stderr):
+                    await asyncio.sleep(0.05)
+
             await conn.cancel_session(session_id=session_id)
 
             with pytest.raises(RequestError) as refused:
