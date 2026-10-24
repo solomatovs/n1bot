@@ -101,6 +101,12 @@ class StepText(StrEnum):
     DONE_STEPS = "aid.feed.doneSteps"
     """Контейнер законченного хода с числом его шагов."""
 
+    STOPPED_TURN = "aid.feed.stopped"
+    """Контейнер остановленного хода без шагов."""
+
+    STOPPED_STEPS = "aid.feed.stoppedSteps"
+    """Контейнер остановленного хода с числом его шагов."""
+
     RUNNING = "aid.feed.running"
     THINKING = "aid.feed.thinking"
     TOOL = "aid.feed.tool"
@@ -318,6 +324,10 @@ class TurnDraft:
     current: str | None = None
     """Id шага текущего действия хода: его подпись несёт контейнер, пока ход
     идёт."""
+
+    stopped: bool = False
+    """Ход кончился остановкой: так его отметил агент (idle с
+    stopReason cancelled) — вживую и в воспроизведении истории."""
 
     answer: Message | None = None
     answers: int = 0
@@ -857,15 +867,30 @@ class ChatView:
         if step is None:
             return
 
-        name = self.label(StepText.DONE)
-        if self._turn.steps:
-            name = self.label(StepText.DONE_STEPS, count=self._turn.steps)
-
-        step.name = name
+        step.name = self._closed_label()
         ended = utc_now()
         step.start = ended
         step.end = ended
         await self._sink.put(step)
+
+    def _closed_label(self) -> str:
+        """Итоговая подпись контейнера: исход хода и число его шагов."""
+        steps = self._turn.steps
+        if self._turn.stopped:
+            if steps:
+                return self.label(StepText.STOPPED_STEPS, count=steps)
+
+            return self.label(StepText.STOPPED_TURN)
+
+        if steps:
+            return self.label(StepText.DONE_STEPS, count=steps)
+
+        return self.label(StepText.DONE)
+
+    def turn_stopped(self) -> None:
+        """Агент кончил ход остановкой: контейнер закроется подписью
+        остановленного хода."""
+        self._turn.stopped = True
 
     def rebuilt(self) -> None:
         """Вкладки собрали ленту заново из истории: шаги нового хода с прежними

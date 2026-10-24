@@ -38,7 +38,7 @@ from chainlit.types import (
 from chainlit.user import PersistedUser
 from chainlit.user import User as ChainlitUser
 
-from boba.aid.domain.fields import ThreadField, ThreadMetaField
+from boba.aid.domain.fields import ThreadMetaField
 from boba.canvas.storage import StorageError
 from boba.chat.threads import (
     ChatThreads,
@@ -48,6 +48,8 @@ from boba.chat.threads import (
     FeedbackStore,
     StoredFeedback,
     StoredThread,
+    ThreadCursor,
+    ThreadCursors,
     ThreadOwnership,
     ThreadUpsert,
     data_boundary,
@@ -62,11 +64,13 @@ from boba.messaging import (
     FeedbackChanged,
     LockToken,
     MessageBus,
+    ThreadActive,
     ThreadChanged,
 )
 from boba.runtime.storage import StorageClient
 
 __all__ = [
+    "ActivityThreadDict",
     "AttachmentDataLayer",
     "FeedRows",
     "PostgresDataLayer",
@@ -76,10 +80,18 @@ __all__ = [
 _T = TypeVar("_T")
 
 
+class ActivityThreadDict(ThreadDict):
+    """ThreadDict chainlit с временем последней записи истории агента треда:
+    по updatedAt панель тредов сортирует и группирует список."""
+
+    updatedAt: str  # noqa: N815 — ключ словаря треда chainlit
+
+
 class FeedRows(Protocol):
-    """Что лента вкладки читает из слоя данных: тред для очистки вкладки
-    перед повторным воспроизведением и оценки шагов по id шага, которые
-    она ставит после воспроизведения. Реализует PostgresDataLayer."""
+    """Что лента вкладки берёт у слоя данных: тред для очистки вкладки
+    перед повторным воспроизведением, оценки шагов по id шага, которые
+    она ставит после воспроизведения, и сдвиг активности треда по записи
+    истории агента. Реализует PostgresDataLayer."""
 
     @abstractmethod
     def get_thread(self, thread_id: str) -> Coroutine[Any, Any, ThreadDict | None]:
@@ -91,14 +103,21 @@ class FeedRows(Protocol):
     ) -> Coroutine[Any, Any, Mapping[str, FeedbackDict]]:
         """Оценки треда: id шага → оценка."""
 
+    @abstractmethod
+    def thread_active(
+        self, thread_id: str, updated_at: datetime
+    ) -> Coroutine[Any, Any, None]:
+        """Агент треда записал историю в updated_at: время треда сдвигается
+        вперёд, вкладки владельца получают новое значение."""
+
 
 class ThreadDeletionListener(Protocol):
-    """Кому сообщать об удаляемом треде: слой данных зовёт до снятия строк с
-    metadata треда; отказ слушателя оставляет тред. Реализует ThreadDeleter
-    клиента агента."""
+    """Кому сообщать об удаляемом треде: слой данных зовёт до снятия строк со
+    строкой треда как есть (владелец, metadata); отказ слушателя оставляет
+    тред. Реализует ThreadDeleter клиента агента."""
 
     @abstractmethod
-    async def thread_deleted(self, thread_id: str, meta: Mapping[str, Any]) -> None:
+    async def thread_deleted(self, thread: StoredThread) -> None:
         """Тред удаляется вместе с элементами и оценками."""
 
 
@@ -185,15 +204,16 @@ class ThreadDicts:
     """Строки сервиса -> словари chainlit: тред и пользователь."""
 
     @staticmethod
-    def thread(stored: StoredThread, user_identifier: str | None) -> ThreadDict:
+    def thread(stored: StoredThread, user_identifier: str | None) -> ActivityThreadDict:
         """Тред без шагов и элементов: их воспроизводит агент."""
         tags = None
         if stored.tags:
             tags = list(stored.tags)
 
-        return ThreadDict(
+        return ActivityThreadDict(
             id=Codec.uuid_str(stored.id),
             createdAt=Codec.iso(stored.created_at),
+            updatedAt=Codec.iso(stored.updated_at),
             name=Codec.text_opt(stored.name),
             userId=Codec.uuid_str_opt(stored.user_id),
             userIdentifier=user_identifier,
@@ -271,6 +291,7 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership, FeedRows):
         self._feedbacks = feedbacks
         self._storage = storage
         self._bus = bus
+        self._cursors = ThreadCursors()
         self._deletion_listeners: list[ThreadDeletionListener] = []
 
     def on_thread_deleted(self, listener: ThreadDeletionListener) -> None:
@@ -362,7 +383,7 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership, FeedRows):
         return await self._threads.get_thread_author(thread_id)
 
     @data_boundary
-    async def get_thread(self, thread_id: str) -> ThreadDict | None:
+    async def get_thread(self, thread_id: str) -> ActivityThreadDict | None:
         tid = UUID(thread_id)
         stored = await self._threads.get(tid)
         if stored is None:
@@ -452,7 +473,7 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership, FeedRows):
         stored = await self._threads.get(tid)
         if stored is not None:
             for listener in self._deletion_listeners:
-                await listener.thread_deleted(thread_id, stored.meta)
+                await listener.thread_deleted(stored)
 
             await self._delete_files(stored)
 
@@ -501,30 +522,52 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership, FeedRows):
         await self._bus.publish(Scope.user(user_id), message, LockToken.local())
 
     @data_boundary
+    async def thread_active(self, thread_id: str, updated_at: datetime) -> None:
+        """Время треда сдвигается только вперёд; сдвиг уходит вкладкам
+        владельца на всех инстансах значением из базы."""
+        touched = await self._threads.touch(UUID(thread_id), updated_at)
+        if touched is None:
+            return
+
+        owner = touched.user_id
+        if owner is None:
+            return
+
+        message = ThreadActive(thread_id=thread_id, updated_at=touched.updated_at)
+        await self._bus.publish(Scope.user(owner), message, LockToken.local())
+
+    @data_boundary
     async def list_threads(
         self,
         pagination: Pagination,
         filters: ThreadFilter,
-    ) -> PaginatedResponse[ThreadDict]:
+    ) -> PaginatedResponse[ActivityThreadDict]:
+        """Страница тредов пользователя по последней активности; курсор —
+        (updated_at, id) последнего треда страницы."""
         if not filters.userId:
             msg = f"filters.userId is required, got {filters.userId!r}"
             raise DataRejectedError("list_threads", msg)
 
         user_id = UUID(filters.userId)
+        after: ThreadCursor | None = None
+        if pagination.cursor:
+            after = self._cursors.parse(pagination.cursor)
+
         user_identifier = await self._identifier_of(user_id)
-        rows = await self._threads.list_of(user_id, pagination.first + 1)
+        rows = await self._threads.list_of(user_id, pagination.first + 1, after)
 
         has_next = len(rows) > pagination.first
-        page = [
-            ThreadDicts.thread(t, user_identifier) for t in rows[: pagination.first]
-        ]
+        shown = rows[: pagination.first]
+
+        page: list[ActivityThreadDict] = []
+        for stored in shown:
+            page.append(ThreadDicts.thread(stored, user_identifier))
 
         start_cursor = None
         end_cursor = None
-
-        if page:
-            start_cursor = page[0][ThreadField.ID]
-            end_cursor = page[-1][ThreadField.ID]
+        if shown:
+            start_cursor = self._cursor_of(shown[0])
+            end_cursor = self._cursor_of(shown[-1])
 
         return PaginatedResponse(
             pageInfo=PageInfo(
@@ -534,6 +577,10 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership, FeedRows):
             ),
             data=page,
         )
+
+    @staticmethod
+    def _cursor_of(stored: StoredThread) -> str:
+        return ThreadCursor(updated_at=stored.updated_at, id=stored.id).render()
 
     @data_boundary
     async def build_debug_url(self) -> str:

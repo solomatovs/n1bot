@@ -1,5 +1,6 @@
 """Тесты PostgresDataLayer."""
 
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -26,6 +27,7 @@ from boba.messaging import (
     Envelope,
     FeedbackChanged,
     MemoryMessageBus,
+    ThreadActive,
     ThreadChanged,
 )
 from boba.runtime.elements import FeedbacksTable
@@ -299,6 +301,93 @@ async def test_list_threads(seeded: Seed):
 
     with pytest.raises(DataRejectedError, match="userId is required"):
         await layer.list_threads(Pagination(first=10), ThreadFilter())
+
+
+async def test_list_threads_pages_by_activity(seeded: Seed):
+    """Страницы по курсору (updated_at, id): тред, ставший активным, — первым,
+    остальные по убыванию активности; прокрутка до конца без повторов и
+    пропусков, hasNextPage честный."""
+    layer = seeded.layer
+    created: list[str] = []
+    for index in range(7):
+        thread_id = str(uuid4())
+        await layer.update_thread(thread_id, name=f"t{index}", user_id=seeded.user.id)
+        created.append(thread_id)
+
+    woken = created[2]
+    await layer.thread_active(woken, datetime.now(UTC) + timedelta(minutes=5))
+
+    shown: list[str] = []
+    stamps: list[str] = []
+    cursor: str | None = None
+    pages = 0
+    while True:
+        page = await layer.list_threads(
+            Pagination(first=3, cursor=cursor), ThreadFilter(userId=seeded.user.id)
+        )
+        pages += 1
+        for thread in page.data:
+            shown.append(thread["id"])
+            stamps.append(thread["updatedAt"])
+
+        if not page.pageInfo.hasNextPage:
+            break
+
+        assert len(page.data) == 3
+        cursor = page.pageInfo.endCursor
+
+    assert shown[0] == woken
+    assert len(shown) == len(set(shown))
+    assert set(created) <= set(shown)
+    assert seeded.thread_id in shown
+    assert pages == (len(shown) + 2) // 3
+
+    moments: list[datetime] = []
+    for stamp in stamps:
+        moments.append(datetime.fromisoformat(stamp))
+
+    assert moments == sorted(moments, reverse=True)
+
+    fresh = await layer.get_thread(created[0])
+    assert fresh is not None
+    assert fresh["updatedAt"] == fresh["createdAt"]
+
+    with pytest.raises(DataRejectedError, match="thread list cursor"):
+        await layer.list_threads(
+            Pagination(first=3, cursor="garbage"), ThreadFilter(userId=seeded.user.id)
+        )
+
+
+async def test_thread_activity_is_published_to_the_user_scope(
+    layer: PostgresDataLayer, seeded: Seed, data_bus: MemoryMessageBus
+) -> None:
+    """Запись истории агента сдвигает время треда вперёд, и вкладки владельца
+    получают значение базы; время не новее — ни записи, ни сообщения."""
+    seen: list[Envelope] = []
+
+    async def collect(envelope: Envelope) -> None:
+        seen.append(envelope)
+
+    later = datetime.now(UTC) + timedelta(minutes=10)
+    leave = data_bus.subscribe(Scope.user(UUID(seeded.user.id)), collect)
+    try:
+        await layer.thread_active(seeded.thread_id, later)
+        await layer.thread_active(seeded.thread_id, later - timedelta(minutes=1))
+        await layer.thread_active(str(uuid4()), later)
+    finally:
+        leave()
+
+    active: list[ThreadActive] = []
+    for envelope in seen:
+        message = envelope.message
+        assert isinstance(message, ThreadActive)
+        active.append(message)
+
+    assert active == [ThreadActive(thread_id=seeded.thread_id, updated_at=later)]
+
+    thread = await layer.get_thread(seeded.thread_id)
+    assert thread is not None
+    assert datetime.fromisoformat(thread["updatedAt"]) == later
 
 
 async def test_delete_thread_removes_its_files(seeded: Seed, files_dir: Path):
