@@ -54,6 +54,7 @@ from chainlit.context import ChainlitContext, context, context_var
 from chainlit.element import CustomElement
 from chainlit.emitter import ChainlitEmitter
 from chainlit.message import Message
+from chainlit.server import sio
 from chainlit.session import WebsocketSession
 from chainlit.step import StepDict
 from chainlit.types import AskElementSpec, CommandDict
@@ -175,6 +176,8 @@ class TabSurface:
     """Контекст chainlit одной вкладки: воспроизведение истории рисуется
     только ей, остальные вкладки треда воспроизводят её сами."""
 
+    NAMESPACE: ClassVar[str] = "/"
+
     def __init__(self, anchor: WebsocketSession) -> None:
         self._anchor = anchor
         self._emitter = TabEmitter(anchor)
@@ -186,6 +189,11 @@ class TabSurface:
     @property
     def session_id(self) -> str:
         return self._anchor.id
+
+    def connected(self) -> bool:
+        """Сокет вкладки подключён прямо сейчас: сессия chainlit переживает
+        обрыв до реконнекта, а сокет — нет."""
+        return sio.manager.is_connected(self._anchor.socket_id, self.NAMESPACE)
 
     @contextmanager
     def entered(self) -> Iterator[None]:
@@ -537,6 +545,9 @@ class AgentFeed(TurnRenderer):
         await context.emitter.delete_step(StepDict(id=question.key))
 
         return question.model_copy(update={"key": key})
+
+    def connected(self) -> bool:
+        return self._tab.connected()
 
     async def cleared(self) -> None:
         """Тред без шагов уходит только этой вкладке: фронт заменяет ленту
