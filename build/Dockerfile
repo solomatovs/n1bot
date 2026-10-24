@@ -535,8 +535,8 @@ CMD ["-m", "boba.mcp_server", "--config", "/app/boba/conf/config.toml", "--site"
 # (`boba serve`), сессии всех подключений — потоки одного процесса. app-site — тот же
 # boba-cli модулем: им проверяется образ и работает установка без Docker. Песочницы и
 # моделей нет: агент ходит к модели по сети, инструменты ему дают клиенты по
-# MCP-over-ACP. Общий конфиг внутри, site.toml и данные приходят деревом compose/agent
-FROM runtime-os AS runtime-agent
+# MCP-over-ACP. Общий конфиг внутри, site.toml и данные приходят деревом compose/boba
+FROM runtime-os AS runtime-boba
 
 ARG BOBA_DIR=/app/boba
 ARG BOBA_UID=1000
@@ -592,7 +592,7 @@ RUN npm ci --no-audit --no-fund && npm run check && npm run build
 
 # образ чата: общий конфиг, ассеты chainlit, vendor-шрифты и стили формул вместо CDN,
 # страница песочницы MCP Apps со шрифтом чата рядом (его берут приложения).
-# Агента в образе нет: чат ходит в службу агента (образ agent). Вложения сессий
+# Агента в образе нет: чат ходит в службу агента (образ boba). Вложения сессий
 # приложение держит в данных ([aid].files_dir), app_root не пишется
 FROM runtime-os AS runtime-aid
 

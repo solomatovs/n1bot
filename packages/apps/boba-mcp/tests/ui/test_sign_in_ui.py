@@ -301,7 +301,7 @@ def _public(process: StandProcess[ServiceStand]) -> str:
 
 
 def _endpoint(process: StandProcess[ServiceStand]) -> str:
-    return f"{_public(process)}/mcp/{ENDPOINT}"
+    return f"{_public(process)}/{ENDPOINT}"
 
 
 def _restart(process: StandProcess[ServiceStand]) -> None:

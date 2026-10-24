@@ -27,11 +27,11 @@
     host             = "${site.pg_host}"
     hostaddr         = "${site.pg_addr}"
     port             = "${site.pg_port}"
-    dbname           = "${site.aid_database}"
+    dbname           = "${site.pg_database}"
     sslmode          = "${site.pg_sslmode}"
     application_name = "boba-agent"
     connect_timeout  = 10
-    auth             = "${site.history_auth.${site.history_auth_method}}"
+    auth             = "${site.pg_history_auth.${site.pg_history_auth_method}}"
     [postgres_history.pool]
         min_size = 2
         max_size = 16
@@ -40,7 +40,7 @@
 [llm.main]
     kind            = "openai"
     baseUrl         = "${site.llm_base_url}"
-    apiKey          = "${site.llm_token}"
+    apiKey          = "${site.llm_auth.bearer.token}"
     sslVerify       = "${site.llm_ssl_verify}"
     timeoutSec      = 600
     retryAttempts   = 3
@@ -57,6 +57,7 @@
     port                 = "${env.port}"
     path                 = "/acp"
     public_url           = "${env.public_url}"
+    url_prefix           = "${env.url_prefix}"
     shutdown_timeout_sec = 10
     idle_sec             = 1800
     [agent.history]
@@ -79,6 +80,7 @@
         [agent.profiles.general.model]
             provider        = "${llm.main}"
             model           = "${site.models.general}"
+            systemPrompt    = "${site.profiles.general.system_prompt}"
             contextWindow   = "${model_limits.main.contextWindow}"
             maxOutputTokens = "${model_limits.main.maxOutputTokens}"
             reasoningReturn = "${model_limits.main.reasoningReturn}"
@@ -93,6 +95,7 @@
         [agent.profiles.search.model]
             provider        = "${llm.main}"
             model           = "${site.models.search}"
+            systemPrompt    = "${site.profiles.search.system_prompt}"
             contextWindow   = "${model_limits.main.contextWindow}"
             maxOutputTokens = "${model_limits.main.maxOutputTokens}"
             reasoningReturn = "${model_limits.main.reasoningReturn}"

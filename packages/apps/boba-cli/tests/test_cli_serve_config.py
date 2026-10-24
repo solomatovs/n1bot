@@ -23,7 +23,8 @@ SITE = """
 [env]
     listen_host = "0.0.0.0"
     port        = 8660
-    public_url  = "https://boba.example.com/boba-agent"
+    public_url  = "https://boba.example.com/boba"
+    url_prefix  = "/boba"
     data        = "${env.base}/data"
 
 [site]
@@ -38,18 +39,24 @@ SITE = """
     pg_host             = "pg.example.com"
     pg_addr             = "10.0.0.5"
     pg_port             = 5432
-    aid_database        = "aid"
+    pg_database         = "aid"
     pg_sslmode          = "disable"
-    history_auth_method = "password"
+    pg_history_auth_method = "password"
     llm_base_url        = "https://llm.example.com/v1"
-    llm_token           = "llm-token-of-the-stand"
     llm_ssl_verify      = true
     [site.agent_client]
         secret = "agent-client-secret-of-the-stand"
     [site.models]
         general = "general-model"
         search  = "search-model"
-    [site.history_auth.password]
+    [site.llm_auth.bearer]
+        method = "bearer"
+        token  = "llm-token-of-the-stand"
+    [site.profiles.general]
+        system_prompt = "general prompt of the stand"
+    [site.profiles.search]
+        system_prompt = "search prompt of the stand"
+    [site.pg_history_auth.password]
         method   = "password"
         user     = "boba_history"
         password = "history-password"
@@ -82,6 +89,11 @@ class TestConfig:
         agent = config.agent
         assert list(agent.profiles) == self.PROFILES
         assert agent.path == "/acp"
+        assert agent.url_prefix == "/boba"
+        assert (
+            agent.profiles["general"].model.system_prompt
+            == "general prompt of the stand"
+        )
         history = agent.history
         assert history.db_schema == "boba"
         assert history.postgres.host == "pg.example.com"
@@ -99,6 +111,14 @@ class TestConfig:
         assert agent.settings.sessions is not None
         assert agent.settings.sessions.max_open == 256
         assert list(agent.clients) == ["boba-chat"]
+
+    def test_public_url_outside_the_prefix_is_refused(self, raw: DictConfig) -> None:
+        section = OmegaConf.to_container(OmegaConf.select(raw, "agent"), resolve=True)
+        assert isinstance(section, dict)
+        section["url_prefix"] = "/other"
+
+        with pytest.raises(ValidationError, match="expected the url_prefix '/other'"):
+            ServeSection.model_validate(section)
 
     @pytest.mark.parametrize(
         ("key", "value", "refusal"),

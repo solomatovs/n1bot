@@ -155,7 +155,10 @@ class ServiceModeStand:
         history = AgentHistoryStand(stand)
         self.history = history
         location = HttpLocation(
-            scheme="http", host="127.0.0.1", port=service.port, path=""
+            scheme="http",
+            host="127.0.0.1",
+            port=service.port,
+            path=ServeStandConfig.PREFIX,
         )
         mode = AgentServiceConfig(
             endpoint=HttpRoute(service=location, path=ServeStandConfig.PATH),
