@@ -56,7 +56,7 @@ langgraph, само исполняло инструменты в песочни�
   старая только читается.
 - **История бесед вместо чекпойнтов.** Dev хранил беседу треда в таблицах
   `checkpoints.*` библиотеки langgraph, в двоичном формате msgpack. Новый чат
-  читает беседу из истории агента — таблиц `boba.session` и `boba.history`, по
+  читает беседу из истории агента — таблиц `boba.session` и `boba.session_records`, по
   строке на запись. Перевод делает скрипт `migrate.sql`, он же привязывает
   каждый тред к его сессии агента и переносит оценки ответов на новые
   идентификаторы шагов.
@@ -521,14 +521,14 @@ PGDATABASE=aid psql -v chat_url=http://127.0.0.1:8501/boba -f migrate.sql
 
 Скрипт работает одной транзакцией: читает каждый тред из чекпойнтов так же,
 как его читал dev при открытии, переводит беседу в записи истории агента,
-создаёт таблицы `session` и `history`, пишет каждому треду чата ключ
+создаёт таблицы `session` и `session_records`, пишет каждому треду чата ключ
 `threads.meta.agent_session`, переводит оценки ответов (`feedbacks.for_id`) на
 идентификаторы шагов, которые новый чат рисует при показе беседы, удаляет
 таблицы `elements` и схему `checkpoints`, которые новому приложению не нужны,
 и переименовывает схемы: `chainlit` в `aid`, `kb` в `mcp`, таблицы `describer`
 переезжают в `mcp`. Если в копии была таблица `agent_history.history_records`
 (история агента раннего выпуска новой версии), её строки раскладываются по
-`session` и `history`, а сама она удаляется. Любая ошибка или несошедшаяся
+`session` и `session_records`, а сама она удаляется. Любая ошибка или несошедшаяся
 сверка откатывает всё.
 
 Что должно получиться. В выводе — заметки перевода (они перенос не
@@ -609,7 +609,7 @@ belong to boba_history; the chat role boba-svc has no rights on them.`
 Повторный запуск ничего не меняет. Проверка:
 
 ```sh
-psql -d aid -c "select has_table_privilege('boba-svc', 'boba.history', 'select')"
+psql -d aid -c "select has_table_privilege('boba-svc', 'boba.session_records', 'select')"
 ```
 
 Ответ — `f`. Вход роли истории вписывается в site.toml чата ключами
@@ -683,10 +683,10 @@ ls -l compose/mcp/data/workspace
 и успела поработать: тогда перенос из dev уже сделан, а история агента
 накопилась в таблице прежнего вида `boba.history_records` — одним документом
 на запись. Текущая версия хранит историю в двух таблицах, `boba.session` и
-`boba.history`, и старую таблицу не читает: без конвертации все беседы таких
+`boba.session_records`, и старую таблицу не читает: без конвертации все беседы таких
 тредов откроются пустыми.
 
-Признак: в новой базе есть `history_records` и нет `session` и `history`:
+Признак: в новой базе есть `history_records` и нет `session` и `session_records`:
 
 ```sh
 psql -d aid -c '\dt boba.*'
@@ -704,11 +704,11 @@ psql -d aid -c '\dt boba.*'
 PGDATABASE=aid psql -v schema=boba -f build/scripts/migrations/2026-10-16-chat-agent-cutover/convert-history.sql
 ```
 
-Скрипт одной транзакцией создаёт таблицы `session` и `history`, если их нет,
+Скрипт одной транзакцией создаёт таблицы `session` и `session_records`, если их нет,
 проверяет, что ключи документа каждой старой строки сходятся с её колонками и
 что у записи есть время (иначе останавливается, ничего не меняя, со списком
 таких строк), заводит строку `session` на каждую сессию со временем её первой
-записи, раскладывает записи по `history` и сверяет число перенесённых записей
+записи, раскладывает записи по `session_records` и сверяет число перенесённых записей
 с числом строк старой таблицы по каждой сессии. При расхождении всё
 откатывается с сообщением `The record counts do not match (listed above), so
 nothing was changed.` Старая таблица не удаляется. Повторный запуск ничего не
@@ -720,7 +720,7 @@ nothing was changed.` Старая таблица не удаляется. По�
 history_records is kept.` Проверка:
 
 ```sh
-psql -d aid -c 'select (select count(*) from boba.history_records) as old_rows, (select count(*) from boba.history) as new_rows'
+psql -d aid -c 'select (select count(*) from boba.history_records) as old_rows, (select count(*) from boba.session_records) as new_rows'
 ```
 
 Числа равны. Когда обновлённая версия запущена и старые треды открываются с

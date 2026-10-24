@@ -7,7 +7,7 @@ create table if not exists session (
     created_at timestamptz not null
 );
 
-create table if not exists history (
+create table if not exists session_records (
     session_id  text        not null references session on delete cascade,
     seq         integer     not null,
     type        text        not null,
