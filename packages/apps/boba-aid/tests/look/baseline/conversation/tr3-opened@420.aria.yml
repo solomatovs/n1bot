@@ -9,12 +9,16 @@
 - article: "Разбейте таблицу по месяцам даты заказа: запросы отчётов читают один месяц, а старые партиции можно отсоединять целиком."
 - article: Какие подключения мне доступны?
 - img "Avatar for AID"
-- article: Смотрю подключения.
-- img "Avatar for AID"
-- 'heading "Завершено · шагов: 1" [level=3]':
-  - 'button "Завершено · шагов: 1" [expanded]'
+- 'heading "Завершено · шагов: 3" [level=3]':
+  - 'button "Завершено · шагов: 3" [expanded]'
 - region:
+  - heading "✔ Размышления" [level=3]:
+    - button "✔ Размышления"
+  - heading "✔ ToolSearch" [level=3]:
+    - button "✔ ToolSearch"
   - heading "✔ connection_list · Смотрю подключения · 0 мс" [level=3]:
     - button "✔ connection_list · Смотрю подключения · 0 мс"
+- img "Avatar for AID"
+- article: Смотрю подключения.
 - img "Avatar for AID"
 - article: "Подключения выше: пока ни одного, их можно добавить в настройках."
