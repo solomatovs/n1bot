@@ -91,8 +91,9 @@ def test_journal_grows_in_the_panel_while_the_call_runs(
     sandbox_chat.ask(_bash_call(command))
     sandbox_chat.await_step(StepKind.RUN, timeout_ms=TURN_TIMEOUT_SEC * 1000)
     sandbox_chat.expand_process()
-    sandbox_chat.await_step(StepKind.TOOL, timeout_ms=TURN_TIMEOUT_SEC * 1000)
-    sandbox_chat.expand_step(StepKind.TOOL)
+    titled = "stand call of bash"
+    sandbox_chat.await_tool_titled(titled, timeout_ms=TURN_TIMEOUT_SEC * 1000)
+    sandbox_chat.expand_tool_titled(titled)
 
     if not _button_appears(sandbox_chat, POLL_SEC):
         raise AssertionError(

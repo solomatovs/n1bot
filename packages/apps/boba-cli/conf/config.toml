@@ -68,6 +68,8 @@
             allowBypass = true
         [agent.settings.mcp]
             callTimeoutSec = 86400
+        [agent.settings.tools]
+            alwaysLoad = []
         [agent.settings.sessions]
             maxOpen = 256
     [agent.profiles.general]

@@ -51,6 +51,7 @@ from boba.aid.agent.client import (
 from boba.aid.agent.config import (
     AgentCommandConfig,
     AgentConfig,
+    AgentToolsConfig,
     PostgresAgentHistory,
 )
 from boba.aid.agent.settings import (
@@ -238,6 +239,7 @@ class AgentStand:
                 stop_timeout_sec=10.0,
             ),
             history=self._history,
+            tools=AgentToolsConfig(always_load=()),
             public_url=public_url,
             seal_ttl_sec=600,
             question_timeout_sec=600,

@@ -436,9 +436,16 @@ class StandAgents:
         clock: Clock | None = None,
         compaction: CompactionSettings | None = None,
         store: HistoryStore | None = None,
+        always_load: Sequence[str] | None = None,
     ) -> Agent:
+        """Агент на стенде; always_load None — все инструменты StandTools
+        уходят полным определением: проверки, которые не про отложенные
+        инструменты, зовут их напрямую."""
         if limits is None:
             limits = TurnLimits(retry_delays_sec=(0.0, 0.0, 0.0))
+
+        if always_load is None:
+            always_load = self._stand_tools()
 
         if compaction is None:
             compaction = CompactionSettings()
@@ -464,9 +471,18 @@ class StandAgents:
             skills=skills,
             environment=environment,
             clock=clock,
+            always_load=always_load,
         )
 
         return Agent(parts)
+
+    @staticmethod
+    def _stand_tools() -> list[str]:
+        names: list[str] = []
+        for name in StandToolName:
+            names.append(name.full)
+
+        return names
 
     async def aclose(self) -> None:
         await self._providers.aclose()
