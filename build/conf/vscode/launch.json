@@ -2,15 +2,18 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Aid: agent",
+            "name": "Aid: chat",
             "type": "debugpy",
             "request": "launch",
-            "preLaunchTask": "aid: debug tree",
-            "program": "${workspaceFolder}/packages/apps/boba-aid/src/boba/aid/main.py",
             "console": "integratedTerminal",
-            "jinja": true,
             "cwd": "${workspaceFolder}/debug/aid",
             "python": "${workspaceFolder}/.venv/bin/python",
+            "justMyCode": false,
+            "stopOnEntry": false,
+            "subProcess": true,
+            "preLaunchTask": "aid: debug tree",
+            "program": "${workspaceFolder}/packages/apps/boba-aid/src/boba/aid/main.py",
+            "jinja": true,
             "args": [
                 "--config",
                 "${workspaceFolder}/packages/apps/boba-aid/conf/config.toml",
@@ -19,20 +22,21 @@
             ],
             "env": {
                 "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/runtime/third/bin:${env:PATH}",
-                "LD_LIBRARY_PATH": "${workspaceFolder}/runtime/third/lib"
-            },
-            "justMyCode": false,
-            "stopOnEntry": false,
-            "subProcess": true
+                "LD_LIBRARY_PATH": "${workspaceFolder}/runtime/third/lib",
+                "BOBA_AGENT_MODE": "${input:agentMode}"
+            }
         },
         {
             "name": "MCP: tools service",
             "type": "debugpy",
             "request": "launch",
-            "module": "boba.mcp_server",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}/debug/mcp",
             "python": "${workspaceFolder}/.vscode/python-debug-slice.sh",
+            "justMyCode": false,
+            "stopOnEntry": false,
+            "subProcess": true,
+            "module": "boba.mcp_server",
             "args": [
                 "--config",
                 "${workspaceFolder}/packages/apps/boba-mcp/conf/config.toml",
@@ -41,42 +45,49 @@
             ],
             "env": {
                 "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/runtime/third/bin:${env:PATH}",
-                "LD_LIBRARY_PATH": "${workspaceFolder}/runtime/third/lib"
-            },
+                "LD_LIBRARY_PATH": "${workspaceFolder}/runtime/third/lib",
+                "BOBA_TOOL_LAUNCHER": "${input:toolLauncher}"
+            }
+        },
+        {
+            "name": "Boba: agent service",
+            "type": "debugpy",
+            "request": "launch",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/debug/boba",
+            "python": "${workspaceFolder}/.venv/bin/python",
             "justMyCode": false,
             "stopOnEntry": false,
-            "subProcess": true
+            "subProcess": true,
+            "module": "boba.cli.app",
+            "args": [
+                "serve",
+                "--config",
+                "${workspaceFolder}/packages/apps/boba-cli/conf/config.toml",
+                "--site",
+                "${workspaceFolder}/debug/boba/conf/site.toml"
+            ],
+            "env": {
+                "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/runtime/third/bin:${env:PATH}",
+                "LD_LIBRARY_PATH": "${workspaceFolder}/runtime/third/lib"
+            }
         },
         {
             "name": "tool",
             "type": "debugpy",
             "request": "launch",
-            "module": "boba.runtime.toolcli",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}/debug/mcp",
             "python": "${workspaceFolder}/.venv/bin/python",
+            "justMyCode": false,
+            "stopOnEntry": false,
+            "module": "boba.runtime.toolcli",
+            "args": "${input:toolCall} --config ${workspaceFolder}/packages/apps/boba-mcp/conf/config.toml --site ${workspaceFolder}/debug/mcp/conf/site.toml --injected ${workspaceFolder}/.vscode/injected/${input:toolInjected}.json",
             "env": {
                 "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/runtime/third/bin:${env:PATH}",
                 "LD_LIBRARY_PATH": "${workspaceFolder}/runtime/third/lib",
                 "BOBA_LOG_LEVEL": "DEBUG"
-            },
-            "justMyCode": false,
-            "args": [
-                "boba.tool.pg.tools",
-                "pg_query",
-                "--sql",
-                "select 1",
-                "--offset",
-                "0",
-                "--limit",
-                "10",
-                "--config",
-                "${workspaceFolder}/packages/apps/boba-mcp/conf/config.toml",
-                "--site",
-                "${workspaceFolder}/debug/mcp/conf/site.toml",
-                "--injected",
-                "${workspaceFolder}/.vscode/injected/pg.json"
-            ]
+            }
         },
         {
             "name": "ix-fts",
@@ -85,14 +96,14 @@
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}/compose/ix-fts",
             "python": "${workspaceFolder}/.venv/bin/python",
-            "program": "${workspaceFolder}/packages/apps/ix/ix-fts/src/boba/ix_fts/worker.py",
             "justMyCode": false,
             "stopOnEntry": false,
             "subProcess": true,
+            "program": "${workspaceFolder}/packages/apps/ix/ix-fts/src/boba/ix_fts/worker.py",
             "args": [
                 "run",
                 "--config",
-                "${workspaceFolder}/compose/ix-fts/conf.toml",
+                "${workspaceFolder}/compose/ix-fts/conf.toml"
             ]
         },
         {
@@ -102,14 +113,14 @@
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}/compose/pg-meta-scraper",
             "python": "${workspaceFolder}/.venv/bin/python",
-            "program": "${workspaceFolder}/packages/apps/ix/pg-meta-scraper/src/boba/pg_meta_scraper/worker.py",
             "justMyCode": false,
             "stopOnEntry": false,
             "subProcess": true,
+            "program": "${workspaceFolder}/packages/apps/ix/pg-meta-scraper/src/boba/pg_meta_scraper/worker.py",
             "args": [
                 "run",
                 "--config",
-                "${workspaceFolder}/compose/pg-meta-scraper/conf.toml",
+                "${workspaceFolder}/compose/pg-meta-scraper/conf.toml"
             ]
         },
         {
@@ -119,14 +130,14 @@
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}/compose/ch-meta-scraper",
             "python": "${workspaceFolder}/.venv/bin/python",
-            "program": "${workspaceFolder}/packages/apps/ix/ch-meta-scraper/src/boba/ch_meta_scraper/worker.py",
             "justMyCode": false,
             "stopOnEntry": false,
             "subProcess": true,
+            "program": "${workspaceFolder}/packages/apps/ix/ch-meta-scraper/src/boba/ch_meta_scraper/worker.py",
             "args": [
                 "run",
                 "--config",
-                "${workspaceFolder}/compose/ch-meta-scraper/conf.toml",
+                "${workspaceFolder}/compose/ch-meta-scraper/conf.toml"
             ]
         },
         {
@@ -136,14 +147,14 @@
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}/compose/cfl-indexer",
             "python": "${workspaceFolder}/.venv/bin/python",
-            "program": "${workspaceFolder}/packages/apps/ix/cfl-indexer/src/boba/cfl_indexer/worker.py",
             "justMyCode": false,
             "stopOnEntry": false,
             "subProcess": true,
+            "program": "${workspaceFolder}/packages/apps/ix/cfl-indexer/src/boba/cfl_indexer/worker.py",
             "args": [
                 "run",
                 "--config",
-                "${workspaceFolder}/compose/cfl-indexer/conf.toml",
+                "${workspaceFolder}/compose/cfl-indexer/conf.toml"
             ]
         },
         {
@@ -153,13 +164,13 @@
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}/compose/ix-search-lab",
             "python": "${workspaceFolder}/.venv/bin/python",
-            "program": "${workspaceFolder}/packages/apps/ix/ix-search-lab/src/boba/ix_search_lab/server.py",
             "justMyCode": false,
             "stopOnEntry": false,
             "subProcess": true,
+            "program": "${workspaceFolder}/packages/apps/ix/ix-search-lab/src/boba/ix_search_lab/server.py",
             "args": [
                 "--config",
-                "${workspaceFolder}/compose/ix-search-lab/conf.toml",
+                "${workspaceFolder}/compose/ix-search-lab/conf.toml"
             ]
         },
         {
@@ -258,9 +269,47 @@
     ],
     "compounds": [
         {
-            "name": "Aid: aid + mcp",
-            "configurations": ["Aid: agent", "MCP: tools service"],
+            "name": "Aid: aid + mcp + boba",
+            "configurations": [
+                "Aid: chat",
+                "MCP: tools service",
+                "Boba: agent service"
+            ],
             "stopAll": true
+        }
+    ],
+    "inputs": [
+        {
+            "id": "agentMode",
+            "type": "pickString",
+            "description": "Agent of the chat: process runs boba --stdio as a child under the debugger, service calls the Boba: agent service target",
+            "options": [
+                "process",
+                "service"
+            ],
+            "default": "process"
+        },
+        {
+            "id": "toolLauncher",
+            "type": "pickString",
+            "description": "Tool bodies of boba-mcp: process runs them as children under the debugger, sandbox runs them in bwrap as in the container",
+            "options": [
+                "process",
+                "sandbox"
+            ],
+            "default": "process"
+        },
+        {
+            "id": "toolCall",
+            "type": "promptString",
+            "description": "Tool module, tool name and its flags",
+            "default": "boba.tool.pg.tools pg_query --sql \"select 1\" --offset 0 --limit 10"
+        },
+        {
+            "id": "toolInjected",
+            "type": "promptString",
+            "description": "Call config of the tool: file name in .vscode/injected without .json",
+            "default": "pg"
         }
     ]
 }

@@ -9,16 +9,17 @@
 
 На машине живёт одна версия boba — ветка `refactoring/chainlit_agent` и её
 потомки: чат aid, служба агента boba и сервис инструментов boba-mcp. Её
-деревья — `compose/aid`, `compose/mcp`, `compose/boba`, `debug/aid` и
-`debug/mcp`, базы PostgreSQL — `aid` у compose и `aid_debug` у отладки; базу
+деревья — `compose/aid`, `compose/mcp`, `compose/boba`, `debug/aid`,
+`debug/mcp` и `debug/boba`, базы PostgreSQL — `aid` у compose и `aid_debug` у отладки; базу
 выбирает ключ `site.pg_database` site.toml. На стенде каждое приложение идёт
 одним контейнером: `aid`, `boba-mcp`, `boba`; в `compose/<приложение>/conf`
 лежат только `site.toml`, `boba.env` и `krb/`. Вход во все внешние системы
 стенда — kerberos (`pg_auth_method`, `pg_history_auth_method` — `kerberos`),
 к модели — токен (`llm_auth_method = "bearer"`), Confluence — без входа
-(`confluence_auth_method = "none"`). В VS Code её запускают цели `launch.json` «Aid: agent» (чат), «MCP:
-tools service» (boba-mcp), «Aid: aid + mcp» (оба процесса сразу), «tool (aid)» и
-«pytest (aid): …».
+(`confluence_auth_method = "none"`). В VS Code её запускают цели `launch.json` «Aid: chat» (чат, агент дочерним
+процессом или службой), «MCP: tools service» (boba-mcp, тела процессом или в
+песочнице), «Boba: agent service» (`boba serve`), «Aid: aid + mcp + boba» (все
+три сразу), «tool» (одно тело через `boba.runtime.toolcli`) и «pytest: …».
 
 Прежняя версия (ветка `dev`, чат chainlit и studio, базы `boba` и `boba_debug`)
 выведена 2026-10-24: её треды, история, соединения, база знаний и индекс
