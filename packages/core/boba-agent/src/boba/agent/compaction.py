@@ -41,7 +41,6 @@ from boba.agent.builder import RequestBuilder
 from boba.agent.ids import Clock, IdMint
 from boba.agent.profile import CompactionSettings, ModelProfile
 from boba.agent.records import (
-    AssistantRecord,
     AttachmentRecord,
     ChainRecord,
     CompactBoundaryRecord,
@@ -49,6 +48,7 @@ from boba.agent.records import (
     CompactSummaryRecord,
     CompactTrigger,
     EnvironmentSnapshot,
+    HistoryFold,
     InvokedSkill,
     InvokedSkillsAttachment,
     MetaRecord,
@@ -57,7 +57,8 @@ from boba.agent.records import (
     Record,
     SnapshotSkill,
     SnapshotTool,
-    ToolResultRecord,
+    ToolResultBlock,
+    ToolUseBlock,
     UserMessage,
 )
 from boba.agent.session import Session
@@ -84,6 +85,7 @@ __all__ = [
     "InvokedSkills",
     "NotSummarized",
     "RoundGrouper",
+    "SkillCalls",
     "Summarized",
     "Summarizer",
     "SummaryAborted",
@@ -807,6 +809,39 @@ class Summarizer:
         return flat
 
 
+class SkillCalls(HistoryFold):
+    """Вызовы скиллов в отрезке разговора по порядку: скиллы прежнего
+    вложения invoked_skills и удачные вызовы инструмента Skill с текстом их
+    результата. Свёртку строит InvokedSkills по пересказанным записям."""
+
+    def __init__(self, records: Sequence[ChainRecord]) -> None:
+        self.invocations: list[tuple[str, str]] = []
+        self._called: dict[str, str] = {}
+        """Идентификатор вызова Skill → имя скилла."""
+        for record in records:
+            record.announce(self)
+
+    def invoked_skills(self, invoked: InvokedSkillsAttachment) -> None:
+        for skill in reversed(invoked.skills):
+            self.invocations.append((skill.name, skill.content))
+
+    def tool_call(self, call: ToolUseBlock) -> None:
+        if call.name != SkillTool.NAME:
+            return
+
+        self._called[call.id] = SkillCallInput.model_validate(call.input).skill
+
+    def tool_result(self, result: ToolResultBlock) -> None:
+        name = self._called.get(result.tool_use_id)
+        if name is None:
+            return
+
+        if result.is_error:
+            return
+
+        self.invocations.append((name, result.text()))
+
+
 class InvokedSkills:
     """Скиллы, вызванные в пересказанной части разговора, для вложения
     invoked_skills: модель после границы не видит их текстов, а их правила
@@ -829,7 +864,7 @@ class InvokedSkills:
 
     def of(self, summarized: Sequence[ChainRecord]) -> Sequence[InvokedSkill]:
         latest: dict[str, str] = {}
-        for name, content in self._invocations(summarized):
+        for name, content in SkillCalls(summarized).invocations:
             latest.pop(name, None)
             latest[name] = content
 
@@ -848,53 +883,6 @@ class InvokedSkills:
 
             left -= len(text)
             yield InvokedSkill(name=name, content=text)
-
-    def _invocations(self, records: Sequence[ChainRecord]) -> Iterator[tuple[str, str]]:
-        """Вызовы скиллов по порядку: прежнее вложение и удачные вызовы Skill."""
-        called: dict[str, str] = {}
-        for record in records:
-            if isinstance(record, AttachmentRecord):
-                yield from self._carried(record)
-                continue
-
-            if isinstance(record, AssistantRecord):
-                called.update(self._calls(record))
-                continue
-
-            if isinstance(record, ToolResultRecord):
-                yield from self._results(record, called)
-
-    @staticmethod
-    def _carried(record: AttachmentRecord) -> Iterator[tuple[str, str]]:
-        attachment = record.attachment
-        if not isinstance(attachment, InvokedSkillsAttachment):
-            return
-
-        for skill in reversed(attachment.skills):
-            yield skill.name, skill.content
-
-    @staticmethod
-    def _calls(record: AssistantRecord) -> Iterator[tuple[str, str]]:
-        """Вызовы Skill ответа: id вызова → имя скилла."""
-        for block in record.message.tool_uses():
-            if block.name != SkillTool.NAME:
-                continue
-
-            yield block.id, SkillCallInput.model_validate(block.input).skill
-
-    @staticmethod
-    def _results(
-        record: ToolResultRecord, called: dict[str, str]
-    ) -> Iterator[tuple[str, str]]:
-        for result in record.message.tool_results():
-            name = called.get(result.tool_use_id)
-            if name is None:
-                continue
-
-            if result.is_error:
-                continue
-
-            yield name, result.text()
 
 
 @dataclass(frozen=True)

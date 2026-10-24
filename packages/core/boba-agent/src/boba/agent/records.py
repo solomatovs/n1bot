@@ -84,6 +84,7 @@ __all__ = [
     "EnvironmentField",
     "EnvironmentSnapshot",
     "HarnessCommandRecord",
+    "HistoryFold",
     "InformationalRecord",
     "InterruptRecord",
     "InvokedSkill",
@@ -562,6 +563,11 @@ class PayloadModel(BaseModel):
         for message in rendered:
             yield message.content
 
+    def announce(self, fold: HistoryFold) -> None:
+        """Что вложение объявляет свёрткам истории; у вложения без
+        объявления — ничего."""
+        return
+
 
 class SnapshotTool(PayloadModel):
     name: str
@@ -588,6 +594,9 @@ class PromptSnapshot(PayloadModel):
     model: str
     system_turns: bool
 
+    def announce(self, fold: HistoryFold) -> None:
+        fold.prompt_snapshot(self)
+
 
 class ModelIdentity(PayloadModel):
     model_id: str
@@ -598,11 +607,17 @@ class ModelAttachment(PayloadModel):
     identity: ModelIdentity
     text: str
 
+    def announce(self, fold: HistoryFold) -> None:
+        fold.model(self)
+
 
 class DateAttachment(PayloadModel):
     type: Literal[AttachmentKind.DATE] = AttachmentKind.DATE
     date: str
     changed: bool
+
+    def announce(self, fold: HistoryFold) -> None:
+        fold.date(self)
 
 
 class QueuedCommandAttachment(PayloadModel):
@@ -662,6 +677,9 @@ class EnvironmentAttachment(PayloadModel):
     snapshot: EnvironmentSnapshot
     changes: Sequence[EnvironmentChange] | None = None
 
+    def announce(self, fold: HistoryFold) -> None:
+        fold.environment(self)
+
 
 class DeferredToolsDeltaAttachment(PayloadModel):
     """Изменение набора инструментов относительно объявленного, одними
@@ -681,6 +699,9 @@ class DeferredToolsDeltaAttachment(PayloadModel):
     surfaced_names: Sequence[str] = ()
     tool_search_absent: bool = False
 
+    def announce(self, fold: HistoryFold) -> None:
+        fold.tool_delta(self)
+
 
 class DeferredToolsRecordAttachment(PayloadModel):
     """Определения загруженных отложенных инструментов, которые впервые ушли
@@ -697,6 +718,9 @@ class DeferredToolsRecordAttachment(PayloadModel):
             yield tool.text()
             yield json.dumps(tool.schema_, ensure_ascii=False)
 
+    def announce(self, fold: HistoryFold) -> None:
+        fold.tool_definitions(self)
+
 
 class McpInstructionsAttachment(PayloadModel):
     """Изменение инструкций серверов MCP относительно объявленного: блоки
@@ -711,6 +735,9 @@ class McpInstructionsAttachment(PayloadModel):
     added_server_instructions: Sequence[str] = ()
     removed_names: Sequence[str] = ()
 
+    def announce(self, fold: HistoryFold) -> None:
+        fold.instructions(self)
+
 
 class SkillListingAttachment(PayloadModel):
     """Список скиллов: первый раз все, дальше только новые имена."""
@@ -720,6 +747,9 @@ class SkillListingAttachment(PayloadModel):
     skill_count: int
     is_initial: bool
     names: Sequence[str]
+
+    def announce(self, fold: HistoryFold) -> None:
+        fold.skill_listing(self)
 
 
 class InvokedSkill(PayloadModel):
@@ -735,6 +765,9 @@ class InvokedSkillsAttachment(PayloadModel):
 
     type: Literal[AttachmentKind.INVOKED_SKILLS] = AttachmentKind.INVOKED_SKILLS
     skills: Sequence[InvokedSkill]
+
+    def announce(self, fold: HistoryFold) -> None:
+        fold.invoked_skills(self)
 
 
 AttachmentData: TypeAlias = Annotated[
@@ -831,6 +864,53 @@ class TurnMark(StrEnum):
         return self in (TurnMark.ASKS, TurnMark.ANSWERS, TurnMark.STUB)
 
 
+class HistoryFold:
+    """Основа свёрток истории: проход по записям разговора, в котором каждая
+    запись сама сообщает, что она объявила модели или сделала, — снимок
+    промпта, модель, дату, окружение, набор инструментов, инструкции
+    серверов, скиллы, вызовы инструментов и их результаты. Каждый метод
+    основы ничего не делает; наследник переопределяет то, что ему нужно.
+    Наследники — свёртка «что объявлено» (Announced) и сбор вызванных
+    скиллов для сжатия (InvokedSkills)."""
+
+    def prompt_snapshot(self, snapshot: PromptSnapshot) -> None:
+        return
+
+    def model(self, model: ModelAttachment) -> None:
+        return
+
+    def date(self, date: DateAttachment) -> None:
+        return
+
+    def environment(self, environment: EnvironmentAttachment) -> None:
+        return
+
+    def tool_delta(self, delta: DeferredToolsDeltaAttachment) -> None:
+        return
+
+    def tool_definitions(self, definitions: DeferredToolsRecordAttachment) -> None:
+        return
+
+    def instructions(self, delta: McpInstructionsAttachment) -> None:
+        return
+
+    def skill_listing(self, listing: SkillListingAttachment) -> None:
+        return
+
+    def invoked_skills(self, invoked: InvokedSkillsAttachment) -> None:
+        return
+
+    def discovered_tools(self, names: Sequence[str]) -> None:
+        """Отложенные инструменты, загруженные до сжатия: список границы."""
+        return
+
+    def tool_call(self, call: ToolUseBlock) -> None:
+        return
+
+    def tool_result(self, result: ToolResultBlock) -> None:
+        return
+
+
 @dataclass(frozen=True)
 class ReplyMark:
     """Запись — ответ модели: идентификатор ответа (по нему режутся группы
@@ -908,6 +988,14 @@ class ChainRecord(WireModel):
     def answered_calls(self) -> Sequence[str]:
         """Идентификаторы вызовов, на которые запись отвечает результатом."""
 
+    @abstractmethod
+    def announce(self, fold: HistoryFold) -> None:
+        """Что запись сообщает свёртке истории."""
+
+    @abstractmethod
+    def carried(self) -> Self:
+        """Копия записи для хвоста, перенесённого за границу сжатия."""
+
 
 class UserRecord(ChainRecord):
     """Основа записей `user`: сообщение роли user. Наследники — виды:
@@ -976,6 +1064,13 @@ class UserRecord(ChainRecord):
             ids.append(result.tool_use_id)
 
         return ids
+
+    def announce(self, fold: HistoryFold) -> None:
+        for result in self.message.tool_results():
+            fold.tool_result(result)
+
+    def carried(self) -> Self:
+        return self
 
 
 class PromptRecord(UserRecord):
@@ -1142,8 +1237,13 @@ class AssistantRecord(ChainRecord):
     def answered_calls(self) -> Sequence[str]:
         return ()
 
-    def with_zero_usage(self) -> Self:
-        """Копия для перенесённого хвоста: учёт обнулён (раздел 5.16 плана)."""
+    def announce(self, fold: HistoryFold) -> None:
+        for call in self.message.tool_uses():
+            fold.tool_call(call)
+
+    def carried(self) -> Self:
+        """Ответ в перенесённом хвосте: учёт обнулён (раздел 5.16 плана),
+        якорем окна он не бывает."""
         message = self.message.model_copy(update={"usage": Usage()})
 
         return self.model_copy(update={"message": message})
@@ -1214,6 +1314,12 @@ class AttachmentRecord(ChainRecord):
     def answered_calls(self) -> Sequence[str]:
         return ()
 
+    def announce(self, fold: HistoryFold) -> None:
+        self.attachment.announce(fold)
+
+    def carried(self) -> Self:
+        return self
+
 
 class SystemRecord(ChainRecord):
     """Основа записей `system`: пометки и события для журнала и ленты —
@@ -1249,6 +1355,12 @@ class SystemRecord(ChainRecord):
 
     def answered_calls(self) -> Sequence[str]:
         return ()
+
+    def announce(self, fold: HistoryFold) -> None:
+        return
+
+    def carried(self) -> Self:
+        return self
 
 
 class ApiErrorRecord(SystemRecord):
@@ -1341,6 +1453,9 @@ class CompactBoundaryRecord(SystemRecord):
 
     def starts_window(self) -> bool:
         return True
+
+    def announce(self, fold: HistoryFold) -> None:
+        fold.discovered_tools(self.compact_metadata.pre_compact_discovered_tools)
 
 
 class HarnessCommandRecord(SystemRecord):

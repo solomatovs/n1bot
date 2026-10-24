@@ -835,7 +835,7 @@ class TurnLoop:
             record = self._attachments.environment(
                 self._session.last_chain_uuid(),
                 self._environment,
-                announced.environment(),
+                announced.environment_snapshot(),
             )
             if record is not None:
                 await self._keeper.add(record)
@@ -908,7 +908,7 @@ class TurnLoop:
         record = self._attachments.instructions(
             self._session.last_chain_uuid(),
             self._catalog.connected(),
-            announced.instructions(),
+            announced.announced_instructions(),
         )
         if record is None:
             return
@@ -943,7 +943,7 @@ class TurnLoop:
         """Дата, если сменилась; снимок, если его нет в доступной истории."""
         announced = Announced(self._session.conversation())
         today = self._attachments.today()
-        known = announced.date()
+        known = announced.date_text()
         if known != today:
             record = self._attachments.date(
                 self._session.last_chain_uuid(), today, known is not None
