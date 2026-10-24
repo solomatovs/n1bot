@@ -210,7 +210,7 @@ class ServiceProcess:
         endpoint = {
             "transport": "streamable-http",
             "service": service,
-            "path": "/mcp/service",
+            "path": "/service",
             "auth": {
                 "auth": "proxy",
                 "issuer": service,
@@ -229,7 +229,7 @@ class ServiceProcess:
     def token_servers(self, name: str) -> McpServersConfig:
         """Секция [mcp.servers] с одним сервером name: вход токеном
         пользователя alice с ролью dev."""
-        path = "/mcp/service"
+        path = "/service"
         token = self._sign_in.token("alice", "dev", f"{self._public}{path}")
         server = {
             "endpoint": {

@@ -21,7 +21,7 @@ class TrackedConfigs:
     APPS: ClassVar[Path] = Path(__file__).resolve().parents[3] / "apps"
     SENSITIVE: ClassVar[re.Pattern[str]] = re.compile(
         r"(password|passwd|secret|(^|_)token$|api_key|_key$|^key$|host|url|addr"
-        r"|server$|^model$|allowed_clients|mapping$|sender|recipient)",
+        r"|server$|^model$|allowed_clients|mapping$|sender|recipient|prompt$)",
         re.IGNORECASE,
     )
     REFERENCE: ClassVar[re.Pattern[str]] = re.compile(r"^\$\{[a-z_][\w.${}-]*\}$")

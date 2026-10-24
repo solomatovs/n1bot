@@ -577,7 +577,7 @@ class ServiceStand:
             "scheme": StandUrl.SCHEME.value,
             "host": StandUrl.HOST.value,
             "port": self.proxy.port,
-            "path": "",
+            "path": ServeStandConfig.PREFIX,
         }
         return {
             "endpoint": {"service": location, "path": ServeStandConfig.PATH},

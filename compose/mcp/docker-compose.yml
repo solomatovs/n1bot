@@ -38,46 +38,6 @@ services:
       - ${BOBA_SANDBOX_CGROUP}:/cgroup/boba-sandbox-mcp:rw
     ports:
       - "8650"
-  mcp2:
-    init: true
-    cgroup_parent: boba-mcp.slice
-    user: "${BOBA_USER}"
-    devices:
-      - /dev/fuse
-    security_opt:
-      - seccomp=../../build/conf/seccomp-sandbox.json
-      - systempaths=unconfined
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
-    mem_limit: 16g
-    cpus: 8
-    pids_limit: 2048
-    restart: unless-stopped
-    stop_grace_period: 30s
-    image: boba-mcp:0.0.30.dev1
-    hostname: boba-mcp2
-    container_name: boba-mcp2
-    networks:
-      default:
-        ipv4_address: ${BOBA_ADDRESS_2}
-    env_file: ./conf/boba.env
-    command:
-      - -m
-      - boba.mcp_server
-      - --config
-      - /app/boba/conf/config.toml
-      - --site
-      - /app/boba/conf/site.toml
-    volumes:
-      - ./conf2/site.toml:/app/boba/conf/site.toml:ro
-      - ./conf2/krb:/app/boba/conf/krb:ro
-      - ./conf2/krb/krb5.conf:/etc/krb5.conf:ro
-      - ./data:/app/boba/data:rw
-      - ${BOBA_SANDBOX_CGROUP}:/cgroup/boba-sandbox-mcp:rw
-    ports:
-      - "8650"
-
 networks:
   default:
     name: ${BOBA_NETWORK}

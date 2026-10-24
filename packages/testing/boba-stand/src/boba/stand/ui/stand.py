@@ -556,7 +556,7 @@ class ServiceStand(StandService):
             "endpoint": {
                 "transport": "streamable-http",
                 "service": service,
-                "path": f"/mcp/{endpoint}",
+                "path": f"/{endpoint}",
                 "auth": self._auth(service),
             },
         }
@@ -609,6 +609,7 @@ class ServiceStand(StandService):
 
         doc["mcp"]["endpoints"] = endpoints
         doc["mcp"]["public_url"] = f"http://127.0.0.1:{self.app_port}"
+        doc["mcp"]["url_prefix"] = ""
         doc["mcp"]["clients"] = {self.CLIENT_ID: {"secret": self.CLIENT_SECRET}}
         doc["auth"]["proxy"] = {
             "type": "proxy",

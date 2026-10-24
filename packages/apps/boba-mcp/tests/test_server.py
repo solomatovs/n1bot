@@ -104,7 +104,7 @@ def port() -> int:
 
 @pytest.fixture
 def stand(tmp_path: Path, port: int) -> ServiceStand:
-    return ServiceStand(tmp_path, RunLimits(max_runs=4, max_waiting=4), port)
+    return ServiceStand(tmp_path, RunLimits(max_runs=4, max_waiting=4), port, "")
 
 
 @pytest.fixture
@@ -1187,7 +1187,7 @@ class TestFailures:
 class TestRunLimit:
     @pytest.fixture
     def stand(self, tmp_path: Path, port: int) -> ServiceStand:
-        return ServiceStand(tmp_path, RunLimits(max_runs=1, max_waiting=1), port)
+        return ServiceStand(tmp_path, RunLimits(max_runs=1, max_waiting=1), port, "")
 
     async def test_calls_over_the_limit_wait_and_over_the_queue_are_refused(
         self, stand: ServiceStand, url: str, tmp_path: Path, dev_token: str
@@ -1409,7 +1409,7 @@ class TestProxySignIn:
         провайдера proxy): обмен отвечает ошибкой OAuth с причиной, а не
         внутренней ошибкой без тела."""
         public = "http://127.0.0.1:1"
-        resource = f"{public}/mcp/{PROFILE}"
+        resource = f"{public}/{PROFILE}"
         sealed = SealedValues("stand-session-secret", ServiceMark.SEALED_SALT)
         server = AuthServer(
             public,
@@ -1823,6 +1823,87 @@ class TestAuthDiscovery:
             )
 
 
+class TestServicePrefix:
+    """Сервис за прокси без переписывания пути: все маршруты под префиксом
+    публичного адреса, метаданные OAuth — в корне хоста по путям RFC 9728 и
+    RFC 8414 с префиксом внутри."""
+
+    PREFIX: ClassVar[str] = "/boba-mcp"
+
+    @pytest.fixture
+    async def prefixed(self, tmp_path: Path, port: int) -> AsyncIterator[ServiceStand]:
+        served = ServiceStand(
+            tmp_path, RunLimits(max_runs=4, max_waiting=4), port, self.PREFIX
+        )
+        async with served.serving():
+            yield served
+
+    async def test_health_answers_only_under_the_prefix(
+        self, prefixed: ServiceStand
+    ) -> None:
+        root = f"http://127.0.0.1:{prefixed.port}"
+        async with httpx.AsyncClient() as http:
+            inside = await http.get(f"{prefixed.public_url}/health")
+            outside = await http.get(f"{root}/health")
+
+        if inside.status_code != httpx.codes.OK:
+            raise AssertionError(f"the probe answers under the prefix: {inside}")
+
+        if outside.status_code != httpx.codes.NOT_FOUND:
+            raise AssertionError(f"the probe is not served outside: {outside}")
+
+    async def test_discovery_leads_to_the_prefixed_sign_in(
+        self, prefixed: ServiceStand
+    ) -> None:
+        root = f"http://127.0.0.1:{prefixed.port}"
+        public = prefixed.public_url
+        async with httpx.AsyncClient() as http:
+            refused = await http.post(prefixed.url(PROFILE), json={})
+            challenge = refused.headers.get("www-authenticate", "")
+            address = challenge.split('resource_metadata="', 1)[1].split('"', 1)[0]
+            resource = await http.get(address)
+            metadata = await http.get(
+                f"{root}/.well-known/oauth-authorization-server{self.PREFIX}"
+            )
+
+        expected = f"{root}/.well-known/oauth-protected-resource{self.PREFIX}/{PROFILE}"
+        if address != expected:
+            raise AssertionError(
+                f"resource metadata lies at the RFC 9728 path: {address}"
+            )
+
+        described = resource.json()
+        if str(described["resource"]).rstrip("/") != prefixed.url(PROFILE):
+            raise AssertionError(f"the resource is the prefixed endpoint: {described}")
+
+        servers = described["authorization_servers"]
+        if [str(item).rstrip("/") for item in servers] != [public]:
+            raise AssertionError(f"the resource names the prefixed issuer: {servers}")
+
+        server = metadata.json()
+        if str(server["issuer"]).rstrip("/") != public:
+            raise AssertionError(f"the issuer is the public address: {server}")
+
+        if server["token_endpoint"] != f"{public}/token":
+            raise AssertionError(f"the token endpoint is under the prefix: {server}")
+
+    async def test_proxy_token_calls_the_prefixed_endpoint(
+        self, prefixed: ServiceStand
+    ) -> None:
+        token = await prefixed.dev_token(PROFILE)
+        async with _client(prefixed.url(PROFILE), token) as client:
+            tools = await client.list_tools()
+
+        names: list[str] = []
+        for tool in tools:
+            names.append(tool.name)
+
+        if "fake_echo" not in names:
+            raise AssertionError(
+                f"the endpoint under the prefix lists its tools: {names}"
+            )
+
+
 class TestWorkspaceFiles:
     """Файлы workspace по маршруту endpoint'а: потоком в обе стороны."""
 
@@ -1892,7 +1973,7 @@ class TestWorkspaceFiles:
         async with httpx.AsyncClient() as http:
             await http.put(address, content=b"secret", headers=self._headers(dev_token))
             other = await http.get(
-                address.replace("/mcp/service/", "/mcp/narrow/"),
+                address.replace("/service/", "/narrow/"),
                 headers=self._headers(await stand.dev_token(NARROW)),
             )
             stranger = await http.get(address, headers=self._headers(weak_token))
@@ -1927,7 +2008,7 @@ class TestWorkspaceFiles:
             declared = client.session.server_capabilities
 
         structured = _shown(result)
-        expected = f"/mcp/service/files/{self.SCOPE}/upload/report.csv"
+        expected = f"/service/files/{self.SCOPE}/upload/report.csv"
         if structured is None or structured.get("path") != expected:
             raise AssertionError(f"the tool names the upload address: {result}")
         if declared is None or declared.extensions is None:
@@ -1935,7 +2016,7 @@ class TestWorkspaceFiles:
 
         files = declared.extensions.get(FilesFeature.ID)
         expected_files = {
-            "path": "/mcp/service/files",
+            "path": "/service/files",
             "upload": FileUploadTool.NAME,
             "workspace": "/workspace",
         }

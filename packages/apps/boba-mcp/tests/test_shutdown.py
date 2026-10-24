@@ -110,7 +110,7 @@ def service(
 
 def _token(public: str) -> str:
     """Токен пользователя стенда обменом утверждения доверенного клиента."""
-    resource = f"{public}/mcp/{ENDPOINT}"
+    resource = f"{public}/{ENDPOINT}"
     assertion = ProxyAssertions(ServiceStand.PROXY_SECRET, 0).issue(
         ServiceStand.CLIENT_ID, "ivanov", "ADM", public, resource
     )
@@ -150,7 +150,7 @@ def test_sigterm_stops_the_running_call_and_exits_cleanly(
     if process is None:
         raise AssertionError("the stand process is started")
 
-    call = RunningCall(f"{public}/mcp/{ENDPOINT}", _token(public))
+    call = RunningCall(f"{public}/{ENDPOINT}", _token(public))
     call.start()
     deadline = time.monotonic() + 60.0
     while not _sleeping():
