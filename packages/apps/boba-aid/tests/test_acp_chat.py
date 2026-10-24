@@ -1371,6 +1371,64 @@ class TestHistory:
         finally:
             await again.end_session()
 
+    async def test_an_edit_redraws_a_dropped_tab_when_it_returns(
+        self, app: StandProcess, cookie: str, rows: ChatRows
+    ) -> None:
+        """Правка в одной вкладке, пока у другой вкладки треда оборван сокет:
+        процесс отключённой ради перерисовки не поднимается; вернувшаяся
+        вкладка рисует ветку заново, и её вопрос продолжает ветку."""
+        agents = AgentProcesses(app)
+        editing = ChatSocket(app, cookie, str(uuid4()))
+        await editing.open()
+        dropped = ChatSocket(app, cookie, editing.thread_id)
+        try:
+            await editing.send(f"zero {ScenarioName.ANSWER.value}")
+            await editing.wait_task_end()
+            assert not editing.errors(), editing.errors()
+            question = str(editing.messages("user_message")[-1].get("id"))
+            kept = await agents.await_thread(editing.thread_id)
+
+            await dropped.open(resumed=True)
+            await dropped.close()
+            await agents.await_thread(editing.thread_id)
+
+            logged = app.log_path.stat().st_size
+            await editing.edit(question, f"edited {ScenarioName.ANSWER.value}")
+            await editing.wait_task_end()
+            assert not editing.errors(), (editing.errors(), app.tail(60))
+            await editing.wait_log(
+                f"thread {editing.thread_id}: the tab is disconnected, its feed is "
+                "redrawn on return",
+                logged,
+            )
+            assert set(agents.of_thread(editing.thread_id)) == {kept}, app.tail(60)
+            branch = await rows.thread_meta(editing.thread_id)
+            assert branch is not None
+
+            mark = len(dropped.events)
+            await dropped.reconnect()
+            await dropped.send(f"next {ScenarioName.ANSWER.value}")
+            await dropped.wait_task_end()
+            assert not dropped.errors(), (dropped.errors(), app.tail(60))
+            redrawn = await dropped.wait_event_index("resume_thread", since=mark)
+            questions: list[object] = []
+            for payload in dropped.messages("user_message", redrawn):
+                questions.append(payload.get("output"))
+
+            assert questions == [
+                f"edited {ScenarioName.ANSWER.value}",
+                f"next {ScenarioName.ANSWER.value}",
+            ], (dropped.trace()[mark:], app.tail(80))
+            after = await rows.thread_meta(editing.thread_id)
+            assert after is not None
+            assert (
+                after[ThreadMetaField.AGENT_SESSION]
+                == branch[ThreadMetaField.AGENT_SESSION]
+            )
+            await dropped.end_session()
+        finally:
+            await editing.end_session()
+
     async def test_a_refused_edit_redraws_the_editing_tab(
         self, app: StandProcess, cookie: str, rows: ChatRows
     ) -> None:
