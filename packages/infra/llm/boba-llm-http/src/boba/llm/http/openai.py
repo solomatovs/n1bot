@@ -520,16 +520,21 @@ class OpenAiChatModel(HttpChatModel[WireChunk]):
         return wired
 
     def _content(self, message: ChatTurn) -> str | list[dict[str, Any]]:
-        """Текст как есть; с картинками — список частей."""
-        if not message.images:
-            return message.content
+        """Текст одной частью — строкой; несколько частей или картинки —
+        списком частей content."""
+        texts = message.text_parts()
+        if not message.images and len(texts) <= 1:
+            return message.text()
 
-        parts: list[dict[str, Any]] = [
-            {
-                WireField.TYPE.value: ContentPartType.TEXT.value,
-                WireField.TEXT.value: message.content,
-            }
-        ]
+        parts: list[dict[str, Any]] = []
+        for text in texts:
+            parts.append(
+                {
+                    WireField.TYPE.value: ContentPartType.TEXT.value,
+                    WireField.TEXT.value: text,
+                }
+            )
+
         for image in message.images:
             parts.append(
                 {

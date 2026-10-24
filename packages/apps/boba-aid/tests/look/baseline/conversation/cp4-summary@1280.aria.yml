@@ -1,0 +1,26 @@
+- article: Выгрузи заказы и возвраты за квартал
+- img "Avatar for AID"
+- 'heading "Завершено · шагов: 3" [level=3]':
+  - 'button "Завершено · шагов: 3"'
+- img "Avatar for AID"
+- article: Выгружаю заказы и возвраты.
+- img "Avatar for AID"
+- article: "Выгрузил заказы и возвраты: по две страницы на таблицу."
+- article: Что из этого стоит проверить первым?
+- img "Avatar for AID"
+- 'heading "Завершено · шагов: 1" [level=3]':
+  - 'button "Завершено · шагов: 1" [expanded]'
+- region:
+  - heading "✔ Контекст сжат" [level=3]:
+    - button "✔ Контекст сжат" [expanded]
+  - region:
+    - article: This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+    - article: "Summary:"
+    - list:
+      - listitem:
+        - article: "Primary Request and Intent: The user drove the stand through the scenario markers listed below."
+      - listitem:
+        - article: "All user messages:"
+    - article: Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.
+- img "Avatar for AID"
+- article: "Первыми стоит проверить возвраты: в них больше всего расхождений."

@@ -4,16 +4,20 @@
 пользователя, `tool_use_error` помечает результат-ошибку, `truncated-output`
 — пометку обрезки (план, разделы 5.12, 5.13). Тег пишется только отсюда:
 AgentTag знает своё имя и собирает скобки, оборачивает текст строкой или
-блоком с переводами строк и снимает блочную обёртку. TagShield обезвреживает
+блоком с переводами строк и снимает блочную обёртку. Локальная команда
+пользователя (`/compact`) записывается в разговор тегами вызова и вывода
+(LocalCommandText), как у эталона (docs/prompt_assembly, texts/compact/
+local_command_records_manual.txt). TagShield обезвреживает
 теги в чужом тексте — словах пользователя, результатах инструментов и в
 содержимом собственных обёрток: теги находит токенизатор стандартной
 библиотеки `html.parser.HTMLParser`, найденное экранирует `html.escape`,
 и модель не принимает чужой текст за разметку агента.
 
 ReplyTag — теги, которыми модель по инструкции агента размечает свой ответ
-(блок пересказа при сжатии, раздел 5.16); их содержимое агент извлекает
-тем же токенизатором. Защита их не экранирует: `<summary>` — обычный
-элемент HTML, который бывает в тексте пользователя и результатах.
+(блоки разбора и пересказа при сжатии, раздел 5.16); их содержимое агент
+извлекает и вырезает тем же токенизатором. Защита их не экранирует:
+`<summary>` — обычный элемент HTML, который бывает в тексте пользователя и
+результатах.
 """
 
 from __future__ import annotations
@@ -23,8 +27,11 @@ from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from html.parser import HTMLParser
+from typing import ClassVar
 
-__all__ = ["AgentTag", "ReplyTag", "TagShield"]
+from boba.core.commands import CommandCall, CommandMark
+
+__all__ = ["AgentTag", "LocalCommandText", "ReplyTag", "TagShield"]
 
 
 class AgentTag(StrEnum):
@@ -33,6 +40,11 @@ class AgentTag(StrEnum):
     SYSTEM_REMINDER = "system-reminder"
     TOOL_USE_ERROR = "tool_use_error"
     TRUNCATED_OUTPUT = "truncated-output"
+    LOCAL_COMMAND_CAVEAT = "local-command-caveat"
+    COMMAND_NAME = "command-name"
+    COMMAND_MESSAGE = "command-message"
+    COMMAND_ARGS = "command-args"
+    LOCAL_COMMAND_STDOUT = "local-command-stdout"
 
     @property
     def open(self) -> str:
@@ -65,14 +77,88 @@ class AgentTag(StrEnum):
         return text
 
 
+class LocalCommandText:
+    """Текст записи вызова локальной команды пользователя и его разбор.
+
+    Вызов `/<имя> <аргументы>`, который агент исполнил сам, без модели,
+    пишется в разговор записью с тегами command-name, command-message и
+    command-args; так его видит модель в следующих запросах. Обратный
+    разбор отдаёт вызов текстом, каким его набрал пользователь, — им вход
+    ACP показывает запись клиенту. Держат цикл хода (TurnLoop) и вход ACP.
+    """
+
+    INDENT: ClassVar[str] = "\n            "
+
+    def call(self, call: CommandCall) -> str:
+        """Текст записи вызова call."""
+        name = f"{CommandMark.PREFIX.value}{call.name}"
+        parts = [
+            AgentTag.COMMAND_NAME.wrap(name),
+            AgentTag.COMMAND_MESSAGE.wrap(call.name),
+            AgentTag.COMMAND_ARGS.wrap(call.rest),
+        ]
+
+        return self.INDENT.join(parts)
+
+    def parsed(self, text: str) -> CommandCall | None:
+        """Вызов из текста записи; None — текст не запись вызова."""
+        if not text.startswith(AgentTag.COMMAND_NAME.open):
+            return None
+
+        name = self._inner(text, AgentTag.COMMAND_MESSAGE)
+        if not name:
+            return None
+
+        rest = self._inner(text, AgentTag.COMMAND_ARGS)
+        if rest is None:
+            return None
+
+        return CommandCall(name=name, rest=rest)
+
+    @staticmethod
+    def _inner(text: str, tag: AgentTag) -> str | None:
+        start = text.find(tag.open)
+        if start < 0:
+            return None
+
+        opened = start + len(tag.open)
+        end = text.find(tag.close, opened)
+        if end < 0:
+            return None
+
+        return text[opened:end]
+
+
 class ReplyTag(StrEnum):
     """Имена тегов в ответе модели и извлечение их содержимого."""
 
     SUMMARY = "summary"
+    ANALYSIS = "analysis"
 
     def extract(self, text: str) -> str | None:
         """Содержимое первого закрытого блока `<tag>…</tag>`; None — блока
         нет либо открытый тег не закрыт."""
+        found = self._block(text)
+        if found is None:
+            return None
+
+        opened, closed = found
+
+        return text[opened.end : closed.start]
+
+    def without(self, text: str) -> str:
+        """Текст без первого закрытого блока `<tag>…</tag>` вместе с тегами;
+        без блока — как есть."""
+        found = self._block(text)
+        if found is None:
+            return text
+
+        opened, closed = found
+
+        return text[: opened.start] + text[closed.end :]
+
+    def _block(self, text: str) -> tuple[TagSpan, TagSpan] | None:
+        """Открывающий и закрывающий теги первого закрытого блока."""
         spans = TagScanner(frozenset({self.value})).scan(text)
         opened: TagSpan | None = None
         for span in spans:
@@ -83,7 +169,7 @@ class ReplyTag(StrEnum):
                 continue
 
             if opened is not None:
-                return text[opened.end : span.start]
+                return opened, span
 
         return None
 

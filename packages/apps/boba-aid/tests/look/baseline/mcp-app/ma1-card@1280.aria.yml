@@ -1,10 +1,10 @@
 - article: Покажи последние заказы магазина
-- img "Avatar for Ассистент-BOBA"
-- 'heading "Завершено · шагов: 1" [level=3]':
-  - 'button "Завершено · шагов: 1"'
+- img "Avatar for AID"
+- 'heading "Завершено · шагов: 3" [level=3]':
+  - 'button "Завершено · шагов: 3"'
 - text: apps · orders
 - button "На весь экран"
 - button "Свернуть"
 - iframe
-- img "Avatar for Ассистент-BOBA"
+- img "Avatar for AID"
 - article: Три последних заказа магазина — в таблице выше.

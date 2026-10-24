@@ -45,7 +45,7 @@ from boba.stand.agent import (
     StandToolName,
     StandTools,
 )
-from boba.stand.ui.fake_llm import ScenarioName
+from boba.stand.ui.fake_llm import ScenarioName, WindowSettings
 
 pytestmark = pytest.mark.anyio
 
@@ -478,6 +478,43 @@ class TestCompaction:
         last = server.requests()[-1]
         assert tool_names(last)[-1] == StandToolName.LARGE.full
         assert served.agent.outcomes == [TurnOutcome.COMPLETED] * 2
+
+
+class TestSummaryTools:
+    async def test_every_ladder_step_offers_the_tools_of_the_turn(
+        self, server: FakeServer, agents: StandAgents
+    ) -> None:
+        """Запрос пересказа несёт те же инструменты, что основной, и после
+        отбрасывания групп, где записано определение загруженного: список
+        берётся по всему разговору, а не по отрезку."""
+        server.app.limit_window(WindowSettings(context_window=5_000, chars_per_token=4))
+        profile = agents.profile(Protocol.OPENAI, chars_per_token=4)
+        served = Served(
+            agents.agent(profile, Collected(), tools=StandTools(), always_load=())
+        )
+        await served.open(SESSION, resume=False)
+        large: dict[str, Any] = {
+            "name": StandToolName.LARGE.full,
+            "arguments": {"size": 14_000, "fill": "x"},
+        }
+        served.agent.queue.enqueue(prompt(call(large)))
+        await served.agent.settled()
+        before = len(server.requests())
+        served.agent.queue.enqueue(prompt(f"{ScenarioName.ANSWER.value} {'y' * 6_000}"))
+        await served.agent.settled()
+        await served.close()
+
+        turn = server.requests()[before:]
+        main = tool_names(turn[0])
+        summaries = turn[1:]
+        assert StandToolName.LARGE.full in main
+        assert len(summaries) == 3
+        for request in summaries:
+            assert tool_names(request) == main
+        assert served.agent.outcomes == [
+            TurnOutcome.COMPLETED,
+            TurnOutcome.BLOCKING_LIMIT,
+        ]
 
 
 class TestMatcher:

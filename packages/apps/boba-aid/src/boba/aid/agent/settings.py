@@ -194,6 +194,12 @@ class ToolsFile(FileModel):
     always_load: Sequence[str]
 
 
+class LimitsFile(FileModel):
+    """Ключ `limits`: пределы хода из [agent.limits]."""
+
+    tool_result_window_share: float
+
+
 class SettingsFile(FileModel):
     """Файл настроек процесса агента целиком, как его пишет чат."""
 
@@ -203,6 +209,7 @@ class SettingsFile(FileModel):
     history: PostgresHistoryFile | MemoryHistoryFile = Field(discriminator="kind")
     mcp: McpFile | None
     tools: ToolsFile
+    limits: LimitsFile
     env: Mapping[str, str]
     system_prompt_file: str = Field(min_length=1)
 
@@ -280,7 +287,8 @@ class ProfileModelSpecs:
 class SettingsFileBuilder:
     """Файл настроек агента из профиля модели и конфига: к профилю модели чата
     добавляются политика запуска `allowBypass` (режим сессии чат выставляет
-    по ACP), история, инструменты «всегда загружать» [agent.tools], срок
+    по ACP), история, инструменты «всегда загружать» [agent.tools], пределы
+    хода [agent.limits], срок
     вызова инструментов — наибольший
     `limits.call_timeout_sec` серверов профиля [mcp.servers.*] — и окружение
     libkrb5 истории ключом `env`. Строка подключения истории — её собственное
@@ -292,6 +300,9 @@ class SettingsFileBuilder:
         self._servers = servers
         self._history = self._history_file(config.history)
         self._tools = ToolsFile(always_load=config.tools.always_load)
+        self._limits = LimitsFile(
+            tool_result_window_share=config.limits.tool_result_window_share
+        )
 
     def build(
         self,
@@ -310,6 +321,7 @@ class SettingsFileBuilder:
             history=self._history,
             mcp=mcp,
             tools=self._tools,
+            limits=self._limits,
             env=env,
             system_prompt_file=WorkdirFile.SYSTEM_PROMPT.value,
         )

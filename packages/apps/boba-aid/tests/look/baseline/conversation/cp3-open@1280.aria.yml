@@ -1,0 +1,17 @@
+- article: Выгрузи заказы и возвраты за квартал
+- img "Avatar for AID"
+- 'heading "Завершено · шагов: 3" [level=3]':
+  - 'button "Завершено · шагов: 3"'
+- img "Avatar for AID"
+- article: Выгружаю заказы и возвраты.
+- img "Avatar for AID"
+- article: "Выгрузил заказы и возвраты: по две страницы на таблицу."
+- article: Что из этого стоит проверить первым?
+- img "Avatar for AID"
+- 'heading "Завершено · шагов: 1" [level=3]':
+  - 'button "Завершено · шагов: 1" [expanded]'
+- region:
+  - heading "✔ Контекст сжат" [level=3]:
+    - button "✔ Контекст сжат"
+- img "Avatar for AID"
+- article: "Первыми стоит проверить возвраты: в них больше всего расхождений."

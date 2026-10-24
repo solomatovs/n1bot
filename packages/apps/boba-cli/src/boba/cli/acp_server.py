@@ -13,10 +13,12 @@
 MCP внутри `mcp/message` (AcpToolServer, SessionMcp): server/discover —
 возможности и инструкции серверов (инструкции модель получает вложением
 хода), инструменты, ресурсы — его инструментами list_mcp_resources и
-read_mcp_resource, промпты — командами сессии (`available_commands_update`
-с подсказками значений аргументов по completion/complete, вопрос
-`/<команда> <аргументы>`). Описание и списки живут по сроку свежести
-ответа (ttlMs) и перечитываются в начале хода, смена списков по потоку
+read_mcp_resource, промпт — по вопросу `/<команда> <аргументы>` с полным
+именем промпта: команды промптов клиенту объявляет не агент, а сами
+серверы. Свои команды сессии агент объявляет `available_commands_update`
+после ответа на `session/new|resume|fork` (SessionCommands). Описание и
+списки живут по сроку свежести ответа (ttlMs) и перечитываются в начале
+хода, а промпт, которого вопрос-команда не нашёл, — сразу; смена списков по потоку
 subscriptions/listen делает их устаревшими сразу. События ядра приёмник
 SessionRelay переводит в уведомления по таблице AcpMapping.
 
@@ -37,8 +39,12 @@ another process», пока замок занят; когда держатель
 Настройки сессии — `configOptions` `mode` (режимы разрешений ядра) и `model`
 (профили `models.<имя>` настроек) в ответах `session/new|resume|fork`;
 `session/set_config_option` меняет их, после смены уходит
-`config_option_update`. После хода и сжатия уходит `usage_update`, при сжатии
-— `compaction_update`, после первого хода и при воспроизведении —
+`config_option_update`. После хода и сжатия уходит `usage_update`; сжатие
+идёт `compaction_update` по стадиям (in_progress, затем completed с
+пересказом, failed с причиной или cancelled), воспроизведение отдаёт
+состоявшиеся сжатия так же — по записи пересказа; пометка агента посреди
+хода (тред не помещается в окно) — `notice`. После первого хода и при
+воспроизведении —
 `session_info_update` с заголовком, после каждого сброса записей в
 хранилище истории — `session_info_update` с `updatedAt` последней
 записи; ошибка вне хода уходит `notice`. Точка
@@ -62,7 +68,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import shlex
 import time
 from abc import abstractmethod
 from collections.abc import (
@@ -134,7 +139,8 @@ from boba.agent.records import (
     ApiErrorRecord,
     AssistantRecord,
     ChainRecord,
-    CompactBoundaryRecord,
+    CompactionPhase,
+    CompactionRecord,
     InformationalRecord,
     NoticeLevel,
     PermissionMode,
@@ -149,6 +155,7 @@ from boba.agent.session import SessionState
 from boba.agent.settings import (
     McpClientJson,
 )
+from boba.agent.tags import LocalCommandText
 from boba.agent.template import AgentTemplate, AgentTemplateFile, ModelTroubleTexts
 from boba.agent.tools import (
     AskOption,
@@ -162,6 +169,7 @@ from boba.agent.tools import (
 from boba.agent.turn import ContextUsage
 from boba.cancellation import StopReason as CoreStopReason
 from boba.cli.threads import LoopCall, LoopThread, SessionLimitError, SessionThreads
+from boba.core.commands import CommandArgument, CommandArgumentsError, CommandLines
 from boba.core.mcp_names import McpToolNameError, McpToolNames
 from boba.core.validation import ValidationText
 from boba.transport.acp.protocol import (
@@ -462,6 +470,131 @@ class ModeCard:
     description: str
 
 
+class CompactionUpdateStatus(StrEnum):
+    """Стадии `compaction_update` ACP."""
+
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class OpenCompactions:
+    """Сжатия воспроизведения, начатые записью и ещё не кончившиеся: агент
+    мог остановиться посреди пересказа, и в истории осталось только начало.
+    Такое сжатие закрывается неудачей, когда за ним идёт вопрос человека или
+    кончается история — кроме идущего сейчас (live): его итог придёт вживую.
+    Создаёт воспроизведение (AcpAgent) на каждый проход."""
+
+    def __init__(self) -> None:
+        self._open: list[str] = []
+
+    def before(self, record: ChainRecord) -> Sequence[str]:
+        """Сжатия, которые закрывает вопрос человека record."""
+        if not isinstance(record, UserRecord):
+            return ()
+
+        if record.human_text() is None:
+            return ()
+
+        unfinished = list(self._open)
+        self._open.clear()
+
+        return unfinished
+
+    def after(self, record: ChainRecord) -> None:
+        if isinstance(record, CompactionRecord):
+            self._follow(record)
+            return
+
+        if not isinstance(record, UserRecord):
+            return
+
+        if not record.is_compact_summary:
+            return
+
+        if record.uuid in self._open:
+            self._open.remove(record.uuid)
+
+    def unfinished(self, live: bool) -> Sequence[str]:
+        """Сжатия без конца в конце истории; live — последнее из них ещё
+        идёт."""
+        unfinished = list(self._open)
+        self._open.clear()
+        if live and unfinished:
+            unfinished.pop()
+
+        return unfinished
+
+    def _follow(self, record: CompactionRecord) -> None:
+        if record.phase is CompactionPhase.STARTED:
+            self._open.append(record.compaction_id)
+            return
+
+        if record.compaction_id in self._open:
+            self._open.remove(record.compaction_id)
+
+
+class SessionCommand(StrEnum):
+    """Команды сессии агента: имя команды без косой черты."""
+
+    COMPACT = "compact"
+
+
+@dataclass(frozen=True)
+class CommandCard:
+    """Объявление команды сессии клиенту: что она делает и подсказка ввода
+    её аргументов."""
+
+    description: str
+    hint: str
+
+
+class SessionCommands:
+    """Команды сессии агента в форме ACP: полный список
+    `available_commands_update`, который клиент получает после ответа на
+    `session/new|resume|fork` (поля `availableCommands` в ответах схема SDK
+    не несёт). Реестр декларативный (CARDS); вызов команды — обычный
+    `session/prompt` с текстом `/<имя> <аргументы>`. Создаёт вход
+    (AcpAgent), объявление уходит клиенту через SessionMcp.announce_later."""
+
+    CARDS: ClassVar[Mapping[SessionCommand, CommandCard]] = {
+        SessionCommand.COMPACT: CommandCard(
+            "Compact the conversation into a summary",
+            "optional instructions for the summary",
+        ),
+    }
+
+    def __init__(self) -> None:
+        self._lines = CommandLines()
+
+    def queued(self, asked: QueueEntry) -> QueueEntry | None:
+        """Вопрос-вызов команды сессии → элемент очереди, который её исполняет
+        (`/compact <указания>` → compact с указаниями текстом); None — вопрос
+        не команда сессии."""
+        call = self._lines.parsed(asked.text)
+        if call is None:
+            return None
+
+        if call.name != SessionCommand.COMPACT.value:
+            return None
+
+        update = {"kind": QueueKind.COMPACT, "text": call.rest}
+        return asked.model_copy(update=update)
+
+    def update(self) -> schema.AvailableCommandsUpdate:
+        commands: list[schema.AvailableCommand] = []
+        for command, card in self.CARDS.items():
+            hint = schema.TextAvailableCommandInput(hint=card.hint)
+            commands.append(
+                schema.AvailableCommand(
+                    name=command.value, description=card.description, input=hint
+                )
+            )
+
+        return schema.AvailableCommandsUpdate(available_commands=commands)
+
+
 class SessionOptions:
     """Настройки сессии в форме ACP: `configOptions` `mode` и `model` из одного
     состояния SessionSettings; то же состояние — уведомлением
@@ -630,7 +763,6 @@ class AcpMapping:
         TurnOutcome.COMPACT_FAILURE_BREAKER: StopReason.REFUSAL,
         TurnOutcome.RAPID_REFILL_BREAKER: StopReason.REFUSAL,
     }
-    COMPACTED: ClassVar[str] = "completed"
     MILLIS: ClassVar[float] = 1000.0
 
     INTERRUPTS: ClassVar[tuple[AgentTemplateFile, ...]] = (
@@ -639,10 +771,22 @@ class AcpMapping:
     )
     """Тексты маркеров остановки хода, которые ядро пишет записью user."""
 
+    COMPACTION_STATUSES: ClassVar[Mapping[CompactionPhase, CompactionUpdateStatus]] = {
+        CompactionPhase.STARTED: CompactionUpdateStatus.IN_PROGRESS,
+        CompactionPhase.FAILED: CompactionUpdateStatus.FAILED,
+        CompactionPhase.CANCELLED: CompactionUpdateStatus.CANCELLED,
+    }
+    INTERRUPTED: ClassVar[str] = (
+        "the compaction did not finish: the agent stopped before it wrote the "
+        "summary; run /compact again"
+    )
+    """Причина у сжатия, чьё начало есть в истории, а конца нет."""
+
     def __init__(self) -> None:
         self._titles = ToolTitles()
         self._templates = AgentTemplate()
         self._troubles = ModelTroubleTexts(self._templates)
+        self._commands = LocalCommandText()
 
     def idle(self, result: ResultEvent) -> schema.IdleSessionStateUpdate:
         """Конец хода по его итогу; причину отказа клиент уже получил
@@ -788,14 +932,15 @@ class AcpMapping:
     def user_updates(self, record: UserRecord) -> Iterator[Update]:
         """Запись `user`: итоги вызовов либо вопрос человека целым
         сообщением `user_message` с uuid записи как `messageId` — текст, за
-        ним ссылки на вложения блоками resource_link; служебные записи в
-        ленту не идут."""
+        ним ссылки на вложения блоками resource_link; запись вызова локальной
+        команды — текстом вызова, каким его набрал пользователь; служебные
+        записи в ленту не идут."""
         results = self.tool_results(record)
         if results:
             yield from results
             return
 
-        text = record.human_text()
+        text = self.prompt_text(record)
         if text is None:
             return
 
@@ -806,6 +951,19 @@ class AcpMapping:
 
         yield schema.UserMessageUpdate(message_id=record.uuid, content=content)
 
+    def prompt_text(self, record: UserRecord) -> str | None:
+        """Текст вопроса человека, каким его видит клиент: запись вызова
+        локальной команды — текстом вызова; None — запись не вопрос."""
+        text = record.human_text()
+        if text is None:
+            return None
+
+        call = self._commands.parsed(text)
+        if call is None:
+            return text
+
+        return call.text()
+
     def replayed(self, record: ChainRecord, hints: ToolHintSource) -> Iterator[Update]:
         """Запись беседы → её уведомления: сообщения целиком (`user_message`,
         `agent_thought`, `agent_message`), вызовы и их итоги — как в живом
@@ -813,10 +971,19 @@ class AcpMapping:
         остановкой или отказом модели — тот же idle, что вживую: маркер
         остановки — `cancelled`, запись об отказе модели — `refusal`; прочие
         синтетические записи агента (заглушки) не воспроизводятся,
-        оборванный ответ — воспроизводится; служебные сообщения, пересказы
-        сжатия, вложения и границы сжатия в ленту не идут."""
+        оборванный ответ — воспроизводится; служебные сообщения, вложения и
+        границы сжатия в ленту не идут; записи хода сжатия и пересказ — его
+        стадиями `compaction_update`, как вживую."""
         yield from self.notices(record)
+        if isinstance(record, CompactionRecord):
+            yield self.compaction(record)
+            return
+
         if isinstance(record, UserRecord):
+            if record.is_compact_summary:
+                yield self.compacted(record)
+                return
+
             yield from self.user_updates(record)
             if self._interrupted(record):
                 yield schema.IdleSessionStateUpdate(stop_reason=StopReason.CANCELLED)
@@ -964,11 +1131,42 @@ class AcpMapping:
 
         return schema.SessionInfoUpdate(updated_at=updated_at)
 
-    def compaction(
-        self, record: CompactBoundaryRecord
-    ) -> schema.SessionCompactionUpdate:
+    def compaction(self, record: CompactionRecord) -> schema.SessionCompactionUpdate:
+        """Запись хода сжатия → его стадия: начато, не удалось с причиной,
+        прервано."""
+        error: str | None = None
+        if record.error:
+            error = record.error
+
+        status = self.COMPACTION_STATUSES[record.phase]
+
         return schema.SessionCompactionUpdate(
-            compaction_id=record.uuid, status=self.COMPACTED
+            compaction_id=record.compaction_id, status=status.value, error=error
+        )
+
+    def compacted(self, record: UserRecord) -> schema.SessionCompactionUpdate:
+        """Пересказ — состоявшееся сжатие с ним; id сжатия — uuid пересказа."""
+        content = record.message.content
+        if not isinstance(content, str):
+            msg = (
+                f"The compaction summary record {record.uuid} holds blocks instead "
+                "of text. This is a bug."
+            )
+            raise RuntimeError(msg)
+
+        return schema.SessionCompactionUpdate(
+            compaction_id=record.uuid,
+            status=CompactionUpdateStatus.COMPLETED.value,
+            summary=[schema.TextContentBlock(text=content)],
+        )
+
+    def interrupted(self, compaction_id: str) -> schema.SessionCompactionUpdate:
+        """Сжатие, у которого в истории есть начало и нет конца: агент
+        остановился раньше, чем записал итог."""
+        return schema.SessionCompactionUpdate(
+            compaction_id=compaction_id,
+            status=CompactionUpdateStatus.FAILED.value,
+            error=self.INTERRUPTED,
         )
 
     def permission_request(
@@ -1550,12 +1748,11 @@ class AcpToolServer(ToolServer):
     вышел. Сервер, до которого запрос не дошёл, отключается: его
     инструменты, промпты и инструкции уходят из сессии до первого удачного
     перечитывания. Если сервер обещал смену списков, агент держит поток
-    subscriptions/listen: смена делает список устаревшим, а смена промптов
-    перечитывает их сразу; кончившийся поток поднимает следующее удачное
-    перечитывание. Вызов — `tools/call` запросом mcp/message через
-    AgentSide; ответ сервера как пришёл ложится в ToolReply, текст для
-    модели по нему собирает агент, ход вызова идёт в приёмник сессии
-    через CallProgressRelay. ask() — любой другой запрос MCP (ресурсы,
+    subscriptions/listen: смена делает список устаревшим; кончившийся поток
+    поднимает следующее удачное перечитывание. Вызов — `tools/call`
+    запросом mcp/message через AgentSide; ответ сервера как пришёл ложится
+    в ToolReply, текст для модели по нему собирает агент, ход вызова идёт
+    в приёмник сессии через CallProgressRelay. ask() — любой другой запрос MCP (ресурсы,
     промпты). Каждый запрос несёт в _meta версию протокола, clientInfo
     агента и его clientCapabilities: формы (elicitation.form) агент
     объявляет, только если их объявил его клиент. Просьбы сервера о вводе
@@ -1573,7 +1770,6 @@ class AcpToolServer(ToolServer):
         limits: McpClientJson,
         mapping: AcpMapping,
         client: mt.Implementation,
-        prompted: Callable[[], Awaitable[None]],
         changes: ServerNotices,
     ) -> None:
         self._link = link
@@ -1583,7 +1779,6 @@ class AcpToolServer(ToolServer):
         self._relay = relay
         self._limits = limits
         self._mapping = mapping
-        self._prompted = prompted
         self._ids = IdMint()
         self._cards_of = ToolCards()
         self._replies = ToolReplies()
@@ -1596,9 +1791,7 @@ class AcpToolServer(ToolServer):
         self._fresh: dict[McpListing, float] = {}
         """Срок свежести ответов по монотонным часам; без срока ответ устарел."""
         self._connected = False
-        self._prompts_changed = asyncio.Event()
         self._listening: asyncio.Task[None] | None = None
-        self._applying: asyncio.Task[None] | None = None
         capabilities: dict[str, Any] = {}
         if relay.elicits:
             capabilities = {
@@ -1676,18 +1869,14 @@ class AcpToolServer(ToolServer):
         self._follow()
 
     async def close(self) -> None:
-        """Поток смены списков и его разбор закрываются."""
-        tasks: list[asyncio.Task[None]] = []
-        for task in (self._listening, self._applying):
-            if task is not None:
-                tasks.append(task)
-
+        """Поток смены списков закрывается."""
+        listening = self._listening
         self._listening = None
-        self._applying = None
-        for task in tasks:
-            task.cancel()
+        if listening is None:
+            return
 
-        await asyncio.gather(*tasks, return_exceptions=True)
+        listening.cancel()
+        await asyncio.gather(listening, return_exceptions=True)
 
     def capabilities(self) -> mt.ServerCapabilities:
         return self._known().capabilities
@@ -2012,10 +2201,6 @@ class AcpToolServer(ToolServer):
         self._listening = asyncio.create_task(
             self._listen(message), name=f"mcp-listen-{name}"
         )
-        if self._applying is None:
-            self._applying = asyncio.create_task(
-                self._applied(), name=f"mcp-changes-{name}"
-            )
 
     @staticmethod
     def _promised(capabilities: mt.ServerCapabilities) -> mt.SubscriptionFilter | None:
@@ -2073,9 +2258,7 @@ class AcpToolServer(ToolServer):
             self._fresh.pop(listing, None)
 
     async def _heard(self, message: McpMessage) -> None:
-        """Уведомление потока подписки: смена списка делает его устаревшим,
-        смена промптов ещё и будит их перечитывание — без запросов из
-        обработчика уведомления.
+        """Уведомление потока подписки: смена списка делает его устаревшим.
 
         Ошибки:
         RequestError — уведомление не разбирается как уведомление сервера MCP
@@ -2109,7 +2292,6 @@ class AcpToolServer(ToolServer):
                 self._fresh.pop(McpListing.TOOLS, None)
             case mt.PromptListChangedNotification():
                 self._fresh.pop(McpListing.PROMPTS, None)
-                self._prompts_changed.set()
             case mt.ResourceListChangedNotification():
                 self._fresh.pop(McpListing.RESOURCES, None)
             case _:
@@ -2118,51 +2300,6 @@ class AcpToolServer(ToolServer):
                     self._label,
                     message.method,
                 )
-
-    async def _applied(self) -> None:
-        """Смена промптов — список перечитывается сразу и команды сессии
-        уходят клиенту заново: их ждёт клиент, а не ход. Сбой чтения — в
-        лог, список перечитает начало хода."""
-        while True:
-            await self._prompts_changed.wait()
-            self._prompts_changed.clear()
-            try:
-                await self._read_prompts()
-            except McpRequestError as exc:
-                logger.warning(
-                    "mcp: %s changed its prompts, re-reading them failed: %s",
-                    self._label,
-                    exc,
-                )
-                continue
-
-            await self._prompted()
-
-    async def completed(self, prompt: str, argument: str) -> Sequence[str]:
-        """Значения аргумента argument промпта prompt, которые подсказывает
-        сервер (completion/complete с пустым началом); сервер без подсказок —
-        пусто. Отказ сервера — в лог: подсказка останется без значений.
-        """
-        if self.capabilities().completions is None:
-            return ()
-
-        params = mt.CompleteRequestParams(
-            ref=mt.PromptReference(name=prompt),
-            argument=mt.CompletionArgument(name=argument, value=""),
-        )
-        try:
-            reply = await self.ask(mt.CompleteRequest(params=params), mt.CompleteResult)
-        except McpRequestError as exc:
-            logger.warning(
-                "mcp: %s gave no values for argument %s of prompt %s: %s",
-                self._label,
-                argument,
-                prompt,
-                exc,
-            )
-            return ()
-
-        return reply.completion.values
 
     async def submit(
         self, calls: Sequence[ToolUseBlock]
@@ -2619,16 +2756,13 @@ class SessionMcp(McpServerSet, ToolServer):
     McpResourceTools и ведёт вызов тому серверу, чей это инструмент; как
     McpServerSet — свежесть серверов в начале хода и подключённые серверы
     с их инструкциями: инструкции модель получает вложением хода, а не
-    системным промптом. Промпты серверов — команды
-    сессии: их список уходит клиенту `available_commands_update` при
-    открытии и при смене промптов, а вопрос `/<команда> <аргументы>`
-    раскрывается prompts/get в служебный контекст вопроса. Сервер, который
-    не открылся, в сессию не входит; смены состояния серверов (не открылся,
-    пропал, вернулся) копит ServerNotices, и ход пишет их человеку пометками
-    в историю. Закрытие сессии закрывает потоки подписки серверов.
+    системным промптом. Вопрос `/<полное имя промпта> <аргументы>`
+    раскрывается prompts/get в служебный контекст вопроса; объявляют
+    промпты клиенту сами серверы, не агент. Сервер, который не открылся, в
+    сессию не входит; смены состояния серверов (не открылся, пропал,
+    вернулся) копит ServerNotices, и ход пишет их человеку пометками в
+    историю. Закрытие сессии закрывает потоки подписки серверов.
     """
-
-    COMMAND_PREFIX: ClassVar[str] = "/"
 
     def __init__(self, relay: SessionRelay) -> None:
         self._relay = relay
@@ -2636,6 +2770,7 @@ class SessionMcp(McpServerSet, ToolServer):
         self._resources = McpResourceTools(self._servers)
         self._names = McpToolNames()
         self._replies = ToolReplies()
+        self._lines = CommandLines()
         self._announcing: asyncio.Task[None] | None = None
         self.changes = ServerNotices()
         """Смены состояния серверов до следующего хода; их копят и серверы."""
@@ -2720,17 +2855,13 @@ class SessionMcp(McpServerSet, ToolServer):
         return done
 
     async def refreshed(self) -> Sequence[ServerNotice]:
-        """Устаревшее у серверов — заново, у всех разом; сменились промпты
-        подключённых серверов — команды сессии уходят клиенту заново. Итог —
-        смены состояния серверов с прошлого хода."""
-        before = list(self._prompt_lists())
+        """Устаревшее у серверов — заново, у всех разом. Итог — смены
+        состояния серверов с прошлого хода."""
         pending: list[Awaitable[None]] = []
         for server in self._servers:
             pending.append(server.refreshed())
 
         await asyncio.gather(*pending)
-        if list(self._prompt_lists()) != before:
-            await self.announce_commands()
 
         return self.changes.taken()
 
@@ -2748,39 +2879,13 @@ class SessionMcp(McpServerSet, ToolServer):
 
             yield ConnectedServer(name=server.name, instructions=instructions)
 
-    def _prompt_lists(self) -> Iterator[Sequence[mt.Prompt]]:
-        for server in self._servers:
-            yield server.prompts()
-
-    def announce_later(self) -> None:
-        """Команды сессии клиенту отдельной задачей, после ответа на запрос
-        сессии: о сессии, которую клиент ещё не знает, он уведомлений не
-        ждёт. Без промптов у серверов — ничего."""
-        prompted = False
-        for server in self._servers:
-            if server.prompts():
-                prompted = True
-
-        if not prompted:
-            return
-
+    def announce_later(self, commands: schema.AvailableCommandsUpdate) -> None:
+        """Команды сессии агента клиенту отдельной задачей, после ответа на
+        запрос сессии: о сессии, которую клиент ещё не знает, он уведомлений
+        не ждёт."""
         self._announcing = asyncio.create_task(
-            self.announce_commands(), name="mcp-commands"
+            self._relay.notify(commands), name="session-commands"
         )
-
-    async def announce_commands(self) -> None:
-        """Промпты серверов командами сессии: `available_commands_update`.
-        Подсказка ввода называет аргументы по порядку, а у аргумента, чьи
-        значения сервер подсказывает (completion/complete), — и сами
-        значения."""
-        commands: list[schema.AvailableCommand] = []
-        for server in self._servers:
-            for prompt in server.prompts():
-                hint = await self._hint(server, prompt)
-                commands.append(self._command(server.name, prompt, hint))
-
-        update = schema.AvailableCommandsUpdate(available_commands=commands)
-        await self._relay.notify(update)
 
     async def expanded(self, asked: QueueEntry) -> QueueEntry:
         """Вопрос `/<команда> <аргументы>` промпта сервера — тот же вопрос с
@@ -2791,16 +2896,23 @@ class SessionMcp(McpServerSet, ToolServer):
         RequestError — аргументов не хватает или они не разбираются
             (-32602), сервер не отдал промпт (-32603).
         """
-        command, _, rest = asked.text.strip().partition(" ")
-        if not command.startswith(self.COMMAND_PREFIX):
+        call = self._lines.parsed(asked.text)
+        if call is None:
             return asked
 
-        found = self._prompt_of(command.removeprefix(self.COMMAND_PREFIX))
+        found = await self._prompt_named(call.name)
         if found is None:
             return asked
 
         server, prompt = found
-        arguments = self._arguments(command, prompt, rest)
+        command = f"/{call.name}"
+        try:
+            arguments = self._lines.arguments(call, self._declared(prompt))
+        except CommandArgumentsError as exc:
+            raise RequestError.invalid_params(
+                {ErrorDataKey.DETAILS.value: str(exc)}
+            ) from exc
+
         params = mt.GetPromptRequestParams(name=prompt.name, arguments=arguments)
         request = mt.GetPromptRequest(params=params)
         try:
@@ -2832,37 +2944,20 @@ class SessionMcp(McpServerSet, ToolServer):
         for server in self._servers:
             await server.close()
 
-    async def _hint(self, server: AcpToolServer, prompt: mt.Prompt) -> str:
-        """Подсказка ввода команды промпта: аргументы по порядку, у аргумента
-        с подсказками сервера — их значения через «|»."""
-        parts: list[str] = []
-        for argument in self._declared(prompt):
-            values = await server.completed(prompt.name, argument.name)
-            if not values:
-                parts.append(argument.name)
-                continue
+    async def _prompt_named(self, name: str) -> tuple[AcpToolServer, mt.Prompt] | None:
+        """Промпт сервера по полному имени; None — такого нет. Имени нет в
+        списках — устаревшие списки перечитываются: сервер мог сменить
+        промпты после начала хода."""
+        found = self._prompt_of(name)
+        if found is not None:
+            return found
 
-            listed = "|".join(values)
-            parts.append(f"{argument.name} ({listed})")
+        if self._names.parse(name) is None:
+            return None
 
-        return " ".join(parts)
+        await self.refreshed()
 
-    def _command(
-        self, server: str, prompt: mt.Prompt, hint: str
-    ) -> schema.AvailableCommand:
-        description = prompt.description
-        if not description:
-            description = prompt.name
-
-        command_input: schema.TextAvailableCommandInput | None = None
-        if hint:
-            command_input = schema.TextAvailableCommandInput(hint=hint)
-
-        return schema.AvailableCommand(
-            name=self._names.full(server, prompt.name),
-            description=description,
-            input=command_input,
-        )
+        return self._prompt_of(name)
 
     def _prompt_of(self, name: str) -> tuple[AcpToolServer, mt.Prompt] | None:
         for server in self._servers:
@@ -2873,60 +2968,16 @@ class SessionMcp(McpServerSet, ToolServer):
         return None
 
     @staticmethod
-    def _declared(prompt: mt.Prompt) -> Sequence[mt.PromptArgument]:
+    def _declared(prompt: mt.Prompt) -> Sequence[CommandArgument]:
         """Аргументы промпта по порядку; промпт без аргументов — пусто."""
         declared = prompt.arguments
         if declared is None:
             return ()
 
-        return declared
-
-    @staticmethod
-    def _arguments(command: str, prompt: mt.Prompt, rest: str) -> dict[str, str]:
-        """Слова после команды — аргументы промпта по порядку; лишние слова —
-        последнему аргументу.
-
-        Ошибки:
-        RequestError — кавычки не закрыты или обязательного аргумента нет
-            (-32602).
-        """
-        try:
-            words = shlex.split(rest)
-        except ValueError as exc:
-            details = f"command {command}: the arguments do not parse: {exc}"
-            raise RequestError.invalid_params(
-                {ErrorDataKey.DETAILS.value: details}
-            ) from exc
-
-        declared = list(SessionMcp._declared(prompt))
-        arguments: dict[str, str] = {}
-        for position, argument in enumerate(declared):
-            if position >= len(words):
-                break
-
-            last = position == len(declared) - 1
-            if last:
-                arguments[argument.name] = " ".join(words[position:])
-                break
-
-            arguments[argument.name] = words[position]
-
+        arguments: list[CommandArgument] = []
         for argument in declared:
-            if not argument.required:
-                continue
-
-            if argument.name in arguments:
-                continue
-
-            order: list[str] = []
-            for item in declared:
-                order.append(item.name)
-
-            details = (
-                f"command {command}: argument {argument.name!r} is required; "
-                f"give the arguments in order: {order}"
-            )
-            raise RequestError.invalid_params({ErrorDataKey.DETAILS.value: details})
+            required = bool(argument.required)
+            arguments.append(CommandArgument(name=argument.name, required=required))
 
         return arguments
 
@@ -3022,9 +3073,7 @@ class SessionRelay(EventSink):
 
         if isinstance(event, ErrorEvent):
             logger.warning("session %s: %s", self._session_id, event.message)
-            await self._send(
-                self._mapping.notice(NoticeLevel.ERROR, event.message, "")
-            )
+            await self._send(self._mapping.notice(NoticeLevel.ERROR, event.message, ""))
             return
 
         if isinstance(event, HistoryWrittenEvent):
@@ -3078,13 +3127,12 @@ class SessionRelay(EventSink):
 
         return self._mapping.title_update(title)
 
-    @staticmethod
-    def _first_prompt(conversation: Sequence[ChainRecord]) -> str | None:
+    def _first_prompt(self, conversation: Sequence[ChainRecord]) -> str | None:
         for record in conversation:
             if not isinstance(record, UserRecord):
                 continue
 
-            text = record.human_text()
+            text = self._mapping.prompt_text(record)
             if text is not None:
                 return text
 
@@ -3140,16 +3188,16 @@ class SessionRelay(EventSink):
 
             return updates
 
+        if isinstance(record, CompactionRecord):
+            return [self._mapping.compaction(record)]
+
         if isinstance(record, UserRecord):
+            if record.is_compact_summary:
+                return self._compacted(record)
+
             self._inserted(record.uuid)
             updates.extend(self._mapping.user_updates(record))
             return updates
-
-        if isinstance(record, CompactBoundaryRecord):
-            updates.append(self._mapping.compaction(record))
-            usage = self._usage()
-            if usage is not None:
-                updates.append(usage)
 
         return updates
 
@@ -3175,6 +3223,15 @@ class SessionRelay(EventSink):
         self._streamed = None
         yield schema.AgentThoughtUpdate(message_id=streamed, content=[])
         yield schema.AgentMessageUpdate(message_id=streamed, content=[])
+
+    def _compacted(self, summary: UserRecord) -> Sequence[Update]:
+        """Состоявшееся сжатие и заполненность после него."""
+        updates: list[Update] = [self._mapping.compacted(summary)]
+        usage = self._usage()
+        if usage is not None:
+            updates.append(usage)
+
+        return updates
 
     def _hints(self, name: str) -> ToolHints | None:
         if self._agent is None:
@@ -3492,7 +3549,8 @@ class SessionAssembly(Protocol):
 class AcpSession:
     """Одна сессия ACP: открытый агент, его обслуживание очереди, приёмник и
     серверы MCP сессии (SessionMcp): вопрос-команда промпта сервера
-    раскрывается ими, закрытие сессии закрывает их потоки."""
+    раскрывается ими, команда сессии (SessionCommands) становится своим
+    элементом очереди, закрытие сессии закрывает потоки серверов."""
 
     def __init__(
         self,
@@ -3507,6 +3565,7 @@ class AcpSession:
         self._relay = relay
         self._mapping = mapping
         self._mcp = mcp
+        self._commands = SessionCommands()
         self._reports: list[asyncio.Task[None]] = []
         self._serving = asyncio.create_task(
             opened.agent.serve(), name=f"acp-serve-{session_id}"
@@ -3602,7 +3661,9 @@ class AcpSession:
         """Ставит вопрос в очередь ядра и отвечает, когда его ход вставил
         запись `user`: `messageId` ответа — её uuid. Вопрос идёт своим ходом,
         без склейки с соседями. Вопрос-команду промпта сервера раскрывает
-        SessionMcp.
+        SessionMcp. Команда сессии `/compact` — элемент очереди compact: её
+        вызов агент пишет в историю записью с uuid элемента, ответ приходит
+        с этой записью, как у вопроса.
 
         Ошибки:
         RequestError — очередь не приняла элемент или аргументы команды не
@@ -3610,7 +3671,12 @@ class AcpSession:
             отдал промпт (-32603), вопрос снят до вставки отменой хода или
             закрытием сессии (-32800).
         """
-        asked = await self._mcp.expanded(asked)
+        command = self._commands.queued(asked)
+        if command is not None:
+            asked = command
+
+        if command is None:
+            asked = await self._mcp.expanded(asked)
         if self._serving.done():
             details = (
                 f"session {self._session_id} no longer serves prompts: its agent "
@@ -3805,6 +3871,7 @@ class AcpAgent(AcpAgentProtocol):
         self._sessions: dict[str, HostedSession] = {}
         self._mapping = AcpMapping()
         self._options = SessionOptions()
+        self._commands = SessionCommands()
         self._prompts = PromptText()
         self._specs = McpServerSpecs()
         self._titles = SessionTitles()
@@ -3976,7 +4043,7 @@ class AcpAgent(AcpAgentProtocol):
 
         relay.attach(opened.agent)
         session = AcpSession(session_id, opened, relay, self._mapping, mcp)
-        mcp.announce_later()
+        mcp.announce_later(self._commands.update())
 
         return session
 
@@ -4011,7 +4078,6 @@ class AcpAgent(AcpAgentProtocol):
                     self._limits,
                     self._mapping,
                     client,
-                    mcp.announce_commands,
                     mcp.changes,
                 )
                 try:
@@ -4243,12 +4309,13 @@ class AcpAgent(AcpAgentProtocol):
         """
         stored = SessionId(value=session_id)
         hints: ToolHintSource = held.hints
+        opened = OpenCompactions()
         replayed = 0
         last = 0
         try:
             async with aclosing(self._assembly.history(stored)) as records:
                 async for record in records:
-                    await self._replay_record(held, record, hints)
+                    await self._replay_record(held, record, hints, opened)
                     replayed += 1
                     last = record.seq
         except HistoryError as exc:
@@ -4256,21 +4323,38 @@ class AcpAgent(AcpAgentProtocol):
                 {ErrorDataKey.DETAILS.value: str(exc)}
             ) from exc
 
+        live = False
         if isinstance(held, AcpSession):
             for record in held.agent.session.since(last):
                 if not isinstance(record, ChainRecord):
                     continue
 
-                await self._replay_record(held, record, hints)
+                await self._replay_record(held, record, hints, opened)
                 replayed += 1
+
+            live = held.agent.session.state is SessionState.COMPACTING
+
+        for compaction_id in opened.unfinished(live):
+            await held.relay.notify(self._mapping.interrupted(compaction_id))
 
         logger.info("session %s: %d record(s) replayed", session_id, replayed)
 
     async def _replay_record(
-        self, held: HeldSession, record: ChainRecord, hints: ToolHintSource
+        self,
+        held: HeldSession,
+        record: ChainRecord,
+        hints: ToolHintSource,
+        opened: OpenCompactions,
     ) -> None:
+        """Уведомления записи; вопрос человека сперва закрывает сжатия, у
+        которых в истории нет конца."""
+        for compaction_id in opened.before(record):
+            await held.relay.notify(self._mapping.interrupted(compaction_id))
+
         for update in self._mapping.replayed(record, hints):
             await held.relay.notify(update)
+
+        opened.after(record)
 
     async def _open_stored(
         self,
@@ -4337,7 +4421,7 @@ class AcpAgent(AcpAgentProtocol):
 
             owned.pop_all()
 
-        mcp.announce_later()
+        mcp.announce_later(self._commands.update())
 
         return held
 
@@ -4742,7 +4826,7 @@ class AcpAgent(AcpAgentProtocol):
 
         relay.attach(opened.agent)
         session = AcpSession(target.value, opened, relay, self._mapping, mcp)
-        mcp.announce_later()
+        mcp.announce_later(self._commands.update())
 
         return session
 

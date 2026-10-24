@@ -26,6 +26,7 @@ from boba.aid.agent.client import (
     AgentProcessError,
     AgentRequestError,
 )
+from boba.aid.agent.commands import CommandError
 from boba.aid.agent.settings import AgentSettingsError
 from boba.aid.infra.session import current_session
 from boba.aid.rendering.errors import show_error
@@ -203,7 +204,7 @@ class UserFailures:
                 channel=FailureChannel.TOAST, text=self.SERVERS, detail=self._brief(exc)
             )
 
-        if isinstance(exc, AcpClientError):
+        if isinstance(exc, AcpClientError | CommandError):
             return UserFailure(channel=FailureChannel.TOAST, text=str(exc), detail="")
 
         return UserFailure(channel=FailureChannel.TOAST, text=self.UNKNOWN, detail="")
