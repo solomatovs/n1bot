@@ -1452,16 +1452,11 @@ class McpRelay:
 
         sealed: list[DagNode] = []
         for call in calls:
-            node_full = self._names.full(server.name, call.tool)
             node_tool = offered.get(call.tool)
             if node_tool is None:
-                msg = (
-                    f"node {call.key!r} ({node_full}): mcp server {server.name!r} "
-                    f"offers the caller of the call no tool {call.tool!r}; "
-                    f"expected one of {sorted(offered)}"
-                )
-                raise RefusalError(InvokeErrorKind.UNKNOWN_TOOL, msg)
+                raise self._unknown_node(call, offered, server)
 
+            node_full = self._names.full(server.name, call.tool)
             try:
                 args = await self._sealing.seal(
                     node_full, call.args, node_tool.input_schema, server
@@ -1476,6 +1471,41 @@ class McpRelay:
             sealed.append(call.model_copy(update={"args": args}))
 
         return nested.replaced(arguments, sealed)
+
+    def _unknown_node(
+        self, call: DagNode, offered: Mapping[str, mt.Tool], server: McpServerInfo
+    ) -> RefusalError:
+        """Отказ узлу call, чей инструмент сервер не предлагает; полному
+        имени инструмента этого же сервера отказ называет его имя на сервере."""
+        parsed = self._names.parse(call.tool)
+        if parsed is None:
+            return self._unknown_tool(call, offered, server)
+
+        if parsed.server != server.name:
+            return self._unknown_tool(call, offered, server)
+
+        if parsed.tool not in offered:
+            return self._unknown_tool(call, offered, server)
+
+        msg = (
+            f"node {call.key!r}: {call.tool!r} is the name the agent gives the "
+            f"tool {parsed.tool!r} of mcp server {server.name!r}, while the "
+            f"nodes of a nested call name tools as the server lists them; "
+            f"name the tool of the node {parsed.tool!r}."
+        )
+
+        return RefusalError(InvokeErrorKind.UNKNOWN_TOOL, msg)
+
+    @staticmethod
+    def _unknown_tool(
+        call: DagNode, offered: Mapping[str, mt.Tool], server: McpServerInfo
+    ) -> RefusalError:
+        msg = (
+            f"node {call.key!r}: mcp server {server.name!r} offers the caller of "
+            f"the call no tool {call.tool!r}; expected one of {sorted(offered)}"
+        )
+
+        return RefusalError(InvokeErrorKind.UNKNOWN_TOOL, msg)
 
     async def _port_of(self, request: RelayedRequest) -> McpToolPort:
         """Порт сервера регистрации запроса request.
