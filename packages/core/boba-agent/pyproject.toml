@@ -4,26 +4,26 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-agent"
-version = "0.0.30.dev2"
+version = "0.0.30.dev3"
 description = "Boba agent: ядро агента — записи истории, очередь ввода, сборка запроса, ход, сжатие; знает только порты."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-core==0.0.30.dev2",
-    "boba-cancellation==0.0.30.dev2",
-    "boba-llm==0.0.30.dev2",
+    "boba-core==0.0.30.dev3",
+    "boba-cancellation==0.0.30.dev3",
+    "boba-llm==0.0.30.dev3",
     "mcp-types>=2.3,<3",
     "pydantic>=2.12,<3",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "boba-stand==0.0.30.dev2",
-    "boba-history-jsonl==0.0.30.dev2",
-    "boba-prompt-assembly==0.0.30.dev2",
-    "boba-llm-http==0.0.30.dev2",
-    "boba-transport-http==0.0.30.dev2",
-    "boba-llm-onnx==0.0.30.dev2",
-    "boba-config==0.0.30.dev2",
+    "boba-stand==0.0.30.dev3",
+    "boba-history-jsonl==0.0.30.dev3",
+    "boba-prompt-assembly==0.0.30.dev3",
+    "boba-llm-http==0.0.30.dev3",
+    "boba-transport-http==0.0.30.dev3",
+    "boba-llm-onnx==0.0.30.dev3",
+    "boba-config==0.0.30.dev3",
     "omegaconf>=2.3,<3",
     "pytest>=9.1,<10",
 ]

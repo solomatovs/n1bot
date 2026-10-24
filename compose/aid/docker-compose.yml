@@ -10,7 +10,7 @@ services:
     cpus: 4
     pids_limit: 512
     restart: unless-stopped
-    image: boba-aid:0.0.30.dev2
+    image: boba-aid:0.0.30.dev3
     hostname: aid
     container_name: aid
     networks:

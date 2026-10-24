@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-tool-mail"
-version = "0.0.30.dev2"
+version = "0.0.30.dev3"
 description = "Инструменты mail"
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-core==0.0.30.dev2",
-    "boba-toolkit==0.0.30.dev2",
+    "boba-core==0.0.30.dev3",
+    "boba-toolkit==0.0.30.dev3",
     "pydantic>=2.12,<3",
 ]
 
