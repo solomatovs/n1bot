@@ -31,12 +31,10 @@ from boba.agent.history import BrokenLine, HistoryStore, SessionId, StoredLine
 from boba.agent.ids import Clock, IdMint
 from boba.agent.records import (
     AssistantMessage,
-    AssistantRecord,
     AttachmentRecord,
     CallStatus,
     ChainRecord,
     EnvironmentAttachment,
-    HarnessCommandRecord,
     NoResponseRecord,
     NoticeLevel,
     Record,
@@ -50,10 +48,10 @@ from boba.agent.records import (
     ToolResultRecord,
     ToolUseBlock,
     TurnEndRecord,
+    TurnMark,
     TurnOutcome,
     Usage,
     UserMessage,
-    UserRecord,
 )
 from boba.agent.session import Session
 from boba.agent.template import AgentTemplate, AgentTemplateFile
@@ -190,7 +188,7 @@ class HistoryLoader:
         человеку; разговору без ответа на последнее сообщение — ответ-заглушка.
         Заглушка ответа и команда запускающей программы хода не открывают."""
         conversation = session.conversation()
-        if self._last_significant(conversation) is None:
+        if not self._speaks(conversation):
             return
 
         if self._open(conversation):
@@ -207,33 +205,35 @@ class HistoryLoader:
     def _open(self, conversation: Sequence[ChainRecord]) -> bool:
         """За последним концом хода есть записи хода: ход не закрыт."""
         for record in reversed(conversation):
-            if isinstance(record, TurnEndRecord):
+            mark = record.turn_mark()
+            if mark.closes_turn:
                 return False
 
-            if isinstance(record, NoResponseRecord | HarnessCommandRecord):
-                continue
-
-            return True
+            if mark.in_turn:
+                return True
 
         return False
 
     def _answered(self, conversation: Sequence[ChainRecord]) -> bool:
-        """Последнее сообщение разговора получило ответ: ответом модели или
-        отказом агента ответить (конец хода с отказом)."""
+        """Последнее сообщение разговора получило ответ: ответом модели,
+        заглушкой ответа или отказом агента ответить."""
         for record in reversed(conversation):
-            if isinstance(record, TurnEndRecord):
-                if record.outcome.refused:
-                    return True
-
-                continue
-
-            if isinstance(record, AssistantRecord):
+            mark = record.turn_mark()
+            if mark.answers:
                 return True
 
-            if isinstance(record, UserRecord | AttachmentRecord):
+            if mark is TurnMark.ASKS:
                 return False
 
         return True
+
+    def _speaks(self, conversation: Sequence[ChainRecord]) -> bool:
+        """В разговоре есть сообщения: вопрос или ответ."""
+        for record in conversation:  # noqa: SIM110
+            if record.turn_mark().speaks:
+                return True
+
+        return False
 
     def _interrupted_end(self, session: Session) -> TurnEndRecord:
         return TurnEndRecord(
@@ -252,16 +252,6 @@ class HistoryLoader:
             duration_ms=0,
         )
 
-    def _last_significant(
-        self, conversation: Sequence[ChainRecord]
-    ) -> ChainRecord | None:
-        """Последняя запись разговора, которой есть что отвечать: не system."""
-        for record in reversed(conversation):
-            if isinstance(record, UserRecord | AssistantRecord | AttachmentRecord):
-                return record
-
-        return None
-
     def _dangling_calls(
         self, conversation: Sequence[ChainRecord]
     ) -> Iterator[DanglingCall]:
@@ -272,14 +262,10 @@ class HistoryLoader:
 
         answered: set[str] = set()
         for record in conversation:
-            if not isinstance(record, ToolResultRecord):
-                continue
-
-            for result in record.message.tool_results():
-                answered.add(result.tool_use_id)
+            answered.update(record.answered_calls())
 
         for record in response:
-            for call in record.message.tool_uses():
+            for call in record.tool_calls():
                 if call.id in answered:
                     continue
 
@@ -287,19 +273,21 @@ class HistoryLoader:
 
     def _last_response(
         self, conversation: Sequence[ChainRecord]
-    ) -> Iterator[AssistantRecord]:
+    ) -> Iterator[ChainRecord]:
         """Записи последнего ответа модели: один message.id, в порядке файла."""
         message_id = ""
         for record in reversed(conversation):
-            if isinstance(record, AssistantRecord) and not record.is_synthetic():
-                message_id = record.message.id
+            reply = record.model_reply()
+            if reply is not None:
+                message_id = reply.message_id
                 break
 
         if not message_id:
             return
 
         for record in conversation:
-            if isinstance(record, AssistantRecord) and record.message.id == message_id:
+            reply = record.model_reply()
+            if reply is not None and reply.message_id == message_id:
                 yield record
 
     def _stub_result(
@@ -389,7 +377,7 @@ class SessionDigests:
         return digest
 
     def _absorb(self, digest: SessionDigest, record: Record) -> SessionDigest:
-        if isinstance(record, UserRecord) and digest.first_prompt is None:
+        if isinstance(record, ChainRecord) and digest.first_prompt is None:
             text = record.human_text()
             if text is not None:
                 return SessionDigest(cwd=digest.cwd, first_prompt=text)

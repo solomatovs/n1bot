@@ -24,8 +24,6 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import ClassVar
 
-import mcp_types as mt
-
 from boba.agent.asking import (
     Aborted,
     Errored,
@@ -50,24 +48,17 @@ from boba.agent.records import (
     CompactMetadata,
     CompactSummaryRecord,
     CompactTrigger,
-    DeferredToolsRecordAttachment,
     EnvironmentSnapshot,
     InvokedSkill,
     InvokedSkillsAttachment,
-    LinkText,
     MetaRecord,
     PreservedMessages,
     PromptSnapshot,
     Record,
     SnapshotSkill,
     SnapshotTool,
-    TextBlock,
-    ThinkingBlock,
-    ToolResultBlock,
     ToolResultRecord,
-    ToolUseBlock,
     UserMessage,
-    UserRecord,
 )
 from boba.agent.session import Session
 from boba.agent.skills import SkillCallInput, SkillTool
@@ -106,10 +97,8 @@ __all__ = [
 
 class TokenEstimator:
     """Оценка записей в токенах без провайдера: знаки, делённые на
-    `chars_per_token` профиля; вызов инструмента — имя и JSON аргументов,
-    вложение — его `rendered`, определения загруженных отложенных
-    инструментов (deferred_tools_record) — как описание инструмента в
-    запросе, прочие записи только для журнала — ноль."""
+    `chars_per_token` профиля, по текстам, которыми запись сама называет
+    своё место в окне (ChainRecord.window_texts)."""
 
     def __init__(self, profile: ModelProfile) -> None:
         self._profile = profile
@@ -125,7 +114,7 @@ class TokenEstimator:
         return total
 
     def record(self, record: ChainRecord) -> int:
-        return self.texts(list(self._texts_of(record)))
+        return self.texts(list(record.window_texts()))
 
     def records(self, records: Sequence[ChainRecord]) -> int:
         total = 0
@@ -146,63 +135,6 @@ class TokenEstimator:
         for tool in tools:
             yield tool.text()
             yield json.dumps(tool.schema_, ensure_ascii=False)
-
-    def _texts_of(self, record: ChainRecord) -> Iterator[str]:
-        if isinstance(record, UserRecord):
-            yield from self._user_texts(record)
-            return
-
-        if isinstance(record, AssistantRecord):
-            yield from self._assistant_texts(record)
-            return
-
-        if isinstance(record, AttachmentRecord):
-            yield from self._attachment_texts(record)
-
-    def _attachment_texts(self, record: AttachmentRecord) -> Iterator[str]:
-        if isinstance(record.attachment, DeferredToolsRecordAttachment):
-            yield from self._tool_texts(record.attachment.entries)
-            return
-
-        if record.rendered is None:
-            return
-
-        for message in record.rendered:
-            yield message.content
-
-    @staticmethod
-    def _user_texts(record: UserRecord) -> Iterator[str]:
-        content = record.message.content
-        if isinstance(content, str):
-            yield content
-            return
-
-        for block in content:
-            if isinstance(block, ToolResultBlock):
-                yield from block.references()
-                yield block.text()
-                continue
-
-            if isinstance(block, mt.ResourceLink):
-                yield LinkText.TEMPLATE.render(block)
-                continue
-
-            yield block.text
-
-    @staticmethod
-    def _assistant_texts(record: AssistantRecord) -> Iterator[str]:
-        for block in record.message.content:
-            if isinstance(block, ThinkingBlock):
-                yield block.thinking
-                continue
-
-            if isinstance(block, TextBlock):
-                yield block.text
-                continue
-
-            if isinstance(block, ToolUseBlock):
-                yield block.name
-                yield json.dumps(block.input, ensure_ascii=False)
 
 
 @dataclass(frozen=True)
@@ -247,50 +179,38 @@ class ContextMeter:
     ) -> Anchor | None:
         for index in range(len(conversation) - 1, -1, -1):
             record = conversation[index]
-            if isinstance(record, CompactBoundaryRecord):
+            if record.starts_window():
                 if index == 0:
                     return Anchor(tokens=self._estimator.prefix(snapshot), index=index)
 
                 continue
 
-            if not isinstance(record, AssistantRecord):
+            reply = record.model_reply()
+            if reply is None:
                 continue
 
-            if record.is_synthetic():
+            if reply.tokens == 0:
                 continue
-
-            usage = record.message.usage
-            if usage.is_zero():
-                continue
-
-            tokens = (
-                usage.input_tokens
-                + usage.output_tokens
-                + usage.cache_creation_input_tokens
-                + usage.cache_read_input_tokens
-            )
 
             return Anchor(
-                tokens=tokens, index=self._first_of_reply(conversation, index)
+                tokens=reply.tokens,
+                index=self._first_of_reply(conversation, index, reply.message_id),
             )
 
         return None
 
     @staticmethod
-    def _first_of_reply(conversation: Sequence[ChainRecord], index: int) -> int:
-        """Первая запись ответа с тем же `message.id`, что у записи index."""
-        record = conversation[index]
-        if not isinstance(record, AssistantRecord):
-            return index
-
-        message_id = record.message.id
+    def _first_of_reply(
+        conversation: Sequence[ChainRecord], index: int, message_id: str
+    ) -> int:
+        """Первая запись ответа message_id, которому принадлежит запись index."""
         first = index
         for earlier in range(index - 1, -1, -1):
-            candidate = conversation[earlier]
-            if not isinstance(candidate, AssistantRecord):
+            reply = conversation[earlier].model_reply()
+            if reply is None:
                 break
 
-            if candidate.message.id != message_id:
+            if reply.message_id != message_id:
                 break
 
             first = earlier
@@ -427,13 +347,13 @@ class RoundGrouper:
         current: list[ChainRecord] = []
         message_id = ""
         for record in conversation:
-            if self._opens_group(record, message_id):
+            reply = record.model_reply()
+            if reply is not None and reply.message_id != message_id:
                 if current:
                     groups.append(current)
 
                 current = []
-                if isinstance(record, AssistantRecord):
-                    message_id = record.message.id
+                message_id = reply.message_id
 
             current.append(record)
 
@@ -443,19 +363,9 @@ class RoundGrouper:
         return groups
 
     @staticmethod
-    def _opens_group(record: ChainRecord, message_id: str) -> bool:
-        if not isinstance(record, AssistantRecord):
-            return False
-
-        if record.is_synthetic():
-            return False
-
-        return record.message.id != message_id
-
-    @staticmethod
     def has_reply(records: Sequence[ChainRecord]) -> bool:
-        for record in records:
-            if isinstance(record, AssistantRecord) and not record.is_synthetic():
+        for record in records:  # noqa: SIM110
+            if record.model_reply() is not None:
                 return True
 
         return False
@@ -790,10 +700,10 @@ class Summarizer:
         модели; None — после ответа вопросов нет."""
         for index in range(len(conversation) - 1, -1, -1):
             record = conversation[index]
-            if isinstance(record, AssistantRecord) and not record.is_synthetic():
+            if record.model_reply() is not None:
                 return None
 
-            if isinstance(record, UserRecord) and record.human_text() is not None:
+            if record.human_text() is not None:
                 return index
 
         return None
