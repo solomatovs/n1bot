@@ -3477,7 +3477,15 @@ class AcpSession:
                 {ErrorDataKey.DETAILS.value: str(exc)}
             ) from exc
 
-        await self._relay.insertion(item.id)
+        inserted = self._relay.insertion(item.id)
+        if priority is QueuePriority.LATER:
+            logger.info(
+                "session %s: prompt %s waits in the queue behind the running turn",
+                self._session_id,
+                item.id,
+            )
+
+        await inserted
 
         return schema.PromptResponse(message_id=item.id)
 
