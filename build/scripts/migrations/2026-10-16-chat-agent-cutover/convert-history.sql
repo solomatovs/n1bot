@@ -1,5 +1,5 @@
 -- Одноразовый перенос истории агента из таблицы прежнего выпуска
--- history_records в таблицы session и history той же схемы.
+-- history_records в таблицы session и session_records той же схемы.
 --
 -- Прежний выпуск хранил запись целиком документом record, а сессию, seq,
 -- вид и время — ещё и колонками или ключами документа. Новый выпуск держит
@@ -73,7 +73,7 @@ create table if not exists :"schema".session (
     created_at timestamptz not null
 );
 
-create table if not exists :"schema".history (
+create table if not exists :"schema".session_records (
     session_id  text        not null references :"schema".session on delete cascade,
     seq         integer     not null,
     type        text        not null,
@@ -115,7 +115,7 @@ from
 group by
     o.session_id;
 
-insert into :"schema".history (session_id, seq, type, recorded_at, record)
+insert into :"schema".session_records (session_id, seq, type, recorded_at, record)
 select
     o.session_id,
     o.seq,
@@ -137,7 +137,7 @@ select
     count(h.seq) as new_records
 from
     moved as m
-    left join :"schema".history as h
+    left join :"schema".session_records as h
         on h.session_id = m.session_id
 group by
     m.session_id,
@@ -155,7 +155,7 @@ select
         select
             count(*)
         from
-            :"schema".history as h
+            :"schema".session_records as h
             join moved as m
                 on m.session_id = h.session_id
     ) as records_converted;
