@@ -4,12 +4,17 @@
 `tools/call` в форме MCP; реализует его вход процесса над серверами MCP
 сессии. Собственные инструменты агента (вопрос пользователю) живут рядом
 с инструментами сервера и зовутся по имени (план, раздел 5.12) и отвечают
-тем же результатом tools/call. ToolRunner ведёт пачку вызовов по разделу
+тем же результатом tools/call. Инструменты сервера отложены, кроме
+названных администратором в списке «всегда загружать»; собственный
+инструмент откладывается своим признаком. Отложенный модель видит одним
+именем и загружает инструментом ToolSearch (docs/prompt_assembly/specs/
+07_system_tools.md, раздел 2.3). ToolRunner ведёт пачку вызовов по разделу
 5.13, шаг 8: каждый вызов проходит разрешения (раздел 5.6), вопросы
 наружу идут по очереди; разрешённые вызовы уходят серверу одним
 `submit`; результаты собираются в порядке вызовов; отмена посреди пачки
-даёт результаты-отказы по таблице раздела 5.14. Результат длиннее предела
-обрезается, пустой заменяется заглушкой.
+даёт результаты-отказы по таблице раздела 5.14. Вызов отложенного
+инструмента, который модель не загрузила, — ошибка вызова с подсказкой.
+Результат длиннее предела обрезается, пустой заменяется заглушкой.
 
 Ошибки:
 ToolsError — имя инструмента предложено дважды: собственным инструментом и
@@ -20,15 +25,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
+import re
 from abc import abstractmethod
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
-from enum import StrEnum
+from enum import Enum, StrEnum
 from typing import Any, ClassVar, Protocol, Self
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from boba.agent.attachments import ConnectedServer, SnapshotTool
+from boba.agent.attachments import Announced, ConnectedServer, SnapshotTool
 from boba.agent.control import (
     AllowAnswer,
     CanUseToolRequest,
@@ -83,11 +90,16 @@ __all__ = [
     "AskUserQuestionTool",
     "BatchOutcome",
     "CallResult",
+    "DeferredCatalog",
     "McpServerSet",
     "OwnTool",
     "PlannedCall",
     "Questioner",
+    "ToolMatcher",
     "ToolRunner",
+    "ToolSearchInput",
+    "ToolSearchOutput",
+    "ToolSearchTool",
     "ToolServer",
     "ToolTexts",
     "ToolsError",
@@ -142,12 +154,14 @@ class CallResult:
     """Результат вызова для записи `user`: текст модели, ответ tools/call
     (его JSON — `toolUseResult`) и причина отказа, если это отказ. Вызов,
     оборванный концом хода, ответа не получил: reply None, для модели это
-    ошибка."""
+    ошибка. references — инструменты, которые результат загрузил (ToolSearch):
+    они ложатся в результат ссылками tool_reference."""
 
     call: PlannedCall
     text: str
     reply: ToolReply | None
     denial: ToolDenialKind | None = None
+    references: Sequence[str] = ()
 
     @property
     def is_error(self) -> bool:
@@ -222,6 +236,12 @@ class OwnTool(Protocol):
 
     @property
     def hints(self) -> ToolHints: ...
+
+    @property
+    def deferred(self) -> bool:
+        """Отложен ли инструмент: модель видит одно имя и загружает
+        определение инструментом ToolSearch."""
+        ...
 
     def card(self) -> SnapshotTool: ...
 
@@ -481,6 +501,10 @@ class AskUserQuestionTool(OwnTool):
     def hints(self) -> ToolHints:
         return self.HINTS
 
+    @property
+    def deferred(self) -> bool:
+        return False
+
     def card(self) -> SnapshotTool:
         return SnapshotTool(
             name=self.NAME,
@@ -574,25 +598,43 @@ class AskUserQuestionTool(OwnTool):
         return output.model_dump(mode="json", by_alias=True, exclude_defaults=True)
 
 
-class AgentTools:
+class DeferredCatalog(Protocol):
+    """Порт набора отложенных инструментов для ToolSearch: определения,
+    среди которых ищет поиск. Реализует AgentTools."""
+
+    @abstractmethod
+    def deferred(self) -> Sequence[SnapshotTool]:
+        """Определения отложенных инструментов сейчас."""
+
+
+class AgentTools(DeferredCatalog):
     """Инструменты, которые видит модель: сервера и собственные, по имени.
 
     Создаёт агент при открытии сессии. Карточки инструментов сервера
-    берутся у живого сервера при каждом снимке: сервер MCP может сменить
+    берутся у живого сервера при каждом обращении: сервер MCP может сменить
     список посреди сессии, и ход объявит разницу модели. Перед этим ход
     освежает серверы MCP сессии (McpServerSet) и берёт у них инструкции.
-    Собственный инструмент, одноимённый с инструментом сервера, — ошибка на
-    старте и в любом снимке после смены списка.
+    Инструменты сервера отложены, кроме перечисленных в always_load;
+    собственный инструмент отложен своим признаком, если его нет в
+    always_load. Пока отложенные есть, в наборе с полным определением стоит
+    ToolSearch (ToolSearchTool), который ищет среди них. Собственный
+    инструмент, одноимённый с инструментом сервера, — ошибка на старте и в
+    любом обращении после смены списка.
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 — набор собирается из портов и текстов поиска
         self,
         server: ToolServer | None,
         own: Sequence[OwnTool],
         servers: McpServerSet | None,
+        always_load: frozenset[str],
+        templates: AgentTemplate,
+        texts: ToolTexts,
     ) -> None:
         self._server = server
         self._servers = servers
+        self._always = always_load
+        self._search = ToolSearchTool(self, templates, texts)
         self._own: dict[str, OwnTool] = {}
         for tool in own:
             self._own[tool.name] = tool
@@ -617,30 +659,74 @@ class AgentTools:
 
         return self._servers.connected()
 
-    def snapshot(self) -> Sequence[SnapshotTool]:
-        """Карточки для снимка промпта: сервера, затем собственные.
+    def inline(self) -> Sequence[SnapshotTool]:
+        """Карточки с полным определением для снимка промпта: сервера, затем
+        собственные, затем ToolSearch, если есть отложенные.
 
         Ошибки:
         ToolsError — сервер предложил инструмент с именем собственного.
         """
         cards: list[SnapshotTool] = []
         for card in self._server_cards().values():
-            cards.append(
-                SnapshotTool(
-                    name=card.name,
-                    description=card.description,
-                    schema=dict(card.parameters),
-                )
-            )
+            if card.name not in self._always:
+                continue
+
+            cards.append(self._snapshot_card(card))
 
         for tool in self._own.values():
+            if self._own_deferred(tool):
+                continue
+
+            cards.append(tool.card())
+
+        if self._searching():
+            cards.append(self._search.card())
+
+        return cards
+
+    def deferred(self) -> Sequence[SnapshotTool]:
+        """Карточки отложенных инструментов: сервера, затем собственные.
+
+        Ошибки:
+        ToolsError — сервер предложил инструмент с именем собственного.
+        """
+        cards: list[SnapshotTool] = []
+        for card in self._server_cards().values():
+            if card.name in self._always:
+                continue
+
+            cards.append(self._snapshot_card(card))
+
+        for tool in self._own.values():
+            if not self._own_deferred(tool):
+                continue
+
             cards.append(tool.card())
 
         return cards
 
+    def names(self) -> Sequence[str]:
+        """Имена всех инструментов: с полным определением, затем отложенные."""
+        names: list[str] = []
+        for card in [*self.inline(), *self.deferred()]:
+            names.append(card.name)
+
+        return names
+
+    def is_deferred(self, name: str) -> bool:
+        """Инструмент отложен: модель должна загрузить его ToolSearch."""
+        if name in self._always:
+            return False
+
+        own = self._own.get(name)
+        if own is not None:
+            return own.deferred
+
+        return name in self._server_cards()
+
     def hints_of(self, name: str) -> ToolHints | None:
         """Пометки инструмента; None — такого инструмента нет."""
-        own = self._own.get(name)
+        own = self.own(name)
         if own is not None:
             return own.hints
 
@@ -651,7 +737,28 @@ class AgentTools:
         return card.hints
 
     def own(self, name: str) -> OwnTool | None:
+        """Собственный инструмент по имени. ToolSearch находится всегда: его
+        пометки нужны и воспроизведению истории, где отложенных уже нет, а
+        вызов без отложенных честно отвечает, что искать нечего."""
+        if name == self._search.name:
+            return self._search
+
         return self._own.get(name)
+
+    def _searching(self) -> bool:
+        return bool(self.deferred())
+
+    def _own_deferred(self, tool: OwnTool) -> bool:
+        if tool.name in self._always:
+            return False
+
+        return tool.deferred
+
+    @staticmethod
+    def _snapshot_card(card: ToolCard) -> SnapshotTool:
+        return SnapshotTool(
+            name=card.name, description=card.description, schema=dict(card.parameters)
+        )
 
     def _server_cards(self) -> dict[str, ToolCard]:
         """Карточки сервера сейчас по именам.
@@ -664,7 +771,11 @@ class AgentTools:
 
         cards: dict[str, ToolCard] = {}
         for card in self._server.tools():
-            if card.name in self._own:
+            own = card.name in self._own
+            if card.name == self._search.name:
+                own = True
+
+            if own:
                 msg = (
                     f"The tool server offers a tool named '{card.name}', which is "
                     "also the name of the agent's own tool. Rename or drop the "
@@ -683,6 +794,332 @@ class AgentTools:
             cards[card.name] = card
 
         return cards
+
+
+class ToolSearchInput(BaseModel):
+    """Ввод ToolSearch (docs/prompt_assembly/texts/system, ToolSearch)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    query: str = Field(
+        description=(
+            'Query to find deferred tools. Use "select:<tool_name>" for direct '
+            "selection, or keywords to search."
+        )
+    )
+    max_results: int = Field(
+        default=5,
+        ge=1,
+        description="Maximum number of results to return (default: 5)",
+    )
+
+
+class ToolSearchOutput(BaseModel):
+    """Итог ToolSearch для истории (`toolUseResult`) и клиента: найденные
+    имена, запрос и сколько отложенных было в поиске."""
+
+    model_config = ConfigDict(frozen=True)
+
+    matches: Sequence[str]
+    query: str
+    total_deferred_tools: int
+
+
+class ToolQuery(StrEnum):
+    """Разметка запроса ToolSearch: выбор по именам и обязательное слово."""
+
+    SELECT = "select:"
+    NAMES = ","
+    REQUIRED = "+"
+
+
+class Bm25(float, Enum):
+    """Параметры BM25: насыщение частоты слова и вес длины описания."""
+
+    K1 = 1.5
+    B = 0.75
+
+
+class SchemaKey(StrEnum):
+    """Ключи JSON Schema, по которым поиск собирает параметры инструмента."""
+
+    PROPERTIES = "properties"
+    DESCRIPTION = "description"
+    ITEMS = "items"
+
+
+class NamePattern(StrEnum):
+    """Разбор текста на слова: разделители и слова camelCase."""
+
+    SEPARATORS = r"[^A-Za-z0-9]+"
+    WORDS = r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])|[0-9]+"
+
+
+@dataclass(frozen=True)
+class ToolDocument:
+    """Инструмент в индексе поиска: имя и частоты слов его имени, описания,
+    имён и описаний параметров."""
+
+    name: str
+    counts: Mapping[str, int]
+    length: int
+
+
+@dataclass(frozen=True)
+class Scored:
+    """Инструмент и вес его совпадения с запросом."""
+
+    name: str
+    score: float
+
+
+class ToolIndex:
+    """BM25-индекс набора отложенных инструментов: документ — инструмент,
+    вес слова запроса — idf, умноженная на насыщенную частоту с поправкой
+    на длину документа. Строит ToolMatcher."""
+
+    def __init__(self, documents: Sequence[ToolDocument]) -> None:
+        self.documents = documents
+        self._frequency: dict[str, int] = {}
+        total = 0
+        for document in documents:
+            total += document.length
+            for word in document.counts:
+                self._frequency[word] = self._frequency.get(word, 0) + 1
+
+        self._average = 1.0
+        if documents and total:
+            self._average = total / len(documents)
+
+    def score(self, document: ToolDocument, words: Sequence[str]) -> float:
+        total = 0.0
+        for word in words:
+            count = document.counts.get(word, 0)
+            if not count:
+                continue
+
+            total += self._idf(word) * self._saturated(count, document.length)
+
+        return total
+
+    def _idf(self, word: str) -> float:
+        size = len(self.documents)
+        frequency = self._frequency.get(word, 0)
+
+        return math.log((size - frequency + 0.5) / (frequency + 0.5) + 1.0)
+
+    def _saturated(self, count: int, length: int) -> float:
+        k1 = Bm25.K1.value
+        norm = 1.0 - Bm25.B.value + Bm25.B.value * length / self._average
+
+        return count * (k1 + 1.0) / (count + k1 * norm)
+
+
+class ToolMatcher:
+    """Поиск ToolSearch среди отложенных инструментов: `select:a,b` — эти
+    имена как есть; иначе BM25 по словам имени, описания, имён и описаний
+    параметров; `+слово` обязано входить в имя и тоже участвует в весе;
+    лучшие max_results по весу, при равном весе — по имени. Индекс строится
+    при первом поиске и заново, когда набор инструментов сменился. Создаёт
+    ToolSearchTool."""
+
+    def __init__(self) -> None:
+        self._separators = re.compile(NamePattern.SEPARATORS.value)
+        self._words = re.compile(NamePattern.WORDS.value)
+        self._index = ToolIndex(())
+        self._fingerprint: tuple[str, ...] = ()
+
+    def matches(
+        self, query: ToolSearchInput, pool: Sequence[SnapshotTool]
+    ) -> Sequence[str]:
+        text = query.query.strip()
+        if text.lower().startswith(ToolQuery.SELECT.value):
+            return self._selected(text[len(ToolQuery.SELECT.value) :], pool)
+
+        index = self._indexed(pool)
+        scored = sorted(self._scored(text, index), key=self._order)
+        names: list[str] = []
+        for item in scored[: query.max_results]:
+            names.append(item.name)
+
+        return names
+
+    def words(self, text: str) -> list[str]:
+        """Слова текста в нижнем регистре: разделители и границы camelCase."""
+        found: list[str] = []
+        for part in self._separators.split(text):
+            for word in self._words.findall(part):
+                found.append(word.lower())
+
+        return found
+
+    def _selected(self, listed: str, pool: Sequence[SnapshotTool]) -> Sequence[str]:
+        known: set[str] = set()
+        for tool in pool:
+            known.add(tool.name)
+
+        names: list[str] = []
+        for raw in listed.split(ToolQuery.NAMES.value):
+            name = raw.strip()
+            if name not in known:
+                continue
+
+            if name in names:
+                continue
+
+            names.append(name)
+
+        return names
+
+    def _indexed(self, pool: Sequence[SnapshotTool]) -> ToolIndex:
+        fingerprint = self._fingerprint_of(pool)
+        if fingerprint == self._fingerprint:
+            return self._index
+
+        documents: list[ToolDocument] = []
+        for tool in pool:
+            documents.append(self._document(tool))
+
+        self._index = ToolIndex(documents)
+        self._fingerprint = fingerprint
+
+        return self._index
+
+    @staticmethod
+    def _fingerprint_of(pool: Sequence[SnapshotTool]) -> tuple[str, ...]:
+        parts: list[str] = []
+        for tool in pool:
+            parts.append(tool.model_dump_json())
+
+        return tuple(parts)
+
+    def _document(self, tool: SnapshotTool) -> ToolDocument:
+        counts: dict[str, int] = {}
+        texts = [tool.name, tool.description, *self._schema_texts(tool.schema_)]
+        length = 0
+        for text in texts:
+            for word in self.words(text):
+                counts[word] = counts.get(word, 0) + 1
+                length += 1
+
+        return ToolDocument(name=tool.name, counts=counts, length=length)
+
+    def _schema_texts(self, schema: Mapping[str, Any]) -> Iterator[str]:
+        """Имена и описания параметров схемы, вложенных объектов и элементов
+        массивов."""
+        properties = schema.get(SchemaKey.PROPERTIES.value)
+        if isinstance(properties, Mapping):
+            for key, value in properties.items():
+                yield str(key)
+                if isinstance(value, Mapping):
+                    yield from self._parameter_texts(value)
+
+        items = schema.get(SchemaKey.ITEMS.value)
+        if isinstance(items, Mapping):
+            yield from self._schema_texts(items)
+
+    def _parameter_texts(self, parameter: Mapping[str, Any]) -> Iterator[str]:
+        description = parameter.get(SchemaKey.DESCRIPTION.value)
+        if isinstance(description, str):
+            yield description
+
+        yield from self._schema_texts(parameter)
+
+    def _scored(self, text: str, index: ToolIndex) -> Iterator[Scored]:
+        required: list[str] = []
+        words: list[str] = []
+        for term in text.lower().split():
+            bare = term.removeprefix(ToolQuery.REQUIRED.value)
+            if term.startswith(ToolQuery.REQUIRED.value) and bare:
+                required.append(bare)
+
+            words.extend(self.words(bare))
+
+        for document in index.documents:
+            if not self._named(document.name, required):
+                continue
+
+            score = index.score(document, words)
+            if score > 0:
+                yield Scored(name=document.name, score=score)
+
+    @staticmethod
+    def _named(name: str, required: Sequence[str]) -> bool:
+        lowered = name.lower()
+        found = map(lowered.__contains__, required)
+
+        return all(found)
+
+    @staticmethod
+    def _order(item: Scored) -> tuple[float, str]:
+        return (-item.score, item.name)
+
+
+class ToolSearchTool(OwnTool):
+    """Инструмент ToolSearch: загружает отложенные инструменты по запросу
+    (docs/prompt_assembly/specs/07_system_tools.md, раздел 2.3).
+
+    Ищет среди отложенных инструментов DeferredCatalog (ToolMatcher) и
+    отвечает ссылками на найденные: они ложатся в историю блоками
+    tool_reference результата, и со следующего запроса определения
+    найденных уходят модели вместе с остальными инструментами. Сам не
+    откладывается. Создаёт AgentTools.
+    """
+
+    NAME: ClassVar[str] = "ToolSearch"
+    HINTS: ClassVar[ToolHints] = ToolHints(read_only=True, destructive=False)
+
+    def __init__(
+        self, catalog: DeferredCatalog, templates: AgentTemplate, texts: ToolTexts
+    ) -> None:
+        self._catalog = catalog
+        self._templates = templates
+        self._texts = texts
+        self._matcher = ToolMatcher()
+        self._errors = ValidationText()
+
+    @property
+    def name(self) -> str:
+        return self.NAME
+
+    @property
+    def hints(self) -> ToolHints:
+        return self.HINTS
+
+    @property
+    def deferred(self) -> bool:
+        return False
+
+    def card(self) -> SnapshotTool:
+        return SnapshotTool(
+            name=self.NAME,
+            description=self._templates.read(AgentTemplateFile.TOOL_SEARCH),
+            schema=ToolSearchInput.model_json_schema(),
+        )
+
+    async def run(
+        self, call: PlannedCall, arguments: Mapping[str, Any], questioner: Questioner
+    ) -> CallResult:
+        try:
+            asked = ToolSearchInput.model_validate(arguments)
+        except ValidationError as exc:
+            text = (
+                f"The {self.NAME} call found nothing: its arguments do not match "
+                f"the tool schema: {self._errors.of(exc)}"
+            )
+            return self._texts.failed(call, text)
+
+        pool = self._catalog.deferred()
+        matches = self._matcher.matches(asked, pool)
+        output = ToolSearchOutput(
+            matches=matches, query=asked.query, total_deferred_tools=len(pool)
+        )
+        structured = output.model_dump(mode="json")
+        if not matches:
+            text = self._templates.read(AgentTemplateFile.NO_MATCHING_TOOLS)
+            return self._texts.answered(call, text, structured)
+
+        return self._texts.loaded(call, matches, structured)
 
 
 class ToolTexts:
@@ -765,6 +1202,26 @@ class ToolTexts:
 
     def failed(self, call: PlannedCall, error: str) -> CallResult:
         return CallResult(call=call, text=error, reply=self._replies.refused(error))
+
+    def not_loaded(self, call: PlannedCall) -> CallResult:
+        """Вызов отложенного инструмента, которого модель не загрузила."""
+        text = self._templates.read(AgentTemplateFile.NOT_LOADED).format(tool=call.name)
+
+        return self.failed(call, text)
+
+    def loaded(
+        self, call: PlannedCall, names: Sequence[str], structured: Mapping[str, Any]
+    ) -> CallResult:
+        """Итог поиска инструментов: ссылки на загруженные; клиенту — их
+        строки текстом."""
+        template = self._templates.read(AgentTemplateFile.TOOL_LOADED)
+        lines: list[str] = []
+        for name in names:
+            lines.append(template.format(name=name))
+
+        reply = self._replies.made("\n".join(lines), structured, False)
+
+        return CallResult(call=call, text="", reply=reply, references=names)
 
     def answered(
         self, call: PlannedCall, text: str, structured: Mapping[str, Any] | None
@@ -867,6 +1324,9 @@ class ToolRunner:
         if hints is None:
             return self._texts.unknown(call)
 
+        if not self._loaded(call.name):
+            return self._texts.not_loaded(call)
+
         decision = self._policy().decide(call.name, hints)
         if isinstance(decision, Classified):
             decision = await self._classified(call, hints)
@@ -888,6 +1348,15 @@ class ToolRunner:
             return await own.run(call, arguments, questioner)
 
         return Approved(arguments)
+
+    def _loaded(self, name: str) -> bool:
+        """Инструмент можно звать: он не отложен либо модель его загрузила."""
+        if not self._tools.is_deferred(name):
+            return True
+
+        announced = Announced(self._keeper.session.conversation())
+
+        return name in announced.loaded_names()
 
     async def _classified(
         self, call: PlannedCall, hints: ToolHints

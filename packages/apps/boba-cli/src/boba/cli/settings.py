@@ -62,6 +62,7 @@ from boba.agent.settings import (
     SecretKey,
     SessionsJson,
     SettingsLayer,
+    ToolsJson,
 )
 from boba.db.postgres.connection import PostgresConfig
 from boba.llm.providers import ChatModelConfig, LlmProvidersError
@@ -348,6 +349,7 @@ class EffectiveSettings(BaseModel):
     compaction: CompactionSettings
     limits: TurnLimits
     mcp: McpClientJson
+    tools: ToolsJson
     sessions: SessionsJson
     env: Mapping[str, str]
     system_prompt: Sequence[str]
@@ -775,6 +777,10 @@ class Settings:
         if mcp is None:
             mcp = McpClientJson()
 
+        tools = layer.tools
+        if tools is None:
+            tools = ToolsJson(always_load=())
+
         sessions = layer.sessions
         if sessions is None:
             sessions = SessionsJson()
@@ -791,6 +797,7 @@ class Settings:
             compaction=compaction,
             limits=limits,
             mcp=mcp,
+            tools=tools,
             sessions=sessions,
             env=layer.env,
             system_prompt=list(self._system_prompt(layer)),

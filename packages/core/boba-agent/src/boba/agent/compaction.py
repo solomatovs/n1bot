@@ -34,11 +34,16 @@ from boba.agent.asking import (
     Overflowed,
 )
 from boba.agent.attachments import (
+    Announced,
+    AttachmentKind,
     ContextAttachments,
+    DeferredToolsRecordAttachment,
     EnvironmentSnapshot,
     PromptSnapshot,
     SkillBudget,
     SnapshotSkill,
+    SnapshotTool,
+    ToolPoolChange,
 )
 from boba.agent.builder import RequestBuilder
 from boba.agent.ids import Clock, IdMint
@@ -91,7 +96,9 @@ __all__ = [
 class TokenEstimator:
     """Оценка записей в токенах без провайдера: знаки, делённые на
     `chars_per_token` профиля; вызов инструмента — имя и JSON аргументов,
-    вложение — его `rendered`, записи только для журнала — ноль."""
+    вложение — его `rendered`, определения загруженных отложенных
+    инструментов (deferred_tools_record) — как описание инструмента в
+    запросе, прочие записи только для журнала — ноль."""
 
     def __init__(self, profile: ModelProfile) -> None:
         self._profile = profile
@@ -119,11 +126,15 @@ class TokenEstimator:
     def prefix(self, snapshot: PromptSnapshot) -> int:
         """Системный промпт и описания инструментов снимка."""
         texts: list[str] = list(snapshot.system_prompt)
-        for tool in snapshot.tools:
-            texts.append(tool.text())
-            texts.append(json.dumps(tool.schema_, ensure_ascii=False))
+        texts.extend(self._tool_texts(snapshot.tools))
 
         return self.texts(texts)
+
+    @staticmethod
+    def _tool_texts(tools: Sequence[SnapshotTool]) -> Iterator[str]:
+        for tool in tools:
+            yield tool.text()
+            yield json.dumps(tool.schema_, ensure_ascii=False)
 
     def _texts_of(self, record: ChainRecord) -> Iterator[str]:
         if isinstance(record, UserRecord):
@@ -138,11 +149,21 @@ class TokenEstimator:
             return
 
         if isinstance(record, AttachmentRecord):
-            if record.rendered is None:
-                return
+            yield from self._attachment_texts(record)
 
-            for message in record.rendered:
-                yield message.content
+    def _attachment_texts(self, record: AttachmentRecord) -> Iterator[str]:
+        if record.attachment.type == AttachmentKind.DEFERRED_TOOLS_RECORD.value:
+            entries = DeferredToolsRecordAttachment.model_validate(
+                record.attachment.model_dump()
+            )
+            yield from self._tool_texts(entries.entries)
+            return
+
+        if record.rendered is None:
+            return
+
+        for message in record.rendered:
+            yield message.content
 
     @staticmethod
     def _user_texts(record: UserRecord) -> Iterator[str]:
@@ -153,6 +174,7 @@ class TokenEstimator:
 
         for block in content:
             if isinstance(block, ToolResultBlock):
+                yield from block.references()
                 yield block.text()
                 continue
 
@@ -638,8 +660,9 @@ class Summarizer:
 
 
 class Compactor:
-    """Пачка записей после сжатия (план, раздел 5.16): граница, дата,
-    пересказ, окружение, модель, инструкции серверов MCP, список скиллов —
+    """Пачка записей после сжатия (план, раздел 5.16): граница со списком
+    загруженных отложенных инструментов, дата, пересказ, окружение, модель,
+    отложенные инструменты, инструкции серверов MCP, список скиллов —
     в сессию разом, без точек ожидания между ними, чтобы писатель положил
     их одним `append`. Хвост не переписывается: граница называет его записи
     по uuid. Создаёт цикл хода."""
@@ -680,6 +703,7 @@ class Compactor:
     ) -> Sequence[Record]:
         """Записи пачки с seq; логический родитель границы — последняя
         запись разговора, то есть последняя запись хвоста."""
+        discovered = Announced(session.conversation()).discovered()
         boundary_uuid = self._ids.uuid()
         date = self._attachments.date(boundary_uuid, today, False)
         summary_record = self._summary_record(session, date.uuid, summary.text)
@@ -705,6 +729,7 @@ class Compactor:
                     uuids=kept_uuids,
                     all_uuids=kept_uuids,
                 ),
+                pre_compact_discovered_tools=discovered,
             ),
         )
 
@@ -741,6 +766,21 @@ class Compactor:
 
         records.append(self._attachments.model(parent, self._profile))
         parent = records[-1].uuid
+
+        deferred: list[str] = []
+        for tool in self._catalog.deferred():
+            deferred.append(tool.name)
+
+        if deferred:
+            change = ToolPoolChange(
+                added=sorted(deferred),
+                removed=(),
+                readded=frozenset(),
+                surfaced=(),
+                search=True,
+            )
+            records.append(self._attachments.deferred_delta(parent, change))
+            parent = records[-1].uuid
 
         instructions = self._attachments.instructions(
             parent, self._catalog.connected(), {}
