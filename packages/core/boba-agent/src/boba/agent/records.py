@@ -37,9 +37,10 @@ from __future__ import annotations
 
 import json
 from abc import abstractmethod
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from dataclasses import dataclass
 from enum import StrEnum
-from typing import Annotated, Any, ClassVar, Literal, Self, TypeAlias
+from typing import Annotated, Any, ClassVar, Literal, Protocol, Self, TypeAlias
 
 import mcp_types as mt
 from pydantic import (
@@ -105,6 +106,7 @@ __all__ = [
     "PermissionRule",
     "PermissionRuleOperation",
     "PermissionRuleRecord",
+    "Placement",
     "PreservedMessages",
     "PromptRecord",
     "PromptSnapshot",
@@ -118,13 +120,16 @@ __all__ = [
     "RecordKind",
     "RecordType",
     "RenderedMessage",
+    "ReplyMark",
     "ReplyRecord",
     "ReplyStopReason",
+    "RequestFeed",
     "ServiceRecord",
     "SkillListingAttachment",
     "SnapshotSkill",
     "SnapshotTool",
     "Synthetic",
+    "SystemRecord",
     "SystemSubtype",
     "TaskNotificationRecord",
     "TextBlock",
@@ -135,6 +140,7 @@ __all__ = [
     "ToolResultRecord",
     "ToolUseBlock",
     "TurnEndRecord",
+    "TurnMark",
     "TurnOutcome",
     "Usage",
     "UserBlock",
@@ -537,12 +543,24 @@ class MessageOrigin(WireModel):
     kind: OriginKind
 
 
+class RenderedMessage(WireModel):
+    content: str
+
+
 class PayloadModel(BaseModel):
     """Основа данных вложения: имена полей на проводе — camelCase."""
 
     model_config = ConfigDict(
         alias_generator=to_camel, populate_by_name=True, frozen=True, extra="ignore"
     )
+
+    def window_texts(self, rendered: Sequence[RenderedMessage] | None) -> Iterator[str]:
+        """Тексты вложения в окне модели: зафиксированный текст."""
+        if rendered is None:
+            return
+
+        for message in rendered:
+            yield message.content
 
 
 class SnapshotTool(PayloadModel):
@@ -673,6 +691,12 @@ class DeferredToolsRecordAttachment(PayloadModel):
     )
     entries: Sequence[SnapshotTool]
 
+    def window_texts(self, rendered: Sequence[RenderedMessage] | None) -> Iterator[str]:
+        """Определения инструментов: они уходят в запрос списком tools."""
+        for tool in self.entries:
+            yield tool.text()
+            yield json.dumps(tool.schema_, ensure_ascii=False)
+
 
 class McpInstructionsAttachment(PayloadModel):
     """Изменение инструкций серверов MCP относительно объявленного: блоки
@@ -730,9 +754,104 @@ AttachmentData: TypeAlias = Annotated[
 """Данные вложения: модель выбирается по полю type."""
 
 
+class Placement(StrEnum):
+    """Место записи при сборке запроса (разбор 06, перестановка вложений):
+    FLOATS — встаёт сразу после ближайшего выше ответа модели или результата
+    инструмента, STOPS — такая точка остановки, STAYS — остаётся на месте."""
+
+    FLOATS = "floats"
+    STOPS = "stops"
+    STAYS = "stays"
+
+
+class RequestFeed(Protocol):
+    """Приёмник вкладов записей в запрос к модели: запись отдаёт в него
+    свои части, а как их склеить в сообщения по разбору 06, решает
+    реализация — накопитель сборщика запроса (RequestBuilder)."""
+
+    @abstractmethod
+    def user_text(self, text: str) -> None:
+        """Слова пользователя или его вложения: приёмник обезвреживает в
+        них служебные теги."""
+
+    @abstractmethod
+    def context_text(self, text: str) -> None:
+        """Текст агента в сообщении пользователя как есть: ссылка на
+        вложение вопроса, вложение с ролью user."""
+
+    @abstractmethod
+    def reminder(self, text: str) -> None:
+        """Системное вложение в обёртке system-reminder."""
+
+    @abstractmethod
+    def tool_result(self, block: ToolResultBlock) -> None:
+        """Результат вызова инструмента."""
+
+    @abstractmethod
+    def reply_block(self, message_id: str, block: AssistantBlock) -> None:
+        """Блок ответа модели; блоки одного message_id — одно сообщение."""
+
+
+class TurnMark(StrEnum):
+    """Чем запись участвует в ходе — по нему загрузчик судит, закрыт ли
+    последний ход и ответил ли кто-то на последнее сообщение.
+
+    ASKS — сообщение, на которое ждут ответа (слова пользователя, вложение);
+    ANSWERS — ответ модели; STUB — синтетическая заглушка ответа агента;
+    NOTE — служебная запись хода (повтор запроса, пометка, сжатие);
+    OUTSIDE — запись вне хода (команда запускающей программы); END — конец
+    хода; REFUSAL — конец хода отказом агента ответить.
+    """
+
+    ASKS = "asks"
+    ANSWERS = "answers"
+    STUB = "stub"
+    NOTE = "note"
+    OUTSIDE = "outside"
+    END = "end"
+    REFUSAL = "refusal"
+
+    @property
+    def in_turn(self) -> bool:
+        """Запись хода: после неё ход не закрыт, пока нет конца."""
+        return self in (TurnMark.ASKS, TurnMark.ANSWERS, TurnMark.NOTE)
+
+    @property
+    def closes_turn(self) -> bool:
+        return self in (TurnMark.END, TurnMark.REFUSAL)
+
+    @property
+    def answers(self) -> bool:
+        """Отвечает на последнее сообщение разговора."""
+        return self in (TurnMark.ANSWERS, TurnMark.STUB, TurnMark.REFUSAL)
+
+    @property
+    def speaks(self) -> bool:
+        """Сообщение разговора: вопрос или ответ."""
+        return self in (TurnMark.ASKS, TurnMark.ANSWERS, TurnMark.STUB)
+
+
+@dataclass(frozen=True)
+class ReplyMark:
+    """Запись — ответ модели: идентификатор ответа (по нему режутся группы
+    сжатия) и учёт токенов ответа; 0 — провайдер учёт не прислал или он
+    обнулён у перенесённого хвоста."""
+
+    message_id: str
+    tokens: int
+
+
 class ChainRecord(WireModel):
     """Общий конверт записей цепочки: вид записи `kind` и связь
-    `uuid` → `parentUuid`."""
+    `uuid` → `parentUuid`.
+
+    Вид записи сам говорит, чем он участвует в работе агента: что вносит
+    в запрос к модели и где встаёт в нём, сколько текста занимает в окне,
+    ответ ли это модели, с него ли начинается счёт окна. Сборщик запроса,
+    оценка окна, группы сжатия и загрузчик спрашивают запись, а не
+    перебирают виды. Реализуют семейства: записи user, assistant,
+    attachment и system.
+    """
 
     type: RecordType
     kind: RecordKind
@@ -748,6 +867,47 @@ class ChainRecord(WireModel):
         description="Порядковый номер в сессии с 1; 0 — ещё не выдан сессией.",
     )
 
+    @abstractmethod
+    def to_request(self, feed: RequestFeed) -> None:
+        """Вклад записи в запрос к модели; запись только для журнала и
+        ленты ничего не отдаёт."""
+
+    @abstractmethod
+    def placement(self) -> Placement:
+        """Место записи при перестановке вложений сборщиком."""
+
+    @abstractmethod
+    def window_texts(self) -> Iterator[str]:
+        """Тексты, которыми запись занимает окно модели при оценке без
+        провайдера."""
+
+    @abstractmethod
+    def model_reply(self) -> ReplyMark | None:
+        """Ответ модели, который несёт запись; None — запись не ответ
+        модели (в том числе синтетический ответ агента)."""
+
+    @abstractmethod
+    def starts_window(self) -> bool:
+        """Разговор, который начинается с этой записи, начинает счёт окна
+        с нуля: граница сжатия."""
+
+    @abstractmethod
+    def human_text(self) -> str | None:
+        """Текст, который человек отправил сам: вопрос или вызов команды;
+        None — запись не от человека."""
+
+    @abstractmethod
+    def turn_mark(self) -> TurnMark:
+        """Чем запись участвует в ходе."""
+
+    @abstractmethod
+    def tool_calls(self) -> Sequence[ToolUseBlock]:
+        """Вызовы инструментов, которые запись делает."""
+
+    @abstractmethod
+    def answered_calls(self) -> Sequence[str]:
+        """Идентификаторы вызовов, на которые запись отвечает результатом."""
+
 
 class UserRecord(ChainRecord):
     """Основа записей `user`: сообщение роли user. Наследники — виды:
@@ -758,10 +918,64 @@ class UserRecord(ChainRecord):
     type: Literal[RecordType.USER] = RecordType.USER
     message: UserMessage
 
-    @abstractmethod
-    def human_text(self) -> str | None:
-        """Текст, который человек отправил сам: вопрос или вызов команды;
-        None — запись не от человека."""
+    def to_request(self, feed: RequestFeed) -> None:
+        content = self.message.content
+        if isinstance(content, str):
+            if content:
+                feed.user_text(content)
+
+            return
+
+        for block in content:
+            if isinstance(block, ToolResultBlock):
+                feed.tool_result(block)
+                continue
+
+            if isinstance(block, mt.ResourceLink):
+                feed.context_text(LinkText.TEMPLATE.render(block))
+                continue
+
+            feed.user_text(block.text)
+
+    def placement(self) -> Placement:
+        return Placement.STAYS
+
+    def window_texts(self) -> Iterator[str]:
+        content = self.message.content
+        if isinstance(content, str):
+            yield content
+            return
+
+        for block in content:
+            if isinstance(block, ToolResultBlock):
+                yield from block.references()
+                yield block.text()
+                continue
+
+            if isinstance(block, mt.ResourceLink):
+                yield LinkText.TEMPLATE.render(block)
+                continue
+
+            yield block.text
+
+    def model_reply(self) -> ReplyMark | None:
+        return None
+
+    def starts_window(self) -> bool:
+        return False
+
+    def turn_mark(self) -> TurnMark:
+        return TurnMark.ASKS
+
+    def tool_calls(self) -> Sequence[ToolUseBlock]:
+        return ()
+
+    def answered_calls(self) -> Sequence[str]:
+        ids: list[str] = []
+        for result in self.message.tool_results():
+            ids.append(result.tool_use_id)
+
+        return ids
 
 
 class PromptRecord(UserRecord):
@@ -838,6 +1052,9 @@ class ToolResultRecord(UserRecord):
     def human_text(self) -> str | None:
         return None
 
+    def placement(self) -> Placement:
+        return Placement.STOPS
+
 
 class InterruptRecord(UserRecord):
     """Маркер остановки хода пользователем или выключением агента: текст
@@ -874,6 +1091,57 @@ class AssistantRecord(ChainRecord):
     def is_synthetic(self) -> bool:
         return self.message.model == Synthetic.MODEL
 
+    def to_request(self, feed: RequestFeed) -> None:
+        for block in self.message.content:
+            feed.reply_block(self.message.id, block)
+
+    def placement(self) -> Placement:
+        return Placement.STOPS
+
+    def window_texts(self) -> Iterator[str]:
+        for block in self.message.content:
+            if isinstance(block, ThinkingBlock):
+                yield block.thinking
+                continue
+
+            if isinstance(block, TextBlock):
+                yield block.text
+                continue
+
+            yield block.name
+            yield json.dumps(block.input, ensure_ascii=False)
+
+    def model_reply(self) -> ReplyMark | None:
+        if self.is_synthetic():
+            return None
+
+        usage = self.message.usage
+        tokens = 0
+        if not usage.is_zero():
+            tokens = (
+                usage.input_tokens
+                + usage.output_tokens
+                + usage.cache_creation_input_tokens
+                + usage.cache_read_input_tokens
+            )
+
+        return ReplyMark(message_id=self.message.id, tokens=tokens)
+
+    def starts_window(self) -> bool:
+        return False
+
+    def human_text(self) -> str | None:
+        return None
+
+    def turn_mark(self) -> TurnMark:
+        return TurnMark.ANSWERS
+
+    def tool_calls(self) -> Sequence[ToolUseBlock]:
+        return self.message.tool_uses()
+
+    def answered_calls(self) -> Sequence[str]:
+        return ()
+
     def with_zero_usage(self) -> Self:
         """Копия для перенесённого хвоста: учёт обнулён (раздел 5.16 плана)."""
         message = self.message.model_copy(update={"usage": Usage()})
@@ -897,9 +1165,8 @@ class NoResponseRecord(AssistantRecord):
 
     kind: Literal[RecordKind.NO_RESPONSE] = RecordKind.NO_RESPONSE
 
-
-class RenderedMessage(WireModel):
-    content: str
+    def turn_mark(self) -> TurnMark:
+        return TurnMark.STUB
 
 
 class AttachmentRecord(ChainRecord):
@@ -909,8 +1176,82 @@ class AttachmentRecord(ChainRecord):
     rendered: Sequence[RenderedMessage] | None = None
     rendered_role: AttachmentRole | None = None
 
+    def to_request(self, feed: RequestFeed) -> None:
+        """Текст, зафиксированный при записи: с ролью user — словами
+        пользователя как есть, иначе системным вложением; без текста —
+        ничего (снимок промпта, определения отложенных инструментов)."""
+        if self.rendered is None:
+            return
 
-class ApiErrorRecord(ChainRecord):
+        for message in self.rendered:
+            if self.rendered_role is AttachmentRole.USER:
+                feed.context_text(message.content)
+                continue
+
+            feed.reminder(message.content)
+
+    def placement(self) -> Placement:
+        return Placement.FLOATS
+
+    def window_texts(self) -> Iterator[str]:
+        return self.attachment.window_texts(self.rendered)
+
+    def model_reply(self) -> ReplyMark | None:
+        return None
+
+    def starts_window(self) -> bool:
+        return False
+
+    def human_text(self) -> str | None:
+        return None
+
+    def turn_mark(self) -> TurnMark:
+        return TurnMark.ASKS
+
+    def tool_calls(self) -> Sequence[ToolUseBlock]:
+        return ()
+
+    def answered_calls(self) -> Sequence[str]:
+        return ()
+
+
+class SystemRecord(ChainRecord):
+    """Основа записей `system`: пометки и события для журнала и ленты —
+    повтор запроса, пометка человеку, ход сжатия, граница сжатия, команда
+    запускающей программы, конец хода. Модели они не уходят и окна не
+    занимают."""
+
+    type: Literal[RecordType.SYSTEM] = RecordType.SYSTEM
+
+    def to_request(self, feed: RequestFeed) -> None:
+        return
+
+    def placement(self) -> Placement:
+        return Placement.STAYS
+
+    def window_texts(self) -> Iterator[str]:
+        return iter(())
+
+    def model_reply(self) -> ReplyMark | None:
+        return None
+
+    def starts_window(self) -> bool:
+        return False
+
+    def human_text(self) -> str | None:
+        return None
+
+    def turn_mark(self) -> TurnMark:
+        return TurnMark.NOTE
+
+    def tool_calls(self) -> Sequence[ToolUseBlock]:
+        return ()
+
+    def answered_calls(self) -> Sequence[str]:
+        return ()
+
+
+class ApiErrorRecord(SystemRecord):
     """Неудачная попытка запроса к модели, за которой следует повтор через
     retry_in_ms."""
 
@@ -929,7 +1270,7 @@ class ApiErrorRecord(ChainRecord):
     """Короткая техническая причина: статус и суть ответа провайдера."""
 
 
-class InformationalRecord(ChainRecord):
+class InformationalRecord(SystemRecord):
     """Пометка для человека в беседе: сервер MCP пропал или вернулся, ход
     оборван выключением агента. Модели не отправляется; клиент показывает
     её в ходе, где она записана."""
@@ -973,7 +1314,7 @@ class CompactionPhase(StrEnum):
     CANCELLED = "cancelled"
 
 
-class CompactionRecord(ChainRecord):
+class CompactionRecord(SystemRecord):
     """Ход сжатия в истории: из этих записей лента рисует сжатие вживую и при
     воспроизведении. Модели не уходит. `command_uuid` — запись вызова
     `/compact` у сжатия по команде; у сжатия по порогу её нет. `error` —
@@ -989,7 +1330,7 @@ class CompactionRecord(ChainRecord):
     error: str
 
 
-class CompactBoundaryRecord(ChainRecord):
+class CompactBoundaryRecord(SystemRecord):
     type: Literal[RecordType.SYSTEM] = RecordType.SYSTEM
     kind: Literal[RecordKind.COMPACT_BOUNDARY] = RecordKind.COMPACT_BOUNDARY
     subtype: Literal[SystemSubtype.COMPACT_BOUNDARY] = SystemSubtype.COMPACT_BOUNDARY
@@ -998,8 +1339,11 @@ class CompactBoundaryRecord(ChainRecord):
     level: NoticeLevel = NoticeLevel.INFO
     compact_metadata: CompactMetadata
 
+    def starts_window(self) -> bool:
+        return True
 
-class HarnessCommandRecord(ChainRecord):
+
+class HarnessCommandRecord(SystemRecord):
     """Команда запускающей программы или окно сервера MCP, которые клиент
     записал в историю сессии: человек видит её в беседе, модели она не
     уходит. `name` — имя команды, `text` — что человек набрал."""
@@ -1010,8 +1354,11 @@ class HarnessCommandRecord(ChainRecord):
     name: str = Field(min_length=1)
     text: str
 
+    def turn_mark(self) -> TurnMark:
+        return TurnMark.OUTSIDE
 
-class TurnEndRecord(ChainRecord):
+
+class TurnEndRecord(SystemRecord):
     """Конец хода: последняя запись каждого хода, её пишет цикл хода при
     любом исходе, а оборванному ходу — загрузчик при починке. По ней и
     живой ход, и воспроизведение кончают ход одинаково. `notice` — слова
@@ -1031,6 +1378,12 @@ class TurnEndRecord(ChainRecord):
     usage: Usage
     num_turns: int = Field(ge=0)
     duration_ms: int = Field(ge=0)
+
+    def turn_mark(self) -> TurnMark:
+        if self.outcome.refused:
+            return TurnMark.REFUSAL
+
+        return TurnMark.END
 
 
 class ServiceRecord(WireModel):
