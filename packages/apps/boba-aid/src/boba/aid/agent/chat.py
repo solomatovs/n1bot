@@ -34,12 +34,15 @@ from boba.aid.agent.client import (
     AcpClientError,
     AgentClient,
     AgentCommand,
+    AgentFailure,
+    AgentFailureKind,
     AgentLink,
     AgentProcess,
     AgentProcessError,
     AgentRequestError,
     AgentService,
     ElicitationReply,
+    LinkAction,
     PromptBlock,
     SessionUpdate,
     SessionUpdates,
@@ -623,7 +626,13 @@ class ProcessLinks(AgentLinks):
                 f"thread {thread_id}: writing the agent settings into "
                 f"{workdir.path} failed: {exc}"
             )
-            raise AgentProcessError(msg) from exc
+            failure = AgentFailure(
+                kind=AgentFailureKind.START_FAILED,
+                peer=self._command.peer(),
+                action=LinkAction.STARTING,
+                cause=f"its settings file cannot be written: {exc.strerror}",
+            )
+            raise AgentProcessError(msg, failure) from exc
 
         process = AgentProcess(
             self._command, workdir, client, self._relay, servers, self._version
@@ -659,7 +668,16 @@ class ServiceLinks(AgentLinks):
                 "in to the agent service as; it predates the service mode, open "
                 "the thread once to store its user"
             )
-            raise AgentProcessError(msg)
+            failure = AgentFailure(
+                kind=AgentFailureKind.START_FAILED,
+                peer=self._service.peer(),
+                action=LinkAction.STARTING,
+                cause=(
+                    "the thread names no user to sign in as; it predates the "
+                    "service mode"
+                ),
+            )
+            raise AgentProcessError(msg, failure)
 
         service = AgentService(
             self._service,
@@ -1004,6 +1022,33 @@ class ThreadAgent:
             finally:
                 await self._close_session(self.process)
 
+    async def recover(self) -> None:
+        """Вкладка просит агента заново после сбоя: агент, который вышел или
+        не поднялся, заменяется новым, лента вкладки рисуется заново из его
+        истории.
+
+        Ошибки:
+        AgentProcessError, AgentRequestError — агент снова не поднялся или
+            отказал в `session/resume`.
+        AgentSettingsError, DataUnavailableError — слой чата не собран.
+        InternalServiceError — тред не прочитан.
+        """
+        async with self._gate:
+            self._detached = False
+            if self._launched is None or self._exited():
+                launch = await self._launcher.prepare(self._identity)
+                await self._close_process()
+                await self._launch(launch)
+                self._restart_pending = False
+
+            await self._close_session(self.process)
+            self._session_id = None
+            await self._renderer.cleared()
+            try:
+                await self._resume(replay=True)
+            finally:
+                await self._close_session(self.process)
+
     def edited(self, question: Question) -> Question:
         """Вопрос-правка с вложениями правленого вопроса из беседы, которую
         вкладка видела у агента.
@@ -1218,11 +1263,13 @@ class ThreadAgent:
         if settled.done():
             return settled.result()
 
+        failure = self.process.lost(LinkAction.TURN)
         msg = (
-            f"thread {self.thread_id}: the agent process exited during the turn "
-            f"of session {turn.session_id}: {self.process.log_tail()}"
+            f"thread {self.thread_id}: {self.process.label()} left during the turn "
+            f"of session {turn.session_id} ({failure.cause}): "
+            f"{self.process.log_tail()}"
         )
-        raise AgentProcessError(msg)
+        raise AgentProcessError(msg, failure)
 
     async def _finish(
         self, turn: StartedTurn, idle: schema.IdleSessionStateUpdate
@@ -1630,6 +1677,7 @@ class ThreadAgents:
 
         failures: list[AcpClientError] = []
         reasons: list[str] = []
+        failure: AgentFailure | None = None
         for agent, outcome in zip(agents, outcomes, strict=True):
             if outcome is None:
                 continue
@@ -1639,13 +1687,20 @@ class ThreadAgents:
 
             failures.append(outcome)
             reasons.append(f"thread {agent.thread_id}: {outcome}")
+            if failure is None:
+                failure = AgentFailure(
+                    kind=AgentFailureKind.CONNECTION_LOST,
+                    peer=f"agent of thread {agent.thread_id}",
+                    action=step.value,
+                    cause=str(outcome),
+                )
 
-        if failures:
+        if failure is not None:
             msg = (
                 f"{step.value} the agents of the tab: {len(failures)} of "
                 f"{len(agents)} failed: {'; '.join(reasons)}"
             )
-            raise AgentProcessError(msg) from failures[0]
+            raise AgentProcessError(msg, failure) from failures[0]
 
 
 class ThreadDeleter(ThreadDeletionListener):

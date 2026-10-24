@@ -16,7 +16,6 @@ from chainlit.server import sio
 from chainlit.session import WebsocketSession
 from chainlit.types import ThreadDict
 
-from boba.aid.chat.feed import TextClip
 from boba.aid.domain.fields import StepField, ThreadField
 from boba.aid.infra import providers
 from boba.aid.infra.session import (
@@ -43,8 +42,6 @@ from boba.messaging import (
     CanvasChanged,
     Envelope,
     LockToken,
-    Notice,
-    NoticeLevel,
     SignInRefreshRequested,
     ThreadChanged,
     Unsubscribe,
@@ -54,7 +51,6 @@ from boba.runtime.di import Container
 
 __all__ = [
     "CanvasRoomTransport",
-    "ChatNotices",
     "ChatRoomSurface",
     "ThreadEmitter",
     "ThreadLive",
@@ -447,40 +443,6 @@ class ThreadLive:
         exclusive = [holder for holder in holders if holder.mode is LockMode.EXCLUSIVE]
 
         return bool(exclusive)
-
-
-class ChatNotices:
-    """Публикует уведомление Notice в область треда текущей сессии для действий вне
-    хода, чтобы его показал рендерер треда.
-    """
-
-    @staticmethod
-    async def error(text: str) -> None:
-        current = current_session()
-        thread_id = current.thread_id
-        if thread_id is None:
-            raise InternalServiceError(
-                internal_detail=(
-                    f"notice {text[:200]!r}: chainlit session {current.id!r} "
-                    "has no thread_id"
-                ),
-                user_detail=None,
-            )
-
-        ChatRoomSurface.renderer_of(ThreadRoom.websocket(), thread_id)
-        root = Container.root
-        if root is None:
-            raise InternalServiceError(
-                internal_detail=(
-                    f"notice for thread {thread_id}: Container.root is not "
-                    "initialised, bootstrap has not run"
-                ),
-                user_detail=None,
-            )
-
-        bus = root.resolved(runtime.message_bus)
-        notice = Notice(level=NoticeLevel.ERROR, text=TextClip.fit(text))
-        await bus.publish(Scope.chat(thread_id), notice, LockToken.local())
 
 
 class CanvasRoomTransport(SignalTransport):
