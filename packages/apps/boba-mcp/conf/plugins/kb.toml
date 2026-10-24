@@ -19,10 +19,12 @@ embedding        = "${embedding.main}"
 [sandbox]
     network = true
     binds   = [
-        "${env.models}/fastembed:/var/cache/fastembed",
         "/etc/resolv.conf:/etc/resolv.conf",
         "/etc/hosts:/etc/hosts",
         "${env.krb}/krb5.conf:/etc/krb5.conf"
+    ]
+    images  = [
+        "${env.models}/fastembed.ext4:/var/cache/fastembed"
     ]
     [sandbox.limits]
         process_memory_bytes = 17179869184

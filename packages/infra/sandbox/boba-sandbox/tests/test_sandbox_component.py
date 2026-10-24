@@ -13,7 +13,7 @@ from omegaconf.errors import InterpolationKeyError
 
 from boba.config import bind
 from boba.sandbox import SandboxConfig, SandboxProfile, SandboxToolConfig
-from boba.stand.zygote import ROOTFS_IMAGE, ProfileFields
+from boba.stand.zygote import ROOTFS_IMAGE, ProfileFields, SandboxCgroup
 
 
 def _bin_dirs() -> list[str]:
@@ -43,7 +43,7 @@ _PROFILE_BASE: dict[str, Any] = {
         "channel_limit_bytes": 67108864,
         "fail_tail_chars": 2000,
         "kill_grace_sec": 5,
-        "cgroup_base": "",
+        "cgroup_base": SandboxCgroup().base,
     },
     "rootfs": str(ROOTFS_IMAGE),
     "mounts": {
@@ -62,6 +62,7 @@ _PROFILE_BASE: dict[str, Any] = {
         "process_cpu_sec": 30,
         "process_file_bytes": 64 * 1024 * 1024,
         "process_open_files": 256,
+        "group_memory_bytes": 2 * 1024 * 1024 * 1024,
         "process_oom_score_adj": 0,
     },
     "run": {

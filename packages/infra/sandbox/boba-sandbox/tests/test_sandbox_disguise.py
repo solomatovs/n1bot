@@ -4,9 +4,9 @@
 репозитория: профиль стенда накладывает src поверх собранного образа, поэтому
 тест видит текущий HostMask, а не запечённый в rootfs плагина.
 
-Остаются принципиальные утечки, которые закрываются только новыми правами и
-потому вынесены отдельными тестами с причиной: версия ядра из uname(2) и
-признак fuse в таблице монтирования.
+Остаются принципиальные утечки, которые закрываются только новыми правами или
+иной архитектурой и потому вынесены отдельными тестами с причиной: версия ядра
+из uname(2), тип fuse у корня и сами следы маскировки (bind поверх /proc).
 
 Ошибки: своих не выпускает.
 """
@@ -14,14 +14,18 @@
 from __future__ import annotations
 
 import os
+import pwd
+import re
 import shutil
+import subprocess
+from pathlib import Path
 from typing import ClassVar
 
 import pytest
 
 from boba.sandbox.guest import HostMask
 from boba.stand.shell import ShellRun
-from boba.stand.zygote import SandboxStand, ZygoteStand
+from boba.stand.zygote import RUNTIME, SandboxStand, ZygoteStand
 
 needs_bwrap = pytest.mark.failif(
     shutil.which("bwrap") is None,
@@ -48,7 +52,6 @@ class Probe:
         "echo loadavg=$(cat /proc/loadavg); "
         "echo modules=$(wc -l < /proc/modules); "
         "echo version=$(cat /proc/version); "
-        "echo mountinfo_fuse=$(grep -c fuse.ext4 /proc/self/mountinfo); "
         "echo bootid=$(cat /proc/sys/kernel/random/boot_id)"
     )
 
@@ -83,6 +86,141 @@ class Probe:
 @pytest.fixture
 def probe(zygote_stand: ZygoteStand) -> Probe:
     made = Probe(zygote_stand)
+    zygote_stand.stop()
+    return made
+
+
+class MountProbe:
+    """Таблица монтирования и содержимое конфига изнутри секции с workspace.
+
+    Профиль несёт образ workspace (fuse rw), образ данных (fuse ro, как веса
+    моделей) и бинд хостового resolv.conf — так один вызов покрывает источник
+    fuse у корня и у образов, каталог образов и нейтрализацию хостового бинда
+    конфига.
+    """
+
+    FAKE_DNS: ClassVar[str] = "nameserver 10.1.2.3"
+    WEIGHTS: ClassVar[str] = "weights-of-the-model"
+    DATA_TARGET: ClassVar[str] = "/media"
+    """Точка образа данных: пустой каталог, который есть в корне shell-плагина."""
+    MOUNTS: ClassVar[str] = "@@mounts@@"
+    RESOLV: ClassVar[str] = "@@resolv@@"
+    DATA: ClassVar[str] = "@@data@@"
+    STATUS: ClassVar[str] = "@@status@@"
+    SCRIPT: ClassVar[str] = (
+        "cat /proc/self/mountinfo; "
+        f"echo {MOUNTS}; cat /proc/mounts; "
+        f"echo {RESOLV}; cat /etc/resolv.conf; "
+        f"echo {DATA}; cat {DATA_TARGET}/weights.txt; "
+        f"echo {STATUS}; cat /proc/self/status"
+    )
+    STAND_CODE: ClassVar[str] = "/usr/src"
+    """Бинд кода репозитория, который кладёт сам стенд: в бою его нет."""
+
+    def __init__(self, stand: ZygoteStand, tmp_path: Path) -> None:
+        fake = tmp_path / "resolv.conf"
+        fake.write_text(f"{self.FAKE_DNS}\n")
+        self._fake = str(fake)
+        self._image = self._data_image(tmp_path)
+
+        # код репозитория (/usr/src) остаётся: иначе зигота взяла бы guest из
+        # запечённого образа, а не из текущих исходников
+        profile = SandboxStand.image_profile(
+            tmp_path,
+            process_memory_bytes=MEM_BYTES,
+            ro=(*SandboxStand.image_ro_binds(), f"{fake}:/etc/resolv.conf"),
+            images=(f"{self._image}:{self.DATA_TARGET}",),
+        )
+        caller = stand.caller(
+            "mnt", profile, path_vars=lambda: {"user_id": "3", "scope_id": "x"}
+        )
+        outcome = ShellRun.call_text(caller, self.SCRIPT)
+        if outcome.exit_code != 0:
+            msg = f"mount probe failed rc={outcome.exit_code}: {outcome.stderr!r}"
+            raise AssertionError(msg)
+
+        self._mountinfo, _, rest = outcome.stdout.partition(f"{self.MOUNTS}\n")
+        self._mounts, _, rest = rest.partition(f"{self.RESOLV}\n")
+        self._resolv, _, rest = rest.partition(f"{self.DATA}\n")
+        self._data, _, self._status = rest.partition(f"{self.STATUS}\n")
+
+    def _data_image(self, tmp_path: Path) -> str:
+        """Ext4-образ данных с одним файлом весов: mke2fs кладёт дерево сам."""
+        mkfs = shutil.which("mkfs.ext4")
+        if mkfs is None:
+            msg = "mount probe: mkfs.ext4 is not found on PATH for the data image"
+            raise AssertionError(msg)
+
+        tree = tmp_path / "data-tree"
+        tree.mkdir()
+        (tree / "weights.txt").write_text(f"{self.WEIGHTS}\n")
+
+        image = tmp_path / "data.ext4"
+        subprocess.run(
+            [mkfs, "-q", "-F", "-t", "ext4", "-d", str(tree), str(image), "4m"],
+            check=True,
+            capture_output=True,
+        )
+        return str(image)
+
+    @property
+    def mountinfo(self) -> str:
+        return self._mountinfo
+
+    @property
+    def mounts(self) -> str:
+        return self._mounts
+
+    @property
+    def resolv(self) -> str:
+        return self._resolv
+
+    @property
+    def fake_host_path(self) -> str:
+        return self._fake
+
+    @property
+    def data(self) -> str:
+        return self._data
+
+    @property
+    def status(self) -> str:
+        return self._status
+
+    def table_lines(self) -> list[str]:
+        """Строки mountinfo и mounts без бинда кода стенда."""
+        lines: list[str] = []
+        for line in (self._mountinfo + self._mounts).splitlines():
+            fields = line.split()
+            if self.STAND_CODE in fields[1:5]:
+                continue
+
+            lines.append(line)
+
+        return lines
+
+    @property
+    def data_image_path(self) -> str:
+        return self._image
+
+    def fuse_sources(self) -> list[str]:
+        """Источник (поле после типа) каждой строки fuse mountinfo."""
+        sources: list[str] = []
+        for line in self._mountinfo.splitlines():
+            _, sep, tail = line.partition(" - ")
+            if not sep:
+                continue
+
+            fields = tail.split()
+            if len(fields) >= 2 and fields[0].startswith("fuse"):
+                sources.append(fields[1])
+
+        return sources
+
+
+@pytest.fixture
+def mount_probe(zygote_stand: ZygoteStand, tmp_path: Path) -> MountProbe:
+    made = MountProbe(zygote_stand, tmp_path)
     zygote_stand.stop()
     return made
 
@@ -154,8 +292,89 @@ class TestHostIsMasked:
             return handle.read().strip()
 
 
+class HostOwner:
+    """Признаки пользователя хоста: uid= и gid= в опциях монтирования, число
+    uid в строках Uid/Gid статуса и имя пользователя отдельным словом."""
+
+    def markers(self) -> list[re.Pattern[str]]:
+        uid = os.getuid()
+        gid = os.getgid()
+        user = pwd.getpwuid(uid).pw_name
+        return [
+            re.compile(rf"\buid={uid}\b"),
+            re.compile(rf"\bgid={gid}\b"),
+            re.compile(rf"^(Uid|Gid):.*\b({uid}|{gid})\b"),
+            re.compile(rf"(?<![\w.-]){re.escape(user)}(?![\w.-])"),
+        ]
+
+
+class TestMountinfoIsClean:
+    """В таблице монтирования нет ничего хостового: ни путей образов, ни
+    host-путей у биндов конфигов."""
+
+    def test_fuse_sources_are_neutral(self, mount_probe: MountProbe) -> None:
+        """Источник корня и образа workspace — нейтральное имя, не путь."""
+        sources = mount_probe.fuse_sources()
+        if not sources:
+            raise AssertionError("fuse-монтирований в таблице нет — проверка слепа")
+
+        for source in sources:
+            if "/" in source:
+                raise AssertionError(f"fuse выдаёт путь образа: {source!r}")
+
+    def test_no_images_directory(self, mount_probe: MountProbe) -> None:
+        if "/mnt/images" in mount_probe.mountinfo + mount_probe.mounts:
+            raise AssertionError("каталог образов виден в таблице монтирования")
+
+    def test_no_rootfs_image_path(self, mount_probe: MountProbe) -> None:
+        rootfs = str(RUNTIME.shell_rootfs)
+        if rootfs in mount_probe.mountinfo or rootfs in mount_probe.mounts:
+            raise AssertionError("путь образа rootfs виден в таблице монтирования")
+
+    def test_config_bind_is_neutralized(self, mount_probe: MountProbe) -> None:
+        """Хостовый бинд resolv.conf заменён копией: путь на хосте исчез,
+        содержимое сохранено."""
+        if mount_probe.fake_host_path in mount_probe.mountinfo:
+            raise AssertionError("host-путь бинда resolv.conf виден в mountinfo")
+
+        if MountProbe.FAKE_DNS not in mount_probe.resolv:
+            msg = f"содержимое resolv.conf потеряно: {mount_probe.resolv!r}"
+            raise AssertionError(msg)
+
+    def test_data_image_is_mounted_neutrally(self, mount_probe: MountProbe) -> None:
+        """Образ данных (как веса моделей) читается телом, а путь образа на
+        хосте в таблице монтирования не виден."""
+        if MountProbe.WEIGHTS not in mount_probe.data:
+            msg = f"файл образа данных не читается: {mount_probe.data!r}"
+            raise AssertionError(msg)
+
+        table = mount_probe.mountinfo + mount_probe.mounts
+        if mount_probe.data_image_path in table:
+            raise AssertionError("путь образа данных виден в таблице монтирования")
+
+    def test_no_host_owner(self, mount_probe: MountProbe) -> None:
+        """Ни uid, ни gid, ни имя пользователя хоста: tmpfs из userns печатала
+        их в опциях, поэтому /tmp, /dev и подмены тела стоят на ramfs."""
+        markers = HostOwner().markers()
+
+        exposed: list[str] = []
+        for line in [*mount_probe.table_lines(), *mount_probe.status.splitlines()]:
+            for marker in markers:
+                if marker.search(line):
+                    exposed.append(line)
+
+        if exposed:
+            listed = "\n".join(exposed)
+            raise AssertionError(f"тело видит владельца на хосте:\n{listed}")
+
+    def test_no_host_nodename(self, mount_probe: MountProbe) -> None:
+        if os.uname().nodename in mount_probe.mountinfo:
+            raise AssertionError("имя хоста машины видно в таблице монтирования")
+
+
 class TestKnownLimitations:
-    """Утечки, которые без новых прав не закрыть; тест фиксирует их явно.
+    """Утечки, которые без новых прав или иной архитектуры не закрыть; тест
+    фиксирует их явно.
 
     Если такой тест упадёт — ограничение снято, и запись о нём в итоге задачи
     пора обновить, а не промолчать.
@@ -173,13 +392,22 @@ class TestKnownLimitations:
                 "обновить итог задачи"
             )
 
-    def test_mountinfo_still_reveals_fuse(self, probe: Probe) -> None:
-        """Источник корня в mountinfo — fuse.ext4 с путём образа на хосте.
-
-        Нейтрализуется только перестроением дерева монтирования (pivot_root в
-        исполнителе) — предложение в итоге; fsname fuse2fs перекрыть не даёт.
-        """
-        if probe.value("mountinfo_fuse") == "0":
+    def test_root_fstype_still_shows_fuse(self, mount_probe: MountProbe) -> None:
+        """Корень — fuse.ext4: тип файловой системы скрыть нельзя, корень
+        действительно обслуживает fuse2fs. Источник уже нейтрален (отдельная
+        проверка)."""
+        if "fuse.ext4" not in mount_probe.mountinfo:
             raise AssertionError(
-                "fuse исчез из mountinfo — ограничение снято, обновить итог задачи"
+                "fuse.ext4 исчез из mountinfo — архитектура корня изменилась, "
+                "обновить итог задачи"
+            )
+
+    def test_proc_masks_show_as_overmounts(self, mount_probe: MountProbe) -> None:
+        """Подмена файлов /proc — bind поверх, он виден строкой tmpfs в
+        mountinfo. Убрать след можно лишь fuse-видом /proc (как LXCFS) —
+        отдельный демон, вынесено предложением."""
+        if "/proc/cpuinfo" not in mount_probe.mountinfo:
+            raise AssertionError(
+                "bind поверх /proc/cpuinfo исчез — способ маскировки изменился, "
+                "обновить итог задачи"
             )

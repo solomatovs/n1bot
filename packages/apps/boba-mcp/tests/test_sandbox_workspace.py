@@ -6,7 +6,7 @@ import os
 
 import pytest
 
-from boba.stand.zygote import ROOTFS_IMAGE, ProfileFields
+from boba.stand.zygote import ROOTFS_IMAGE, ProfileFields, SandboxCgroup
 
 _ROOT = "/tmp/boba-rootfs"  # noqa: S108
 """Точка, куда цепочка лаунчера смонтировала корень."""
@@ -47,7 +47,7 @@ _PROFILE_BASE: dict[str, object] = {
         "channel_limit_bytes": 67108864,
         "fail_tail_chars": 2000,
         "kill_grace_sec": 5,
-        "cgroup_base": "",
+        "cgroup_base": SandboxCgroup().base,
     },
     "rootfs": str(ROOTFS_IMAGE),
     "mounts": {
@@ -66,6 +66,7 @@ _PROFILE_BASE: dict[str, object] = {
         "process_cpu_sec": 30,
         "process_file_bytes": 64 * 1024 * 1024,
         "process_open_files": 256,
+        "group_memory_bytes": 2 * 1024 * 1024 * 1024,
         "process_oom_score_adj": 0,
     },
     "run": {
@@ -200,3 +201,36 @@ class TestProfileRender:
         host = self._rendered_host("7", "t1")
         if not (f"/srv/ws/{key}".startswith(f"{host}/upload/")):
             raise AssertionError('f"/srv/ws/{key}".startswith(f"{host}/upload/")')
+
+
+class TestDataImages:
+    """Образ данных монтирует внешний слой, во вложенный он едет ro-биндом."""
+
+    IMAGE = "/srv/models/fastembed.ext4"
+    TARGET = "/var/cache/fastembed"
+
+    def test_image_is_bound_read_only_to_its_target(self) -> None:
+        profile = _profile(images=(f"{self.IMAGE}:{self.TARGET}",))
+        argv = ZygoteArgv(profile).argv(["true"], env={}, root=_ROOT)
+
+        pairs: list[list[str]] = []
+        for index, arg in enumerate(argv):
+            if arg == "--ro-bind":
+                pairs.append(argv[index + 1 : index + 3])
+
+        if ["/tmp/boba-image-0", self.TARGET] not in pairs:  # noqa: S108
+            raise AssertionError(f"no read-only bind of the image mount: {pairs}")
+
+        if self.IMAGE in argv:
+            raise AssertionError("the image file itself reaches the nested layer")
+
+    def test_chain_mounts_the_image_file(self) -> None:
+        profile = _profile(images=(f"{self.IMAGE}:{self.TARGET}",))
+        images = ZygoteArgv(profile).data_images()
+
+        if images != ((self.IMAGE, "/tmp/boba-image-0"),):  # noqa: S108
+            raise AssertionError(f"data images of the chain: {images}")
+
+    def test_per_call_variable_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="mounted once per zygote"):
+            _profile(images=("/srv/{user_id}.ext4:/var/cache/x",))

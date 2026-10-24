@@ -42,7 +42,6 @@ from boba.db.postgres.connection import PostgresConfig
 from boba.identity.token import CookieSpec, SessionRenewal
 from boba.krb import KerberosWorkspaceConfig
 from boba.krb.seal import SsoTickets, TicketSealer
-from boba.runtime.launchers import ToolLaunchers
 from boba.workspace.launcher import LauncherEnv, LauncherInterpreter
 
 __all__ = [
@@ -671,13 +670,9 @@ class ProcessConfig(BaseModel):
 
     @classmethod
     def load(cls, files: ConfigFiles) -> Self:
-        """Читает файлы конфигурации, проверяет способ запуска инструментов и
-        раскладывает кэши kerberos.
-        """
+        """Читает файлы конфигурации и раскладывает кэши kerberos."""
         raw = RawConfig.load(files)
         config = bind(raw, path=cls.SECTION, model=cls)
-        # предпосылки способа запуска проверяются на старте: отказ виден сразу
-        ToolLaunchers(raw).build().probe()
         # кэши билетов раскладывает приложение: строкам соединений пути не задают
         config.krb.apply()
 
