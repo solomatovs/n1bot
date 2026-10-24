@@ -3028,7 +3028,7 @@ class TestHistory:
         показывает те же пометки и ни одного недописанного ответа."""
         client = AcpClient()
         document = boba.settings_document()
-        document["limits"] = {"apiRetries": 1}
+        document["limits"]["apiRetries"] = 1
         conn = await boba.start(client, registration, document)
         try:
             await handshake(conn)
