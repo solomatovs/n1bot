@@ -53,7 +53,9 @@ async def stub() -> AsyncIterator[tuple[ConfluenceStub, int]]:
 
 @pytest.fixture
 def shared(ix_stand: IxStand, ix_database: IxStandDatabase) -> SharedIndexers:
-    return SharedIndexers(ix_stand.ix_database, ix_stand.embedding_cache_dir)
+    return SharedIndexers(
+        ix_stand.ix_database, ix_stand.embedding_cache_dir, ix_stand.krb
+    )
 
 
 @pytest.fixture

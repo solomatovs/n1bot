@@ -264,11 +264,18 @@ class ToolService:
     """
 
     ENDPOINT: ClassVar[str] = "general"
+    PLUGINS: ClassVar[tuple[str, ...]] = ("pg", "ch", "web")
+    """Плагины песочницы, которые зовут тесты сервиса: соединения
+    пользователя (pg, ch) и делегированный HTTP (web)."""
     BOOT_TIMEOUT_SEC: ClassVar[float] = 300.0
 
     def __init__(self, workdir: Path, db_name: str) -> None:
         self._config = ServiceStand(
-            workdir=workdir, app_port=StandPorts().free(), db_name=db_name, sandbox=True
+            workdir=workdir,
+            app_port=StandPorts().free(),
+            db_name=db_name,
+            sandbox=True,
+            plugins=self.PLUGINS,
         )
         self._process = StandProcess[ServiceStand](
             config=self._config, log_path=workdir / "mcp.log"
