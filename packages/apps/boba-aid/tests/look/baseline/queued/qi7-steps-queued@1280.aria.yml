@@ -10,7 +10,7 @@
 - article
 - article: А сколько строк в витрине?
 - textbox "Введите сообщение здесь..."
-- button:
+- button "Прикрепить файлы":
   - img
 - button "Команды"
 - button

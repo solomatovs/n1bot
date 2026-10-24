@@ -2,6 +2,7 @@
   - text: "The agent didn't accept the sign-in of this chat, so the chat can't answer. Reload the page to sign in again; if it keeps failing, let the administrator know. agent service at http://127.0.0.1:0/acp, initialize: No authorization server metadata at configured issuer http://127.0.0.1:0/"
   - button "Повторить"
 - textbox "Введите сообщение здесь..."
-- img
+- button "Прикрепить файлы" [disabled]:
+  - img
 - button [disabled]:
   - img

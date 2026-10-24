@@ -9,7 +9,7 @@
 - img "Avatar for AID"
 - article
 - textbox "Введите сообщение здесь...": А сколько строк в витрине?
-- button:
+- button "Прикрепить файлы":
   - img
 - button "Команды"
 - button:
