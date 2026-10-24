@@ -43,6 +43,7 @@ from boba.messaging import (
     Envelope,
     LockToken,
     SignInRefreshRequested,
+    ThreadActive,
     ThreadChanged,
     Unsubscribe,
 )
@@ -298,7 +299,9 @@ class ChatRoomSurface(RenderSurface):
 class UserRoom:
     """Подписка инстанса на область пользователя: по ThreadChanged все его вкладки на
     этом инстансе перечитывают список тредов событием first_interaction chainlit с
-    их же текущим тредом. Подписка живёт до конца процесса.
+    их же текущим тредом, по ThreadActive получают сигнал страницы с новым
+    временем активности треда — панель ставит тред по нему. Подписка живёт до
+    конца процесса.
     """
 
     EVENT: ClassVar[str] = "first_interaction"
@@ -341,6 +344,10 @@ class UserRoom:
         message = envelope.message
         if isinstance(message, SignInRefreshRequested):
             await cls._refresh_requested(user_id)
+            return
+
+        if isinstance(message, ThreadActive):
+            await cls._thread_active(user_id, message)
             return
 
         if not isinstance(message, ThreadChanged):
@@ -412,6 +419,32 @@ class UserRoom:
                     exc,
                     exc_info=True,
                 )
+
+    @classmethod
+    async def _thread_active(cls, user_id: UUID, message: ThreadActive) -> None:
+        """Время активности треда — каждой вкладке пользователя, включая ту,
+        где тред открыт: панель любой страницы ставит тред по значению базы."""
+        payload = {
+            "type": SignalType.THREAD_ACTIVITY,
+            "threadId": message.thread_id,
+            "updatedAt": message.updated_at.isoformat(),
+        }
+        failed: list[str] = []
+        for session in session_source_ref().of_user(user_id):
+            # одна битая вкладка не должна оставить без сигнала остальные
+            try:
+                await session.emit(ChatRoomSurface.EVENT, payload)
+            except Exception as exc:
+                failed.append(f"{session.id}: {exc}")
+
+        if failed:
+            raise InternalServiceError(
+                internal_detail=(
+                    f"thread activity signal of thread {message.thread_id} failed "
+                    f"for sessions of user {user_id}: " + "; ".join(failed)
+                ),
+                user_detail=None,
+            )
 
     @staticmethod
     def _on_thread_page(socket: WebsocketSession) -> bool:

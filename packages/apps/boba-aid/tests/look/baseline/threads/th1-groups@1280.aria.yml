@@ -1,0 +1,32 @@
+- button:
+  - img
+- button:
+  - img
+- button:
+  - img
+- list:
+  - text: Сегодня
+  - list:
+    - listitem:
+      - link "План на сегодня":
+        - /url: /boba-look/thread/00000000-0000-0000-0000-000000000000
+        - button "План на сегодня"
+  - text: Вчера
+  - list:
+    - listitem:
+      - link "Разбор вчерашнего релиза":
+        - /url: /boba-look/thread/00000000-0000-0000-0000-000000000000
+        - button "Разбор вчерашнего релиза"
+  - text: Предыдущие 7 дней
+  - list:
+    - listitem:
+      - link "Отчёт за неделю":
+        - /url: /boba-look/thread/00000000-0000-0000-0000-000000000000
+        - button "Отчёт за неделю"
+  - text: Предыдущие 30 дней
+  - list:
+    - listitem:
+      - link "Архив задач":
+        - /url: /boba-look/thread/00000000-0000-0000-0000-000000000000
+        - button "Архив задач"
+- button "Toggle Sidebar"

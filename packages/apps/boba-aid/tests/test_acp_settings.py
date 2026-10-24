@@ -1,9 +1,9 @@
-"""Настройки агента: слой чата из профиля в Postgres стенда с шифрованием
-секретов, файл настроек ключами договора запуска в приватном каталоге
-0700/0600 без серверов MCP, хуков, режима сессии и области вызовов, строка
-подключения истории, и
-рукопожатие настоящего `boba --stdio` v2 по этому файлу — секреты не попадают в
-argv и окружение ребёнка, каталог удаляется с процессом."""
+"""Настройки агента: профиль модели из профиля чата, файл настроек ключами
+договора запуска в приватном каталоге 0700/0600 без серверов MCP, хуков,
+режима сессии и области вызовов, строка подключения истории, рукопожатие
+настоящего `boba --stdio` v2 по этому файлу — секреты не попадают в argv и
+окружение ребёнка, каталог удаляется с процессом, — и удаление сессии треда
+коротким процессом по текущему профилю."""
 
 from __future__ import annotations
 
@@ -39,15 +39,14 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
-from psycopg import sql
-from psycopg.types.json import Jsonb
 
 from boba.aid.agent.chat import (
-    AgentLaunch,
     AgentLauncher,
     AgentSessionMeta,
     Question,
     ThreadAgent,
+    ThreadAgentsIndex,
+    ThreadDeleter,
     ThreadIdentity,
 )
 from boba.aid.agent.client import (
@@ -63,15 +62,18 @@ from boba.aid.agent.config import (
 )
 from boba.aid.agent.settings import (
     AgentSettingsError,
-    AgentSettingsTable,
     AgentWorkdirs,
     HistoryEnvironment,
     ProfileModelSpecs,
     SettingsFileBuilder,
 )
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
-from boba.chat.profiles import ChatProfileConfig, ReasoningReturn, SelectedProfile
-from boba.connections.secrets import SecretCipher
+from boba.chat.profiles import (
+    ChatProfileConfig,
+    ChatProfiles,
+    ReasoningReturn,
+    SelectedProfile,
+)
 from boba.core.mcp_names import McpToolNames
 from boba.db.postgres import AsyncPostgresPool, PostgresSchema
 from boba.db.postgres.connection import (
@@ -86,6 +88,7 @@ from boba.krb.credentials import KerberosEnv
 from boba.llm.onnx import OnnxProvider
 from boba.mcp_client.client import McpServerConfig, McpServers, McpServersConfig
 from boba.runtime.threads import ThreadsTable
+from boba.runtime.users import UsersTable
 from boba.stand.names import StandNames
 from boba.stand.signin import SignInStand
 from boba.stand.site import Stand
@@ -102,7 +105,6 @@ pytestmark = pytest.mark.anyio
 
 SCHEMA = StandNames().of_tree("acp_settings")
 NO_SERVERS = McpServersConfig(servers={})
-CIPHER_KEY = b"0123456789abcdef0123456789abcdef"
 
 
 @pytest.fixture(autouse=True)
@@ -111,19 +113,10 @@ def chainlit_context() -> None:
 
 
 @pytest.fixture
-async def table(
-    test_postgres: PostgresConfig, pool: AsyncPostgresPool
-) -> AgentSettingsTable:
-    async with pool.connection() as conn:
-        await conn.execute(
-            sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(SCHEMA))
-        )
-
-    schema_dir = files("boba.aid.agent") / "schema"
-    async with pool.connection() as conn:
-        await PostgresSchema(SCHEMA).apply_files(conn, schema_dir, {})
-
-    return AgentSettingsTable(test_postgres, SCHEMA, SecretCipher(CIPHER_KEY), pool)
+async def users(test_postgres: PostgresConfig, pool: AsyncPostgresPool) -> UsersTable:
+    """Строки users набора: запуск агента читает их только при удалении
+    треда в режиме службы."""
+    return UsersTable(test_postgres, SCHEMA, pool)
 
 
 @pytest.fixture
@@ -131,122 +124,8 @@ def specs() -> ProfileModelSpecs:
     return ProfileModelSpecs()
 
 
-class TestChatLayer:
-    """Слой чата: запуск агента собирает его из профиля чата, сохраняет для
-    удаления треда и шифрует секреты строки."""
-
-    async def test_launch_takes_the_profile_over_the_stored_row(
-        self,
-        tmp_path: Path,
-        stand: Stand,
-        table: AgentSettingsTable,
-        auth_token: str,
-    ) -> None:
-        """Сохранённая строка треда с другой моделью и ключом запуск не
-        трогает: слой берётся из профиля и заменяет строку."""
-        identity = self._identity(SignInStand.profile())
-        thread_id = UUID(identity.thread_id)
-        stored = FakeModel().chat_settings("stale prompt")
-        await table.save_chat_layer(
-            thread_id, identity.user_id, SignInStand.PROFILE, stored
-        )
-
-        launch = await self._prepare(tmp_path, stand, table, identity)
-
-        chat = launch.chat
-        assert chat.model_name == SignInStand.PROFILE
-        assert chat.model.model == SignInStand.profile().model
-        assert chat.model.provider.base_url == "https://fake-llm/v1"
-        assert chat.system_prompt == "stand"
-        assert await table.chat_layer(thread_id) == chat
-
-    async def test_secrets_are_encrypted_at_rest(
-        self, table: AgentSettingsTable, pool: AsyncPostgresPool
-    ) -> None:
-        thread_id = uuid4()
-        chat = FakeModel().chat_settings()
-        await table.save_chat_layer(thread_id, uuid4(), "general", chat)
-        async with pool.connection() as conn:
-            row = await conn.execute(
-                sql.SQL(
-                    "select settings::text from {}.agent_chat_settings "
-                    "where thread_id = %s"
-                ).format(sql.Identifier(SCHEMA)),
-                (thread_id,),
-            )
-            fetched = await row.fetchone()
-
-        assert fetched is not None
-        raw = fetched[0]
-        assert API_KEY not in raw
-        assert "enc:v1:" in raw
-
-        loaded = await table.chat_layer(thread_id)
-        assert loaded == chat
-
-    async def test_missing_row_reads_as_none(self, table: AgentSettingsTable) -> None:
-        assert await table.chat_layer(uuid4()) is None
-
-        thread_id = uuid4()
-        await table.delete_chat_layer(thread_id)
-        assert await table.chat_layer(thread_id) is None
-
-    async def test_stored_permission_mode_is_dropped_on_read(
-        self, table: AgentSettingsTable, pool: AsyncPostgresPool
-    ) -> None:
-        """Строка с режимом разрешений, выбранным пользователем, читается: режим
-        отбрасывается, остальные поля на месте."""
-        thread_id = uuid4()
-        chat = FakeModel().chat_settings()
-        await table.save_chat_layer(thread_id, uuid4(), "general", chat)
-        async with pool.connection() as conn:
-            await conn.execute(
-                sql.SQL(
-                    "update {}.agent_chat_settings set settings = settings || %s "
-                    "where thread_id = %s"
-                ).format(sql.Identifier(SCHEMA)),
-                (Jsonb({"mode": "plan"}), thread_id),
-            )
-
-        assert await table.chat_layer(thread_id) == chat
-
-    @staticmethod
-    def _identity(profile: ChatProfileConfig) -> ThreadIdentity:
-        tab = TabSession()
-        tab.password_sign_in(frozenset({"dev"}))
-
-        return ThreadIdentity(
-            thread_id=str(uuid4()),
-            user_id=uuid4(),
-            login=TabSession.LOGIN,
-            roles=frozenset({"dev"}),
-            session=tab.live,
-            profile=SelectedProfile(name=SignInStand.PROFILE, config=profile),
-        )
-
-    @staticmethod
-    async def _prepare(
-        tmp_path: Path,
-        stand: Stand,
-        table: AgentSettingsTable,
-        identity: ThreadIdentity,
-    ) -> AgentLaunch:
-        credentials = KerberosCredentialSource(None, NoRefresh())
-        relays = RelayStand(NoConnectionStore(), lambda: credentials, CallContexts())
-        servers = McpServers(NO_SERVERS)
-        history = AgentHistoryStand(stand)
-        launcher = AgentLauncher(
-            AgentStand(tmp_path / "agents", history.history()).config(),
-            NO_SERVERS,
-            table,
-            relays.registrations,
-            relays.relay(servers),
-            "0.0",
-        )
-        try:
-            return await launcher.prepare(identity)
-        finally:
-            await servers.stop()
+class TestProfileModel:
+    """Профиль модели агента из профиля чата: только удалённый провайдер."""
 
     def test_local_provider_is_refused(self, specs: ProfileModelSpecs) -> None:
         profile = ChatProfileConfig.model_validate(
@@ -275,7 +154,9 @@ class TestHistoryDsn:
         assert f"dbname={stand.pg_probe_database}" in dsn
         assert "gssencmode=disable" in dsn
 
-    def test_certificate_auth_is_refused(self, test_postgres: PostgresConfig) -> None:
+    async def test_certificate_auth_is_refused(
+        self, test_postgres: PostgresConfig
+    ) -> None:
         certificate = test_postgres.model_copy(
             update={
                 "auth": CertificateAuth(
@@ -331,11 +212,11 @@ class TestSettingsFile:
             "http://127.0.0.1:8000/boba"
         )
         builder = SettingsFileBuilder(config, NO_SERVERS)
-        chat = model.chat_settings("Answer briefly")
+        launch = model.launch("Answer briefly")
 
-        document = builder.build(chat, None, {})
+        document = builder.build(launch.profile, launch.model, None, {})
         workdir = AgentWorkdirs(tmp_path / "agents").create("thread-1")
-        workdir.write(document, chat.system_prompt)
+        workdir.write(document, launch.system_prompt)
 
         assert stat.S_IMODE(workdir.path.stat().st_mode) == 0o700
         assert stat.S_IMODE(workdir.settings_path.stat().st_mode) == 0o600
@@ -343,12 +224,12 @@ class TestSettingsFile:
         assert workdir.prompt_path.read_text(encoding="utf-8") == "Answer briefly"
 
         body = json.loads(workdir.settings_path.read_text(encoding="utf-8"))
-        assert body["model"] == chat.model_name
-        provider = body["models"][chat.model_name]["provider"]
+        assert body["model"] == launch.profile
+        provider = body["models"][launch.profile]["provider"]
         assert provider["kind"] == "openai"
         assert provider["baseUrl"] == model.base_url()
         assert provider["apiKey"] == API_KEY
-        assert body["models"][chat.model_name]["contextWindow"] == 32000
+        assert body["models"][launch.profile]["contextWindow"] == 32000
         assert body["permissions"] == {"allowBypass": True}
         assert body["history"]["kind"] == "postgres"
         assert body["history"]["schema"] == history.db_schema
@@ -371,11 +252,11 @@ class TestAgentHandshake:
     ) -> None:
         history = AgentHistoryStand(stand)
         agent_stand = AgentStand(tmp_path / "agents", history.history())
-        chat = model.chat_settings()
+        launch = model.launch()
         builder = SettingsFileBuilder(agent_stand.config(), NO_SERVERS)
-        document = builder.build(chat, None, {})
+        document = builder.build(launch.profile, launch.model, None, {})
         workdir = AgentWorkdirs(tmp_path / "agents").create("thread-2")
-        workdir.write(document, chat.system_prompt)
+        workdir.write(document, launch.system_prompt)
 
         client = AgentClient(RecordingUpdates())
         credentials = KerberosCredentialSource(None, NoRefresh())
@@ -429,7 +310,7 @@ class TestRetiredServers:
         self,
         tmp_path: Path,
         stand: Stand,
-        table: AgentSettingsTable,
+        users: UsersTable,
         threads: ThreadsTable,
         model: FakeModel,
         auth_token: str,
@@ -445,7 +326,8 @@ class TestRetiredServers:
         launcher = AgentLauncher(
             agent_stand.config(),
             servers_config,
-            table,
+            SignInStand.profiles(),
+            users,
             relays.registrations,
             relay,
             "0.0",
@@ -542,7 +424,7 @@ class TestForkCut:
         self,
         tmp_path: Path,
         stand: Stand,
-        table: AgentSettingsTable,
+        users: UsersTable,
         test_postgres: PostgresConfig,
         pool: AsyncPostgresPool,
         auth_token: str,
@@ -560,7 +442,8 @@ class TestForkCut:
         launcher = AgentLauncher(
             config.model_copy(update={"process": foreign}),
             NO_SERVERS,
-            table,
+            SignInStand.profiles(),
+            users,
             relays.registrations,
             relay,
             "0.0",
@@ -604,7 +487,7 @@ class TestForkCut:
 
 
 class ChatLaunch:
-    """Чат теста ниже обработчиков chainlit: слой чата в Postgres стенда,
+    """Чат теста ниже обработчиков chainlit: треды в Postgres стенда,
     запуск агента AgentLauncher по профилю чата и [agent], агент вкладки
     ThreadAgent, ретранслятор стенда. Файл настроек строится по серверам
     filed, ретранслятор ходит к серверам relayed: так видно, чьим сроком
@@ -614,12 +497,12 @@ class ChatLaunch:
         self,
         root: Path,
         stand: Stand,
-        table: AgentSettingsTable,
+        users: UsersTable,
         threads: ThreadsTable,
     ) -> None:
         self._root = root
         self._history = AgentHistoryStand(stand)
-        self._table = table
+        self._users = users
         self._threads = threads
         credentials = KerberosCredentialSource(None, NoRefresh())
         self._relays = RelayStand(
@@ -641,7 +524,8 @@ class ChatLaunch:
         launcher = AgentLauncher(
             config,
             filed,
-            self._table,
+            SignInStand.profiles(),
+            self._users,
             self._relays.registrations,
             self._relays.relay(servers),
             "0.0",
@@ -687,11 +571,11 @@ async def threads(
 async def chat_launch(
     tmp_path: Path,
     stand: Stand,
-    table: AgentSettingsTable,
+    users: UsersTable,
     threads: ThreadsTable,
     auth_token: str,
 ) -> AsyncIterator[ChatLaunch]:
-    launch = ChatLaunch(tmp_path, stand, table, threads)
+    launch = ChatLaunch(tmp_path, stand, users, threads)
     try:
         yield launch
     finally:
@@ -949,7 +833,7 @@ class TestFailedLaunch:
         self,
         tmp_path: Path,
         stand: Stand,
-        table: AgentSettingsTable,
+        users: UsersTable,
     ) -> None:
         history = AgentHistoryStand(stand)
         config = AgentStand(tmp_path / "agents", history.history()).config()
@@ -962,17 +846,28 @@ class TestFailedLaunch:
         launcher = AgentLauncher(
             config.model_copy(update={"process": missing}),
             NO_SERVERS,
-            table,
+            SignInStand.profiles(),
+            users,
             relays.registrations,
             relays.relay(servers),
             "0.0",
         )
-        chat = FakeModel().chat_settings()
+        tab = TabSession()
+        tab.password_sign_in(frozenset({"dev"}))
+        identity = ThreadIdentity(
+            thread_id=str(uuid4()),
+            user_id=uuid4(),
+            login=TabSession.LOGIN,
+            roles=frozenset({"dev"}),
+            session=tab.live,
+            profile=SelectedProfile(
+                name=SignInStand.PROFILE, config=SignInStand.profile()
+            ),
+        )
+        launch = launcher.prepare(identity)
         try:
             with pytest.raises(AgentProcessError) as refused:
-                await launcher.launch_settings(
-                    "thread-missing", chat, None, (), AgentClient(RecordingUpdates())
-                )
+                await launcher.launch(identity, launch, AgentClient(RecordingUpdates()))
         finally:
             await servers.stop()
 
@@ -997,9 +892,10 @@ class TestFailedLaunch:
             stop_timeout_sec=5.0,
         )
         builder = SettingsFileBuilder(agent_stand.config(), NO_SERVERS)
-        chat = FakeModel().chat_settings()
+        launch = FakeModel().launch()
+        document = builder.build(launch.profile, launch.model, None, {})
         workdir = AgentWorkdirs(tmp_path / "agents").create("thread-silent")
-        workdir.write(builder.build(chat, None, {}), chat.system_prompt)
+        workdir.write(document, launch.system_prompt)
         credentials = KerberosCredentialSource(None, NoRefresh())
         relays = RelayStand(NoConnectionStore(), lambda: credentials, CallContexts())
         servers = McpServers(NO_SERVERS)
@@ -1022,6 +918,149 @@ class TestFailedLaunch:
         assert "session/new" in str(cut.value)
         assert "within 1.0s" in str(cut.value)
         assert "request_timeout_sec" in str(cut.value)
+
+
+class DeletionStand:
+    """Тред своего процесса агента и его удаление ниже обработчиков chainlit:
+    вкладка открывает сессию под профилем чата, удаление идёт запуском с
+    другим, текущим набором [profiles]."""
+
+    def __init__(
+        self, root: Path, stand: Stand, users: UsersTable, threads: ThreadsTable
+    ) -> None:
+        self.history = AgentHistoryStand(stand)
+        self._config = AgentStand(root / "agents", self.history.history()).config()
+        self._users = users
+        self._threads = threads
+        credentials = KerberosCredentialSource(None, NoRefresh())
+        self._relays = RelayStand(
+            NoConnectionStore(), lambda: credentials, CallContexts()
+        )
+        self._servers = McpServers(NO_SERVERS)
+
+    def profile(self, model: FakeModel) -> ChatProfileConfig:
+        provider = {
+            "kind": "openai",
+            "connection": {
+                "scheme": "http",
+                "host": "127.0.0.1",
+                "port": model.port,
+                "path": "/v1",
+            },
+            "transport": HttpTransportConfig().model_dump(mode="json"),
+        }
+        base = SignInStand.profile().model_dump(mode="json")
+
+        return ChatProfileConfig.model_validate(
+            {**base, "provider": provider, "model": "fake-model"}
+        )
+
+    def launcher(self, profiles: ChatProfiles) -> AgentLauncher:
+        return AgentLauncher(
+            self._config,
+            NO_SERVERS,
+            profiles,
+            self._users,
+            self._relays.registrations,
+            self._relays.relay(self._servers),
+            "0.0",
+        )
+
+    async def opened(self, profile: ChatProfileConfig) -> tuple[str, str]:
+        """Тред с одним ходом под профилем profile: id треда и сессии агента."""
+        launcher = self.launcher(ChatProfiles({SignInStand.PROFILE: profile}))
+        tab = TabSession()
+        tab.password_sign_in(frozenset({"dev"}))
+        identity = ThreadIdentity(
+            thread_id=str(uuid4()),
+            user_id=uuid4(),
+            login=TabSession.LOGIN,
+            roles=frozenset({"dev"}),
+            session=tab.live,
+            profile=SelectedProfile(name=SignInStand.PROFILE, config=profile),
+        )
+        updates = RecordingUpdates()
+        agent = ThreadAgent(
+            identity, launcher, AgentSessionMeta(self._threads), updates
+        )
+        try:
+            await agent.start()
+            await agent.ask(Question(key="first", text=ScenarioName.ANSWER.value))
+            session_id = agent.session_id
+        finally:
+            await agent.close()
+
+        assert updates.finished, updates.updates
+        assert session_id is not None
+
+        return identity.thread_id, session_id
+
+    async def delete(self, thread_id: str, profiles: ChatProfiles) -> None:
+        stored = await self._threads.get(UUID(thread_id))
+        assert stored is not None
+        deleter = ThreadDeleter(self.launcher(profiles), ThreadAgentsIndex())
+
+        await deleter.thread_deleted(stored)
+
+    async def stop(self) -> None:
+        await self._servers.stop()
+
+
+@pytest.fixture
+async def deletion(
+    tmp_path: Path,
+    stand: Stand,
+    users: UsersTable,
+    threads: ThreadsTable,
+    auth_token: str,
+) -> AsyncIterator[DeletionStand]:
+    made = DeletionStand(tmp_path, stand, users, threads)
+    try:
+        yield made
+    finally:
+        await made.stop()
+
+
+class TestThreadDeletion:
+    """Удаление треда своим процессом агента: короткий процесс собирается по
+    профилю треда из текущих [profiles] и стирает сессию из истории; профиль,
+    исчезнувший из конфига, — отказ с понятной причиной, сессия цела."""
+
+    async def test_session_is_deleted_after_the_inference_moved(
+        self, deletion: DeletionStand, model: FakeModel
+    ) -> None:
+        """Тред открыт с одним адресом модели и удалён после смены адреса в
+        профиле: процесс удаления собран по новому адресу, к прежнему
+        запросов нет."""
+        thread_id, session_id = await deletion.opened(deletion.profile(model))
+        assert await deletion.history.rows(session_id) > 0
+        asked = len(model.app.requests)
+
+        moved = FakeModel()
+        await moved.start()
+        try:
+            profiles = ChatProfiles({SignInStand.PROFILE: deletion.profile(moved)})
+            await deletion.delete(thread_id, profiles)
+        finally:
+            await moved.stop()
+
+        assert await deletion.history.rows(session_id) == 0
+        assert len(model.app.requests) == asked
+
+    async def test_thread_whose_profile_is_gone_is_refused(
+        self, deletion: DeletionStand, model: FakeModel
+    ) -> None:
+        thread_id, session_id = await deletion.opened(deletion.profile(model))
+        profiles = ChatProfiles({"other": deletion.profile(model)})
+
+        with pytest.raises(AgentSettingsError) as refused:
+            await deletion.delete(thread_id, profiles)
+
+        text = str(refused.value)
+        assert thread_id in text, text
+        assert f"{SignInStand.PROFILE!r} of the thread is not in [profiles]" in text
+        assert "['other']" in text, text
+        assert await deletion.history.rows(session_id) > 0
 
 
 def _is_zombie(pid: int) -> bool:

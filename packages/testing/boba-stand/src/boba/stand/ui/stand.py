@@ -919,7 +919,6 @@ class StandConfig(StandService):
             "public_url": self.base_url,
             "seal_ttl_sec": 600,
             "question_timeout_sec": 600,
-            "settings_table": {"cipher": "${keys.encryption}"},
             "process": process,
             "history": dict(self.agent_history),
             "tools": tools,

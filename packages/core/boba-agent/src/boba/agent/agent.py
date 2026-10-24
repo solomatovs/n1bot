@@ -263,7 +263,9 @@ class Agent:
         self._session = session
         self._lease = lease
         self._tools = tools
-        writer = HistoryWriter(session, parts.store, lease, report.stored_seq)
+        writer = HistoryWriter(
+            session, parts.store, lease, report.stored_seq, parts.sink
+        )
         writer.start()
         self._writer = writer
         # починка оборванного хода ложится в журнал сразу, а не со следующим ходом
