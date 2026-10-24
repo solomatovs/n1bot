@@ -4,21 +4,21 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-stand-core"
-version = "0.0.26.dev4"
+version = "0.0.30.dev1"
 description = "Boba stand core: помощники тестов, которым хватает домена — фейки, контекст вызова, аудит зависимостей."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-core==0.0.26.dev4",
-    "boba-cancellation==0.0.26.dev4",
-    "boba-identity==0.0.26.dev4",
-    "boba-toolkit==0.0.26.dev4",
+    "boba-core==0.0.30.dev1",
+    "boba-cancellation==0.0.30.dev1",
+    "boba-identity==0.0.30.dev1",
+    "boba-toolkit==0.0.30.dev1",
     "pydantic>=2.12,<3",
     "pytest>=9.1,<10",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "boba-stand==0.0.26.dev4",
+    "boba-stand==0.0.30.dev1",
 ]
 
 [tool.setuptools.packages.find]
