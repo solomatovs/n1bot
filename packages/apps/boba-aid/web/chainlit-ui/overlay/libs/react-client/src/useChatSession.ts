@@ -32,6 +32,7 @@ import {
   sessionState,
   sideViewState,
   tasklistState,
+  threadHistoryState,
   threadIdToResumeState,
   tokenCountState,
   wavRecorderState,
@@ -45,7 +46,8 @@ import {
   IMode,
   IStep,
   ITasklistElement,
-  IThread
+  IThread,
+  ThreadHistory
 } from 'src/types';
 import { StepOp, addMessage, applyStepOps } from 'src/utils/message';
 
@@ -62,6 +64,42 @@ const HISTORY_LOADED_EVENT = 'history_loaded';
 
 // boba: вкладка открыла тред, и его история ещё воспроизводится: лента
 // показывает загрузку, кнопка отправки неактивна (а не «Стоп» хода)
+// boba: после каждой записи истории агента сервер шлёт время активности
+// треда из базы; панель тредов ставит тред по нему, даже закрытая (лист на
+// узком окне). Тред вне загруженных страниц — перечитывание первой страницы:
+// ThreadHistory загружает список, когда threads нет
+const THREAD_ACTIVITY = 'boba:thread-activity';
+
+interface ThreadActivity {
+  type: typeof THREAD_ACTIVITY;
+  threadId: string;
+  updatedAt: string;
+}
+
+const isThreadActivity = (data: unknown): data is ThreadActivity =>
+  typeof data === 'object' &&
+  data !== null &&
+  (data as { type?: unknown }).type === THREAD_ACTIVITY;
+
+const withActivity = (
+  history: ThreadHistory | undefined,
+  activity: ThreadActivity
+): ThreadHistory | undefined => {
+  const threads = history?.threads;
+  if (!threads) return history;
+  const index = threads.findIndex((thread) => thread.id === activity.threadId);
+  if (index === -1) {
+    return { ...history, threads: undefined, pageInfo: undefined };
+  }
+  const thread = threads[index];
+  if (Date.parse(activity.updatedAt) <= Date.parse(String(thread.updatedAt))) {
+    return history;
+  }
+  const moved = [...threads];
+  moved[index] = { ...thread, updatedAt: activity.updatedAt };
+  return { ...history, threads: moved };
+};
+
 export const historyLoadingState = atom<boolean>({
   key: 'BobaHistoryLoading',
   default: false
@@ -91,6 +129,7 @@ const useChatSession = () => {
   const resetChatSettingsValue = useResetRecoilState(chatSettingsValueState);
   const setChatSettingsValue = useSetRecoilState(chatSettingsValueState);
   const setFirstUserInteraction = useSetRecoilState(firstUserInteraction);
+  const setThreadHistory = useSetRecoilState(threadHistoryState);
   const setLoading = useSetRecoilState(loadingState);
   const setMcps = useSetRecoilState(mcpState);
   const wavStreamPlayer = useRecoilValue(wavStreamPlayerState);
@@ -549,6 +588,10 @@ const useChatSession = () => {
       });
 
       socket.on('window_message', (data: any) => {
+        if (isThreadActivity(data)) {
+          setThreadHistory((prev) => withActivity(prev, data));
+          return;
+        }
         if (window.parent) {
           // Код chainlit: канал окна вьювера. Целевой origin не сужаем —
           // страница встраивается на произвольный хост, а данные несут

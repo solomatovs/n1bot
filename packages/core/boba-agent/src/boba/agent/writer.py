@@ -2,8 +2,10 @@
 
 Задача в цикле событий просыпается по событию «добавлена запись» и не реже
 раза в interval_sec, берёт записи с seq больше последнего сброшенного и зовёт
-`append` одной пачкой (план, раздел 5.15). Неудача — запись в лог, записи
-остаются несброшенными, следующий тик пробует снова; ход не останавливается.
+`append` одной пачкой (план, раздел 5.15); после каждой сохранённой пачки
+приёмник получает HistoryWrittenEvent со временем её последней записи.
+Неудача — запись в лог, записи остаются несброшенными, следующий тик
+пробует снова; ход не останавливается.
 Принудительный сброс с ожиданием — в конце хода и при завершении процесса.
 
 RecordKeeper — единственная дверь, через которую ход и исполнитель
@@ -27,7 +29,7 @@ import json
 import logging
 from typing import ClassVar, TypeVar
 
-from boba.agent.events import AgentEvent, EventSink, RecordEvent
+from boba.agent.events import AgentEvent, EventSink, HistoryWrittenEvent, RecordEvent
 from boba.agent.history import HistoryError, HistoryStore, SessionLease
 from boba.agent.ids import Clock, IdMint
 from boba.agent.records import (
@@ -52,7 +54,7 @@ R = TypeVar("R", bound=Record)
 class HistoryWriter:
     """Фоновый сброс записей сессии в хранилище истории."""
 
-    DEFAULT_INTERVAL_SEC: ClassVar[float] = 0.1
+    INTERVAL_SEC: ClassVar[float] = 0.1
 
     def __init__(
         self,
@@ -60,13 +62,13 @@ class HistoryWriter:
         store: HistoryStore,
         lease: SessionLease,
         flushed_seq: int,
-        interval_sec: float = DEFAULT_INTERVAL_SEC,
+        sink: EventSink,
     ) -> None:
         self._session = session
         self._store = store
         self._lease = lease
         self._flushed = flushed_seq
-        self._interval = interval_sec
+        self._sink = sink
         self._wake = asyncio.Event()
         self._lock = asyncio.Lock()
         self._stopping = False
@@ -141,7 +143,7 @@ class HistoryWriter:
 
     async def _sleep_until_wake(self) -> None:
         try:
-            await asyncio.wait_for(self._wake.wait(), timeout=self._interval)
+            await asyncio.wait_for(self._wake.wait(), timeout=self.INTERVAL_SEC)
         except TimeoutError:
             return
 
@@ -155,8 +157,11 @@ class HistoryWriter:
                 return
 
             await self._store.append(self._lease, pending)
-            self._flushed = pending[-1].seq
+            last = pending[-1]
+            self._flushed = last.seq
             self._session.durable_through(self._flushed)
+
+        await self._sink.emit(HistoryWrittenEvent(recorded_at=last.timestamp))
 
 
 class RecordKeeper:

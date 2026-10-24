@@ -21,7 +21,8 @@ TurnStarted. Вопрос, заданный по ходу, ждёт в очер�
 Ошибки:
 LockBusyError — тред уже ведёт другой держатель: ход не начат.
 MessageBusError — шина не приняла сообщение держателя.
-DataUnavailableError — тред или оценки не прочитаны слоем данных.
+DataUnavailableError — тред или оценки не прочитаны либо время активности
+    треда не записано слоем данных.
 InternalServiceError — треда нет в слое данных.
 AcpClientError — агент не принял вопрос.
 """
@@ -329,7 +330,6 @@ class AgentFeed(TurnRenderer):
     """
 
     _SERVICE_UPDATES: ClassVar[tuple[type[SessionUpdate], ...]] = (
-        schema.SessionInfoUpdate,
         schema.SessionPlanUpdate,
         schema.SessionPlanRemovedUpdate,
         schema.AvailableCommandsUpdate,
@@ -339,8 +339,8 @@ class AgentFeed(TurnRenderer):
         schema.RunningSessionStateUpdate,
         schema.RequiresActionSessionStateUpdate,
     )
-    """Уведомления сессии, которых в ленте нет: заголовок, план, команды,
-    настройки сессии, сжатие и состояние идущего хода."""
+    """Уведомления сессии, которых в ленте нет: план, команды, настройки
+    сессии, сжатие и состояние идущего хода."""
 
     ABANDONED: ClassVar[str] = "turn failed"
     """Причина в итоге хода, сорвавшегося без ответа агента."""
@@ -556,6 +556,10 @@ class AgentFeed(TurnRenderer):
             )
             return
 
+        if isinstance(update, schema.SessionInfoUpdate):
+            await self._activity(update)
+            return
+
         if isinstance(update, self._SERVICE_UPDATES):
             return
 
@@ -567,6 +571,13 @@ class AgentFeed(TurnRenderer):
             return
 
         await turn.feed.agent_update(update)
+
+    async def _activity(self, info: schema.SessionInfoUpdate) -> None:
+        """`updatedAt` агент шлёт после каждой записи истории: время треда в
+        слое данных сдвигается к нему. Заголовок сессии чату не нужен —
+        имя треду даёт chainlit."""
+        if updated_at := info.updated_at:
+            await self._rows.thread_active(self.thread_id, updated_at)
 
     async def permission(
         self, session_id: str, title: str, options: Sequence[schema.PermissionOption]

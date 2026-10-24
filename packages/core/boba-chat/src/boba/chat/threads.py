@@ -14,9 +14,10 @@ from __future__ import annotations
 import functools
 from abc import abstractmethod
 from collections.abc import Callable, Coroutine, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
-from typing import Any, ParamSpec, Protocol, TypeVar
+from typing import Any, ClassVar, ParamSpec, Protocol, TypeVar
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
@@ -38,8 +39,11 @@ __all__ = [
     "FeedbacksColumn",
     "StoredFeedback",
     "StoredThread",
+    "ThreadCursor",
+    "ThreadCursors",
     "ThreadOwnership",
     "ThreadStore",
+    "ThreadTouched",
     "ThreadUpsert",
     "ThreadUpserted",
     "ThreadsColumn",
@@ -105,6 +109,7 @@ class ThreadsColumn(StrEnum):
 
     ID = "id"
     CREATED_AT = "created_at"
+    UPDATED_AT = "updated_at"
     NAME = "name"
     USER_ID = "user_id"
     TAGS = "tags"
@@ -122,12 +127,15 @@ class FeedbacksColumn(StrEnum):
 
 
 class StoredThread(BaseModel):
-    """Строка threads как её хранит база; владелец пуст у треда без пользователя."""
+    """Строка threads как её хранит база; владелец пуст у треда без пользователя.
+    updated_at — время последней записи истории агента треда, при создании
+    равно created_at."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     id: UUID
     created_at: datetime
+    updated_at: datetime
     name: str = ""
     user_id: UUID | None = None
     tags: Sequence[str] = ()
@@ -157,6 +165,61 @@ class ThreadUpserted(BaseModel):
     inserted: bool
 
 
+@dataclass(frozen=True)
+class ThreadTouched:
+    """Итог сдвига активности треда: владелец и новое updated_at из базы."""
+
+    user_id: UUID | None
+    updated_at: datetime
+
+
+@dataclass(frozen=True)
+class ThreadCursor:
+    """Место в списке тредов пользователя: следующая страница начинается с
+    тредов, стоящих после (updated_at, id) в порядке updated_at desc, id desc.
+    Курсор фиксирует значения на момент выдачи страницы, поэтому сдвиг или
+    удаление треда-курсора не даёт ни повторов, ни пропусков."""
+
+    updated_at: datetime
+    id: UUID
+
+    SEPARATOR: ClassVar[str] = "/"
+
+    def render(self) -> str:
+        return f"{self.updated_at.isoformat()}{self.SEPARATOR}{self.id}"
+
+
+class ThreadCursors:
+    """Разбор курсора страницы тредов, который вернул фронт; запись — у
+    ThreadCursor.render."""
+
+    def parse(self, raw: str) -> ThreadCursor:
+        """Ошибки:
+        DataRejectedError — строка не курсор ThreadCursor.
+        """
+        stamp, separator, thread_id = raw.partition(ThreadCursor.SEPARATOR)
+        if not separator:
+            detail = (
+                "expected a thread list cursor '<updated_at iso>"
+                f"{ThreadCursor.SEPARATOR}<thread uuid>', got {raw!r}"
+            )
+            raise DataRejectedError("list_threads", detail)
+
+        try:
+            updated_at = datetime.fromisoformat(stamp)
+        except ValueError as exc:
+            detail = f"thread list cursor {raw!r} starts with no iso time: {exc}"
+            raise DataRejectedError("list_threads", detail) from exc
+
+        try:
+            key = UUID(thread_id)
+        except ValueError as exc:
+            detail = f"thread list cursor {raw!r} ends with no thread uuid: {exc}"
+            raise DataRejectedError("list_threads", detail) from exc
+
+        return ThreadCursor(updated_at=updated_at, id=key)
+
+
 class ThreadOwnership(Protocol):
     """Автор треда чата: по нему API проверяет, что тред принадлежит вызывающему."""
 
@@ -180,8 +243,18 @@ class ThreadStore(Protocol):
         """Владелец удалённого треда; None — треда не было или он без владельца."""
 
     @abstractmethod
-    async def list_of(self, user_id: UUID, limit: int) -> Sequence[StoredThread]:
-        """Треды пользователя, новые первыми."""
+    async def touch(
+        self, thread_id: UUID, updated_at: datetime
+    ) -> ThreadTouched | None:
+        """Тред активен в updated_at: время сдвигается только вперёд; None —
+        треда нет или его время уже не раньше."""
+
+    @abstractmethod
+    async def list_of(
+        self, user_id: UUID, limit: int, after: ThreadCursor | None
+    ) -> Sequence[StoredThread]:
+        """Треды пользователя по последней активности, свежие первыми; after —
+        курсор прошлой страницы, None — первая страница."""
 
 
 class ChatThreads(ThreadStore, ThreadOwnership, Protocol):

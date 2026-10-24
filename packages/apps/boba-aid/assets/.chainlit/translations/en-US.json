@@ -286,6 +286,8 @@
             "working": "Working…",
             "done": "Finished",
             "doneSteps": "Finished · steps: {{count}}",
+            "stopped": "Stopped",
+            "stoppedSteps": "Stopped · steps: {{count}}",
             "running": "running…",
             "thinking": "Thinking",
             "tool": "tool",
