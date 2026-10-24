@@ -69,6 +69,7 @@ from boba.toolkit.dag import (
 )
 from boba.toolkit.wire import ResultWire
 from boba.transport.acp.protocol import (
+    CompactionTrigger,
     ElicitationRound,
     IdleErrorUpdate,
     MetaKey,
@@ -464,8 +465,13 @@ class UpdateView:
     async def _compaction(self, update: schema.SessionCompactionUpdate) -> None:
         """Сжатие разговора шагом хода: идёт — «сжимаю», состоялось — пересказ
         под шагом (история отдаёт сразу состоявшееся), не удалось или
-        прервано — шаг убирается: в истории его нет."""
+        прервано — шаг убирается: в истории его нет. Сжатие по команде
+        пользователя — свой ход без вопроса: вживую ключ хода и есть id
+        сжатия, в истории оно закрывает прежний ход и открывает свой."""
         key = update.compaction_id
+        if self._own_turn(update):
+            await self._begin_own_turn(key)
+
         step = self._compactions.pop(key, None)
         if update.status == CompactionState.IN_PROGRESS.value:
             if step is None:
@@ -484,6 +490,23 @@ class UpdateView:
             step = await self._view.compaction_started(key)
 
         await self._view.compaction_finished(step, self._summary_text(update))
+
+    def _own_turn(self, update: schema.SessionCompactionUpdate) -> bool:
+        """Сжатие по команде пользователя вне хода с его ключом."""
+        if update.compaction_id == self._turn_key:
+            return False
+
+        meta = update.field_meta
+        if meta is None:
+            return False
+
+        return meta.get(MetaKey.TRIGGER.value) == CompactionTrigger.MANUAL.value
+
+    async def _begin_own_turn(self, key: str) -> None:
+        if self._turn_key is not None:
+            await self.finish_turn()
+
+        self.begin_turn(key)
 
     @staticmethod
     def _summary_text(update: schema.SessionCompactionUpdate) -> str:

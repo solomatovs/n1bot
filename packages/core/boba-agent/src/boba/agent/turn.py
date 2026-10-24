@@ -70,7 +70,7 @@ from boba.agent.events import (
 )
 from boba.agent.ids import Clock, IdMint
 from boba.agent.profile import CompactionSettings, ModelProfile, TurnLimits
-from boba.agent.queue import InputQueue, QueueKind, Taken
+from boba.agent.queue import InputQueue, QueueItem, QueueKind, Taken
 from boba.agent.records import (
     ApiErrorRecord,
     AssistantBlock,
@@ -285,7 +285,7 @@ class TurnLoop:
         self._failures = 0
         progress = Progress()
         if taken.head.kind is QueueKind.COMPACT:
-            outcome = await self._manual_compact(taken.head.text, cancellation)
+            outcome = await self._manual_compact(taken.head, cancellation)
         else:
             outcome = await self._turn(taken, progress, cancellation)
 
@@ -329,11 +329,14 @@ class TurnLoop:
                 return outcome
 
     async def _manual_compact(
-        self, instructions: str, cancellation: RunCancellation
+        self, command: QueueItem, cancellation: RunCancellation
     ) -> TurnOutcome:
         """Сжатие по команде пользователя: вопроса в истории нет, модель
-        получает только пересказ; instructions — указания к пересказу.
-        Неудача — запись об ошибке с причиной, как у отказа модели."""
+        получает только пересказ; текст команды — указания к пересказу, её id
+        — id сжатия. Неудача — запись об ошибке с причиной, как у отказа
+        модели."""
+        compaction_id = command.id
+        instructions = command.text
         snapshot = self._snapshot_in_use()
         fill = self._gate.measure(self._session.conversation(), snapshot)
         pressure = SummaryPressure(
@@ -342,7 +345,9 @@ class TurnLoop:
             excess=None,
             instructions=instructions,
         )
-        compacted = await self._compact(fill, snapshot, pressure, cancellation)
+        compacted = await self._compact(
+            fill, snapshot, pressure, cancellation, compaction_id
+        )
         if isinstance(compacted, SummaryAborted):
             return self._abort_outcome(compacted.reason)
 
@@ -430,7 +435,9 @@ class TurnLoop:
                 excess=None,
                 instructions="",
             )
-            compacted = await self._compact(fill, snapshot, pressure, cancellation)
+            compacted = await self._compact(
+                fill, snapshot, pressure, cancellation, self._ids.uuid()
+            )
             if isinstance(compacted, SummaryAborted):
                 return self._abort_outcome(compacted.reason)
 
@@ -509,7 +516,9 @@ class TurnLoop:
             excess=self._overflow_signs.excess(asked.error),
             instructions="",
         )
-        compacted = await self._compact(fill, snapshot, pressure, cancellation)
+        compacted = await self._compact(
+            fill, snapshot, pressure, cancellation, self._ids.uuid()
+        )
         if isinstance(compacted, SummaryAborted):
             return self._abort_outcome(compacted.reason)
 
@@ -529,6 +538,7 @@ class TurnLoop:
         snapshot: PromptSnapshot,
         pressure: SummaryPressure,
         cancellation: RunCancellation,
+        compaction_id: str,
     ) -> CompactResult:
         """Пересказ и пачка записей; остановка во время пересказа записей не
         оставляет. Наружу — ход сжатия событиями: начато, состоялось с
@@ -546,11 +556,11 @@ class TurnLoop:
             logger.info("compaction skipped: %s", unready.describe())
             return unready
 
-        compaction_id = self._ids.uuid()
         await self._sink.emit(
             CompactionEvent(
                 compaction_id=compaction_id,
                 status=CompactionStatus.IN_PROGRESS,
+                trigger=pressure.trigger,
                 summary="",
                 error="",
             )
@@ -562,14 +572,14 @@ class TurnLoop:
             self._session.enter(SessionState.TURN)
 
         if isinstance(summarized, SummaryAborted):
-            return await self._compaction_aborted(compaction_id, summarized)
+            return await self._compaction_aborted(compaction_id, pressure, summarized)
 
         if cancellation.cancelled:
             aborted = SummaryAborted(self._stop_reason_of(cancellation))
-            return await self._compaction_aborted(compaction_id, aborted)
+            return await self._compaction_aborted(compaction_id, pressure, aborted)
 
         if isinstance(summarized, NotSummarized):
-            return await self._compaction_failed(compaction_id, summarized)
+            return await self._compaction_failed(compaction_id, pressure, summarized)
 
         duration = int((time.monotonic() - started) * self.MILLIS)
         compact_job = CompactJob(
@@ -588,7 +598,7 @@ class TurnLoop:
                 f"holds {window}"
             )
             failure = NotSummarized(SummaryFailure.DOES_NOT_FIT, detail)
-            return await self._compaction_failed(compaction_id, failure)
+            return await self._compaction_failed(compaction_id, pressure, failure)
 
         records = self._compactor.add(self._session, pack)
         for record in records:
@@ -598,6 +608,7 @@ class TurnLoop:
             CompactionEvent(
                 compaction_id=compaction_id,
                 status=CompactionStatus.COMPLETED,
+                trigger=pressure.trigger,
                 summary=self._summary_text(pack.summary),
                 error="",
             )
@@ -613,13 +624,14 @@ class TurnLoop:
         return Compacted(records)
 
     async def _compaction_failed(
-        self, compaction_id: str, failure: NotSummarized
+        self, compaction_id: str, pressure: SummaryPressure, failure: NotSummarized
     ) -> NotSummarized:
         logger.warning("compaction failed: %s", failure.describe())
         await self._sink.emit(
             CompactionEvent(
                 compaction_id=compaction_id,
                 status=CompactionStatus.FAILED,
+                trigger=pressure.trigger,
                 summary="",
                 error=failure.describe(),
             )
@@ -628,12 +640,13 @@ class TurnLoop:
         return failure
 
     async def _compaction_aborted(
-        self, compaction_id: str, aborted: SummaryAborted
+        self, compaction_id: str, pressure: SummaryPressure, aborted: SummaryAborted
     ) -> SummaryAborted:
         await self._sink.emit(
             CompactionEvent(
                 compaction_id=compaction_id,
                 status=CompactionStatus.CANCELLED,
+                trigger=pressure.trigger,
                 summary="",
                 error="",
             )

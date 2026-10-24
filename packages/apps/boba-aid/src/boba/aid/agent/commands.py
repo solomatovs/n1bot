@@ -11,6 +11,8 @@
 и пометил промпт как открывающий приложение, вкладка исполняет сама —
 tools/call инструмента и его приложение MCP Apps; команду чата — её
 обработчик; всё остальное уходит агенту текстом вопроса `/<имя> <аргументы>`.
+Вызов команды самого агента агент исполняет сам, лента рисует его итог, а
+не строку вызова.
 Окна, которые команда открыла во вкладке, агент и модель не видят, в
 историю они не пишутся.
 
@@ -67,6 +69,7 @@ __all__ = [
     "HarnessCommands",
     "McpCommands",
     "MenuCommand",
+    "RoutedText",
 ]
 
 logger = logging.getLogger(__name__)
@@ -144,10 +147,13 @@ class AgentCommands(CommandSource):
 
     def __init__(self) -> None:
         self._commands: tuple[MenuCommand, ...] = ()
+        self._names: frozenset[str] = frozenset()
 
     def heard(self, update: schema.AvailableCommandsUpdate) -> None:
         listed: list[MenuCommand] = []
+        names: set[str] = set()
         for command in update.available_commands:
+            names.add(command.name)
             listed.append(
                 MenuCommand(
                     name=command.name,
@@ -158,9 +164,14 @@ class AgentCommands(CommandSource):
             )
 
         self._commands = tuple(listed)
+        self._names = frozenset(names)
 
     def commands(self) -> Sequence[MenuCommand]:
         return self._commands
+
+    def owns(self, name: str) -> bool:
+        """Агент объявил команду name в последнем списке."""
+        return name in self._names
 
     @staticmethod
     def _hint(command: schema.AvailableCommand) -> str:
@@ -680,6 +691,16 @@ class HarnessCommands(CommandSource):
         await board.table_shown(self.TITLE, table)
 
 
+@dataclass(frozen=True)
+class RoutedText:
+    """Вопрос агенту после маршрута команд вкладки: текст и признак вызова
+    команды самого агента (agent_command) — её исполняет агент, строку
+    вызова лента не рисует. Отдаёт CommandMenu.routed."""
+
+    text: str
+    agent_command: bool
+
+
 class CommandMenu:
     """Реестр команд одной вкладки треда: меню поля ввода из команд чата,
     агента и серверов MCP профиля и маршрут вызова к владельцу.
@@ -731,17 +752,19 @@ class CommandMenu:
 
         self._read_later(stale)
 
-    async def routed(self, step_id: str, text: str, command: str | None) -> str | None:
+    async def routed(
+        self, step_id: str, text: str, command: str | None
+    ) -> RoutedText | None:
         """Вопрос вкладки step_id с текстом text и выбранной в меню командой
-        command: текст вопроса агенту либо None — команду исполнила вкладка,
-        шаг вопроса снят.
+        command: вопрос агенту либо None — команду исполнила вкладка, шаг
+        вопроса снят.
 
         Ошибки:
         CommandError — команду сервера или чата не исполнить.
         """
         call = self._call(text, command)
         if call is None:
-            return text
+            return RoutedText(text=text, agent_command=False)
 
         if self._harness.owns(call.name):
             await self._harness.run(call, self._board)
@@ -750,11 +773,12 @@ class CommandMenu:
 
         server = self._server_of(call.name)
         if server is None:
-            return call.text()
+            owned = self._agent.owns(call.name)
+            return RoutedText(text=call.text(), agent_command=owned)
 
         asked = await server.run(call, self._board)
         if asked is not None:
-            return asked
+            return RoutedText(text=asked, agent_command=False)
 
         await self._board.taken(step_id)
 
