@@ -485,11 +485,14 @@ class TestBashTool:
         if payload.stdout.strip() != "5":
             raise AssertionError('payload.stdout.strip() == "5"')
 
-    def test_tmpfs_size_limit_enforced(
+    def test_tmp_write_is_bounded(
         self, zygote_stand: ZygoteStand, tmp_path: Path
     ) -> None:
+        """Временный каталог вызова на ramfs — tmpfs из userns печатала бы uid; файл
+        в нём ограничивает process_file_bytes, весь каталог — память группы."""
+        profile = _profile(process_file_bytes=1024 * 1024)
         payload = self._invoke(
-            self._make_tool(zygote_stand, tmp_path, _profile(tmp="1M")),
+            self._make_tool(zygote_stand, tmp_path, profile),
             command="dd if=/dev/zero of=/tmp/blob bs=1M count=4 2>&1; echo rc=$?",
         )
         if "rc=0" in payload.stdout:
