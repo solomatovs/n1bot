@@ -6,7 +6,10 @@
 открывает сессии и отвечает на вопрос сразу пустым ходом — эхо вопроса
 `user_message` и idle; вопрос с маркером `notice:` перед idle присылает
 пометку `notice` с текстом после маркера, вопрос с маркером `detach`
-закрывает свой вывод и ход не кончает. Ветку session/fork держит, но среза по
+закрывает свой вывод и ход не кончает, с маркером `answer-late` ответ на
+session/prompt приходит через LATE_SEC, как на вопрос, вставленный после
+идущего хода, а с ним и `exit-before-answer` процесс вместо ответа выходит. Ветку
+session/fork держит, но среза по
 messageId вопроса в `capabilities.session.fork._meta` не объявляет; с
 `--silent-sessions` на session/new не отвечает вовсе.
 """
@@ -31,6 +34,9 @@ class ForeignAgent(Agent):
     SILENT: str = "--silent-sessions"
     NOTICE: str = "notice:"
     DETACH: str = "detach"
+    LATE: str = "answer-late"
+    EXIT: str = "exit-before-answer"
+    LATE_SEC: float = 2.0
 
     # SDK считает метод протокола неподдержанным
     login = Agent.login
@@ -99,6 +105,13 @@ class ForeignAgent(Agent):
     async def prompt(
         self, session_id: str, prompt: list[Any], **kwargs: Any
     ) -> schema.PromptResponse:
+        text = self._text(prompt)
+        if self.LATE in text:
+            await asyncio.sleep(self.LATE_SEC)
+
+        if self.EXIT in text:
+            os._exit(1)
+
         message_id = str(uuid4())
         turn = asyncio.create_task(self._idle(session_id, message_id, prompt))
         self._turns.add(turn)

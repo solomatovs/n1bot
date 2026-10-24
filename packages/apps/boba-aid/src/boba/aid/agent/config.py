@@ -14,6 +14,7 @@ from collections.abc import Sequence
 from enum import StrEnum
 from typing import Annotated, Literal
 
+from acp.http.server import SSE_KEEPALIVE_INTERVAL_SECONDS
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -78,7 +79,9 @@ class AgentCommandConfig(BaseModel):
         gt=0,
         description=(
             "Сколько ждать ответа агента на метод сессии (new, resume, fork, "
-            "prompt, close, delete); ход ответа не ждёт — его конец приходит idle."
+            "close, delete). Вопрос (prompt) ждёт без срока: агент отвечает, "
+            "когда вставил его своим ходом, а вопрос во время хода — после "
+            "идущего хода; ушедший процесс обрывает ожидание."
         ),
     )
     stop_timeout_sec: float = Field(
@@ -134,8 +137,18 @@ class AgentServiceConfig(BaseModel):
     request_timeout_sec: float = Field(
         gt=0,
         description=(
-            "Сколько ждать ответа службы на метод сессии; ход ответа не ждёт — "
-            "его конец приходит idle."
+            "Сколько ждать ответа службы на метод сессии. Вопрос (prompt) ждёт "
+            "без срока: служба отвечает, когда вставила его своим ходом, а "
+            "вопрос во время хода — после идущего хода; закрытый или "
+            "замолчавший поток событий обрывает ожидание."
+        ),
+    )
+    silence_timeout_sec: float = Field(
+        gt=SSE_KEEPALIVE_INTERVAL_SECONDS,
+        description=(
+            "Сколько может молчать поток событий службы, прежде чем чат сочтёт "
+            "службу ушедшей: служба шлёт в него keepalive каждые "
+            f"{SSE_KEEPALIVE_INTERVAL_SECONDS:g} с, срок должен быть больше."
         ),
     )
 

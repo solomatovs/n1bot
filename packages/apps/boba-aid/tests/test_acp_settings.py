@@ -15,6 +15,7 @@ import stat
 import sys
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
+from enum import StrEnum
 from importlib.resources import files
 from ipaddress import ip_address
 from pathlib import Path
@@ -39,6 +40,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
+from foreign_agent import ForeignAgent
 
 from boba.aid.agent.chat import (
     AgentLauncher,
@@ -488,7 +490,7 @@ class TestForkCut:
             await agent.close()
             await servers.stop()
 
-        assert "can't branch a conversation" in str(refused.value)
+        assert "does not declare 'boba/upToMessageId'" in str(refused.value)
 
 
 class ChatLaunch:
@@ -893,42 +895,111 @@ class TestFailedLaunch:
     async def test_silent_session_request_is_cut_by_request_timeout(
         self, tmp_path: Path, stand: Stand
     ) -> None:
+        foreign = ForeignProcessStand(tmp_path, stand, ForeignAgentFlag.SILENT)
+        process = await foreign.started()
+        try:
+            with pytest.raises(AgentProcessError) as cut:
+                await process.open_session()
+        finally:
+            await foreign.close()
+
+        assert "session/new" in str(cut.value)
+        assert "within 1.0s" in str(cut.value)
+        assert "request_timeout_sec" in str(cut.value)
+
+
+class TestLatePrompt:
+    """Ответ на session/prompt приходит, когда агент вставил вопрос своим
+    ходом, — у вопроса во время хода после идущего хода; срок
+    request_timeout_sec к нему не относится, ожидание обрывает только выход
+    процесса."""
+
+    async def test_prompt_answered_after_the_request_timeout_is_taken(
+        self, tmp_path: Path, stand: Stand
+    ) -> None:
+        foreign = ForeignProcessStand(tmp_path, stand, ForeignAgentFlag.NONE)
+        process = await foreign.started()
+        try:
+            opened = await process.open_session()
+            text = schema.TextContentBlock(text=ForeignAgent.LATE)
+            message_id = await process.prompt(opened.session_id, [text])
+        finally:
+            await foreign.close()
+
+        assert ForeignAgent.LATE_SEC > foreign.REQUEST_TIMEOUT_SEC
+        assert UUID(message_id)
+
+    async def test_agent_exiting_before_the_answer_is_a_lost_connection(
+        self, tmp_path: Path, stand: Stand
+    ) -> None:
+        foreign = ForeignProcessStand(tmp_path, stand, ForeignAgentFlag.NONE)
+        process = await foreign.started()
+        late_exit = f"{ForeignAgent.LATE} {ForeignAgent.EXIT}"
+        try:
+            opened = await process.open_session()
+            text = schema.TextContentBlock(text=late_exit)
+            with pytest.raises(AgentProcessError) as lost:
+                await process.prompt(opened.session_id, [text])
+        finally:
+            await foreign.close()
+
+        assert lost.value.failure.kind is AgentFailureKind.CONNECTION_LOST
+        assert "session/prompt" in str(lost.value)
+        assert "request_timeout_sec" not in str(lost.value)
+
+
+class ForeignAgentFlag(StrEnum):
+    """Ключи запуска чужого агента foreign_agent.py."""
+
+    NONE = ""
+    SILENT = ForeignAgent.SILENT
+
+
+class ForeignProcessStand:
+    """Процесс чужого агента foreign_agent.py вкладки без серверов чата: чат
+    ждёт ответа на метод сессии REQUEST_TIMEOUT_SEC."""
+
+    REQUEST_TIMEOUT_SEC: ClassVar[float] = 1.0
+
+    def __init__(self, tmp_path: Path, stand: Stand, flag: ForeignAgentFlag) -> None:
         history = AgentHistoryStand(stand)
         agent_stand = AgentStand(tmp_path / "agents", history.history())
+        args = [str(TestForkCut.FOREIGN)]
+        if flag is not ForeignAgentFlag.NONE:
+            args.append(flag.value)
+
         command = AgentCommand(
             executable=sys.executable,
-            args=(str(TestForkCut.FOREIGN), "--silent-sessions"),
+            args=tuple(args),
             start_timeout_sec=30.0,
-            request_timeout_sec=1.0,
+            request_timeout_sec=self.REQUEST_TIMEOUT_SEC,
             stop_timeout_sec=5.0,
         )
         builder = SettingsFileBuilder(agent_stand.config(), NO_SERVERS)
         launch = FakeModel().launch()
         document = builder.build(launch.profile, launch.model, None, {})
-        workdir = AgentWorkdirs(tmp_path / "agents").create("thread-silent")
+        workdir = AgentWorkdirs(tmp_path / "agents").create("thread-foreign")
         workdir.write(document, launch.system_prompt)
         credentials = KerberosCredentialSource(None, NoRefresh())
         relays = RelayStand(NoConnectionStore(), lambda: credentials, CallContexts())
-        servers = McpServers(NO_SERVERS)
-        process = AgentProcess(
+        self._servers = McpServers(NO_SERVERS)
+        self._process = AgentProcess(
             command,
             workdir,
             AgentClient(RecordingUpdates()),
-            relays.relay(servers),
+            relays.relay(self._servers),
             (),
             "0.0",
         )
-        try:
-            await process.start()
-            with pytest.raises(AgentProcessError) as cut:
-                await process.open_session()
-        finally:
-            await process.close()
-            await servers.stop()
 
-        assert "session/new" in str(cut.value)
-        assert "within 1.0s" in str(cut.value)
-        assert "request_timeout_sec" in str(cut.value)
+    async def started(self) -> AgentProcess:
+        await self._process.start()
+
+        return self._process
+
+    async def close(self) -> None:
+        await self._process.close()
+        await self._servers.stop()
 
 
 class DeletionStand:
