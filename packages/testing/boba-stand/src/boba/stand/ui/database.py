@@ -1,5 +1,6 @@
-"""База UI-стенда: создание, расширения, снос таблиц прошлых прогонов и посев соединений
-для одного приложения; kerberos как у приложения, один пул на операцию.
+"""База UI-стенда: создание, расширения, снос таблиц прошлых прогонов, посев
+соединений и тредов для одного приложения; kerberos как у приложения, один пул
+на операцию.
 
 Ошибки:
 StandError — база не подготовлена (нет прав на расширение и т.п.).
@@ -10,9 +11,10 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Coroutine, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 from enum import StrEnum
 from typing import Any, ClassVar
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from omegaconf import OmegaConf
 from psycopg import sql
@@ -259,6 +261,86 @@ class StandDatabase:
             .build()
         )
         run_blocking(self._execute(query))
+
+    def drop_threads_of(self, login: str) -> None:
+        """Треды пользователя login сняты строками: его панель тредов пуста."""
+        query = (
+            PgQueryBuilder(schema=sql.Identifier(self._schema))
+            .add(
+                """
+                delete from {schema}.threads t
+                using {schema}.users u
+                where
+                    t.user_id = u.id
+                    and u.identifier = %(login)s
+                """,
+                login=login,
+            )
+            .build()
+        )
+        run_blocking(self._execute(query))
+
+    def seed_thread(self, login: str, name: str, at: datetime) -> UUID:
+        """Тред name пользователя login без истории агента, созданный и
+        последний раз активный в at. Строка users появляется со входом:
+        пользователь должен войти раньше."""
+        query = (
+            PgQueryBuilder(schema=sql.Identifier(self._schema))
+            .add(
+                """
+                insert into {schema}.threads (
+                    id, created_at, updated_at, name, user_id, meta
+                )
+                select
+                    %(id)s, %(at)s, %(at)s, %(name)s, u.id, '{{}}'::jsonb
+                from
+                    {schema}.users u
+                where
+                    u.identifier = %(login)s
+                returning
+                    id
+                """,
+                id=uuid4(),
+                at=at,
+                name=name,
+                login=login,
+            )
+            .build()
+        )
+        row = run_blocking(self._execute(query))
+        if row is None:
+            msg = (
+                f"seeding thread {name!r}: {self._schema}.users has no row of "
+                f"{login!r}; sign the user in first"
+            )
+            raise StandError(msg)
+
+        return row[0]
+
+    def backdate_thread(self, thread_id: str, at: datetime) -> None:
+        """created_at и updated_at треда — at: тред выглядит начатым и
+        последний раз активным тогда."""
+        query = (
+            PgQueryBuilder(schema=sql.Identifier(self._schema))
+            .add(
+                """
+                update {schema}.threads set
+                    created_at = %(at)s,
+                    updated_at = %(at)s
+                where
+                    id = %(id)s
+                returning
+                    id
+                """,
+                at=at,
+                id=UUID(thread_id),
+            )
+            .build()
+        )
+        row = run_blocking(self._execute(query))
+        if row is None:
+            msg = f"backdating thread {thread_id}: no row in {self._schema}.threads"
+            raise StandError(msg)
 
     def add_stored_connection(self, name: str, connection: ConnectionBase) -> UUID:
         """Готовый профиль под именем name, выданный всем ролям стенда: тест
