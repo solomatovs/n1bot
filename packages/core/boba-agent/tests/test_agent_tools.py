@@ -13,7 +13,7 @@ from typing import ClassVar
 import pytest
 
 from boba.agent.control import AllowAnswer, DenyAnswer
-from boba.agent.events import ControlCancelEvent, ResultEvent, TurnOutcome
+from boba.agent.events import ControlCancelEvent, ResultEvent
 from boba.agent.history import SessionId
 from boba.agent.ids import IdMint, SystemClock
 from boba.agent.loader import HistoryLoader
@@ -23,6 +23,7 @@ from boba.agent.records import (
     AssistantRecord,
     AttachmentRecord,
     ChainRecord,
+    InterruptRecord,
     PermissionBehavior,
     PermissionMode,
     PermissionModeRecord,
@@ -31,9 +32,13 @@ from boba.agent.records import (
     QueueOperationRecord,
     QueueRemoveReason,
     Record,
+    ReplyRecord,
+    TaskNotificationRecord,
     ToolDenialKind,
     ToolResultBlock,
+    ToolResultRecord,
     ToolUseBlock,
+    TurnOutcome,
     UserRecord,
 )
 from boba.agent.session import Session
@@ -106,10 +111,10 @@ def results(records: Sequence[Record] | Sequence[ChainRecord]) -> list[ToolResul
 
 def result_records(
     records: Sequence[Record] | Sequence[ChainRecord],
-) -> list[UserRecord]:
-    found: list[UserRecord] = []
+) -> list[ToolResultRecord]:
+    found: list[ToolResultRecord] = []
     for record in records:
-        if isinstance(record, UserRecord) and record.message.tool_results():
+        if isinstance(record, ToolResultRecord):
             found.append(record)
 
     return found
@@ -231,6 +236,7 @@ class TestCalls:
             "user:tool_result",
             "user:tool_result",
             "assistant:text",
+            "system",
         ]
         uses = tool_uses(chain)
         found = results(chain)
@@ -365,7 +371,7 @@ class TestCalls:
         assert {
             r.wire_tool_call_id
             for r in session.records()
-            if isinstance(r, AssistantRecord) and r.wire_tool_call_id
+            if isinstance(r, ReplyRecord) and r.wire_tool_call_id
         } == {"call_dup"}
         second = server.requests()[1]["messages"]
         assert isinstance(second, list)
@@ -398,8 +404,8 @@ class TestCalls:
 
         assert served.agent.outcomes == [TurnOutcome.MAX_TURNS]
         assert len(tools.calls) == 3
-        assert kinds(session.chain())[-1] == "attachment:max_turns_reached"
-        last = session.chain()[-1]
+        assert kinds(session.chain())[-2] == "attachment:max_turns_reached"
+        last = session.chain()[-2]
         assert isinstance(last, AttachmentRecord)
         assert last.rendered is None
         result_event = sink.of(ResultEvent)[0]
@@ -868,15 +874,17 @@ class TestQueueMidTurn:
         await served.agent.settled()
         await served.close()
 
-        assert kinds(session.chain())[-4:] == [
+        assert kinds(session.chain())[-5:] == [
             "user:tool_result",
             "attachment:queued_command",
             "assistant:text",
             "assistant:text",
-        ] or kinds(session.chain())[-3:] == [
+            "system",
+        ] or kinds(session.chain())[-4:] == [
             "user:tool_result",
             "attachment:queued_command",
             "assistant:text",
+            "system",
         ]
         assert served.agent.outcomes == [TurnOutcome.COMPLETED]
         queued = [
@@ -966,8 +974,7 @@ class TestQueueMidTurn:
 
         assert served.agent.outcomes == [TurnOutcome.COMPLETED, TurnOutcome.COMPLETED]
         users = [r for r in session.chain() if isinstance(r, UserRecord)]
-        assert users[1].is_meta is True
-        assert users[1].origin is not None
+        assert isinstance(users[1], TaskNotificationRecord)
         assert users[1].origin.kind.value == "task-notification"
         assert len(server.requests()) == 2
 
@@ -1008,8 +1015,8 @@ class TestCancellation:
             ToolDenialKind.USER_REJECTED,
             ToolDenialKind.USER_REJECTED,
         ]
-        last = session.chain()[-1]
-        assert isinstance(last, UserRecord)
+        last = session.chain()[-2]
+        assert isinstance(last, InterruptRecord)
         assert last.message.content == "[Request interrupted by user for tool use]"
         assert served.agent.outcomes == [TurnOutcome.ABORTED_TOOLS]
         assert served.agent.answer("req_unknown", AllowAnswer()) is False
@@ -1053,8 +1060,8 @@ class TestCancellation:
         record = result_records(session.records())[0]
         assert record.tool_denial_kind is ToolDenialKind.USER_REJECTED
         assert record.tool_use_result is None
-        last = session.chain()[-1]
-        assert isinstance(last, UserRecord)
+        last = session.chain()[-2]
+        assert isinstance(last, InterruptRecord)
         assert last.interrupted_by_shutdown is True
         again = await reloaded(tmp_path / "history", SESSION)
         assert list(again.records())[: len(session.records())] == list(

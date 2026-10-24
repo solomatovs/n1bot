@@ -16,12 +16,9 @@ from typing import ClassVar
 
 import pytest
 
-from boba.agent.attachments import ConnectedServer, InvokedSkillsAttachment
+from boba.agent.attachments import ConnectedServer
 from boba.agent.control import AllowAnswer
-from boba.agent.events import (
-    RecordEvent,
-    TurnOutcome,
-)
+from boba.agent.events import RecordEvent
 from boba.agent.history import SessionId, StoredLine
 from boba.agent.ids import IdMint, SystemClock
 from boba.agent.loader import HistoryLoader
@@ -35,13 +32,17 @@ from boba.agent.records import (
     CompactBoundaryRecord,
     CompactionPhase,
     CompactionRecord,
+    CompactSummaryRecord,
     CompactTrigger,
+    InvokedSkillsAttachment,
+    MetaRecord,
     PermissionBehavior,
     PermissionMode,
     PermissionRule,
     Record,
     RecordCodec,
-    TextBlock,
+    TurnEndRecord,
+    TurnOutcome,
     UserRecord,
 )
 from boba.agent.session import Session, SessionState
@@ -124,7 +125,7 @@ def kinds(records: Sequence[Record] | Sequence[ChainRecord]) -> list[str]:
             if record.message.tool_results():
                 name = "user:tool_result"
 
-            if record.is_compact_summary:
+            if isinstance(record, CompactSummaryRecord):
                 name = "user:summary"
 
         if isinstance(record, CompactBoundaryRecord):
@@ -135,6 +136,9 @@ def kinds(records: Sequence[Record] | Sequence[ChainRecord]) -> list[str]:
 
         if isinstance(record, CompactionRecord):
             name = "system:compaction"
+
+        if isinstance(record, TurnEndRecord):
+            name = "system:turn_end"
 
         names.append(name)
 
@@ -150,10 +154,10 @@ def boundaries(records: Sequence[Record]) -> list[CompactBoundaryRecord]:
     return found
 
 
-def summaries(records: Sequence[Record]) -> list[UserRecord]:
-    found: list[UserRecord] = []
+def summaries(records: Sequence[Record]) -> list[CompactSummaryRecord]:
+    found: list[CompactSummaryRecord] = []
     for record in records:
-        if isinstance(record, UserRecord) and record.is_compact_summary:
+        if isinstance(record, CompactSummaryRecord):
             found.append(record)
 
     return found
@@ -206,17 +210,11 @@ def phases(records: Sequence[Record]) -> list[tuple[str, CompactionPhase]]:
 
 
 def synthetic_texts(records: Sequence[Record]) -> list[str]:
+    """Пометки человеку, которыми кончились ходы."""
     texts: list[str] = []
     for record in records:
-        if not isinstance(record, AssistantRecord):
-            continue
-
-        if not record.is_api_error_message:
-            continue
-
-        for block in record.message.content:
-            if isinstance(block, TextBlock):
-                texts.append(block.text)
+        if isinstance(record, TurnEndRecord) and record.notice:
+            texts.append(record.notice)
 
     return texts
 
@@ -418,6 +416,7 @@ class TestThreshold:
             "attachment:model",
             "attachment:prompt_snapshot",
             "assistant:text",
+            "system:turn_end",
         ]
 
         boundary = boundaries(records)[0]
@@ -445,21 +444,25 @@ class TestThreshold:
             if isinstance(record, ChainRecord):
                 chain.append(record)
 
-        answer_one = chain[chain.index(prompt_two) - 1]
+        answer_one = chain[chain.index(prompt_two) - 2]
+        turn_one_end = chain[chain.index(prompt_two) - 1]
         assert isinstance(answer_one, AssistantRecord)
+        assert isinstance(turn_one_end, TurnEndRecord)
         assert list(metadata.preserved_messages.uuids) == [
             answer_one.uuid,
+            turn_one_end.uuid,
             prompt_two.uuid,
         ]
         assert metadata.pre_tokens > metadata.post_tokens > 0
         assert metadata.duration_ms >= 0
 
         conversation = session.conversation()
-        assert kinds(conversation[:7]) == [
+        assert kinds(conversation[:8]) == [
             "system:compact_boundary",
             "attachment:date",
             "user:summary",
             "assistant:text",
+            "system:turn_end",
             "user",
             "attachment:model",
             "attachment:prompt_snapshot",
@@ -604,7 +607,7 @@ class TestBreakers:
         )
         errors: list[str] = []
         for record in records:
-            if isinstance(record, ApiErrorRecord):
+            if isinstance(record, TurnEndRecord):
                 errors.append(record.error)
 
         if failure is SummaryName.LONG:
@@ -614,10 +617,9 @@ class TestBreakers:
                 "Prompt is too long. Automatic compaction failed:"
             ), errors
 
-        assert kinds(records[-3:]) == [
+        assert kinds(records[-2:]) == [
             "user:tool_result",
-            "system:api_error",
-            "assistant:synthetic",
+            "system:turn_end",
         ]
 
     async def test_rapid_refill_trips_the_breaker(
@@ -857,13 +859,12 @@ class TestWindow:
             "This conversation no longer fits in the model's memory, and shortening "
             "it automatically didn't help. Start a new chat to continue.",
         ]
-        causes: list[str | None] = []
+        causes: list[str] = []
         for record in records:
-            if isinstance(record, AssistantRecord) and record.is_api_error_message:
-                causes.append(record.error)
+            if isinstance(record, TurnEndRecord) and record.notice:
+                causes.append(record.detail)
 
-        assert causes[0] is None
-        assert causes[1] is not None
+        assert causes[0] == ""
         assert causes[1].startswith(
             "the summary request does not fit the context window even after "
             "dropping the oldest rounds"
@@ -951,7 +952,7 @@ class TestManual:
         сжатия — uuid пересказа."""
         written = [r for r in records[before:] if isinstance(r, UserRecord)]
         caveat, called = written[:2]
-        assert caveat.is_meta
+        assert isinstance(caveat, MetaRecord)
         assert caveat.message.content == CAVEAT
         assert called.uuid == command_id
         assert called.message.content == self.CALL
@@ -1029,9 +1030,7 @@ class TestManual:
 
         assert served.agent.outcomes[-1] is TurnOutcome.COMPLETED
         summaries = [
-            r
-            for r in session.conversation()
-            if isinstance(r, UserRecord) and r.is_compact_summary
+            r for r in session.conversation() if isinstance(r, CompactSummaryRecord)
         ]
         assert len(summaries) == 1
         content = summaries[0].message.content
@@ -1102,6 +1101,7 @@ class TestCancellation:
             "user",
             "system:compaction",
             "system:compaction",
+            "system:turn_end",
         ]
         assert not boundaries(records)
         assert session.state is SessionState.STOPPING
@@ -1141,7 +1141,7 @@ class TestCancellation:
             for r in records
             if isinstance(r, UserRecord)
             and isinstance(r.message.content, str)
-            and not r.is_compact_summary
+            and not isinstance(r, CompactSummaryRecord)
         ]
         assert [p.message.content for p in prompts] == [
             first,

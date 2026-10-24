@@ -23,8 +23,9 @@
 -- плагины. Имена схем можно не передавать, тогда берутся умолчания:
 --   chainlit_schema    — схема данных чата dev, по умолчанию chainlit;
 --   checkpoints_schema — схема чекпойнтов langgraph, по умолчанию checkpoints;
---   history_schema     — схема истории агента, если она была в старой базе,
---                        по умолчанию agent_history;
+--   history_schema     — схема истории агента раннего выпуска, по умолчанию
+--                        agent_history; её записи текущий выпуск не читает,
+--                        и перенос с ней останавливается до изменений;
 --   kb_schema          — схема базы знаний, по умолчанию kb;
 --   describer_schema   — схема инструмента описаний, по умолчанию describer;
 --   aid_schema         — схема чата в новой базе, по умолчанию aid;
@@ -123,6 +124,15 @@ select :'taken_schemas' <> '' as targets_taken \gset
 \if :targets_taken
     \echo 'The schemas' :taken_schemas 'of the new application already exist in this database.'
     do $$ begin raise exception 'The target schemas must not exist before the migration (listed above), so nothing was changed. Restore the copy into a new empty database.'; end $$;
+\endif
+
+-- Историю агента раннего выпуска (одна таблица history_records) текущий
+-- выпуск не читает: у её записей нет вида kind. Перенос переводит только
+-- беседы dev из чекпойнтов.
+select to_regnamespace(:'history_schema') is not null as has_early_history \gset
+\if :has_early_history
+    \echo 'The old database holds the agent history of an early release in the schema' :history_schema
+    do $$ begin raise exception 'This release cannot read the agent history of an early release, so nothing was changed: the migration moves the dev conversations from the checkpoints only. Drop that schema from the copy and run the migration again.'; end $$;
 \endif
 
 begin;
@@ -911,8 +921,14 @@ from
 -- оценки. Ответ модели даёт по записи assistant на каждый блок (рассуждение,
 -- текст, вызов инструмента) с общими message.id и requestId; модель берётся
 -- последняя названная в треде, а у подготовки хода стоит <synthetic>. Ответ
--- с пометкой error становится синтетической записью об ошибке модели, ответ
--- с пометкой stopped — оборванным ответом и маркером прерывания за ним.
+-- с пометкой stopped становится оборванным ответом и маркером прерывания за
+-- ним. Ход — вопрос и всё до следующего вопроса — кончается записью
+-- turn_end: исход completed, у хода с ответом-ошибкой (пометка error) —
+-- api_error с текстом ошибки пометкой человеку, у остановленного —
+-- aborted_streaming. Последний ход треда конца не получает, если он кончается
+-- не ответом модели, ошибкой или остановкой либо у последнего ответа модели
+-- остались вызовы без итога: такой ход загрузчик агента чинит как
+-- оборванный — заглушки итогов и конец хода с пометкой.
 -- Итог инструмента даёт запись user с блоком tool_result и toolUseResult —
 -- результатом tools/call в форме MCP, как его пишет агент: текст итога
 -- одним блоком text, ссылки resource_link на каналы журнала вызова по его
@@ -1076,6 +1092,7 @@ reply_unit as (
         null::text as answers_call,
         jsonb_build_object(
             'type', 'assistant',
+            'kind', 'reply',
             'message', jsonb_build_object(
                 'id', r.message_id,
                 'type', 'message',
@@ -1110,37 +1127,6 @@ reply_unit as (
     where
         r.shape <> 'error'
 ),
-failure_unit as (
-    select
-        r.thread_id,
-        r.n,
-        0 as sub,
-        'assistant' as type,
-        history_migrate.uuid_of(r.thread_id || '/' || r.n || '/error') as uuid,
-        null::text as call_id,
-        null::text as answers_call,
-        jsonb_build_object(
-            'type', 'assistant',
-            'message', jsonb_build_object(
-                'id', r.message_id,
-                'type', 'message',
-                'role', 'assistant',
-                'model', '<synthetic>',
-                'content', jsonb_build_array(jsonb_build_object('type', 'text', 'text', r.body_text)),
-                'stop_reason', 'stop_sequence',
-                'stop_sequence', null,
-                'usage', '{"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}'::jsonb
-            ),
-            'apiBlockIndex', 0,
-            'requestId', r.request_id,
-            'isApiErrorMessage', true,
-            'error', r.body_text
-        ) as body
-    from
-        reply as r
-    where
-        r.shape = 'error'
-),
 interrupt_unit as (
     select
         r.thread_id,
@@ -1152,6 +1138,7 @@ interrupt_unit as (
         null::text as answers_call,
         jsonb_build_object(
             'type', 'user',
+            'kind', 'interrupt',
             'message', jsonb_build_object('role', 'user', 'content', '[Request interrupted by user]')
         ) as body
     from
@@ -1245,6 +1232,7 @@ question_unit as (
         null::text as answers_call,
         jsonb_build_object(
             'type', 'user',
+            'kind', 'prompt',
             'message', jsonb_build_object(
                 'role', 'user',
                 'content', case
@@ -1268,6 +1256,11 @@ tool_unit as (
         t.m ->> 'tool_call_id' as answers_call,
         jsonb_build_object(
             'type', 'user',
+            'kind', 'tool_result',
+            'status', case
+                when t.m ->> 'status' = 'error' then 'failed'
+                else 'completed'
+            end,
             'message', jsonb_build_object(
                 'role', 'user',
                 'content', jsonb_build_array(
@@ -1292,16 +1285,147 @@ tool_unit as (
         message as t
     where
         t.class = 'ToolMessage'
+),
+content_unit as (
+    select * from question_unit
+    union all
+    select * from reply_unit
+    union all
+    select * from interrupt_unit
+    union all
+    select * from tool_unit
+),
+marked as (
+    select
+        m.thread_id,
+        m.n,
+        m.sub,
+        m.kind,
+        m.failure,
+        (
+            select
+                max(q.n)
+            from
+                question_unit as q
+            where
+                q.thread_id = m.thread_id
+                and q.n <= m.n
+        ) as turn_n
+    from (
+        select
+            u.thread_id,
+            u.n,
+            u.sub,
+            u.body ->> 'kind' as kind,
+            null::text as failure
+        from
+            content_unit as u
+        union all
+        select
+            r.thread_id,
+            r.n,
+            0,
+            'failure',
+            r.body_text
+        from
+            reply as r
+        where
+            r.shape = 'error'
+    ) as m
+),
+thread_tail as (
+    select distinct on (thread_id)
+        thread_id,
+        turn_n,
+        kind
+    from
+        marked
+    order by
+        thread_id,
+        n desc,
+        sub desc
+),
+last_answer as (
+    select
+        u.thread_id,
+        max(u.n) as n
+    from
+        reply_unit as u
+    where
+        u.body -> 'message' ->> 'model' <> '<synthetic>'
+    group by
+        u.thread_id
+),
+dangling as (
+    select distinct
+        u.thread_id
+    from
+        reply_unit as u
+        join last_answer as a
+            on a.thread_id = u.thread_id
+            and a.n = u.n
+    where
+        u.call_id is not null
+        and not exists (
+            select
+                1
+            from
+                tool_unit as t
+            where
+                t.thread_id = u.thread_id
+                and t.answers_call = u.call_id
+        )
+),
+turn_unit as (
+    select
+        t.thread_id,
+        max(t.n) as n,
+        3000 as sub,
+        'system' as type,
+        history_migrate.uuid_of(t.thread_id || '/' || t.turn_n || '/turn_end') as uuid,
+        null::text as call_id,
+        null::text as answers_call,
+        jsonb_build_object(
+            'type', 'system',
+            'kind', 'turn_end',
+            'subtype', 'turn_end',
+            'outcome', case
+                when bool_or(t.kind = 'failure') then 'api_error'
+                when bool_or(t.kind = 'interrupt') then 'aborted_streaming'
+                else 'completed'
+            end,
+            'notice', coalesce((array_agg(t.failure order by t.n desc) filter (where t.kind = 'failure'))[1], ''),
+            'level', 'error',
+            'detail', '',
+            'error', coalesce((array_agg(t.failure order by t.n desc) filter (where t.kind = 'failure'))[1], ''),
+            'usage', '{"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}'::jsonb,
+            'numTurns', count(*) filter (where t.kind in ('reply', 'failure') and t.sub = 0),
+            'durationMs', 0
+        ) as body
+    from
+        marked as t
+        join thread_tail as tail
+            on tail.thread_id = t.thread_id
+        left join dangling as d
+            on d.thread_id = t.thread_id
+    where
+        t.turn_n is not null
+    group by
+        t.thread_id,
+        t.turn_n,
+        tail.turn_n,
+        tail.kind,
+        d.thread_id
+    having
+        t.turn_n <> tail.turn_n
+        or (
+            tail.kind in ('reply', 'failure', 'interrupt')
+            and d.thread_id is null
+        )
 )
-select * from question_unit
+select * from content_unit
 union all
-select * from reply_unit
-union all
-select * from failure_unit
-union all
-select * from interrupt_unit
-union all
-select * from tool_unit;
+select * from turn_unit;
 
 -- Записи собираются сразу в раскладке таблицы session_records: сессия, seq, вид и
 -- время — колонками, остальное — документом record без этих четырёх ключей.
@@ -1456,7 +1580,7 @@ select
 from
     history_migrate.records as r
 where
-    r.record -> 'message' -> 'content' -> 0 ->> 'type' = 'tool_result'
+    r.record ->> 'kind' = 'tool_result'
     and not (r.record ? 'sourceToolAssistantUUID');
 
 -- 5. Загрузка.
@@ -1467,86 +1591,12 @@ where
 -- совпадение определений с кодом хранилища проверяет тест
 -- boba-history-postgres. Комментарии к таблицам агент допишет сам при первом
 -- обращении.
---
--- Если агент уже вёл историю в старой базе, её схема сначала
--- переименовывается в схему агента. Агент прежнего выпуска держал всю запись
--- одной таблицей history_records, документом вместе с сессией, seq, видом и
--- временем; её строки раскладываются по session и session_records так же, как пишет
--- хранилище, а сама таблица удаляется, когда число строк сошлось. Строка,
--- у которой ключи документа расходятся с колонками или нет времени,
--- останавливает перенос: при раскладке часть записи пропала бы. Беседа
--- треда переносится только в сессию, которой в истории ещё нет: сессию,
--- которую агент уже вёл, перенос не трогает.
-
-select
-    format('alter schema %I rename to %I', :'history_schema', :'boba_schema')
-where
-    :'history_schema' <> :'boba_schema'
-    and to_regnamespace(:'history_schema') is not null
-\gexec
 
 create schema if not exists :"boba_schema";
 
 set local search_path to :"boba_schema";
 \ir history_tables.sql
 reset search_path;
-
-select to_regclass(format('%I.history_records', :'boba_schema')) is not null as has_old_history \gset
-\if :has_old_history
-select
-    count(*) as old_history_inconsistent
-from
-    :"boba_schema".history_records
-where
-    record ->> 'sessionId' is distinct from session_id
-    or record ->> 'seq' is distinct from seq::text
-    or record ->> 'type' is distinct from type
-    or record ->> 'timestamp' is null
-\gset
-select :old_history_inconsistent > 0 as old_history_broken \gset
-\if :old_history_broken
-    \echo 'Rows of the old agent history table history_records whose document keys disagree with their columns or lack a timestamp:' :old_history_inconsistent
-    do $$ begin raise exception 'The old agent history table history_records cannot be split without losing data (count above), so nothing was changed.'; end $$;
-\endif
-
-insert into :"boba_schema".session (id, created_at)
-select
-    session_id,
-    min((record ->> 'timestamp')::timestamptz)
-from
-    :"boba_schema".history_records
-group by
-    session_id;
-
-insert into :"boba_schema".session_records (session_id, seq, type, recorded_at, record)
-select
-    session_id,
-    seq,
-    type,
-    (record ->> 'timestamp')::timestamptz,
-    record - array['type', 'seq', 'sessionId', 'timestamp']
-from
-    :"boba_schema".history_records;
-
-select
-    (select count(*) from :"boba_schema".history_records) as old_history_records,
-    (
-        select
-            count(*)
-        from
-            :"boba_schema".session_records as h
-        where
-            exists (select 1 from :"boba_schema".history_records as o where o.session_id = h.session_id)
-    ) as old_history_converted
-\gset
-\echo 'Records of the old agent history table history_records:' :old_history_records ', converted:' :old_history_converted
-select :old_history_records <> :old_history_converted as old_history_lost \gset
-\if :old_history_lost
-    do $$ begin raise exception 'Converting the old agent history table history_records lost records (counts above), so nothing was changed.'; end $$;
-\endif
-
-drop table :"boba_schema".history_records;
-\endif
 
 create table history_migrate.loaded (
     session_id text    primary key,
@@ -1784,7 +1834,7 @@ from (
 left join (
     select session_id, count(*) as questions
     from history_migrate.records
-    where record -> 'origin' ->> 'kind' = 'human'
+    where record ->> 'kind' = 'prompt'
     group by session_id
 ) as r
     on r.session_id = s.thread_id
@@ -1804,7 +1854,7 @@ from (
 left join (
     select session_id, count(*) as results
     from history_migrate.records
-    where record -> 'message' -> 'content' -> 0 ->> 'type' = 'tool_result'
+    where record ->> 'kind' = 'tool_result'
     group by session_id
 ) as r
     on r.session_id = s.thread_id

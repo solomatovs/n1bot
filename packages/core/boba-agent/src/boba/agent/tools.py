@@ -63,6 +63,7 @@ from boba.agent.permissions import (
 )
 from boba.agent.profile import ModelProfile, TurnLimits
 from boba.agent.records import (
+    CallStatus,
     NoticeLevel,
     PermissionBehavior,
     PermissionRule,
@@ -172,6 +173,18 @@ class CallResult:
             return True
 
         return self.reply.result.is_error
+
+    @property
+    def status(self) -> CallStatus:
+        """Исход вызова: без ответа сервера — отменён, ответ-ошибка —
+        сорвался, иначе выполнен."""
+        if self.reply is None:
+            return CallStatus.CANCELLED
+
+        if self.reply.result.is_error:
+            return CallStatus.FAILED
+
+        return CallStatus.COMPLETED
 
     @property
     def stored(self) -> Any:

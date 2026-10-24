@@ -33,14 +33,8 @@ from boba.agent.events import AgentEvent, EventSink, HistoryWrittenEvent, Record
 from boba.agent.history import HistoryError, HistoryStore, SessionLease
 from boba.agent.ids import Clock, IdMint
 from boba.agent.records import (
-    ApiErrorRecord,
     ApiRequestRecord,
-    AssistantRecord,
-    CompactBoundaryRecord,
-    CompactionRecord,
-    InformationalRecord,
     Record,
-    UserRecord,
 )
 from boba.agent.session import Session
 from boba.llm.chat import ChatRequest
@@ -166,20 +160,12 @@ class HistoryWriter:
 
 
 class RecordKeeper:
-    """Добавляет записи в сессию, будит писателя и показывает наружу записи
-    разговора и пометки для человека (повтор запроса к модели, состояние
-    серверов MCP). Создаёт агент на сессию; им пользуются цикл хода и
-    исполнитель инструментов."""
-
-    SHOWN: ClassVar[tuple[type[Record], ...]] = (
-        UserRecord,
-        AssistantRecord,
-        CompactBoundaryRecord,
-        CompactionRecord,
-        ApiErrorRecord,
-        InformationalRecord,
-    )
-    """Записи, о которых узнаёт порт событий."""
+    """Добавляет записи в сессию, будит писателя и показывает наружу каждую
+    записанную запись событием RecordEvent: что из неё показать человеку,
+    решает сама запись и отрисовщик приёмника. Конец хода объявляет агент
+    событием ResultEvent, когда сессия свободна, поэтому его запись
+    добавляется без события. Создаёт агент на сессию; им пользуются цикл
+    хода и исполнитель инструментов."""
 
     def __init__(
         self, session: Session, writer: HistoryWriter, sink: EventSink
@@ -202,8 +188,15 @@ class RecordKeeper:
     async def added(self, record: Record) -> None:
         """Запись, уже добавленная в сессию кем-то другим."""
         self._writer.notify()
-        if isinstance(record, self.SHOWN):
-            await self._sink.emit(RecordEvent(record=record))
+        await self._sink.emit(RecordEvent(record=record))
+
+    def add_unannounced(self, record: R) -> R:
+        """Запись без события: о ней объявит своё событие (конец хода —
+        ResultEvent)."""
+        sequenced = self._session.add(record)
+        self._writer.notify()
+
+        return sequenced
 
     async def emit(self, event: AgentEvent) -> None:
         await self._sink.emit(event)

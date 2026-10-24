@@ -44,7 +44,6 @@ from typing import BinaryIO, ClassVar, NoReturn
 from acp.experimental.v2 import schema
 
 from boba.agent.agent import Agent, AgentParts
-from boba.agent.attachments import EnvironmentSnapshot
 from boba.agent.events import EventSink
 from boba.agent.history import (
     HistoryError,
@@ -59,7 +58,7 @@ from boba.agent.loader import HistoryLoader, SessionDigests
 from boba.agent.mcp import ToolHints
 from boba.agent.permissions import PermissionModeError
 from boba.agent.profile import ModelProfile, ProfileError
-from boba.agent.records import ChainRecord
+from boba.agent.records import ChainRecord, EnvironmentSnapshot
 from boba.agent.session import SessionError
 from boba.agent.settings import (
     MemoryHistorySettings,
