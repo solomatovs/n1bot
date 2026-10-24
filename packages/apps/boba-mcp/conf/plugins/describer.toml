@@ -17,3 +17,5 @@ tools      = [
         "/etc/hosts:/etc/hosts",
         "${env.krb}/krb5.conf:/etc/krb5.conf"
     ]
+    [sandbox.limits]
+        group_memory_bytes = 1073741824
