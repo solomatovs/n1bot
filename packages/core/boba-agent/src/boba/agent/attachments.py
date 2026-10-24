@@ -51,6 +51,7 @@ from boba.agent.records import (
     HistoryFold,
     InvokedSkill,
     InvokedSkillsAttachment,
+    LinkText,
     MaxTurnsAttachment,
     McpInstructionsAttachment,
     ModelAttachment,
@@ -767,16 +768,22 @@ class ContextAttachments:
             source_uuid=item.id,
             origin=origin,
             is_meta=item.is_meta,
+            links=item.links,
         )
+        rendered = [RenderedMessage(content=text)]
+        for link in item.links:
+            rendered.append(RenderedMessage(content=LinkText.TEMPLATE.render(link)))
 
+        # uuid записи — id элемента, как у записи вопроса: по нему отправитель
+        # узнаёт вставку и режет ветку при правке
         return AttachmentRecord(
-            uuid=self._ids.uuid(),
+            uuid=item.id,
             parent_uuid=parent,
             timestamp=self._clock.now(),
             session_id=self._session_id,
             version=self._version,
             attachment=self._written(attachment),
-            rendered=[RenderedMessage(content=text)],
+            rendered=rendered,
             rendered_role=AttachmentRole.USER,
         )
 

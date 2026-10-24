@@ -7,13 +7,11 @@
     - button "✔ Размышления"
   - heading "✔ ToolSearch" [level=3]:
     - button "✔ ToolSearch"
+  - article: Складываю счётчики.
   - heading "✔ add" [level=3]:
     - button "✔ add"
+  - article: Жду пересчёта витрины.
   - heading "○ sleep_for" [level=3]:
     - button "○ sleep_for"
-- img "Avatar for AID"
-- article: Складываю счётчики.
-- img "Avatar for AID"
-- article: Жду пересчёта витрины.
 - img "Avatar for AID"
 - article

@@ -2085,11 +2085,19 @@ class TestMcpOverAcp:
 
 
 class TestQueueAndCancel:
-    QUEUED_LOG: ClassVar[str] = "waits in the queue behind the running turn"
+    QUEUED_LOG: ClassVar[str] = "waits for the next step boundary of the running turn"
 
-    async def test_queued_prompts_are_answered_on_insertion_each_its_own(
-        self, boba: AcpProcess, registration: StandRegistration, tmp_path: Path
+    async def test_prompts_asked_during_a_turn_join_it_at_the_step_boundary(
+        self,
+        boba: AcpProcess,
+        registration: StandRegistration,
+        model: FakeModel,
+        tmp_path: Path,
     ) -> None:
+        """Вопросы, заданные во время вызова, ход вставляет после его итога
+        вложениями queued_command с id вопросов: ответы на `session/prompt`
+        и эхо `user_message` приходят до конца хода, idle — один, модель
+        отвечает в том же ходе; воспроизведение даёт тот же порядок."""
         client = AcpClient()
         document = boba.settings_document(mode="bypassPermissions", allow_bypass=True)
         conn = await boba.start(client, registration, document)
@@ -2120,35 +2128,78 @@ class TestQueueAndCancel:
             assert not queued[0].done()
             assert not queued[1].done()
 
+            second = await queued[0]
+            third = await queued[1]
             ended = await client.idle(session_id)
             assert ended.stop_reason == StopReason.END_TURN
-            second = await queued[0]
-            again = await client.idle(session_id)
-            assert again.stop_reason == StopReason.END_TURN
-            third = await queued[1]
-            last = await client.idle(session_id)
-            assert last.stop_reason == StopReason.END_TURN
-
-            ids = [first.message_id, second.message_id, third.message_id]
-            assert len(set(ids)) == 3
-            echoes = [
-                u
-                for u in client.updates_of(session_id)
-                if isinstance(u, schema.UserMessageUpdate)
-            ]
-            assert [e.message_id for e in echoes] == ids
+            live = self.order(client.updates_of(session_id))
         finally:
             await conn.close()
             await boba.close_stdin()
 
         assert await boba.wait() == 0
+        ids = [first.message_id, second.message_id, third.message_id]
+        assert len(set(ids)) == 3
+        assert live == [ids[0], "tool", ids[1], ids[2], "answer", "idle"]
         records = boba.journal(session_id)
-        spoken = [
-            r["message"]["content"]
+        absorbed = [
+            r
             for r in records
-            if r["type"] == "user" and isinstance(r["message"]["content"], str)
+            if r["type"] == "attachment" and r["attachment"]["type"] == "queued_command"
         ]
-        assert spoken[1:] == list(texts)
+        assert [r["uuid"] for r in absorbed] == ids[1:]
+        assert [r["attachment"]["prompt"] for r in absorbed] == list(texts)
+        ends = [r for r in records if r.get("kind") == "turn_end"]
+        assert len(ends) == 1
+
+        again = AcpProcess(tmp_path, model)
+        replaying = AcpClient()
+        conn = await again.start(replaying, registration)
+        try:
+            await handshake(conn)
+            await conn.resume_session(
+                cwd=str(tmp_path),
+                session_id=session_id,
+                mcp_servers=[StandRegistration.STAND],
+                replay_from=schema.ReplayFromStartVariant(),
+            )
+            replayed = self.order(replaying.updates_of(session_id))
+        finally:
+            await conn.close()
+            await again.close_stdin()
+            await again.kill()
+
+        assert replayed == live
+
+    @staticmethod
+    def order(updates: Sequence[Any]) -> list[str]:
+        """Вопросы (их id), законченные вызовы, первые куски ответов и концы
+        ходов по порядку."""
+        kinds: list[str] = []
+        answers: set[str] = set()
+        for update in updates:
+            if isinstance(update, schema.UserMessageUpdate):
+                kinds.append(update.message_id)
+                continue
+
+            if isinstance(update, schema.SessionToolCallUpdate):
+                if update.status == ToolStatus.COMPLETED:
+                    kinds.append("tool")
+
+                continue
+
+            if isinstance(update, schema.AgentMessageChunk | schema.AgentMessageUpdate):
+                if update.message_id in answers:
+                    continue
+
+                answers.add(update.message_id)
+                kinds.append("answer")
+                continue
+
+            if isinstance(update, schema.IdleSessionStateUpdate):
+                kinds.append("idle")
+
+        return kinds
 
     async def test_cancel_refuses_queued_prompts(
         self, boba: AcpProcess, registration: StandRegistration, tmp_path: Path

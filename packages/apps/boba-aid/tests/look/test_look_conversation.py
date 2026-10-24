@@ -386,6 +386,18 @@ class TalkFixes:
             "строки; по концу хода — «Завершено · шагов: N» без мерцания"
         ),
     )
+    INTERIM: ClassVar[LookFix] = LookFix(
+        code="Промежуточный текст модели внутри хода",
+        summary=(
+            "было: текст модели между шагами хода стоял в основной ленте "
+            "отдельными сообщениями с аватаром — над и под свёрнутой строкой "
+            "хода, вперемешку с итоговым ответом; стало: он внутри хода "
+            "обычными абзацами между размышлениями и вызовами в порядке "
+            "появления, без аватара и кнопок, виден, когда ход раскрыт; вне "
+            "хода остаётся только итоговый ответ — вживую и после перезагрузки "
+            "одинаково"
+        ),
+    )
     THOUGHT: ClassVar[LookFix] = LookFix(
         code="Отметка законченных размышлений",
         summary=(
@@ -547,44 +559,47 @@ class TalkLook:
         GROUP,
         "tr5-pulse-after-tool",
         "Вызов отработал, модель думает над ответом",
-        "текст «Смотрю подключения.», под ним свёрнутая строка хода с "
-        "текущим действием «✓ connection_list · Смотрю подключения · 0 мс» "
-        "(мерцание идущего хода в кадре заморожено), ниже мигающий кружок — "
-        "ход ещё идёт",
-        (TalkFixes.DONE, TalkFixes.CURRENT),
+        "под вопросом свёрнутая строка хода с текущим действием «✓ "
+        "connection_list · Смотрю подключения · 0 мс» (мерцание идущего хода "
+        "в кадре заморожено), ниже мигающий кружок — ход ещё идёт; текста "
+        "«Смотрю подключения.» в основной ленте нет — он внутри хода",
+        (TalkFixes.DONE, TalkFixes.CURRENT, TalkFixes.INTERIM),
     )
     RUNNING_LONG: ClassVar[LookState] = LookState(
         GROUP,
         "tr10-running-long",
         "Ход идёт, подпись вызова длиннее строки",
-        "текст «Проверяю источники.», под ним свёрнутая строка хода в одну "
-        "строку: «✓ connection_list · Перебираю все подключения…» обрезана "
-        "многоточием у края ленты, прокрутки вбок нет; ниже мигающий кружок",
-        (TalkFixes.CURRENT,),
+        "под вопросом свёрнутая строка хода в одну строку: «✓ "
+        "connection_list · Перебираю все подключения…» обрезана многоточием "
+        "у края ленты, прокрутки вбок нет; ниже мигающий кружок; текст "
+        "«Проверяю источники.» — внутри хода",
+        (TalkFixes.CURRENT, TalkFixes.INTERIM),
     )
     DONE: ClassVar[LookState] = LookState(
         GROUP,
         "tr2-done",
-        "Ход с вызовом закончен: текст, строка хода свёрнута, ответ",
-        "«Смотрю подключения.», под ним свёрнутая строка «Завершено · шагов: "
-        "1», ниже итоговый ответ; кружка нет",
-        (TalkFixes.DONE, TalkFixes.PLAIN),
+        "Ход с вызовом закончен: строка хода свёрнута, ответ",
+        "под вопросом свёрнутая строка «Завершено · шагов: 1», ниже итоговый "
+        "ответ; промежуточного «Смотрю подключения.» в основной ленте нет; "
+        "кружка нет",
+        (TalkFixes.DONE, TalkFixes.PLAIN, TalkFixes.INTERIM),
     )
     OPENED: ClassVar[LookState] = LookState(
         GROUP,
         "tr3-opened",
-        "Строка хода раскрыта: шаг вызова под ней",
-        "под «Завершено · шагов: 1» шаг вызова с подписью «Смотрю "
-        "подключения» и левой чертой цвета темы",
-        (TalkFixes.PLAIN,),
+        "Строка хода раскрыта: текст и шаг вызова под ней",
+        "под «Завершено · шагов: 1» у левой черты цвета темы абзац «Смотрю "
+        "подключения.» без аватара и кнопок, под ним шаг вызова с подписью "
+        "«Смотрю подключения»",
+        (TalkFixes.PLAIN, TalkFixes.INTERIM),
     )
     DONE_AGAIN: ClassVar[LookState] = LookState(
         GROUP,
         "tr2-done-reloaded",
         "Тот же ход с вызовом после перезагрузки страницы",
-        "кадр тот же, что «Ход с вызовом закончен»: строка хода между текстом "
-        "и ответом; тест сверил его с живым пиксель в пиксель",
-        (TalkFixes.CONTAINER, TalkFixes.RELOAD),
+        "кадр тот же, что «Ход с вызовом закончен»: строка хода между "
+        "вопросом и ответом; тест сверил его с живым пиксель в пиксель",
+        (TalkFixes.CONTAINER, TalkFixes.RELOAD, TalkFixes.INTERIM),
     )
     THINKING: ClassVar[LookState] = LookState(
         GROUP,
@@ -762,6 +777,14 @@ class TalkFeed:
     def shown(self, text: str) -> None:
         """Текст text нарисован в ленте."""
         expect(self._page.get_by_text(text).last).to_be_visible(timeout=60_000)
+
+    def folded(self, text: str) -> None:
+        """Промежуточный текст text ушёл в свёрнутый контейнер хода: в
+        основной ленте его нет."""
+        expect(
+            self._page.locator(Selector.of_type(StepKind.RUN.value)).last
+        ).to_be_visible(timeout=60_000)
+        expect(self._page.get_by_text(text)).to_have_count(0, timeout=60_000)
 
     def no_pulse(self) -> None:
         """Ход закончен: кружка ожидания нет."""
@@ -1059,7 +1082,7 @@ def test_turn_look(
         feed.fold_last(StepKind.RUN)
 
         feed.ask_held(TalkQuestion.CONNECTIONS)
-        feed.shown(TalkText.LOOKING)
+        feed.folded(TalkText.LOOKING)
         expect(page.locator(Selector.of_type(StepKind.RUN.value)).last).to_be_visible()
         feed.pulse()
         look_pages.settle(page)
@@ -1122,7 +1145,7 @@ def test_running_turn_look(
     for theme, size, feed in talk_frames(look_pages, talk_stand, talk_book):
         page = feed.page
         feed.ask_held(TalkQuestion.SOURCES)
-        feed.shown(TalkText.CHECKING)
+        feed.folded(TalkText.CHECKING)
         running = page.locator(Selector.of_type(StepKind.RUN.value)).last
         expect(running).to_contain_text(TalkBook.LONG_INTENT, timeout=30_000)
         feed.pulse()

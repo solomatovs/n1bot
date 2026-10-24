@@ -133,7 +133,7 @@ from boba.agent.mcp import (
     ToolReply,
 )
 from boba.agent.permissions import PermissionModeError
-from boba.agent.queue import QueueEntry, QueueKind, QueuePriority, QueueRefusedError
+from boba.agent.queue import QueueEntry, QueueKind, QueueRefusedError
 from boba.agent.records import (
     ApiErrorRecord,
     CallStatus,
@@ -3588,12 +3588,15 @@ class AcpSession:
         self._reports.append(asyncio.create_task(self._relay.failed()))
 
     async def prompt(self, asked: QueueEntry) -> schema.PromptResponse:
-        """Ставит вопрос в очередь ядра и отвечает, когда его ход вставил
-        запись `user`: `messageId` ответа — её uuid. Вопрос идёт своим ходом,
-        без склейки с соседями. Вопрос-команду промпта сервера раскрывает
-        SessionMcp. Команда сессии `/compact` — элемент очереди compact: её
-        вызов агент пишет в историю записью с uuid элемента, ответ приходит
-        с этой записью, как у вопроса.
+        """Ставит вопрос в очередь ядра и отвечает, когда ход вставил его
+        запись: `messageId` ответа — её uuid. Вопрос свободной сессии
+        начинает ход, вопрос идущего хода встаёт в него на ближайшей границе
+        шага вложением queued_command, а если ход кончился ответом без
+        вызовов — начинает следующий; с соседями он не склеивается.
+        Вопрос-команду промпта сервера раскрывает SessionMcp. Команда сессии
+        `/compact` — элемент очереди compact: её вызов агент пишет в историю
+        записью с uuid элемента, ответ приходит с этой записью, как у
+        вопроса.
 
         Ошибки:
         RequestError — очередь не приняла элемент или аргументы команды не
@@ -3615,14 +3618,7 @@ class AcpSession:
             raise RequestError.internal_error({ErrorDataKey.DETAILS.value: details})
 
         agent = self.agent
-        priority: QueuePriority | None = None
-        if agent.session.state is not SessionState.IDLE:
-            priority = QueuePriority.LATER
-
-        if len(agent.queue) > 0:
-            priority = QueuePriority.LATER
-
-        entry = asked.model_copy(update={"priority": priority, "alone": True})
+        entry = asked.model_copy(update={"alone": True})
         try:
             item = agent.queue.enqueue(entry)
         except QueueRefusedError as exc:
@@ -3631,9 +3627,10 @@ class AcpSession:
             ) from exc
 
         inserted = self._relay.insertion(item.id)
-        if priority is QueuePriority.LATER:
+        if agent.session.state is not SessionState.IDLE:
             logger.info(
-                "session %s: prompt %s waits in the queue behind the running turn",
+                "session %s: prompt %s waits for the next step boundary of the "
+                "running turn",
                 self._session_id,
                 item.id,
             )

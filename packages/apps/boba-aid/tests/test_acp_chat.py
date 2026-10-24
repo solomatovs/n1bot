@@ -51,6 +51,7 @@ from boba.stand.ui.fake_llm import (
     FailureName,
     Reply,
     ReplyBookClient,
+    ReplyCall,
     ReplyTurn,
     ScenarioName,
     serve,
@@ -1835,8 +1836,9 @@ class TestHistory:
 
 class TestQueuedQuestions:
     """Вопрос во время хода уходит в очередь сессии агента: ход не
-    прерывается, вопрос получает свой ход агента после текущего ответа;
-    остановка хода снимает его и возвращает текст в поле ввода."""
+    прерывается; агент вставляет вопрос на ближайшей границе шага, а после
+    ответа без вызовов вопрос получает свой ход; остановка хода снимает его
+    и возвращает текст в поле ввода."""
 
     HELD: ClassVar[str] = "Describe the migration steps slowly"
     HELD_ANSWER: ClassVar[str] = "Copy the schema, move the data and compare counts."
@@ -1844,6 +1846,10 @@ class TestQueuedQuestions:
     QUEUED_ANSWER: ClassVar[str] = "About an hour on the stand."
     LATER: ClassVar[str] = "Then check the indexes"
     HELD_TOKENS: ClassVar[int] = 3
+    STEPPED: ClassVar[str] = "Check the tables step by step"
+    LOOKING: ClassVar[str] = "Looking at the tables first."
+    MID_TURN: ClassVar[str] = "Skip the archive schema"
+    MID_TURN_ANSWER: ClassVar[str] = "Done without the archive schema."
 
     def _book(self, llm_port: int) -> ReplyBookClient:
         book = ReplyBookClient(StandUrl.of(llm_port))
@@ -1863,10 +1869,70 @@ class TestQueuedQuestions:
                     question=self.QUEUED,
                     turns=[ReplyTurn(content=self.QUEUED_ANSWER)],
                 ),
+                Reply(
+                    question=self.STEPPED,
+                    turns=[
+                        ReplyTurn(
+                            content=self.LOOKING,
+                            calls=[self._search()],
+                            hold=True,
+                            hold_after_tokens=self.HELD_TOKENS,
+                        ),
+                        ReplyTurn(content=self.HELD_ANSWER),
+                    ],
+                ),
+                Reply(
+                    question=self.MID_TURN,
+                    turns=[ReplyTurn(content=self.MID_TURN_ANSWER)],
+                ),
             ]
         )
 
         return book
+
+    def _search(self) -> ReplyCall:
+        return ReplyCall(
+            tool="ToolSearch", arguments={"query": "tables", "max_results": 1}
+        )
+
+    def _interim(self, visible: dict[str, dict[str, Any]], container: str) -> list[str]:
+        """Промежуточные тексты внутри контейнера container по порядку."""
+        found: list[str] = []
+        for payload in visible.values():
+            if payload.get("parentId") != container:
+                continue
+
+            if payload.get("metadata", {}).get(StepMeta.INTERIM.value):
+                found.append(str(payload.get("output")))
+
+        return found
+
+    def _root_answers(self, visible: dict[str, dict[str, Any]]) -> list[str]:
+        """Ответы основной ленты по порядку."""
+        found: list[str] = []
+        for payload in visible.values():
+            if payload.get("type") != "assistant_message":
+                continue
+
+            if payload.get("parentId"):
+                continue
+
+            found.append(str(payload.get("output")))
+
+        return found
+
+    def _visible(self, tab: ChatSocket) -> dict[str, dict[str, Any]]:
+        """Шаги ленты, которые не сняты: перенесённый в контейнер текст
+        уходит из основной ленты."""
+        deleted = self._deleted(tab)
+        found: dict[str, dict[str, Any]] = {}
+        for step_id, payload in tab.steps().items():
+            if step_id in deleted:
+                continue
+
+            found[step_id] = payload
+
+        return found
 
     def _questions(self, tab: ChatSocket) -> list[tuple[str, str]]:
         """Вопросы ленты по порядку появления: id шага и текст."""
@@ -1945,6 +2011,52 @@ class TestQueuedQuestions:
                     kind,
                     again.frames(),
                 )
+        finally:
+            await again.end_session()
+
+    async def test_a_question_during_a_call_splits_the_turn_at_the_step(
+        self, app: StandProcess, cookie: str, llm_port: int
+    ) -> None:
+        """Вопрос, заданный, пока ход вызывает инструмент, агент вставляет
+        после итога вызова: контейнер первого хода закрывается с его шагом и
+        промежуточным текстом внутри, под ним — вопрос и продолжение хода с
+        ответом на него; воспроизведение рисует ту же ленту."""
+        book = self._book(llm_port)
+        tab = ChatSocket(app, cookie, str(uuid4()))
+        await tab.open()
+        try:
+            await tab.send(self.STEPPED)
+            await asyncio.to_thread(book.await_held, self.STEPPED, TURN_TIMEOUT_SEC)
+            sent = await tab.send(self.MID_TURN)
+            await tab.wait_log(f"question {sent} goes to the queue")
+            book.release(self.STEPPED)
+            await tab.wait_task_end()
+
+            assert not tab.errors(), (tab.errors(), app.tail(80))
+            live = self._questions(tab)
+            texts = [text for _, text in live]
+            assert texts == [self.STEPPED, self.MID_TURN], tab.frames()
+            visible = self._visible(tab)
+            containers = [k for k, v in visible.items() if v.get("type") == "run"]
+            assert len(containers) == 1, tab.frames()
+            assert self._interim(visible, containers[0]) == [self.LOOKING]
+            answers = self._root_answers(visible)
+            assert self.LOOKING not in answers, answers
+            assert self.HELD_ANSWER not in answers, answers
+            assert self.MID_TURN_ANSWER in answers, answers
+            order = list(visible)
+            asked_at = order.index(live[1][0])
+            assert order.index(containers[0]) < asked_at, order
+            live_visible = set(visible)
+        finally:
+            await tab.end_session()
+
+        again = ChatSocket(app, cookie, tab.thread_id)
+        await again.open(resumed=True)
+        try:
+            assert not again.errors(), (again.errors(), app.tail(60))
+            assert self._questions(again) == live, again.frames()
+            assert set(self._visible(again)) == live_visible, again.frames()
         finally:
             await again.end_session()
 

@@ -1141,7 +1141,8 @@ class TurnLoop:
         return blocks
 
     async def _absorb(self) -> None:
-        """Элементы `now` и `next` из очереди — вложениями в разговор."""
+        """Элементы `now` и `next` из очереди — вложениями в разговор, за
+        ними служебный контекст элементов, как у вопроса хода."""
         items = self._queue.absorb()
         if not items:
             return
@@ -1151,6 +1152,10 @@ class TurnLoop:
         )
         for record in records:
             await self._keeper.add(record)
+
+        for item in items:
+            for text in item.context:
+                await self._write_meta(text)
 
     async def _write_partial(
         self, partial: Partial, stop_reason: ReplyStopReason, aborted: bool

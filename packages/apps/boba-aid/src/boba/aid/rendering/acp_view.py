@@ -1150,11 +1150,15 @@ class UpdateView:
         await painter.journal_opened(opened)
 
     async def _user_message(self, update: schema.UserMessageUpdate) -> None:
-        """Вопрос из воспроизведения закрывает прежний ход и открывает свой;
-        живое эхо вопроса открытого хода уже нарисовано по TurnStarted."""
+        """Новый вопрос закрывает прежний ход и открывает свой: в
+        воспроизведении и вживую, когда агент вставил вопрос, заданный по
+        ходу, — посреди хода на границе шага или после его ответа; живой ход
+        продолжается под вопросом с кружком ожидания. Живое эхо вопроса
+        открытого хода уже нарисовано по TurnStarted."""
         if update.message_id == self._turn_key:
             return
 
+        live = self._view.turn_live
         if self._turn_key is not None:
             await self.finish_turn()
 
@@ -1173,6 +1177,8 @@ class UpdateView:
 
         self.begin_turn(update.message_id)
         await self.question(text, update.message_id, links=links)
+        if live:
+            await self._view.await_model()
 
     async def _thought_chunk(
         self, update: schema.AgentThoughtChunk | schema.AgentThoughtUpdate

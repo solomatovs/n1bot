@@ -1,0 +1,10 @@
+- article: Сверь витрину по шагам
+- img "Avatar for AID"
+- 'heading "Завершено · шагов: 4" [level=3]':
+  - 'button "Завершено · шагов: 4"'
+- article: А сколько строк в витрине?
+- img "Avatar for AID"
+- 'heading "Завершено · шагов: 1" [level=3]':
+  - 'button "Завершено · шагов: 1"'
+- img "Avatar for AID"
+- article: В витрине пять строк.
