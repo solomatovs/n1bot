@@ -37,10 +37,11 @@ from boba.agent.attachments import (
     SkillBudget,
     ToolPoolChange,
 )
-from boba.agent.builder import RequestBuilder
+from boba.agent.builder import RequestBuilder, RequestTexts
 from boba.agent.ids import Clock, IdMint
 from boba.agent.profile import CompactionSettings, ModelProfile
 from boba.agent.records import (
+    AssistantBlock,
     AttachmentRecord,
     ChainRecord,
     CompactBoundaryRecord,
@@ -55,8 +56,11 @@ from boba.agent.records import (
     PreservedMessages,
     PromptSnapshot,
     Record,
+    RequestFeed,
     SnapshotSkill,
     SnapshotTool,
+    TextBlock,
+    ThinkingBlock,
     ToolResultBlock,
     ToolUseBlock,
     UserMessage,
@@ -79,6 +83,7 @@ __all__ = [
     "CompactTracking",
     "Compactor",
     "ContextMeter",
+    "CostFeed",
     "Fill",
     "FillLevel",
     "GateDecision",
@@ -97,13 +102,53 @@ __all__ = [
 ]
 
 
+class CostFeed(RequestFeed):
+    """Реализация RequestFeed оценки окна: тексты, которые запись вносит в
+    запрос, — как их видит модель (RequestTexts сборщика), и определения
+    загруженных отложенных инструментов. Строит TokenEstimator на запись."""
+
+    def __init__(self, texts: RequestTexts) -> None:
+        self._texts = texts
+        self.texts: list[str] = []
+
+    def user_text(self, text: str) -> None:
+        self.texts.append(self._texts.user(text))
+
+    def context_text(self, text: str) -> None:
+        self.texts.append(text)
+
+    def reminder(self, text: str) -> None:
+        self.texts.append(text)
+
+    def tool_result(self, block: ToolResultBlock) -> None:
+        self.texts.append(self._texts.result(block))
+
+    def reply_block(self, message_id: str, block: AssistantBlock) -> None:
+        if isinstance(block, ThinkingBlock):
+            self.texts.append(block.thinking)
+            return
+
+        if isinstance(block, TextBlock):
+            self.texts.append(block.text)
+            return
+
+        self.texts.append(block.name)
+        self.texts.append(json.dumps(block.input, ensure_ascii=False))
+
+    def tool_definitions(self, tools: Sequence[SnapshotTool]) -> None:
+        for tool in tools:
+            self.texts.append(tool.text())
+            self.texts.append(json.dumps(tool.schema_, ensure_ascii=False))
+
+
 class TokenEstimator:
     """Оценка записей в токенах без провайдера: знаки, делённые на
-    `chars_per_token` профиля, по текстам, которыми запись сама называет
-    своё место в окне (ChainRecord.window_texts)."""
+    `chars_per_token` профиля, по тому, что запись вносит в запрос к модели
+    (ChainRecord.to_request) — тем же текстом, что уходит модели."""
 
-    def __init__(self, profile: ModelProfile) -> None:
+    def __init__(self, profile: ModelProfile, templates: AgentTemplate) -> None:
         self._profile = profile
+        self._texts = RequestTexts(templates)
 
     def text(self, text: str) -> int:
         return self._profile.estimate(text)
@@ -116,7 +161,10 @@ class TokenEstimator:
         return total
 
     def record(self, record: ChainRecord) -> int:
-        return self.texts(list(record.window_texts()))
+        feed = CostFeed(self._texts)
+        record.to_request(feed)
+
+        return self.texts(feed.texts)
 
     def records(self, records: Sequence[ChainRecord]) -> int:
         total = 0

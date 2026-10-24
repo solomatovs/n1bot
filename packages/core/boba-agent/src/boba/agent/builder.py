@@ -30,6 +30,7 @@ from boba.agent.records import (
     Placement,
     PromptSnapshot,
     RequestFeed,
+    SnapshotTool,
     TextBlock,
     ThinkingBlock,
     ToolResultBlock,
@@ -39,7 +40,7 @@ from boba.agent.tags import AgentTag, TagShield
 from boba.agent.template import AgentTemplate, AgentTemplateFile
 from boba.llm.chat import ChatRequest, ChatRole, ChatTurn, ToolCall, ToolSpec
 
-__all__ = ["RequestBuilder"]
+__all__ = ["RequestBuilder", "RequestTexts"]
 
 
 @dataclass
@@ -80,6 +81,40 @@ class SystemTurn:
 Turn = UserTurn | AssistantTurn | SystemTurn
 
 
+class RequestTexts:
+    """Тексты записи, какими их видит модель: слова пользователя с
+    обезвреженными служебными тегами и результат инструмента — строки о
+    загруженных отложенных инструментах, обезвреженный текст, у ошибки —
+    обёртка tool_use_error. Им пользуются сборщик запроса и оценка окна,
+    чтобы окно считалось по тому же тексту, что уходит модели."""
+
+    TEXT_JOIN: ClassVar[str] = "\n"
+
+    def __init__(self, templates: AgentTemplate) -> None:
+        self._templates = templates
+        self._shield = TagShield([AgentTag.SYSTEM_REMINDER, AgentTag.TOOL_USE_ERROR])
+
+    def user(self, text: str) -> str:
+        return self._shield.shield(text)
+
+    def result(self, result: ToolResultBlock) -> str:
+        lines: list[str] = []
+        for name in result.references():
+            lines.append(
+                self._templates.read(AgentTemplateFile.TOOL_LOADED).format(name=name)
+            )
+
+        text = self._shield.shield(result.text())
+        if text:
+            lines.append(text)
+
+        joined = self.TEXT_JOIN.join(lines)
+        if result.is_error:
+            return AgentTag.TOOL_USE_ERROR.wrap(joined)
+
+        return joined
+
+
 class Feed(RequestFeed):
     """Реализация RequestFeed сборщика: накопитель сообщений в порядке
     подачи (шаги 4–5 разбора 06). Записи отдают сюда свои части, накопитель
@@ -88,14 +123,14 @@ class Feed(RequestFeed):
     напоминаниями в сообщении пользователя либо отдельным системным
     сообщением в режиме system_turns. Создаёт сборщик на каждый запрос."""
 
-    def __init__(self, shield: TagShield, system_turns: bool) -> None:
-        self._shield = shield
+    def __init__(self, texts: RequestTexts, system_turns: bool) -> None:
+        self._texts = texts
         self._system_turns = system_turns
         self.turns: list[Turn] = []
         self.pending_system: list[str] = []
 
     def user_text(self, text: str) -> None:
-        self.last_user().texts.append(self._shield.shield(text))
+        self.last_user().texts.append(self._texts.user(text))
 
     def context_text(self, text: str) -> None:
         self.last_user().texts.append(text)
@@ -109,6 +144,11 @@ class Feed(RequestFeed):
 
     def tool_result(self, block: ToolResultBlock) -> None:
         self.last_user().results.append(block)
+
+    def tool_definitions(self, tools: Sequence[SnapshotTool]) -> None:
+        """Определения загруженных отложенных уходят списком tools: его
+        сборщик берёт из свёртки Announced."""
+        return
 
     def reply_block(self, message_id: str, block: AssistantBlock) -> None:
         turn = self.assistant(message_id)
@@ -181,12 +221,12 @@ class RequestBuilder:
     def __init__(self, profile: ModelProfile, templates: AgentTemplate) -> None:
         self._profile = profile
         self._templates = templates
-        self._shield = TagShield([AgentTag.SYSTEM_REMINDER, AgentTag.TOOL_USE_ERROR])
+        self._texts = RequestTexts(templates)
 
     def build(
         self, conversation: Sequence[ChainRecord], snapshot: PromptSnapshot
     ) -> ChatRequest:
-        feed = Feed(self._shield, self._profile.system_turns)
+        feed = Feed(self._texts, self._profile.system_turns)
         for record in self._reordered(conversation):
             record.to_request(feed)
 
@@ -406,7 +446,7 @@ class RequestBuilder:
             tools.append(
                 ChatTurn(
                     role=ChatRole.TOOL,
-                    content=self._result_text(result),
+                    content=self._texts.result(result),
                     tool_call_id=result.tool_use_id,
                     tool_references=result.references(),
                 )
@@ -426,24 +466,6 @@ class RequestBuilder:
             # слитые сообщения пользователя и вложения — отдельными частями
             # одного сообщения, как блоки в docs/prompt_assembly
             yield ChatTurn(role=ChatRole.USER, parts=texts)
-
-    def _result_text(self, result: ToolResultBlock) -> str:
-        lines: list[str] = []
-        for name in result.references():
-            lines.append(self._loaded_line(name))
-
-        text = self._shield.shield(result.text())
-        if text:
-            lines.append(text)
-
-        joined = self.TEXT_JOIN.join(lines)
-        if result.is_error:
-            return AgentTag.TOOL_USE_ERROR.wrap(joined)
-
-        return joined
-
-    def _loaded_line(self, name: str) -> str:
-        return self._templates.read(AgentTemplateFile.TOOL_LOADED).format(name=name)
 
     def _tools(
         self, conversation: Sequence[ChainRecord], snapshot: PromptSnapshot
