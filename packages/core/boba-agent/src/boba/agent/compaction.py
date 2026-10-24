@@ -319,6 +319,8 @@ class CompactTracking:
     consecutive_failures: int = 0
     consecutive_rapid_refills: int = 0
     last_failure: str = ""
+    last_reason: str = ""
+    """Причина последней неудачи без текста нижнего слоя: для человека."""
 
     @property
     def breaker_open(self) -> bool:
@@ -340,10 +342,12 @@ class CompactTracking:
         self.turn_counter = 0
         self.consecutive_failures = 0
         self.last_failure = ""
+        self.last_reason = ""
 
-    def failed(self, detail: str) -> None:
+    def failed(self, detail: str, reason: str) -> None:
         self.consecutive_failures += 1
         self.last_failure = detail
+        self.last_reason = reason
 
     def tools_ran(self) -> None:
         self.turn_counter += 1
@@ -496,6 +500,10 @@ class NotSummarized:
 
     def describe(self) -> str:
         return self.reason.describe(self.detail)
+
+    def brief(self) -> str:
+        """Причина без текста нижнего слоя: для человека."""
+        return self.reason.describe("")
 
 
 @dataclass(frozen=True)

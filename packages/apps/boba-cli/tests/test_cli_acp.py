@@ -47,7 +47,20 @@ from mcp_types.jsonrpc import ErrorData
 from mcp_types.methods import parse_client_request
 from pydantic import AnyUrl, BaseModel, ConfigDict
 
-from boba.cli.acp_server import ConfigOptionId, PermissionChoice, ToolKindName
+from boba.agent.records import (
+    AssistantMessage,
+    AssistantRecord,
+    ReplyStopReason,
+    Synthetic,
+    TextBlock,
+    Usage,
+)
+from boba.cli.acp_server import (
+    AcpMapping,
+    ConfigOptionId,
+    PermissionChoice,
+    ToolKindName,
+)
 from boba.stand.acp_frames import Frames
 from boba.stand.ui.fake_llm import FailureName, FakeLlmApp, ScenarioName
 from boba.stand.ui.stand import StandPorts
@@ -55,7 +68,7 @@ from boba.transport.acp.protocol import (
     AcpErrorCode,
     AcpVersion,
     ClientConnection,
-    IdleErrorUpdate,
+    ErrorDataKey,
     McpErrorOutcome,
     McpMessage,
     McpOutcome,
@@ -166,8 +179,10 @@ class StandRegistration:
     листинга), ASKING — `input_required`, MIXED — блоки для человека и для
     модели, LARGE — текст заданной длины. serverId вне `servers` — внешняя
     ошибка -33001. Описание и страницы списка несут срок свежести ttl_ms;
-    drop() молча убирает инструмент из списка. Копит запросы и requestId
-    отменённых ответов."""
+    drop() молча убирает инструмент из списка; unreachable — сервер за
+    регистрацией недоступен, любой запрос получает внешнюю ошибку -33002,
+    как от чата без связи с сервером. Копит запросы и requestId отменённых
+    ответов."""
 
     STAND: ClassVar[schema.AcpMcpServer] = schema.AcpMcpServer(
         name="stand", server_id="stand:3f9c2a"
@@ -276,12 +291,22 @@ class StandRegistration:
         self.connection: ClientConnection | None = None
         self.received: list[McpMessage] = []
         self.cancelled: list[str] = []
+        self.unreachable = False
 
     async def answer(self, message: McpMessage) -> McpOutcome:
         self.received.append(message)
         if message.server_id not in self._served:
             msg = f"No MCP server is registered under serverId {message.server_id!r}"
             raise RequestError(AcpErrorCode.UNKNOWN_SERVER, msg)
+
+        if self.unreachable:
+            msg = (
+                f"{message.method} to MCP server {message.server_id!r} got no MCP "
+                "outcome: connecting to http://127.0.0.1:9/mcp failed: connection "
+                "refused"
+            )
+            data = {ErrorDataKey.DETAILS.value: "no connection"}
+            raise RequestError(AcpErrorCode.BACKEND_FAILED, msg, data)
 
         request = parse_client_request(
             message.method, McpVersion.V2026_07_28, message.params
@@ -596,9 +621,7 @@ class AcpClient(Client):
 
         return self.permissions[seen]
 
-    async def idle(
-        self, session_id: str
-    ) -> schema.IdleSessionStateUpdate | IdleErrorUpdate:
+    async def idle(self, session_id: str) -> schema.IdleSessionStateUpdate:
         """Следующий ещё не взятый `idle` сессии: конец её очередного хода."""
         taken = self._idles.get(session_id, 0)
         while True:
@@ -940,7 +963,7 @@ class AcpProcess:
         client: AcpClient,
         session_id: str,
         prompt: Sequence[schema.TextContentBlock | schema.ResourceContentBlock],
-    ) -> tuple[schema.PromptResponse, schema.IdleSessionStateUpdate | IdleErrorUpdate]:
+    ) -> tuple[schema.PromptResponse, schema.IdleSessionStateUpdate]:
         """Ход целиком: `session/prompt` и ожидание его `idle`."""
         assert self._connection is not None
         response = await self._connection.prompt(
@@ -1184,7 +1207,7 @@ class TestTurnState:
         ]
         assert human == [response.message_id]
 
-    async def test_model_failure_after_insertion_is_idle_with_error(
+    async def test_model_failure_after_insertion_is_a_notice_and_refusal(
         self, boba: AcpProcess, registration: StandRegistration, tmp_path: Path
     ) -> None:
         client = AcpClient()
@@ -1200,13 +1223,15 @@ class TestTurnState:
             )
 
             assert response.message_id
-            assert isinstance(idle, IdleErrorUpdate)
-            assert idle.stop_reason == StopReason.ERROR
-            assert idle.error is not None
-            assert idle.error.code == AcpErrorCode.INTERNAL_ERROR
-            assert isinstance(idle.error.data, dict)
-            assert idle.error.data["kind"] == "api_error"
-            assert idle.error.message
+            assert idle.stop_reason == StopReason.REFUSAL
+            notices = client.of(schema.SessionNotice)
+            assert len(notices) == 1, notices
+            assert notices[0].severity == "error"
+            assert notices[0].title.startswith(
+                "The model service still isn't responding"
+            ), notices[0].title
+            assert notices[0].description is not None
+            assert notices[0].description.startswith("HTTP 500"), notices[0]
         finally:
             await conn.close()
             await boba.close_stdin()
@@ -2142,9 +2167,76 @@ class TestRefusals:
         assert await boba.wait() == 0
         assert len(notices) == 1, notices
         assert notices[0].severity == "warning", notices
-        assert "'dead'" in notices[0].title, notices
-        assert "dead:0" in str(notices[0].description), notices
+        assert "The MCP server 'dead' isn't available" in notices[0].title, notices
+        assert notices[0].description is None, notices
         assert result_text(client.calls_of(starts[0].tool_call_id)[-1]) == "3"
+
+    async def test_server_that_stops_and_returns_is_noticed_in_live_and_replay(
+        self, boba: AcpProcess, model: FakeModel, tmp_path: Path
+    ) -> None:
+        """Сервер перестал отвечать между ходами: следующий ход начинается
+        пометкой о пропаже, ход после его возврата — пометкой о возврате;
+        воспроизведение показывает те же пометки на тех же местах."""
+        registration = StandRegistration([StandRegistration.STAND], 0)
+        client = AcpClient()
+        conn = await boba.start(client, registration)
+        try:
+            await handshake(conn)
+            session = await conn.new_session(
+                cwd=str(tmp_path), mcp_servers=[StandRegistration.STAND]
+            )
+            session_id = session.session_id
+            answer = [schema.TextContentBlock(text=ScenarioName.ANSWER.value)]
+            await boba.turn(client, session_id, answer)
+            registration.unreachable = True
+            await boba.turn(client, session_id, answer)
+            registration.unreachable = False
+            await boba.turn(client, session_id, answer)
+            live = TestHistory.turn_ends(client.updates_of(session_id))
+        finally:
+            await conn.close()
+            await boba.close_stdin()
+
+        assert await boba.wait() == 0
+        kinds, notices = live
+        assert kinds == [
+            "user",
+            StopReason.END_TURN,
+            "user",
+            "notice",
+            StopReason.END_TURN,
+            "user",
+            "notice",
+            StopReason.END_TURN,
+        ]
+        assert notices[0].severity == "warning", notices
+        assert "stopped answering" in notices[0].title, notices
+        assert notices[0].description == "no connection", notices
+        assert notices[1].severity == "info", notices
+        assert "is answering again" in notices[1].title, notices
+
+        second = AcpProcess(tmp_path, model)
+        replaying = AcpClient()
+        conn = await second.start(replaying, registration)
+        try:
+            await handshake(conn)
+            await conn.resume_session(
+                cwd=str(tmp_path),
+                session_id=session_id,
+                mcp_servers=[StandRegistration.STAND],
+                replay_from=schema.ReplayFromStartVariant(),
+            )
+            replayed = TestHistory.turn_ends(replaying.updates_of(session_id))
+        finally:
+            await conn.close()
+            await second.close_stdin()
+            await second.kill()
+
+        # штатный конец хода воспроизведение idle не повторяет
+        assert replayed == (
+            ["user", "user", "notice", "user", "notice"],
+            notices,
+        )
 
     async def test_same_tool_of_two_servers_is_called_on_each(
         self, boba: AcpProcess, tmp_path: Path
@@ -2251,7 +2343,7 @@ class TestQuestions:
         registration: StandRegistration,
         tmp_path: Path,
         forms: bool,
-    ) -> tuple[str, schema.IdleSessionStateUpdate | IdleErrorUpdate]:
+    ) -> tuple[str, schema.IdleSessionStateUpdate]:
         """Ход с вызовом AskUserQuestion: id сессии и idle хода."""
         conn = await boba.start(client, registration)
         try:
@@ -2769,6 +2861,29 @@ class TestHistory:
         ]
         assert human == [*self.PROMPTS, ScenarioName.ANSWER.value]
 
+    @staticmethod
+    def turn_ends(
+        updates: Sequence[Any],
+    ) -> tuple[list[str], list[schema.SessionNotice]]:
+        """Вопросы, пометки и концы ходов воспроизведения по порядку и сами
+        пометки."""
+        kinds: list[str] = []
+        notices: list[schema.SessionNotice] = []
+        for update in updates:
+            if isinstance(update, schema.UserMessageUpdate):
+                kinds.append("user")
+                continue
+
+            if isinstance(update, schema.SessionNotice):
+                kinds.append("notice")
+                notices.append(update)
+                continue
+
+            if isinstance(update, schema.IdleSessionStateUpdate):
+                kinds.append(str(update.stop_reason))
+
+        return kinds, notices
+
     async def test_replay_ends_the_stopped_and_the_failed_turn_like_the_live_one(
         self,
         boba: AcpProcess,
@@ -2812,7 +2927,8 @@ class TestHistory:
 
         assert await boba.wait() == 0
         assert stopped.stop_reason == StopReason.CANCELLED
-        assert isinstance(failed, IdleErrorUpdate)
+        assert failed.stop_reason == StopReason.REFUSAL
+        live_notices = client.of(schema.SessionNotice)
 
         second = AcpProcess(tmp_path, model)
         replaying = AcpClient()
@@ -2831,20 +2947,170 @@ class TestHistory:
             await second.close_stdin()
             await second.kill()
 
-        kinds: list[str] = []
-        ends: list[schema.IdleSessionStateUpdate] = []
-        for update in replayed:
-            if isinstance(update, schema.UserMessageUpdate):
-                kinds.append("user")
+        kinds, notices = self.turn_ends(replayed)
+        assert kinds == [
+            "user",
+            StopReason.CANCELLED,
+            "user",
+            "notice",
+            StopReason.REFUSAL,
+        ]
+        assert notices == live_notices
+
+    async def replayed(
+        self,
+        model: FakeModel,
+        registration: StandRegistration,
+        root: Path,
+        session_id: str,
+    ) -> list[Any]:
+        """Второй процесс над тем же журналом: воспроизведение сессии
+        session_id; итог — его уведомления. Процесс завершён."""
+        second = AcpProcess(root, model)
+        replaying = AcpClient()
+        conn = await second.start(replaying, registration)
+        try:
+            await handshake(conn)
+            await conn.resume_session(
+                cwd=str(root),
+                session_id=session_id,
+                mcp_servers=[StandRegistration.STAND],
+                replay_from=schema.ReplayFromStartVariant(),
+            )
+            return replaying.updates_of(session_id)
+        finally:
+            await conn.close()
+            await second.close_stdin()
+            await second.kill()
+
+    async def test_model_retries_are_notices_and_their_partial_answers_go(
+        self,
+        boba: AcpProcess,
+        registration: StandRegistration,
+        model: FakeModel,
+        tmp_path: Path,
+    ) -> None:
+        """Попытка запроса к модели оборвалась посреди ответа: её
+        недописанный ответ заменяется пустым, повтор объявлен пометкой с
+        паузой, отказ после повторов — пометкой ошибки; воспроизведение
+        показывает те же пометки и ни одного недописанного ответа."""
+        client = AcpClient()
+        document = boba.settings_document()
+        document["limits"] = {"apiRetries": 1}
+        conn = await boba.start(client, registration, document)
+        try:
+            await handshake(conn)
+            session = await conn.new_session(cwd=str(tmp_path), mcp_servers=[])
+            session_id = session.session_id
+            cut = f"{ScenarioName.ANSWER.value} {FailureName.CUT.value}"
+            _, idle = await boba.turn(
+                client, session_id, [schema.TextContentBlock(text=cut)]
+            )
+            live = client.updates_of(session_id)
+        finally:
+            await conn.close()
+            await boba.close_stdin()
+
+        assert await boba.wait() == 0
+        assert idle.stop_reason == StopReason.REFUSAL
+        streamed: set[str] = set()
+        withdrawn: set[str] = set()
+        for update in live:
+            if isinstance(update, schema.AgentMessageChunk):
+                streamed.add(update.message_id)
                 continue
 
-            if isinstance(update, schema.IdleSessionStateUpdate):
-                kinds.append(str(update.stop_reason))
+            if isinstance(update, schema.AgentMessageUpdate):
+                assert update.content == [], update
+                withdrawn.add(update.message_id)
+
+        assert len(streamed) == 2, live
+        assert withdrawn == streamed
+        kinds, notices = self.turn_ends(live)
+        assert kinds == ["user", "notice", "notice", StopReason.REFUSAL]
+        assert notices[0].severity == "warning", notices
+        assert notices[0].title == (
+            "The model's answer broke off before it was finished. Trying again "
+            "in 1 second (attempt 1 of 1)."
+        ), notices
+        assert notices[0].description == "the stream stopped early", notices
+        assert notices[1].severity == "error", notices
+        assert notices[1].title.startswith("The model's answer kept breaking off")
+
+        replayed = await self.replayed(model, registration, tmp_path, session_id)
+        assert self.turn_ends(replayed) == (kinds, notices)
+        for update in replayed:
+            assert not isinstance(update, schema.AgentMessageUpdate), update
+
+    @staticmethod
+    def _calls_written(journal: Sequence[Document]) -> bool:
+        """В журнале уже есть ответ модели с вызовом инструмента."""
+        for line in journal:
+            if line.get("type") != "assistant":
+                continue
+
+            for block in line["message"]["content"]:
+                if block.get("type") == "tool_use":
+                    return True
+
+        return False
+
+    async def test_turn_cut_by_a_killed_agent_is_repaired_on_resume(
+        self,
+        boba: AcpProcess,
+        registration: StandRegistration,
+        model: FakeModel,
+        tmp_path: Path,
+    ) -> None:
+        """Агент убит посреди вызова: следующий процесс, открывший сессию,
+        сразу пишет в журнал результат-заглушку вызова и пометку об
+        оборванном ходе; воспроизведение показывает вызов сорванным с текстом
+        заглушки и пометку."""
+        client = AcpClient()
+        document = boba.settings_document(mode="bypassPermissions", allow_bypass=True)
+        conn = await boba.start(client, registration, document)
+        try:
+            await handshake(conn)
+            session = await conn.new_session(
+                cwd=str(tmp_path), mcp_servers=[StandRegistration.STAND]
+            )
+            session_id = session.session_id
+            slow = {
+                "name": "mcp__stand__progress",
+                "arguments": {"steps": 1, "seconds": 30},
+            }
+            await conn.prompt(session_id=session_id, prompt=[*call(slow)])
+            while not registration.received:
+                await asyncio.sleep(0.05)
+
+            while registration.received[-1].method != "tools/call":
+                await asyncio.sleep(0.05)
+
+            while not self._calls_written(boba.journal(session_id)):
+                await asyncio.sleep(0.05)
+        finally:
+            await boba.kill()
+
+        replayed = await self.replayed(model, registration, tmp_path, session_id)
+        kinds, notices = self.turn_ends(replayed)
+        assert kinds == ["user", "notice"], replayed
+        assert notices[0].severity == "warning", notices
+        assert "interrupted" in notices[0].title, notices
+        ends: list[schema.SessionToolCallUpdate] = []
+        for update in replayed:
+            if not isinstance(update, schema.SessionToolCallUpdate):
+                continue
+
+            if update.status == ToolStatus.FAILED:
                 ends.append(update)
 
-        assert kinds == ["user", StopReason.CANCELLED, "user", StopReason.ERROR]
-        assert isinstance(ends[1], IdleErrorUpdate)
-        assert ends[1].error == failed.error
+        assert len(ends) == 1, replayed
+        assert "Tool call interrupted" in result_text(ends[0])
+        journal = boba.journal(session_id)
+        informational = [
+            line for line in journal if line.get("subtype") == "informational"
+        ]
+        assert len(informational) == 1, journal[-3:]
 
     async def test_resume_restores_without_replay(
         self,
@@ -3905,3 +4171,58 @@ class TestFork:
             assert await second.wait() == 0
 
         assert sorted((tmp_path / "history").glob("*.jsonl")) == journals
+
+
+class TestRefusalNotices:
+    """Отказ модели — пометка со словами человеку из текста записи и
+    короткой причиной из её error; запись прежних версий, где текст и error
+    совпадают, причину не повторяет."""
+
+    def _refusal(self, text: str, error: str | None) -> AssistantRecord:
+        message = AssistantMessage(
+            id="msg-1",
+            model=Synthetic.MODEL.value,
+            content=[TextBlock(text=text)],
+            stop_reason=ReplyStopReason.STOP_SEQUENCE,
+            usage=Usage(),
+        )
+        return AssistantRecord(
+            uuid="u-1",
+            parent_uuid=None,
+            timestamp="2026-10-24T00:00:00.000Z",
+            session_id="s-1",
+            version="0",
+            message=message,
+            request_id="r-1",
+            is_api_error_message=True,
+            error=error,
+        )
+
+    def test_refusal_text_and_detail_are_apart(self) -> None:
+        text = (
+            "This conversation no longer fits in the model's memory, and "
+            "shortening it automatically didn't help. Start a new chat to continue."
+        )
+        detail = "the summary request failed: HTTP 400 Bad Request"
+        notices = list(AcpMapping().notices(self._refusal(text, detail)))
+
+        assert len(notices) == 1, notices
+        assert notices[0].severity == "error"
+        assert notices[0].title == text, notices[0].title
+        assert notices[0].description == detail, notices[0]
+
+    def test_refusal_without_detail_has_no_description(self) -> None:
+        text = "This conversation no longer fits in the model's memory."
+        notices = list(AcpMapping().notices(self._refusal(text, None)))
+
+        assert [(notice.title, notice.description) for notice in notices] == [
+            (text, None)
+        ]
+
+    def test_old_refusal_does_not_repeat_its_text(self) -> None:
+        error = "openai chat: POST http://model/v1: expected 2xx, got 500"
+        notices = list(AcpMapping().notices(self._refusal(error, error)))
+
+        assert [(notice.title, notice.description) for notice in notices] == [
+            (error, None)
+        ]

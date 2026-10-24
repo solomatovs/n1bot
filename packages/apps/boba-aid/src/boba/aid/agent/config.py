@@ -139,6 +139,10 @@ class AgentServiceConfig(BaseModel):
         ),
     )
 
+    def peer(self) -> str:
+        """Служба агента для человека: её адрес ACP."""
+        return f"agent service at {self.endpoint.url()}"
+
 
 class PostgresAgentHistory(BaseModel):
     """История агента в Postgres своим подключением ([postgres_history]: своя
