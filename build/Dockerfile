@@ -3,8 +3,8 @@ ARG GLIBC_IMAGE=dmp/glibc:2.28
 ARG GCC_IMAGE=dmp/gcc:8.5.0
 ARG PYTHON_IMAGE=dmp/python:${PYTHON_VERSION}-dist
 ARG NODE_IMAGE=dmp/nodejs:20
-# основа образа mcp: runtime-sandbox с образами корней плагинов и workspace, их make build
-# кладёт отдельной сборкой build/sandbox.Dockerfile в контексте runtime/sandbox
+# основа образа mcp: runtime-sandbox с моделями, образами корней плагинов и workspace, их make
+# build кладёт отдельной сборкой build/sandbox.Dockerfile в контексте runtime/
 ARG SANDBOX_IMAGE=runtime-sandbox
 
 # Собирает make классическим сборщиком (DOCKER_BUILDKIT=0): он проходит все стадии до
@@ -490,7 +490,7 @@ ENTRYPOINT ["python3"]
 # --- boba-mcp: MCP-сервер с инструментами boba -------------------------------------
 
 # основа приложений, которые исполняют инструменты в песочнице (mcp): bwrap, fuse2fs
-# и каталог образов корней плагинов и workspace. Образы кладёт поверх неё
+# и каталог образов корней плагинов и workspace. Модели и образы кладёт поверх неё
 # build/sandbox.Dockerfile — это и есть SANDBOX_IMAGE стадии runtime-mcp
 FROM runtime-os AS runtime-sandbox
 
@@ -508,7 +508,7 @@ RUN chmod -R go-w ${BOBA_DIR}/third/bin ${BOBA_DIR}/sandbox \
     && ${BOBA_DIR}/third/bin/fuse2fs -V
 
 
-# образ сервиса: образы корней плагинов и шаблон workspace внутри (снаружи приложению
+# образ сервиса: модели, образы корней плагинов и шаблон workspace внутри (снаружи приложению
 # нужны только конфиг и данные, и пересборка плагинов не меняет файлы под живым
 # контейнером), общий конфиг внутри, site.toml и данные приходят деревом compose/mcp
 FROM ${SANDBOX_IMAGE} AS runtime-mcp
