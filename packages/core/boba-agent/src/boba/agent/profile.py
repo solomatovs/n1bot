@@ -83,8 +83,15 @@ class CompactionSettings(BaseModel):
     compact_at: float = Field(default=0.8, gt=0, lt=1)
     block_at: float = Field(default=0.95, gt=0, le=1)
 
-    def threshold(self, profile: ModelProfile) -> int:
-        return int(profile.effective_window() * self.compact_at)
+    def threshold(self, profile: ModelProfile, instruction: str) -> int:
+        """Порог сжатия: доля действующего окна, но не выше окна без места
+        под инструкцию пересказа — запрос пересказа несёт разговор до порога
+        и её, и должен поместиться в окно (запас под пересказ,
+        docs/prompt_assembly/specs/04_compaction.md, 1.4)."""
+        share = int(profile.effective_window() * self.compact_at)
+        room = profile.effective_window() - profile.estimate(instruction)
+
+        return min(share, room)
 
     def limit(self, profile: ModelProfile) -> int:
         return int(profile.effective_window() * self.block_at)
@@ -116,9 +123,12 @@ class ProfileCheck:
 
     HALF: ClassVar[int] = 2
 
-    def __init__(self, profile: ModelProfile, compaction: CompactionSettings) -> None:
+    def __init__(
+        self, profile: ModelProfile, compaction: CompactionSettings, instruction: str
+    ) -> None:
         self._profile = profile
         self._compaction = compaction
+        self._instruction = instruction
 
     def run(self, system_prompt: Sequence[str], tool_texts: Sequence[str]) -> None:
         if not self._profile.supports_tools:
@@ -134,7 +144,8 @@ class ProfileCheck:
         for text in [*system_prompt, *tool_texts]:
             used += self._profile.estimate(text)
 
-        allowed = self._compaction.threshold(self._profile) // self.HALF
+        allowed = self._compaction.threshold(self._profile, self._instruction)
+        allowed //= self.HALF
         if used >= allowed:
             msg = (
                 f"The system prompt and tool descriptions for "

@@ -176,6 +176,20 @@ class RequestBuilder:
             stream=True,
         )
 
+    def summary(
+        self,
+        sent: Sequence[ChainRecord],
+        conversation: Sequence[ChainRecord],
+        snapshot: PromptSnapshot,
+    ) -> ChatRequest:
+        """Запрос пересказа: сообщения — отрезок с инструкцией, инструменты —
+        те же, что у основного запроса по всему разговору: загруженные
+        отложенные записаны и в отброшенных лестницей группах, и в хвосте."""
+        request = self.build(sent, snapshot)
+        tools = list(self._tools(conversation, snapshot))
+
+        return request.model_copy(update={"tools": tools})
+
     def _sendable(self, conversation: Sequence[ChainRecord]) -> Iterator[ChainRecord]:
         for record in conversation:
             if isinstance(record, UserRecord):
