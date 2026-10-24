@@ -85,17 +85,51 @@ def test_pool_passes_cfg_to_connection_pool():
         raise AssertionError('kwargs["timeout"] == 2.0')
 
 
+async def _open_close_twice(pool: AsyncPostgresPool) -> None:
+    await pool.open()
+    await pool.close()
+    await pool.close()
+
+
 def test_open_close():
     pool = AsyncPostgresPool(_cfg())
     inner = _FakeAsyncConnectionPool.instances[0]
-    asyncio.run(pool.open())
+    # close идемпотентен
+    asyncio.run(_open_close_twice(pool))
     if inner.opened is not True:
         raise AssertionError("inner.opened is True")
-    asyncio.run(pool.close())
     if inner.closed is not True:
         raise AssertionError("inner.closed is True")
-    # close идемпотентен
-    asyncio.run(pool.close())
+
+
+def test_close_from_another_loop_raises():
+    pool = AsyncPostgresPool(_cfg())
+    inner = _FakeAsyncConnectionPool.instances[0]
+    asyncio.run(pool.open())
+    with pytest.raises(PostgresPoolLoopError):
+        asyncio.run(pool.close())
+    if inner.closed is not False:
+        raise AssertionError("a pool of another loop stays open")
+
+
+async def _open_then_close_all(own: AsyncPostgresPool) -> None:
+    await own.open()
+    await AsyncPostgresPool.close_all()
+
+
+def test_close_all_closes_only_the_pools_of_the_running_loop():
+    # пул другого цикла (поток хранилища) закрывает его владелец, не close_all
+    foreign = AsyncPostgresPool(_cfg())
+    own = AsyncPostgresPool(_cfg())
+    foreign_inner, own_inner = _FakeAsyncConnectionPool.instances
+    asyncio.run(foreign.open())
+    asyncio.run(_open_then_close_all(own))
+    if own_inner.closed is not True:
+        raise AssertionError("the pool of the running loop is closed")
+    if foreign_inner.closed is not False:
+        raise AssertionError("the pool of another loop stays open")
+    if foreign not in AsyncPostgresPool.opened():
+        raise AssertionError("the pool of another loop stays live")
 
 
 def test_connection_after_close_raises():
