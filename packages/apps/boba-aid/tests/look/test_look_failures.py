@@ -38,7 +38,7 @@ from aid_look import (
     LookState,
     LookTheme,
 )
-from playwright.sync_api import Error, Locator, Page, WebSocket, expect
+from playwright.sync_api import Error, Locator, Page, Response, WebSocket, expect
 
 from boba.cli.serve import ServeHistory
 from boba.runtime.config import ProcessConfig
@@ -267,6 +267,11 @@ class FailLook:
     WAIT_MS: ClassVar[float] = 60_000
     BANNER: ClassVar[str] = "[data-agent-unavailable]"
     RETRY: ClassVar[str] = "#agent-retry"
+    ACTION: ClassVar[str] = "/project/action"
+    """Маршрут chainlit, которым вкладка шлёт действие и ждёт его итога."""
+    EDIT: ClassVar[str] = ".edit-message"
+    EDIT_INPUT: ClassVar[str] = "#edit-chat-input"
+    CONFIRM_EDIT: ClassVar[str] = ".confirm-edit"
     COMPOSER: ClassVar[str] = "#message-composer"
     TOOL: ClassVar[str] = "mcp__faulty__"
     TALL: ClassVar[int] = 2000
@@ -434,10 +439,33 @@ class FailTab:
         return banner
 
     def retried(self) -> None:
-        """Кнопка «Повторить»: полоса уходит, лента собрана заново."""
-        self._page.locator(FailLook.RETRY).click()
+        """Кнопка «Повторить»: полоса уходит сразу, лента собрана заново к
+        ответу сервера на действие."""
+        with self._page.expect_response(self._retry_answered, timeout=FailLook.WAIT_MS):
+            self._page.locator(FailLook.RETRY).click()
+
         expect(self._page.locator(FailLook.BANNER)).to_have_count(
             0, timeout=FailLook.WAIT_MS
+        )
+
+    def _retry_answered(self, response: Response) -> bool:
+        return response.url.endswith(FailLook.ACTION)
+
+    def edited(self, text: str) -> None:
+        """Первый вопрос ленты правится на text, ход по правке доходит до
+        конца."""
+        self._log.clear()
+        self._page.locator(FailLook.EDIT).first.click(force=True)
+        self._page.locator(FailLook.EDIT_INPUT).fill(text)
+        self._page.locator(FailLook.CONFIRM_EDIT).click()
+        self._chat.await_idle(FailLook.TURN_SEC)
+
+    def no_banner(self) -> None:
+        expect(self._page.locator(FailLook.BANNER)).to_have_count(
+            0, timeout=FailLook.WAIT_MS
+        )
+        expect(self._page.locator(LookPages.INPUT)).to_be_editable(
+            timeout=FailLook.WAIT_MS
         )
 
     def composer(self) -> Locator:
@@ -686,6 +714,30 @@ def test_lost_agent_look(
     tab.shots(look, tab.feed, FailLook.TOOL_LOST)
     tab.check_clean()
     look.verify()
+
+
+def test_lost_agent_banner_clears(tabs: FailTabs, process_stand: StandProcess) -> None:
+    """Полоса недоступного агента — состояние связи вкладки, а не итог
+    хода: правка вопроса и «Повторить» снимают её, и удачный ход после них
+    полосу не возвращает."""
+    agents = AgentPids(process_stand)
+    tab = tabs.open(process_stand)
+    tab.ask(FailQuestion.ANSWER)
+    tab.ask_held()
+    agents.killed()
+    tab.release()
+    tab.banner()
+    tab.edited(FailQuestion.ANSWER)
+    tab.no_banner()
+
+    tab.ask_held()
+    agents.killed()
+    tab.release()
+    tab.banner()
+    tab.retried()
+    tab.ask(FailQuestion.ANSWER)
+    tab.no_banner()
+    tab.check_clean()
 
 
 def test_model_failure_look(

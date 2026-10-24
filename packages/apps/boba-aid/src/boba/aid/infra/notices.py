@@ -298,7 +298,8 @@ class TabNotices:
         await self._show(failure)
 
     async def agent_ready(self) -> None:
-        """Агент вкладки отвечает: полоса снимается, поле ввода открыто."""
+        """Агент вкладки отвечает или новое действие пользователя ждёт итога:
+        полоса снимается, поле ввода открыто."""
         await self._agent_state(AgentState(available=True, key="", detail=""))
 
     async def _show(self, failure: UserFailure) -> None:
