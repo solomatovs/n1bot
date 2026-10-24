@@ -12,7 +12,6 @@ import { useRecoilValue } from 'recoil';
 import { ICommand, commandsState } from '@chainlit/react-client';
 
 import Icon from '@/components/Icon';
-import { Button } from '@/components/ui/button';
 import {
   Command,
   CommandGroup,
@@ -29,6 +28,8 @@ import {
 import { useTranslation } from 'components/i18n/Translator';
 
 import { useCommandNavigation } from '@/hooks/useCommandNavigation';
+
+import { ComposerIconButton } from './ComposerIconButton';
 
 interface Props {
   disabled?: boolean;
@@ -146,34 +147,20 @@ export const CommandPopoverButton = ({
           <Tooltip open={!open && tooltipOpen}>
             <TooltipTrigger asChild>
               <PopoverTrigger asChild>
-                <Button
+                <ComposerIconButton
                   ref={buttonRef}
                   id="command-button"
-                  variant="ghost"
-                  size="sm"
+                  label={t('chat.commands.button')}
                   aria-haspopup="menu"
                   aria-expanded={open}
                   aria-controls="command-popover"
-                  className={cn(
-                    'flex items-center h-9 rounded-full font-medium text-[13px]',
-                    'hover:bg-muted hover:dark:bg-muted transition-all duration-200 transition-width-padding',
-                    'focus:outline-none focus-visible:ring-0 focus-visible:ring-offset-0',
-                    open && 'bg-muted/50',
-                    hasSelectedNonButtonCommand
-                      ? 'min-w-[36px] px-0 gap-0'
-                      : 'px-3 gap-1.5'
-                  )}
+                  className={cn(open && 'bg-muted/50')}
                   disabled={disabled}
                   onMouseEnter={scheduleTooltipOpen}
                   onMouseLeave={cancelTooltipOpen}
                 >
-                  <SquareSlash className="!size-5" />
-                  {!hasSelectedNonButtonCommand && (
-                    <span className="overflow-hidden transition-all duration-300 opacity-100 w-auto max-w-[100px]">
-                      {t('chat.commands.button')}
-                    </span>
-                  )}
-                </Button>
+                  <SquareSlash />
+                </ComposerIconButton>
               </PopoverTrigger>
             </TooltipTrigger>
             <TooltipContent>
