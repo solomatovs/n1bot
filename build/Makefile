@@ -335,6 +335,14 @@ SANDBOX_DEV_KRB := $(foreach app,$(SANDBOX_APPS),$(SRC_DIR)/compose/$(app)/conf/
 # одно значение — в conf/local.mk
 JOBS            ?= 4
 
+# сколько образов корней плагинов собирать одновременно (plugin-rootfs-all и недостающие
+# у build): каждая сборка — свой docker build и mke2fs, около 4 ГБ памяти. Лог каждой —
+# в PLUGIN_LOG_DIR, на экран — строка начала и итога
+PLUGIN_JOBS     ?= 1
+PLUGIN_LOG_DIR  := $(RELEASE_DIR)/logs/plugin-rootfs
+# устаревшие образы плагинов, которые отметили правила файлов; их собирает build разом
+PLUGIN_STALE    := $(RELEASE_DIR)/logs/plugin-rootfs.stale
+
 # сеть шагов docker build и запусков docker run, которым нужен реестр (npm фронта):
 # пусто — сеть docker по умолчанию; offline-check ставит container:<ловушка>
 BUILD_NETWORK   ?=
@@ -897,7 +905,23 @@ PLUGIN_ROOT_SRCS := $(BASE_DIR)/Dockerfile $(SCRIPTS_DIR)/plugin_rootfs.py $(SCR
 
 .SECONDEXPANSION:
 $(SANDBOX_DIR)/plugins/%/rootfs.ext4: $$(call plugin-sources,$$*) $(PLUGIN_ROOT_SRCS) | $(SANDBOX_INPUTS) $(SANDBOX_TOOLS)
-	@$(MAKE) -f "$(MAKEFILE)" plugin-rootfs PLUGIN=$*
+	@mkdir -p "$(dir $(PLUGIN_STALE))"
+	echo "$*" >> "$(PLUGIN_STALE)"
+
+# образы корней плагинов $(1) по PLUGIN_JOBS одновременно; первый упавший останавливает
+# запуск новых и печатает хвост своего лога
+define plugin-rootfs-many
+mkdir -p "$(PLUGIN_LOG_DIR)"
+printf '%s\n' $(1) | xargs -r -P "$(PLUGIN_JOBS)" -I{} bash -c '
+    log="$(PLUGIN_LOG_DIR)/{}.log"
+    echo "== образ корня плагина {}: лог $$log"
+    if ! $(MAKE) -f "$(MAKEFILE)" plugin-rootfs PLUGIN={} > "$$log" 2>&1; then
+        echo "образ корня плагина {} не собран, хвост лога $$log:" >&2
+        tail -n 30 "$$log" >&2
+        exit 255
+    fi
+    echo ">>> образ корня плагина {} готов"'
+endef
 
 # образы всех плагинов с entry points группы boba.tools
 .PHONY: plugin-rootfs-all
@@ -906,9 +930,7 @@ plugin-rootfs-all: version-check
 	    echo "плагинов с entry points boba.tools в $(SRC_DIR)/packages не найдено — проверь $(PYTHON): нужен .venv репозитория (source dev.sh)" >&2
 	    exit 1
 	fi
-	for name in $(PLUGIN_PACKAGES); do
-	    $(MAKE) -f "$(MAKEFILE)" plugin-rootfs PLUGIN=$$name
-	done
+	$(call plugin-rootfs-many,$(PLUGIN_PACKAGES))
 
 # образы данных песочницы: веса моделей ext4-файлом из уже скачанного; входы проверяются,
 # а не делаются — модели кладёт fetch
@@ -1064,6 +1086,11 @@ else
 # Недостающие или устаревшие workspace, образы плагинов и образы моделей build собирает сам
 build: version-check $(if $(APP_SANDBOX),$(SANDBOX_DIR)/workspace.ext4 $(PLUGIN_IMAGES) models-image)
 	@$(call check,$(IMAGE_INPUTS),запусти: make fetch)
+	if [ -s "$(PLUGIN_STALE)" ]; then
+	    stale=$$(sort -u "$(PLUGIN_STALE)")
+	    rm -f "$(PLUGIN_STALE)"
+	    $(call plugin-rootfs-many,$$stale)
+	fi
 	tmp=
 	trap 'rm -rf "$$tmp"' EXIT
 	tmp=$$(mktemp -d)
