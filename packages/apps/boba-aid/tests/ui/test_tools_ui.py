@@ -71,6 +71,7 @@ from boba.stand.ui.socket_log import ChatEvent, StepField
 from boba.stand.ui.stand import (
     StandApp,
     StandConfig,
+    StandPlugins,
     StandPorts,
     StandProcess,
     StandToolNames,
@@ -1069,6 +1070,7 @@ def sandbox_stand(
         db_name=stand_database,
         url_prefix="/boba-sandbox",
         sandbox=True,
+        service_plugins=StandPlugins.SANDBOXED,
     )
     process = StandProcess(config=config, log_path=stand_workdir / "sandbox-app.log")
     process.start(boot_timeout_sec=BOOT_TIMEOUT_SEC)
