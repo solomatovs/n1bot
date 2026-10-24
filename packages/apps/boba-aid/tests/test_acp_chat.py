@@ -575,9 +575,42 @@ class ChatSocket:
         return found
 
     def errors(self) -> list[str]:
+        """Сбои во вкладке по порядку прихода: пометки агента об ошибке в
+        ленте, всплывающие уведомления и полоса недоступного агента."""
+        found: list[str] = []
+        for event, payload in self.events:
+            if not isinstance(payload, dict):
+                continue
+
+            if event == "toast":
+                found.append(str(payload.get("message")))
+                continue
+
+            if event == "agent_state":
+                if not payload.get("available"):
+                    found.append(str(payload.get("text")))
+                continue
+
+            if event not in ("new_message", "update_message", "stream_start"):
+                continue
+
+            if payload.get("type") != "assistant_message":
+                continue
+
+            if payload.get("isError"):
+                found.append(str(payload.get("output")))
+
+        return found
+
+    def notices(self) -> list[str]:
+        """Пометки агента в ленте со значком (предупреждение и сведение)."""
         found: list[str] = []
         for payload in self.messages("assistant_message"):
-            if payload.get("isError"):
+            metadata = payload.get("metadata")
+            if not isinstance(metadata, dict):
+                continue
+
+            if metadata.get("icon"):
                 found.append(str(payload.get("output")))
 
         return found
@@ -987,7 +1020,8 @@ class TestConversation:
 class TestUnavailableServer:
     """Сервер MCP профиля не отвечает: агент открывает сессию без его
     инструментов и отвечает на вопрос, а лента хода показывает пометку с
-    именем сервера и причиной."""
+    именем сервера и причиной; пометка — запись агента и видна и после
+    возврата к треду."""
 
     async def test_agent_answers_while_a_server_of_the_profile_is_down(
         self, ghosted: StandProcess, cookie: str
@@ -997,7 +1031,7 @@ class TestUnavailableServer:
         try:
             await tab.send(f"hello {ScenarioName.THINKING_ANSWER.value}")
             await tab.wait_task_end()
-            notes = tab.errors()
+            notes = tab.notices()
             answers: list[str] = []
             for payload in tab.messages():
                 if payload.get("isError"):
@@ -1012,6 +1046,15 @@ class TestUnavailableServer:
         noted = [note for note in notes if "'ghost' is unavailable" in note]
         assert noted, (notes, ghosted.tail(60))
         assert "127.0.0.1" in noted[0], noted
+
+        again = ChatSocket(ghosted, cookie, tab.thread_id)
+        await again.open(resumed=True)
+        try:
+            replayed = again.notices()
+        finally:
+            await again.end_session()
+
+        assert noted[0] in replayed, (replayed, again.trace())
 
 
 class TestHistory:

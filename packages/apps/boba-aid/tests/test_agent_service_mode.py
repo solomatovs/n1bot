@@ -50,6 +50,7 @@ from boba.runtime.config import ProcessConfig
 from boba.runtime.threads import ThreadsTable
 from boba.stand.agent_service import (
     AgentServiceStand,
+    ServeAddress,
     ServeStandConfig,
     ServiceProfiles,
 )
@@ -57,6 +58,7 @@ from boba.stand.names import StandNames
 from boba.stand.signin import SignInStand
 from boba.stand.site import Stand
 from boba.stand.ui.fake_llm import ScenarioName
+from boba.stand.ui.stand import StandPorts
 from boba.transport.http import HttpTransportConfig
 
 pytestmark = pytest.mark.anyio
@@ -115,12 +117,14 @@ async def service(
     profiles = ServiceProfiles(model.base_url()).add(
         SignInStand.PROFILE, ["dev"], MODEL
     )
+    port = StandPorts().free()
     served = AgentServiceStand(
         process_config.krb,
         ServeHistory(schema=history.schema(), postgres=history.postgres()),
         layer,
         profiles,
         600.0,
+        ServeAddress(listen=port, public=port),
     )
     await served.start()
     try:
