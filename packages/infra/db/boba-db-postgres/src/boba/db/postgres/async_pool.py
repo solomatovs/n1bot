@@ -18,6 +18,7 @@ from collections.abc import (
     Awaitable,
     Callable,
     Generator,
+    Iterator,
     Sequence,
 )
 from contextlib import (
@@ -245,13 +246,34 @@ class AsyncPostgresPool(PostgresPool):
 
     @classmethod
     async def close_all(cls) -> None:
-        """Закрывает и забывает все живые пулы процесса, не только singleton'ы."""
+        """Закрывает и забывает живые пулы, открытые в текущем цикле событий, не
+        только singleton'ы. Пул другого цикла (поток хранилища агента) закрывает
+        его владелец в своём цикле: из чужого его не закрыть."""
+        current = id(asyncio.get_running_loop())
         async with cls._CACHE_LOCK:
-            cls._CACHE.clear()
-            pools = list(cls._LIVE)
+            for key in list(cls._cached_of(current)):
+                del cls._CACHE[key]
+
+            pools = list(cls._live_of(current))
 
         for pool in pools:
             await pool.close()
+
+    @classmethod
+    def _cached_of(cls, loop_id: int) -> Iterator[_CacheKey]:
+        for key, cached in cls._CACHE.items():
+            if cached._loop_id != loop_id:
+                continue
+
+            yield key
+
+    @classmethod
+    def _live_of(cls, loop_id: int) -> Iterator[AsyncPostgresPool]:
+        for pool in cls._LIVE:
+            if pool._loop_id != loop_id:
+                continue
+
+            yield pool
 
     @staticmethod
     def _cache_key(
@@ -317,10 +339,11 @@ class AsyncPostgresPool(PostgresPool):
             yield cur
 
     async def close(self) -> None:
-        """Закрыть пул. Идемпотентно."""
+        """Закрыть пул в цикле, где он открыт. Идемпотентно."""
         if self._closed:
             return
 
+        self._check_loop("close")
         self._closed = True
         if self in self._LIVE:
             self._LIVE.remove(self)
