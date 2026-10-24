@@ -20,8 +20,8 @@
 - article: В витрине пять строк.
 - article: Пересчитай витрину по шагам
 - img "Avatar for AID"
-- 'heading "Завершено · шагов: 4" [level=3]':
-  - 'button "Завершено · шагов: 4"'
+- 'heading "Остановлено · шагов: 4" [level=3]':
+  - 'button "Остановлено · шагов: 4"'
 - img "Avatar for AID"
 - article: Складываю счётчики.
 - img "Avatar for AID"

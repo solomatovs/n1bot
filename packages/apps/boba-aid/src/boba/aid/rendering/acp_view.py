@@ -469,6 +469,7 @@ class UpdateView:
         """Пометка конца хода: остановка — к ответу, сбой — шагом ошибки."""
         ending = self.ending(idle)
         if ending.outcome is TurnOutcome.STOPPED:
+            self._view.turn_stopped()
             await self._view.interrupt_answer(ending.note, self._turn_key)
             return
 
