@@ -765,7 +765,7 @@ class TestRelayAcceptance:
             "mcp__boba__fake_sleep", {"seconds": 120, "marker": str(marker)}
         )
 
-        ending = agents.questions[process].ending(session_id)
+        ending = agents.questions[process].ending(session_id).settled
         await process.prompt(session_id, [schema.TextContentBlock(text=text)])
         deadline = time.monotonic() + 60.0
         while not marker.exists() and time.monotonic() < deadline:

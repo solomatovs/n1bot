@@ -1,0 +1,24 @@
+- article: Проверь выгрузку по шагам
+- img "Avatar for AID"
+- 'heading "Завершено · шагов: 5" [level=3]':
+  - 'button "Завершено · шагов: 5" [expanded]'
+- region:
+  - heading "✔ Размышления" [level=3]:
+    - button "✔ Размышления"
+  - heading "✔ ToolSearch" [level=3]:
+    - button "✔ ToolSearch"
+  - heading "✔ add" [level=3]:
+    - button "✔ add"
+  - heading "✔ sleep_for" [level=3]:
+    - button "✔ sleep_for"
+  - heading "✖ broken" [level=3]:
+    - button "✖ broken"
+- img "Avatar for AID"
+- article: Складываю счётчики.
+- img "Avatar for AID"
+- article: Жду пересчёта витрины.
+- img "Avatar for AID"
+- article: Проверяю таблицу заказов.
+- img "Avatar for AID"
+- article: Счётчики сошлись, витрина пересчитана, а таблицы заказов нет — её нужно создать.
+- button

@@ -1849,7 +1849,9 @@ class TestMcpOverAcp:
 
 
 class TestQueueAndCancel:
-    async def test_second_prompt_waits_for_its_own_turn(
+    QUEUED_LOG: ClassVar[str] = "waits in the queue behind the running turn"
+
+    async def test_queued_prompts_are_answered_on_insertion_each_its_own(
         self, boba: AcpProcess, registration: StandRegistration, tmp_path: Path
     ) -> None:
         client = AcpClient()
@@ -1865,31 +1867,40 @@ class TestQueueAndCancel:
                 "name": "mcp__stand__progress",
                 "arguments": {"steps": 1, "seconds": 1.0},
             }
-            first, second = await asyncio.gather(
-                conn.prompt(
-                    session_id=session_id,
-                    prompt=[*call(slow)],
-                ),
-                conn.prompt(
-                    session_id=session_id,
-                    prompt=[schema.TextContentBlock(text=ScenarioName.ANSWER.value)],
-                ),
+            first = await conn.prompt(session_id=session_id, prompt=[*call(slow)])
+            texts = (
+                f"{ScenarioName.ANSWER.value} two",
+                f"{ScenarioName.ANSWER.value} three",
             )
+            queued: list[asyncio.Task[schema.PromptResponse]] = []
+            for text in texts:
+                asked = conn.prompt(
+                    session_id=session_id, prompt=[schema.TextContentBlock(text=text)]
+                )
+                queued.append(asyncio.create_task(asked))
+                await asyncio.sleep(0.1)
+
+            await asyncio.sleep(0.3)
+            assert not queued[0].done()
+            assert not queued[1].done()
+
             ended = await client.idle(session_id)
             assert ended.stop_reason == StopReason.END_TURN
+            second = await queued[0]
             again = await client.idle(session_id)
             assert again.stop_reason == StopReason.END_TURN
+            third = await queued[1]
+            last = await client.idle(session_id)
+            assert last.stop_reason == StopReason.END_TURN
 
-            assert first.message_id != second.message_id
+            ids = [first.message_id, second.message_id, third.message_id]
+            assert len(set(ids)) == 3
             echoes = [
                 u
                 for u in client.updates_of(session_id)
                 if isinstance(u, schema.UserMessageUpdate)
             ]
-            assert [e.message_id for e in echoes] == [
-                first.message_id,
-                second.message_id,
-            ]
+            assert [e.message_id for e in echoes] == ids
         finally:
             await conn.close()
             await boba.close_stdin()
@@ -1901,8 +1912,63 @@ class TestQueueAndCancel:
             for r in records
             if r["type"] == "user" and isinstance(r["message"]["content"], str)
         ]
-        assert len(spoken) == 2
-        assert ScenarioName.ANSWER.value in spoken[1]
+        assert spoken[1:] == list(texts)
+
+    async def test_cancel_refuses_queued_prompts(
+        self, boba: AcpProcess, registration: StandRegistration, tmp_path: Path
+    ) -> None:
+        client = AcpClient()
+        document = boba.settings_document(mode="bypassPermissions", allow_bypass=True)
+        conn = await boba.start(client, registration, document)
+        try:
+            await handshake(conn)
+            session = await conn.new_session(
+                cwd=str(tmp_path), mcp_servers=[StandRegistration.STAND]
+            )
+            session_id = session.session_id
+            slow = {
+                "name": "mcp__stand__progress",
+                "arguments": {"steps": 1, "seconds": 30},
+            }
+            first = await conn.prompt(session_id=session_id, prompt=[*call(slow)])
+            while registration.received[-1].method != "tools/call":
+                await asyncio.sleep(0.05)
+
+            asked = conn.prompt(
+                session_id=session_id,
+                prompt=[schema.TextContentBlock(text=ScenarioName.ANSWER.value)],
+            )
+            queued = asyncio.create_task(asked)
+            async with asyncio.timeout(READ_TIMEOUT_SEC):
+                while not any(self.QUEUED_LOG in line for line in boba.stderr):
+                    await asyncio.sleep(0.05)
+
+            await conn.cancel_session(session_id=session_id)
+
+            with pytest.raises(RequestError) as refused:
+                await queued
+
+            assert refused.value.code == AcpErrorCode.REQUEST_CANCELLED
+            idle = await client.idle(session_id)
+            assert idle.stop_reason == StopReason.CANCELLED
+            echoes = [
+                u.message_id
+                for u in client.updates_of(session_id)
+                if isinstance(u, schema.UserMessageUpdate)
+            ]
+            assert echoes == [first.message_id]
+
+            _, after = await boba.turn(
+                client,
+                session_id,
+                [schema.TextContentBlock(text=ScenarioName.ANSWER.value)],
+            )
+            assert after.stop_reason == StopReason.END_TURN
+        finally:
+            await conn.close()
+            await boba.close_stdin()
+
+        assert await boba.wait() == 0
 
     async def test_cancel_stops_the_running_tool(
         self, boba: AcpProcess, registration: StandRegistration, tmp_path: Path

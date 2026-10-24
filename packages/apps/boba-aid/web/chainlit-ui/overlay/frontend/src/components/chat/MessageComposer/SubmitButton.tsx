@@ -20,11 +20,13 @@ import { Translator } from 'components/i18n';
 
 interface SubmitButtonProps {
   disabled?: boolean;
+  empty: boolean;
   onSubmit: () => void;
 }
 
 export default function SubmitButton({
   disabled,
+  empty,
   onSubmit
 }: SubmitButtonProps) {
   const { loading } = useChatData();
@@ -36,7 +38,8 @@ export default function SubmitButton({
 
   return (
     <TooltipProvider>
-      {loading && firstInteraction && !historyLoading ? (
+      {/* boba: при идущем ходе Stop — только у пустого поля, с текстом — Send в очередь */}
+      {loading && firstInteraction && !historyLoading && empty ? (
         <Tooltip>
           <TooltipTrigger asChild>
             <Button

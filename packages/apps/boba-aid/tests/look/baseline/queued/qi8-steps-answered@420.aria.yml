@@ -1,0 +1,20 @@
+- article: Сверь витрину по шагам
+- img "Avatar for AID"
+- 'heading "Завершено · шагов: 5" [level=3]':
+  - 'button "Завершено · шагов: 5"'
+- img "Avatar for AID"
+- article: Складываю счётчики.
+- img "Avatar for AID"
+- article: Жду пересчёта витрины.
+- img "Avatar for AID"
+- article: Проверяю таблицу заказов.
+- img "Avatar for AID"
+- article: Счётчики сошлись, витрина пересчитана, а таблицы заказов нет — её нужно создать.
+- article: А сколько строк в витрине?
+- img "Avatar for AID"
+- article: Считаю строки.
+- img "Avatar for AID"
+- 'heading "Завершено · шагов: 1" [level=3]':
+  - 'button "Завершено · шагов: 1"'
+- img "Avatar for AID"
+- article: В витрине пять строк.

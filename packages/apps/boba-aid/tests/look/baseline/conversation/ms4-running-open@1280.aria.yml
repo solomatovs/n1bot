@@ -1,0 +1,19 @@
+- article: Проверь выгрузку по шагам
+- img "Avatar for AID"
+- heading "○ sleep_for" [level=3]:
+  - button "○ sleep_for" [expanded]
+- region:
+  - heading "✔ Размышления" [level=3]:
+    - button "✔ Размышления"
+  - heading "✔ ToolSearch" [level=3]:
+    - button "✔ ToolSearch"
+  - heading "✔ add" [level=3]:
+    - button "✔ add"
+  - heading "○ sleep_for" [level=3]:
+    - button "○ sleep_for"
+- img "Avatar for AID"
+- article: Складываю счётчики.
+- img "Avatar for AID"
+- article: Жду пересчёта витрины.
+- img "Avatar for AID"
+- article
