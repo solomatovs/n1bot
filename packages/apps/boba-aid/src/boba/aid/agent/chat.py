@@ -2,12 +2,14 @@
 службе агента ([agent.process]), id сессии в threads.meta, ход и его
 остановка, замена вышедшего процесса или закрытого подключения, удаление
 сессии с тредом; поток сессии уходит приёмнику TurnRenderer, который
-создаёт фабрика TurnRenderers (feed.py).
+создаёт фабрика TurnRenderers (feed.py). Команды «/» вкладки ведёт реестр
+CommandMenu (commands.py): вопрос-команду он отдаёт владельцу.
 
 Ошибки:
 AcpClientError и наследники — процесс или ответ агента (client.py).
 AgentSettingsError — профиль чата не годится агенту или исчез из конфига
     (settings.py).
+CommandError — команду сервера или чата не исполнить (commands.py).
 DataUnavailableError — таблицы чата недоступны.
 PostgresError — билет kerberos-роли истории для процесса агента не получен.
 """
@@ -48,6 +50,7 @@ from boba.aid.agent.client import (
     SessionUpdate,
     SessionUpdates,
 )
+from boba.aid.agent.commands import CommandBoard, CommandMenu, CommandMenus
 from boba.aid.agent.config import AgentCommandConfig, AgentConfig, AgentServiceConfig
 from boba.aid.agent.relay import ChatTools, McpRegistration, McpRegistrations, McpRelay
 from boba.aid.agent.settings import (
@@ -312,10 +315,11 @@ class AgentSessionMeta:
         await self._threads.upsert(change)
 
 
-class TurnRenderer(SessionUpdates, Protocol):
+class TurnRenderer(SessionUpdates, CommandBoard, Protocol):
     """Приёмник потока сессии, который знает и о ходе вкладки: его начало,
-    остановку, очистку ленты и конец воспроизведения истории. Реализует
-    AgentFeed (feed.py).
+    остановку, очистку ленты и конец воспроизведения истории; он же —
+    вкладка для реестра команд (меню и окна команд). Реализует AgentFeed
+    (feed.py).
     """
 
     @abstractmethod
@@ -502,11 +506,13 @@ class TurnEnd:
 class AskedQuestions(SessionUpdates):
     """Приёмник-обёртка агента треда: запоминает вложения вопросов, которые
     агент показал вкладке (`user_message` воспроизведения и живое эхо), решает
-    ожидание конца хода по idle и передаёт поток дальше рендереру. По ним
-    правка вопроса сохраняет его вложения для модели."""
+    ожидание конца хода по idle, отдаёт команды агента реестру команд
+    вкладки и передаёт поток дальше рендереру. По вложениям правка вопроса
+    сохраняет их для модели."""
 
-    def __init__(self, inner: SessionUpdates) -> None:
+    def __init__(self, inner: SessionUpdates, menu: CommandMenu) -> None:
         self._inner = inner
+        self._menu = menu
         self.links: dict[str, tuple[schema.ResourceContentBlock, ...]] = {}
         """messageId вопроса → его блоки resource_link."""
         self._ending: dict[str, TurnEnd] = {}
@@ -533,6 +539,9 @@ class AskedQuestions(SessionUpdates):
                     links.append(block)
 
             self.links[update.message_id] = tuple(links)
+
+        if isinstance(update, schema.AvailableCommandsUpdate):
+            await self._menu.heard(update)
 
         ending = self._ending.get(session_id)
         if ending is not None:
@@ -978,12 +987,15 @@ class ThreadAgent:
         launcher: AgentLauncher,
         meta: AgentSessionMeta,
         renderer: TurnRenderer,
+        menus: CommandMenus,
     ) -> None:
         self._identity = identity
         self._launcher = launcher
         self._meta = meta
         self._renderer = renderer
-        self._questions = AskedQuestions(renderer)
+        registration = identity.registration(ChatTools.NAME)
+        self._menu = menus.menu(registration, renderer)
+        self._questions = AskedQuestions(renderer, self._menu)
         self._launched: LaunchedAgent | None = None
         self._session_id: str | None = None
         self._open = False
@@ -1028,9 +1040,30 @@ class ThreadAgent:
         return self._active is not None
 
     async def start(self) -> None:
-        """Процесс агента; сессия открывается позже."""
+        """Процесс агента и меню команд вкладки; сессия открывается позже, и
+        команды агента меню получит с её открытием."""
         async with self._gate:
             await self._launch(self._launcher.prepare(self._identity))
+
+        await self._menu.start()
+
+    async def routed(self, question: Question, command: str | None) -> Question | None:
+        """Вопрос вкладки с выбранной в меню командой command — владельцу
+        команды: вопрос агенту (с текстом `/<имя> <аргументы>`, если это
+        вызов команды) либо None — команду исполнила вкладка, шаг вопроса
+        снят. Вопрос-правка идёт агенту как есть.
+
+        Ошибки:
+        CommandError — команду сервера или чата не исполнить.
+        """
+        if question.edited:
+            return question
+
+        text = await self._menu.routed(question.key, question.text, command)
+        if text is None:
+            return None
+
+        return question.model_copy(update={"text": text})
 
     async def _restart(self) -> None:
         """Замена процесса под замком вкладки перед ходом: файл настроек
@@ -1266,6 +1299,7 @@ class ThreadAgent:
         finally:
             self._current = None
             self._closed.set()
+            self._menu.revisit()
 
     async def _begin(self, question: Question) -> StartedTurn:
         """Начало хода под замком вкладки: вышедший процесс заменяется,
@@ -1513,9 +1547,13 @@ class ThreadAgent:
             await self._close_process()
 
     async def close(self) -> None:
-        """Закрытие сессии у агента (замок отпущен) и остановка процесса."""
-        async with self._gate:
-            await self._close_process()
+        """Закрытие сессии у агента (замок отпущен), остановка процесса и
+        потоков меню команд."""
+        try:
+            async with self._gate:
+                await self._close_process()
+        finally:
+            await self._menu.close()
 
     async def _close_process(self) -> None:
         """Прежний процесс: сессия закрыта у агента, процесс остановлен, его
@@ -1760,11 +1798,13 @@ class ThreadAgents:
         meta: AgentSessionMeta,
         index: ThreadAgentsIndex,
         renderers: TurnRenderers,
+        menus: CommandMenus,
     ) -> None:
         self._launcher = launcher
         self._meta = meta
         self._index = index
         self._renderers = renderers
+        self._menus = menus
         self._agents: dict[str, ThreadAgent] = {}
         self._starting = asyncio.Lock()
 
@@ -1781,7 +1821,9 @@ class ThreadAgents:
                 return known
 
             renderer = await self._renderers.create(identity)
-            agent = ThreadAgent(identity, self._launcher, self._meta, renderer)
+            agent = ThreadAgent(
+                identity, self._launcher, self._meta, renderer, self._menus
+            )
             await agent.start()
             self._agents[identity.thread_id] = agent
             self._index.register(agent)

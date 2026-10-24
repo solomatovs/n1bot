@@ -565,6 +565,7 @@ class ServiceStand:
         settings = {
             "permissions": {"defaultMode": "bypassPermissions", "allowBypass": True},
             "sessions": {"maxOpen": 8},
+            "limits": {"toolResultWindowShare": 0.25},
         }
         return AgentServiceStand(
             self._krb, self._history, settings, self._profiles, 600.0, self._address
@@ -602,7 +603,7 @@ class ServiceStand:
 
 @pytest.fixture(scope="module")
 def faulty(tmp_path_factory: pytest.TempPathFactory) -> Iterator[FaultyServer]:
-    host = AppsHost(tmp_path_factory.mktemp("look-failures-apps"))
+    host = AppsHost(tmp_path_factory.mktemp("look-failures-apps"), ())
     server = FaultyServer(host)
     try:
         host.await_listening()

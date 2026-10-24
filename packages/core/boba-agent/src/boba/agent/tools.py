@@ -61,6 +61,7 @@ from boba.agent.permissions import (
     PermissionState,
     StaticRules,
 )
+from boba.agent.profile import ModelProfile, TurnLimits
 from boba.agent.records import (
     NoticeLevel,
     PermissionBehavior,
@@ -1139,6 +1140,23 @@ class ToolSearchTool(OwnTool):
         return self._texts.loaded(call, matches, structured)
 
 
+class ResultBound:
+    """Предел длины результата инструмента по пределам хода и профилю
+    модели (TurnLimits.tool_result_chars). Создаёт агент и отдаёт всем
+    ToolTexts сессии; смена модели меняет профиль и с ним предел."""
+
+    def __init__(self, limits: TurnLimits, profile: ModelProfile) -> None:
+        self._limits = limits
+        self._chars = limits.tool_result_chars(profile)
+
+    def set_profile(self, profile: ModelProfile) -> None:
+        self._chars = self._limits.tool_result_chars(profile)
+
+    @property
+    def chars(self) -> int:
+        return self._chars
+
+
 class ToolTexts:
     """Тексты и ответы результатов: обрезка, пустой результат, отказы.
 
@@ -1146,9 +1164,11 @@ class ToolTexts:
     у отказа и собственного инструмента — собранный здесь (ToolReplies).
     """
 
-    def __init__(self, templates: AgentTemplate, limit: int, agent_name: str) -> None:
+    def __init__(
+        self, templates: AgentTemplate, bound: ResultBound, agent_name: str
+    ) -> None:
         self._templates = templates
-        self._limit = limit
+        self._bound = bound
         self._agent = agent_name
         self._replies = ToolReplies()
 
@@ -1157,14 +1177,15 @@ class ToolTexts:
         if not text.strip():
             return self._templates.read(AgentTemplateFile.NO_OUTPUT).format(tool=tool)
 
-        if self._limit <= 0 or len(text) <= self._limit:
+        limit = self._bound.chars
+        if len(text) <= limit:
             return text
 
         note = self._templates.read(AgentTemplateFile.TRUNCATED).format(
-            shown=self._limit, total=len(text)
+            shown=limit, total=len(text)
         )
 
-        return text[: self._limit] + AgentTag.TRUNCATED_OUTPUT.wrap(note)
+        return text[:limit] + AgentTag.TRUNCATED_OUTPUT.wrap(note)
 
     def unknown(self, call: PlannedCall) -> CallResult:
         text = self._templates.read(AgentTemplateFile.NO_SUCH_TOOL).format(

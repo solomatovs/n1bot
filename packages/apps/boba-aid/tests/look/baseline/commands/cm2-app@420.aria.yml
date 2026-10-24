@@ -1,0 +1,4 @@
+- text: cmds · orders_console
+- button "На весь экран"
+- button "Свернуть"
+- iframe

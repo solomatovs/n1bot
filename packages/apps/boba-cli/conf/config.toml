@@ -72,6 +72,8 @@
             alwaysLoad = []
         [agent.settings.sessions]
             maxOpen = 256
+        [agent.settings.limits]
+            toolResultWindowShare = 0.25
     [agent.profiles.general]
         roles = ["*"]
         [agent.profiles.general.model]

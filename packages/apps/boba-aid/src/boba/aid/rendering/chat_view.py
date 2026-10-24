@@ -123,6 +123,18 @@ class StepText(StrEnum):
     ENDED_EARLY = "aid.feed.endedEarly"
     """Ход кончился раньше по причине, которой чат не знает."""
 
+    COMPACTING = "aid.feed.compacting"
+    """Агент пересказывает разговор, чтобы он поместился в окно модели."""
+
+    COMPACTED = "aid.feed.compacted"
+    """Разговор сжат; под шагом — пересказ, который получила модель."""
+
+    COMPACTION_FAILED = "aid.feed.compactionFailed"
+    """Сжатие не удалось; под шагом — причина."""
+
+    COMPACTION_STOPPED = "aid.feed.compactionStopped"
+    """Сжатие прервано: ход остановили раньше, чем пересказ готов."""
+
     NO_ROWS = "aid.feed.noRows"
     """Пустая таблица результата."""
 
@@ -299,6 +311,7 @@ class StepRole(StrEnum):
 
     QUESTION = "question"
     QUESTION_CARD = "question-card"
+    COMPACTION = "compaction"
 
 
 class StepMeta(StrEnum):
@@ -1874,6 +1887,52 @@ class ChatView:
             return
 
         element.id = element_id
+
+    async def compaction_started(self, key: str) -> Step:
+        """Шаг сжатия разговора под контейнером хода, пока агент
+        пересказывает; он же — текущее действие хода."""
+        await self.seal_answer()
+        label = self.label(StepText.COMPACTING)
+        step = await self._child(
+            StepStatus.IDLE.title(label), StepKind.TOOL, key, StepRole.COMPACTION
+        )
+        step.start = utc_now()
+        await self._sink.put(step)
+        await self.follow(step)
+
+        return step
+
+    async def compaction_finished(self, step: Step, summary: str) -> None:
+        """Сжатие состоялось: шаг закрыт, в нём — пересказ разметкой
+        (свёрнут)."""
+        ended = utc_now()
+        step.start = ended
+        step.end = ended
+        step.name = StepStatus.DONE.title(self.label(StepText.COMPACTED))
+        step.output = summary
+        await self._sink.put(step)
+        await self._relabel(step.id, step.name)
+
+    async def compaction_failed(self, step: Step, error: str) -> None:
+        """Сжатие не удалось: шаг закрыт провалом, под ним — причина."""
+        step.is_error = True
+        await self._compaction_closed(
+            step, StepStatus.FAILED.title(self.label(StepText.COMPACTION_FAILED)), error
+        )
+
+    async def compaction_stopped(self, step: Step) -> None:
+        """Сжатие прервано: шаг закрыт пометкой остановки."""
+        name = StepStatus.STOPPED.title(self.label(StepText.COMPACTION_STOPPED))
+        await self._compaction_closed(step, name, "")
+
+    async def _compaction_closed(self, step: Step, name: str, output: str) -> None:
+        ended = utc_now()
+        step.start = ended
+        step.end = ended
+        step.name = name
+        step.output = output
+        await self._sink.put(step)
+        await self._relabel(step.id, step.name)
 
     async def tool_stopped(self, step: Step) -> None:
         """Инструмент не доработал: ход кончился раньше вызова, приложение

@@ -83,8 +83,15 @@ class CompactionSettings(BaseModel):
     compact_at: float = Field(default=0.8, gt=0, lt=1)
     block_at: float = Field(default=0.95, gt=0, le=1)
 
-    def threshold(self, profile: ModelProfile) -> int:
-        return int(profile.effective_window() * self.compact_at)
+    def threshold(self, profile: ModelProfile, instruction: str) -> int:
+        """Порог сжатия: доля действующего окна, но не выше окна без места
+        под инструкцию пересказа — запрос пересказа несёт разговор до порога
+        и её, и должен поместиться в окно (запас под пересказ,
+        docs/prompt_assembly/specs/04_compaction.md, 1.4)."""
+        share = int(profile.effective_window() * self.compact_at)
+        room = profile.effective_window() - profile.estimate(instruction)
+
+        return min(share, room)
 
     def limit(self, profile: ModelProfile) -> int:
         return int(profile.effective_window() * self.block_at)
@@ -97,9 +104,27 @@ class TurnLimits(BaseModel):
 
     max_turns: int = Field(default=100, gt=0)
     tool_result_max_chars: int = Field(default=50_000, gt=0)
+    tool_result_window_share: float = Field(
+        gt=0,
+        le=1,
+        description=(
+            "Доля действующего окна профиля, которую может занять один "
+            "результат инструмента; длиннее — обрезка с пометкой для модели."
+        ),
+    )
     api_retries: int = Field(default=3, ge=0)
     retry_delays_sec: Sequence[float] = (1.0, 2.0, 4.0)
     output_limit_retries: int = Field(default=3, ge=0)
+
+    def tool_result_chars(self, profile: ModelProfile) -> int:
+        """Предел длины одного результата инструмента в знаках: не больше
+        tool_result_max_chars и не больше доли действующего окна профиля —
+        результат, сравнимый с окном, не даёт разговору влезть в окно и
+        после сжатия."""
+        share = profile.effective_window() * self.tool_result_window_share
+        window_chars = int(share * profile.chars_per_token)
+
+        return min(self.tool_result_max_chars, window_chars)
 
     def delay_before(self, attempt: int) -> float:
         """Пауза перед повтором с номером attempt (с 1); хвост — последняя пауза."""
@@ -116,9 +141,12 @@ class ProfileCheck:
 
     HALF: ClassVar[int] = 2
 
-    def __init__(self, profile: ModelProfile, compaction: CompactionSettings) -> None:
+    def __init__(
+        self, profile: ModelProfile, compaction: CompactionSettings, instruction: str
+    ) -> None:
         self._profile = profile
         self._compaction = compaction
+        self._instruction = instruction
 
     def run(self, system_prompt: Sequence[str], tool_texts: Sequence[str]) -> None:
         if not self._profile.supports_tools:
@@ -134,7 +162,8 @@ class ProfileCheck:
         for text in [*system_prompt, *tool_texts]:
             used += self._profile.estimate(text)
 
-        allowed = self._compaction.threshold(self._profile) // self.HALF
+        allowed = self._compaction.threshold(self._profile, self._instruction)
+        allowed //= self.HALF
         if used >= allowed:
             msg = (
                 f"The system prompt and tool descriptions for "
