@@ -16,6 +16,7 @@ from boba.agent.queue import QueueEntry, QueueKind
 from boba.agent.records import PermissionMode, UserRecord
 from boba.agent.settings import (
     HistoryKind,
+    HistoryPoolSettings,
     JsonlHistorySettings,
     MemoryHistorySettings,
     PostgresHistorySettings,
@@ -38,6 +39,7 @@ OWNER_ONLY = 0o600
 WORLD_READABLE = 0o644
 API_KEY = "sk-file-secret"
 DSN = "postgresql://agent:pg-file-secret@db.example.org:5432/boba"
+POOL = HistoryPoolSettings(min_size=1, max_size=4, timeout_sec=30)
 SESSION = SessionId(value="settings-memory-1")
 
 ENV = {
@@ -222,7 +224,7 @@ class TestProfile:
 class TestPostgresHistory:
     def test_dsn_from_the_named_variable_becomes_a_config(self) -> None:
         history = PostgresHistorySettings(
-            kind=HistoryKind.POSTGRES, dsn_env="PG", schema="boba"
+            kind=HistoryKind.POSTGRES, dsn_env="PG", schema="boba", pool=POOL
         )
         env = {
             "PG": "postgresql://agent:s3cret@db.example.org:5433/boba?sslmode=require"
@@ -230,6 +232,8 @@ class TestPostgresHistory:
 
         config = PostgresBuilder(env).config(history)
 
+        assert (config.pool.min_size, config.pool.max_size) == (1, 4)
+        assert config.pool.timeout == 30
         assert config.host == "db.example.org"
         assert config.port == 5433
         assert config.dbname == "boba"
@@ -241,7 +245,7 @@ class TestPostgresHistory:
 
     def test_missing_variable_and_missing_user_are_errors(self) -> None:
         history = PostgresHistorySettings(
-            kind=HistoryKind.POSTGRES, dsn_env="PG", schema="boba"
+            kind=HistoryKind.POSTGRES, dsn_env="PG", schema="boba", pool=POOL
         )
 
         with pytest.raises(SettingsError, match="PG"):
@@ -271,7 +275,12 @@ def secret_document() -> dict[str, object]:
                 "maxOutputTokens": 4096,
             }
         },
-        "history": {"kind": "postgres", "dsn": DSN, "schema": "agent"},
+        "history": {
+            "kind": "postgres",
+            "dsn": DSN,
+            "schema": "agent",
+            "pool": {"minSize": 1, "maxSize": 4, "timeoutSec": 30},
+        },
     }
 
 
@@ -352,7 +361,9 @@ class TestSecretsInFile:
 
     def test_postgres_history_needs_dsn_or_dsn_env(self, tmp_path: Path) -> None:
         path = tmp_path / "settings.json"
-        write_private(path, {"history": {"kind": "postgres", "schema": "boba"}})
+        pool = {"minSize": 1, "maxSize": 4, "timeoutSec": 30}
+        history = {"kind": "postgres", "schema": "boba", "pool": pool}
+        write_private(path, {"history": history})
 
         with pytest.raises(SettingsError, match="'dsn'"):
             settings(tmp_path, Arguments(settings=(str(path),))).effective()
