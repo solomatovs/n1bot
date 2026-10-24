@@ -129,6 +129,22 @@ class TestReplyTag:
 
         assert ReplyTag.SUMMARY.extract(text) == "\n1. Primary Request\n"
 
+    def test_analysis_naming_the_summary_tag_is_cut_first(self) -> None:
+        """Разбор называет тег `<summary>` словами, как это делает настоящая
+        модель: после вырезания разбора извлекается настоящий блок."""
+        text = (
+            "<analysis>\nThe reply needs a <summary> block.\n</analysis>\n\n"
+            "<summary>\n1. Primary Request\n</summary>"
+        )
+        without = ReplyTag.ANALYSIS.without(text)
+
+        assert ReplyTag.SUMMARY.extract(text) == (
+            " block.\n</analysis>\n\n<summary>\n1. Primary Request\n"
+        )
+        assert without == "\n\n<summary>\n1. Primary Request\n</summary>"
+        assert ReplyTag.SUMMARY.extract(without) == "\n1. Primary Request\n"
+        assert ReplyTag.ANALYSIS.without("no analysis") == "no analysis"
+
     def test_case_and_attributes_do_not_matter(self) -> None:
         assert ReplyTag.SUMMARY.extract("<Summary lang=en>text</SUMMARY>") == "text"
 

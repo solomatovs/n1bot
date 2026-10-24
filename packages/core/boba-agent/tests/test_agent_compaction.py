@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from boba.agent.attachments import ConnectedServer
+from boba.agent.attachments import ConnectedServer, InvokedSkillsAttachment
 from boba.agent.control import AllowAnswer
 from boba.agent.events import RecordEvent, TurnOutcome
 from boba.agent.history import SessionId, StoredLine
@@ -37,7 +37,8 @@ from boba.agent.records import (
     UserRecord,
 )
 from boba.agent.session import Session, SessionState
-from boba.agent.template import AgentTemplate
+from boba.agent.skills import Skill, SkillTool
+from boba.agent.template import AgentTemplate, AgentTemplateFile
 from boba.history.jsonl import JsonlHistoryStore
 from boba.stand.agent import (
     Collected,
@@ -49,7 +50,12 @@ from boba.stand.agent import (
     StandToolName,
     StandTools,
 )
-from boba.stand.ui.fake_llm import FailureName, ScenarioName, SummaryName
+from boba.stand.ui.fake_llm import (
+    FailureName,
+    ScenarioName,
+    SummaryName,
+    WindowSettings,
+)
 
 pytestmark = pytest.mark.anyio
 
@@ -58,6 +64,10 @@ VERSION = "0.0.26.dev4"
 CONTINUED = "This session is being continued from a previous conversation"
 INSTRUCTION_MARK = "an <analysis> block followed by a <summary> block"
 NOTE = "Look the rows up before you drop them."
+TRUNCATED_FOR_RETRY = "[earlier conversation truncated for compaction retry]"
+HEAD_NOT_COVERED = "is NOT covered by this summary"
+SKILL_BODY = "Always answer the stand in exactly three bullet points."
+INVOKED_MARK = "The following skills were invoked EARLIER in this session"
 LARGE_CHARS = 24_000
 """Результат, после которого учёт следующего ответа переходит порог
 (80 % окна 8000 минус 512), но не предел (95 %)."""
@@ -341,8 +351,8 @@ class TestThreshold:
             "system:compact_boundary",
             "attachment:date",
             "user:summary",
-            "attachment:model",
             "attachment:mcp_instructions_delta",
+            "attachment:model",
         ], announced
         assert servers.refreshes == 2
 
@@ -373,6 +383,8 @@ class TestThreshold:
         assert summary.is_visible_in_transcript_only is True
         assert isinstance(summary.message.content, str)
         assert summary.message.content.startswith(CONTINUED)
+        assert "Summary:\n1. Primary Request and Intent:" in summary.message.content
+        assert "analysis" not in summary.message.content
         metadata = boundary.compact_metadata
         assert metadata.preserved_messages.anchor_uuid == summary.uuid
         chain: list[ChainRecord] = []
@@ -430,6 +442,41 @@ class TestThreshold:
 
         return after
 
+    async def test_fill_after_the_boundary_counts_the_prompt_and_tools(
+        self, agents: StandAgents
+    ) -> None:
+        """Сразу после сжатия ответа с учётом ещё нет: заполненность — оценка
+        записей после границы вместе с системным промптом и инструментами.
+        Запрос после сжатия падает статусом, и оценка остаётся на границе."""
+        profile = agents.profile(Protocol.OPENAI, chars_per_token=4)
+        system_prompt = ("x" * 4_000,)
+        served = Served(
+            agents.agent(
+                profile,
+                Collected(),
+                tools=StandTools(),
+                system_prompt=system_prompt,
+            )
+        )
+        session = await served.open(SESSION, resume=False)
+
+        served.agent.queue.enqueue(prompt(call(large())))
+        await served.agent.settled()
+        failing = f"{FailureName.STATUS_500.value} {ScenarioName.ANSWER.value}"
+        served.agent.queue.enqueue(prompt(failing))
+        await served.agent.settled()
+        usage = served.agent.context_usage()
+        await served.close()
+
+        assert list(served.agent.outcomes) == [
+            TurnOutcome.COMPLETED,
+            TurnOutcome.API_ERROR,
+        ]
+        conversation = session.conversation()
+        assert isinstance(conversation[0], CompactBoundaryRecord)
+        post = conversation[0].compact_metadata.post_tokens
+        assert usage.used >= post + profile.estimate(system_prompt[0])
+
     async def test_cyrillic_text_without_usage_compacts_before_the_limit(
         self, plain_server: FakeServer, plain_agents: StandAgents
     ) -> None:
@@ -479,7 +526,8 @@ class TestBreakers:
         sink = Collected()
         profile = plain_agents.profile(Protocol.OPENAI)
         settings = CompactionSettings(compact_at=0.3)
-        size = settings.threshold(profile) * profile.chars_per_token // 4
+        instruction = AgentTemplate().read(AgentTemplateFile.SUMMARIZE_INSTRUCTION)
+        size = settings.threshold(profile, instruction) * profile.chars_per_token // 4
         served = Served(
             plain_agents.agent(profile, sink, tools=StandTools(), compaction=settings)
         )
@@ -568,10 +616,226 @@ class TestLadder:
         assert SummaryName.OVERFLOW.value not in second_texts
         second_messages = attempts[1]["messages"]
         assert isinstance(second_messages, list)
-        assert [m["role"] for m in second_messages[:2]] == ["system", "assistant"]
+        assert [m["role"] for m in second_messages[:3]] == [
+            "system",
+            "user",
+            "assistant",
+        ]
+        assert second_messages[1]["content"] == TRUNCATED_FOR_RETRY
         records = session.records()
         assert len(boundaries(records)) == 1
         assert not synthetic_texts(records)
+        summary = summaries(records)[0].message.content
+        assert isinstance(summary, str)
+        assert HEAD_NOT_COVERED in summary
+
+
+class TestWindow:
+    """Стенд с окном модели: запрос больше окна сервер отвергает ошибкой
+    переполнения, как OpenAI-совместимый сервер."""
+
+    async def test_summary_request_fits_the_window_at_the_threshold(
+        self, server: FakeServer, agents: StandAgents
+    ) -> None:
+        """Заполненность растёт шагами, сервер считает так же, как агент, и его
+        окно — действующее окно профиля: порог оставляет место под
+        инструкцию пересказа, и запрос пересказа влезает с первой попытки —
+        лестница не отбрасывает начало разговора."""
+        profile = agents.profile(Protocol.OPENAI)
+        server.app.limit_window(
+            WindowSettings(
+                context_window=profile.effective_window(),
+                chars_per_token=profile.chars_per_token,
+            )
+        )
+        served = Served(agents.agent(profile, Collected(), tools=StandTools()))
+        session = await served.open(SESSION, resume=False)
+
+        for text in [
+            call(large(8_000)),
+            call(large(8_000)),
+            ScenarioName.ANSWER.value,
+            call(large(1_500)),
+            ScenarioName.ANSWER.value,
+        ]:
+            served.agent.queue.enqueue(prompt(text))
+            await served.agent.settled()
+
+        await served.close()
+
+        assert list(served.agent.outcomes) == [TurnOutcome.COMPLETED] * 5
+        records = session.records()
+        assert boundaries(records)
+        assert len(summary_requests(server)) == len(boundaries(records))
+        for summary in summaries(records):
+            assert isinstance(summary.message.content, str)
+            assert HEAD_NOT_COVERED not in summary.message.content
+
+    async def test_overflow_mid_turn_compacts_and_repeats_the_request(
+        self, server: FakeServer, agents: StandAgents
+    ) -> None:
+        """Оценка агента ниже счёта сервера: перед запросом порог не перейдён,
+        сервер отвечает переполнением — сжатие и один повтор, ход доходит до
+        ответа без записи об ошибке."""
+        server.app.limit_window(WindowSettings(context_window=6_000, chars_per_token=2))
+        profile = agents.profile(Protocol.OPENAI, chars_per_token=4)
+        served = Served(agents.agent(profile, Collected(), tools=StandTools()))
+        session = await served.open(SESSION, resume=False)
+
+        served.agent.queue.enqueue(prompt(call(large(3_000))))
+        await served.agent.settled()
+        before = len(server.requests())
+        served.agent.queue.enqueue(prompt(call(large(9_000))))
+        await served.agent.settled()
+        await served.close()
+
+        assert list(served.agent.outcomes) == [TurnOutcome.COMPLETED] * 2
+        records = session.records()
+        assert len(boundaries(records)) == 1
+        assert not synthetic_texts(records)
+        assert "system:api_error" not in kinds(records)
+        turn = server.requests()[before:]
+        assert [is_summary_request(r) for r in turn] == [False, False, True, False]
+        overflowed, retried = turn[1], turn[3]
+        assert overflowed["tools"] == retried["tools"]
+        retried_messages = retried["messages"]
+        overflowed_messages = overflowed["messages"]
+        assert isinstance(retried_messages, list)
+        assert isinstance(overflowed_messages, list)
+        assert retried_messages[0] == overflowed_messages[0]
+        first_user = retried_messages[1]["content"]
+        assert isinstance(first_user, str)
+        assert CONTINUED in first_user
+        assert [m["role"] for m in retried_messages[-2:]] == ["assistant", "tool"]
+
+    async def test_summary_that_never_fits_names_the_cause(
+        self, server: FakeServer, agents: StandAgents
+    ) -> None:
+        """Запрос пересказа не влезает и после отбрасывания старших групп:
+        лестница кончается, ход — пределом с причиной, а повторов сверх
+        лестницы нет."""
+        server.app.limit_window(WindowSettings(context_window=5_000, chars_per_token=4))
+        profile = agents.profile(Protocol.OPENAI, chars_per_token=4)
+        served = Served(agents.agent(profile, Collected(), tools=StandTools()))
+        session = await served.open(SESSION, resume=False)
+
+        served.agent.queue.enqueue(prompt(call(large(14_000))))
+        await served.agent.settled()
+        served.agent.queue.enqueue(prompt(f"{ScenarioName.ANSWER.value} {'y' * 6_000}"))
+        await served.agent.settled()
+        await served.close()
+
+        assert list(served.agent.outcomes) == [
+            TurnOutcome.COMPLETED,
+            TurnOutcome.BLOCKING_LIMIT,
+        ]
+        attempts = summary_requests(server)
+        assert len(attempts) == 2
+        retry = attempts[1]["messages"]
+        assert isinstance(retry, list)
+        assert retry[1]["content"] == TRUNCATED_FOR_RETRY
+        records = session.records()
+        assert not boundaries(records)
+        texts = synthetic_texts(records)
+        assert len(texts) == 1
+        assert texts[0].startswith(
+            "Prompt is too long. Automatic compaction failed: the summary request "
+            "does not fit the context window even after dropping the oldest rounds"
+        )
+        assert "after dropping 2 oldest round(s)" in texts[0]
+        assert "maximum context length is 5000 tokens" in texts[0]
+
+    async def test_tail_over_the_window_ends_each_turn_without_a_loop(
+        self, server: FakeServer, agents: StandAgents
+    ) -> None:
+        """Последняя группа — результат инструмента больше окна: сжатие
+        переносит его хвостом, повтор снова не влезает. Ход кончается
+        пределом после одного сжатия и одного повтора; следующий ход — после
+        одного запроса: пересказывать нечего, и повторов нет."""
+        server.app.limit_window(WindowSettings(context_window=6_000, chars_per_token=2))
+        profile = agents.profile(Protocol.OPENAI, chars_per_token=4)
+        served = Served(agents.agent(profile, Collected(), tools=StandTools()))
+        session = await served.open(SESSION, resume=False)
+
+        counts: list[int] = []
+        for text in [
+            ScenarioName.ANSWER.value,
+            call(large(14_000)),
+            ScenarioName.ANSWER.value,
+        ]:
+            before = len(server.requests())
+            served.agent.queue.enqueue(prompt(text))
+            await served.agent.settled()
+            counts.append(len(server.requests()) - before)
+
+        await served.close()
+
+        assert list(served.agent.outcomes) == [
+            TurnOutcome.COMPLETED,
+            TurnOutcome.BLOCKING_LIMIT,
+            TurnOutcome.BLOCKING_LIMIT,
+        ]
+        assert counts == [1, 4, 1]
+        records = session.records()
+        assert len(boundaries(records)) == 1
+        texts = synthetic_texts(records)
+        assert texts[0] == "Prompt is too long"
+        assert texts[1].startswith(
+            "Prompt is too long. Automatic compaction failed: there is nothing to "
+            "summarize yet"
+        )
+
+
+class TestInvokedSkills:
+    async def test_skill_called_before_the_boundary_comes_back_after_it(
+        self, server: FakeServer, agents: StandAgents, tmp_path: Path
+    ) -> None:
+        """Скилл, вызванный в пересказанной части, возвращается вложением
+        invoked_skills с текстом своего результата — вслед за пересказом, до
+        модели; второе сжатие переносит его из прежнего вложения."""
+        profile = agents.profile(Protocol.OPENAI, chars_per_token=4)
+        skill = Skill(name="stand-skill", description="Stand skill", content=SKILL_BODY)
+        served = Served(
+            agents.agent(profile, Collected(), tools=StandTools(), skills=[skill])
+        )
+        await served.open(SESSION, resume=False)
+
+        skill_call = {"name": SkillTool.NAME, "arguments": {"skill": skill.name}}
+        for text in [
+            call(skill_call),
+            call(large()),
+            ScenarioName.ANSWER.value,
+            call(large()),
+            ScenarioName.ANSWER.value,
+        ]:
+            served.agent.queue.enqueue(prompt(text))
+            await served.agent.settled()
+
+        await served.close()
+
+        assert list(served.agent.outcomes) == [TurnOutcome.COMPLETED] * 5
+        records = await journal(tmp_path / "history", SESSION)
+        found = boundaries(records)
+        assert len(found) >= 2
+        for boundary in found:
+            pack = kinds(records[records.index(boundary) :])
+            assert pack[:4] == [
+                "system:compact_boundary",
+                "attachment:date",
+                "user:summary",
+                "attachment:invoked_skills",
+            ], pack
+            invoked = records[records.index(boundary) + 3]
+            assert isinstance(invoked, AttachmentRecord)
+            attachment = InvokedSkillsAttachment.model_validate(
+                invoked.attachment.model_dump()
+            )
+            assert [s.name for s in attachment.skills] == [skill.name]
+            assert SKILL_BODY in attachment.skills[0].content
+
+        after = json.dumps(server.requests()[-1]["messages"], ensure_ascii=False)
+        assert INVOKED_MARK in after
+        assert SKILL_BODY in after
 
 
 class TestCancellation:

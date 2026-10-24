@@ -13,6 +13,11 @@
 последнем сообщении и отвечает по маркеру `summary:*`; учёт токенов либо
 постоянный, либо считается по размеру запроса и ответа.
 
+Окно контекста (`PUT /window`) делает стенд похожим на настоящий сервер:
+запрос, чьи сообщения по оценке больше окна, получает 400 с текстом OpenAI
+о переполнении, а учёт ответов с этого момента считается по размеру с тем
+же делителем. `POST /reset` снимает окно вместе с журналом запросов.
+
 Книга ответов (ReplyBook) — ответы, которые тест заранее положил под точным
 текстом вопроса пользователя (`PUT /replies`): вопрос в ленте остаётся
 обычным текстом, а ход книги умеет встать на паузу посреди потока до
@@ -66,7 +71,9 @@ __all__ = [
     "SummaryName",
     "ToolCallSpec",
     "TurnScript",
+    "UsageBook",
     "UsageCounts",
+    "WindowSettings",
 ]
 
 
@@ -85,6 +92,7 @@ class FakeRoute(StrEnum):
     PAGE = "/page"
     LINES = "/lines"
     RESET = "/reset"
+    WINDOW = "/window"
     REQUESTS = "/requests"
     REPLIES = "/replies"
     RELEASE = "/replies/release"
@@ -733,7 +741,8 @@ class SummaryBook:
 
         return (
             "<analysis>\nThe stand model read the conversation and lists what the "
-            "user asked for.\n</analysis>\n\n<summary>\n1. Primary Request and "
+            "user asked for; the answer goes into a <summary> block, as the "
+            "instruction says.\n</analysis>\n\n<summary>\n1. Primary Request and "
             "Intent:\n   The user drove the stand through the scenario markers "
             f"listed below.\n\n6. All user messages:\n{listed}\n</summary>"
         )
@@ -758,30 +767,76 @@ class SummaryBook:
 
 class UsageBook:
     """Учёт токенов ответа: постоянные числа либо оценка по знакам запроса
-    и ответа, как у настоящего провайдера."""
+    и ответа, как у настоящего провайдера; той же оценкой окно стенда
+    меряет запрос."""
 
     PROMPT: ClassVar[int] = 11
     COMPLETION: ClassVar[int] = 7
     CHARS_PER_TOKEN: ClassVar[int] = 4
 
-    def __init__(self, estimate: bool) -> None:
+    def __init__(self, estimate: bool, chars_per_token: int) -> None:
         self._estimate = estimate
+        self._chars_per_token = chars_per_token
 
     def of(self, payload: Mapping[str, Any], script: TurnScript) -> UsageCounts:
         if not self._estimate:
             return UsageCounts(prompt=self.PROMPT, completion=self.COMPLETION)
-
-        prompt_chars = 0
-        for message in payload.get("messages") or []:
-            prompt_chars += len(json.dumps(message, ensure_ascii=False))
 
         completion_chars = len(script.reasoning) + len(script.content)
         for call in script.tool_calls:
             completion_chars += len(call.name) + len(call.arguments)
 
         return UsageCounts(
-            prompt=-(-prompt_chars // self.CHARS_PER_TOKEN),
-            completion=-(-completion_chars // self.CHARS_PER_TOKEN),
+            prompt=self.prompt(payload),
+            completion=-(-completion_chars // self._chars_per_token),
+        )
+
+    def prompt(self, payload: Mapping[str, Any]) -> int:
+        """Сообщения запроса в токенах: знаки JSON каждого сообщения."""
+        prompt_chars = 0
+        for message in payload.get("messages") or []:
+            prompt_chars += len(json.dumps(message, ensure_ascii=False))
+
+        return -(-prompt_chars // self._chars_per_token)
+
+
+class WindowSettings(BaseModel):
+    """Тело `PUT /window`: окно модели стенда в токенах и делитель оценки
+    знаков в токены для окна и учёта ответов."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    context_window: int = Field(gt=0)
+    chars_per_token: int = Field(gt=0)
+
+
+class PromptWindow:
+    """Базовое окно модели стенда — без предела: любой запрос влезает.
+    FakeLlmApp держит его, пока тест не задал окно; предел добавляет
+    наследник LimitedWindow."""
+
+    def fits(self, tokens: int) -> bool:
+        return True
+
+    def refusal(self, tokens: int) -> str:
+        msg = f"fake llm: a request of {tokens} tokens has no window to overflow"
+        raise ScenarioError(msg)
+
+
+class LimitedWindow(PromptWindow):
+    """Окно `PUT /window`: запрос больше окна отвергается текстом OpenAI."""
+
+    def __init__(self, tokens: int) -> None:
+        self._tokens = tokens
+
+    def fits(self, tokens: int) -> bool:
+        return tokens <= self._tokens
+
+    def refusal(self, tokens: int) -> str:
+        return (
+            f"This model's maximum context length is {self._tokens} tokens. However, "
+            f"your messages resulted in {tokens} tokens. Please reduce the length of "
+            "the messages."
         )
 
 
@@ -1166,6 +1221,7 @@ class OpenAiWire:
     MEDIA_STREAM: ClassVar[str] = "text/event-stream"
     MEDIA_JSON: ClassVar[str] = "application/json"
     REJECTED_CODE: ClassVar[str] = "no_reply"
+    OVERFLOW_CODE: ClassVar[str] = "context_length_exceeded"
 
     def __init__(self, model: str) -> None:
         self._model = model
@@ -1181,6 +1237,18 @@ class OpenAiWire:
         }
 
         return JSONResponse(body, status_code=failure.http_status)
+
+    def overflowed(self, message: str) -> Response:
+        """Отказ 400 запросу больше окна стенда — как у OpenAI."""
+        body = {
+            "error": {
+                "message": message,
+                "type": "invalid_request_error",
+                "code": self.OVERFLOW_CODE,
+            }
+        }
+
+        return JSONResponse(body, status_code=httpx.codes.BAD_REQUEST)
 
     def rejected(self, message: str) -> Response:
         """Отказ 400: на вопрос у стенда нет ни ответа книги, ни маркера."""
@@ -1336,6 +1404,10 @@ class OllamaWire:
         return JSONResponse(
             {"error": failure.error_text}, status_code=failure.http_status
         )
+
+    def overflowed(self, message: str) -> Response:
+        """Отказ 400 запросу больше окна стенда."""
+        return JSONResponse({"error": message}, status_code=httpx.codes.BAD_REQUEST)
 
     def rejected(self, message: str) -> Response:
         """Отказ 400: на вопрос у стенда нет ни ответа книги, ни маркера."""
@@ -1827,6 +1899,7 @@ class FakeLlmApp:
     _failures: FailureBook = field(init=False, repr=False)
     _summaries: SummaryBook = field(init=False, repr=False)
     _usage: UsageBook = field(init=False, repr=False)
+    _window: PromptWindow = field(init=False, repr=False)
     _names: McpToolNames = field(init=False, repr=False)
     _questions: ReplyQuestions = field(init=False, repr=False)
     _book: ReplyBook = field(init=False, repr=False)
@@ -1838,7 +1911,8 @@ class FakeLlmApp:
         self._ollama = OllamaWire(self.model)
         self._failures = FailureBook()
         self._summaries = SummaryBook()
-        self._usage = UsageBook(self.estimate_usage)
+        self._usage = UsageBook(self.estimate_usage, UsageBook.CHARS_PER_TOKEN)
+        self._window = PromptWindow()
         self._questions = ReplyQuestions()
         self._book = ReplyBook(self._questions)
         self._holds = ReplyHolds()
@@ -1862,9 +1936,26 @@ class FakeLlmApp:
 
         @app.post(FakeRoute.RESET.value)
         async def reset() -> dict[str, str]:
-            """Сброс журнала запросов: тест начинает с чистого листа."""
+            """Сброс журнала запросов и окна: тест начинает с чистого листа."""
             self.requests.clear()
+            self._usage = UsageBook(self.estimate_usage, UsageBook.CHARS_PER_TOKEN)
+            self._window = PromptWindow()
             return {"status": "ok"}
+
+        @app.put(FakeRoute.WINDOW.value)
+        async def window(request: Request) -> Response:
+            """Окно модели: запрос больше окна получает 400 о переполнении."""
+            try:
+                settings = WindowSettings.model_validate(await request.json())
+            except ValidationError as exc:
+                route = FakeRoute.WINDOW.value
+                msg = f"fake llm: PUT {route} expects the window settings: {exc}"
+                return JSONResponse(
+                    {"detail": msg}, status_code=httpx.codes.UNPROCESSABLE_ENTITY
+                )
+
+            self.limit_window(settings)
+            return JSONResponse({"status": "ok"})
 
         @app.get(FakeRoute.REQUESTS.value)
         async def recorded() -> JSONResponse:
@@ -1901,6 +1992,12 @@ class FakeLlmApp:
             """Вопросы, чьи потоки сейчас стоят на паузе."""
             body = ReplyHeld(held=self._holds.held()).model_dump(mode="json")
             return JSONResponse(body)
+
+    def limit_window(self, settings: WindowSettings) -> None:
+        """Окно модели стенда; учёт ответов с этого момента — оценкой по
+        размеру с делителем окна."""
+        self._usage = UsageBook(True, settings.chars_per_token)
+        self._window = LimitedWindow(settings.context_window)
 
     def _replace_book(self, raw: object) -> Response:
         try:
@@ -1942,6 +2039,10 @@ class FakeLlmApp:
         формате протокола."""
         payload = await request.json()
         self.requests.append(payload)
+
+        tokens = self._usage.prompt(payload)
+        if not self._window.fits(tokens):
+            return wire.overflowed(self._window.refusal(tokens))
 
         if self._summaries.is_summary_request(payload):
             return await self._play_summary(payload, wire)

@@ -204,7 +204,12 @@ class TurnLoop:
         self._budget = SkillBudget(profile.context_window, profile.chars_per_token)
         self._asking = ModelAsk(model, self._sink)
         estimator = TokenEstimator(profile)
-        self._gate = CompactGate(ContextMeter(estimator), self._compaction, profile)
+        self._gate = CompactGate(
+            ContextMeter(estimator),
+            self._compaction,
+            profile,
+            self._templates.read(AgentTemplateFile.SUMMARIZE_INSTRUCTION),
+        )
         self._summarizer = Summarizer(
             self._asking,
             builder,
@@ -339,9 +344,10 @@ class TurnLoop:
 
         if isinstance(asked, Overflowed):
             await self._write_api_error(asked.error, 0, 0)
-            await self._write_api_failure(
-                self._templates.read(AgentTemplateFile.PROMPT_TOO_LONG)
-            )
+            await self._write_api_failure(self._too_long(progress.tracking))
+            if progress.tracking.breaker_open:
+                return TurnOutcome.COMPACT_FAILURE_BREAKER
+
             return TurnOutcome.BLOCKING_LIMIT
 
         if isinstance(asked, Failed):
@@ -392,12 +398,7 @@ class TurnLoop:
         if tracking.compacted:
             return None
 
-        text = self._templates.read(AgentTemplateFile.PROMPT_TOO_LONG)
-        if tracking.last_failure:
-            text = self._templates.read(AgentTemplateFile.COMPACTION_FAILED).format(
-                detail=tracking.last_failure
-            )
-
+        text = self._too_long(tracking)
         await self._write_api_error(text, 0, 0)
         await self._write_api_failure(text)
         if tracking.breaker_open:
@@ -405,11 +406,25 @@ class TurnLoop:
 
         return TurnOutcome.BLOCKING_LIMIT
 
+    def _too_long(self, tracking: CompactTracking) -> str:
+        """Текст записи о запросе больше окна: с причиной последней неудачи
+        сжатия, если оно в этом ходе не удалось."""
+        if tracking.last_failure:
+            return self._templates.read(AgentTemplateFile.COMPACTION_FAILED).format(
+                detail=tracking.last_failure
+            )
+
+        return self._templates.read(AgentTemplateFile.PROMPT_TOO_LONG)
+
     async def _recover_overflow(
         self, asked: Overflowed, progress: Progress, cancellation: RunCancellation
     ) -> Settled | TurnOutcome:
         """Запрос не поместился в окно: сжатие и один повтор запроса; без
-        сжатия исход решает обычный разбор переполнения."""
+        сжатия исход решает обычный разбор переполнения. После трёх неудач
+        хода сжатие больше не пробуется."""
+        if progress.tracking.breaker_open:
+            return asked
+
         snapshot = self._snapshot_in_use()
         fill = self._gate.measure(self._session.conversation(), snapshot)
         compacted = await self._compact(fill, snapshot, cancellation)

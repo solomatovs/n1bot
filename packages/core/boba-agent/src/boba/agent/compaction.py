@@ -39,6 +39,8 @@ from boba.agent.attachments import (
     ContextAttachments,
     DeferredToolsRecordAttachment,
     EnvironmentSnapshot,
+    InvokedSkill,
+    InvokedSkillsAttachment,
     PromptSnapshot,
     SkillBudget,
     SnapshotSkill,
@@ -66,12 +68,13 @@ from boba.agent.records import (
     UserRecord,
 )
 from boba.agent.session import Session
+from boba.agent.skills import SkillCallInput, SkillTool
 from boba.agent.tags import ReplyTag
 from boba.agent.template import AgentTemplate, AgentTemplateFile
 from boba.agent.tools import AgentTools
 from boba.agent.writer import RequestRecorder
 from boba.cancellation import RunCancellation, StopReason
-from boba.llm.chat import ChatReply
+from boba.llm.chat import ChatReply, ChatRequest
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +86,7 @@ __all__ = [
     "Fill",
     "FillLevel",
     "GateDecision",
+    "InvokedSkills",
     "NotSummarized",
     "RoundGrouper",
     "Summarized",
@@ -213,10 +217,13 @@ class ContextMeter:
 
     Якорь — последний ответ модели с ненулевым учётом (не синтетический;
     перенесённый хвост несёт нули и якорем не бывает), сдвинутый к первой
-    записи того же ответа; граница сжатия в начале разговора — якорь со
-    значением ноль. Граница посреди разговора — след сжатия, упавшего между
-    записями (план, раздел 5.16): она не якорь. К учёту якоря прибавляется
-    оценка записей после него. Без якоря оценивается весь разговор вместе с
+    записи того же ответа; его учёт уже включает системный промпт и
+    инструменты. Граница сжатия в начале разговора — якорь без учёта: к
+    оценке записей после неё прибавляется оценка системного промпта и
+    инструментов снимка, иначе заполненность сразу после сжатия занижена на
+    них. Граница посреди разговора — след сжатия, упавшего между записями
+    (план, раздел 5.16): она не якорь. К учёту якоря прибавляется оценка
+    записей после него. Без якоря оценивается весь разговор вместе с
     системным промптом и инструментами снимка.
     """
 
@@ -226,7 +233,7 @@ class ContextMeter:
     def tokens(
         self, conversation: Sequence[ChainRecord], snapshot: PromptSnapshot
     ) -> int:
-        anchor = self._anchor(conversation)
+        anchor = self._anchor(conversation, snapshot)
         if anchor is None:
             return self._estimator.prefix(snapshot) + self._estimator.records(
                 conversation
@@ -234,12 +241,14 @@ class ContextMeter:
 
         return anchor.tokens + self._estimator.records(conversation[anchor.index + 1 :])
 
-    def _anchor(self, conversation: Sequence[ChainRecord]) -> Anchor | None:
+    def _anchor(
+        self, conversation: Sequence[ChainRecord], snapshot: PromptSnapshot
+    ) -> Anchor | None:
         for index in range(len(conversation) - 1, -1, -1):
             record = conversation[index]
             if isinstance(record, CompactBoundaryRecord):
                 if index == 0:
-                    return Anchor(tokens=0, index=index)
+                    return Anchor(tokens=self._estimator.prefix(snapshot), index=index)
 
                 continue
 
@@ -361,10 +370,14 @@ class CompactGate:
     предохранителей хода. Создаёт цикл хода."""
 
     def __init__(
-        self, meter: ContextMeter, settings: CompactionSettings, profile: ModelProfile
+        self,
+        meter: ContextMeter,
+        settings: CompactionSettings,
+        profile: ModelProfile,
+        instruction: str,
     ) -> None:
         self._meter = meter
-        self._threshold = settings.threshold(profile)
+        self._threshold = settings.threshold(profile, instruction)
         self._limit = settings.limit(profile)
 
     def measure(
@@ -482,11 +495,14 @@ class SummaryFailure(StrEnum):
 
 @dataclass(frozen=True)
 class Summarized:
-    """Пересказ получен: текст, что пересказано и что переносится хвостом."""
+    """Пересказ получен: текст, что пересказано и что переносится хвостом;
+    head_truncated — лестница отбросила старшие группы, и пересказ их не
+    покрывает."""
 
     text: str
     summarized: Sequence[ChainRecord]
     kept: Sequence[ChainRecord]
+    head_truncated: bool
 
 
 @dataclass(frozen=True)
@@ -514,7 +530,10 @@ class Summarizer:
     сообщением пользователя (сборщик сливает её с последним текстом
     пользователя, когда отрезок кончается им). Переполнение окна на запросе
     пересказа отбрасывает старшую группу и повторяет попытку, не больше
-    LADDER_STEPS раз. Создаёт цикл хода.
+    LADDER_STEPS раз; остаток, который теперь начинается ответом модели,
+    открывается пометкой об усечении, а пересказ — оговоркой, что начало
+    разговора он не покрывает (docs/prompt_assembly/specs/04_compaction.md,
+    2.1–2.2). Создаёт цикл хода.
     """
 
     LADDER_STEPS: ClassVar[int] = 3
@@ -558,12 +577,15 @@ class Summarizer:
         for dropped in range(self.LADDER_STEPS + 1):
             head = self._flat(groups[dropped:-1])
             if not self._grouper.has_reply(head):
-                return NotSummarized(
-                    SummaryFailure.TOO_FEW_GROUPS,
-                    "the part to summarize holds no model reply",
+                return self._nothing_left(dropped, overflow)
+
+            request = self._request(session, head, conversation, snapshot, dropped)
+            outcome = await self._attempt(request, head, cancellation)
+            if isinstance(outcome, str):
+                return Summarized(
+                    text=outcome, summarized=head, kept=kept, head_truncated=dropped > 0
                 )
 
-            outcome = await self._attempt(session, head, kept, snapshot, cancellation)
             if not isinstance(outcome, Overflowed):
                 return outcome
 
@@ -577,16 +599,49 @@ class Summarizer:
 
         return NotSummarized(SummaryFailure.REQUEST_TOO_LONG, overflow)
 
-    async def _attempt(
+    @staticmethod
+    def _nothing_left(dropped: int, overflow: str) -> NotSummarized:
+        """В отрезке не осталось ответа модели: сразу — пересказывать нечего,
+        после ступеней лестницы — запрос не влез и отбрасывать больше нечего."""
+        if not dropped:
+            return NotSummarized(
+                SummaryFailure.TOO_FEW_GROUPS,
+                "the part to summarize holds no model reply",
+            )
+
+        return NotSummarized(
+            SummaryFailure.REQUEST_TOO_LONG,
+            f"{overflow} (after dropping {dropped} oldest round(s) no model reply "
+            "is left to summarize)",
+        )
+
+    def _request(
         self,
         session: Session,
         head: Sequence[ChainRecord],
-        kept: Sequence[ChainRecord],
+        conversation: Sequence[ChainRecord],
         snapshot: PromptSnapshot,
+        dropped: int,
+    ) -> ChatRequest:
+        """Запрос пересказа отрезка; после отброшенных групп отрезок
+        начинается ответом модели, и перед ним встаёт пометка об усечении."""
+        sent: list[ChainRecord] = []
+        if dropped:
+            sent.append(self._user(session, AgentTemplateFile.TRUNCATED_FOR_RETRY))
+
+        sent.extend(head)
+        sent.append(self._user(session, AgentTemplateFile.SUMMARIZE_INSTRUCTION))
+
+        return self._builder.summary(sent, conversation, snapshot)
+
+    async def _attempt(
+        self,
+        request: ChatRequest,
+        head: Sequence[ChainRecord],
         cancellation: RunCancellation,
-    ) -> SummaryOutcome | Overflowed:
-        """Один запрос пересказа; Overflowed — ступень лестницы."""
-        request = self._builder.build([*head, self._instruction(session)], snapshot)
+    ) -> str | NotSummarized | SummaryAborted | Overflowed:
+        """Один запрос пересказа: текст пересказа либо неудача; Overflowed —
+        ступень лестницы."""
         await self._recorder.record(request)
         asked = await self._ask.attempt(
             request, cancellation, show=False, message_id=""
@@ -603,14 +658,11 @@ class Summarizer:
         if isinstance(asked, Errored):
             return NotSummarized(SummaryFailure.MODEL_ERROR, asked.error)
 
-        return self._parsed(asked.reply, head, kept)
+        return self._parsed(asked.reply, head)
 
     def _parsed(
-        self,
-        reply: ChatReply,
-        head: Sequence[ChainRecord],
-        kept: Sequence[ChainRecord],
-    ) -> Summarized | NotSummarized:
+        self, reply: ChatReply, head: Sequence[ChainRecord]
+    ) -> str | NotSummarized:
         if reply.tool_calls:
             names = [call.name for call in reply.tool_calls]
             return NotSummarized(SummaryFailure.TOOL_CALLS, ", ".join(names))
@@ -618,7 +670,10 @@ class Summarizer:
         if not reply.content.strip():
             return NotSummarized(SummaryFailure.EMPTY, "")
 
-        text = ReplyTag.SUMMARY.extract(reply.content)
+        # разбор <analysis> вырезается первым: модель упоминает в нём тег
+        # <summary> словами, и первым блоком оказался бы кусок разбора
+        reply_text = ReplyTag.ANALYSIS.without(reply.content)
+        text = ReplyTag.SUMMARY.extract(reply_text)
         if text is None:
             return NotSummarized(SummaryFailure.NO_BLOCK, reply.content[:200])
 
@@ -634,12 +689,12 @@ class Summarizer:
                 f"about {summary_tokens} tokens against {source_tokens}",
             )
 
-        return Summarized(text=text, summarized=head, kept=kept)
+        return text
 
-    def _instruction(self, session: Session) -> UserRecord:
-        """Инструкция пересказа как запись пользователя для сборщика; в
-        сессию не попадает."""
-        text = self._templates.read(AgentTemplateFile.SUMMARIZE_INSTRUCTION)
+    def _user(self, session: Session, template: AgentTemplateFile) -> UserRecord:
+        """Текст запроса пересказа — инструкция или пометка об усечении — как
+        запись пользователя для сборщика; в сессию не попадает."""
+        text = self._templates.read(template)
 
         return UserRecord(
             uuid=self._ids.uuid(),
@@ -659,13 +714,106 @@ class Summarizer:
         return flat
 
 
+class InvokedSkills:
+    """Скиллы, вызванные в пересказанной части разговора, для вложения
+    invoked_skills: модель после границы не видит их текстов, а их правила
+    могут ещё действовать (docs/prompt_assembly/specs/04_compaction.md, 3.3).
+
+    Текст скилла — результат его вызова, как модель его получила; вложение
+    invoked_skills прежнего сжатия переносится дальше. Новые первыми, каждый
+    и все вместе — в пределах бюджета: 5000 и 25000 токенов по разбору на
+    окне от 200 000, на меньшем окне — та же доля окна. Создаёт Compactor.
+    """
+
+    PER_SKILL_TOKENS: ClassVar[int] = 5_000
+    TOTAL_TOKENS: ClassVar[int] = 25_000
+    FULL_WINDOW: ClassVar[int] = 200_000
+
+    def __init__(self, profile: ModelProfile) -> None:
+        share = min(1.0, profile.context_window / self.FULL_WINDOW)
+        self._per_skill = int(self.PER_SKILL_TOKENS * share) * profile.chars_per_token
+        self._total = int(self.TOTAL_TOKENS * share) * profile.chars_per_token
+
+    def of(self, summarized: Sequence[ChainRecord]) -> Sequence[InvokedSkill]:
+        latest: dict[str, str] = {}
+        for name, content in self._invocations(summarized):
+            latest.pop(name, None)
+            latest[name] = content
+
+        newest = list(latest.items())
+        newest.reverse()
+
+        return list(self._bounded(newest))
+
+    def _bounded(self, newest: Sequence[tuple[str, str]]) -> Iterator[InvokedSkill]:
+        left = self._total
+        for name, content in newest:
+            size = min(self._per_skill, left)
+            text = content[:size]
+            if not text:
+                return
+
+            left -= len(text)
+            yield InvokedSkill(name=name, content=text)
+
+    def _invocations(self, records: Sequence[ChainRecord]) -> Iterator[tuple[str, str]]:
+        """Вызовы скиллов по порядку: прежнее вложение и удачные вызовы Skill."""
+        called: dict[str, str] = {}
+        for record in records:
+            if isinstance(record, AttachmentRecord):
+                yield from self._carried(record)
+                continue
+
+            if isinstance(record, AssistantRecord):
+                called.update(self._calls(record))
+                continue
+
+            if isinstance(record, UserRecord):
+                yield from self._results(record, called)
+
+    @staticmethod
+    def _carried(record: AttachmentRecord) -> Iterator[tuple[str, str]]:
+        if record.attachment.type != AttachmentKind.INVOKED_SKILLS.value:
+            return
+
+        attachment = InvokedSkillsAttachment.model_validate(
+            record.attachment.model_dump()
+        )
+        for skill in reversed(attachment.skills):
+            yield skill.name, skill.content
+
+    @staticmethod
+    def _calls(record: AssistantRecord) -> Iterator[tuple[str, str]]:
+        """Вызовы Skill ответа: id вызова → имя скилла."""
+        for block in record.message.tool_uses():
+            if block.name != SkillTool.NAME:
+                continue
+
+            yield block.id, SkillCallInput.model_validate(block.input).skill
+
+    @staticmethod
+    def _results(
+        record: UserRecord, called: dict[str, str]
+    ) -> Iterator[tuple[str, str]]:
+        for result in record.message.tool_results():
+            name = called.get(result.tool_use_id)
+            if name is None:
+                continue
+
+            if result.is_error:
+                continue
+
+            yield name, result.text()
+
+
 class Compactor:
     """Пачка записей после сжатия (план, раздел 5.16): граница со списком
-    загруженных отложенных инструментов, дата, пересказ, окружение, модель,
-    отложенные инструменты, инструкции серверов MCP, список скиллов —
-    в сессию разом, без точек ожидания между ними, чтобы писатель положил
-    их одним `append`. Хвост не переписывается: граница называет его записи
-    по uuid. Создаёт цикл хода."""
+    загруженных отложенных инструментов, дата, пересказ, затем вложения в
+    порядке docs/prompt_assembly/specs/13_compaction_model.md, 1.6 —
+    вызванные скиллы, отложенные инструменты, инструкции серверов MCP,
+    окружение, модель — и список скиллов; в сессию разом, без точек
+    ожидания между ними, чтобы писатель положил их одним `append`. Хвост не
+    переписывается: граница называет его записи по uuid. Создаёт цикл хода."""
 
     def __init__(  # noqa: PLR0913 — пачка собирается из всех объявлений контекста
         self,
@@ -692,6 +840,7 @@ class Compactor:
         self._skills = list(skills)
         self._budget = budget
         self._catalog = catalog
+        self._invoked = InvokedSkills(profile)
 
     def records(
         self,
@@ -706,8 +855,8 @@ class Compactor:
         discovered = Announced(session.conversation()).discovered()
         boundary_uuid = self._ids.uuid()
         date = self._attachments.date(boundary_uuid, today, False)
-        summary_record = self._summary_record(session, date.uuid, summary.text)
-        inputs = self._inputs(summary_record.uuid)
+        summary_record = self._summary_record(session, date.uuid, summary)
+        inputs = self._inputs(summary_record.uuid, summary.summarized)
         post_tokens = self._estimator.records(
             [date, summary_record, *summary.kept, *inputs]
         )
@@ -739,7 +888,16 @@ class Compactor:
 
         return added
 
-    def _summary_record(self, session: Session, parent: str, text: str) -> UserRecord:
+    def _summary_record(
+        self, session: Session, parent: str, summary: Summarized
+    ) -> UserRecord:
+        """Пересказ в обёртке; без начала разговора — с оговоркой об этом."""
+        text = summary.text
+        if summary.head_truncated:
+            text = self._templates.read(
+                AgentTemplateFile.SUMMARY_HEAD_TRUNCATED
+            ).format(summary=text)
+
         wrapped = self._templates.read(AgentTemplateFile.SUMMARY_WRAPPER).format(
             summary=text
         )
@@ -755,17 +913,14 @@ class Compactor:
             is_visible_in_transcript_only=True,
         )
 
-    def _inputs(self, parent: str) -> list[AttachmentRecord]:
-        """Вложения точки «ввод» заново: модель прежних не видит."""
+    def _inputs(
+        self, parent: str, summarized: Sequence[ChainRecord]
+    ) -> list[AttachmentRecord]:
+        """Вложения контекста заново: модель прежних не видит."""
         records: list[AttachmentRecord] = []
-        if self._environment is not None:
-            records.append(
-                self._attachments.environment_block(parent, self._environment)
-            )
+        if invoked := self._invoked.of(summarized):
+            records.append(self._attachments.invoked_skills(parent, invoked))
             parent = records[-1].uuid
-
-        records.append(self._attachments.model(parent, self._profile))
-        parent = records[-1].uuid
 
         deferred: list[str] = []
         for tool in self._catalog.deferred():
@@ -788,6 +943,15 @@ class Compactor:
         if instructions is not None:
             records.append(instructions)
             parent = instructions.uuid
+
+        if self._environment is not None:
+            records.append(
+                self._attachments.environment_block(parent, self._environment)
+            )
+            parent = records[-1].uuid
+
+        records.append(self._attachments.model(parent, self._profile))
+        parent = records[-1].uuid
 
         if self._skills:
             records.append(

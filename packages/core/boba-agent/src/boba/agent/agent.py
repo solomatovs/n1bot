@@ -65,7 +65,7 @@ from boba.agent.queue import InputQueue, QueueRemoveReason
 from boba.agent.records import PermissionMode, PermissionModeRecord
 from boba.agent.session import Session, SessionError, SessionState
 from boba.agent.skills import Skill, SkillTool
-from boba.agent.template import AgentTemplate
+from boba.agent.template import AgentTemplate, AgentTemplateFile
 from boba.agent.tools import (
     AgentTools,
     AskUserQuestionTool,
@@ -539,7 +539,12 @@ class Agent:
         for tool in tools.inline():
             tool_texts.append(tool.text())
 
-        ProfileCheck(profile, self._parts.compaction).run(system_prompt, tool_texts)
+        instruction = self._wiring.templates.read(
+            AgentTemplateFile.SUMMARIZE_INSTRUCTION
+        )
+        ProfileCheck(profile, self._parts.compaction, instruction).run(
+            system_prompt, tool_texts
+        )
 
     def tool_hints(self, name: str) -> ToolHints | None:
         """Пометки инструмента по имени; None — такого инструмента нет."""

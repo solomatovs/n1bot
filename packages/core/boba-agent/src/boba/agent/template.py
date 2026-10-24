@@ -27,6 +27,8 @@ class AgentTemplateFile(StrEnum):
 
     SUMMARIZE_INSTRUCTION = "compact/summarize_instruction.txt"
     SUMMARY_WRAPPER = "compact/summary_wrapper.txt"
+    SUMMARY_HEAD_TRUNCATED = "compact/summary_head_truncated.txt"
+    TRUNCATED_FOR_RETRY = "compact/truncated_for_retry.txt"
     INTERRUPTED_TOOL_RESULT = "compact/interrupted_tool_result.txt"
     NO_RESPONSE_REQUESTED = "compact/no_response_requested.txt"
     OUTPUT_LIMIT_HIT = "compact/output_limit_hit.txt"
@@ -56,6 +58,8 @@ class AgentTemplateFile(StrEnum):
     MCP_INSTRUCTIONS_REMOVED = "attachments/mcp_instructions_removed.txt"
     AMBIENT = "attachments/ambient.txt"
     SKILL_LISTING = "attachments/skill_listing.txt"
+    INVOKED_SKILLS = "attachments/invoked_skills.txt"
+    INVOKED_SKILL = "attachments/invoked_skill.txt"
     QUEUED_HUMAN = "attachments/queued_human.txt"
     QUEUED_NOTIFICATION = "attachments/queued_notification.txt"
     QUEUED_NOTIFICATION_WITH_USER = "attachments/queued_notification_with_user.txt"

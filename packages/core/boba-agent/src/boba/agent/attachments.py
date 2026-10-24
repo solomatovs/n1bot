@@ -63,6 +63,8 @@ __all__ = [
     "EnvironmentChange",
     "EnvironmentField",
     "EnvironmentSnapshot",
+    "InvokedSkill",
+    "InvokedSkillsAttachment",
     "MaxTurnsAttachment",
     "McpInstructionsAttachment",
     "ModelAttachment",
@@ -88,6 +90,7 @@ class AttachmentKind(StrEnum):
     DEFERRED_TOOLS_RECORD = "deferred_tools_record"
     MCP_INSTRUCTIONS_DELTA = "mcp_instructions_delta"
     SKILL_LISTING = "skill_listing"
+    INVOKED_SKILLS = "invoked_skills"
     QUEUED_COMMAND = "queued_command"
     MAX_TURNS_REACHED = "max_turns_reached"
 
@@ -305,6 +308,21 @@ class SkillListingAttachment(PayloadModel):
     skill_count: int
     is_initial: bool
     names: Sequence[str]
+
+
+class InvokedSkill(PayloadModel):
+    """Скилл, вызванный до сжатия, и текст, который модель тогда получила."""
+
+    name: str
+    content: str
+
+
+class InvokedSkillsAttachment(PayloadModel):
+    """Скиллы, вызванные в пересказанной части разговора, — заново после
+    границы сжатия, новые первыми (docs/prompt_assembly, invoked_skills)."""
+
+    type: str = AttachmentKind.INVOKED_SKILLS.value
+    skills: Sequence[InvokedSkill]
 
 
 class Announced:
@@ -567,6 +585,7 @@ class ContextAttachments:
     """Строит записи вложений контекста одной сессии; добавляет их вызывающий."""
 
     DATE_LENGTH: ClassVar[int] = 10
+    SKILLS_JOIN: ClassVar[str] = "\n\n---\n\n"
     LISTED_UP_TO: ClassVar[int] = 30
     """Сколько снятых инструментов MCP перечисляется по строке; больше —
     группами `mcp__<сервер>__*` с числом."""
@@ -884,6 +903,25 @@ class ContextAttachments:
             return f"1 {kind} is"
 
         return f"{count} {kind}s are"
+
+    def invoked_skills(
+        self, parent: str | None, skills: Sequence[InvokedSkill]
+    ) -> AttachmentRecord:
+        """Скиллы, вызванные до сжатия: имя и текст каждого блоком."""
+        blocks: list[str] = []
+        for skill in skills:
+            blocks.append(
+                self._templates.read(AgentTemplateFile.INVOKED_SKILL).format(
+                    name=skill.name, content=skill.content
+                )
+            )
+
+        text = self._templates.read(AgentTemplateFile.INVOKED_SKILLS).format(
+            skills=self.SKILLS_JOIN.join(blocks)
+        )
+        attachment = InvokedSkillsAttachment(skills=skills)
+
+        return self._system(parent, attachment.payload(), text)
 
     def skill_listing(
         self,

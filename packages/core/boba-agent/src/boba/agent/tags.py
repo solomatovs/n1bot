@@ -11,9 +11,10 @@ AgentTag знает своё имя и собирает скобки, обора
 и модель не принимает чужой текст за разметку агента.
 
 ReplyTag — теги, которыми модель по инструкции агента размечает свой ответ
-(блок пересказа при сжатии, раздел 5.16); их содержимое агент извлекает
-тем же токенизатором. Защита их не экранирует: `<summary>` — обычный
-элемент HTML, который бывает в тексте пользователя и результатах.
+(блоки разбора и пересказа при сжатии, раздел 5.16); их содержимое агент
+извлекает и вырезает тем же токенизатором. Защита их не экранирует:
+`<summary>` — обычный элемент HTML, который бывает в тексте пользователя и
+результатах.
 """
 
 from __future__ import annotations
@@ -69,10 +70,32 @@ class ReplyTag(StrEnum):
     """Имена тегов в ответе модели и извлечение их содержимого."""
 
     SUMMARY = "summary"
+    ANALYSIS = "analysis"
 
     def extract(self, text: str) -> str | None:
         """Содержимое первого закрытого блока `<tag>…</tag>`; None — блока
         нет либо открытый тег не закрыт."""
+        found = self._block(text)
+        if found is None:
+            return None
+
+        opened, closed = found
+
+        return text[opened.end : closed.start]
+
+    def without(self, text: str) -> str:
+        """Текст без первого закрытого блока `<tag>…</tag>` вместе с тегами;
+        без блока — как есть."""
+        found = self._block(text)
+        if found is None:
+            return text
+
+        opened, closed = found
+
+        return text[: opened.start] + text[closed.end :]
+
+    def _block(self, text: str) -> tuple[TagSpan, TagSpan] | None:
+        """Открывающий и закрывающий теги первого закрытого блока."""
         spans = TagScanner(frozenset({self.value})).scan(text)
         opened: TagSpan | None = None
         for span in spans:
@@ -83,7 +106,7 @@ class ReplyTag(StrEnum):
                 continue
 
             if opened is not None:
-                return text[opened.end : span.start]
+                return opened, span
 
         return None
 
