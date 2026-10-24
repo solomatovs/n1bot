@@ -2,7 +2,8 @@
 # деревья запуска. Образы собирает классический сборщик docker (DOCKER_BUILDKIT=0).
 # Сеть: в интернет ходит только fetch. Остальные цели — только в реестры через прокси:
 # apt-зеркало из sources.list образов dmp/*, pypi из conf/pip.conf и conf/uv.toml, npm из
-# npmrc образа nodejs. Проверка этого — make offline-check.
+# глобального npmrc образа nodejs (<prefix>/etc/npmrc: ~/.npmrc root сборка фронта не
+# читает, она идёт с HOME=/tmp). Проверка этого — make offline-check.
 
 # от каталога Makefile, а не от cwd: make -f build/Makefile из корня искал бы
 # test/ и conf/ рядом с собой
@@ -364,6 +365,8 @@ endif
 # закрытый контур: CA внутреннего TLS для curl хоста; в образы его кладёт Dockerfile из conf/
 CA_CHAIN        := $(wildcard $(CONF_DIR)/ca-chain.crt)
 CURL_OPTS       := $(if $(CA_CHAIN),--cacert "$(CA_CHAIN)")
+# node образа nodejs на хосте (фронт для отладки): CA контура в дополнение к своим
+NODE_CA_OPTS    := $(if $(CA_CHAIN),-v "$(CA_CHAIN):/etc/boba-ca-chain.crt:ro" -e NODE_EXTRA_CA_CERTS=/etc/boba-ca-chain.crt)
 
 # прокси: в docker build аргументами, в docker run окружением
 PROXY_VARS      := http_proxy https_proxy no_proxy HTTP_PROXY HTTPS_PROXY NO_PROXY
@@ -646,7 +649,7 @@ define HELP
   testapps              boba-testapps:$(BOBA_TAG)$(if $(LATEST_TAG), и :$(LATEST_TAG)) — серверы MCP для тестов клиента:
                         примеры MCP Apps, свой сервер на TypeScript SDK 1.x и серверы fastmcp[apps]
                         с рендерером Prefab статикой; TESTAPPS_TAGS=<образ> — свой тег, тесты берут
-                        его --testapps-image <образ>; TESTAPPS_PIP_INDEX=<url> — индекс pypi контура
+                        его --testapps-image <образ>
 
 Образы — APP=$(subst $(space),|,$(APPS)) либо <цель>-<приложение>, без APP — оба:
   build                 boba-<приложение>:$(BOBA_TAG)$(if $(LATEST_TAG), и :$(LATEST_TAG)); в agent — агент bin/boba.dist (Nuitka),
@@ -897,19 +900,18 @@ models-image: version-check
 # --- тестовые образы -------------------------------------------------------------
 
 # серверы MCP для тестов клиента; контекст — их каталог, пакеты npm ci и dist рендерера
-# Prefab берёт из реестра образа nodejs, пакеты python — pip из pypi (TESTAPPS_PIP_INDEX —
-# индекс закрытого контура) в дерево python образа PYTHON_IMAGE
+# Prefab берёт из реестра образа nodejs, пакеты python — pip по conf/pip.conf в дерево
+# python образа PYTHON_IMAGE; CA и pip.conf — из образа сборки BASE_IMAGE
 TESTAPPS_DIR        := $(SRC_DIR)/tests/services/testapps
 TESTAPPS_NODE_IMAGE ?= dmp/nodejs:22
-TESTAPPS_PIP_INDEX  ?=
 TESTAPPS_TAGS       ?= boba-testapps:$(BOBA_TAG) $(if $(LATEST_TAG),boba-testapps:$(LATEST_TAG))
 
 .PHONY: testapps
-testapps:
+testapps: base
 	@echo "== тестовые серверы MCP: $(TESTAPPS_TAGS) от $(TESTAPPS_NODE_IMAGE) и $(PYTHON_IMAGE) =="
 	$(DOCKER_BUILD) -f "$(BASE_DIR)/testapps.Dockerfile" $(NO_CACHE_OPT) $(PROXY_ARGS) $(CACHE_SCOPE_ARG) \
 	    --build-arg NODE_IMAGE=$(TESTAPPS_NODE_IMAGE) --build-arg PYTHON_IMAGE=$(PYTHON_IMAGE) \
-	    --build-arg PIP_INDEX_URL=$(TESTAPPS_PIP_INDEX) \
+	    --build-arg BASE_IMAGE=$(BASE_IMAGE) \
 	    $(addprefix --tag ,$(TESTAPPS_TAGS)) "$(TESTAPPS_DIR)"
 
 # --- проверка закрытого контура ---------------------------------------------------
@@ -1251,7 +1253,7 @@ web: $(PAGE_JS) $(UI_DIST)/index.html $(WEB_FILES)
 # скрипт страницы node'ом образа: на хосте node не нужен
 $(PAGE_JS): $(PAGE_SRCS)
 	@echo "== скрипт страницы page.js: $(NODE_IMAGE) =="
-	docker run --rm $(NETWORK_OPT) $(PROXY_ENV) --entrypoint /bin/sh -u "$(RUN_OWNER)" -e HOME=/tmp \
+	docker run --rm $(NETWORK_OPT) $(PROXY_ENV) $(NODE_CA_OPTS) --entrypoint /bin/sh -u "$(RUN_OWNER)" -e HOME=/tmp \
 	    -e npm_config_update_notifier=false -v "$(AID_DIR):/pkg" -w /pkg/web/page $(NODE_IMAGE) \
 	    -c 'npm ci --no-audit --no-fund && npm run check && npm run build'
 	ls -la "$@"
@@ -1261,7 +1263,7 @@ $(PAGE_JS): $(PAGE_SRCS)
 $(UI_DIST)/index.html: $(UI_SRCS) $(CHAINLIT_TARBALL)
 	@echo "== UI chainlit $(CHAINLIT_VERSION) (фронт + copilot) с overlay: $(NODE_IMAGE) -> $(UI_DIST) =="
 	mkdir -p "$(UI_DIST)"
-	docker run --rm $(NETWORK_OPT) $(PROXY_ENV) --entrypoint /bin/sh -u "$(RUN_OWNER)" \
+	docker run --rm $(NETWORK_OPT) $(PROXY_ENV) $(NODE_CA_OPTS) --entrypoint /bin/sh -u "$(RUN_OWNER)" \
 	    -v "$(DEPS_DIR):/deps:ro" -v "$(SCRIPTS_DIR):/scripts:ro" -v "$(UI_DIR):/ui:ro" \
 	    -v "$(UI_ELEMENTS):/elements:ro" -v "$(UI_DIST):/out" $(NODE_IMAGE) \
 	    /scripts/chainlit_ui.sh "/deps/$(notdir $(CHAINLIT_TARBALL))" /ui/overlay /elements /out
