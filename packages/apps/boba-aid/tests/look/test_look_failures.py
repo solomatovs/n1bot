@@ -152,11 +152,9 @@ class FailLook:
         GROUP,
         "fl10-mcp-lost-and-back",
         "Сервер MCP пропал между ходами и вернулся",
-        "второй ход — вызов add красный: сервер не ответил; третий ход "
-        "начинается пометкой «MCP server 'faulty' stopped answering, its tools "
-        "are left out of the session until it answers again: …», четвёртый — "
-        "пометкой со значком «i» «… answers again, its tools are back in the "
-        "session.»",
+        "первый ход — ответ; второй начинается пометкой с жёлтым треугольником "
+        "«MCP server 'faulty' is unavailable, … got no answer: ConnectError: All "
+        "connection attempts failed»; третий — снова ответ без пометки",
         (),
     )
     MCP_AND_MODEL: ClassVar[LookState] = LookState(
@@ -321,8 +319,10 @@ class FailTab:
         return self._page
 
     def opened(self) -> None:
-        """Новый тред открыт и его старт закончен."""
-        self._chat.open()
+        """Старт сессии chainlit после входа закончен: его задача не
+        спутается с первым ходом. Страница не открывается заново — вторая
+        вкладка подняла бы второго агента."""
+        self._wait(lambda: self._log.task_done(ChatPage.ON_CHAT_START))
 
     def tall(self) -> None:
         """Окно той же ширины, в которое лента нескольких ходов входит
@@ -573,7 +573,7 @@ def service(
 
 @pytest.fixture(scope="module")
 def service_stand(look_stands: LookStand, service: ServiceStand) -> StandProcess:
-    shape = LookAgentShape(service=service.agent(), timeouts_sec=(15.0, 15.0))
+    shape = LookAgentShape(service=service.agent())
     return look_stands.shaped("failures-service", shape)
 
 
@@ -649,10 +649,10 @@ def test_mcp_failure_look(
     process_stand: StandProcess,
     faulty: FaultyServer,
 ) -> None:
-    """Отказы сервера MCP — пометки агента в ходе с кодом и видом тела;
-    пометка — запись истории; пропажа сервера, замеченная вызовом, и его
-    возврат видны в начале следующих ходов."""
-    questions = FailQuestion()
+    """Отказы сервера MCP — пометки агента в ходе с кодом, видом тела или
+    причиной соединения; пометка — запись истории. Сессия агента
+    открывается на каждый ход, поэтому сервер, пропавший между ходами,
+    назван пометкой следующего хода, а вернувшийся молча снова в сессии."""
     try:
         faulty.reply(HTTPStatus.UNAUTHORIZED)
         tab = tabs.open(process_stand)
@@ -680,12 +680,10 @@ def test_mcp_failure_look(
         tab.tall()
         tab.ask(FailQuestion.ANSWER)
         faulty.proxy.set(FaultMode.REFUSE)
-        tab.ask(questions.call("add", {"a": 1, "b": 2}))
         tab.ask(FailQuestion.ANSWER)
-        tab.shown("stopped answering")
+        tab.shown("All connection attempts failed")
         faulty.through()
         tab.ask(FailQuestion.ANSWER)
-        tab.shown("answers again")
         tabs.settle(tab)
         look.frame(tab.whole(), FailLook.MCP_LOST_AND_BACK, THEME, SIZE)
 

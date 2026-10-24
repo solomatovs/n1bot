@@ -682,7 +682,18 @@ class AcpMapping:
             return
 
         if failure := record.error:
-            yield self.notice(NoticeLevel.ERROR, failure)
+            yield self.notice(NoticeLevel.ERROR, self._advised(failure))
+
+    def _advised(self, failure: str) -> str:
+        """Отказ модели с советом человеку: разговор, который больше не
+        входит в окно модели (сжатие не помогло), дальше вести нельзя."""
+        too_long = self._templates.read(AgentTemplateFile.PROMPT_TOO_LONG)
+        if not failure.startswith(too_long):
+            return failure
+
+        advice = self._templates.read(AgentTemplateFile.WINDOW_FULL_NOTICE)
+
+        return f"{failure.rstrip('.')}. {advice}"
 
     def _retry(self, record: ApiErrorRecord) -> Iterator[schema.SessionNotice]:
         """Неудачная попытка с повтором; попытка без повтора своей пометки

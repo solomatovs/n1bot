@@ -575,11 +575,12 @@ class ChatSocket:
 
         return found
 
-    def errors(self) -> list[str]:
-        """Сбои во вкладке по порядку прихода: пометки агента об ошибке в
-        ленте, всплывающие уведомления и полоса недоступного агента."""
+    def errors(self, since: int = 0) -> list[str]:
+        """Сбои во вкладке по порядку прихода, начиная с события since:
+        пометки агента об ошибке в ленте, всплывающие уведомления и полоса
+        недоступного агента."""
         found: list[str] = []
-        for event, payload in self.events:
+        for event, payload in self.events[since:]:
             if not isinstance(payload, dict):
                 continue
 
@@ -2026,15 +2027,10 @@ class TestTabsOfOneThread:
         отказы, пришедшие за это время."""
         deadline = time.monotonic() + TURN_TIMEOUT_SEC
         while time.monotonic() < deadline:
-            refusals: list[str] = []
+            refusals = tab.errors(since)
             answered = False
             for payload in tab.messages(since=since):
-                output = str(payload.get("output"))
-                if payload.get("isError"):
-                    refusals.append(output)
-                    continue
-
-                if self.ANSWERED in output:
+                if self.ANSWERED in str(payload.get("output")):
                     answered = True
 
             if refusals:
