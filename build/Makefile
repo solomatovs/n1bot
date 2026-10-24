@@ -53,8 +53,8 @@ BUILD_ARGS_aid    =
 # фронт на хосте нужен только отладке чата: образ собирает его сам
 WEB_aid          := web
 
-# boba-mcp — MCP-сервер с инструментами boba; фронта у него нет, образы корней плагинов
-# и шаблон workspace лежат внутри образа
+# boba-mcp — MCP-сервер с инструментами boba; фронта у него нет, модели, образы корней
+# плагинов и шаблон workspace лежат внутри образа
 PACKAGES_mcp      = boba-mcp $(PLUGIN_PACKAGES) boba-llm-fastembed
 IMPORTS_mcp      := boba.mcp_server.app fastmcp
 MODULE_mcp       := boba.mcp_server
@@ -275,7 +275,7 @@ CHAINLIT_TARBALL := $(DEPS_DIR)/chainlit-$(CHAINLIT_VERSION).tar.gz
 SANDBOX_INPUTS  := $(BWRAP_TARBALL) $(LIBFUSE_TARBALL) $(E2FSPROGS_TARBALL) $(UV_BIN)
 WEB_INPUTS      := $(WEB_FILES) $(CHAINLIT_TARBALL)
 IMAGE_INPUTS    := $(SANDBOX_INPUTS) $(WEB_INPUTS)
-# модели приложения по именам MODELS_<приложение>: лежат рядом с релизом, не в образе
+# модели приложения по именам MODELS_<приложение>: каталоги models/ образа приложения
 MODEL_FILES_fastembed := $(FASTEMBED_STAMPS)
 MODEL_FILES_rapidocr  := $(RAPIDOCR_FILES)
 APP_MODEL_FILES  = $(foreach model,$(APP_MODELS),$(MODEL_FILES_$(model)))
@@ -411,18 +411,21 @@ $(DOCKER_BUILD) -f $(BASE_DIR)/Dockerfile $(NO_CACHE_OPT) $(DOCKER_ARGS) $(PROXY
 endef
 
 # основа образа приложения с песочницей: стадия runtime-sandbox (ID образа в файле $(1)) и
-# поверх неё образы корней плагинов и workspace — сборка build/sandbox.Dockerfile в
-# контексте $(SANDBOX_DIR). Отпечаток основы и файлов (размер, время) лежит меткой образа:
-# с тем же отпечатком образ берётся готовым и гигабайты контекста в демон не уходят
+# поверх неё модели приложения, образы корней плагинов и workspace — сборка
+# build/sandbox.Dockerfile в контексте $(RUNTIME_DIR), из которого .dockerignore пускает
+# только их. Отпечаток основы и файлов (размер, время) лежит меткой образа: с тем же
+# отпечатком образ берётся готовым и гигабайты контекста в демон не уходят
 define sandbox-image
 base=$$(cat "$(1)")
-stamp=$$({ echo "$$base"; cat "$(BASE_DIR)/sandbox.Dockerfile"; find "$(SANDBOX_DIR)/plugins" "$(SANDBOX_DIR)/workspace.ext4" -type f -printf '%p %s %T@\n' | sort; } | sha256sum | cut -c1-16)
+printf '%s\n' '*' $(APP_MODELS:%='!models/%') $(APP_MODEL_IMAGES:%='!models/%.ext4') \
+    '!sandbox/workspace.ext4' '!sandbox/plugins' > "$(RUNTIME_DIR)/.dockerignore"
+stamp=$$({ echo "$$base"; cat "$(BASE_DIR)/sandbox.Dockerfile" "$(RUNTIME_DIR)/.dockerignore"; find "$(SANDBOX_DIR)/plugins" "$(SANDBOX_DIR)/workspace.ext4" $(APP_MODELS:%="$(MODELS_DIR)/%") $(APP_MODEL_IMAGES:%="$(MODELS_DIR)/%.ext4") -type f -printf '%p %s %T@\n' | sort; } | sha256sum | cut -c1-16)
 built=$$(docker image inspect --format '{{index .Config.Labels "boba.sandbox"}}' "$(SANDBOX_IMAGE)" 2>/dev/null || true)
 if [ "$$built" = "$$stamp" ] && [ "$(NO_CACHE)" != 1 ]; then
-    echo "    $(SANDBOX_IMAGE): образы плагинов и основа не менялись, образ готов"
+    echo "    $(SANDBOX_IMAGE): модели, образы плагинов и основа не менялись, образ готов"
 else
     $(DOCKER_BUILD) -f "$(BASE_DIR)/sandbox.Dockerfile" $(NO_CACHE_OPT) --build-arg RUNTIME_SANDBOX="$$base" \
-        --build-arg BOBA_DIR="$(DEST_DIR)" --label boba.sandbox="$$stamp" --tag "$(SANDBOX_IMAGE)" "$(SANDBOX_DIR)"
+        --build-arg BOBA_DIR="$(DEST_DIR)" --label boba.sandbox="$$stamp" --tag "$(SANDBOX_IMAGE)" "$(RUNTIME_DIR)"
 fi
 endef
 
@@ -653,7 +656,8 @@ define HELP
 
 Образы — APP=$(subst $(space),|,$(APPS)) либо <цель>-<приложение>, без APP — оба:
   build                 boba-<приложение>:$(BOBA_TAG)$(if $(LATEST_TAG), и :$(LATEST_TAG)); в agent — агент bin/boba.dist (Nuitka),
-                        в mcp — образы корней плагинов и workspace из runtime/sandbox
+                        в mcp — модели, образы корней плагинов и workspace из runtime/; недостающие
+                        или устаревшие (новее исходники пакетов плагина) собирает сам
   test                  build, затем проверка в образе без сети: пакеты, точки входа, у mcp —
                         образы плагинов и модели, у agent — ход агента; итог — RESULT: ALL OK
   boba-bin              агент каталогом -> release/$(VERSION)/bin/boba.dist; BIN_ONNX=1 —
@@ -845,7 +849,14 @@ sandbox: version-check
 	# TrustedBinaries отвергает каталог, открытый группе на запись
 	chmod -R go-w "$(THIRD_DIR)"
 	chmod go-w "$(RUNTIME_DIR)"
+	# docker cp оставляет время файла из слоя образа: по нему make счёл бы результат старше входов
+	touch $(SANDBOX_PARTS) $(SANDBOX_TOOLS)
 	ls -lh $(THIRD_DIR)/bin $(SANDBOX_DIR)/workspace.ext4
+
+# результаты sandbox для сборки образа: собираются, когда их нет или входы новее
+$(SANDBOX_PARTS) $(SANDBOX_TOOLS) &: $(SANDBOX_INPUTS) $(BASE_DIR)/Dockerfile $(SCRIPTS_DIR)/mkworkspace.sh \
+        $(SCRIPTS_DIR)/e2fsprogs-$(E2FSPROGS_VERSION)-ro-mount.patch
+	@$(MAKE) -f "$(MAKEFILE)" sandbox
 
 # образ корня одного плагина: цель читает декларации [tool.boba.sandbox] пакета
 PLUGIN_ROOTFS    = $(SANDBOX_DIR)/plugins/$(PLUGIN)/rootfs.ext4
@@ -874,6 +885,16 @@ plugin-rootfs: version-check
 	mkdir -p "$(dir $(PLUGIN_ROOTFS))"
 	mv -f "$$stage/rootfs.ext4" "$(PLUGIN_ROOTFS)"
 	echo ">>> образ корня: $(PLUGIN_ROOTFS)"
+
+# образ корня плагина для сборки образа: собирается, когда его нет или новее хоть один
+# файл пакетов его закрытия, Dockerfile, сценарии корня либо uv.lock
+plugin-sources   = $(shell $(PYTHON) $(SCRIPTS_DIR)/plugin_rootfs.py sources $(SRC_DIR)/packages $(1))
+PLUGIN_ROOT_SRCS := $(BASE_DIR)/Dockerfile $(SCRIPTS_DIR)/plugin_rootfs.py $(SCRIPTS_DIR)/mkrootfs.sh \
+                    $(SRC_DIR)/pyproject.toml $(SRC_DIR)/uv.lock
+
+.SECONDEXPANSION:
+$(SANDBOX_DIR)/plugins/%/rootfs.ext4: $$(call plugin-sources,$$*) $(PLUGIN_ROOT_SRCS) | $(SANDBOX_INPUTS) $(SANDBOX_TOOLS)
+	@$(MAKE) -f "$(MAKEFILE)" plugin-rootfs PLUGIN=$*
 
 # образы всех плагинов с entry points группы boba.tools
 .PHONY: plugin-rootfs-all
@@ -1036,15 +1057,14 @@ site-keys: $(APPS:%=site-keys-%)
 else
 
 # образ приложения. У приложения с песочницей сборок три: стадия runtime-sandbox, поверх
-# неё образы корней плагинов и workspace (sandbox-image), затем код приложения
-build: version-check
+# неё модели, образы корней плагинов и workspace (sandbox-image), затем код приложения.
+# Недостающие или устаревшие workspace, образы плагинов и образы моделей build собирает сам
+build: version-check $(if $(APP_SANDBOX),$(SANDBOX_DIR)/workspace.ext4 $(PLUGIN_IMAGES) models-image)
 	@$(call check,$(IMAGE_INPUTS),запусти: make fetch)
 	tmp=
 	trap 'rm -rf "$$tmp"' EXIT
 	tmp=$$(mktemp -d)
 	if [ -n "$(APP_SANDBOX)" ]; then
-	    $(call check,$(SANDBOX_DIR)/workspace.ext4,запусти: make sandbox)
-	    $(call check,$(PLUGIN_IMAGES),запусти: make plugin-rootfs-all)
 	    # в образ уезжает каталог целиком: образ плагина, которого больше нет, там лишний
 	    for dir in "$(SANDBOX_DIR)/plugins"/*/; do
 	        name=$$(basename "$$dir")
@@ -1053,7 +1073,7 @@ build: version-check
 	            *) echo "$$dir: в репозитории нет плагина $$name — удали каталог" >&2; exit 1 ;;
 	        esac
 	    done
-	    echo "== основа $(SANDBOX_IMAGE): runtime-sandbox и образы плагинов из $(SANDBOX_DIR) =="
+	    echo "== основа $(SANDBOX_IMAGE): runtime-sandbox, модели и образы плагинов из $(RUNTIME_DIR) =="
 	    $(call docker-image,runtime-sandbox,$$tmp/runtime-sandbox.iid,$(APP_ARGS))
 	    $(call sandbox-image,$$tmp/runtime-sandbox.iid)
 	fi
@@ -1062,18 +1082,14 @@ build: version-check
 	echo ">>> образ готов: $(IMAGE); проверка: make test APP=$(APP)"
 
 # проверка образа тем же окружением, что уедет в compose и systemd: шаблон conf/boba.env
-# с путями образа. Модели в образе не лежат — в релизе и compose они рядом, здесь —
-# биндами. Сети у контейнера нет: модель хода агента живёт в нём же
+# с путями образа, модели — в самом образе. Сети у контейнера нет: модель хода агента
+# живёт в нём же
 test: build
-	@$(call check,$(APP_MODEL_FILES),запусти: make fetch)
-	$(call check,$(APP_MODEL_IMAGES:%=$(MODELS_DIR)/%.ext4),запусти: make models-image)
-	echo "== проверка образа $(IMAGE) =="
+	@echo "== проверка образа $(IMAGE) =="
 	env_file=$$(mktemp)
 	trap 'rm -f "$$env_file"' EXIT
 	$(call app-env,$(DEST_DIR),$(DEST_DIR)/data) > "$$env_file"
 	docker run --rm -i --network none --env-file "$$env_file" --tmpfs "$(DEST_DIR)/data:uid=1000,gid=1000" \
-	    $(foreach model,$(APP_MODELS),-v "$(MODELS_DIR)/$(model):$(DEST_DIR)/models/$(model):ro") \
-	    $(foreach model,$(APP_MODEL_IMAGES),-v "$(MODELS_DIR)/$(model).ext4:$(DEST_DIR)/models/$(model).ext4:ro") \
 	    --entrypoint sh $(IMAGE) \
 	    -c '"$$PYTHONHOME/bin/python3" - --app $(APP) --base $(DEST_DIR) --names $(DEST_DIR)/app/packages.txt $(if $(APP_SANDBOX),--sandbox --ocr $(notdir $(RAPIDOCR_FILES)) --model-images $(APP_MODEL_IMAGES))' \
 	    < "$(TEST_DIR)/bobacheck.py"
@@ -1084,18 +1100,10 @@ release:
 	    echo "нет образа $(IMAGE) — запусти: make build APP=$(APP)" >&2
 	    exit 1
 	fi
-	$(call check,$(APP_MODEL_FILES),запусти: make fetch)
-	$(call check,$(APP_MODEL_IMAGES:%=$(MODELS_DIR)/%.ext4),запусти: make models-image)
 	echo "== релиз $(APP) ($(INSTANCE)) из образа $(IMAGE) -> $(OUT) =="
 	rm -rf "$(OUT)"
 	mkdir -p "$(OUT)/conf" "$(OUT)/models"
 	$(call image-copy,$(IMAGE),$(DEST_DIR)/.,$(OUT)/)
-	for model in $(APP_MODELS); do
-	    cp -a "$(MODELS_DIR)/$$model" "$(OUT)/models/$$model"
-	done
-	for model in $(APP_MODEL_IMAGES); do
-	    cp "$(MODELS_DIR)/$$model.ext4" "$(OUT)/models/$$model.ext4"
-	done
 	# системные библиотеки образа (libssl1.1, libffi6, krb5 ...) в third/lib: нужны там,
 	# где система не та, на которой собран образ, и этих версий в ней нет
 	if [ -n "$(BUNDLE_OS_LIBS)" ]; then
@@ -1173,14 +1181,13 @@ install:
 	echo "    журнал:  journalctl --user -u boba-$(INSTANCE).service -f"
 
 # рабочее дерево приложения для docker compose: conf, data и .env;
-# docker-compose*.yml лежат в нём же и трекаются git'ом. Модели compose монтирует из
-# runtime/, общий конфиг и образы песочницы лежат в образе. В conf дерева — только
+# docker-compose*.yml лежат в нём же и трекаются git'ом. Общий конфиг, модели и образы
+# песочницы лежат в образе. В conf дерева — только
 # специфика машины: site.toml (пишет администратор), keytab и krb5.conf. Готовые
 # .env и site.toml цель не трогает
 dev: OUT = $(SRC_DIR)/compose/$(APP)
 dev:
-	@$(call check,$(APP_MODEL_FILES),запусти: make fetch)
-	echo "== дерево compose $(APP) в $(OUT) =="
+	@echo "== дерево compose $(APP) в $(OUT) =="
 	$(call host-check,compose)
 	$(call data-dirs,$(OUT)/data)
 	if [ -n "$(APP_SANDBOX)" ]; then

@@ -12,15 +12,34 @@ root    — каталог-оверлей корня внутри пакета; 
 setup   — setup-скрипт внутри пакета; пусто — нет.
 imports — модули smoke-проверки образа (по строке).
 data    — гостевые пути данных по закрытию: точки монтирования (по строке).
+sources — файлы пакетов закрытия, от которых зависит образ корня (по строке).
 list    — пакеты репозитория с entry points группы boba.tools (по строке).
 """
 
 import re
 import sys
 import tomllib
+from enum import StrEnum
 from pathlib import Path
 
 GROUP = "boba.tools"
+
+
+class ContextSkip(StrEnum):
+    """Части путей пакета, которых нет в контексте сборки (.dockerignore)."""
+
+    TESTS = "tests"
+    CONFTEST = "conftest.py"
+    PYCACHE = "__pycache__"
+    PYTEST_CACHE = ".pytest_cache"
+    NODE_MODULES = "node_modules"
+    EGG_INFO = ".egg-info"
+
+    def matches(self, part: str) -> bool:
+        if self is ContextSkip.EGG_INFO:
+            return part.endswith(self.value)
+
+        return part == self.value
 
 
 class Projects:
@@ -214,6 +233,31 @@ class Commands:
                     found.append(path)
 
         return found
+
+    def sources(self) -> list[str]:
+        """Файлы пакетов закрытия из контекста сборки: по ним make видит,
+        что образ корня плагина устарел."""
+        found: list[str] = []
+        for name in self._closure():
+            root = self._projects.dir_of(name)
+            for path in sorted(root.rglob("*")):
+                if not path.is_file():
+                    continue
+
+                if self._skipped(path.relative_to(root).parts):
+                    continue
+
+                found.append(str(path))
+
+        return found
+
+    def _skipped(self, parts: tuple[str, ...]) -> bool:
+        for part in parts:
+            for skip in ContextSkip:
+                if skip.matches(part):
+                    return True
+
+        return False
 
     def imports(self) -> list[str]:
         return list(self._projects.sandbox_of(self._package).get("imports", []))
