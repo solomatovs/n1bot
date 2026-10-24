@@ -49,7 +49,7 @@ def port() -> int:
 
 @pytest.fixture
 def stand(tmp_path: Path, port: int) -> ServiceStand:
-    return ServiceStand(tmp_path, RunLimits(max_runs=4, max_waiting=4), port)
+    return ServiceStand(tmp_path, RunLimits(max_runs=4, max_waiting=4), port, "")
 
 
 @pytest.fixture

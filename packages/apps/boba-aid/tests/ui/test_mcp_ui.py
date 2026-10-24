@@ -128,7 +128,7 @@ class BobaMcpStand:
             "endpoint": {
                 "transport": "streamable-http",
                 "service": service,
-                "path": "/mcp/service",
+                "path": "/service",
                 "auth": {
                     "auth": "proxy",
                     "issuer": service,

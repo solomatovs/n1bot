@@ -301,7 +301,7 @@ def _public(process: StandProcess[ServiceStand]) -> str:
 
 
 def _endpoint(process: StandProcess[ServiceStand]) -> str:
-    return f"{_public(process)}/mcp/{ENDPOINT}"
+    return f"{_public(process)}/{ENDPOINT}"
 
 
 def _restart(process: StandProcess[ServiceStand]) -> None:
@@ -617,7 +617,7 @@ def deployed() -> DeployedService:
 
     return DeployedService(
         public=public,
-        endpoint=f"{public}{common['mcp']['path']}/{ENDPOINT}",
+        endpoint=f"{public}/{ENDPOINT}",
         client_id=clients[0],
         client_secret=str(site["site"]["mcp_client"]["secret"]),
         proxy_secret=str(site["site"]["mcp_proxy_secret"]),

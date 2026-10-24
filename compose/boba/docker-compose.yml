@@ -1,5 +1,5 @@
 services:
-  agent:
+  boba:
     init: true
     user: "${BOBA_USER}"
     security_opt:
@@ -11,9 +11,9 @@ services:
     pids_limit: 1024
     restart: unless-stopped
     stop_grace_period: 30s
-    image: boba-agent:0.0.26.dev4
-    hostname: boba-agent
-    container_name: boba-agent
+    image: boba:0.0.30.dev1
+    hostname: boba
+    container_name: boba
     networks:
       default:
         ipv4_address: ${BOBA_ADDRESS}

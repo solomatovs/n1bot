@@ -32,23 +32,24 @@ RELEASE_DIR     := $(SRC_DIR)/release
 
 # приложения сборки; цели build, test, dev, debug, release, install и site-keys работают
 # по одному приложению (APP=<имя> либо <цель>-<имя>), без APP — по всем
-APPS            := aid mcp agent
+APPS            := aid mcp boba
 APP             ?=
 
 # чат инструментов не исполняет: песочницы, cgroup и моделей у него нет
 PACKAGES_aid      = boba-aid boba-llm-http
+NAME_aid         := boba-aid
 IMPORTS_aid      := boba.aid
 MODULE_aid       := boba.aid.main
 STAGE_aid        := runtime-aid
 HEALTH_aid       := /
 PORT_aid         := 8501
-PREFIX_aid       := /boba
+PREFIX_aid       := /aid
 SANDBOX_aid      :=
 MODELS_aid       :=
 PARTS_aid        := app_root/public app_root/public/page.js app_root/public/vendor \
                     app_root/ui/index.html app_root/ui/index.js app_root/mcp-apps/sandbox.html \
                     app_root/mcp-apps/fonts/inter/files
-# агента в образе чата нет: на выкатке чат ходит в службу агента (образ agent, boba serve)
+# агента в образе чата нет: на выкатке чат ходит в службу агента (образ boba, boba serve)
 BUILD_ARGS_aid    =
 # фронт на хосте нужен только отладке чата: образ собирает его сам
 WEB_aid          := web
@@ -56,12 +57,13 @@ WEB_aid          := web
 # boba-mcp — MCP-сервер с инструментами boba; фронта у него нет, модели, образы корней
 # плагинов и шаблон workspace лежат внутри образа
 PACKAGES_mcp      = boba-mcp $(PLUGIN_PACKAGES) boba-llm-fastembed
+NAME_mcp         := boba-mcp
 IMPORTS_mcp      := boba.mcp_server.app fastmcp
 MODULE_mcp       := boba.mcp_server
 STAGE_mcp        := runtime-mcp
 HEALTH_mcp       := /health
 PORT_mcp         := 8650
-PREFIX_mcp       :=
+PREFIX_mcp       := /mcp
 SANDBOX_mcp      := yes
 MODELS_mcp       := fastembed rapidocr
 PARTS_mcp        :=
@@ -71,24 +73,25 @@ WEB_mcp          :=
 # агент как служба — `boba serve` пакета boba-cli: агент сам слушает ACP по сети,
 # сессии — потоки одного процесса; образ запускает бинарник boba-bin, установка без
 # Docker — модуль интерпретатором; песочницы, моделей и фронта нет
-PACKAGES_agent    = boba-cli
-IMPORTS_agent    := boba.cli.serve
-MODULE_agent     := boba.cli.app serve
-CONF_agent       := boba-cli
-STAGE_agent      := runtime-agent
-HEALTH_agent     := /health
-PORT_agent       := 8660
-PREFIX_agent     :=
-SANDBOX_agent    :=
-MODELS_agent     :=
-PARTS_agent      := bin/boba.dist/boba.bin
-BUILD_ARGS_agent  = $(BIN_TOOL_ARGS) --build-arg BIN_ONNX=
-WEB_agent        :=
+PACKAGES_boba     = boba-cli
+NAME_boba        := boba
+IMPORTS_boba     := boba.cli.serve
+MODULE_boba      := boba.cli.app serve
+CONF_boba        := boba-cli
+STAGE_boba       := runtime-boba
+HEALTH_boba      := /health
+PORT_boba        := 8660
+PREFIX_boba      := /boba
+SANDBOX_boba     :=
+MODELS_boba      :=
+PARTS_boba       := bin/boba.dist/boba.bin
+BUILD_ARGS_boba   = $(BIN_TOOL_ARGS) --build-arg BIN_ONNX=
+WEB_boba         :=
 
 # лимиты пользовательского юнита установки без Docker: те же, что у контейнера compose
 UNIT_LIMITS_aid      := 4G 400% 512
 UNIT_LIMITS_mcp      := 16G 800% 2048
-UNIT_LIMITS_agent    := 8G 400% 1024
+UNIT_LIMITS_boba     := 8G 400% 1024
 
 APP_PACKAGES      = $(PACKAGES_$(APP))
 APP_IMPORTS       = $(IMPORTS_$(APP))
@@ -158,7 +161,7 @@ DATA_DIR         = $(INSTALL_DIR)/data
 # корень релиза в образе: его же называют CMD образов и тома compose
 DEST_DIR        := /app/boba
 
-IMAGE            = boba-$(APP):$(BOBA_TAG)
+IMAGE            = $(NAME_$(APP)):$(BOBA_TAG)
 # основа образа приложения с песочницей: runtime-sandbox и образы корней плагинов
 SANDBOX_IMAGE    = boba-$(APP)-sandbox:$(BOBA_TAG)
 OUT              = $(RELEASE_DIR)/$(VERSION)/$(INSTANCE)
@@ -562,7 +565,7 @@ endef
 # .env дерева compose называет каждую переменную docker-compose.yml: значений по
 # умолчанию в compose-файлах нет, и пропущенная переменная молча стала бы пустой строкой
 COMPOSE_VARS     = BOBA_USER BOBA_NETWORK BOBA_NETWORK_EXTERNAL BOBA_ADDRESS \
-                   BOBA_ADDRESS_2 $(if $(APP_SANDBOX),BOBA_SANDBOX_CGROUP)
+                   $(if $(APP_SANDBOX),BOBA_SANDBOX_CGROUP)
 COMPOSE_REQUIRED = BOBA_USER BOBA_NETWORK BOBA_NETWORK_EXTERNAL $(if $(APP_SANDBOX),BOBA_SANDBOX_CGROUP)
 define compose-env-check
 for name in $(COMPOSE_VARS); do
@@ -655,11 +658,11 @@ define HELP
                         его --testapps-image <образ>
 
 Образы — APP=$(subst $(space),|,$(APPS)) либо <цель>-<приложение>, без APP — оба:
-  build                 boba-<приложение>:$(BOBA_TAG)$(if $(LATEST_TAG), и :$(LATEST_TAG)); в agent — агент bin/boba.dist (Nuitka),
+  build                 образ приложения (boba-aid, boba-mcp, boba):$(BOBA_TAG)$(if $(LATEST_TAG), и :$(LATEST_TAG)); в boba — агент bin/boba.dist (Nuitka),
                         в mcp — модели, образы корней плагинов и workspace из runtime/; недостающие
                         или устаревшие (новее исходники пакетов плагина) собирает сам
   test                  build, затем проверка в образе без сети: пакеты, точки входа, у mcp —
-                        образы плагинов и модели, у agent — ход агента; итог — RESULT: ALL OK
+                        образы плагинов и модели, у boba — ход агента; итог — RESULT: ALL OK
   boba-bin              агент каталогом -> release/$(VERSION)/bin/boba.dist; BIN_ONNX=1 —
                         bin/boba-onnx.dist с рантаймом onnxruntime-genai (вторая компиляция Nuitka)
 
@@ -1019,7 +1022,7 @@ offline-check: version-check
 
 # --- агент boba каталогом standalone ---------------------------------------------
 
-# стадия boba-bin компилирует boba-cli Nuitka внутри образа base; образ agent берёт ту же
+# стадия boba-bin компилирует boba-cli Nuitka внутри образа base; образ boba берёт ту же
 # стадию с BIN_ONNX= — при пустом BIN_ONNX здесь компиляция одна на обе цели
 .PHONY: boba-bin
 boba-bin: version-check
@@ -1078,7 +1081,7 @@ build: version-check $(if $(APP_SANDBOX),$(SANDBOX_DIR)/workspace.ext4 $(PLUGIN_
 	    $(call sandbox-image,$$tmp/runtime-sandbox.iid)
 	fi
 	echo "== образ $(IMAGE), релиз внутри него лежит в $(DEST_DIR) =="
-	$(call docker-stage,$(APP_STAGE),$(IMAGE),$(if $(LATEST_TAG),--tag boba-$(APP):$(LATEST_TAG)) $(APP_ARGS) $(if $(APP_SANDBOX),--build-arg SANDBOX_IMAGE=$(SANDBOX_IMAGE)))
+	$(call docker-stage,$(APP_STAGE),$(IMAGE),$(if $(LATEST_TAG),--tag $(NAME_$(APP)):$(LATEST_TAG)) $(APP_ARGS) $(if $(APP_SANDBOX),--build-arg SANDBOX_IMAGE=$(SANDBOX_IMAGE)))
 	echo ">>> образ готов: $(IMAGE); проверка: make test APP=$(APP)"
 
 # проверка образа тем же окружением, что уедет в compose и systemd: шаблон conf/boba.env
@@ -1207,7 +1210,6 @@ dev:
 	        echo "BOBA_NETWORK=boba"
 	        echo "BOBA_NETWORK_EXTERNAL=true"
 	        echo "BOBA_ADDRESS="
-	        echo "BOBA_ADDRESS_2="
 	    } > "$(OUT)/.env"
 	    echo "    .env создан: $(OUT)/.env (сеть и адреса — по образцу $(CONF_DIR)/compose.env.example)"
 	fi

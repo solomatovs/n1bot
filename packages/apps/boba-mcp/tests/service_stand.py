@@ -3,9 +3,9 @@
 Тесты сервиса поднимают его в своём процессе; тесты клиента чата запускают
 этот файл субпроцессом в окружении сервиса: `python service_stand.py <port>
 <workdir> [<срок токена, с>]` — клиент живёт на других версиях библиотек и
-видит сервер только по сети. Endpoint'ы стенда: `/mcp/service` (все
-инструменты, всем ролям), `/mcp/narrow` (один инструмент, только роли dev) и
-`/mcp/offers` (все инструменты с правилами предложения соединений по ролям и
+видит сервер только по сети. Endpoint'ы стенда: `/service` (все
+инструменты, всем ролям), `/narrow` (один инструмент, только роли dev) и
+`/offers` (все инструменты с правилами предложения соединений по ролям и
 признаку клиента).
 """
 
@@ -150,9 +150,11 @@ class ServiceStand:
         workdir: Path,
         limits: RunLimits,
         port: int,
+        prefix: str,
         token_ttl_sec: int = TOKEN_TTL_SEC,
     ) -> None:
         self.port = port
+        self.public_url = f"http://127.0.0.1:{port}{prefix}"
         contexts = CallContexts()
         runs = Runs(contexts)
         params = SealedConnectionParams(
@@ -256,7 +258,7 @@ class ServiceStand:
         )
         # в сервисе точку workspace ставит загрузчик плагинов из профиля песочницы
         WorkspaceMount.configure("/workspace")
-        public_url = f"http://127.0.0.1:{port}"
+        public_url = self.public_url
         tokens = ServiceTokens(
             public_url,
             "stand-session-secret",
@@ -275,9 +277,9 @@ class ServiceStand:
             RegisteredClients(sealed, {CLIENT_ID: declared}),
             sealed,
             [
-                f"{public_url}/mcp/{PROFILE}",
-                f"{public_url}/mcp/{NARROW}",
-                f"{public_url}/mcp/{self.OFFERS}",
+                f"{public_url}/{PROFILE}",
+                f"{public_url}/{NARROW}",
+                f"{public_url}/{self.OFFERS}",
             ],
         )
         auth = ServiceAuth(
@@ -286,9 +288,9 @@ class ServiceStand:
             tokens,
             ServiceMark.NAME,
             {
-                PROFILE: f"{public_url}/mcp/{PROFILE}",
-                NARROW: f"{public_url}/mcp/{NARROW}",
-                self.OFFERS: f"{public_url}/mcp/{self.OFFERS}",
+                PROFILE: f"{public_url}/{PROFILE}",
+                NARROW: f"{public_url}/{NARROW}",
+                self.OFFERS: f"{public_url}/{self.OFFERS}",
             },
         )
         self._sign_in = ServiceSignIn(
@@ -302,7 +304,6 @@ class ServiceStand:
             granted,
             params,
             limits,
-            "/mcp",
             LocalStorageConfig(
                 files_dir=str(workdir / "files"),
                 mounting=MountingConfig(
@@ -319,7 +320,7 @@ class ServiceStand:
         )
 
     def url(self, profile: str) -> str:
-        return f"http://127.0.0.1:{self.port}/mcp/{profile}"
+        return f"{self.public_url}/{profile}"
 
     async def dev_token(self, profile: str) -> str:
         """Токен пользователя alice с ролью dev для endpoint'а profile."""
@@ -377,6 +378,7 @@ if __name__ == "__main__":
         Path(sys.argv[2]),
         RunLimits(max_runs=4, max_waiting=4),
         int(sys.argv[1]),
+        "",
         ttl_sec,
     )
     uvicorn.run(

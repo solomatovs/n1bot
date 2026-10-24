@@ -102,6 +102,8 @@ class ServeStandConfig:
     PROXY_SECRET: ClassVar[str] = "stand-agent-proxy-secret"  # noqa: S105 — ключ стенда
     SESSION_SECRET: ClassVar[str] = "stand-agent-session-secret"  # noqa: S105 — ключ стенда
     PATH: ClassVar[str] = "/acp"
+    PREFIX: ClassVar[str] = "/boba"
+    """Префикс службы: стенд, как прод за прокси, отвечает под ним."""
 
     def __init__(  # noqa: PLR0913 — служба собирается всеми частями стенда
         self,
@@ -114,7 +116,7 @@ class ServeStandConfig:
     ) -> None:
         self.port = address.listen
         self.public_port = address.public
-        self.public_url = f"http://127.0.0.1:{address.public}"
+        self.public_url = f"http://127.0.0.1:{address.public}{self.PREFIX}"
         self._krb = krb
         self._history = history
         self._settings = dict(settings)
@@ -161,6 +163,7 @@ class ServeStandConfig:
                 "port": self.public_port,
                 "path": self.PATH,
                 "public_url": self.public_url,
+                "url_prefix": self.PREFIX,
                 "shutdown_timeout_sec": 2,
                 "idle_sec": self._idle_sec,
                 "history": history,
@@ -174,7 +177,7 @@ class ServeStandConfig:
         return f"{self.public_url}{self.PATH}"
 
     def ws_url(self) -> str:
-        return f"ws://127.0.0.1:{self.port}{self.PATH}"
+        return f"ws://127.0.0.1:{self.port}{self.PREFIX}{self.PATH}"
 
     async def token(self, login: str, roles: str) -> str:
         """Токен ресурса ACP по утверждению доверенного клиента."""

@@ -1244,7 +1244,7 @@ class TestRelaySealing:
         пользователя запечатывается с предупреждением."""
         config = service_process.servers()
         boba = config.servers["boba"]
-        endpoint = boba.endpoint.model_copy(update={"path": "/mcp/offers"})
+        endpoint = boba.endpoint.model_copy(update={"path": "/offers"})
         served = boba.model_copy(update={"endpoint": endpoint})
         offers = config.model_copy(update={"servers": {"boba": served}})
         tab.password_sign_in(frozenset({"analyst"}))

@@ -97,6 +97,7 @@ from boba.oauth.server import (
     AuthServer,
     RegisteredClients,
     SealedValues,
+    ServiceAddress,
     ServiceAuth,
     ServiceTokens,
     TokenClaims,
@@ -166,9 +167,9 @@ class ServeHistory(BaseModel):
     postgres: PostgresConfig
 
 
-class ServeSection(BaseModel):
-    """Секция [agent]: адрес службы и путь ACP, публичный адрес (от него
-    строятся метаданные OAuth и ресурс токена), история, слой настроек
+class ServeSection(ServiceAddress):
+    """Секция [agent]: адрес службы и путь ACP, публичный адрес и префикс
+    (ServiceAddress), история, слой настроек
     агента без истории и моделей, профили агента и доверенные клиенты
     OAuth."""
 
@@ -177,7 +178,6 @@ class ServeSection(BaseModel):
     host: str = Field(min_length=1)
     port: int = Field(gt=0, lt=65536)
     path: str = Field(min_length=1, pattern=r"^/")
-    public_url: str = Field(min_length=1)
     shutdown_timeout_sec: int = Field(gt=0)
     idle_sec: float = Field(gt=0)
     """Подключение HTTP без запросов и ходов дольше idle_sec закрывается
@@ -754,8 +754,8 @@ class ServeHost:
         return f"{section.public_url.rstrip('/')}{section.path}"
 
     def app(self) -> Starlette:
-        """Приложение службы: маршруты входа, метаданные ресурса ACP, адрес
-        ACP и проба готовности."""
+        """Приложение службы: маршруты входа, адрес ACP и проба готовности под
+        префиксом службы, метаданные ресурса ACP — в корне."""
         section = self._config.agent
         auth = self._auth()
         provider = auth.resource(ServeMark.RESOURCE, [])
@@ -763,13 +763,12 @@ class ServeHost:
         router = ServeRouter(self._agents)
         endpoint = AcpEndpoint(router, CallerTokens(), section.idle_sec)
         guarded = RequireAuthMiddleware(endpoint, [], metadata)
-        routes: list[BaseRoute] = [
+        served: list[BaseRoute] = [
             Route(ServeMark.HEALTH, self._health, methods=["GET"]),
-            *auth.routes(),
-            *provider.get_well_known_routes(section.path),
             Route(section.path, guarded, methods=["POST", "GET", "DELETE"]),
             WebSocketRoute(section.path, endpoint.websocket),
         ]
+        routes = auth.app_routes(provider.get_well_known_routes(section.path), served)
 
         @asynccontextmanager
         async def lifespan(app: Starlette) -> AsyncGenerator[None, None]:

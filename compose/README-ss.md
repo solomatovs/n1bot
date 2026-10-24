@@ -8,10 +8,15 @@
 ## Версия и базы
 
 На машине живёт одна версия boba — ветка `refactoring/chainlit_agent` и её
-потомки: чат aid с процессом-агентом и сервис инструментов boba-mcp. Её деревья —
-`compose/aid`, `compose/mcp`, `debug/aid` и `debug/mcp`, базы PostgreSQL — `aid`
-у compose и `aid_debug` у отладки; базу выбирает ключ `site.aid_database`
-site.toml. В VS Code её запускают цели `launch.json` «Aid: agent» (чат), «MCP:
+потомки: чат aid, служба агента boba и сервис инструментов boba-mcp. Её
+деревья — `compose/aid`, `compose/mcp`, `compose/boba`, `debug/aid` и
+`debug/mcp`, базы PostgreSQL — `aid` у compose и `aid_debug` у отладки; базу
+выбирает ключ `site.pg_database` site.toml. На стенде каждое приложение идёт
+одним контейнером: `aid`, `boba-mcp`, `boba`; в `compose/<приложение>/conf`
+лежат только `site.toml`, `boba.env` и `krb/`. Вход во все внешние системы
+стенда — kerberos (`pg_auth_method`, `pg_history_auth_method` — `kerberos`),
+к модели — токен (`llm_auth_method = "bearer"`), Confluence — без входа
+(`confluence_auth_method = "none"`). В VS Code её запускают цели `launch.json` «Aid: agent» (чат), «MCP:
 tools service» (boba-mcp), «Aid: aid + mcp» (оба процесса сразу), «tool (aid)» и
 «pytest (aid): …».
 
@@ -32,8 +37,8 @@ tools service» (boba-mcp), «Aid: aid + mcp» (оба процесса сраз
 Модель эмбеддингов `ix-vector` и `ix-search-lab` берут из `runtime/models/fastembed`.
 Тесты новой версии читают индекс из `aid_debug`.
 
-Контейнер чата новой версии называется `aid` (второй узел `aid2`): на это имя
-рассчитаны карта доступа к PostgreSQL и прокси (раздел «Сеть»). Отладка чата
+Контейнер чата называется `aid`: на это имя рассчитаны карта доступа к
+PostgreSQL и прокси (раздел «Сеть»). Отладка чата
 обеих версий слушает порт 8601, потому что порт задаёт тот же site.toml.
 
 ## Пользователь и демон
@@ -67,22 +72,29 @@ tools service» (boba-mcp), «Aid: aid + mcp» (оба процесса сраз
 Поэтому в `compose/<приложение>/.env` стоят `BOBA_NETWORK=ss`,
 `BOBA_NETWORK_EXTERNAL=true` и закреплённые адреса:
 
-| Контейнер | `BOBA_ADDRESS` | Второй узел, `BOBA_ADDRESS_2` |
-|---|---|---|
-| `aid` (чат новой версии) | 10.118.0.6 | 10.118.0.36 (`aid2`) |
-| `boba-mcp` (только новая версия) | 10.118.0.30 | 10.118.0.31 (`boba-mcp2`) |
-| `studio` (только dev) | 10.118.0.12 | — |
+| Контейнер | `BOBA_ADDRESS` |
+|---|---|
+| `aid` (чат) | 10.118.0.6 |
+| `boba-mcp` (сервис инструментов) | 10.118.0.30 |
+| `boba` (служба агента) | 10.118.0.32 |
 
 Адреса закреплены, потому что на них ссылается карта доступа между сетями
 (`/mnt/store/ss/docker/compose/network-map.conf`, её применяют юниты
 `docker-netmap-*`). Карта пускает к PostgreSQL только контейнеры с именами
-`aid`, `studio` и `boba-mcp`: контейнер с другим именем или адресом до
+`aid`, `boba-mcp` и `boba`: контейнер с другим именем или адресом до
 базы не дойдёт и остановится с `PostgresError: ... couldn't get a connection`
-(руководство, раздел 12). Вторые узлы обычно не запущены.
+(руководство, раздел 12).
 
-Снаружи приложения отдаёт контейнер `nginx`: `https://loshara.com/boba/` — чат
-aid (контейнер `aid`), `/boba-mcp/health` — boba-mcp новой версии,
-`/boba-studio/` — studio версии dev. Его конфигурация —
+Снаружи приложения отдаёт контейнер `nginx`: `https://loshara.com/aid/` — чат
+(контейнер `aid`), `/mcp/` — boba-mcp (`/mcp/health`, серверы `/mcp/base`,
+`/mcp/general`, `/mcp/search`), `/boba/` — служба агента (`/boba/health`,
+ACP на `/boba/acp`). Каждое приложение само отвечает под своим префиксом, nginx
+передаёт путь как есть, без `rewrite`; метаданные OAuth
+`/.well-known/…/mcp` и `/.well-known/…/boba` идут в свои сервисы. Чат ходит в
+boba-mcp и службу агента тоже через nginx, по https. Браузер со старой ссылкой
+чата `/boba/…` (заголовок `Sec-Fetch-Dest: document`) nginx уводит ответом 302 на
+`/aid/…` с тем же остатком пути; клиенты службы агента этот заголовок не шлют.
+Конфигурация nginx —
 `/mnt/store/ss/docker/compose/nginx/conf/conf.d/locations/boba.conf`
 (руководство, раздел 14).
 
