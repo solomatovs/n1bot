@@ -215,6 +215,28 @@ class TestToolList:
         if "cfg" in properties:
             raise AssertionError("the injected config is not shown to the client")
 
+    async def test_workflow_names_node_tools_as_the_server_does(
+        self, stand: ServiceStand, url: str, dev_token: str
+    ) -> None:
+        """Описание связки и поле tool её узла говорят модели, что узел
+        называет инструмент именем на сервере, без приставки агента."""
+        async with _client(url, dev_token) as client:
+            listed = await client.list_tools()
+
+        workflow = next(tool for tool in listed if tool.name == WorkflowTool.NAME)
+        nodes = workflow.input_schema["properties"]["nodes"]
+        node = nodes["items"]
+        if "$ref" in node:
+            node = workflow.input_schema["$defs"][node["$ref"].rsplit("/", 1)[-1]]
+
+        texts = {
+            "description": workflow.description,
+            "node tool": node["properties"]["tool"]["description"],
+        }
+        for where, text in texts.items():
+            if "без приставки mcp__<сервер>__" not in str(text):
+                raise AssertionError(f"the {where} names the prefix: {text}")
+
     async def test_scope_parameter_is_marked_in_the_tools_of_a_workspace(
         self, stand: ServiceStand, url: str, dev_token: str
     ) -> None:
