@@ -23,6 +23,7 @@ import signal
 import sys
 import time
 from collections.abc import AsyncIterator, Iterator
+from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar
 from uuid import uuid4
@@ -785,6 +786,47 @@ class ChatRows:
         assert row is not None
 
         return int(row[0])
+
+    async def thread_times(self, thread_id: str) -> tuple[datetime, datetime]:
+        """created_at и updated_at треда."""
+        pool = AsyncPostgresPool(self._postgres)
+        await pool.open()
+        try:
+            async with pool.connection() as conn:
+                cursor = await conn.execute(
+                    sql.SQL(
+                        "select created_at, updated_at from {}.threads where id = %s"
+                    ).format(sql.Identifier(self._schema)),
+                    (thread_id,),
+                )
+                row = await cursor.fetchone()
+        finally:
+            await pool.close()
+
+        assert row is not None, f"no thread {thread_id}"
+
+        return row[0], row[1]
+
+    async def last_history_write(self, session_id: str) -> datetime:
+        """Время последней записи сессии в истории агента."""
+        pool = AsyncPostgresPool(self._postgres)
+        await pool.open()
+        try:
+            async with pool.connection() as conn:
+                cursor = await conn.execute(
+                    sql.SQL(
+                        "select max(recorded_at) from {}.history where session_id = %s"
+                    ).format(sql.Identifier(self._history_schema)),
+                    (session_id,),
+                )
+                row = await cursor.fetchone()
+        finally:
+            await pool.close()
+
+        assert row is not None
+        assert row[0] is not None, f"no history of session {session_id}"
+
+        return row[0]
 
     async def chat_settings_rows(self, thread_id: str) -> int:
         pool = AsyncPostgresPool(self._postgres)
@@ -1825,6 +1867,104 @@ class TestQueuedQuestions:
             assert tab.messages(since=mark), tab.trace()[mark:]
         finally:
             await tab.end_session()
+
+
+class TestThreadActivity:
+    """Тред встаёт в списке по последней записи истории агента: ход
+    сдвигает threads.updated_at ко времени последней записи, и вкладки
+    владельца — та, что ведёт ход, и вкладка другого треда на этом или
+    втором инстансе — получают это значение сигналом страницы; возврат к
+    треду время не трогает."""
+
+    @pytest.fixture(params=["same", "second"])
+    def watcher_app(
+        self, request: pytest.FixtureRequest, app: StandProcess
+    ) -> StandProcess:
+        """Инстанс вкладки, которая следит за списком: тот же или второй."""
+        if request.param == "same":
+            return app
+
+        return request.getfixturevalue("second")
+
+    @staticmethod
+    def _activity(tab: ChatSocket, thread_id: str, since: int = 0) -> list[datetime]:
+        stamps: list[datetime] = []
+        for event, payload in tab.events[since:]:
+            if event != "window_message" or not isinstance(payload, dict):
+                continue
+
+            if payload.get("type") != SignalType.THREAD_ACTIVITY:
+                continue
+
+            if payload.get("threadId") != thread_id:
+                continue
+
+            stamps.append(datetime.fromisoformat(str(payload["updatedAt"])))
+
+        return stamps
+
+    async def _await_activity(
+        self, tab: ChatSocket, thread_id: str, rows: ChatRows, session_id: str
+    ) -> tuple[datetime, list[datetime]]:
+        """Последняя запись истории сессии и сигналы активности треда во
+        вкладке, когда последний из них дошёл до этой записи."""
+        deadline = time.monotonic() + TURN_TIMEOUT_SEC
+        while time.monotonic() < deadline:
+            last = await rows.last_history_write(session_id)
+            stamps = self._activity(tab, thread_id)
+            if stamps and stamps[-1] == last:
+                return last, stamps
+
+            await asyncio.sleep(0.1)
+
+        msg = (
+            f"no activity signal of thread {thread_id} up to the last history "
+            f"write in {TURN_TIMEOUT_SEC}s: {self._activity(tab, thread_id)}"
+        )
+        raise AssertionError(msg)
+
+    async def test_a_turn_moves_the_thread_to_its_last_history_write(
+        self,
+        app: StandProcess,
+        watcher_app: StandProcess,
+        cookie: str,
+        rows: ChatRows,
+    ) -> None:
+        tab = ChatSocket(app, cookie, str(uuid4()))
+        await tab.open()
+        watcher = ChatSocket(watcher_app, cookie, str(uuid4()))
+        await watcher.open()
+        try:
+            await tab.send(f"activity probe {ScenarioName.ANSWER.value}")
+            await tab.wait_task_end()
+            assert not tab.errors(), (tab.errors(), app.tail(60))
+
+            meta = await rows.thread_meta(tab.thread_id)
+            assert meta is not None
+            session_id = meta[ThreadMetaField.AGENT_SESSION]
+            last, seen = await self._await_activity(
+                watcher, tab.thread_id, rows, session_id
+            )
+            _, own = await self._await_activity(tab, tab.thread_id, rows, session_id)
+            assert seen == sorted(seen)
+            assert own[-1] == last
+
+            created_at, updated_at = await rows.thread_times(tab.thread_id)
+            assert updated_at == last
+            assert updated_at > created_at
+        finally:
+            await tab.end_session()
+
+        mark = len(watcher.events)
+        again = ChatSocket(app, cookie, tab.thread_id)
+        await again.open(resumed=True)
+        try:
+            assert not again.errors(), (again.errors(), app.tail(60))
+            assert await rows.thread_times(tab.thread_id) == (created_at, updated_at)
+            assert self._activity(watcher, tab.thread_id, mark) == []
+        finally:
+            await again.end_session()
+            await watcher.end_session()
 
 
 class TestTabsOfOneThread:
