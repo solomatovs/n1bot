@@ -835,11 +835,23 @@ class TestWindow:
         records = session.records()
         assert len(boundaries(records)) == 1
         texts = synthetic_texts(records)
-        assert texts[0] == "Prompt is too long"
-        assert texts[1].startswith(
-            "Prompt is too long. Automatic compaction failed: the summary request "
-            "does not fit the context window even after dropping the oldest rounds"
-        )
+        assert texts == [
+            "This conversation no longer fits in the model's memory. Start a new "
+            "chat to continue.",
+            "This conversation no longer fits in the model's memory, and shortening "
+            "it automatically didn't help. Start a new chat to continue.",
+        ]
+        causes: list[str | None] = []
+        for record in records:
+            if isinstance(record, AssistantRecord) and record.is_api_error_message:
+                causes.append(record.error)
+
+        assert causes[0] is None
+        assert causes[1] is not None
+        assert causes[1].startswith(
+            "the summary request does not fit the context window even after "
+            "dropping the oldest rounds"
+        ), causes
 
 
 class TestInvokedSkills:
@@ -1027,7 +1039,7 @@ class TestManual:
         assert users[-1] == command.id
         assert synthetic_texts(records) == [
             "Compaction failed: there is nothing to summarize yet: the conversation "
-            "holds fewer than two rounds with a model reply: 1 group(s) in total"
+            "holds fewer than two rounds with a model reply"
         ]
 
 
