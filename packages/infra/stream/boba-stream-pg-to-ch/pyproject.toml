@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-stream-pg-to-ch"
-version = "0.0.30.dev2"
+version = "0.0.30.dev3"
 description = "Пара postgres -> ClickHouse: контракт RowDescription источника переводится в типы ClickHouse по OID и typmod, сверка с каталогом приёмника, поток COPY text в input() как TabSeparated без перекодирования."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-toolkit==0.0.30.dev2",
-    "boba-db-postgres==0.0.30.dev2",
-    "boba-db-clickhouse[payload]==0.0.30.dev2",
+    "boba-toolkit==0.0.30.dev3",
+    "boba-db-postgres==0.0.30.dev3",
+    "boba-db-clickhouse[payload]==0.0.30.dev3",
     "clickhouse-connect>=1.6,<2",
     "psycopg>=3.3,<4",
 ]

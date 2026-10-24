@@ -4,15 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-transport-http"
-version = "0.0.30.dev2"
+version = "0.0.30.dev3"
 description = "Boba HTTP transport: HttpRequest + HttpTransport + auth callables (PatAuth/BasicAuth) на httpx."
 requires-python = ">=3.11,<4"
 dependencies = [
     "pydantic>=2.12,<3",
-    "boba-connections==0.0.30.dev2",
-    "boba-kerberos==0.0.30.dev2",
-    "boba-cancellation==0.0.30.dev2",
-    "boba-krb==0.0.30.dev2",
+    "boba-connections==0.0.30.dev3",
+    "boba-kerberos==0.0.30.dev3",
+    "boba-cancellation==0.0.30.dev3",
+    "boba-krb==0.0.30.dev3",
     "httpx[http2]>=0.28,<1",
     "httpcore>=1.0,<2",
 ]
@@ -22,7 +22,7 @@ web = "boba.transport.http.manifest:MANIFEST"
 
 [project.optional-dependencies]
 dev = [
-    "boba-stand==0.0.30.dev2",
+    "boba-stand==0.0.30.dev3",
     "pytest>=9.1,<10",
 ]
 

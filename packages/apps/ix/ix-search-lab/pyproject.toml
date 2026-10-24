@@ -4,15 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-ix-search-lab"
-version = "0.0.30.dev2"
+version = "0.0.30.dev3"
 description = "Стенд поисковой выдачи по ix: страница и http-сервер с fts, trgm, vector и подсказками."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-cancellation==0.0.30.dev2",
-    "boba-config==0.0.30.dev2",
-    "boba-db-postgres==0.0.30.dev2",
-    "boba-ix-core==0.0.30.dev2",
-    "boba-llm==0.0.30.dev2",
+    "boba-cancellation==0.0.30.dev3",
+    "boba-config==0.0.30.dev3",
+    "boba-db-postgres==0.0.30.dev3",
+    "boba-ix-core==0.0.30.dev3",
+    "boba-llm==0.0.30.dev3",
     "psycopg>=3.3,<4",
     "pydantic>=2.12,<3",
 ]
