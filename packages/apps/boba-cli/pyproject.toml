@@ -32,7 +32,8 @@ dependencies = [
     "psycopg>=3.3,<4",
     "pydantic>=2.12,<3",
     "starlette>=1.0,<2",
-    "uvicorn[standard]>=0.35,<1",
+    "uvicorn>=0.35,<1",
+    "websockets>=15,<16",
 ]
 
 [project.scripts]
@@ -46,8 +47,10 @@ dev = [
     "httpx2>=2.10,<3",
     "omegaconf>=2.3,<3",
     "pytest>=9.1,<10",
-    "websockets>=15,<16",
 ]
+
+[tool.boba.unimported]
+websockets = "протокол WebSocket сервера uvicorn: boba serve принимает ACP по WebSocket"
 
 [tool.setuptools.packages.find]
 where = ["src"]
