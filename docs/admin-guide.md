@@ -415,6 +415,42 @@ fastembed и rapidocr), образы корней всех плагинов и �
 VER=X.Y.Z` проставляет во все `pyproject.toml`. Тег образа в строке `image:`
 файлов `docker-compose.yml` при смене версии правят вручную.
 
+### Команды: полная сборка и выкатка
+
+Сборка долгая, поэтому идёт в своей сессии tmux, а весь её вывод — в один
+лог: обрыв терминала её не остановит. Команды выполняют из корня репозитория.
+
+Полная сборка с нуля — исходники, песочница, модели, образы всех плагинов
+(`PLUGIN_JOBS` — сколько одновременно, около 4 ГБ памяти на каждый), фронт,
+образы и проверка всех трёх приложений:
+
+```
+tmux new-session -d -s build-all \
+  'DOCKER_BUILDKIT=0 make -C build all PLUGIN_JOBS=4 > /tmp/build-all.log 2>&1; echo EXIT=$? >> /tmp/build-all.log'
+touch /tmp/build-all.log; tail -f /tmp/build-all.log     # конец — строка EXIT=0
+```
+
+Пересборка одного приложения после правки кода (`aid`, `mcp` или `boba`);
+у `mcp` устаревшие образы плагинов собираются сами:
+
+```
+APP=mcp
+tmux new-session -d -s build-$APP \
+  "DOCKER_BUILDKIT=0 make -C build test APP=$APP PLUGIN_JOBS=4 > /tmp/build-$APP.log 2>&1; echo EXIT=\$? >> /tmp/build-$APP.log"
+touch /tmp/build-$APP.log; tail -f /tmp/build-$APP.log
+```
+
+Выкатка собранного в docker compose — служба агента и boba-mcp раньше чата,
+затем перечитать nginx и дождаться `healthy`:
+
+```
+for app in boba mcp aid; do (cd compose/$app && docker compose up -d); done
+docker exec nginx nginx -s reload
+watch -n 5 "docker ps --format '{{.Names}} {{.Status}}' | grep -E '^(aid|boba|boba-mcp) '"
+```
+
+Сессию сборки после конца закрывают: `tmux kill-session -t =build-all`.
+
 ## 5. Конфигурация
 
 ### Два файла вместо одного
