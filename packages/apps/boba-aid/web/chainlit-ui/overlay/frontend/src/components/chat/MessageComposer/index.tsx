@@ -34,6 +34,7 @@ import {
   persistentCommandState
 } from 'state/chat';
 
+import AgentUnavailable from './AgentUnavailable';
 import { Attachments } from './Attachments';
 import CommandButtons from './CommandButtons';
 import CommandButton from './CommandPopoverButton';
@@ -291,6 +292,7 @@ export default function MessageComposer({
       id="message-composer"
       className="bg-accent dark:bg-card rounded-3xl p-3 px-4 w-full min-h-24 flex flex-col"
     >
+      <AgentUnavailable />
       {attachments.length > 0 ? (
         <div className="mb-1">
           <Attachments />

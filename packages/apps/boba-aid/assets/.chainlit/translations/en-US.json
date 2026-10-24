@@ -337,6 +337,9 @@
             "collapse": "Collapse",
             "expand": "Expand"
         },
+        "agent": {
+            "retry": "Retry"
+        },
         "notice": {
             "profileRetired": "Chat profile \"{{retired}}\" is no longer available: this chat continues with \"{{profile}}\""
         },

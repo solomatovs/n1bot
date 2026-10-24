@@ -76,7 +76,6 @@ from boba.aid.rendering.acp_view import (
     UpdateView,
 )
 from boba.aid.rendering.chat_view import ChatView, LiveSink
-from boba.aid.rendering.errors import show_error
 from boba.aid.rendering.question import QuestionCards
 from boba.aid.rendering.renderer import RenderSurface, SignalType, TabSurfaces
 from boba.aid.rendering.tool import ChatElements
@@ -85,7 +84,7 @@ from boba.identity.context import Scope
 from boba.identity.errors import InternalServiceError
 from boba.identity.locks import LiveLocks, LockKeeper, LockMode, LockPurpose
 from boba.mcp_client.client import McpCaller, McpServers
-from boba.messaging import MessageBus, NoticeLevel, PayloadStore, TurnOutcome
+from boba.messaging import MessageBus, PayloadStore, TurnOutcome
 from boba.runtime.storage import StorageClient
 from boba.transport.acp.protocol import ErrorDataKey
 
@@ -557,10 +556,6 @@ class AgentFeed(TurnRenderer):
             )
             return
 
-        if isinstance(update, schema.SessionNotice):
-            await self._notice(update)
-            return
-
         if isinstance(update, self._SERVICE_UPDATES):
             return
 
@@ -572,36 +567,6 @@ class AgentFeed(TurnRenderer):
             return
 
         await turn.feed.agent_update(update)
-
-    async def _notice(self, notice: schema.SessionNotice) -> None:
-        """Пометка агента: в идущем ходе — уведомлением ленты хода, вне хода
-        ошибка — сообщением вкладке, остальное — в журнал процесса."""
-        text = notice.title
-        if notice.description:
-            text = f"{notice.title}: {notice.description}"
-
-        level = self._level(notice.severity)
-        turn = self._turn
-        if turn is not None:
-            await turn.feed.notice(level, text)
-            return
-
-        if level is not NoticeLevel.ERROR:
-            logger.info("thread %s: agent notice: %s", self.thread_id, text)
-            return
-
-        with self._tab.entered():
-            await show_error(f"agent of thread {self.thread_id}: {text}", "Agent")
-
-    @staticmethod
-    def _level(severity: str) -> NoticeLevel:
-        """Важность пометки: severity ACP — открытый набор, незнакомое значение
-        показывается как сведение."""
-        for level in NoticeLevel:
-            if level.value == severity:
-                return level
-
-        return NoticeLevel.INFO
 
     async def permission(
         self, session_id: str, title: str, options: Sequence[schema.PermissionOption]
