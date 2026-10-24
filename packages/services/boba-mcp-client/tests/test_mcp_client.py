@@ -81,7 +81,13 @@ from boba.toolkit.result import (
     FailureResult,
     MarkdownResult,
 )
-from boba.toolkit.wire import JournalFeature, JournalNotice, JournalRead, ScopeFeature
+from boba.toolkit.wire import (
+    CommandsFeature,
+    JournalFeature,
+    JournalNotice,
+    JournalRead,
+    ScopeFeature,
+)
 from boba.workspace.launcher import ReadWindow
 
 pytestmark = pytest.mark.anyio
@@ -1996,6 +2002,7 @@ class TestFailureStand:
         "large",
         "load_rows",
         "orders",
+        "orders_console",
         "picture",
         "pid",
         "progress",
@@ -2291,7 +2298,7 @@ class TestStandardEdition:
         assert declared["info"] == {"name": "boba-cli", "version": "9.9"}
         assert declared["capabilities"]["elicitation"] == {"form": {}}
         assert sorted(declared["capabilities"]["extensions"]) == sorted(
-            [JournalFeature.ID, SealFeature.ID, ScopeFeature.ID]
+            [JournalFeature.ID, SealFeature.ID, ScopeFeature.ID, CommandsFeature.ID]
         )
         assert mine["info"] == McpServers.OWN.info.model_dump(exclude_none=True)
         assert "elicitation" not in mine["capabilities"]
@@ -2450,7 +2457,7 @@ class TestHandshakeEdition:
         assert sorted(declared["capabilities"]) == ["elicitation", "extensions"]
         assert declared["capabilities"]["elicitation"] == {"form": {}}
         assert sorted(declared["capabilities"]["extensions"]) == sorted(
-            [JournalFeature.ID, SealFeature.ID, ScopeFeature.ID]
+            [JournalFeature.ID, SealFeature.ID, ScopeFeature.ID, CommandsFeature.ID]
         )
         assert sorted(declared["meta"]) == sorted(["progressToken", self.TRACE])
         assert "expected one such call open on the session, got 0" in str(unasked.value)

@@ -17,22 +17,24 @@ import threading
 import time
 from collections.abc import (
     AsyncIterator,
+    Callable,
     Collection,
     Coroutine,
     Iterator,
     Mapping,
     Sequence,
 )
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, ClassVar
+from uuid import uuid4
 
 import pytest
 import uvicorn
 from acp.experimental.v2 import schema
-from aid_stand import NoConnectionStore, RelayStand
+from aid_stand import NoConnectionStore, RelayStand, TabSession
 from chainlit.session import WebsocketSession
 from psycopg import sql
 from pydantic import JsonValue, SecretStr
@@ -50,9 +52,11 @@ from boba.aid.agent.client import (
     AgentProcess,
     ElicitationReply,
 )
+from boba.aid.agent.commands import AppWindow, MenuCommand
 from boba.aid.agent.config import (
     AgentCommandConfig,
     AgentConfig,
+    AgentLimitsConfig,
     AgentToolsConfig,
     PostgresAgentHistory,
 )
@@ -79,6 +83,7 @@ from boba.mcp_client.client import (
     StdioCommand,
 )
 from boba.stand.names import StandNames
+from boba.stand.signin import SignInStand
 from boba.stand.site import Stand
 from boba.stand.ui.fake_llm import (
     FakeLlmApp,
@@ -88,6 +93,7 @@ from boba.stand.ui.fake_llm import (
     ReplyTurn,
 )
 from boba.stand.ui.stand import REPO_ROOT, StandPorts
+from boba.toolkit.result import TableResult
 
 API_KEY = "sk-aid-acp-test-secret"
 MODEL_NAME = "stand-model"
@@ -258,6 +264,7 @@ class AgentStand:
             ),
             history=self._history,
             tools=AgentToolsConfig(always_load=()),
+            limits=AgentLimitsConfig(tool_result_window_share=0.25),
             public_url=public_url,
             seal_ttl_sec=600,
             question_timeout_sec=600,
@@ -268,7 +275,10 @@ class RecordingUpdates(TurnRenderer):
     """Реализация TurnRenderer для тестов транспорта и агента треда: копит
     уведомления, итоги, формы вопросов пользователю и messageId вопросов; ход
     начинает ответом агента на вопрос, форму — ответом из replies (без него
-    — отмена)."""
+    — отмена). Как вкладка реестра команд копит меню, открытые окна команд и
+    снятые шаги вопросов-команд; меню нужного вида ждёт menu."""
+
+    MENU_TIMEOUT_SEC: ClassVar[float] = 60.0
 
     def __init__(self) -> None:
         self.asked: list[str] = []
@@ -281,6 +291,51 @@ class RecordingUpdates(TurnRenderer):
         self.first_update = asyncio.Event()
         self.inserted_questions: list[str] = []
         self.withdrawn_questions: list[str] = []
+        self.menus: list[list[MenuCommand]] = []
+        self.windows: list[AppWindow] = []
+        self.tables: list[tuple[str, TableResult]] = []
+        self.taken_steps: list[str] = []
+        self._offered = asyncio.Condition()
+
+    async def offered(self, commands: Sequence[MenuCommand]) -> None:
+        async with self._offered:
+            self.menus.append(list(commands))
+            self._offered.notify_all()
+
+    async def app_opened(self, window: AppWindow) -> None:
+        self.windows.append(window)
+
+    async def table_shown(self, title: str, table: TableResult) -> None:
+        self.tables.append((title, table))
+
+    async def taken(self, step_id: str) -> None:
+        self.taken_steps.append(step_id)
+
+    async def menu(
+        self, wanted: Callable[[Sequence[str]], bool], since: int
+    ) -> list[str]:
+        """Имена команд первого меню с номером не меньше since, которое
+        отвечает wanted.
+
+        Ошибки:
+        TimeoutError — такого меню нет за MENU_TIMEOUT_SEC.
+        """
+        async with asyncio.timeout(self.MENU_TIMEOUT_SEC), self._offered:
+            while True:
+                for menu in self.menus[since:]:
+                    names = self.names(menu)
+                    if wanted(names):
+                        return names
+
+                await self._offered.wait()
+
+    @staticmethod
+    def names(menu: Sequence[MenuCommand]) -> list[str]:
+        names: list[str] = []
+        for command in menu:
+            names.append(command.name)
+
+        return names
 
     async def update(self, session_id: str, update: SessionUpdate) -> None:
         self.updates.append((session_id, update))
@@ -333,6 +388,9 @@ class RecordingUpdates(TurnRenderer):
         self.asked.append(turn.key)
 
         return turn
+
+    def connected(self) -> bool:
+        return True
 
     async def cleared(self) -> None:
         return
@@ -448,6 +506,7 @@ class Agents:
         relay = RelayStand(NoConnectionStore(), lambda: credentials, CallContexts())
         self.registrations = relay.registrations
         self.relay = relay.relay(self._servers)
+        self.menus = relay.menus(self._servers)
         self.started: list[AgentProcess] = []
         self.questions: dict[AgentProcess, AskedQuestions] = {}
 
@@ -462,7 +521,11 @@ class Agents:
         document = self._builder.build(launch.profile, launch.model, None, {})
         workdir = AgentWorkdirs(self._root).create(thread)
         workdir.write(document, launch.system_prompt)
-        questions = AskedQuestions(updates)
+        tab = TabSession()
+        registration = tab.registration(uuid4(), SignInStand.PROFILE)
+        alone = replace(registration, servers=frozenset())
+        menu = self.menus.menu(alone, updates)
+        questions = AskedQuestions(updates, menu)
         process = AgentProcess(
             self._stand.command(),
             workdir,
@@ -587,9 +650,9 @@ class SandboxHost:
 
 class AppsHost:
     """Хост приложений MCP Apps для стендов чата: стандартный сервер
-    (standard_server.py) по HTTP и его песочница (SandboxHost). Создают его
-    фикстуры стендов ui- и look-тестов; секции [mcp.servers.<имя>] чата
-    дают drawn и plain."""
+    (standard_server.py) по HTTP с флагами запуска flags и его песочница
+    (SandboxHost). Создают его фикстуры стендов ui- и look-тестов; секции
+    [mcp.servers.<имя>] чата дают drawn и plain."""
 
     SCRIPT: ClassVar[Path] = (
         REPO_ROOT / "packages/services/boba-mcp-client/tests/standard_server.py"
@@ -598,11 +661,17 @@ class AppsHost:
     BOOT_SEC: ClassVar[float] = 60.0
     STOP_SEC: ClassVar[float] = 10.0
 
-    def __init__(self, workdir: Path) -> None:
+    def __init__(self, workdir: Path, flags: Sequence[str]) -> None:
         self._sandbox = SandboxHost(workdir)
         self._mcp_port = StandPorts().free()
         self._server = subprocess.Popen(
-            [sys.executable, str(self.SCRIPT), "streamable-http", str(self._mcp_port)]
+            [
+                sys.executable,
+                str(self.SCRIPT),
+                "streamable-http",
+                str(self._mcp_port),
+                *flags,
+            ]
         )
 
     @property

@@ -422,6 +422,37 @@ class TestOpenAiChatModel:
         if not parts[1]["image_url"]["url"].startswith("data:image/png;base64,"):
             raise AssertionError(parts)
 
+    async def test_text_parts_go_as_content_parts(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Сообщение из нескольких частей текста — массив частей content;
+        из одной части — строка."""
+        seen: list[dict[str, Any]] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(json.loads(request.content))
+            body = {"choices": [{"message": {"role": "assistant", "content": "text"}}]}
+            return httpx.Response(200, json=body)
+
+        turns = [
+            ChatTurn(
+                role=ChatRole.USER,
+                parts=["<system-reminder>x</system-reminder>", "hello"],
+            ),
+            ChatTurn(role=ChatRole.USER, parts=["alone"]),
+        ]
+        request = ChatRequest(messages=turns, stream=False)
+        await _openai(monkeypatch, handler).reply(request)
+
+        sent = seen[0]["messages"]
+        if sent[0]["content"] != [
+            {"type": "text", "text": "<system-reminder>x</system-reminder>"},
+            {"type": "text", "text": "hello"},
+        ]:
+            raise AssertionError(sent)
+        if sent[1]["content"] != "alone":
+            raise AssertionError(sent)
+
     async def test_retry_before_first_byte(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -528,6 +559,26 @@ class TestOllamaChatModel:
             raise AssertionError(f"схема ушла полем format: {seen[0]}")
         if reply.content != '{"text": "ok"}':
             raise AssertionError(reply)
+
+    async def test_text_parts_go_joined(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Родной /api/chat берёт content строкой: части склеиваются."""
+        seen: list[dict[str, Any]] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(json.loads(request.content))
+            body = {
+                "message": {"role": "assistant", "content": "ok"},
+                "done": True,
+                "done_reason": "stop",
+            }
+            return httpx.Response(200, json=body)
+
+        turn = ChatTurn(role=ChatRole.USER, parts=["first", "second"])
+        request = ChatRequest(messages=[turn], stream=False)
+        await _ollama(monkeypatch, handler).reply(request)
+
+        if seen[0]["messages"][0]["content"] != "first\nsecond":
+            raise AssertionError(seen[0])
 
     async def test_length_done_reason_is_an_honest_error(
         self, monkeypatch: pytest.MonkeyPatch

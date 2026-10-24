@@ -11,11 +11,11 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
-import resource
 import shutil
 import subprocess
 import tracemalloc
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
+from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
 from typing import Any, ClassVar, Self
@@ -110,12 +110,69 @@ class MemoryProbe:
         self.peak_bytes = peak
 
 
-class ChildMemory:
-    """Пиковый RSS дочерних процессов: у лаунчера он не зависит от объёма."""
+class LauncherMemory:
+    """Пик резидентной памяти цепочки лаунчера — потомков процесса теста,
+    запущенных после создания замера: прежние потомки (стенды других
+    тестов воркера) в неё не входят.
 
-    @staticmethod
-    def peak_bytes() -> int:
-        return resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss * 1024
+    Каждый процесс цепочки считается своим VmHWM из /proc — пиком с его
+    собственного exec, а не пиком процесса теста, который потомок наследует
+    в ru_maxrss. У зомби VmHWM нет: памяти он не держит.
+    """
+
+    PEAK_FIELD: ClassVar[str] = "VmHWM:"
+
+    def __init__(self, root: int) -> None:
+        self._root = root
+        self._before = frozenset(self._children(root))
+
+    def peak_bytes(self) -> int:
+        """Сумма пиков цепочки; её нет — тесту нечего мерить."""
+        pids = list(self._chain())
+        if not pids:
+            msg = f"process {self._root} has no new descendants: no launcher is running"
+            raise AssertionError(msg)
+
+        total = 0
+        for pid in pids:
+            total += self._peak_kib(pid) * 1024
+
+        return total
+
+    def _chain(self) -> Iterator[int]:
+        for child in self._children(self._root):
+            if child in self._before:
+                continue
+
+            yield child
+            yield from self._descendants(child)
+
+    def _descendants(self, pid: int) -> Iterator[int]:
+        for child in self._children(pid):
+            yield child
+            yield from self._descendants(child)
+
+    def _children(self, pid: int) -> Iterator[int]:
+        for children in Path(f"/proc/{pid}/task").glob("*/children"):
+            for child in children.read_text(encoding="ascii").split():
+                yield int(child)
+
+    def _peak_kib(self, pid: int) -> int:
+        status = Path(f"/proc/{pid}/status").read_text(encoding="utf-8")
+        for line in status.splitlines():
+            if line.startswith(self.PEAK_FIELD):
+                return int(line.split()[1])
+
+        return 0
+
+
+@dataclass(frozen=True)
+class StreamPeaks:
+    """Пик памяти цепочки лаунчера по ходу одного чтения и прочитанный объём."""
+
+    first_chunk: int
+    near_end: int
+    read: int
 
 
 @pytest.fixture(scope="module")
@@ -188,6 +245,32 @@ async def drain(storage: ImageStorageClient, window: ReadWindow) -> tuple[int, s
     return read, state.hexdigest()
 
 
+async def sampled_drain(
+    storage: ImageStorageClient, memory: LauncherMemory, tail: int
+) -> StreamPeaks:
+    """Читает файл целиком и мерит цепочку лаунчера дважды: после первого
+    чанка и когда недочитанным остался хвост tail."""
+    opened = await storage.open_stream(KEY, ReadWindow.entire())
+    near = opened.stat.size - tail
+
+    async with opened:
+        chunks = aiter(opened.chunks)
+        read = len(await anext(chunks))
+        first_chunk = memory.peak_bytes()
+
+        async for chunk in chunks:
+            read += len(chunk)
+            if read >= near:
+                break
+
+        near_end = memory.peak_bytes()
+
+        async for chunk in chunks:
+            read += len(chunk)
+
+    return StreamPeaks(first_chunk=first_chunk, near_end=near_end, read=read)
+
+
 async def body_of(opened: OpenedStream) -> bytes:
     collected = bytearray()
     async for chunk in opened.chunks:
@@ -207,6 +290,13 @@ class TestStreamingReads:
 
     HOST_PEAK_LIMIT: ClassVar[int] = 8 << 20
     """Потолок пика хоста: чанк 1 МиБ, запас на восемь чанков."""
+
+    LAUNCHER_GROWTH_LIMIT: ClassVar[int] = 8 << 20
+    """Допустимый рост пика цепочки лаунчера за чтение: восемь чанков по 1 МиБ."""
+
+    LAUNCHER_TAIL: ClassVar[int] = 16 << 20
+    """Недочитанный хвост при втором замере: цепочке ещё писать его в канал,
+    поэтому она жива и ждёт читателя."""
 
     def test_upload_does_not_buffer_the_file(
         self,
@@ -344,17 +434,24 @@ class TestStreamingReads:
     def test_launcher_memory_does_not_scale_with_the_file(
         self, storage: ImageStorageClient, payload: PatternPayload
     ) -> None:
-        """RSS лаунчера после мелкого и после полного чтения — один и тот же."""
-        asyncio.run(collect(storage, ReadWindow(offset=0, length=4096)))
-        after_small = ChildMemory.peak_bytes()
+        """Пик памяти цепочки лаунчера у конца файла почти тот же, что после
+        первого чанка: файл течёт через неё, а не копится. Оба замера — пока
+        поток не дочитан и цепочка ждёт читателя на записи в канал."""
+        memory = LauncherMemory(os.getpid())
 
-        read, _ = asyncio.run(drain(storage, ReadWindow.entire()))
-        after_whole = ChildMemory.peak_bytes()
+        peaks = asyncio.run(sampled_drain(storage, memory, self.LAUNCHER_TAIL))
 
-        if read != payload.size:
-            raise AssertionError("read == payload.size")
-        if after_whole != after_small:
-            raise AssertionError("after_whole == after_small")
+        if peaks.read != payload.size:
+            raise AssertionError(f"read {peaks.read} bytes of {payload.size}")
+
+        growth = peaks.near_end - peaks.first_chunk
+        if growth >= self.LAUNCHER_GROWTH_LIMIT:
+            msg = (
+                f"launcher chain peak grew by {growth} bytes while streaming "
+                f"{payload.size} bytes: {peaks.first_chunk} after the first chunk, "
+                f"{peaks.near_end} near the end"
+            )
+            raise AssertionError(msg)
 
     def test_abandoned_stream_releases_the_image(
         self, storage: ImageStorageClient, payload: PatternPayload

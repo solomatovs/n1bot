@@ -37,6 +37,7 @@ from boba.agent.records import (
     ApiRequestRecord,
     AssistantRecord,
     CompactBoundaryRecord,
+    CompactionRecord,
     InformationalRecord,
     Record,
     UserRecord,
@@ -174,6 +175,7 @@ class RecordKeeper:
         UserRecord,
         AssistantRecord,
         CompactBoundaryRecord,
+        CompactionRecord,
         ApiErrorRecord,
         InformationalRecord,
     )

@@ -13,6 +13,11 @@
 последнем сообщении и отвечает по маркеру `summary:*`; учёт токенов либо
 постоянный, либо считается по размеру запроса и ответа.
 
+Окно контекста (`PUT /window`) делает стенд похожим на настоящий сервер:
+запрос, чьи сообщения по оценке больше окна, получает 400 с текстом OpenAI
+о переполнении, а учёт ответов с этого момента считается по размеру с тем
+же делителем. `POST /reset` снимает окно вместе с журналом запросов.
+
 Книга ответов (ReplyBook) — ответы, которые тест заранее положил под точным
 текстом вопроса пользователя (`PUT /replies`): вопрос в ленте остаётся
 обычным текстом, а ход книги умеет встать на паузу посреди потока до
@@ -63,10 +68,14 @@ __all__ = [
     "Scenario",
     "ScenarioError",
     "ScenarioName",
+    "SummaryBook",
     "SummaryName",
     "ToolCallSpec",
     "TurnScript",
+    "UsageBook",
     "UsageCounts",
+    "WindowSettings",
+    "WireText",
 ]
 
 
@@ -85,6 +94,8 @@ class FakeRoute(StrEnum):
     PAGE = "/page"
     LINES = "/lines"
     RESET = "/reset"
+    WINDOW = "/window"
+    SUMMARY_HOLD = "/summary/hold"
     REQUESTS = "/requests"
     REPLIES = "/replies"
     RELEASE = "/replies/release"
@@ -266,7 +277,7 @@ class SummaryName(StrEnum):
     """Вместо текста — вызов инструмента."""
 
     NO_BLOCK = "summary:no-block"
-    """Текст без блока <summary>."""
+    """Разбор <analysis> и текст без блока <summary>: пересказ — этот текст."""
 
     EMPTY = "summary:empty"
     LONG = "summary:long"
@@ -417,6 +428,39 @@ class Played:
         return self.failure is failure
 
 
+class WireText:
+    """Текст сообщения запроса на проводе: строка content либо массив его
+    частей (OpenAI шлёт так слитые сообщения пользователя) — текстовые
+    части склеиваются переводом строки, как их склеивает провайдер без
+    частей."""
+
+    TEXT_PART: ClassVar[str] = "text"
+    JOIN: ClassVar[str] = "\n"
+
+    def of(self, content: object) -> str | None:
+        """Текст content; None — у сообщения нет текста (нет content или
+        это не строка и не массив частей)."""
+        if isinstance(content, str):
+            return content
+
+        if not isinstance(content, list):
+            return None
+
+        return self.JOIN.join(self._parts(content))
+
+    def _parts(self, parts: Sequence[object]) -> Iterator[str]:
+        for part in parts:
+            if not isinstance(part, dict):
+                continue
+
+            if part.get("type") != self.TEXT_PART:
+                continue
+
+            text = part.get(self.TEXT_PART)
+            if isinstance(text, str):
+                yield text
+
+
 class ToolSearchWord(StrEnum):
     """Слова отложенных инструментов агента: имя инструмента поиска, выбор
     по именам, заголовок списка отложенных во вложении и вид строки-имени."""
@@ -443,6 +487,7 @@ class OfferedTools:
 
     def __init__(self, payload: Mapping[str, Any], names: McpToolNames) -> None:
         self._names = names
+        self._text = WireText()
         self._offered: list[str] = []
         self._signable: set[str] = set()
         for name, signable in self._listed(payload):
@@ -563,8 +608,8 @@ class OfferedTools:
         """Отложенные инструменты, объявленные агентом: строки имён под
         заголовком списка отложенных до пустой строки."""
         for message in payload.get("messages") or []:
-            content = message.get("content")
-            if not isinstance(content, str):
+            content = self._text.of(message.get("content"))
+            if content is None:
                 continue
 
             yield from self._listed_deferred(content)
@@ -662,8 +707,15 @@ class SummaryBook:
     )
     """Фраза инструкции пересказа, по которой стенд узнаёт запрос."""
 
+    HOLD_KEY: ClassVar[str] = "summary"
+    """Ключ паузы запроса пересказа в паузах книги (`POST /summary/hold`):
+    отпускает её `POST /replies/release` с этим вопросом."""
+
     LONG_CHARS: ClassVar[int] = 60_000
     TOOL: ClassVar[str] = "lookup"
+
+    def __init__(self) -> None:
+        self._text = WireText()
 
     def is_summary_request(self, payload: Mapping[str, Any]) -> bool:
         messages = payload.get("messages")
@@ -674,8 +726,8 @@ class SummaryBook:
             if message.get("role") != "user":
                 continue
 
-            content = message.get("content")
-            if not isinstance(content, str):
+            content = self._text.of(message.get("content"))
+            if content is None:
                 continue
 
             return self.INSTRUCTION_MARK in content
@@ -733,13 +785,13 @@ class SummaryBook:
 
         return (
             "<analysis>\nThe stand model read the conversation and lists what the "
-            "user asked for.\n</analysis>\n\n<summary>\n1. Primary Request and "
+            "user asked for; the answer goes into a <summary> block, as the "
+            "instruction says.\n</analysis>\n\n<summary>\n1. Primary Request and "
             "Intent:\n   The user drove the stand through the scenario markers "
             f"listed below.\n\n6. All user messages:\n{listed}\n</summary>"
         )
 
-    @staticmethod
-    def _user_texts(payload: Mapping[str, Any]) -> list[str]:
+    def _user_texts(self, payload: Mapping[str, Any]) -> list[str]:
         texts: list[str] = []
         messages = payload.get("messages")
         if not messages:
@@ -749,8 +801,8 @@ class SummaryBook:
             if message.get("role") != "user":
                 continue
 
-            content = message.get("content")
-            if isinstance(content, str):
+            content = self._text.of(message.get("content"))
+            if content is not None:
                 texts.append(content)
 
         return texts
@@ -758,30 +810,76 @@ class SummaryBook:
 
 class UsageBook:
     """Учёт токенов ответа: постоянные числа либо оценка по знакам запроса
-    и ответа, как у настоящего провайдера."""
+    и ответа, как у настоящего провайдера; той же оценкой окно стенда
+    меряет запрос."""
 
     PROMPT: ClassVar[int] = 11
     COMPLETION: ClassVar[int] = 7
     CHARS_PER_TOKEN: ClassVar[int] = 4
 
-    def __init__(self, estimate: bool) -> None:
+    def __init__(self, estimate: bool, chars_per_token: int) -> None:
         self._estimate = estimate
+        self._chars_per_token = chars_per_token
 
     def of(self, payload: Mapping[str, Any], script: TurnScript) -> UsageCounts:
         if not self._estimate:
             return UsageCounts(prompt=self.PROMPT, completion=self.COMPLETION)
-
-        prompt_chars = 0
-        for message in payload.get("messages") or []:
-            prompt_chars += len(json.dumps(message, ensure_ascii=False))
 
         completion_chars = len(script.reasoning) + len(script.content)
         for call in script.tool_calls:
             completion_chars += len(call.name) + len(call.arguments)
 
         return UsageCounts(
-            prompt=-(-prompt_chars // self.CHARS_PER_TOKEN),
-            completion=-(-completion_chars // self.CHARS_PER_TOKEN),
+            prompt=self.prompt(payload),
+            completion=-(-completion_chars // self._chars_per_token),
+        )
+
+    def prompt(self, payload: Mapping[str, Any]) -> int:
+        """Сообщения запроса в токенах: знаки JSON каждого сообщения."""
+        prompt_chars = 0
+        for message in payload.get("messages") or []:
+            prompt_chars += len(json.dumps(message, ensure_ascii=False))
+
+        return -(-prompt_chars // self._chars_per_token)
+
+
+class WindowSettings(BaseModel):
+    """Тело `PUT /window`: окно модели стенда в токенах и делитель оценки
+    знаков в токены для окна и учёта ответов."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    context_window: int = Field(gt=0)
+    chars_per_token: int = Field(gt=0)
+
+
+class PromptWindow:
+    """Базовое окно модели стенда — без предела: любой запрос влезает.
+    FakeLlmApp держит его, пока тест не задал окно; предел добавляет
+    наследник LimitedWindow."""
+
+    def fits(self, tokens: int) -> bool:
+        return True
+
+    def refusal(self, tokens: int) -> str:
+        msg = f"fake llm: a request of {tokens} tokens has no window to overflow"
+        raise ScenarioError(msg)
+
+
+class LimitedWindow(PromptWindow):
+    """Окно `PUT /window`: запрос больше окна отвергается текстом OpenAI."""
+
+    def __init__(self, tokens: int) -> None:
+        self._tokens = tokens
+
+    def fits(self, tokens: int) -> bool:
+        return tokens <= self._tokens
+
+    def refusal(self, tokens: int) -> str:
+        return (
+            f"This model's maximum context length is {self._tokens} tokens. However, "
+            f"your messages resulted in {tokens} tokens. Please reduce the length of "
+            "the messages."
         )
 
 
@@ -1166,6 +1264,7 @@ class OpenAiWire:
     MEDIA_STREAM: ClassVar[str] = "text/event-stream"
     MEDIA_JSON: ClassVar[str] = "application/json"
     REJECTED_CODE: ClassVar[str] = "no_reply"
+    OVERFLOW_CODE: ClassVar[str] = "context_length_exceeded"
 
     def __init__(self, model: str) -> None:
         self._model = model
@@ -1181,6 +1280,18 @@ class OpenAiWire:
         }
 
         return JSONResponse(body, status_code=failure.http_status)
+
+    def overflowed(self, message: str) -> Response:
+        """Отказ 400 запросу больше окна стенда — как у OpenAI."""
+        body = {
+            "error": {
+                "message": message,
+                "type": "invalid_request_error",
+                "code": self.OVERFLOW_CODE,
+            }
+        }
+
+        return JSONResponse(body, status_code=httpx.codes.BAD_REQUEST)
 
     def rejected(self, message: str) -> Response:
         """Отказ 400: на вопрос у стенда нет ни ответа книги, ни маркера."""
@@ -1336,6 +1447,10 @@ class OllamaWire:
         return JSONResponse(
             {"error": failure.error_text}, status_code=failure.http_status
         )
+
+    def overflowed(self, message: str) -> Response:
+        """Отказ 400 запросу больше окна стенда."""
+        return JSONResponse({"error": message}, status_code=httpx.codes.BAD_REQUEST)
 
     def rejected(self, message: str) -> Response:
         """Отказ 400: на вопрос у стенда нет ни ответа книги, ни маркера."""
@@ -1500,7 +1615,8 @@ class ReplyQuestions:
     """Вопрос пользователя в запросе модели — ключ книги ответов.
 
     Берётся последнее сообщение пользователя с текстом; у сообщения частями —
-    текст частей `text`. Агент дописывает в то же сообщение свои служебные
+    текст частей `text`, склеенный так же, как его склеивает провайдер без
+    частей (WireText). Агент дописывает в то же сообщение свои служебные
     блоки `<system-reminder>` и ссылки на вложения вопроса (LinkText),
     поэтому ключ — только набранное пользователем: блоки и ссылки
     вырезаются, остаток проходит strip и NFC. Тем же правилом приводится
@@ -1508,14 +1624,15 @@ class ReplyQuestions:
     """
 
     FORM: ClassVar[Literal["NFC"]] = "NFC"
-    TEXT_PART: ClassVar[str] = "text"
-    PART_JOIN: ClassVar[str] = "\n\n"
     LINK: ClassVar[re.Pattern[str]] = re.compile(
         re.escape(LinkText.TEMPLATE.value)
         .replace(re.escape("{name}"), r"[^\]]*")
         .replace(re.escape("{uri}"), r"[^)]*")
     )
     """Ссылка на вложение вопроса в тексте, каким его видит модель."""
+
+    def __init__(self) -> None:
+        self._wire = WireText()
 
     def normal(self, text: str) -> str:
         return unicodedata.normalize(self.FORM, text.strip())
@@ -1530,33 +1647,16 @@ class ReplyQuestions:
             if message.get("role") != "user":
                 continue
 
-            typed = self._typed(self._text(message.get("content")))
+            text = self._wire.of(message.get("content"))
+            if text is None:
+                continue
+
+            typed = self._typed(text)
             question = self.normal(typed)
             if question:
                 return question
 
         return ""
-
-    def _text(self, content: object) -> str:
-        if isinstance(content, str):
-            return content
-
-        if not isinstance(content, list):
-            return ""
-
-        return self.PART_JOIN.join(self._text_parts(content))
-
-    def _text_parts(self, parts: Sequence[object]) -> Iterator[str]:
-        for part in parts:
-            if not isinstance(part, dict):
-                continue
-
-            if part.get("type") != self.TEXT_PART:
-                continue
-
-            text = part.get(self.TEXT_PART)
-            if isinstance(text, str):
-                yield text
 
     def _typed(self, text: str) -> str:
         """Текст без служебных блоков агента и ссылок на вложения; незакрытый
@@ -1700,6 +1800,10 @@ class ReplyHolds:
     def release(self, question: str) -> None:
         self._event(question).set()
 
+    def rearm(self, question: str) -> None:
+        """Вопрос снова держится до следующего отпускания."""
+        self._released[question] = asyncio.Event()
+
     def held(self) -> list[str]:
         return sorted(self._held)
 
@@ -1773,6 +1877,26 @@ class ReplyBookClient:
         response = httpx.post(url, json=body, timeout=self.TIMEOUT_SEC)
         self._expect_ok(f"POST {url}", response)
 
+    def limit_window(self, settings: WindowSettings) -> None:
+        """Окно модели стенда и учёт ответов по размеру (`PUT /window`)."""
+        url = f"{self._base_url}{FakeRoute.WINDOW.value}"
+        body = settings.model_dump(mode="json")
+        response = httpx.put(url, json=body, timeout=self.TIMEOUT_SEC)
+        self._expect_ok(f"PUT {url}", response)
+
+    def reset(self) -> None:
+        """Сброс стенда: журнал запросов, окно, пауза пересказа."""
+        url = f"{self._base_url}{FakeRoute.RESET.value}"
+        response = httpx.post(url, timeout=self.TIMEOUT_SEC)
+        self._expect_ok(f"POST {url}", response)
+
+    def hold_summary(self) -> None:
+        """Следующий запрос пересказа агента встанет на паузу: её ждут и
+        отпускают по ключу SummaryBook.HOLD_KEY."""
+        url = f"{self._base_url}{FakeRoute.SUMMARY_HOLD.value}"
+        response = httpx.post(url, timeout=self.TIMEOUT_SEC)
+        self._expect_ok(f"POST {url}", response)
+
     def held(self) -> Sequence[str]:
         url = f"{self._base_url}{FakeRoute.HELD.value}"
         response = httpx.get(url, timeout=self.TIMEOUT_SEC)
@@ -1827,6 +1951,9 @@ class FakeLlmApp:
     _failures: FailureBook = field(init=False, repr=False)
     _summaries: SummaryBook = field(init=False, repr=False)
     _usage: UsageBook = field(init=False, repr=False)
+    _text: WireText = field(init=False, repr=False)
+    _window: PromptWindow = field(init=False, repr=False)
+    _summary_held: bool = field(init=False, repr=False, default=False)
     _names: McpToolNames = field(init=False, repr=False)
     _questions: ReplyQuestions = field(init=False, repr=False)
     _book: ReplyBook = field(init=False, repr=False)
@@ -1838,7 +1965,9 @@ class FakeLlmApp:
         self._ollama = OllamaWire(self.model)
         self._failures = FailureBook()
         self._summaries = SummaryBook()
-        self._usage = UsageBook(self.estimate_usage)
+        self._text = WireText()
+        self._usage = UsageBook(self.estimate_usage, UsageBook.CHARS_PER_TOKEN)
+        self._window = PromptWindow()
         self._questions = ReplyQuestions()
         self._book = ReplyBook(self._questions)
         self._holds = ReplyHolds()
@@ -1860,11 +1989,7 @@ class FakeLlmApp:
             """Многострочный текст: окно строк и grep web-инструментов."""
             return Response(FakePage.LINES.value, media_type=FakePage.LINES.media_type)
 
-        @app.post(FakeRoute.RESET.value)
-        async def reset() -> dict[str, str]:
-            """Сброс журнала запросов: тест начинает с чистого листа."""
-            self.requests.clear()
-            return {"status": "ok"}
+        self._control_routes(app)
 
         @app.get(FakeRoute.REQUESTS.value)
         async def recorded() -> JSONResponse:
@@ -1882,6 +2007,41 @@ class FakeLlmApp:
             return await self._play(request, self._ollama)
 
         return app
+
+    def _control_routes(self, app: FastAPI) -> None:
+        """Управление стендом: сброс, окно модели, пауза пересказа."""
+
+        @app.post(FakeRoute.RESET.value)
+        async def reset() -> dict[str, str]:
+            """Сброс журнала запросов и окна: тест начинает с чистого листа."""
+            self.requests.clear()
+            self._usage = UsageBook(self.estimate_usage, UsageBook.CHARS_PER_TOKEN)
+            self._window = PromptWindow()
+            self._summary_held = False
+            self._holds.release(SummaryBook.HOLD_KEY)
+            return {"status": "ok"}
+
+        @app.post(FakeRoute.SUMMARY_HOLD.value)
+        async def summary_hold() -> dict[str, str]:
+            """Следующий запрос пересказа встанет на паузу до отпускания."""
+            self._holds.rearm(SummaryBook.HOLD_KEY)
+            self._summary_held = True
+            return {"status": "ok"}
+
+        @app.put(FakeRoute.WINDOW.value)
+        async def window(request: Request) -> Response:
+            """Окно модели: запрос больше окна получает 400 о переполнении."""
+            try:
+                settings = WindowSettings.model_validate(await request.json())
+            except ValidationError as exc:
+                route = FakeRoute.WINDOW.value
+                msg = f"fake llm: PUT {route} expects the window settings: {exc}"
+                return JSONResponse(
+                    {"detail": msg}, status_code=httpx.codes.UNPROCESSABLE_ENTITY
+                )
+
+            self.limit_window(settings)
+            return JSONResponse({"status": "ok"})
 
     def _reply_routes(self, app: FastAPI) -> None:
         """Маршруты книги ответов: книга целиком, отпускание паузы, паузы."""
@@ -1901,6 +2061,12 @@ class FakeLlmApp:
             """Вопросы, чьи потоки сейчас стоят на паузе."""
             body = ReplyHeld(held=self._holds.held()).model_dump(mode="json")
             return JSONResponse(body)
+
+    def limit_window(self, settings: WindowSettings) -> None:
+        """Окно модели стенда; учёт ответов с этого момента — оценкой по
+        размеру с делителем окна."""
+        self._usage = UsageBook(True, settings.chars_per_token)
+        self._window = LimitedWindow(settings.context_window)
 
     def _replace_book(self, raw: object) -> Response:
         try:
@@ -1929,6 +2095,10 @@ class FakeLlmApp:
                 {"detail": msg}, status_code=httpx.codes.UNPROCESSABLE_ENTITY
             )
 
+        if question == SummaryBook.HOLD_KEY:
+            self._holds.release(question)
+            return JSONResponse({"status": "ok"})
+
         if not self._book.has(question):
             msg = f"fake llm: release of question {question!r} that is not in the book"
             return JSONResponse({"detail": msg}, status_code=httpx.codes.NOT_FOUND)
@@ -1942,6 +2112,10 @@ class FakeLlmApp:
         формате протокола."""
         payload = await request.json()
         self.requests.append(payload)
+
+        tokens = self._usage.prompt(payload)
+        if not self._window.fits(tokens):
+            return wire.overflowed(self._window.refusal(tokens))
 
         if self._summaries.is_summary_request(payload):
             return await self._play_summary(payload, wire)
@@ -2029,6 +2203,10 @@ class FakeLlmApp:
         if name is SummaryName.OVERFLOW:
             return wire.error(FailureName.OVERFLOW)
 
+        if self._summary_held:
+            self._summary_held = False
+            await self._holds.wait(SummaryBook.HOLD_KEY)
+
         if name is SummaryName.HANG:
             await asyncio.sleep(self.hang_sec)
 
@@ -2081,8 +2259,7 @@ class FakeLlmApp:
 
         return ScenarioName.of(text)
 
-    @staticmethod
-    def _called_names(payload: Mapping[str, Any]) -> list[str]:
+    def _called_names(self, payload: Mapping[str, Any]) -> list[str]:
         """Имена инструментов, которые ассистент уже вызвал после последнего
         сообщения пользователя с текстом: по ним сценарий узнаёт, какой ход
         отвечать. Сообщение пользователя из одних результатов инструментов
@@ -2094,7 +2271,8 @@ class FakeLlmApp:
 
         for message in reversed(messages):
             role = message.get("role")
-            if role == "user" and isinstance(message.get("content"), str):
+            text = self._text.of(message.get("content"))
+            if role == "user" and text is not None:
                 return called
 
             if role != "assistant":
@@ -2107,8 +2285,7 @@ class FakeLlmApp:
 
         return called
 
-    @staticmethod
-    def _last_user_text(payload: Mapping[str, Any]) -> str:
+    def _last_user_text(self, payload: Mapping[str, Any]) -> str:
         """Строка с маркером: сообщения пользователя с конца, строки каждого
         с конца; первая строка с маркером сценария или отказа решает.
 
@@ -2130,8 +2307,8 @@ class FakeLlmApp:
             if message.get("role") != "user":
                 continue
 
-            content = message.get("content")
-            if not isinstance(content, str):
+            content = self._text.of(message.get("content"))
+            if content is None:
                 continue
 
             texts.append(content)

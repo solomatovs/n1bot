@@ -770,9 +770,7 @@ class Settings:
         if layer.compaction is not None:
             compaction = layer.compaction.core()
 
-        limits = TurnLimits()
-        if layer.limits is not None:
-            limits = layer.limits.core()
+        limits = self._limits(layer)
 
         mcp = layer.mcp
         if mcp is None:
@@ -821,6 +819,28 @@ class Settings:
                 raise SettingsError(msg) from exc
 
         return models
+
+    @staticmethod
+    def _limits(layer: SettingsLayer) -> TurnLimits:
+        """Пределы хода слоя; доля окна под результат инструмента задаётся
+        только явно.
+
+        Ошибки:
+        SettingsError — limits.toolResultWindowShare не задан ни одним слоем.
+        """
+        missing = (
+            "Settings have no limits.toolResultWindowShare: the share of the "
+            "effective context window one tool result may take (0.25 in the "
+            "shipped configs). Set it in settings.json under limits."
+        )
+        limits = layer.limits
+        if limits is None:
+            raise SettingsError(missing)
+
+        if limits.tool_result_window_share is None:
+            raise SettingsError(missing)
+
+        return limits.core()
 
     def _system_prompt(self, layer: SettingsLayer) -> Iterator[str]:
         """Секции системного промпта: промпт аргумента или файла, затем

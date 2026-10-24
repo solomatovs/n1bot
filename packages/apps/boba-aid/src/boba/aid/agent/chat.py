@@ -2,12 +2,14 @@
 службе агента ([agent.process]), id сессии в threads.meta, ход и его
 остановка, замена вышедшего процесса или закрытого подключения, удаление
 сессии с тредом; поток сессии уходит приёмнику TurnRenderer, который
-создаёт фабрика TurnRenderers (feed.py).
+создаёт фабрика TurnRenderers (feed.py). Команды «/» вкладки ведёт реестр
+CommandMenu (commands.py): вопрос-команду он отдаёт владельцу.
 
 Ошибки:
 AcpClientError и наследники — процесс или ответ агента (client.py).
 AgentSettingsError — профиль чата не годится агенту или исчез из конфига
     (settings.py).
+CommandError — команду сервера или чата не исполнить (commands.py).
 DataUnavailableError — таблицы чата недоступны.
 PostgresError — билет kerberos-роли истории для процесса агента не получен.
 """
@@ -48,6 +50,7 @@ from boba.aid.agent.client import (
     SessionUpdate,
     SessionUpdates,
 )
+from boba.aid.agent.commands import CommandBoard, CommandMenu, CommandMenus
 from boba.aid.agent.config import AgentCommandConfig, AgentConfig, AgentServiceConfig
 from boba.aid.agent.relay import ChatTools, McpRegistration, McpRegistrations, McpRelay
 from boba.aid.agent.settings import (
@@ -312,10 +315,11 @@ class AgentSessionMeta:
         await self._threads.upsert(change)
 
 
-class TurnRenderer(SessionUpdates, Protocol):
+class TurnRenderer(SessionUpdates, CommandBoard, Protocol):
     """Приёмник потока сессии, который знает и о ходе вкладки: его начало,
-    остановку, очистку ленты и конец воспроизведения истории. Реализует
-    AgentFeed (feed.py).
+    остановку, очистку ленты и конец воспроизведения истории; он же —
+    вкладка для реестра команд (меню и окна команд). Реализует AgentFeed
+    (feed.py).
     """
 
     @abstractmethod
@@ -354,6 +358,10 @@ class TurnRenderer(SessionUpdates, Protocol):
     async def withdrawn(self, questions: Sequence[Question]) -> None:
         """Вопросы очереди сняты отменой хода до вставки: их шаги во вкладке
         снимаются, текст возвращается в поле ввода в порядке отправки."""
+
+    @abstractmethod
+    def connected(self) -> bool:
+        """Сокет вкладки приёмника подключён прямо сейчас."""
 
     @abstractmethod
     async def cleared(self) -> None:
@@ -498,11 +506,13 @@ class TurnEnd:
 class AskedQuestions(SessionUpdates):
     """Приёмник-обёртка агента треда: запоминает вложения вопросов, которые
     агент показал вкладке (`user_message` воспроизведения и живое эхо), решает
-    ожидание конца хода по idle и передаёт поток дальше рендереру. По ним
-    правка вопроса сохраняет его вложения для модели."""
+    ожидание конца хода по idle, отдаёт команды агента реестру команд
+    вкладки и передаёт поток дальше рендереру. По вложениям правка вопроса
+    сохраняет их для модели."""
 
-    def __init__(self, inner: SessionUpdates) -> None:
+    def __init__(self, inner: SessionUpdates, menu: CommandMenu) -> None:
         self._inner = inner
+        self._menu = menu
         self.links: dict[str, tuple[schema.ResourceContentBlock, ...]] = {}
         """messageId вопроса → его блоки resource_link."""
         self._ending: dict[str, TurnEnd] = {}
@@ -529,6 +539,9 @@ class AskedQuestions(SessionUpdates):
                     links.append(block)
 
             self.links[update.message_id] = tuple(links)
+
+        if isinstance(update, schema.AvailableCommandsUpdate):
+            await self._menu.heard(update)
 
         ending = self._ending.get(session_id)
         if ending is not None:
@@ -974,12 +987,15 @@ class ThreadAgent:
         launcher: AgentLauncher,
         meta: AgentSessionMeta,
         renderer: TurnRenderer,
+        menus: CommandMenus,
     ) -> None:
         self._identity = identity
         self._launcher = launcher
         self._meta = meta
         self._renderer = renderer
-        self._questions = AskedQuestions(renderer)
+        registration = identity.registration(ChatTools.NAME)
+        self._menu = menus.menu(registration, renderer)
+        self._questions = AskedQuestions(renderer, self._menu)
         self._launched: LaunchedAgent | None = None
         self._session_id: str | None = None
         self._open = False
@@ -994,6 +1010,9 @@ class ThreadAgent:
         self._restart_pending = False
         self._detached = False
         """Вкладка отключилась: процесс останавливается, как только нет хода."""
+        self._redraw = False
+        """Правка другой вкладки сменила ветку треда, пока эта была отключена:
+        первым делом вернувшейся вкладки её лента рисуется заново."""
         self._contexts: dict[str, Sequence[PromptBlock]] = {}
 
     @property
@@ -1021,9 +1040,30 @@ class ThreadAgent:
         return self._active is not None
 
     async def start(self) -> None:
-        """Процесс агента; сессия открывается позже."""
+        """Процесс агента и меню команд вкладки; сессия открывается позже, и
+        команды агента меню получит с её открытием."""
         async with self._gate:
             await self._launch(self._launcher.prepare(self._identity))
+
+        await self._menu.start()
+
+    async def routed(self, question: Question, command: str | None) -> Question | None:
+        """Вопрос вкладки с выбранной в меню командой command — владельцу
+        команды: вопрос агенту (с текстом `/<имя> <аргументы>`, если это
+        вызов команды) либо None — команду исполнила вкладка, шаг вопроса
+        снят. Вопрос-правка идёт агенту как есть.
+
+        Ошибки:
+        CommandError — команду сервера или чата не исполнить.
+        """
+        if question.edited:
+            return question
+
+        text = await self._menu.routed(question.key, question.text, command)
+        if text is None:
+            return None
+
+        return question.model_copy(update={"text": text})
 
     async def _restart(self) -> None:
         """Замена процесса под замком вкладки перед ходом: файл настроек
@@ -1096,6 +1136,7 @@ class ThreadAgent:
         вопрос откроет новую."""
         known = self._session_id
         if replay:
+            self._redraw = False
             known = await self._meta.session_of(self.thread_id)
 
         if known is None:
@@ -1137,13 +1178,36 @@ class ThreadAgent:
         """
         async with self._gate:
             await self._revive()
+            await self._redrawn()
+
+    async def rewound(self) -> None:
+        """Правка другой вкладки сменила ветку треда: подключённая вкладка
+        перерисовывается сразу, отключённая — первым делом, когда вернётся.
+        Ради ленты без зрителя процесс не поднимается и замка вкладки
+        рендерер треда не ждёт.
+
+        Ошибки: как у reload.
+        """
+        if not self._renderer.connected():
+            self._redraw = True
+            logger.info(
+                "thread %s: the tab is disconnected, its feed is redrawn on return",
+                self.thread_id,
+            )
+            return
+
+        await self.reload()
+
+    async def _redrawn(self) -> None:
+        """Лента вкладки заново из сессии треда в threads.meta: под замком
+        вкладки, процесс уже запущен."""
+        await self._close_session(self.process)
+        self._session_id = None
+        await self._renderer.cleared()
+        try:
+            await self._resume(replay=True)
+        finally:
             await self._close_session(self.process)
-            self._session_id = None
-            await self._renderer.cleared()
-            try:
-                await self._resume(replay=True)
-            finally:
-                await self._close_session(self.process)
 
     async def recover(self) -> None:
         """Вкладка просит агента заново после сбоя: агент, который вышел или
@@ -1235,6 +1299,7 @@ class ThreadAgent:
         finally:
             self._current = None
             self._closed.set()
+            self._menu.revisit()
 
     async def _begin(self, question: Question) -> StartedTurn:
         """Начало хода под замком вкладки: вышедший процесс заменяется,
@@ -1249,6 +1314,9 @@ class ThreadAgent:
 
         if self._restart_pending:
             await self._restart()
+
+        if self._redraw:
+            await self._redrawn()
 
         turn = await self._renderer.turn_started(question, self._started(question))
         self._active = turn.session_id
@@ -1479,9 +1547,13 @@ class ThreadAgent:
             await self._close_process()
 
     async def close(self) -> None:
-        """Закрытие сессии у агента (замок отпущен) и остановка процесса."""
-        async with self._gate:
-            await self._close_process()
+        """Закрытие сессии у агента (замок отпущен), остановка процесса и
+        потоков меню команд."""
+        try:
+            async with self._gate:
+                await self._close_process()
+        finally:
+            await self._menu.close()
 
     async def _close_process(self) -> None:
         """Прежний процесс: сессия закрыта у агента, процесс остановлен, его
@@ -1665,7 +1737,8 @@ class ThreadAgentsIndex(ThreadRewinds):
 
     async def rewound(self, thread_id: str, session_id: str) -> None:
         """Каждый агент треда не на ветке session_id перечитывает её в свою
-        вкладку; правящая вкладка уже на ветке, хвост она обрезала сама.
+        вкладку (отключённая — когда вернётся); правящая вкладка уже на
+        ветке, хвост она обрезала сама.
         Отказ одной вкладки не оставляет без перерисовки остальные.
 
         Ошибки:
@@ -1677,7 +1750,7 @@ class ThreadAgentsIndex(ThreadRewinds):
                 continue
 
             try:
-                await agent.reload()
+                await agent.rewound()
             except (AcpClientError, InternalServiceError, DataLayerError) as exc:
                 logger.error(
                     "thread %s: a tab did not reload branch %s: %s",
@@ -1725,11 +1798,13 @@ class ThreadAgents:
         meta: AgentSessionMeta,
         index: ThreadAgentsIndex,
         renderers: TurnRenderers,
+        menus: CommandMenus,
     ) -> None:
         self._launcher = launcher
         self._meta = meta
         self._index = index
         self._renderers = renderers
+        self._menus = menus
         self._agents: dict[str, ThreadAgent] = {}
         self._starting = asyncio.Lock()
 
@@ -1746,7 +1821,9 @@ class ThreadAgents:
                 return known
 
             renderer = await self._renderers.create(identity)
-            agent = ThreadAgent(identity, self._launcher, self._meta, renderer)
+            agent = ThreadAgent(
+                identity, self._launcher, self._meta, renderer, self._menus
+            )
             await agent.start()
             self._agents[identity.thread_id] = agent
             self._index.register(agent)

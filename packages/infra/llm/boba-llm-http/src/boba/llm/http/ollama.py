@@ -345,7 +345,8 @@ class OllamaChatModel(HttpChatModel[OllamaWireChunk]):
     def _message(self, message: ChatTurn) -> dict[str, Any]:
         wired: dict[str, Any] = {
             OllamaField.ROLE.value: message.role.value,
-            OllamaField.CONTENT.value: message.content,
+            # родной /api/chat берёт content строкой: части идут склейкой
+            OllamaField.CONTENT.value: message.text(),
         }
 
         if message.images:

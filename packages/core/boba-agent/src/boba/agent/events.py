@@ -4,7 +4,8 @@
 сообщения, записанная запись разговора, сброс записей в хранилище истории,
 начало исполнения инструмента,
 отчёт сервера о ходе вызова, итог хода с элементами очереди, которые он
-обслужил, ошибка вне хода, вопрос наружу и его снятие. Как события уходят
+обслужил, ход сжатия разговора, пометка пользователю посреди хода, ошибка
+вне хода, вопрос наружу и его снятие. Как события уходят
 на провод — дело реализации порта (вход процесса); ядро только зовёт `emit`.
 """
 
@@ -55,6 +56,19 @@ class TurnOutcome(StrEnum):
     def is_failure(self) -> bool:
         """Ход кончился отказом модели: ответа нет, текст причины — в итоге."""
         return self in (TurnOutcome.API_ERROR, TurnOutcome.OUTPUT_LIMIT)
+
+    @property
+    def has_reason(self) -> bool:
+        """Ход кончился с причиной, которую агент записал текстом: отказ
+        модели, запрос больше окна, срабатывание предохранителей сжатия."""
+        if self.is_failure:
+            return True
+
+        return self in (
+            TurnOutcome.BLOCKING_LIMIT,
+            TurnOutcome.RAPID_REFILL_BREAKER,
+            TurnOutcome.COMPACT_FAILURE_BREAKER,
+        )
 
 
 class EventModel(BaseModel):
@@ -118,7 +132,8 @@ class HistoryWrittenEvent(EventModel):
 
 class ResultEvent(EventModel):
     """Конец хода: исход, учёт и идентификаторы элементов очереди, которые
-    ход обслужил; `error` — текст отказа модели при исходе-ошибке."""
+    ход обслужил; `error` — причина конца хода, когда она есть
+    (TurnOutcome.has_reason)."""
 
     outcome: TurnOutcome
     session_id: str
