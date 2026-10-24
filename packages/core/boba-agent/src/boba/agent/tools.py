@@ -737,12 +737,11 @@ class AgentTools(DeferredCatalog):
         return card.hints
 
     def own(self, name: str) -> OwnTool | None:
-        """Собственный инструмент по имени; ToolSearch — пока есть отложенные."""
+        """Собственный инструмент по имени. ToolSearch находится всегда: его
+        пометки нужны и воспроизведению истории, где отложенных уже нет, а
+        вызов без отложенных честно отвечает, что искать нечего."""
         if name == self._search.name:
-            if self._searching():
-                return self._search
-
-            return None
+            return self._search
 
         return self._own.get(name)
 

@@ -146,6 +146,15 @@ class RegisteredTool(StrEnum):
     LARGE = "large"
 
 
+class RegisteredServer(StrEnum):
+    """Имена серверов MCP, под которыми тесты регистрируют инструменты."""
+
+    STAND = "stand"
+    ALIVE = "alive"
+    FIRST = "first"
+    SECOND = "second"
+
+
 class StandRegistration:
     """Регистрация серверов на стороне тестового клиента в роли чата aid:
     отвечает на mcp/message сама моделями mcp_types. `tools/list` отдаёт
@@ -806,12 +815,26 @@ class AcpProcess:
     def settings_document(
         self, mode: str = "default", allow_bypass: bool = False
     ) -> Document:
+        """Настройки процесса: инструменты серверов тестов уходят модели
+        полным определением — проверки зовут их напрямую; отложенные
+        инструменты проверяет TestDeferredTools."""
         return {
             "model": "fake",
             "models": {"fake": self.profile_document("fake-model")},
             "history": {"kind": "jsonl", "root": str(self._root / "history")},
             "permissions": {"defaultMode": mode, "allowBypass": allow_bypass},
+            "tools": {"alwaysLoad": self.loaded_tools()},
         }
+
+    @staticmethod
+    def loaded_tools() -> list[str]:
+        """Все инструменты серверов тестов под полными именами."""
+        names: list[str] = []
+        for server in RegisteredServer:
+            for tool in RegisteredTool:
+                names.append(f"mcp__{server.value}__{tool.value}")
+
+        return names
 
     def profile_document(
         self,
@@ -1488,15 +1511,63 @@ class TestConversation:
         assert await boba.wait() == 0
 
 
+class TestDeferredTools:
+    """Ключ `tools.alwaysLoad` пуст: инструменты сервера модель видит одними
+    именами и загружает ToolSearch; клиент видит оба вызова."""
+
+    async def test_tool_is_loaded_by_tool_search_then_called(
+        self,
+        boba: AcpProcess,
+        registration: StandRegistration,
+        model: FakeModel,
+        tmp_path: Path,
+    ) -> None:
+        client = AcpClient()
+        document = boba.settings_document(mode="bypassPermissions", allow_bypass=True)
+        document["tools"] = {"alwaysLoad": []}
+        conn = await boba.start(client, registration, document)
+        try:
+            await handshake(conn)
+            session = await conn.new_session(
+                cwd=str(tmp_path), mcp_servers=[StandRegistration.STAND]
+            )
+            added = call({"name": "mcp__stand__add", "arguments": {"a": 1, "b": 2}})
+            await boba.turn(client, session.session_id, added)
+        finally:
+            await conn.close()
+            await boba.close_stdin()
+
+        assert await boba.wait() == 0
+        offered: list[list[str]] = []
+        for request in model.app.requests:
+            names: list[str] = []
+            for tool in request["tools"]:
+                names.append(tool["function"]["name"])
+
+            offered.append(names)
+
+        assert "ToolSearch" in offered[0]
+        assert "mcp__stand__add" not in offered[0]
+        assert offered[1][-1] == "mcp__stand__add"
+        announced = json.dumps(model.app.requests[0]["messages"], ensure_ascii=False)
+        assert "deferred tools are now available via ToolSearch" in announced
+
+        started: list[str] = []
+        for update in client.of(schema.SessionToolCallUpdate):
+            if update.status == ToolStatus.PENDING:
+                started.append(str(update.name))
+
+        assert started == ["ToolSearch", "mcp__stand__add"]
+
+
 class TestMcpOverAcp:
     """Инструменты только через MCP-over-ACP: регистрация отвечает сама."""
 
     TTL_MS: ClassVar[int] = 8000
     DROPPED: ClassVar[str] = (
         "<system-reminder>\n"
-        "The following deferred tools are no longer available (their MCP server "
-        "disconnected). Do not search for them — ToolSearch will return no "
-        "match:\n"
+        "The following tools are no longer available (their MCP server "
+        "disconnected). Do not call them:\n"
         "mcp__stand__large\n\n"
         "This is ambient context — do not narrate it to the user unless they ask "
         "or it is directly relevant to their request.\n"
@@ -1566,11 +1637,7 @@ class TestMcpOverAcp:
         for tool in RegisteredTool:
             expected.append(f"mcp__stand__{tool.value}")
 
-        assert "ToolSearch" in offered
-        assert set(offered).isdisjoint(expected), offered
-        announced = json.dumps(model.app.requests[0]["messages"], ensure_ascii=False)
-        deferred = "\\n".join(sorted(expected))
-        assert f"before calling them:\\n{deferred}\\n" in announced, announced
+        assert sorted(offered) == sorted(expected)
 
     async def test_answers_stay_fresh_for_their_ttl_in_a_long_session(
         self, boba: AcpProcess, model: FakeModel, tmp_path: Path
@@ -1595,9 +1662,7 @@ class TestMcpOverAcp:
             await boba.turn(client, session.session_id, question)
             fresh_for = time.monotonic() - started
             within = registration.received[opened:]
-            offered_within = json.dumps(
-                model.app.requests[-1]["messages"], ensure_ascii=False
-            )
+            offered_within = self._offered(model)
             await asyncio.sleep(self.TTL_MS / 1000)
             await boba.turn(client, session.session_id, question)
             after = registration.received[opened + len(within) :]
