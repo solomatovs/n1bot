@@ -1,7 +1,8 @@
 """Агент чата в режиме службы: [agent.process] называет адрес службы агента
 (`boba serve` на стенде в цикле теста) и вход proxy; вкладка входит в
 службу от имени своего пользователя, профиль агента выбирается настройкой
-сессии `model` по имени профиля чата, ход идёт сессией службы, закрытие
+сессии `model` по имени профиля чата, ход идёт сессией службы и каждая
+запись истории приходит `session_info_update` с `updatedAt`, закрытие
 вкладки закрывает её. Удаление треда стирает сессию через службу от имени
 владельца треда (логин и роли — из его строки users) и не зависит от
 профилей чата в конфиге; профиль, которого служба не предлагает, — отказ с
@@ -10,12 +11,14 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from datetime import datetime
 from importlib.resources import files
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
+from acp.experimental.v2 import schema
 from acp_stand import AgentHistoryStand, AgentStand, FakeModel, RecordingUpdates
 from aid_stand import NoConnectionStore, RelayStand, TabSession
 from pydantic import SecretStr
@@ -220,10 +223,12 @@ class ServiceModeStand:
             {**base, "provider": provider, "model": MODEL}
         )
 
-    async def opened(self) -> tuple[ThreadIdentity, str]:
-        """Тред с одним ходом через службу: вкладка и id сессии агента."""
+    async def opened(
+        self, updates: RecordingUpdates
+    ) -> tuple[ThreadIdentity, str]:
+        """Тред с одним ходом через службу: вкладка и id сессии агента;
+        обновления хода копятся в updates."""
         identity = await self.identity(SignInStand.PROFILE)
-        updates = RecordingUpdates()
         agent = ThreadAgent(
             identity, self.launcher, AgentSessionMeta(self._threads), updates
         )
@@ -269,7 +274,21 @@ class TestServiceMode:
     async def test_turn_goes_through_the_agent_service(
         self, mode: ServiceModeStand, service: AgentServiceStand
     ) -> None:
-        identity, session_id = await mode.opened()
+        updates = RecordingUpdates()
+        identity, session_id = await mode.opened(updates)
+
+        # служба, как и `boba --stdio`, сообщает о каждой записи истории
+        activity: list[datetime] = []
+        for _, update in updates.updates:
+            if not isinstance(update, schema.SessionInfoUpdate):
+                continue
+
+            if update.updated_at is not None:
+                activity.append(update.updated_at)
+
+        assert activity, updates.updates
+        assert activity == sorted(activity)
+
         await service.sessions_drop_to(0)
         assert await mode.history.rows(session_id) > 0
 
@@ -285,7 +304,7 @@ class TestServiceMode:
         """Профиль треда ушёл из [profiles] чата: удаление всё равно входит в
         службу от имени владельца и стирает сессию — модели чата службе не
         нужны."""
-        identity, session_id = await mode.opened()
+        identity, session_id = await mode.opened(RecordingUpdates())
         await service.sessions_drop_to(0)
         assert await mode.history.rows(session_id) > 0
 

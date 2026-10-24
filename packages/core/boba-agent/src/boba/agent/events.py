@@ -1,7 +1,8 @@
 """Порт наружу: события хода, которые агент отдаёт запускающей программе.
 
 Виды событий: первое событие сеанса, кусок ответа с идентификатором
-сообщения, записанная запись разговора, начало исполнения инструмента,
+сообщения, записанная запись разговора, сброс записей в хранилище истории,
+начало исполнения инструмента,
 отчёт сервера о ходе вызова, итог хода с элементами очереди, которые он
 обслужил, ошибка вне хода, вопрос наружу и его снятие. Как события уходят
 на провод — дело реализации порта (вход процесса); ядро только зовёт `emit`.
@@ -14,7 +15,7 @@ from collections.abc import Mapping, Sequence
 from enum import StrEnum
 from typing import Protocol, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, JsonValue
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from boba.agent.control import CanUseToolRequest
 from boba.agent.records import PermissionMode, Record, Usage
@@ -25,6 +26,7 @@ __all__ = [
     "ControlRequestEvent",
     "ErrorEvent",
     "EventSink",
+    "HistoryWrittenEvent",
     "InitEvent",
     "RecordEvent",
     "ResultEvent",
@@ -107,6 +109,13 @@ class RecordEvent(EventModel):
     record: Record
 
 
+class HistoryWrittenEvent(EventModel):
+    """Записи сессии сохранены в хранилище истории; `recorded_at` — время
+    последней из них строкой журнала. Шлёт писатель после каждого сброса."""
+
+    recorded_at: str = Field(min_length=1)
+
+
 class ResultEvent(EventModel):
     """Конец хода: исход, учёт и идентификаторы элементов очереди, которые
     ход обслужил; `error` — текст отказа модели при исходе-ошибке."""
@@ -146,6 +155,7 @@ AgentEvent: TypeAlias = (
     InitEvent
     | StreamEvent
     | RecordEvent
+    | HistoryWrittenEvent
     | ToolStartedEvent
     | ToolProgressEvent
     | ResultEvent

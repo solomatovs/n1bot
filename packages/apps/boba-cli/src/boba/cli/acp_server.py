@@ -39,7 +39,9 @@ another process», пока замок занят; когда держатель
 `session/set_config_option` меняет их, после смены уходит
 `config_option_update`. После хода и сжатия уходит `usage_update`, при сжатии
 — `compaction_update`, после первого хода и при воспроизведении —
-`session_info_update` с заголовком; ошибка вне хода уходит `notice`. Точка
+`session_info_update` с заголовком, после каждого сброса записей в
+хранилище истории — `session_info_update` с `updatedAt` последней
+записи; ошибка вне хода уходит `notice`. Точка
 среза `session/fork` — расширение `_meta["boba/upToMessageId"]`.
 
 Ошибки:
@@ -101,6 +103,7 @@ from boba.agent.events import (
     ControlRequestEvent,
     ErrorEvent,
     EventSink,
+    HistoryWrittenEvent,
     InitEvent,
     RecordEvent,
     ResultEvent,
@@ -883,6 +886,13 @@ class AcpMapping:
 
     def title_update(self, title: str) -> schema.SessionInfoUpdate:
         return schema.SessionInfoUpdate(title=title)
+
+    def activity_update(self, event: HistoryWrittenEvent) -> schema.SessionInfoUpdate:
+        """Время последней активности сессии — время последней записи,
+        сохранённой в истории: то же, что `updatedAt` в `session/list`."""
+        updated_at = datetime.fromisoformat(event.recorded_at)
+
+        return schema.SessionInfoUpdate(updated_at=updated_at)
 
     def compaction(
         self, record: CompactBoundaryRecord
@@ -2811,10 +2821,12 @@ class SessionRelay(EventSink):
     пометки инструментов, заполненность контекста и ответы на вопросы живут
     у него. Первое событие хода шлёт `state_update` `running`, итог хода —
     `usage_update`, после первого вопроса — `session_info_update` и затем
-    `idle`. Вопрос `can_use_tool` уходит клиенту отдельной задачей, которую
-    снимает отмена хода: разрешение — `session/request_permission`, вопрос
-    AskUserQuestion — формой `elicitation/create` с toolCallId вызова, если
-    клиент объявил формы (elicits); без них вопрос остаётся без ответа.
+    `idle`; каждый сброс записей в историю — `session_info_update` с
+    `updatedAt`, в ходе и вне его. Вопрос `can_use_tool` уходит клиенту
+    отдельной задачей, которую снимает отмена хода: разрешение —
+    `session/request_permission`, вопрос AskUserQuestion — формой
+    `elicitation/create` с toolCallId вызова, если клиент объявил формы
+    (elicits); без них вопрос остаётся без ответа.
     На время вопроса сессия в `requires_action`. После ухода клиента
     приёмник отвязывается и дальше молчит.
     """
@@ -2895,6 +2907,10 @@ class SessionRelay(EventSink):
         if isinstance(event, ErrorEvent):
             logger.warning("session %s: %s", self._session_id, event.message)
             await self._send(self._mapping.notice(event))
+            return
+
+        if isinstance(event, HistoryWrittenEvent):
+            await self._send(self._mapping.activity_update(event))
             return
 
         updates = self._updates(event)
