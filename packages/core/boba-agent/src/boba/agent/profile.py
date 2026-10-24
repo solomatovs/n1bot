@@ -104,9 +104,20 @@ class TurnLimits(BaseModel):
 
     max_turns: int = Field(default=100, gt=0)
     tool_result_max_chars: int = Field(default=50_000, gt=0)
+    tool_result_window_share: float = Field(default=0.25, gt=0, le=1)
     api_retries: int = Field(default=3, ge=0)
     retry_delays_sec: Sequence[float] = (1.0, 2.0, 4.0)
     output_limit_retries: int = Field(default=3, ge=0)
+
+    def tool_result_chars(self, profile: ModelProfile) -> int:
+        """Предел длины одного результата инструмента в знаках: не больше
+        tool_result_max_chars и не больше доли действующего окна профиля —
+        результат, сравнимый с окном, не даёт разговору влезть в окно и
+        после сжатия."""
+        share = profile.effective_window() * self.tool_result_window_share
+        window_chars = int(share * profile.chars_per_token)
+
+        return min(self.tool_result_max_chars, window_chars)
 
     def delay_before(self, attempt: int) -> float:
         """Пауза перед повтором с номером attempt (с 1); хвост — последняя пауза."""

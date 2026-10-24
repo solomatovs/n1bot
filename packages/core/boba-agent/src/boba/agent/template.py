@@ -40,6 +40,8 @@ class AgentTemplateFile(StrEnum):
     NO_MESSAGE_CONTENT = "compact/no_message_content.txt"
     THRASHING = "compact/thrashing.txt"
     COMPACTION_FAILED = "compact/compaction_failed.txt"
+    THREAD_EXHAUSTED = "compact/thread_exhausted.txt"
+    THREAD_EXHAUSTED_TITLE = "compact/thread_exhausted_title.txt"
 
     ENVIRONMENT = "attachments/environment.txt"
     ENVIRONMENT_UPDATE = "attachments/environment_update.txt"

@@ -17,7 +17,14 @@ import pytest
 
 from boba.agent.attachments import ConnectedServer, InvokedSkillsAttachment
 from boba.agent.control import AllowAnswer
-from boba.agent.events import RecordEvent, TurnOutcome
+from boba.agent.events import (
+    CompactionEvent,
+    CompactionStatus,
+    NoticeEvent,
+    RecordEvent,
+    ResultEvent,
+    TurnOutcome,
+)
 from boba.agent.history import SessionId, StoredLine
 from boba.agent.ids import IdMint, SystemClock
 from boba.agent.loader import HistoryLoader
@@ -65,6 +72,10 @@ CONTINUED = "This session is being continued from a previous conversation"
 INSTRUCTION_MARK = "an <analysis> block followed by a <summary> block"
 NOTE = "Look the rows up before you drop them."
 TRUNCATED_FOR_RETRY = "[earlier conversation truncated for compaction retry]"
+THREAD_EXHAUSTED = (
+    "This conversation no longer fits the context window of the model, even after "
+    "compaction"
+)
 HEAD_NOT_COVERED = "is NOT covered by this summary"
 SKILL_BODY = "Always answer the stand in exactly three bullet points."
 INVOKED_MARK = "The following skills were invoked EARLIER in this session"
@@ -306,6 +317,15 @@ class TestThreshold:
         self.check_records(session, await journal(root, SESSION), before)
         events = [e for e in sink.of(RecordEvent) if isinstance(e, RecordEvent)]
         assert any(isinstance(e.record, CompactBoundaryRecord) for e in events)
+        compactions = [
+            e for e in sink.of(CompactionEvent) if isinstance(e, CompactionEvent)
+        ]
+        summary = summaries(session.records())[0]
+        assert [(e.compaction_id, e.status) for e in compactions] == [
+            (summary.uuid, CompactionStatus.IN_PROGRESS),
+            (summary.uuid, CompactionStatus.COMPLETED),
+        ]
+        assert compactions[1].summary == summary.message.content
         after = self.check_requests(server)
 
         again = await reloaded(root, SESSION)
@@ -539,17 +559,40 @@ class TestBreakers:
         await served.close()
 
         assert list(served.agent.outcomes) == [TurnOutcome.COMPACT_FAILURE_BREAKER]
+        statuses = [
+            e.status for e in sink.of(CompactionEvent) if isinstance(e, CompactionEvent)
+        ]
+        assert (
+            statuses
+            == [
+                CompactionStatus.IN_PROGRESS,
+                CompactionStatus.FAILED,
+            ]
+            * 3
+        )
         records = session.records()
         assert not boundaries(records)
         assert len(summary_requests(plain_server)) == 3
         texts = synthetic_texts(records)
         assert len(texts) == 1
-        assert texts[0].startswith("Prompt is too long. Automatic compaction failed:")
+        notices = [e for e in sink.of(NoticeEvent) if isinstance(e, NoticeEvent)]
+        if failure is SummaryName.LONG:
+            assert texts[0].startswith(THREAD_EXHAUSTED)
+            assert "Start a new chat to continue." in texts[0]
+            assert [n.description for n in notices] == texts
+        else:
+            assert texts[0].startswith(
+                "Prompt is too long. Automatic compaction failed:"
+            )
+            assert not notices
+
         assert kinds(records[-3:]) == [
             "user:tool_result",
             "system:api_error",
             "assistant:synthetic",
         ]
+        ended = [e for e in sink.of(ResultEvent) if isinstance(e, ResultEvent)]
+        assert ended[-1].error == texts[0]
 
     async def test_rapid_refill_trips_the_breaker(
         self, plain_server: FakeServer, plain_agents: StandAgents, tmp_path: Path
@@ -587,47 +630,84 @@ class TestBreakers:
 
 
 class TestLadder:
-    async def test_overflowing_summary_request_drops_the_oldest_round(
+    """Лестница пересказа (docs/prompt_assembly/specs/04_compaction.md, 2.2):
+    переполнение запроса пересказа переносит последние группы в хвост, голова
+    не выбрасывается; последний рубеж — всё до последнего вопроса человека, и
+    только он отбрасывает старшие группы."""
+
+    async def test_overflowing_summary_request_moves_rounds_into_the_tail(
         self, server: FakeServer, agents: StandAgents
     ) -> None:
-        sink = Collected()
-        served = Served(
-            agents.agent(
-                agents.profile(Protocol.OPENAI, chars_per_token=4),
-                sink,
-                tools=StandTools(),
-            )
-        )
+        """Беседа из многих раундов упирается в окно сервера; пересказ всего,
+        кроме последней группы, не влезает, и названное сервером превышение
+        переносит в хвост столько последних групп, сколько его покрывает:
+        второй запрос пересказа — начало первого, пометки об усечении нет."""
+        server.app.limit_window(WindowSettings(context_window=5_000, chars_per_token=4))
+        profile = agents.profile(Protocol.OPENAI, chars_per_token=4)
+        served = Served(agents.agent(profile, Collected(), tools=StandTools()))
         session = await served.open(SESSION, resume=False)
 
-        first = f"{SummaryName.OVERFLOW.value} {call(large())}"
-        served.agent.queue.enqueue(prompt(first))
+        for _turn in range(12):
+            served.agent.queue.enqueue(prompt(call(large(2_400))))
+            await served.agent.settled()
+            if boundaries(session.records()):
+                break
+
+        await served.close()
+
+        assert set(served.agent.outcomes) == {TurnOutcome.COMPLETED}
+        attempts = summary_requests(server)
+        assert len(attempts) == 2
+        first = attempts[0]["messages"]
+        second = attempts[1]["messages"]
+        assert isinstance(first, list)
+        assert isinstance(second, list)
+        assert len(second) < len(first)
+        assert second[:-1] == first[: len(second) - 1]
+        assert TRUNCATED_FOR_RETRY not in json.dumps(second)
+        records = session.records()
+        summary = summaries(records)[0].message.content
+        assert isinstance(summary, str)
+        assert HEAD_NOT_COVERED not in summary
+        kept = boundaries(records)[0].compact_metadata.preserved_messages.uuids
+        assert len(kept) > 2
+
+    async def test_last_resort_keeps_the_prompt_and_drops_the_head(
+        self, server: FakeServer, agents: StandAgents
+    ) -> None:
+        """Сервер отверг запрос, а пересказ по раундам не влезает, пока в нём
+        есть ответ модели: последний рубеж пересказывает всё до последнего
+        вопроса и отбрасывает старшие группы с пометкой; вопрос остаётся
+        хвостом, и ход доходит до ответа."""
+        server.app.limit_window(WindowSettings(context_window=5_000, chars_per_token=4))
+        profile = agents.profile(Protocol.OPENAI, chars_per_token=4)
+        served = Served(agents.agent(profile, Collected(), tools=StandTools()))
+        session = await served.open(SESSION, resume=False)
+
+        served.agent.queue.enqueue(prompt(call(large(14_000))))
         await served.agent.settled()
-        served.agent.queue.enqueue(prompt(ScenarioName.ANSWER.value))
+        long_prompt = f"{ScenarioName.ANSWER.value} {'y' * 6_000}"
+        served.agent.queue.enqueue(prompt(long_prompt))
         await served.agent.settled()
         await served.close()
 
         assert list(served.agent.outcomes) == [TurnOutcome.COMPLETED] * 2
         attempts = summary_requests(server)
-        assert len(attempts) == 2
-        first_texts = json.dumps(attempts[0]["messages"])
-        second_texts = json.dumps(attempts[1]["messages"])
-        assert SummaryName.OVERFLOW.value in first_texts
-        assert SummaryName.OVERFLOW.value not in second_texts
-        second_messages = attempts[1]["messages"]
-        assert isinstance(second_messages, list)
-        assert [m["role"] for m in second_messages[:3]] == [
-            "system",
-            "user",
-            "assistant",
-        ]
-        assert second_messages[1]["content"] == TRUNCATED_FOR_RETRY
+        last = attempts[-1]["messages"]
+        assert isinstance(last, list)
+        assert last[1]["content"] == TRUNCATED_FOR_RETRY
         records = session.records()
         assert len(boundaries(records)) == 1
-        assert not synthetic_texts(records)
         summary = summaries(records)[0].message.content
         assert isinstance(summary, str)
         assert HEAD_NOT_COVERED in summary
+        kept = boundaries(records)[0].compact_metadata.preserved_messages.uuids
+        prompts = [
+            r
+            for r in records
+            if isinstance(r, UserRecord) and r.message.content == long_prompt
+        ]
+        assert kept[0] == prompts[0].uuid
 
 
 class TestWindow:
@@ -708,43 +788,6 @@ class TestWindow:
         assert CONTINUED in first_user
         assert [m["role"] for m in retried_messages[-2:]] == ["assistant", "tool"]
 
-    async def test_summary_that_never_fits_names_the_cause(
-        self, server: FakeServer, agents: StandAgents
-    ) -> None:
-        """Запрос пересказа не влезает и после отбрасывания старших групп:
-        лестница кончается, ход — пределом с причиной, а повторов сверх
-        лестницы нет."""
-        server.app.limit_window(WindowSettings(context_window=5_000, chars_per_token=4))
-        profile = agents.profile(Protocol.OPENAI, chars_per_token=4)
-        served = Served(agents.agent(profile, Collected(), tools=StandTools()))
-        session = await served.open(SESSION, resume=False)
-
-        served.agent.queue.enqueue(prompt(call(large(14_000))))
-        await served.agent.settled()
-        served.agent.queue.enqueue(prompt(f"{ScenarioName.ANSWER.value} {'y' * 6_000}"))
-        await served.agent.settled()
-        await served.close()
-
-        assert list(served.agent.outcomes) == [
-            TurnOutcome.COMPLETED,
-            TurnOutcome.BLOCKING_LIMIT,
-        ]
-        attempts = summary_requests(server)
-        assert len(attempts) == 2
-        retry = attempts[1]["messages"]
-        assert isinstance(retry, list)
-        assert retry[1]["content"] == TRUNCATED_FOR_RETRY
-        records = session.records()
-        assert not boundaries(records)
-        texts = synthetic_texts(records)
-        assert len(texts) == 1
-        assert texts[0].startswith(
-            "Prompt is too long. Automatic compaction failed: the summary request "
-            "does not fit the context window even after dropping the oldest rounds"
-        )
-        assert "after dropping 2 oldest round(s)" in texts[0]
-        assert "maximum context length is 5000 tokens" in texts[0]
-
     async def test_tail_over_the_window_ends_each_turn_without_a_loop(
         self, server: FakeServer, agents: StandAgents
     ) -> None:
@@ -775,14 +818,14 @@ class TestWindow:
             TurnOutcome.BLOCKING_LIMIT,
             TurnOutcome.BLOCKING_LIMIT,
         ]
-        assert counts == [1, 4, 1]
+        assert counts == [1, 4, 2]
         records = session.records()
         assert len(boundaries(records)) == 1
         texts = synthetic_texts(records)
         assert texts[0] == "Prompt is too long"
         assert texts[1].startswith(
-            "Prompt is too long. Automatic compaction failed: there is nothing to "
-            "summarize yet"
+            "Prompt is too long. Automatic compaction failed: the summary request "
+            "does not fit the context window even after dropping the oldest rounds"
         )
 
 
@@ -866,6 +909,10 @@ class TestCancellation:
             TurnOutcome.COMPLETED,
             TurnOutcome.ABORTED_STREAMING,
         ]
+        statuses = [
+            e.status for e in sink.of(CompactionEvent) if isinstance(e, CompactionEvent)
+        ]
+        assert statuses == [CompactionStatus.IN_PROGRESS, CompactionStatus.CANCELLED]
         records = list(session.records())
         assert kinds(records[before:]) == ["queue-operation", "queue-operation", "user"]
         assert not boundaries(records)

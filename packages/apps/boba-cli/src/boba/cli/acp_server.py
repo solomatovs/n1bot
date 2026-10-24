@@ -37,8 +37,12 @@ another process», пока замок занят; когда держатель
 Настройки сессии — `configOptions` `mode` (режимы разрешений ядра) и `model`
 (профили `models.<имя>` настроек) в ответах `session/new|resume|fork`;
 `session/set_config_option` меняет их, после смены уходит
-`config_option_update`. После хода и сжатия уходит `usage_update`, при сжатии
-— `compaction_update`, после первого хода и при воспроизведении —
+`config_option_update`. После хода и сжатия уходит `usage_update`; сжатие
+идёт `compaction_update` по стадиям (in_progress, затем completed с
+пересказом, failed с причиной или cancelled), воспроизведение отдаёт
+состоявшиеся сжатия так же — по записи пересказа; пометка агента посреди
+хода (тред не помещается в окно) — `notice`. После первого хода и при
+воспроизведении —
 `session_info_update` с заголовком, после каждого сброса записей в
 хранилище истории — `session_info_update` с `updatedAt` последней
 записи; ошибка вне хода уходит `notice`. Точка
@@ -99,12 +103,15 @@ from boba.agent.control import (
 )
 from boba.agent.events import (
     AgentEvent,
+    CompactionEvent,
+    CompactionStatus,
     ControlCancelEvent,
     ControlRequestEvent,
     ErrorEvent,
     EventSink,
     HistoryWrittenEvent,
     InitEvent,
+    NoticeEvent,
     RecordEvent,
     ResultEvent,
     StreamEvent,
@@ -133,7 +140,6 @@ from boba.agent.queue import QueueEntry, QueueKind, QueuePriority, QueueRefusedE
 from boba.agent.records import (
     AssistantRecord,
     ChainRecord,
-    CompactBoundaryRecord,
     PermissionMode,
     Record,
     TextBlock,
@@ -625,7 +631,6 @@ class AcpMapping:
         TurnOutcome.COMPACT_FAILURE_BREAKER: StopReason.REFUSAL,
         TurnOutcome.RAPID_REFILL_BREAKER: StopReason.REFUSAL,
     }
-    COMPACTED: ClassVar[str] = "completed"
 
     INTERRUPTS: ClassVar[tuple[AgentTemplateFile, ...]] = (
         AgentTemplateFile.REQUEST_INTERRUPTED,
@@ -750,6 +755,10 @@ class AcpMapping:
         сообщения, пересказы сжатия, вложения и границы сжатия в ленту не
         идут."""
         if isinstance(record, UserRecord):
+            if record.is_compact_summary:
+                yield self.replayed_compaction(record)
+                return
+
             yield from self.user_updates(record)
             if self._interrupted(record):
                 yield schema.IdleSessionStateUpdate(stop_reason=StopReason.CANCELLED)
@@ -894,11 +903,45 @@ class AcpMapping:
 
         return schema.SessionInfoUpdate(updated_at=updated_at)
 
-    def compaction(
-        self, record: CompactBoundaryRecord
-    ) -> schema.SessionCompactionUpdate:
+    def compaction(self, event: CompactionEvent) -> schema.SessionCompactionUpdate:
+        """Ход сжатия: стадия, у состоявшегося — пересказ, у неудачного —
+        причина; id — uuid записи пересказа."""
+        summary: list[ContentBlock] | None = None
+        if event.summary:
+            summary = [schema.TextContentBlock(text=event.summary)]
+
+        error: str | None = None
+        if event.error:
+            error = event.error
+
         return schema.SessionCompactionUpdate(
-            compaction_id=record.uuid, status=self.COMPACTED
+            compaction_id=event.compaction_id,
+            status=event.status.value,
+            summary=summary,
+            error=error,
+        )
+
+    def replayed_compaction(self, record: UserRecord) -> schema.SessionCompactionUpdate:
+        """Пересказ из истории — то же состоявшееся сжатие, что вживую."""
+        content = record.message.content
+        if not isinstance(content, str):
+            msg = (
+                f"The compaction summary record {record.uuid} holds blocks instead "
+                "of text. This is a bug."
+            )
+            raise RuntimeError(msg)
+
+        event = CompactionEvent(
+            compaction_id=record.uuid,
+            status=CompactionStatus.COMPLETED,
+            summary=content,
+        )
+
+        return self.compaction(event)
+
+    def turn_notice(self, event: NoticeEvent) -> schema.SessionNotice:
+        return schema.SessionNotice(
+            severity="error", title=event.title, description=event.description
         )
 
     def notice(self, event: ErrorEvent) -> schema.SessionNotice:
@@ -2983,6 +3026,9 @@ class SessionRelay(EventSink):
         if isinstance(event, ToolStartedEvent):
             return [self._mapping.tool_started(event)]
 
+        if isinstance(event, CompactionEvent | NoticeEvent):
+            return self._marks(event)
+
         if isinstance(event, ToolProgressEvent):
             return [self._mapping.tool_progress(event)]
 
@@ -3017,15 +3063,23 @@ class SessionRelay(EventSink):
             self._inserted(record.uuid)
             return list(self._mapping.user_updates(record))
 
-        if isinstance(record, CompactBoundaryRecord):
-            compaction: list[Update] = [self._mapping.compaction(record)]
-            usage = self._usage()
-            if usage is not None:
-                compaction.append(usage)
-
-            return compaction
-
         return ()
+
+    def _marks(self, event: CompactionEvent | NoticeEvent) -> Sequence[Update]:
+        """Пометки хода: пометка пользователю; сжатие, после состоявшегося —
+        с новой заполненностью."""
+        if isinstance(event, NoticeEvent):
+            return [self._mapping.turn_notice(event)]
+
+        updates: list[Update] = [self._mapping.compaction(event)]
+        if event.status is not CompactionStatus.COMPLETED:
+            return updates
+
+        usage = self._usage()
+        if usage is not None:
+            updates.append(usage)
+
+        return updates
 
     def _hints(self, name: str) -> ToolHints | None:
         if self._agent is None:

@@ -44,6 +44,7 @@ from boba.agent.attachments import (
 from boba.agent.builder import RequestBuilder
 from boba.agent.compaction import (
     CompactGate,
+    CompactJob,
     Compactor,
     CompactTracking,
     ContextMeter,
@@ -53,10 +54,16 @@ from boba.agent.compaction import (
     NotSummarized,
     Summarizer,
     SummaryAborted,
+    SummaryFailure,
+    SummaryJob,
+    SummaryPressure,
     TokenEstimator,
 )
 from boba.agent.events import (
+    CompactionEvent,
+    CompactionStatus,
     EventSink,
+    NoticeEvent,
     ResultEvent,
     TurnOutcome,
 )
@@ -93,7 +100,13 @@ from boba.agent.tools import (
 )
 from boba.agent.writer import HistoryWriter, RecordKeeper, RequestRecorder
 from boba.cancellation import RunCancellation, StopReason
-from boba.llm.chat import ChatModel, ChatReply, ChatRequest, ChatUsage
+from boba.llm.chat import (
+    ChatModel,
+    ChatReply,
+    ChatRequest,
+    ChatUsage,
+    ContextOverflowSigns,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -191,6 +204,7 @@ class TurnLoop:
         self._agent = agent_name
         self._last_failure = ""
         self._failures = 0
+        self._overflow_signs = ContextOverflowSigns()
         self._bind_model(profile, model, builder)
 
     def _bind_model(
@@ -204,6 +218,7 @@ class TurnLoop:
         self._budget = SkillBudget(profile.context_window, profile.chars_per_token)
         self._asking = ModelAsk(model, self._sink)
         estimator = TokenEstimator(profile)
+        self._estimator = estimator
         self._gate = CompactGate(
             ContextMeter(estimator),
             self._compaction,
@@ -288,7 +303,7 @@ class TurnLoop:
             prompt_ids.append(item.id)
 
         error = ""
-        if outcome.is_failure:
+        if outcome.has_reason:
             error = self._last_failure
 
         await self._writer.flush()
@@ -344,11 +359,9 @@ class TurnLoop:
 
         if isinstance(asked, Overflowed):
             await self._write_api_error(asked.error, 0, 0)
-            await self._write_api_failure(self._too_long(progress.tracking))
-            if progress.tracking.breaker_open:
-                return TurnOutcome.COMPACT_FAILURE_BREAKER
+            text = self._too_long(progress.tracking)
 
-            return TurnOutcome.BLOCKING_LIMIT
+            return await self._too_long_outcome(text, progress.tracking)
 
         if isinstance(asked, Failed):
             await self._write_api_failure(asked.error)
@@ -376,7 +389,10 @@ class TurnLoop:
             return TurnOutcome.RAPID_REFILL_BREAKER
 
         if decision is GateDecision.COMPACT:
-            compacted = await self._compact(fill, snapshot, cancellation)
+            pressure = SummaryPressure(
+                last_resort=fill.level is FillLevel.BLOCKED, excess=None
+            )
+            compacted = await self._compact(fill, snapshot, pressure, cancellation)
             if isinstance(compacted, SummaryAborted):
                 return self._abort_outcome(compacted.reason)
 
@@ -384,7 +400,7 @@ class TurnLoop:
                 tracking.succeeded()
                 return None
 
-            tracking.failed(compacted.describe())
+            tracking.failed(compacted)
 
         return await self._blocked(fill, tracking)
 
@@ -400,15 +416,37 @@ class TurnLoop:
 
         text = self._too_long(tracking)
         await self._write_api_error(text, 0, 0)
+
+        return await self._too_long_outcome(text, tracking)
+
+    async def _too_long_outcome(
+        self, text: str, tracking: CompactTracking
+    ) -> TurnOutcome:
+        """Конец хода запросом больше окна: запись агента с причиной; если
+        разговор не помещается и после сжатия — ещё пометка пользователю,
+        что пора начать новый чат."""
         await self._write_api_failure(text)
+        if tracking.exhausted:
+            notice = NoticeEvent(
+                title=self._templates.read(AgentTemplateFile.THREAD_EXHAUSTED_TITLE),
+                description=text,
+            )
+            await self._sink.emit(notice)
+
         if tracking.breaker_open:
             return TurnOutcome.COMPACT_FAILURE_BREAKER
 
         return TurnOutcome.BLOCKING_LIMIT
 
     def _too_long(self, tracking: CompactTracking) -> str:
-        """Текст записи о запросе больше окна: с причиной последней неудачи
-        сжатия, если оно в этом ходе не удалось."""
+        """Текст записи о запросе больше окна: разговор не помещается и
+        после сжатия — просьба начать новый чат; иначе с причиной последней
+        неудачи сжатия, если оно в этом ходе не удалось."""
+        if tracking.exhausted:
+            return self._templates.read(AgentTemplateFile.THREAD_EXHAUSTED).format(
+                detail=tracking.last_detail
+            )
+
         if tracking.last_failure:
             return self._templates.read(AgentTemplateFile.COMPACTION_FAILED).format(
                 detail=tracking.last_failure
@@ -427,12 +465,15 @@ class TurnLoop:
 
         snapshot = self._snapshot_in_use()
         fill = self._gate.measure(self._session.conversation(), snapshot)
-        compacted = await self._compact(fill, snapshot, cancellation)
+        pressure = SummaryPressure(
+            last_resort=True, excess=self._overflow_signs.excess(asked.error)
+        )
+        compacted = await self._compact(fill, snapshot, pressure, cancellation)
         if isinstance(compacted, SummaryAborted):
             return self._abort_outcome(compacted.reason)
 
         if isinstance(compacted, NotSummarized):
-            progress.tracking.failed(compacted.describe())
+            progress.tracking.failed(compacted)
             return asked
 
         progress.tracking.succeeded()
@@ -442,36 +483,79 @@ class TurnLoop:
         return await self._ask(request, cancellation)
 
     async def _compact(
-        self, fill: Fill, snapshot: PromptSnapshot, cancellation: RunCancellation
+        self,
+        fill: Fill,
+        snapshot: PromptSnapshot,
+        pressure: SummaryPressure,
+        cancellation: RunCancellation,
     ) -> CompactResult:
         """Пересказ и пачка записей; остановка во время пересказа записей не
-        оставляет."""
+        оставляет. Наружу — ход сжатия событиями: начато, состоялось с
+        пересказом, не удалось, прервано."""
         started = time.monotonic()
-        conversation = self._session.conversation()
+        job = SummaryJob(
+            session=self._session,
+            conversation=self._session.conversation(),
+            snapshot=snapshot,
+            cancellation=cancellation,
+            pressure=pressure,
+        )
+        unready = self._summarizer.unready(job)
+        if unready is not None:
+            logger.info("compaction skipped: %s", unready.describe())
+            return unready
+
+        compaction_id = self._ids.uuid()
+        await self._sink.emit(
+            CompactionEvent(
+                compaction_id=compaction_id, status=CompactionStatus.IN_PROGRESS
+            )
+        )
         self._session.enter(SessionState.COMPACTING)
         try:
-            summarized = await self._summarizer.summarize(
-                self._session, conversation, snapshot, cancellation
-            )
+            summarized = await self._summarizer.summarize(job)
         finally:
             self._session.enter(SessionState.TURN)
 
-        if isinstance(summarized, NotSummarized):
-            logger.warning("compaction failed: %s", summarized.describe())
-            return summarized
-
         if isinstance(summarized, SummaryAborted):
-            return summarized
+            return await self._compaction_aborted(compaction_id, summarized)
 
         if cancellation.cancelled:
-            return SummaryAborted(self._stop_reason_of(cancellation))
+            aborted = SummaryAborted(self._stop_reason_of(cancellation))
+            return await self._compaction_aborted(compaction_id, aborted)
+
+        if isinstance(summarized, NotSummarized):
+            return await self._compaction_failed(compaction_id, summarized)
 
         duration = int((time.monotonic() - started) * self.MILLIS)
-        records = self._compactor.records(
-            self._session, summarized, fill.tokens, duration, self._attachments.today()
+        compact_job = CompactJob(
+            compaction_id=compaction_id,
+            pre_tokens=fill.tokens,
+            duration_ms=duration,
+            today=self._attachments.today(),
         )
+        pack = self._compactor.pack(self._session, summarized, compact_job)
+        fit = self._estimator.prefix(self._fresh_snapshot()) + pack.post_tokens
+        window = self._profile.effective_window()
+        if fit > window:
+            detail = (
+                f"after compaction the request needs about {fit} tokens, the window "
+                f"holds {window}"
+            )
+            failure = NotSummarized(SummaryFailure.DOES_NOT_FIT, detail)
+            return await self._compaction_failed(compaction_id, failure)
+
+        records = self._compactor.add(self._session, pack)
         for record in records:
             await self._keeper.added(record)
+
+        await self._sink.emit(
+            CompactionEvent(
+                compaction_id=compaction_id,
+                status=CompactionStatus.COMPLETED,
+                summary=self._summary_text(pack.summary),
+            )
+        )
 
         logger.info(
             "compaction: %d record(s) summarized, %d kept, %d tokens before",
@@ -481,6 +565,44 @@ class TurnLoop:
         )
 
         return Compacted(records)
+
+    async def _compaction_failed(
+        self, compaction_id: str, failure: NotSummarized
+    ) -> NotSummarized:
+        logger.warning("compaction failed: %s", failure.describe())
+        await self._sink.emit(
+            CompactionEvent(
+                compaction_id=compaction_id,
+                status=CompactionStatus.FAILED,
+                error=failure.describe(),
+            )
+        )
+
+        return failure
+
+    async def _compaction_aborted(
+        self, compaction_id: str, aborted: SummaryAborted
+    ) -> SummaryAborted:
+        await self._sink.emit(
+            CompactionEvent(
+                compaction_id=compaction_id, status=CompactionStatus.CANCELLED
+            )
+        )
+
+        return aborted
+
+    @staticmethod
+    def _summary_text(record: UserRecord) -> str:
+        """Текст пересказа для пользователя — содержимое записи, как его
+        получает модель и как его отдаёт воспроизведение истории."""
+        content = record.message.content
+        if isinstance(content, str):
+            return content
+
+        msg = (
+            "The compaction summary record holds blocks instead of text. This is a bug."
+        )
+        raise RuntimeError(msg)
 
     def _snapshot_in_use(self) -> PromptSnapshot:
         """Снимок, по которому пойдёт запрос: из истории либо свежий."""
@@ -940,7 +1062,9 @@ class TurnLoop:
         await self._keeper.add(record)
 
     async def _write_api_failure(self, error: str) -> None:
-        """Синтетическая запись об ошибке модели; модели не отправляется."""
+        """Синтетическая запись об ошибке модели; модели не отправляется. Её
+        текст — причина конца хода в итоге."""
+        self._last_failure = error
         record = AssistantRecord(
             uuid=self._ids.uuid(),
             parent_uuid=self._session.last_chain_uuid(),

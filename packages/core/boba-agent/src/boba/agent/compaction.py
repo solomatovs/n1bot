@@ -74,12 +74,14 @@ from boba.agent.template import AgentTemplate, AgentTemplateFile
 from boba.agent.tools import AgentTools
 from boba.agent.writer import RequestRecorder
 from boba.cancellation import RunCancellation, StopReason
-from boba.llm.chat import ChatReply, ChatRequest
+from boba.llm.chat import ChatReply, ChatRequest, ContextOverflowSigns
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
     "CompactGate",
+    "CompactJob",
+    "CompactPack",
     "CompactTracking",
     "Compactor",
     "ContextMeter",
@@ -93,6 +95,8 @@ __all__ = [
     "Summarizer",
     "SummaryAborted",
     "SummaryFailure",
+    "SummaryJob",
+    "SummaryPressure",
     "TokenEstimator",
 ]
 
@@ -328,6 +332,9 @@ class CompactTracking:
     consecutive_failures: int = 0
     consecutive_rapid_refills: int = 0
     last_failure: str = ""
+    last_detail: str = ""
+    exhausted: bool = False
+    """Последняя неудача — разговор не помещается в окно и после сжатия."""
 
     @property
     def breaker_open(self) -> bool:
@@ -349,10 +356,14 @@ class CompactTracking:
         self.turn_counter = 0
         self.consecutive_failures = 0
         self.last_failure = ""
+        self.last_detail = ""
+        self.exhausted = False
 
-    def failed(self, detail: str) -> None:
+    def failed(self, failure: NotSummarized) -> None:
         self.consecutive_failures += 1
-        self.last_failure = detail
+        self.last_failure = failure.describe()
+        self.last_detail = failure.detail
+        self.exhausted = failure.reason is SummaryFailure.DOES_NOT_FIT
 
     def tools_ran(self) -> None:
         self.turn_counter += 1
@@ -457,7 +468,7 @@ class SummaryFailure(StrEnum):
     NO_BLOCK = "no_summary_block"
     EMPTY = "empty_summary"
     OUTPUT_LIMIT = "output_limit"
-    TOO_LONG = "summary_longer_than_source"
+    DOES_NOT_FIT = "does_not_fit"
     MODEL_ERROR = "model_error"
     REQUEST_TOO_LONG = "request_too_long"
 
@@ -477,8 +488,9 @@ class SummaryFailure(StrEnum):
             SummaryFailure.OUTPUT_LIMIT: (
                 "the summary reply was cut by the output limit of the model"
             ),
-            SummaryFailure.TOO_LONG: (
-                "the summary is longer than the part of the conversation it replaces"
+            SummaryFailure.DOES_NOT_FIT: (
+                "the conversation does not fit the context window of the model even "
+                "after compaction"
             ),
             SummaryFailure.MODEL_ERROR: "the summary request failed",
             SummaryFailure.REQUEST_TOO_LONG: (
@@ -522,21 +534,54 @@ class SummaryAborted:
 SummaryOutcome = Summarized | NotSummarized | SummaryAborted
 
 
+@dataclass(frozen=True)
+class SummaryPressure:
+    """Чем вызвано сжатие. last_resort — заполненность у предела или сервер
+    уже отверг запрос: если пересказывать по раундам нечего, разрешён
+    последний рубеж; excess — на сколько токенов основной запрос превысил
+    окно по словам сервера, None — сервер чисел не назвал или запроса не
+    было."""
+
+    last_resort: bool
+    excess: int | None
+
+
+@dataclass(frozen=True)
+class SummaryJob:
+    """Один пересказ: сессия, разговор после границы, снимок промпта,
+    остановка хода и повод сжатия."""
+
+    session: Session
+    conversation: Sequence[ChainRecord]
+    snapshot: PromptSnapshot
+    cancellation: RunCancellation
+    pressure: SummaryPressure
+
+
 class Summarizer:
-    """Запрос пересказа и разбор ответа.
+    """Запрос пересказа и разбор ответа — лестница
+    docs/prompt_assembly/specs/04_compaction.md, 2.2.
 
     Пересказывается всё, кроме последней группы; запрос несёт тот же
-    системный промпт и инструменты, что основной, плюс инструкцию отдельным
-    сообщением пользователя (сборщик сливает её с последним текстом
-    пользователя, когда отрезок кончается им). Переполнение окна на запросе
-    пересказа отбрасывает старшую группу и повторяет попытку, не больше
-    LADDER_STEPS раз; остаток, который теперь начинается ответом модели,
-    открывается пометкой об усечении, а пересказ — оговоркой, что начало
-    разговора он не покрывает (docs/prompt_assembly/specs/04_compaction.md,
-    2.1–2.2). Создаёт цикл хода.
+    системный промпт и инструменты, что основной, плюс инструкцию сообщением
+    пользователя (сборщик сливает её с последним текстом пользователя,
+    когда отрезок кончается им). Если основной запрос уже превысил окно на
+    известное число токенов, хвост сразу берёт столько последних групп,
+    сколько покрывает превышение. Запрос пересказа, не влезший в окно,
+    переносит в хвост последние группы пересказываемого — столько, сколько
+    покрывает названное сервером превышение, иначе одну; голова не
+    отбрасывается. Когда в пересказываемом не осталось ответа модели,
+    при давлении (предел или отказ сервера) действует последний рубеж:
+    пересказывается всё до последнего вопроса человека после последнего
+    ответа, и только здесь при переполнении отбрасываются старшие группы —
+    не больше LADDER_STEPS раз; остаток открывается пометкой об усечении,
+    пересказ — оговоркой, что начало разговора он не покрывает. Создаёт
+    цикл хода.
     """
 
     LADDER_STEPS: ClassVar[int] = 3
+    HEAD_SHARE: ClassVar[float] = 0.2
+    """Доля групп, отбрасываемая последним рубежом, когда превышение неизвестно."""
 
     def __init__(  # noqa: PLR0913 — пересказ собирается из частей ядра, как цикл хода
         self,
@@ -555,32 +600,92 @@ class Summarizer:
         self._templates = templates
         self._estimator = estimator
         self._grouper = RoundGrouper()
+        self._signs = ContextOverflowSigns()
         self._ids = ids
         self._clock = clock
         self._version = version
 
-    async def summarize(
-        self,
-        session: Session,
-        conversation: Sequence[ChainRecord],
-        snapshot: PromptSnapshot,
-        cancellation: RunCancellation,
-    ) -> SummaryOutcome:
-        groups = self._grouper.groups(conversation)
+    def unready(self, job: SummaryJob) -> NotSummarized | None:
+        """Пересказывать нечего — без запроса к модели; None — пересказ
+        пойдёт. Цикл хода спрашивает до того, как объявить сжатие начатым."""
+        groups = self._grouper.groups(job.conversation)
         if len(groups) < 2:  # noqa: PLR2004 — начальная группа и хотя бы один ответ
             return NotSummarized(
                 SummaryFailure.TOO_FEW_GROUPS, f"{len(groups)} group(s) in total"
             )
 
-        kept = groups[-1]
-        overflow = ""
-        for dropped in range(self.LADDER_STEPS + 1):
-            head = self._flat(groups[dropped:-1])
-            if not self._grouper.has_reply(head):
-                return self._nothing_left(dropped, overflow)
+        if self._grouper.has_reply(self._flat(groups[:-1])):
+            return None
 
-            request = self._request(session, head, conversation, snapshot, dropped)
-            outcome = await self._attempt(request, head, cancellation)
+        if not job.pressure.last_resort:
+            return self._nothing_left("")
+
+        split = self._last_prompt(job.conversation)
+        if split is None:
+            return self._nothing_left("")
+
+        if not self._grouper.has_reply(job.conversation[:split]):
+            return self._nothing_left("")
+
+        return None
+
+    async def summarize(self, job: SummaryJob) -> SummaryOutcome:
+        unready = self.unready(job)
+        if unready is not None:
+            return unready
+
+        groups = self._grouper.groups(job.conversation)
+        sizes = self._sizes(groups)
+        preserve = self._preserved_at_start(sizes, job.pressure.excess)
+        overflow = ""
+        while True:
+            cut = max(0, len(groups) - preserve)
+            head = self._flat(groups[:cut])
+            if not self._grouper.has_reply(head):
+                return await self._last_resort(job, overflow)
+
+            request = self._request(job, head, 0)
+            outcome = await self._attempt(request, job.cancellation)
+            if isinstance(outcome, str):
+                kept = self._flat(groups[cut:])
+                return Summarized(
+                    text=outcome, summarized=head, kept=kept, head_truncated=False
+                )
+
+            if not isinstance(outcome, Overflowed):
+                return outcome
+
+            overflow = outcome.error
+            step = self._covering(list(reversed(sizes[:cut])), overflow)
+            preserve += step
+            logger.info(
+                "compaction: the summary request overflowed, %d more round(s) "
+                "move into the kept tail (%d kept of %d)",
+                step,
+                preserve,
+                len(groups),
+            )
+
+    async def _last_resort(self, job: SummaryJob, overflow: str) -> SummaryOutcome:
+        """Последний рубеж: всё до последнего вопроса человека после
+        последнего ответа; переполнение отбрасывает старшие группы."""
+        split = self._last_prompt(job.conversation)
+        if not job.pressure.last_resort:
+            return self._nothing_left(overflow)
+
+        if split is None:
+            return self._nothing_left(overflow)
+
+        groups = self._grouper.groups(job.conversation[:split])
+        kept = list(job.conversation[split:])
+        dropped = 0
+        for _attempt in range(self.LADDER_STEPS + 1):
+            head = self._flat(groups[dropped:])
+            if not self._grouper.has_reply(head):
+                return self._nothing_left(overflow)
+
+            request = self._request(job, head, dropped)
+            outcome = await self._attempt(request, job.cancellation)
             if isinstance(outcome, str):
                 return Summarized(
                     text=outcome, summarized=head, kept=kept, head_truncated=dropped > 0
@@ -590,20 +695,88 @@ class Summarizer:
                 return outcome
 
             overflow = outcome.error
+            dropped += self._dropped(self._sizes(groups[dropped:]), overflow)
             logger.info(
-                "compaction: the summary request overflowed, dropping the oldest "
-                "round (%d of %d)",
-                dropped + 1,
-                self.LADDER_STEPS,
+                "compaction: the last-resort summary request overflowed, "
+                "%d oldest round(s) dropped",
+                dropped,
             )
 
         return NotSummarized(SummaryFailure.REQUEST_TOO_LONG, overflow)
 
+    def _preserved_at_start(self, sizes: Sequence[int], excess: int | None) -> int:
+        """Сколько последних групп хвост берёт сразу: одну; при известном
+        превышении основного запроса и больше чем трёх группах — ещё столько,
+        сколько покрывает превышение сверх последней группы."""
+        if excess is None:
+            return 1
+
+        if len(sizes) <= 3:  # noqa: PLR2004 — правило разбора: больше трёх групп
+            return 1
+
+        need = excess - sizes[-1]
+        before = list(reversed(sizes[:-1]))
+
+        return 1 + self._count_covering(before, need)
+
+    def _covering(self, newest_first: Sequence[int], overflow: str) -> int:
+        """Сколько групп с конца перенести в хвост: покрывающих превышение,
+        названное сервером, иначе одну."""
+        excess = self._signs.excess(overflow)
+        if excess is None:
+            return 1
+
+        return max(1, self._count_covering(newest_first, excess))
+
+    def _dropped(self, oldest_first: Sequence[int], overflow: str) -> int:
+        """Сколько старших групп отбросить: покрывающих превышение, иначе
+        HEAD_SHARE групп, не меньше одной."""
+        excess = self._signs.excess(overflow)
+        if excess is None:
+            return max(1, int(len(oldest_first) * self.HEAD_SHARE))
+
+        return max(1, self._count_covering(oldest_first, excess))
+
     @staticmethod
-    def _nothing_left(dropped: int, overflow: str) -> NotSummarized:
-        """В отрезке не осталось ответа модели: сразу — пересказывать нечего,
-        после ступеней лестницы — запрос не влез и отбрасывать больше нечего."""
-        if not dropped:
+    def _count_covering(sizes: Sequence[int], need: int) -> int:
+        """Сколько первых размеров набирают need; need не больше нуля — ноль."""
+        if need <= 0:
+            return 0
+
+        total = 0
+        for count, size in enumerate(sizes, start=1):
+            total += size
+            if total >= need:
+                return count
+
+        return len(sizes)
+
+    def _sizes(self, groups: Sequence[Sequence[ChainRecord]]) -> list[int]:
+        sizes: list[int] = []
+        for group in groups:
+            sizes.append(self._estimator.records(group))
+
+        return sizes
+
+    @staticmethod
+    def _last_prompt(conversation: Sequence[ChainRecord]) -> int | None:
+        """Позиция последнего вопроса человека после последнего ответа
+        модели; None — после ответа вопросов нет."""
+        for index in range(len(conversation) - 1, -1, -1):
+            record = conversation[index]
+            if isinstance(record, AssistantRecord) and not record.is_synthetic():
+                return None
+
+            if isinstance(record, UserRecord) and record.human_text() is not None:
+                return index
+
+        return None
+
+    @staticmethod
+    def _nothing_left(overflow: str) -> NotSummarized:
+        """В пересказываемом не осталось ответа модели: без переполнения —
+        пересказывать нечего, после переполнений — запрос не влез."""
+        if not overflow:
             return NotSummarized(
                 SummaryFailure.TOO_FEW_GROUPS,
                 "the part to summarize holds no model reply",
@@ -611,34 +784,26 @@ class Summarizer:
 
         return NotSummarized(
             SummaryFailure.REQUEST_TOO_LONG,
-            f"{overflow} (after dropping {dropped} oldest round(s) no model reply "
-            "is left to summarize)",
+            f"{overflow} (no part with a model reply is left to summarize)",
         )
 
     def _request(
-        self,
-        session: Session,
-        head: Sequence[ChainRecord],
-        conversation: Sequence[ChainRecord],
-        snapshot: PromptSnapshot,
-        dropped: int,
+        self, job: SummaryJob, head: Sequence[ChainRecord], dropped: int
     ) -> ChatRequest:
         """Запрос пересказа отрезка; после отброшенных групп отрезок
         начинается ответом модели, и перед ним встаёт пометка об усечении."""
         sent: list[ChainRecord] = []
         if dropped:
-            sent.append(self._user(session, AgentTemplateFile.TRUNCATED_FOR_RETRY))
+            marker = self._user(job.session, AgentTemplateFile.TRUNCATED_FOR_RETRY)
+            sent.append(marker)
 
         sent.extend(head)
-        sent.append(self._user(session, AgentTemplateFile.SUMMARIZE_INSTRUCTION))
+        sent.append(self._user(job.session, AgentTemplateFile.SUMMARIZE_INSTRUCTION))
 
-        return self._builder.summary(sent, conversation, snapshot)
+        return self._builder.summary(sent, job.conversation, job.snapshot)
 
     async def _attempt(
-        self,
-        request: ChatRequest,
-        head: Sequence[ChainRecord],
-        cancellation: RunCancellation,
+        self, request: ChatRequest, cancellation: RunCancellation
     ) -> str | NotSummarized | SummaryAborted | Overflowed:
         """Один запрос пересказа: текст пересказа либо неудача; Overflowed —
         ступень лестницы."""
@@ -658,11 +823,9 @@ class Summarizer:
         if isinstance(asked, Errored):
             return NotSummarized(SummaryFailure.MODEL_ERROR, asked.error)
 
-        return self._parsed(asked.reply, head)
+        return self._parsed(asked.reply)
 
-    def _parsed(
-        self, reply: ChatReply, head: Sequence[ChainRecord]
-    ) -> str | NotSummarized:
+    def _parsed(self, reply: ChatReply) -> str | NotSummarized:
         if reply.tool_calls:
             names = [call.name for call in reply.tool_calls]
             return NotSummarized(SummaryFailure.TOOL_CALLS, ", ".join(names))
@@ -680,14 +843,6 @@ class Summarizer:
         text = text.strip()
         if not text:
             return NotSummarized(SummaryFailure.EMPTY, "the <summary> block is empty")
-
-        summary_tokens = self._estimator.text(text)
-        source_tokens = self._estimator.records(head)
-        if summary_tokens > source_tokens:
-            return NotSummarized(
-                SummaryFailure.TOO_LONG,
-                f"about {summary_tokens} tokens against {source_tokens}",
-            )
 
         return text
 
@@ -806,6 +961,28 @@ class InvokedSkills:
             yield name, result.text()
 
 
+@dataclass(frozen=True)
+class CompactJob:
+    """Данные пачки, которые знает цикл хода: идентификатор сжатия (он же
+    uuid пересказа и compactionId наружу), заполненность до сжатия,
+    длительность и сегодняшняя дата."""
+
+    compaction_id: str
+    pre_tokens: int
+    duration_ms: int
+    today: str
+
+
+@dataclass(frozen=True)
+class CompactPack:
+    """Пачка сжатия до записи в сессию: записи по порядку, оценка того, что
+    после границы уходит модели, и запись пересказа."""
+
+    records: Sequence[Record]
+    post_tokens: int
+    summary: UserRecord
+
+
 class Compactor:
     """Пачка записей после сжатия (план, раздел 5.16): граница со списком
     загруженных отложенных инструментов, дата, пересказ, затем вложения в
@@ -842,20 +1019,18 @@ class Compactor:
         self._catalog = catalog
         self._invoked = InvokedSkills(profile)
 
-    def records(
-        self,
-        session: Session,
-        summary: Summarized,
-        pre_tokens: int,
-        duration_ms: int,
-        today: str,
-    ) -> Sequence[Record]:
-        """Записи пачки с seq; логический родитель границы — последняя
-        запись разговора, то есть последняя запись хвоста."""
+    def pack(
+        self, session: Session, summary: Summarized, job: CompactJob
+    ) -> CompactPack:
+        """Записи пачки без seq — в сессию их кладёт `add`; логический
+        родитель границы — последняя запись разговора, то есть последняя
+        запись хвоста. uuid пересказа — идентификатор сжатия job."""
         discovered = Announced(session.conversation()).discovered()
         boundary_uuid = self._ids.uuid()
-        date = self._attachments.date(boundary_uuid, today, False)
-        summary_record = self._summary_record(session, date.uuid, summary)
+        date = self._attachments.date(boundary_uuid, job.today, False)
+        summary_record = self._summary_record(
+            session, date.uuid, summary, job.compaction_id
+        )
         inputs = self._inputs(summary_record.uuid, summary.summarized)
         post_tokens = self._estimator.records(
             [date, summary_record, *summary.kept, *inputs]
@@ -870,9 +1045,9 @@ class Compactor:
             logical_parent_uuid=summary.kept[-1].uuid,
             compact_metadata=CompactMetadata(
                 trigger=CompactTrigger.AUTO,
-                pre_tokens=pre_tokens,
+                pre_tokens=job.pre_tokens,
                 post_tokens=post_tokens,
-                duration_ms=duration_ms,
+                duration_ms=job.duration_ms,
                 preserved_messages=PreservedMessages(
                     anchor_uuid=summary_record.uuid,
                     uuids=kept_uuids,
@@ -882,14 +1057,26 @@ class Compactor:
             ),
         )
 
+        records: list[Record] = [boundary, date, summary_record, *inputs]
+
+        return CompactPack(
+            records=records,
+            post_tokens=post_tokens,
+            summary=summary_record,
+        )
+
+    @staticmethod
+    def add(session: Session, pack: CompactPack) -> Sequence[Record]:
+        """Записи пачки в сессию разом, без точек ожидания: писатель положит
+        их одним `append`."""
         added: list[Record] = []
-        for record in [boundary, date, summary_record, *inputs]:
+        for record in pack.records:
             added.append(session.add(record))
 
         return added
 
     def _summary_record(
-        self, session: Session, parent: str, summary: Summarized
+        self, session: Session, parent: str, summary: Summarized, uuid: str
     ) -> UserRecord:
         """Пересказ в обёртке; без начала разговора — с оговоркой об этом."""
         text = summary.text
@@ -903,7 +1090,7 @@ class Compactor:
         )
 
         return UserRecord(
-            uuid=self._ids.uuid(),
+            uuid=uuid,
             parent_uuid=parent,
             timestamp=self._clock.now(),
             session_id=session.id.value,
