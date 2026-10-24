@@ -29,23 +29,41 @@ from collections import Counter
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, ClassVar
+from typing import ClassVar, TypeVar
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
-from pydantic.alias_generators import to_camel
+from pydantic import TypeAdapter
 
 from boba.agent.ids import Clock, IdMint
 from boba.agent.profile import ModelProfile
 from boba.agent.queue import QueueItem, QueueKind
 from boba.agent.records import (
-    AttachmentPayload,
+    AttachmentData,
     AttachmentRecord,
     AttachmentRole,
     ChainRecord,
     CompactBoundaryRecord,
+    DateAttachment,
+    DeferredToolsDeltaAttachment,
+    DeferredToolsRecordAttachment,
+    EnvironmentAttachment,
+    EnvironmentChange,
+    EnvironmentField,
+    EnvironmentSnapshot,
+    InvokedSkill,
+    InvokedSkillsAttachment,
+    MaxTurnsAttachment,
+    McpInstructionsAttachment,
+    ModelAttachment,
+    ModelIdentity,
     OriginKind,
+    PayloadModel,
+    PromptSnapshot,
+    QueuedCommandAttachment,
     RenderedMessage,
-    UserRecord,
+    SkillListingAttachment,
+    SnapshotSkill,
+    SnapshotTool,
+    ToolResultRecord,
 )
 from boba.agent.tags import AgentTag
 from boba.agent.template import AgentTemplate, AgentTemplateFile
@@ -53,46 +71,13 @@ from boba.core.mcp_names import McpToolNames
 
 __all__ = [
     "Announced",
-    "AttachmentKind",
     "ConnectedServer",
     "ContextAttachments",
-    "DateAttachment",
-    "DeferredToolsDeltaAttachment",
-    "DeferredToolsRecordAttachment",
-    "EnvironmentAttachment",
-    "EnvironmentChange",
-    "EnvironmentField",
-    "EnvironmentSnapshot",
-    "InvokedSkill",
-    "InvokedSkillsAttachment",
-    "MaxTurnsAttachment",
-    "McpInstructionsAttachment",
-    "ModelAttachment",
-    "ModelIdentity",
-    "PromptSnapshot",
-    "QueuedCommandAttachment",
     "SkillBudget",
-    "SkillListingAttachment",
-    "SnapshotSkill",
-    "SnapshotTool",
     "ToolPoolChange",
 ]
 
-
-class AttachmentKind(StrEnum):
-    """Виды вложений первой версии."""
-
-    PROMPT_SNAPSHOT = "prompt_snapshot"
-    MODEL = "model"
-    DATE = "date"
-    ENVIRONMENT = "environment"
-    DEFERRED_TOOLS_DELTA = "deferred_tools_delta"
-    DEFERRED_TOOLS_RECORD = "deferred_tools_record"
-    MCP_INSTRUCTIONS_DELTA = "mcp_instructions_delta"
-    SKILL_LISTING = "skill_listing"
-    INVOKED_SKILLS = "invoked_skills"
-    QUEUED_COMMAND = "queued_command"
-    MAX_TURNS_REACHED = "max_turns_reached"
+P = TypeVar("P", bound=PayloadModel)
 
 
 @dataclass(frozen=True)
@@ -102,145 +87,6 @@ class ConnectedServer:
 
     name: str
     instructions: str
-
-
-class PayloadModel(BaseModel):
-    """Основа данных вложения: имена полей на проводе — camelCase."""
-
-    model_config = ConfigDict(
-        alias_generator=to_camel, populate_by_name=True, frozen=True, extra="ignore"
-    )
-
-    def payload(self) -> AttachmentPayload:
-        """Данные вложения в виде, в каком они лягут в журнал: как после JSON."""
-        document = self.model_dump(by_alias=True, mode="json")
-
-        return AttachmentPayload.model_validate(document)
-
-
-class SnapshotTool(PayloadModel):
-    name: str
-    description: str
-    schema_: dict[str, Any] = Field(default_factory=dict, alias="schema")
-
-    def text(self) -> str:
-        """Текст описания для оценки места в окне."""
-        return f"{self.name}: {self.description}"
-
-
-class SnapshotSkill(PayloadModel):
-    name: str
-    description: str
-
-
-class PromptSnapshot(PayloadModel):
-    """Снимок: системный промпт секциями, инструменты, скиллы, модель, режим."""
-
-    type: str = AttachmentKind.PROMPT_SNAPSHOT.value
-    system_prompt: Sequence[str]
-    tools: Sequence[SnapshotTool] = ()
-    skills: Sequence[SnapshotSkill] = ()
-    model: str
-    system_turns: bool
-
-
-class ModelIdentity(PayloadModel):
-    model_id: str
-
-
-class ModelAttachment(PayloadModel):
-    type: str = AttachmentKind.MODEL.value
-    identity: ModelIdentity
-    text: str
-
-
-class DateAttachment(PayloadModel):
-    type: str = AttachmentKind.DATE.value
-    date: str
-    changed: bool
-
-
-class QueuedCommandAttachment(PayloadModel):
-    """Сообщение, подмешанное посреди хода из очереди (раздел 5.7, путь 2)."""
-
-    type: str = AttachmentKind.QUEUED_COMMAND.value
-    prompt: str
-    source_uuid: str
-    origin: OriginKind
-    is_meta: bool
-
-
-class MaxTurnsAttachment(PayloadModel):
-    """Предел шагов хода достигнут; модели не отправляется."""
-
-    type: str = AttachmentKind.MAX_TURNS_REACHED.value
-    max_turns: int
-    turn_count: int
-
-
-class EnvironmentSnapshot(PayloadModel):
-    """Окружение процесса, которое объявляется модели; собирает вход процесса."""
-
-    working_directory: str
-    platform: str
-    shell: str
-    os_version: str
-
-    def same_host(self, other: EnvironmentSnapshot) -> bool:
-        """Платформа, оболочка и ОС не сменились: разницу можно описать полями."""
-        if self.platform != other.platform:
-            return False
-
-        if self.shell != other.shell:
-            return False
-
-        return self.os_version == other.os_version
-
-
-class EnvironmentField(StrEnum):
-    """Поля окружения, у которых бывает разница."""
-
-    WORKING_DIRECTORY = "workingDirectory"
-
-
-class EnvironmentChange(PayloadModel):
-    field: EnvironmentField
-    previous: str = Field(
-        validation_alias=AliasChoices("from", "previous"), serialization_alias="from"
-    )
-
-
-class EnvironmentAttachment(PayloadModel):
-    """Окружение: полный блок при первом появлении, разница полей — потом."""
-
-    type: str = AttachmentKind.ENVIRONMENT.value
-    snapshot: EnvironmentSnapshot
-    changes: Sequence[EnvironmentChange] | None = None
-
-
-class DeferredToolsDeltaAttachment(PayloadModel):
-    """Изменение набора инструментов относительно объявленного, одними
-    именами: added — отложенные, которые стали доступны через ToolSearch
-    (readded среди них — те, что разговор уже объявлял и потом снимал: их
-    строк в added_lines нет); surfaced — инструменты с полным определением,
-    появившиеся посреди сессии; removed — снятые. tool_search_absent —
-    отложенных не осталось, ToolSearch в запросе нет."""
-
-    type: str = AttachmentKind.DEFERRED_TOOLS_DELTA.value
-    added_names: Sequence[str] = ()
-    added_lines: Sequence[str] = ()
-    removed_names: Sequence[str] = ()
-    readded_names: Sequence[str] = ()
-    surfaced_names: Sequence[str] = ()
-    tool_search_absent: bool = False
-
-
-class DeferredToolsRecordAttachment(PayloadModel):
-    """Определения загруженных отложенных инструментов, которые впервые ушли
-    в запрос; модели не отправляется."""
-
-    type: str = AttachmentKind.DEFERRED_TOOLS_RECORD.value
-    entries: Sequence[SnapshotTool]
 
 
 @dataclass(frozen=True)
@@ -288,43 +134,6 @@ class Wording:
     load: ToolWording
 
 
-class McpInstructionsAttachment(PayloadModel):
-    """Изменение инструкций серверов MCP относительно объявленного: блоки
-    `## <сервер>` появившихся серверов и серверов с новым текстом, имена
-    отключившихся (docs/prompt_assembly, mcp_instructions_delta)."""
-
-    type: str = AttachmentKind.MCP_INSTRUCTIONS_DELTA.value
-    added_names: Sequence[str] = ()
-    added_blocks: Sequence[str] = ()
-    added_server_instructions: Sequence[str] = ()
-    removed_names: Sequence[str] = ()
-
-
-class SkillListingAttachment(PayloadModel):
-    """Список скиллов: первый раз все, дальше только новые имена."""
-
-    type: str = AttachmentKind.SKILL_LISTING.value
-    content: str
-    skill_count: int
-    is_initial: bool
-    names: Sequence[str]
-
-
-class InvokedSkill(PayloadModel):
-    """Скилл, вызванный до сжатия, и текст, который модель тогда получила."""
-
-    name: str
-    content: str
-
-
-class InvokedSkillsAttachment(PayloadModel):
-    """Скиллы, вызванные в пересказанной части разговора, — заново после
-    границы сжатия, новые первыми (docs/prompt_assembly, invoked_skills)."""
-
-    type: str = AttachmentKind.INVOKED_SKILLS.value
-    skills: Sequence[InvokedSkill]
-
-
 class Announced:
     """Что модели уже объявлено: последние снимок, модель и дата разговора."""
 
@@ -332,38 +141,28 @@ class Announced:
         self._conversation = conversation
 
     def snapshot(self) -> PromptSnapshot | None:
-        record = self._last(AttachmentKind.PROMPT_SNAPSHOT)
-        if record is None:
-            return None
-
-        return PromptSnapshot.model_validate(record.attachment.model_dump())
+        return self._last(PromptSnapshot)
 
     def model_id(self) -> str | None:
-        record = self._last(AttachmentKind.MODEL)
-        if record is None:
+        model = self._last(ModelAttachment)
+        if model is None:
             return None
-
-        model = ModelAttachment.model_validate(record.attachment.model_dump())
 
         return model.identity.model_id
 
     def date(self) -> str | None:
-        record = self._last(AttachmentKind.DATE)
-        if record is None:
+        date = self._last(DateAttachment)
+        if date is None:
             return None
 
-        return DateAttachment.model_validate(record.attachment.model_dump()).date
+        return date.date
 
     def environment(self) -> EnvironmentSnapshot | None:
-        record = self._last(AttachmentKind.ENVIRONMENT)
-        if record is None:
+        environment = self._last(EnvironmentAttachment)
+        if environment is None:
             return None
 
-        attachment = EnvironmentAttachment.model_validate(
-            record.attachment.model_dump()
-        )
-
-        return attachment.snapshot
+        return environment.snapshot
 
     def inline_names(self) -> frozenset[str] | None:
         """Инструменты, которые уходят полным определением: последний
@@ -382,7 +181,7 @@ class Announced:
         """Отложенные инструменты, объявленные модели: свёртка вложений
         deferred_tools_delta разговора."""
         pool: set[str] = set()
-        for delta in self._tool_deltas():
+        for delta in self._all(DeferredToolsDeltaAttachment):
             pool.update(delta.added_names)
             pool.difference_update(delta.removed_names)
 
@@ -401,7 +200,7 @@ class Announced:
         """Имена, которые разговор объявлял и потом снял разницей, а заново
         с тех пор не объявлял."""
         withdrawn: set[str] = set()
-        for delta in self._tool_deltas():
+        for delta in self._all(DeferredToolsDeltaAttachment):
             withdrawn.difference_update(delta.added_names)
             withdrawn.difference_update(delta.surfaced_names)
             withdrawn.update(delta.removed_names)
@@ -417,10 +216,7 @@ class Announced:
         """Определения загруженных отложенных, записанные разговором по
         имени; позднее определение заменяет раннее."""
         definitions: dict[str, SnapshotTool] = {}
-        for record in self._of_kind(AttachmentKind.DEFERRED_TOOLS_RECORD):
-            entries = DeferredToolsRecordAttachment.model_validate(
-                record.attachment.model_dump()
-            )
+        for entries in self._all(DeferredToolsRecordAttachment):
             for tool in entries.entries:
                 definitions[tool.name] = tool
 
@@ -469,40 +265,11 @@ class Announced:
 
         return missing
 
-    def _discovered_names(self) -> Iterator[str]:
-        for record in self._conversation:
-            if isinstance(record, CompactBoundaryRecord):
-                yield from record.compact_metadata.pre_compact_discovered_tools
-                continue
-
-            if not isinstance(record, UserRecord):
-                continue
-
-            for result in record.message.tool_results():
-                yield from result.references()
-
-    def _of_kind(self, kind: AttachmentKind) -> Iterator[AttachmentRecord]:
-        for record in self._conversation:
-            if not isinstance(record, AttachmentRecord):
-                continue
-
-            if record.attachment.type == kind.value:
-                yield record
-
     def instructions(self) -> Mapping[str, str]:
         """Объявленные инструкции серверов MCP по имени сервера: свёртка
         вложений mcp_instructions_delta разговора."""
         announced: dict[str, str] = {}
-        for record in self._conversation:
-            if not isinstance(record, AttachmentRecord):
-                continue
-
-            if record.attachment.type != AttachmentKind.MCP_INSTRUCTIONS_DELTA.value:
-                continue
-
-            delta = McpInstructionsAttachment.model_validate(
-                record.attachment.model_dump()
-            )
+        for delta in self._all(McpInstructionsAttachment):
             texts = zip(delta.added_names, delta.added_server_instructions, strict=True)
             for name, text in texts:
                 announced[name] = text
@@ -512,36 +279,42 @@ class Announced:
 
         return announced
 
-    def _tool_deltas(self) -> Iterator[DeferredToolsDeltaAttachment]:
-        for record in self._of_kind(AttachmentKind.DEFERRED_TOOLS_DELTA):
-            yield DeferredToolsDeltaAttachment.model_validate(
-                record.attachment.model_dump()
-            )
-
     def skill_names(self) -> frozenset[str]:
         """Имена скиллов, уже перечисленных модели в этом разговоре."""
         names: set[str] = set()
-        for record in self._conversation:
-            if not isinstance(record, AttachmentRecord):
-                continue
-
-            if record.attachment.type != AttachmentKind.SKILL_LISTING.value:
-                continue
-
-            listing = SkillListingAttachment.model_validate(
-                record.attachment.model_dump()
-            )
+        for listing in self._all(SkillListingAttachment):
             names.update(listing.names)
 
         return frozenset(names)
 
-    def _last(self, kind: AttachmentKind) -> AttachmentRecord | None:
+    def _discovered_names(self) -> Iterator[str]:
+        for record in self._conversation:
+            if isinstance(record, CompactBoundaryRecord):
+                yield from record.compact_metadata.pre_compact_discovered_tools
+                continue
+
+            if not isinstance(record, ToolResultRecord):
+                continue
+
+            for result in record.message.tool_results():
+                yield from result.references()
+
+    def _all(self, kind: type[P]) -> Iterator[P]:
+        """Данные вложений вида kind в порядке разговора."""
+        for record in self._conversation:
+            if not isinstance(record, AttachmentRecord):
+                continue
+
+            if isinstance(record.attachment, kind):
+                yield record.attachment
+
+    def _last(self, kind: type[P]) -> P | None:
         for record in reversed(self._conversation):
             if not isinstance(record, AttachmentRecord):
                 continue
 
-            if record.attachment.type == kind.value:
-                return record
+            if isinstance(record.attachment, kind):
+                return record.attachment
 
         return None
 
@@ -604,6 +377,7 @@ class ContextAttachments:
         self._version = version
         self._session_id = session_id
         self._names = McpToolNames()
+        self._data: TypeAdapter[AttachmentData] = TypeAdapter(AttachmentData)
 
     def today(self) -> str:
         return self._clock.now()[: self.DATE_LENGTH]
@@ -612,7 +386,7 @@ class ContextAttachments:
         self, parent: str | None, snapshot: PromptSnapshot
     ) -> AttachmentRecord:
         """Снимок без `rendered`: модели он не отправляется."""
-        return self._silent(parent, snapshot.payload())
+        return self._silent(parent, snapshot)
 
     def model(self, parent: str | None, profile: ModelProfile) -> AttachmentRecord:
         text = self._templates.read(AgentTemplateFile.MODEL_PLAIN).format(
@@ -622,7 +396,7 @@ class ContextAttachments:
             identity=ModelIdentity(model_id=profile.model_id), text=text
         )
 
-        return self._system(parent, attachment.payload(), text)
+        return self._system(parent, attachment, text)
 
     def date(self, parent: str | None, today: str, changed: bool) -> AttachmentRecord:
         template = AgentTemplateFile.DATE
@@ -632,7 +406,7 @@ class ContextAttachments:
         text = self._templates.read(template).format(date=today)
         attachment = DateAttachment(date=today, changed=changed)
 
-        return self._system(parent, attachment.payload(), text)
+        return self._system(parent, attachment, text)
 
     def environment(
         self,
@@ -664,7 +438,7 @@ class ContextAttachments:
         )
         attachment = EnvironmentAttachment(snapshot=current, changes=[change])
 
-        return self._system(parent, attachment.payload(), text)
+        return self._system(parent, attachment, text)
 
     def environment_block(
         self, parent: str | None, current: EnvironmentSnapshot
@@ -675,7 +449,7 @@ class ContextAttachments:
         )
         attachment = EnvironmentAttachment(snapshot=current)
 
-        return self._system(parent, attachment.payload(), text)
+        return self._system(parent, attachment, text)
 
     def deferred_delta(
         self, parent: str | None, change: ToolPoolChange
@@ -721,7 +495,7 @@ class ContextAttachments:
             tool_search_absent=not change.search,
         )
 
-        return self._system(parent, attachment.payload(), "\n\n".join(sections))
+        return self._system(parent, attachment, "\n\n".join(sections))
 
     def deferred_record(
         self, parent: str | None, entries: Sequence[SnapshotTool]
@@ -730,7 +504,7 @@ class ContextAttachments:
         модели запись не отправляется, по ней собирается запрос."""
         attachment = DeferredToolsRecordAttachment(entries=entries)
 
-        return self._silent(parent, attachment.payload())
+        return self._silent(parent, attachment)
 
     def instructions(
         self,
@@ -778,7 +552,7 @@ class ContextAttachments:
             removed_names=removed,
         )
 
-        return self._system(parent, attachment.payload(), "\n\n".join(sections))
+        return self._system(parent, attachment, "\n\n".join(sections))
 
     def _instructed(
         self, connected: Sequence[ConnectedServer], announced: Mapping[str, str]
@@ -921,7 +695,7 @@ class ContextAttachments:
         )
         attachment = InvokedSkillsAttachment(skills=skills)
 
-        return self._system(parent, attachment.payload(), text)
+        return self._system(parent, attachment, text)
 
     def skill_listing(
         self,
@@ -942,7 +716,7 @@ class ContextAttachments:
             content=content, skill_count=len(skills), is_initial=initial, names=names
         )
 
-        return self._system(parent, attachment.payload(), text)
+        return self._system(parent, attachment, text)
 
     def _environment_lines(self, snapshot: EnvironmentSnapshot) -> str:
         lines = [
@@ -979,7 +753,7 @@ class ContextAttachments:
         """Вложение без `rendered`: модели оно не уходит."""
         attachment = MaxTurnsAttachment(max_turns=max_turns, turn_count=turn_count)
 
-        return self._silent(parent, attachment.payload())
+        return self._silent(parent, attachment)
 
     def _queued_one(
         self, parent: str | None, item: QueueItem, agent_name: str, with_user: bool
@@ -1006,13 +780,13 @@ class ContextAttachments:
             timestamp=self._clock.now(),
             session_id=self._session_id,
             version=self._version,
-            attachment=attachment.payload(),
+            attachment=self._written(attachment),
             rendered=[RenderedMessage(content=text)],
             rendered_role=AttachmentRole.USER,
         )
 
     def _system(
-        self, parent: str | None, payload: AttachmentPayload, text: str
+        self, parent: str | None, payload: AttachmentData, text: str
     ) -> AttachmentRecord:
         wrapped = AgentTag.SYSTEM_REMINDER.wrap_block(text)
 
@@ -1022,14 +796,12 @@ class ContextAttachments:
             timestamp=self._clock.now(),
             session_id=self._session_id,
             version=self._version,
-            attachment=payload,
+            attachment=self._written(payload),
             rendered=[RenderedMessage(content=wrapped)],
             rendered_role=AttachmentRole.SYSTEM,
         )
 
-    def _silent(
-        self, parent: str | None, payload: AttachmentPayload
-    ) -> AttachmentRecord:
+    def _silent(self, parent: str | None, payload: AttachmentData) -> AttachmentRecord:
         """Запись без `rendered`: только для журнала и сборщика."""
         return AttachmentRecord(
             uuid=self._ids.uuid(),
@@ -1037,5 +809,12 @@ class ContextAttachments:
             timestamp=self._clock.now(),
             session_id=self._session_id,
             version=self._version,
-            attachment=payload,
+            attachment=self._written(payload),
         )
+
+    def _written(self, payload: AttachmentData) -> AttachmentData:
+        """Данные вложения в том виде, в каком их прочитает загрузчик из
+        журнала: запись в памяти равна записи после перезапуска."""
+        document = payload.model_dump(by_alias=True, mode="json")
+
+        return self._data.validate_python(document)

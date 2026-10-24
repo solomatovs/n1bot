@@ -9,19 +9,21 @@ from boba.agent.history import SessionId
 from boba.agent.records import (
     AssistantMessage,
     AssistantRecord,
-    AttachmentPayload,
     AttachmentRecord,
     CompactBoundaryRecord,
     CompactMetadata,
+    CompactSummaryRecord,
     CompactTrigger,
+    DateAttachment,
     PermissionMode,
     PermissionModeRecord,
     PreservedMessages,
+    PromptRecord,
+    ReplyRecord,
     ReplyStopReason,
     TextBlock,
     Usage,
     UserMessage,
-    UserRecord,
 )
 from boba.agent.session import Session, SessionError
 
@@ -30,24 +32,31 @@ STAMP = "2026-10-10T10:00:00.000Z"
 VERSION = "0.0.26.dev4"
 
 
-def user(uuid: str, parent: str | None, text: str, summary: bool = False) -> UserRecord:
-    flag: bool | None = None
+def user(
+    uuid: str, parent: str | None, text: str, summary: bool = False
+) -> PromptRecord | CompactSummaryRecord:
     if summary:
-        flag = True
+        return CompactSummaryRecord(
+            uuid=uuid,
+            parent_uuid=parent,
+            timestamp=STAMP,
+            session_id=SESSION.value,
+            version=VERSION,
+            message=UserMessage(content=text),
+        )
 
-    return UserRecord(
+    return PromptRecord(
         uuid=uuid,
         parent_uuid=parent,
         timestamp=STAMP,
         session_id=SESSION.value,
         version=VERSION,
         message=UserMessage(content=text),
-        is_compact_summary=flag,
     )
 
 
-def assistant(uuid: str, parent: str | None, text: str) -> AssistantRecord:
-    return AssistantRecord(
+def assistant(uuid: str, parent: str | None, text: str) -> ReplyRecord:
+    return ReplyRecord(
         uuid=uuid,
         parent_uuid=parent,
         timestamp=STAMP,
@@ -91,7 +100,7 @@ def attachment(uuid: str, parent: str | None) -> AttachmentRecord:
         timestamp=STAMP,
         session_id=SESSION.value,
         version=VERSION,
-        attachment=AttachmentPayload(type="date"),
+        attachment=DateAttachment(date="2026-10-10", changed=False),
     )
 
 

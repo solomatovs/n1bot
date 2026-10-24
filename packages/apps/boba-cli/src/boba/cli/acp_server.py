@@ -137,17 +137,23 @@ from boba.agent.permissions import PermissionModeError
 from boba.agent.queue import QueueEntry, QueueKind, QueuePriority, QueueRefusedError
 from boba.agent.records import (
     ApiErrorRecord,
+    ApiFailureRecord,
     AssistantRecord,
+    CallStatus,
     ChainRecord,
     CompactionPhase,
     CompactionRecord,
+    CompactSummaryRecord,
     InformationalRecord,
+    InterruptRecord,
     NoticeLevel,
     PermissionMode,
     Record,
+    ReplyRecord,
     TextBlock,
     ThinkingBlock,
     ToolResultBlock,
+    ToolResultRecord,
     ToolUseBlock,
     UserRecord,
 )
@@ -507,10 +513,7 @@ class OpenCompactions:
             self._follow(record)
             return
 
-        if not isinstance(record, UserRecord):
-            return
-
-        if not record.is_compact_summary:
+        if not isinstance(record, CompactSummaryRecord):
             return
 
         if record.uuid in self._open:
@@ -765,11 +768,12 @@ class AcpMapping:
     }
     MILLIS: ClassVar[float] = 1000.0
 
-    INTERRUPTS: ClassVar[tuple[AgentTemplateFile, ...]] = (
-        AgentTemplateFile.REQUEST_INTERRUPTED,
-        AgentTemplateFile.REQUEST_INTERRUPTED_TOOL_USE,
-    )
-    """Тексты маркеров остановки хода, которые ядро пишет записью user."""
+    CALL_STATUSES: ClassVar[Mapping[CallStatus, ToolStatus]] = {
+        CallStatus.COMPLETED: ToolStatus.COMPLETED,
+        CallStatus.FAILED: ToolStatus.FAILED,
+        CallStatus.CANCELLED: ToolStatus.CANCELLED,
+    }
+    """Исход вызова записи результата → статус вызова ACP."""
 
     COMPACTION_STATUSES: ClassVar[Mapping[CompactionPhase, CompactionUpdateStatus]] = {
         CompactionPhase.STARTED: CompactionUpdateStatus.IN_PROGRESS,
@@ -829,15 +833,12 @@ class AcpMapping:
             yield from self._retry(record)
             return
 
-        if not isinstance(record, AssistantRecord):
-            return
-
-        if not record.is_api_error_message:
+        if not isinstance(record, ApiFailureRecord):
             return
 
         yield self._refusal(record)
 
-    def _refusal(self, record: AssistantRecord) -> schema.SessionNotice:
+    def _refusal(self, record: ApiFailureRecord) -> schema.SessionNotice:
         """Отказ модели: слова человеку — текст записи, причина — её error,
         если он не повторяет текст."""
         texts: list[str] = []
@@ -921,11 +922,11 @@ class AcpMapping:
         )
 
     def tool_results(
-        self, record: UserRecord
+        self, record: ToolResultRecord
     ) -> Sequence[schema.SessionToolCallUpdate]:
         updates: list[schema.SessionToolCallUpdate] = []
         for block in record.message.tool_results():
-            updates.append(self._tool_result(block, record.tool_use_result))
+            updates.append(self._tool_result(block, record))
 
         return updates
 
@@ -935,9 +936,8 @@ class AcpMapping:
         ним ссылки на вложения блоками resource_link; запись вызова локальной
         команды — текстом вызова, каким его набрал пользователь; служебные
         записи в ленту не идут."""
-        results = self.tool_results(record)
-        if results:
-            yield from results
+        if isinstance(record, ToolResultRecord):
+            yield from self.tool_results(record)
             return
 
         text = self.prompt_text(record)
@@ -979,45 +979,27 @@ class AcpMapping:
             yield self.compaction(record)
             return
 
-        if isinstance(record, UserRecord):
-            if record.is_compact_summary:
-                yield self.compacted(record)
-                return
+        if isinstance(record, CompactSummaryRecord):
+            yield self.compacted(record)
+            return
 
+        if isinstance(record, UserRecord):
             yield from self.user_updates(record)
-            if self._interrupted(record):
+            if isinstance(record, InterruptRecord):
                 yield schema.IdleSessionStateUpdate(stop_reason=StopReason.CANCELLED)
 
             return
 
-        if isinstance(record, AssistantRecord):
-            yield from self._replayed_assistant(record, hints)
-
-    def _interrupted(self, record: UserRecord) -> bool:
-        """Запись user — маркер остановки хода пользователем или выключением."""
-        content = record.message.content
-        if not isinstance(content, str):
-            return False
-
-        for marker in self.INTERRUPTS:
-            if content == self._templates.read(marker):
-                return True
-
-        return False
-
-    def _failed(self, record: AssistantRecord) -> Iterator[Update]:
-        """Запись агента об отказе модели — конец хода отказом, как idle
-        живого хода; причину уже несёт пометка записи."""
-        if record.is_api_error_message:
+        if isinstance(record, ApiFailureRecord):
             yield schema.IdleSessionStateUpdate(stop_reason=StopReason.REFUSAL)
-
-    def _replayed_assistant(
-        self, record: AssistantRecord, hints: ToolHintSource
-    ) -> Iterator[Update]:
-        yield from self._failed(record)
-        if record.is_synthetic() and not record.is_aborted_mid_stream:
             return
 
+        if isinstance(record, ReplyRecord):
+            yield from self._replayed_reply(record, hints)
+
+    def _replayed_reply(
+        self, record: ReplyRecord, hints: ToolHintSource
+    ) -> Iterator[Update]:
         message_id = record.message.id
         thoughts: list[ContentBlock] = []
         texts: list[ContentBlock] = []
@@ -1043,31 +1025,18 @@ class AcpMapping:
             yield self.tool_call(block, hints.tool_hints(block.name))
 
     def _tool_result(
-        self, block: ToolResultBlock, stored: Any
+        self, block: ToolResultBlock, record: ToolResultRecord
     ) -> schema.SessionToolCallUpdate:
-        """Итог вызова: текст модели содержимым, ответ tools/call как он
-        записан в `toolUseResult` — `rawOutput`. Без записанного ответа
-        вызов оборван концом хода — `cancelled` без `rawOutput`; заглушка
-        вызова, оборванного выключением агента, — `failed` со своим текстом:
-        исход вызова неизвестен."""
-        status = ToolStatus.COMPLETED
-        if block.is_error:
-            status = ToolStatus.FAILED
-
-        if stored is None:
-            status = ToolStatus.CANCELLED
-
-        stub = self._templates.read(AgentTemplateFile.INTERRUPTED_TOOL_RESULT)
-        if block.text() == stub:
-            status = ToolStatus.FAILED
-
+        """Итог вызова: текст модели содержимым, исход вызова записи —
+        статусом, ответ tools/call как он записан в `toolUseResult` —
+        `rawOutput`."""
         text = schema.TextContentBlock(text=block.text())
 
         return schema.SessionToolCallUpdate(
             tool_call_id=block.tool_use_id,
-            status=status,
+            status=self.CALL_STATUSES[record.status],
             content=[schema.ContentToolCallContent(content=text)],
-            raw_output=stored,
+            raw_output=record.tool_use_result,
         )
 
     def tool_started(self, event: ToolStartedEvent) -> schema.SessionToolCallUpdate:
@@ -1144,7 +1113,7 @@ class AcpMapping:
             compaction_id=record.compaction_id, status=status.value, error=error
         )
 
-    def compacted(self, record: UserRecord) -> schema.SessionCompactionUpdate:
+    def compacted(self, record: CompactSummaryRecord) -> schema.SessionCompactionUpdate:
         """Пересказ — состоявшееся сжатие с ним; id сжатия — uuid пересказа."""
         content = record.message.content
         if not isinstance(content, str):
@@ -3191,10 +3160,10 @@ class SessionRelay(EventSink):
         if isinstance(record, CompactionRecord):
             return [self._mapping.compaction(record)]
 
-        if isinstance(record, UserRecord):
-            if record.is_compact_summary:
-                return self._compacted(record)
+        if isinstance(record, CompactSummaryRecord):
+            return self._compacted(record)
 
+        if isinstance(record, UserRecord):
             self._inserted(record.uuid)
             updates.extend(self._mapping.user_updates(record))
             return updates
@@ -3207,10 +3176,7 @@ class SessionRelay(EventSink):
         if isinstance(record, ApiErrorRecord):
             return True
 
-        if not isinstance(record, AssistantRecord):
-            return False
-
-        return bool(record.is_api_error_message)
+        return isinstance(record, ApiFailureRecord)
 
     def _withdrawn(self) -> Iterator[Update]:
         """Неудачная попытка запроса к модели: её недописанный ответ и
@@ -3224,7 +3190,7 @@ class SessionRelay(EventSink):
         yield schema.AgentThoughtUpdate(message_id=streamed, content=[])
         yield schema.AgentMessageUpdate(message_id=streamed, content=[])
 
-    def _compacted(self, summary: UserRecord) -> Sequence[Update]:
+    def _compacted(self, summary: CompactSummaryRecord) -> Sequence[Update]:
         """Состоявшееся сжатие и заполненность после него."""
         updates: list[Update] = [self._mapping.compacted(summary)]
         usage = self._usage()

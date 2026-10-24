@@ -36,6 +36,7 @@ from boba.agent.records import (
     ApiErrorRecord,
     ApiRequestRecord,
     AssistantRecord,
+    ChainRecord,
     CompactBoundaryRecord,
     CompactionRecord,
     InformationalRecord,
@@ -171,7 +172,7 @@ class RecordKeeper:
     серверов MCP). Создаёт агент на сессию; им пользуются цикл хода и
     исполнитель инструментов."""
 
-    SHOWN: ClassVar[tuple[type[Record], ...]] = (
+    SHOWN: ClassVar[tuple[type[ChainRecord], ...]] = (
         UserRecord,
         AssistantRecord,
         CompactBoundaryRecord,

@@ -15,12 +15,7 @@ from typing import Any, ClassVar
 import pytest
 from test_agent_compaction import journal
 
-from boba.agent.attachments import (
-    Announced,
-    DeferredToolsDeltaAttachment,
-    DeferredToolsRecordAttachment,
-    SnapshotTool,
-)
+from boba.agent.attachments import Announced
 from boba.agent.builder import RequestBuilder
 from boba.agent.events import TurnOutcome
 from boba.agent.history import SessionId
@@ -30,9 +25,12 @@ from boba.agent.records import (
     AttachmentRecord,
     ChainRecord,
     CompactBoundaryRecord,
+    DeferredToolsDeltaAttachment,
+    DeferredToolsRecordAttachment,
     Record,
+    SnapshotTool,
     ToolReferenceBlock,
-    UserRecord,
+    ToolResultRecord,
 )
 from boba.agent.template import AgentTemplate
 from boba.agent.tools import ToolMatcher, ToolSearchInput, ToolSearchOutput
@@ -101,10 +99,10 @@ def attachments(records: Sequence[Record], kind: str) -> list[AttachmentRecord]:
     return found
 
 
-def results(records: Sequence[Record]) -> list[UserRecord]:
-    found: list[UserRecord] = []
+def results(records: Sequence[Record]) -> list[ToolResultRecord]:
+    found: list[ToolResultRecord] = []
     for record in records:
-        if isinstance(record, UserRecord) and record.message.tool_results():
+        if isinstance(record, ToolResultRecord):
             found.append(record)
 
     return found

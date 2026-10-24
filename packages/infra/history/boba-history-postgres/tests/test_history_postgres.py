@@ -36,20 +36,20 @@ from boba.agent.loader import HistoryLoader, LoadReport
 from boba.agent.queue import QueueEntry, QueueKind
 from boba.agent.records import (
     AssistantMessage,
-    AssistantRecord,
     AttachmentRecord,
     ChainRecord,
     CompactBoundaryRecord,
     PermissionBehavior,
     PermissionMode,
     PermissionRule,
+    PromptRecord,
     Record,
     RecordCodec,
+    ReplyRecord,
     ReplyStopReason,
     TextBlock,
     Usage,
     UserMessage,
-    UserRecord,
 )
 from boba.agent.session import Session
 from boba.agent.template import AgentTemplate
@@ -101,24 +101,21 @@ class Journal:
         self._session = Session(session_id)
         self._ids = IdMint()
 
-    def user(
-        self, text: str, tool_use_result: object = None, stamp: str = STAMP
-    ) -> UserRecord:
+    def user(self, text: str, stamp: str = STAMP) -> PromptRecord:
         return self._session.add(
-            UserRecord(
+            PromptRecord(
                 uuid=self._ids.uuid(),
                 parent_uuid=self._session.last_chain_uuid(),
                 timestamp=stamp,
                 session_id=self._session.id.value,
                 version=VERSION,
                 message=UserMessage(content=text),
-                tool_use_result=tool_use_result,
             )
         )
 
-    def assistant(self, text: str) -> AssistantRecord:
+    def assistant(self, text: str) -> ReplyRecord:
         return self._session.add(
-            AssistantRecord(
+            ReplyRecord(
                 uuid=self._ids.uuid(),
                 parent_uuid=self._session.last_chain_uuid(),
                 timestamp=STAMP,

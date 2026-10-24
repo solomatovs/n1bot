@@ -16,31 +16,33 @@ from boba.agent.ids import IdMint, SystemClock
 from boba.agent.records import (
     AssistantBlock,
     AssistantMessage,
-    AssistantRecord,
-    AttachmentPayload,
+    AttachmentData,
     AttachmentRecord,
     AttachmentRole,
+    CallStatus,
     CompactBoundaryRecord,
     CompactMetadata,
+    CompactSummaryRecord,
     CompactTrigger,
-    MessageOrigin,
-    OriginKind,
+    DateAttachment,
     PermissionMode,
     PermissionModeRecord,
     PreservedMessages,
+    PromptRecord,
     QueueOperation,
     QueueOperationRecord,
     Record,
     RenderedMessage,
+    ReplyRecord,
     ReplyStopReason,
     TextBlock,
     ThinkingBlock,
     ToolResultBlock,
+    ToolResultRecord,
     ToolUseBlock,
     Usage,
     UserBlock,
     UserMessage,
-    UserRecord,
 )
 from boba.agent.session import Session
 
@@ -92,27 +94,26 @@ class JournalScript:
 
         return await self._put(record)
 
-    async def prompt(self, text: str | Sequence[UserBlock]) -> UserRecord:
-        record = UserRecord(
+    async def prompt(self, text: str | Sequence[UserBlock]) -> PromptRecord:
+        record = PromptRecord(
             uuid=self._ids.uuid(),
             parent_uuid=self._session.last_chain_uuid(),
             timestamp=self._clock.now(),
             session_id=self._session.id.value,
             version=VERSION,
             message=UserMessage(content=text),
-            origin=MessageOrigin(kind=OriginKind.HUMAN),
         )
 
         return await self._put(record)
 
-    async def attachment(self, kind: str, text: str) -> AttachmentRecord:
+    async def attachment(self, data: AttachmentData, text: str) -> AttachmentRecord:
         record = AttachmentRecord(
             uuid=self._ids.uuid(),
             parent_uuid=self._session.last_chain_uuid(),
             timestamp=self._clock.now(),
             session_id=self._session.id.value,
             version=VERSION,
-            attachment=AttachmentPayload(type=kind),
+            attachment=data,
             rendered=[RenderedMessage(content=text)],
             rendered_role=AttachmentRole.SYSTEM,
         )
@@ -145,7 +146,7 @@ class JournalScript:
         request_id = self._ids.request_id()
         written: list[WrittenCall] = []
         for index, block in enumerate(blocks):
-            record = AssistantRecord(
+            record = ReplyRecord(
                 uuid=self._ids.uuid(),
                 parent_uuid=self._session.last_chain_uuid(),
                 timestamp=self._clock.now(),
@@ -168,9 +169,9 @@ class JournalScript:
 
         return written
 
-    async def tool_result(self, call: WrittenCall, text: str) -> UserRecord:
+    async def tool_result(self, call: WrittenCall, text: str) -> ToolResultRecord:
         block = ToolResultBlock(tool_use_id=call.call_id, content=text)
-        record = UserRecord(
+        record = ToolResultRecord(
             uuid=self._ids.uuid(),
             parent_uuid=self._session.last_chain_uuid(),
             timestamp=self._clock.now(),
@@ -179,13 +180,14 @@ class JournalScript:
             message=UserMessage(content=[block]),
             tool_use_result=text,
             source_tool_assistant_uuid=call.assistant_uuid,
+            status=CallStatus.COMPLETED,
         )
 
         return await self._put(record)
 
     async def compaction(
         self, summary: str, preserved: Sequence[str]
-    ) -> tuple[CompactBoundaryRecord, UserRecord]:
+    ) -> tuple[CompactBoundaryRecord, CompactSummaryRecord]:
         """Граница, пересказ и вложение даты одной пачкой, как пишет агент."""
         logical_parent = self._session.last_chain_uuid()
         summary_uuid = self._ids.uuid()
@@ -214,20 +216,18 @@ class JournalScript:
             timestamp=self._clock.now(),
             session_id=self._session.id.value,
             version=VERSION,
-            attachment=AttachmentPayload(type="date"),
+            attachment=DateAttachment(date="2026-10-10", changed=False),
             rendered=[RenderedMessage(content="Today's date is 2026-10-10.")],
             rendered_role=AttachmentRole.SYSTEM,
         )
         stored_date = self._session.add(date)
-        wrapped = UserRecord(
+        wrapped = CompactSummaryRecord(
             uuid=summary_uuid,
             parent_uuid=stored_date.uuid,
             timestamp=self._clock.now(),
             session_id=self._session.id.value,
             version=VERSION,
             message=UserMessage(content=summary),
-            is_compact_summary=True,
-            is_visible_in_transcript_only=True,
         )
         stored_summary = self._session.add(wrapped)
         await self._store.append(

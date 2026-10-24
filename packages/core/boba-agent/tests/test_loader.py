@@ -19,7 +19,10 @@ from boba.agent.ids import IdMint, SystemClock
 from boba.agent.loader import HistoryLoader, LoadReport
 from boba.agent.records import (
     AssistantRecord,
+    CallStatus,
     ChainRecord,
+    EnvironmentAttachment,
+    EnvironmentSnapshot,
     InformationalRecord,
     NoticeLevel,
     PermissionMode,
@@ -27,7 +30,7 @@ from boba.agent.records import (
     RecordCodec,
     Synthetic,
     ToolDenialKind,
-    UserRecord,
+    ToolResultRecord,
 )
 from boba.agent.session import Session
 from boba.agent.template import AgentTemplate
@@ -37,6 +40,14 @@ pytestmark = pytest.mark.anyio
 
 SESSION = SessionId(value="0f3b2c1e-1111-4222-8333-444455556666")
 VERSION = "0.0.26.dev4"
+ENVIRONMENT = EnvironmentSnapshot.model_validate(
+    {
+        "workingDirectory": "/work",
+        "platform": "linux",
+        "shell": "bash",
+        "osVersion": "Linux 6.18",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -139,7 +150,10 @@ async def written(tmp_path: Path) -> Written:
         await script.permission_mode(PermissionMode.DEFAULT)
         await script.enqueue("list the tables")
         await script.prompt("list the tables")
-        await script.attachment("environment", "# Environment\n - Platform: linux")
+        await script.attachment(
+            EnvironmentAttachment(snapshot=ENVIRONMENT),
+            "# Environment\n - Platform: linux",
+        )
         names = ["pg_tables", "ch_tables"]
         calls = await script.reply("", calls=names, thinking="I need both lists")
         await script.tool_result(calls[0], "pg: users, orders")
@@ -239,7 +253,8 @@ class TestTruncatedJournal:
         session, report = await Resumed(cut_root).load(SESSION)
 
         stub = report.repaired[0]
-        assert isinstance(stub, UserRecord)
+        assert isinstance(stub, ToolResultRecord)
+        assert stub.status is CallStatus.FAILED
         assert stub.tool_denial_kind is ToolDenialKind.INTERRUPTED
         assert stub.tool_use_result is None
         results = stub.message.tool_results()
@@ -361,7 +376,10 @@ class TestDamagedJournal:
 
     async def test_unknown_record_type_is_skipped(self, written: Written) -> None:
         with written.path.open("a", encoding="utf-8") as out:
-            out.write('{"type": "last-prompt", "leafUuid": "x", "seq": 99}\n')
+            out.write(
+                '{"type": "last-prompt", "kind": "last-prompt", "leafUuid": "x", '
+                '"seq": 99}\n'
+            )
 
         session, report = await Resumed(written.path.parent).load(SESSION)
 

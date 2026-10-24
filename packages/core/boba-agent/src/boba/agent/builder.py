@@ -22,14 +22,16 @@ from typing import ClassVar
 
 import mcp_types as mt
 
-from boba.agent.attachments import Announced, AttachmentKind, PromptSnapshot
+from boba.agent.attachments import Announced
 from boba.agent.profile import ModelProfile, ReasoningReturn
 from boba.agent.records import (
+    ApiFailureRecord,
     AssistantRecord,
     AttachmentRecord,
     AttachmentRole,
     ChainRecord,
     LinkText,
+    PromptSnapshot,
     TextBlock,
     ThinkingBlock,
     ToolResultBlock,
@@ -196,10 +198,10 @@ class RequestBuilder:
                 yield record
                 continue
 
-            if isinstance(record, AssistantRecord):
-                if record.is_api_error_message:
-                    continue
+            if isinstance(record, ApiFailureRecord):
+                continue
 
+            if isinstance(record, AssistantRecord):
                 yield record
                 continue
 
@@ -207,7 +209,7 @@ class RequestBuilder:
                 if record.rendered is None:
                     continue
 
-                if record.attachment.type == AttachmentKind.PROMPT_SNAPSHOT.value:
+                if isinstance(record.attachment, PromptSnapshot):
                     continue
 
                 yield record

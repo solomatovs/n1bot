@@ -24,14 +24,17 @@ from boba.agent.loader import HistoryLoader
 from boba.agent.queue import QueueEntry, QueueKind
 from boba.agent.records import (
     ApiErrorRecord,
+    ApiFailureRecord,
     AssistantRecord,
     AttachmentRecord,
     ChainRecord,
+    InterruptRecord,
+    MetaRecord,
     Record,
+    ReplyRecord,
     ReplyStopReason,
     Synthetic,
     TextBlock,
-    UserRecord,
 )
 from boba.agent.session import Session
 from boba.agent.template import AgentTemplate
@@ -258,14 +261,13 @@ class TestOutputLimit:
             if isinstance(r, AssistantRecord)
             and r.message.stop_reason is ReplyStopReason.MAX_TOKENS
         ]
-        metas = [r for r in chain if isinstance(r, UserRecord) and r.is_meta]
+        metas = [r for r in chain if isinstance(r, MetaRecord)]
         assert len(partials) == 4
         assert len(metas) == 3
         assert metas[0].message.content.startswith("Output token limit hit.")  # type: ignore[union-attr]
         assert partials[0].message.content[0].type == "text"
         final = chain[-1]
-        assert isinstance(final, AssistantRecord)
-        assert final.is_api_error_message
+        assert isinstance(final, ApiFailureRecord)
         assert final.message.model == Synthetic.MODEL
         assert len(server.requests()) == 4
         last_messages = server.requests()[-1]["messages"]
@@ -313,8 +315,7 @@ class TestApiErrors:
         troubles = {e.trouble for e in errors}
         assert troubles == {self.TROUBLES[failure]}, errors
         synthetic = first_turn[-1]
-        assert isinstance(synthetic, AssistantRecord)
-        assert synthetic.is_api_error_message
+        assert isinstance(synthetic, ApiFailureRecord)
         told = synthetic.message.content[0]
         assert isinstance(told, TextBlock)
         assert "so this turn has stopped" in told.text, told.text
@@ -356,9 +357,9 @@ class TestCancellation:
         chain = session.chain()
         partial = chain[-2]
         marker = chain[-1]
-        assert isinstance(partial, AssistantRecord)
+        assert isinstance(partial, ReplyRecord)
         assert partial.is_aborted_mid_stream
-        assert isinstance(marker, UserRecord)
+        assert isinstance(marker, InterruptRecord)
         assert marker.message.content == "[Request interrupted by user]"
         assert marker.interrupted_by_shutdown is None
         again = await reloaded(tmp_path / "history", SESSION)
@@ -386,7 +387,7 @@ class TestCancellation:
 
         assert list(served.agent.outcomes) == [TurnOutcome.SHUTDOWN]
         marker = session.chain()[-1]
-        assert isinstance(marker, UserRecord)
+        assert isinstance(marker, InterruptRecord)
         assert marker.interrupted_by_shutdown is True
         again = await reloaded(tmp_path / "history", SESSION)
         stored = len(session.records())
