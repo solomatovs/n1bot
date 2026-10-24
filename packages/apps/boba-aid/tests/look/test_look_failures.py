@@ -76,8 +76,9 @@ class FailLook:
         GROUP,
         "fl1-turn-lost",
         "Процесс агента убит посреди хода",
-        "над полем ввода строка с красной точкой «The connection to the agent "
-        "was lost. Reconnect with the button on the right; …», под ней мелко "
+        "над полем ввода блок с красной рамкой и красноватым фоном, внутри "
+        "«The connection to the agent was lost. Reconnect with the button on "
+        "the right; …», под ним мелко "
         "причина «agent "
         "process 'python…', the turn: the process exited with code -9», и "
         "кнопка «Повторить»; поле ввода заперто; в ленте — вопрос, сообщений об "
@@ -89,7 +90,7 @@ class FailLook:
         "fl2-turn-lost-retried",
         "Тот же тред после «Повторить»",
         "полосы нет, поле ввода открыто; лента собрана из истории агента: "
-        "вопрос и под ним строка с жёлтой точкой в колонке аватара «The "
+        "вопрос и под ним блок с жёлтой рамкой и желтоватым фоном «The "
         "previous turn was cut short: the agent stopped before it finished…»",
         (),
     )
@@ -106,10 +107,11 @@ class FailLook:
         GROUP,
         "fl4-model-retries",
         "Модель трижды ответила 429, ход кончился отказом",
-        "три строки с жёлтой точкой «The model is busy right now. Trying again "
-        "in N seconds (attempt N of 3).», под каждой мелко «HTTP 429 Too Many "
-        "Requests: fake llm: rate limit exceeded, retry later», и строка с "
-        "красной точкой «The model is still busy after several tries, so this "
+        "три блока с жёлтой рамкой и желтоватым фоном «The model is busy "
+        "right now. Trying again in N seconds (attempt N of 3).», внутри "
+        "каждого мелко «HTTP 429 Too Many Requests: fake llm: rate limit "
+        "exceeded, retry later», и блок с "
+        "красной рамкой «The model is still busy after several tries, so this "
         "turn has stopped. …»; сырого JSON и недописанных ответов нет",
         (),
     )
@@ -124,9 +126,9 @@ class FailLook:
         GROUP,
         "fl6-model-cut",
         "Поток модели обрывается на каждой попытке",
-        "ни одного обрывка ответа: только строки повторов «The model's answer "
-        "broke off before it was finished. Trying again …» и строка с красной "
-        "точкой «The model's answer kept breaking off, so this turn has "
+        "ни одного обрывка ответа: только жёлтые блоки повторов «The model's answer "
+        "broke off before it was finished. Trying again …» и блок с красной "
+        "рамкой «The model's answer kept breaking off, so this turn has "
         "stopped. …»",
         (),
     )
@@ -134,7 +136,7 @@ class FailLook:
         GROUP,
         "fl7-mcp-unauthorized",
         "Сервер MCP отвечает 401 страницей HTML",
-        "в ходе строка с жёлтой точкой «The MCP server 'faulty' isn't "
+        "в ходе блок с жёлтой рамкой «The MCP server 'faulty' isn't "
         "available right now, so its tools can't be used in this turn. …», под "
         "ней мелко «HTTP 401 Unauthorized»; адресов и типов исключений нет; "
         "ниже ответ модели",
@@ -160,7 +162,7 @@ class FailLook:
         GROUP,
         "fl10-mcp-lost-and-back",
         "Сервер MCP пропал между ходами и вернулся",
-        "первый ход — ответ; второй начинается строкой с жёлтой точкой «The "
+        "первый ход — ответ; второй начинается блоком с жёлтой рамкой «The "
         "MCP server 'faulty' isn't available right now, …» и мелкой причиной "
         "«no connection»; третий — снова ответ без пометки",
         (),
@@ -169,8 +171,8 @@ class FailLook:
         GROUP,
         "fl11-mcp-and-model",
         "Сервер MCP отвечает 401, модель — 429",
-        "видны обе причины: строка о сервере MCP, строки повторов и строка "
-        "отказа модели; точки одного размера в колонке аватара, ни одна "
+        "видны обе причины: блок о сервере MCP, блоки повторов и блок "
+        "отказа модели; блоки одного вида, ни одна "
         "пометка не затёрла другую",
         (),
     )
@@ -178,7 +180,7 @@ class FailLook:
         GROUP,
         "fl12-start-failed",
         "Программа агента не найдена",
-        "строка с красной точкой «The agent couldn't be started, so the chat "
+        "блок с красной рамкой «The agent couldn't be started, so the chat "
         "can't answer right now. Try again with the button on the right; …», "
         "мелко причина для "
         "администратора «agent process 'boba-missing', start: …» и «Повторить»; "
@@ -189,7 +191,7 @@ class FailLook:
         GROUP,
         "fl13-no-answer",
         "Агент не ответил на initialize",
-        "строка с красной точкой «The agent didn't respond in time, so the chat "
+        "блок с красной рамкой «The agent didn't respond in time, so the chat "
         "can't answer right now. Try again in a moment with the button on the "
         "right.», мелко «agent process "
         "'python…', initialize: no answer within 8 s»; поле заперто",
@@ -199,7 +201,7 @@ class FailLook:
         GROUP,
         "fl14-service-unreachable",
         "Служба агента недоступна при открытии треда",
-        "строка с красной точкой «The agent can't be reached right now, so the "
+        "блок с красной рамкой «The agent can't be reached right now, so the "
         "chat can't answer. …», мелко адрес службы и причина; лента пуста; "
         "поле заперто",
         (),

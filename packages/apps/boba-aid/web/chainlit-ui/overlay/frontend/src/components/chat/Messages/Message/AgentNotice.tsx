@@ -2,8 +2,8 @@ import { cn } from '@/lib/utils';
 import type { ReactNode } from 'react';
 
 // boba: пометка агента (notice ACP), ошибка хода и полоса недоступного агента
-// — одна строка ленты: в колонке аватара мелкая точка цвета важности (токены
-// Consta из ui.css), справа обычный текст человеку и мелкая строка причины
+// — один блок: рамка и лёгкий фон цвета важности (токены Consta из ui.css),
+// внутри текст человеку, мелкая строка причины и кнопки, если они есть
 export type NoticeSeverity = 'info' | 'warning' | 'error';
 
 const SEVERITIES: readonly NoticeSeverity[] = ['info', 'warning', 'error'];
@@ -36,9 +36,6 @@ export function AgentNotice({
       data-agent-notice={severity}
       className={cn('agent-notice', className)}
     >
-      <span className="agent-notice-mark" aria-hidden="true">
-        <span className="agent-notice-dot" />
-      </span>
       <div className="agent-notice-body">
         <div className="agent-notice-text">{text}</div>
         {detail ? <div className="agent-notice-detail">{detail}</div> : null}
