@@ -264,6 +264,8 @@ class RecordingUpdates(TurnRenderer):
         self.forms: list[schema.CreateFormSessionElicitationRequest] = []
         self.replies: list[ElicitationReply] = []
         self.first_update = asyncio.Event()
+        self.inserted_questions: list[str] = []
+        self.withdrawn_questions: list[str] = []
 
     async def update(self, session_id: str, update: SessionUpdate) -> None:
         self.updates.append((session_id, update))
@@ -296,6 +298,13 @@ class RecordingUpdates(TurnRenderer):
 
     def stopping(self, session_id: str) -> None:
         return
+
+    async def inserted(self, question: Question) -> None:
+        self.inserted_questions.append(question.key)
+
+    async def withdrawn(self, questions: Sequence[Question]) -> None:
+        for question in questions:
+            self.withdrawn_questions.append(question.key)
 
     async def question_shown(
         self, anchor: WebsocketSession, live: Collection[str]
@@ -456,7 +465,7 @@ class Agents:
         self, process: AgentProcess, session_id: str, text: str
     ) -> tuple[str, schema.IdleSessionStateUpdate]:
         """Вопрос в сессию до idle: messageId вопроса и idle хода."""
-        ending = self.questions[process].ending(session_id)
+        ending = self.questions[process].ending(session_id).settled
         block = schema.TextContentBlock(text=text)
         message_id = await process.prompt(session_id, [block])
         idle = await asyncio.wait_for(ending, self.TURN_TIMEOUT_SEC)

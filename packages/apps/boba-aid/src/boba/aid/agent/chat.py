@@ -91,6 +91,7 @@ __all__ = [
     "ThreadDeleter",
     "ThreadIdentities",
     "ThreadIdentity",
+    "TurnEnd",
     "TurnRenderer",
     "TurnRenderers",
 ]
@@ -324,6 +325,16 @@ class TurnRenderer(SessionUpdates, Protocol):
         """
 
     @abstractmethod
+    async def inserted(self, question: Question) -> None:
+        """Вопрос из очереди сессии вставлен агентом: шаг вкладки с id
+        вопроса снимается, сам вопрос рисует эхо агента."""
+
+    @abstractmethod
+    async def withdrawn(self, questions: Sequence[Question]) -> None:
+        """Вопросы очереди сняты отменой хода до вставки: их шаги во вкладке
+        снимаются, текст возвращается в поле ввода в порядке отправки."""
+
+    @abstractmethod
     async def cleared(self) -> None:
         """Лента вкладки очищается перед повторным воспроизведением истории.
 
@@ -377,6 +388,92 @@ class MuteUpdates(SessionUpdates):
         return
 
 
+class TurnEnd:
+    """Конец хода вкладки по потоку сессии: idle агента, после которого не
+    ждёт вставки ни один вопрос, поставленный по ходу в очередь сессии.
+
+    Вопрос очереди ждёт от отправки `session/prompt` до ответа и эха его
+    `user_message` — в любом порядке — либо до отказа; idle до этого —
+    граница между ходами агента, а не конец хода вкладки. Создаёт
+    AskedQuestions на ход, вопросы очереди отмечает ThreadAgent; снятые до
+    вставки вопросы копятся в порядке отправки (withdrawn).
+    """
+
+    def __init__(self) -> None:
+        self.settled: asyncio.Future[schema.IdleSessionStateUpdate]
+        self.settled = asyncio.get_running_loop().create_future()
+        self._sending: list[Question] = []
+        self._withdrawn: list[Question] = []
+        self._unechoed: set[str] = set()
+        self._echoed: set[str] = set()
+        self._idle: schema.IdleSessionStateUpdate | None = None
+
+    def sent(self, question: Question) -> bool:
+        """Вопрос уходит в очередь сессии идущего хода; False — ход уже
+        кончился, вопрос начнёт свой."""
+        if self.settled.done():
+            return False
+
+        self._sending.append(question)
+
+        return True
+
+    def answered(self, question: Question, message_id: str) -> None:
+        """Агент вставил вопрос и дал ему message_id."""
+        self._sending.remove(question)
+        if message_id not in self._echoed:
+            self._unechoed.add(message_id)
+
+        self._settle()
+
+    def refused(self, question: Question, withdrawn: bool) -> None:
+        """Вопрос не вставлен; withdrawn — его сняла отмена хода, и текст
+        вернётся в поле ввода."""
+        self._sending.remove(question)
+        if withdrawn:
+            self._withdrawn.append(question)
+
+        self._settle()
+
+    def withdrawn(self) -> Sequence[Question]:
+        """Снятые до вставки вопросы в порядке отправки."""
+        return list(self._withdrawn)
+
+    def update(self, update: SessionUpdate) -> None:
+        if isinstance(update, schema.UserMessageUpdate):
+            self._echoed.add(update.message_id)
+            self._unechoed.discard(update.message_id)
+            self._idle = None
+            return
+
+        if isinstance(update, schema.IdleSessionStateUpdate):
+            self._idle = update
+            self._settle()
+            return
+
+        if isinstance(
+            update,
+            schema.RunningSessionStateUpdate | schema.RequiresActionSessionStateUpdate,
+        ):
+            self._idle = None
+
+    def _settle(self) -> None:
+        if self.settled.done():
+            return
+
+        idle = self._idle
+        if idle is None:
+            return
+
+        if self._sending:
+            return
+
+        if self._unechoed:
+            return
+
+        self.settled.set_result(idle)
+
+
 class AskedQuestions(SessionUpdates):
     """Приёмник-обёртка агента треда: запоминает вложения вопросов, которые
     агент показал вкладке (`user_message` воспроизведения и живое эхо), решает
@@ -387,15 +484,13 @@ class AskedQuestions(SessionUpdates):
         self._inner = inner
         self.links: dict[str, tuple[schema.ResourceContentBlock, ...]] = {}
         """messageId вопроса → его блоки resource_link."""
-        self._ending: dict[str, asyncio.Future[schema.IdleSessionStateUpdate]] = {}
-        """Ожидание конца хода по сессии; ждут одну сессию, idle снимает его."""
+        self._ending: dict[str, TurnEnd] = {}
+        """Конец хода по сессии; ждут одну сессию, его решает idle агента."""
 
-    def ending(self, session_id: str) -> asyncio.Future[schema.IdleSessionStateUpdate]:
-        """Ожидание конца хода сессии session_id: его решает idle агента.
-        Ставится до `session/prompt`, чтобы idle не прошёл мимо; заменяет
-        прежнее ожидание."""
-        ending: asyncio.Future[schema.IdleSessionStateUpdate]
-        ending = asyncio.get_running_loop().create_future()
+    def ending(self, session_id: str) -> TurnEnd:
+        """Конец хода сессии session_id. Ставится до `session/prompt`, чтобы
+        idle не прошёл мимо; заменяет прежний."""
+        ending = TurnEnd()
         self._ending.clear()
         self._ending[session_id] = ending
 
@@ -414,10 +509,11 @@ class AskedQuestions(SessionUpdates):
 
             self.links[update.message_id] = tuple(links)
 
-        if isinstance(update, schema.IdleSessionStateUpdate):
-            ended = self._ending.pop(session_id, None)
-            if ended is not None:
-                ended.set_result(update)
+        ending = self._ending.get(session_id)
+        if ending is not None:
+            ending.update(update)
+            if ending.settled.done():
+                self._ending.pop(session_id)
 
         await self._inner.update(session_id, update)
 
@@ -706,7 +802,7 @@ class StartedTurn:
     а приёмник TurnRenderer возвращает после захвата замка области."""
 
     session_id: str
-    ending: asyncio.Future[schema.IdleSessionStateUpdate]
+    ending: TurnEnd
     key: str
 
 
@@ -720,7 +816,7 @@ class ThreadAgent:
     воспроизведением при возврате к треду; правка вопроса ветвит сессию
     `session/fork`; режим разрешений открытой сессии процесс выставляет по
     ACP (AgentLink: свой процесс или служба). Ход кончается idle агента
-    (AskedQuestions.ending) либо
+    (TurnEnd) либо
     выходом процесса. Вышедший процесс заменяется новым перед следующим ходом:
     запуск, смена процесса и начало хода идут под одним замком вкладки.
 
@@ -748,6 +844,11 @@ class ThreadAgent:
         self._open = False
         """Сессия _session_id открыта у процесса и держит замок истории."""
         self._active: str | None = None
+        self._current: StartedTurn | None = None
+        """Ход вкладки от начала до отпущенного замка области."""
+        self._closed = asyncio.Event()
+        """Хода вкладки нет: следующий вопрос начнёт свой."""
+        self._closed.set()
         self._gate = asyncio.Lock()
         self._restart_pending = False
         self._detached = False
@@ -923,8 +1024,11 @@ class ThreadAgent:
 
     async def ask(self, question: Question) -> None:
         """Ход по вопросу: новая сессия на первом, ветвь на правке; ход
-        кончается idle агента. Кнопка Stop снимает задачу обработчика chainlit: ход
-        всё равно дожидается idle агента после отмены и отмечает его в ленте.
+        кончается idle агента. Вопрос во время идущего хода вкладки уходит в
+        очередь той же сессии агента и ход продолжает; правку во время хода
+        отказывает замок области.
+        Кнопка Stop снимает задачу обработчика chainlit: ход всё равно
+        дожидается idle агента после отмены и отмечает его в ленте.
         Вышедший процесс (упал сам или посреди хода) перед ходом заменяется
         новым; несостоявшаяся замена повторяется перед следующим ходом.
 
@@ -933,38 +1037,72 @@ class ThreadAgent:
         AgentProcessError — процесс умер по ходу.
         LockBusyError — тред уже ведёт другой держатель.
         """
-        async with self._gate:
-            await self._revive()
-            if self._exited():
-                logger.warning(
-                    "thread %s: the agent process exited, a new one starts",
-                    self.thread_id,
-                )
-                self._restart_pending = True
+        while True:
+            async with self._gate:
+                current = self._current
+                if current is None:
+                    turn = await self._begin(question)
+                    break
 
-            if self._restart_pending:
-                await self._restart()
+                # правку идущий ход не ждёт: замок области отказывает ей сразу
+                if question.edited:
+                    turn = await self._begin(question)
+                    break
 
-            turn = await self._renderer.turn_started(question, self._started(question))
-            self._active = turn.session_id
-            logger.info(
-                "thread %s: turn %s starts in session %s",
+                queued = current.ending.sent(question)
+
+            if queued:
+                await self._enqueued(question, current)
+                return
+
+            await self._closed.wait()
+
+        try:
+            await self._carried(turn)
+        finally:
+            self._current = None
+            self._closed.set()
+
+    async def _begin(self, question: Question) -> StartedTurn:
+        """Начало хода под замком вкладки: вышедший процесс заменяется,
+        вопрос уходит агенту под замком области треда."""
+        await self._revive()
+        if self._exited():
+            logger.warning(
+                "thread %s: the agent process exited, a new one starts",
                 self.thread_id,
-                turn.key,
-                turn.session_id,
             )
+            self._restart_pending = True
 
+        if self._restart_pending:
+            await self._restart()
+
+        turn = await self._renderer.turn_started(question, self._started(question))
+        self._active = turn.session_id
+        self._current = turn
+        self._closed.clear()
+        logger.info(
+            "thread %s: turn %s starts in session %s",
+            self.thread_id,
+            turn.key,
+            turn.session_id,
+        )
+
+        return turn
+
+    async def _carried(self, turn: StartedTurn) -> None:
+        """Ход до idle агента, после которого не ждёт ни один вопрос очереди."""
         session_id = turn.session_id
         try:
             idle = await self._idle(turn)
         except asyncio.CancelledError:
-            if not turn.ending.done():
+            if not turn.ending.settled.done():
                 self._renderer.stopping(session_id)
                 self._stopped()
                 await self.process.cancel(session_id)
 
             idle = await self._idle(turn)
-            await self._finish(session_id, idle)
+            await self._finish(turn, idle)
             raise
         except Exception:
             self._active = None
@@ -975,7 +1113,71 @@ class ThreadAgent:
 
             raise
 
-        await self._finish(session_id, idle)
+        await self._finish(turn, idle)
+
+    async def _enqueued(self, question: Question, turn: StartedTurn) -> None:
+        """Вопрос в очередь сессии идущего хода: агент отвечает на
+        `session/prompt`, когда вставил вопрос своим ходом. Обработчик ждёт
+        конца хода вкладки — индикатор хода горит, пока идёт и он; Stop
+        снимает задачу обработчика, но исход вопроса всё равно учитывается.
+
+        Ошибки:
+        AcpClientError — агент отказал в вопросе не отменой хода.
+        """
+        logger.info(
+            "thread %s: question %s goes to the queue of session %s",
+            self.thread_id,
+            question.key,
+            turn.session_id,
+        )
+        blocks = self._blocks(question)
+        request = asyncio.ensure_future(self.process.prompt(turn.session_id, blocks))
+        try:
+            await asyncio.wait((request,))
+        except asyncio.CancelledError:
+            await asyncio.wait((request,))
+            await self._queued_outcome(question, turn, request)
+            raise
+
+        await self._queued_outcome(question, turn, request)
+        await self._closed.wait()
+
+    async def _queued_outcome(
+        self, question: Question, turn: StartedTurn, request: asyncio.Future[str]
+    ) -> None:
+        """Исход вопроса очереди: вставлен — шаг вкладки уступает эху агента;
+        снят отменой хода — вернётся в поле ввода в конце хода.
+
+        Ошибки:
+        AcpClientError — агент отказал в вопросе не отменой хода.
+        """
+        try:
+            key = request.result()
+        except AgentRequestError as exc:
+            withdrawn = exc.code == AcpErrorCode.REQUEST_CANCELLED
+            turn.ending.refused(question, withdrawn)
+            if not withdrawn:
+                raise
+
+            logger.info(
+                "thread %s: queued question %s was withdrawn by the stop: %s",
+                self.thread_id,
+                question.key,
+                exc,
+            )
+            return
+        except AcpClientError:
+            turn.ending.refused(question, False)
+            raise
+
+        turn.ending.answered(question, key)
+        logger.info(
+            "thread %s: queued question %s was inserted as %s",
+            self.thread_id,
+            question.key,
+            key,
+        )
+        await self._renderer.inserted(question)
 
     def _exited(self) -> bool:
         """Процесс вкладки был запущен и больше не отвечает: вышел (упал сам или
@@ -1006,16 +1208,15 @@ class ThreadAgent:
         Ошибки:
         AgentProcessError — процесс вышел посреди хода.
         """
+        settled = turn.ending.settled
         exited = asyncio.ensure_future(self.process.ended())
         try:
-            await asyncio.wait(
-                (turn.ending, exited), return_when=asyncio.FIRST_COMPLETED
-            )
+            await asyncio.wait((settled, exited), return_when=asyncio.FIRST_COMPLETED)
         finally:
             exited.cancel()
 
-        if turn.ending.done():
-            return turn.ending.result()
+        if settled.done():
+            return settled.result()
 
         msg = (
             f"thread {self.thread_id}: the agent process exited during the turn "
@@ -1024,15 +1225,19 @@ class ThreadAgent:
         raise AgentProcessError(msg)
 
     async def _finish(
-        self, session_id: str, idle: schema.IdleSessionStateUpdate
+        self, turn: StartedTurn, idle: schema.IdleSessionStateUpdate
     ) -> None:
         self._active = None
+        session_id = turn.session_id
         # замок истории отпущен раньше замка области: вопрос другой вкладки,
         # пришедший сразу за концом хода, застаёт сессию свободной
         try:
             await self._released()
         finally:
-            await self._renderer.turn_finished(session_id, idle)
+            try:
+                await self._renderer.withdrawn(turn.ending.withdrawn())
+            finally:
+                await self._renderer.turn_finished(session_id, idle)
 
         logger.info(
             "thread %s: turn of session %s finished with %s",

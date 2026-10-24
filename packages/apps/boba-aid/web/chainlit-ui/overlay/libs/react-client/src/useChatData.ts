@@ -38,9 +38,9 @@ const useChatData = () => {
   );
 
   const connected = session?.socket.connected && !session?.error;
+  // boba: идущий ход поле ввода не запирает — сообщение уходит в очередь агента
   const disabled =
     !connected ||
-    loading ||
     historyLoading ||
     askUser?.spec.type === 'file' ||
     askUser?.spec.type === 'action' ||
