@@ -48,8 +48,6 @@
     retryStatuses   = { 429 = 5 }
 
 [model_limits.main]
-    contextWindow   = 128000
-    maxOutputTokens = 8192
     reasoningReturn = "turn"
 
 [agent]
@@ -81,8 +79,8 @@
             provider        = "${llm.main}"
             model           = "${site.models.general}"
             systemPrompt    = "${site.profiles.general.system_prompt}"
-            contextWindow   = "${model_limits.main.contextWindow}"
-            maxOutputTokens = "${model_limits.main.maxOutputTokens}"
+            contextWindow   = "${site.model_limits.general.context_window}"
+            maxOutputTokens = "${site.model_limits.general.max_output_tokens}"
             reasoningReturn = "${model_limits.main.reasoningReturn}"
             [agent.profiles.general.model.sampling]
                 temperature      = 1.0
@@ -96,8 +94,8 @@
             provider        = "${llm.main}"
             model           = "${site.models.search}"
             systemPrompt    = "${site.profiles.search.system_prompt}"
-            contextWindow   = "${model_limits.main.contextWindow}"
-            maxOutputTokens = "${model_limits.main.maxOutputTokens}"
+            contextWindow   = "${site.model_limits.search.context_window}"
+            maxOutputTokens = "${site.model_limits.search.max_output_tokens}"
             reasoningReturn = "${model_limits.main.reasoningReturn}"
     [agent.clients.boba-chat]
         secret = "${keys.agent_client}"

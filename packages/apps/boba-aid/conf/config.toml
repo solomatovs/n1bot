@@ -62,9 +62,14 @@
         retry_statuses    = { 429 = 5 }
         auth              = "${site.llm_auth.${site.llm_auth_method}}"
 
-[model_limits.main]
-    context_window    = 128000
-    max_output_tokens = 8192
+[model_limits.general]
+    context_window    = "${site.model_limits.general.context_window}"
+    max_output_tokens = "${site.model_limits.general.max_output_tokens}"
+    reasoning_return  = "turn"
+
+[model_limits.search]
+    context_window    = "${site.model_limits.search.context_window}"
+    max_output_tokens = "${site.model_limits.search.max_output_tokens}"
     reasoning_return  = "turn"
 
 [profiles.general]
@@ -77,7 +82,7 @@
     provider                = "${llm.main}"
     model                   = "${site.models.general}"
     system_prompt           = "${site.profiles.general.system_prompt}"
-    limits                  = "${model_limits.main}"
+    limits                  = "${model_limits.general}"
     [profiles.general.sampling]
         temperature      = 1.0
         top_p            = 0.95
@@ -95,7 +100,7 @@
     provider              = "${llm.main}"
     model                 = "${site.models.search}"
     system_prompt         = "${site.profiles.search.system_prompt}"
-    limits                  = "${model_limits.main}"
+    limits                = "${model_limits.search}"
     [profiles.search.sampling]
         temperature      = 1.0
         top_p            = 0.95
