@@ -14,6 +14,8 @@
 from __future__ import annotations
 
 import os
+import pwd
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -104,12 +106,16 @@ class MountProbe:
     MOUNTS: ClassVar[str] = "@@mounts@@"
     RESOLV: ClassVar[str] = "@@resolv@@"
     DATA: ClassVar[str] = "@@data@@"
+    STATUS: ClassVar[str] = "@@status@@"
     SCRIPT: ClassVar[str] = (
         "cat /proc/self/mountinfo; "
         f"echo {MOUNTS}; cat /proc/mounts; "
         f"echo {RESOLV}; cat /etc/resolv.conf; "
-        f"echo {DATA}; cat {DATA_TARGET}/weights.txt"
+        f"echo {DATA}; cat {DATA_TARGET}/weights.txt; "
+        f"echo {STATUS}; cat /proc/self/status"
     )
+    STAND_CODE: ClassVar[str] = "/usr/src"
+    """Бинд кода репозитория, который кладёт сам стенд: в бою его нет."""
 
     def __init__(self, stand: ZygoteStand, tmp_path: Path) -> None:
         fake = tmp_path / "resolv.conf"
@@ -135,7 +141,8 @@ class MountProbe:
 
         self._mountinfo, _, rest = outcome.stdout.partition(f"{self.MOUNTS}\n")
         self._mounts, _, rest = rest.partition(f"{self.RESOLV}\n")
-        self._resolv, _, self._data = rest.partition(f"{self.DATA}\n")
+        self._resolv, _, rest = rest.partition(f"{self.DATA}\n")
+        self._data, _, self._status = rest.partition(f"{self.STATUS}\n")
 
     def _data_image(self, tmp_path: Path) -> str:
         """Ext4-образ данных с одним файлом весов: mke2fs кладёт дерево сам."""
@@ -175,6 +182,22 @@ class MountProbe:
     @property
     def data(self) -> str:
         return self._data
+
+    @property
+    def status(self) -> str:
+        return self._status
+
+    def table_lines(self) -> list[str]:
+        """Строки mountinfo и mounts без бинда кода стенда."""
+        lines: list[str] = []
+        for line in (self._mountinfo + self._mounts).splitlines():
+            fields = line.split()
+            if self.STAND_CODE in fields[1:5]:
+                continue
+
+            lines.append(line)
+
+        return lines
 
     @property
     def data_image_path(self) -> str:
@@ -269,6 +292,22 @@ class TestHostIsMasked:
             return handle.read().strip()
 
 
+class HostOwner:
+    """Признаки пользователя хоста: uid= и gid= в опциях монтирования, число
+    uid в строках Uid/Gid статуса и имя пользователя отдельным словом."""
+
+    def markers(self) -> list[re.Pattern[str]]:
+        uid = os.getuid()
+        gid = os.getgid()
+        user = pwd.getpwuid(uid).pw_name
+        return [
+            re.compile(rf"\buid={uid}\b"),
+            re.compile(rf"\bgid={gid}\b"),
+            re.compile(rf"^(Uid|Gid):.*\b({uid}|{gid})\b"),
+            re.compile(rf"(?<![\w.-]){re.escape(user)}(?![\w.-])"),
+        ]
+
+
 class TestMountinfoIsClean:
     """В таблице монтирования нет ничего хостового: ни путей образов, ни
     host-путей у биндов конфигов."""
@@ -312,6 +351,21 @@ class TestMountinfoIsClean:
         table = mount_probe.mountinfo + mount_probe.mounts
         if mount_probe.data_image_path in table:
             raise AssertionError("путь образа данных виден в таблице монтирования")
+
+    def test_no_host_owner(self, mount_probe: MountProbe) -> None:
+        """Ни uid, ни gid, ни имя пользователя хоста: tmpfs из userns печатала
+        их в опциях, поэтому /tmp, /dev и подмены тела стоят на ramfs."""
+        markers = HostOwner().markers()
+
+        exposed: list[str] = []
+        for line in [*mount_probe.table_lines(), *mount_probe.status.splitlines()]:
+            for marker in markers:
+                if marker.search(line):
+                    exposed.append(line)
+
+        if exposed:
+            listed = "\n".join(exposed)
+            raise AssertionError(f"тело видит владельца на хосте:\n{listed}")
 
     def test_no_host_nodename(self, mount_probe: MountProbe) -> None:
         if os.uname().nodename in mount_probe.mountinfo:

@@ -1281,7 +1281,7 @@ class ZygoteSpawner:
         )
         bare = bare.model_copy(update={"mounts": restored})
 
-        self._call_mounts = self.call_mounts(bare)
+        self._call_mounts = self.call_mounts()
         self._with_images = profile.mounts.workspace is not None
         self._profile = bare
         self._modules = tuple(modules)
@@ -1361,13 +1361,9 @@ class ZygoteSpawner:
         )
 
     @staticmethod
-    def call_mounts(profile: SandboxProfile) -> CallMounts:
-        """Приватные точки вызова: procfs и /tmp с размером из профиля."""
-        return CallMounts(
-            proc=SandboxMount.PROC.value,
-            tmp=SandboxMount.TMP.value,
-            tmp_bytes=profile.mounts.tmp,
-        )
+    def call_mounts() -> CallMounts:
+        """Приватные точки вызова: procfs и /tmp; точки фиксированы песочницей."""
+        return CallMounts(proc=SandboxMount.PROC.value, tmp=SandboxMount.TMP.value)
 
 
 class _RelayTee(StderrTee):
@@ -1412,7 +1408,7 @@ class ZygoteToolCaller(ToolLauncher):
         self._ambient = ambient
         self._sinks = CallSinks()
         self._path_vars = path_vars
-        self._call_mounts = ZygoteSpawner.call_mounts(profile)
+        self._call_mounts = ZygoteSpawner.call_mounts()
 
     @property
     def supervisor(self) -> ZygoteSupervisor:

@@ -19,6 +19,7 @@ from uuid import uuid4
 
 import pytest
 from omegaconf import DictConfig
+from test_sandbox_disguise import HostOwner
 
 from boba.config import bind
 from boba.runtime.launchers import EnvPaths
@@ -162,7 +163,8 @@ class TestMountinfoHasNoHostPaths:
     Источник fuse-корня был путём rootfs.ext4 на хосте, у биндов resolv.conf,
     hosts, krb5.conf и каталогов весов моделей поле root несло host-путь
     (${env.krb}/krb5.conf, ${env.models}/fastembed). Тело не должно видеть ни
-    одного пути [env] развёртывания. Исключение — бинд кода bash-тула, который
+    одного пути [env] развёртывания, ни uid, gid и имени пользователя хоста
+    (их печатала tmpfs из userns). Исключение — бинд кода bash-тула, который
     кладёт сам стенд (SandboxStand.with_shell): в бою его нет.
     """
 
@@ -173,12 +175,14 @@ class TestMountinfoHasNoHostPaths:
         caller_of: CallerFactory,
     ) -> None:
         markers = self._deployment_paths(raw_config)
+        owner = HostOwner().markers()
 
         exposed: list[str] = []
         for section in sections:
             caller = caller_of(section)
             outcome = ShellRun.call_text(
-                caller, "cat /proc/self/mountinfo; cat /proc/mounts"
+                caller,
+                "cat /proc/self/mountinfo; cat /proc/mounts; cat /proc/self/status",
             )
 
             for line in outcome.stdout.splitlines():
@@ -187,6 +191,12 @@ class TestMountinfoHasNoHostPaths:
 
                 for marker in markers:
                     if marker not in line:
+                        continue
+
+                    exposed.append(f"{section.name}: {line[:200]}")
+
+                for pattern in owner:
+                    if not pattern.search(line):
                         continue
 
                     exposed.append(f"{section.name}: {line[:200]}")
