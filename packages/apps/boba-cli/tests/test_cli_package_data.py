@@ -96,7 +96,9 @@ class TestPackageData:
 
         assert surveyed.returncode == 0, surveyed.stderr[-2000:]
         assert surveyed.stdout.splitlines() == [
+            "--include-module=boba.agent",
             "--include-package-data=boba.agent",
+            "--include-module=boba.history.postgres",
             "--include-package-data=boba.history.postgres",
             f"--include-data-files={manifest}=boba/cli/package_data.json",
         ]

@@ -60,6 +60,7 @@ from boba.agent.settings import (
     ProviderKind,
     ProviderSettings,
     SecretKey,
+    SessionsJson,
     SettingsLayer,
 )
 from boba.db.postgres.connection import PostgresConfig
@@ -347,8 +348,14 @@ class EffectiveSettings(BaseModel):
     compaction: CompactionSettings
     limits: TurnLimits
     mcp: McpClientJson
+    sessions: SessionsJson
     env: Mapping[str, str]
     system_prompt: Sequence[str]
+    """Секции промпта настроек: промпт аргумента или файла и дополнения."""
+    appended_prompt: Sequence[str]
+    """Дополнения промпта из аргументов: они идут и за промптом профиля."""
+    argument_prompt: bool
+    """Промпт задан аргументом --system-prompt: он сильнее промпта профиля."""
     skills_dir: str | None
     agent_name: str
     record_requests: bool
@@ -377,6 +384,19 @@ class EffectiveSettings(BaseModel):
             raise SettingsError(msg)
 
         return found
+
+    def system_prompt_of(self, name: str) -> Sequence[str]:
+        """Секции системного промпта сессии на профиле name: свой промпт
+        профиля с дополнениями, иначе промпт настроек; промпт аргумента
+        сильнее промпта профиля."""
+        own = self.models[name].system_prompt
+        if own is None:
+            return self.system_prompt
+
+        if self.argument_prompt:
+            return self.system_prompt
+
+        return [own, *self.appended_prompt]
 
     def public(self) -> dict[str, Any]:
         """Настройки для события `init`: без значений окружения;
@@ -539,10 +559,16 @@ class PostgresBuilder:
                 "password": SecretStr(str(password)),
             }
 
+        pool = settings.pool
         document: dict[str, Any] = {
             **parts,
             "application_name": self.APPLICATION,
             "auth": auth,
+            "pool": {
+                "min_size": pool.min_size,
+                "max_size": pool.max_size,
+                "timeout": pool.timeout_sec,
+            },
         }
         try:
             return PostgresConfig.model_validate(document)
@@ -603,6 +629,12 @@ class Settings:
             layer = self._merge.merged(layer, upper)
 
         return self._effective(layer)
+
+    def effective_of(self, layer: SettingsLayer) -> EffectiveSettings:
+        """Действующие настройки одного готового слоя поверх нижнего слоя по
+        умолчанию, без файлов и аргументов: так их собирает `boba serve` из
+        своего конфига."""
+        return self._effective(self._merge.merged(self._defaults(), layer))
 
     def layer_of(self, document: Mapping[str, Any], what: str) -> SettingsLayer:
         try:
@@ -743,6 +775,10 @@ class Settings:
         if mcp is None:
             mcp = McpClientJson()
 
+        sessions = layer.sessions
+        if sessions is None:
+            sessions = SessionsJson()
+
         agent_name = layer.agent_name
         if agent_name is None:
             agent_name = EffectiveSettings.DEFAULT_AGENT_NAME
@@ -755,8 +791,11 @@ class Settings:
             compaction=compaction,
             limits=limits,
             mcp=mcp,
+            sessions=sessions,
             env=layer.env,
             system_prompt=list(self._system_prompt(layer)),
+            appended_prompt=list(self._appended_prompt()),
+            argument_prompt=self._arguments.system_prompt is not None,
             skills_dir=layer.skills_dir,
             agent_name=agent_name,
             record_requests=self._arguments.record_requests,
@@ -786,6 +825,11 @@ class Settings:
                 self._cwd / layer.system_prompt_file, "the system prompt"
             ).strip()
 
+        yield from self._appended_prompt()
+
+    def _appended_prompt(self) -> Iterator[str]:
+        """Дополнения промпта из аргументов запуска."""
+        arguments = self._arguments
         if arguments.append_system_prompt is not None:
             yield arguments.append_system_prompt
 

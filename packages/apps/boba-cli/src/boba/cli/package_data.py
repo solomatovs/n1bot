@@ -66,6 +66,7 @@ class WheelLayout(StrEnum):
 class NuitkaFlag(StrEnum):
     """Флаги Nuitka, которыми данные пакетов попадают в бинарник."""
 
+    PACKAGE = "--include-module="
     PACKAGE_DATA = "--include-package-data="
     DATA_FILE = "--include-data-files="
 
@@ -130,9 +131,12 @@ class PackageDataSurvey:
         return PackageDataManifest(resources=found)
 
     def flags(self, manifest: PackageDataManifest, written: Path) -> Iterator[str]:
-        """Флаги Nuitka: данные каждого пакета описи и сама опись в данных
-        boba.cli."""
+        """Флаги Nuitka: модуль каждого пакета описи (иначе пакет, которого
+        не импортирует код бинарника, есть только каталогом данных, и
+        importlib.resources его не найдёт), его данные и сама опись в
+        данных boba.cli."""
         for package in manifest.packages():
+            yield f"{NuitkaFlag.PACKAGE.value}{package}"
             yield f"{NuitkaFlag.PACKAGE_DATA.value}{package}"
 
         package = PurePosixPath(*ManifestFile.PACKAGE.value.split("."))
