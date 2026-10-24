@@ -5,3 +5,5 @@ tools            = ["bash"]
 
 [sandbox]
     workspace = true
+    [sandbox.limits]
+        group_memory_bytes = 1073741824

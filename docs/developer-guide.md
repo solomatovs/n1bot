@@ -1360,7 +1360,8 @@ async def redis_restore_stream(
 |---|---|
 | `network` | `true` — сеть хоста; по умолчанию сети нет |
 | `workspace` | `true` — монтирует ext4-образ воркспейса пользователя в `/workspace` и делает его рабочим каталогом; по умолчанию воркспейса нет, рабочий каталог `/tmp` |
-| `binds` | пары `host:guest`, только явные файлы и каталоги хоста, read-only; пути через `${env.*}` |
+| `binds` | пары `host:guest`, только явные файлы и каталоги хоста, read-only; пути через `${env.*}`. Бинд показывает телу в `/proc/self/mountinfo` путь на хосте; файлы `/etc/resolv.conf`, `/etc/hosts`, `/etc/krb5.conf` исполнитель подменяет копией на tmpfs, каталоги так не скрыть |
+| `images` | пары `образ:точка` — ext4-образы данных (веса моделей), read-only; fuse2fs монтирует их один раз на жизнь зиготы с нейтральным источником, пути хоста в `mountinfo` тела нет. Точка обязана быть в образе корня (`data` в `[tool.boba.sandbox]`), образ собирает `make -C build models-image` |
 | `[sandbox.limits]` | `process_memory_bytes` (1 GiB), `process_cpu_sec`, `process_file_bytes`, `process_open_files` (1024), `group_memory_bytes` (1 GiB), `group_cpu_percent` (100 = одно ядро), `group_pids_max` (256), `timeout_sec` (86400) |
 | `[sandbox.zygote]` | `max_start_attempts`, `restart_backoff_sec`, `start_timeout_sec` |
 | `profile` | полный профиль ссылкой `"${sandbox.profiles.<имя>}"` вместо всех ключей выше |
@@ -1372,10 +1373,12 @@ async def redis_restore_stream(
 [sandbox]
     network = true
     binds   = [
-        "${env.models}/fastembed:/var/cache/fastembed",
         "/etc/resolv.conf:/etc/resolv.conf",
         "/etc/hosts:/etc/hosts",
         "${env.krb}/krb5.conf:/etc/krb5.conf"
+    ]
+    images  = [
+        "${env.models}/fastembed.ext4:/var/cache/fastembed"
     ]
     [sandbox.limits]
         process_memory_bytes = 17179869184
@@ -1384,7 +1387,7 @@ async def redis_restore_stream(
 ```
 
 Ориентиры: `pg.toml` — сеть и `krb5.conf`; `bash.toml` — `workspace = true`;
-`doc.toml` — воркспейс и бинд `tessdata`.
+`doc.toml` — воркспейс и образ весов OCR `rapidocr.ext4`.
 
 Тело, убитое лимитом, отчитаться не успевает, и вызов без конверта
 песочница объясняет по коду возврата: 152 — `process_cpu_sec`, 153 —

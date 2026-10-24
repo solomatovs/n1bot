@@ -16,10 +16,12 @@ confluence      = "${confluence}"
 [sandbox]
     network = true
     binds   = [
-        "${env.models}/rapidocr:/var/cache/rapidocr",
         "/etc/resolv.conf:/etc/resolv.conf",
         "/etc/hosts:/etc/hosts",
         "${env.krb}/krb5.conf:/etc/krb5.conf"
+    ]
+    images  = [
+        "${env.models}/rapidocr.ext4:/var/cache/rapidocr"
     ]
     [sandbox.limits]
         process_memory_bytes = 4294967296

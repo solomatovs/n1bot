@@ -276,6 +276,11 @@ IMAGE_INPUTS    := $(SANDBOX_INPUTS) $(WEB_INPUTS)
 MODEL_FILES_fastembed := $(FASTEMBED_STAMPS)
 MODEL_FILES_rapidocr  := $(RAPIDOCR_FILES)
 APP_MODEL_FILES  = $(foreach model,$(APP_MODELS),$(MODEL_FILES_$(model)))
+# модели, которые секции песочницы монтируют образом данных, а не каталогом: тогда в
+# mountinfo тела нет пути хоста. Образ лежит рядом с каталогом, процессный режим читает
+# сам каталог
+MODEL_IMAGES    := fastembed rapidocr
+APP_MODEL_IMAGES = $(if $(APP_SANDBOX),$(filter $(MODEL_IMAGES),$(APP_MODELS)))
 # всё, что качает fetch: входы образов, модели, колесо oracledb для .venv хоста
 INPUTS          := $(IMAGE_INPUTS) $(RAPIDOCR_FILES) $(FASTEMBED_STAMPS) $(ORACLEDB_WHEEL) \
                    $(if $(BIN_ONNX),$(ONNX_DIRS))
@@ -310,7 +315,8 @@ SANDBOX_TOOLS   := $(SANDBOX_DIR)/tools/mke2fs $(SANDBOX_DIR)/tools/mke2fs.conf
 RELEASE_SANDBOX := sandbox/plugins sandbox/workspace.ext4 third/bin/bwrap third/bin/fuse2fs
 RELEASE_PARTS    = $(if $(APP_SANDBOX),$(RELEASE_SANDBOX)) \
                    third/bin/python3 third/lib/libstdc++.so.6 third/lib/libgcc_s.so.1 \
-                   app/bin conf/config.toml $(PARTS_$(APP)) $(APP_MODELS:%=models/%)
+                   app/bin conf/config.toml $(PARTS_$(APP)) $(APP_MODELS:%=models/%) \
+                   $(APP_MODEL_IMAGES:%=models/%.ext4)
 
 # каталоги krb dev-деревьев: точки монтирования в образе корня плагина
 SANDBOX_DEV_KRB := $(foreach app,$(SANDBOX_APPS),$(SRC_DIR)/compose/$(app)/conf/krb)
@@ -416,11 +422,29 @@ fi
 endef
 
 # mke2fs из runtime/sandbox/tools в контейнере glibc: $(1) — скрипт, $(2) — каталог результата,
-# $(3) — аргументы скрипта. root в контейнере нужен, чтобы сохранить владельцев из tar
+# $(3) — аргументы скрипта, $(4) — дополнительные тома docker (источник дерева образа).
+# root в контейнере нужен, чтобы сохранить владельцев из tar
 define mke2fs-run
 docker run --rm -i --network none -e MKE2FS_CONFIG=/tools/mke2fs.conf -e PATH=/tools:/usr/sbin:/usr/bin:/sbin:/bin \
-    -v "$(SANDBOX_DIR)/tools:/tools:ro" -v "$(SCRIPTS_DIR):/scripts:ro" -v "$(2):/out" \
+    -v "$(SANDBOX_DIR)/tools:/tools:ro" -v "$(SCRIPTS_DIR):/scripts:ro" -v "$(2):/out" $(4) \
     --entrypoint sh $(GLIBC_IMAGE) /scripts/$(1) $(3) "$(RUN_OWNER)"
+endef
+
+# образ данных песочницы $(1) из уже скачанного каталога весов $(MODELS_DIR)/$(1): ext4
+# рядом с каталогом; в сеть не ходит, источник монтируется в контейнер read-only.
+# Пересобирается, когда образа нет или в каталоге модели либо в скрипте есть файл новее
+define model-image
+image="$(MODELS_DIR)/$(1).ext4"
+if [ -e "$$image" ] && [ -z "$$(find "$(MODELS_DIR)/$(1)" "$(SCRIPTS_DIR)/mkmodels.sh" -newer "$$image" -print -quit)" ]; then
+    echo "    $$image: модель не менялась, образ готов"
+else
+    echo "== образ данных $(1): $(MODELS_DIR)/$(1) -> $$image =="
+    stage=$$(mktemp -d "$(STAGE_TEMPLATE)")
+    $(call mke2fs-run,mkmodels.sh,$$stage,/out/$(1).ext4 /src $(1) 16,-v "$(MODELS_DIR)/$(1):/src:ro") < /dev/null
+    chmod 0644 "$$stage/$(1).ext4"
+    mv -f "$$stage/$(1).ext4" "$$image"
+    rm -rf "$$stage"
+fi
 endef
 
 # в интернет ходит только fetch (и all, который начинается с него): цель, которой не
@@ -591,6 +615,7 @@ define HELP
 С нуля по порядку (каждый шаг кладёт то, что нужно следующему):
   fetch                 артефакты и модели из сети -> build/src, runtime/models
   sandbox               bwrap, fuse2fs, mke2fs, шаблон workspace.ext4 -> runtime/third, runtime/sandbox
+  models-image          образы данных из скачанных моделей -> runtime/models/<модель>.ext4
   plugin-rootfs-all     образы корней плагинов -> runtime/sandbox/plugins (уезжают в образ mcp)
   test                  собрать оба образа и проверить их: test = build + проверка в образе
   all                   всё это по порядку, затем фронт для отладки (web) и деревья compose (dev)
@@ -606,6 +631,8 @@ define HELP
   sandbox               песочница приложений, исполняющих инструменты: $(SANDBOX_APPS)
   plugin-rootfs         образ корня одного плагина: PLUGIN=<пакет>
   plugin-rootfs-all     образы корней всех плагинов с entry points boba.tools, всегда заново
+  models-image          образы данных песочницы ($(MODEL_IMAGES)): ext4 рядом с каталогом модели,
+                        секции монтируют их read-only вместо каталога; пересобираются по файлам моделей
 
 Закрытый контур:
   offline-check         сборка без интернета: цели OFFLINE_TARGETS (по умолчанию все, кроме
@@ -854,6 +881,17 @@ plugin-rootfs-all: version-check
 	    $(MAKE) -f "$(MAKEFILE)" plugin-rootfs PLUGIN=$$name
 	done
 
+# образы данных песочницы: веса моделей ext4-файлом из уже скачанного; входы проверяются,
+# а не делаются — модели кладёт fetch
+.PHONY: models-image
+models-image: version-check
+	@$(call check,$(SANDBOX_TOOLS),запусти: make sandbox)
+	$(call check,$(foreach model,$(MODEL_IMAGES),$(MODEL_FILES_$(model))),запусти: make fetch)
+	stage=
+	trap 'rm -rf "$$stage"' EXIT
+	$(foreach model,$(MODEL_IMAGES),$(call model-image,$(model))
+	)
+
 # --- тестовые образы -------------------------------------------------------------
 
 # серверы MCP для тестов клиента; контекст — их каталог, пакеты npm ci и dist рендерера
@@ -884,7 +922,7 @@ testapps:
 # сетевого пакета: только файл сокета. Кэш сборщика — своя область CACHE_SCOPE: каждый шаг
 # исполняется заново один раз. Журналы и итог — в OFFLINE_DIR: allow.jsonl, proxy.jsonl,
 # dns.jsonl, marks.jsonl, build.log, report.txt
-OFFLINE_TARGETS ?= sandbox plugin-rootfs-all chainlit-ui web test testapps boba-bin
+OFFLINE_TARGETS ?= sandbox models-image plugin-rootfs-all chainlit-ui web test testapps boba-bin
 OFFLINE_DIR     ?= $(RELEASE_DIR)/offline-check
 OFFLINE_NAME    := boba-offline-check
 OFFLINE_PORT    := 3128
@@ -1024,14 +1062,16 @@ build: version-check
 # биндами. Сети у контейнера нет: модель хода агента живёт в нём же
 test: build
 	@$(call check,$(APP_MODEL_FILES),запусти: make fetch)
+	$(call check,$(APP_MODEL_IMAGES:%=$(MODELS_DIR)/%.ext4),запусти: make models-image)
 	echo "== проверка образа $(IMAGE) =="
 	env_file=$$(mktemp)
 	trap 'rm -f "$$env_file"' EXIT
 	$(call app-env,$(DEST_DIR),$(DEST_DIR)/data) > "$$env_file"
 	docker run --rm -i --network none --env-file "$$env_file" --tmpfs "$(DEST_DIR)/data:uid=1000,gid=1000" \
 	    $(foreach model,$(APP_MODELS),-v "$(MODELS_DIR)/$(model):$(DEST_DIR)/models/$(model):ro") \
+	    $(foreach model,$(APP_MODEL_IMAGES),-v "$(MODELS_DIR)/$(model).ext4:$(DEST_DIR)/models/$(model).ext4:ro") \
 	    --entrypoint sh $(IMAGE) \
-	    -c '"$$PYTHONHOME/bin/python3" - --app $(APP) --base $(DEST_DIR) --names $(DEST_DIR)/app/packages.txt $(if $(APP_SANDBOX),--sandbox --ocr $(notdir $(RAPIDOCR_FILES)))' \
+	    -c '"$$PYTHONHOME/bin/python3" - --app $(APP) --base $(DEST_DIR) --names $(DEST_DIR)/app/packages.txt $(if $(APP_SANDBOX),--sandbox --ocr $(notdir $(RAPIDOCR_FILES)) --model-images $(APP_MODEL_IMAGES))' \
 	    < "$(TEST_DIR)/bobacheck.py"
 
 # дерево установки из готового образа: пути и шебанги переводятся с DEST_DIR на INSTALL_DIR
@@ -1041,12 +1081,16 @@ release:
 	    exit 1
 	fi
 	$(call check,$(APP_MODEL_FILES),запусти: make fetch)
+	$(call check,$(APP_MODEL_IMAGES:%=$(MODELS_DIR)/%.ext4),запусти: make models-image)
 	echo "== релиз $(APP) ($(INSTANCE)) из образа $(IMAGE) -> $(OUT) =="
 	rm -rf "$(OUT)"
 	mkdir -p "$(OUT)/conf" "$(OUT)/models"
 	$(call image-copy,$(IMAGE),$(DEST_DIR)/.,$(OUT)/)
 	for model in $(APP_MODELS); do
 	    cp -a "$(MODELS_DIR)/$$model" "$(OUT)/models/$$model"
+	done
+	for model in $(APP_MODEL_IMAGES); do
+	    cp "$(MODELS_DIR)/$$model.ext4" "$(OUT)/models/$$model.ext4"
 	done
 	# системные библиотеки образа (libssl1.1, libffi6, krb5 ...) в third/lib: нужны там,
 	# где система не та, на которой собран образ, и этих версий в ней нет
@@ -1252,7 +1296,7 @@ vscode:
 # всё целиком: артефакты, песочница, образы корней плагинов, фронт для отладки, образы
 # с проверкой и compose-деревья всех приложений
 .PHONY: all
-all: fetch sandbox plugin-rootfs-all web
+all: fetch sandbox models-image plugin-rootfs-all web
 	@$(MAKE) -f "$(MAKEFILE)" test APP=
 	$(MAKE) -f "$(MAKEFILE)" dev APP=
 
