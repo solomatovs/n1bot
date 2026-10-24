@@ -6,8 +6,10 @@
 по outputSchema инструмента. Перевод описан в одном месте — ResultWire.
 
 Здесь же модели границы клиент—сервер: адрес окна журнала (JournalRead),
-уведомление об открытом журнале вызова (JournalNotice) и настройки
-расширений сервера (JournalFeature, FilesFeature, ScopeFeature).
+уведомление об открытом журнале вызова (JournalNotice), настройки
+расширений сервера (JournalFeature, FilesFeature, ScopeFeature) и
+расширение команд пользователя (CommandsFeature) с пометкой промпта
+(PromptCommand).
 
 Ошибки:
 ValidationError — настройки расширения не проходят свою модель.
@@ -17,6 +19,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any, ClassVar
 from urllib.parse import quote, urlunsplit
 
@@ -29,10 +32,14 @@ from boba.toolkit.dag import NodeOutcome, ServerFeature
 from boba.toolkit.result import BlockAudience, ContentOut
 
 __all__ = [
+    "CommandAction",
+    "CommandsFeature",
+    "CommandsVersion",
     "FilesFeature",
     "JournalFeature",
     "JournalNotice",
     "JournalRead",
+    "PromptCommand",
     "ResultWire",
     "ScopeFeature",
     "WireResult",
@@ -138,6 +145,70 @@ class ScopeFeature(ServerFeature):
         """Параметры схемы инструмента schema с пометкой области: имя →
         значение пометки."""
         return SchemaMark.marked(schema, self.mark)
+
+
+class CommandsVersion(StrEnum):
+    """Редакции расширения команд пользователя (CommandsFeature)."""
+
+    V2026_10_24 = "2026-10-24"
+
+
+class CommandAction(StrEnum):
+    """Что делает команда, помеченная расширением CommandsFeature."""
+
+    APP = "app"
+    """Открывает приложение MCP Apps инструмента, модель не участвует."""
+
+
+class PromptCommand(BaseModel):
+    """Пометка промпта расширением CommandsFeature: команда action ведёт к
+    инструменту tool того же сервера, у которого есть приложение MCP Apps
+    (_meta.ui.resourceUri) и "app" в visibility. Аргументы промпта —
+    аргументы этого вызова. Сервер кладёт пометку в _meta промпта (meta),
+    клиент разбирает её из prompts/list (CommandsFeature.command)."""
+
+    model_config = ConfigDict(frozen=True, extra="ignore")
+
+    action: CommandAction
+    tool: str = Field(min_length=1)
+
+    def meta(self) -> dict[str, Any]:
+        """_meta промпта с этой пометкой."""
+        return {CommandsFeature.ID: self.model_dump(mode="json")}
+
+
+class CommandsFeature(ServerFeature):
+    """Настройки расширения «команды пользователя».
+
+    Клиент и сервер объявляют его в своих возможностях одинаково — редакцией
+    version; действует оно в подключении, где его объявили обе стороны.
+    Сервер помечает в prompts/list промпты, которые ведут не к модели, а в
+    приложение MCP Apps (PromptCommand в _meta промпта под ключом ID). Клиент
+    с расширением по такой команде сам зовёт tools/call названного
+    инструмента и рисует его приложение; клиент без расширения отдаёт промпт
+    модели как обычный, поэтому prompts/get помеченного промпта — обычная
+    инструкция модели вызвать тот же инструмент.
+    """
+
+    ID: ClassVar[str] = "com.boba/commands"
+
+    version: CommandsVersion
+
+    def command(self, prompt: mt.Prompt) -> PromptCommand | None:
+        """Пометка промпта prompt; None — промпт обычный.
+
+        Ошибки:
+        ValidationError — пометка не по модели PromptCommand.
+        """
+        meta = prompt.meta
+        if meta is None:
+            return None
+
+        marked = meta.get(self.ID)
+        if marked is None:
+            return None
+
+        return PromptCommand.model_validate(marked)
 
 
 class JournalRead(BaseModel):

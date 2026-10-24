@@ -1,8 +1,10 @@
 """Callback'и chainlit: мост между интерфейсом чата и агентом треда по ACP.
 
 Ход — `session/prompt` агента вкладки, лента рисуется из его уведомлений через
-шину; возврат к треду — `session/resume` после того, как chainlit отдал вкладке
-сам тред; приложения MCP Apps у шагов вызова зовут свой сервер действиями mcp_app_*.
+шину; вопрос-команду «/» сначала получает реестр команд вкладки и отдаёт её
+владельцу; возврат к треду — `session/resume` после того, как chainlit отдал
+вкладке сам тред; приложения MCP Apps у шагов вызова зовут свой сервер
+действиями mcp_app_*.
 """
 
 import logging
@@ -39,6 +41,7 @@ from boba.aid.agent.chat import (
     ThreadIdentity,
 )
 from boba.aid.agent.client import AcpClientError
+from boba.aid.agent.commands import CommandError
 from boba.aid.agent.config import AgentConfig
 from boba.aid.agent.relay import AppAction, AppRequest, McpRelay
 from boba.aid.agent.settings import AgentSettingsError
@@ -134,6 +137,7 @@ class TabAgent:
         AgentSettingsError,
         McpClientError,
         LockBusyError,
+        CommandError,
     )
     """Отказы пути агента, которые уходят в ленту сообщением об ошибке."""
 
@@ -192,12 +196,17 @@ class TabAgent:
                 agent.thread_id,
             )
 
-    async def run(self, identity: ThreadIdentity, question: Question) -> None:
-        """Ход по вопросу: агент вкладки получает `session/prompt`, лента
-        рисуется из его уведомлений через шину; отказ агента или занятый тред
-        уходят в ленту сообщением об ошибке, а при отказе правки вкладка
-        сначала заново рисует беседу из истории — фронт уже обрезал её ленту;
-        не вышло и это — в сообщении обе причины."""
+    async def run(
+        self, identity: ThreadIdentity, question: Question, command: str | None
+    ) -> None:
+        """Ход по вопросу: вопрос-команду (command — команда, выбранная в
+        меню) сначала получает реестр команд вкладки, команду чата или
+        приложения сервера исполняет вкладка без хода; остальное — агенту
+        вкладки `session/prompt`, лента рисуется из его уведомлений через
+        шину. Отказ команды или агента и занятый тред уходят в ленту
+        сообщением об ошибке, а при отказе правки вкладка сначала заново
+        рисует беседу из истории — фронт уже обрезал её ленту; не вышло и
+        это — в сообщении обе причины."""
         thread_id = identity.thread_id
 
         ThreadRoom.activate(thread_id)
@@ -215,9 +224,24 @@ class TabAgent:
             return
 
         try:
-            asked = question
-            if question.edited:
-                asked = agent.edited(question)
+            routed = await agent.routed(question, command)
+        except self.FAILURES as exc:
+            logger.error(
+                "thread %s: command of question %s failed: %s",
+                thread_id,
+                question.key,
+                exc,
+            )
+            await self.failed(str(exc))
+            return
+
+        if routed is None:
+            return
+
+        try:
+            asked = routed
+            if routed.edited:
+                asked = agent.edited(routed)
 
             await agent.ask(asked)
         except self.FAILURES as exc:
@@ -283,7 +307,7 @@ async def on_message(
     identity = tab.identity(selected)
     question = tab.question(msg, identity, config.public_url)
 
-    await tab.run(identity, question)
+    await tab.run(identity, question, msg.command)
 
 
 @chainlit_error_ctx_handler
@@ -299,7 +323,7 @@ async def on_edit(
     tab = TabAgent(agents, registry)
     identity = tab.identity(selected)
 
-    await tab.run(identity, question)
+    await tab.run(identity, question, None)
 
 
 @di_inject

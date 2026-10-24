@@ -631,14 +631,38 @@ class AcpClient(Client):
         return found
 
     def turn_updates_of(self, session_id: str) -> list[Any]:
-        """Обновления хода сессии без session_info_update: те приходят на
-        каждую запись истории и не входят в последовательность хода."""
+        """Обновления хода сессии без session_info_update и объявления
+        команд: первые приходят на каждую запись истории, второе — после
+        каждого открытия сессии, в последовательность хода они не входят."""
         found: list[Any] = []
-        for update in self.updates_of(session_id):
+        for update in self.unannounced_of(session_id):
             if isinstance(update, schema.SessionInfoUpdate):
                 continue
 
             found.append(update)
+
+        return found
+
+    def unannounced_of(self, session_id: str) -> list[Any]:
+        """Обновления сессии без available_commands_update: его агент шлёт
+        после каждого ответа на `session/new|resume|fork`."""
+        found: list[Any] = []
+        for update in self.updates_of(session_id):
+            if isinstance(update, schema.AvailableCommandsUpdate):
+                continue
+
+            found.append(update)
+
+        return found
+
+    def unannounced(self) -> list[tuple[str, Any]]:
+        """Обновления всех сессий без available_commands_update."""
+        found: list[tuple[str, Any]] = []
+        for session_id, update in self.updates:
+            if isinstance(update, schema.AvailableCommandsUpdate):
+                continue
+
+            found.append((session_id, update))
 
         return found
 
@@ -2867,7 +2891,7 @@ class TestHistory:
                 session_id=session_id,
                 mcp_servers=[StandRegistration.STAND],
             )
-            assert client.updates == []
+            assert client.unannounced() == []
 
             _, idle = await second.turn(
                 client,
@@ -3096,21 +3120,37 @@ class TestListAndDelete:
 
 
 def update_kinds(frames: Frames, request_method: str) -> list[str]:
-    """Виды `session/update`, пришедших до ответа на последний запрос метода."""
+    """Виды `session/update`, пришедших до ответа на последний запрос метода;
+    объявление команд сессии (available_commands_update) агент шлёт
+    отдельной задачей, до ответа или после, и его здесь нет."""
     request_id = frames.request_id(request_method, -1)
     answered_at = frames.position_of_response(request_id)
     kinds: list[str] = []
     for message in frames.incoming_notifications(answered_at):
-        if message["method"] != "session/update":
+        kind = session_update_kind(message)
+        if kind is None:
             continue
 
-        kinds.append(message["params"]["update"]["sessionUpdate"])
+        kinds.append(kind)
 
-    assert all(
-        m["method"] != "session/update" for m in frames.incoming_after(answered_at)
-    )
+    for message in frames.incoming_after(answered_at):
+        assert session_update_kind(message) is None, message
 
     return kinds
+
+
+def session_update_kind(message: Mapping[str, Any]) -> str | None:
+    """Вид уведомления `session/update` в кадре журнала; None — кадр не
+    уведомление сессии либо объявление её команд."""
+    if message["method"] != "session/update":
+        return None
+
+    kind = str(message["params"]["update"]["sessionUpdate"])
+    announced = schema.AvailableCommandsUpdate(available_commands=[])
+    if kind == announced.session_update:
+        return None
+
+    return kind
 
 
 def option_of(
@@ -3134,6 +3174,48 @@ def option_values(option: schema.SelectSessionConfigOption) -> list[str]:
         values.append(item.value)
 
     return values
+
+
+class TestSessionCommands:
+    """Свои команды сессии агент объявляет `available_commands_update` после
+    `session/new|resume`; команд промптов серверов в этом списке нет."""
+
+    async def test_new_and_resume_announce_the_agent_commands(
+        self, boba: AcpProcess, registration: StandRegistration, tmp_path: Path
+    ) -> None:
+        client = AcpClient()
+        conn = await boba.start(client, registration)
+        try:
+            await handshake(conn)
+            session = await conn.new_session(cwd=str(tmp_path), mcp_servers=[])
+            session_id = session.session_id
+            await boba.turn(
+                client,
+                session_id,
+                [schema.TextContentBlock(text=ScenarioName.ANSWER.value)],
+            )
+            await conn.close_session(session_id=session_id)
+            await conn.resume_session(
+                cwd=str(tmp_path), session_id=session_id, mcp_servers=[]
+            )
+            await boba.turn(
+                client,
+                session_id,
+                [schema.TextContentBlock(text=ScenarioName.ANSWER.value)],
+            )
+        finally:
+            await conn.close()
+            await boba.close_stdin()
+
+        announced = client.of(schema.AvailableCommandsUpdate)
+        assert len(announced) == 2, announced
+        commands = announced[-1].available_commands
+        assert len(commands) == 1, commands
+        compact = commands[0]
+        assert compact.name == "compact"
+        assert isinstance(compact.input, schema.TextAvailableCommandInput)
+        assert compact.input.hint == "optional instructions for the summary"
+        assert await boba.wait() == 0
 
 
 class TestSessionSettings:
@@ -3179,7 +3261,7 @@ class TestSessionSettings:
                 cwd=str(tmp_path), session_id=session_id, mcp_servers=[]
             )
             self.check_state(resumed, "default", "fake")
-            assert client.updates == []
+            assert client.unannounced() == []
         finally:
             await conn.close()
             await boba.close_stdin()
@@ -3724,7 +3806,7 @@ class TestFork:
             )
             branch_id = forked.session_id
             assert branch_id != session_id
-            assert client.updates_of(branch_id) == []
+            assert client.unannounced_of(branch_id) == []
             assert option_of(forked, ConfigOptionId.MODE).current_value == (
                 "bypassPermissions"
             )
@@ -3868,8 +3950,8 @@ class TestFork:
                 mcp_servers=[],
                 replay_from=self.REPLAY,
             )
-            assert FeedView().render(client.updates_of(branch_id)) == []
-            assert [type(u) for u in client.updates_of(branch_id)] == [
+            assert FeedView().render(client.unannounced_of(branch_id)) == []
+            assert [type(u) for u in client.unannounced_of(branch_id)] == [
                 schema.UsageUpdate
             ]
 

@@ -6,7 +6,7 @@
 (инструкции — вложением хода), читает инструменты и промпты, держит поток
 subscriptions/listen смены списков через ретранслятор и поднимает его снова,
 когда сервер вернулся после обрыва, читает
-ресурсы своими инструментами и раскрывает промпт сервера командой вопроса;
+ресурсы своими инструментами и раскрывает промпт сервера по вопросу-команде;
 ретранслятор передаёт серверу личность агента. Что агент предложил модели и
 что она получила, видно по запросам фейковой модели. Методы, которые агент
 не зовёт сам (completion/complete, подписка на ресурс, просьбы о вводе в
@@ -186,29 +186,27 @@ class TestAgentThroughRelay:
 
         return offered
 
-    async def test_listen_stream_is_raised_again_after_the_server_drops(
-        self, agents: Agents
+    async def test_prompt_changed_after_the_server_drops_reaches_its_command(
+        self, agents: Agents, model: FakeModel
     ) -> None:
-        """Поток subscriptions/listen оборвался вместе с сервером: начало
-        следующего хода, когда сервер снова отвечает, поднимает поток, и
-        смена промптов снова доходит до команд сессии без хода."""
-        process, updates, session_id = await self._session(agents, "relisten")
+        """Сервер упал и вернулся к следующему ходу: смена его промптов
+        после этого доходит до агента, и вопрос-команда нового промпта
+        раскрывается его сообщениями."""
+        process, _, session_id = await self._session(agents, "relisten")
 
         await agents.turn(process, session_id, self._call("mcp__standard__die", {}))
         await agents.turn(process, session_id, ScenarioName.ANSWER.value)
         await agents.turn(
             process, session_id, self._call("mcp__standard__toggle_prompt", {})
         )
-        announced: list[str] = []
-        for _ in range(50):
-            announced = self._commands(updates)[-1:]
-            if announced and "mcp__standard__extra_prompt" in announced[0]:
-                break
+        await agents.turn(
+            process,
+            session_id,
+            f"/mcp__standard__extra_prompt {ScenarioName.ANSWER.value}",
+        )
 
-            await asyncio.sleep(0.1)
-
-        assert announced, self._commands(updates)
-        assert "mcp__standard__extra_prompt" in announced[0], announced
+        read = ModelRequests(model).read()
+        assert "the extra prompt" in read, read
 
     async def test_resources_are_listed_and_read_by_the_agent_tools(
         self, agents: Agents, model: FakeModel
@@ -255,12 +253,13 @@ class TestAgentThroughRelay:
         read = ModelRequests(model).read()
         assert "the server asked for more input" in read, read
 
-    async def test_prompt_of_the_server_is_a_command_of_the_session(
+    async def test_prompt_of_the_server_is_expanded_by_its_command(
         self, agents: Agents, model: FakeModel
     ) -> None:
-        """prompts/list и prompts/get: промпты сервера — команды сессии
-        (available_commands_update), вопрос-команда раскрывается сообщениями
-        промпта в служебный контекст вопроса."""
+        """prompts/list и prompts/get: вопрос-команда с полным именем
+        промпта раскрывается сообщениями промпта в служебный контекст
+        вопроса. Сами промпты агент командами не объявляет — их объявляет
+        сервер, — в списке агента только его собственные команды."""
         process, updates, session_id = await self._session(agents, "prompts")
 
         await agents.turn(
@@ -269,32 +268,30 @@ class TestAgentThroughRelay:
             f"/mcp__standard__greet Bob poem {ScenarioName.ANSWER.value}",
         )
 
-        commands = self._commands(updates)
-        hints = self._hints(updates)
         read = ModelRequests(model).read()
-        assert "mcp__standard__greet" in commands[-1], commands
-        assert hints["mcp__standard__greet"] == "name style (plain|poem|pirate)", hints
+        assert self._commands(updates) == ["compact"], self._commands(updates)
         assert "Greet Bob in the poem" in read, read
         assert "[assistant] Hello, Bob!" in read, read
 
-    async def test_changed_prompt_list_is_announced_again(self, agents: Agents) -> None:
-        """notifications/prompts/list_changed: агент перечитал промпты и
-        снова объявил команды сессии."""
-        process, updates, session_id = await self._session(agents, "prompts-changed")
+    async def test_changed_prompt_list_is_read_again_for_its_command(
+        self, agents: Agents, model: FakeModel
+    ) -> None:
+        """notifications/prompts/list_changed: агент перечитал промпты, и
+        вопрос-команда нового промпта раскрывается его сообщениями, а не
+        уходит модели голым текстом."""
+        process, _, session_id = await self._session(agents, "prompts-changed")
 
         await agents.turn(
             process, session_id, self._call("mcp__standard__toggle_prompt", {})
         )
-        announced: list[str] = []
-        for _ in range(50):
-            announced = self._commands(updates)[-1:]
-            if announced and "mcp__standard__extra_prompt" in announced[0]:
-                break
+        await agents.turn(
+            process,
+            session_id,
+            f"/mcp__standard__extra_prompt {ScenarioName.ANSWER.value}",
+        )
 
-            await asyncio.sleep(0.1)
-
-        assert announced, self._commands(updates)
-        assert "mcp__standard__extra_prompt" in announced[0], announced
+        read = ModelRequests(model).read()
+        assert "the extra prompt" in read, read
 
     async def test_missing_argument_of_a_command_is_refused(
         self, agents: Agents
@@ -306,22 +303,6 @@ class TestAgentThroughRelay:
 
         with pytest.raises(AgentRequestError, match="argument 'name' is required"):
             await process.prompt(session_id, [block])
-
-    @staticmethod
-    def _hints(updates: RecordingUpdates) -> dict[str, str]:
-        """Подсказки ввода команд из последнего объявления: completion/complete
-        сервера дал значения аргументов."""
-        hints: dict[str, str] = {}
-        for _, update in updates.updates:
-            if not isinstance(update, schema.AvailableCommandsUpdate):
-                continue
-
-            hints = {}
-            for command in update.available_commands:
-                if isinstance(command.input, schema.TextAvailableCommandInput):
-                    hints[command.name] = command.input.hint
-
-        return hints
 
     @staticmethod
     def _commands(updates: RecordingUpdates) -> list[str]:

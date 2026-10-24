@@ -4,12 +4,13 @@ ACP → initialize → session/new с выбором профиля агента
 потоки процесса службы, история — в Postgres стенда своим подключением
 (вход билетом Kerberos из кэша стенда). Проверяется: способ входа службы в
 initialize и auth/login; инструмент клиента по MCP-over-ACP (mcp/message
-туда и обратно); профили только по ролям; чужая сессия не видна и не
-открывается; session/close и закрытие подключения закрывают сессии; предел
-сессий; подключение HTTP, брошенное клиентом без DELETE, закрывается по
-простою, а живое с открытым потоком — нет; session/cancel доходит до сессии
-посреди хода; без токена — 401 и
-отказ рукопожатия, токен без профилей — 403."""
+туда и обратно), в том числе у двух вкладок одного пользователя и разных —
+каждый запрос в своё подключение; профили только по ролям; чужая сессия не
+видна и не открывается; session/close и закрытие подключения закрывают
+сессии; предел сессий; подключение HTTP, брошенное клиентом без DELETE,
+закрывается по простою, а живое с открытым потоком — нет; session/cancel
+доходит до сессии посреди хода; без токена — 401 и отказ рукопожатия, токен
+без профилей — 403."""
 
 from __future__ import annotations
 
@@ -582,6 +583,79 @@ class TestSessions:
                 assert idle.stop_reason == StopReason.END_TURN
 
             assert stand.host.sessions() == 2
+        finally:
+            await alice.close()
+            await carol.close()
+
+        await stand.sessions_drop_to(0)
+
+
+class TestTabs:
+    """Две вкладки — два подключения к службе: запрос mcp/message сессии
+    уходит в подключение, которое её открыло, а не в последнее открытое,
+    будь вкладки одного пользователя или разных."""
+
+    async def tool_turn(self, tab: Connected, session_id: str, calls: int) -> None:
+        asked = call("mcp__stand__add", {"a": 2, "b": 2})
+        idle = await asyncio.wait_for(tab.turn(session_id, asked), WAIT_SEC)
+        assert idle.stop_reason == StopReason.END_TURN
+        assert tab.tools.calls == calls
+
+    async def resumed(self, tab: Connected, session_id: str, cwd: Path) -> None:
+        await tab.conn.resume_session(
+            session_id=session_id, cwd=str(cwd), mcp_servers=[StandTools.SERVER]
+        )
+
+    async def test_two_tabs_of_one_user_answer_their_own_tools(
+        self, stands: Stands, tmp_path: Path
+    ) -> None:
+        stand = await stands.start()
+        token = await stand.token("alice", "dev")
+        first = http(stand, token)
+        second = http(stand, token)
+        try:
+            await first.initialize()
+            opened = await first.new_session(tmp_path)
+            await second.initialize()
+            other = await second.new_session(tmp_path)
+
+            await self.tool_turn(first, opened.session_id, 1)
+            await self.tool_turn(second, other.session_id, 1)
+            await asyncio.gather(
+                self.tool_turn(first, opened.session_id, 2),
+                self.tool_turn(second, other.session_id, 2),
+            )
+
+            # сессия открыта на ход: вкладки поочерёдно берут одну и ту же
+            await first.conn.close_session(session_id=opened.session_id)
+            await self.resumed(second, opened.session_id, tmp_path)
+            await self.tool_turn(second, opened.session_id, 3)
+            await second.conn.close_session(session_id=opened.session_id)
+            await self.resumed(first, opened.session_id, tmp_path)
+            await self.tool_turn(first, opened.session_id, 3)
+        finally:
+            await first.close()
+            await second.close()
+
+        await stand.sessions_drop_to(0)
+
+    async def test_tabs_of_two_users_answer_their_own_tools(
+        self, stands: Stands, tmp_path: Path
+    ) -> None:
+        stand = await stands.start()
+        alice = http(stand, await stand.token("alice", "dev"))
+        carol = http(stand, await stand.token("carol", "analyst"))
+        try:
+            await alice.initialize()
+            first = await alice.new_session(tmp_path)
+            await carol.initialize()
+            second = await carol.new_session(tmp_path)
+
+            await asyncio.gather(
+                self.tool_turn(alice, first.session_id, 1),
+                self.tool_turn(carol, second.session_id, 1),
+            )
+            await self.tool_turn(alice, first.session_id, 2)
         finally:
             await alice.close()
             await carol.close()

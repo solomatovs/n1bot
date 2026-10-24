@@ -22,6 +22,7 @@ from boba.aid.agent.chat import (
     ThreadAgentsIndex,
     ThreadDeleter,
 )
+from boba.aid.agent.commands import CommandMenus
 from boba.aid.agent.config import AgentConfig
 from boba.aid.agent.feed import AgentFeeds, BusParts
 from boba.aid.agent.relay import ChatTools, McpRegistrations, McpRelay
@@ -263,6 +264,15 @@ def mcp_relay(  # noqa: PLR0913 — ретранслятор собираетс�
     return McpRelay(registrations, servers, sealing, contexts, chat, canvas, bus, own)
 
 
+def command_menus(
+    servers: Annotated[McpServers, Depends(mcp_servers)],
+    relay: Annotated[McpRelay, Depends(mcp_relay)],
+) -> CommandMenus:
+    """Реестры команд «/» вкладок: серверы MCP профиля, их приложения через
+    ретранслятор и соединения пользователя из хранилища чата."""
+    return CommandMenus(servers, relay, runtime.connection_store_ref)
+
+
 def agent_launcher(  # noqa: PLR0913 — запуск собирается всеми входами процесса
     app_config: Annotated[AppConfig, Depends(get_app_config)],
     config: Annotated[AgentConfig, Depends(agent_config)],
@@ -343,10 +353,11 @@ async def thread_agents(
     meta: Annotated[AgentSessionMeta, Depends(agent_session_meta)],
     index: Annotated[ThreadAgentsIndex, Depends(thread_agents_index)],
     feeds: Annotated[AgentFeeds, Depends(agent_feeds)],
+    menus: Annotated[CommandMenus, Depends(command_menus)],
 ) -> AsyncIterator[ThreadAgents]:
     """Агенты вкладки: процессы живут с DI-контейнером сессии chainlit и
     закрываются вместе с ним."""
-    agents = ThreadAgents(launcher, meta, index, feeds)
+    agents = ThreadAgents(launcher, meta, index, feeds, menus)
     try:
         yield agents
     finally:

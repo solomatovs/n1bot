@@ -113,6 +113,8 @@ from boba.toolkit.dag import CallDag, DagNode, ToolServer
 from boba.toolkit.ports import ProgressReport
 from boba.toolkit.result import ContentMime, ErrorResult
 from boba.toolkit.wire import (
+    CommandsFeature,
+    CommandsVersion,
     FilesFeature,
     JournalFeature,
     JournalNotice,
@@ -865,6 +867,8 @@ class McpServer(Middleware):
     согласование (эпоху выбирает SDK тем, какой крючок зовёт) объявляют
     ровно это: список инструментов не меняется (он зависит только от ролей
     токена, а реестр собран на старте), промптов, логов и подсказок нет.
+    Расширение команд пользователя (CommandsFeature) объявлено: промпт,
+    который открывает приложение сервиса, несёт пометку PromptCommand.meta().
     Подсказки кэша — по природе ответа: описание зависит только от конфига
     (public), список инструментов — от ролей токена и объявленного клиентом
     расширения (private), оба свежи HINT_TTL_MS; журналы идущих вызовов и их
@@ -909,6 +913,8 @@ class McpServer(Middleware):
         self._features = self._features_of(registry)
         self._features[ScopeFeature.ID] = CallFields().feature().settings()
         self._features[FilesFeature.ID] = self._files.feature(upload.name).settings()
+        commands = CommandsFeature(version=CommandsVersion.V2026_10_24)
+        self._features[CommandsFeature.ID] = commands.settings()
         self._journaled = journals.active()
         if self._journaled:
             journal = JournalFeature(

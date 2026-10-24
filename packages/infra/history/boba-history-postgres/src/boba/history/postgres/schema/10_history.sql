@@ -7,7 +7,7 @@ alter table {schema}.session add column if not exists owner text;
 
 create index if not exists session_owner_id_idx on {schema}.session (owner, id);
 
-create table if not exists {schema}.history (
+create table if not exists {schema}.session_records (
     session_id  text        not null references {schema}.session on delete cascade,
     seq         integer     not null,
     type        text        not null,
@@ -28,17 +28,17 @@ comment on column {schema}.session.created_at is
 comment on column {schema}.session.owner is
 'Логин пользователя, которому принадлежит сессия. Процесс агента, запущенный службой от имени пользователя, заводит сессии на него и видит, открывает, ветвит и удаляет только их. Пустое значение означает, что владелец неизвестен: сессию завёл процесс, запущенный по stdio без владельца, или она появилась раньше этой колонки. Такие сессии не видны ни одному пользователю службы, их видят только процессы без владельца; передать сессию пользователю можно, записав его логин в эту колонку.';
 
-comment on table {schema}.history is
+comment on table {schema}.session_records is
 'История сессий агента: по строке на запись журнала в порядке seq внутри сессии. Общие для всех записей поля лежат колонками, всё остальное содержимое записи лежит в record.';
 
-comment on column {schema}.history.seq is
+comment on column {schema}.session_records.seq is
 'Порядковый номер записи в сессии, начиная с 1; его выдаёт сессия агента.';
 
-comment on column {schema}.history.type is
+comment on column {schema}.session_records.type is
 'Вид записи: user, assistant, attachment, system, queue-operation, permission-mode, permission-rule или api-request.';
 
-comment on column {schema}.history.recorded_at is
+comment on column {schema}.session_records.recorded_at is
 'Время, когда агент сделал запись.';
 
-comment on column {schema}.history.record is
+comment on column {schema}.session_records.record is
 'Остальные поля записи в том виде, в каком агент пишет их в журнал JSONL, но без идентификатора сессии, seq, вида и времени: они лежат в колонках этой строки.';

@@ -213,7 +213,7 @@ class FeedTurn:
 
 @pytest.fixture(scope="module")
 def apps_host(tmp_path_factory: pytest.TempPathFactory) -> Iterator[AppsHost]:
-    host = AppsHost(Path(tmp_path_factory.mktemp("look-apps")))
+    host = AppsHost(Path(tmp_path_factory.mktemp("look-apps")), ())
     try:
         host.await_listening()
         yield host

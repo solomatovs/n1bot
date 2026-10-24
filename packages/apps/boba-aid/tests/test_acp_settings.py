@@ -344,7 +344,7 @@ class TestRetiredServers:
         )
         meta = AgentSessionMeta(threads)
         updates = RecordingUpdates()
-        agent = ThreadAgent(identity, launcher, meta, updates)
+        agent = ThreadAgent(identity, launcher, meta, updates, relays.menus(servers))
         try:
             await agent.start()
             first = agent.process._servers[0].server_id
@@ -465,7 +465,13 @@ class TestForkCut:
 
         threads = ThreadsTable(test_postgres, SCHEMA)
         updates = RecordingUpdates()
-        agent = ThreadAgent(identity, launcher, AgentSessionMeta(threads), updates)
+        agent = ThreadAgent(
+            identity,
+            launcher,
+            AgentSessionMeta(threads),
+            updates,
+            relays.menus(servers),
+        )
         try:
             await agent.start()
             assert not agent.process.forks_by_message()
@@ -540,7 +546,11 @@ class ChatLaunch:
             profile=SelectedProfile(name=SignInStand.PROFILE, config=profile),
         )
         agent = ThreadAgent(
-            identity, launcher, AgentSessionMeta(self._threads), updates
+            identity,
+            launcher,
+            AgentSessionMeta(self._threads),
+            updates,
+            self._relays.menus(servers),
         )
         self._agents.append(agent)
 
@@ -967,7 +977,11 @@ class DeletionStand:
         )
         updates = RecordingUpdates()
         agent = ThreadAgent(
-            identity, launcher, AgentSessionMeta(self._threads), updates
+            identity,
+            launcher,
+            AgentSessionMeta(self._threads),
+            updates,
+            self._relays.menus(self._servers),
         )
         try:
             await agent.start()
