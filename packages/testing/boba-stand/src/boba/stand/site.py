@@ -5,8 +5,8 @@ site.toml и stand.toml, которых нет в репозитории. Зна
 сервис (примеры доменов, разбор шаблонов), в конфиг не ходят.
 
 Ошибки:
-StandError — конфиг приложения не читается или в секции [site] нет ключа
-    стенда.
+StandError — конфиг приложения не найден или не читается, или в секции
+    [site] нет ключа стенда.
 """
 
 from __future__ import annotations
@@ -18,7 +18,12 @@ from typing import Any, ClassVar
 from omegaconf import OmegaConf
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError
 
-from boba.runtime.config import AppLayers, ConfigFiles, ConfigLocator
+from boba.runtime.config import (
+    AppLayers,
+    ConfigFiles,
+    ConfigLayoutError,
+    ConfigLocator,
+)
 
 __all__ = ["Stand", "StandError", "StandLayers"]
 
@@ -95,6 +100,14 @@ class Stand(BaseModel):
     )
     krb_ch_keytab: str = ""
 
+    developer: str = Field(
+        pattern=r"^[a-z][a-z0-9_]*$",
+        description=(
+            "Метка разработчика (пользователь машины): по ней названы его база "
+            "aid_<developer> и объекты стенда тестов на общих серверах."
+        ),
+    )
+
     pg_host: str
     pg_addr: str
     pg_port: int
@@ -128,7 +141,12 @@ class Stand(BaseModel):
     @classmethod
     def load(cls) -> Stand:
         """Стенд из конфига приложения; путь берётся так же, как приложением."""
-        files = ConfigLocator.files()
+        try:
+            files = ConfigLocator.files()
+        except ConfigLayoutError as exc:
+            msg = f"stand: locating the application config: {exc}"
+            raise StandError(msg) from exc
+
         try:
             raw = StandLayers.compose(files)
         except Exception as exc:

@@ -128,7 +128,7 @@ def look_llm_port() -> Iterator[int]:
 @pytest.fixture(scope="session")
 def look_db() -> StandDatabase:
     """База стендов вида: тесты сеют в неё треды своего пользователя."""
-    return StandDatabase(StandApp.AID, StandNames().of_tree(LookStand.DATABASE))
+    return StandDatabase(StandApp.AID, StandNames().tree_database(LookStand.DATABASE))
 
 
 @pytest.fixture(scope="session")

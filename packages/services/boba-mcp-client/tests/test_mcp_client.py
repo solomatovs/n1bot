@@ -1780,6 +1780,8 @@ class BobaMcpService:
     HOST: str = "localhost"
     """Имя публичного адреса, который стенд задаёт сервису: издатель токена
     и адрес ресурса обязаны совпадать с тем, как клиент называет сервис."""
+    PREFIX: str = "/mcp"
+    """Префикс сервиса стенда: свой, а не префикс отладки разработчика."""
     PROFILE: str = "general"
     CLIENT: str = "boba-chat"
     THIRD: Path = RUNTIME.third
@@ -1810,7 +1812,8 @@ class BobaMcpService:
             env={
                 EnvOverride.BASE.var: str(debug.base()),
                 EnvOverride.PORT.var: str(self.port),
-                EnvOverride.PUBLIC_URL.var: f"http://{self.HOST}:{self.port}",
+                EnvOverride.URL_PREFIX.var: self.PREFIX,
+                EnvOverride.PUBLIC_URL.var: f"http://{self.HOST}:{self.port}{self.PREFIX}",
                 EnvOverride.TOOL_LAUNCHER.var: "process",
                 "PATH": f"{self.THIRD / 'bin'}:/usr/local/bin:/usr/bin:/bin",
                 "LD_LIBRARY_PATH": str(self.THIRD / "lib"),
@@ -1820,7 +1823,9 @@ class BobaMcpService:
         )
 
     def endpoint(self) -> HttpEndpoint:
-        service = HttpLocation(scheme="http", host=self.HOST, port=self.port, path="")
+        service = HttpLocation(
+            scheme="http", host=self.HOST, port=self.port, path=self.PREFIX
+        )
         auth = ProxyAuth(
             issuer=service,
             client_id=self.CLIENT,
@@ -1828,7 +1833,7 @@ class BobaMcpService:
             secret=self._proxy.secret,
         )
 
-        return HttpEndpoint(service=service, path=f"/mcp/{self.PROFILE}", auth=auth)
+        return HttpEndpoint(service=service, path=f"/{self.PROFILE}", auth=auth)
 
     def stop(self) -> None:
         self._process.terminate()

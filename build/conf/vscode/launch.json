@@ -94,7 +94,7 @@
             "type": "debugpy",
             "request": "launch",
             "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}/compose/ix-fts",
+            "cwd": "${workspaceFolder}/debug/ix-fts",
             "python": "${workspaceFolder}/.venv/bin/python",
             "justMyCode": false,
             "stopOnEntry": false,
@@ -103,7 +103,7 @@
             "args": [
                 "run",
                 "--config",
-                "${workspaceFolder}/compose/ix-fts/conf.toml"
+                "${workspaceFolder}/debug/ix-fts/conf.toml"
             ]
         },
         {
@@ -111,7 +111,7 @@
             "type": "debugpy",
             "request": "launch",
             "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}/compose/pg-meta-scraper",
+            "cwd": "${workspaceFolder}/debug/pg-meta-scraper",
             "python": "${workspaceFolder}/.venv/bin/python",
             "justMyCode": false,
             "stopOnEntry": false,
@@ -120,7 +120,7 @@
             "args": [
                 "run",
                 "--config",
-                "${workspaceFolder}/compose/pg-meta-scraper/conf.toml"
+                "${workspaceFolder}/debug/pg-meta-scraper/conf.toml"
             ]
         },
         {
@@ -128,7 +128,7 @@
             "type": "debugpy",
             "request": "launch",
             "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}/compose/ch-meta-scraper",
+            "cwd": "${workspaceFolder}/debug/ch-meta-scraper",
             "python": "${workspaceFolder}/.venv/bin/python",
             "justMyCode": false,
             "stopOnEntry": false,
@@ -137,7 +137,7 @@
             "args": [
                 "run",
                 "--config",
-                "${workspaceFolder}/compose/ch-meta-scraper/conf.toml"
+                "${workspaceFolder}/debug/ch-meta-scraper/conf.toml"
             ]
         },
         {
@@ -145,7 +145,7 @@
             "type": "debugpy",
             "request": "launch",
             "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}/compose/cfl-indexer",
+            "cwd": "${workspaceFolder}/debug/cfl-indexer",
             "python": "${workspaceFolder}/.venv/bin/python",
             "justMyCode": false,
             "stopOnEntry": false,
@@ -154,7 +154,7 @@
             "args": [
                 "run",
                 "--config",
-                "${workspaceFolder}/compose/cfl-indexer/conf.toml"
+                "${workspaceFolder}/debug/cfl-indexer/conf.toml"
             ]
         },
         {
@@ -162,7 +162,7 @@
             "type": "debugpy",
             "request": "launch",
             "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}/compose/ix-search-lab",
+            "cwd": "${workspaceFolder}/debug/ix-search-lab",
             "python": "${workspaceFolder}/.venv/bin/python",
             "justMyCode": false,
             "stopOnEntry": false,
@@ -170,7 +170,7 @@
             "program": "${workspaceFolder}/packages/apps/ix/ix-search-lab/src/boba/ix_search_lab/server.py",
             "args": [
                 "--config",
-                "${workspaceFolder}/compose/ix-search-lab/conf.toml"
+                "${workspaceFolder}/debug/ix-search-lab/conf.toml"
             ]
         },
         {

@@ -66,8 +66,9 @@ class E2eStand:
 
     Конфиги отладки называют порты, данные и базу интерактивной отладки; стенд
     переписывает их в debug/e2e/<приложение>/conf со своей базой и
-    переопределяет окружением порты и каталоги данных, чтобы прогон шёл рядом
-    с запущенной отладкой. Чат и сервис делят одну базу стенда.
+    переопределяет окружением порты, префиксы, каталоги данных и адрес сервиса
+    (отладка ходит в сервис через nginx), чтобы прогон шёл рядом с запущенной
+    отладкой. Чат и сервис делят одну базу стенда.
     """
 
     ROOT: ClassVar[Path] = REPO / "debug" / "e2e"
@@ -75,10 +76,13 @@ class E2eStand:
     SERVICE_DATA: ClassVar[Path] = ROOT / "mcp" / "data"
     SERVICE_PORT: ClassVar[int] = StandPorts().free()
     SERVICE_HOST: ClassVar[str] = "localhost"
+    SERVICE_SCHEME: ClassVar[str] = "http"
+    SERVICE_PREFIX: ClassVar[str] = "/mcp"
+    APP_PREFIX: ClassVar[str] = "/aid"
     INSTANCE: ClassVar[str] = "e2e"
     SERVICE_LAUNCHER: ClassVar[str] = "sandbox"
     DATA_DIRS: ClassVar[tuple[str, ...]] = ("krb", "dump", "workspace", "tool-logs")
-    DB_NAME: ClassVar[str] = "boba_e2e"
+    DB_NAME: ClassVar[str] = "e2e"
     CONF: ClassVar[str] = "conf"
 
     def prepare(self) -> None:
@@ -86,7 +90,7 @@ class E2eStand:
             for name in self.DATA_DIRS:
                 (data / name).mkdir(parents=True, exist_ok=True)
 
-        database = StandDatabase(StandApp.AID, StandNames().of_tree(self.DB_NAME))
+        database = StandDatabase(StandApp.AID, StandNames().tree_database(self.DB_NAME))
         name = database.prepare()
 
         for app in (StandApp.AID, StandApp.MCP):
@@ -102,11 +106,13 @@ class E2eStand:
         return StandFiles(self.ROOT / app.value / self.CONF)
 
     def service_env(self) -> dict[str, str]:
-        public = f"http://{self.SERVICE_HOST}:{self.SERVICE_PORT}"
+        origin = f"{self.SERVICE_SCHEME}://{self.SERVICE_HOST}:{self.SERVICE_PORT}"
+        public = f"{origin}{self.SERVICE_PREFIX}"
 
         return {
             EnvOverride.BASE.var: str(StandApp.MCP.files().base()),
             EnvOverride.PORT.var: str(self.SERVICE_PORT),
+            EnvOverride.URL_PREFIX.var: self.SERVICE_PREFIX,
             EnvOverride.PUBLIC_URL.var: public,
             EnvOverride.DATA.var: str(self.SERVICE_DATA),
             # тесты называют файлы путями тела инструмента (/workspace/...):
@@ -118,17 +124,20 @@ class E2eStand:
         return {
             EnvOverride.BASE.var: str(StandApp.AID.files().base()),
             EnvOverride.PORT.var: str(PORT),
+            EnvOverride.URL_PREFIX.var: self.APP_PREFIX,
             EnvOverride.INSTANCE_ID.var: self.INSTANCE,
             EnvOverride.DATA.var: str(self.APP_DATA),
+            EnvOverride.MCP_SCHEME.var: self.SERVICE_SCHEME,
             EnvOverride.MCP_HOST.var: self.SERVICE_HOST,
             EnvOverride.MCP_PORT.var: str(self.SERVICE_PORT),
+            EnvOverride.MCP_PREFIX.var: self.SERVICE_PREFIX,
         }
 
 
 PORT = int(os.environ.get("BOBA_E2E_PORT") or StandPorts().free())
 """Порт чата стенда: свободный на момент прогона, если его не назвали явно —
 порты конфигов отладки заняты интерактивной отладкой, своей и соседей."""
-BASE = FakeUrl.loopback(PORT, "/boba-debug")
+BASE = FakeUrl.loopback(PORT, E2eStand.APP_PREFIX)
 FILES_PROFILE = "general"
 """Профиль, в котором работает стенд: файлы лежат на его первом MCP-сервере."""
 LOGIN = ("admin", "myPassdfd3")
@@ -435,7 +444,7 @@ def app_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[E2eProcesse
             str(service_files.site),
         ],
         stand.service_env(),
-        FakeUrl.loopback(stand.SERVICE_PORT, "/health"),
+        FakeUrl.loopback(stand.SERVICE_PORT, f"{stand.SERVICE_PREFIX}/health"),
         logs / f"mcp-{stand.SERVICE_PORT}.log",
     )
     app = E2eApp(

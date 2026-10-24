@@ -164,3 +164,89 @@ def test_missing_site_key_is_named_on_access(
 
     with pytest.raises(InterpolationKeyError, match=r"site\.pg_host"):
         OmegaConf.to_container(raw, resolve=True)
+
+
+SHARED = """
+[site]
+    pg_host      = "shared.example"
+    developer    = "ss"
+    pg_database = "aid_${site.developer}"
+"""
+
+
+def _write_with_include(tmp_path: Path, own: str) -> ConfigFiles:
+    """Site-файл приложения в <base>/conf подключает общий файл среды из
+    <base>/../conf, как debug/aid/conf/site.toml — debug/conf/site.toml."""
+    (tmp_path / "app").mkdir()
+    files = _write(tmp_path / "app")
+
+    shared = tmp_path / "conf" / "site.toml"
+    shared.parent.mkdir()
+    shared.write_text(SHARED, encoding="utf-8")
+    files.site.write_text(own, encoding="utf-8")
+
+    return files
+
+
+def test_included_site_lies_under_the_own_site(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for override in EnvOverride:
+        monkeypatch.delenv(override.var, raising=False)
+
+    own = 'include = "../../conf/site.toml"\n[env]\n    port = 8601\n'
+    files = _write_with_include(tmp_path, own)
+
+    raw = AppLayers.compose(files)
+
+    assert OmegaConf.select(raw, "env.base") == str(tmp_path / "app")
+    assert OmegaConf.select(raw, "env.port") == 8601
+    assert OmegaConf.select(raw, "postgres.host") == "shared.example"
+    assert OmegaConf.select(raw, "site.pg_database") == "aid_ss"
+    assert OmegaConf.select(raw, "include") is None
+
+
+def test_own_site_overrides_the_included(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for override in EnvOverride:
+        monkeypatch.delenv(override.var, raising=False)
+
+    own = (
+        'include = "../../conf/site.toml"\n[env]\n    port = 8601\n'
+        '[site]\n    pg_database = "aid_ss_pdbname"\n'
+    )
+    files = _write_with_include(tmp_path, own)
+
+    raw = AppLayers.compose(files)
+
+    assert OmegaConf.select(raw, "site.pg_database") == "aid_ss_pdbname"
+    assert OmegaConf.select(raw, "site.pg_host") == "shared.example"
+
+
+def test_foreign_section_in_the_included_file_is_refused(tmp_path: Path) -> None:
+    own = 'include = "../../conf/site.toml"\n[env]\n    port = 8601\n'
+    files = _write_with_include(tmp_path, own)
+    shared = tmp_path / "conf" / "site.toml"
+    shared.write_text(SHARED + '\n[postgres]\n    host = "x"\n', encoding="utf-8")
+
+    with pytest.raises(ConfigLayoutError, match=r"with its include.*postgres"):
+        AppLayers.compose(files)
+
+
+def test_missing_included_file_is_named(tmp_path: Path) -> None:
+    files = _write(tmp_path)
+    files.site.write_text('include = "../absent.toml"\n' + SITE, encoding="utf-8")
+
+    with pytest.raises(ConfigLayoutError, match=r"absent\.toml.*does not exist"):
+        AppLayers.compose(files)
+
+
+def test_included_file_includes_nothing(tmp_path: Path) -> None:
+    own = 'include = "../../conf/site.toml"\n[env]\n    port = 8601\n'
+    files = _write_with_include(tmp_path, own)
+    shared = tmp_path / "conf" / "site.toml"
+    shared.write_text('include = "other.toml"\n' + SHARED, encoding="utf-8")
+
+    with pytest.raises(ConfigLayoutError, match="an included file includes nothing"):
+        AppLayers.compose(files)

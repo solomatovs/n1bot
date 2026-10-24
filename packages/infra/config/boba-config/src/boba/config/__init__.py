@@ -5,6 +5,8 @@ from boba.config.builder import ConfigBuilder, build_app_config
 from boba.config.section import (
     ConfigBase,
     ConfigError,
+    TomlFile,
+    TomlKey,
     bind_optional_section,
     bind_section,
 )
@@ -13,6 +15,8 @@ __all__ = [
     "ConfigBase",
     "ConfigBuilder",
     "ConfigError",
+    "TomlFile",
+    "TomlKey",
     "bind",
     "bind_optional_section",
     "bind_section",
