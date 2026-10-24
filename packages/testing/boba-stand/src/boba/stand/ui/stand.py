@@ -3,8 +3,9 @@
 уводятся на тестовые.
 
 Ошибки:
-StandError — стенд не поднялся, не ответил в отведённое время или site.toml
-    отладки сервиса не называет каталоги сборки runtime.
+StandError — стенд не поднялся, не ответил в отведённое время, site.toml
+    отладки не читается вместе с подключённым файлом среды или не называет
+    каталоги сборки runtime.
 """
 
 from __future__ import annotations
@@ -31,7 +32,7 @@ import httpx
 from pydantic import ValidationError
 from typing_extensions import TypeVar
 
-from boba.config import bind
+from boba.config import ConfigError, TomlFile, bind
 from boba.core.mcp_names import McpToolNames
 from boba.runtime.config import AppLayers, ConfigFiles
 from boba.runtime.launchers import EnvPaths
@@ -278,13 +279,20 @@ class StandApp(StrEnum):
 
     def document(self) -> dict[str, Any]:
         """Общий конфиг и site.toml приложения одной таблицей: стенд правит её
-        и раскладывает обратно на два файла (StandFiles.write)."""
+        и раскладывает обратно на два файла (StandFiles.write). Файл среды,
+        который site.toml подключает ключом include, входит в таблицу: в
+        каталоге стенда site.toml лежит без него."""
         files = self.files()
         with files.config.open("rb") as handle:
             doc: dict[str, Any] = tomllib.load(handle)
 
-        with files.site.open("rb") as handle:
-            doc.update(tomllib.load(handle))
+        try:
+            site = TomlFile(files.site).sections()
+        except ConfigError as exc:
+            msg = f"stand: reading the site file of {self.value}: {exc}"
+            raise StandError(msg) from exc
+
+        doc.update(site)
 
         return doc
 

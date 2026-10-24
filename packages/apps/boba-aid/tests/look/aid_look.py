@@ -1290,7 +1290,7 @@ class LookStand:
     BOOT_TIMEOUT_SEC: ClassVar[float] = 300.0
     FULL_WINDOW: ClassVar[int] = 200000
     """Окно модели стенда, при котором разговор теста не сжимается."""
-    DATABASE: ClassVar[str] = "boba_look_test"
+    DATABASE: ClassVar[str] = "look_test"
     TOKEN_DELAY_SEC: ClassVar[float] = 0.0
 
     def __init__(self, workdir: Path, llm_port: int, database: str) -> None:

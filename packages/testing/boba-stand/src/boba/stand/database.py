@@ -1,6 +1,7 @@
 """Тестовая база postgres: создаётся через пул приложения, живёт между прогонами.
-Имя несёт метку набора и процесса (StandNames): наборы и процессы xdist пишут
-в схему приложения каждый в своей базе. Базы создаются из шаблона с расширениями
+Имя несёт метку разработчика, набора, процесса и дерева (StandNames,
+aid_ss_test_aid_gw0_pint4): наборы и процессы xdist пишут в схему приложения
+каждый в своей базе. Базы создаются из шаблона с расширениями
 (server/template.sql пакета): ставить их может только суперпользователь."""
 
 from psycopg import sql
@@ -13,13 +14,13 @@ from boba.stand.names import StandNames
 class TestDatabase:
     """База набора тестов; схемы в ней тесты создают и сносят сами."""
 
-    NAME = "boba_test"
+    NAME = "test"
     TEMPLATE = "boba_stand_template"
 
     @classmethod
     async def ensure(cls, postgres: PostgresConfig) -> str:
         """Создаёт базу, если её нет, и отдаёт имя."""
-        name = StandNames().of_tree(cls.NAME)
+        name = StandNames().tree_database(cls.NAME)
 
         maintenance = AsyncPostgresPool(postgres)
         await maintenance.open()

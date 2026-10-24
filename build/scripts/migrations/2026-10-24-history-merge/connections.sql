@@ -1,16 +1,17 @@
--- Соединения пользователей, которые смотрят на удаляемые базы: соединение
--- remove удаляется вместе со своими грантами (как ConnectionStore.remove), у
--- postgres-соединения repoint база меняется на dbname. База — открытое поле
--- профиля, секреты профиля (шифр enc:v1: ключом [connections] чата)
--- остаются как были. Любая из двух правок необязательна.
+-- Соединения пользователей, которые смотрят на удаляемые или чужие базы:
+-- соединение remove удаляется вместе со своими грантами (как
+-- ConnectionStore.remove), у соединения repoint база меняется на dbname — у
+-- postgres это поле dbname профиля, у clickhouse — поле database. База —
+-- открытое поле профиля, секреты профиля (шифр enc:v1: ключом [connections]
+-- чата) остаются как были. Любая из двух правок необязательна.
 --
 -- Скрипт останавливается до изменений, если соединения repoint нет или оно
--- не postgres. Соединения remove, которого уже нет, — заметка. Повторный
--- запуск ничего не меняет.
+-- не postgres и не clickhouse. Соединения remove, которого уже нет, — заметка.
+-- Повторный запуск ничего не меняет.
 --
 -- Переменные psql (-v): remove — имя удаляемого соединения; repoint и
--- dbname — имя postgres-соединения и его новая база; aid_schema (aid) —
--- схема чата.
+-- dbname — имя postgres- или clickhouse-соединения и его новая база;
+-- aid_schema (aid) — схема чата.
 --
 -- Запуск:
 --   PGDATABASE=<база чата> psql -v remove=pg-solomatovs \
@@ -55,14 +56,17 @@ begin;
 
     select count(*) <> 1 as repoint_missing
     from :"aid_schema".connections
-    where name = :'repoint' and data ->> 'kind' = 'postgres' \gset
+    where name = :'repoint' and data ->> 'kind' in ('postgres', 'clickhouse') \gset
     \if :repoint_missing
-        \echo 'Expected exactly one postgres connection named' :repoint'.'
-        do $$ begin raise exception 'The connection to repoint is not found or is not a postgres connection, so nothing was changed.'; end $$;
+        \echo 'Expected exactly one postgres or clickhouse connection named' :repoint'.'
+        do $$ begin raise exception 'The connection to repoint is not found or is neither a postgres nor a clickhouse connection, so nothing was changed.'; end $$;
     \endif
 
     update :"aid_schema".connections
-    set data = jsonb_set(data, '{dbname}', to_jsonb(:'dbname'::text))
+    set data = case data ->> 'kind'
+        when 'postgres' then jsonb_set(data, '{dbname}', to_jsonb(:'dbname'::text))
+        else jsonb_set(data, '{database}', to_jsonb(:'dbname'::text))
+    end
     where name = :'repoint';
 
     \echo 'The connection' :repoint 'now goes to the database' :dbname'.'

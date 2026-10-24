@@ -2,9 +2,10 @@
 источника и сносит после тестов.
 
 Стенды разных пакетов пишут на общие серверы Oracle, поэтому имя
-пользователя несёт метку набора и процесса (StandNames), пароль равен имени в
-нижнем регистре. Администратор выдаёт только create session и create table с
-квотой на users: таблицы в схеме создаёт сам владелец.
+пользователя несёт метку разработчика, набора и процесса (StandNames), пароль —
+имя в нижнем регистре, не длиннее 30 байт, которые Oracle держит для пароля.
+Администратор выдаёт только create session и create table с квотой на users:
+таблицы в схеме создаёт сам владелец.
 
 Ошибки:
 OracleQueryError — сервер отклонил DDL администратора.
@@ -36,6 +37,7 @@ class StandOracleUser:
     STILL_CONNECTED: ClassVar[str] = "ORA-01940"
     DROP_ATTEMPTS: ClassVar[int] = 20
     DROP_PAUSE: ClassVar[float] = 0.25
+    PASSWORD_BYTES: ClassVar[int] = 30
 
     def __init__(self, admin: OracleConfig, base: str) -> None:
         self._admin = admin
@@ -47,7 +49,7 @@ class StandOracleUser:
         return self._names.of(self._base).upper()
 
     def secret(self) -> str:
-        return self.name.lower()
+        return self.name.lower()[: self.PASSWORD_BYTES]
 
     @property
     def owner(self) -> OracleConfig:
