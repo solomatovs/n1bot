@@ -29,6 +29,7 @@ from boba.aid.agent.client import (
 from boba.aid.agent.settings import AgentSettingsError
 from boba.aid.infra.session import current_session
 from boba.aid.rendering.errors import show_error
+from boba.canvas.canvas import CanvasError, CanvasErrorKind
 from boba.identity.errors import RefusalError
 from boba.identity.locks import LockBusyError
 from boba.identity.session import LogLine
@@ -175,6 +176,10 @@ class UserFailures:
         "Reload the page to try again."
     )
     CANVAS: ClassVar[str] = "The file couldn't be opened in the side panel."
+    PANEL_EXPLAINS: ClassVar[frozenset[str]] = frozenset(
+        {CanvasErrorKind.NO_VIEWER.value, CanvasErrorKind.RENDER_FAILED.value}
+    )
+    """Отказы панели, которые она объясняет сама на месте содержимого."""
     UNKNOWN: ClassVar[str] = (
         "Something went wrong in the chat. Try again; if it keeps happening, "
         "let the administrator know."
@@ -209,6 +214,13 @@ class UserFailures:
             channel=FailureChannel.TOAST, text=self.UPLOADS, detail=self._brief(exc)
         )
 
+    def explained_in_panel(self, exc: RefusalError) -> bool:
+        """Отказ панели, который она показывает сама вместо содержимого."""
+        if not isinstance(exc, CanvasError):
+            return False
+
+        return exc.kind in self.PANEL_EXPLAINS
+
     @staticmethod
     def _brief(exc: McpClientError) -> str:
         if isinstance(exc, McpUnansweredError):
@@ -235,7 +247,13 @@ class TabNotices:
         await self._show(self._failures.uploads_off(exc))
 
     async def canvas_refused(self, exc: RefusalError) -> None:
-        """Панель не открыла файл: текст отказа уже для человека."""
+        """Панель не открыла файл по клику. Отказ, который панель объясняет
+        сама (нет вьювера, диаграмма не нарисовалась), уведомлением не
+        дублируется; прочие — всплывающим уведомлением с текстом отказа."""
+        if self._failures.explained_in_panel(exc):
+            logger.info("canvas: the panel explains the refusal itself: %s", exc)
+            return
+
         failure = UserFailure(
             channel=FailureChannel.TOAST, text=self._failures.CANVAS, detail=str(exc)
         )
