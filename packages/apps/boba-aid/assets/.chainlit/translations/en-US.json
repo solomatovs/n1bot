@@ -99,9 +99,9 @@
             }
         },
         "commands": {
-            "button": "Tools",
-            "changeTool": "Change Tool",
-            "availableTools": "Available Tools"
+            "button": "Commands",
+            "changeTool": "Change Command",
+            "availableTools": "Available Commands"
         },
         "speech": {
             "start": "Start recording",
