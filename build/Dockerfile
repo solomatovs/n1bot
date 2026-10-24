@@ -51,7 +51,7 @@ RUN if [ -f /tmp/conf/ca-chain.crt ]; then \
 RUN cp -a /etc/ssl/certs /certs/etc/ssl/ \
     && cp -a /usr/local/share/ca-certificates /certs/usr/local/share/
 
-RUN if [ -f /tmp/conf/pip.conf ]; then cp /tmp/conf/pip.conf /index/etc/pip.conf; fi
+RUN if [ -f /tmp/conf/pip.conf ]; then cp /tmp/conf/pip.conf /index/etc/pip.conf; else : > /index/etc/pip.conf; fi
 RUN if [ -f /tmp/conf/uv.toml ]; then cp /tmp/conf/uv.toml /index/etc/uv/uv.toml; fi
 
 
@@ -62,6 +62,8 @@ FROM ${GCC_IMAGE} AS base
 # стадий от base, идут заново. Её же объявляют остальные стадии с сетью от образов-основ
 ARG CACHE_SCOPE
 
+COPY --from=site-conf /certs/        /
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libssl1.1 libffi6 libsqlite3-0 libbz2-1.0                \
         liblzma5 libreadline7 libncurses5 zlib1g                 \
@@ -69,7 +71,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=python-dist /opt/python  /
-COPY --from=site-conf /certs/        /
 COPY --from=site-conf /index/        /
 COPY build/src/uv/uv        /usr/local/bin/uv
 
@@ -457,13 +458,14 @@ ARG LIBSTDCXX_VERSION=6.0.25
 ARG BOBA_DIR=/app/boba
 ARG HEALTH_PATH=/
 
+COPY --from=site-conf /certs/                                                 /
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libssl1.1 libffi6 libsqlite3-0 libbz2-1.0                \
         liblzma5 libreadline7 libncurses5 zlib1g                 \
         libkrb5-3 libgssapi-krb5-2 krb5-user                     \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=site-conf /certs/                                                 /
 COPY --from=python-slim /python/                                              ${BOBA_DIR}/third/
 COPY --from=base /usr/lib/x86_64-linux-gnu/libstdc++.so.6                     ${BOBA_DIR}/third/lib/
 COPY --from=base /usr/lib/x86_64-linux-gnu/libstdc++.so.${LIBSTDCXX_VERSION}  ${BOBA_DIR}/third/lib/
@@ -564,6 +566,7 @@ FROM ${NODE_IMAGE} AS chainlit-ui-build
 ARG CACHE_SCOPE
 ARG CHAINLIT_VERSION
 
+COPY --from=site-conf /certs/  /
 COPY build/scripts/chainlit_ui.sh                   /tmp/chainlit_ui.sh
 COPY build/src/chainlit-${CHAINLIT_VERSION}.tar.gz  /tmp/chainlit.tar.gz
 COPY packages/apps/boba-aid/web/chainlit-ui/overlay/  /tmp/overlay/
@@ -580,6 +583,7 @@ ARG CACHE_SCOPE
 # закрытый контур: npm не спрашивает реестр о своей новой версии
 ENV npm_config_update_notifier=false
 
+COPY --from=site-conf /certs/  /
 COPY packages/apps/boba-aid/web/page/  /src/web/page/
 
 WORKDIR /src/web/page
