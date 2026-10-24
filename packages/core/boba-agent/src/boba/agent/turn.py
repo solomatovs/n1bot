@@ -39,6 +39,7 @@ from boba.agent.attachments import (
     SkillBudget,
     SnapshotSkill,
     SnapshotTool,
+    ToolPoolChange,
 )
 from boba.agent.builder import RequestBuilder
 from boba.agent.compaction import (
@@ -74,6 +75,7 @@ from boba.agent.records import (
     Synthetic,
     TextBlock,
     ThinkingBlock,
+    ToolReferenceBlock,
     ToolResultBlock,
     ToolUseBlock,
     Usage,
@@ -607,41 +609,51 @@ class TurnLoop:
         await self._announce_skills(announced)
 
     async def _announce_tools(self, announced: Announced) -> None:
-        """Список инструментов изменился относительно объявленного: разница
-        вложением и новый снимок; без снимка в разговоре объявляет сам снимок.
-        Инструмент, который разговор уже объявлял и снимал, объявляется
+        """Набор инструментов изменился относительно объявленного: разница
+        именами вложением deferred_tools_delta; набор с полным определением
+        сменился — новый снимок. Без снимка в разговоре его объявит
+        `_announce_context`, а вложение называет только отложенные.
+        Отложенный, которого разговор уже объявлял и снимал, объявляется
         вернувшимся."""
-        known = announced.tool_names()
-        if known is None:
-            return
+        inline: list[str] = []
+        for tool in self._catalog.inline():
+            inline.append(tool.name)
 
-        current: dict[str, SnapshotTool] = {}
-        for tool in self._catalog.snapshot():
-            current[tool.name] = tool
+        deferred: list[str] = []
+        for tool in self._catalog.deferred():
+            deferred.append(tool.name)
 
-        added: list[SnapshotTool] = []
-        for name, tool in current.items():
-            if name not in known:
-                added.append(tool)
-
-        removed: list[str] = []
-        for name in sorted(known):
-            if name not in current:
-                removed.append(name)
-
-        if not added and not removed:
-            return
-
+        inline_known = announced.inline_names()
+        pool = announced.deferred_pool()
         withdrawn = announced.withdrawn_tools()
-        readded: set[str] = set()
-        for tool in added:
-            if tool.name in withdrawn:
-                readded.add(tool.name)
+        added = sorted(set(deferred) - pool)
+        readded = withdrawn.intersection(added)
+        surfaced: list[str] = []
+        known = set(pool)
+        if inline_known is not None:
+            surfaced = sorted(set(inline) - inline_known)
+            known.update(inline_known)
 
-        record = self._attachments.tools_delta(
-            self._session.last_chain_uuid(), added, removed, frozenset(readded)
+        removed = sorted(known - set(inline) - set(deferred))
+        change = ToolPoolChange(
+            added=added,
+            removed=removed,
+            readded=readded,
+            surfaced=surfaced,
+            search=bool(deferred),
         )
-        await self._keeper.add(record)
+        if not change.empty():
+            record = self._attachments.deferred_delta(
+                self._session.last_chain_uuid(), change
+            )
+            await self._keeper.add(record)
+
+        if inline_known is None:
+            return
+
+        if inline_known == frozenset(inline):
+            return
+
         await self._keeper.add(
             self._attachments.snapshot(
                 self._session.last_chain_uuid(), self._fresh_snapshot()
@@ -679,7 +691,7 @@ class TurnLoop:
     def _fresh_snapshot(self) -> PromptSnapshot:
         return PromptSnapshot(
             system_prompt=self._system_prompt,
-            tools=self._catalog.snapshot(),
+            tools=self._catalog.inline(),
             skills=self._skills,
             model=self._profile.model_id,
             system_turns=self._profile.system_turns,
@@ -703,15 +715,45 @@ class TurnLoop:
                 self._session.last_chain_uuid(), snapshot
             )
             await self._keeper.add(record)
-            return snapshot
-
-        if snapshot.system_prompt != self._system_prompt:
+        elif snapshot.system_prompt != self._system_prompt:
             logger.warning(
                 "turn: the system prompt of the launch differs from the snapshot in "
                 "history; the request follows the snapshot"
             )
 
+        await self._record_deferred()
+
         return snapshot
+
+    async def _record_deferred(self) -> None:
+        """Определения загруженных отложенных инструментов, которых история
+        ещё не записала, — записью deferred_tools_record из живого набора:
+        запрос собирается из истории, и возобновление шлёт те же байты.
+        Инструмент, которого в живом наборе уже нет, не записывается и в
+        запрос не уходит."""
+        missing = Announced(self._session.conversation()).deferred_unrecorded()
+        if not missing:
+            return
+
+        live: dict[str, SnapshotTool] = {}
+        for tool in self._catalog.deferred():
+            live[tool.name] = tool
+
+        entries: list[SnapshotTool] = []
+        for name in missing:
+            tool = live.get(name)
+            if tool is None:
+                continue
+
+            entries.append(tool)
+
+        if not entries:
+            return
+
+        record = self._attachments.deferred_record(
+            self._session.last_chain_uuid(), entries
+        )
+        await self._keeper.add(record)
 
     async def _write_prompt(self, taken: Taken) -> None:
         origin = MessageOrigin(kind=OriginKind.HUMAN)
@@ -815,7 +857,7 @@ class TurnLoop:
 
             block = ToolResultBlock(
                 tool_use_id=result.call.block.id,
-                content=result.text,
+                content=self._result_content(result),
                 is_error=is_error,
             )
             record = UserRecord(
@@ -830,6 +872,24 @@ class TurnLoop:
                 tool_denial_kind=result.denial,
             )
             await self._keeper.add(record)
+
+    @staticmethod
+    def _result_content(
+        result: CallResult,
+    ) -> str | Sequence[TextBlock | ToolReferenceBlock]:
+        """Текст результата; у результата со ссылками — блоки tool_reference,
+        затем текст, если он есть."""
+        if not result.references:
+            return result.text
+
+        blocks: list[TextBlock | ToolReferenceBlock] = []
+        for name in result.references:
+            blocks.append(ToolReferenceBlock(tool_name=name))
+
+        if result.text:
+            blocks.append(TextBlock(text=result.text))
+
+        return blocks
 
     async def _absorb(self) -> None:
         """Элементы `now` и `next` из очереди — вложениями в разговор."""

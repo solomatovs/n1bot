@@ -1,0 +1,2 @@
+The following tools just became available and are ready to use:
+{names}

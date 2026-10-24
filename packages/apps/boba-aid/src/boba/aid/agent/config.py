@@ -187,6 +187,22 @@ AgentHistoryConfig = Annotated[
 ]
 
 
+class AgentToolsConfig(BaseModel):
+    """Секция [agent.tools]: какие инструменты модель агента получает полным
+    определением с первого запроса."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    always_load: Sequence[str] = Field(
+        description=(
+            "Полные имена инструментов, как их видит модель "
+            "(mcp__<сервер>__<инструмент>), которые уходят модели сразу; "
+            "остальные отложены — модель видит их имена и загружает "
+            "инструментом ToolSearch. Пустой список — всё через ToolSearch."
+        )
+    )
+
+
 class AgentConfig(BaseModel):
     """Секция [agent]: всё, что чат aid знает об агенте и о себе для него."""
 
@@ -199,6 +215,7 @@ class AgentConfig(BaseModel):
         )
     )
     history: AgentHistoryConfig
+    tools: AgentToolsConfig
     public_url: str = Field(
         min_length=1,
         description=(

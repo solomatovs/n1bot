@@ -255,6 +255,9 @@ class HttpChatModel(ChatModel, Generic[C]):
         yield trailing
 
     def _function_tools(self, tools: Sequence[ToolSpec]) -> list[dict[str, Any]]:
+        """Инструменты функциями в порядке списка. Загруженный отложенный
+        (ToolSpec.deferred) идёт обычной записью: родных отложенных
+        инструментов у протокола нет, а вызывающий ставит такие в конец."""
         wired: list[dict[str, Any]] = []
         for tool in tools:
             wired.append(
