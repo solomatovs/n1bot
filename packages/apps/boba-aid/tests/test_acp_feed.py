@@ -678,6 +678,36 @@ class TestContainerLabel:
             TEXTS.text(StepText.DONE_STEPS.value, count=3),
         ]
 
+    @pytest.mark.anyio
+    async def test_turn_stopped_by_the_agent_says_stopped_live_and_in_replay(
+        self,
+        runtime_stand: StandRefs,
+        storage: LocalStorageClient,
+        recorded: FakeEmitter,
+    ) -> None:
+        """Ход, который агент кончил остановкой (idle с stopReason
+        cancelled), закрывается подписью остановленного хода и вживую, и при
+        воспроизведении истории."""
+        stopped = TEXTS.text(StepText.STOPPED_STEPS.value, count=1)
+        idle = schema.IdleSessionStateUpdate(stop_reason="cancelled")
+
+        live = _view(runtime_stand, storage, RemoteJournals())
+        live.begin_turn(QUESTION)
+        await live.view.await_model()
+        await live.apply(_call(CALL, "mcp__boba__bash", {"cmd": "sleep 9"}))
+        await live.apply(idle)
+        await live.finish_turn()
+
+        assert _labels(recorded)[-1] == stopped
+
+        replay = _view(runtime_stand, storage, RemoteJournals())
+        await replay.apply(_question())
+        await replay.apply(_call(CALL, "mcp__boba__bash", {"cmd": "sleep 9"}))
+        await replay.apply(idle)
+        await replay.finish_turn()
+
+        assert _labels(recorded)[-1] == stopped
+
 
 class TestToolApps:
     """Инструмент с приложением MCP Apps у сервера с секцией apps: карточка
