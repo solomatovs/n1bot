@@ -11,7 +11,9 @@
 --     целевой строки;
 --   * роли — по имени роли, так же;
 --   * треды, оценки ответов и настройки агента треда — по своему id;
---     строка, id которой в целевой базе уже есть, не трогается;
+--     строка, id которой в целевой базе уже есть, не трогается; время
+--     треда (updated_at) — время последней записи его сессии, но не
+--     раньше времени создания треда;
 --   * сессии истории агента и их записи — сессия, которой в целевой базе ещё
 --     нет, переносится целиком; существующая не трогается, вывод называет
 --     число таких сессий;
@@ -20,6 +22,9 @@
 --     иначе группа пропускается с заметкой. Регистры ix (surface, aspect и
 --     прочие) не переносятся: их ведут индексаторы целевой базы, и каждое
 --     значение копии обязано в них быть.
+--
+-- Целевая база должна быть разложена текущим выпуском (threads.updated_at
+-- заводит старт чата); иначе скрипт останавливается до изменений.
 --
 -- Повторный запуск без новой копии ничего не делает: схем cutover_* нет.
 -- Повторное слияние той же копии (stage.sh ещё раз) ничего не дублирует.
@@ -56,6 +61,18 @@ select to_regnamespace('cutover_aid') is null as nothing_staged \gset
 \if :nothing_staged
     \echo 'There is no staged schema cutover_aid in this database, so there is nothing to merge: stage a copy with stage.sh first.'
     \quit
+\endif
+
+select not exists (
+    select 1
+    from information_schema.columns
+    where table_schema = :'aid_schema'
+        and table_name = 'threads'
+        and column_name = 'updated_at'
+) as no_updated_at \gset
+\if :no_updated_at
+    \echo 'The table' :aid_schema'.threads has no column updated_at: the chat of the current release lays it out when it starts.'
+    do $$ begin raise exception 'The target database is not laid out by the current release, so nothing was merged: start its chat once, then merge.'; end $$;
 \endif
 
 begin;
@@ -309,10 +326,18 @@ on conflict (id) do nothing;
 create temporary table merged_threads (id uuid) on commit drop;
 
 with inserted as (
-    insert into :"aid_schema".threads (id, created_at, name, user_id, tags, meta)
+    insert into :"aid_schema".threads (id, created_at, updated_at, name, user_id, tags, meta)
     select
         t.id,
         t.created_at,
+        greatest(
+            t.created_at,
+            (
+                select max(h.recorded_at)
+                from cutover_boba.session_records as h
+                where h.session_id = t.meta ->> 'agent_session'
+            )
+        ),
         t.name,
         m.target_id,
         t.tags,
