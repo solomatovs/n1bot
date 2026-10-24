@@ -12,7 +12,7 @@
 #     connections, roles, grants — boba-connection-broker ConnectionStore;
 #   схема истории агента ([agent.history].schema): history_records —
 #     PostgresHistoryStore прежнего выпуска (есть, если агент уже работал);
-#     migrate.sql раскладывает её по таблицам session и history;
+#     migrate.sql раскладывает её по таблицам session и session_records;
 #   схема чекпойнтов langgraph: checkpoints, checkpoint_blobs, checkpoint_writes —
 #     источник перевода беседы в migrate.sql;
 #   схема базы знаний ([tool.kb]): kb_collections, kb_chunks, kb_sources и
