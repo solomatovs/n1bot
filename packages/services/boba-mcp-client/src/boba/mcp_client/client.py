@@ -142,6 +142,8 @@ from boba.connections.sealed import SealFeature
 from boba.core.mcp_names import McpToolNames
 from boba.toolkit.dag import NestedCallsFeature, ServerFeature
 from boba.toolkit.wire import (
+    CommandsFeature,
+    CommandsVersion,
     FilesFeature,
     JournalFeature,
     JournalNotice,
@@ -1809,7 +1811,8 @@ class CachedMethod(StrEnum):
 class McpDescription:
     """Описание сервера: ответ server/discover (у сервера прежней редакции —
     собранный из его initialize) со сроком свежести и объявленные в нём
-    расширения com.boba/*, которые клиент умеет исполнять.
+    расширения boba (com.boba/*, io.boba/commands), которые клиент умеет
+    исполнять.
 
     Создаёт порт (McpToolServer.described, ChatToolPort чата) на каждое
     обращение из ответа, который тот взял из кэша или у сервера. Любой
@@ -1857,6 +1860,11 @@ class McpDescription:
         None — сервер такого не объявил."""
         return self._feature(NestedCallsFeature)
 
+    def commands(self) -> CommandsFeature | None:
+        """Расширение команд пользователя: сервер помечает промпты, которые
+        открывают его приложение; None — сервер его не объявил."""
+        return self._feature(CommandsFeature)
+
     def links(self) -> JournalLinks | None:
         """Адреса каналов журнала по шаблону, объявленному сервером; None —
         журнала нет либо шаблон не по RFC 6570 (причина в логе)."""
@@ -1878,7 +1886,11 @@ class McpDescription:
             return None
 
     def _feature(self, model: type[FeatureModel]) -> FeatureModel | None:
-        settings = self.features().get(model.ID)
+        extensions = self.result.capabilities.extensions
+        if not extensions:
+            return None
+
+        settings = extensions.get(model.ID)
         if settings is None:
             return None
 
@@ -1891,7 +1903,7 @@ class McpDescription:
                 self.label,
                 model.ID,
                 model.__name__,
-                dict(settings),
+                settings,
                 exc,
             )
             return None
@@ -1985,11 +1997,15 @@ class McpToolServer(McpToolPort):
         JournalFeature.ID: {},
         SealFeature.ID: {},
         ScopeFeature.ID: {},
+        CommandsFeature.ID: CommandsFeature(
+            version=CommandsVersion.V2026_10_24
+        ).settings(),
     }
     """Расширения, которые чат объявляет любому серверу: журнал вызовов он
     читает и слушает сам, соединения пользователя запечатывает ключом
     сервера, и сервер по этому предлагает их, область вызова ставит в
-    помеченный сервером параметр сам."""
+    помеченный сервером параметр сам, команды, открывающие приложение
+    сервера, исполняет сам."""
     NOT_FOUND: ClassVar[frozenset[int]] = frozenset({mt.INVALID_PARAMS, -32002})
     """Коды «ресурса нет» resources/read: -32602 и прежний -32002, которого
     в константах SDK нет."""

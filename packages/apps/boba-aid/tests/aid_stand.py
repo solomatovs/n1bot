@@ -32,6 +32,7 @@ from chainlit.user import PersistedUser
 from chainlit.user import User as ChainlitUser
 from psycopg import sql
 
+from boba.aid.agent.commands import CommandMenus
 from boba.aid.agent.relay import (
     ChatTools,
     McpRegistration,
@@ -335,6 +336,7 @@ class RelayStand:
     ) -> None:
         self.registrations = McpRegistrations()
         self._contexts = contexts
+        self._store = store
         connections = ArmedConnections(store, credentials, contexts)
         self.sealing = CallSealing(connections, self.SEAL_TTL)
         refs = StandRefs(contexts)
@@ -347,6 +349,11 @@ class RelayStand:
 
     def relay(self, servers: McpServers) -> McpRelay:
         return self.relay_with(servers, self.chat, self.canvas)
+
+    def menus(self, servers: McpServers) -> CommandMenus:
+        """Реестры команд вкладок над серверами servers и хранилищем
+        соединений стенда."""
+        return CommandMenus(servers, self.relay(servers), self._store)
 
     def relay_with(
         self, servers: McpServers, chat: ChatTools, canvas: CanvasOpener
