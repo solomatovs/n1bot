@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 import pytest
+from test_agent_compaction import journal
 
 from boba.agent.attachments import (
     Announced,
@@ -438,12 +439,14 @@ class TestCompaction:
         await fake.start()
         stand = StandAgents(fake, tmp_path / "history")
         try:
-            await self._compact(fake, stand)
+            await self._compact(fake, stand, tmp_path / "history")
         finally:
             await stand.aclose()
             await fake.stop()
 
-    async def _compact(self, server: FakeServer, agents: StandAgents) -> None:
+    async def _compact(
+        self, server: FakeServer, agents: StandAgents, root: Path
+    ) -> None:
         profile = agents.profile(Protocol.OPENAI, chars_per_token=4)
         served = Served(
             agents.agent(profile, Collected(), tools=StandTools(), always_load=())
@@ -455,12 +458,12 @@ class TestCompaction:
         }
         served.agent.queue.enqueue(prompt(call(large)))
         await served.agent.settled()
-        before = len(session.records())
+        before = len(await journal(root, SESSION))
         served.agent.queue.enqueue(prompt(ScenarioName.ANSWER.value))
         await served.agent.settled()
         await served.close()
 
-        after = list(session.records())[before:]
+        after = (await journal(root, SESSION))[before:]
         boundaries = [r for r in after if isinstance(r, CompactBoundaryRecord)]
         assert len(boundaries) == 1
         assert list(boundaries[0].compact_metadata.pre_compact_discovered_tools) == [
