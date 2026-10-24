@@ -80,8 +80,6 @@ boba-aid = "boba.aid.infra.entry:cli"
 boba-db-clickhouse = "entry points boba.addresses: адреса clickhouse в соединениях пользователей"
 boba-db-oracle = "entry points boba.connections и boba.addresses: тип соединения oracle"
 
-[tool.setuptools.package-data]
-"boba.aid.agent" = ["schema/*.sql"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

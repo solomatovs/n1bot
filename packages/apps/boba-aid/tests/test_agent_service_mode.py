@@ -2,9 +2,10 @@
 (`boba serve` на стенде в цикле теста) и вход proxy; вкладка входит в
 службу от имени своего пользователя, профиль агента выбирается настройкой
 сессии `model` по имени профиля чата, ход идёт сессией службы, закрытие
-вкладки закрывает её. Удаление треда удаляет сессию через службу от имени
-пользователя треда, сохранённого со слоем чата; профиль, которого служба не
-предлагает, — отказ с понятной причиной."""
+вкладки закрывает её. Удаление треда стирает сессию через службу от имени
+владельца треда (логин и роли — из его строки users) и не зависит от
+профилей чата в конфиге; профиль, которого служба не предлагает, — отказ с
+понятной причиной."""
 
 from __future__ import annotations
 
@@ -12,7 +13,7 @@ from collections.abc import AsyncIterator
 from importlib.resources import files
 from pathlib import Path
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from acp_stand import AgentHistoryStand, AgentStand, FakeModel, RecordingUpdates
@@ -30,15 +31,15 @@ from boba.aid.agent.chat import (
 )
 from boba.aid.agent.client import AgentProcessError
 from boba.aid.agent.config import AgentConfig, AgentServiceConfig
-from boba.aid.agent.settings import AgentSettingsTable
-from boba.aid.domain.fields import ThreadMetaField
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
-from boba.chat.profiles import ChatProfileConfig, SelectedProfile
+from boba.chat.profiles import ChatProfileConfig, ChatProfiles, SelectedProfile
+from boba.chat.threads import StoredThread, ThreadUpsert
 from boba.cli.serve import ServeHistory
-from boba.connections.secrets import SecretCipher
 from boba.db.postgres import AsyncPostgresPool, PostgresSchema
 from boba.db.postgres.connection import PostgresConfig
 from boba.identity.context import CallContexts
+from boba.identity.session import Login
+from boba.identity.signin import SignInMetadata
 from boba.mcp_client.client import (
     HttpLocation,
     HttpRoute,
@@ -48,6 +49,7 @@ from boba.mcp_client.client import (
 )
 from boba.runtime.config import ProcessConfig
 from boba.runtime.threads import ThreadsTable
+from boba.runtime.users import UsersTable
 from boba.stand.agent_service import (
     AgentServiceStand,
     ServeStandConfig,
@@ -62,7 +64,6 @@ from boba.transport.http import HttpTransportConfig
 pytestmark = pytest.mark.anyio
 
 SCHEMA = StandNames().of_tree("agent_service_mode")
-CIPHER_KEY = b"0123456789abcdef0123456789abcdef"
 NO_SERVERS = McpServersConfig(servers={})
 MODEL = "fake-model"
 FOREIGN_PROFILE = "absent"
@@ -76,29 +77,26 @@ def chainlit_context(auth_token: str) -> None:
 
 
 @pytest.fixture
-async def table(
-    test_postgres: PostgresConfig, pool: AsyncPostgresPool
-) -> AgentSettingsTable:
-    """Слой чата настроек агента в схеме набора."""
-    async with pool.connection() as conn:
-        await PostgresSchema(SCHEMA).apply_files(
-            conn, files("boba.aid.agent") / "schema", {}
-        )
-
-    return AgentSettingsTable(test_postgres, SCHEMA, SecretCipher(CIPHER_KEY), pool)
-
-
-@pytest.fixture
-async def threads(
-    pool: AsyncPostgresPool, test_postgres: PostgresConfig
-) -> ThreadsTable:
-    """Таблица тредов в схеме набора: в threads.meta агент вкладки помнит сессию."""
+async def runtime_schema(pool: AsyncPostgresPool) -> None:
+    """Таблицы чата в схеме набора: threads и users."""
     async with pool.connection() as conn:
         await PostgresSchema(SCHEMA).apply_files(
             conn, files("boba.runtime") / "schema", {}
         )
 
+
+@pytest.fixture
+async def threads(test_postgres: PostgresConfig, runtime_schema: None) -> ThreadsTable:
+    """Таблица тредов: в threads.meta агент вкладки помнит сессию и профиль."""
     return ThreadsTable(test_postgres, SCHEMA)
+
+
+@pytest.fixture
+async def users(
+    test_postgres: PostgresConfig, pool: AsyncPostgresPool, runtime_schema: None
+) -> UsersTable:
+    """Строки users: по ним удаление треда входит в службу от имени владельца."""
+    return UsersTable(test_postgres, SCHEMA, pool)
 
 
 @pytest.fixture
@@ -130,20 +128,22 @@ async def service(
 
 
 class ServiceModeStand:
-    """Запуск агента чата в режиме службы и вкладка пользователя alice с
-    ролью dev."""
+    """Запуск агента чата в режиме службы, вкладка пользователя alice с
+    ролью dev и удаление её треда."""
 
     LOGIN = "alice"
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 — стенд собирается фикстурами набора
         self,
         stand: Stand,
         service: AgentServiceStand,
         model: FakeModel,
-        table: AgentSettingsTable,
+        users: UsersTable,
+        threads: ThreadsTable,
         tmp_path: Path,
     ) -> None:
         history = AgentHistoryStand(stand)
+        self.history = history
         location = HttpLocation(
             scheme="http", host="127.0.0.1", port=service.port, path=""
         )
@@ -165,23 +165,38 @@ class ServiceModeStand:
             NoConnectionStore(), lambda: credentials, CallContexts()
         )
         self._servers = McpServers(NO_SERVERS)
-        self.launcher = AgentLauncher(
+        self._users = users
+        self._threads = threads
+        self._model = model
+        self.launcher = self.launcher_of(
+            ChatProfiles({SignInStand.PROFILE: self.profile()})
+        )
+
+    def launcher_of(self, profiles: ChatProfiles) -> AgentLauncher:
+        """Запуск агента при профилях чата profiles в конфиге."""
+        return AgentLauncher(
             self.config,
             NO_SERVERS,
-            table,
+            profiles,
+            self._users,
             self._relays.registrations,
             self._relays.relay(self._servers),
             "0.0",
         )
-        self._model = model
 
-    def identity(self, profile: str) -> ThreadIdentity:
+    async def identity(self, profile: str) -> ThreadIdentity:
+        """Вкладка alice в новом треде: строка users с ролями входа и строка
+        треда с владельцем, как их оставляет вход и слой данных."""
+        sign_in = SignInMetadata(roles=frozenset({"dev"}))
+        owner = await self._users.upsert(Login(self.LOGIN), sign_in.render())
+        thread_id = str(uuid4())
+        await self._threads.upsert(ThreadUpsert(id=UUID(thread_id), user_id=owner.id))
         tab = TabSession()
         tab.password_sign_in(frozenset({"dev"}))
 
         return ThreadIdentity(
-            thread_id=str(uuid4()),
-            user_id=uuid4(),
+            thread_id=thread_id,
+            user_id=owner.id,
             login=self.LOGIN,
             roles=frozenset({"dev"}),
             session=tab.live,
@@ -205,19 +220,45 @@ class ServiceModeStand:
             {**base, "provider": provider, "model": MODEL}
         )
 
+    async def opened(self) -> tuple[ThreadIdentity, str]:
+        """Тред с одним ходом через службу: вкладка и id сессии агента."""
+        identity = await self.identity(SignInStand.PROFILE)
+        updates = RecordingUpdates()
+        agent = ThreadAgent(
+            identity, self.launcher, AgentSessionMeta(self._threads), updates
+        )
+        try:
+            await agent.start()
+            await agent.ask(Question(key="first", text=ScenarioName.ANSWER.value))
+            session_id = agent.session_id
+        finally:
+            await agent.close()
+
+        assert updates.finished, updates.updates
+        assert session_id is not None
+
+        return identity, session_id
+
+    async def stored(self, thread_id: str) -> StoredThread:
+        stored = await self._threads.get(UUID(thread_id))
+        assert stored is not None
+
+        return stored
+
     async def stop(self) -> None:
         await self._servers.stop()
 
 
 @pytest.fixture
-async def mode(
+async def mode(  # noqa: PLR0913 — стенд собирается фикстурами набора
     stand: Stand,
     service: AgentServiceStand,
     model: FakeModel,
-    table: AgentSettingsTable,
+    users: UsersTable,
+    threads: ThreadsTable,
     tmp_path: Path,
 ) -> AsyncIterator[ServiceModeStand]:
-    made = ServiceModeStand(stand, service, model, table, tmp_path)
+    made = ServiceModeStand(stand, service, model, users, threads, tmp_path)
     try:
         yield made
     finally:
@@ -226,36 +267,39 @@ async def mode(
 
 class TestServiceMode:
     async def test_turn_goes_through_the_agent_service(
-        self,
-        mode: ServiceModeStand,
-        service: AgentServiceStand,
-        threads: ThreadsTable,
-        table: AgentSettingsTable,
+        self, mode: ServiceModeStand, service: AgentServiceStand
     ) -> None:
-        identity = mode.identity(SignInStand.PROFILE)
-        updates = RecordingUpdates()
-        agent = ThreadAgent(identity, mode.launcher, AgentSessionMeta(threads), updates)
-        try:
-            await agent.start()
-            await agent.ask(Question(key="first", text=ScenarioName.ANSWER.value))
-            assert updates.finished, updates.updates
-            session_id = agent.session_id
-            assert session_id is not None
-        finally:
-            await agent.close()
+        identity, session_id = await mode.opened()
+        await service.sessions_drop_to(0)
+        assert await mode.history.rows(session_id) > 0
+
+        deleter = ThreadDeleter(mode.launcher, ThreadAgentsIndex())
+        await deleter.thread_deleted(await mode.stored(identity.thread_id))
 
         await service.sessions_drop_to(0)
+        assert await mode.history.rows(session_id) == 0
 
-        deleter = ThreadDeleter(mode.launcher, table, ThreadAgentsIndex())
-        meta = {ThreadMetaField.AGENT_SESSION: session_id}
-        await deleter.thread_deleted(identity.thread_id, meta)
+    async def test_deletion_needs_no_chat_profile_in_the_config(
+        self, mode: ServiceModeStand, service: AgentServiceStand
+    ) -> None:
+        """Профиль треда ушёл из [profiles] чата: удаление всё равно входит в
+        службу от имени владельца и стирает сессию — модели чата службе не
+        нужны."""
+        identity, session_id = await mode.opened()
+        await service.sessions_drop_to(0)
+        assert await mode.history.rows(session_id) > 0
+
+        other = ChatProfiles({"other": mode.profile()})
+        deleter = ThreadDeleter(mode.launcher_of(other), ThreadAgentsIndex())
+        await deleter.thread_deleted(await mode.stored(identity.thread_id))
 
         await service.sessions_drop_to(0)
+        assert await mode.history.rows(session_id) == 0
 
     async def test_profile_the_service_does_not_offer_is_refused(
         self, mode: ServiceModeStand, threads: ThreadsTable
     ) -> None:
-        identity = mode.identity(FOREIGN_PROFILE)
+        identity = await mode.identity(FOREIGN_PROFILE)
         agent = ThreadAgent(
             identity, mode.launcher, AgentSessionMeta(threads), RecordingUpdates()
         )

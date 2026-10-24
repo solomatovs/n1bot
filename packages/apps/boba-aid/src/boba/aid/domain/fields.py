@@ -20,7 +20,8 @@ class ThreadField:
 
 
 class ThreadMetaField:
-    """Ключи metadata треда: их пишет persist сессии chainlit."""
+    """Ключи metadata треда: их пишет persist сессии chainlit, сессию агента
+    и профиль, под которым она открыта, — агент треда."""
 
     CHAT_PROFILE: Final = "chat_profile"
     AGENT_SESSION: Final = "agent_session"
