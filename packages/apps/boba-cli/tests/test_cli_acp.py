@@ -49,7 +49,7 @@ from pydantic import AnyUrl, BaseModel, ConfigDict
 
 from boba.cli.acp_server import ConfigOptionId, PermissionChoice, ToolKindName
 from boba.stand.acp_frames import Frames
-from boba.stand.ui.fake_llm import FailureName, FakeLlmApp, ScenarioName
+from boba.stand.ui.fake_llm import FailureName, FakeLlmApp, ScenarioName, WireText
 from boba.stand.ui.stand import StandPorts
 from boba.transport.acp.protocol import (
     AcpErrorCode,
@@ -1428,7 +1428,8 @@ class TestConversation:
             )
 
             assert idle.stop_reason == StopReason.END_TURN
-            sent = model.app.requests[0]["messages"][-1]["content"]
+            sent = WireText().of(model.app.requests[0]["messages"][-1]["content"])
+            assert sent is not None
             assert "[@main.py](file:///work/main.py)" in sent
 
             # ветка копирует записи как есть: вложение остаётся блоком

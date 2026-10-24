@@ -74,6 +74,7 @@ __all__ = [
     "TurnScript",
     "UsageBook",
     "UsageCounts",
+    "WireText",
     "WindowSettings",
 ]
 
@@ -427,6 +428,39 @@ class Played:
         return self.failure is failure
 
 
+class WireText:
+    """Текст сообщения запроса на проводе: строка content либо массив его
+    частей (OpenAI шлёт так слитые сообщения пользователя) — текстовые
+    части склеиваются переводом строки, как их склеивает провайдер без
+    частей."""
+
+    TEXT_PART: ClassVar[str] = "text"
+    JOIN: ClassVar[str] = "\n"
+
+    def of(self, content: object) -> str | None:
+        """Текст content; None — у сообщения нет текста (нет content или
+        это не строка и не массив частей)."""
+        if isinstance(content, str):
+            return content
+
+        if not isinstance(content, list):
+            return None
+
+        return self.JOIN.join(self._parts(content))
+
+    def _parts(self, parts: Sequence[object]) -> Iterator[str]:
+        for part in parts:
+            if not isinstance(part, dict):
+                continue
+
+            if part.get("type") != self.TEXT_PART:
+                continue
+
+            text = part.get(self.TEXT_PART)
+            if isinstance(text, str):
+                yield text
+
+
 class ToolSearchWord(StrEnum):
     """Слова отложенных инструментов агента: имя инструмента поиска, выбор
     по именам, заголовок списка отложенных во вложении и вид строки-имени."""
@@ -453,6 +487,7 @@ class OfferedTools:
 
     def __init__(self, payload: Mapping[str, Any], names: McpToolNames) -> None:
         self._names = names
+        self._text = WireText()
         self._offered: list[str] = []
         self._signable: set[str] = set()
         for name, signable in self._listed(payload):
@@ -573,8 +608,8 @@ class OfferedTools:
         """Отложенные инструменты, объявленные агентом: строки имён под
         заголовком списка отложенных до пустой строки."""
         for message in payload.get("messages") or []:
-            content = message.get("content")
-            if not isinstance(content, str):
+            content = self._text.of(message.get("content"))
+            if content is None:
                 continue
 
             yield from self._listed_deferred(content)
@@ -679,6 +714,9 @@ class SummaryBook:
     LONG_CHARS: ClassVar[int] = 60_000
     TOOL: ClassVar[str] = "lookup"
 
+    def __init__(self) -> None:
+        self._text = WireText()
+
     def is_summary_request(self, payload: Mapping[str, Any]) -> bool:
         messages = payload.get("messages")
         if not messages:
@@ -688,8 +726,8 @@ class SummaryBook:
             if message.get("role") != "user":
                 continue
 
-            content = message.get("content")
-            if not isinstance(content, str):
+            content = self._text.of(message.get("content"))
+            if content is None:
                 continue
 
             return self.INSTRUCTION_MARK in content
@@ -753,8 +791,7 @@ class SummaryBook:
             f"listed below.\n\n6. All user messages:\n{listed}\n</summary>"
         )
 
-    @staticmethod
-    def _user_texts(payload: Mapping[str, Any]) -> list[str]:
+    def _user_texts(self, payload: Mapping[str, Any]) -> list[str]:
         texts: list[str] = []
         messages = payload.get("messages")
         if not messages:
@@ -764,8 +801,8 @@ class SummaryBook:
             if message.get("role") != "user":
                 continue
 
-            content = message.get("content")
-            if isinstance(content, str):
+            content = self._text.of(message.get("content"))
+            if content is not None:
                 texts.append(content)
 
         return texts
@@ -1929,6 +1966,7 @@ class FakeLlmApp:
     _failures: FailureBook = field(init=False, repr=False)
     _summaries: SummaryBook = field(init=False, repr=False)
     _usage: UsageBook = field(init=False, repr=False)
+    _text: WireText = field(init=False, repr=False)
     _window: PromptWindow = field(init=False, repr=False)
     _summary_held: bool = field(init=False, repr=False, default=False)
     _names: McpToolNames = field(init=False, repr=False)
@@ -1942,6 +1980,7 @@ class FakeLlmApp:
         self._ollama = OllamaWire(self.model)
         self._failures = FailureBook()
         self._summaries = SummaryBook()
+        self._text = WireText()
         self._usage = UsageBook(self.estimate_usage, UsageBook.CHARS_PER_TOKEN)
         self._window = PromptWindow()
         self._questions = ReplyQuestions()
@@ -2235,8 +2274,7 @@ class FakeLlmApp:
 
         return ScenarioName.of(text)
 
-    @staticmethod
-    def _called_names(payload: Mapping[str, Any]) -> list[str]:
+    def _called_names(self, payload: Mapping[str, Any]) -> list[str]:
         """Имена инструментов, которые ассистент уже вызвал после последнего
         сообщения пользователя с текстом: по ним сценарий узнаёт, какой ход
         отвечать. Сообщение пользователя из одних результатов инструментов
@@ -2248,7 +2286,8 @@ class FakeLlmApp:
 
         for message in reversed(messages):
             role = message.get("role")
-            if role == "user" and isinstance(message.get("content"), str):
+            text = self._text.of(message.get("content"))
+            if role == "user" and text is not None:
                 return called
 
             if role != "assistant":
@@ -2261,8 +2300,7 @@ class FakeLlmApp:
 
         return called
 
-    @staticmethod
-    def _last_user_text(payload: Mapping[str, Any]) -> str:
+    def _last_user_text(self, payload: Mapping[str, Any]) -> str:
         """Строка с маркером: сообщения пользователя с конца, строки каждого
         с конца; первая строка с маркером сценария или отказа решает.
 
@@ -2284,8 +2322,8 @@ class FakeLlmApp:
             if message.get("role") != "user":
                 continue
 
-            content = message.get("content")
-            if not isinstance(content, str):
+            content = self._text.of(message.get("content"))
+            if content is None:
                 continue
 
             texts.append(content)
