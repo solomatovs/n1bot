@@ -283,7 +283,11 @@ class TestCalls:
     async def test_large_result_is_truncated_with_a_mark(
         self, agents: StandAgents
     ) -> None:
-        limits = TurnLimits(retry_delays_sec=(0.0,), tool_result_max_chars=100)
+        limits = TurnLimits(
+            retry_delays_sec=(0.0,),
+            tool_result_max_chars=100,
+            tool_result_window_share=1.0,
+        )
         served = Served(
             agents.agent(
                 agents.profile(Protocol.OPENAI),
@@ -317,7 +321,7 @@ class TestCalls:
         """Предел результата — не больше доли действующего окна профиля в
         знаках: у окна 8000 без 512 под ответ и четверти — 1872 токена."""
         profile = agents.profile(Protocol.OPENAI, chars_per_token=4)
-        limits = TurnLimits(retry_delays_sec=(0.0,))
+        limits = TurnLimits(retry_delays_sec=(0.0,), tool_result_window_share=0.25)
         served = Served(
             agents.agent(profile, Collected(), limits=limits, tools=StandTools())
         )
@@ -340,7 +344,9 @@ class TestCalls:
     async def test_duplicate_wire_ids_keep_pairs_intact(
         self, server: FakeServer, agents: StandAgents
     ) -> None:
-        limits = TurnLimits(retry_delays_sec=(0.0,), max_turns=2)
+        limits = TurnLimits(
+            retry_delays_sec=(0.0,), max_turns=2, tool_result_window_share=1.0
+        )
         sink = Collected()
         served = Served(
             agents.agent(
@@ -369,7 +375,9 @@ class TestCalls:
         assert served.agent.outcomes == [TurnOutcome.MAX_TURNS]
 
     async def test_looping_model_stops_at_max_turns(self, agents: StandAgents) -> None:
-        limits = TurnLimits(retry_delays_sec=(0.0,), max_turns=3)
+        limits = TurnLimits(
+            retry_delays_sec=(0.0,), max_turns=3, tool_result_window_share=1.0
+        )
         tools = StandTools()
         sink = Collected()
         served = Served(

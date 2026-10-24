@@ -549,7 +549,10 @@ class TurnLoop:
         compaction_id = self._ids.uuid()
         await self._sink.emit(
             CompactionEvent(
-                compaction_id=compaction_id, status=CompactionStatus.IN_PROGRESS
+                compaction_id=compaction_id,
+                status=CompactionStatus.IN_PROGRESS,
+                summary="",
+                error="",
             )
         )
         self._session.enter(SessionState.COMPACTING)
@@ -596,6 +599,7 @@ class TurnLoop:
                 compaction_id=compaction_id,
                 status=CompactionStatus.COMPLETED,
                 summary=self._summary_text(pack.summary),
+                error="",
             )
         )
 
@@ -616,6 +620,7 @@ class TurnLoop:
             CompactionEvent(
                 compaction_id=compaction_id,
                 status=CompactionStatus.FAILED,
+                summary="",
                 error=failure.describe(),
             )
         )
@@ -627,7 +632,10 @@ class TurnLoop:
     ) -> SummaryAborted:
         await self._sink.emit(
             CompactionEvent(
-                compaction_id=compaction_id, status=CompactionStatus.CANCELLED
+                compaction_id=compaction_id,
+                status=CompactionStatus.CANCELLED,
+                summary="",
+                error="",
             )
         )
 

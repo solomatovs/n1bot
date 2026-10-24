@@ -837,6 +837,7 @@ class AcpProcess:
             "history": {"kind": "jsonl", "root": str(self._root / "history")},
             "permissions": {"defaultMode": mode, "allowBypass": allow_bypass},
             "tools": {"alwaysLoad": self.loaded_tools()},
+            "limits": {"toolResultWindowShare": 0.25},
         }
 
     @staticmethod
@@ -1189,7 +1190,7 @@ class TestTurnState:
     ) -> None:
         client = AcpClient()
         document = boba.settings_document()
-        document["limits"] = {"apiRetries": 0}
+        document["limits"]["apiRetries"] = 0
         conn = await boba.start(client, registration, document)
         try:
             await handshake(conn)
@@ -2782,7 +2783,7 @@ class TestHistory:
         лента истории ставит по нему те же пометки."""
         client = AcpClient()
         document = boba.settings_document(mode="bypassPermissions", allow_bypass=True)
-        document["limits"] = {"apiRetries": 0}
+        document["limits"]["apiRetries"] = 0
         conn = await boba.start(client, registration, document)
         try:
             await handshake(conn)
@@ -3600,7 +3601,7 @@ class TestServiceUpdates:
         document["models"]["fake"] = boba.profile_document(
             "fake-model", context_window=8000, max_output_tokens=512, chars_per_token=4
         )
-        document["limits"] = {"toolResultWindowShare": 1.0}
+        document["limits"]["toolResultWindowShare"] = 1.0
         try:
             conn = await boba.start(client, registration, document)
             try:

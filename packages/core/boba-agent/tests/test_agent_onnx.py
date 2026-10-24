@@ -103,7 +103,9 @@ def agent(  # noqa: PLR0913 — стенд собирает агента по ч
     providers = LlmProviders(LlmProviderTypes.installed())
     parts = AgentParts(
         profile=model_profile,
-        limits=TurnLimits(retry_delays_sec=(0.0, 0.0, 0.0)),
+        limits=TurnLimits(
+            retry_delays_sec=(0.0, 0.0, 0.0), tool_result_window_share=0.25
+        ),
         compaction=compaction,
         system_prompt=SYSTEM_PROMPT,
         store=JsonlHistoryStore(root),

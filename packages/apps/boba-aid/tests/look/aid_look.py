@@ -24,7 +24,7 @@ import json
 import os
 import shutil
 import subprocess
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterator, Mapping, MutableMapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from importlib.metadata import version
@@ -1252,12 +1252,26 @@ class LookAppRoots:
         raise LookError(msg)
 
 
+@dataclass(kw_only=True)
+class WindowStandConfig(StandConfig):
+    """Стенд aid с окном модели профилей context_window: малым окном тест
+    вида доводит разговор до сжатия."""
+
+    context_window: int
+
+    def _use_fake_llm(self, doc: MutableMapping[str, Any]) -> None:
+        super()._use_fake_llm(doc)
+        doc["model_limits"]["fake"]["context_window"] = self.context_window
+
+
 class LookStand:
     """Стенды aid тестов вида: на каждый набор входов и язык свой процесс,
     поднятый по первому запросу и остановленный в конце сессии. База и
     FakeLLM — общие."""
 
     BOOT_TIMEOUT_SEC: ClassVar[float] = 300.0
+    FULL_WINDOW: ClassVar[int] = 200000
+    """Окно модели стенда, при котором разговор теста не сжимается."""
     DATABASE: ClassVar[str] = "boba_look_test"
     TOKEN_DELAY_SEC: ClassVar[float] = 0.0
 
@@ -1295,7 +1309,7 @@ class LookStand:
         self,
         name: str,
         servers: Mapping[str, Mapping[str, object]],
-        context_window: int = 200000,
+        context_window: int,
     ) -> StandProcess:
         """Стенд name с серверами MCP servers (секции [mcp.servers.<имя>]) и
         окном модели context_window: вход local, язык конфига assets; поднят
@@ -1307,7 +1321,7 @@ class LookStand:
         for server, section in servers.items():
             mcp_servers[server] = dict(section)
 
-        config = StandConfig(
+        config = WindowStandConfig(
             workdir=self._workdir / name,
             app=StandApp.AID,
             app_port=StandPorts().free(),
@@ -1317,7 +1331,10 @@ class LookStand:
             mcp_servers=mcp_servers,
             context_window=context_window,
         )
-        process = StandProcess(config=config, log_path=self._workdir / f"{name}.log")
+        log_path = self._workdir / f"{name}.log"
+        process: StandProcess[StandConfig] = StandProcess(
+            config=config, log_path=log_path
+        )
         process.start(boot_timeout_sec=self.BOOT_TIMEOUT_SEC)
         self._served[name] = process
         return process

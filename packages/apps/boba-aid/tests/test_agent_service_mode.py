@@ -112,6 +112,7 @@ async def service(
     layer: dict[str, Any] = {
         "permissions": {"defaultMode": "bypassPermissions", "allowBypass": True},
         "sessions": {"maxOpen": 4},
+        "limits": {"toolResultWindowShare": 0.25},
     }
     profiles = ServiceProfiles(model.base_url()).add(
         SignInStand.PROFILE, ["dev"], MODEL

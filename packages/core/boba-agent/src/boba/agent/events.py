@@ -164,8 +164,11 @@ class CompactionEvent(EventModel):
 
     compaction_id: str
     status: CompactionStatus
-    summary: str = ""
-    error: str = ""
+    summary: str
+    """Пересказ состоявшегося сжатия; у остальных стадий пусто."""
+
+    error: str
+    """Причина неудачи; у остальных стадий пусто."""
 
 
 class NoticeEvent(EventModel):

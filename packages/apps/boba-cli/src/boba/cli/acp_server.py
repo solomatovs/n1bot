@@ -935,6 +935,7 @@ class AcpMapping:
             compaction_id=record.uuid,
             status=CompactionStatus.COMPLETED,
             summary=content,
+            error="",
         )
 
         return self.compaction(event)
