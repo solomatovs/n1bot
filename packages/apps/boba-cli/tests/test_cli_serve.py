@@ -224,10 +224,11 @@ class HistoryStand:
 
     @staticmethod
     def layer(max_sessions: int) -> dict[str, Any]:
-        """Слой настроек агента службы: права и предел сессий."""
+        """Слой настроек агента службы: права, предел сессий и пределы хода."""
         return {
             "permissions": {"defaultMode": "bypassPermissions", "allowBypass": True},
             "sessions": {"maxOpen": max_sessions},
+            "limits": {"toolResultWindowShare": 0.25},
         }
 
 

@@ -5,16 +5,20 @@
 в ожидаемом виде: ошибкой LlmError либо ответом, который агенту предстоит
 распознать самому (неизвестный инструмент, пустой id, повтор id, без учёта,
 пустой ответ, теги <think>). Оборванный поток без финального чанка оба
-клиента считают ошибкой.
+клиента считают ошибкой. Окно стенда отвергает запрос больше себя ошибкой
+переполнения, сброс стенда окно снимает; запрос пересказа встаёт на паузу по
+заказу теста.
 """
 
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from enum import StrEnum
 
+import httpx
 import pytest
 import uvicorn
 
@@ -24,6 +28,7 @@ from boba.llm.chat import (
     ChatRequest,
     ChatRole,
     ChatTurn,
+    LlmContextOverflowError,
     LlmError,
     ToolCall,
     ToolSpec,
@@ -31,8 +36,17 @@ from boba.llm.chat import (
 from boba.llm.http.ollama import OllamaProvider
 from boba.llm.http.openai import OpenAiProvider
 from boba.llm.providers import ChatModelConfig, LlmProviders, LlmProviderTypes
-from boba.stand.ui.fake_llm import FailureName, FakeLlmApp, ScenarioName
-from boba.stand.ui.stand import StandPorts
+from boba.stand.ui.fake_llm import (
+    FailureName,
+    FakeLlmApp,
+    FakeRoute,
+    ReplyBookClient,
+    ScenarioName,
+    SummaryBook,
+    UsageBook,
+    WindowSettings,
+)
+from boba.stand.ui.stand import StandPorts, StandUrl
 from boba.transport.http import HttpTransportConfig
 from boba.transport.http.connection import HttpConnection, NoneAuth, UrlScheme
 
@@ -392,3 +406,93 @@ class TestRepliesTheAgentMustJudge:
         assert outcome.reply is not None, outcome.error
         assert outcome.reply.content.startswith("<think>")
         assert outcome.reply.reasoning == ""
+
+
+class TestWindow:
+    """Окно `PUT /window`: запрос больше окна — переполнение, как у
+    OpenAI-совместимого сервера; учёт ответа — по размеру запроса."""
+
+    WINDOW = WindowSettings(context_window=40, chars_per_token=4)
+
+    @pytest.mark.parametrize("protocol", list(Protocol))
+    @pytest.mark.parametrize("stream", [True, False])
+    async def test_request_over_the_window_overflows(
+        self, clients: StandClients, stand_port: int, protocol: Protocol, stream: bool
+    ) -> None:
+        await self._limit(stand_port)
+        short = await clients.ask(protocol, ScenarioName.ANSWER.value, stream)
+        long = f"{ScenarioName.ANSWER.value} {'w' * 400}"
+        request = ChatRequest(
+            messages=[ChatTurn(role=ChatRole.USER, content=long)], stream=stream
+        )
+
+        with pytest.raises(LlmContextOverflowError) as overflow:
+            async for _event in clients.chat(protocol).chat(request):
+                pass
+
+        assert short.reply is not None, short.error
+        assert 0 < short.reply.usage.input_tokens <= self.WINDOW.context_window
+        assert short.reply.usage.input_tokens != UsageBook.PROMPT
+        found = re.search(
+            r"maximum context length is 40 tokens\. However, your messages "
+            r"resulted in (\d+) tokens",
+            str(overflow.value),
+        )
+        assert found is not None, str(overflow.value)
+        assert int(found.group(1)) > len(long) // self.WINDOW.chars_per_token
+
+    async def test_reset_lifts_the_window(
+        self, clients: StandClients, stand_port: int
+    ) -> None:
+        await self._limit(stand_port)
+        async with httpx.AsyncClient() as http:
+            response = await http.post(StandUrl.of(stand_port, FakeRoute.RESET.value))
+            response.raise_for_status()
+
+        long = f"{ScenarioName.ANSWER.value} {'w' * 400}"
+        outcome = await clients.ask(Protocol.OPENAI, long, True)
+
+        assert outcome.reply is not None, outcome.error
+        assert outcome.reply.usage.input_tokens == UsageBook.PROMPT
+
+    async def test_window_needs_both_fields(self, stand_port: int) -> None:
+        async with httpx.AsyncClient() as http:
+            response = await http.put(
+                StandUrl.of(stand_port, FakeRoute.WINDOW.value),
+                json={"context_window": 40},
+            )
+
+        assert response.status_code == httpx.codes.UNPROCESSABLE_ENTITY
+        assert "chars_per_token" in response.text
+
+    async def _limit(self, port: int) -> None:
+        async with httpx.AsyncClient() as http:
+            response = await http.put(
+                StandUrl.of(port, FakeRoute.WINDOW.value),
+                json=self.WINDOW.model_dump(mode="json"),
+            )
+            response.raise_for_status()
+
+
+class TestSummaryHold:
+    """Пауза запроса пересказа (`POST /summary/hold`): следующий запрос
+    пересказа стоит, пока тест его не отпустит; остальные идут как обычно."""
+
+    async def test_summary_request_waits_for_the_release(
+        self, clients: StandClients, stand_port: int
+    ) -> None:
+        book = ReplyBookClient(StandUrl.of(stand_port))
+        await asyncio.to_thread(book.hold_summary)
+        summary = f"Summarize. Reply with {SummaryBook.INSTRUCTION_MARK}."
+        asked = asyncio.create_task(clients.ask(Protocol.OPENAI, summary, True))
+        await asyncio.to_thread(book.await_held, SummaryBook.HOLD_KEY, 5.0)
+        plain = await clients.ask(Protocol.OPENAI, ScenarioName.ANSWER.value, True)
+
+        assert not asked.done()
+        assert plain.reply is not None, plain.error
+
+        await asyncio.to_thread(book.release, SummaryBook.HOLD_KEY)
+        outcome = await asked
+
+        assert outcome.reply is not None, outcome.error
+        assert "<summary>" in outcome.reply.content

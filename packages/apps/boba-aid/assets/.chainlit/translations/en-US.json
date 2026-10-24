@@ -293,6 +293,8 @@
             "tool": "tool",
             "stoppedByUser": "stopped by the user",
             "unfinished": "the turn ended before the call did",
+            "compacting": "Compacting the conversation…",
+            "compacted": "Context compacted",
             "elapsedMs": "{{ms}} ms",
             "elapsedSec": "{{sec}} s",
             "elapsedMin": "{{min}} m {{sec}} s",

@@ -190,6 +190,21 @@ AgentHistoryConfig = Annotated[
 ]
 
 
+class AgentLimitsConfig(BaseModel):
+    """Секция [agent.limits]: пределы хода агента, которые задаёт чат."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    tool_result_window_share: float = Field(
+        gt=0,
+        le=1,
+        description=(
+            "Доля действующего окна модели, которую может занять один результат "
+            "инструмента; длиннее — агент обрезает его с пометкой для модели."
+        ),
+    )
+
+
 class AgentToolsConfig(BaseModel):
     """Секция [agent.tools]: какие инструменты модель агента получает полным
     определением с первого запроса."""
@@ -219,6 +234,7 @@ class AgentConfig(BaseModel):
     )
     history: AgentHistoryConfig
     tools: AgentToolsConfig
+    limits: AgentLimitsConfig
     public_url: str = Field(
         min_length=1,
         description=(

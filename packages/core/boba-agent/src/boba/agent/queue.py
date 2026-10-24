@@ -49,20 +49,31 @@ class QueueRefusedError(Exception):
 
 
 class QueueKind(StrEnum):
-    """Виды элементов; poll-event и orphaned-permission — заготовки без поведения."""
+    """Виды элементов; poll-event и orphaned-permission — заготовки без
+    поведения."""
 
     PROMPT = "prompt"
     TASK_NOTIFICATION = "task-notification"
+    COMPACT = "compact"
+    """Сжатие по команде пользователя; текст — указания к пересказу."""
+
     POLL_EVENT = "poll-event"
     ORPHANED_PERMISSION = "orphaned-permission"
 
     @property
     def supported(self) -> bool:
-        return self in (QueueKind.PROMPT, QueueKind.TASK_NOTIFICATION)
+        return self in (
+            QueueKind.PROMPT,
+            QueueKind.TASK_NOTIFICATION,
+            QueueKind.COMPACT,
+        )
 
     @property
     def default_priority(self) -> QueuePriority:
         if self is QueueKind.PROMPT:
+            return QueuePriority.NEXT
+
+        if self is QueueKind.COMPACT:
             return QueuePriority.NEXT
 
         return QueuePriority.LATER
@@ -283,10 +294,14 @@ class InputQueue:
         return Taken(items=taken)
 
     def absorb(self) -> Sequence[QueueItem]:
-        """Элементы `now` и `next` для подмешивания посреди хода."""
+        """Элементы `now` и `next` для подмешивания посреди хода; команда
+        сжатия ждёт своего хода."""
         absorbed: list[QueueItem] = []
         for item in list(self._items):
             if item.priority is QueuePriority.LATER:
+                continue
+
+            if item.kind is QueueKind.COMPACT:
                 continue
 
             self._items.remove(item)

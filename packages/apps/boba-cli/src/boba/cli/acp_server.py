@@ -39,8 +39,12 @@ another process», пока замок занят; когда держатель
 Настройки сессии — `configOptions` `mode` (режимы разрешений ядра) и `model`
 (профили `models.<имя>` настроек) в ответах `session/new|resume|fork`;
 `session/set_config_option` меняет их, после смены уходит
-`config_option_update`. После хода и сжатия уходит `usage_update`, при сжатии
-— `compaction_update`, после первого хода и при воспроизведении —
+`config_option_update`. После хода и сжатия уходит `usage_update`; сжатие
+идёт `compaction_update` по стадиям (in_progress, затем completed с
+пересказом, failed с причиной или cancelled), воспроизведение отдаёт
+состоявшиеся сжатия так же — по записи пересказа; пометка агента посреди
+хода (тред не помещается в окно) — `notice`. После первого хода и при
+воспроизведении —
 `session_info_update` с заголовком, после каждого сброса записей в
 хранилище истории — `session_info_update` с `updatedAt` последней
 записи; ошибка вне хода уходит `notice`. Точка
@@ -100,12 +104,15 @@ from boba.agent.control import (
 )
 from boba.agent.events import (
     AgentEvent,
+    CompactionEvent,
+    CompactionStatus,
     ControlCancelEvent,
     ControlRequestEvent,
     ErrorEvent,
     EventSink,
     HistoryWrittenEvent,
     InitEvent,
+    NoticeEvent,
     RecordEvent,
     ResultEvent,
     StreamEvent,
@@ -135,7 +142,6 @@ from boba.agent.records import (
     ApiErrorRecord,
     AssistantRecord,
     ChainRecord,
-    CompactBoundaryRecord,
     InformationalRecord,
     NoticeLevel,
     PermissionMode,
@@ -150,6 +156,7 @@ from boba.agent.session import SessionState
 from boba.agent.settings import (
     McpClientJson,
 )
+from boba.agent.tags import LocalCommandText
 from boba.agent.template import AgentTemplate, AgentTemplateFile, ModelTroubleTexts
 from boba.agent.tools import (
     AskOption,
@@ -494,6 +501,23 @@ class SessionCommands:
         ),
     }
 
+    def __init__(self) -> None:
+        self._lines = CommandLines()
+
+    def queued(self, asked: QueueEntry) -> QueueEntry | None:
+        """Вопрос-вызов команды сессии → элемент очереди, который её исполняет
+        (`/compact <указания>` → compact с указаниями текстом); None — вопрос
+        не команда сессии."""
+        call = self._lines.parsed(asked.text)
+        if call is None:
+            return None
+
+        if call.name != SessionCommand.COMPACT.value:
+            return None
+
+        update = {"kind": QueueKind.COMPACT, "text": call.rest}
+        return asked.model_copy(update=update)
+
     def update(self) -> schema.AvailableCommandsUpdate:
         commands: list[schema.AvailableCommand] = []
         for command, card in self.CARDS.items():
@@ -675,7 +699,6 @@ class AcpMapping:
         TurnOutcome.COMPACT_FAILURE_BREAKER: StopReason.REFUSAL,
         TurnOutcome.RAPID_REFILL_BREAKER: StopReason.REFUSAL,
     }
-    COMPACTED: ClassVar[str] = "completed"
     MILLIS: ClassVar[float] = 1000.0
 
     INTERRUPTS: ClassVar[tuple[AgentTemplateFile, ...]] = (
@@ -688,6 +711,7 @@ class AcpMapping:
         self._titles = ToolTitles()
         self._templates = AgentTemplate()
         self._troubles = ModelTroubleTexts(self._templates)
+        self._commands = LocalCommandText()
 
     def idle(self, result: ResultEvent) -> schema.IdleSessionStateUpdate:
         """Конец хода по его итогу; причину отказа клиент уже получил
@@ -833,14 +857,15 @@ class AcpMapping:
     def user_updates(self, record: UserRecord) -> Iterator[Update]:
         """Запись `user`: итоги вызовов либо вопрос человека целым
         сообщением `user_message` с uuid записи как `messageId` — текст, за
-        ним ссылки на вложения блоками resource_link; служебные записи в
-        ленту не идут."""
+        ним ссылки на вложения блоками resource_link; запись вызова локальной
+        команды — текстом вызова, каким его набрал пользователь; служебные
+        записи в ленту не идут."""
         results = self.tool_results(record)
         if results:
             yield from results
             return
 
-        text = record.human_text()
+        text = self.prompt_text(record)
         if text is None:
             return
 
@@ -850,6 +875,19 @@ class AcpMapping:
             content.append(schema.ResourceContentBlock.model_validate(dumped))
 
         yield schema.UserMessageUpdate(message_id=record.uuid, content=content)
+
+    def prompt_text(self, record: UserRecord) -> str | None:
+        """Текст вопроса человека, каким его видит клиент: запись вызова
+        локальной команды — текстом вызова; None — запись не вопрос."""
+        text = record.human_text()
+        if text is None:
+            return None
+
+        call = self._commands.parsed(text)
+        if call is None:
+            return text
+
+        return call.text()
 
     def replayed(self, record: ChainRecord, hints: ToolHintSource) -> Iterator[Update]:
         """Запись беседы → её уведомления: сообщения целиком (`user_message`,
@@ -862,6 +900,10 @@ class AcpMapping:
         сжатия, вложения и границы сжатия в ленту не идут."""
         yield from self.notices(record)
         if isinstance(record, UserRecord):
+            if record.is_compact_summary:
+                yield self.replayed_compaction(record)
+                return
+
             yield from self.user_updates(record)
             if self._interrupted(record):
                 yield schema.IdleSessionStateUpdate(stop_reason=StopReason.CANCELLED)
@@ -1009,11 +1051,46 @@ class AcpMapping:
 
         return schema.SessionInfoUpdate(updated_at=updated_at)
 
-    def compaction(
-        self, record: CompactBoundaryRecord
-    ) -> schema.SessionCompactionUpdate:
+    def compaction(self, event: CompactionEvent) -> schema.SessionCompactionUpdate:
+        """Ход сжатия: стадия, у состоявшегося — пересказ, у неудачного —
+        причина; id — uuid записи пересказа."""
+        summary: list[ContentBlock] | None = None
+        if event.summary:
+            summary = [schema.TextContentBlock(text=event.summary)]
+
+        error: str | None = None
+        if event.error:
+            error = event.error
+
         return schema.SessionCompactionUpdate(
-            compaction_id=record.uuid, status=self.COMPACTED
+            compaction_id=event.compaction_id,
+            status=event.status.value,
+            summary=summary,
+            error=error,
+        )
+
+    def replayed_compaction(self, record: UserRecord) -> schema.SessionCompactionUpdate:
+        """Пересказ из истории — то же состоявшееся сжатие, что вживую."""
+        content = record.message.content
+        if not isinstance(content, str):
+            msg = (
+                f"The compaction summary record {record.uuid} holds blocks instead "
+                "of text. This is a bug."
+            )
+            raise RuntimeError(msg)
+
+        event = CompactionEvent(
+            compaction_id=record.uuid,
+            status=CompactionStatus.COMPLETED,
+            summary=content,
+            error="",
+        )
+
+        return self.compaction(event)
+
+    def turn_notice(self, event: NoticeEvent) -> schema.SessionNotice:
+        return schema.SessionNotice(
+            severity="error", title=event.title, description=event.description
         )
 
     def permission_request(
@@ -2974,13 +3051,12 @@ class SessionRelay(EventSink):
 
         return self._mapping.title_update(title)
 
-    @staticmethod
-    def _first_prompt(conversation: Sequence[ChainRecord]) -> str | None:
+    def _first_prompt(self, conversation: Sequence[ChainRecord]) -> str | None:
         for record in conversation:
             if not isinstance(record, UserRecord):
                 continue
 
-            text = record.human_text()
+            text = self._mapping.prompt_text(record)
             if text is not None:
                 return text
 
@@ -2997,6 +3073,9 @@ class SessionRelay(EventSink):
 
         if isinstance(event, ToolStartedEvent):
             return [self._mapping.tool_started(event)]
+
+        if isinstance(event, CompactionEvent | NoticeEvent):
+            return self._marks(event)
 
         if isinstance(event, ToolProgressEvent):
             return [self._mapping.tool_progress(event)]
@@ -3041,12 +3120,6 @@ class SessionRelay(EventSink):
             updates.extend(self._mapping.user_updates(record))
             return updates
 
-        if isinstance(record, CompactBoundaryRecord):
-            updates.append(self._mapping.compaction(record))
-            usage = self._usage()
-            if usage is not None:
-                updates.append(usage)
-
         return updates
 
     @staticmethod
@@ -3071,6 +3144,22 @@ class SessionRelay(EventSink):
         self._streamed = None
         yield schema.AgentThoughtUpdate(message_id=streamed, content=[])
         yield schema.AgentMessageUpdate(message_id=streamed, content=[])
+
+    def _marks(self, event: CompactionEvent | NoticeEvent) -> Sequence[Update]:
+        """Пометки хода: пометка пользователю; сжатие, после состоявшегося —
+        с новой заполненностью."""
+        if isinstance(event, NoticeEvent):
+            return [self._mapping.turn_notice(event)]
+
+        updates: list[Update] = [self._mapping.compaction(event)]
+        if event.status is not CompactionStatus.COMPLETED:
+            return updates
+
+        usage = self._usage()
+        if usage is not None:
+            updates.append(usage)
+
+        return updates
 
     def _hints(self, name: str) -> ToolHints | None:
         if self._agent is None:
@@ -3388,7 +3477,8 @@ class SessionAssembly(Protocol):
 class AcpSession:
     """Одна сессия ACP: открытый агент, его обслуживание очереди, приёмник и
     серверы MCP сессии (SessionMcp): вопрос-команда промпта сервера
-    раскрывается ими, закрытие сессии закрывает их потоки."""
+    раскрывается ими, команда сессии (SessionCommands) становится своим
+    элементом очереди, закрытие сессии закрывает потоки серверов."""
 
     def __init__(
         self,
@@ -3403,6 +3493,7 @@ class AcpSession:
         self._relay = relay
         self._mapping = mapping
         self._mcp = mcp
+        self._commands = SessionCommands()
         self._reports: list[asyncio.Task[None]] = []
         self._serving = asyncio.create_task(
             opened.agent.serve(), name=f"acp-serve-{session_id}"
@@ -3498,7 +3589,9 @@ class AcpSession:
         """Ставит вопрос в очередь ядра и отвечает, когда его ход вставил
         запись `user`: `messageId` ответа — её uuid. Вопрос идёт своим ходом,
         без склейки с соседями. Вопрос-команду промпта сервера раскрывает
-        SessionMcp.
+        SessionMcp. Команда сессии `/compact` — элемент очереди compact: её
+        вызов агент пишет в историю записью с uuid элемента, ответ приходит
+        с этой записью, как у вопроса.
 
         Ошибки:
         RequestError — очередь не приняла элемент или аргументы команды не
@@ -3506,7 +3599,12 @@ class AcpSession:
             отдал промпт (-32603), вопрос снят до вставки отменой хода или
             закрытием сессии (-32800).
         """
-        asked = await self._mcp.expanded(asked)
+        command = self._commands.queued(asked)
+        if command is not None:
+            asked = command
+
+        if command is None:
+            asked = await self._mcp.expanded(asked)
         if self._serving.done():
             details = (
                 f"session {self._session_id} no longer serves prompts: its agent "

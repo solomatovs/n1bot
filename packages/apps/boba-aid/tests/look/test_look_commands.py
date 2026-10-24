@@ -157,7 +157,9 @@ def commands_host(tmp_path_factory: pytest.TempPathFactory) -> Iterator[AppsHost
 
 @pytest.fixture(scope="module")
 def commands_stand(look_stands: LookStand, commands_host: AppsHost) -> StandProcess:
-    return look_stands.served("commands", {SERVER: commands_host.drawn()})
+    return look_stands.served(
+        "commands", {SERVER: commands_host.drawn()}, LookStand.FULL_WINDOW
+    )
 
 
 def test_commands_menu_and_windows(

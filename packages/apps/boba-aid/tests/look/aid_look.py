@@ -24,7 +24,7 @@ import json
 import os
 import shutil
 import subprocess
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterator, Mapping, MutableMapping, Sequence
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from importlib.metadata import version
@@ -1270,16 +1270,16 @@ class LookAppRoots:
         raise LookError(msg)
 
 
-@dataclass(frozen=True)
-class LookAgentShape:
-    """Серверы MCP и агент стенда вида: process — [agent.process] агента
-    процессом (пусто — агент стенда по умолчанию), service — служба агента
-    (пусто — процесс), timeouts_sec — сроки рукопожатия и ответа агента."""
+@dataclass(kw_only=True)
+class WindowStandConfig(StandConfig):
+    """Стенд aid с окном модели профилей context_window: малым окном тест
+    вида доводит разговор до сжатия."""
 
-    servers: Mapping[str, Mapping[str, object]] = field(default_factory=dict)
-    process: Mapping[str, Any] = field(default_factory=dict)
-    service: Mapping[str, Any] = field(default_factory=dict)
-    timeouts_sec: tuple[float, float] = (60.0, 60.0)
+    context_window: int
+
+    def _use_fake_llm(self, doc: MutableMapping[str, Any]) -> None:
+        super()._use_fake_llm(doc)
+        doc["model_limits"]["fake"]["context_window"] = self.context_window
 
 
 class LookStand:
@@ -1288,6 +1288,8 @@ class LookStand:
     FakeLLM — общие."""
 
     BOOT_TIMEOUT_SEC: ClassVar[float] = 300.0
+    FULL_WINDOW: ClassVar[int] = 200000
+    """Окно модели стенда, при котором разговор теста не сжимается."""
     DATABASE: ClassVar[str] = "boba_look_test"
     TOKEN_DELAY_SEC: ClassVar[float] = 0.0
 
@@ -1322,15 +1324,21 @@ class LookStand:
         return process
 
     def served(
-        self, name: str, servers: Mapping[str, Mapping[str, object]]
+        self,
+        name: str,
+        servers: Mapping[str, Mapping[str, object]],
+        context_window: int,
     ) -> StandProcess:
-        """Стенд name с серверами MCP servers (секции [mcp.servers.<имя>]):
-        вход local, язык конфига assets; поднят по первому запросу."""
-        return self.shaped(name, LookAgentShape(servers=servers))
+        """Стенд name с серверами MCP servers (секции [mcp.servers.<имя>]) и
+        окном модели context_window: вход local, язык конфига assets; поднят
+        по первому запросу."""
+        shape = LookAgentShape(servers=servers, context_window=context_window)
+
+        return self.shaped(name, shape)
 
     def shaped(self, name: str, shape: LookAgentShape) -> StandProcess:
-        """Стенд name с серверами MCP и агентом по shape: вход local, язык
-        конфига assets; поднят по первому запросу."""
+        """Стенд name с серверами MCP, окном модели и агентом по shape: вход
+        local, язык конфига assets; поднят по первому запросу."""
         if running := self._served.get(name):
             return running
 
@@ -1338,7 +1346,7 @@ class LookStand:
         for server, section in shape.servers.items():
             mcp_servers[server] = dict(section)
 
-        config = StandConfig(
+        config = WindowStandConfig(
             workdir=self._workdir / name,
             app=StandApp.AID,
             app_port=StandPorts().free(),
@@ -1348,11 +1356,15 @@ class LookStand:
             mcp_servers=mcp_servers,
             agent_service=dict(shape.service),
             agent_timeouts_sec=shape.timeouts_sec,
+            context_window=shape.context_window,
         )
         if shape.process:
             config = replace(config, agent_process=dict(shape.process))
 
-        process = StandProcess(config=config, log_path=self._workdir / f"{name}.log")
+        log_path = self._workdir / f"{name}.log"
+        process: StandProcess[StandConfig] = StandProcess(
+            config=config, log_path=log_path
+        )
         process.start(boot_timeout_sec=self.BOOT_TIMEOUT_SEC)
         self._served[name] = process
         return process
@@ -1366,3 +1378,17 @@ class LookStand:
 
         self._running.clear()
         self._served.clear()
+
+
+@dataclass(frozen=True)
+class LookAgentShape:
+    """Серверы MCP и агент стенда вида: process — [agent.process] агента
+    процессом (пусто — агент стенда по умолчанию), service — служба агента
+    (пусто — процесс), timeouts_sec — сроки рукопожатия и ответа агента,
+    context_window — окно модели профилей."""
+
+    servers: Mapping[str, Mapping[str, object]] = field(default_factory=dict)
+    process: Mapping[str, Any] = field(default_factory=dict)
+    service: Mapping[str, Any] = field(default_factory=dict)
+    timeouts_sec: tuple[float, float] = (60.0, 60.0)
+    context_window: int = LookStand.FULL_WINDOW

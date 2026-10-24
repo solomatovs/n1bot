@@ -7,13 +7,15 @@
 набранная «/» открывает меню с командами чата, агента и сервера (подсказка
 аргументов — в описании); выбранная команда сервера открывает приложение
 карточкой во вкладке без хода модели и без строки вопроса в ленте; команда
-чата показывает таблицу соединений.
+чата показывает таблицу соединений; команда агента `/compact` — ход без
+строки вопроса с шагом сжатия.
 
 Ошибки: своих не выпускает; расхождение — падение теста.
 """
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator
 from pathlib import Path
 from typing import ClassVar
@@ -22,10 +24,15 @@ import httpx
 import pytest
 from acp_stand import AppsHost
 from chat_ui import BOOT_TIMEOUT_SEC, OpenChat
-from playwright.sync_api import FrameLocator, Locator, Page
+from playwright.sync_api import FrameLocator, Locator, Page, expect
 
-from boba.stand.ui.chat_page import ChatPage, StepKind
-from boba.stand.ui.fake_llm import FakeRoute, ScenarioName
+from boba.stand.ui.chat_page import ChatPage, Selector, StepKind
+from boba.stand.ui.fake_llm import (
+    FakeRoute,
+    ReplyBookClient,
+    ScenarioName,
+    SummaryBook,
+)
 from boba.stand.ui.stand import (
     StandApp,
     StandConfig,
@@ -103,11 +110,13 @@ class CommandMenu:
         return self.page.locator(self.ITEM, has_text=name).first
 
     def run(self, name: str, arguments: str) -> None:
-        """Команда name выбрана в меню, её аргументы набраны и отправлены."""
+        """Команда name выбрана в меню, её аргументы набраны и отправлены;
+        журнал вкладки очищен, как перед вопросом: в нём только этот ход."""
         self.typed(name)
         self.item(name).click()
         field = self.page.locator("#chat-input")
         field.fill(arguments)
+        self.chat.log.clear()
         field.press("Enter")
 
     def card(self) -> Locator:
@@ -128,6 +137,11 @@ def model_requests(llm_port: int) -> int:
 
 
 class TestCommandMenu:
+    COMPACTING: ClassVar[re.Pattern[str]] = re.compile(
+        "Сжимаю контекст|Compacting the conversation"
+    )
+    COMPACTED: ClassVar[re.Pattern[str]] = re.compile("Контекст сжат|Context compacted")
+
     def test_slash_opens_the_commands_of_the_chat_the_agent_and_the_server(
         self, commands_stand: StandProcess, open_chat: OpenChat
     ) -> None:
@@ -189,3 +203,35 @@ class TestCommandMenu:
 
         questions = menu.chat.steps_of(StepKind.USER.value)
         assert questions.count() == 0, menu.chat.dom()
+
+    def test_compact_command_compacts_without_the_question_line(
+        self, commands_stand: StandProcess, open_chat: OpenChat, llm_port: int
+    ) -> None:
+        """`/compact` из меню — ход агента без строки вопроса: пока агент
+        пересказывает, контейнер хода подписан «сжимаю», после — шаг
+        «контекст сжат»."""
+        book = ReplyBookClient(StandUrl.of(llm_port))
+        menu = CommandMenu(open_chat(commands_stand, ""))
+        menu.chat.ask(ScenarioName.ANSWER.value)
+        menu.chat.await_idle(timeout_sec=120.0)
+        menu.chat.ask(ScenarioName.ANSWER.value)
+        menu.chat.await_idle(timeout_sec=120.0)
+        menu.typed("compact")
+        menu.item("compact").wait_for(timeout=CommandMenu.WAIT_MS)
+
+        book.hold_summary()
+        try:
+            menu.run("compact", "")
+            book.await_held(SummaryBook.HOLD_KEY, 60.0)
+            container = menu.page.locator(Selector.of_type(StepKind.RUN.value)).last
+            expect(container).to_contain_text(self.COMPACTING)
+        finally:
+            book.release(SummaryBook.HOLD_KEY)
+
+        menu.chat.await_idle(timeout_sec=120.0)
+        menu.chat.expand_last_run()
+        step = menu.page.locator(Selector.of_type(StepKind.TOOL.value)).last
+        expect(step).to_contain_text(self.COMPACTED)
+
+        questions = menu.chat.steps_of(StepKind.USER.value)
+        assert questions.count() == 2, menu.chat.dom()

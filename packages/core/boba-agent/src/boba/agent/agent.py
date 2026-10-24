@@ -37,6 +37,7 @@ from boba.agent.attachments import (
     SnapshotSkill,
 )
 from boba.agent.builder import RequestBuilder
+from boba.agent.compaction import SummaryInstruction
 from boba.agent.control import ControlQuestions, PermissionAnswer
 from boba.agent.events import EventSink, InitEvent, TurnOutcome
 from boba.agent.history import (
@@ -71,6 +72,7 @@ from boba.agent.tools import (
     AskUserQuestionTool,
     McpServerSet,
     OwnTool,
+    ResultBound,
     ToolRunner,
     ToolSearchTool,
     ToolsError,
@@ -192,6 +194,7 @@ class Agent:
     def __init__(self, parts: AgentParts) -> None:
         self._parts = parts
         self._wiring = Wiring(parts)
+        self._bound = ResultBound(parts.limits, parts.profile)
         self._session: Session | None = None
         self._lease: SessionLease | None = None
         self._writer: HistoryWriter | None = None
@@ -334,7 +337,7 @@ class Agent:
     def _texts(self) -> ToolTexts:
         return ToolTexts(
             self._wiring.templates,
-            self._parts.limits.tool_result_max_chars,
+            self._bound,
             self._parts.agent_name,
         )
 
@@ -530,6 +533,7 @@ class Agent:
 
         self._check_profile(profile, turns.system_prompt, tools)
         turns.set_model(profile, model, self._request_builder(profile))
+        self._bound.set_profile(profile)
 
     def _request_builder(self, profile: ModelProfile) -> RequestBuilder:
         return RequestBuilder(profile, self._wiring.templates)
@@ -544,7 +548,10 @@ class Agent:
         for tool in tools.inline():
             tool_texts.append(tool.text())
 
-        ProfileCheck(profile, self._parts.compaction).run(system_prompt, tool_texts)
+        instruction = SummaryInstruction(self._wiring.templates).text("")
+        ProfileCheck(profile, self._parts.compaction, instruction).run(
+            system_prompt, tool_texts
+        )
 
     def tool_hints(self, name: str) -> ToolHints | None:
         """Пометки инструмента по имени; None — такого инструмента нет."""
