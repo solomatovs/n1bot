@@ -25,7 +25,7 @@ from enum import StrEnum
 from pathlib import PurePosixPath
 from typing import Any, ClassVar, Protocol, TypeAlias, cast
 from urllib.parse import unquote, urlsplit, urlunsplit
-from uuid import UUID, uuid5
+from uuid import UUID, uuid4, uuid5
 
 import mcp_types as mt
 from acp.experimental.v2 import schema
@@ -69,6 +69,8 @@ __all__ = [
     "AppCard",
     "ChatSink",
     "ChatView",
+    "FeedMessage",
+    "FeedStep",
     "LiveSink",
     "StepKind",
     "StepMeta",
@@ -353,6 +355,75 @@ class TurnDraft:
 
         self.thinking = None
         return step
+
+
+class FeedStep(Step):
+    """Шаг ленты chainlit без паузы конструктора.
+
+    Step.__init__ chainlit спит 1 мс (time.sleep), чтобы метки created_at
+    шагов различались, — блокируя цикл событий всего процесса на каждый
+    шаг: воспроизведение истории в сотни шагов стояло на этом сотни
+    миллисекунд, и вместе с ним стояли все вкладки инстанса. Порядок ленты
+    задаёт порядок отправки, а не created_at, поэтому шаг собирается теми же
+    полями, что у chainlit, без паузы. Создаёт его ChatView; совпадение
+    набора полей с Step проверяет тест.
+    """
+
+    def __init__(  # noqa: PLR0913 — те же параметры, что ChatView отдаёт шагу chainlit
+        self,
+        *,
+        name: str,
+        type: TrueStepType,  # noqa: A002 — имя параметра Step chainlit
+        id: str | None,  # noqa: A002 — имя параметра Step chainlit
+        parent_id: str | None,
+        thread_id: str,
+        default_open: bool,
+        auto_collapse: bool,
+    ) -> None:
+        self._input = ""
+        self._output = ""
+        self.thread_id = thread_id
+        self.name = name
+        self.type = type
+        self.id = id or str(uuid4())
+        self.metadata = {}
+        self.tags = None
+        self.is_error = False
+        self.show_input = "json"
+        self.parent_id = parent_id
+        self.language = None
+        self.icon = None
+        self.default_open = default_open
+        self.auto_collapse = auto_collapse
+        self.generation = None
+        self.elements = []
+        self.created_at = utc_now()
+        self.start = None
+        self.end = None
+        self.streaming = False
+        self.persisted = False
+        self.fail_on_persist_error = False
+
+
+class FeedMessage(Message):
+    """Ответ ассистента в ленте без паузы конструктора Message chainlit
+    (та же пауза 1 мс, что у шага, см. FeedStep): поля — как у Message с
+    пустым текстом, автором интерфейса и без действий и вложений. Создаёт
+    его ChatView для ответа хода."""
+
+    def __init__(self, *, id: str | None) -> None:  # noqa: A002 — имя параметра Message chainlit
+        self.language = None
+        self.content = ""
+        if id:
+            self.id = id
+
+        self.metadata = None
+        self.tags = None
+        self.author = chainlit_config.ui.name
+        self.type = "assistant_message"
+        self.actions = []
+        self.elements = []
+        self.__post_init__()
 
 
 class ChatSink(ABC):
@@ -992,9 +1063,8 @@ class ChatView:
 
     def _open_answer(self, key: str | None = None) -> Message:
         answer_key = self._turn.answer_key(key)
-        message = Message(
-            content="",
-            id=self.derive_id(self._thread_id, answer_key, StepRole.ANSWER),
+        message = FeedMessage(
+            id=self.derive_id(self._thread_id, answer_key, StepRole.ANSWER)
         )
         message.parent_id = None
         return message
@@ -1793,7 +1863,7 @@ class ChatView:
         parent_id: str | None,
         step_id: str | None = None,
     ) -> Step:
-        return Step(
+        return FeedStep(
             name=name,
             type=kind.step_type,
             id=step_id,

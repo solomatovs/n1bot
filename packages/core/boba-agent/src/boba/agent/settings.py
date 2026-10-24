@@ -30,6 +30,7 @@ from boba.core.secrets import SecretRevealing
 __all__ = [
     "CompactionJson",
     "HistoryKind",
+    "HistoryPoolSettings",
     "HistorySettings",
     "JsonlHistorySettings",
     "LimitsJson",
@@ -41,6 +42,7 @@ __all__ = [
     "ProviderKind",
     "ProviderSettings",
     "SecretKey",
+    "SessionsJson",
     "SettingsLayer",
     "SettingsModel",
     "SettingsSchema",
@@ -123,7 +125,10 @@ class ProviderSettings(SettingsModel):
 
 
 class ModelSettings(SettingsModel):
-    """Ключ `models.<имя>`: всё, что ядро знает о модели (ModelProfile)."""
+    """Ключ `models.<имя>`: профиль сессии — всё, что ядро знает о модели
+    (ModelProfile), и свой системный промпт `systemPrompt`: сессия на этом
+    профиле берёт его вместо промпта настроек (systemPromptFile), смена
+    профиля в сессии меняет и промпт."""
 
     provider: ProviderSettings
     model: str = Field(min_length=1)
@@ -135,6 +140,7 @@ class ModelSettings(SettingsModel):
     supports_images: bool = False
     system_turns: bool = False
     reasoning_return: ReasoningReturn = ReasoningReturn.NEVER
+    system_prompt: str | None = None
 
 
 class PermissionSettings(SettingsModel):
@@ -151,9 +157,32 @@ class JsonlHistorySettings(SettingsModel):
     root: str = Field(min_length=1)
 
 
+class HistoryPoolSettings(SettingsModel):
+    """Ключ `history.pool`: пул соединений истории, общий для всех сессий
+    процесса, — сколько держать открытыми, сколько открывать самое большее
+    и сколько ждать свободного соединения. Сверх пула процесс держит одно
+    соединение замков сессий."""
+
+    min_size: int = Field(ge=1)
+    max_size: int = Field(ge=1)
+    timeout_sec: float = Field(gt=0)
+
+    @model_validator(mode="after")
+    def _ordered(self) -> HistoryPoolSettings:
+        if self.max_size < self.min_size:
+            msg = (
+                f"history.pool.maxSize ({self.max_size}) must be at least "
+                f"history.pool.minSize ({self.min_size})"
+            )
+            raise ValueError(msg)
+
+        return self
+
+
 class PostgresHistorySettings(SettingsModel):
     """Журнал в Postgres: строка подключения libpq значением либо именем
-    переменной окружения, таблица — в схеме из обязательного ключа `schema`.
+    переменной окружения, таблица — в схеме из обязательного ключа `schema`,
+    пул соединений — ключом `pool`.
     `owner` — логин пользователя, от имени которого работает процесс: его
     ставит служба агента, и процесс видит только сессии этого пользователя;
     без ключа (запуск по stdio) процессу видны все сессии."""
@@ -162,6 +191,7 @@ class PostgresHistorySettings(SettingsModel):
     dsn: SecretStr | None = None
     dsn_env: str | None = Field(default=None, min_length=1)
     db_schema: str = Field(min_length=1, alias="schema")
+    pool: HistoryPoolSettings
     owner: str | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
@@ -219,6 +249,13 @@ class LimitsJson(SettingsModel):
         return TurnLimits.model_validate(values)
 
 
+class SessionsJson(SettingsModel):
+    """Ключ `sessions`: сколько сессий процесс держит открытыми разом —
+    у каждой свой поток; сверх предела открытие сессии отказывает."""
+
+    max_open: int = Field(default=64, gt=0)
+
+
 class McpClientJson(SettingsModel):
     """Ключ `mcp`: сроки ожидания серверов MCP-over-ACP — одной страницы
     `tools/list` и одного вызова `tools/call`, — и сколько раз сервер может
@@ -252,6 +289,7 @@ class SettingsLayer(SettingsModel):
     limits: LimitsJson | None = None
     mcp: McpClientJson | None = None
     tools: ToolsJson | None = None
+    sessions: SessionsJson | None = None
     env: Mapping[str, str] = Field(default_factory=dict)
     system_prompt_file: str | None = None
     skills_dir: str | None = None

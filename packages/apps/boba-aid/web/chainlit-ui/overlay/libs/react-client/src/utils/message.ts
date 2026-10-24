@@ -265,9 +265,46 @@ const applyTokens = (messages: IStep[], tokens: IToken[]): IStep[] => {
   return next;
 };
 
+// boba: событие ленты, отложенное до кадра отрисовки; порядок событий сокета
+// сохраняется, соседние токены применяются одной пачкой applyTokens
+type StepOp =
+  | { kind: 'add'; step: IStep }
+  | { kind: 'update'; step: IStep }
+  | { kind: 'delete'; step: IStep }
+  | { kind: 'token'; token: IToken };
+
+const applyStepOps = (messages: IStep[], ops: StepOp[]): IStep[] => {
+  let next = messages;
+  let tokens: IToken[] = [];
+  for (const op of ops) {
+    if (op.kind === 'token') {
+      tokens.push(op.token);
+      continue;
+    }
+    if (tokens.length) {
+      next = applyTokens(next, tokens);
+      tokens = [];
+    }
+    if (op.kind === 'add') {
+      next = addMessage(next, op.step);
+    } else if (op.kind === 'update') {
+      next = updateMessageById(next, op.step.id, op.step);
+    } else {
+      next = deleteMessageById(next, op.step.id);
+    }
+  }
+  if (tokens.length) {
+    next = applyTokens(next, tokens);
+  }
+  return next;
+};
+
+export type { StepOp };
+
 export {
   addMessageToParent,
   addMessage,
+  applyStepOps,
   applyTokens,
   deleteMessageById,
   hasMessageById,

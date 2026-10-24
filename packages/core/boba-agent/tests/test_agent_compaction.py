@@ -18,7 +18,7 @@ import pytest
 from boba.agent.attachments import ConnectedServer
 from boba.agent.control import AllowAnswer
 from boba.agent.events import RecordEvent, TurnOutcome
-from boba.agent.history import SessionId
+from boba.agent.history import SessionId, StoredLine
 from boba.agent.ids import IdMint, SystemClock
 from boba.agent.loader import HistoryLoader
 from boba.agent.profile import CompactionSettings, ProfileError
@@ -33,6 +33,7 @@ from boba.agent.records import (
     PermissionMode,
     PermissionRule,
     Record,
+    RecordCodec,
     UserRecord,
 )
 from boba.agent.session import Session, SessionState
@@ -179,6 +180,21 @@ async def reloaded(root: Path, session_id: SessionId) -> Session:
     return session
 
 
+async def journal(root: Path, session_id: SessionId) -> list[Record]:
+    """Все записи журнала сессии по порядку. Память сессии после сжатия держит
+    только нужное модели, поэтому историю целиком тесты читают отсюда."""
+    store = JsonlHistoryStore(root)
+    codec = RecordCodec()
+    found: list[Record] = []
+    async for line in store.read(session_id):
+        assert isinstance(line, StoredLine), line
+        found.append(codec.parse(line.raw))
+
+    await store.close()
+
+    return found
+
+
 async def wait_state(session: Session, state: SessionState) -> None:
     deadline = time.monotonic() + 3.0
     while session.state is not state:
@@ -267,21 +283,22 @@ class TestThreshold:
         profile = agents.profile(protocol, chars_per_token=4)
         served = Served(agents.agent(profile, sink, tools=StandTools()))
         session = await served.open(SESSION, resume=False)
+        root = tmp_path / "history"
 
         served.agent.queue.enqueue(prompt(call(large())))
         await served.agent.settled()
-        before = len(session.records())
+        before = len(await journal(root, SESSION))
         served.agent.queue.enqueue(prompt(ScenarioName.ANSWER.value))
         await served.agent.settled()
         await served.close()
 
         assert list(served.agent.outcomes) == [TurnOutcome.COMPLETED] * 2
-        self.check_records(session, before)
+        self.check_records(session, await journal(root, SESSION), before)
         events = [e for e in sink.of(RecordEvent) if isinstance(e, RecordEvent)]
         assert any(isinstance(e.record, CompactBoundaryRecord) for e in events)
         after = self.check_requests(server)
 
-        again = await reloaded(tmp_path / "history", SESSION)
+        again = await reloaded(root, SESSION)
         assert list(again.records()) == list(session.records())
         assert list(again.conversation()) == list(session.conversation())
 
@@ -296,7 +313,7 @@ class TestThreshold:
         assert len(boundaries(resumed.agent.session.records())) == 1
 
     async def test_compaction_announces_the_server_instructions_again(
-        self, agents: StandAgents
+        self, agents: StandAgents, tmp_path: Path
     ) -> None:
         """Пачка сжатия объявляет инструкции подключённых серверов MCP
         заново вслед за моделью: прежнее вложение осталось за границей.
@@ -306,16 +323,17 @@ class TestThreshold:
         servers = StandServers([ConnectedServer(name="stand", instructions=NOTE)])
         agent = agents.agent(profile, sink, tools=StandTools(), servers=servers)
         served = Served(agent)
-        session = await served.open(SESSION, resume=False)
+        await served.open(SESSION, resume=False)
+        root = tmp_path / "history"
 
         served.agent.queue.enqueue(prompt(call(large())))
         await served.agent.settled()
-        before = len(session.records())
+        before = len(await journal(root, SESSION))
         served.agent.queue.enqueue(prompt(ScenarioName.ANSWER.value))
         await served.agent.settled()
         await served.close()
 
-        records = list(session.records())
+        records = await journal(root, SESSION)
         announced = kinds(records[before:])
         first = kinds(records[:before])
         assert first.count("attachment:mcp_instructions_delta") == 1, first
@@ -329,9 +347,8 @@ class TestThreshold:
         assert servers.refreshes == 2
 
     @staticmethod
-    def check_records(session: Session, before: int) -> None:
-        """Пачка после второго промпта, границы и проекция разговора."""
-        records = list(session.records())
+    def check_records(session: Session, records: Sequence[Record], before: int) -> None:
+        """Пачка журнала после второго промпта, границы и проекция разговора."""
         assert kinds(records[before:]) == [
             "queue-operation",
             "queue-operation",
@@ -358,7 +375,11 @@ class TestThreshold:
         assert summary.message.content.startswith(CONTINUED)
         metadata = boundary.compact_metadata
         assert metadata.preserved_messages.anchor_uuid == summary.uuid
-        chain = session.chain()
+        chain: list[ChainRecord] = []
+        for record in records:
+            if isinstance(record, ChainRecord):
+                chain.append(record)
+
         answer_one = chain[chain.index(prompt_two) - 1]
         assert isinstance(answer_one, AssistantRecord)
         assert list(metadata.preserved_messages.uuids) == [
@@ -483,7 +504,7 @@ class TestBreakers:
         ]
 
     async def test_rapid_refill_trips_the_breaker(
-        self, plain_server: FakeServer, plain_agents: StandAgents
+        self, plain_server: FakeServer, plain_agents: StandAgents, tmp_path: Path
     ) -> None:
         """Сжатие удаётся, но результат каждого шага сам больше порога: три
         быстрых перезаполнения подряд кончают ход."""
@@ -505,7 +526,7 @@ class TestBreakers:
         await served.close()
 
         assert list(served.agent.outcomes) == [TurnOutcome.RAPID_REFILL_BREAKER]
-        records = session.records()
+        records = await journal(tmp_path / "history", SESSION)
         assert len(boundaries(records)) == 3
         assert len(summaries(records)) == 3
         assert len(summary_requests(plain_server)) == 3
@@ -514,7 +535,7 @@ class TestBreakers:
         assert texts[0].startswith("Autocompact is thrashing")
         conversation = session.conversation()
         assert isinstance(conversation[0], CompactBoundaryRecord)
-        assert conversation[0] is boundaries(records)[-1]
+        assert conversation[0].uuid == boundaries(records)[-1].uuid
 
 
 class TestLadder:
@@ -587,7 +608,7 @@ class TestCancellation:
         assert session.state is SessionState.STOPPING
 
     async def test_now_message_during_compaction_starts_its_own_turn(
-        self, hanging_agents: StandAgents
+        self, hanging_agents: StandAgents, tmp_path: Path
     ) -> None:
         sink = Collected()
         served = Served(
@@ -614,7 +635,7 @@ class TestCancellation:
             TurnOutcome.ABORTED_STREAMING,
             TurnOutcome.COMPLETED,
         ]
-        records = session.records()
+        records = await journal(tmp_path / "history", SESSION)
         assert len(boundaries(records)) == 1
         prompts = [
             r
@@ -677,13 +698,13 @@ class TestResume:
         assert list(again.conversation()) == list(conversation)
 
     async def test_rule_and_mode_survive_two_compactions_and_resume(
-        self, server: FakeServer, agents: StandAgents
+        self, server: FakeServer, agents: StandAgents, tmp_path: Path
     ) -> None:
         tools = StandTools()
         sink = Collected()
         profile = agents.profile(Protocol.OPENAI, chars_per_token=4)
         served = Served(agents.agent(profile, sink, tools=tools))
-        session = await served.open(SESSION, resume=False)
+        await served.open(SESSION, resume=False)
 
         served.agent.queue.enqueue(prompt(call({"name": StandToolName.DROP.full})))
         question = await sink.next_question(0)
@@ -706,7 +727,7 @@ class TestResume:
         await served.agent.settled()
         await served.close()
 
-        assert len(boundaries(session.records())) >= 2
+        assert len(boundaries(await journal(tmp_path / "history", SESSION))) >= 2
         assert len(sink.questions()) == 1
         assert [c.name for c in tools.calls] == [
             "mcp__stand__drop",

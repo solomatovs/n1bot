@@ -109,8 +109,8 @@ class AgentCommandConfig(BaseModel):
 
 
 class AgentServiceConfig(BaseModel):
-    """Агент — служба boba-agent-service по адресу ACP (streamable HTTP):
-    процессы агента, профили моделей и историю держит служба. Чат входит в
+    """Агент — служба агента (`boba serve`) по адресу ACP (streamable HTTP):
+    сессии агента, профили моделей и историю держит служба. Чат входит в
     неё proxy от имени пользователя вкладки и выбирает профиль агента
     настройкой сессии `model` по имени профиля чата."""
 

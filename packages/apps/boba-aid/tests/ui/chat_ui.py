@@ -1,14 +1,24 @@
-"""Помощники ui-тестов чата: логин формой chainlit, вкладки чата, журнал сокетов."""
+"""Помощники ui-тестов чата: логин формой chainlit, вкладки чата, журнал сокетов,
+консоль и сокеты вкладки."""
 
 from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import ClassVar
 
 import httpx
 from playwright._impl._api_structures import SetCookieParam
-from playwright.sync_api import Browser, BrowserContext, Page, ViewportSize, WebSocket
+from playwright.sync_api import (
+    Browser,
+    BrowserContext,
+    ConsoleMessage,
+    Error,
+    Page,
+    ViewportSize,
+    WebSocket,
+)
 
 from boba.stand.ui.chat_page import ChatPage
 from boba.stand.ui.fake_llm import FakeRoute
@@ -50,6 +60,44 @@ def watch_sockets(page: Page, log: SocketLog) -> None:
         socket.on("framereceived", log.accept)
 
     page.on("websocket", on_socket)
+
+
+class ConsoleLevel(StrEnum):
+    """Уровни сообщений консоли, которые пользователь замечает."""
+
+    ERROR = "error"
+    WARNING = "warning"
+
+
+class PageWatch:
+    """Консоль и сокеты вкладки чата глазами пользователя.
+
+    Копит то, что пользователь увидел бы в консоли браузера: ошибки страницы
+    и сообщения уровней error и warning, включая сетевые сообщения самого
+    браузера (неудавшийся WebSocket). Сокеты считаются по открытым
+    WebSocket-соединениям: лишнее переподключение видно по их числу.
+    """
+
+    def __init__(self, page: Page) -> None:
+        self.complaints: list[str] = []
+        self.sockets: list[str] = []
+        self._levels = list(ConsoleLevel)
+        page.on("console", self._logged)
+        page.on("pageerror", self._failed)
+        page.on("websocket", self._opened)
+
+    def _logged(self, message: ConsoleMessage) -> None:
+        if message.type not in self._levels:
+            return
+
+        where = message.location.get("url", "")
+        self.complaints.append(f"{message.type} {where}: {message.text}")
+
+    def _failed(self, error: Error) -> None:
+        self.complaints.append(f"page error: {error.message}\n{error.stack}")
+
+    def _opened(self, socket: WebSocket) -> None:
+        self.sockets.append(socket.url)
 
 
 @dataclass

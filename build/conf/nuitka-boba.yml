@@ -1,4 +1,4 @@
-# Конфигурация пакетов Nuitka для сборки boba одним файлом (стадия boba-bin).
+# Конфигурация пакетов Nuitka для сборки агента boba (стадия boba-bin).
 # onnxruntime_genai ищет каталог пакета onnxruntime через find_spec, а у пакета,
 # скомпилированного Nuitka, submodule_search_locations пуст; каталог onnxruntime
 # с его библиотеками лежит рядом с пакетом genai в распакованном дереве.
@@ -7,3 +7,13 @@
     - description: 'onnxruntime directory next to this package instead of find_spec locations'
       replacements_plain:
         'ort_package_path = ort_package.submodule_search_locations[0]': 'ort_package_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "onnxruntime")'
+
+# Модели схемы ACP просят у pydantic описания полей из исходного текста
+# (use_attribute_docstrings): у скомпилированного модуля исходника нет, и pydantic
+# на каждом классе схемы ищет его по путям и модулям — это секунда старта агента.
+# Описания полей агенту в работе не нужны.
+- module-name: 'acp._schema_base'
+  anti-bloat:
+    - description: 'no field docstrings from the source of compiled schema models'
+      replacements_plain:
+        'use_attribute_docstrings=True,': 'use_attribute_docstrings=False,'

@@ -70,6 +70,7 @@ __all__ = [
     "AgentWorkdirs",
     "ChatAgentSettings",
     "HistoryEnvironment",
+    "HistoryPoolFile",
     "McpFile",
     "MemoryHistoryFile",
     "ModelFile",
@@ -168,12 +169,22 @@ class PermissionsFile(FileModel):
     allow_bypass: bool
 
 
+class HistoryPoolFile(FileModel):
+    """Ключ `history.pool`: пул соединений истории процесса агента — из
+    пула подключения истории [postgres_history].pool."""
+
+    min_size: int = Field(ge=1)
+    max_size: int = Field(ge=1)
+    timeout_sec: float = Field(gt=0)
+
+
 class PostgresHistoryFile(FileModel):
-    """Ключ `history` вида postgres: строка libpq и схема журнала."""
+    """Ключ `history` вида postgres: строка libpq, схема журнала и пул."""
 
     kind: Literal[AgentHistoryKind.POSTGRES]
     dsn: SecretStr
     db_schema: str = Field(alias="schema", min_length=1)
+    pool: HistoryPoolFile
 
 
 class MemoryHistoryFile(FileModel):
@@ -469,10 +480,18 @@ class SettingsFileBuilder:
         history: AgentHistoryConfig,
     ) -> PostgresHistoryFile | MemoryHistoryFile:
         if isinstance(history, PostgresAgentHistory):
+            pool = history.postgres.pool
+            max_size = pool.min_size
+            if pool.max_size is not None:
+                max_size = pool.max_size
+
             return PostgresHistoryFile(
                 kind=AgentHistoryKind.POSTGRES,
                 dsn=LibpqConnection(history.postgres).dsn(),
                 schema=history.db_schema,
+                pool=HistoryPoolFile(
+                    min_size=pool.min_size, max_size=max_size, timeout_sec=pool.timeout
+                ),
             )
 
         if isinstance(history, MemoryAgentHistory):
