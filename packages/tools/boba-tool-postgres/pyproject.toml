@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-tool-postgres"
-version = "0.0.30.dev3"
+version = "0.0.30.dev4"
 description = "SQL-инструменты только на чтение: соединение и запрос идут из песочницы."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-core==0.0.30.dev3",
-    "boba-toolkit==0.0.30.dev3",
-    "boba-db-postgres==0.0.30.dev3",
+    "boba-core==0.0.30.dev4",
+    "boba-toolkit==0.0.30.dev4",
+    "boba-db-postgres==0.0.30.dev4",
     "psycopg>=3.3,<4",
     "pydantic>=2.12,<3",
 ]
@@ -22,13 +22,13 @@ pg = "boba.tool.pg.plugin:MANIFEST"
 
 [project.optional-dependencies]
 payload = [
-    "boba-db-postgres[arrow]==0.0.30.dev3",
+    "boba-db-postgres[arrow]==0.0.30.dev4",
 ]
 dev = [
-    "boba-runtime==0.0.30.dev3",
-    "boba-stand==0.0.30.dev3",
+    "boba-runtime==0.0.30.dev4",
+    "boba-stand==0.0.30.dev4",
     "omegaconf>=2.3,<3",
-    "boba-config==0.0.30.dev3",
+    "boba-config==0.0.30.dev4",
     "pytest>=9.1,<10",
 ]
 
