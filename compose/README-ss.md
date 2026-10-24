@@ -10,27 +10,32 @@
 На машине живёт одна версия boba — ветка `refactoring/chainlit_agent` и её
 потомки: чат aid с процессом-агентом и сервис инструментов boba-mcp. Её деревья —
 `compose/aid`, `compose/mcp`, `debug/aid` и `debug/mcp`, базы PostgreSQL — `aid`
-у compose и `aid_debug` у отладки; базу выбирает ключ `site.aid_database`
-site.toml. В VS Code её запускают цели `launch.json` «Aid: agent» (чат), «MCP:
+у compose и `aid_<разработчик>` у отладки (`aid_ss` у `ss`); базу выбирает ключ
+`site.aid_database` site.toml, у отладки он выводится из `developer` файла среды
+`debug/conf/site.toml` (руководство, раздел 8, «Среда разработчика»). В VS Code её запускают цели `launch.json` «Aid: agent» (чат), «MCP:
 tools service» (boba-mcp), «Aid: aid + mcp» (оба процесса сразу), «tool (aid)» и
 «pytest (aid): …».
 
 Прежняя версия (ветка `dev`, чат chainlit и studio, базы `boba` и `boba_debug`)
 выведена 2026-10-24: её треды, история, соединения, база знаний и индекс
-перенесены в `aid` и `aid_debug` скриптами
+перенесены в `aid` и `aid_debug` (теперь `aid_ss`) скриптами
 `build/scripts/migrations/2026-10-24-history-merge`, базы `boba`, `boba_debug` и
 `solomatovs` удалены, их дампы лежат в `/mnt/nas/ss/pg-backup-2026-10-24`.
 
-Базы `aid` и `aid_debug` — системные. Рабочая база чат-бота, куда пользователи
-ходят своим логином через соединение `pg-krb-delegate` (Kerberos-делегирование),
-— `playground`: владелец `boba-svc`, группа `adusers` может создавать в ней схемы
-и объекты в `public`.
+Базы `aid` и `aid_<разработчик>` — системные. Рабочая база чат-бота, куда
+пользователи ходят своим логином через соединение `pg-krb-delegate`
+(Kerberos-делегирование), — `playground` у стенда и `playground_<разработчик>` у
+отладки: владелец `boba-svc`, группа `adusers` может создавать в ней схемы и
+объекты в `public`. Соединения ClickHouse у стенда смотрят в `default`, у отладки
+— в `playground_<разработчик>` кластера `gpn`. Базы разработчика заводит
+`make -C build dev-db` (руководство, раздел 8).
 
 Индексаторы и скраперы ix (`compose/ix-*`, `compose/cfl-indexer`,
 `compose/*-meta-scraper`) пишут в схему `ix` базы `aid`; схему они создают сами
 командой `upgrade`, ядро `ix-core` — первым, `cfl-indexer` — после `ix-fts`.
 Модель эмбеддингов `ix-vector` и `ix-search-lab` берут из `runtime/models/fastembed`.
-Тесты новой версии читают индекс из `aid_debug`.
+Отладочные индексаторы (`debug/ix-*`, `debug/cfl-indexer`, `debug/*-meta-scraper`,
+цели `launch.json`) пишут в базу разработчика.
 
 Контейнер чата новой версии называется `aid` (второй узел `aid2`): на это имя
 рассчитаны карта доступа к PostgreSQL и прокси (раздел «Сеть»). Отладка чата
@@ -131,8 +136,11 @@ Function not implemented, falling back to fork`. Это не ошибка: secco
 
 ## Отладка
 
-Порты отладки: чат 8601, boba-mcp 8651. База отладки — `aid_debug`. Соседний пользователь
-машины отлаживает свой чат на 8611. Keytab сервиса отладка читает из
+Порты отладки: чат 8601, boba-mcp 8651. База отладки — `aid_ss`, рабочие базы
+соединений — `playground_ss` в postgres и ClickHouse. Соседний пользователь машины
+`alexeyk500` отлаживает свой чат на 8611; его база новой версии — `aid_alexeyk500`.
+Тестовые базы называются `aid_ss_<тест>_…`, объекты ClickHouse и Oracle тестов —
+`ss_<имя>_…`. Keytab сервиса отладка читает из
 `compose/<приложение>/conf/krb`: владелец файла — 625287, группа `ss`, режим
 `0440`.
 

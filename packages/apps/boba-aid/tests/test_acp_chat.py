@@ -67,7 +67,7 @@ from boba.toolkit.result import ContentMime
 
 pytestmark = pytest.mark.anyio
 
-DB_NAME = "boba_acp_chat"
+DB_NAME = "acp_chat"
 BOOT_TIMEOUT_SEC = 180.0
 TURN_TIMEOUT_SEC = 120.0
 TOKEN_DELAY_SEC = 0.03
@@ -88,7 +88,7 @@ def chainlit_context() -> None:
 
 @pytest.fixture(scope="module")
 def stand_database() -> str:
-    return StandDatabase(StandApp.AID, StandNames().of_tree(DB_NAME)).prepare()
+    return StandDatabase(StandApp.AID, StandNames().tree_database(DB_NAME)).prepare()
 
 
 @pytest.fixture(scope="module")

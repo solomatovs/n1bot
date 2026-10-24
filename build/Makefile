@@ -658,6 +658,10 @@ define HELP
   dev                   compose/<приложение>: boba.env, data, .env, юнит песочницы (mcp), владельцы
   debug                 debug/<приложение> и .vscode из образцов; для aid собирает фронт (web)
   site-keys             ключи site.toml, на которые ссылается общий конфиг
+  dev-db                базы разработчика: DEVELOPER=<логин> SOURCE=<база стенда> TEMPLATE=<шаблон>
+                        CH_CLUSTER=<кластер>; aid_<логин>, playground_<логин> в postgres и ClickHouse,
+                        соединения стенда на них. Postgres — PGHOST/PGUSER…, ClickHouse — CH_URL,
+                        CH_AUTH=negotiate|password (CH_USER, CH_PASSWORD)
   release               дерево установки из образа -> release/$(VERSION)/<экземпляр>;
                         INSTANCE=<имя> (по умолчанию имя приложения), INSTALL_ROOT=$(INSTALL_ROOT),
                         BUNDLE_OS_LIBS=1 — с системными библиотеками образа в third/lib
@@ -1290,6 +1294,15 @@ vscode:
 	    echo "    vscode: $(VSCODE_DIR)/$$name создан из образца"
 	done
 	chmod 0755 "$(VSCODE_DIR)/python-debug-slice.sh"
+
+# --- среда разработчика ------------------------------------------------------------
+
+# базы разработчика на общих серверах стенда: aid_<DEVELOPER> чата и сервиса,
+# playground_<DEVELOPER> соединений в postgres и ClickHouse, соединения из базы SOURCE
+# стенда, переведённые на них. Postgres — переменные libpq, ClickHouse — CH_URL и CH_AUTH
+.PHONY: dev-db
+dev-db:
+	@"$(SCRIPTS_DIR)/dev-db.sh" "$(DEVELOPER)" "$(SOURCE)" "$(TEMPLATE)" "$(CH_CLUSTER)"
 
 # --- обслуживание ------------------------------------------------------------------
 

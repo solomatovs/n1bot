@@ -3,7 +3,8 @@
 Ошибки:
 ConfigLayoutError — файлы конфигурации названы или разложены не так: нет файла,
     не заданы переменные стенда, в общем конфиге есть секция [env] или [site],
-    в site-файле есть секция сверх этих двух.
+    в site-файле или в файле, который он подключает, есть секция сверх этих
+    двух, подключённого файла нет.
 RuntimeError — конфиг ещё не загружен (RawConfig.get до RawConfig.load).
 """
 
@@ -37,7 +38,7 @@ from boba.auth.config import (
     ProxyAuthConfig,
 )
 from boba.chat.profiles import ChatProfileConfig
-from boba.config import ConfigBuilder, bind
+from boba.config import ConfigBuilder, ConfigError, TomlFile, bind
 from boba.db.postgres.connection import PostgresConfig
 from boba.identity.token import CookieSpec, SessionRenewal
 from boba.krb import KerberosWorkspaceConfig
@@ -196,7 +197,9 @@ class AppLayers:
 
     Общий конфиг описывает устройство приложения и на [env] и [site] только
     ссылается; сами секции лежат в site-файле, и другой секции в нём быть не
-    может — иначе устройство приложения описывалось бы в двух местах. base
+    может — иначе устройство приложения описывалось бы в двух местах. Общую
+    для нескольких приложений часть site-файл берёт из файла среды ключом
+    include (TomlFile). base
     выводится из раскладки случая (site.toml лежит в ${base}/conf), файлы
     plugins/<id>.toml рядом с общим конфигом ложатся секциями tool.<id>, а
     окружение лишь переопределяет ключи [env] из реестра EnvOverride.
@@ -292,13 +295,17 @@ class AppLayers:
 
     @classmethod
     def _site(cls, path: Path) -> dict[str, Any]:
-        with path.open("rb") as body:
-            sections = tomllib.load(body)
+        """Секции site-файла поверх файла, который он подключает ключом include."""
+        try:
+            sections = TomlFile(path).sections()
+        except ConfigError as exc:
+            msg = f"site file {path}: {exc}"
+            raise ConfigLayoutError(msg) from exc
 
         foreign = sorted(set(sections) - cls.SITE_SECTIONS)
         if foreign:
             msg = (
-                f"site file {path}: expected only sections "
+                f"site file {path} with its include: expected only sections "
                 f"{sorted(cls.SITE_SECTIONS)}, got also {foreign}; the structure "
                 "of the application is described in the common config alone"
             )

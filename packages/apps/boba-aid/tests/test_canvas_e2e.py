@@ -78,7 +78,7 @@ class E2eStand:
     INSTANCE: ClassVar[str] = "e2e"
     SERVICE_LAUNCHER: ClassVar[str] = "sandbox"
     DATA_DIRS: ClassVar[tuple[str, ...]] = ("krb", "dump", "workspace", "tool-logs")
-    DB_NAME: ClassVar[str] = "boba_e2e"
+    DB_NAME: ClassVar[str] = "e2e"
     CONF: ClassVar[str] = "conf"
 
     def prepare(self) -> None:
@@ -86,7 +86,7 @@ class E2eStand:
             for name in self.DATA_DIRS:
                 (data / name).mkdir(parents=True, exist_ok=True)
 
-        database = StandDatabase(StandApp.AID, StandNames().of_tree(self.DB_NAME))
+        database = StandDatabase(StandApp.AID, StandNames().tree_database(self.DB_NAME))
         name = database.prepare()
 
         for app in (StandApp.AID, StandApp.MCP):

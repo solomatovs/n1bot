@@ -125,7 +125,8 @@ create role boba_history login;
 
 Имя новой базы может быть любым: приложения берут его из ключа `site.aid_database`
 файла site.toml. В примерах ниже база называется `aid`; так она называется у
-развёртывания compose, а у отладочного дерева — `aid_debug`. Старая база в примерах
+развёртывания compose, а у отладки — база разработчика `aid_<разработчик>`
+(`docs/admin-guide.md`, раздел 8, «Среда разработчика»). Старая база в примерах
 называется `boba` (у отладки — `boba_debug`).
 
 ## Порядок действий
@@ -193,7 +194,8 @@ create role boba_history login;
 7. Перенести workspace пользователей к сервису boba-mcp скриптом
    `../2026-10-05-workspace-to-mcp.sh` (карта `select id, identifier from chainlit.users`).
 8. Направить конфиги нового чата и boba-mcp на новую базу
-   (`site.aid_database = "aid"`, у отладки `"aid_debug"`; индексаторы — своими
+   (`site.aid_database = "aid"`, у отладки `"aid_${site.developer}"` файла
+   среды разработчика; индексаторы — своими
    конфигами) со схемами
    `aid`/`boba`/`mcp`, вписать в site.toml чата вход истории
    (`history_auth_method` и `[site.history_auth.password]` или

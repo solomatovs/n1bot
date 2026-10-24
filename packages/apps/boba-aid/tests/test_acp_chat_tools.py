@@ -60,7 +60,7 @@ from boba.stand.ui.stand import (
 
 pytestmark = pytest.mark.anyio
 
-DB_NAME = "boba_acp_tools"
+DB_NAME = "acp_tools"
 TOKEN_DELAY_SEC = 0.0
 CONNECTION = "probe"
 SERVICE_PLUGINS = ("pg",)
@@ -77,7 +77,7 @@ def chainlit_context() -> None:
 
 @pytest.fixture(scope="module")
 def stand_database() -> StandDatabase:
-    return StandDatabase(StandApp.AID, StandNames().of_tree(DB_NAME))
+    return StandDatabase(StandApp.AID, StandNames().tree_database(DB_NAME))
 
 
 @pytest.fixture(scope="module")
