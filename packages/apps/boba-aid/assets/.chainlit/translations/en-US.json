@@ -295,6 +295,8 @@
             "unfinished": "the turn ended before the call did",
             "compacting": "Compacting the conversation…",
             "compacted": "Context compacted",
+            "compactionFailed": "Compaction failed",
+            "compactionStopped": "Compaction stopped",
             "elapsedMs": "{{ms}} ms",
             "elapsedSec": "{{sec}} s",
             "elapsedMin": "{{min}} m {{sec}} s",

@@ -19,8 +19,6 @@ import pytest
 from boba.agent.attachments import ConnectedServer, InvokedSkillsAttachment
 from boba.agent.control import AllowAnswer
 from boba.agent.events import (
-    CompactionEvent,
-    CompactionStatus,
     NoticeEvent,
     RecordEvent,
     ResultEvent,
@@ -37,6 +35,8 @@ from boba.agent.records import (
     AttachmentRecord,
     ChainRecord,
     CompactBoundaryRecord,
+    CompactionPhase,
+    CompactionRecord,
     CompactTrigger,
     PermissionBehavior,
     PermissionMode,
@@ -134,6 +134,9 @@ def kinds(records: Sequence[Record] | Sequence[ChainRecord]) -> list[str]:
         if isinstance(record, ApiErrorRecord):
             name = "system:api_error"
 
+        if isinstance(record, CompactionRecord):
+            name = "system:compaction"
+
         names.append(name)
 
     return names
@@ -181,6 +184,24 @@ def summary_requests(server: FakeServer) -> list[dict[str, object]]:
     for request in server.requests():
         if is_summary_request(request):
             found.append(request)
+
+    return found
+
+
+def compaction_records(records: Sequence[Record]) -> list[CompactionRecord]:
+    found: list[CompactionRecord] = []
+    for record in records:
+        if isinstance(record, CompactionRecord):
+            found.append(record)
+
+    return found
+
+
+def phases(records: Sequence[Record]) -> list[tuple[str, CompactionPhase]]:
+    """Записи хода сжатия по порядку: (id сжатия, фаза)."""
+    found: list[tuple[str, CompactionPhase]] = []
+    for record in compaction_records(records):
+        found.append((record.compaction_id, record.phase))
 
     return found
 
@@ -320,15 +341,12 @@ class TestThreshold:
         self.check_records(session, await journal(root, SESSION), before)
         events = [e for e in sink.of(RecordEvent) if isinstance(e, RecordEvent)]
         assert any(isinstance(e.record, CompactBoundaryRecord) for e in events)
-        compactions = [
-            e for e in sink.of(CompactionEvent) if isinstance(e, CompactionEvent)
-        ]
-        summary = summaries(session.records())[0]
-        assert [(e.compaction_id, e.status) for e in compactions] == [
-            (summary.uuid, CompactionStatus.IN_PROGRESS),
-            (summary.uuid, CompactionStatus.COMPLETED),
-        ]
-        assert compactions[1].summary == summary.message.content
+        written = await journal(root, SESSION)
+        summary = summaries(written)[0]
+        assert phases(written) == [(summary.uuid, CompactionPhase.STARTED)]
+        started = compaction_records(written)[0]
+        assert started.trigger is CompactTrigger.AUTO
+        assert started.command_uuid is None
         after = self.check_requests(server)
 
         again = await reloaded(root, SESSION)
@@ -370,7 +388,8 @@ class TestThreshold:
         announced = kinds(records[before:])
         first = kinds(records[:before])
         assert first.count("attachment:mcp_instructions_delta") == 1, first
-        assert announced[3:8] == [
+        assert announced[3:9] == [
+            "system:compaction",
             "system:compact_boundary",
             "attachment:date",
             "user:summary",
@@ -386,6 +405,7 @@ class TestThreshold:
             "queue-operation",
             "queue-operation",
             "user",
+            "system:compaction",
             "system:compact_boundary",
             "attachment:date",
             "user:summary",
@@ -397,8 +417,12 @@ class TestThreshold:
         boundary = boundaries(records)[0]
         summary = summaries(records)[0]
         prompt_two = records[before + 2]
-        date = records[before + 4]
+        started = records[before + 3]
+        date = records[before + 5]
         assert isinstance(prompt_two, UserRecord)
+        assert isinstance(started, CompactionRecord)
+        assert started.parent_uuid == prompt_two.uuid
+        assert started.compaction_id == summary.uuid
         assert isinstance(date, AttachmentRecord)
         assert boundary.parent_uuid is None
         assert boundary.logical_parent_uuid == prompt_two.uuid
@@ -560,18 +584,10 @@ class TestBreakers:
         await served.close()
 
         assert list(served.agent.outcomes) == [TurnOutcome.COMPACT_FAILURE_BREAKER]
-        statuses = [
-            e.status for e in sink.of(CompactionEvent) if isinstance(e, CompactionEvent)
-        ]
-        assert (
-            statuses
-            == [
-                CompactionStatus.IN_PROGRESS,
-                CompactionStatus.FAILED,
-            ]
-            * 3
-        )
         records = session.records()
+        steps = [phase for _, phase in phases(records)]
+        assert steps == [CompactionPhase.STARTED, CompactionPhase.FAILED] * 3
+        assert all(r.error for r in compaction_records(records)[1::2])
         assert not boundaries(records)
         assert len(summary_requests(plain_server)) == 3
         texts = synthetic_texts(records)
@@ -903,6 +919,25 @@ class TestManual:
         f"            <command-args>{NOTE}</command-args>"
     )
 
+    def _check_command_records(
+        self, records: Sequence[Record], before: int, command_id: str
+    ) -> None:
+        """За прежними before записями — пометка и вызов команды с uuid
+        command_id, до границы; запись начала сжатия ссылается на вызов, id
+        сжатия — uuid пересказа."""
+        written = [r for r in records[before:] if isinstance(r, UserRecord)]
+        caveat, called = written[:2]
+        assert caveat.is_meta
+        assert caveat.message.content == CAVEAT
+        assert called.uuid == command_id
+        assert called.message.content == self.CALL
+        assert records.index(called) < records.index(boundaries(records)[0])
+        started = compaction_records(records)
+        assert [r.phase for r in started] == [CompactionPhase.STARTED]
+        assert started[0].trigger is CompactTrigger.MANUAL
+        assert started[0].command_uuid == command_id
+        assert started[0].compaction_id == summaries(records)[0].uuid
+
     async def test_command_compacts_with_the_instructions(
         self, server: FakeServer, agents: StandAgents, tmp_path: Path
     ) -> None:
@@ -926,16 +961,7 @@ class TestManual:
 
         assert list(served.agent.outcomes) == [TurnOutcome.COMPLETED] * 4
         records = await journal(tmp_path / "history", SESSION)
-        written = [r for r in records[before:] if isinstance(r, UserRecord)]
-        caveat, called = written[:2]
-        assert isinstance(caveat, UserRecord)
-        assert caveat.is_meta
-        assert caveat.message.content == CAVEAT
-        assert isinstance(called, UserRecord)
-        assert called.uuid == command.id
-        assert called.message.content == self.CALL
-        boundary_at = records.index(boundaries(records)[0])
-        assert records.index(called) < boundary_at
+        self._check_command_records(records, before, command.id)
         found = boundaries(records)
         assert len(found) == 1
         assert found[0].compact_metadata.trigger is CompactTrigger.MANUAL
@@ -954,10 +980,6 @@ class TestManual:
         stdout = "<local-command-stdout>Compacted</local-command-stdout>"
         assert stdout in sent_after
         assert sent_after.index(stdout) > sent_after.index(CONTINUED)
-        statuses = [
-            e.status for e in sink.of(CompactionEvent) if isinstance(e, CompactionEvent)
-        ]
-        assert statuses == [CompactionStatus.IN_PROGRESS, CompactionStatus.COMPLETED]
         conversation = session.conversation()
         assert isinstance(conversation[0], CompactBoundaryRecord)
         assert conversation[0].uuid == found[0].uuid
@@ -1047,12 +1069,16 @@ class TestCancellation:
             TurnOutcome.COMPLETED,
             TurnOutcome.ABORTED_STREAMING,
         ]
-        statuses = [
-            e.status for e in sink.of(CompactionEvent) if isinstance(e, CompactionEvent)
-        ]
-        assert statuses == [CompactionStatus.IN_PROGRESS, CompactionStatus.CANCELLED]
         records = list(session.records())
-        assert kinds(records[before:]) == ["queue-operation", "queue-operation", "user"]
+        steps = [phase for _, phase in phases(records)]
+        assert steps == [CompactionPhase.STARTED, CompactionPhase.CANCELLED]
+        assert kinds(records[before:]) == [
+            "queue-operation",
+            "queue-operation",
+            "user",
+            "system:compaction",
+            "system:compaction",
+        ]
         assert not boundaries(records)
         assert session.state is SessionState.STOPPING
 

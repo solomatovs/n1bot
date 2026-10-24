@@ -61,8 +61,6 @@ from boba.agent.compaction import (
     TokenEstimator,
 )
 from boba.agent.events import (
-    CompactionEvent,
-    CompactionStatus,
     EventSink,
     NoticeEvent,
     ResultEvent,
@@ -76,6 +74,8 @@ from boba.agent.records import (
     AssistantBlock,
     AssistantMessage,
     AssistantRecord,
+    CompactionPhase,
+    CompactionRecord,
     CompactTrigger,
     MessageOrigin,
     OriginKind,
@@ -154,6 +154,16 @@ class Progress:
     limit_hits: int = 0
     usage: Usage = field(default_factory=Usage)
     tracking: CompactTracking = field(default_factory=CompactTracking)
+
+
+@dataclass(frozen=True)
+class CompactionStep:
+    """Идущее сжатие для его записей compaction: id, триггер и запись вызова
+    `/compact` (None — сжатие по порогу)."""
+
+    compaction_id: str
+    trigger: CompactTrigger
+    command_uuid: str | None
 
 
 class TurnLoop:
@@ -349,7 +359,9 @@ class TurnLoop:
             excess=None,
             instructions=command.text,
         )
-        compacted = await self._compact(fill, snapshot, pressure, cancellation)
+        compacted = await self._compact(
+            fill, snapshot, pressure, cancellation, command.id
+        )
         if isinstance(compacted, SummaryAborted):
             return self._abort_outcome(compacted.reason)
 
@@ -472,7 +484,9 @@ class TurnLoop:
                 excess=None,
                 instructions="",
             )
-            compacted = await self._compact(fill, snapshot, pressure, cancellation)
+            compacted = await self._compact(
+                fill, snapshot, pressure, cancellation, None
+            )
             if isinstance(compacted, SummaryAborted):
                 return self._abort_outcome(compacted.reason)
 
@@ -551,7 +565,7 @@ class TurnLoop:
             excess=self._overflow_signs.excess(asked.error),
             instructions="",
         )
-        compacted = await self._compact(fill, snapshot, pressure, cancellation)
+        compacted = await self._compact(fill, snapshot, pressure, cancellation, None)
         if isinstance(compacted, SummaryAborted):
             return self._abort_outcome(compacted.reason)
 
@@ -571,10 +585,12 @@ class TurnLoop:
         snapshot: PromptSnapshot,
         pressure: SummaryPressure,
         cancellation: RunCancellation,
+        command_uuid: str | None,
     ) -> CompactResult:
-        """Пересказ и пачка записей; остановка во время пересказа записей не
-        оставляет. Наружу — ход сжатия событиями: начато, состоялось с
-        пересказом, не удалось, прервано."""
+        """Пересказ и пачка записей. Ход сжатия пишется в историю записями
+        compaction: начато, не удалось с причиной, прервано; состоявшееся —
+        граница и пересказ с uuid, равным id сжатия. command_uuid — запись
+        вызова `/compact` у сжатия по команде."""
         started = time.monotonic()
         job = SummaryJob(
             session=self._session,
@@ -588,15 +604,12 @@ class TurnLoop:
             logger.info("compaction skipped: %s", unready.describe())
             return unready
 
-        compaction_id = self._ids.uuid()
-        await self._sink.emit(
-            CompactionEvent(
-                compaction_id=compaction_id,
-                status=CompactionStatus.IN_PROGRESS,
-                summary="",
-                error="",
-            )
+        phase = CompactionStep(
+            compaction_id=self._ids.uuid(),
+            trigger=pressure.trigger,
+            command_uuid=command_uuid,
         )
+        await self._write_compaction(phase, CompactionPhase.STARTED, "")
         self._session.enter(SessionState.COMPACTING)
         try:
             summarized = await self._summarizer.summarize(job)
@@ -604,18 +617,18 @@ class TurnLoop:
             self._session.enter(SessionState.TURN)
 
         if isinstance(summarized, SummaryAborted):
-            return await self._compaction_aborted(compaction_id, summarized)
+            return await self._compaction_aborted(phase, summarized)
 
         if cancellation.cancelled:
             aborted = SummaryAborted(self._stop_reason_of(cancellation))
-            return await self._compaction_aborted(compaction_id, aborted)
+            return await self._compaction_aborted(phase, aborted)
 
         if isinstance(summarized, NotSummarized):
-            return await self._compaction_failed(compaction_id, summarized)
+            return await self._compaction_failed(phase, summarized)
 
         duration = int((time.monotonic() - started) * self.MILLIS)
         compact_job = CompactJob(
-            compaction_id=compaction_id,
+            compaction_id=phase.compaction_id,
             trigger=pressure.trigger,
             pre_tokens=fill.tokens,
             duration_ms=duration,
@@ -630,20 +643,11 @@ class TurnLoop:
                 f"holds {window}"
             )
             failure = NotSummarized(SummaryFailure.DOES_NOT_FIT, detail)
-            return await self._compaction_failed(compaction_id, failure)
+            return await self._compaction_failed(phase, failure)
 
         records = self._compactor.add(self._session, pack)
         for record in records:
             await self._keeper.added(record)
-
-        await self._sink.emit(
-            CompactionEvent(
-                compaction_id=compaction_id,
-                status=CompactionStatus.COMPLETED,
-                summary=self._summary_text(pack.summary),
-                error="",
-            )
-        )
 
         logger.info(
             "compaction: %d record(s) summarized, %d kept, %d tokens before",
@@ -655,46 +659,36 @@ class TurnLoop:
         return Compacted(records)
 
     async def _compaction_failed(
-        self, compaction_id: str, failure: NotSummarized
+        self, phase: CompactionStep, failure: NotSummarized
     ) -> NotSummarized:
         logger.warning("compaction failed: %s", failure.describe())
-        await self._sink.emit(
-            CompactionEvent(
-                compaction_id=compaction_id,
-                status=CompactionStatus.FAILED,
-                summary="",
-                error=failure.describe(),
-            )
-        )
+        await self._write_compaction(phase, CompactionPhase.FAILED, failure.describe())
 
         return failure
 
     async def _compaction_aborted(
-        self, compaction_id: str, aborted: SummaryAborted
+        self, phase: CompactionStep, aborted: SummaryAborted
     ) -> SummaryAborted:
-        await self._sink.emit(
-            CompactionEvent(
-                compaction_id=compaction_id,
-                status=CompactionStatus.CANCELLED,
-                summary="",
-                error="",
-            )
-        )
+        await self._write_compaction(phase, CompactionPhase.CANCELLED, "")
 
         return aborted
 
-    @staticmethod
-    def _summary_text(record: UserRecord) -> str:
-        """Текст пересказа для пользователя — содержимое записи, как его
-        получает модель и как его отдаёт воспроизведение истории."""
-        content = record.message.content
-        if isinstance(content, str):
-            return content
-
-        msg = (
-            "The compaction summary record holds blocks instead of text. This is a bug."
+    async def _write_compaction(
+        self, step: CompactionStep, phase: CompactionPhase, error: str
+    ) -> None:
+        record = CompactionRecord(
+            uuid=self._ids.uuid(),
+            parent_uuid=self._session.last_chain_uuid(),
+            timestamp=self._clock.now(),
+            session_id=self._session.id.value,
+            version=self._version,
+            compaction_id=step.compaction_id,
+            phase=phase,
+            trigger=step.trigger,
+            command_uuid=step.command_uuid,
+            error=error,
         )
-        raise RuntimeError(msg)
+        await self._keeper.add(record)
 
     def _snapshot_in_use(self) -> PromptSnapshot:
         """Снимок, по которому пойдёт запрос: из истории либо свежий."""

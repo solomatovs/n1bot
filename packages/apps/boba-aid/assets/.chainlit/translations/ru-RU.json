@@ -295,6 +295,8 @@
             "unfinished": "ход закончился раньше вызова",
             "compacting": "Сжимаю контекст…",
             "compacted": "Контекст сжат",
+            "compactionFailed": "Сжатие не удалось",
+            "compactionStopped": "Сжатие прервано",
             "elapsedMs": "{{ms}} мс",
             "elapsedSec": "{{sec}} с",
             "elapsedMin": "{{min}} мин {{sec}} с",

@@ -3399,10 +3399,8 @@ class TestCompactCommand:
         )
 
         marks = self._marks(replayed)
-        first_at = marks.index(("user", first.message_id))
-        second_at = marks.index(("user", second.message_id))
-        assert marks[first_at + 1][0] == "completed", marks
-        assert marks[second_at + 1][0] == "completed", marks
+        live_marks = self._marks(client.updates_of(session_id))
+        assert marks == live_marks
         for update in replayed:
             if isinstance(update, schema.UserMessageUpdate):
                 if update.message_id == second.message_id:
@@ -3449,6 +3447,57 @@ class TestCompactCommand:
         assert "compact_boundary" not in subtypes
         uuids = [r["uuid"] for r in records if r["type"] == "user"]
         assert response.message_id in uuids
+        phases = [r["phase"] for r in records if r.get("subtype") == "compaction"]
+        assert phases == ["started", "cancelled"]
+
+    async def test_unfinished_compaction_replays_as_interrupted(
+        self,
+        boba: AcpProcess,
+        registration: StandRegistration,
+        model: FakeModel,
+        tmp_path: Path,
+    ) -> None:
+        """Процесс убит посреди пересказа: в истории есть начало сжатия без
+        конца — воспроизведение отдаёт его начатым и затем неудачей с
+        причиной, а не вечным «сжимаю»."""
+        client = AcpClient()
+        document = boba.settings_document(mode="bypassPermissions", allow_bypass=True)
+        conn = await boba.start(client, registration, document)
+        try:
+            await handshake(conn)
+            session = await conn.new_session(
+                cwd=str(tmp_path), mcp_servers=[StandRegistration.STAND]
+            )
+            session_id = session.session_id
+            await self._conversation(boba, client, session_id)
+
+            hang = [schema.TextContentBlock(text=f"/compact {SummaryName.HANG.value}")]
+            async with asyncio.timeout(READ_TIMEOUT_SEC):
+                await conn.prompt(session_id=session_id, prompt=[*hang])
+                while not self._started_on_disk(boba, session_id):
+                    await asyncio.sleep(0.05)
+        finally:
+            await boba.kill()
+
+        replayed = await self._replayed(
+            model, registration, document, tmp_path, session_id
+        )
+
+        compactions = [
+            u for u in replayed if isinstance(u, schema.SessionCompactionUpdate)
+        ]
+        assert [c.status for c in compactions] == ["in_progress", "failed"]
+        assert compactions[0].compaction_id == compactions[1].compaction_id
+        assert compactions[1].error is not None
+        assert "did not finish" in compactions[1].error
+
+    @staticmethod
+    def _started_on_disk(boba: AcpProcess, session_id: str) -> bool:
+        for record in boba.journal(session_id):
+            if record.get("subtype") == "compaction":
+                return True
+
+        return False
 
     async def test_nothing_to_compact_answers_with_the_reason(
         self, boba: AcpProcess, registration: StandRegistration, tmp_path: Path
@@ -3986,9 +4035,10 @@ class TestServiceUpdates:
             await counting.stop()
 
         assert [(c.compaction_id, c.status) for c in replayed] == [
-            (compactions[1].compaction_id, "completed")
+            (compactions[1].compaction_id, "in_progress"),
+            (compactions[1].compaction_id, "completed"),
         ]
-        assert replayed[0].summary == compactions[1].summary
+        assert replayed[1].summary == compactions[1].summary
         records = boba.journal(session_id)
         boundaries = [
             r

@@ -52,6 +52,8 @@ __all__ = [
     "CompactBoundaryRecord",
     "CompactMetadata",
     "CompactTrigger",
+    "CompactionPhase",
+    "CompactionRecord",
     "KeptNull",
     "LinkText",
     "MessageOrigin",
@@ -120,6 +122,7 @@ class SystemSubtype(StrEnum):
 
     API_ERROR = "api_error"
     COMPACT_BOUNDARY = "compact_boundary"
+    COMPACTION = "compaction"
 
 
 class BlockType(StrEnum):
@@ -503,6 +506,30 @@ class CompactMetadata(WireModel):
     )
 
 
+class CompactionPhase(StrEnum):
+    """Что записано о сжатии записью compaction: начато, не удалось, прервано.
+    Состоявшееся сжатие — граница и пересказ с uuid, равным id сжатия."""
+
+    STARTED = "started"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class CompactionRecord(ChainRecord):
+    """Ход сжатия в истории: из этих записей лента рисует сжатие вживую и при
+    воспроизведении. Модели не уходит. `command_uuid` — запись вызова
+    `/compact` у сжатия по команде; у сжатия по порогу её нет. `error` —
+    причина у неудачи, у остальных фаз пусто."""
+
+    type: Literal[RecordType.SYSTEM] = RecordType.SYSTEM
+    subtype: Literal[SystemSubtype.COMPACTION] = SystemSubtype.COMPACTION
+    compaction_id: str = Field(min_length=1)
+    phase: CompactionPhase
+    trigger: CompactTrigger
+    command_uuid: str | None
+    error: str
+
+
 class CompactBoundaryRecord(ChainRecord):
     type: Literal[RecordType.SYSTEM] = RecordType.SYSTEM
     subtype: Literal[SystemSubtype.COMPACT_BOUNDARY] = SystemSubtype.COMPACT_BOUNDARY
@@ -559,6 +586,7 @@ Record: TypeAlias = (
     | AttachmentRecord
     | ApiErrorRecord
     | CompactBoundaryRecord
+    | CompactionRecord
     | QueueOperationRecord
     | PermissionModeRecord
     | PermissionRuleRecord
@@ -572,6 +600,7 @@ class KeptNull(StrEnum):
     PARENT_UUID = "parentUuid"
     LOGICAL_PARENT_UUID = "logicalParentUuid"
     STOP_SEQUENCE = "stop_sequence"
+    COMMAND_UUID = "commandUuid"
 
     @classmethod
     def covers(cls, key: str) -> bool:
@@ -604,6 +633,7 @@ class RecordCodec:
         self._system: dict[SystemSubtype, type[Record]] = {
             SystemSubtype.API_ERROR: ApiErrorRecord,
             SystemSubtype.COMPACT_BOUNDARY: CompactBoundaryRecord,
+            SystemSubtype.COMPACTION: CompactionRecord,
         }
 
     def parse(self, raw: Mapping[str, Any]) -> Record:

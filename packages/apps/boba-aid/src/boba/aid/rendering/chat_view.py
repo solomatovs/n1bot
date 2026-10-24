@@ -120,6 +120,12 @@ class StepText(StrEnum):
     COMPACTED = "aid.feed.compacted"
     """Разговор сжат; под шагом — пересказ, который получила модель."""
 
+    COMPACTION_FAILED = "aid.feed.compactionFailed"
+    """Сжатие не удалось; под шагом — причина."""
+
+    COMPACTION_STOPPED = "aid.feed.compactionStopped"
+    """Сжатие прервано: ход остановили раньше, чем пересказ готов."""
+
     NO_ROWS = "aid.feed.noRows"
     """Пустая таблица результата."""
 
@@ -1817,20 +1823,26 @@ class ChatView:
         await self._sink.put(step)
         await self._relabel(step.id, step.name)
 
-    async def compaction_dropped(self, step: Step) -> None:
-        """Сжатие не состоялось: его следа в истории нет, и шаг уходит из
-        ленты; контейнер, в котором больше ничего нет, — тоже."""
-        self._turn.steps -= 1
-        await self._sink.drop(step)
-        container = self._turn.container
-        if container is None:
-            return
+    async def compaction_failed(self, step: Step, error: str) -> None:
+        """Сжатие не удалось: шаг закрыт провалом, под ним — причина."""
+        step.is_error = True
+        await self._compaction_closed(
+            step, StepStatus.FAILED.title(self.label(StepText.COMPACTION_FAILED)), error
+        )
 
-        if self._turn.steps:
-            return
+    async def compaction_stopped(self, step: Step) -> None:
+        """Сжатие прервано: шаг закрыт пометкой остановки."""
+        name = StepStatus.STOPPED.title(self.label(StepText.COMPACTION_STOPPED))
+        await self._compaction_closed(step, name, "")
 
-        await self._sink.drop(container)
-        self._turn.container = None
+    async def _compaction_closed(self, step: Step, name: str, output: str) -> None:
+        ended = utc_now()
+        step.start = ended
+        step.end = ended
+        step.name = name
+        step.output = output
+        await self._sink.put(step)
+        await self._relabel(step.id, step.name)
 
     async def tool_stopped(self, step: Step) -> None:
         """Инструмент не доработал: ход кончился раньше вызова, приложение

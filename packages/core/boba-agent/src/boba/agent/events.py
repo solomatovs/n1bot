@@ -23,8 +23,6 @@ from boba.agent.records import PermissionMode, Record, Usage
 
 __all__ = [
     "AgentEvent",
-    "CompactionEvent",
-    "CompactionStatus",
     "ControlCancelEvent",
     "ControlRequestEvent",
     "ErrorEvent",
@@ -147,30 +145,6 @@ class ResultEvent(EventModel):
     error: str = ""
 
 
-class CompactionStatus(StrEnum):
-    """Стадии сжатия разговора — значения status уведомления
-    compaction_update ACP."""
-
-    IN_PROGRESS = "in_progress"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    CANCELLED = "cancelled"
-
-
-class CompactionEvent(EventModel):
-    """Сжатие разговора: начато, состоялось с пересказом, не удалось с
-    причиной или прервано. `compaction_id` — uuid записи пересказа: по нему
-    воспроизведение истории выдаёт то же сжатие."""
-
-    compaction_id: str
-    status: CompactionStatus
-    summary: str
-    """Пересказ состоявшегося сжатия; у остальных стадий пусто."""
-
-    error: str
-    """Причина неудачи; у остальных стадий пусто."""
-
-
 class NoticeEvent(EventModel):
     """Пометка пользователю посреди хода: агент сообщает о том, что требует
     его действия (тред больше не помещается в окно модели)."""
@@ -209,7 +183,6 @@ AgentEvent: TypeAlias = (
     | ToolStartedEvent
     | ToolProgressEvent
     | ResultEvent
-    | CompactionEvent
     | NoticeEvent
     | ErrorEvent
     | ControlRequestEvent
