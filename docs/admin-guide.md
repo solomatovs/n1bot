@@ -641,7 +641,7 @@ Keytab — тоже секрет: владелец — пользователь,
 | Схема | Чья | Что в ней | Где задаётся |
 |---|---|---|---|
 | `aid` | чат | пользователи, треды, оценки ответов, соединения пользователей, роли и гранты, настройки агента, шина сообщений `live_*` | `[app].schema` общего конфига чата |
-| `boba` | агент | история бесед (`session`, `history`) | `[agent.history].schema` общего конфига чата |
+| `boba` | агент | история бесед (`session`, `session_records`) | `[agent.history].schema` общего конфига чата |
 | `mcp` | boba-mcp и его плагины | база знаний `kb_*`, описания `node` и `edge` | `[app].schema` общего конфига сервиса; файлы плагинов берут его ссылкой `${app.schema}` |
 | `ix` | индексаторы | индексы базы знаний; плагин `kb` сервиса их читает | конфиги индексаторов |
 
@@ -666,7 +666,7 @@ handed to another process as a libpq connection string; expected method
 | Роль (если разведены) | Кто входит | Чем владеет | Ключи site.toml |
 |---|---|---|---|
 | роль чата (`boba-svc`) | чат, boba-mcp | схемы `aid`, `mcp` | `pg_auth_method`, `[site.pg_auth.*]` |
-| роль истории (`boba_history`) | агент | схема `boba` с `session` и `history` | `history_auth_method`, `[site.history_auth.*]` |
+| роль истории (`boba_history`) | агент | схема `boba` с `session` и `session_records` | `history_auth_method`, `[site.history_auth.*]` |
 
 На стенде разработки и в развёртывании по умолчанию роль одна: ключи
 `[site.history_auth.*]` повторяют `[site.pg_auth.*]` (учётка `boba-svc`).
