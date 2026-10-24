@@ -47,6 +47,7 @@ def sandbox_stand(
         db_name=stand_database,
         url_prefix="/boba-stream",
         sandbox=True,
+        service_plugins=("bash",),
     )
     process = StandProcess(config=config, log_path=stand_workdir / "stream-app.log")
     process.start(boot_timeout_sec=BOOT_TIMEOUT_SEC)
