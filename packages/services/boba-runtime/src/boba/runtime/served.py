@@ -126,6 +126,9 @@ class StreamedFile:
     """
 
     ACCEPT_RANGES: ClassVar[str] = "bytes"
+    NOSNIFF: ClassVar[str] = "nosniff"
+    """Браузер верит Content-Type и не угадывает вид по телу: файл
+    пользователя не исполнится как html или скрипт в origin отдающего."""
 
     def __init__(self, storage: StorageClient, policy: UploadPolicy) -> None:
         self._storage = storage
@@ -201,12 +204,8 @@ class StreamedFile:
         mime: str,
         content_disposition: str,
     ) -> Response:
-        headers: dict[str, str] = {
-            FileHeader.CONTENT_LENGTH: str(opened.stat.size),
-            FileHeader.ACCEPT_RANGES: self.ACCEPT_RANGES,
-        }
-        if content_disposition:
-            headers[FileHeader.CONTENT_DISPOSITION] = content_disposition
+        headers = self._described(content_disposition)
+        headers[FileHeader.CONTENT_LENGTH] = str(opened.stat.size)
 
         body = self._logged(object_key, opened, opened.stat.size, "whole file")
         return StreamingResponse(body, media_type=mime, headers=headers)
@@ -223,19 +222,27 @@ class StreamedFile:
         length = window.resolve_length(size)
         last = window.offset + length - 1
 
-        headers: dict[str, str] = {
-            FileHeader.CONTENT_LENGTH: str(length),
-            FileHeader.CONTENT_RANGE: f"bytes {window.offset}-{last}/{size}",
-            FileHeader.ACCEPT_RANGES: self.ACCEPT_RANGES,
-        }
-        if content_disposition:
-            headers[FileHeader.CONTENT_DISPOSITION] = content_disposition
+        headers = self._described(content_disposition)
+        headers[FileHeader.CONTENT_LENGTH] = str(length)
+        headers[FileHeader.CONTENT_RANGE] = f"bytes {window.offset}-{last}/{size}"
 
         window_label = f"bytes {window.offset}-{last} of {size}"
         body = self._logged(object_key, opened, length, window_label)
         return StreamingResponse(
             body, status_code=206, media_type=mime, headers=headers
         )
+
+    def _described(self, content_disposition: str) -> dict[str, str]:
+        """Заголовки любого ответа телом файла: диапазоны, запрет угадывать
+        вид и, если задано, как браузеру обойтись с файлом."""
+        headers: dict[str, str] = {
+            FileHeader.ACCEPT_RANGES: self.ACCEPT_RANGES,
+            FileHeader.CONTENT_TYPE_OPTIONS: self.NOSNIFF,
+        }
+        if content_disposition:
+            headers[FileHeader.CONTENT_DISPOSITION] = content_disposition
+
+        return headers
 
     async def _logged(
         self,

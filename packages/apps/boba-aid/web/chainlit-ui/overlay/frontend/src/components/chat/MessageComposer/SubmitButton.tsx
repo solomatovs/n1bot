@@ -1,4 +1,7 @@
+import { useRecoilValue } from 'recoil';
+
 import {
+  historyLoadingState,
   useChatData,
   useChatInteract,
   useChatMessages
@@ -29,11 +32,14 @@ export default function SubmitButton({
   const { loading } = useChatData();
   const { firstInteraction } = useChatMessages();
   const { stopTask } = useChatInteract();
+  // boba: пока воспроизводится история треда, хода нет: вместо «Стоп» —
+  // неактивная кнопка отправки (её гасит disabled из useChatData)
+  const historyLoading = useRecoilValue(historyLoadingState);
 
   return (
     <TooltipProvider>
       {/* boba: при идущем ходе Stop — только у пустого поля, с текстом — Send в очередь */}
-      {loading && firstInteraction && empty ? (
+      {loading && firstInteraction && !historyLoading && empty ? (
         <Tooltip>
           <TooltipTrigger asChild>
             <Button

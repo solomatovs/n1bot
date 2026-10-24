@@ -1,4 +1,4 @@
-"""Стенд aid ведёт разговор через `boba acp`: приложение и его сервис
+"""Стенд aid ведёт разговор через `boba --stdio`: приложение и его сервис
 boba-mcp отдельными процессами, фейковая модель, вкладка — headless-клиент
 socket.io тем же протоколом, что и браузер. Проверяется ход с потоком токенов
 в ленту, остановка кнопкой Stop, sessionId агента в threads.meta, процесс
@@ -673,7 +673,7 @@ async def tab(app: StandProcess, cookie: str) -> AsyncIterator[ChatSocket]:
 
 
 class AgentProcesses:
-    """Процессы `boba acp`, запущенные стендом: по каталогу настроек в argv."""
+    """Процессы `boba --stdio`, запущенные стендом: по каталогу настроек в argv."""
 
     def __init__(self, app: StandProcess) -> None:
         self._agents_dir = app.config.workdir / "agents"

@@ -1,9 +1,9 @@
-"""Собранный бинарник `release/<версия>/bin/boba`: сценарий ACP через него —
+"""Собранный агент `release/<версия>/bin/boba.dist/boba.bin`: сценарий ACP через него —
 рукопожатие, сессия с регистрацией MCP-over-ACP, ход с инструментом,
 разрешение; история в Postgres стенда, как у чата в проде, — сессия, ход,
 возобновление с воспроизведением и второй ход; самопроверка данных пакетов;
 время старта и размер, отсутствие исходного текста внутри. Локальную модель
-onnx проверяет `bin/boba-onnx` — сборка с рантаймом onnxruntime-genai.
+onnx проверяет `bin/boba-onnx.dist/boba.bin` — сборка с рантаймом onnxruntime-genai.
 
 Тесты проверяют артефакт, а не код, и в обычный прогон не входят: маркер
 binary — после `make -C build boba-bin`, binary_onnx — после
@@ -45,8 +45,8 @@ pytestmark = [pytest.mark.anyio, pytest.mark.integration]
 class ReleaseBinary(StrEnum):
     """Бинарники выпуска в каталоге bin и команды, которые их собирают."""
 
-    BOBA = "boba"
-    ONNX = "boba-onnx"
+    BOBA = "boba.dist/boba.bin"
+    ONNX = "boba-onnx.dist/boba.bin"
 
     @property
     def build(self) -> str:
@@ -123,13 +123,13 @@ class TestBinary:
         path = release_bin.path(ReleaseBinary.BOBA)
         started = time.monotonic()
         completed = subprocess.run(
-            [str(path), "acp", "--help"], check=True, capture_output=True, timeout=60
+            [str(path), "--help"], check=True, capture_output=True, timeout=60
         )
         elapsed = time.monotonic() - started
         size = path.stat().st_size
 
         assert b"--settings" in completed.stdout
-        print(f"\n./boba acp --help: {elapsed:.2f} s, size {size / 1_000_000:.1f} MB")
+        print(f"\n./boba --help: {elapsed:.2f} s, size {size / 1_000_000:.1f} MB")
         assert elapsed < self.HELP_CEILING_SEC
 
         data = path.read_bytes()

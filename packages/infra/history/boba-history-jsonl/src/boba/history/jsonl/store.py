@@ -5,8 +5,9 @@
 Захват сессии — flock на файл на всё время работы процесса; второй процесс
 получает SessionHeldError. Перед первой дозаписью запечатывается хвост: файл
 без перевода строки в конце получает его, иначе новая запись склеилась бы с
-оборванной. Пачка пишется одним write без fsync. Чтение — весь файл
-построчно: строка не-JSON или не объект отдаётся BrokenLine. Список сессий —
+оборванной. Пачка пишется одним write без fsync. Чтение — файл построчно
+потоком, порциями строк: файл целиком в память не читается; строка не-JSON
+или не объект отдаётся BrokenLine. Список сессий —
 файлы каталога по имени, время — из последней записи файла; удаление —
 unlink под тем же flock, так что журнал работающего процесса не удалить.
 Копия (ветвление) — строки файла источника до записи среза в новый файл
@@ -31,9 +32,10 @@ import json
 import logging
 import os
 import uuid
-from collections.abc import AsyncIterator, Iterator, Sequence
+from collections.abc import AsyncGenerator, Generator, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
+from itertools import islice
 from pathlib import Path
 from typing import ClassVar
 
@@ -89,6 +91,8 @@ class JsonlHistoryStore(HistoryStore):
     DIR_MODE: ClassVar[int] = 0o700
     FILE_MODE: ClassVar[int] = 0o600
     NEWLINE: ClassVar[bytes] = b"\n"
+    READ_CHUNK: ClassVar[int] = 64
+    """Строк журнала за один переход в поток чтения."""
 
     def __init__(self, root: Path) -> None:
         self._root = root
@@ -119,11 +123,19 @@ class JsonlHistoryStore(HistoryStore):
             await asyncio.to_thread(self._write, held, data)
             held.last_seq = fresh[-1].seq
 
-    async def read(self, session: SessionId) -> AsyncIterator[HistoryLine]:
+    async def read(self, session: SessionId) -> AsyncGenerator[HistoryLine, None]:
         path = self._layout.file_of(self._root, session)
-        data = await asyncio.to_thread(self._read_bytes, path)
-        for line in self._lines(data):
-            yield line
+        lines = self._lines_of(path)
+        try:
+            while True:
+                chunk = await asyncio.to_thread(self._chunk, lines)
+                if not chunk:
+                    return
+
+                for line in chunk:
+                    yield line
+        finally:
+            lines.close()
 
     async def release(self, lease: SessionLease) -> None:
         held = self._held.pop(lease.key, None)
@@ -131,6 +143,11 @@ class JsonlHistoryStore(HistoryStore):
             return
 
         self._unlock(held)
+
+    async def close(self) -> None:
+        """Отпускает журналы всех сессий, которые держит хранилище."""
+        for key in list(self._held):
+            self._unlock(self._held.pop(key))
 
     async def list(self, cursor: str | None, limit: int) -> StoredPage:
         return await asyncio.to_thread(self._list, cursor, limit)
@@ -163,11 +180,7 @@ class JsonlHistoryStore(HistoryStore):
         SessionHeldError — журнал цели под замком другого процесса.
         HistoryError — у цели уже есть записи, файлы не прочитать или не записать.
         """
-        data = self._read_bytes(source_path)
-        end = self._cut(source, source_path, data, up_to)
-        lines = list(self._branch(data, end, target))
-        copied = len(list(self._stored_before(data, end)))
-
+        end = self._cut(source, source_path, up_to)
         held = self._lock(target, target_path)
         try:
             if held.last_seq != 0:
@@ -178,16 +191,17 @@ class JsonlHistoryStore(HistoryStore):
                 )
                 raise HistoryError(msg)
 
-            if lines:
-                self._write(held, b"".join(lines))
+            copied = 0
+            branch = self._branch(source_path, end, target)
+            while chunk := list(islice(branch, self.READ_CHUNK)):
+                self._write(held, b"".join(self._raw_of(chunk)))
+                copied += self._stored_in(chunk)
         finally:
             self._unlock(held)
 
         return copied
 
-    def _cut(
-        self, source: SessionId, path: Path, data: bytes, up_to: str | None
-    ) -> int | None:
+    def _cut(self, source: SessionId, path: Path, up_to: str | None) -> int | None:
         """Номер строки записи среза; None — среза нет, копируется всё.
 
         Ошибки:
@@ -196,7 +210,7 @@ class JsonlHistoryStore(HistoryStore):
         """
         found: int | None = None
         stored = 0
-        for line in self._lines(data):
+        for line in self._lines_of(path):
             if not isinstance(line, StoredLine):
                 continue
 
@@ -222,31 +236,37 @@ class JsonlHistoryStore(HistoryStore):
         return found
 
     def _branch(
-        self, data: bytes, end: int | None, target: SessionId
-    ) -> Iterator[bytes]:
+        self, path: Path, end: int | None, target: SessionId
+    ) -> Iterator[tuple[HistoryLine, bytes]]:
         """Строки журнала до строки `end` (не включая) с `sessionId` цели;
-        испорченные строки — как есть."""
-        for number, raw in self._raw_lines(data):
+        испорченные строки — как есть. Каждая — с её разбором."""
+        for number, raw in self._raw_lines(path):
             if end is not None and number >= end:
                 return
 
             line = self._line(number, raw)
             if isinstance(line, BrokenLine):
-                yield raw + self.NEWLINE
+                yield line, raw + self.NEWLINE
                 continue
 
             document = dict(line.raw)
             document[LineKey.SESSION_ID.value] = target.value
             text = json.dumps(document, ensure_ascii=False)
-            yield text.encode(JsonlLayout.ENCODING.value) + self.NEWLINE
+            yield line, text.encode(JsonlLayout.ENCODING.value) + self.NEWLINE
 
-    def _stored_before(self, data: bytes, end: int | None) -> Iterator[StoredLine]:
-        for line in self._lines(data):
-            if end is not None and line.number >= end:
-                return
+    @staticmethod
+    def _raw_of(chunk: Iterable[tuple[HistoryLine, bytes]]) -> Iterator[bytes]:
+        for _, raw in chunk:
+            yield raw
 
+    @staticmethod
+    def _stored_in(chunk: Iterable[tuple[HistoryLine, bytes]]) -> int:
+        count = 0
+        for line, _ in chunk:
             if isinstance(line, StoredLine):
-                yield line
+                count += 1
+
+        return count
 
     def _list(self, cursor: str | None, limit: int) -> StoredPage:
         sessions: list[StoredSession] = []
@@ -286,7 +306,7 @@ class JsonlHistoryStore(HistoryStore):
             return None
 
         updated_at: str | None = None
-        for line in self._lines(self._read_bytes(path)):
+        for line in self._lines_of(path):
             if not isinstance(line, StoredLine):
                 continue
 
@@ -398,7 +418,7 @@ class JsonlHistoryStore(HistoryStore):
 
     def _last_seq(self, path: Path) -> int:
         last = 0
-        for line in self._lines(self._read_bytes(path)):
+        for line in self._lines_of(path):
             if not isinstance(line, StoredLine):
                 continue
 
@@ -437,27 +457,40 @@ class JsonlHistoryStore(HistoryStore):
 
         held.sealed = True
 
-    def _read_bytes(self, path: Path) -> bytes:
-        if not path.exists():
-            return b""
+    def _chunk(self, lines: Iterator[HistoryLine]) -> list[HistoryLine]:
+        """Следующая порция строк журнала: читается в потоке чтения."""
+        return list(islice(lines, self.READ_CHUNK))
 
-        try:
-            return path.read_bytes()
-        except OSError as exc:
-            msg = f"Could not read the journal {path}: {exc}"
-            raise HistoryError(msg) from exc
-
-    def _lines(self, data: bytes) -> Iterator[HistoryLine]:
-        for number, raw in self._raw_lines(data):
+    def _lines_of(self, path: Path) -> Generator[HistoryLine, None, None]:
+        for number, raw in self._raw_lines(path):
             yield self._line(number, raw)
 
-    def _raw_lines(self, data: bytes) -> Iterator[tuple[int, bytes]]:
-        """Непустые строки файла с номерами с 1."""
-        for number, raw in enumerate(data.split(self.NEWLINE), start=1):
-            if not raw.strip():
-                continue
+    def _raw_lines(self, path: Path) -> Iterator[tuple[int, bytes]]:
+        """Непустые строки файла с номерами с 1, по одной с диска; файла
+        нет — строк нет.
 
-            yield number, raw
+        Ошибки:
+        HistoryError — файл не открыть или не прочитать.
+        """
+        try:
+            handle = path.open("rb")
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            msg = f"Could not open the journal {path}: {exc}"
+            raise HistoryError(msg) from exc
+
+        with handle:
+            try:
+                for number, raw in enumerate(handle, start=1):
+                    line = raw.rstrip(self.NEWLINE)
+                    if not line.strip():
+                        continue
+
+                    yield number, line
+            except OSError as exc:
+                msg = f"Could not read the journal {path}: {exc}"
+                raise HistoryError(msg) from exc
 
     def _line(self, number: int, raw: bytes) -> HistoryLine:
         try:
