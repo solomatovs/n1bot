@@ -25,7 +25,11 @@ logging), чтобы клиент проверялся на всём: server/dis
 (toggle_prompt) и ростом ресурса (bump). Расширение MCP Apps даёт
 приложение заказов (orders.html): инструмент orders показывает строки
 заказов, которые передаёт модель, refresh_orders зовёт только приложение,
-archive_orders — только модель.
+archive_orders — только модель, orders_console открывает то же приложение
+по статусу. Промпт orders_console просит модель вызвать этот инструмент и
+несёт пометку расширения команд io.boba/commands, ведущую в его
+приложение; `--commands` — сервер объявляет само расширение, без флага
+пометку клиент обязан не замечать.
 """
 
 import argparse
@@ -56,6 +60,7 @@ from mcp.types import (
     ElicitResult,
     EmbeddedResource,
     InputRequiredResult,
+    Prompt,
     PromptReference,
     ResourceLink,
     ResourceTemplateReference,
@@ -66,6 +71,27 @@ from mcp.types import (
 from pydantic import BaseModel, Field
 from starlette.types import ASGIApp, Receive, Scope, Send
 from starlette.types import Message as AsgiMessage
+
+
+class MarkedPrompts(MCPServer):
+    """MCPServer, чей prompts/list несёт _meta промптов из marks: высокий
+    уровень SDK пометок промптов не задаёт."""
+
+    def __init__(self, marks: dict[str, dict[str, Any]], **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._marks = marks
+
+    async def list_prompts(self) -> list[Prompt]:
+        listed: list[Prompt] = []
+        for prompt in await super().list_prompts():
+            mark = self._marks.get(prompt.name)
+            if mark is None:
+                listed.append(prompt)
+                continue
+
+            listed.append(prompt.model_copy(update={"meta": mark}))
+
+        return listed
 
 
 class DeclaredExtension(Extension):
@@ -217,6 +243,12 @@ class StandardServer:
     }
     REFUSAL: ClassVar[dict[str, str]] = {"reason": "the stand refuses"}
     ORDERS: ClassVar[str] = "ui://standard/orders.html"
+    CONSOLE: ClassVar[str] = "orders_console"
+    COMMANDS: ClassVar[str] = "io.boba/commands"
+    COMMANDS_SETTINGS: ClassVar[dict[str, Any]] = {"version": "2026-10-24"}
+    CONSOLE_MARK: ClassVar[dict[str, Any]] = {
+        COMMANDS: {"action": "app", "tool": CONSOLE}
+    }
     ORDERS_CSP: ClassVar[ResourceCsp] = ResourceCsp(
         resource_domains=["https://cdn.example.com"]
     )
@@ -238,24 +270,25 @@ class StandardServer:
         DeclaredExtension("com.boba/nested-calls", {"tool": "workflow"}),
     )
 
-    def __init__(
-        self, port: int, extended: bool, ttl_ms: int, retired: str, workspace: str
+    def __init__(  # noqa: PLR0913 — сервер собирается всеми флагами запуска
+        self,
+        port: int,
+        extended: bool,
+        ttl_ms: int,
+        retired: str,
+        workspace: str,
+        commands: bool,
     ) -> None:
-        apps = Apps()
-        apps.tool(resource_uri=self.ORDERS)(self.orders)
-        apps.tool(resource_uri=self.ORDERS, visibility=["app"])(self.refresh_orders)
-        apps.tool(resource_uri=self.ORDERS, visibility=["model"])(self.archive_orders)
-        html = Path(__file__).with_name("orders.html").read_text()
-        apps.add_html_resource(self.ORDERS, html, csp=self.ORDERS_CSP)
-        extensions = self._extensions(apps, extended, workspace)
+        extensions = self._extensions(self._apps(), extended, workspace, commands)
 
         hints: dict[Any, CacheHint] = {}
         if ttl_ms:
             hints["server/discover"] = CacheHint(ttl_ms=ttl_ms, scope="public")
             hints["tools/list"] = CacheHint(ttl_ms=ttl_ms, scope="private")
 
-        self._mcp = MCPServer(
-            "standard",
+        self._mcp = MarkedPrompts(
+            {self.CONSOLE: self.CONSOLE_MARK},
+            name="standard",
             instructions=self.INSTRUCTIONS,
             version="1.0",
             extensions=extensions,
@@ -301,13 +334,27 @@ class StandardServer:
         )
         self._mcp.prompt()(self.greet)
         self._mcp.prompt()(self.ask_prompt)
+        self._mcp.prompt(name=self.CONSOLE)(self.console_prompt)
         self._mcp.completion()(self.complete)
 
+    def _apps(self) -> Apps:
+        """Приложение заказов и его инструменты."""
+        apps = Apps()
+        apps.tool(resource_uri=self.ORDERS)(self.orders)
+        apps.tool(resource_uri=self.ORDERS)(self.orders_console)
+        apps.tool(resource_uri=self.ORDERS, visibility=["app"])(self.refresh_orders)
+        apps.tool(resource_uri=self.ORDERS, visibility=["model"])(self.archive_orders)
+        html = Path(__file__).with_name("orders.html").read_text()
+        apps.add_html_resource(self.ORDERS, html, csp=self.ORDERS_CSP)
+
+        return apps
+
     def _extensions(
-        self, apps: Apps, extended: bool, workspace: str
+        self, apps: Apps, extended: bool, workspace: str, commands: bool
     ) -> tuple[Extension, ...]:
         """Расширения сервера: MCP Apps, с extended — объявленные не по
-        моделям клиента, с workspace — файлы workspace под этим каталогом."""
+        моделям клиента, с workspace — файлы workspace под этим каталогом, с
+        commands — расширение команд io.boba/commands."""
         extensions: tuple[Extension, ...] = (apps,)
         if extended:
             extensions = (apps, *self.EXTENSIONS)
@@ -315,6 +362,10 @@ class StandardServer:
         if workspace:
             files = {"path": "/files", "upload": "show", "workspace": workspace}
             extensions = (*extensions, DeclaredExtension("com.boba/files", files))
+
+        if commands:
+            declared = DeclaredExtension(self.COMMANDS, self.COMMANDS_SETTINGS)
+            extensions = (*extensions, declared)
 
         return extensions
 
@@ -566,6 +617,13 @@ class StandardServer:
             AssistantMessage(f"Hello, {name}!"),
         ]
 
+    def console_prompt(self, status: str) -> str:
+        """Opens the orders console with the orders of the given status."""
+        return (
+            f"Open the orders console for the orders with status {status}: call "
+            f"the tool {self.CONSOLE} with status {status}."
+        )
+
     def ask_prompt(self) -> InputRequiredResult:
         """Asks the client for more input instead of the messages."""
         return InputRequiredResult(request_state=self.ASKED)
@@ -604,6 +662,10 @@ class StandardServer:
 
         return "\n".join(lines)
 
+    def orders_console(self, status: str) -> str:
+        """Opens the orders console with the orders of the given status."""
+        return f"the orders console is open for {status} orders"
+
     def refresh_orders(self) -> str:
         """Refreshes the orders; only their app calls it."""
         return "orders refreshed"
@@ -631,9 +693,15 @@ if __name__ == "__main__":
     parser.add_argument("--ttl-ms", type=int, default=0)
     parser.add_argument("--retired", default="")
     parser.add_argument("--workspace", default="")
+    parser.add_argument("--commands", action="store_true")
     args = parser.parse_args()
 
     extended = args.transport == "stdio-extended"
-    StandardServer(args.port, extended, args.ttl_ms, args.retired, args.workspace).run(
-        args.transport
-    )
+    StandardServer(
+        args.port,
+        extended,
+        args.ttl_ms,
+        args.retired,
+        args.workspace,
+        args.commands,
+    ).run(args.transport)

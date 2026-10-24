@@ -174,6 +174,7 @@ class ServiceModeStand:
         self.launcher = self.launcher_of(
             ChatProfiles({SignInStand.PROFILE: self.profile()})
         )
+        self.menus = self._relays.menus(self._servers)
 
     def launcher_of(self, profiles: ChatProfiles) -> AgentLauncher:
         """Запуск агента при профилях чата profiles в конфиге."""
@@ -223,14 +224,16 @@ class ServiceModeStand:
             {**base, "provider": provider, "model": MODEL}
         )
 
-    async def opened(
-        self, updates: RecordingUpdates
-    ) -> tuple[ThreadIdentity, str]:
+    async def opened(self, updates: RecordingUpdates) -> tuple[ThreadIdentity, str]:
         """Тред с одним ходом через службу: вкладка и id сессии агента;
         обновления хода копятся в updates."""
         identity = await self.identity(SignInStand.PROFILE)
         agent = ThreadAgent(
-            identity, self.launcher, AgentSessionMeta(self._threads), updates
+            identity,
+            self.launcher,
+            AgentSessionMeta(self._threads),
+            updates,
+            self.menus,
         )
         try:
             await agent.start()
@@ -320,7 +323,11 @@ class TestServiceMode:
     ) -> None:
         identity = await mode.identity(FOREIGN_PROFILE)
         agent = ThreadAgent(
-            identity, mode.launcher, AgentSessionMeta(threads), RecordingUpdates()
+            identity,
+            mode.launcher,
+            AgentSessionMeta(threads),
+            RecordingUpdates(),
+            mode.menus,
         )
         try:
             await agent.start()
