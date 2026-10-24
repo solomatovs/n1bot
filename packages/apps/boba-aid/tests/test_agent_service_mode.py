@@ -16,7 +16,7 @@ from collections.abc import AsyncIterator
 from datetime import datetime
 from importlib.resources import files
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 from uuid import UUID, uuid4
 
 import pytest
@@ -34,7 +34,7 @@ from boba.aid.agent.chat import (
     ThreadDeleter,
     ThreadIdentity,
 )
-from boba.aid.agent.client import AgentProcessError
+from boba.aid.agent.client import AgentFailureKind, AgentProcessError
 from boba.aid.agent.config import AgentConfig, AgentServiceConfig
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.chat.profiles import ChatProfileConfig, ChatProfiles, SelectedProfile
@@ -64,8 +64,8 @@ from boba.stand.agent_service import (
 from boba.stand.names import StandNames
 from boba.stand.signin import SignInStand
 from boba.stand.site import Stand
-from boba.stand.ui.fake_llm import ScenarioName
-from boba.stand.ui.stand import StandPorts
+from boba.stand.ui.fake_llm import Reply, ReplyBookClient, ReplyTurn, ScenarioName
+from boba.stand.ui.stand import StandPorts, StandUrl
 from boba.transport.http import HttpTransportConfig
 
 pytestmark = pytest.mark.anyio
@@ -170,6 +170,7 @@ class ServiceModeStand:
             ),
             start_timeout_sec=60.0,
             request_timeout_sec=60.0,
+            silence_timeout_sec=60.0,
         )
         base = AgentStand(tmp_path / "agents", history.history()).config()
         self.config: AgentConfig = base.model_copy(update={"process": mode})
@@ -182,14 +183,14 @@ class ServiceModeStand:
         self._threads = threads
         self._model = model
         self.launcher = self.launcher_of(
-            ChatProfiles({SignInStand.PROFILE: self.profile()})
+            ChatProfiles({SignInStand.PROFILE: self.profile()}), self.config
         )
         self.menus = self._relays.menus(self._servers)
 
-    def launcher_of(self, profiles: ChatProfiles) -> AgentLauncher:
-        """Запуск агента при профилях чата profiles в конфиге."""
+    def launcher_of(self, profiles: ChatProfiles, config: AgentConfig) -> AgentLauncher:
+        """Запуск агента конфигом config при профилях чата profiles."""
         return AgentLauncher(
-            self.config,
+            config,
             NO_SERVERS,
             profiles,
             self._users,
@@ -257,6 +258,15 @@ class ServiceModeStand:
 
         return identity, session_id
 
+    def answering_within(self, request_timeout_sec: float) -> AgentConfig:
+        """Конфиг чата, в котором служба отвечает на метод сессии в срок
+        request_timeout_sec."""
+        process = self.config.process.model_copy(
+            update={"request_timeout_sec": request_timeout_sec}
+        )
+
+        return self.config.model_copy(update={"process": process})
+
     async def stored(self, thread_id: str) -> StoredThread:
         stored = await self._threads.get(UUID(thread_id))
         assert stored is not None
@@ -322,7 +332,8 @@ class TestServiceMode:
         assert await mode.history.rows(session_id) > 0
 
         other = ChatProfiles({"other": mode.profile()})
-        deleter = ThreadDeleter(mode.launcher_of(other), ThreadAgentsIndex())
+        launcher = mode.launcher_of(other, mode.config)
+        deleter = ThreadDeleter(launcher, ThreadAgentsIndex())
         await deleter.thread_deleted(await mode.stored(identity.thread_id))
 
         await service.sessions_drop_to(0)
@@ -376,3 +387,110 @@ class TestServiceMode:
                 await agent.ask(Question(key="first", text=ScenarioName.ANSWER.value))
         finally:
             await agent.close()
+
+
+class TestLongTurn:
+    """Вопрос во время хода служба вставляет своим ходом после идущего хода и
+    только тогда отвечает на его `session/prompt`: ход дольше
+    request_timeout_sec не обрывает ни себя, ни вопрос очереди. Служба,
+    ушедшая посреди хода, — отказ обрывом соединения у обоих."""
+
+    REQUEST_TIMEOUT_SEC: ClassVar[float] = 1.0
+    HELD_SEC: ClassVar[float] = 3.0
+    """Сколько ход стоит на паузе модели: дольше срока запроса."""
+    TURN_SEC: ClassVar[float] = 60.0
+    HELD_ANSWER: ClassVar[str] = "Copy the schema, then move the data."
+    QUEUED_ANSWER: ClassVar[str] = "About an hour on the stand."
+
+    def _book(self, model: FakeModel, held: str, queued: str) -> ReplyBookClient:
+        book = ReplyBookClient(StandUrl.of(model.port))
+        book.register(
+            [
+                Reply(
+                    question=held,
+                    turns=[
+                        ReplyTurn(
+                            content=self.HELD_ANSWER, hold=True, hold_after_tokens=2
+                        )
+                    ],
+                ),
+                Reply(question=queued, turns=[ReplyTurn(content=self.QUEUED_ANSWER)]),
+            ]
+        )
+
+        return book
+
+    async def _tab(
+        self, mode: ServiceModeStand, threads: ThreadsTable, updates: RecordingUpdates
+    ) -> ThreadAgent:
+        """Вкладка, чей чат ждёт ответа службы на метод сессии
+        REQUEST_TIMEOUT_SEC."""
+        identity = await mode.identity(SignInStand.PROFILE)
+        profiles = ChatProfiles({SignInStand.PROFILE: mode.profile()})
+        config = mode.answering_within(self.REQUEST_TIMEOUT_SEC)
+        launcher = mode.launcher_of(profiles, config)
+        agent = ThreadAgent(
+            identity, launcher, AgentSessionMeta(threads), updates, mode.menus
+        )
+        await agent.start()
+
+        return agent
+
+    async def test_a_question_during_a_long_turn_gets_its_turn(
+        self, mode: ServiceModeStand, model: FakeModel, threads: ThreadsTable
+    ) -> None:
+        held = f"Describe the migration {uuid4()}"
+        queued = f"And how long will it take {uuid4()}"
+        book = await asyncio.to_thread(self._book, model, held, queued)
+        updates = RecordingUpdates()
+        agent = await self._tab(mode, threads, updates)
+        queued_key = str(uuid4())
+        try:
+            first = asyncio.ensure_future(agent.ask(Question(key="held", text=held)))
+            await asyncio.to_thread(book.await_held, held, self.TURN_SEC)
+            second = asyncio.ensure_future(
+                agent.ask(Question(key=queued_key, text=queued))
+            )
+            await asyncio.sleep(self.HELD_SEC)
+            await asyncio.to_thread(book.release, held)
+            await asyncio.wait_for(asyncio.gather(first, second), self.TURN_SEC)
+        finally:
+            await agent.close()
+
+        assert updates.inserted_questions == [queued_key], updates.updates
+        joined = "".join(updates.texts())
+        assert self.HELD_ANSWER in joined, joined
+        assert self.QUEUED_ANSWER in joined, joined
+        assert joined.index(self.HELD_ANSWER) < joined.index(self.QUEUED_ANSWER)
+        assert updates.finished[-1][1].stop_reason == "end_turn", updates.finished
+
+    async def test_the_service_leaving_mid_turn_is_a_lost_connection(
+        self,
+        mode: ServiceModeStand,
+        model: FakeModel,
+        threads: ThreadsTable,
+        service: AgentServiceStand,
+    ) -> None:
+        held = f"Describe the migration {uuid4()}"
+        queued = f"And how long will it take {uuid4()}"
+        book = await asyncio.to_thread(self._book, model, held, queued)
+        agent = await self._tab(mode, threads, RecordingUpdates())
+        try:
+            first = asyncio.ensure_future(agent.ask(Question(key="held", text=held)))
+            await asyncio.to_thread(book.await_held, held, self.TURN_SEC)
+            second = asyncio.ensure_future(
+                agent.ask(Question(key=str(uuid4()), text=queued))
+            )
+            await asyncio.sleep(self.HELD_SEC)
+            await service.outage()
+            outcomes = await asyncio.wait_for(
+                asyncio.gather(first, second, return_exceptions=True), self.TURN_SEC
+            )
+        finally:
+            await asyncio.to_thread(book.release, held)
+            await agent.close()
+
+        for outcome in outcomes:
+            assert isinstance(outcome, AgentProcessError), outcomes
+            assert outcome.failure.kind is AgentFailureKind.CONNECTION_LOST, outcomes
+            assert "request_timeout_sec" not in str(outcome), outcomes

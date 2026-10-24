@@ -254,13 +254,17 @@ class AgentServiceStand:
             await asyncio.sleep(0.02)
 
     async def stop(self) -> None:
+        await self.outage()
+        await self.host.stop()
+
+    async def outage(self) -> None:
+        """Адрес службы перестаёт отвечать: сервер HTTP останавливается и
+        рвёт соединения клиентов, сессии службы живут до stop."""
         if self._server is not None:
             self._server.should_exit = True
 
         if self._task is not None:
             await self._task
-
-        await self.host.stop()
 
     async def token(self, login: str, roles: str) -> str:
         """Токен ресурса ACP по утверждению доверенного клиента."""

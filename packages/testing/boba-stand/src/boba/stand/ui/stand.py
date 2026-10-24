@@ -923,6 +923,7 @@ class StandConfig(StandService):
                 **self.agent_service,
                 "start_timeout_sec": start_sec,
                 "request_timeout_sec": request_sec,
+                "silence_timeout_sec": 60,
             }
 
         doc["agent"] = {

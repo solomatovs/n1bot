@@ -675,11 +675,18 @@ class AgentLink:
         """Вопрос в сессию; ответ — messageId, который агент дал вопросу. Он
         же uuid записи вопроса у агента и id шага вопроса в чате.
 
+        Агент отвечает, когда вставил вопрос своим ходом: вопрос во время хода
+        ждёт конца идущего хода, поэтому срока request_timeout_sec у ответа
+        нет. Ушедшего агента выдаёт транспорт: конец вывода процесса либо
+        закрытый или замолчавший поток событий службы.
+
         Ошибки:
-        AgentProcessError — агент дал вопросу id, который не uuid.
+        AgentRequestError — агент отказал в вопросе.
+        AgentProcessError — агент дал вопросу id, который не uuid, ушёл или
+            ответил не по схеме.
         """
         connection = self._require_connection()
-        response = await self._request(
+        response = await self._answer_of(
             "session/prompt",
             connection.prompt(session_id=session_id, prompt=list(blocks)),
         )
@@ -1195,7 +1202,10 @@ class AgentService(AgentLink):
         AgentProcessError — вход, соединение или рукопожатие не состоялись.
         """
         auth = self._config.auth.on_behalf_of(self._caller).httpx_auth(self._url)
-        http = httpx2.AsyncClient(auth=auth, timeout=httpx2.Timeout(None))
+        # поток событий, молчащий дольше срока чтения, транспорт закрывает, и
+        # ждущие ответа запросы получают обрыв соединения
+        timeout = httpx2.Timeout(None, read=self._config.silence_timeout_sec)
+        http = httpx2.AsyncClient(auth=auth, timeout=timeout)
         self._stack.push_async_callback(http.aclose)
         transport = create_http_stream(self._url, client=http)
         connection = ClientConnection(self._client, self._answer, transport, None)

@@ -182,6 +182,7 @@
     auth                = "${agent_auth.boba}"
     start_timeout_sec   = 60
     request_timeout_sec = 120
+    silence_timeout_sec = 60
     [agent_launch.service.endpoint]
         service = "${service.boba}"
         path    = "/acp"
