@@ -1,0 +1,1 @@
+InputValidationError: {tool} is a deferred tool and its schema is not loaded, so it cannot be called yet. Load it with ToolSearch first: call ToolSearch with query "select:{tool}", then call {tool} again.

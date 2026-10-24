@@ -72,6 +72,7 @@ from boba.agent.tools import (
     McpServerSet,
     OwnTool,
     ToolRunner,
+    ToolSearchTool,
     ToolsError,
     ToolServer,
     ToolTexts,
@@ -117,6 +118,7 @@ class AgentParts:
         denied_tools: Sequence[str] = (),
         record_requests: bool = False,
         question_tool: bool = True,
+        always_load: Sequence[str] = (),
     ) -> None:
         self.profile = profile
         self.limits = limits
@@ -146,6 +148,9 @@ class AgentParts:
         self.question_tool = question_tool
         """Предлагать ли модели собственный инструмент «вопрос пользователю»:
         запускающая программа без формы для вопросов его не показывает."""
+        self.always_load = frozenset(always_load)
+        """Инструменты, которые уходят модели полным определением с первого
+        запроса; остальные инструменты серверов отложены до ToolSearch."""
 
 
 class Wiring:
@@ -240,7 +245,14 @@ class Agent:
         session = Session(session_id)
         try:
             report = await self._restored(session, resume)
-            tools = AgentTools(parts.tools, self._own_tools(), parts.servers)
+            tools = AgentTools(
+                parts.tools,
+                self._own_tools(),
+                parts.servers,
+                parts.always_load,
+                wiring.templates,
+                self._texts(),
+            )
             self._check_tools_survived(session, tools, resume)
             self._check_profile(parts.profile, parts.system_prompt, tools)
             mode = self._effective_mode(session, resume)
@@ -260,12 +272,9 @@ class Agent:
             self._record_mode(mode)
 
         keeper = RecordKeeper(session, writer, parts.sink)
-        texts = ToolTexts(
-            wiring.templates, parts.limits.tool_result_max_chars, parts.agent_name
-        )
         runner = ToolRunner(
             tools,
-            texts,
+            self._texts(),
             wiring.templates,
             self._questions,
             wiring.classifier,
@@ -304,16 +313,12 @@ class Agent:
             recorder,
         )
 
-        tool_names: list[str] = []
-        for card in tools.snapshot():
-            tool_names.append(card.name)
-
         await parts.sink.emit(
             InitEvent(
                 session_id=session_id.value,
                 resumed=resume,
                 model=parts.profile.model_id,
-                tools=tool_names,
+                tools=tools.names(),
                 permission_mode=self.permission_mode,
                 version=parts.version,
             )
@@ -321,18 +326,20 @@ class Agent:
 
         return session
 
-    def _own_tools(self) -> Sequence[OwnTool]:
-        """Собственные инструменты: вопрос пользователю, если он разрешён
-        параметрами, Skill — при скиллах."""
-        wiring = self._wiring
-        texts = ToolTexts(
-            wiring.templates,
+    def _texts(self) -> ToolTexts:
+        return ToolTexts(
+            self._wiring.templates,
             self._parts.limits.tool_result_max_chars,
             self._parts.agent_name,
         )
+
+    def _own_tools(self) -> Sequence[OwnTool]:
+        """Собственные инструменты: вопрос пользователю, если он разрешён
+        параметрами, Skill — при скиллах. ToolSearch добавляет AgentTools."""
+        wiring = self._wiring
         own: list[OwnTool] = []
         if self._parts.question_tool:
-            own.append(AskUserQuestionTool(wiring.templates, texts))
+            own.append(AskUserQuestionTool(wiring.templates, self._texts()))
 
         if self._parts.skills:
             own.append(SkillTool(self._parts.skills, wiring.templates))
@@ -362,11 +369,11 @@ class Agent:
         if not known:
             return
 
-        own: set[str] = set()
+        own: set[str] = {ToolSearchTool.NAME}
         for tool in self._own_tools():
             own.add(tool.name)
 
-        offered = frozenset(card.name for card in tools.snapshot()) - own
+        offered = frozenset(tools.names()) - own
         if offered:
             return
 
@@ -529,7 +536,7 @@ class Agent:
         ProfileError — профиль не годится для этого промпта и инструментов.
         """
         tool_texts: list[str] = []
-        for tool in tools.snapshot():
+        for tool in tools.inline():
             tool_texts.append(tool.text())
 
         ProfileCheck(profile, self._parts.compaction).run(system_prompt, tool_texts)
