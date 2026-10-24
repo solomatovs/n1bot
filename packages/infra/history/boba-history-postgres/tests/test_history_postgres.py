@@ -436,7 +436,7 @@ class TestContract:
             await cur.execute(
                 sql.SQL(
                     "select session_id, seq, type, recorded_at, record "
-                    "from {}.history order by seq"
+                    "from {}.session_records order by seq"
                 ).format(sql.Identifier(schema))
             )
             rows = await cur.fetchall()
@@ -848,7 +848,7 @@ class TestCutoverTable:
     COLUMNS: ClassVar[LiteralString] = (
         "select table_name, column_name, data_type, is_nullable, column_default "
         "from information_schema.columns "
-        "where table_schema = %s and table_name in ('session', 'history') "
+        "where table_schema = %s and table_name in ('session', 'session_records') "
         "order by table_name, column_name"
     )
     CONSTRAINTS: ClassVar[LiteralString] = (
@@ -863,14 +863,14 @@ class TestCutoverTable:
         "join pg_class t on t.oid = k.conrelid "
         "join pg_namespace s on s.oid = t.relnamespace "
         "left join pg_class r on r.oid = k.confrelid "
-        "where s.nspname = %s and t.relname in ('session', 'history') "
+        "where s.nspname = %s and t.relname in ('session', 'session_records') "
         "order by t.relname, k.contype, columns"
     )
 
     LEGACY_ROWS: ClassVar[LiteralString] = (
         "insert into session (id, created_at) "
         "values ('legacy-1', '2026-10-10T09:00:00Z'); "
-        "insert into history (session_id, seq, type, recorded_at, record) "
+        "insert into session_records (session_id, seq, type, recorded_at, record) "
         "values ('legacy-1', 1, 'user', '2026-10-10T09:00:00Z', '{}')"
     )
 
