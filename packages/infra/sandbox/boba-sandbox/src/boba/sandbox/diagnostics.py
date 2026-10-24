@@ -85,13 +85,10 @@ class SandboxDiagnostics:
 
         limit = (
             f"process_memory_bytes={profile.limits.process_memory_bytes} bytes "
-            f"(RLIMIT_AS, per process)"
+            f"(RLIMIT_AS, per process) or group_memory_bytes="
+            f"{profile.limits.group_memory_bytes} bytes (cgroup memory.max, the "
+            f"whole run, files in /tmp included)"
         )
-        if profile.limits.group_memory_bytes is not None:
-            limit += (
-                f" or group_memory_bytes={profile.limits.group_memory_bytes} bytes "
-                f"(cgroup memory.max, the whole run)"
-            )
 
         return (
             f"Memory limit reached: {limit}. Stream the data "

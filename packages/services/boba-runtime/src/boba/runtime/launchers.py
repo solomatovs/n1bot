@@ -149,7 +149,9 @@ class SandboxDefaults:
     """Дефолтный профиль песочницы: числа здесь, пути — конвенциями от [env].
 
     Секции [sandbox] в корневом конфиге нет: всё выводимое строится кодом,
-    файл плагина описывает только отличия.
+    файл плагина описывает только отличия. Память группы вызова кодом не
+    выводится: её объявляет [sandbox.limits] каждого плагина, а профиль без
+    неё не собирается.
     """
 
     TMP_SIZE: ClassVar[str] = "512M"
@@ -186,7 +188,6 @@ class SandboxDefaults:
         "process_file_bytes": 1073741824,
         "process_open_files": 1024,
         "process_oom_score_adj": 900,
-        "group_memory_bytes": 1073741824,
         "group_swap_bytes": 0,
         "group_cpu_percent": 100,
         "group_cpu_weight": 100,

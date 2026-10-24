@@ -512,10 +512,28 @@ class LimitsSpec(BaseModel):
 
     process_* ставит себе исполнитель через setrlimit, поэтому они действуют
     на каждый процесс вызова отдельно. group_* приложение выставляет
-    cgroup-leaf'у и считает всю группу разом.
+    cgroup-leaf'у и считает всю группу разом. group_memory_bytes обязателен:
+    /tmp вызова лежит на ramfs, и его объём ограничивает только память группы.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _memory_is_bounded(cls, value: object) -> object:
+        """Без памяти группы /tmp вызова ограничен лишь памятью машины."""
+        if not isinstance(value, Mapping):
+            return value
+
+        if value.get("group_memory_bytes") is not None:
+            return value
+
+        msg = (
+            "sandbox: limits.group_memory_bytes is required, got none: the call's "
+            "/tmp lives on ramfs and only the memory of the call group bounds it; "
+            "set it in [sandbox.limits] of the plugin or in the profile"
+        )
+        raise ValueError(msg)
 
     timeout_sec: int | None = Field(
         default=None,
@@ -552,13 +570,13 @@ class LimitsSpec(BaseModel):
             "OOM killer убьёт их, а не сервер. 0 — не менять."
         ),
     )
-    group_memory_bytes: int | None = Field(
-        default=None,
+    group_memory_bytes: int = Field(
         gt=0,
         description=(
             "Лимит памяти всей группы вызова (cgroup memory.max), байт: в "
-            "отличие от process_memory_bytes не множится на число процессов. "
-            "Отсутствие — не контролируется."
+            "отличие от process_memory_bytes не множится на число процессов и "
+            "ограничивает приватный /tmp вызова на ramfs. Обязателен: нужен "
+            "делегированный host.cgroup_base."
         ),
     )
     group_swap_bytes: int | None = Field(
@@ -730,7 +748,11 @@ class SandboxProfile(BaseModel):
     @model_validator(mode="after")
     def _validate_groups(self) -> Self:
         if self.limits.group_requested() and not self.host.cgroup_base:
-            msg = "sandbox: group limits are set, but host.cgroup_base is empty"
+            msg = (
+                "sandbox: group limits are set, but host.cgroup_base is empty: "
+                "group_memory_bytes needs a delegated cgroup v2 directory for "
+                "the leaf of each call"
+            )
             raise ValueError(msg)
 
         return self
