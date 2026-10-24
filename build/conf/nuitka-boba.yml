@@ -17,3 +17,83 @@
     - description: 'no field docstrings from the source of compiled schema models'
       replacements_plain:
         'use_attribute_docstrings=True,': 'use_attribute_docstrings=False,'
+
+- module-name: 'fastmcp'
+  anti-bloat:
+    - description: 'the agent takes only the OAuth server pieces of fastmcp: no client, server application, providers, OAuth proxies to other identity providers or OpenAPI'
+      no-follow:
+        'fastmcp.client': 'the agent is no fastmcp client'
+        'fastmcp.apps': 'no fastmcp applications in the agent'
+        'fastmcp.mcp_config': 'no MCP server configs in the agent'
+        'fastmcp.server.server': 'the agent runs no fastmcp server'
+        'fastmcp.server.context': 'the agent runs no fastmcp server'
+        'fastmcp.server.mixins': 'the agent runs no fastmcp server'
+        'fastmcp.server.middleware': 'the agent runs no fastmcp server'
+        'fastmcp.server.providers.openapi': 'the agent runs no fastmcp server'
+        'fastmcp.server.providers.proxy': 'the agent runs no fastmcp server'
+        'fastmcp.server.auth.oauth_proxy': 'the agent signs in by its own provider, not through an upstream identity provider'
+        'fastmcp.server.auth.oidc_proxy': 'the agent signs in by its own provider, not through an upstream identity provider'
+        'fastmcp.server.auth.providers': 'the agent signs in by its own provider, not through an upstream identity provider'
+        'fastmcp.server.auth.cimd': 'the agent signs in by its own provider, not through an upstream identity provider'
+        'fastmcp.utilities.openapi': 'no OpenAPI in the agent'
+        'fastmcp.utilities.mcp_server_config': 'no MCP server configs in the agent'
+        'fastmcp.utilities.json_schema_type': 'the agent runs no fastmcp server'
+        'authlib': 'only the upstream OAuth proxy of fastmcp uses it'
+        'key_value': 'only the OAuth proxy and the client of fastmcp keep state in it'
+        'beartype': 'only key_value checks types with it'
+        'cachetools': 'only key_value stores use it'
+        'aiofile': 'only key_value stores use it'
+        'caio': 'only key_value stores use it'
+        'griffe': 'only fastmcp tools parse docstrings with it'
+        'openapi_pydantic': 'no OpenAPI in the agent'
+        'jsonschema_path': 'no OpenAPI in the agent'
+        'pathable': 'no OpenAPI in the agent'
+
+- module-name: 'fastmcp.utilities.logging'
+  anti-bloat:
+    - description: 'fastmcp logs exceptions as plain text: rich tracebacks need pygments'
+      replacements_plain:
+        '"rich_tracebacks": enable_rich_tracebacks,': '"rich_tracebacks": False,'
+
+- module-name: 'rich'
+  anti-bloat:
+    - description: 'the agent prints no highlighted code'
+      no-follow:
+        'rich.traceback': 'fastmcp logs exceptions as plain text'
+        'rich.syntax': 'the agent prints no highlighted code'
+        'pygments': 'the agent prints no highlighted code'
+
+- module-name: 'httpx2'
+  anti-bloat:
+    - description: 'command line and websockets of httpx2 are not used by the agent'
+      no-follow:
+        'httpx2._main': 'command line of httpx2'
+        'httpx2.websockets': 'the agent serves websockets through uvicorn'
+
+- module-name: 'uvicorn'
+  anti-bloat:
+    - description: 'boba serve runs uvicorn in its own asyncio loop with the h11 parser and without reload'
+      no-follow:
+        'uvloop': 'the server runs in the asyncio loop of boba serve'
+        'httptools': 'h11 parses HTTP'
+        'watchfiles': 'no reload in the agent'
+
+- module-name: 'yaml'
+  anti-bloat:
+    - description: 'omegaconf loads with the pure python loader'
+      no-follow:
+        'yaml._yaml': 'libyaml loader is not used'
+
+- module-name: 'psycopg'
+  anti-bloat:
+    - description: 'psycopg runs on psycopg_binary'
+      no-follow:
+        'psycopg.pq.pq_ctypes': 'psycopg_binary is the libpq wrapper'
+        'psycopg.pq._pq_ctypes': 'psycopg_binary is the libpq wrapper'
+        'psycopg._py_transformer': 'psycopg_binary is the transformer'
+
+- module-name: 'pydantic'
+  anti-bloat:
+    - description: 'mypy plugin of pydantic'
+      no-follow:
+        'pydantic.mypy': 'mypy plugin'

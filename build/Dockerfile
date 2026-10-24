@@ -386,14 +386,13 @@ FROM base AS boba-bin
 
 ARG NUITKA_VERSION
 ARG PATCHELF_VERSION
-ARG ZSTANDARD_VERSION
 ARG ORDERED_SET_VERSION
 ARG BIN_ONNX
 
 RUN mkdir -p /out /opt/bin-tools && { [ -z "${NUITKA_VERSION}" ] || \
         uv pip install --python "$(command -v python3)" --target /opt/bin-tools \
             "nuitka==${NUITKA_VERSION}" "patchelf==${PATCHELF_VERSION}" \
-            "zstandard==${ZSTANDARD_VERSION}" "ordered-set==${ORDERED_SET_VERSION}"; }
+            "ordered-set==${ORDERED_SET_VERSION}"; }
 
 COPY build/conf/nuitka-boba.yml       /tmp/nuitka-boba.yml
 COPY --from=bin-site /opt/bin-site/   /opt/bin-site/
