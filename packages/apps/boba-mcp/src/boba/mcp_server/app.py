@@ -16,7 +16,7 @@ import asyncio
 import logging
 import logging.config
 import signal
-from typing import Annotated
+from typing import Annotated, Self
 
 import uvicorn
 from mcp.shared.auth import OAuthClientInformationFull
@@ -45,9 +45,10 @@ from boba.oauth.server import (
     TrustedClient,
 )
 from boba.runtime import providers
-from boba.runtime.config import ConfigArguments, ConfigFiles, ProcessConfig
+from boba.runtime.config import ConfigArguments, ConfigFiles, ProcessConfig, RawConfig
 from boba.runtime.di import Container
 from boba.runtime.http import SignalledServer
+from boba.runtime.launchers import ToolLaunchers
 from boba.runtime.plugins import EntryPointPlugins
 from boba.runtime.storage import LocalStorageConfig
 
@@ -97,6 +98,15 @@ class McpAppConfig(ProcessConfig):
     ]
     """Заданные соединения сервера [connections.<имя>]: имя — идентификатор
     без точек, поэтому его не спутать с запечатанным значением."""
+
+    @classmethod
+    def load(cls, files: ConfigFiles) -> Self:
+        """Конфиг процесса и проверка предпосылок способа запуска инструментов
+        [tool_launcher]: отказ виден на старте сервиса."""
+        config = super().load(files)
+        ToolLaunchers(RawConfig.get()).build().probe()
+
+        return config
 
 
 class StoppedRuns:

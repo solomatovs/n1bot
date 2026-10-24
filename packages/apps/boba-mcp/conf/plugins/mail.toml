@@ -7,3 +7,7 @@ user      = "${site.mail.user}"
 password  = "${site.mail.password}"
 sender    = "${site.mail.sender}"
 recipient = "${site.mail.recipient}"
+
+[sandbox]
+    [sandbox.limits]
+        group_memory_bytes = 1073741824

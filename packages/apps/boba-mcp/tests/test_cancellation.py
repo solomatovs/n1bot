@@ -25,7 +25,13 @@ from boba.sandbox import SandboxProfile, SandboxToolConfig
 from boba.sandbox.zygote import ZygotePolicy, ZygoteToolCaller
 from boba.stand.shell import ShellRun
 from boba.stand.toolstand import ProbeTools
-from boba.stand.zygote import ROOTFS_IMAGE, RUNTIME, SandboxStand, ZygoteStand
+from boba.stand.zygote import (
+    ROOTFS_IMAGE,
+    RUNTIME,
+    SandboxCgroup,
+    SandboxStand,
+    ZygoteStand,
+)
 from boba.tool.shell.tools import BashToolConfig
 from boba.toolkit.chain import CallAmbient
 from boba.toolkit.dag import DagNode, NodeOutcome
@@ -81,7 +87,7 @@ _PROFILE_RAW: dict[str, object] = {
         "channel_limit_bytes": 67108864,
         "fail_tail_chars": 2000,
         "kill_grace_sec": 5,
-        "cgroup_base": "",
+        "cgroup_base": SandboxCgroup().base,
     },
     "rootfs": str(ROOTFS_IMAGE),
     "mounts": {
@@ -108,6 +114,7 @@ _PROFILE_RAW: dict[str, object] = {
         "process_cpu_sec": 300,
         "process_file_bytes": 64 * 1024 * 1024,
         "process_open_files": 256,
+        "group_memory_bytes": 2 * 1024 * 1024 * 1024,
         "process_oom_score_adj": 0,
     },
     "run": {

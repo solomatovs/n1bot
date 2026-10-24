@@ -149,7 +149,7 @@ def _call_echo(
             ToolChannel.STDOUT: stdout.feed,
         },
         isolate=isolate,
-        mounts=CallMounts(proc="/proc", tmp="/tmp", tmp_bytes=16 * 1024 * 1024),  # noqa: S108
+        mounts=CallMounts(proc="/proc", tmp="/tmp"),  # noqa: S108
         timeout_sec=timeout_sec,
         kill_grace_sec=5.0,
     )
@@ -282,7 +282,7 @@ class TestLifecycle:
                 NO_LIMITS,
                 {ToolChannel.RESULT: result.feed},
                 isolate=False,
-                mounts=CallMounts(proc="/proc", tmp="/tmp", tmp_bytes=16 * 1024 * 1024),  # noqa: S108
+                mounts=CallMounts(proc="/proc", tmp="/tmp"),  # noqa: S108
                 timeout_sec=30.0,
                 kill_grace_sec=5.0,
             )
@@ -501,7 +501,7 @@ class TestIsolated:
                 NO_LIMITS,
                 {ToolChannel.RESULT: result.feed},
                 isolate=True,
-                mounts=CallMounts(proc="/proc", tmp="/tmp", tmp_bytes=16 * 1024 * 1024),  # noqa: S108
+                mounts=CallMounts(proc="/proc", tmp="/tmp"),  # noqa: S108
                 timeout_sec=30.0,
                 kill_grace_sec=5.0,
             )
