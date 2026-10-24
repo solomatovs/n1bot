@@ -2296,7 +2296,7 @@ boba-mcp и служба агента — сами себе серверы ав�
 | языковая модель, OpenAI-совместимый API | 443 | процесс агента в режиме `process` (из контейнера чата) либо служба агента; сам чат к модели не ходит | нет | чат: `site.llm_host`, `llm_path`, `llm_token`, `llm_ssl_verify`, прокси — `[agent_http].proxy` либо `HTTPS_PROXY` окружения при `trust_env = true`; служба: `site.llm_base_url`, `llm_token`, `llm_ssl_verify` |
 | Confluence | 443 | плагины `confluence` и `ingest` boba-mcp | да | `[site.confluence]`: `host`, `port`, `path`; прокси — `[http].proxy` общего конфига сервиса |
 | интернет | 80, 443 | плагин `web` (`web_fetch_page`, `web_grep_page`): адрес называет модель | да | прокси — `[http].proxy` общего конфига сервиса |
-| почтовый сервер, SMTP | 587 | плагин `mail` | в поставке выключен, сети в профиле нет | `[site.mail]`: `server`, `port`, `use_tls` |
+| почтовый сервер, SMTP | 587 | плагин `mail` | да; в поставке плагин выключен | `[site.mail]`: `server`, `port`, `use_tls` |
 
 Билет службы `HTTP/<krb_domain>` для входа kerberos в чат браузер получает у
 KDC сам, со своей рабочей станции; чат принимает его своим keytab
@@ -2321,13 +2321,14 @@ boba паролей учёток не меняет. Внешних провай�
 | Плагин | Сеть | Бинды для сети | Куда ходит |
 |---|---|---|---|
 | `bash`, `canvas`, `doc` | нет | — | — |
-| `chart`, `mail` (в поставке выключены) | нет | — | — |
+| `chart` (в поставке выключен) | нет | — | — |
 | `pg`, `ch` | да | `/etc/resolv.conf`, `/etc/hosts`, `krb5.conf` | базы пользователей |
 | `ora` | да | `/etc/resolv.conf`, `/etc/hosts` | Oracle; без `krb5.conf` kerberos здесь недоступен |
 | `describer`, `kb` | да | `/etc/resolv.conf`, `/etc/hosts`, `krb5.conf` | PostgreSQL сервиса |
 | `ingest` | да | `/etc/resolv.conf`, `/etc/hosts`, `krb5.conf` | Confluence и PostgreSQL сервиса |
 | `confluence` | да | `/etc/resolv.conf`, `/etc/hosts`, `krb5.conf` | Confluence |
 | `web` | да | `/etc/resolv.conf`, `/etc/hosts`, `krb5.conf` | интернет |
+| `mail` (в поставке выключен) | да | `/etc/resolv.conf`, `/etc/hosts` | почтовый сервер |
 
 Плагин с сетью получает сеть процесса boba-mcp как есть: в контейнере — сеть
 контейнера, под systemd — сеть машины. Имена он разрешает по
@@ -2344,11 +2345,10 @@ boba паролей учёток не меняет. Внешних провай�
 `tool_launcher = "process"` (отладка, раздел 8) песочницы нет, и сеть есть у
 всех плагинов.
 
-Плагин `mail` в поставке выключен, и сети в его профиле нет. Чтобы включить
-его, в `plugins/mail.toml` ставят `enable = true`, а в `[sandbox]` —
-`network = true` и бинды `/etc/resolv.conf` и `/etc/hosts`, как у `web`: иначе
-почтовый сервер из песочницы недостижим. Файл плагина — часть общего конфига,
-поэтому правка доходит до контейнера с пересборкой образа boba-mcp (раздел 4).
+Плагин `mail` в поставке выключен; сеть и бинды `/etc/resolv.conf` и
+`/etc/hosts` в его профиле уже есть. Чтобы включить его, в `plugins/mail.toml`
+ставят `enable = true`. Файл плагина — часть общего конфига, поэтому правка
+доходит до контейнера с пересборкой образа boba-mcp (раздел 4).
 
 ### Сеть сборки
 
