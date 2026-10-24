@@ -359,7 +359,7 @@ class QueuedFeed:
 @pytest.fixture(scope="module")
 def steps_stand(look_stands: LookStand, standard: McpServerConfig) -> StandProcess:
     server = standard.model_dump(mode="json", exclude_none=True)
-    return look_stands.served("steps", {"standard": server})
+    return look_stands.served("steps", {"standard": server}, LookStand.FULL_WINDOW)
 
 
 def steps_frames(

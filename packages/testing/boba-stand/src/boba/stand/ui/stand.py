@@ -781,9 +781,6 @@ class StandConfig(StandService):
     service_token_ttl_sec: int = 300
     """Срок токена доступа сервиса стенда: коротким тест проверяет, что
     агент обновляет токен сам."""
-    context_window: int = 200000
-    """Окно модели профилей стенда в токенах: малым окном тест вида доводит
-    разговор до сжатия."""
     messaging: str = ""
     """Провайдер шины [messaging]: пусто — как в конфиге отладки (память
     процесса); postgres — шина в базе стенда, общая у двух инстансов."""
@@ -886,11 +883,12 @@ class StandConfig(StandService):
     def _use_agent(self, doc: MutableMapping[str, Any]) -> None:
         """Агент ACP стенда чата: процесс и история по полям стенда,
         приватные каталоги в рабочем каталоге стенда; инструменты «всегда
-        загружать» — как в конфиге приложения."""
+        загружать» и пределы хода — как в конфиге приложения."""
         if "agent" not in doc:
             return
 
         tools = doc["agent"]["tools"]
+        limits = doc["agent"]["limits"]
 
         private_dir = self.workdir / "agents"
         private_dir.mkdir(parents=True, exist_ok=True)
@@ -909,6 +907,7 @@ class StandConfig(StandService):
             },
             "history": dict(self.agent_history),
             "tools": tools,
+            "limits": limits,
         }
 
     @staticmethod
@@ -957,7 +956,7 @@ class StandConfig(StandService):
         doc["agent_http"] = {"dump": {"enable": False}}
         doc["model_limits"] = {
             "fake": {
-                "context_window": self.context_window,
+                "context_window": 200000,
                 "max_output_tokens": 4096,
                 "reasoning_return": "turn",
             }

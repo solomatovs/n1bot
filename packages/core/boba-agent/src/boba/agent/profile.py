@@ -104,7 +104,14 @@ class TurnLimits(BaseModel):
 
     max_turns: int = Field(default=100, gt=0)
     tool_result_max_chars: int = Field(default=50_000, gt=0)
-    tool_result_window_share: float = Field(default=0.25, gt=0, le=1)
+    tool_result_window_share: float = Field(
+        gt=0,
+        le=1,
+        description=(
+            "Доля действующего окна профиля, которую может занять один "
+            "результат инструмента; длиннее — обрезка с пометкой для модели."
+        ),
+    )
     api_retries: int = Field(default=3, ge=0)
     retry_delays_sec: Sequence[float] = (1.0, 2.0, 4.0)
     output_limit_retries: int = Field(default=3, ge=0)

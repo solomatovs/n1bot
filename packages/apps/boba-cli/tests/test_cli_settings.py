@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -41,6 +42,7 @@ API_KEY = "sk-file-secret"
 DSN = "postgresql://agent:pg-file-secret@db.example.org:5432/boba"
 POOL = HistoryPoolSettings(min_size=1, max_size=4, timeout_sec=30)
 SESSION = SessionId(value="settings-memory-1")
+LIMITS = {"limits": {"toolResultWindowShare": 0.25}}
 
 ENV = {
     EnvName.LLM_KIND.value: "openai",
@@ -59,13 +61,17 @@ def settings(
     arguments: Arguments | None = None,
     env: dict[str, str] | None = None,
 ) -> Settings:
+    """Настройки запуска; пределы хода, которые обязаны быть заданы явно,
+    приходят нижним слоем `--settings`."""
     if arguments is None:
         arguments = Arguments()
 
     if env is None:
         env = dict(ENV)
 
-    return Settings(arguments, env, tmp_path / "home", tmp_path / "project")
+    limited = replace(arguments, settings=(json.dumps(LIMITS), *arguments.settings))
+
+    return Settings(limited, env, tmp_path / "home", tmp_path / "project")
 
 
 class TestLayers:
@@ -81,6 +87,14 @@ class TestLayers:
         assert effective.history.root == str(tmp_path / "home" / ".boba" / "history")
         assert effective.permission_mode is PermissionMode.DEFAULT
         assert effective.system_prompt == []
+
+    def test_missing_window_share_is_named(self, tmp_path: Path) -> None:
+        """Доля окна под результат инструмента задаётся только явно: без неё
+        настройки не собираются."""
+        bare = Settings(Arguments(), dict(ENV), tmp_path / "home", tmp_path / "project")
+
+        with pytest.raises(SettingsError, match=r"limits\.toolResultWindowShare"):
+            bare.effective()
 
     def test_without_any_model_the_error_names_the_keys(self, tmp_path: Path) -> None:
         with pytest.raises(SettingsError, match="BOBA_LLM_KIND"):
