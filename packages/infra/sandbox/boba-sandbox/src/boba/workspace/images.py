@@ -290,6 +290,16 @@ class FuseMounter:
     FAKEROOT_OPTIONS: ClassVar[str] = "fakeroot"
     """Запись без userns: права внутри образа проверяются как у root."""
 
+    NEUTRAL_OPTIONS: ClassVar[str] = (
+        "no_default_opts,fsname=rootfs,subtype=ext4,kernel_cache,attr_timeout=0"
+    )
+    """Источник монтирования в /proc/mounts и mountinfo нейтрален.
+
+    По умолчанию fuse2fs ставит fsname = путь образа и выдаёт телу раскладку
+    хоста (/mnt/images/…, путь rootfs.ext4). no_default_opts отключает этот
+    набор, а остальное повторяет его дефолты (kernel_cache, attr_timeout);
+    use_ino/big_writes в libfuse3 не нужны."""
+
     def mount(
         self, image: str, mnt: str, *, readonly: bool, fakeroot: bool = False
     ) -> None:
@@ -306,11 +316,13 @@ class FuseMounter:
         fuse2fs = self._binaries.resolve(SandboxBinary.FUSE2FS)
         os.makedirs(mnt, exist_ok=True)
 
-        argv = [fuse2fs, "-f", image, mnt]
+        options = self.NEUTRAL_OPTIONS
         if readonly:
-            argv = [fuse2fs, "-f", "-o", self.READONLY_OPTIONS, image, mnt]
+            options = f"{self.READONLY_OPTIONS},{options}"
         if fakeroot:
-            argv = [fuse2fs, "-f", "-o", self.FAKEROOT_OPTIONS, image, mnt]
+            options = f"{self.FAKEROOT_OPTIONS},{options}"
+
+        argv = [fuse2fs, "-f", "-o", options, image, mnt]
 
         # stdout fuse2fs — информационный шум («Mounting read-only.»); в stderr
         # он смешивался бы с выводом тела. Ошибки fuse2fs идут его stderr'ом.

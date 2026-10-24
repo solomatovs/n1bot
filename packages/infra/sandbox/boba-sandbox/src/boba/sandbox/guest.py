@@ -146,6 +146,9 @@ class CloneFlag(IntEnum):
     """Флаги unshare(2)/clone3(2), которые применяет ребёнок."""
 
     NEWNS = 0x00020000
+    NEWCGROUP = 0x02000000
+    """Своя cgroup-иерархия вызова: /proc/self/cgroup тела — «0::/», без имён
+    юнитов и слайсов хоста."""
     NEWUTS = 0x04000000
     NEWIPC = 0x08000000
     NEWPID = 0x20000000
@@ -156,9 +159,12 @@ class CloneFlag(IntEnum):
 class MountFlag(IntEnum):
     """Флаги mount(2)/umount2(2) для приватных точек вызова."""
 
+    RDONLY = 0x1
     NOSUID = 0x2
     NODEV = 0x4
+    REMOUNT = 0x20
     BIND = 0x1000
+    MOVE = 0x2000
     REC = 0x4000
     PRIVATE = 0x40000
     DETACH = 0x2
@@ -319,11 +325,12 @@ class CallMounts(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    proc: str = ""
-    """Точка procfs из профиля; пусто — профиль её не объявил."""
-    tmp: str = ""
-    """Приватная tmpfs вызова из профиля; пусто — общая с зиготой."""
-    tmp_bytes: int = 0
+    proc: str = Field(min_length=1)
+    """Точка procfs: исполнитель ставит свой procfs своего pid namespace."""
+    tmp: str = Field(min_length=1)
+    """Приватный /tmp вызова на ramfs; в нём же исполнитель готовит подмены
+    хоста. Размер его ограничивает память группы вызова (cgroup memory.max)
+    и RLIMIT_FSIZE на файл: tmpfs с размером печатала бы uid хоста."""
 
 
 class CallRequest(BaseModel):
@@ -719,27 +726,57 @@ class Isolation:
             raise OSError(code, msg)
 
     @classmethod
-    def enter_call_namespaces(cls, mounts: CallMounts) -> None:
-        """Своё дерево монтирований вызова; NEWPID ставит вызывающий.
+    def move(cls, source: str, target: str) -> None:
+        """Перенести точку монтирования вместе с её подмонтированиями."""
+        cls.mount(source, target, "", MountFlag.MOVE, "")
 
-        Точки берутся из профиля: пустое значение означает, что профиль такой
-        точки не объявил и приватной её делать не из чего.
+    @classmethod
+    def remount_readonly(cls, target: str) -> None:
+        """Бинд только для чтения: тело не перепишет подменённый файл."""
+        flags = MountFlag.BIND | MountFlag.REMOUNT | MountFlag.RDONLY
+        cls.mount("none", target, "", flags, "")
+
+    @classmethod
+    def enter_call_namespaces(cls, mounts: CallMounts) -> None:
+        """Своё дерево монтирований и своя cgroup-иерархия вызова; NEWPID
+        ставит вызывающий.
+
+        Вызывается, когда исполнитель уже в cgroup-leaf'е вызова: корнем
+        иерархии тела становится leaf, и пути юнитов хоста ему не видны.
         """
         cls.mount("none", "/", "", MountFlag.REC | MountFlag.PRIVATE, "")
+        cls.unshare(CloneFlag.NEWCGROUP)
+        cls._own_tmp(mounts.tmp)
+        cls._own_proc(mounts)
 
-        if mounts.proc:
-            cls.mount(
-                "proc", mounts.proc, "proc", MountFlag.NOSUID | MountFlag.NODEV, ""
-            )
+    TMP_MODE: ClassVar[int] = 0o1777
 
-        if mounts.tmp:
-            cls.mount(
-                "tmpfs",
-                mounts.tmp,
-                "tmpfs",
-                MountFlag.NOSUID | MountFlag.NODEV,
-                f"size={mounts.tmp_bytes}",
-            )
+    @classmethod
+    def _own_tmp(cls, tmp: str) -> None:
+        """Приватный /tmp на ramfs вместо tmpfs зиготы, а не поверх неё.
+
+        tmpfs, смонтированная в userns, печатает в опциях uid и gid хоста;
+        у ramfs опций владельца нет. tmpfs зиготы снимается, иначе её строка
+        осталась бы в таблице монтирования под новой точкой.
+        """
+        cls.detach(tmp)
+        cls.mount("ramfs", tmp, "ramfs", MountFlag.NOSUID | MountFlag.NODEV, "")
+        os.chmod(tmp, cls.TMP_MODE)
+
+    @classmethod
+    def _own_proc(cls, mounts: CallMounts) -> None:
+        """procfs своего pid namespace вместо procfs зиготы, а не поверх неё.
+
+        Новый procfs монтируется в стороне, пока procfs зиготы ещё виден
+        целиком (иначе ядро откажет), затем procfs зиготы снимается и новый
+        переносится на его место: в таблице монтирования тела один /proc.
+        """
+        side = StagingDir(mounts.tmp).path
+        os.mkdir(side)
+        cls.mount("proc", side, "proc", MountFlag.NOSUID | MountFlag.NODEV, "")
+        cls.detach(mounts.proc)
+        cls.move(side, mounts.proc)
+        os.rmdir(side)
 
 
 class MaskFile(StrEnum):
@@ -760,27 +797,64 @@ class MaskFile(StrEnum):
     MODULES = "/proc/modules"
     BOOT_ID = "/proc/sys/kernel/random/boot_id"
 
-    def staged(self, root: str) -> str:
-        """Путь нейтральной копии на staging-tmpfs; basename уникален в enum."""
-        return os.path.join(root, self.name.lower())
-
 
 class StagingDir:
-    """Каталог staging для нейтральных файлов /proc, уникальный на вызов.
+    """Скрытый каталог подготовки в приватной tmpfs вызова, уникальный на шаг.
 
-    /dev у детей одной зиготы — одна tmpfs: общее имя каталога давало гонку,
-    где rmdir одного вызова убирал каталог у другого посреди записи. Суффикс
-    разводит вызовы по своим каталогам в этой общей tmpfs.
+    Исполнитель собирает в нём подмены (procfs, файлы /proc, новый /dev) и
+    убирает каталог до запуска тела; суффикс разводит шаги одного вызова.
     """
 
-    PREFIX: ClassVar[str] = "/dev/.host-"
+    PREFIX: ClassVar[str] = ".host-"
 
-    def __init__(self) -> None:
-        self._path = f"{self.PREFIX}{os.urandom(6).hex()}"
+    def __init__(self, parent: str) -> None:
+        self._path = os.path.join(parent, f"{self.PREFIX}{os.urandom(6).hex()}")
 
     @property
     def path(self) -> str:
         return self._path
+
+
+class DevNode(StrEnum):
+    """Устройства /dev тела: тот же набор, что даёт bwrap --dev, без fuse.
+
+    Узлы устройств приходят только биндом с devtmpfs хоста: в userns mknod
+    запрещён, а свои файловые системы там всегда nodev.
+    """
+
+    NULL = "null"
+    ZERO = "zero"
+    FULL = "full"
+    RANDOM = "random"
+    URANDOM = "urandom"
+    TTY = "tty"
+
+
+class DevLink(StrEnum):
+    """Ссылки /dev тела и их цели, как у bwrap --dev."""
+
+    FD = "fd"
+    STDIN = "stdin"
+    STDOUT = "stdout"
+    STDERR = "stderr"
+    PTMX = "ptmx"
+
+    def target(self) -> str:
+        targets = {
+            DevLink.FD: "/proc/self/fd",
+            DevLink.STDIN: "/proc/self/fd/0",
+            DevLink.STDOUT: "/proc/self/fd/1",
+            DevLink.STDERR: "/proc/self/fd/2",
+            DevLink.PTMX: "pts/ptmx",
+        }
+        return targets[self]
+
+
+class DevDir(StrEnum):
+    """Каталоги /dev тела: pts переносится из /dev зиготы, shm создаётся."""
+
+    PTS = "pts"
+    SHM = "shm"
 
 
 class HostMask:
@@ -788,8 +862,11 @@ class HostMask:
 
     Тело инструмента читает /proc обычным open, поэтому хост подменяется
     bind-монтированием заранее подготовленных файлов — статический аналог
-    LXCFS без демона. Копии кладутся на приватный tmpfs, монтируются поверх
-    настоящих файлов и их источник отцепляется, чтобы staging не был виден.
+    LXCFS без демона. Копии кладутся на ramfs, монтируются поверх настоящих
+    файлов только для чтения, а источник отцепляется, чтобы staging не был
+    виден. ramfs, а не tmpfs: tmpfs, смонтированная в userns, печатает в
+    опциях uid и gid пользователя хоста, ramfs опций владельца не имеет. По
+    той же причине /dev тела пересобирается на ramfs из узлов /dev зиготы.
     Значения согласованы с лимитами вызова: процессоров столько, сколько
     видит тело через affinity, памяти — сколько даёт RLIMIT_AS, так что
     nproc/free не противоречат подмене.
@@ -802,6 +879,21 @@ class HostMask:
     HOSTNAME: ClassVar[str] = "localhost"
     COMM: ClassVar[str] = "init"
 
+    CONFIG_BINDS: ClassVar[tuple[str, ...]] = (
+        "/etc/resolv.conf",
+        "/etc/hosts",
+        "/etc/krb5.conf",
+    )
+    """Файлы, которые сетевые секции монтируют биндом с хоста: в mountinfo у
+    бинда поле root — путь на хосте (${env.krb}/krb5.conf и т.п.). Это данные,
+    не живые точки, поэтому исполнитель копирует содержимое на свою ramfs,
+    снимает хостовый бинд и кладёт копию поверх — источник становится ramfs."""
+
+    DEV: ClassVar[str] = "/dev"
+    RAMFS: ClassVar[str] = "ramfs"
+    DEV_MODE: ClassVar[int] = 0o755
+    SHM_MODE: ClassVar[int] = 0o1777
+
     CPU_MODEL: ClassVar[str] = "Common x86_64 Processor"
     CPU_FLAGS: ClassVar[str] = (
         "fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat "
@@ -811,43 +903,109 @@ class HostMask:
     )
     BOGOMIPS: ClassVar[str] = "4000.00"
 
-    def __init__(self, cpu_count: int, mem_total_kb: int) -> None:
+    def __init__(self, cpu_count: int, mem_total_kb: int, scratch: str) -> None:
         self._cpu_count = max(1, cpu_count)
         self._mem_total_kb = max(1, mem_total_kb)
-        self._staging = StagingDir()
+        self._staging = StagingDir(scratch)
+        self._dev = StagingDir(scratch)
 
     def apply(self) -> None:
-        """Нейтральные имя хоста, comm и файлы /proc поверх настоящих."""
+        """Нейтральные имя хоста, comm, файлы /proc, бинды конфигов и /dev."""
         Isolation.set_hostname(self.HOSTNAME)
         Isolation.set_comm(self.COMM)
-        self._mask_proc()
+        self._mask()
+        self._rebuild_dev()
 
-    def _mask_proc(self) -> None:
+    def _mask(self) -> None:
         root = self._staging.path
-        os.mkdir(root)
-        Isolation.mount(
-            "tmpfs", root, "tmpfs", MountFlag.NOSUID | MountFlag.NODEV, "size=1048576"
-        )
+        self._ramfs(root)
         for target in MaskFile:
-            self._place(target)
+            self._place(target.value, self._content(target).encode())
+
+        for path in self.CONFIG_BINDS:
+            self._neutralize_bind(path)
 
         Isolation.detach(root)
         os.rmdir(root)
 
-    def _place(self, target: MaskFile) -> None:
-        """Нейтральную копию файла на staging — поверх настоящего bind'ом.
+    def _ramfs(self, path: str) -> None:
+        os.mkdir(path)
+        flags = MountFlag.NOSUID | MountFlag.NODEV
+        Isolation.mount(self.RAMFS, path, self.RAMFS, flags, "")
+
+    def _rebuild_dev(self) -> None:
+        """/dev тела на ramfs: узлы и pts из /dev зиготы, без /dev/fuse.
+
+        Новый /dev собирается в стороне, /dev зиготы (tmpfs с uid хоста в
+        опциях и с fuse) снимается целиком, собранный переносится на его
+        место. fuse2fs образа workspace свой дескриптор /dev/fuse уже держит.
+        """
+        root = self._dev.path
+        self._ramfs(root)
+        os.chmod(root, self.DEV_MODE)
+
+        for node in DevNode:
+            source = os.path.join(self.DEV, node.value)
+            if not os.path.exists(source):
+                continue
+
+            target = os.path.join(root, node.value)
+            with open(target, "w"):
+                pass
+            Isolation.mount(source, target, "", MountFlag.BIND, "")
+
+        pts = os.path.join(self.DEV, DevDir.PTS.value)
+        if os.path.ismount(pts):
+            moved = os.path.join(root, DevDir.PTS.value)
+            os.mkdir(moved)
+            Isolation.move(pts, moved)
+
+        shm = os.path.join(root, DevDir.SHM.value)
+        os.mkdir(shm)
+        os.chmod(shm, self.SHM_MODE)
+
+        for link in DevLink:
+            os.symlink(link.target(), os.path.join(root, link.value))
+
+        Isolation.detach(self.DEV)
+        Isolation.move(root, self.DEV)
+        os.rmdir(root)
+
+    def _staged(self, target: str) -> str:
+        """Путь копии на staging: точка в имени уникальна по полному пути."""
+        return os.path.join(self._staging.path, target.strip("/").replace("/", "_"))
+
+    def _place(self, target: str, content: bytes) -> None:
+        """Нейтральную копию на staging — поверх настоящего файла bind'ом.
 
         Отсутствующий у ядра файл пропускается: bind поверх несуществующей
         точки отказал бы, а подменять нечего.
         """
-        if not os.path.exists(target.value):
+        if not os.path.exists(target):
             return
 
-        staged = target.staged(self._staging.path)
-        with open(staged, "w") as handle:
-            handle.write(self._content(target))
+        staged = self._staged(target)
+        with open(staged, "wb") as handle:
+            handle.write(content)
 
-        Isolation.mount(staged, target.value, "", MountFlag.BIND, "")
+        Isolation.mount(staged, target, "", MountFlag.BIND, "")
+        Isolation.remount_readonly(target)
+
+    def _neutralize_bind(self, path: str) -> None:
+        """Хостовый бинд конфига заменить копией его содержимого на tmpfs.
+
+        Сначала читаем содержимое (пока виден хостовый бинд), снимаем бинд,
+        затем кладём копию поверх: иначе bind лёг бы стопкой на хостовый, и
+        тот остался бы в mountinfo со своим host-путём.
+        """
+        if not os.path.ismount(path):
+            return
+
+        with open(path, "rb") as handle:
+            content = handle.read()
+
+        Isolation.detach(path)
+        self._place(path, content)
 
     def _content(self, target: MaskFile) -> str:
         builders = {
@@ -1485,7 +1643,9 @@ class ZygoteMain:
         if mem_kb <= 0:
             mem_kb = cls.DEFAULT_MEM_KB
 
-        return HostMask(cpu_count=cpu_count, mem_total_kb=mem_kb)
+        return HostMask(
+            cpu_count=cpu_count, mem_total_kb=mem_kb, scratch=request.mounts.tmp
+        )
 
     def _run_body(self, request: CallRequest, argv: list[str]) -> int:
         """Тело своим процессом — только когда после него надо гасить демон.
