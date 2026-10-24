@@ -1173,6 +1173,24 @@ class TestRelaySealing:
             ),
             RelayCall(
                 name="workflow",
+                arguments={
+                    "nodes": [
+                        {
+                            "key": "n0",
+                            "tool": "mcp__boba__fake_connection_host",
+                            "args": {"connection": "orders"},
+                        }
+                    ]
+                },
+                errored=True,
+                expected=[
+                    "node 'n0': 'mcp__boba__fake_connection_host' is the name "
+                    "the agent gives the tool 'fake_connection_host'",
+                    "name the tool of the node 'fake_connection_host'",
+                ],
+            ),
+            RelayCall(
+                name="workflow",
                 arguments={"nodes": "n0"},
                 errored=True,
                 expected=["does not match its schema", "nodes"],
@@ -1184,6 +1202,7 @@ class TestRelaySealing:
             "node-sealed",
             "node-refused",
             "node-unknown-tool",
+            "node-agent-name",
             "off-shape-as-is",
         ],
     )
