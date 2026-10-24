@@ -20,6 +20,8 @@ from boba.agent.loader import HistoryLoader, LoadReport
 from boba.agent.records import (
     AssistantRecord,
     ChainRecord,
+    InformationalRecord,
+    NoticeLevel,
     PermissionMode,
     Record,
     RecordCodec,
@@ -195,7 +197,8 @@ class TestTruncatedJournal:
 
         session, report = await resumed.load(SESSION)
 
-        assert [r.type.value for r in report.repaired] == expected
+        notices, appended = self._split(report.repaired)
+        assert [r.type.value for r in appended] == expected
         assert [r.uuid for r in session.chain()[: len(cut.chain_uuids())]] == (
             cut.chain_uuids()
         )
@@ -205,6 +208,26 @@ class TestTruncatedJournal:
         assert last.message.model == Synthetic.MODEL
         assert last.message.usage.is_zero()
         assert Reference().appended_types(cut.path) == expected
+        assert len(notices) == 1, report.repaired
+        assert notices[0].level is NoticeLevel.WARNING
+        assert notices[0].content.startswith("The turn was interrupted:")
+
+    @staticmethod
+    def _split(
+        repaired: Sequence[ChainRecord],
+    ) -> tuple[list[InformationalRecord], list[ChainRecord]]:
+        """Пометка человеку об оборванном ходе — своя запись boba сверх
+        починки по docs/prompt_assembly; остальное сверяется с эталоном."""
+        notices: list[InformationalRecord] = []
+        appended: list[ChainRecord] = []
+        for record in repaired:
+            if isinstance(record, InformationalRecord):
+                notices.append(record)
+                continue
+
+            appended.append(record)
+
+        return notices, appended
 
     async def test_stub_results_name_the_interrupted_calls(
         self, written: Written, tmp_path: Path
@@ -334,7 +357,7 @@ class TestDamagedJournal:
         again, second = await resumed.load(SESSION)
         assert added in again.records()
         assert second.skipped_lines == 1
-        assert [r.type.value for r in second.repaired] == ["assistant"]
+        assert [r.type.value for r in second.repaired] == ["system", "assistant"]
 
     async def test_unknown_record_type_is_skipped(self, written: Written) -> None:
         with written.path.open("a", encoding="utf-8") as out:

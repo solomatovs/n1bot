@@ -68,7 +68,9 @@ from boba.agent.records import (
     AssistantBlock,
     AssistantMessage,
     AssistantRecord,
+    InformationalRecord,
     MessageOrigin,
+    NoticeLevel,
     OriginKind,
     Record,
     ReplyStopReason,
@@ -190,7 +192,6 @@ class TurnLoop:
         self._environment = environment
         self._agent = agent_name
         self._last_failure = ""
-        self._failures = 0
         self._bind_model(profile, model, builder)
 
     def _bind_model(
@@ -260,7 +261,6 @@ class TurnLoop:
         """Ход по взятому из очереди; итог отдаётся, а не объявляется: конец хода
         объявляет агент, когда записи сброшены и сессия уже свободна."""
         started = time.monotonic()
-        self._failures = 0
         progress = Progress()
 
         await self._write_prompt(taken)
@@ -338,7 +338,7 @@ class TurnLoop:
             return await self._output_limited(asked, progress)
 
         if isinstance(asked, Overflowed):
-            await self._write_api_error(asked.error, 0, 0)
+            await self._write_api_error(asked.error, 0, 0, 0)
             await self._write_api_failure(
                 self._templates.read(AgentTemplateFile.PROMPT_TOO_LONG)
             )
@@ -398,7 +398,7 @@ class TurnLoop:
                 detail=tracking.last_failure
             )
 
-        await self._write_api_error(text, 0, 0)
+        await self._write_api_error(text, 0, 0, 0)
         await self._write_api_failure(text)
         if tracking.breaker_open:
             return TurnOutcome.COMPACT_FAILURE_BREAKER
@@ -538,7 +538,14 @@ class TurnLoop:
             if attempt > self._limits.api_retries:
                 return Failed(self._last_failure)
 
-            await asyncio.sleep(self._limits.delay_before(attempt))
+            delay = self._limits.delay_before(attempt)
+            await self._write_api_error(
+                self._last_failure,
+                attempt,
+                self._limits.api_retries,
+                int(delay * self.MILLIS),
+            )
+            await asyncio.sleep(delay)
 
     async def _attempt(
         self, request: ChatRequest, cancellation: RunCancellation
@@ -551,10 +558,6 @@ class TurnLoop:
         )
         if isinstance(asked, Errored):
             self._last_failure = asked.error
-            self._failures += 1
-            await self._write_api_error(
-                self._last_failure, self._failures, self._limits.api_retries
-            )
             return None
 
         if isinstance(asked, Answered) and self._is_empty(asked.reply):
@@ -587,7 +590,9 @@ class TurnLoop:
         инструментов, инструкции серверов MCP, список скиллов — каждое,
         только если есть что сообщить. Перед этим устаревшее у серверов MCP
         перечитывается: свежесть проверяется там, где списки нужны."""
-        await self._catalog.refreshed()
+        for notice in await self._catalog.refreshed():
+            await self._write_notice(notice.level, notice.text)
+
         announced = Announced(self._session.conversation())
         if self._environment is not None:
             record = self._attachments.environment(
@@ -911,7 +916,12 @@ class TurnLoop:
 
         await self._write_reply(partial.as_reply(), stop_reason, aborted)
 
-    async def _write_api_error(self, error: str, attempt: int, retries: int) -> None:
+    async def _write_api_error(
+        self, error: str, attempt: int, retries: int, retry_in_ms: int
+    ) -> None:
+        """Запись system api_error: попытка attempt из retries не удалась,
+        повтор через retry_in_ms; attempt 0 — отказ без повтора, его текст
+        пишет следом синтетический ответ."""
         record = ApiErrorRecord(
             uuid=self._ids.uuid(),
             parent_uuid=self._session.last_chain_uuid(),
@@ -919,8 +929,22 @@ class TurnLoop:
             session_id=self._session.id.value,
             version=self._version,
             error=error,
+            retry_in_ms=retry_in_ms,
             retry_attempt=attempt,
             max_retries=retries,
+        )
+        await self._keeper.add(record)
+
+    async def _write_notice(self, level: NoticeLevel, content: str) -> None:
+        """Пометка для человека: записью informational в ход."""
+        record = InformationalRecord(
+            uuid=self._ids.uuid(),
+            parent_uuid=self._session.last_chain_uuid(),
+            timestamp=self._clock.now(),
+            session_id=self._session.id.value,
+            version=self._version,
+            content=content,
+            level=level,
         )
         await self._keeper.add(record)
 

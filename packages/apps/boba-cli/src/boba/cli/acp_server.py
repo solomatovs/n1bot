@@ -128,9 +128,12 @@ from boba.agent.mcp import (
 from boba.agent.permissions import PermissionModeError
 from boba.agent.queue import QueueEntry, QueueKind, QueuePriority, QueueRefusedError
 from boba.agent.records import (
+    ApiErrorRecord,
     AssistantRecord,
     ChainRecord,
     CompactBoundaryRecord,
+    InformationalRecord,
+    NoticeLevel,
     PermissionMode,
     Record,
     TextBlock,
@@ -150,6 +153,7 @@ from boba.agent.tools import (
     AskUserQuestionInput,
     AskUserQuestionTool,
     McpServerSet,
+    ServerNotice,
     ToolServer,
 )
 from boba.agent.turn import ContextUsage
@@ -164,8 +168,6 @@ from boba.transport.acp.protocol import (
     AgentSide,
     ElicitationRound,
     ErrorDataKey,
-    IdleErrorNotification,
-    IdleErrorUpdate,
     McpErrorOutcome,
     McpMessage,
     McpOutcome,
@@ -602,7 +604,9 @@ class PermissionAsk(BaseModel):
 
 class AcpMapping:
     """Соответствие ядра протоколу: исходы хода → `idle` со `stopReason`,
-    события → уведомления `session/update`, пометки инструмента → `kind`,
+    события → уведомления `session/update`, записи для человека (повтор
+    запроса к модели, отказ модели, состояние серверов MCP, оборванный ход)
+    → `notice` одинаково вживую и в воспроизведении, пометки инструмента → `kind`,
     вопрос `can_use_tool` → запрос разрешения и ответ на него, вопрос
     AskUserQuestion → форма `elicitation/create` и ответ формы → ответы
     вопроса.
@@ -613,8 +617,9 @@ class AcpMapping:
 
     STOP_REASONS: ClassVar[Mapping[TurnOutcome, StopReason]] = {
         TurnOutcome.COMPLETED: StopReason.END_TURN,
+        TurnOutcome.API_ERROR: StopReason.REFUSAL,
         TurnOutcome.MAX_TURNS: StopReason.MAX_TURN_REQUESTS,
-        TurnOutcome.OUTPUT_LIMIT: StopReason.MAX_TOKENS,
+        TurnOutcome.OUTPUT_LIMIT: StopReason.REFUSAL,
         TurnOutcome.ABORTED_STREAMING: StopReason.CANCELLED,
         TurnOutcome.ABORTED_TOOLS: StopReason.CANCELLED,
         TurnOutcome.SHUTDOWN: StopReason.CANCELLED,
@@ -623,6 +628,7 @@ class AcpMapping:
         TurnOutcome.RAPID_REFILL_BREAKER: StopReason.REFUSAL,
     }
     COMPACTED: ClassVar[str] = "completed"
+    MILLIS: ClassVar[float] = 1000.0
 
     INTERRUPTS: ClassVar[tuple[AgentTemplateFile, ...]] = (
         AgentTemplateFile.REQUEST_INTERRUPTED,
@@ -634,25 +640,64 @@ class AcpMapping:
         self._titles = ToolTitles()
         self._templates = AgentTemplate()
 
-    def idle(
-        self, result: ResultEvent
-    ) -> schema.IdleSessionStateUpdate | IdleErrorUpdate:
-        """Конец хода по его итогу; отказ модели — idle с ошибкой."""
-        found = self.STOP_REASONS.get(result.outcome)
-        if found is None:
-            return self.idle_error(result.outcome.value, result.error)
-
-        return schema.IdleSessionStateUpdate(stop_reason=found)
-
-    def idle_error(self, kind: str, message: str) -> IdleErrorUpdate:
-        """Конец хода сбоем: вид сбоя в `data`, текст — сообщение ошибки."""
-        error = schema.Error(
-            code=AcpErrorCode.INTERNAL_ERROR,
-            message=message,
-            data={ErrorDataKey.KIND.value: kind},
+    def idle(self, result: ResultEvent) -> schema.IdleSessionStateUpdate:
+        """Конец хода по его итогу; причину отказа клиент уже получил
+        пометкой записи об отказе модели."""
+        return schema.IdleSessionStateUpdate(
+            stop_reason=self.STOP_REASONS[result.outcome]
         )
 
-        return IdleErrorUpdate(stop_reason=StopReason.ERROR, error=error)
+    def notice(self, level: NoticeLevel, text: str) -> schema.SessionNotice:
+        return schema.SessionNotice(severity=level.value, title=text)
+
+    def serving_stopped(self, failure: BaseException) -> Sequence[Update]:
+        """Обслуживание сессии сорвалось: пометка с причиной и конец хода
+        отказом."""
+        text = self._templates.read(AgentTemplateFile.SERVING_STOPPED_NOTICE)
+        cause = f"{type(failure).__name__}: {failure}"
+
+        return (
+            self.notice(NoticeLevel.ERROR, text.format(cause=cause)),
+            schema.IdleSessionStateUpdate(stop_reason=StopReason.REFUSAL),
+        )
+
+    def notices(self, record: ChainRecord) -> Iterator[schema.SessionNotice]:
+        """Пометки человеку, которые несёт запись: повтор запроса к модели,
+        отказ модели, состояние серверов MCP и оборванный ход."""
+        if isinstance(record, InformationalRecord):
+            yield self.notice(record.level, record.content)
+            return
+
+        if isinstance(record, ApiErrorRecord):
+            yield from self._retry(record)
+            return
+
+        if not isinstance(record, AssistantRecord):
+            return
+
+        if not record.is_synthetic():
+            return
+
+        if failure := record.error:
+            yield self.notice(NoticeLevel.ERROR, failure)
+
+    def _retry(self, record: ApiErrorRecord) -> Iterator[schema.SessionNotice]:
+        """Неудачная попытка с повтором; попытка без повтора своей пометки
+        не даёт — причину скажет запись об отказе модели."""
+        if record.retry_attempt == 0:
+            return
+
+        text = self._templates.read(AgentTemplateFile.MODEL_RETRY_NOTICE)
+        seconds = record.retry_in_ms / self.MILLIS
+        yield self.notice(
+            NoticeLevel.WARNING,
+            text.format(
+                error=record.error,
+                attempt=record.retry_attempt,
+                retries=record.max_retries,
+                seconds=f"{seconds:g}",
+            ),
+        )
 
     def tool_kind(self, hints: ToolHints | None) -> ToolKindName:
         """`kind` по пометкам MCP: читающий — read, разрушающий — execute,
@@ -740,12 +785,13 @@ class AcpMapping:
     def replayed(self, record: ChainRecord, hints: ToolHintSource) -> Iterator[Update]:
         """Запись беседы → её уведомления: сообщения целиком (`user_message`,
         `agent_thought`, `agent_message`), вызовы и их итоги — как в живом
-        ходе. Конец хода остановкой или отказом модели — тот же idle, что
-        вживую: маркер остановки — `cancelled`, запись об отказе модели —
-        idle с ошибкой; прочие синтетические записи агента (заглушки) не
-        воспроизводятся, оборванный ответ — воспроизводится; служебные
-        сообщения, пересказы сжатия, вложения и границы сжатия в ленту не
-        идут."""
+        ходе, пометки человеку — теми же `notice`, что вживую. Конец хода
+        остановкой или отказом модели — тот же idle, что вживую: маркер
+        остановки — `cancelled`, запись об отказе модели — `refusal`; прочие
+        синтетические записи агента (заглушки) не воспроизводятся,
+        оборванный ответ — воспроизводится; служебные сообщения, пересказы
+        сжатия, вложения и границы сжатия в ленту не идут."""
+        yield from self.notices(record)
         if isinstance(record, UserRecord):
             yield from self.user_updates(record)
             if self._interrupted(record):
@@ -769,13 +815,13 @@ class AcpMapping:
         return False
 
     def _failed(self, record: AssistantRecord) -> Iterator[Update]:
-        """Запись агента об отказе модели — конец хода сбоем, как idle живого
-        хода."""
+        """Запись агента об отказе модели — конец хода отказом, как idle
+        живого хода; причину уже несёт пометка записи."""
         if not record.is_synthetic():
             return
 
-        if failure := record.error:
-            yield self.idle_error(TurnOutcome.API_ERROR.value, failure)
+        if record.error:
+            yield schema.IdleSessionStateUpdate(stop_reason=StopReason.REFUSAL)
 
     def _replayed_assistant(
         self, record: AssistantRecord, hints: ToolHintSource
@@ -813,13 +859,19 @@ class AcpMapping:
     ) -> schema.SessionToolCallUpdate:
         """Итог вызова: текст модели содержимым, ответ tools/call как он
         записан в `toolUseResult` — `rawOutput`. Без записанного ответа
-        вызов оборван концом хода — `cancelled` без `rawOutput`."""
+        вызов оборван концом хода — `cancelled` без `rawOutput`; заглушка
+        вызова, оборванного выключением агента, — `failed` со своим текстом:
+        исход вызова неизвестен."""
         status = ToolStatus.COMPLETED
         if block.is_error:
             status = ToolStatus.FAILED
 
         if stored is None:
             status = ToolStatus.CANCELLED
+
+        stub = self._templates.read(AgentTemplateFile.INTERRUPTED_TOOL_RESULT)
+        if block.text() == stub:
+            status = ToolStatus.FAILED
 
         text = schema.TextContentBlock(text=block.text())
 
@@ -890,9 +942,6 @@ class AcpMapping:
         return schema.SessionCompactionUpdate(
             compaction_id=record.uuid, status=self.COMPACTED
         )
-
-    def notice(self, event: ErrorEvent) -> schema.SessionNotice:
-        return schema.SessionNotice(severity="error", title=event.message)
 
     def permission_request(
         self, request: CanUseToolRequest, hints: ToolHints | None
@@ -1265,9 +1314,6 @@ class ClientLink:
 
         return await self._home.run(self._side.request(message, relayed))
 
-    async def idle_error(self, notification: IdleErrorNotification) -> None:
-        await self._home.run(self._side.send_update(notification))
-
     async def session_update(self, session_id: str, update: Update) -> None:
         await self._home.run(self._connection.session_update(session_id, update))
 
@@ -1406,6 +1452,55 @@ class McpPages(Generic[PageT]):
     fresh_until: float
 
 
+class ServerNotices:
+    """Смены состояния серверов MCP сессии до начала следующего хода:
+    сервер не открылся, перестал отвечать, ответил снова. Копят их
+    SessionMcp и его серверы (AcpToolServer), забирает ход через
+    SessionMcp.refreshed и пишет пометками в историю."""
+
+    def __init__(self) -> None:
+        self._templates = AgentTemplate()
+        self._pending: list[ServerNotice] = []
+
+    def unavailable(self, server: str, failure: BaseException) -> None:
+        text = self._templates.read(AgentTemplateFile.MCP_UNAVAILABLE_NOTICE)
+        cause = self._cause(failure)
+        self._add(NoticeLevel.WARNING, text.format(server=server, cause=cause))
+
+    def lost(self, server: str, failure: BaseException) -> None:
+        text = self._templates.read(AgentTemplateFile.MCP_LOST_NOTICE)
+        cause = self._cause(failure)
+        self._add(NoticeLevel.WARNING, text.format(server=server, cause=cause))
+
+    def back(self, server: str) -> None:
+        text = self._templates.read(AgentTemplateFile.MCP_BACK_NOTICE)
+        self._add(NoticeLevel.INFO, text.format(server=server))
+
+    def taken(self) -> Sequence[ServerNotice]:
+        """Накопленные смены; каждая отдаётся один раз."""
+        taken = list(self._pending)
+        self._pending.clear()
+
+        return taken
+
+    def _add(self, level: NoticeLevel, text: str) -> None:
+        self._pending.append(ServerNotice(level=level, text=text))
+
+    @staticmethod
+    def _cause(failure: BaseException) -> str:
+        """Причина для человека: ответ клиента ACP об отказе сервера (его
+        текст называет сервер, адрес и ответ HTTP) без обёрток агента;
+        без такого ответа — текст самого сбоя."""
+        cause: BaseException | None = failure
+        while cause is not None:
+            if isinstance(cause, RequestError):
+                return str(cause)
+
+            cause = cause.__cause__
+
+        return str(failure)
+
+
 class AcpToolServer(ToolServer):
     """Реализация ToolServer над одной регистрацией MCP-over-ACP: запись
     `type: "acp"` сессии.
@@ -1441,9 +1536,11 @@ class AcpToolServer(ToolServer):
         mapping: AcpMapping,
         client: mt.Implementation,
         prompted: Callable[[], Awaitable[None]],
+        changes: ServerNotices,
     ) -> None:
         self._link = link
         self._server = server
+        self._changes = changes
         self._sink: EventSink = relay
         self._relay = relay
         self._limits = limits
@@ -1535,6 +1632,7 @@ class AcpToolServer(ToolServer):
 
         if not self._connected:
             logger.info("mcp: %s answers again, it is back in the session", self._label)
+            self._changes.back(self._server.name)
 
         self._connected = True
         self._follow()
@@ -1749,7 +1847,8 @@ class AcpToolServer(ToolServer):
         return time.monotonic() + answer.ttl_ms / self.MILLIS
 
     def _disconnect(self, cause: McpUnreachableError) -> None:
-        """Сервер отключён до первого удачного чтения; все ответы устарели."""
+        """Сервер отключён до первого удачного чтения; все ответы устарели,
+        человек получит пометку в начале хода."""
         if self._connected:
             logger.warning(
                 "mcp: %s does not answer, its tools, prompts and instructions "
@@ -1757,6 +1856,7 @@ class AcpToolServer(ToolServer):
                 self._label,
                 cause,
             )
+            self._changes.lost(self._server.name, cause)
 
         self._connected = False
         self._fresh.clear()
@@ -2485,8 +2585,9 @@ class SessionMcp(McpServerSet, ToolServer):
     сессии: их список уходит клиенту `available_commands_update` при
     открытии и при смене промптов, а вопрос `/<команда> <аргументы>`
     раскрывается prompts/get в служебный контекст вопроса. Сервер, который
-    не открылся, в сессию не входит: клиент получает о нём пометку notice
-    вместе с командами. Закрытие сессии закрывает потоки подписки серверов.
+    не открылся, в сессию не входит; смены состояния серверов (не открылся,
+    пропал, вернулся) копит ServerNotices, и ход пишет их человеку пометками
+    в историю. Закрытие сессии закрывает потоки подписки серверов.
     """
 
     COMMAND_PREFIX: ClassVar[str] = "/"
@@ -2498,20 +2599,17 @@ class SessionMcp(McpServerSet, ToolServer):
         self._names = McpToolNames()
         self._replies = ToolReplies()
         self._announcing: asyncio.Task[None] | None = None
-        self._notices: list[schema.SessionNotice] = []
+        self.changes = ServerNotices()
+        """Смены состояния серверов до следующего хода; их копят и серверы."""
 
     def add(self, server: AcpToolServer) -> None:
         self._servers.append(server)
 
-    def unavailable(self, server: str, reason: str) -> None:
-        """Сервер server не открылся: сессия идёт без него, клиенту — пометка."""
-        logger.warning("mcp: server %s is left out of the session: %s", server, reason)
-        notice = schema.SessionNotice(
-            severity="warning",
-            title=f"MCP server {server!r} is unavailable, its tools are left out",
-            description=f"{reason}; the session goes on without this server",
-        )
-        self._notices.append(notice)
+    def unavailable(self, server: str, failure: BaseException) -> None:
+        """Сервер server не открылся: сессия идёт без него, первый ход
+        запишет человеку пометку."""
+        logger.warning("mcp: server %s is left out of the session: %s", server, failure)
+        self.changes.unavailable(server, failure)
 
     def tools(self) -> Sequence[ToolCard]:
         """Инструменты серверов и инструменты ресурсов; имена, которые
@@ -2583,19 +2681,20 @@ class SessionMcp(McpServerSet, ToolServer):
 
         return done
 
-    async def refreshed(self) -> None:
+    async def refreshed(self) -> Sequence[ServerNotice]:
         """Устаревшее у серверов — заново, у всех разом; сменились промпты
-        подключённых серверов — команды сессии уходят клиенту заново."""
+        подключённых серверов — команды сессии уходят клиенту заново. Итог —
+        смены состояния серверов с прошлого хода."""
         before = list(self._prompt_lists())
         pending: list[Awaitable[None]] = []
         for server in self._servers:
             pending.append(server.refreshed())
 
         await asyncio.gather(*pending)
-        if list(self._prompt_lists()) == before:
-            return
+        if list(self._prompt_lists()) != before:
+            await self.announce_commands()
 
-        await self.announce_commands()
+        return self.changes.taken()
 
     def connected(self) -> Sequence[ConnectedServer]:
         return list(self._connected())
@@ -2616,29 +2715,20 @@ class SessionMcp(McpServerSet, ToolServer):
             yield server.prompts()
 
     def announce_later(self) -> None:
-        """Пометки о серверах, которые не открылись, и команды сессии клиенту
-        отдельной задачей, после ответа на запрос сессии: о сессии, которую
-        клиент ещё не знает, он уведомлений не ждёт. Без пометок и промптов у
-        серверов — ничего."""
+        """Команды сессии клиенту отдельной задачей, после ответа на запрос
+        сессии: о сессии, которую клиент ещё не знает, он уведомлений не
+        ждёт. Без промптов у серверов — ничего."""
         prompted = False
         for server in self._servers:
             if server.prompts():
                 prompted = True
 
-        noticed = len(self._notices) > 0
-        if not prompted and not noticed:
+        if not prompted:
             return
 
         self._announcing = asyncio.create_task(
-            self._announced(prompted), name="mcp-commands"
+            self.announce_commands(), name="mcp-commands"
         )
-
-    async def _announced(self, prompted: bool) -> None:
-        for notice in self._notices:
-            await self._relay.notify(notice)
-
-        if prompted:
-            await self.announce_commands()
 
     async def announce_commands(self) -> None:
         """Промпты серверов командами сессии: `available_commands_update`.
@@ -2834,6 +2924,8 @@ class SessionRelay(EventSink):
         self._running = False
         self._inserting: dict[str, asyncio.Future[None]] = {}
         """Вопрос `session/prompt` в очереди → ожидание его записи `user`."""
+        self._streamed: str | None = None
+        """messageId ответа, который сейчас стримится и ещё не записан."""
 
     def attach(self, agent: Agent) -> None:
         self._agent = agent
@@ -2875,26 +2967,22 @@ class SessionRelay(EventSink):
         контекста, как после хода."""
         await self._send_all(self._turn_summary())
 
-    async def failed(self, update: IdleErrorUpdate) -> None:
-        """Ход кончился сбоем: `idle` с ошибкой."""
+    async def failed(self, failure: BaseException) -> None:
+        """Обслуживание сессии сорвалось: пометка с причиной и `idle`
+        отказом."""
         self._running = False
-        await self._send(update)
+        await self._send_all(self._mapping.serving_stopped(failure))
 
     async def emit(self, event: AgentEvent) -> None:
         if isinstance(event, ResultEvent):
             await self._send_all(self._turn_summary())
-            idle = self._mapping.idle(event)
-            if isinstance(idle, IdleErrorUpdate):
-                await self.failed(idle)
-                return
-
             self._running = False
-            await self._send(idle)
+            await self._send(self._mapping.idle(event))
             return
 
         if isinstance(event, ErrorEvent):
             logger.warning("session %s: %s", self._session_id, event.message)
-            await self._send(self._mapping.notice(event))
+            await self._send(self._mapping.notice(NoticeLevel.ERROR, event.message))
             return
 
         updates = self._updates(event)
@@ -2959,6 +3047,7 @@ class SessionRelay(EventSink):
     def _updates(self, event: AgentEvent) -> Sequence[Update] | None:
         """Уведомления хода по событию; None — событие не про ленту."""
         if isinstance(event, StreamEvent):
+            self._streamed = event.message_id
             return self._mapping.chunks(event)
 
         if isinstance(event, RecordEvent):
@@ -2990,8 +3079,16 @@ class SessionRelay(EventSink):
             )
 
     def _record_updates(self, record: Record) -> Sequence[Update]:
+        if not isinstance(record, ChainRecord):
+            return ()
+
+        updates: list[Update] = []
+        if self._failed_attempt(record):
+            updates.extend(self._withdrawn())
+
+        updates.extend(self._mapping.notices(record))
         if isinstance(record, AssistantRecord):
-            updates: list[Update] = []
+            self._streamed = None
             for block in record.message.tool_uses():
                 updates.append(self._mapping.tool_call(block, self._hints(block.name)))
 
@@ -2999,17 +3096,42 @@ class SessionRelay(EventSink):
 
         if isinstance(record, UserRecord):
             self._inserted(record.uuid)
-            return list(self._mapping.user_updates(record))
+            updates.extend(self._mapping.user_updates(record))
+            return updates
 
         if isinstance(record, CompactBoundaryRecord):
-            compaction: list[Update] = [self._mapping.compaction(record)]
+            updates.append(self._mapping.compaction(record))
             usage = self._usage()
             if usage is not None:
-                compaction.append(usage)
+                updates.append(usage)
 
-            return compaction
+        return updates
 
-        return ()
+    @staticmethod
+    def _failed_attempt(record: ChainRecord) -> bool:
+        """Запись о неудачной попытке запроса к модели: повтор или отказ."""
+        if isinstance(record, ApiErrorRecord):
+            return True
+
+        if not isinstance(record, AssistantRecord):
+            return False
+
+        if not record.is_synthetic():
+            return False
+
+        return bool(record.error)
+
+    def _withdrawn(self) -> Iterator[Update]:
+        """Неудачная попытка запроса к модели: её недописанный ответ и
+        рассуждение заменяются пустыми — в журнале их нет, и лента клиента
+        совпадёт с воспроизведением."""
+        streamed = self._streamed
+        if streamed is None:
+            return
+
+        self._streamed = None
+        yield schema.AgentThoughtUpdate(message_id=streamed, content=[])
+        yield schema.AgentMessageUpdate(message_id=streamed, content=[])
 
     def _hints(self, name: str) -> ToolHints | None:
         if self._agent is None:
@@ -3021,18 +3143,11 @@ class SessionRelay(EventSink):
         for update in updates:
             await self._send(update)
 
-    async def _send(self, update: Update | IdleErrorUpdate) -> None:
+    async def _send(self, update: Update) -> None:
         if self._detached:
             return
 
         try:
-            if isinstance(update, IdleErrorUpdate):
-                notification = IdleErrorNotification(
-                    session_id=self._session_id, update=update
-                )
-                await self._link.idle_error(notification)
-                return
-
             await self._link.session_update(self._session_id, update)
         except (ConnectionError, AcpTransportError) as exc:
             self._detached = True
@@ -3419,8 +3534,8 @@ class AcpSession:
         return len(self.agent.queue) > 0
 
     def _served(self, task: asyncio.Task[None]) -> None:
-        """Обслуживание остановилось сбоем: идущий ход кончается `idle` с
-        ошибкой."""
+        """Обслуживание остановилось сбоем: идущий ход кончается пометкой с
+        причиной и `idle` отказом."""
         if task.cancelled():
             return
 
@@ -3438,8 +3553,7 @@ class AcpSession:
         self._relay.refuse_all(
             RequestError.internal_error({ErrorDataKey.DETAILS.value: details})
         )
-        update = self._mapping.idle_error(type(failure).__name__, str(failure))
-        self._reports.append(asyncio.create_task(self._relay.failed(update)))
+        self._reports.append(asyncio.create_task(self._relay.failed(failure)))
 
     async def prompt(self, asked: QueueEntry) -> schema.PromptResponse:
         """Ставит вопрос в очередь ядра и отвечает, когда его ход вставил
@@ -3855,12 +3969,13 @@ class AcpAgent(AcpAgentProtocol):
                     self._mapping,
                     client,
                     mcp.announce_commands,
+                    mcp.changes,
                 )
                 try:
                     await tool_server.open()
                 except SessionOpenError as exc:
                     await tool_server.close()
-                    mcp.unavailable(server.name, str(exc))
+                    mcp.unavailable(server.name, exc)
                     continue
 
                 mcp.add(tool_server)

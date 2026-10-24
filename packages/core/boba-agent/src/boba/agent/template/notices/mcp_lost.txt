@@ -1,0 +1,1 @@
+MCP server '{server}' stopped answering, its tools are left out of the session until it answers again: {cause}

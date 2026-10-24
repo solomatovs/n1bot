@@ -266,6 +266,9 @@ class Agent:
         writer = HistoryWriter(session, parts.store, lease, report.stored_seq)
         writer.start()
         self._writer = writer
+        # починка оборванного хода ложится в журнал сразу, а не со следующим ходом
+        if report.repaired:
+            writer.notify()
         self._queue = InputQueue(session, wiring.clock, wiring.ids)
         self._questions = ControlQuestions(wiring.ids)
         if mode is not None:
