@@ -29,7 +29,6 @@ __all__ = [
     "EventSink",
     "HistoryWrittenEvent",
     "InitEvent",
-    "NoticeEvent",
     "RecordEvent",
     "ResultEvent",
     "StreamEvent",
@@ -145,14 +144,6 @@ class ResultEvent(EventModel):
     error: str = ""
 
 
-class NoticeEvent(EventModel):
-    """Пометка пользователю посреди хода: агент сообщает о том, что требует
-    его действия (тред больше не помещается в окно модели)."""
-
-    title: str
-    description: str
-
-
 class ErrorEvent(EventModel):
     """Ошибка вне хода: строка ввода не разобрана, сброс журнала не удался."""
 
@@ -183,7 +174,6 @@ AgentEvent: TypeAlias = (
     | ToolStartedEvent
     | ToolProgressEvent
     | ResultEvent
-    | NoticeEvent
     | ErrorEvent
     | ControlRequestEvent
     | ControlCancelEvent

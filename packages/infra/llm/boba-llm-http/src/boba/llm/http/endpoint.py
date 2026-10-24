@@ -9,12 +9,15 @@ API, обмен json-телами через HttpTransport проекта и к�
 
 Ошибки:
 LlmContextOverflowError — 4xx с текстом о длине контекста: запрос не поместился в окно.
-LlmError — endpoint недоступен, ответил статусом после ретраев, оборвал
-    или задержал поток, либо ответил не по wire-контракту.
+LlmServiceError — endpoint недоступен или ответил статусом после ретраев: вид
+    беды и короткая причина (статус и error.message ответа) для человека.
+LlmError — endpoint оборвал или задержал поток либо ответил не по
+    wire-контракту.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 from abc import abstractmethod
 from collections.abc import AsyncIterator, Mapping, Sequence
@@ -33,6 +36,8 @@ from boba.llm.chat import (
     ContextOverflowSigns,
     LlmContextOverflowError,
     LlmError,
+    LlmServiceError,
+    LlmTrouble,
     ToolSpec,
 )
 from boba.llm.providers import LlmProvider
@@ -81,6 +86,68 @@ class HttpLlmProvider(LlmProvider):
     )
 
 
+class ErrorBodyKey(StrEnum):
+    """Стандартные поля тела отказа: error.message OpenAI и строка error ollama."""
+
+    ERROR = "error"
+    MESSAGE = "message"
+
+
+class ProviderRefusal:
+    """Отказ провайдера словами для человека: статус и суть из стандартного
+    поля ответа — error.message (OpenAI и совместимые) или строки error
+    (ollama); тело другого вида в текст не идёт, оно остаётся в журнале.
+    Держит его в поле LlmEndpoint."""
+
+    LIMIT: ClassVar[int] = 200
+
+    def detail(self, status: int, body: str) -> str:
+        message = self._message(body)
+        phrase = self._phrase(status)
+        if not message:
+            return phrase
+
+        return f"{phrase}: {message[: self.LIMIT]}"
+
+    def trouble(self, status: int) -> LlmTrouble:
+        if status == HTTPStatus.TOO_MANY_REQUESTS:
+            return LlmTrouble.BUSY
+
+        if status >= HTTPStatus.INTERNAL_SERVER_ERROR:
+            return LlmTrouble.DOWN
+
+        return LlmTrouble.REJECTED
+
+    @staticmethod
+    def _phrase(status: int) -> str:
+        try:
+            return f"HTTP {status} {HTTPStatus(status).phrase}"
+        except ValueError:
+            return f"HTTP {status}"
+
+    def _message(self, body: str) -> str:
+        try:
+            document = json.loads(body)
+        except json.JSONDecodeError:
+            return ""
+
+        if not isinstance(document, dict):
+            return ""
+
+        error = document.get(ErrorBodyKey.ERROR.value)
+        if isinstance(error, str):
+            return error
+
+        if not isinstance(error, dict):
+            return ""
+
+        message = error.get(ErrorBodyKey.MESSAGE.value)
+        if isinstance(message, str):
+            return message
+
+        return ""
+
+
 class LlmRoute(StrEnum):
     """Маршруты API провайдеров относительно корня соединения."""
 
@@ -110,6 +177,7 @@ class LlmEndpoint:
         self._label = label
         self._where = f"{label}: {self.METHOD} {connection.url_of(route.value)}"
         self._overflow = ContextOverflowSigns()
+        self._refusal = ProviderRefusal()
 
     @property
     def where(self) -> str:
@@ -124,7 +192,7 @@ class LlmEndpoint:
         except HttpStatusError as exc:
             raise self._status_error(exc, f"{self._label}: {exc}") from exc
         except TransportError as exc:
-            raise LlmError(f"{self._label}: {exc}") from exc
+            raise self._unreachable(exc, f"{self._label}: {exc}") from exc
 
     async def stream(self, payload: Mapping[str, Any]) -> AsyncIterator[str]:
         """Строки потокового ответа; обрыв посреди потока — ошибка, не повтор."""
@@ -136,20 +204,26 @@ class LlmEndpoint:
             message = f"{self._label}: stream failed: {exc}"
             raise self._status_error(exc, message) from exc
         except TransportError as exc:
-            raise LlmError(f"{self._label}: stream failed: {exc}") from exc
+            message = f"{self._label}: stream failed: {exc}"
+            raise self._unreachable(exc, message) from exc
 
     def _status_error(self, exc: HttpStatusError, message: str) -> LlmError:
-        """4xx с текстом о длине контекста — переполнение окна, остальное — LlmError."""
-        lowest = HTTPStatus.BAD_REQUEST
-        highest = HTTPStatus.INTERNAL_SERVER_ERROR
-        client_error = lowest <= exc.status < highest
-        if not client_error:
-            return LlmError(message)
+        """4xx с текстом о длине контекста — переполнение окна, остальное —
+        LlmServiceError с видом беды по статусу."""
+        trouble = self._refusal.trouble(exc.status)
+        refused = LlmServiceError(
+            message, trouble, self._refusal.detail(exc.status, exc.body)
+        )
+        if trouble is not LlmTrouble.REJECTED:
+            return refused
 
         if self._overflow.matches(exc.body):
             return LlmContextOverflowError(message)
 
-        return LlmError(message)
+        return refused
+
+    def _unreachable(self, exc: TransportError, message: str) -> LlmServiceError:
+        return LlmServiceError(message, LlmTrouble.DOWN, exc.failure.value)
 
     def _request(self, payload: Mapping[str, Any]) -> HttpRequest:
         return HttpRequest(url=self._route.value, method=self.METHOD, json=payload)

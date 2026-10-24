@@ -13,6 +13,8 @@ LlmOutputLimitError — подкласс LlmError: ответ срезан пр�
     length, done_reason length, расход потолка локального прогона).
 LlmContextOverflowError — подкласс LlmError: запрос не поместился в окно модели
     (ответ 4xx или ошибка сервера с текстом о длине контекста).
+LlmServiceError — подкласс LlmError: провайдер занят, недоступен, отказал или
+    оборвал ответ; вид беды (LlmTrouble) и короткая причина — для человека.
 """
 
 from __future__ import annotations
@@ -39,6 +41,8 @@ __all__ = [
     "LlmContextOverflowError",
     "LlmError",
     "LlmOutputLimitError",
+    "LlmServiceError",
+    "LlmTrouble",
     "ToolCall",
     "ToolSpec",
 ]
@@ -46,6 +50,43 @@ __all__ = [
 
 class LlmError(Exception):
     """Обращение к модели не состоялось: загрузка, сеть, статус, мусорный ответ."""
+
+
+class LlmTrouble(StrEnum):
+    """Что случилось с провайдером модели — по этому виду человек получает
+    понятный текст, а не ошибку транспорта."""
+
+    BUSY = "busy"
+    """Провайдер просит подождать: 429."""
+
+    DOWN = "down"
+    """Провайдер не отвечает: соединение, срок, 5xx."""
+
+    REJECTED = "rejected"
+    """Провайдер отказал в запросе: прочие 4xx."""
+
+    CUT = "cut"
+    """Ответ оборвался или кончился не по правилам."""
+
+    BLOCKED = "blocked"
+    """Ответ закрыт фильтром содержимого провайдера."""
+
+    EMPTY = "empty"
+    """Модель ответила пустотой: ни текста, ни вызовов."""
+
+    UNKNOWN = "unknown"
+    """Обращение не состоялось по иной причине: подробности — в журнале."""
+
+
+class LlmServiceError(LlmError):
+    """Провайдер модели занят, недоступен, отказал или оборвал ответ: вид
+    беды и короткая причина (статус и суть ответа провайдера) для человека;
+    полный текст — в сообщении исключения для журнала."""
+
+    def __init__(self, message: str, trouble: LlmTrouble, detail: str) -> None:
+        super().__init__(message)
+        self.trouble = trouble
+        self.detail = detail
 
 
 class LlmOutputLimitError(LlmError):

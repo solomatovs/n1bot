@@ -333,6 +333,8 @@ class CompactTracking:
     consecutive_failures: int = 0
     consecutive_rapid_refills: int = 0
     last_failure: str = ""
+    last_reason: str = ""
+    """Причина последней неудачи без текста нижнего слоя: для человека."""
     last_detail: str = ""
     exhausted: bool = False
     """Последняя неудача — разговор не помещается в окно и после сжатия."""
@@ -357,12 +359,14 @@ class CompactTracking:
         self.turn_counter = 0
         self.consecutive_failures = 0
         self.last_failure = ""
+        self.last_reason = ""
         self.last_detail = ""
         self.exhausted = False
 
     def failed(self, failure: NotSummarized) -> None:
         self.consecutive_failures += 1
         self.last_failure = failure.describe()
+        self.last_reason = failure.brief()
         self.last_detail = failure.detail
         self.exhausted = failure.reason is SummaryFailure.DOES_NOT_FIT
 
@@ -521,6 +525,10 @@ class NotSummarized:
 
     def describe(self) -> str:
         return self.reason.describe(self.detail)
+
+    def brief(self) -> str:
+        """Причина без текста нижнего слоя: для человека."""
+        return self.reason.describe("")
 
 
 @dataclass(frozen=True)

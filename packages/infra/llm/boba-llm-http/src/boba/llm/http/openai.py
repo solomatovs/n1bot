@@ -44,6 +44,8 @@ from boba.llm.chat import (
     ChatUsage,
     LlmError,
     LlmOutputLimitError,
+    LlmServiceError,
+    LlmTrouble,
     ToolCall,
     ToolSpec,
 )
@@ -331,7 +333,7 @@ class StreamAssembly(ChunkAssembly[WireChunk]):
                 f"{self._where}: the stream ended without a finish_reason: the reply "
                 "is cut off or the server closed the connection early"
             )
-            raise LlmError(msg)
+            raise LlmServiceError(msg, LlmTrouble.CUT, "the stream stopped early")
 
         if FinishReason.is_complete(self._finish_reason):
             return
@@ -344,13 +346,14 @@ class StreamAssembly(ChunkAssembly[WireChunk]):
                 f"{self._where}: reply blocked by the provider content filter "
                 "(finish_reason=content_filter)"
             )
-            raise LlmError(msg)
+            raise LlmServiceError(msg, LlmTrouble.BLOCKED, "content filter")
 
         msg = (
             f"{self._where}: generation ended abnormally, expected "
             f"finish_reason=stop or tool_calls, got finish_reason={self._finish_reason}"
         )
-        raise LlmError(msg)
+        detail = f"finish_reason={self._finish_reason}"
+        raise LlmServiceError(msg, LlmTrouble.CUT, detail)
 
     def _ceiling_error(self) -> LlmOutputLimitError:
         """Ошибка обрыва по потолку токенов: расход, недописанный вызов, совет."""

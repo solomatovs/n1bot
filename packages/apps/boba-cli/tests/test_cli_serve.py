@@ -42,9 +42,10 @@ from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
 from boba.runtime.config import ProcessConfig
 from boba.stand.agent import FakeServer
-from boba.stand.agent_service import AgentServiceStand, ServiceProfiles
+from boba.stand.agent_service import AgentServiceStand, ServeAddress, ServiceProfiles
 from boba.stand.database import TestDatabase
 from boba.stand.ui.fake_llm import FailureName, ScenarioName
+from boba.stand.ui.stand import StandPorts
 from boba.transport.acp.protocol import (
     AcpErrorCode,
     AcpVersion,
@@ -312,12 +313,14 @@ class Stands:
     async def start(
         self, max_sessions: int = 8, idle_sec: float = 600.0
     ) -> AgentServiceStand:
+        port = StandPorts().free()
         stand = AgentServiceStand(
             self._process.krb,
             ServeHistory(schema=self._history.schema, postgres=self._history.postgres),
             self._history.layer(max_sessions),
             self._profiles,
             idle_sec,
+            ServeAddress(listen=port, public=port),
         )
         await stand.start()
         self.started.append(stand)

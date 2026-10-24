@@ -114,6 +114,15 @@ class StepText(StrEnum):
     FINISHED = "aid.feed.unfinished"
     """Выход вызова, который не закончился к концу хода."""
 
+    ENDED_MAX_TOKENS = "aid.feed.endedMaxTokens"
+    """Ход кончился пределом длины ответа модели."""
+
+    ENDED_MAX_TURNS = "aid.feed.endedMaxTurns"
+    """Ход кончился пределом шагов агента на ход."""
+
+    ENDED_EARLY = "aid.feed.endedEarly"
+    """Ход кончился раньше по причине, которой чат не знает."""
+
     COMPACTING = "aid.feed.compacting"
     """Агент пересказывает разговор, чтобы он поместился в окно модели."""
 
@@ -135,6 +144,20 @@ class StepText(StrEnum):
 
     QUESTIONS = "aid.question.title.many"
     """То же для нескольких вопросов разом."""
+
+
+class NoticeLevel(StrEnum):
+    """Важность пометки агента (severity `notice` ACP): цвет рамки и фона
+    блока пометки в ленте. Набор ACP открытый: незнакомое значение —
+    сведение."""
+
+    INFO = "info"
+    WARNING = "warning"
+    ERROR = "error"
+
+    @classmethod
+    def _missing_(cls, value: object) -> NoticeLevel:
+        return cls.INFO
 
 
 class StepKind(StrEnum):
@@ -272,6 +295,7 @@ class StepRole(StrEnum):
 
     ANSWER = "answer"
     ERROR = "error"
+    NOTICE = "notice"
     PROCESS = "process"
     PULSE = "pulse"
     THINKING = "thinking"
@@ -297,6 +321,13 @@ class StepMeta(StrEnum):
     AVATAR_NAME = "avatarName"
     """Аватар по этому имени вместо имени шага: у контейнера имя меняется
     со счётчиком шагов."""
+
+    NOTICE = "agentNotice"
+    """Важность пометки агента или ошибки хода: overlay рисует такое
+    сообщение блоком пометки (AgentNotice) с рамкой и фоном её цвета."""
+
+    NOTICE_DETAIL = "noticeDetail"
+    """Короткая техническая причина пометки: мелкой строкой под текстом."""
 
     APP = "mcpApp"
     """Сообщение карточки приложения MCP Apps: без аватара и кнопок
@@ -345,6 +376,22 @@ class TurnDraft:
     answer: Message | None = None
     answers: int = 0
     thinking: Step | None = None
+    notices: int = 0
+    """Пометки агента в ходе: у каждой своё сообщение с номером в id."""
+
+    def notice_key(self, key: str | None) -> str | None:
+        """Ключ следующей пометки хода; None — у хода нет ключа."""
+        turn_key = key
+        if turn_key is None:
+            turn_key = self.key
+
+        if turn_key is None:
+            return None
+
+        number = self.notices
+        self.notices += 1
+
+        return f"{turn_key}#{number}"
 
     def answer_key(self, key: str | None = None) -> str | None:
         """Каждый следующий ответ хода — своё сообщение, как в истории."""
@@ -1028,17 +1075,60 @@ class ChatView:
         return step
 
     async def error(self, text: str, key: str | None = None) -> Step:
+        """Ошибка хода — тем же блоком, что пометка агента с важностью
+        ошибки."""
+        step_id = self.derive_id(self._thread_id, key, StepRole.ERROR)
+
+        return await self._notice_step(NoticeLevel.ERROR, text, "", step_id)
+
+    async def notice(
+        self, level: NoticeLevel, text: str, detail: str, key: str | None = None
+    ) -> Step:
+        """Пометка агента: своё сообщение на каждую пометку хода; detail —
+        короткая причина мелкой строкой под текстом."""
+        step_id = self.derive_id(
+            self._thread_id, self._turn.notice_key(key), StepRole.NOTICE
+        )
+
+        return await self._notice_step(level, text, detail, step_id)
+
+    async def _notice_step(
+        self, level: NoticeLevel, text: str, detail: str, step_id: str | None
+    ) -> Step:
         step = self._step(
-            self._assistant_name,
-            StepKind.ASSISTANT,
-            parent_id=None,
-            step_id=self.derive_id(self._thread_id, key, StepRole.ERROR),
+            self._assistant_name, StepKind.ASSISTANT, parent_id=None, step_id=step_id
         )
         step.output = text
-        step.is_error = True
+        step.is_error = level is NoticeLevel.ERROR
+        step.metadata = {
+            StepMeta.NOTICE.value: level.value,
+            StepMeta.NOTICE_DETAIL.value: detail,
+        }
         await self._sink.put(step)
         await self._pulse.bump()
         return step
+
+    async def withdraw_answer(self) -> None:
+        """Агент заменил стримящийся ответ пустым (неудачная попытка запроса
+        к модели): сообщение уходит из ленты, следующий ответ займёт его
+        место."""
+        message = self._turn.answer
+        if message is None:
+            return
+
+        self._turn.answer = None
+        await self._batch.flush()
+        await message.remove()
+
+    async def withdraw_thinking(self) -> None:
+        """То же для рассуждения неудачной попытки."""
+        step = self._turn.seal_thinking()
+        if step is None:
+            return
+
+        self._turn.steps -= 1
+        await self._batch.flush()
+        await self._sink.drop(step)
 
     async def stream_answer(self, token: str, key: str | None = None) -> None:
         """Токен в стримящийся ответ; первое обращение открывает сообщение."""

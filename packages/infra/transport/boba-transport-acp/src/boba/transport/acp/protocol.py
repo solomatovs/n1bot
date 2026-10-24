@@ -57,8 +57,6 @@ __all__ = [
     "ClientConnection",
     "ElicitationRound",
     "ErrorDataKey",
-    "IdleErrorNotification",
-    "IdleErrorUpdate",
     "McpErrorOutcome",
     "McpMessage",
     "McpOutcome",
@@ -115,14 +113,14 @@ class AcpErrorCode(IntEnum):
 
 
 class StopReason(StrEnum):
-    """Причины конца хода (`stopReason` в idle); у ERROR причина в IdleErrorUpdate."""
+    """Причины конца хода (`stopReason` в idle); причину отказа агент шлёт
+    пометкой `notice` до idle."""
 
     END_TURN = "end_turn"
     MAX_TOKENS = "max_tokens"
     MAX_TURN_REQUESTS = "max_turn_requests"
     REFUSAL = "refusal"
     CANCELLED = "cancelled"
-    ERROR = "error"
 
 
 class ToolStatus(StrEnum):
@@ -214,19 +212,6 @@ class McpErrorOutcome(BaseModel):
 
 
 McpOutcome: TypeAlias = McpResultOutcome | McpErrorOutcome
-
-
-class IdleErrorUpdate(schema.IdleSessionStateUpdate):
-    """idle со stopReason "error" и полем error (alpha.8)."""
-
-    error: schema.Error | None = None
-
-
-class IdleErrorNotification(schema.UpdateSessionNotification):
-    """session/update с IdleErrorUpdate: шлёт AgentSide.send_update, разбирает
-    ClientConnection."""
-
-    update: IdleErrorUpdate
 
 
 @dataclass(slots=True)
@@ -454,20 +439,6 @@ class AgentSide:
                 f"{shown}, expected an object with 'result' or 'error': {exc}"
             ) from exc
 
-    async def send_update(self, notification: IdleErrorNotification) -> None:
-        """idle со stopReason "error"; прочие обновления агент шлёт через SDK."""
-        params = notification.model_dump(mode="json", by_alias=True, exclude_unset=True)
-
-        try:
-            await self._connection.send_notification(
-                CLIENT_METHODS["session_update"], params
-            )
-        except ConnectionError as exc:
-            raise AcpTransportError(
-                f"Could not tell the client that session '{notification.session_id}' "
-                f"stopped with an error because the ACP connection is gone: {exc}."
-            ) from exc
-
     @property
     def connection(self) -> Connection:
         """Соединение SDK этой стороны: его отдаёт роутер сервера сети."""
@@ -481,8 +452,8 @@ class AgentSide:
 
 class ClientConnection(ClientSideConnection):
     """Наследник ClientSideConnection SDK на его закрытых именах. Запрос
-    mcp/message отдаёт answer, idle с ошибкой — client.session_update как
-    IdleErrorUpdate, остальное — роутеру SDK; notify шлёт уведомление mcp/message."""
+    mcp/message отдаёт answer, остальное — роутеру SDK; notify шлёт
+    уведомление mcp/message."""
 
     def __init__(
         self,
@@ -510,22 +481,7 @@ class ClientConnection(ClientSideConnection):
             outcome = await self._answer(McpMessage.model_validate(params))
             return outcome.model_dump(mode="json", by_alias=True, exclude_unset=True)
 
-        update = is_notification and method == CLIENT_METHODS["session_update"]
-        if not update:
-            return await self._router(method, params, is_notification)
-
-        notification = schema.UpdateSessionNotification.model_validate(params)
-        if not isinstance(notification.update, schema.IdleSessionStateUpdate):
-            return await self._router(method, params, is_notification)
-
-        if notification.update.stop_reason != StopReason.ERROR:
-            return await self._router(method, params, is_notification)
-
-        failed = IdleErrorNotification.model_validate(params)
-        await self._client.session_update(
-            session_id=failed.session_id, update=failed.update
-        )
-        return None
+        return await self._router(method, params, is_notification)
 
     def connected(self) -> bool:
         """Соединение живо: SDK не видел конца потока агента и его не закрывали."""

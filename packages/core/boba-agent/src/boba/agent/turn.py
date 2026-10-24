@@ -62,7 +62,6 @@ from boba.agent.compaction import (
 )
 from boba.agent.events import (
     EventSink,
-    NoticeEvent,
     ResultEvent,
     TurnOutcome,
 )
@@ -77,7 +76,9 @@ from boba.agent.records import (
     CompactionPhase,
     CompactionRecord,
     CompactTrigger,
+    InformationalRecord,
     MessageOrigin,
+    NoticeLevel,
     OriginKind,
     Record,
     ReplyStopReason,
@@ -93,7 +94,7 @@ from boba.agent.records import (
 )
 from boba.agent.session import Session, SessionState
 from boba.agent.tags import AgentTag, LocalCommandText
-from boba.agent.template import AgentTemplate, AgentTemplateFile
+from boba.agent.template import AgentTemplate, AgentTemplateFile, ModelTroubleTexts
 from boba.agent.tools import (
     AgentTools,
     BatchOutcome,
@@ -110,6 +111,7 @@ from boba.llm.chat import (
     ChatRequest,
     ChatUsage,
     ContextOverflowSigns,
+    LlmTrouble,
 )
 
 logger = logging.getLogger(__name__)
@@ -119,9 +121,9 @@ __all__ = ["ContextUsage", "TurnLoop"]
 
 @dataclass(frozen=True)
 class Failed:
-    """Повторы запроса исчерпаны."""
+    """Повторы запроса исчерпаны: последняя неудачная попытка."""
 
-    error: str
+    attempt: Errored
 
 
 Settled = Asked | Failed
@@ -206,6 +208,7 @@ class TurnLoop:
         self._attachments = attachments
         self._tools = tools
         self._templates = templates
+        self._troubles = ModelTroubleTexts(templates)
         self._ids = ids
         self._clock = clock
         self._version = version
@@ -218,7 +221,6 @@ class TurnLoop:
         self._agent = agent_name
         self._commands = LocalCommandText()
         self._last_failure = ""
-        self._failures = 0
         self._overflow_signs = ContextOverflowSigns()
         self._bind_model(profile, model, builder)
 
@@ -295,7 +297,6 @@ class TurnLoop:
         """Ход по взятому из очереди; итог отдаётся, а не объявляется: конец хода
         объявляет агент, когда записи сброшены и сессия уже свободна."""
         started = time.monotonic()
-        self._failures = 0
         progress = Progress()
         if taken.head.kind is QueueKind.COMPACT:
             outcome = await self._manual_compact(taken.head, cancellation)
@@ -367,7 +368,9 @@ class TurnLoop:
 
         if isinstance(compacted, NotSummarized):
             text = self._templates.read(AgentTemplateFile.MANUAL_COMPACTION_FAILED)
-            await self._write_api_failure(text.format(detail=compacted.describe()))
+            await self._write_api_failure(
+                text.format(detail=compacted.brief()), compacted.describe()
+            )
             return TurnOutcome.API_ERROR
 
         output = self._templates.read(AgentTemplateFile.COMPACTED)
@@ -447,13 +450,15 @@ class TurnLoop:
             return await self._output_limited(asked, progress)
 
         if isinstance(asked, Overflowed):
-            await self._write_api_error(asked.error, 0, 0)
-            text = self._too_long(progress.tracking)
+            await self._write_api_error(self._unretried(asked.error), 0, 0)
 
-            return await self._too_long_outcome(text, progress.tracking)
+            return await self._too_long_outcome(progress.tracking)
 
         if isinstance(asked, Failed):
-            await self._write_api_failure(asked.error)
+            failed = asked.attempt
+            await self._write_api_failure(
+                self._troubles.failed(failed.trouble), failed.detail
+            )
             return TurnOutcome.API_ERROR
 
         if isinstance(asked, Errored):
@@ -473,7 +478,7 @@ class TurnLoop:
         decision = self._gate.decide(fill, tracking)
         if decision is GateDecision.RAPID_REFILL:
             await self._write_api_failure(
-                self._templates.read(AgentTemplateFile.THRASHING)
+                self._templates.read(AgentTemplateFile.WINDOW_THRASHING_NOTICE), None
             )
             return TurnOutcome.RAPID_REFILL_BREAKER
 
@@ -509,24 +514,21 @@ class TurnLoop:
             return None
 
         text = self._too_long(tracking)
-        await self._write_api_error(text, 0, 0)
+        await self._write_api_error(self._unretried(text), 0, 0)
 
-        return await self._too_long_outcome(text, tracking)
+        return await self._too_long_outcome(tracking)
 
-    async def _too_long_outcome(
-        self, text: str, tracking: CompactTracking
-    ) -> TurnOutcome:
-        """Конец хода запросом больше окна: запись агента с причиной; если
-        разговор не помещается и после сжатия — ещё пометка пользователю,
-        что пора начать новый чат."""
-        await self._write_api_failure(text)
-        if tracking.exhausted:
-            notice = NoticeEvent(
-                title=self._templates.read(AgentTemplateFile.THREAD_EXHAUSTED_TITLE),
-                description=text,
-            )
-            await self._sink.emit(notice)
+    async def _too_long_outcome(self, tracking: CompactTracking) -> TurnOutcome:
+        """Конец хода запросом больше окна: запись агента человеку — окно
+        полно, а если сжатие в этом ходе не удалось — что оно не помогло, с
+        короткой причиной."""
+        notice = self._templates.read(AgentTemplateFile.WINDOW_FULL_NOTICE)
+        detail: str | None = None
+        if tracking.last_failure:
+            notice = self._templates.read(AgentTemplateFile.WINDOW_UNSHORTENED_NOTICE)
+            detail = tracking.last_reason
 
+        await self._write_api_failure(notice, detail)
         if tracking.breaker_open:
             return TurnOutcome.COMPACT_FAILURE_BREAKER
 
@@ -739,7 +741,9 @@ class TurnLoop:
         await self._write_partial(asked.partial, ReplyStopReason.MAX_TOKENS, False)
         if progress.limit_hits > self._limits.output_limit_retries:
             self._last_failure = asked.error
-            await self._write_api_failure(asked.error)
+            await self._write_api_failure(
+                self._templates.read(AgentTemplateFile.OUTPUT_LIMIT_NOTICE), None
+            )
             return TurnOutcome.OUTPUT_LIMIT
 
         await self._write_meta(self._templates.read(AgentTemplateFile.OUTPUT_LIMIT_HIT))
@@ -754,38 +758,41 @@ class TurnLoop:
         attempt = 0
         while True:
             asked = await self._attempt(request, cancellation)
-            if asked is not None:
+            if not isinstance(asked, Errored):
                 return asked
 
+            self._last_failure = asked.error
             attempt += 1
             if attempt > self._limits.api_retries:
-                return Failed(self._last_failure)
+                return Failed(asked)
 
-            await asyncio.sleep(self._limits.delay_before(attempt))
+            delay = self._limits.delay_before(attempt)
+            await self._write_api_error(asked, int(delay * self.MILLIS), attempt)
+            await asyncio.sleep(delay)
 
     async def _attempt(
         self, request: ChatRequest, cancellation: RunCancellation
-    ) -> Asked | None:
-        """Одна попытка; None — ошибка, которую стоит повторить. Идентификатор
-        сообщения ответа выдаётся здесь, до первого куска наружу."""
+    ) -> Asked:
+        """Одна попытка; Errored — ошибка, которую стоит повторить, пустой
+        ответ — тоже. Идентификатор сообщения ответа выдаётся здесь, до
+        первого куска наружу."""
         self._message_id = self._ids.message_id()
         asked = await self._asking.attempt(
             request, cancellation, show=True, message_id=self._message_id
         )
-        if isinstance(asked, Errored):
-            self._last_failure = asked.error
-            self._failures += 1
-            await self._write_api_error(
-                self._last_failure, self._failures, self._limits.api_retries
-            )
-            return None
+        if not isinstance(asked, Answered):
+            return asked
 
-        if isinstance(asked, Answered) and self._is_empty(asked.reply):
-            self._last_failure = "the model returned an empty reply"
-            logger.warning("turn: the model replied with nothing to record, retrying")
-            return None
+        if not self._is_empty(asked.reply):
+            return asked
 
-        return asked
+        logger.warning("turn: the model replied with nothing to record, retrying")
+
+        return Errored("the model returned an empty reply", LlmTrouble.EMPTY, "")
+
+    def _unretried(self, error: str) -> Errored:
+        """Отказ без повтора: окно модели, текст для журнала."""
+        return Errored(error, LlmTrouble.UNKNOWN, "")
 
     def _is_empty(self, reply: ChatReply) -> bool:
         if reply.tool_calls:
@@ -810,7 +817,9 @@ class TurnLoop:
         инструментов, инструкции серверов MCP, список скиллов — каждое,
         только если есть что сообщить. Перед этим устаревшее у серверов MCP
         перечитывается: свежесть проверяется там, где списки нужны."""
-        await self._catalog.refreshed()
+        for notice in await self._catalog.refreshed():
+            await self._write_notice(notice.level, notice.text, notice.detail)
+
         announced = Announced(self._session.conversation())
         if self._environment is not None:
             record = self._attachments.environment(
@@ -1125,23 +1134,51 @@ class TurnLoop:
 
         await self._write_reply(partial.as_reply(), stop_reason, aborted)
 
-    async def _write_api_error(self, error: str, attempt: int, retries: int) -> None:
+    async def _write_api_error(
+        self, failed: Errored, retry_in_ms: int, attempt: int
+    ) -> None:
+        """Запись system api_error: попытка attempt не удалась, повтор через
+        retry_in_ms; attempt 0 — отказ без повтора, его текст пишет следом
+        синтетический ответ."""
+        retries = 0
+        if attempt:
+            retries = self._limits.api_retries
+
         record = ApiErrorRecord(
             uuid=self._ids.uuid(),
             parent_uuid=self._session.last_chain_uuid(),
             timestamp=self._clock.now(),
             session_id=self._session.id.value,
             version=self._version,
-            error=error,
+            error=failed.error,
+            retry_in_ms=retry_in_ms,
             retry_attempt=attempt,
             max_retries=retries,
+            trouble=failed.trouble,
+            detail=failed.detail,
         )
         await self._keeper.add(record)
 
-    async def _write_api_failure(self, error: str) -> None:
-        """Синтетическая запись об ошибке модели; модели не отправляется. Её
-        текст — причина конца хода в итоге."""
-        self._last_failure = error
+    async def _write_notice(
+        self, level: NoticeLevel, content: str, detail: str
+    ) -> None:
+        """Пометка для человека: записью informational в ход."""
+        record = InformationalRecord(
+            uuid=self._ids.uuid(),
+            parent_uuid=self._session.last_chain_uuid(),
+            timestamp=self._clock.now(),
+            session_id=self._session.id.value,
+            version=self._version,
+            content=content,
+            level=level,
+            detail=detail,
+        )
+        await self._keeper.add(record)
+
+    async def _write_api_failure(self, text: str, detail: str | None) -> None:
+        """Синтетическая запись об отказе модели: text — слова человеку,
+        detail — короткая техническая причина (None — её нет); модели не
+        отправляется."""
         record = AssistantRecord(
             uuid=self._ids.uuid(),
             parent_uuid=self._session.last_chain_uuid(),
@@ -1151,13 +1188,13 @@ class TurnLoop:
             message=AssistantMessage(
                 id=self._ids.message_id(),
                 model=Synthetic.MODEL.value,
-                content=[TextBlock(text=error)],
+                content=[TextBlock(text=text)],
                 stop_reason=ReplyStopReason.STOP_SEQUENCE,
                 usage=Usage(),
             ),
             request_id=self._ids.request_id(),
             is_api_error_message=True,
-            error=error,
+            error=detail,
         )
         await self._keeper.add(record)
 

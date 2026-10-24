@@ -11,8 +11,10 @@ from __future__ import annotations
 import asyncio
 import signal
 import subprocess
+import threading
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, ClassVar
@@ -25,16 +27,28 @@ from boba.core.secrets import SecretReveal
 from boba.db.postgres.connection.auth import KeytabAuth
 from boba.krb import KerberosWorkspaceConfig
 from boba.stand.service_signin import ServiceSignIn
-from boba.stand.ui.stand import StandPorts
 from boba.stand.ui.toml_text import TomlText
 
 __all__ = [
     "AgentServiceProcess",
     "AgentServiceProcessError",
     "AgentServiceStand",
+    "ServeAddress",
     "ServeStandConfig",
+    "ServeThread",
     "ServiceProfiles",
 ]
+
+
+@dataclass(frozen=True)
+class ServeAddress:
+    """Порты службы стенда: на каком она слушает и какой называет своим
+    адресом (public_url, издатель токенов). Без прокси стенда они равны, за
+    прокси (FaultProxy) публичный — порт прокси. Порты выбирает тест —
+    StandPorts().free()."""
+
+    listen: int
+    public: int
 
 
 class AgentServiceProcessError(Exception):
@@ -80,7 +94,7 @@ class ServeStandConfig:
     процессом (AgentServiceProcess). history — подключение истории (своя
     схема стенда), settings — слой настроек агента без истории и моделей
     (права, сессии), profiles — [agent.profiles], idle_sec — простой, после
-    которого служба закрывает брошенное подключение HTTP.
+    которого служба закрывает брошенное подключение HTTP, address — порты.
     """
 
     CLIENT_ID: ClassVar[str] = "stand-chat"
@@ -89,16 +103,18 @@ class ServeStandConfig:
     SESSION_SECRET: ClassVar[str] = "stand-agent-session-secret"  # noqa: S105 — ключ стенда
     PATH: ClassVar[str] = "/acp"
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 — служба собирается всеми частями стенда
         self,
         krb: KerberosWorkspaceConfig,
         history: ServeHistory,
         settings: Mapping[str, Any],
         profiles: ServiceProfiles,
         idle_sec: float,
+        address: ServeAddress,
     ) -> None:
-        self.port = StandPorts().free()
-        self.public_url = f"http://127.0.0.1:{self.port}"
+        self.port = address.listen
+        self.public_port = address.public
+        self.public_url = f"http://127.0.0.1:{address.public}"
         self._krb = krb
         self._history = history
         self._settings = dict(settings)
@@ -142,7 +158,7 @@ class ServeStandConfig:
             },
             "agent": {
                 "host": "127.0.0.1",
-                "port": self.port,
+                "port": self.public_port,
                 "path": self.PATH,
                 "public_url": self.public_url,
                 "shutdown_timeout_sec": 2,
@@ -189,15 +205,18 @@ class AgentServiceStand:
     VERSION: ClassVar[str] = "0.0.0-stand"
     WAIT_SEC: ClassVar[float] = 60.0
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 — служба собирается всеми частями стенда
         self,
         krb: KerberosWorkspaceConfig,
         history: ServeHistory,
         settings: Mapping[str, Any],
         profiles: ServiceProfiles,
         idle_sec: float,
+        address: ServeAddress,
     ) -> None:
-        self._config = ServeStandConfig(krb, history, settings, profiles, idle_sec)
+        self._config = ServeStandConfig(
+            krb, history, settings, profiles, idle_sec, address
+        )
         self.port = self._config.port
         self.public_url = self._config.public_url
         config = ServeConfig.model_validate(self._config.app())
@@ -387,3 +406,67 @@ class AgentServiceProcess:
             return False
 
         return reply.status_code == httpx.codes.OK
+
+
+class ServeThread:
+    """Служба агента стенда в своём потоке и цикле событий — для синхронных
+    ui- и look-тестов: start поднимает службу, собранную served, stop гасит
+    её, и следующий start поднимает новую на тех же портах (перезапуск
+    службы с потерей сессий в памяти)."""
+
+    WAIT_SEC: ClassVar[float] = 120.0
+
+    def __init__(self, served: Callable[[], AgentServiceStand]) -> None:
+        self._served = served
+        self._thread: threading.Thread | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._stop: asyncio.Event | None = None
+        self._ready = threading.Event()
+        self._failure: BaseException | None = None
+
+    def start(self) -> None:
+        """Ошибки:
+        AgentServiceProcessError — служба не поднялась за WAIT_SEC.
+        """
+        self._ready.clear()
+        self._failure = None
+        self._thread = threading.Thread(target=self._run, name="serve", daemon=True)
+        self._thread.start()
+        if not self._ready.wait(self.WAIT_SEC):
+            msg = f"agent service stand: not started within {self.WAIT_SEC}s"
+            raise AgentServiceProcessError(msg)
+
+        if self._failure is not None:
+            msg = f"agent service stand did not start: {self._failure}"
+            raise AgentServiceProcessError(msg) from self._failure
+
+    def stop(self) -> None:
+        loop = self._loop
+        stop = self._stop
+        thread = self._thread
+        if loop is None or stop is None or thread is None:
+            return
+
+        loop.call_soon_threadsafe(stop.set)
+        thread.join(self.WAIT_SEC)
+        self._thread = None
+
+    def _run(self) -> None:
+        asyncio.run(self._served_until_stop())
+
+    async def _served_until_stop(self) -> None:
+        self._loop = asyncio.get_running_loop()
+        self._stop = asyncio.Event()
+        served = self._served()
+        try:
+            await served.start()
+        except Exception as exc:
+            self._failure = exc
+            self._ready.set()
+            return
+
+        self._ready.set()
+        try:
+            await self._stop.wait()
+        finally:
+            await served.stop()

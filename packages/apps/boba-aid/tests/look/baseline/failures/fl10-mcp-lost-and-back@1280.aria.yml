@@ -1,0 +1,10 @@
+- article: Как дела? scenario
+- img "Avatar for AID"
+- article: "Here is a plain streamed answer: about the request step by step checking tables joins filters and the expected shape of the answer before calling any tool the model reasons about the request step by step"
+- article: Как дела? scenario
+- status: The MCP server 'faulty' isn't available right now, so its tools can't be used in this turn. It will be tried again with your next message. no connection
+- img "Avatar for AID"
+- article: "Here is a plain streamed answer: about the request step by step checking tables joins filters and the expected shape of the answer before calling any tool the model reasons about the request step by step"
+- article: Как дела? scenario
+- img "Avatar for AID"
+- article: "Here is a plain streamed answer: about the request step by step checking tables joins filters and the expected shape of the answer before calling any tool the model reasons about the request step by step"

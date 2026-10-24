@@ -21,8 +21,6 @@ from boba.messaging import (
     AnyMessage,
     LockToken,
     MessageBus,
-    Notice,
-    NoticeLevel,
     PayloadStore,
     ThreadRewound,
     TurnFinished,
@@ -121,9 +119,6 @@ class TurnFeed:
     async def rewound(self, session_id: str) -> None:
         """История треда заменена веткой session_id до правленого вопроса."""
         await self._publish(ThreadRewound(turn_id=self._turn_id, session_id=session_id))
-
-    async def notice(self, level: NoticeLevel, text: str) -> None:
-        await self._publish(Notice(level=level, text=TextClip.fit(text)))
 
     async def finished(self, outcome: TurnOutcome, reason: str) -> None:
         message = TurnFinished(
