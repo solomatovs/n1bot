@@ -349,6 +349,27 @@
         "agent": {
             "retry": "Retry"
         },
+        "failure": {
+            "startFailed": "The agent couldn't be started, so the chat can't answer right now. Try again with the button on the right; if it keeps failing, let the administrator know.",
+            "unreachable": "The agent can't be reached right now, so the chat can't answer. Try again in a moment with the button on the right; if it keeps failing, let the administrator know.",
+            "signInRefused": "The agent didn't accept the sign-in of this chat, so the chat can't answer. Reload the page to sign in again; if it keeps failing, let the administrator know.",
+            "badAnswer": "The agent answered in a way the chat doesn't understand, so the chat can't answer right now. Try again with the button on the right; if it keeps failing, let the administrator know.",
+            "noAnswer": "The agent didn't respond in time, so the chat can't answer right now. Try again in a moment with the button on the right.",
+            "connectionLost": "The connection to the agent was lost. Reconnect with the button on the right; the answer that was in progress may need to be asked for again.",
+            "refused": "The agent couldn't complete this request. Try again; if it keeps failing, let the administrator know.",
+            "profileMissing": "The agent doesn't offer the chat profile of this tab, so the chat can't answer. Pick another profile or ask the administrator.",
+            "busy": "This chat is answering in another tab or window right now. Wait for that answer to finish, then send your message again.",
+            "settings": "The agent can't use the settings of this chat profile, so the chat can't answer. Let the administrator know.",
+            "servers": "One of the MCP servers of this chat isn't answering, so its tools can't be used right now. Try again in a moment.",
+            "uploads": "File uploads are turned off in this chat because one of its MCP servers isn't answering, so the chat can't tell where to store files. Reload the page to try again.",
+            "canvas": "The file couldn't be opened in the side panel.",
+            "command": "The command didn't run.",
+            "redraw": "The conversation couldn't be shown again after the failed edit. Reload the page to see it.",
+            "notEdited": "The question wasn't edited because the earlier conversation couldn't be replaced, so everything stays as it was. Try again when no other tab of this chat is answering.",
+            "notLoaded": "This question isn't in the conversation loaded in this tab, so it can't be edited. Reload the chat and try again.",
+            "noBranching": "This agent can't branch a conversation, so questions can't be edited here. Send the question again as a new message instead.",
+            "unknown": "Something went wrong in the chat. Try again; if it keeps happening, let the administrator know."
+        },
         "notice": {
             "profileRetired": "Chat profile \"{{retired}}\" is no longer available: this chat continues with \"{{profile}}\""
         },

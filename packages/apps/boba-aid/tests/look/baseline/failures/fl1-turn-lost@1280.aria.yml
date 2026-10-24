@@ -1,5 +1,5 @@
 - alert:
-  - text: "The connection to the agent was lost. Reconnect with the button on the right; the answer that was in progress may need to be asked for again. agent process 'python', the turn: the process exited with code -9"
+  - text: "Связь с агентом прервалась. Подключитесь заново кнопкой справа; ответ, который готовился, возможно, придётся запросить ещё раз. agent process 'python', the turn: the process exited with code -9"
   - button "Повторить"
 - textbox "Введите сообщение здесь..."
 - button "Прикрепить файлы" [disabled]:

@@ -106,18 +106,19 @@ export const historyLoadingState = atom<boolean>({
 });
 
 // boba: доступен ли агент вкладки (событие сокета agent_state сервера aid):
-// недоступный запирает поле ввода полосой с текстом сбоя и кнопкой повтора
+// недоступный запирает поле ввода полосой с текстом сбоя и кнопкой повтора;
+// key — ключ перевода слов человеку (aid.failure.*), detail — подробность
 const AGENT_STATE_EVENT = 'agent_state';
 
 export interface IAgentState {
   available: boolean;
-  text: string;
+  key: string;
   detail: string;
 }
 
 export const agentStateState = atom<IAgentState>({
   key: 'BobaAgentState',
-  default: { available: true, text: '', detail: '' }
+  default: { available: true, key: '', detail: '' }
 });
 
 const useChatSession = () => {
@@ -236,7 +237,7 @@ const useChatSession = () => {
 
       // boba: пачка и состояние агента прежнего сокета принадлежат прежнему треду
       pendingSteps.current = [];
-      setAgentState({ available: true, text: '', detail: '' });
+      setAgentState({ available: true, key: '', detail: '' });
 
       const socket = io(uri, {
         path,

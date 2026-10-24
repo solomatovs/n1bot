@@ -1,5 +1,5 @@
 - alert:
-  - text: "The agent didn't respond in time, so the chat can't answer right now. Try again in a moment with the button on the right. agent process 'python', initialize: no answer within 8 s"
+  - text: "Агент не ответил вовремя, поэтому чат сейчас не может ответить. Попробуйте ещё раз чуть позже кнопкой справа. agent process 'python', initialize: no answer within 8 s"
   - button "Повторить"
 - textbox "Введите сообщение здесь..."
 - button "Прикрепить файлы" [disabled]:
