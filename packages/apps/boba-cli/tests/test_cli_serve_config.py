@@ -49,6 +49,12 @@ SITE = """
     [site.models]
         general = "general-model"
         search  = "search-model"
+    [site.model_limits.general]
+        context_window    = 128000
+        max_output_tokens = 8192
+    [site.model_limits.search]
+        context_window    = 128000
+        max_output_tokens = 8192
     [site.llm_auth.bearer]
         method = "bearer"
         token  = "llm-token-of-the-stand"

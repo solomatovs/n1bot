@@ -490,12 +490,14 @@ python -m boba.mcp_server --config <общий конфиг> --site <специ�
 
 | В общем конфиге (git) | В site.toml (вне git) |
 |---|---|
-| профили чата, их системные промпты и параметры выборки | имена моделей (`[site.models]`) |
+| профили чата, их системные промпты и параметры выборки | имена моделей (`[site.models]`) и их пределы (`[site.model_limits.<профиль>]`: `context_window`, `max_output_tokens`) |
 | секции входа: какие способы, какие заголовки, пути | секреты, адреса каталога, таблицы ролей и локальные учётки |
 | пулы и схемы PostgreSQL | хост, адрес, база, способ входа и пароль |
 | список MCP-серверов чата, таймауты | схема, хост, порт и префикс сервиса |
 | включённые инструменты, лимиты песочницы плагинов | адреса Confluence и почты, их учётки |
 | ссылки `${env.*}` на каталоги | сами каталоги: `data`, `models`, `third`, `sandbox`, `app_root`, `krb` |
+
+Окно модели и потолок ответа меняются в site.toml чата и службы агента, ключами `[site.model_limits.<профиль>] context_window` и `max_output_tokens` (значения без умолчания); узнать их для модели можно из ответа `/v1/models` маршрутизатора LLM — поля `context_window` и `max_output_tokens` модели.
 
 ### Как собирается конфигурация
 
@@ -916,8 +918,8 @@ Chainlit держит вложения сессий в каталоге `.files`
 срок запроса, проверка TLS и повторы провайдера из `[llm.<имя>].connection`,
 транспорт из его секции `[agent_http]` (свой транспорт агента: сам чат к
 модели не ходит); окно, потолок ответа и возврат рассуждений — из пределов
-модели профиля `limits = "${model_limits.main}"`, секции `[model_limits.main]`
-(`reasoning_return = "turn"` — рассуждения прошлых ответов
+модели профиля `limits = "${model_limits.<профиль>}"`, секции
+`[model_limits.<профиль>]` (`reasoning_return = "turn"` — рассуждения прошлых ответов
 уходят модели в пределах хода, этого требуют thinking-модели вроде deepseek,
 когда ход вызывает инструмент; `never` для них даёт отказ 400
 «reasoning_content ... must be passed back»). Там же срок вызова инструмента —
@@ -1081,7 +1083,7 @@ boba-mcp принимает клиентов обеих редакций на о
   выдан, и профиль модели агента `model` (ключи `models.<имя>` файла настроек
   агента, схема `boba settings-schema`): провайдер — общий объект `[llm.main]`
   ссылкой `provider = "${llm.main}"`, окно и потолок ответа — из
-  `[model_limits.main]`, модель и параметры выборки — свои; `systemPrompt`
+  `[site.model_limits.<профиль>]`, модель и параметры выборки — свои; `systemPrompt`
   профиля — промпт сессий этого профиля, его текст лежит в site.toml службы
   ключом `[site.profiles.<профиль>] system_prompt`.
   Вошедшему доступны профили, выданные его ролям, первый из них по порядку
@@ -1108,7 +1110,8 @@ boba-mcp принимает клиентов обеих редакций на о
 вход роли истории `pg_history_auth_method` и `pg_history_auth.<способ>`,
 `agent_client.secret` — секрет доверенного клиента `boba-chat`
 (`[agent.clients]`), `llm_base_url`, `llm_auth.bearer.token`,
-`llm_ssl_verify`, `models.general`, `models.search` и промпты
+`llm_ssl_verify`, `models.general`, `models.search`, пределы
+`model_limits.<профиль>.context_window` и `.max_output_tokens` и промпты
 `profiles.general.system_prompt`, `profiles.search.system_prompt`. Секция
 `[env]`: `port = 8660`, `listen_host`, `url_prefix`, `public_url`, `data`.
 `public_url` — издатель токенов службы, и он обязан совпасть с адресом, по
