@@ -20,7 +20,9 @@ class FrameError(ValueError):
 
 
 class ChatEvent(StrEnum):
-    """События ленты, которые chainlit шлёт вкладке."""
+    """События, которые сервер шлёт вкладке: ленты chainlit, открытия треда
+    (first_interaction, resume_thread) и конца загрузки его истории aid
+    (history_loaded)."""
 
     NEW_MESSAGE = "new_message"
     UPDATE_MESSAGE = "update_message"
@@ -31,6 +33,9 @@ class ChatEvent(StrEnum):
     TASK_END = "task_end"
     ELEMENT = "element"
     CHAT_SETTINGS = "chat_settings"
+    FIRST_INTERACTION = "first_interaction"
+    RESUME_THREAD = "resume_thread"
+    HISTORY_LOADED = "history_loaded"
 
 
 class StepField(StrEnum):

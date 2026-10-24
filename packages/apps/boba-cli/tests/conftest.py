@@ -1,4 +1,4 @@
-"""Фикстуры стенда `boba acp`, общие для тестов команды, бинарника и
+"""Фикстуры стенда `boba --stdio`, общие для тестов команды, бинарника и
 истории в Postgres: фейковая модель, регистрация MCP-over-ACP клиента, база
 стенда со своей схемой истории на тест; опция `--acp-tck` — путь к
 исполняемому файлу acp-tck для test_cli_tck.py, опция `--boba-bin` — каталог
@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 from omegaconf import DictConfig
 from psycopg import sql
-from test_cli_acp import FakeModel, StandRegistration
+from test_cli_acp import AcpProcess, FakeModel, StandRegistration
 from test_cli_acp_postgres import PostgresStand
 
 from boba.config import bind
@@ -66,6 +66,16 @@ async def model() -> AsyncIterator[FakeModel]:
         yield fake
     finally:
         await fake.stop()
+
+
+@pytest.fixture
+async def boba(model: FakeModel, tmp_path: Path) -> AsyncIterator[AcpProcess]:
+    """Процесс `boba --stdio` над фейковой моделью; убивается после теста."""
+    process = AcpProcess(tmp_path, model)
+    try:
+        yield process
+    finally:
+        await process.kill()
 
 
 @pytest.fixture

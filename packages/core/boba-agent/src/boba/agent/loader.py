@@ -21,7 +21,8 @@ SessionError — записи журнала идут не по порядку s
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterator, Sequence
+from collections.abc import AsyncGenerator, Iterator, Sequence
+from contextlib import aclosing
 from dataclasses import dataclass, field
 
 from boba.agent.attachments import AttachmentKind, EnvironmentAttachment
@@ -106,29 +107,59 @@ class HistoryLoader:
         return report
 
     async def restore(self, session: Session) -> LoadReport:
-        """Восстановление как есть, без дописанных записей."""
+        """Восстановление как есть, без дописанных записей: записи журнала
+        входят в сессию по одной, по мере чтения, и сессия сама отпускает
+        то, что модели уже не нужно."""
         report = LoadReport()
-        records: list[Record] = []
-        async for line in self._store.read(session.id):
-            if isinstance(line, BrokenLine):
-                report.skipped_lines += 1
-                report.notes.append(f"line {line.number} skipped: {line.reason}")
-                logger.warning(
-                    "history %s: line %d skipped: %s",
-                    session.id.value,
-                    line.number,
-                    line.reason,
-                )
-                continue
+        async with aclosing(self._store.read(session.id)) as lines:
+            async for line in lines:
+                if isinstance(line, BrokenLine):
+                    report.skipped_lines += 1
+                    report.notes.append(f"line {line.number} skipped: {line.reason}")
+                    logger.warning(
+                        "history %s: line %d skipped: %s",
+                        session.id.value,
+                        line.number,
+                        line.reason,
+                    )
+                    continue
 
-            record = self._parse(session, line, report)
-            if record is not None:
-                records.append(record)
+                record = self._parse(session, line, report)
+                if record is not None:
+                    session.restore((record,))
 
-        session.restore(records)
         report.stored_seq = session.last_seq
 
         return report
+
+    async def records(self, session: SessionId) -> AsyncGenerator[ChainRecord, None]:
+        """Записи цепочки сессии из журнала потоком, по одной, без починки и
+        без накопления: так их читает воспроизведение беседы. Испорченные
+        строки и записи пропускаются с записью в журнал процесса."""
+        async with aclosing(self._store.read(session)) as lines:
+            async for line in lines:
+                if isinstance(line, BrokenLine):
+                    logger.warning(
+                        "history %s: line %d skipped: %s",
+                        session.value,
+                        line.number,
+                        line.reason,
+                    )
+                    continue
+
+                try:
+                    record = self._codec.parse(line.raw)
+                except RecordError as exc:
+                    logger.warning(
+                        "history %s: line %d skipped: %s",
+                        session.value,
+                        line.number,
+                        exc,
+                    )
+                    continue
+
+                if isinstance(record, ChainRecord):
+                    yield record
 
     def _parse(
         self, session: Session, line: StoredLine, report: LoadReport
@@ -276,18 +307,19 @@ class SessionDigests:
         HistoryError — порт истории отказал при чтении.
         """
         digest = SessionDigest(cwd=None, first_prompt=None)
-        async for line in self._store.read(session):
-            if not isinstance(line, StoredLine):
-                continue
+        async with aclosing(self._store.read(session)) as lines:
+            async for line in lines:
+                if not isinstance(line, StoredLine):
+                    continue
 
-            try:
-                record = self._codec.parse(line.raw)
-            except RecordError:
-                continue
+                try:
+                    record = self._codec.parse(line.raw)
+                except RecordError:
+                    continue
 
-            digest = self._absorb(digest, record)
-            if digest.complete():
-                break
+                digest = self._absorb(digest, record)
+                if digest.complete():
+                    break
 
         return digest
 
