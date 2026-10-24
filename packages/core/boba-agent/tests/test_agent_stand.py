@@ -12,29 +12,24 @@ from typing import ClassVar
 
 import pytest
 
-from boba.agent.events import (
-    RecordEvent,
-    ResultEvent,
-    StreamEvent,
-    TurnOutcome,
-)
+from boba.agent.events import RecordEvent, ResultEvent, StreamEvent
 from boba.agent.history import SessionId
 from boba.agent.ids import IdMint, SystemClock
 from boba.agent.loader import HistoryLoader
 from boba.agent.queue import QueueEntry, QueueKind
 from boba.agent.records import (
     ApiErrorRecord,
-    ApiFailureRecord,
     AssistantRecord,
     AttachmentRecord,
     ChainRecord,
     InterruptRecord,
     MetaRecord,
+    NoResponseRecord,
     Record,
     ReplyRecord,
     ReplyStopReason,
-    Synthetic,
-    TextBlock,
+    TurnEndRecord,
+    TurnOutcome,
 )
 from boba.agent.session import Session
 from boba.agent.template import AgentTemplate
@@ -65,6 +60,9 @@ def kinds(records: Sequence[Record] | Sequence[ChainRecord]) -> list[str]:
 
         if isinstance(record, AssistantRecord):
             name = f"assistant:{record.message.content[0].type}"
+
+        if isinstance(record, TurnEndRecord):
+            name = f"system:turn_end:{record.outcome.value}"
 
         names.append(name)
 
@@ -143,11 +141,13 @@ class TestTwoTurns:
             "attachment:date",
             "attachment:prompt_snapshot",
             "assistant:text",
+            "system:turn_end:completed",
             "queue-operation",
             "queue-operation",
             "user",
             "assistant:thinking",
             "assistant:text",
+            "system:turn_end:completed",
         ]
         assert_linked(session.chain())
         assert list(served.agent.outcomes) == [TurnOutcome.COMPLETED] * 2
@@ -220,6 +220,7 @@ class TestResume:
             "user",
             "assistant:thinking",
             "assistant:text",
+            "system:turn_end:completed",
         ]
         assert_linked(session_again.chain())
         after_request = server.requests()[-1]["messages"]
@@ -267,8 +268,9 @@ class TestOutputLimit:
         assert metas[0].message.content.startswith("Output token limit hit.")  # type: ignore[union-attr]
         assert partials[0].message.content[0].type == "text"
         final = chain[-1]
-        assert isinstance(final, ApiFailureRecord)
-        assert final.message.model == Synthetic.MODEL
+        assert isinstance(final, TurnEndRecord)
+        assert final.outcome is TurnOutcome.OUTPUT_LIMIT
+        assert final.notice
         assert len(server.requests()) == 4
         last_messages = server.requests()[-1]["messages"]
         assert isinstance(last_messages, list)
@@ -314,11 +316,10 @@ class TestApiErrors:
         assert [e.retry_in_ms for e in errors] == [0, 0, 0]
         troubles = {e.trouble for e in errors}
         assert troubles == {self.TROUBLES[failure]}, errors
-        synthetic = first_turn[-1]
-        assert isinstance(synthetic, ApiFailureRecord)
-        told = synthetic.message.content[0]
-        assert isinstance(told, TextBlock)
-        assert "so this turn has stopped" in told.text, told.text
+        ended = first_turn[-1]
+        assert isinstance(ended, TurnEndRecord)
+        assert ended.outcome is TurnOutcome.API_ERROR
+        assert "so this turn has stopped" in ended.notice, ended.notice
 
         roles = [m["role"] for m in server.requests()[-1]["messages"]]  # type: ignore[index]
         assert roles in (["system", "user", "assistant"], ["system", "user"])
@@ -355,8 +356,11 @@ class TestCancellation:
 
         assert list(served.agent.outcomes) == [TurnOutcome.ABORTED_STREAMING]
         chain = session.chain()
-        partial = chain[-2]
-        marker = chain[-1]
+        partial = chain[-3]
+        marker = chain[-2]
+        ended = chain[-1]
+        assert isinstance(ended, TurnEndRecord)
+        assert ended.outcome is TurnOutcome.ABORTED_STREAMING
         assert isinstance(partial, ReplyRecord)
         assert partial.is_aborted_mid_stream
         assert isinstance(marker, InterruptRecord)
@@ -386,7 +390,7 @@ class TestCancellation:
             await server.stop()
 
         assert list(served.agent.outcomes) == [TurnOutcome.SHUTDOWN]
-        marker = session.chain()[-1]
+        marker = session.chain()[-2]
         assert isinstance(marker, InterruptRecord)
         assert marker.interrupted_by_shutdown is True
         again = await reloaded(tmp_path / "history", SESSION)
@@ -434,7 +438,10 @@ class TestTruncation:
 
             assert all(len(ids) == 1 for ids in by_message.values()), kept
             last = chain[-1]
-            assert isinstance(last, AssistantRecord), (kept, kinds(chain))
+            assert isinstance(last, TurnEndRecord | NoResponseRecord), (
+                kept,
+                kinds(chain),
+            )
 
             store = JsonlHistoryStore(root)
             lease = await store.acquire(SESSION)

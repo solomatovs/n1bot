@@ -43,7 +43,6 @@ from boba.agent.builder import RequestBuilder
 from boba.agent.ids import Clock, IdMint
 from boba.agent.profile import CompactionSettings, ModelProfile
 from boba.agent.records import (
-    ApiFailureRecord,
     AssistantRecord,
     AttachmentRecord,
     ChainRecord,
@@ -151,9 +150,6 @@ class TokenEstimator:
     def _texts_of(self, record: ChainRecord) -> Iterator[str]:
         if isinstance(record, UserRecord):
             yield from self._user_texts(record)
-            return
-
-        if isinstance(record, ApiFailureRecord):
             return
 
         if isinstance(record, AssistantRecord):

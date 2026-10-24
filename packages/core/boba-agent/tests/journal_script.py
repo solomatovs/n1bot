@@ -25,6 +25,7 @@ from boba.agent.records import (
     CompactSummaryRecord,
     CompactTrigger,
     DateAttachment,
+    NoticeLevel,
     PermissionMode,
     PermissionModeRecord,
     PreservedMessages,
@@ -40,6 +41,8 @@ from boba.agent.records import (
     ToolResultBlock,
     ToolResultRecord,
     ToolUseBlock,
+    TurnEndRecord,
+    TurnOutcome,
     Usage,
     UserBlock,
     UserMessage,
@@ -181,6 +184,28 @@ class JournalScript:
             tool_use_result=text,
             source_tool_assistant_uuid=call.assistant_uuid,
             status=CallStatus.COMPLETED,
+        )
+
+        return await self._put(record)
+
+    async def turn_end(
+        self, outcome: TurnOutcome = TurnOutcome.COMPLETED
+    ) -> TurnEndRecord:
+        """Конец хода, как его пишет цикл хода."""
+        record = TurnEndRecord(
+            uuid=self._ids.uuid(),
+            parent_uuid=self._session.last_chain_uuid(),
+            timestamp=self._clock.now(),
+            session_id=self._session.id.value,
+            version=VERSION,
+            outcome=outcome,
+            notice="",
+            level=NoticeLevel.ERROR,
+            detail="",
+            error="",
+            usage=Usage(),
+            num_turns=1,
+            duration_ms=1,
         )
 
         return await self._put(record)

@@ -25,7 +25,6 @@ import mcp_types as mt
 from boba.agent.attachments import Announced
 from boba.agent.profile import ModelProfile, ReasoningReturn
 from boba.agent.records import (
-    ApiFailureRecord,
     AssistantRecord,
     AttachmentRecord,
     AttachmentRole,
@@ -196,9 +195,6 @@ class RequestBuilder:
         for record in conversation:
             if isinstance(record, UserRecord):
                 yield record
-                continue
-
-            if isinstance(record, ApiFailureRecord):
                 continue
 
             if isinstance(record, AssistantRecord):

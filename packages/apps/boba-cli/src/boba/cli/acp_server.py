@@ -115,7 +115,6 @@ from boba.agent.events import (
     StreamEvent,
     ToolProgressEvent,
     ToolStartedEvent,
-    TurnOutcome,
 )
 from boba.agent.history import (
     HistoryError,
@@ -137,7 +136,6 @@ from boba.agent.permissions import PermissionModeError
 from boba.agent.queue import QueueEntry, QueueKind, QueuePriority, QueueRefusedError
 from boba.agent.records import (
     ApiErrorRecord,
-    ApiFailureRecord,
     AssistantRecord,
     CallStatus,
     ChainRecord,
@@ -145,7 +143,6 @@ from boba.agent.records import (
     CompactionRecord,
     CompactSummaryRecord,
     InformationalRecord,
-    InterruptRecord,
     NoticeLevel,
     PermissionMode,
     Record,
@@ -155,6 +152,8 @@ from boba.agent.records import (
     ToolResultBlock,
     ToolResultRecord,
     ToolUseBlock,
+    TurnEndRecord,
+    TurnOutcome,
     UserRecord,
 )
 from boba.agent.session import SessionState
@@ -765,6 +764,7 @@ class AcpMapping:
         TurnOutcome.BLOCKING_LIMIT: StopReason.REFUSAL,
         TurnOutcome.COMPACT_FAILURE_BREAKER: StopReason.REFUSAL,
         TurnOutcome.RAPID_REFILL_BREAKER: StopReason.REFUSAL,
+        TurnOutcome.INTERRUPTED: StopReason.END_TURN,
     }
     MILLIS: ClassVar[float] = 1000.0
 
@@ -792,11 +792,20 @@ class AcpMapping:
         self._troubles = ModelTroubleTexts(self._templates)
         self._commands = LocalCommandText()
 
-    def idle(self, result: ResultEvent) -> schema.IdleSessionStateUpdate:
-        """Конец хода по его итогу; причину отказа клиент уже получил
-        пометкой записи об отказе модели."""
-        return schema.IdleSessionStateUpdate(
-            stop_reason=self.STOP_REASONS[result.outcome]
+    def turn_ended(self, record: TurnEndRecord) -> Iterator[Update]:
+        """Конец хода по его записи — одинаково вживую и в воспроизведении:
+        пометка о причине, если она есть, затем `idle` со `stopReason`
+        исхода. Ход, оборванный гибелью агента, кончается штатным idle: его
+        пометка уже говорит, что случилось."""
+        if record.notice:
+            detail = record.detail
+            if detail == record.notice:
+                detail = ""
+
+            yield self.notice(record.level, record.notice, detail)
+
+        yield schema.IdleSessionStateUpdate(
+            stop_reason=self.STOP_REASONS[record.outcome]
         )
 
     def notice(
@@ -823,50 +832,22 @@ class AcpMapping:
         )
 
     def notices(self, record: ChainRecord) -> Iterator[schema.SessionNotice]:
-        """Пометки человеку, которые несёт запись: повтор запроса к модели,
-        отказ модели, состояние серверов MCP и оборванный ход."""
+        """Пометки человеку посреди хода, которые несёт запись: повтор
+        запроса к модели и состояние серверов MCP."""
         if isinstance(record, InformationalRecord):
             yield self.notice(record.level, record.content, record.detail)
             return
 
         if isinstance(record, ApiErrorRecord):
-            yield from self._retry(record)
-            return
+            yield self._retry(record)
 
-        if not isinstance(record, ApiFailureRecord):
-            return
-
-        yield self._refusal(record)
-
-    def _refusal(self, record: ApiFailureRecord) -> schema.SessionNotice:
-        """Отказ модели: слова человеку — текст записи, причина — её error,
-        если он не повторяет текст."""
-        texts: list[str] = []
-        for block in record.message.content:
-            if isinstance(block, TextBlock):
-                texts.append(block.text)
-
-        text = "\n".join(texts)
-        detail = ""
-        if record.error is not None:
-            detail = record.error
-
-        if detail == text:
-            detail = ""
-
-        return self.notice(NoticeLevel.ERROR, text, detail)
-
-    def _retry(self, record: ApiErrorRecord) -> Iterator[schema.SessionNotice]:
-        """Неудачная попытка с повтором; попытка без повтора своей пометки
-        не даёт — причину скажет запись об отказе модели."""
-        if record.retry_attempt == 0:
-            return
-
+    def _retry(self, record: ApiErrorRecord) -> schema.SessionNotice:
+        """Неудачная попытка запроса к модели и пауза до повтора."""
         seconds = record.retry_in_ms / self.MILLIS
         text = self._troubles.retry(
             record.trouble, record.retry_attempt, record.max_retries, seconds
         )
-        yield self.notice(NoticeLevel.WARNING, text, record.detail)
+        return self.notice(NoticeLevel.WARNING, text, record.detail)
 
     def tool_kind(self, hints: ToolHints | None) -> ToolKindName:
         """`kind` по пометкам MCP: читающий — read, разрушающий — execute,
@@ -985,13 +966,10 @@ class AcpMapping:
 
         if isinstance(record, UserRecord):
             yield from self.user_updates(record)
-            if isinstance(record, InterruptRecord):
-                yield schema.IdleSessionStateUpdate(stop_reason=StopReason.CANCELLED)
-
             return
 
-        if isinstance(record, ApiFailureRecord):
-            yield schema.IdleSessionStateUpdate(stop_reason=StopReason.REFUSAL)
+        if isinstance(record, TurnEndRecord):
+            yield from self.turn_ended(record)
             return
 
         if isinstance(record, ReplyRecord):
@@ -3037,7 +3015,9 @@ class SessionRelay(EventSink):
         if isinstance(event, ResultEvent):
             await self._send_all(self._turn_summary())
             self._running = False
-            await self._send(self._mapping.idle(event))
+            ending = list(self._withdrawn())
+            ending.extend(self._mapping.turn_ended(event.turn_end))
+            await self._send_all(ending)
             return
 
         if isinstance(event, ErrorEvent):
@@ -3172,11 +3152,8 @@ class SessionRelay(EventSink):
 
     @staticmethod
     def _failed_attempt(record: ChainRecord) -> bool:
-        """Запись о неудачной попытке запроса к модели: повтор или отказ."""
-        if isinstance(record, ApiErrorRecord):
-            return True
-
-        return isinstance(record, ApiFailureRecord)
+        """Запись о неудачной попытке запроса к модели перед повтором."""
+        return isinstance(record, ApiErrorRecord)
 
     def _withdrawn(self) -> Iterator[Update]:
         """Неудачная попытка запроса к модели: её недописанный ответ и

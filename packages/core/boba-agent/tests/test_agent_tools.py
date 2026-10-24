@@ -13,7 +13,7 @@ from typing import ClassVar
 import pytest
 
 from boba.agent.control import AllowAnswer, DenyAnswer
-from boba.agent.events import ControlCancelEvent, ResultEvent, TurnOutcome
+from boba.agent.events import ControlCancelEvent, ResultEvent
 from boba.agent.history import SessionId
 from boba.agent.ids import IdMint, SystemClock
 from boba.agent.loader import HistoryLoader
@@ -38,6 +38,7 @@ from boba.agent.records import (
     ToolResultBlock,
     ToolResultRecord,
     ToolUseBlock,
+    TurnOutcome,
     UserRecord,
 )
 from boba.agent.session import Session
@@ -235,6 +236,7 @@ class TestCalls:
             "user:tool_result",
             "user:tool_result",
             "assistant:text",
+            "system",
         ]
         uses = tool_uses(chain)
         found = results(chain)
@@ -402,8 +404,8 @@ class TestCalls:
 
         assert served.agent.outcomes == [TurnOutcome.MAX_TURNS]
         assert len(tools.calls) == 3
-        assert kinds(session.chain())[-1] == "attachment:max_turns_reached"
-        last = session.chain()[-1]
+        assert kinds(session.chain())[-2] == "attachment:max_turns_reached"
+        last = session.chain()[-2]
         assert isinstance(last, AttachmentRecord)
         assert last.rendered is None
         result_event = sink.of(ResultEvent)[0]
@@ -872,15 +874,17 @@ class TestQueueMidTurn:
         await served.agent.settled()
         await served.close()
 
-        assert kinds(session.chain())[-4:] == [
+        assert kinds(session.chain())[-5:] == [
             "user:tool_result",
             "attachment:queued_command",
             "assistant:text",
             "assistant:text",
-        ] or kinds(session.chain())[-3:] == [
+            "system",
+        ] or kinds(session.chain())[-4:] == [
             "user:tool_result",
             "attachment:queued_command",
             "assistant:text",
+            "system",
         ]
         assert served.agent.outcomes == [TurnOutcome.COMPLETED]
         queued = [
@@ -1011,8 +1015,8 @@ class TestCancellation:
             ToolDenialKind.USER_REJECTED,
             ToolDenialKind.USER_REJECTED,
         ]
-        last = session.chain()[-1]
-        assert isinstance(last, UserRecord)
+        last = session.chain()[-2]
+        assert isinstance(last, InterruptRecord)
         assert last.message.content == "[Request interrupted by user for tool use]"
         assert served.agent.outcomes == [TurnOutcome.ABORTED_TOOLS]
         assert served.agent.answer("req_unknown", AllowAnswer()) is False
@@ -1056,7 +1060,7 @@ class TestCancellation:
         record = result_records(session.records())[0]
         assert record.tool_denial_kind is ToolDenialKind.USER_REJECTED
         assert record.tool_use_result is None
-        last = session.chain()[-1]
+        last = session.chain()[-2]
         assert isinstance(last, InterruptRecord)
         assert last.interrupted_by_shutdown is True
         again = await reloaded(tmp_path / "history", SESSION)

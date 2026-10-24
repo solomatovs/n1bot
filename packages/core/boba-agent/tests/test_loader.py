@@ -21,9 +21,9 @@ from boba.agent.records import (
     AssistantRecord,
     CallStatus,
     ChainRecord,
+    CompactBoundaryRecord,
     EnvironmentAttachment,
     EnvironmentSnapshot,
-    InformationalRecord,
     NoticeLevel,
     PermissionMode,
     Record,
@@ -31,6 +31,8 @@ from boba.agent.records import (
     Synthetic,
     ToolDenialKind,
     ToolResultRecord,
+    TurnEndRecord,
+    TurnOutcome,
 )
 from boba.agent.session import Session
 from boba.agent.template import AgentTemplate
@@ -159,6 +161,7 @@ async def written(tmp_path: Path) -> Written:
         await script.tool_result(calls[0], "pg: users, orders")
         await script.tool_result(calls[1], "ch: events")
         await script.reply("Two lists above.")
+        await script.turn_end()
     finally:
         await store.release(lease)
 
@@ -189,7 +192,7 @@ class TestTruncatedJournal:
     """Обрывы: после user, после вложения, после ответа с двумя вызовами,
     после одного из двух результатов. Индексы — номера записей в журнале:
     1 режим, 2 очередь, 3 user, 4 вложение, 5-7 ответ (thinking, два
-    tool_use), 8-9 результаты, 10 ответ текстом."""
+    tool_use), 8-9 результаты, 10 ответ текстом, 11 конец хода."""
 
     @pytest.mark.parametrize(
         ("kept", "expected"),
@@ -223,19 +226,21 @@ class TestTruncatedJournal:
         assert last.message.usage.is_zero()
         assert Reference().appended_types(cut.path) == expected
         assert len(notices) == 1, report.repaired
+        assert notices[0].outcome is TurnOutcome.INTERRUPTED
         assert notices[0].level is NoticeLevel.WARNING
-        assert notices[0].content.startswith("The previous turn was cut short:")
+        assert notices[0].notice.startswith("The previous turn was cut short:")
 
     @staticmethod
     def _split(
         repaired: Sequence[ChainRecord],
-    ) -> tuple[list[InformationalRecord], list[ChainRecord]]:
-        """Пометка человеку об оборванном ходе — своя запись boba сверх
-        починки по docs/prompt_assembly; остальное сверяется с эталоном."""
-        notices: list[InformationalRecord] = []
+    ) -> tuple[list[TurnEndRecord], list[ChainRecord]]:
+        """Конец оборванного хода с пометкой человеку — своя запись boba
+        сверх починки по docs/prompt_assembly; остальное сверяется с
+        эталоном."""
+        notices: list[TurnEndRecord] = []
         appended: list[ChainRecord] = []
         for record in repaired:
-            if isinstance(record, InformationalRecord):
+            if isinstance(record, TurnEndRecord):
                 notices.append(record)
                 continue
 
@@ -301,10 +306,11 @@ class TestCompactedJournal:
         session.restore(written.records)
         script = JournalScript(session, store, lease)
         try:
-            tail = [r.uuid for r in session.chain()[-3:]]
+            tail = [r.uuid for r in session.chain()[-4:-1]]
             await script.compaction("Summary: two lists were produced.", tail)
             await script.prompt("thanks")
             await script.reply("You are welcome.")
+            await script.turn_end()
         finally:
             await store.release(lease)
 
@@ -315,7 +321,7 @@ class TestCompactedJournal:
         kinds = [r.type.value for r in conversation]
         assert kinds[:3] == ["system", "attachment", "user"]
         assert [r.uuid for r in conversation[3:6]] == tail
-        assert kinds[6:] == ["user", "assistant"]
+        assert kinds[6:] == ["user", "assistant", "system"]
         moved = conversation[5]
         assert isinstance(moved, AssistantRecord)
         assert moved.message.usage.is_zero()
@@ -342,9 +348,12 @@ class TestCompactedJournal:
         resumed, report = await Resumed(root).load(SESSION)
 
         conversation = resumed.conversation()
-        assert [r.uuid for r in conversation[:-1]] == written.chain_uuids()
-        assert conversation[-1].type.value == "system"
-        assert report.repaired == []
+        assert [r.uuid for r in conversation[:-2]] == written.chain_uuids()
+        assert isinstance(conversation[-2], CompactBoundaryRecord)
+        ended = conversation[-1]
+        assert isinstance(ended, TurnEndRecord)
+        assert ended.outcome is TurnOutcome.INTERRUPTED
+        assert report.repaired == [ended]
 
 
 class TestDamagedJournal:
@@ -358,7 +367,7 @@ class TestDamagedJournal:
         session, report = await resumed.load(SESSION)
 
         assert report.skipped_lines == 1
-        assert "line 11 skipped: not JSON" in report.notes[0]
+        assert "line 12 skipped: not JSON" in report.notes[0]
         assert list(session.records()) == list(written.records)
 
         store = JsonlHistoryStore(written.path.parent)

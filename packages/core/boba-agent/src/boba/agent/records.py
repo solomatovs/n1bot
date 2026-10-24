@@ -8,7 +8,7 @@
 кодек выбирает модель, и смысл записи (вопрос, результат инструмента,
 маркер остановки, пересказ сжатия…) больше нигде не угадывается по флагам
 и тексту. Поля эталона, которые различают виды (`isMeta`,
-`isCompactSummary`, `isApiErrorMessage`, `origin`), класс вида пишет сам
+`isCompactSummary`, `origin`), класс вида пишет сам
 постоянными значениями. Запись читается в модель один раз, в загрузчике,
 дальше по коду ходит модель; неизвестное поле известного вида
 игнорируется, чтобы старый агент читал журнал нового.
@@ -56,7 +56,6 @@ from boba.llm.chat import LlmTrouble
 
 __all__ = [
     "ApiErrorRecord",
-    "ApiFailureRecord",
     "ApiRequestRecord",
     "AssistantBlock",
     "AssistantMessage",
@@ -135,6 +134,8 @@ __all__ = [
     "ToolResultBlock",
     "ToolResultRecord",
     "ToolUseBlock",
+    "TurnEndRecord",
+    "TurnOutcome",
     "Usage",
     "UserBlock",
     "UserMessage",
@@ -177,6 +178,7 @@ class SystemSubtype(StrEnum):
     COMPACTION = "compaction"
     INFORMATIONAL = "informational"
     HARNESS_COMMAND = "harness_command"
+    TURN_END = "turn_end"
 
 
 class RecordKind(StrEnum):
@@ -192,13 +194,13 @@ class RecordKind(StrEnum):
     COMPACT_SUMMARY = "compact_summary"
     REPLY = "reply"
     NO_RESPONSE = "no_response"
-    API_FAILURE = "api_failure"
     ATTACHMENT = "attachment"
     API_ERROR = "api_error"
     INFORMATIONAL = "informational"
     COMPACTION = "compaction"
     COMPACT_BOUNDARY = "compact_boundary"
     HARNESS_COMMAND = "harness_command"
+    TURN_END = "turn_end"
     QUEUE_OPERATION = "queue_operation"
     PERMISSION_MODE = "permission_mode"
     PERMISSION_RULE = "permission_rule"
@@ -271,6 +273,36 @@ class CallStatus(StrEnum):
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
+
+
+class TurnOutcome(StrEnum):
+    """Исходы хода — закрытый перечень раздела 5.13 плана; INTERRUPTED —
+    ход оборван гибелью агента, конец ему пишет загрузчик при починке."""
+
+    COMPLETED = "completed"
+    ABORTED_STREAMING = "aborted_streaming"
+    ABORTED_TOOLS = "aborted_tools"
+    API_ERROR = "api_error"
+    BLOCKING_LIMIT = "blocking_limit"
+    RAPID_REFILL_BREAKER = "rapid_refill_breaker"
+    COMPACT_FAILURE_BREAKER = "compact_failure_breaker"
+    MAX_TURNS = "max_turns"
+    OUTPUT_LIMIT = "output_limit"
+    SHUTDOWN = "shutdown"
+    INTERRUPTED = "interrupted"
+
+    @property
+    def refused(self) -> bool:
+        """Ход кончился отказом агента ответить: отказ модели, предел длины
+        ответа, запрос больше окна, срабатывание предохранителей сжатия. Такой
+        конец отвечает на вопрос хода: модели заглушка ответа не нужна."""
+        return self in (
+            TurnOutcome.API_ERROR,
+            TurnOutcome.OUTPUT_LIMIT,
+            TurnOutcome.BLOCKING_LIMIT,
+            TurnOutcome.RAPID_REFILL_BREAKER,
+            TurnOutcome.COMPACT_FAILURE_BREAKER,
+        )
 
 
 class AttachmentRole(StrEnum):
@@ -832,7 +864,7 @@ class CompactSummaryRecord(UserRecord):
 
 class AssistantRecord(ChainRecord):
     """Основа записей `assistant`: один блок ответа на запись. Наследники —
-    ответ модели, заглушка «ответа нет» и отказ модели."""
+    ответ модели и заглушка «ответа нет»."""
 
     type: Literal[RecordType.ASSISTANT] = RecordType.ASSISTANT
     message: AssistantMessage
@@ -864,15 +896,6 @@ class NoResponseRecord(AssistantRecord):
     кончился вопросом без ответа: дописывает загрузчик при починке."""
 
     kind: Literal[RecordKind.NO_RESPONSE] = RecordKind.NO_RESPONSE
-
-
-class ApiFailureRecord(AssistantRecord):
-    """Отказ модели синтетическим ответом: текст человеку, `error` —
-    короткая техническая причина; модели не отправляется."""
-
-    kind: Literal[RecordKind.API_FAILURE] = RecordKind.API_FAILURE
-    is_api_error_message: Literal[True] = True
-    error: str | None = None
 
 
 class RenderedMessage(WireModel):
@@ -988,6 +1011,28 @@ class HarnessCommandRecord(ChainRecord):
     text: str
 
 
+class TurnEndRecord(ChainRecord):
+    """Конец хода: последняя запись каждого хода, её пишет цикл хода при
+    любом исходе, а оборванному ходу — загрузчик при починке. По ней и
+    живой ход, и воспроизведение кончают ход одинаково. `notice` — слова
+    человеку о причине конца (отказ модели, полное окно, оборванный ход),
+    пусто — пометки нет; `level` — её важность; `detail` — короткая
+    техническая причина под ней; `error` — техническая причина целиком
+    (ответ провайдера) для журнала. Модели не уходит."""
+
+    type: Literal[RecordType.SYSTEM] = RecordType.SYSTEM
+    kind: Literal[RecordKind.TURN_END] = RecordKind.TURN_END
+    subtype: Literal[SystemSubtype.TURN_END] = SystemSubtype.TURN_END
+    outcome: TurnOutcome
+    notice: str
+    level: NoticeLevel
+    detail: str
+    error: str
+    usage: Usage
+    num_turns: int = Field(ge=0)
+    duration_ms: int = Field(ge=0)
+
+
 class ServiceRecord(WireModel):
     """Общий конверт служебных записей: вне цепочки, без uuid."""
 
@@ -1045,13 +1090,13 @@ Record: TypeAlias = Annotated[
     | CompactSummaryRecord
     | ReplyRecord
     | NoResponseRecord
-    | ApiFailureRecord
     | AttachmentRecord
     | ApiErrorRecord
     | InformationalRecord
     | CompactionRecord
     | CompactBoundaryRecord
     | HarnessCommandRecord
+    | TurnEndRecord
     | QueueOperationRecord
     | PermissionModeRecord
     | PermissionRuleRecord

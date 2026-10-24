@@ -11,7 +11,6 @@ import pytest
 
 from boba.agent.records import (
     ApiErrorRecord,
-    ApiFailureRecord,
     ApiRequestRecord,
     AssistantMessage,
     AttachmentRecord,
@@ -59,6 +58,8 @@ from boba.agent.records import (
     ToolResultBlock,
     ToolResultRecord,
     ToolUseBlock,
+    TurnEndRecord,
+    TurnOutcome,
     Usage,
     UserMessage,
 )
@@ -184,17 +185,6 @@ SAMPLES: dict[str, Record] = {
         ),
         request_id="req_b",
     ),
-    "api-failure": ApiFailureRecord(
-        **chained(),
-        message=AssistantMessage(
-            id="msg_c",
-            model=Synthetic.MODEL,
-            content=[TextBlock(text="The model is down.")],
-            stop_reason=ReplyStopReason.STOP_SEQUENCE,
-        ),
-        request_id="req_c",
-        error="HTTP 500",
-    ),
     "attachment": AttachmentRecord(
         **chained(),
         attachment=DateAttachment(date="2026-10-10", changed=False),
@@ -249,6 +239,17 @@ SAMPLES: dict[str, Record] = {
     ),
     "harness-command": HarnessCommandRecord(
         **chained(), name="connections", text="/connections"
+    ),
+    "turn-end": TurnEndRecord(
+        **chained(),
+        outcome=TurnOutcome.API_ERROR,
+        notice="The model is down.",
+        level=NoticeLevel.ERROR,
+        detail="HTTP 500",
+        error="openai chat: POST http://model/v1: expected 2xx, got 500",
+        usage=Usage(input_tokens=10, output_tokens=0),
+        num_turns=1,
+        duration_ms=120,
     ),
     "queue": QueueOperationRecord(
         timestamp=STAMP,
@@ -348,14 +349,11 @@ class TestRecordCodec:
         """Вид записи — поле kind; флаги эталона, которые различают виды,
         класс вида пишет сам."""
         summary = json.loads(RecordCodec().line(SAMPLES["summary"]))
-        failure = json.loads(RecordCodec().line(SAMPLES["api-failure"]))
         meta = json.loads(RecordCodec().line(SAMPLES["task-notification"]))
 
         assert summary["kind"] == "compact_summary"
         assert summary["isCompactSummary"] is True
         assert summary["isVisibleInTranscriptOnly"] is True
-        assert failure["kind"] == "api_failure"
-        assert failure["isApiErrorMessage"] is True
         assert meta["isMeta"] is True
         assert meta["origin"] == {"kind": "task-notification"}
 

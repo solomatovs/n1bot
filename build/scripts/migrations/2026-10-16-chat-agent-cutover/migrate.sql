@@ -921,8 +921,14 @@ from
 -- оценки. Ответ модели даёт по записи assistant на каждый блок (рассуждение,
 -- текст, вызов инструмента) с общими message.id и requestId; модель берётся
 -- последняя названная в треде, а у подготовки хода стоит <synthetic>. Ответ
--- с пометкой error становится синтетической записью об ошибке модели, ответ
--- с пометкой stopped — оборванным ответом и маркером прерывания за ним.
+-- с пометкой stopped становится оборванным ответом и маркером прерывания за
+-- ним. Ход — вопрос и всё до следующего вопроса — кончается записью
+-- turn_end: исход completed, у хода с ответом-ошибкой (пометка error) —
+-- api_error с текстом ошибки пометкой человеку, у остановленного —
+-- aborted_streaming. Последний ход треда конца не получает, если он кончается
+-- не ответом модели, ошибкой или остановкой либо у последнего ответа модели
+-- остались вызовы без итога: такой ход загрузчик агента чинит как
+-- оборванный — заглушки итогов и конец хода с пометкой.
 -- Итог инструмента даёт запись user с блоком tool_result и toolUseResult —
 -- результатом tools/call в форме MCP, как его пишет агент: текст итога
 -- одним блоком text, ссылки resource_link на каналы журнала вызова по его
@@ -1121,38 +1127,6 @@ reply_unit as (
     where
         r.shape <> 'error'
 ),
-failure_unit as (
-    select
-        r.thread_id,
-        r.n,
-        0 as sub,
-        'assistant' as type,
-        history_migrate.uuid_of(r.thread_id || '/' || r.n || '/error') as uuid,
-        null::text as call_id,
-        null::text as answers_call,
-        jsonb_build_object(
-            'type', 'assistant',
-            'kind', 'api_failure',
-            'message', jsonb_build_object(
-                'id', r.message_id,
-                'type', 'message',
-                'role', 'assistant',
-                'model', '<synthetic>',
-                'content', jsonb_build_array(jsonb_build_object('type', 'text', 'text', r.body_text)),
-                'stop_reason', 'stop_sequence',
-                'stop_sequence', null,
-                'usage', '{"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}'::jsonb
-            ),
-            'apiBlockIndex', 0,
-            'requestId', r.request_id,
-            'isApiErrorMessage', true,
-            'error', r.body_text
-        ) as body
-    from
-        reply as r
-    where
-        r.shape = 'error'
-),
 interrupt_unit as (
     select
         r.thread_id,
@@ -1311,16 +1285,147 @@ tool_unit as (
         message as t
     where
         t.class = 'ToolMessage'
+),
+content_unit as (
+    select * from question_unit
+    union all
+    select * from reply_unit
+    union all
+    select * from interrupt_unit
+    union all
+    select * from tool_unit
+),
+marked as (
+    select
+        m.thread_id,
+        m.n,
+        m.sub,
+        m.kind,
+        m.failure,
+        (
+            select
+                max(q.n)
+            from
+                question_unit as q
+            where
+                q.thread_id = m.thread_id
+                and q.n <= m.n
+        ) as turn_n
+    from (
+        select
+            u.thread_id,
+            u.n,
+            u.sub,
+            u.body ->> 'kind' as kind,
+            null::text as failure
+        from
+            content_unit as u
+        union all
+        select
+            r.thread_id,
+            r.n,
+            0,
+            'failure',
+            r.body_text
+        from
+            reply as r
+        where
+            r.shape = 'error'
+    ) as m
+),
+thread_tail as (
+    select distinct on (thread_id)
+        thread_id,
+        turn_n,
+        kind
+    from
+        marked
+    order by
+        thread_id,
+        n desc,
+        sub desc
+),
+last_answer as (
+    select
+        u.thread_id,
+        max(u.n) as n
+    from
+        reply_unit as u
+    where
+        u.body -> 'message' ->> 'model' <> '<synthetic>'
+    group by
+        u.thread_id
+),
+dangling as (
+    select distinct
+        u.thread_id
+    from
+        reply_unit as u
+        join last_answer as a
+            on a.thread_id = u.thread_id
+            and a.n = u.n
+    where
+        u.call_id is not null
+        and not exists (
+            select
+                1
+            from
+                tool_unit as t
+            where
+                t.thread_id = u.thread_id
+                and t.answers_call = u.call_id
+        )
+),
+turn_unit as (
+    select
+        t.thread_id,
+        max(t.n) as n,
+        3000 as sub,
+        'system' as type,
+        history_migrate.uuid_of(t.thread_id || '/' || t.turn_n || '/turn_end') as uuid,
+        null::text as call_id,
+        null::text as answers_call,
+        jsonb_build_object(
+            'type', 'system',
+            'kind', 'turn_end',
+            'subtype', 'turn_end',
+            'outcome', case
+                when bool_or(t.kind = 'failure') then 'api_error'
+                when bool_or(t.kind = 'interrupt') then 'aborted_streaming'
+                else 'completed'
+            end,
+            'notice', coalesce((array_agg(t.failure order by t.n desc) filter (where t.kind = 'failure'))[1], ''),
+            'level', 'error',
+            'detail', '',
+            'error', coalesce((array_agg(t.failure order by t.n desc) filter (where t.kind = 'failure'))[1], ''),
+            'usage', '{"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}'::jsonb,
+            'numTurns', count(*) filter (where t.kind in ('reply', 'failure') and t.sub = 0),
+            'durationMs', 0
+        ) as body
+    from
+        marked as t
+        join thread_tail as tail
+            on tail.thread_id = t.thread_id
+        left join dangling as d
+            on d.thread_id = t.thread_id
+    where
+        t.turn_n is not null
+    group by
+        t.thread_id,
+        t.turn_n,
+        tail.turn_n,
+        tail.kind,
+        d.thread_id
+    having
+        t.turn_n <> tail.turn_n
+        or (
+            tail.kind in ('reply', 'failure', 'interrupt')
+            and d.thread_id is null
+        )
 )
-select * from question_unit
+select * from content_unit
 union all
-select * from reply_unit
-union all
-select * from failure_unit
-union all
-select * from interrupt_unit
-union all
-select * from tool_unit;
+select * from turn_unit;
 
 -- Записи собираются сразу в раскладке таблицы session_records: сессия, seq, вид и
 -- время — колонками, остальное — документом record без этих четырёх ключей.
