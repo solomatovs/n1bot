@@ -105,6 +105,9 @@ class QueuedLook:
     )
     QUEUED_LOG: ClassVar[str] = "goes to the queue of session"
     QUEUE_SEC: ClassVar[float] = 60.0
+    SETTLE_ROUNDS: ClassVar[int] = 40
+    QUIET_ROUNDS: ClassVar[int] = 3
+    SETTLE_MS: ClassVar[int] = 250
 
 
 class QueuedInput:
@@ -148,6 +151,29 @@ class QueuedInput:
 
             time.sleep(0.1)
 
+    def feed(self, question: TalkQuestion) -> Locator:
+        """Лента, прокрученная к вопросу хода, когда кнопка «↓» пришла в
+        покой: chainlit показывает её позже прокрутки, поэтому кадр ждёт,
+        пока её наличие не повторится QUIET_ROUNDS раз подряд."""
+        region = self._feed.feed(question)
+        button = region.locator(TalkLook.SCROLL_DOWN)
+        last = -1
+        same = 0
+        for _ in range(QueuedLook.SETTLE_ROUNDS):
+            shown = button.count()
+            same += 1
+            if shown != last:
+                same = 0
+
+            if same >= QueuedLook.QUIET_ROUNDS:
+                return region
+
+            last = shown
+            self._page.wait_for_timeout(QueuedLook.SETTLE_MS)
+
+        msg = f"the scroll-down button of the feed at {question.value!r} never settled"
+        raise AssertionError(msg)
+
     def bubble(self, question: TalkQuestion) -> Locator:
         return self._page.locator(
             Selector.of_type(StepKind.USER.value), has_text=question.value
@@ -181,19 +207,19 @@ def test_message_during_the_turn_look(
         queue.send(TalkQuestion.STATUS)
         expect(queue.bubble(TalkQuestion.STATUS)).to_be_visible()
         look_pages.settle(page)
-        look.frame(feed.feed(TalkQuestion.STEPS), QueuedLook.QUEUED, theme, size)
+        look.frame(queue.feed(TalkQuestion.STEPS), QueuedLook.QUEUED, theme, size)
 
         feed.release(TalkQuestion.STEPS)
         feed.shown(TalkText.STATUS)
         feed.no_pulse()
         look_pages.settle(page)
-        look.frame(feed.feed(TalkQuestion.STEPS), QueuedLook.ANSWERED, theme, size)
+        look.frame(queue.feed(TalkQuestion.STEPS), QueuedLook.ANSWERED, theme, size)
 
         feed.reload()
         feed.shown(TalkText.STATUS)
         look_pages.settle(page)
         look.frame(
-            feed.feed(TalkQuestion.STEPS), QueuedLook.ANSWERED_AGAIN, theme, size
+            queue.feed(TalkQuestion.STEPS), QueuedLook.ANSWERED_AGAIN, theme, size
         )
         look.same_as(QueuedLook.ANSWERED_AGAIN, QueuedLook.ANSWERED, theme, size)
 
