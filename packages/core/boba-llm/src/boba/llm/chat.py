@@ -104,6 +104,16 @@ class ToolSpec(BaseModel):
     name: str
     description: str
     parameters: Mapping[str, Any]
+    deferred: bool = Field(
+        default=False,
+        description=(
+            "Отложенный инструмент, который модель загрузила поиском: ссылка на "
+            "него пришла в результате инструмента (ChatTurn.tool_references). "
+            "Провайдер с родными отложенными инструментами шлёт его с "
+            "defer_loading; остальные — обычной записью в порядке списка: "
+            "вызывающий ставит такие инструменты в конец, в порядке загрузки."
+        ),
+    )
 
 
 class ToolCall(BaseModel):
@@ -152,6 +162,14 @@ class ChatTurn(BaseModel):
     tool_call_id: str = Field(
         default="",
         description="Для роли tool: вызов, на который отвечает сообщение.",
+    )
+    tool_references: Sequence[str] = Field(
+        default=(),
+        description=(
+            "Для роли tool: имена инструментов, которые результат загрузил "
+            "(ссылки tool_reference). content уже называет их текстом; "
+            "провайдер с родными ссылками шлёт их блоками tool_reference."
+        ),
     )
 
 

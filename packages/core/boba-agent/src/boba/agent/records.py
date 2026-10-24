@@ -15,6 +15,7 @@
     блок `text`                            ↔ `content`
     блок `tool_use` {id, name, input}      ↔ `ToolCall(id, name, arguments)`
     блок `tool_result` в записи `user`     ↔ сообщение роли `tool` с `tool_call_id`
+    блок `tool_reference` в `tool_result`  ↔ `tool_references` и строка текста
     `stop_reason` end_turn/tool_use/max_tokens ↔ `finish_reason` stop/tool_calls/length
     `usage.input_tokens`/`output_tokens`   ↔ `ChatUsage.input_tokens`/`output_tokens`
 
@@ -77,6 +78,7 @@ __all__ = [
     "TextBlock",
     "ThinkingBlock",
     "ToolDenialKind",
+    "ToolReferenceBlock",
     "ToolResultBlock",
     "ToolUseBlock",
     "Usage",
@@ -127,6 +129,7 @@ class BlockType(StrEnum):
     TEXT = "text"
     TOOL_USE = "tool_use"
     TOOL_RESULT = "tool_result"
+    TOOL_REFERENCE = "tool_reference"
 
 
 class ReplyStopReason(StrEnum):
@@ -250,25 +253,46 @@ class ToolUseBlock(MessageModel):
     input: Mapping[str, Any]
 
 
+class ToolReferenceBlock(MessageModel):
+    """Ссылка на инструмент внутри результата: результат ToolSearch называет
+    так отложенные инструменты, которые он загрузил."""
+
+    type: Literal["tool_reference"] = BlockType.TOOL_REFERENCE.value
+    tool_name: str
+
+
 class ToolResultBlock(MessageModel):
     type: Literal["tool_result"] = BlockType.TOOL_RESULT.value
     tool_use_id: str
-    content: str | Sequence[TextBlock] = ""
+    content: str | Sequence[TextBlock | ToolReferenceBlock] = ""
     is_error: bool | None = Field(
         default=None,
         description="Только у ошибок: true; у обычного результата поля нет.",
     )
 
     def text(self) -> str:
-        """Текст результата одной строкой."""
+        """Текст результата одной строкой; ссылки на инструменты в него не входят."""
         if isinstance(self.content, str):
             return self.content
 
         parts: list[str] = []
         for block in self.content:
-            parts.append(block.text)
+            if isinstance(block, TextBlock):
+                parts.append(block.text)
 
         return "\n".join(parts)
+
+    def references(self) -> Sequence[str]:
+        """Имена инструментов из ссылок результата по порядку."""
+        if isinstance(self.content, str):
+            return ()
+
+        names: list[str] = []
+        for block in self.content:
+            if isinstance(block, ToolReferenceBlock):
+                names.append(block.tool_name)
+
+        return names
 
 
 AssistantBlock: TypeAlias = ThinkingBlock | TextBlock | ToolUseBlock
@@ -470,6 +494,13 @@ class CompactMetadata(WireModel):
     post_tokens: int
     duration_ms: int
     preserved_messages: PreservedMessages
+    pre_compact_discovered_tools: Sequence[str] = Field(
+        default_factory=list,
+        description=(
+            "Отложенные инструменты, загруженные до сжатия, в порядке загрузки: "
+            "ссылки на них уходят вместе с пересказанной частью."
+        ),
+    )
 
 
 class CompactBoundaryRecord(ChainRecord):

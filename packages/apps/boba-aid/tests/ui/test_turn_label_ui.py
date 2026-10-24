@@ -2,8 +2,9 @@
 текущим действием хода и мерцает, как идущий шаг; по концу хода — итоговая
 подпись без мерцания.
 
-Ход — книга ответов FakeLLM: рассуждение, вызов инструмента с длинной
-подписью и ответ, чей поток стоит на паузе до первого токена, пока тест
+Ход — книга ответов FakeLLM: рассуждение, вызов отложенного инструмента
+с длинной подписью (перед ним фейковая модель загружает его ToolSearch) и
+ответ, чей поток стоит на паузе до первого токена, пока тест
 смотрит на свёрнутый контейнер. Последовательность подписей берётся из
 socket.io (кадры шага run), вид — из DOM.
 """
@@ -121,18 +122,27 @@ def test_collapsed_container_shows_the_current_action(
     label_book.release(LabelBook.QUESTION)
     chat.await_idle()
 
-    done = app_texts.text(StepText.DONE_STEPS.value, count=2)
+    # отложенный connection_list фейковая модель сначала загружает ToolSearch:
+    # рассуждение и загрузка, затем рассуждение и сам вызов
+    done = app_texts.text(StepText.DONE_STEPS.value, count=4)
     expect(toggle).to_have_text(done)
     expect(toggle).not_to_have_class(LabelBook.SHIMMER)
 
     labels = _labels(chat)
     elapsed = StepElapsed(app_texts).titled(f"✔ {called}", False)
-    expected = [f"○ {thinking}", f"✔ {thinking}", f"○ {called}"]
-    if labels[:3] != expected:
-        raise AssertionError(f"container labels {labels}, expected to start {expected}")
+    thought = [f"○ {thinking}", f"✔ {thinking}"]
+    if labels[:2] != thought:
+        raise AssertionError(f"container labels {labels}, expected to start {thought}")
 
-    if not re.match(elapsed, labels[3]):
+    if f"○ {called}" not in labels:
+        raise AssertionError(f"the running call is not the label: {labels}")
+
+    at = labels.index(f"○ {called}")
+    if labels[at - 2 : at] != thought:
+        raise AssertionError(f"the call does not follow a thought: {labels}")
+
+    if not re.match(elapsed, labels[at + 1]):
         raise AssertionError(f"the finished call is not the label: {labels}")
 
-    if labels[4:] != [done]:
+    if labels[at + 2 :] != [done]:
         raise AssertionError(f"the turn does not end with {done!r}: {labels}")
