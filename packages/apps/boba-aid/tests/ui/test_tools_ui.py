@@ -66,7 +66,13 @@ from boba.stand.site import Stand, StandLayers
 from boba.stand.stream_sinks import SinkSources, StreamSinks
 from boba.stand.ui.chat_page import ChatPage, StepKind
 from boba.stand.ui.database import StandDatabase, StandOracle
-from boba.stand.ui.fake_llm import FakePage, FakeRoute, OfferedTools, ScenarioName
+from boba.stand.ui.fake_llm import (
+    FakePage,
+    FakeRoute,
+    OfferedTools,
+    ScenarioName,
+    WireText,
+)
 from boba.stand.ui.socket_log import ChatEvent, StepField
 from boba.stand.ui.stand import (
     StandApp,
@@ -2833,7 +2839,7 @@ class TestSecondTab:
             if message.get("role") != "user":
                 continue
 
-            content = str(message.get("content"))
+            content = str(WireText().of(message.get("content")))
 
         return content
 

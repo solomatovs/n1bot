@@ -42,7 +42,7 @@ from boba.stand.agent import (
     Served,
     StandAgents,
 )
-from boba.stand.ui.fake_llm import FailureName, ScenarioName
+from boba.stand.ui.fake_llm import FailureName, ScenarioName, WireText
 
 pytestmark = pytest.mark.anyio
 
@@ -159,7 +159,7 @@ class TestTwoTurns:
         assert isinstance(second, list)
         assert second[: len(first)] == first
         assert first[0]["role"] == "system"
-        assert "scenario:answer" in first[1]["content"]
+        assert "scenario:answer" in str(WireText().of(first[1]["content"]))
         assert second[2]["role"] == "assistant"
 
         again = await reloaded(tmp_path / "history", SESSION)
@@ -268,7 +268,8 @@ class TestOutputLimit:
         last_messages = server.requests()[-1]["messages"]
         assert isinstance(last_messages, list)
         assert last_messages[-1]["role"] == "user"
-        assert "Output token limit hit" in last_messages[-1]["content"]
+        last_text = str(WireText().of(last_messages[-1]["content"]))
+        assert "Output token limit hit" in last_text
         assert_linked(chain)
 
 
@@ -308,7 +309,8 @@ class TestApiErrors:
         for left, right in pairwise(roles):
             assert not (left == "user" and right == "user")
 
-        merged = server.requests()[-1]["messages"][1]["content"]  # type: ignore[index]
+        content = server.requests()[-1]["messages"][1]["content"]  # type: ignore[index]
+        merged = str(WireText().of(content))
         assert marker in merged
         assert merged.endswith(ScenarioName.ANSWER.value)
 

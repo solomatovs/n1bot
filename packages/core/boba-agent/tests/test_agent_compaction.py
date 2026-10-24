@@ -64,6 +64,7 @@ from boba.stand.ui.fake_llm import (
     ScenarioName,
     SummaryName,
     WindowSettings,
+    WireText,
 )
 
 pytestmark = pytest.mark.anyio
@@ -170,9 +171,9 @@ def is_summary_request(request: dict[str, object]) -> bool:
     if last["role"] != "user":
         return False
 
-    content = last["content"]
+    content = WireText().of(last["content"])
 
-    return isinstance(content, str) and INSTRUCTION_MARK in content
+    return content is not None and INSTRUCTION_MARK in content
 
 
 def summary_requests(server: FakeServer) -> list[dict[str, object]]:
@@ -452,14 +453,13 @@ class TestThreshold:
         after = messages(server, 3)
         assert after[0] == messages(server, 0)[0]
         assert [m["role"] for m in after] == ["system", "user", "assistant", "user"]
-        first_user = after[1]["content"]
-        assert isinstance(first_user, str)
-        assert CONTINUED in first_user
-        assert "Today's date is" in first_user
+        first_user = WireText().of(after[1]["content"])
+        assert first_user is not None
+        assert first_user.index("Today's date is") < first_user.index(CONTINUED)
         assert ScenarioName.CALL.value in first_user
         assert after[2]["content"] == "the tool has answered"
-        last_user = after[3]["content"]
-        assert isinstance(last_user, str)
+        last_user = WireText().of(after[3]["content"])
+        assert last_user is not None
         assert last_user.endswith(ScenarioName.ANSWER.value)
 
         return after
@@ -482,7 +482,7 @@ class TestThreshold:
         )
         session = await served.open(SESSION, resume=False)
 
-        served.agent.queue.enqueue(prompt(call(large())))
+        served.agent.queue.enqueue(prompt(call(large(20_000))))
         await served.agent.settled()
         failing = f"{FailureName.STATUS_500.value} {ScenarioName.ANSWER.value}"
         served.agent.queue.enqueue(prompt(failing))
@@ -697,7 +697,7 @@ class TestLadder:
         attempts = summary_requests(server)
         last = attempts[-1]["messages"]
         assert isinstance(last, list)
-        assert last[1]["content"] == TRUNCATED_FOR_RETRY
+        assert WireText().of(last[1]["content"]) == TRUNCATED_FOR_RETRY
         records = session.records()
         assert len(boundaries(records)) == 1
         summary = summaries(records)[0].message.content
@@ -785,8 +785,8 @@ class TestWindow:
         assert isinstance(retried_messages, list)
         assert isinstance(overflowed_messages, list)
         assert retried_messages[0] == overflowed_messages[0]
-        first_user = retried_messages[1]["content"]
-        assert isinstance(first_user, str)
+        first_user = WireText().of(retried_messages[1]["content"])
+        assert first_user is not None
         assert CONTINUED in first_user
         assert [m["role"] for m in retried_messages[-2:]] == ["assistant", "tool"]
 
@@ -923,8 +923,8 @@ class TestManual:
         instruction = json.dumps(sent[-1], ensure_ascii=False)
         assert f"Additional Instructions:\\n{self.NOTE}\\n\\nREMINDER:" in instruction
         after = messages(server, len(server.requests()) - 1)
-        first_user = after[1]["content"]
-        assert isinstance(first_user, str)
+        first_user = WireText().of(after[1]["content"])
+        assert first_user is not None
         assert CONTINUED in first_user
         statuses = [
             e.status for e in sink.of(CompactionEvent) if isinstance(e, CompactionEvent)

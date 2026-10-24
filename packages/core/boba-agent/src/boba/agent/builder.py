@@ -491,7 +491,9 @@ class RequestBuilder:
 
         yield from tools
         if texts:
-            yield ChatTurn(role=ChatRole.USER, content=self.TEXT_JOIN.join(texts))
+            # слитые сообщения пользователя и вложения — отдельными частями
+            # одного сообщения, как блоки в docs/prompt_assembly
+            yield ChatTurn(role=ChatRole.USER, parts=texts)
 
     def _result_text(self, result: ToolResultBlock) -> str:
         lines: list[str] = []
