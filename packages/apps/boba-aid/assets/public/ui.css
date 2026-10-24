@@ -359,3 +359,71 @@ button[id^="step-"] {
 :is(input, textarea).border-input:focus-visible {
   border-color: hsl(var(--ring)) !important;
 }
+
+/* =========================================================
+   Пометки агента, ошибка хода и полоса недоступного агента
+   Токены цвета Consta: gpnDefault — светлая, gpnDark — тёмная.
+   ========================================================= */
+
+:root {
+  --color-bg-warning: #f38b00;
+  --color-bg-alert: #eb5757;
+  --color-bg-system: #dee4e8;
+  --color-bg-border: rgba(0, 65, 102, 0.2);
+  --color-typo-secondary: rgba(0, 32, 51, 0.6);
+}
+
+.dark {
+  --color-bg-warning: #f38b00;
+  --color-bg-alert: #fe4343;
+  --color-bg-system: #4d525b;
+  --color-bg-border: hsla(0, 0%, 100%, 0.2);
+  --color-typo-secondary: hsla(0, 0%, 100%, 0.6);
+}
+
+.agent-notice {
+  --agent-notice-color: var(--color-bg-system);
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  min-width: 0;
+  line-height: 24px;
+}
+
+.agent-notice[data-agent-notice="warning"] {
+  --agent-notice-color: var(--color-bg-warning);
+}
+
+.agent-notice[data-agent-notice="error"] {
+  --agent-notice-color: var(--color-bg-alert);
+}
+
+/* место точки — колонка аватара ленты (avatar_size = 32 в config.toml),
+   точка по центру первой строки текста */
+.agent-notice-mark {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 24px;
+}
+
+.agent-notice-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: var(--agent-notice-color);
+}
+
+.agent-notice-body {
+  flex-grow: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.agent-notice-detail {
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--color-typo-secondary);
+}

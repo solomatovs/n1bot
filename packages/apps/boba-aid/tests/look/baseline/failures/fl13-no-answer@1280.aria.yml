@@ -1,5 +1,5 @@
 - alert:
-  - text: "The agent process 'python' did not answer initialize: no answer within 8 s."
+  - text: "The agent didn't respond in time, so the chat can't answer right now. Try again in a moment with the button on the right. agent process 'python', initialize: no answer within 8 s"
   - button "Повторить"
 - textbox "Введите сообщение здесь..."
 - img

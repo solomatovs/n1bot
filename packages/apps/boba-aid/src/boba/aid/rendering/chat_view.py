@@ -114,6 +114,15 @@ class StepText(StrEnum):
     FINISHED = "aid.feed.unfinished"
     """Выход вызова, который не закончился к концу хода."""
 
+    ENDED_MAX_TOKENS = "aid.feed.endedMaxTokens"
+    """Ход кончился пределом длины ответа модели."""
+
+    ENDED_MAX_TURNS = "aid.feed.endedMaxTurns"
+    """Ход кончился пределом шагов агента на ход."""
+
+    ENDED_EARLY = "aid.feed.endedEarly"
+    """Ход кончился раньше по причине, которой чат не знает."""
+
     NO_ROWS = "aid.feed.noRows"
     """Пустая таблица результата."""
 
@@ -126,28 +135,16 @@ class StepText(StrEnum):
 
 
 class NoticeLevel(StrEnum):
-    """Важность пометки агента (severity `notice` ACP): значок сообщения в
-    ленте; ошибка рисуется цветом ошибки. Набор ACP открытый: незнакомое
-    значение — сведение."""
+    """Важность пометки агента (severity `notice` ACP): цвет рамки и точки
+    блока пометки в ленте. Набор ACP открытый: незнакомое значение —
+    сведение."""
 
     INFO = "info"
     WARNING = "warning"
     ERROR = "error"
 
-    @property
-    def icon(self) -> str:
-        """Значок lucide, который фронт chainlit ставит вместо аватара."""
-        if self is NoticeLevel.WARNING:
-            return "triangle-alert"
-
-        return "info"
-
     @classmethod
-    def of(cls, severity: str) -> NoticeLevel:
-        for level in cls:
-            if level.value == severity:
-                return level
-
+    def _missing_(cls, value: object) -> NoticeLevel:
         return cls.INFO
 
 
@@ -312,9 +309,12 @@ class StepMeta(StrEnum):
     """Аватар по этому имени вместо имени шага: у контейнера имя меняется
     со счётчиком шагов."""
 
-    ICON = "icon"
-    """Значок lucide вместо аватара (чтение штатное у chainlit): у пометок
-    агента."""
+    NOTICE = "agentNotice"
+    """Важность пометки агента или ошибки хода: overlay рисует такое
+    сообщение блоком пометки (AgentNotice) с рамкой и точкой её цвета."""
+
+    NOTICE_DETAIL = "noticeDetail"
+    """Короткая техническая причина пометки: мелкой строкой под текстом."""
 
     APP = "mcpApp"
     """Сообщение карточки приложения MCP Apps: без аватара и кнопок
@@ -1062,37 +1062,35 @@ class ChatView:
         return step
 
     async def error(self, text: str, key: str | None = None) -> Step:
-        step = self._step(
-            self._assistant_name,
-            StepKind.ASSISTANT,
-            parent_id=None,
-            step_id=self.derive_id(self._thread_id, key, StepRole.ERROR),
-        )
-        step.output = text
-        step.is_error = True
-        await self._sink.put(step)
-        await self._pulse.bump()
-        return step
+        """Ошибка хода — тем же блоком, что пометка агента с важностью
+        ошибки."""
+        step_id = self.derive_id(self._thread_id, key, StepRole.ERROR)
+
+        return await self._notice_step(NoticeLevel.ERROR, text, "", step_id)
 
     async def notice(
-        self, level: NoticeLevel, text: str, key: str | None = None
+        self, level: NoticeLevel, text: str, detail: str, key: str | None = None
     ) -> Step:
-        """Пометка агента: своё сообщение на каждую пометку хода, значок по
-        важности, у ошибки — цвет ошибки."""
+        """Пометка агента: своё сообщение на каждую пометку хода; detail —
+        короткая причина мелкой строкой под текстом."""
+        step_id = self.derive_id(
+            self._thread_id, self._turn.notice_key(key), StepRole.NOTICE
+        )
+
+        return await self._notice_step(level, text, detail, step_id)
+
+    async def _notice_step(
+        self, level: NoticeLevel, text: str, detail: str, step_id: str | None
+    ) -> Step:
         step = self._step(
-            self._assistant_name,
-            StepKind.ASSISTANT,
-            parent_id=None,
-            step_id=self.derive_id(
-                self._thread_id, self._turn.notice_key(key), StepRole.NOTICE
-            ),
+            self._assistant_name, StepKind.ASSISTANT, parent_id=None, step_id=step_id
         )
         step.output = text
-        if level is NoticeLevel.ERROR:
-            step.is_error = True
-        else:
-            step.metadata = {StepMeta.ICON.value: level.icon}
-
+        step.is_error = level is NoticeLevel.ERROR
+        step.metadata = {
+            StepMeta.NOTICE.value: level.value,
+            StepMeta.NOTICE_DETAIL.value: detail,
+        }
         await self._sink.put(step)
         await self._pulse.bump()
         return step

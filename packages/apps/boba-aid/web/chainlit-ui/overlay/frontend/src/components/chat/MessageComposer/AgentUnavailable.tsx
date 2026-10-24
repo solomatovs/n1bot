@@ -9,6 +9,7 @@ import {
 } from '@chainlit/react-client';
 
 import { Button } from '@/components/ui/button';
+import { AgentNotice } from 'components/chat/Messages/Message/AgentNotice';
 import { useTranslation } from 'components/i18n/Translator';
 
 // boba: агент вкладки недоступен — полоса над полем ввода с текстом сбоя от
@@ -46,21 +47,23 @@ export default function AgentUnavailable() {
   };
 
   return (
-    <div
-      role="alert"
-      data-agent-unavailable=""
-      className="mb-2 flex items-start gap-3 rounded-2xl border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-foreground"
-    >
-      <span className="flex-grow break-words">{agentState.text}</span>
-      <Button
-        id="agent-retry"
-        size="sm"
-        variant="outline"
-        disabled={retrying}
-        onClick={retry}
+    <div data-agent-unavailable="" className="mb-2">
+      <AgentNotice
+        severity="error"
+        role="alert"
+        text={agentState.text}
+        detail={agentState.detail}
       >
-        {t('aid.agent.retry')}
-      </Button>
+        <Button
+          id="agent-retry"
+          size="sm"
+          variant="outline"
+          disabled={retrying}
+          onClick={retry}
+        >
+          {t('aid.agent.retry')}
+        </Button>
+      </AgentNotice>
     </div>
   );
 }

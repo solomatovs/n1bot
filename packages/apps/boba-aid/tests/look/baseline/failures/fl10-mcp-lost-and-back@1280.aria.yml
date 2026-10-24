@@ -2,14 +2,7 @@
 - img "Avatar for AID"
 - article: "Here is a plain streamed answer: about the request step by step checking tables joins filters and the expected shape of the answer before calling any tool the model reasons about the request step by step"
 - article: Как дела? scenario
-- article:
-  - text: "MCP server 'faulty' is unavailable, its tools are left out of the session: server/discover to MCP server 'faulty': mcp server 'faulty' ("
-  - link "http://127.0.0.1:0/mcp":
-    - /url: http://127.0.0.1:0/mcp
-  - text: "): server/discover got no answer of the MCP server: POST"
-  - link "http://127.0.0.1:0/mcp":
-    - /url: http://127.0.0.1:0/mcp
-  - text: ": expected a reply of the MCP server, got no answer: ConnectError: All connection attempts failed"
+- status: The MCP server 'faulty' isn't available right now, so its tools can't be used in this turn. It will be tried again with your next message. no connection
 - img "Avatar for AID"
 - article: "Here is a plain streamed answer: about the request step by step checking tables joins filters and the expected shape of the answer before calling any tool the model reasons about the request step by step"
 - article: Как дела? scenario

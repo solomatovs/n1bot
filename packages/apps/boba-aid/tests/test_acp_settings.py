@@ -482,8 +482,7 @@ class TestForkCut:
             await agent.close()
             await servers.stop()
 
-        assert "cannot branch the conversation" in str(refused.value)
-        assert "boba/upToMessageId" in str(refused.value)
+        assert "can't branch a conversation" in str(refused.value)
 
 
 class ChatLaunch:
@@ -657,7 +656,8 @@ class TestLaunchConfig:
         }
 
     def _failure(self, updates: RecordingUpdates) -> str:
-        """Причина отказа хода: пометка агента об ошибке перед idle отказом."""
+        """Причина отказа хода: пометка агента об ошибке перед idle отказом —
+        слова человеку и короткая причина."""
         assert updates.finished, updates.updates
         _, idle = updates.finished[-1]
         assert idle.stop_reason == StopReason.REFUSAL, idle
@@ -667,7 +667,7 @@ class TestLaunchConfig:
                 continue
 
             if update.severity == "error":
-                errors.append(update.title)
+                errors.append(f"{update.title} ({update.description})")
 
         assert errors, updates.updates
 
@@ -687,7 +687,7 @@ class TestLaunchConfig:
         await agent.ask(Question(key="draft", text=FailureName.HANG.value))
 
         failure = self._failure(updates)
-        assert "timed out" in failure.lower() or "timeout" in failure.lower(), failure
+        assert failure.endswith("(no answer in time)"), failure
         requests = len(model.app.requests)
         assert requests % 2 == 0, requests
         assert requests >= 2, requests
@@ -724,7 +724,8 @@ class TestLaunchConfig:
         await agent.start()
         await agent.ask(Question(key="checking", text=text))
 
-        assert "certificate" in self._failure(refused).lower()
+        failure = self._failure(refused)
+        assert failure.endswith("(the certificate check failed)"), failure
 
     async def test_transport_section_of_the_provider_acts(
         self, chat_launch: ChatLaunch, model: FakeModel, tmp_path: Path

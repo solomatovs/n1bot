@@ -149,7 +149,7 @@ from boba.agent.session import SessionState
 from boba.agent.settings import (
     McpClientJson,
 )
-from boba.agent.template import AgentTemplate, AgentTemplateFile
+from boba.agent.template import AgentTemplate, AgentTemplateFile, ModelTroubleTexts
 from boba.agent.tools import (
     AskOption,
     AskQuestion,
@@ -642,6 +642,7 @@ class AcpMapping:
     def __init__(self) -> None:
         self._titles = ToolTitles()
         self._templates = AgentTemplate()
+        self._troubles = ModelTroubleTexts(self._templates)
 
     def idle(self, result: ResultEvent) -> schema.IdleSessionStateUpdate:
         """Конец хода по его итогу; причину отказа клиент уже получил
@@ -650,17 +651,26 @@ class AcpMapping:
             stop_reason=self.STOP_REASONS[result.outcome]
         )
 
-    def notice(self, level: NoticeLevel, text: str) -> schema.SessionNotice:
-        return schema.SessionNotice(severity=level.value, title=text)
+    def notice(
+        self, level: NoticeLevel, text: str, detail: str
+    ) -> schema.SessionNotice:
+        """Пометка: text — слова человеку заголовком, detail — короткая
+        техническая причина описанием (пусто — без описания)."""
+        description: str | None = None
+        if detail:
+            description = detail
 
-    def serving_stopped(self, failure: BaseException) -> Sequence[Update]:
-        """Обслуживание сессии сорвалось: пометка с причиной и конец хода
-        отказом."""
+        return schema.SessionNotice(
+            severity=level.value, title=text, description=description
+        )
+
+    def serving_stopped(self) -> Sequence[Update]:
+        """Обслуживание сессии сорвалось: пометка и конец хода отказом;
+        причина — в журнале агента."""
         text = self._templates.read(AgentTemplateFile.SERVING_STOPPED_NOTICE)
-        cause = f"{type(failure).__name__}: {failure}"
 
         return (
-            self.notice(NoticeLevel.ERROR, text.format(cause=cause)),
+            self.notice(NoticeLevel.ERROR, text, ""),
             schema.IdleSessionStateUpdate(stop_reason=StopReason.REFUSAL),
         )
 
@@ -668,7 +678,7 @@ class AcpMapping:
         """Пометки человеку, которые несёт запись: повтор запроса к модели,
         отказ модели, состояние серверов MCP и оборванный ход."""
         if isinstance(record, InformationalRecord):
-            yield self.notice(record.level, record.content)
+            yield self.notice(record.level, record.content, record.detail)
             return
 
         if isinstance(record, ApiErrorRecord):
@@ -678,22 +688,28 @@ class AcpMapping:
         if not isinstance(record, AssistantRecord):
             return
 
-        if not record.is_synthetic():
+        if not record.is_api_error_message:
             return
 
-        if failure := record.error:
-            yield self.notice(NoticeLevel.ERROR, self._advised(failure))
+        yield self._refusal(record)
 
-    def _advised(self, failure: str) -> str:
-        """Отказ модели с советом человеку: разговор, который больше не
-        входит в окно модели (сжатие не помогло), дальше вести нельзя."""
-        too_long = self._templates.read(AgentTemplateFile.PROMPT_TOO_LONG)
-        if not failure.startswith(too_long):
-            return failure
+    def _refusal(self, record: AssistantRecord) -> schema.SessionNotice:
+        """Отказ модели: слова человеку — текст записи, причина — её error,
+        если он не повторяет текст."""
+        texts: list[str] = []
+        for block in record.message.content:
+            if isinstance(block, TextBlock):
+                texts.append(block.text)
 
-        advice = self._templates.read(AgentTemplateFile.WINDOW_FULL_NOTICE)
+        text = "\n".join(texts)
+        detail = ""
+        if record.error is not None:
+            detail = record.error
 
-        return f"{failure.rstrip('.')}. {advice}"
+        if detail == text:
+            detail = ""
+
+        return self.notice(NoticeLevel.ERROR, text, detail)
 
     def _retry(self, record: ApiErrorRecord) -> Iterator[schema.SessionNotice]:
         """Неудачная попытка с повтором; попытка без повтора своей пометки
@@ -701,17 +717,11 @@ class AcpMapping:
         if record.retry_attempt == 0:
             return
 
-        text = self._templates.read(AgentTemplateFile.MODEL_RETRY_NOTICE)
         seconds = record.retry_in_ms / self.MILLIS
-        yield self.notice(
-            NoticeLevel.WARNING,
-            text.format(
-                error=record.error,
-                attempt=record.retry_attempt,
-                retries=record.max_retries,
-                seconds=f"{seconds:g}",
-            ),
+        text = self._troubles.retry(
+            record.trouble, record.retry_attempt, record.max_retries, seconds
         )
+        yield self.notice(NoticeLevel.WARNING, text, record.detail)
 
     def tool_kind(self, hints: ToolHints | None) -> ToolKindName:
         """`kind` по пометкам MCP: читающий — read, разрушающий — execute,
@@ -831,10 +841,7 @@ class AcpMapping:
     def _failed(self, record: AssistantRecord) -> Iterator[Update]:
         """Запись агента об отказе модели — конец хода отказом, как idle
         живого хода; причину уже несёт пометка записи."""
-        if not record.is_synthetic():
-            return
-
-        if record.error:
+        if record.is_api_error_message:
             yield schema.IdleSessionStateUpdate(stop_reason=StopReason.REFUSAL)
 
     def _replayed_assistant(
@@ -1485,17 +1492,15 @@ class ServerNotices:
 
     def unavailable(self, server: str, failure: BaseException) -> None:
         text = self._templates.read(AgentTemplateFile.MCP_UNAVAILABLE_NOTICE)
-        cause = self._cause(failure)
-        self._add(NoticeLevel.WARNING, text.format(server=server, cause=cause))
+        self._add(NoticeLevel.WARNING, text.format(server=server), self._cause(failure))
 
     def lost(self, server: str, failure: BaseException) -> None:
         text = self._templates.read(AgentTemplateFile.MCP_LOST_NOTICE)
-        cause = self._cause(failure)
-        self._add(NoticeLevel.WARNING, text.format(server=server, cause=cause))
+        self._add(NoticeLevel.WARNING, text.format(server=server), self._cause(failure))
 
     def back(self, server: str) -> None:
         text = self._templates.read(AgentTemplateFile.MCP_BACK_NOTICE)
-        self._add(NoticeLevel.INFO, text.format(server=server))
+        self._add(NoticeLevel.INFO, text.format(server=server), "")
 
     def taken(self) -> Sequence[ServerNotice]:
         """Накопленные смены; каждая отдаётся один раз."""
@@ -1504,22 +1509,34 @@ class ServerNotices:
 
         return taken
 
-    def _add(self, level: NoticeLevel, text: str) -> None:
-        self._pending.append(ServerNotice(level=level, text=text))
+    def _add(self, level: NoticeLevel, text: str, detail: str) -> None:
+        self._pending.append(ServerNotice(level=level, text=text, detail=detail))
 
     @staticmethod
     def _cause(failure: BaseException) -> str:
-        """Причина для человека: ответ клиента ACP об отказе сервера (его
-        текст называет сервер, адрес и ответ HTTP) без обёрток агента;
-        без такого ответа — текст самого сбоя."""
+        """Короткая причина для человека: `details` ответа клиента ACP об
+        отказе сервера (статус HTTP, страница вместо MCP, нет соединения);
+        без неё — пусто, полный текст сбоя остаётся в журнале агента."""
         cause: BaseException | None = failure
         while cause is not None:
             if isinstance(cause, RequestError):
-                return str(cause)
+                return ServerNotices._details(cause)
 
             cause = cause.__cause__
 
-        return str(failure)
+        return ""
+
+    @staticmethod
+    def _details(error: RequestError) -> str:
+        data = error.data
+        if not isinstance(data, Mapping):
+            return ""
+
+        details = data.get(ErrorDataKey.DETAILS.value)
+        if not isinstance(details, str):
+            return ""
+
+        return details
 
 
 class AcpToolServer(ToolServer):
@@ -2990,11 +3007,11 @@ class SessionRelay(EventSink):
         контекста, как после хода."""
         await self._send_all(self._turn_summary())
 
-    async def failed(self, failure: BaseException) -> None:
-        """Обслуживание сессии сорвалось: пометка с причиной и `idle`
-        отказом."""
+    async def failed(self) -> None:
+        """Обслуживание сессии сорвалось: пометка и `idle` отказом; причину
+        пишет в журнал тот, кто заметил сбой."""
         self._running = False
-        await self._send_all(self._mapping.serving_stopped(failure))
+        await self._send_all(self._mapping.serving_stopped())
 
     async def emit(self, event: AgentEvent) -> None:
         if isinstance(event, ResultEvent):
@@ -3005,7 +3022,9 @@ class SessionRelay(EventSink):
 
         if isinstance(event, ErrorEvent):
             logger.warning("session %s: %s", self._session_id, event.message)
-            await self._send(self._mapping.notice(NoticeLevel.ERROR, event.message))
+            await self._send(
+                self._mapping.notice(NoticeLevel.ERROR, event.message, "")
+            )
             return
 
         if isinstance(event, HistoryWrittenEvent):
@@ -3143,10 +3162,7 @@ class SessionRelay(EventSink):
         if not isinstance(record, AssistantRecord):
             return False
 
-        if not record.is_synthetic():
-            return False
-
-        return bool(record.error)
+        return bool(record.is_api_error_message)
 
     def _withdrawn(self) -> Iterator[Update]:
         """Неудачная попытка запроса к модели: её недописанный ответ и
@@ -3580,7 +3596,7 @@ class AcpSession:
         self._relay.refuse_all(
             RequestError.internal_error({ErrorDataKey.DETAILS.value: details})
         )
-        self._reports.append(asyncio.create_task(self._relay.failed(failure)))
+        self._reports.append(asyncio.create_task(self._relay.failed()))
 
     async def prompt(self, asked: QueueEntry) -> schema.PromptResponse:
         """Ставит вопрос в очередь ядра и отвечает, когда его ход вставил

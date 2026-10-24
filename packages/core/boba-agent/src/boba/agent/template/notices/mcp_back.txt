@@ -1,1 +1,1 @@
-MCP server '{server}' answers again, its tools are back in the session.
+The MCP server '{server}' is answering again, and its tools are available.

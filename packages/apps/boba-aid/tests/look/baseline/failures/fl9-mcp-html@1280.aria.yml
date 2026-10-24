@@ -1,14 +1,4 @@
 - article: Как дела? scenario
-- article:
-  - text: "MCP server 'faulty' is unavailable, its tools are left out of the session: server/discover to MCP server 'faulty': mcp server 'faulty': mcp"
-  - link "http://127.0.0.1:0/mcp":
-    - /url: http://127.0.0.1:0/mcp
-  - text: ": connecting and initializing failed: POST"
-  - link "http://127.0.0.1:0/mcp":
-    - /url: http://127.0.0.1:0/mcp
-  - text: ": expected a reply of the MCP server, got HTTP 200 OK with body text/html; McpClientError: mcp"
-  - link "http://127.0.0.1:0/mcp":
-    - /url: http://127.0.0.1:0/mcp
-  - text: ": negotiating the protocol by server/discover and then initialize was refused with MCP error -32600: Unexpected content type: text/html (data None); the client speaks ['2024-11-05', '2025-03-26', '2025-06-18', '2025-11-25', '2026-07-28']"
+- status: The MCP server 'faulty' isn't available right now, so its tools can't be used in this turn. It will be tried again with your next message. a web page instead of an MCP reply (HTTP 200)
 - img "Avatar for AID"
 - article: "Here is a plain streamed answer: about the request step by step checking tables joins filters and the expected shape of the answer before calling any tool the model reasons about the request step by step"

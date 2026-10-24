@@ -1,1 +1,1 @@
-This chat no longer fits the model window: start a new chat to go on.
+This conversation no longer fits in the model's memory. Start a new chat to continue.

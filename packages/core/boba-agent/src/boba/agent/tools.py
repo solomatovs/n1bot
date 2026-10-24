@@ -260,10 +260,12 @@ class OwnTool(Protocol):
 class ServerNotice:
     """Смена состояния сервера MCP сессии для человека: сервер не открылся,
     перестал отвечать или ответил снова. Отдаёт McpServerSet, ход пишет её
-    записью informational."""
+    записью informational; detail — короткая техническая причина под
+    текстом, пусто — причины нет."""
 
     level: NoticeLevel
     text: str
+    detail: str
 
 
 class McpServerSet(Protocol):

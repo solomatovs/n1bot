@@ -1,21 +1,5 @@
 - article: Вопрос под лимитом scenario failure
-- article:
-  - text: "The model request failed: openai chat: stream failed: POST"
-  - link "http://127.0.0.1:0/v1/chat/completions":
-    - /url: http://127.0.0.1:0/v1/chat/completions
-  - text: ": expected 2xx, got 429 Too Many Requests: '{\"error\":{\"message\":\"fake llm: rate limit exceeded, retry later\",\"type\":\"invalid_request_error\",\"code\":\"failure \"}}'. Retry 1 of 3 in 1 s."
-- article:
-  - text: "The model request failed: openai chat: stream failed: POST"
-  - link "http://127.0.0.1:0/v1/chat/completions":
-    - /url: http://127.0.0.1:0/v1/chat/completions
-  - text: ": expected 2xx, got 429 Too Many Requests: '{\"error\":{\"message\":\"fake llm: rate limit exceeded, retry later\",\"type\":\"invalid_request_error\",\"code\":\"failure \"}}'. Retry 2 of 3 in 2 s."
-- article:
-  - text: "The model request failed: openai chat: stream failed: POST"
-  - link "http://127.0.0.1:0/v1/chat/completions":
-    - /url: http://127.0.0.1:0/v1/chat/completions
-  - text: ": expected 2xx, got 429 Too Many Requests: '{\"error\":{\"message\":\"fake llm: rate limit exceeded, retry later\",\"type\":\"invalid_request_error\",\"code\":\"failure \"}}'. Retry 3 of 3 in 4 s."
-- article:
-  - text: "openai chat: stream failed: POST"
-  - link "http://127.0.0.1:0/v1/chat/completions":
-    - /url: http://127.0.0.1:0/v1/chat/completions
-  - text: ": expected 2xx, got 429 Too Many Requests: '{\"error\":{\"message\":\"fake llm: rate limit exceeded, retry later\",\"type\":\"invalid_request_error\",\"code\":\"failure \"}}'"
+- status: "The model is busy right now. Trying again in 1 second (attempt 1 of 3). HTTP 429 Too Many Requests: fake llm: rate limit exceeded, retry later"
+- status: "The model is busy right now. Trying again in 2 seconds (attempt 2 of 3). HTTP 429 Too Many Requests: fake llm: rate limit exceeded, retry later"
+- status: "The model is busy right now. Trying again in 4 seconds (attempt 3 of 3). HTTP 429 Too Many Requests: fake llm: rate limit exceeded, retry later"
+- status: "The model is still busy after several tries, so this turn has stopped. Wait a minute and send your message again. HTTP 429 Too Many Requests: fake llm: rate limit exceeded, retry later"

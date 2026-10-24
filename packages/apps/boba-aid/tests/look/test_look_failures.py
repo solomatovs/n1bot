@@ -76,10 +76,12 @@ class FailLook:
         GROUP,
         "fl1-turn-lost",
         "Процесс агента убит посреди хода",
-        "над полем ввода полоса «The connection to the agent process 'python…' "
-        "was lost during the turn: the process exited with code -9.» и кнопка "
-        "«Повторить»; поле ввода заперто; в ленте — вопрос, сообщений об ошибке "
-        "в ленте нет, кружка ожидания нет",
+        "над полем ввода строка с красной точкой «The connection to the agent "
+        "was lost. Reconnect with the button on the right; …», под ней мелко "
+        "причина «agent "
+        "process 'python…', the turn: the process exited with code -9», и "
+        "кнопка «Повторить»; поле ввода заперто; в ленте — вопрос, сообщений об "
+        "ошибке в ленте нет, кружка ожидания нет",
         (),
     )
     TURN_LOST_RETRIED: ClassVar[LookState] = LookState(
@@ -87,8 +89,8 @@ class FailLook:
         "fl2-turn-lost-retried",
         "Тот же тред после «Повторить»",
         "полосы нет, поле ввода открыто; лента собрана из истории агента: "
-        "вопрос и под ним пометка с жёлтым треугольником «The turn was "
-        "interrupted: the agent stopped before it finished…»",
+        "вопрос и под ним строка с жёлтой точкой в колонке аватара «The "
+        "previous turn was cut short: the agent stopped before it finished…»",
         (),
     )
     TOOL_LOST: ClassVar[LookState] = LookState(
@@ -104,9 +106,11 @@ class FailLook:
         GROUP,
         "fl4-model-retries",
         "Модель трижды ответила 429, ход кончился отказом",
-        "три пометки с жёлтым треугольником «The model request failed: … 429 "
-        "Too Many Requests … Retry N of 3 in N s.» и красная пометка с причиной "
-        "отказа; недописанных ответов нет",
+        "три строки с жёлтой точкой «The model is busy right now. Trying again "
+        "in N seconds (attempt N of 3).», под каждой мелко «HTTP 429 Too Many "
+        "Requests: fake llm: rate limit exceeded, retry later», и строка с "
+        "красной точкой «The model is still busy after several tries, so this "
+        "turn has stopped. …»; сырого JSON и недописанных ответов нет",
         (),
     )
     MODEL_RETRIES_RELOADED: ClassVar[LookState] = LookState(
@@ -120,17 +124,20 @@ class FailLook:
         GROUP,
         "fl6-model-cut",
         "Поток модели обрывается на каждой попытке",
-        "ни одного обрывка ответа: только пометки повторов и красная пометка "
-        "«… the stream ended without a finish_reason …»",
+        "ни одного обрывка ответа: только строки повторов «The model's answer "
+        "broke off before it was finished. Trying again …» и строка с красной "
+        "точкой «The model's answer kept breaking off, so this turn has "
+        "stopped. …»",
         (),
     )
     MCP_UNAUTHORIZED: ClassVar[LookState] = LookState(
         GROUP,
         "fl7-mcp-unauthorized",
         "Сервер MCP отвечает 401 страницей HTML",
-        "в ходе пометка с жёлтым треугольником «MCP server 'faulty' is "
-        "unavailable, its tools are left out of the session: … got HTTP 401 "
-        "Unauthorized with body text/html»; ниже ответ модели",
+        "в ходе строка с жёлтой точкой «The MCP server 'faulty' isn't "
+        "available right now, so its tools can't be used in this turn. …», под "
+        "ней мелко «HTTP 401 Unauthorized»; адресов и типов исключений нет; "
+        "ниже ответ модели",
         (),
     )
     MCP_UNAUTHORIZED_RELOADED: ClassVar[LookState] = LookState(
@@ -145,32 +152,36 @@ class FailLook:
         GROUP,
         "fl9-mcp-html",
         "Сервер MCP отвечает 200 страницей HTML вместо MCP",
-        "пометка «… got HTTP 200 OK with body text/html»",
+        "строка о сервере, под ней мелко «a web page instead of an MCP reply "
+        "(HTTP 200)»",
         (),
     )
     MCP_LOST_AND_BACK: ClassVar[LookState] = LookState(
         GROUP,
         "fl10-mcp-lost-and-back",
         "Сервер MCP пропал между ходами и вернулся",
-        "первый ход — ответ; второй начинается пометкой с жёлтым треугольником "
-        "«MCP server 'faulty' is unavailable, … got no answer: ConnectError: All "
-        "connection attempts failed»; третий — снова ответ без пометки",
+        "первый ход — ответ; второй начинается строкой с жёлтой точкой «The "
+        "MCP server 'faulty' isn't available right now, …» и мелкой причиной "
+        "«no connection»; третий — снова ответ без пометки",
         (),
     )
     MCP_AND_MODEL: ClassVar[LookState] = LookState(
         GROUP,
         "fl11-mcp-and-model",
         "Сервер MCP отвечает 401, модель — 429",
-        "видны обе причины: пометка о сервере MCP, пометки повторов и красная "
-        "пометка отказа модели; ни одна не затёрла другую",
+        "видны обе причины: строка о сервере MCP, строки повторов и строка "
+        "отказа модели; точки одного размера в колонке аватара, ни одна "
+        "пометка не затёрла другую",
         (),
     )
     START_FAILED: ClassVar[LookState] = LookState(
         GROUP,
         "fl12-start-failed",
         "Программа агента не найдена",
-        "полоса «The agent process 'boba-missing' could not be started: No such "
-        "file or directory; check [agent.process].command.» и «Повторить»; "
+        "строка с красной точкой «The agent couldn't be started, so the chat "
+        "can't answer right now. Try again with the button on the right; …», "
+        "мелко причина для "
+        "администратора «agent process 'boba-missing', start: …» и «Повторить»; "
         "внутренних путей в тексте нет; поле заперто",
         (),
     )
@@ -178,16 +189,19 @@ class FailLook:
         GROUP,
         "fl13-no-answer",
         "Агент не ответил на initialize",
-        "полоса «The agent process 'python…' did not answer initialize: no answer "
-        "within 8 s.»; поле заперто",
+        "строка с красной точкой «The agent didn't respond in time, so the chat "
+        "can't answer right now. Try again in a moment with the button on the "
+        "right.», мелко «agent process "
+        "'python…', initialize: no answer within 8 s»; поле заперто",
         (),
     )
     SERVICE_UNREACHABLE: ClassVar[LookState] = LookState(
         GROUP,
         "fl14-service-unreachable",
         "Служба агента недоступна при открытии треда",
-        "полоса «The agent service at http://127.0.0.1:0/acp is unreachable "
-        "(initialize): …»; лента пуста; поле заперто",
+        "строка с красной точкой «The agent can't be reached right now, so the "
+        "chat can't answer. …», мелко адрес службы и причина; лента пуста; "
+        "поле заперто",
         (),
     )
     SERVICE_RETRIED: ClassVar[LookState] = LookState(
@@ -201,27 +215,41 @@ class FailLook:
         GROUP,
         "fl16-service-unauthorized",
         "Служба агента отвечает 401 страницей HTML",
-        "полоса «The agent service at … refused the sign-in of this chat …»",
+        "строка «The agent didn't accept the sign-in of this chat, so the chat "
+        "can't answer. Reload the page to sign in again; …»",
         (),
     )
     SERVICE_BAD_GATEWAY: ClassVar[LookState] = LookState(
         GROUP,
         "fl17-service-bad-gateway",
         "Служба агента отвечает 502 страницей HTML",
-        "полоса «The agent service at … answered initialize not by the agent "
-        "protocol: HTTP 502 …»",
+        "строка «The agent answered in a way the chat doesn't understand, …», "
+        "мелко «… HTTP 502 …»",
         (),
     )
     SERVICE_LOST: ClassVar[LookState] = LookState(
         GROUP,
         "fl18-service-lost",
         "Связь со службой агента оборвалась посреди хода",
-        "полоса «The connection to the agent service at … was lost during the "
-        "turn: the service closed the connection.»; процесса в тексте нет",
+        "строка «The connection to the agent was lost. Reconnect with the button "
+        "on the right; …», мелко «agent service at …, the turn: the service closed "
+        "the connection»; процесса в тексте нет",
         (),
     )
 
     LOGIN_USER: ClassVar[str] = "admin"
+    THEMED: ClassVar[str] = """(theme) => {
+      window.localStorage.setItem('vite-ui-theme', theme);
+      const root = document.documentElement;
+      root.classList.remove('light', 'dark');
+      root.classList.add(theme);
+      const variables = (window.theme || {})[theme] || {};
+      for (const [key, value] of Object.entries(variables)) {
+        root.style.setProperty(key, value);
+      }
+    }"""
+    """Тема страницы так же, как её ставит ThemeProvider chainlit."""
+    THEME_MS: ClassVar[int] = 300
     TURN_SEC: ClassVar[float] = 120.0
     WAIT_MS: ClassVar[float] = 60_000
     BANNER: ClassVar[str] = "[data-agent-unavailable]"
@@ -323,6 +351,35 @@ class FailTab:
         спутается с первым ходом. Страница не открывается заново — вторая
         вкладка подняла бы второго агента."""
         self._wait(lambda: self._log.task_done(ChatPage.ON_CHAT_START))
+
+    def shots(
+        self, look: LookCheck, region: Callable[[], Locator], state: LookState
+    ) -> None:
+        """Кадры состояния в обеих темах и обоих размерах на той же странице:
+        состояние сбоя одноразовое, новая вкладка его бы не повторила. Тема
+        переключается так же, как её ставит ThemeProvider chainlit, высота
+        окна остаётся прежней; после кадров — снова светлая тема и ширина
+        ноутбука."""
+        viewport = self._page.viewport_size
+        assert viewport is not None
+        height = viewport["height"]
+        for size in LookSize:
+            self._page.set_viewport_size(
+                {"width": size.viewport["width"], "height": height}
+            )
+            for theme in LookTheme:
+                self._themed(theme)
+                look.frame(region(), state, theme, size)
+
+        self._page.set_viewport_size(
+            {"width": SIZE.viewport["width"], "height": height}
+        )
+        self._themed(THEME)
+
+    def _themed(self, theme: LookTheme) -> None:
+        self._page.emulate_media(color_scheme=theme.value)
+        self._page.evaluate(FailLook.THEMED, theme.value)
+        self._page.wait_for_timeout(FailLook.THEME_MS)
 
     def tall(self) -> None:
         """Окно той же ширины, в которое лента нескольких ходов входит
@@ -596,23 +653,23 @@ def test_lost_agent_look(
     tab.release()
     tab.banner()
     tabs.settle(tab)
-    look.frame(tab.composer(), FailLook.TURN_LOST, THEME, SIZE)
+    tab.shots(look, tab.composer, FailLook.TURN_LOST)
 
     tab.retried()
-    tab.shown("The turn was interrupted")
+    tab.shown("The previous turn was cut short")
     tabs.settle(tab)
-    look.frame(tab.feed(), FailLook.TURN_LOST_RETRIED, THEME, SIZE)
+    tab.shots(look, tab.feed, FailLook.TURN_LOST_RETRIED)
 
     tab.ask_running(questions.call("sleep_for", {"seconds": 60}))
     tab.await_tool()
     agents.killed()
     tab.banner()
     tab.retried()
-    tab.shown("The turn was interrupted")
+    tab.shown("The previous turn was cut short")
     tab.open_steps()
     tab.shown("Tool call interrupted")
     tabs.settle(tab)
-    look.frame(tab.feed(), FailLook.TOOL_LOST, THEME, SIZE)
+    tab.shots(look, tab.feed, FailLook.TOOL_LOST)
     tab.check_clean()
     look.verify()
 
@@ -625,20 +682,20 @@ def test_model_failure_look(
     tab = tabs.open(process_stand)
     tab.tall()
     tab.ask(FailQuestion.RATE)
-    tab.shown("Retry 3 of 3")
+    tab.shown("(attempt 3 of 3)")
     tabs.settle(tab)
-    look.frame(tab.feed(), FailLook.MODEL_RETRIES, THEME, SIZE)
+    tab.shots(look, tab.feed, FailLook.MODEL_RETRIES)
     tab.reload()
-    tab.shown("Retry 3 of 3")
+    tab.shown("(attempt 3 of 3)")
     tabs.settle(tab)
-    look.frame(tab.feed(), FailLook.MODEL_RETRIES_RELOADED, THEME, SIZE)
+    tab.shots(look, tab.feed, FailLook.MODEL_RETRIES_RELOADED)
     look.same_as(FailLook.MODEL_RETRIES_RELOADED, FailLook.MODEL_RETRIES, THEME, SIZE)
 
     tab.ask(FailQuestion.CUT)
-    tab.shown("finish_reason")
+    tab.shown("kept breaking off")
     expect(tab.page.get_by_text("Here is a plain streamed answer")).to_have_count(0)
     tabs.settle(tab)
-    look.frame(tab.feed(), FailLook.MODEL_CUT, THEME, SIZE)
+    tab.shots(look, tab.feed, FailLook.MODEL_CUT)
     tab.check_clean()
     look.verify()
 
@@ -659,11 +716,11 @@ def test_mcp_failure_look(
         tab.ask(FailQuestion.ANSWER)
         tab.shown("401 Unauthorized")
         tabs.settle(tab)
-        look.frame(tab.feed(), FailLook.MCP_UNAUTHORIZED, THEME, SIZE)
+        tab.shots(look, tab.feed, FailLook.MCP_UNAUTHORIZED)
         tab.reload()
         tab.shown("401 Unauthorized")
         tabs.settle(tab)
-        look.frame(tab.feed(), FailLook.MCP_UNAUTHORIZED_RELOADED, THEME, SIZE)
+        tab.shots(look, tab.feed, FailLook.MCP_UNAUTHORIZED_RELOADED)
         look.same_as(
             FailLook.MCP_UNAUTHORIZED_RELOADED, FailLook.MCP_UNAUTHORIZED, THEME, SIZE
         )
@@ -671,9 +728,9 @@ def test_mcp_failure_look(
         faulty.reply(HTTPStatus.OK)
         tab = tabs.open(process_stand)
         tab.ask(FailQuestion.ANSWER)
-        tab.shown("200 OK with body text/html")
+        tab.shown("a web page instead of an MCP reply (HTTP 200)")
         tabs.settle(tab)
-        look.frame(tab.feed(), FailLook.MCP_HTML, THEME, SIZE)
+        tab.shots(look, tab.feed, FailLook.MCP_HTML)
 
         faulty.through()
         tab = tabs.open(process_stand)
@@ -681,20 +738,20 @@ def test_mcp_failure_look(
         tab.ask(FailQuestion.ANSWER)
         faulty.proxy.set(FaultMode.REFUSE)
         tab.ask(FailQuestion.ANSWER)
-        tab.shown("All connection attempts failed")
+        tab.shown("no connection")
         faulty.through()
         tab.ask(FailQuestion.ANSWER)
         tabs.settle(tab)
-        look.frame(tab.whole(), FailLook.MCP_LOST_AND_BACK, THEME, SIZE)
+        tab.shots(look, tab.whole, FailLook.MCP_LOST_AND_BACK)
 
         faulty.reply(HTTPStatus.UNAUTHORIZED)
         tab = tabs.open(process_stand)
         tab.tall()
         tab.ask(FailQuestion.RATE)
-        tab.shown("Retry 3 of 3")
+        tab.shown("(attempt 3 of 3)")
         tab.shown("401 Unauthorized")
         tabs.settle(tab)
-        look.frame(tab.feed(), FailLook.MCP_AND_MODEL, THEME, SIZE)
+        tab.shots(look, tab.feed, FailLook.MCP_AND_MODEL)
         tab.check_clean()
     finally:
         faulty.through()
@@ -713,7 +770,7 @@ def test_agent_start_look(
     tab = tabs.open(look_stands.shaped("failures-missing", missing))
     tab.banner()
     tabs.settle(tab)
-    look.frame(tab.composer(), FailLook.START_FAILED, THEME, SIZE)
+    tab.shots(look, tab.composer, FailLook.START_FAILED)
 
     silent = LookAgentShape(
         process={
@@ -725,7 +782,7 @@ def test_agent_start_look(
     tab = tabs.open(look_stands.shaped("failures-silent", silent))
     tab.banner()
     tabs.settle(tab)
-    look.frame(tab.composer(), FailLook.NO_ANSWER, THEME, SIZE)
+    tab.shots(look, tab.composer, FailLook.NO_ANSWER)
     tab.check_clean()
     look.verify()
 
@@ -746,24 +803,24 @@ def test_service_failure_look(
         tab.reload()
         tab.banner()
         tabs.settle(tab)
-        look.frame(tab.composer(), FailLook.SERVICE_UNREACHABLE, THEME, SIZE)
+        tab.shots(look, tab.composer, FailLook.SERVICE_UNREACHABLE)
         service.proxy.set(FaultMode.THROUGH)
         tab.retried()
         tab.shown("Here is a plain streamed answer")
         tabs.settle(tab)
-        look.frame(tab.feed(), FailLook.SERVICE_RETRIED, THEME, SIZE)
+        tab.shots(look, tab.feed, FailLook.SERVICE_RETRIED)
 
         service.reply(HTTPStatus.UNAUTHORIZED)
         tab = tabs.open(service_stand)
         tab.banner()
         tabs.settle(tab)
-        look.frame(tab.composer(), FailLook.SERVICE_UNAUTHORIZED, THEME, SIZE)
+        tab.shots(look, tab.composer, FailLook.SERVICE_UNAUTHORIZED)
 
         service.reply(HTTPStatus.BAD_GATEWAY)
         tab = tabs.open(service_stand)
         tab.banner()
         tabs.settle(tab)
-        look.frame(tab.composer(), FailLook.SERVICE_BAD_GATEWAY, THEME, SIZE)
+        tab.shots(look, tab.composer, FailLook.SERVICE_BAD_GATEWAY)
 
         service.proxy.set(FaultMode.THROUGH)
         tab = tabs.open(service_stand)
@@ -773,7 +830,7 @@ def test_service_failure_look(
         tab.banner()
         tab.release()
         tabs.settle(tab)
-        look.frame(tab.composer(), FailLook.SERVICE_LOST, THEME, SIZE)
+        tab.shots(look, tab.composer, FailLook.SERVICE_LOST)
         tab.check_clean()
     finally:
         service.proxy.set(FaultMode.THROUGH)

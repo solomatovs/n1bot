@@ -35,7 +35,7 @@ import logging
 from abc import abstractmethod
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Protocol, TypeAlias
+from typing import Any, ClassVar, Protocol, TypeAlias
 
 import mcp_types as mt
 from acp.experimental.v2 import schema
@@ -351,6 +351,12 @@ class UpdateView:
     открытый журнал.
     """
 
+    EARLY: ClassVar[Mapping[str, StepText]] = {
+        StopReason.MAX_TOKENS: StepText.ENDED_MAX_TOKENS,
+        StopReason.MAX_TURN_REQUESTS: StepText.ENDED_MAX_TURNS,
+    }
+    """Пометки ленты хода, который кончился пределом раньше ответа."""
+
     def __init__(
         self,
         view: ChatView,
@@ -464,7 +470,11 @@ class UpdateView:
         if stop_reason == StopReason.REFUSAL:
             return TurnEnding(outcome=TurnOutcome.FAILED, note="")
 
-        note = f"The turn ended early: the agent stopped it with {stop_reason}."
+        if early := self.EARLY.get(stop_reason):
+            note = self._view.label(early)
+            return TurnEnding(outcome=TurnOutcome.FAILED, note=note)
+
+        note = self._view.label(StepText.ENDED_EARLY, reason=stop_reason)
         return TurnEnding(outcome=TurnOutcome.FAILED, note=note)
 
     async def _ended(self, idle: schema.IdleSessionStateUpdate) -> None:
@@ -636,12 +646,14 @@ class UpdateView:
 
     async def _notice(self, notice: schema.SessionNotice) -> None:
         """Пометка агента — своим сообщением хода."""
-        text = notice.title
+        detail = ""
         if notice.description:
-            text = f"{notice.title}: {notice.description}"
+            detail = notice.description
 
         await self._close_thinking()
-        await self._view.notice(NoticeLevel.of(notice.severity), text, self._turn_key)
+        await self._view.notice(
+            NoticeLevel(notice.severity), notice.title, detail, self._turn_key
+        )
 
     @staticmethod
     def _withdrawn(

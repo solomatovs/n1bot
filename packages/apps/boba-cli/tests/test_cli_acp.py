@@ -68,6 +68,7 @@ from boba.transport.acp.protocol import (
     AcpErrorCode,
     AcpVersion,
     ClientConnection,
+    ErrorDataKey,
     McpErrorOutcome,
     McpMessage,
     McpOutcome,
@@ -304,7 +305,8 @@ class StandRegistration:
                 "outcome: connecting to http://127.0.0.1:9/mcp failed: connection "
                 "refused"
             )
-            raise RequestError(AcpErrorCode.BACKEND_FAILED, msg)
+            data = {ErrorDataKey.DETAILS.value: "no connection"}
+            raise RequestError(AcpErrorCode.BACKEND_FAILED, msg, data)
 
         request = parse_client_request(
             message.method, McpVersion.V2026_07_28, message.params
@@ -1225,7 +1227,11 @@ class TestTurnState:
             notices = client.of(schema.SessionNotice)
             assert len(notices) == 1, notices
             assert notices[0].severity == "error"
-            assert "500" in notices[0].title, notices[0].title
+            assert notices[0].title.startswith(
+                "The model service still isn't responding"
+            ), notices[0].title
+            assert notices[0].description is not None
+            assert notices[0].description.startswith("HTTP 500"), notices[0]
         finally:
             await conn.close()
             await boba.close_stdin()
@@ -2161,8 +2167,8 @@ class TestRefusals:
         assert await boba.wait() == 0
         assert len(notices) == 1, notices
         assert notices[0].severity == "warning", notices
-        assert "'dead'" in notices[0].title, notices
-        assert "dead:0" in notices[0].title, notices
+        assert "The MCP server 'dead' isn't available" in notices[0].title, notices
+        assert notices[0].description is None, notices
         assert result_text(client.calls_of(starts[0].tool_call_id)[-1]) == "3"
 
     async def test_server_that_stops_and_returns_is_noticed_in_live_and_replay(
@@ -2205,9 +2211,9 @@ class TestRefusals:
         ]
         assert notices[0].severity == "warning", notices
         assert "stopped answering" in notices[0].title, notices
-        assert "connection refused" in notices[0].title, notices
+        assert notices[0].description == "no connection", notices
         assert notices[1].severity == "info", notices
-        assert "answers again" in notices[1].title, notices
+        assert "is answering again" in notices[1].title, notices
 
         second = AcpProcess(tmp_path, model)
         replaying = AcpClient()
@@ -3023,8 +3029,13 @@ class TestHistory:
         kinds, notices = self.turn_ends(live)
         assert kinds == ["user", "notice", "notice", StopReason.REFUSAL]
         assert notices[0].severity == "warning", notices
-        assert "Retry 1 of 1 in 1 s" in notices[0].title, notices
+        assert notices[0].title == (
+            "The model's answer broke off before it was finished. Trying again "
+            "in 1 second (attempt 1 of 1)."
+        ), notices
+        assert notices[0].description == "the stream stopped early", notices
         assert notices[1].severity == "error", notices
+        assert notices[1].title.startswith("The model's answer kept breaking off")
 
         replayed = await self.replayed(model, registration, tmp_path, session_id)
         assert self.turn_ends(replayed) == (kinds, notices)
@@ -4163,14 +4174,15 @@ class TestFork:
 
 
 class TestRefusalNotices:
-    """Отказ модели — пометка с тем же текстом вживую и в истории; отказ
-    из-за окна модели несёт совет начать новый тред."""
+    """Отказ модели — пометка со словами человеку из текста записи и
+    короткой причиной из её error; запись прежних версий, где текст и error
+    совпадают, причину не повторяет."""
 
-    def _refusal(self, error: str) -> AssistantRecord:
+    def _refusal(self, text: str, error: str | None) -> AssistantRecord:
         message = AssistantMessage(
             id="msg-1",
             model=Synthetic.MODEL.value,
-            content=[TextBlock(text=error)],
+            content=[TextBlock(text=text)],
             stop_reason=ReplyStopReason.STOP_SEQUENCE,
             usage=Usage(),
         )
@@ -4186,17 +4198,31 @@ class TestRefusalNotices:
             error=error,
         )
 
-    def test_window_full_refusal_advises_a_new_thread(self) -> None:
-        error = "Prompt is too long. Automatic compaction failed: 400 Bad Request"
-        notices = list(AcpMapping().notices(self._refusal(error)))
+    def test_refusal_text_and_detail_are_apart(self) -> None:
+        text = (
+            "This conversation no longer fits in the model's memory, and "
+            "shortening it automatically didn't help. Start a new chat to continue."
+        )
+        detail = "the summary request failed: HTTP 400 Bad Request"
+        notices = list(AcpMapping().notices(self._refusal(text, detail)))
 
         assert len(notices) == 1, notices
         assert notices[0].severity == "error"
-        assert notices[0].title.startswith(error), notices[0].title
-        assert "start a new chat" in notices[0].title, notices[0].title
+        assert notices[0].title == text, notices[0].title
+        assert notices[0].description == detail, notices[0]
 
-    def test_other_refusal_keeps_its_text(self) -> None:
+    def test_refusal_without_detail_has_no_description(self) -> None:
+        text = "This conversation no longer fits in the model's memory."
+        notices = list(AcpMapping().notices(self._refusal(text, None)))
+
+        assert [(notice.title, notice.description) for notice in notices] == [
+            (text, None)
+        ]
+
+    def test_old_refusal_does_not_repeat_its_text(self) -> None:
         error = "openai chat: POST http://model/v1: expected 2xx, got 500"
-        notices = list(AcpMapping().notices(self._refusal(error)))
+        notices = list(AcpMapping().notices(self._refusal(error, error)))
 
-        assert [notice.title for notice in notices] == [error]
+        assert [(notice.title, notice.description) for notice in notices] == [
+            (error, None)
+        ]

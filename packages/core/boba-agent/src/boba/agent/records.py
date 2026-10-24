@@ -38,6 +38,8 @@ import mcp_types as mt
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError
 from pydantic.alias_generators import to_camel
 
+from boba.llm.chat import LlmTrouble
+
 __all__ = [
     "ApiErrorRecord",
     "ApiRequestRecord",
@@ -499,6 +501,14 @@ class ApiErrorRecord(ChainRecord):
     retry_attempt: int
     max_retries: int
     level: NoticeLevel = NoticeLevel.ERROR
+    trouble: LlmTrouble = Field(
+        default=LlmTrouble.UNKNOWN,
+        description="Вид беды для текста человеку; прежние журналы его не пишут.",
+    )
+    detail: str = Field(
+        default="",
+        description="Короткая техническая причина: статус и суть ответа провайдера.",
+    )
 
 
 class InformationalRecord(ChainRecord):
@@ -510,6 +520,8 @@ class InformationalRecord(ChainRecord):
     subtype: Literal[SystemSubtype.INFORMATIONAL] = SystemSubtype.INFORMATIONAL
     content: str = Field(min_length=1)
     level: NoticeLevel
+    detail: str
+    """Короткая техническая причина под текстом; пусто — причины нет."""
 
 
 class PreservedMessages(WireModel):
