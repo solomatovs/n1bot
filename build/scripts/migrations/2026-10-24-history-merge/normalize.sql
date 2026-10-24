@@ -34,8 +34,13 @@
 -- видна пользователям службы агента. Назначается только сессиям, у которых
 -- владельца ещё нет.
 --
+-- Время треда (threads.updated_at, если его уже завёл чат текущего
+-- выпуска) сдвигается вперёд ко времени последней записи его сессии: старт
+-- чата заводит колонку временем создания треда, и без сдвига список тредов
+-- шёл бы по созданию, а не по последней беседе.
+--
 -- Повторный запуск ничего не меняет: записи уже в текущем виде, владельцы
--- назначены.
+-- назначены, время тредов сдвинуто.
 --
 -- Переменные psql (-v), необязательные: aid_schema (aid), boba_schema (boba).
 --
@@ -222,11 +227,47 @@ with assigned as (
 )
 insert into owned select id from assigned;
 
+create temporary table moved_threads (id uuid) on commit drop;
+
+select exists (
+    select 1
+    from information_schema.columns
+    where table_schema = :'aid_schema'
+        and table_name = 'threads'
+        and column_name = 'updated_at'
+) as has_updated_at \gset
+\if :has_updated_at
+    with lasts as (
+        select
+            h.session_id,
+            max(h.recorded_at) as last
+        from
+            :"boba_schema".session_records as h
+        group by
+            h.session_id
+    ),
+    moved as (
+        update :"aid_schema".threads as t
+        set
+            updated_at = l.last
+        from
+            lasts as l
+        where
+            l.session_id = t.meta ->> 'agent_session'
+            and l.last > t.updated_at
+        returning t.id
+    )
+    insert into moved_threads select id from moved;
+\endif
+
 \echo 'Tool results brought to a tools/call result, by their former form:'
 select form, count(*) as records from converted group by form order by form;
 
 \echo 'Sessions that got the login of their thread user as the owner:'
 select count(*) as sessions from owned;
+
+\echo 'Threads whose updated_at moved to the last record of their session:'
+select count(*) as threads from moved_threads;
 
 commit;
 
