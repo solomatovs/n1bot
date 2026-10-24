@@ -53,6 +53,7 @@ __all__ = [
     "FakeLlmApp",
     "FakePage",
     "FakeRoute",
+    "OfferedTools",
     "Played",
     "Reply",
     "ReplyBookClient",
@@ -466,6 +467,18 @@ class OfferedTools:
             return tool
 
         return deferred[0]
+
+    def deferred(self) -> Sequence[str]:
+        """Отложенные инструменты, объявленные агентом в сообщениях запроса."""
+        return self._deferred
+
+    def visible(self) -> frozenset[str]:
+        """Инструменты, которые знает модель: предложенные полным
+        определением и объявленные отложенными, кроме самого ToolSearch."""
+        names = set(self._offered) | set(self._deferred)
+        names.discard(ToolSearchWord.TOOL.value)
+
+        return frozenset(names)
 
     def _by_tool(self, tool: str, names: Sequence[str]) -> list[str]:
         found: list[str] = []
