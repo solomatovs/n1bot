@@ -22,6 +22,7 @@ import uvicorn
 
 from boba.cli.serve import ServeConfig, ServeHistory, ServeHost, ServeMark
 from boba.core.secrets import SecretReveal
+from boba.db.postgres.connection.auth import KeytabAuth
 from boba.krb import KerberosWorkspaceConfig
 from boba.stand.service_signin import ServiceSignIn
 from boba.stand.ui.stand import StandPorts
@@ -108,8 +109,21 @@ class ServeStandConfig:
         )
 
     def app(self) -> dict[str, Any]:
-        """Секция [app] службы: история с открытыми секретами, без пустых полей
-        — так её и читает ServeConfig, и пишет в файл TomlText."""
+        """Секция [app] службы для ServeConfig в процессе теста: подключение
+        истории — моделью, как его дал тест."""
+        return self._app(self._history)
+
+    def document(self) -> dict[str, Any]:
+        """Секция [app] службы для файла конфига процесса: подключение истории
+        словарём без пустых полей.
+
+        Ошибки:
+        AgentServiceProcessError — вход истории не по keytab: секреты другого
+            входа в файл не пишутся.
+        """
+        return self._app(self._history_section())
+
+    def _app(self, history: object) -> dict[str, Any]:
         return {
             "schema": "agent_service_stand",
             "krb": self._krb.model_dump(mode="json", exclude_none=True),
@@ -133,7 +147,7 @@ class ServeStandConfig:
                 "public_url": self.public_url,
                 "shutdown_timeout_sec": 2,
                 "idle_sec": self._idle_sec,
-                "history": self._history_section(),
+                "history": history,
                 "settings": self._settings,
                 "profiles": self._profiles.section(),
                 "clients": {self.CLIENT_ID: {"secret": self.CLIENT_SECRET}},
@@ -151,9 +165,17 @@ class ServeStandConfig:
         return await asyncio.to_thread(self._sign_in.token, login, roles, self.url())
 
     def _history_section(self) -> dict[str, object]:
-        """Подключение истории без контекста раскрытия: вход по keytab в него не
-        пускается, а путь keytab и принципал — не секреты; голые SecretStr
-        раскрываются обходом."""
+        """Путь keytab и принципал — не секреты, поэтому дамп идёт без контекста
+        раскрытия, а голые SecretStr раскрываются обходом."""
+        auth = self._history.postgres.auth
+        if not isinstance(auth, KeytabAuth):
+            got = type(auth).__name__
+            msg = (
+                "agent service process: the history of the stand must be entered "
+                f"with a keytab to be written to the config file, got {got}"
+            )
+            raise AgentServiceProcessError(msg)
+
         dumped = self._history.model_dump(mode="json", by_alias=True, exclude_none=True)
         SecretReveal.apply(self._history, dumped)
 
@@ -288,8 +310,11 @@ class AgentServiceProcess:
         config = ServeFiles.CONFIG.under(self._workdir)
         site = ServeFiles.SITE.under(self._workdir)
         site.parent.mkdir(parents=True, exist_ok=True)
-        config.write_text(TomlText.dumps({"app": self._config.app()}), encoding="utf-8")
-        site.write_text(TomlText.dumps({"env": {}}), encoding="utf-8")
+        document = TomlText.dumps({"app": self._config.document()})
+        config.write_text(document, encoding="utf-8")
+
+        empty_site = TomlText.dumps({"env": {}})
+        site.write_text(empty_site, encoding="utf-8")
         argv = [*self._command, "serve", "--config", str(config), "--site", str(site)]
         with ServeFiles.LOG.under(self._workdir).open("wb") as log:
             self._process = subprocess.Popen(  # noqa: S603 — стенд теста

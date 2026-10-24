@@ -48,7 +48,11 @@ from boba.mcp_client.client import (
 )
 from boba.runtime.config import ProcessConfig
 from boba.runtime.threads import ThreadsTable
-from boba.stand.agent_service import AgentServiceStand, ServiceProfiles
+from boba.stand.agent_service import (
+    AgentServiceStand,
+    ServeStandConfig,
+    ServiceProfiles,
+)
 from boba.stand.names import StandNames
 from boba.stand.signin import SignInStand
 from boba.stand.site import Stand
@@ -144,12 +148,12 @@ class ServiceModeStand:
             scheme="http", host="127.0.0.1", port=service.port, path=""
         )
         mode = AgentServiceConfig(
-            endpoint=HttpRoute(service=location, path=service.PATH),
+            endpoint=HttpRoute(service=location, path=ServeStandConfig.PATH),
             auth=ProxyAuth(
                 issuer=location,
-                client_id=service.CLIENT_ID,
-                client_secret=SecretStr(service.CLIENT_SECRET),
-                secret=SecretStr(service.PROXY_SECRET),
+                client_id=ServeStandConfig.CLIENT_ID,
+                client_secret=SecretStr(ServeStandConfig.CLIENT_SECRET),
+                secret=SecretStr(ServeStandConfig.PROXY_SECRET),
             ),
             start_timeout_sec=60.0,
             request_timeout_sec=60.0,
