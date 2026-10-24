@@ -51,13 +51,13 @@ class App(StrEnum):
 
     AID = "aid"
     MCP = "mcp"
-    AGENT = "agent"
+    BOBA = "boba"
 
     @property
     def third_party(self) -> tuple[str, ...]:
         if self is App.AID:
             return ("pydantic", "fastapi", "chainlit")
-        if self is App.AGENT:
+        if self is App.BOBA:
             return ("pydantic", "fastmcp", "acp")
         return ("pydantic", "fastmcp")
 
@@ -65,7 +65,7 @@ class App(StrEnum):
     def runs_agent(self) -> bool:
         """В образе приложения есть агент boba: служба агента и есть он сам
         (`boba serve`); чат ходит в неё по сети, своего агента у него нет."""
-        return self is App.AGENT
+        return self is App.BOBA
 
 
 class SandboxOnly(StrEnum):
