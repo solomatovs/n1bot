@@ -12,6 +12,7 @@ import json
 import time
 from collections.abc import AsyncIterator, Sequence
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 
@@ -36,6 +37,7 @@ from boba.agent.records import (
     AttachmentRecord,
     ChainRecord,
     CompactBoundaryRecord,
+    CompactTrigger,
     PermissionBehavior,
     PermissionMode,
     PermissionRule,
@@ -879,6 +881,83 @@ class TestInvokedSkills:
         after = json.dumps(server.requests()[-1]["messages"], ensure_ascii=False)
         assert INVOKED_MARK in after
         assert SKILL_BODY in after
+
+
+class TestManual:
+    """Сжатие по команде пользователя: элемент очереди compact — свой ход
+    без записи вопроса; указания пользователя уходят в инструкцию блоком
+    «Additional Instructions:»; граница — с триггером manual."""
+
+    NOTE: ClassVar[str] = "Keep only the table names."
+
+    async def test_command_compacts_with_the_instructions(
+        self, server: FakeServer, agents: StandAgents, tmp_path: Path
+    ) -> None:
+        sink = Collected()
+        profile = agents.profile(Protocol.OPENAI, chars_per_token=4)
+        served = Served(agents.agent(profile, sink, tools=StandTools()))
+        session = await served.open(SESSION, resume=False)
+
+        served.agent.queue.enqueue(prompt(call(large(2_000))))
+        await served.agent.settled()
+        served.agent.queue.enqueue(prompt(ScenarioName.ANSWER.value))
+        await served.agent.settled()
+        before = len(await journal(tmp_path / "history", SESSION))
+        served.agent.queue.enqueue(QueueEntry(kind=QueueKind.COMPACT, text=self.NOTE))
+        await served.agent.settled()
+        served.agent.queue.enqueue(prompt(ScenarioName.ANSWER.value))
+        await served.agent.settled()
+        await served.close()
+
+        assert list(served.agent.outcomes) == [TurnOutcome.COMPLETED] * 4
+        records = await journal(tmp_path / "history", SESSION)
+        compacted = kinds(records[before:])
+        assert "user" not in compacted[: compacted.index("system:compact_boundary")]
+        found = boundaries(records)
+        assert len(found) == 1
+        assert found[0].compact_metadata.trigger is CompactTrigger.MANUAL
+        attempts = summary_requests(server)
+        assert len(attempts) == 1
+        sent = attempts[0]["messages"]
+        assert isinstance(sent, list)
+        instruction = json.dumps(sent[-1], ensure_ascii=False)
+        assert f"Additional Instructions:\\n{self.NOTE}\\n\\nREMINDER:" in instruction
+        after = messages(server, len(server.requests()) - 1)
+        first_user = after[1]["content"]
+        assert isinstance(first_user, str)
+        assert CONTINUED in first_user
+        statuses = [
+            e.status for e in sink.of(CompactionEvent) if isinstance(e, CompactionEvent)
+        ]
+        assert statuses == [CompactionStatus.IN_PROGRESS, CompactionStatus.COMPLETED]
+        conversation = session.conversation()
+        assert isinstance(conversation[0], CompactBoundaryRecord)
+        assert conversation[0].uuid == found[0].uuid
+
+    async def test_command_without_anything_to_summarize_fails(
+        self, agents: StandAgents
+    ) -> None:
+        profile = agents.profile(Protocol.OPENAI, chars_per_token=4)
+        served = Served(agents.agent(profile, Collected(), tools=StandTools()))
+        session = await served.open(SESSION, resume=False)
+
+        served.agent.queue.enqueue(prompt(ScenarioName.ANSWER.value))
+        await served.agent.settled()
+        served.agent.queue.enqueue(QueueEntry(kind=QueueKind.COMPACT, text=""))
+        await served.agent.settled()
+        await served.close()
+
+        assert list(served.agent.outcomes) == [
+            TurnOutcome.COMPLETED,
+            TurnOutcome.API_ERROR,
+        ]
+        records = session.records()
+        assert not boundaries(records)
+        assert synthetic_texts(records) == [
+            "Compaction failed: there is nothing to summarize yet: the conversation "
+            "holds fewer than two rounds with a model reply: the part to summarize "
+            "holds no model reply"
+        ]
 
 
 class TestCancellation:

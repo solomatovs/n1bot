@@ -781,6 +781,9 @@ class StandConfig(StandService):
     service_token_ttl_sec: int = 300
     """Срок токена доступа сервиса стенда: коротким тест проверяет, что
     агент обновляет токен сам."""
+    context_window: int = 200000
+    """Окно модели профилей стенда в токенах: малым окном тест вида доводит
+    разговор до сжатия."""
     messaging: str = ""
     """Провайдер шины [messaging]: пусто — как в конфиге отладки (память
     процесса); postgres — шина в базе стенда, общая у двух инстансов."""
@@ -954,7 +957,7 @@ class StandConfig(StandService):
         doc["agent_http"] = {"dump": {"enable": False}}
         doc["model_limits"] = {
             "fake": {
-                "context_window": 200000,
+                "context_window": self.context_window,
                 "max_output_tokens": 4096,
                 "reasoning_return": "turn",
             }

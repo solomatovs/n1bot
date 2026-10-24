@@ -37,6 +37,7 @@ from boba.agent.attachments import (
     SnapshotSkill,
 )
 from boba.agent.builder import RequestBuilder
+from boba.agent.compaction import SummaryInstruction
 from boba.agent.control import ControlQuestions, PermissionAnswer
 from boba.agent.events import EventSink, InitEvent, TurnOutcome
 from boba.agent.history import (
@@ -65,7 +66,7 @@ from boba.agent.queue import InputQueue, QueueRemoveReason
 from boba.agent.records import PermissionMode, PermissionModeRecord
 from boba.agent.session import Session, SessionError, SessionState
 from boba.agent.skills import Skill, SkillTool
-from boba.agent.template import AgentTemplate, AgentTemplateFile
+from boba.agent.template import AgentTemplate
 from boba.agent.tools import (
     AgentTools,
     AskUserQuestionTool,
@@ -544,9 +545,7 @@ class Agent:
         for tool in tools.inline():
             tool_texts.append(tool.text())
 
-        instruction = self._wiring.templates.read(
-            AgentTemplateFile.SUMMARIZE_INSTRUCTION
-        )
+        instruction = SummaryInstruction(self._wiring.templates).text("")
         ProfileCheck(profile, self._parts.compaction, instruction).run(
             system_prompt, tool_texts
         )

@@ -1807,13 +1807,13 @@ class ChatView:
         return step
 
     async def compaction_finished(self, step: Step, summary: str) -> None:
-        """Сжатие состоялось: шаг закрыт, в нём — пересказ (свёрнут)."""
+        """Сжатие состоялось: шаг закрыт, в нём — пересказ разметкой
+        (свёрнут)."""
         ended = utc_now()
         step.start = ended
         step.end = ended
         step.name = StepStatus.DONE.title(self.label(StepText.COMPACTED))
         step.output = summary
-        step.language = StepLanguage.TEXT.value
         await self._sink.put(step)
         await self._relabel(step.id, step.name)
 
