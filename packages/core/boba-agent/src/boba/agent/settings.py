@@ -240,6 +240,7 @@ class CompactionJson(SettingsModel):
 class LimitsJson(SettingsModel):
     max_turns: int | None = Field(default=None, gt=0)
     tool_result_max_chars: int | None = Field(default=None, gt=0)
+    tool_result_window_share: float | None = Field(default=None, gt=0, le=1)
     api_retries: int | None = Field(default=None, ge=0)
     output_limit_retries: int | None = Field(default=None, ge=0)
 

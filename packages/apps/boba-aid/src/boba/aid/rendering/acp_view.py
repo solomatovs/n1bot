@@ -23,7 +23,10 @@
 ответа — строка «Question(s)» с
 мигающей точкой, после итога — запись ответа той же панелью только для
 чтения; вопросы сервера MCP, заданные в вызове (раунды в `_meta`
-результата), — такими же записями рядом с итогом вызова.
+результата), — такими же записями рядом с итогом вызова. Строку вызова
+команды, итог которой ход рисует своим шагом (`/compact` — шаг сжатия),
+лента не рисует ни вживую, ни при воспроизведении: агент отдаёт запись
+вызова тем же текстом, что набрал пользователь (QuestionLines).
 
 Ошибки:
 ValidationError — тело уведомления из шины не по схеме ACP v2.
@@ -35,6 +38,7 @@ import logging
 from abc import abstractmethod
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any, ClassVar, Protocol, TypeAlias
 
 import mcp_types as mt
@@ -46,6 +50,7 @@ from pydantic import TypeAdapter, ValidationError
 from boba.aid.rendering.chat_view import ChatView, NoticeLevel, StepText
 from boba.aid.rendering.question import QuestionCard, QuestionCards
 from boba.aid.rendering.tool import AppMeta, ToolAppView
+from boba.core.commands import CommandLines
 from boba.core.mcp_names import McpToolNames
 from boba.mcp_client.client import (
     JournalLinks,
@@ -323,6 +328,40 @@ class JournalRegistry(Protocol):
         """Адрес журнала вызова call_id треда."""
 
 
+class SilentCommand(StrEnum):
+    """Команды агента, строку вызова которых лента не рисует: итог такой
+    команды — свой шаг хода."""
+
+    COMPACT = "compact"
+
+
+class QuestionLines:
+    """Рисовать ли строку вопроса: вызов команды из SilentCommand — нет.
+    Решает по тексту вопроса: вживую это набранный вызов, в истории —
+    запись вызова, которую агент отдаёт тем же текстом. Держит его
+    переводчик ленты (UpdateView)."""
+
+    def __init__(self) -> None:
+        self._lines = CommandLines()
+        self._silent = frozenset(SilentCommand)
+
+    def shown(self, text: str) -> bool:
+        call = self._lines.parsed(text)
+        if call is None:
+            return True
+
+        return call.name not in self._silent
+
+
+class CompactionState(StrEnum):
+    """Стадии compaction_update ACP, которые различает лента."""
+
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
 @dataclass(frozen=True)
 class TurnEnding:
     """Чем кончился ход по его idle: исход для итога хода в шине и пометка
@@ -370,6 +409,7 @@ class UpdateView:
         self._media = media
         self._names = McpToolNames()
         self._cards = QuestionCards()
+        self._lines = QuestionLines()
         self._round_list: TypeAdapter[list[ElicitationRound]] = TypeAdapter(
             list[ElicitationRound]
         )
@@ -377,6 +417,8 @@ class UpdateView:
         self._thought_id: str | None = None
         self._answer_id: str | None = None
         self._steps: dict[str, Step] = {}
+        self._compactions: dict[str, Step] = {}
+        """Идущее сжатие → его шаг: в истории остаётся только состоявшееся."""
         self._asked: dict[str, Mapping[str, Any]] = {}
         """Идущий вызов-вопрос пользователю → его ввод: по нему рисуется
         запись ответа."""
@@ -407,6 +449,7 @@ class UpdateView:
         self._thought_id = None
         self._answer_id = None
         self._steps.clear()
+        self._compactions.clear()
         self._asked.clear()
         self._called.clear()
         self._groups.clear()
@@ -420,7 +463,10 @@ class UpdateView:
         links: Sequence[schema.ResourceContentBlock] = (),
     ) -> None:
         """Вопрос пользователя: шаг с id, который вопросу дал агент, и его
-        вложения."""
+        вложения; строку вызова команды из SilentCommand — нет."""
+        if not self._lines.shown(text):
+            return
+
         await self._view.question(text, key, name=author, links=links)
 
     async def apply(self, update: SessionUpdate) -> None:
@@ -441,17 +487,69 @@ class UpdateView:
             await self._tool_update(update)
             return
 
-        if isinstance(update, schema.IdleSessionStateUpdate):
-            await self._ended(update)
-            return
-
-        if isinstance(update, schema.SessionNotice):
-            await self._notice(update)
+        if await self._marked(update):
             return
 
         logger.debug(
             "thread %s: update %s is not drawn", self._thread_id, type(update).__name__
         )
+
+    async def _marked(self, update: SessionUpdate) -> bool:
+        """Пометки хода: его конец, пометка агента, сжатие; False —
+        уведомление не из них."""
+        if isinstance(update, schema.IdleSessionStateUpdate):
+            await self._ended(update)
+            return True
+
+        if isinstance(update, schema.SessionNotice):
+            await self._notice(update)
+            return True
+
+        if isinstance(update, schema.SessionCompactionUpdate):
+            await self._compaction(update)
+            return True
+
+        return False
+
+    async def _compaction(self, update: schema.SessionCompactionUpdate) -> None:
+        """Сжатие разговора шагом хода по его стадиям — вживую и в истории
+        одинаково: идёт — «сжимаю», состоялось — пересказ под шагом, не
+        удалось — причина под шагом, прервано — пометка остановки."""
+        key = update.compaction_id
+        step = self._compactions.pop(key, None)
+        if step is None:
+            step = await self._view.compaction_started(key)
+
+        if update.status == CompactionState.IN_PROGRESS.value:
+            self._compactions[key] = step
+            return
+
+        if update.status == CompactionState.COMPLETED.value:
+            await self._view.compaction_finished(step, self._summary_text(update))
+            return
+
+        if update.status == CompactionState.CANCELLED.value:
+            await self._view.compaction_stopped(step)
+            return
+
+        error = update.error
+        if error is None:
+            error = ""
+
+        await self._view.compaction_failed(step, error)
+
+    @staticmethod
+    def _summary_text(update: schema.SessionCompactionUpdate) -> str:
+        parts: list[str] = []
+        summary = update.summary
+        if summary is None:
+            return ""
+
+        for block in summary:
+            if isinstance(block, schema.TextContentBlock):
+                parts.append(block.text)
+
+        return "\n\n".join(parts)
 
     def ending(self, idle: schema.IdleSessionStateUpdate) -> TurnEnding:
         """Исход хода и пометка ленты по его idle."""
@@ -517,7 +615,11 @@ class UpdateView:
             card = self._cards.asked(asked, None, True)
             await self._view.question_finished(step, card, key)
 
+        for compaction in list(self._compactions.values()):
+            await self._view.compaction_stopped(compaction)
+
         self._steps.clear()
+        self._compactions.clear()
         self._groups.clear()
         await self._view.finish_turn()
         self._turn_key = None

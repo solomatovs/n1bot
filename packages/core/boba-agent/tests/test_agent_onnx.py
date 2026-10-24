@@ -103,7 +103,9 @@ def agent(  # noqa: PLR0913 — стенд собирает агента по ч
     providers = LlmProviders(LlmProviderTypes.installed())
     parts = AgentParts(
         profile=model_profile,
-        limits=TurnLimits(retry_delays_sec=(0.0, 0.0, 0.0)),
+        limits=TurnLimits(
+            retry_delays_sec=(0.0, 0.0, 0.0), tool_result_window_share=0.25
+        ),
         compaction=compaction,
         system_prompt=SYSTEM_PROMPT,
         store=JsonlHistoryStore(root),
@@ -213,9 +215,10 @@ class TestLocalModel:
         caplog: pytest.LogCaptureFixture,
     ) -> None:
         """Длинный кириллический промпт: оценка по знакам переводит ход за
-        порог сжатия раньше, чем настоящее окно модели переполняется. Сама
-        локальная модель пересказ с потолком в 256 токенов обычно не
-        дописывает — тогда неудача считается, а ход продолжается без ошибок.
+        порог сжатия раньше, чем настоящее окно модели переполняется, — и
+        так дважды: промпт приходит дважды. Ответ локальной модели без блока
+        <summary> — пересказ целиком; недописанный пересказ с потолком в 256
+        токенов — неудача, которая считается, а ход продолжается без ошибок.
         Вопроса пользователю у агента нет: на длинный промпт локальная модель
         порой отвечает вызовом AskUserQuestion, чьи аргументы не влезают в
         потолок ответа."""
@@ -240,12 +243,14 @@ class TestLocalModel:
             await settled(served)
             served.agent.queue.enqueue(prompt("Скажи «да»."))
             await settled(served)
+            served.agent.queue.enqueue(prompt(f"{story}\nЕщё раз ответь: да."))
+            await settled(served)
             served.agent.queue.enqueue(prompt("Ещё раз скажи «да»."))
             await settled(served)
             await served.close()
 
-        assert list(served.agent.outcomes) == [TurnOutcome.COMPLETED] * 3
-        chain = session.chain()
+        assert list(served.agent.outcomes) == [TurnOutcome.COMPLETED] * 4
+        chain = session.records()
         assert not any(
             isinstance(r, AssistantRecord) and r.is_api_error_message for r in chain
         )

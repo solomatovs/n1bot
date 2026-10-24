@@ -19,12 +19,13 @@ LlmServiceError — подкласс LlmError: провайдер занят, н
 
 from __future__ import annotations
 
+import re
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 from enum import StrEnum
 from typing import Any, ClassVar, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 __all__ = [
     "ChatDelta",
@@ -116,8 +117,38 @@ class ContextOverflowSigns:
         "exceeds the limit",
     )
 
+    EXCESS: ClassVar[tuple[re.Pattern[str], ...]] = (
+        re.compile(
+            r"maximum context length is (?P<limit>\d+) tokens.*?"
+            r"(?:resulted in|requested) (?P<actual>\d+) tokens",
+            re.IGNORECASE | re.DOTALL,
+        ),
+        re.compile(
+            r"prompt is too long[^0-9]*(?P<actual>\d+)\s*tokens?\s*>\s*(?P<limit>\d+)",
+            re.IGNORECASE,
+        ),
+    )
+    """Тексты, в которых сервер называет окно и размер запроса: OpenAI и
+    vLLM («maximum context length is N tokens… resulted in / requested M»),
+    Anthropic («prompt is too long: M tokens > N»)."""
+
     def matches(self, text: str) -> bool:
         return any(self._hits(text.lower()))
+
+    def excess(self, text: str) -> int | None:
+        """На сколько токенов запрос больше окна по тексту ошибки сервера;
+        None — сервер чисел не назвал."""
+        for pattern in self.EXCESS:
+            found = pattern.search(text)
+            if found is None:
+                continue
+
+            actual = int(found.group("actual"))
+            limit = int(found.group("limit"))
+
+            return max(0, actual - limit)
+
+        return None
 
     def _hits(self, lowered: str) -> Iterator[bool]:
         for phrase in self.PHRASES:
@@ -177,12 +208,27 @@ class ChatImage(BaseModel):
 
 
 class ChatTurn(BaseModel):
-    """Одно сообщение истории в конверте запроса."""
+    """Одно сообщение истории в конверте запроса. Текст — строкой content
+    либо отдельными частями parts: так сборщик подаёт соседние сообщения
+    пользователя, вложения агента и инструкцию пересказа, слитые в одно
+    сообщение (в docs/prompt_assembly это отдельные текстовые блоки одного
+    сообщения). Провайдер, который умеет части, шлёт их массивом, остальные
+    — склейкой text()."""
 
     model_config = ConfigDict(frozen=True)
 
+    PART_JOIN: ClassVar[str] = "\n"
+    """Склейка частей для бэкенда без частей текста."""
+
     role: ChatRole
     content: str = ""
+    parts: Sequence[str] = Field(
+        default=(),
+        description=(
+            "Текст сообщения отдельными частями; пусто — текст одной строкой "
+            "content. Заданы части — content пуст."
+        ),
+    )
     images: Sequence[ChatImage] = Field(
         default=(),
         description="Картинки сообщения пользователя; бэкенд без зрения отказывает.",
@@ -212,6 +258,32 @@ class ChatTurn(BaseModel):
             "провайдер с родными ссылками шлёт их блоками tool_reference."
         ),
     )
+
+    @model_validator(mode="after")
+    def _one_text(self) -> ChatTurn:
+        if self.parts and self.content:
+            msg = (
+                f"A {self.role.value} message carries both content and parts; "
+                "the text goes either as one string or as parts"
+            )
+            raise ValueError(msg)
+
+        return self
+
+    def text_parts(self) -> Sequence[str]:
+        """Части текста: заданные либо content одной частью; пустой текст —
+        ни одной."""
+        if self.parts:
+            return self.parts
+
+        if self.content:
+            return (self.content,)
+
+        return ()
+
+    def text(self) -> str:
+        """Текст одной строкой: части через PART_JOIN."""
+        return self.PART_JOIN.join(self.text_parts())
 
 
 class ChatRequest(BaseModel):

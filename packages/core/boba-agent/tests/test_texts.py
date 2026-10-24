@@ -5,8 +5,9 @@ from __future__ import annotations
 
 import pytest
 
-from boba.agent.tags import AgentTag, ReplyTag, TagShield
+from boba.agent.tags import AgentTag, LocalCommandText, ReplyTag, TagShield
 from boba.agent.template import AgentTemplate, AgentTemplateFile
+from boba.core.commands import CommandCall
 
 
 class TestAgentTexts:
@@ -129,6 +130,22 @@ class TestReplyTag:
 
         assert ReplyTag.SUMMARY.extract(text) == "\n1. Primary Request\n"
 
+    def test_analysis_naming_the_summary_tag_is_cut_first(self) -> None:
+        """Разбор называет тег `<summary>` словами, как это делает настоящая
+        модель: после вырезания разбора извлекается настоящий блок."""
+        text = (
+            "<analysis>\nThe reply needs a <summary> block.\n</analysis>\n\n"
+            "<summary>\n1. Primary Request\n</summary>"
+        )
+        without = ReplyTag.ANALYSIS.without(text)
+
+        assert ReplyTag.SUMMARY.extract(text) == (
+            " block.\n</analysis>\n\n<summary>\n1. Primary Request\n"
+        )
+        assert without == "\n\n<summary>\n1. Primary Request\n</summary>"
+        assert ReplyTag.SUMMARY.extract(without) == "\n1. Primary Request\n"
+        assert ReplyTag.ANALYSIS.without("no analysis") == "no analysis"
+
     def test_case_and_attributes_do_not_matter(self) -> None:
         assert ReplyTag.SUMMARY.extract("<Summary lang=en>text</SUMMARY>") == "text"
 
@@ -143,3 +160,21 @@ class TestReplyTag:
         text = "<details><summary>title</summary>body</details>"
 
         assert TagShield(list(AgentTag)).shield(text) == text
+
+
+class TestLocalCommandText:
+    """Запись вызова локальной команды — как у эталона, и разбор обратно."""
+
+    def test_call_is_written_as_the_reference_and_parsed_back(self) -> None:
+        texts = LocalCommandText()
+        call = CommandCall(name="compact", rest="keep the plan")
+
+        written = texts.call(call)
+
+        assert written == (
+            "<command-name>/compact</command-name>\n"
+            "            <command-message>compact</command-message>\n"
+            "            <command-args>keep the plan</command-args>"
+        )
+        assert texts.parsed(written) == call
+        assert texts.parsed("/compact keep the plan") is None

@@ -62,7 +62,13 @@ from boba.cli.acp_server import (
     ToolKindName,
 )
 from boba.stand.acp_frames import Frames
-from boba.stand.ui.fake_llm import FailureName, FakeLlmApp, ScenarioName
+from boba.stand.ui.fake_llm import (
+    FailureName,
+    FakeLlmApp,
+    ScenarioName,
+    SummaryName,
+    WireText,
+)
 from boba.stand.ui.stand import StandPorts
 from boba.transport.acp.protocol import (
     AcpErrorCode,
@@ -654,14 +660,38 @@ class AcpClient(Client):
         return found
 
     def turn_updates_of(self, session_id: str) -> list[Any]:
-        """Обновления хода сессии без session_info_update: те приходят на
-        каждую запись истории и не входят в последовательность хода."""
+        """Обновления хода сессии без session_info_update и объявления
+        команд: первые приходят на каждую запись истории, второе — после
+        каждого открытия сессии, в последовательность хода они не входят."""
         found: list[Any] = []
-        for update in self.updates_of(session_id):
+        for update in self.unannounced_of(session_id):
             if isinstance(update, schema.SessionInfoUpdate):
                 continue
 
             found.append(update)
+
+        return found
+
+    def unannounced_of(self, session_id: str) -> list[Any]:
+        """Обновления сессии без available_commands_update: его агент шлёт
+        после каждого ответа на `session/new|resume|fork`."""
+        found: list[Any] = []
+        for update in self.updates_of(session_id):
+            if isinstance(update, schema.AvailableCommandsUpdate):
+                continue
+
+            found.append(update)
+
+        return found
+
+    def unannounced(self) -> list[tuple[str, Any]]:
+        """Обновления всех сессий без available_commands_update."""
+        found: list[tuple[str, Any]] = []
+        for session_id, update in self.updates:
+            if isinstance(update, schema.AvailableCommandsUpdate):
+                continue
+
+            found.append((session_id, update))
 
         return found
 
@@ -860,6 +890,7 @@ class AcpProcess:
             "history": {"kind": "jsonl", "root": str(self._root / "history")},
             "permissions": {"defaultMode": mode, "allowBypass": allow_bypass},
             "tools": {"alwaysLoad": self.loaded_tools()},
+            "limits": {"toolResultWindowShare": 0.25},
         }
 
     @staticmethod
@@ -1212,7 +1243,7 @@ class TestTurnState:
     ) -> None:
         client = AcpClient()
         document = boba.settings_document()
-        document["limits"] = {"apiRetries": 0}
+        document["limits"]["apiRetries"] = 0
         conn = await boba.start(client, registration, document)
         try:
             await handshake(conn)
@@ -1453,7 +1484,8 @@ class TestConversation:
             )
 
             assert idle.stop_reason == StopReason.END_TURN
-            sent = model.app.requests[0]["messages"][-1]["content"]
+            sent = WireText().of(model.app.requests[0]["messages"][-1]["content"])
+            assert sent is not None
             assert "[@main.py](file:///work/main.py)" in sent
 
             # ветка копирует записи как есть: вложение остаётся блоком
@@ -2896,7 +2928,7 @@ class TestHistory:
         лента истории ставит по нему те же пометки."""
         client = AcpClient()
         document = boba.settings_document(mode="bypassPermissions", allow_bypass=True)
-        document["limits"] = {"apiRetries": 0}
+        document["limits"]["apiRetries"] = 0
         conn = await boba.start(client, registration, document)
         try:
             await handshake(conn)
@@ -2996,7 +3028,7 @@ class TestHistory:
         показывает те же пометки и ни одного недописанного ответа."""
         client = AcpClient()
         document = boba.settings_document()
-        document["limits"] = {"apiRetries": 1}
+        document["limits"]["apiRetries"] = 1
         conn = await boba.start(client, registration, document)
         try:
             await handshake(conn)
@@ -3131,7 +3163,7 @@ class TestHistory:
                 session_id=session_id,
                 mcp_servers=[StandRegistration.STAND],
             )
-            assert client.updates == []
+            assert client.turn_updates_of(session_id) == []
 
             _, idle = await second.turn(
                 client,
@@ -3360,21 +3392,37 @@ class TestListAndDelete:
 
 
 def update_kinds(frames: Frames, request_method: str) -> list[str]:
-    """Виды `session/update`, пришедших до ответа на последний запрос метода."""
+    """Виды `session/update`, пришедших до ответа на последний запрос метода;
+    объявление команд сессии (available_commands_update) агент шлёт
+    отдельной задачей, до ответа или после, и его здесь нет."""
     request_id = frames.request_id(request_method, -1)
     answered_at = frames.position_of_response(request_id)
     kinds: list[str] = []
     for message in frames.incoming_notifications(answered_at):
-        if message["method"] != "session/update":
+        kind = session_update_kind(message)
+        if kind is None:
             continue
 
-        kinds.append(message["params"]["update"]["sessionUpdate"])
+        kinds.append(kind)
 
-    assert all(
-        m["method"] != "session/update" for m in frames.incoming_after(answered_at)
-    )
+    for message in frames.incoming_after(answered_at):
+        assert session_update_kind(message) is None, message
 
     return kinds
+
+
+def session_update_kind(message: Mapping[str, Any]) -> str | None:
+    """Вид уведомления `session/update` в кадре журнала; None — кадр не
+    уведомление сессии либо объявление её команд."""
+    if message["method"] != "session/update":
+        return None
+
+    kind = str(message["params"]["update"]["sessionUpdate"])
+    announced = schema.AvailableCommandsUpdate(available_commands=[])
+    if kind == announced.session_update:
+        return None
+
+    return kind
 
 
 def option_of(
@@ -3398,6 +3446,349 @@ def option_values(option: schema.SelectSessionConfigOption) -> list[str]:
         values.append(item.value)
 
     return values
+
+
+class TestSessionCommands:
+    """Свои команды сессии агент объявляет `available_commands_update` после
+    `session/new|resume`; команд промптов серверов в этом списке нет."""
+
+    async def test_new_and_resume_announce_the_agent_commands(
+        self, boba: AcpProcess, registration: StandRegistration, tmp_path: Path
+    ) -> None:
+        client = AcpClient()
+        conn = await boba.start(client, registration)
+        try:
+            await handshake(conn)
+            session = await conn.new_session(cwd=str(tmp_path), mcp_servers=[])
+            session_id = session.session_id
+            await boba.turn(
+                client,
+                session_id,
+                [schema.TextContentBlock(text=ScenarioName.ANSWER.value)],
+            )
+            await conn.close_session(session_id=session_id)
+            await conn.resume_session(
+                cwd=str(tmp_path), session_id=session_id, mcp_servers=[]
+            )
+            await boba.turn(
+                client,
+                session_id,
+                [schema.TextContentBlock(text=ScenarioName.ANSWER.value)],
+            )
+        finally:
+            await conn.close()
+            await boba.close_stdin()
+
+        announced = client.of(schema.AvailableCommandsUpdate)
+        assert len(announced) == 2, announced
+        commands = announced[-1].available_commands
+        assert len(commands) == 1, commands
+        compact = commands[0]
+        assert compact.name == "compact"
+        assert isinstance(compact.input, schema.TextAvailableCommandInput)
+        assert compact.input.hint == "optional instructions for the summary"
+        assert await boba.wait() == 0
+
+
+class TestCompactCommand:
+    """`/compact <указания>` — сжатие своим ходом: вызов агент пишет в
+    историю записями локальной команды (пометка, вызов с uuid = messageId
+    ответа, после пересказа — вывод), ответ на `session/prompt` и
+    `user_message` с текстом вызова приходят с записью вызова, до сжатия;
+    воспроизведение отдаёт тот же `user_message` перед состоявшимся
+    сжатием. Отмена сжатия и сжатие без того, что пересказывать, — тоже
+    ответ на prompt и idle с причиной."""
+
+    NOTE: ClassVar[str] = "keep the plan"
+
+    @staticmethod
+    async def _conversation(
+        boba: AcpProcess, client: AcpClient, session_id: str
+    ) -> None:
+        """Два хода с ответом модели: сжатию есть что пересказать."""
+        large = {"name": "mcp__stand__large", "arguments": {"size": 2000}}
+        await boba.turn(client, session_id, call(large))
+        answer = [schema.TextContentBlock(text=ScenarioName.ANSWER.value)]
+        await boba.turn(client, session_id, answer)
+
+    @staticmethod
+    def _compactions(
+        client: AcpClient, session_id: str
+    ) -> list[schema.SessionCompactionUpdate]:
+        found: list[schema.SessionCompactionUpdate] = []
+        for update in client.updates_of(session_id):
+            if isinstance(update, schema.SessionCompactionUpdate):
+                found.append(update)
+
+        return found
+
+    @staticmethod
+    def _marks(updates: Sequence[Any]) -> list[tuple[str, str]]:
+        """Вопросы и стадии сжатия по порядку: (вид, id)."""
+        marks: list[tuple[str, str]] = []
+        for update in updates:
+            if isinstance(update, schema.UserMessageUpdate):
+                marks.append(("user", update.message_id))
+                continue
+
+            if isinstance(update, schema.SessionCompactionUpdate):
+                marks.append((update.status, update.compaction_id))
+
+        return marks
+
+    @staticmethod
+    def _echoes(client: AcpClient, session_id: str) -> list[schema.UserMessageUpdate]:
+        found: list[schema.UserMessageUpdate] = []
+        for update in client.updates_of(session_id):
+            if isinstance(update, schema.UserMessageUpdate):
+                found.append(update)
+
+        return found
+
+    @staticmethod
+    async def _replayed(
+        model: FakeModel,
+        registration: StandRegistration,
+        document: dict[str, Any],
+        tmp_path: Path,
+        session_id: str,
+    ) -> list[Any]:
+        """Уведомления, которые новый процесс отдаёт при воспроизведении."""
+        second_process = AcpProcess(tmp_path, model)
+        loader = AcpClient()
+        conn = await second_process.start(loader, registration, document)
+        try:
+            await handshake(conn)
+            await conn.resume_session(
+                cwd=str(tmp_path),
+                session_id=session_id,
+                mcp_servers=[StandRegistration.STAND],
+                replay_from=schema.ReplayFromStartVariant(),
+            )
+            replayed = loader.turn_updates_of(session_id)
+        finally:
+            await conn.close()
+            await second_process.close_stdin()
+            await second_process.kill()
+
+        return replayed
+
+    def _check_journal(self, records: Sequence[Document], called_id: str) -> None:
+        """Две ручные границы, запись вызова called_id с указаниями и вывод
+        команды после каждого сжатия."""
+        boundaries = [
+            r
+            for r in records
+            if r["type"] == "system" and r.get("subtype") == "compact_boundary"
+        ]
+        triggers = [b["compactMetadata"]["trigger"] for b in boundaries]
+        assert triggers == ["manual", "manual"]
+        by_uuid = {r.get("uuid"): r for r in records}
+        called = by_uuid[called_id]["message"]["content"]
+        assert called.startswith("<command-name>/compact</command-name>"), called
+        assert f"<command-args>{self.NOTE}</command-args>" in called
+        spoken = [
+            r["message"]["content"]
+            for r in records
+            if r["type"] == "user" and isinstance(r["message"]["content"], str)
+        ]
+        outputs = [t for t in spoken if t.startswith("<local-command-stdout>")]
+        assert len(outputs) == 2
+
+    async def test_command_compacts_in_its_own_turn(
+        self,
+        boba: AcpProcess,
+        registration: StandRegistration,
+        model: FakeModel,
+        tmp_path: Path,
+    ) -> None:
+        client = AcpClient()
+        document = boba.settings_document(mode="bypassPermissions", allow_bypass=True)
+        conn = await boba.start(client, registration, document)
+        try:
+            await handshake(conn)
+            session = await conn.new_session(
+                cwd=str(tmp_path), mcp_servers=[StandRegistration.STAND]
+            )
+            session_id = session.session_id
+            await self._conversation(boba, client, session_id)
+
+            bare = [schema.TextContentBlock(text="/compact")]
+            first, first_idle = await boba.turn(client, session_id, bare)
+            await self._conversation(boba, client, session_id)
+            echoed = len(self._echoes(client, session_id))
+            given = [schema.TextContentBlock(text=f"/compact {self.NOTE}")]
+            second, second_idle = await boba.turn(client, session_id, given)
+        finally:
+            await conn.close()
+            await boba.close_stdin()
+
+        assert await boba.wait() == 0
+        assert first_idle.stop_reason == StopReason.END_TURN
+        assert second_idle.stop_reason == StopReason.END_TURN
+        compactions = self._compactions(client, session_id)
+        statuses = [c.status for c in compactions]
+        assert statuses == ["in_progress", "completed"] * 2
+        for compaction in compactions:
+            assert compaction.field_meta is None
+
+        live = self._marks(client.updates_of(session_id))
+        for asked, compaction in ((first, 1), (second, 3)):
+            at = live.index(("user", asked.message_id))
+            compaction_id = compactions[compaction].compaction_id
+            assert live[at + 1 : at + 3] == [
+                ("in_progress", compaction_id),
+                ("completed", compaction_id),
+            ], live
+
+        echoes = self._echoes(client, session_id)
+        first_echo = echoes[echoed - 3]
+        assert first_echo.message_id == first.message_id
+        assert first_echo.content == bare
+        assert echoes[echoed:] == [
+            schema.UserMessageUpdate(message_id=second.message_id, content=[*given])
+        ]
+
+        instructions: list[str] = []
+        for request in model.app.requests:
+            sent = json.dumps(request, ensure_ascii=False)
+            if "Additional Instructions:" in sent:
+                instructions.append(sent)
+
+        assert len(instructions) == 1
+        assert f"Additional Instructions:\\n{self.NOTE}\\n" in instructions[0]
+
+        self._check_journal(boba.journal(session_id), second.message_id)
+
+        replayed = await self._replayed(
+            model, registration, document, tmp_path, session_id
+        )
+
+        marks = self._marks(replayed)
+        live_marks = self._marks(client.updates_of(session_id))
+        assert marks == live_marks
+        for update in replayed:
+            if isinstance(update, schema.UserMessageUpdate):
+                if update.message_id == second.message_id:
+                    assert update.content == given
+
+    async def test_cancel_during_the_command_answers_and_stops(
+        self,
+        boba: AcpProcess,
+        registration: StandRegistration,
+        tmp_path: Path,
+    ) -> None:
+        """Сжатие ждёт пересказа (`summary:hang`): ответ на prompt уже
+        пришёл, отмена даёт compaction_update cancelled и idle cancelled,
+        границы в истории нет, вызов команды — есть."""
+        client = AcpClient()
+        document = boba.settings_document(mode="bypassPermissions", allow_bypass=True)
+        conn = await boba.start(client, registration, document)
+        try:
+            await handshake(conn)
+            session = await conn.new_session(
+                cwd=str(tmp_path), mcp_servers=[StandRegistration.STAND]
+            )
+            session_id = session.session_id
+            await self._conversation(boba, client, session_id)
+
+            hang = [schema.TextContentBlock(text=f"/compact {SummaryName.HANG.value}")]
+            async with asyncio.timeout(READ_TIMEOUT_SEC):
+                response = await conn.prompt(session_id=session_id, prompt=[*hang])
+                while not self._compactions(client, session_id):
+                    await asyncio.sleep(0.05)
+
+            await conn.cancel_session(session_id=session_id)
+            idle = await client.idle(session_id)
+        finally:
+            await conn.close()
+            await boba.close_stdin()
+
+        assert await boba.wait() == 0
+        assert idle.stop_reason == StopReason.CANCELLED
+        statuses = [c.status for c in self._compactions(client, session_id)]
+        assert statuses == ["in_progress", "cancelled"]
+        records = boba.journal(session_id)
+        subtypes = [r.get("subtype") for r in records if r["type"] == "system"]
+        assert "compact_boundary" not in subtypes
+        uuids = [r["uuid"] for r in records if r["type"] == "user"]
+        assert response.message_id in uuids
+        phases = [r["phase"] for r in records if r.get("subtype") == "compaction"]
+        assert phases == ["started", "cancelled"]
+
+    async def test_unfinished_compaction_replays_as_interrupted(
+        self,
+        boba: AcpProcess,
+        registration: StandRegistration,
+        model: FakeModel,
+        tmp_path: Path,
+    ) -> None:
+        """Процесс убит посреди пересказа: в истории есть начало сжатия без
+        конца — воспроизведение отдаёт его начатым и затем неудачей с
+        причиной, а не вечным «сжимаю»."""
+        client = AcpClient()
+        document = boba.settings_document(mode="bypassPermissions", allow_bypass=True)
+        conn = await boba.start(client, registration, document)
+        try:
+            await handshake(conn)
+            session = await conn.new_session(
+                cwd=str(tmp_path), mcp_servers=[StandRegistration.STAND]
+            )
+            session_id = session.session_id
+            await self._conversation(boba, client, session_id)
+
+            hang = [schema.TextContentBlock(text=f"/compact {SummaryName.HANG.value}")]
+            async with asyncio.timeout(READ_TIMEOUT_SEC):
+                await conn.prompt(session_id=session_id, prompt=[*hang])
+                while not self._started_on_disk(boba, session_id):
+                    await asyncio.sleep(0.05)
+        finally:
+            await boba.kill()
+
+        replayed = await self._replayed(
+            model, registration, document, tmp_path, session_id
+        )
+
+        compactions = [
+            u for u in replayed if isinstance(u, schema.SessionCompactionUpdate)
+        ]
+        assert [c.status for c in compactions] == ["in_progress", "failed"]
+        assert compactions[0].compaction_id == compactions[1].compaction_id
+        assert compactions[1].error is not None
+        assert "did not finish" in compactions[1].error
+
+    @staticmethod
+    def _started_on_disk(boba: AcpProcess, session_id: str) -> bool:
+        for record in boba.journal(session_id):
+            if record.get("subtype") == "compaction":
+                return True
+
+        return False
+
+    async def test_nothing_to_compact_answers_with_the_reason(
+        self, boba: AcpProcess, registration: StandRegistration, tmp_path: Path
+    ) -> None:
+        client = AcpClient()
+        conn = await boba.start(client, registration)
+        try:
+            await handshake(conn)
+            session = await conn.new_session(cwd=str(tmp_path), mcp_servers=[])
+            session_id = session.session_id
+            command = [schema.TextContentBlock(text="/compact")]
+            response, idle = await boba.turn(client, session_id, command)
+        finally:
+            await conn.close()
+            await boba.close_stdin()
+
+        assert await boba.wait() == 0
+        assert response.message_id
+        assert idle.stop_reason == StopReason.REFUSAL
+        notices = client.of(schema.SessionNotice)
+        assert len(notices) == 1, notices
+        assert notices[0].title.startswith("Compaction failed: "), notices
+        assert not self._compactions(client, session_id)
+        echoes = self._echoes(client, session_id)
+        assert [e.message_id for e in echoes] == [response.message_id]
 
 
 class TestSessionSettings:
@@ -3443,7 +3834,7 @@ class TestSessionSettings:
                 cwd=str(tmp_path), session_id=session_id, mcp_servers=[]
             )
             self.check_state(resumed, "default", "fake")
-            assert client.updates == []
+            assert client.unannounced() == []
         finally:
             await conn.close()
             await boba.close_stdin()
@@ -3688,7 +4079,8 @@ class TestSessionSettings:
 
 class TestServiceUpdates:
     """`usage_update` после каждого хода и после сжатия, `compaction_update`
-    при сжатии, `session_info_update` с заголовком после первого хода и при
+    при сжатии по стадиям и при воспроизведении — состоявшимся,
+    `session_info_update` с заголовком после первого хода и при
     воспроизведении; всё — до `idle` хода."""
 
     SIZE: ClassVar[int] = 32000 - 4096
@@ -3827,6 +4219,32 @@ class TestServiceUpdates:
 
         return None
 
+    @staticmethod
+    async def _replayed_compactions(
+        registration: StandRegistration,
+        tmp_path: Path,
+        model: FakeModel,
+        document: dict[str, Any],
+        session_id: str,
+    ) -> list[schema.SessionCompactionUpdate]:
+        """Сжатия, которые новый процесс отдаёт при воспроизведении сессии."""
+        second = AcpProcess(tmp_path, model)
+        loader = AcpClient()
+        conn = await second.start(loader, registration, document)
+        try:
+            await handshake(conn)
+            await conn.resume_session(
+                cwd=str(tmp_path),
+                session_id=session_id,
+                mcp_servers=[StandRegistration.STAND],
+                replay_from=schema.ReplayFromStartVariant(),
+            )
+            return loader.of(schema.SessionCompactionUpdate)
+        finally:
+            await conn.close()
+            await second.close_stdin()
+            await second.kill()
+
     async def test_compaction_reports_compaction_and_usage(
         self, registration: StandRegistration, tmp_path: Path
     ) -> None:
@@ -3838,6 +4256,7 @@ class TestServiceUpdates:
         document["models"]["fake"] = boba.profile_document(
             "fake-model", context_window=8000, max_output_tokens=512, chars_per_token=4
         )
+        document["limits"]["toolResultWindowShare"] = 1.0
         try:
             conn = await boba.start(client, registration, document)
             try:
@@ -3862,18 +4281,30 @@ class TestServiceUpdates:
                 assert usage[1].used < usage[0].used
                 assert all(u.size == 8000 - 512 for u in usage)
                 compactions = client.of(schema.SessionCompactionUpdate)
-                assert len(compactions) == 1
-                assert compactions[0].status == "completed"
-                assert compactions[0].compaction_id
+                assert [c.status for c in compactions] == ["in_progress", "completed"]
+                assert compactions[0].compaction_id == compactions[1].compaction_id
+                assert compactions[0].summary is None
+                summary = compactions[1].summary
+                assert summary is not None
+                assert isinstance(summary[0], schema.TextContentBlock)
+                assert summary[0].text.startswith("This session is being continued")
             finally:
                 await conn.close()
                 await boba.close_stdin()
 
             assert await boba.wait() == 0
+            replayed = await self._replayed_compactions(
+                registration, tmp_path, counting, document, session_id
+            )
         finally:
             await boba.kill()
             await counting.stop()
 
+        assert [(c.compaction_id, c.status) for c in replayed] == [
+            (compactions[1].compaction_id, "in_progress"),
+            (compactions[1].compaction_id, "completed"),
+        ]
+        assert replayed[1].summary == compactions[1].summary
         records = boba.journal(session_id)
         boundaries = [
             r
@@ -3881,8 +4312,10 @@ class TestServiceUpdates:
             if r["type"] == "system" and r.get("subtype") == "compact_boundary"
         ]
         assert len(boundaries) == 1
-        assert boundaries[0]["uuid"] == compactions[0].compaction_id
-        assert any(r["type"] == "user" and r.get("isCompactSummary") for r in records)
+        summaries = [
+            r for r in records if r["type"] == "user" and r.get("isCompactSummary")
+        ]
+        assert [r["uuid"] for r in summaries] == [compactions[1].compaction_id]
 
 
 class TestFork:
@@ -3947,7 +4380,7 @@ class TestFork:
             )
             branch_id = forked.session_id
             assert branch_id != session_id
-            assert client.updates_of(branch_id) == []
+            assert client.unannounced_of(branch_id) == []
             assert option_of(forked, ConfigOptionId.MODE).current_value == (
                 "bypassPermissions"
             )
@@ -4091,8 +4524,8 @@ class TestFork:
                 mcp_servers=[],
                 replay_from=self.REPLAY,
             )
-            assert FeedView().render(client.updates_of(branch_id)) == []
-            assert [type(u) for u in client.updates_of(branch_id)] == [
+            assert FeedView().render(client.unannounced_of(branch_id)) == []
+            assert [type(u) for u in client.unannounced_of(branch_id)] == [
                 schema.UsageUpdate
             ]
 

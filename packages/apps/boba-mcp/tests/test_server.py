@@ -79,6 +79,8 @@ from boba.toolkit.dag import (
 )
 from boba.toolkit.mcp import McpResults
 from boba.toolkit.wire import (
+    CommandsFeature,
+    CommandsVersion,
     FilesFeature,
     JournalFeature,
     JournalNotice,
@@ -420,8 +422,9 @@ class TestCall:
         self, stand: ServiceStand, url: str, dev_token: str
     ) -> None:
         """Возможности объявлены расширениями: клиент узнаёт ключ
-        запечатывания, инструмент-связку и операцию журнала при согласовании
-        протокола, не вызывая инструментов."""
+        запечатывания, инструмент-связку, операцию журнала и редакцию
+        расширения команд при согласовании протокола, не вызывая
+        инструментов."""
         async with _client(url, dev_token) as client:
             capabilities = client.session.server_capabilities
 
@@ -438,9 +441,16 @@ class TestCall:
             JournalFeature.ID,
             NestedCallsFeature.ID,
             ScopeFeature.ID,
+            CommandsFeature.ID,
         ):
             if feature not in declared:
                 raise AssertionError(f"{feature} is declared: {sorted(declared)}")
+
+        commands = CommandsFeature.model_validate(declared[CommandsFeature.ID])
+        if commands.version is not CommandsVersion.V2026_10_24:
+            raise AssertionError(
+                f"the commands extension names its edition: {commands}"
+            )
 
         scoping = ScopeFeature.model_validate(declared[ScopeFeature.ID])
         if scoping.mark != SchemaMark.SCOPE.value:

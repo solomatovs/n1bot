@@ -16,7 +16,9 @@ TurnStarted. Вопрос, заданный по ходу, ждёт в очер�
 (форма `elicitation/create`) держатель показывает в своей вкладке панелью
 вместо поля ввода (элемент Question и `ask` chainlit) до ответа, срока
 [agent].question_timeout_sec или снятия; вкладка, подключившаяся к треду
-заново, получает висящий вопрос снова.
+заново, получает висящий вопрос снова. Меню команд «/» и окна команд
+(приложение сервера, таблица чата) приёмник рисует только в своей вкладке:
+в историю агента они не попадают.
 
 Ошибки:
 LockBusyError — тред уже ведёт другой держатель: ход не начат.
@@ -51,10 +53,11 @@ from acp.experimental.v2 import schema
 from chainlit.context import ChainlitContext, context, context_var
 from chainlit.element import CustomElement
 from chainlit.emitter import ChainlitEmitter
+from chainlit.message import Message
 from chainlit.server import sio
 from chainlit.session import WebsocketSession
 from chainlit.step import StepDict
-from chainlit.types import AskElementSpec
+from chainlit.types import AskElementSpec, CommandDict
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from boba.aid.agent.chat import (
@@ -66,6 +69,7 @@ from boba.aid.agent.chat import (
     TurnRenderers,
 )
 from boba.aid.agent.client import ElicitationReply
+from boba.aid.agent.commands import AppWindow, MenuCommand
 from boba.aid.canvas.remote import RemoteJournals
 from boba.aid.chat.feed import TurnFeed
 from boba.aid.chat.ui_text import UiText
@@ -77,10 +81,10 @@ from boba.aid.rendering.acp_view import (
     ToolMedia,
     UpdateView,
 )
-from boba.aid.rendering.chat_view import ChatView, LiveSink
+from boba.aid.rendering.chat_view import ChatView, LiveSink, StepMeta
 from boba.aid.rendering.question import QuestionCards
 from boba.aid.rendering.renderer import RenderSurface, SignalType, TabSurfaces
-from boba.aid.rendering.tool import ChatElements
+from boba.aid.rendering.tool import AppProp, ChatElements
 from boba.cancellation import RunCancellation
 from boba.identity.context import Scope
 from boba.identity.errors import InternalServiceError
@@ -88,6 +92,7 @@ from boba.identity.locks import LiveLocks, LockKeeper, LockMode, LockPurpose
 from boba.mcp_client.client import McpCaller, McpServers
 from boba.messaging import MessageBus, PayloadStore, TurnOutcome
 from boba.runtime.storage import StorageClient
+from boba.toolkit.result import MarkdownTable, NoteLine, TableResult
 from boba.transport.acp.protocol import ErrorDataKey
 
 __all__ = [
@@ -342,16 +347,21 @@ class AgentFeed(TurnRenderer):
         schema.SessionPlanRemovedUpdate,
         schema.AvailableCommandsUpdate,
         schema.ConfigOptionUpdate,
-        schema.SessionCompactionUpdate,
         schema.SessionCompactionSummaryChunk,
         schema.RunningSessionStateUpdate,
         schema.RequiresActionSessionStateUpdate,
     )
     """Уведомления сессии, которых в ленте нет: план, команды, настройки
-    сессии, сжатие и состояние идущего хода."""
+    сессии, куски пересказа и состояние идущего хода; сжатие рисуется шагом
+    хода (UpdateView)."""
 
     ABANDONED: ClassVar[str] = "turn failed"
     """Причина в итоге хода, сорвавшегося без ответа агента."""
+    COMMANDS_AUTHOR: ClassVar[str] = "Chat"
+    """Подпись окон команд чата во вкладке."""
+    HINT_DASH: ClassVar[str] = " — "
+    """Между описанием команды и подсказкой её аргументов: поля под подсказку
+    в меню chainlit нет."""
 
     def __init__(  # noqa: PLR0913 — приёмник собирается всеми своими входами
         self,
@@ -633,8 +643,72 @@ class AgentFeed(TurnRenderer):
             await self._release(turn)
 
     async def inserted(self, question: Question) -> None:
+        await self.taken(question.key)
+
+    async def taken(self, step_id: str) -> None:
         with self._tab.entered():
-            await self._tab.emitter.delete_step(StepDict(id=question.key))
+            await self._tab.emitter.delete_step(StepDict(id=step_id))
+
+    async def offered(self, commands: Sequence[MenuCommand]) -> None:
+        listed: list[CommandDict] = []
+        for command in commands:
+            description = command.description
+            if command.hint:
+                description = f"{description}{self.HINT_DASH}{command.hint}"
+
+            listed.append(
+                CommandDict(
+                    id=command.name,
+                    description=description,
+                    icon=command.icon.value,
+                    button=False,
+                    persistent=False,
+                    selected=False,
+                )
+            )
+
+        await self._tab.emitter.set_commands(listed)
+
+    async def app_opened(self, window: AppWindow) -> None:
+        """Карточка приложения сообщением вкладки, сразу с итогом вызова."""
+        element = self._elements.app(window.view, window.call_id, window.arguments)
+        element.thread_id = self.thread_id
+        element.props[AppProp.RESULT.value] = dict(window.result)
+        message = Message(
+            content="",
+            author=self.COMMANDS_AUTHOR,
+            elements=[element],
+            metadata={StepMeta.APP.value: True},
+        )
+        with self._tab.entered():
+            await message.send()
+
+    async def table_shown(self, title: str, table: TableResult) -> None:
+        rows: list[dict[str, str]] = []
+        for row in table.rows:
+            cells: dict[str, str] = {}
+            for key, value in row.items():
+                cells[key] = self._cell(value)
+
+            rows.append(cells)
+
+        parts = [f"**{title}**"]
+        if rows:
+            parts.append(MarkdownTable.render(rows))
+
+        if table.note:
+            parts.append(NoteLine.render(table.note))
+
+        message = Message(content="\n\n".join(parts), author=self.COMMANDS_AUTHOR)
+        with self._tab.entered():
+            await message.send()
+
+    @staticmethod
+    def _cell(value: object) -> str:
+        if value is None:
+            return ""
+
+        return str(value)
 
     async def withdrawn(self, questions: Sequence[Question]) -> None:
         if not questions:

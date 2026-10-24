@@ -167,6 +167,8 @@
         postgres = "${postgres_history}"
     [agent.tools]
         always_load = []
+    [agent.limits]
+        tool_result_window_share = 0.25
 
 [agent_launch.process]
     command             = "${env.agent_command}"

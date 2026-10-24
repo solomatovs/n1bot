@@ -94,11 +94,15 @@ class TurnFeed:
     async def agent_update(self, update: SessionUpdate) -> None:
         """Уведомление агента как есть: вызовы с аргументами и итогом — по
         ссылке (ключи аргументов обязаны сохранить порядок, jsonb шины его
-        не хранит), idle конца хода — тоже по ссылке (текст ошибки модели
-        длиной не ограничен), куски текста — в самом сообщении."""
+        не хранит), idle конца хода и сжатие — тоже по ссылке (текст ошибки
+        модели и пересказ длиной не ограничены), куски текста — в самом
+        сообщении."""
         body = self._codec.encode(update)
         if isinstance(
-            update, schema.SessionToolCallUpdate | schema.IdleSessionStateUpdate
+            update,
+            schema.SessionToolCallUpdate
+            | schema.IdleSessionStateUpdate
+            | schema.SessionCompactionUpdate,
         ):
             ref = await self._payloads.put(self._scope, body)
             await self._publish(AgentUpdate(turn_id=self._turn_id, stored=ref))
