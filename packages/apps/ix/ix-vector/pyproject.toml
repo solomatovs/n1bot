@@ -4,15 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-ix-vector"
-version = "0.0.30.dev3"
+version = "0.0.30.dev4"
 description = "Векторный индекс ix_emb_e5_1024: чанки аспектов объектов ix через локальные эмбеддинги."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-cancellation==0.0.30.dev3",
-    "boba-config==0.0.30.dev3",
-    "boba-db-postgres==0.0.30.dev3",
-    "boba-ix-core==0.0.30.dev3",
-    "boba-llm==0.0.30.dev3",
+    "boba-cancellation==0.0.30.dev4",
+    "boba-config==0.0.30.dev4",
+    "boba-db-postgres==0.0.30.dev4",
+    "boba-ix-core==0.0.30.dev4",
+    "boba-llm==0.0.30.dev4",
     "psycopg>=3.3,<4",
     "pydantic>=2.12,<3",
     "tokenizers>=0.20,<1",

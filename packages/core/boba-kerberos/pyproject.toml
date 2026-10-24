@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-kerberos"
-version = "0.0.30.dev3"
+version = "0.0.30.dev4"
 description = "Boba kerberos: модели и ошибки kerberos — секции профилей, режимы делегирования, билет входа, порт печати — без gssapi."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-core==0.0.30.dev3",
+    "boba-core==0.0.30.dev4",
     "pydantic>=2.12,<3",
 ]
 
