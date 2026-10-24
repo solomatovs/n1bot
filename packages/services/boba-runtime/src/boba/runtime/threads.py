@@ -1,7 +1,8 @@
 """Таблица threads чата: единственный владелец строки треда.
 
-DDL, чтение, upsert с правкой meta по ключам, удаление с владельцем в ответе,
-список тредов пользователя и автор треда для проверки владения.
+DDL, чтение, upsert с правкой meta по ключам, сдвиг времени активности,
+удаление с владельцем в ответе, список тредов пользователя страницами по
+активности и автор треда для проверки владения.
 
 Ошибки:
 DataUnavailableError — postgres недоступен или ответил не тем.
@@ -21,7 +22,9 @@ from boba.chat.threads import (
     ChatThreads,
     DataRejectedError,
     StoredThread,
+    ThreadCursor,
     ThreadsColumn,
+    ThreadTouched,
     ThreadUpsert,
     ThreadUpserted,
 )
@@ -49,6 +52,7 @@ class ThreadsTable(PgTable, ChatThreads):
         return StoredThread(
             id=row[ThreadsColumn.ID.value],
             created_at=row[ThreadsColumn.CREATED_AT.value],
+            updated_at=row[ThreadsColumn.UPDATED_AT.value],
             name=name,
             user_id=row[ThreadsColumn.USER_ID.value],
             tags=tuple(tags),
@@ -60,7 +64,7 @@ class ThreadsTable(PgTable, ChatThreads):
             self._query()
             .add(
                 """
-                select id, created_at, name, user_id, tags, meta
+                select id, created_at, updated_at, name, user_id, tags, meta
                 from {schema}.threads
                 where id = %(id)s
                 """,
@@ -86,6 +90,7 @@ class ThreadsTable(PgTable, ChatThreads):
                 insert into {schema}.threads as t (
                     id,
                     created_at,
+                    updated_at,
                     name,
                     user_id,
                     tags,
@@ -93,6 +98,7 @@ class ThreadsTable(PgTable, ChatThreads):
                 )
                 values (
                     %(id)s,
+                    %(created_at)s,
                     %(created_at)s,
                     %(name)s,
                     %(user_id)s,
@@ -149,28 +155,67 @@ class ThreadsTable(PgTable, ChatThreads):
 
         return row[ThreadsColumn.USER_ID.value]
 
-    async def list_of(self, user_id: UUID, limit: int) -> Sequence[StoredThread]:
+    async def touch(
+        self, thread_id: UUID, updated_at: datetime
+    ) -> ThreadTouched | None:
         query = (
             self._query()
             .add(
                 """
-                select
-                    id, created_at, name, user_id, tags, meta
-                from
-                    {schema}.threads
+                update {schema}.threads set
+                    updated_at = %(updated_at)s
                 where
-                    user_id = %(user_id)s
-                order by
-                    created_at desc
-                limit
-                    %(limit)s
+                    id = %(id)s
+                    and updated_at < %(updated_at)s
+                returning
+                    user_id,
+                    updated_at
                 """,
-                user_id=user_id,
-                limit=limit,
+                id=thread_id,
+                updated_at=updated_at,
             )
             .build()
         )
-        rows = await self._rows(query, "list_threads")
+        row = await self._row(query, "touch_thread")
+        if row is None:
+            return None
+
+        return ThreadTouched(
+            user_id=row[ThreadsColumn.USER_ID.value],
+            updated_at=row[ThreadsColumn.UPDATED_AT.value],
+        )
+
+    async def list_of(
+        self, user_id: UUID, limit: int, after: ThreadCursor | None
+    ) -> Sequence[StoredThread]:
+        query = self._query().add(
+            """
+            select
+                id, created_at, updated_at, name, user_id, tags, meta
+            from
+                {schema}.threads
+            where
+                user_id = %(user_id)s
+            """,
+            user_id=user_id,
+        )
+        if after is not None:
+            query = query.add(
+                "and (updated_at, id) < (%(after_at)s, %(after_id)s)",
+                after_at=after.updated_at,
+                after_id=after.id,
+            )
+
+        query = query.add(
+            """
+            order by
+                updated_at desc, id desc
+            limit
+                %(limit)s
+            """,
+            limit=limit,
+        )
+        rows = await self._rows(query.build(), "list_threads")
 
         threads: list[StoredThread] = []
         for row in rows:
