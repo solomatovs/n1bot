@@ -528,7 +528,8 @@ class ProfileBuilder:
 class PostgresBuilder:
     """PostgresConfig из строки подключения libpq — значения `dsn` из файла
     настроек или переменной окружения, названной `dsnEnv`; пароль живёт
-    в SecretStr и в публичные настройки не попадает."""
+    в SecretStr и в публичные настройки не попадает. Имя агента в
+    pg_stat_activity — запасное: application_name строки подключения главнее."""
 
     APPLICATION: ClassVar[str] = "boba"
 
@@ -564,7 +565,7 @@ class PostgresBuilder:
         pool = settings.pool
         document: dict[str, Any] = {
             **parts,
-            "application_name": self.APPLICATION,
+            "fallback_application_name": self.APPLICATION,
             "auth": auth,
             "pool": {
                 "min_size": pool.min_size,
