@@ -31,6 +31,7 @@ from aid_look import (
     LookAgentShape,
     LookCheck,
     LookError,
+    LookFix,
     LookPages,
     LookSize,
     LookStand,
@@ -68,6 +69,17 @@ THEME = LookTheme.LIGHT
 SIZE = LookSize.WIDE
 
 
+class FailFixes:
+    RUSSIAN: ClassVar[LookFix] = LookFix(
+        code="Сбои по-русски",
+        summary=(
+            "слова о недоступном агенте на полосе над полем ввода — на языке "
+            "интерфейса из переводов chainlit; техническая строка под ними "
+            "осталась как есть"
+        ),
+    )
+
+
 class FailLook:
     """Состояния сбоев (FL плана тестов вида)."""
 
@@ -77,13 +89,13 @@ class FailLook:
         "fl1-turn-lost",
         "Процесс агента убит посреди хода",
         "над полем ввода блок с красной рамкой и красноватым фоном, внутри "
-        "«The connection to the agent was lost. Reconnect with the button on "
-        "the right; …», под ним мелко "
+        "«Связь с агентом прервалась. Подключитесь заново кнопкой справа; …», "
+        "под ним мелко "
         "причина «agent "
         "process 'python…', the turn: the process exited with code -9», и "
         "кнопка «Повторить»; поле ввода заперто; в ленте — вопрос, сообщений об "
         "ошибке в ленте нет, кружка ожидания нет",
-        (),
+        (FailFixes.RUSSIAN,),
     )
     TURN_LOST_RETRIED: ClassVar[LookState] = LookState(
         GROUP,
@@ -180,31 +192,31 @@ class FailLook:
         GROUP,
         "fl12-start-failed",
         "Программа агента не найдена",
-        "блок с красной рамкой «The agent couldn't be started, so the chat "
-        "can't answer right now. Try again with the button on the right; …», "
+        "блок с красной рамкой «Не удалось запустить агента, поэтому чат сейчас "
+        "не может ответить. Попробуйте ещё раз кнопкой справа; …», "
         "мелко причина для "
         "администратора «agent process 'boba-missing', start: …» и «Повторить»; "
         "внутренних путей в тексте нет; поле заперто",
-        (),
+        (FailFixes.RUSSIAN,),
     )
     NO_ANSWER: ClassVar[LookState] = LookState(
         GROUP,
         "fl13-no-answer",
         "Агент не ответил на initialize",
-        "блок с красной рамкой «The agent didn't respond in time, so the chat "
-        "can't answer right now. Try again in a moment with the button on the "
-        "right.», мелко «agent process "
+        "блок с красной рамкой «Агент не ответил вовремя, поэтому чат сейчас не "
+        "может ответить. Попробуйте ещё раз чуть позже кнопкой справа.», мелко "
+        "«agent process "
         "'python…', initialize: no answer within 8 s»; поле заперто",
-        (),
+        (FailFixes.RUSSIAN,),
     )
     SERVICE_UNREACHABLE: ClassVar[LookState] = LookState(
         GROUP,
         "fl14-service-unreachable",
         "Служба агента недоступна при открытии треда",
-        "блок с красной рамкой «The agent can't be reached right now, so the "
-        "chat can't answer. …», мелко адрес службы и причина; лента пуста; "
+        "блок с красной рамкой «Агент сейчас недоступен, поэтому чат не может "
+        "ответить. …», мелко адрес службы и причина; лента пуста; "
         "поле заперто",
-        (),
+        (FailFixes.RUSSIAN,),
     )
     SERVICE_RETRIED: ClassVar[LookState] = LookState(
         GROUP,
@@ -217,26 +229,25 @@ class FailLook:
         GROUP,
         "fl16-service-unauthorized",
         "Служба агента отвечает 401 страницей HTML",
-        "строка «The agent didn't accept the sign-in of this chat, so the chat "
-        "can't answer. Reload the page to sign in again; …»",
-        (),
+        "строка «Агент не принял вход этого чата, поэтому чат не может "
+        "ответить. Перезагрузите страницу, чтобы войти заново; …»",
+        (FailFixes.RUSSIAN,),
     )
     SERVICE_BAD_GATEWAY: ClassVar[LookState] = LookState(
         GROUP,
         "fl17-service-bad-gateway",
         "Служба агента отвечает 502 страницей HTML",
-        "строка «The agent answered in a way the chat doesn't understand, …», "
-        "мелко «… HTTP 502 …»",
-        (),
+        "строка «Агент ответил так, что чат его не понял, …», мелко «… HTTP 502 …»",
+        (FailFixes.RUSSIAN,),
     )
     SERVICE_LOST: ClassVar[LookState] = LookState(
         GROUP,
         "fl18-service-lost",
         "Связь со службой агента оборвалась посреди хода",
-        "строка «The connection to the agent was lost. Reconnect with the button "
-        "on the right; …», мелко «agent service at …, the turn: the service closed "
+        "строка «Связь с агентом прервалась. Подключитесь заново кнопкой справа; "
+        "…», мелко «agent service at …, the turn: the service closed "
         "the connection»; процесса в тексте нет",
-        (),
+        (FailFixes.RUSSIAN,),
     )
 
     LOGIN_USER: ClassVar[str] = "admin"

@@ -7,6 +7,7 @@ CommandMenu (commands.py): вопрос-команду он отдаёт вла�
 
 Ошибки:
 AcpClientError и наследники — процесс или ответ агента (client.py).
+QuestionEditError — правка вопроса не принята (наследник AcpClientError).
 AgentSettingsError — профиль чата не годится агенту или исчез из конфига
     (settings.py).
 CommandError — команду сервера или чата не исполнить (commands.py).
@@ -23,7 +24,7 @@ from collections.abc import Collection, Coroutine, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, ClassVar, Protocol
+from typing import Any, Protocol
 from urllib.parse import urljoin
 from uuid import UUID
 
@@ -83,12 +84,14 @@ __all__ = [
     "AgentLauncher",
     "AgentLinks",
     "AgentSessionMeta",
+    "EditRefusal",
     "LaunchedAgent",
     "ModelContextUpdate",
     "MuteUpdates",
     "PermissionKind",
     "ProcessLinks",
     "Question",
+    "QuestionEditError",
     "Questions",
     "ServiceLinks",
     "StartedTurn",
@@ -104,6 +107,29 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
+
+
+class EditRefusal(StrEnum):
+    """Почему правка вопроса не принята: по виду вкладка выбирает слова
+    человеку (UserFailures в infra/notices.py)."""
+
+    NOT_EDITED = "not-edited"
+    """Прежнюю беседу не удалось заменить ветвью: всё осталось как было."""
+
+    NOT_LOADED = "not-loaded"
+    """Вопроса нет в беседе, которую видела вкладка."""
+
+    NO_BRANCHING = "no-branching"
+    """Агент не объявил ветвление беседы по сообщению."""
+
+
+class QuestionEditError(AcpClientError):
+    """Правка вопроса не принята; refusal — вид отказа для человека, текст
+    исключения — подробность для журнала."""
+
+    def __init__(self, message: str, refusal: EditRefusal) -> None:
+        super().__init__(message)
+        self.refusal = refusal
 
 
 class Question(BaseModel):
@@ -975,12 +1001,6 @@ class ThreadAgent:
     ходы разводит замок области треда в приёмнике (TurnRenderer).
     """
 
-    NOT_EDITED: ClassVar[str] = (
-        "The question wasn't edited because the earlier conversation couldn't be "
-        "replaced, so everything stays as it was. Try again when no other tab of "
-        "this chat is answering."
-    )
-
     def __init__(
         self,
         identity: ThreadIdentity,
@@ -1241,21 +1261,16 @@ class ThreadAgent:
         вкладка видела у агента.
 
         Ошибки:
-        AcpClientError — вопроса вкладка не видела: его задали в другой
+        QuestionEditError — вопроса вкладка не видела: его задали в другой
             вкладке после её открытия.
         """
         links = self._questions.links.get(question.key)
         if links is None:
-            logger.warning(
-                "thread %s: edited question %s is not in the loaded conversation",
-                self.thread_id,
-                question.key,
-            )
             msg = (
-                "This question isn't in the conversation loaded in this tab, so it "
-                "can't be edited. Reload the chat and try again."
+                f"edit of question {question.key} in thread {self.thread_id}: the "
+                "question is not in the conversation loaded in this tab"
             )
-            raise AcpClientError(msg)
+            raise QuestionEditError(msg, EditRefusal.NOT_LOADED)
 
         return question.model_copy(update={"links": links, "edited": True})
 
@@ -1629,18 +1644,12 @@ class ThreadAgent:
         AgentRequestError — агент отказал в `session/fork`.
         """
         if not self.process.forks_by_message():
-            logger.warning(
-                "thread %s: question %s edited, but the agent does not declare %r "
-                "in capabilities.session.fork._meta",
-                self.thread_id,
-                question.key,
-                MetaKey.UP_TO_MESSAGE_ID.value,
-            )
             msg = (
-                "This agent can't branch a conversation, so questions can't be "
-                "edited here. Send the question again as a new message instead."
+                f"edit of question {question.key} in thread {self.thread_id}: the "
+                f"agent does not declare {MetaKey.UP_TO_MESSAGE_ID.value!r} in "
+                "capabilities.session.fork._meta"
             )
-            raise AcpClientError(msg)
+            raise QuestionEditError(msg, EditRefusal.NO_BRANCHING)
 
         branch = await self.process.fork(current, question.key)
         forked = branch.session_id
@@ -1663,9 +1672,18 @@ class ThreadAgent:
                     forked,
                     dropped,
                 )
-                raise AcpClientError(self.NOT_EDITED) from dropped
+                msg = (
+                    f"edit of question {question.key} in thread {self.thread_id}: "
+                    f"session {current} not deleted ({refused}), branch {forked} "
+                    f"not removed either: {dropped}"
+                )
+                raise QuestionEditError(msg, EditRefusal.NOT_EDITED) from dropped
 
-            raise AcpClientError(self.NOT_EDITED) from refused
+            msg = (
+                f"edit of question {question.key} in thread {self.thread_id}: "
+                f"session {current} not deleted: {refused}"
+            )
+            raise QuestionEditError(msg, EditRefusal.NOT_EDITED) from refused
 
         await self._meta.remember(self.thread_id, forked, self._identity.profile.name)
         self._session_id = forked

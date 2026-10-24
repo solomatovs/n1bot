@@ -12,9 +12,9 @@ import { Button } from '@/components/ui/button';
 import { AgentNotice } from 'components/chat/Messages/Message/AgentNotice';
 import { useTranslation } from 'components/i18n/Translator';
 
-// boba: агент вкладки недоступен — полоса над полем ввода с текстом сбоя от
-// сервера aid и кнопкой повтора; поле ввода заперто (useChatData), пока
-// сервер не сообщит, что агент снова отвечает
+// boba: агент вкладки недоступен — полоса над полем ввода со словами о сбое
+// по ключу перевода от сервера aid и кнопкой повтора; поле ввода заперто
+// (useChatData), пока сервер не сообщит, что агент снова отвечает
 const RETRY_ACTION = 'agent_retry';
 
 export default function AgentUnavailable() {
@@ -51,7 +51,7 @@ export default function AgentUnavailable() {
       <AgentNotice
         severity="error"
         role="alert"
-        text={agentState.text}
+        text={t(agentState.key)}
         detail={agentState.detail}
       >
         <Button

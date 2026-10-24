@@ -51,7 +51,7 @@ from boba.aid.canvas.tools import CanvasOpener
 from boba.aid.chat.ui_text import UiText
 from boba.aid.domain.fields import ThreadField, ThreadMetaField
 from boba.aid.infra.config import AppConfig
-from boba.aid.infra.notices import TabAction, TabEvent, TabNotices
+from boba.aid.infra.notices import FailureText, TabAction, TabEvent, TabNotices
 from boba.aid.infra.providers import (
     agent_config,
     canvas_opener,
@@ -291,11 +291,7 @@ class TabAgent:
                 question.key,
                 redraw,
             )
-            await self._notices.toast(
-                "The conversation couldn't be shown again after the failed edit. "
-                "Reload the page to see it.",
-                redraw.view_message().content,
-            )
+            await self._notices.toast(FailureText.REDRAW, redraw.view_message().content)
 
 
 @chainlit_error_ctx_handler

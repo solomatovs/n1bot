@@ -590,7 +590,7 @@ class ChatSocket:
 
             if event == "agent_state":
                 if not payload.get("available"):
-                    found.append(f"{payload.get('text')} ({payload.get('detail')})")
+                    found.append(f"{payload.get('key')} ({payload.get('detail')})")
                 continue
 
             if event not in ("new_message", "update_message", "stream_start"):
@@ -1288,7 +1288,7 @@ class TestHistory:
                 await asyncio.sleep(0.2)
 
             assert tab.errors(), tab.trace()
-            assert "answering in another tab" in tab.errors()[-1], tab.errors()
+            assert "отвечает в другой вкладке" in tab.errors()[-1], tab.errors()
             # конец обработчика правки, а не хода
             await tab.wait_task_end()
             during = await rows.thread_meta(tab.thread_id)
@@ -1411,7 +1411,7 @@ class TestHistory:
             await editing.wait_task_end()
             refusals = editing.errors()
             assert refusals, editing.trace()
-            assert "Reload the chat and try again" in refusals[-1], refusals
+            assert "Перезагрузите чат и попробуйте ещё раз" in refusals[-1], refusals
             await editing.wait_event_index("resume_thread", since=reloaded)
 
             await editing.edit(question, f"edited {ScenarioName.ANSWER.value}")
@@ -1517,7 +1517,7 @@ class TestHistory:
                 await asyncio.sleep(0.2)
 
             assert editing.errors(), editing.trace()
-            assert "answering in another tab" in editing.errors()[-1], editing.errors()
+            assert "отвечает в другой вкладке" in editing.errors()[-1], editing.errors()
             redrawn = await editing.wait_event_index("resume_thread", since=mark)
             replayed = editing.messages("user_message", redrawn)
             assert replayed, editing.trace()[mark:]
@@ -1670,7 +1670,7 @@ class TestHistory:
             await tab.wait_task_end()
             refusals = tab.errors()
             assert refusals, tab.trace()[mark:]
-            assert "can't branch a conversation" in refusals[-1], refusals
+            assert "не умеет ветвить беседу" in refusals[-1], refusals
             await tab.wait_event_index("resume_thread", since=mark)
             assert await rows.thread_meta(tab.thread_id) == before
         finally:
@@ -2211,7 +2211,7 @@ class TestTabsOfOneThread:
             await other.send(f"mine {ScenarioName.ANSWER.value}")
             refusals = await self._reply(other, busy)
             assert refusals, other.trace()[busy:]
-            assert "answering in another tab" in refusals[-1], refusals
+            assert "отвечает в другой вкладке" in refusals[-1], refusals
 
             await first.stop()
             await first.wait_task_end()
