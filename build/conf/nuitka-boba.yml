@@ -63,12 +63,6 @@
         'rich.syntax': 'the agent prints no highlighted code'
         'pygments': 'the agent prints no highlighted code'
 
-- module-name: 'httpx'
-  anti-bloat:
-    - description: 'zstandard of the build tools is no dependency of the agent'
-      no-follow:
-        'zstandard': 'responses are not zstd-encoded for the agent'
-
 - module-name: 'httpx2'
   anti-bloat:
     - description: 'command line and websockets of httpx2 are not used by the agent'
