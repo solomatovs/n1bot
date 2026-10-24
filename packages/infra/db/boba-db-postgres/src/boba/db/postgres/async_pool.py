@@ -99,7 +99,12 @@ class PostgresPool(Protocol):
 
 class AsyncPostgresPool(PostgresPool):
     """
-    Единственная точка работы с postgres: async-пул поверх AsyncConnectionPool
+    Единственная точка работы с postgres: async-пул поверх AsyncConnectionPool.
+
+    Соединение проверяется пустым запросом при каждой выдаче. Оборванное
+    (перезапуск сервера, pg_terminate_backend) уходит из пула вместе с
+    остальными оборванными простаивающими, и вызывающий получает живое:
+    мёртвое соединение до его запроса не доходит.
     """
 
     Configure = Callable[[psycopg.AsyncConnection[Any]], Awaitable[None]]
@@ -310,7 +315,33 @@ class AsyncPostgresPool(PostgresPool):
         self._check_loop("connection")
 
         async with self._pool.connection() as conn:
+            if await self._alive(conn):
+                yield conn
+                return
+
+        # не check= пула: тот перед каждым следующим соединением ждёт с нарастающей
+        # задержкой и после перезапуска сервера выходит за timeout; check() разом
+        # заменяет все оборванные простаивающие
+        await self._pool.check()
+
+        async with self._pool.connection() as conn:
             yield conn
+
+    async def _alive(self, conn: psycopg.AsyncConnection[Any]) -> bool:
+        """Соединение отвечает на пустой запрос; оборванное пул отбросит,
+        когда оно вернётся к нему."""
+        try:
+            await self._pool.check_connection(conn)
+        except psycopg.OperationalError as exc:
+            logger.warning(
+                "AsyncPostgresPool db=%s: a pooled connection broke on the server, "
+                "dropping the broken idle connections: %s",
+                self._cfg.dbname,
+                exc,
+            )
+            return False
+
+        return True
 
     @asynccontextmanager
     async def cursor(self) -> AsyncGenerator[psycopg.AsyncCursor[Any], None]:

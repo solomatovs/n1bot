@@ -31,6 +31,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 from boba.db.postgres import (
     AsyncPostgresPool,
     Cursor,
+    PgQuery,
     PgQueryBuilder,
     PostgresError,
     PostgresPool,
@@ -424,8 +425,7 @@ class PgMessageBus(PostgresTable, MessageBus):
             .build()
         )
 
-        action = f"publish of {message.kind} to {scope.render()}"
-        async with self._transaction(action) as cur:
+        async def work(cur: Cursor) -> int:
             await self._advisory_lock(cur, scope.render())
             if message.kind.requires_lock:
                 await self._fence(cur, scope, scope_id, token)
@@ -444,7 +444,11 @@ class PgMessageBus(PostgresTable, MessageBus):
             )
             await self._notify(cur, pointer)
 
-        return seq
+            return seq
+
+        return await self._transacted(
+            f"publish of {message.kind} to {scope.render()}", work
+        )
 
     async def _notify(self, cur: Cursor, pointer: Pointer) -> None:
         notify = (
@@ -524,8 +528,7 @@ class PgMessageBus(PostgresTable, MessageBus):
             .build()
         )
 
-        action = f"command {command.kind} to {scope.render()}"
-        async with self._transaction(action) as cur:
+        async def work(cur: Cursor) -> int:
             await cur.execute(insert.text, insert.params)
             row = self._returning(
                 await cur.fetchone(),
@@ -541,7 +544,11 @@ class PgMessageBus(PostgresTable, MessageBus):
             )
             await self._notify(cur, pointer)
 
-        return command_id
+            return command_id
+
+        return await self._transacted(
+            f"command {command.kind} to {scope.render()}", work
+        )
 
     def subscribe(self, scope: Scope, listener: Listener) -> Unsubscribe:
         self._listener.ensure_alive()
@@ -641,10 +648,9 @@ class PgMessageBus(PostgresTable, MessageBus):
             .build()
         )
 
-        async with self._transaction(f"purge of {scope.render()}") as cur:
-            await cur.execute(events.text, events.params)
-            removed = cur.rowcount
-            await cur.execute(commands.text, commands.params)
+        removed = await self._transacted(
+            f"purge of {scope.render()}", self._purged(events, commands)
+        )
 
         self._last_seen.pop(scope, None)
         return removed
@@ -696,13 +702,23 @@ class PgMessageBus(PostgresTable, MessageBus):
             .build()
         )
 
-        action = f"purge of scopes idle for {max_age_sec}s"
-        async with self._transaction(action) as cur:
+        return await self._transacted(
+            f"purge of scopes idle for {max_age_sec}s", self._purged(events, commands)
+        )
+
+    def _purged(
+        self, events: PgQuery, commands: PgQuery
+    ) -> Callable[[Cursor], Awaitable[int]]:
+        """Работа очистки: удаление событий, затем команд; число удалённых событий."""
+
+        async def work(cur: Cursor) -> int:
             await cur.execute(events.text, events.params)
             removed = cur.rowcount
             await cur.execute(commands.text, commands.params)
 
-        return removed
+            return removed
+
+        return work
 
     async def _rows_after(self, scope: Scope, after_seq: int) -> Sequence[DictRow]:
         scope_id = self._scope_id(scope)

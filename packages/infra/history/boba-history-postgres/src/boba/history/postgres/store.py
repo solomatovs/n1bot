@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections.abc import (
     AsyncGenerator,
     Iterable,
@@ -95,6 +96,8 @@ __all__ = [
     "SessionColumn",
     "SessionLocks",
 ]
+
+logger = logging.getLogger(__name__)
 
 
 class HistoryTable(StrEnum):
@@ -229,9 +232,10 @@ class SessionLocks:
     берётся повторно без отказа, поэтому сессии, захваченные этим процессом,
     помнит реестр: второй захват той же сессии отказывает по нему, а замок
     в Postgres отказывает другим процессам. Соединение одно на процесс, так
-    что число соединений истории — пул плюс одно. Обрыв соединения
-    обнаруживается на ближайшем обращении: оно закрывается, замки его
-    поколения считаются потерянными, следующий захват открывает новое.
+    что число соединений истории — пул плюс одно. Перед каждым обращением
+    соединение проверяется пустым запросом: оборванное закрывается, замки
+    его поколения считаются потерянными (сервер снял их вместе с сеансом),
+    захват открывает новое, а дозапись потерянной сессии отказывает.
     Создаёт процесс, держат его хранилища истории процесса.
     """
 
@@ -284,15 +288,14 @@ class SessionLocks:
             raise HistoryError(self._lost(grant, "it was released"))
 
         async with self._guard:
-            conn = self._conn
-            if conn is None or conn.closed or grant.generation != self._generation:
-                raise HistoryError(self._lost(grant, "the lock connection was closed"))
+            conn = await self._live()
+            if conn is None:
+                raise HistoryError(self._lost(grant, "the lock connection was lost"))
 
-            try:
-                await conn.execute("select 1")
-            except psycopg.Error as exc:
-                await self._drop()
-                raise HistoryError(self._lost(grant, str(exc))) from exc
+            if grant.generation != self._generation:
+                raise HistoryError(
+                    self._lost(grant, "the lock connection was reopened")
+                )
 
     async def give(self, grant: LockGrant) -> None:
         """Отпускает замок; замок потерянного поколения отпускать незачем.
@@ -308,8 +311,11 @@ class SessionLocks:
         del self._held[session]
         statement = self._statement("select pg_advisory_unlock", grant.session)
         async with self._guard:
-            conn = self._conn
-            if conn is None or conn.closed or grant.generation != self._generation:
+            conn = await self._live()
+            if conn is None:
+                return
+
+            if grant.generation != self._generation:
                 return
 
             await self._fetched(conn, statement, f"releasing session '{session}'")
@@ -324,8 +330,7 @@ class SessionLocks:
         """Ошибки:
         HistoryError — соединение замков не открылось.
         """
-        conn = self._conn
-        if conn is not None and not conn.closed:
+        if conn := await self._live():
             return conn
 
         try:
@@ -336,6 +341,30 @@ class SessionLocks:
 
         self._conn = conn
         self._generation += 1
+
+        return conn
+
+    async def _live(self) -> psycopg.AsyncConnection[Any] | None:
+        """Соединение замков, если оно открыто и отвечает; оборванное
+        закрывается: его замки сервер снял вместе с сеансом."""
+        conn = self._conn
+        if conn is None:
+            return None
+
+        if conn.closed:
+            return None
+
+        try:
+            await conn.execute("")
+        except psycopg.OperationalError as exc:
+            logger.warning(
+                "history: the lock connection of the sessions broke, the locks "
+                "of generation %d are lost: %s",
+                self._generation,
+                exc,
+            )
+            await self._drop()
+            return None
 
         return conn
 
@@ -489,10 +518,13 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
             )
             .build()
         )
-        action = f"appending {len(fresh)} record(s) to session '{held.session.value}'"
-        async with self._transaction(action) as cur:
+
+        async def work(cur: Cursor) -> None:
             await cur.execute(opening.text, opening.params)
             await cur.executemany(query.text, rows)
+
+        action = f"appending {len(fresh)} record(s) to session '{held.session.value}'"
+        await self._transacted(action, work)
 
         held.last_seq = fresh[-1].seq
 
@@ -635,8 +667,8 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
             .when(self._owned(), "and owner = %(owner)s", owner=self._owner)
             .build()
         )
-        action = f"deleting session '{session.value}'"
-        async with self._transaction(action) as cur:
+
+        async def work(cur: Cursor) -> None:
             await cur.execute(probe.text, probe.params)
             row = await cur.fetchone()
             acquired = False
@@ -652,12 +684,14 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
 
             await cur.execute(query.text, query.params)
 
+        await self._transacted(f"deleting session '{session.value}'", work)
+
     async def copy(
         self, source: SessionId, target: SessionId, up_to: str | None
     ) -> int:
         await self._prepare()
-        action = f"copying session '{source.value}' to '{target.value}'"
-        async with self._transaction(action) as cur:
+
+        async def work(cur: Cursor) -> int:
             if not await self._exists(cur, source, self._owned()):
                 msg = (
                     f"Session '{source.value}' cannot be copied: it has no records "
@@ -727,6 +761,9 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
             await cur.execute(query.text, query.params)
 
             return cur.rowcount
+
+        action = f"copying session '{source.value}' to '{target.value}'"
+        return await self._transacted(action, work)
 
     async def _exists(self, cur: Cursor, session: SessionId, owned: bool) -> bool:
         """Есть ли строка сессии: её заводит первая запись, удаление уносит;

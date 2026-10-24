@@ -2,11 +2,21 @@
 
 from __future__ import annotations
 
-__all__ = ["PgArrowError", "PgDescribeError", "PostgresError"]
+__all__ = [
+    "PgArrowError",
+    "PgDescribeError",
+    "PostgresConnectionLostError",
+    "PostgresError",
+]
 
 
 class PostgresError(Exception):
     """Базовая ошибка PG-инфры: пул, соединение, таймаут, авторизация."""
+
+
+class PostgresConnectionLostError(PostgresError):
+    """Соединение оборвалось посреди транзакции до её commit: сервер её не
+    зафиксировал, и PostgresTable повторяет работу на новом соединении пула."""
 
 
 class PgDescribeError(RuntimeError):

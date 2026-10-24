@@ -138,7 +138,8 @@ class PgLiveLocks(PostgresTable, LiveLocks):
             f"{mode.value} acquire of {scope.render()} for {purpose.value} "
             f"by {self._instance}"
         )
-        async with self._transaction(action) as cur:
+
+        async def work(cur: Cursor) -> None:
             await self._advisory_lock(cur, scope.render())
             await cur.execute(expire.text, expire.params)
             holders = await self._holders(cur, scope)
@@ -150,6 +151,8 @@ class PgLiveLocks(PostgresTable, LiveLocks):
                     raise LockBusyError(scope, busy)
 
             await cur.execute(insert.text, insert.params)
+
+        await self._transacted(action, work)
 
         logger.info(
             "lock acquired: %s %s %s by %s",
@@ -206,8 +209,10 @@ class PgLiveLocks(PostgresTable, LiveLocks):
         return found
 
     async def holders_of(self, scope: Scope) -> Sequence[LockBusy]:
-        async with self._transaction(f"reading holders of {scope.render()}") as cur:
+        async def work(cur: Cursor) -> Sequence[LockBusy]:
             return await self._holders(cur, scope)
+
+        return await self._transacted(f"reading holders of {scope.render()}", work)
 
     async def heartbeat(self, token: LockToken) -> bool:
         query = (
