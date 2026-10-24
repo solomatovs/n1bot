@@ -414,8 +414,10 @@ class MountsSpec(BaseModel):
     tmp: int = Field(
         gt=0,
         description=(
-            "Размер /tmp, например `512M`: он приватен вызову и служит "
-            "единственным местом записи для тела без workspace."
+            "Размер /tmp зиготы (tmpfs), например `512M`. У вызова свой "
+            "приватный /tmp на ramfs: tmpfs, смонтированная в userns, печатала "
+            "бы телу uid хоста, поэтому его объём ограничивают память группы "
+            "вызова (group_memory_bytes) и process_file_bytes на файл."
         ),
     )
     workspace: WorkspaceSpec | None = Field(
