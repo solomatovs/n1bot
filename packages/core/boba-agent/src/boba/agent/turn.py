@@ -321,7 +321,7 @@ class TurnLoop:
         if outcome.refused:
             error = self._last_failure
 
-        turn_end = await self._keeper.add(
+        turn_end = self._keeper.add_unannounced(
             TurnEndRecord(
                 uuid=self._ids.uuid(),
                 parent_uuid=self._session.last_chain_uuid(),

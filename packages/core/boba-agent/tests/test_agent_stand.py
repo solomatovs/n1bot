@@ -155,7 +155,18 @@ class TestTwoTurns:
         assert len(results) == 2
         assert all(isinstance(e, ResultEvent) and e.num_turns == 1 for e in results)
         assert len(sink.of(StreamEvent)) > 0
-        assert len(sink.of(RecordEvent)) == 5
+        announced: list[str] = []
+        for event in sink.of(RecordEvent):
+            assert isinstance(event, RecordEvent)
+            if isinstance(event.record, ChainRecord):
+                announced.append(event.record.uuid)
+
+        expected: list[str] = []
+        for record in session.chain():
+            if not isinstance(record, TurnEndRecord):
+                expected.append(record.uuid)
+
+        assert announced == expected
 
         requests = server.requests()
         assert len(requests) == 2
