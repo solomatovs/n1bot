@@ -495,7 +495,7 @@ class CompactMetadata(WireModel):
     duration_ms: int
     preserved_messages: PreservedMessages
     pre_compact_discovered_tools: Sequence[str] = Field(
-        default=(),
+        default_factory=list,
         description=(
             "Отложенные инструменты, загруженные до сжатия, в порядке загрузки: "
             "ссылки на них уходят вместе с пересказанной частью."
