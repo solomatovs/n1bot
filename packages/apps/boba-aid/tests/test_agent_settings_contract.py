@@ -27,7 +27,6 @@ from boba.aid.agent.config import (
 from boba.aid.agent.settings import (
     AgentProviderKind,
     AgentWorkdirs,
-    ChatAgentSettings,
     McpFile,
     ModelFile,
     ProviderFile,
@@ -80,8 +79,8 @@ def published_schema() -> Draft202012Validator:
     return Draft202012Validator(document)
 
 
-def _chat(system_prompt: str) -> ChatAgentSettings:
-    """Слой чата профиля с удалённым провайдером и всеми полями, которые
+def _model() -> ModelFile:
+    """Профиль модели с удалённым провайдером и всеми полями, которые
     ProfileModelSpecs берёт из соединения профиля."""
     provider = ProviderFile(
         kind=AgentProviderKind.OPENAI,
@@ -95,17 +94,13 @@ def _chat(system_prompt: str) -> ChatAgentSettings:
         retry_after_max_sec=30.0,
         transport={"dump": {"enabled": False}},
     )
-    model = ModelFile(
+    return ModelFile(
         provider=provider,
         model="fake-model-general",
         sampling={"temperature": 0.2},
         context_window=32000,
         max_output_tokens=4096,
         reasoning_return=ReasoningReturn.TURN,
-    )
-
-    return ChatAgentSettings(
-        model_name=PROFILE, model=model, system_prompt=system_prompt
     )
 
 
@@ -122,10 +117,9 @@ def _written(
 ) -> dict[str, Any]:
     """Документ файла настроек, как его записал бы запуск агента треда."""
     builder = SettingsFileBuilder(config, McpServersConfig(servers={}))
-    chat = _chat("Answer briefly")
     env = {"KRB5CCNAME": "FILE:/run/boba/krb5cc", "KRB5_CONFIG": "/etc/boba/krb5.conf"}
     workdir = AgentWorkdirs(tmp_path / "agents").create("thread-contract")
-    workdir.write(builder.build(chat, mcp, env), chat.system_prompt)
+    workdir.write(builder.build(PROFILE, _model(), mcp, env), "Answer briefly")
     try:
         return json.loads(workdir.settings_path.read_text(encoding="utf-8"))
     finally:
