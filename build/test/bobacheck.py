@@ -327,6 +327,7 @@ class AgentTurn:
             "model": "check",
             "models": {"check": model},
             "history": {"kind": "memory"},
+            "limits": {"toolResultWindowShare": 0.25},
             "permissions": {"defaultMode": "bypassPermissions", "allowBypass": True},
         }
         path = workdir / "settings.json"
