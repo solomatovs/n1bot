@@ -301,15 +301,41 @@ class TestCalls:
         await served.close()
 
         text = results(session.records())[0].text()
+        mark = (
+            "<truncated-output>Output truncated: 100 of 500 characters shown. The "
+            "rest does not fit the context window of the model; if you need it, ask "
+            "the tool for a narrower part (a filter, a range or a smaller limit)."
+            "</truncated-output>"
+        )
         assert text.startswith("x" * 100)
-        assert text.endswith(
-            "<truncated-output>Output truncated: 100 of 500 characters shown."
-            "</truncated-output>"
+        assert text.endswith(mark)
+        assert len(text) == 100 + len(mark)
+
+    async def test_result_is_bounded_by_a_share_of_the_window(
+        self, agents: StandAgents
+    ) -> None:
+        """Предел результата — не больше доли действующего окна профиля в
+        знаках: у окна 8000 без 512 под ответ и четверти — 1872 токена."""
+        profile = agents.profile(Protocol.OPENAI, chars_per_token=4)
+        limits = TurnLimits(retry_delays_sec=(0.0,))
+        served = Served(
+            agents.agent(profile, Collected(), limits=limits, tools=StandTools())
         )
-        assert len(text) == 100 + len(
-            "<truncated-output>Output truncated: 100 of 500 characters shown."
-            "</truncated-output>"
+        session = await served.open(SESSION, resume=False)
+
+        served.agent.queue.enqueue(
+            prompt(
+                call({"name": StandToolName.LARGE.full, "arguments": {"size": 40_000}})
+            )
         )
+        await served.agent.settled()
+        await served.close()
+
+        shown = limits.tool_result_chars(profile)
+        text = results(session.records())[0].text()
+        assert shown == 7488 // 4 * 4
+        assert text.startswith("x" * shown)
+        assert f"Output truncated: {shown} of 40000 characters shown." in text
 
     async def test_duplicate_wire_ids_keep_pairs_intact(
         self, server: FakeServer, agents: StandAgents

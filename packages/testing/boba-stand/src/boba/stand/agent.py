@@ -440,9 +440,13 @@ class StandAgents:
     ) -> Agent:
         """Агент на стенде; always_load None — все инструменты StandTools
         уходят полным определением: проверки, которые не про отложенные
-        инструменты, зовут их напрямую."""
+        инструменты, зовут их напрямую. Пределы по умолчанию — без пауз
+        между повторами и с результатом инструмента до целого окна: тесты
+        сжатия переполняют малое окно стенда одним большим результатом."""
         if limits is None:
-            limits = TurnLimits(retry_delays_sec=(0.0, 0.0, 0.0))
+            limits = TurnLimits(
+                retry_delays_sec=(0.0, 0.0, 0.0), tool_result_window_share=1.0
+            )
 
         if always_load is None:
             always_load = self._stand_tools()

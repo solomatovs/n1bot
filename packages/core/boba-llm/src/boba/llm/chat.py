@@ -17,6 +17,7 @@ LlmContextOverflowError — подкласс LlmError: запрос не пом�
 
 from __future__ import annotations
 
+import re
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 from enum import StrEnum
@@ -75,8 +76,38 @@ class ContextOverflowSigns:
         "exceeds the limit",
     )
 
+    EXCESS: ClassVar[tuple[re.Pattern[str], ...]] = (
+        re.compile(
+            r"maximum context length is (?P<limit>\d+) tokens.*?"
+            r"(?:resulted in|requested) (?P<actual>\d+) tokens",
+            re.IGNORECASE | re.DOTALL,
+        ),
+        re.compile(
+            r"prompt is too long[^0-9]*(?P<actual>\d+)\s*tokens?\s*>\s*(?P<limit>\d+)",
+            re.IGNORECASE,
+        ),
+    )
+    """Тексты, в которых сервер называет окно и размер запроса: OpenAI и
+    vLLM («maximum context length is N tokens… resulted in / requested M»),
+    Anthropic («prompt is too long: M tokens > N»)."""
+
     def matches(self, text: str) -> bool:
         return any(self._hits(text.lower()))
+
+    def excess(self, text: str) -> int | None:
+        """На сколько токенов запрос больше окна по тексту ошибки сервера;
+        None — сервер чисел не назвал."""
+        for pattern in self.EXCESS:
+            found = pattern.search(text)
+            if found is None:
+                continue
+
+            actual = int(found.group("actual"))
+            limit = int(found.group("limit"))
+
+            return max(0, actual - limit)
+
+        return None
 
     def _hits(self, lowered: str) -> Iterator[bool]:
         for phrase in self.PHRASES:

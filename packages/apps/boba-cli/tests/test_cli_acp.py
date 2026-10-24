@@ -3422,7 +3422,8 @@ class TestSessionSettings:
 
 class TestServiceUpdates:
     """`usage_update` после каждого хода и после сжатия, `compaction_update`
-    при сжатии, `session_info_update` с заголовком после первого хода и при
+    при сжатии по стадиям и при воспроизведении — состоявшимся,
+    `session_info_update` с заголовком после первого хода и при
     воспроизведении; всё — до `idle` хода."""
 
     SIZE: ClassVar[int] = 32000 - 4096
@@ -3561,6 +3562,32 @@ class TestServiceUpdates:
 
         return None
 
+    @staticmethod
+    async def _replayed_compactions(
+        registration: StandRegistration,
+        tmp_path: Path,
+        model: FakeModel,
+        document: dict[str, Any],
+        session_id: str,
+    ) -> list[schema.SessionCompactionUpdate]:
+        """Сжатия, которые новый процесс отдаёт при воспроизведении сессии."""
+        second = AcpProcess(tmp_path, model)
+        loader = AcpClient()
+        conn = await second.start(loader, registration, document)
+        try:
+            await handshake(conn)
+            await conn.resume_session(
+                cwd=str(tmp_path),
+                session_id=session_id,
+                mcp_servers=[StandRegistration.STAND],
+                replay_from=schema.ReplayFromStartVariant(),
+            )
+            return loader.of(schema.SessionCompactionUpdate)
+        finally:
+            await conn.close()
+            await second.close_stdin()
+            await second.kill()
+
     async def test_compaction_reports_compaction_and_usage(
         self, registration: StandRegistration, tmp_path: Path
     ) -> None:
@@ -3572,6 +3599,7 @@ class TestServiceUpdates:
         document["models"]["fake"] = boba.profile_document(
             "fake-model", context_window=8000, max_output_tokens=512, chars_per_token=4
         )
+        document["limits"] = {"toolResultWindowShare": 1.0}
         try:
             conn = await boba.start(client, registration, document)
             try:
@@ -3596,18 +3624,29 @@ class TestServiceUpdates:
                 assert usage[1].used < usage[0].used
                 assert all(u.size == 8000 - 512 for u in usage)
                 compactions = client.of(schema.SessionCompactionUpdate)
-                assert len(compactions) == 1
-                assert compactions[0].status == "completed"
-                assert compactions[0].compaction_id
+                assert [c.status for c in compactions] == ["in_progress", "completed"]
+                assert compactions[0].compaction_id == compactions[1].compaction_id
+                assert compactions[0].summary is None
+                summary = compactions[1].summary
+                assert summary is not None
+                assert isinstance(summary[0], schema.TextContentBlock)
+                assert summary[0].text.startswith("This session is being continued")
             finally:
                 await conn.close()
                 await boba.close_stdin()
 
             assert await boba.wait() == 0
+            replayed = await self._replayed_compactions(
+                registration, tmp_path, counting, document, session_id
+            )
         finally:
             await boba.kill()
             await counting.stop()
 
+        assert [(c.compaction_id, c.status) for c in replayed] == [
+            (compactions[1].compaction_id, "completed")
+        ]
+        assert replayed[0].summary == compactions[1].summary
         records = boba.journal(session_id)
         boundaries = [
             r
@@ -3615,8 +3654,10 @@ class TestServiceUpdates:
             if r["type"] == "system" and r.get("subtype") == "compact_boundary"
         ]
         assert len(boundaries) == 1
-        assert boundaries[0]["uuid"] == compactions[0].compaction_id
-        assert any(r["type"] == "user" and r.get("isCompactSummary") for r in records)
+        summaries = [
+            r for r in records if r["type"] == "user" and r.get("isCompactSummary")
+        ]
+        assert [r["uuid"] for r in summaries] == [compactions[1].compaction_id]
 
 
 class TestFork:
