@@ -270,6 +270,16 @@ class ChatPage:
         toggle.click()
         self.page.wait_for_timeout(300)
 
+    def await_tool_titled(self, title: str, timeout_ms: float | None = None) -> Locator:
+        """Ждёт шаг инструмента, в чьём заголовке есть title: в ходе перед
+        вызовом бывает другой шаг — загрузка отложенного инструмента."""
+        node = self.page.locator(Selector.of_type(StepKind.TOOL.value)).filter(
+            has_text=title
+        )
+        node.first.wait_for(state="attached", timeout=timeout_ms)
+
+        return node.first
+
     def await_step(self, step_type: str, timeout_ms: float | None = None) -> Locator:
         """Ждёт первый шаг указанного типа и отдаёт его локатор."""
         selector = Selector.of_type(step_type)
