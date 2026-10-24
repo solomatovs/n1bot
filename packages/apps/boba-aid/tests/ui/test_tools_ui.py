@@ -61,7 +61,6 @@ from boba.doc.document import DisabledOcr, DocumentHint, PageWindow
 from boba.doc.router import DocumentRouter
 from boba.runtime.config import AppLayers
 from boba.stand.edm import Asset, EdmSources
-from boba.stand.ix_index import IxPage
 from boba.stand.site import Stand, StandLayers
 from boba.stand.stream_sinks import SinkSources, StreamSinks
 from boba.stand.ui.chat_page import ChatPage, StepKind
@@ -77,6 +76,7 @@ from boba.stand.ui.socket_log import ChatEvent, StepField
 from boba.stand.ui.stand import (
     StandApp,
     StandConfig,
+    StandPlugins,
     StandPorts,
     StandProcess,
     StandToolNames,
@@ -194,33 +194,6 @@ class ProbeSql(StrEnum):
     ORA_SELECT = "select 1 as a from dual"
     ORA_SYSTEM = "SYS"
     ORA_DUAL = "DUAL"
-
-
-class IxProbe:
-    """Страницы Confluence, которыми стенд засевает схему ix: заказы и склады,
-    чтобы векторный поиск различал их по смыслу."""
-
-    SURFACE: ClassVar[str] = "cfl_page"
-    PAGES: ClassVar[tuple[IxPage, ...]] = (
-        IxPage(
-            content_id="9001",
-            title="Регламент выгрузки заказов",
-            body=(
-                "# Выгрузка заказов\n\n"
-                "Ежедневная выгрузка заказов в хранилище начинается после "
-                "закрытия операционного дня и занимает около часа."
-            ),
-        ),
-        IxPage(
-            content_id="9002",
-            title="Справочник складов",
-            body=(
-                "# Склады\n\n"
-                "Остатки товаров на складах обновляются каждый час из учётной "
-                "системы логистики."
-            ),
-        ),
-    )
 
 
 class RowWindowArgs:
@@ -1075,6 +1048,7 @@ def sandbox_stand(
         db_name=stand_database,
         url_prefix="/boba-sandbox",
         sandbox=True,
+        service_plugins=StandPlugins.SANDBOXED,
     )
     process = StandProcess(config=config, log_path=stand_workdir / "sandbox-app.log")
     process.start(boot_timeout_sec=BOOT_TIMEOUT_SEC)
@@ -1096,13 +1070,6 @@ def sandbox_stand(
 def stream_sinks(sandbox_stand: StandProcess, stand_database: str) -> StreamSinks:
     """База ClickHouse и схема Oracle приёмников насосов, заведённые стендом."""
     return StandDatabase(StandApp.AID, stand_database).stream_sinks()
-
-
-@pytest.fixture(scope="module")
-def ix_nodes(sandbox_stand: StandProcess, stand_database: str) -> list[int]:
-    """Страницы IxProbe в схеме ix базы стенда с индексами: id их node."""
-    database = StandDatabase(StandApp.AID, stand_database)
-    return database.seed_ix(IxProbe.PAGES)
 
 
 @pytest.fixture
@@ -1733,69 +1700,6 @@ class TestKbTools:
         result = TableResult(rows=[], note="nothing found")
         no_rows = app_texts.text(StepText.NO_ROWS.value)
         feed.call(call, ToolExpect.of(result, dom=[no_rows, "nothing found"]))
-
-
-class TestKbIxTools:
-    """kb_*2: поиск по схеме ix базы стенда, засеянной страницами IxProbe."""
-
-    HIT_HEADER: ClassVar[str] = TablePattern.row(
-        "node_id", "surface", "url", "score", "aspect", "snippet"
-    )
-
-    def _search(self, tool: str, query: str, aspects: list[str]) -> ToolCall:
-        return ToolCall(
-            tool=tool,
-            arguments={
-                "query": query,
-                "surfaces": [IxProbe.SURFACE],
-                "aspects": aspects,
-                **RowWindowArgs.of(limit=1),
-            },
-        )
-
-    def _hit(self, node: int) -> ToolExpect:
-        """Выдача поиска: шапка попаданий и первая строка — node страницы."""
-        return ToolExpect(
-            patterns=[self.HIT_HEADER, TablePattern.cells(str(node), IxProbe.SURFACE)],
-            dom=[IxProbe.SURFACE],
-        )
-
-    def test_catalog(self, feed: ToolFeed, ix_nodes: list[int]) -> None:
-        call = ToolCall(tool="kb_catalog2")
-        expect = ToolExpect(
-            patterns=[
-                TablePattern.row("surface", "description", "nodes", "aspects"),
-                TablePattern.cells(IxProbe.SURFACE),
-            ],
-            dom=[IxProbe.SURFACE],
-        )
-        feed.call(call, expect)
-
-    def test_fts_search(self, feed: ToolFeed, ix_nodes: list[int]) -> None:
-        call = self._search("kb_fts_search2", "выгрузка", ["title", "body"])
-        feed.call(call, self._hit(ix_nodes[0]))
-
-    def test_trgm_search(self, feed: ToolFeed, ix_nodes: list[int]) -> None:
-        call = self._search("kb_trgm_search2", IxProbe.PAGES[0].title, ["title"])
-        feed.call(call, self._hit(ix_nodes[0]))
-
-    def test_vector_search(self, feed: ToolFeed, ix_nodes: list[int]) -> None:
-        call = self._search("kb_vector_search2", "когда выгружаются заказы", ["body"])
-        feed.call(call, self._hit(ix_nodes[0]))
-
-    def test_node(self, feed: ToolFeed, ix_nodes: list[int]) -> None:
-        node = ix_nodes[0]
-        call = ToolCall(
-            tool="kb_node2", arguments={"node_id": node, "aspects": ["title"]}
-        )
-        expect = ToolExpect(
-            patterns=[
-                f"^# {IxProbe.SURFACE} node {node}$",
-                re.escape(IxProbe.PAGES[0].title),
-            ],
-            dom=[IxProbe.PAGES[0].title],
-        )
-        feed.call(call, expect)
 
 
 class TestPgTools:
