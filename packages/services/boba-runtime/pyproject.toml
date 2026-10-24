@@ -4,25 +4,25 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-runtime"
-version = "0.0.30.dev1"
+version = "0.0.30.dev2"
 description = "Boba runtime: контейнер зависимостей app/session/call и загрузчик tool-плагинов из конфига."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-ldap==0.0.30.dev1",
-    "boba-cancellation==0.0.30.dev1",
-    "boba-access==0.0.30.dev1",
-    "boba-canvas==0.0.30.dev1",
-    "boba-messaging==0.0.30.dev1",
-    "boba-chat==0.0.30.dev1",
-    "boba-connections==0.0.30.dev1",
-    "boba-db-postgres==0.0.30.dev1",
-    "boba-connection-broker==0.0.30.dev1",
-    "boba-identity==0.0.30.dev1",
-    "boba-sandbox==0.0.30.dev1",
-    "boba-config==0.0.30.dev1",
-    "boba-toolkit==0.0.30.dev1",
-    "boba-toolrun==0.0.30.dev1",
-    "boba-krb[seal]==0.0.30.dev1",
+    "boba-ldap==0.0.30.dev2",
+    "boba-cancellation==0.0.30.dev2",
+    "boba-access==0.0.30.dev2",
+    "boba-canvas==0.0.30.dev2",
+    "boba-messaging==0.0.30.dev2",
+    "boba-chat==0.0.30.dev2",
+    "boba-connections==0.0.30.dev2",
+    "boba-db-postgres==0.0.30.dev2",
+    "boba-connection-broker==0.0.30.dev2",
+    "boba-identity==0.0.30.dev2",
+    "boba-sandbox==0.0.30.dev2",
+    "boba-config==0.0.30.dev2",
+    "boba-toolkit==0.0.30.dev2",
+    "boba-toolrun==0.0.30.dev2",
+    "boba-krb[seal]==0.0.30.dev2",
     "pydantic>=2.12,<3",
     "psycopg>=3.3,<4",
     "omegaconf>=2.3,<3",
@@ -30,13 +30,13 @@ dependencies = [
     "fastapi>=0.116,<1",
     "aiofiles>=24.1,<26",
     "uvicorn>=0.35,<1",
-    "boba-auth==0.0.30.dev1",
+    "boba-auth==0.0.30.dev2",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "boba-stand==0.0.30.dev1",
-    "boba-stand-core==0.0.30.dev1",
+    "boba-stand==0.0.30.dev2",
+    "boba-stand-core==0.0.30.dev2",
     "pyjwt>=2.8,<3",
     "pytest>=9.1,<10",
 ]
