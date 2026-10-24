@@ -3,5 +3,6 @@
   - button "Повторить"
 - textbox "Введите сообщение здесь..."
 - img
+- button "Инструменты" [disabled]
 - button [disabled]:
   - img
