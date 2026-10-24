@@ -444,12 +444,15 @@ class StandAgents:
         compaction: CompactionSettings | None = None,
         store: HistoryStore | None = None,
         always_load: Sequence[str] | None = None,
+        record_requests: bool = False,
     ) -> Agent:
         """Агент на стенде; always_load None — все инструменты StandTools
         уходят полным определением: проверки, которые не про отложенные
         инструменты, зовут их напрямую. Пределы по умолчанию — без пауз
         между повторами и с результатом инструмента до целого окна: тесты
-        сжатия переполняют малое окно стенда одним большим результатом."""
+        сжатия переполняют малое окно стенда одним большим результатом.
+        record_requests — каждый запрос к модели пишется в журнал записью
+        api-request."""
         if limits is None:
             limits = TurnLimits(
                 retry_delays_sec=(0.0, 0.0, 0.0), tool_result_window_share=1.0
@@ -483,6 +486,7 @@ class StandAgents:
             environment=environment,
             clock=clock,
             always_load=always_load,
+            record_requests=record_requests,
         )
 
         return Agent(parts)
