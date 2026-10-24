@@ -1,5 +1,5 @@
-"""Стенд службы агента (boba-agent-service) в цикле событий теста и вход в
-неё proxy доверенного клиента.
+"""Стенд службы агента (`boba serve`) в цикле событий теста и вход в неё
+proxy доверенного клиента.
 
 Ошибки:
 ServiceSignInError — служба не выдала токен (boba.stand.service_signin).
@@ -8,15 +8,13 @@ ServiceSignInError — служба не выдала токен (boba.stand.ser
 from __future__ import annotations
 
 import asyncio
-import sys
 import time
 from collections.abc import Mapping, Sequence
-from pathlib import Path
 from typing import Any, ClassVar
 
 import uvicorn
 
-from boba.agent_service.app import AgentServiceConfig, AgentServiceHost
+from boba.cli.serve import ServeConfig, ServeHistory, ServeHost
 from boba.krb import KerberosWorkspaceConfig
 from boba.stand.service_signin import ServiceSignIn
 from boba.stand.ui.stand import StandPorts
@@ -56,31 +54,32 @@ class ServiceProfiles:
 
 
 class AgentServiceStand:
-    """Служба агента на свободном порту в цикле теста: процессы агента —
-    модуль boba.cli.app интерпретатором теста, вход — proxy клиента
-    CLIENT_ID под ключом PROXY_SECRET. settings — базовый слой файла
-    настроек (история, окружение, права), profiles — [agent.profiles]."""
+    """Служба агента на свободном порту в цикле теста: сессии — потоки этого
+    же процесса, вход — proxy клиента CLIENT_ID под ключом PROXY_SECRET.
+    history — подключение истории (своя схема стенда), settings — слой
+    настроек агента без истории и моделей (права, сессии), profiles —
+    [agent.profiles], idle_sec — простой, после которого служба закрывает
+    брошенное подключение HTTP."""
 
     CLIENT_ID: ClassVar[str] = "stand-chat"
     CLIENT_SECRET: ClassVar[str] = "stand-agent-client-secret"  # noqa: S105 — ключ стенда
     PROXY_SECRET: ClassVar[str] = "stand-agent-proxy-secret"  # noqa: S105 — ключ стенда
     SESSION_SECRET: ClassVar[str] = "stand-agent-session-secret"  # noqa: S105 — ключ стенда
     PATH: ClassVar[str] = "/acp"
-    AGENT_MODULE: ClassVar[str] = "boba.cli.app"
+    VERSION: ClassVar[str] = "0.0.0-stand"
     WAIT_SEC: ClassVar[float] = 60.0
 
-    def __init__(  # noqa: PLR0913 — стенд собирается всеми своими частями
+    def __init__(
         self,
         krb: KerberosWorkspaceConfig,
-        workdir: Path,
+        history: ServeHistory,
         settings: Mapping[str, Any],
         profiles: ServiceProfiles,
-        max_processes: int,
         idle_sec: float,
     ) -> None:
         self.port = StandPorts().free()
         self.public_url = f"http://127.0.0.1:{self.port}"
-        config = AgentServiceConfig.model_validate(
+        config = ServeConfig.model_validate(
             {
                 "schema": "agent_service_stand",
                 "krb": krb.model_dump(),
@@ -103,27 +102,15 @@ class AgentServiceStand:
                     "path": self.PATH,
                     "public_url": self.public_url,
                     "shutdown_timeout_sec": 2,
-                    "process": {
-                        "command": sys.executable,
-                        "args": [
-                            "-m",
-                            self.AGENT_MODULE,
-                            "acp",
-                            "--setting-sources",
-                            "",
-                        ],
-                        "workdir": str(workdir),
-                        "stop_timeout_sec": 5,
-                        "max_processes": max_processes,
-                        "idle_sec": idle_sec,
-                    },
+                    "idle_sec": idle_sec,
+                    "history": history,
                     "settings": dict(settings),
                     "profiles": profiles.section(),
                     "clients": {self.CLIENT_ID: {"secret": self.CLIENT_SECRET}},
                 },
             }
         )
-        self.host = AgentServiceHost(config)
+        self.host = ServeHost(config, self.VERSION)
         self._sign_in = ServiceSignIn(
             self.public_url, self.CLIENT_ID, self.CLIENT_SECRET, self.PROXY_SECRET
         )
@@ -169,18 +156,18 @@ class AgentServiceStand:
         """Токен ресурса ACP по утверждению доверенного клиента."""
         return await asyncio.to_thread(self._sign_in.token, login, roles, self.url())
 
-    async def processes_drop_to(self, wanted: int) -> None:
-        """Ждёт, пока у службы останется wanted процессов агента."""
+    async def sessions_drop_to(self, wanted: int) -> None:
+        """Ждёт, пока у службы останется wanted открытых сессий."""
         deadline = time.monotonic() + self.WAIT_SEC
         while True:
-            taken = self.host.quota().taken()
-            if taken == wanted:
+            opened = self.host.sessions()
+            if opened == wanted:
                 return
 
             if time.monotonic() >= deadline:
                 msg = (
-                    f"agent service stand: expected {wanted} agent processes "
-                    f"within {self.WAIT_SEC}s, got {taken}"
+                    f"agent service stand: expected {wanted} open sessions "
+                    f"within {self.WAIT_SEC}s, got {opened}"
                 )
                 raise AssertionError(msg)
 

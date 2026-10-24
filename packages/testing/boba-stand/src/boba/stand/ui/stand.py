@@ -763,7 +763,7 @@ class StandConfig(StandService):
     agent_process: dict[str, Any] = field(
         default_factory=lambda: {
             "command": shlex.join([sys.executable, "-m", StandConfig.AGENT_MODULE]),
-            "args": ["acp", "--setting-sources", ""],
+            "args": ["--stdio", "--setting-sources", ""],
         }
     )
     """Команда строкой оболочки и аргументы секции [agent.process] чата: по

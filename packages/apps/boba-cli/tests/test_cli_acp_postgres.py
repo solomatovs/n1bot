@@ -1,4 +1,4 @@
-"""Два процесса `boba acp` на одну сессию в Postgres стенда: держатель ведёт
+"""Два процесса `boba --stdio` на одну сессию в Postgres стенда: держатель ведёт
 ход, второй процесс возобновляет сессию с воспроизведением наблюдателем —
 отдаёт историю теми же уведомлениями, его `prompt` отвергается, пока замок у
 держателя, а после закрытия сессии держателем проходит; `session/list` видит сессию с
@@ -34,7 +34,7 @@ from boba.agent.history import SessionId, StoredLine
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import LibpqConnection, PostgresConfig
 from boba.db.postgres.connection.auth import KeytabAuth
-from boba.history.postgres import PostgresHistoryStore
+from boba.history.postgres import PostgresHistoryStore, SessionLocks
 from boba.krb import KerberosEnv, KerberosWorkspace
 from boba.stand.ui.fake_llm import ScenarioName
 from boba.transport.acp.protocol import (
@@ -83,6 +83,7 @@ class PostgresStand:
             "kind": "postgres",
             "dsn": self.dsn(),
             "schema": self._schema,
+            "pool": {"minSize": 1, "maxSize": 4, "timeoutSec": 30},
         }
         if owner is not None:
             history["owner"] = owner
@@ -93,7 +94,9 @@ class PostgresStand:
 
     def store(self, pool: AsyncPostgresPool) -> PostgresHistoryStore:
         """Хранилище без владельца: видит сессии всех процессов."""
-        return PostgresHistoryStore(self._postgres, self._schema, None, pool)
+        return PostgresHistoryStore(
+            self._postgres, self._schema, None, SessionLocks(self._postgres), pool
+        )
 
     async def human_prompts(
         self, store: PostgresHistoryStore, session_id: str

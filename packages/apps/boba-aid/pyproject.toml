@@ -53,6 +53,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "boba-cli==0.0.26.dev4",
     "boba-llm-onnx==0.0.26.dev4",
     "boba-doc[readers]==0.0.26.dev4",
     "boba-krb[seal]==0.0.26.dev4",
