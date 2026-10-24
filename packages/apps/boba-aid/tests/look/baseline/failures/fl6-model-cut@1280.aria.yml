@@ -1,0 +1,42 @@
+- article: Вопрос под лимитом scenario failure
+- article:
+  - text: "The model request failed: openai chat: stream failed: POST"
+  - link "http://127.0.0.1:0/v1/chat/completions":
+    - /url: http://127.0.0.1:0/v1/chat/completions
+  - text: ": expected 2xx, got 429 Too Many Requests: '{\"error\":{\"message\":\"fake llm: rate limit exceeded, retry later\",\"type\":\"invalid_request_error\",\"code\":\"failure \"}}'. Retry 1 of 3 in 1 s."
+- article:
+  - text: "The model request failed: openai chat: stream failed: POST"
+  - link "http://127.0.0.1:0/v1/chat/completions":
+    - /url: http://127.0.0.1:0/v1/chat/completions
+  - text: ": expected 2xx, got 429 Too Many Requests: '{\"error\":{\"message\":\"fake llm: rate limit exceeded, retry later\",\"type\":\"invalid_request_error\",\"code\":\"failure \"}}'. Retry 2 of 3 in 2 s."
+- article:
+  - text: "The model request failed: openai chat: stream failed: POST"
+  - link "http://127.0.0.1:0/v1/chat/completions":
+    - /url: http://127.0.0.1:0/v1/chat/completions
+  - text: ": expected 2xx, got 429 Too Many Requests: '{\"error\":{\"message\":\"fake llm: rate limit exceeded, retry later\",\"type\":\"invalid_request_error\",\"code\":\"failure \"}}'. Retry 3 of 3 in 4 s."
+- article:
+  - text: "openai chat: stream failed: POST"
+  - link "http://127.0.0.1:0/v1/chat/completions":
+    - /url: http://127.0.0.1:0/v1/chat/completions
+  - text: ": expected 2xx, got 429 Too Many Requests: '{\"error\":{\"message\":\"fake llm: rate limit exceeded, retry later\",\"type\":\"invalid_request_error\",\"code\":\"failure \"}}'"
+- article: Оборванный ответ scenario failure
+- article:
+  - text: "The model request failed: openai chat: POST"
+  - link "http://127.0.0.1:0/v1/chat/completions":
+    - /url: http://127.0.0.1:0/v1/chat/completions
+  - text: ": the stream ended without a finish_reason: the reply is cut off or the server closed the connection early. Retry 1 of 3 in 1 s."
+- article:
+  - text: "The model request failed: openai chat: POST"
+  - link "http://127.0.0.1:0/v1/chat/completions":
+    - /url: http://127.0.0.1:0/v1/chat/completions
+  - text: ": the stream ended without a finish_reason: the reply is cut off or the server closed the connection early. Retry 2 of 3 in 2 s."
+- article:
+  - text: "The model request failed: openai chat: POST"
+  - link "http://127.0.0.1:0/v1/chat/completions":
+    - /url: http://127.0.0.1:0/v1/chat/completions
+  - text: ": the stream ended without a finish_reason: the reply is cut off or the server closed the connection early. Retry 3 of 3 in 4 s."
+- article:
+  - text: "openai chat: POST"
+  - link "http://127.0.0.1:0/v1/chat/completions":
+    - /url: http://127.0.0.1:0/v1/chat/completions
+  - text: ": the stream ended without a finish_reason: the reply is cut off or the server closed the connection early"

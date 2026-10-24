@@ -1,0 +1,5 @@
+- article: Как дела? scenario
+- img "Avatar for AID"
+- article: "Here is a plain streamed answer: about the request step by step checking tables joins filters and the expected shape of the answer before calling any tool the model reasons about the request step by step"
+- article: Долгий вопрос, ответ на который ещё идёт
+- article: "The turn was interrupted: the agent stopped before it finished. Tool calls left without a result are marked as interrupted; check whether they took effect before relying on them."

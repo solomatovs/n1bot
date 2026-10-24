@@ -1,0 +1,7 @@
+- alert:
+  - text: "The agent service at http://127.0.0.1:0/acp is unreachable (initialize): connecting failed: All connection attempts failed."
+  - button "Повторить"
+- textbox "Введите сообщение здесь..."
+- img
+- button [disabled]:
+  - img

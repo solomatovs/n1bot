@@ -1,0 +1,7 @@
+- alert:
+  - text: "The agent process 'boba-missing' could not be started: No such file or directory; check [agent.process].command."
+  - button "Повторить"
+- textbox "Введите сообщение здесь..."
+- img
+- button [disabled]:
+  - img

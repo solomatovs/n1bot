@@ -1,0 +1,7 @@
+- alert:
+  - text: "The connection to the agent process 'python' was lost during the turn: the process exited with code -9."
+  - button "Повторить"
+- textbox "Введите сообщение здесь..."
+- img
+- button [disabled]:
+  - img

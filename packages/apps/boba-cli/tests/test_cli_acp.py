@@ -47,7 +47,20 @@ from mcp_types.jsonrpc import ErrorData
 from mcp_types.methods import parse_client_request
 from pydantic import AnyUrl, BaseModel, ConfigDict
 
-from boba.cli.acp_server import ConfigOptionId, PermissionChoice, ToolKindName
+from boba.agent.records import (
+    AssistantMessage,
+    AssistantRecord,
+    ReplyStopReason,
+    Synthetic,
+    TextBlock,
+    Usage,
+)
+from boba.cli.acp_server import (
+    AcpMapping,
+    ConfigOptionId,
+    PermissionChoice,
+    ToolKindName,
+)
 from boba.stand.acp_frames import Frames
 from boba.stand.ui.fake_llm import FailureName, FakeLlmApp, ScenarioName
 from boba.stand.ui.stand import StandPorts
@@ -4147,3 +4160,43 @@ class TestFork:
             assert await second.wait() == 0
 
         assert sorted((tmp_path / "history").glob("*.jsonl")) == journals
+
+
+class TestRefusalNotices:
+    """Отказ модели — пометка с тем же текстом вживую и в истории; отказ
+    из-за окна модели несёт совет начать новый тред."""
+
+    def _refusal(self, error: str) -> AssistantRecord:
+        message = AssistantMessage(
+            id="msg-1",
+            model=Synthetic.MODEL.value,
+            content=[TextBlock(text=error)],
+            stop_reason=ReplyStopReason.STOP_SEQUENCE,
+            usage=Usage(),
+        )
+        return AssistantRecord(
+            uuid="u-1",
+            parent_uuid=None,
+            timestamp="2026-10-24T00:00:00.000Z",
+            session_id="s-1",
+            version="0",
+            message=message,
+            request_id="r-1",
+            is_api_error_message=True,
+            error=error,
+        )
+
+    def test_window_full_refusal_advises_a_new_thread(self) -> None:
+        error = "Prompt is too long. Automatic compaction failed: 400 Bad Request"
+        notices = list(AcpMapping().notices(self._refusal(error)))
+
+        assert len(notices) == 1, notices
+        assert notices[0].severity == "error"
+        assert notices[0].title.startswith(error), notices[0].title
+        assert "start a new chat" in notices[0].title, notices[0].title
+
+    def test_other_refusal_keeps_its_text(self) -> None:
+        error = "openai chat: POST http://model/v1: expected 2xx, got 500"
+        notices = list(AcpMapping().notices(self._refusal(error)))
+
+        assert [notice.title for notice in notices] == [error]

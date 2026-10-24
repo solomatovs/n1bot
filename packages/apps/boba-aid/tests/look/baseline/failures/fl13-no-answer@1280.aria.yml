@@ -1,0 +1,7 @@
+- alert:
+  - text: "The agent process 'python' did not answer initialize: no answer within 8 s."
+  - button "Повторить"
+- textbox "Введите сообщение здесь..."
+- img
+- button [disabled]:
+  - img

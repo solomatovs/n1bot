@@ -1,0 +1,24 @@
+- article: Как дела? scenario
+- img "Avatar for AID"
+- article: "Here is a plain streamed answer: about the request step by step checking tables joins filters and the expected shape of the answer before calling any tool the model reasons about the request step by step"
+- article: Долгий вопрос, ответ на который ещё идёт
+- article: "The turn was interrupted: the agent stopped before it finished. Tool calls left without a result are marked as interrupted; check whether they took effect before relying on them."
+- article: "scenario {\"name\": \"mcp__faulty__sleep_for\", \"arguments\": {\"seconds\": 60}}"
+- img "Avatar for AID"
+- 'heading "Завершено · шагов: 4" [level=3]':
+  - 'button "Завершено · шагов: 4" [expanded]'
+- region:
+  - heading "✔ Размышления" [level=3]:
+    - button "✔ Размышления"
+  - heading "✔ ToolSearch" [level=3]:
+    - button "✔ ToolSearch"
+  - heading "✔ Размышления" [level=3]:
+    - button "✔ Размышления"
+  - heading "✖ sleep_for" [level=3]:
+    - button "✖ sleep_for" [expanded]
+  - region:
+    - article:
+      - text: "seconds:"
+      - code: "60"
+    - article: "[Tool call interrupted: the session ended before this call's result was recorded, so its outcome is unknown. Check whether it took effect before relying on it or running it again.]"
+- article: "The turn was interrupted: the agent stopped before it finished. Tool calls left without a result are marked as interrupted; check whether they took effect before relying on them."

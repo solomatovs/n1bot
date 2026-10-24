@@ -1,0 +1,7 @@
+- alert:
+  - text: "The agent service at http://127.0.0.1:0/acp answered initialize not by the agent protocol: HTTP 502: initialize failed."
+  - button "Повторить"
+- textbox "Введите сообщение здесь..."
+- img
+- button [disabled]:
+  - img

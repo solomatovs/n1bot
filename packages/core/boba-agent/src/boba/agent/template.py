@@ -66,6 +66,7 @@ class AgentTemplateFile(StrEnum):
     MCP_BACK_NOTICE = "notices/mcp_back.txt"
     MODEL_RETRY_NOTICE = "notices/model_retry.txt"
     SERVING_STOPPED_NOTICE = "notices/serving_stopped.txt"
+    WINDOW_FULL_NOTICE = "notices/window_full.txt"
 
     USER_REJECTED = "tools/user_rejected.txt"
     USER_REJECTED_SAID = "tools/user_rejected_said.txt"
