@@ -312,6 +312,9 @@ class StepRole(StrEnum):
     QUESTION = "question"
     QUESTION_CARD = "question-card"
     COMPACTION = "compaction"
+    INTERIM = "interim"
+    """Промежуточный текст модели в контейнере хода; ключ — id ответа,
+    из которого он перенесён."""
 
 
 class StepMeta(StrEnum):
@@ -332,6 +335,10 @@ class StepMeta(StrEnum):
     APP = "mcpApp"
     """Сообщение карточки приложения MCP Apps: без аватара и кнопок
     сообщения, рамка встаёт с края текста ответа."""
+
+    INTERIM = "interimText"
+    """Промежуточный текст модели: overlay оставляет его внутри контейнера
+    хода обычным абзацем между шагами, без аватара и кнопок."""
 
 
 class AppCancel(StrEnum):
@@ -375,6 +382,10 @@ class TurnDraft:
 
     answer: Message | None = None
     answers: int = 0
+    sealed: Message | None = None
+    """Ответ, закрытый последним кадром ленты: если следом встаёт шаг под
+    контейнером, текст был промежуточным и уходит в контейнер."""
+
     thinking: Step | None = None
     notices: int = 0
     """Пометки агента в ходе: у каждой своё сообщение с номером в id."""
@@ -902,6 +913,12 @@ class ChatView:
         return self._turn.thinking
 
     @property
+    def turn_live(self) -> bool:
+        """Открытый ход идёт вживую: его начал вопрос вкладки, а не
+        воспроизведение истории."""
+        return self._pulse.live
+
+    @property
     def pulse_step(self) -> Step | None:
         """Показанный кружок ожидания; None — ход ничего не ждёт."""
         return self._pulse.step
@@ -1095,6 +1112,7 @@ class ChatView:
     async def _notice_step(
         self, level: NoticeLevel, text: str, detail: str, step_id: str | None
     ) -> Step:
+        self._turn.sealed = None
         step = self._step(
             self._assistant_name, StepKind.ASSISTANT, parent_id=None, step_id=step_id
         )
@@ -1187,9 +1205,32 @@ class ChatView:
 
         await self._batch.flush()
         await message.send()
+        self._turn.sealed = message
         await self._pulse.resume()
 
+    async def _fold(self, container: Step) -> None:
+        """Ответ, за которым встаёт шаг хода, — промежуточный текст: он
+        уходит из основной ленты в контейнер перед этим шагом, так что
+        контейнер держит тексты и шаги в порядке появления — вживую и при
+        воспроизведении одинаково."""
+        message = self._turn.sealed
+        if message is None:
+            return
+
+        self._turn.sealed = None
+        await message.remove()
+        step = self._step(
+            self._assistant_name,
+            StepKind.ASSISTANT,
+            parent_id=container.id,
+            step_id=self.derive_id(self._thread_id, message.id, StepRole.INTERIM),
+        )
+        step.output = message.content
+        step.metadata = {StepMeta.INTERIM.value: True}
+        await self._sink.put(step)
+
     def _open_answer(self, key: str | None = None) -> Message:
+        self._turn.sealed = None
         answer_key = self._turn.answer_key(key)
         message = FeedMessage(
             id=self.derive_id(self._thread_id, answer_key, StepRole.ANSWER)
@@ -1456,6 +1497,7 @@ class ChatView:
         await self._pulse.bump()
 
     def _question_step(self, key: str) -> Step:
+        self._turn.sealed = None
         step = self._step(
             self._assistant_name,
             StepKind.ASSISTANT,
@@ -2021,6 +2063,7 @@ class ChatView:
         role: StepRole,
     ) -> Step:
         parent = await self.container(name)
+        await self._fold(parent)
         self._turn.steps += 1
         return self._step(
             name,

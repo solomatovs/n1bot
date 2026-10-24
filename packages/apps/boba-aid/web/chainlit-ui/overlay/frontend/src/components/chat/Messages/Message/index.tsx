@@ -51,6 +51,9 @@ const Message = memo(
     // boba: карточка приложения MCP Apps — сообщение без аватара и кнопок:
     // рамка встаёт с края текста ответа, копировать и оценивать в ней нечего
     const isApp = Boolean(message.metadata?.mcpApp);
+    // boba: промежуточный текст модели — абзац внутри контейнера хода между
+    // шагами, без аватара и кнопок сообщения
+    const isInterim = Boolean(message.metadata?.interimText);
     // boba: пометка агента и ошибка хода — блок с рамкой цвета важности
     const notice = message.metadata?.agentNotice;
     // Only keep tool calls if Chain of Thought is tool_call
@@ -121,7 +124,7 @@ const Message = memo(
                 </div>
               ) : (
                 <div className="ai-message flex gap-4 w-full">
-                  {!isStep || !indent ? (
+                  {(!isStep || !indent) && !isInterim ? (
                     <MessageAvatar
                       author={message.metadata?.avatarName || message.name}
                       hide={isApp}
@@ -145,7 +148,9 @@ const Message = memo(
                       {message.steps ? (
                         <Messages
                           messages={message.steps.filter(
-                            (s) => !s.type.includes('message')
+                            (s) =>
+                              !s.type.includes('message') ||
+                              Boolean(s.metadata?.interimText)
                           )}
                           elements={elements}
                           actions={actions}
@@ -196,7 +201,7 @@ const Message = memo(
                         messageId={message.id}
                       />
 
-                      {isApp ? null : (
+                      {isApp || isInterim ? null : (
                         <MessageButtons
                           message={message}
                           actions={actions}
@@ -216,7 +221,10 @@ const Message = memo(
         {/* Make sure the child assistant messages of a step are displayed at the root level. */}
         {message.steps && isStep ? (
           <Messages
-            messages={message.steps.filter((s) => s.type.includes('message'))}
+            messages={message.steps.filter(
+              (s) =>
+                s.type.includes('message') && !s.metadata?.interimText
+            )}
             elements={elements}
             actions={actions}
             indent={0}

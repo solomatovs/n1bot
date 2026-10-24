@@ -99,6 +99,43 @@ class TestAnswerOrder:
             raise AssertionError("second.id != first.id")
 
     @pytest.mark.anyio
+    async def test_text_before_a_step_moves_into_the_container(
+        self, runtime_stand: StandRefs, storage: LocalStorageClient, http_context: None
+    ) -> None:
+        """Текст, за которым встал шаг хода, — промежуточный: он встаёт в
+        контейнер перед шагом с меткой промежуточного текста; последний
+        текст хода остаётся ответом в основной ленте."""
+        sink = RecordingSink()
+        view = ChatView(THREAD, sink, "u-1", storage, TEXTS, user_name="Пользователь")
+        view.begin_turn(TURN)
+
+        await view.stream_answer("Смотрю таблицу", TURN)
+        await view.tool_started("bash", {"cmd": "ls"}, "call-1", None, None)
+        await view.stream_answer("Таблица пуста", TURN)
+        final = view.answer_message
+        await view.finish_turn()
+
+        container = view.container_step
+        if container is None:
+            raise AssertionError("the tool step opened no container")
+
+        interim_id = ChatView.derive_id(THREAD, ANSWER, StepRole.INTERIM)
+        children: list[str] = []
+        for step in sink.steps:
+            if step.get("parentId") == container.id:
+                children.append(str(step.get("id")))
+
+        interim = next(s for s in sink.steps if s.get("id") == interim_id)
+        assert interim.get("output") == "Смотрю таблицу"
+        assert interim.get("type") == StepKind.ASSISTANT.value
+        assert interim.get("metadata") == {StepMeta.INTERIM.value: True}
+        tool_id = ChatView.derive_id(THREAD, "call-1", StepRole.TOOL)
+        assert children == [interim_id, tool_id]
+        assert final is not None
+        assert final.parent_id is None
+        assert final.content == "Таблица пуста"
+
+    @pytest.mark.anyio
     async def test_answers_of_one_turn_have_distinct_ids(
         self, runtime_stand: StandRefs, storage: LocalStorageClient, http_context: None
     ) -> None:

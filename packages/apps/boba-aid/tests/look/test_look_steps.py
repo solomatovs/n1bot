@@ -1,8 +1,9 @@
 """Вид хода из многих шагов: контейнер хода на каждом этапе — размышление,
 удачный вызов, идущий вызов, вызов с ошибкой, законченный ход и он же после
 перезагрузки; и ввод во время такого хода — Send, вопрос в очереди под ним,
-его ход со своими шагами и Stop с возвратом текста в поле. Обе темы, 1280 и
-420.
+ход, закрытый там, где агент вставил вопрос, продолжение хода под вопросом
+(и то же после перезагрузки) и Stop с возвратом текста в поле. Обе темы,
+1280 и 420.
 
 Шаги дают инструменты обычного сервера MCP стенда (standard_server.py):
 add отвечает сразу, sleep_for держит вызов идущим, broken отказывает. Поток
@@ -27,7 +28,7 @@ from aid_look import (
     LookTheme,
 )
 from playwright.sync_api import Locator, Page, expect
-from test_look_conversation import TalkFeed, TalkLook, talk_book
+from test_look_conversation import TalkFeed, TalkFixes, TalkLook, talk_book
 from test_look_queued import QueuedLook
 
 from boba.mcp_client.client import McpServerConfig
@@ -152,6 +153,16 @@ class StepsFixes:
             "и тот же после перезагрузки"
         ),
     )
+    SPLIT: ClassVar[LookFix] = LookFix(
+        code="Вопрос посреди хода делит ход",
+        summary=(
+            "было: вопрос, отправленный во время хода, ждал конца всего хода "
+            "и получал свой ход после ответа; стало: агент вставляет его на "
+            "ближайшей границе шага — ход в ленте закрывается в этой точке "
+            "(«Завершено · шагов: N»), ниже вопрос, под ним продолжение хода с "
+            "ответом на него; после перезагрузки лента та же"
+        ),
+    )
 
 
 class StepsLook:
@@ -173,8 +184,8 @@ class StepsLook:
         "ms2-called",
         "Многошаговый ход: первый вызов закончен",
         "контейнер свёрнут, подпись — законченный вызов add с галочкой; "
-        "ниже текст «Складываю счётчики.»",
-        (StepsFixes.STEPS,),
+        "текста «Складываю счётчики.» в основной ленте нет — он внутри хода",
+        (StepsFixes.STEPS, TalkFixes.INTERIM),
     )
     RUNNING: ClassVar[LookState] = LookState(
         TURN,
@@ -188,24 +199,26 @@ class StepsLook:
         "ms4-running-open",
         "Многошаговый ход раскрыт, пока идёт второй вызов",
         "под контейнером по порядку: размышление, загрузка инструментов "
-        "ToolSearch и add с галочками, идущий sleep_for с кружком",
-        (StepsFixes.STEPS,),
+        "ToolSearch, абзац «Складываю счётчики.», add с галочкой, абзац «Жду "
+        "пересчёта витрины.», идущий sleep_for с кружком; абзацы без аватара",
+        (StepsFixes.STEPS, TalkFixes.INTERIM),
     )
     FINISHED: ClassVar[LookState] = LookState(
         TURN,
         "ms5-finished",
         "Многошаговый ход закончен, в нём вызов с ошибкой",
-        "контейнер свёрнут, подпись «Завершено · шагов: 5»; ниже тексты "
-        "ходов и итоговый ответ; кружка нет",
-        (StepsFixes.STEPS,),
+        "контейнер свёрнут, подпись «Завершено · шагов: 5»; ниже только "
+        "итоговый ответ; кружка нет",
+        (StepsFixes.STEPS, TalkFixes.INTERIM),
     )
     FINISHED_OPEN: ClassVar[LookState] = LookState(
         TURN,
         "ms6-finished-open",
         "Законченный многошаговый ход раскрыт",
-        "пять шагов под контейнером: размышление, ToolSearch, add и sleep_for "
-        "с галочками, broken красным с крестиком",
-        (StepsFixes.STEPS,),
+        "под контейнером в порядке появления: размышление, ToolSearch, "
+        "«Складываю счётчики.», add, «Жду пересчёта витрины.», sleep_for с "
+        "галочками, «Проверяю таблицу заказов.», broken красным с крестиком",
+        (StepsFixes.STEPS, TalkFixes.INTERIM),
     )
     FINISHED_AGAIN: ClassVar[LookState] = LookState(
         TURN,
@@ -234,11 +247,30 @@ class StepsLook:
     ANSWERED: ClassVar[LookState] = LookState(
         QUEUED,
         "qi8-steps-answered",
-        "Вопрос из очереди получил свой ход со своими шагами",
-        "пузырь вопроса из очереди наверху, под ним его ход: «Считаю "
-        "строки.», свёрнутый контейнер «Завершено · шагов: 1» с вызовом add и "
+        "Вопрос продолжил ход со своими шагами",
+        "пузырь вопроса наверху, под ним продолжение хода: свёрнутый "
+        "контейнер «Завершено · шагов: 1» (внутри «Считаю строки.» и add) и "
         "ответ «В витрине пять строк.»",
-        (StepsFixes.STEPS,),
+        (StepsFixes.STEPS, StepsFixes.SPLIT, TalkFixes.INTERIM),
+    )
+    SPLIT_AT: ClassVar[LookState] = LookState(
+        QUEUED,
+        "qi10-steps-split",
+        "Ход закрылся там, где агент вставил вопрос",
+        "вопрос первого хода, под ним свёрнутый контейнер «Завершено · шагов: "
+        "4» (размышление, ToolSearch, add, sleep_for), ниже пузырь вопроса, "
+        "отправленного во время sleep_for, и под ним продолжение хода; "
+        "ответа на первый вопрос нет — модель продолжила ход ответом на "
+        "второй",
+        (StepsFixes.SPLIT,),
+    )
+    SPLIT_AGAIN: ClassVar[LookState] = LookState(
+        QUEUED,
+        "qi10-steps-split-reloaded",
+        "Тот же разделённый ход после перезагрузки",
+        "кадр тот же, что «Ход закрылся там, где агент вставил вопрос»; тест "
+        "сверил его с живым пиксель в пиксель",
+        (StepsFixes.SPLIT,),
     )
     RESTORED: ClassVar[LookState] = LookState(
         QUEUED,
@@ -394,7 +426,7 @@ def test_many_steps_turn_look(
         look.frame(steps.region(question), StepsLook.THINKING, theme, size)
 
         steps.held_again(question)
-        feed.shown(StepsText.LOOKING)
+        feed.folded(StepsText.LOOKING)
         expect(steps.container()).to_contain_text(StepsBook.ADD)
         look_pages.settle(page)
         look.frame(steps.region(question), StepsLook.CALLED, theme, size)
@@ -464,6 +496,13 @@ def test_input_during_many_steps_look(
         feed.no_pulse()
         look_pages.settle(page)
         look.frame(steps.region(StepsQuestion.QUEUED), StepsLook.ANSWERED, theme, size)
+        look.frame(steps.region(first), StepsLook.SPLIT_AT, theme, size)
+
+        feed.reload()
+        feed.shown(StepsText.ROWS)
+        look_pages.settle(page)
+        look.frame(steps.region(first), StepsLook.SPLIT_AGAIN, theme, size)
+        look.same_as(StepsLook.SPLIT_AGAIN, StepsLook.SPLIT_AT, theme, size)
 
         stopped = StepsQuestion.STOPPED
         steps.ask_held(stopped)

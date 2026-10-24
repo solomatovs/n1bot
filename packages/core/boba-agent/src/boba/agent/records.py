@@ -566,6 +566,11 @@ class PayloadModel(BaseModel):
         такого вклада — ничего."""
         return
 
+    def feed(self, sink: FeedSink) -> None:
+        """Что вложение показывает человеку в беседе; контекст модели он не
+        видит."""
+        return
+
 
 class SnapshotTool(PayloadModel):
     name: str
@@ -619,13 +624,25 @@ class DateAttachment(PayloadModel):
 
 
 class QueuedCommandAttachment(PayloadModel):
-    """Сообщение, подмешанное посреди хода из очереди (раздел 5.7, путь 2)."""
+    """Сообщение, подмешанное посреди хода из очереди (раздел 5.7, путь 2).
+    Вопрос человека лента показывает вопросом с id элемента очереди:
+    продолжение хода встаёт под ним."""
 
     type: Literal[AttachmentKind.QUEUED_COMMAND] = AttachmentKind.QUEUED_COMMAND
     prompt: str
     source_uuid: str
     origin: OriginKind
     is_meta: bool
+    links: Sequence[mt.ResourceLink] = ()
+
+    def feed(self, sink: FeedSink) -> None:
+        if self.origin is not OriginKind.HUMAN:
+            return
+
+        if self.is_meta:
+            return
+
+        sink.question(self.source_uuid, self.prompt, self.links)
 
 
 class MaxTurnsAttachment(PayloadModel):
@@ -1371,8 +1388,7 @@ class AttachmentRecord(ChainRecord):
         return self
 
     def feed(self, sink: FeedSink) -> None:
-        """Вложения — контекст модели, человек их не видит."""
-        return
+        self.attachment.feed(sink)
 
 
 class SystemRecord(ChainRecord):

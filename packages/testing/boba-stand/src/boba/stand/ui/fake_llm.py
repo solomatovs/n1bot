@@ -51,6 +51,7 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, RootModel, Validat
 
 from boba.agent.records import LinkText
 from boba.agent.tags import AgentTag
+from boba.agent.template import AgentTemplate, AgentTemplateFile
 from boba.core.mcp_names import McpToolNames
 
 __all__ = [
@@ -1619,8 +1620,10 @@ class ReplyQuestions:
     частей (WireText). Агент дописывает в то же сообщение свои служебные
     блоки `<system-reminder>` и ссылки на вложения вопроса (LinkText),
     поэтому ключ — только набранное пользователем: блоки и ссылки
-    вырезаются, остаток проходит strip и NFC. Тем же правилом приводится
-    вопрос, который кладёт в книгу тест.
+    вырезаются, остаток проходит strip и NFC. Вопрос, который агент
+    подмешал посреди хода, приходит в обёртке шаблона queued_human: ключ —
+    текст внутри неё. Тем же правилом приводится вопрос, который кладёт в
+    книгу тест.
     """
 
     FORM: ClassVar[Literal["NFC"]] = "NFC"
@@ -1633,6 +1636,13 @@ class ReplyQuestions:
 
     def __init__(self) -> None:
         self._wire = WireText()
+        wrapper = AgentTemplate().read(AgentTemplateFile.QUEUED_HUMAN)
+        pattern = (
+            re.escape(wrapper)
+            .replace(re.escape("{text}"), "(?P<text>.*)")
+            .replace(re.escape("{agent}"), ".*?")
+        )
+        self._queued = re.compile(pattern, re.DOTALL)
 
     def normal(self, text: str) -> str:
         return unicodedata.normalize(self.FORM, text.strip())
@@ -1652,6 +1662,9 @@ class ReplyQuestions:
                 continue
 
             typed = self._typed(text)
+            if queued := self._queued.search(typed):
+                typed = queued.group("text")
+
             question = self.normal(typed)
             if question:
                 return question

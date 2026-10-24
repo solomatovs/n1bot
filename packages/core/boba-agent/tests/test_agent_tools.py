@@ -10,6 +10,7 @@ from collections.abc import AsyncIterator, Sequence
 from pathlib import Path
 from typing import ClassVar
 
+import mcp_types as mt
 import pytest
 
 from boba.agent.control import AllowAnswer, DenyAnswer
@@ -24,11 +25,14 @@ from boba.agent.records import (
     AttachmentRecord,
     ChainRecord,
     InterruptRecord,
+    LinkText,
+    MetaRecord,
     PermissionBehavior,
     PermissionMode,
     PermissionModeRecord,
     PermissionRule,
     PermissionRuleRecord,
+    QueuedCommandAttachment,
     QueueOperationRecord,
     QueueRemoveReason,
     Record,
@@ -912,6 +916,56 @@ class TestQueueMidTurn:
         assert isinstance(second, list)
         assert second[-1]["role"] == "user"
         assert "scenario:answer" in second[-1]["content"]
+
+    async def test_absorbed_question_keeps_its_id_links_and_context(
+        self, agents: StandAgents
+    ) -> None:
+        """Вопрос человека, подмешанный посреди хода, — запись с id элемента
+        очереди, его ссылками (модель видит их текстом ссылки) и служебным
+        контекстом следом; лента получает его вопросом."""
+        tools = StandTools()
+        sink = Collected()
+        served = Served(
+            agents.agent(agents.profile(Protocol.OPENAI), sink, tools=tools)
+        )
+        session = await served.open(SESSION, resume=False)
+
+        served.agent.queue.enqueue(
+            prompt(
+                call({"name": StandToolName.SLEEP.full, "arguments": {"seconds": 0.4}})
+            )
+        )
+        while not tools.calls:
+            await asyncio.sleep(0.01)
+
+        link = mt.ResourceLink(name="plan.txt", uri="file:///work/plan.txt")
+        served.agent.queue.enqueue(
+            QueueEntry(
+                kind=QueueKind.PROMPT,
+                text=ScenarioName.ANSWER.value,
+                links=[link],
+                context=["the app shows three orders"],
+                id="asked-mid-turn",
+                alone=True,
+            )
+        )
+        await served.agent.settled()
+        await served.close()
+
+        chain = list(session.chain())
+        uuids = [record.uuid for record in chain]
+        at = uuids.index("asked-mid-turn")
+        absorbed = chain[at]
+        assert isinstance(absorbed, AttachmentRecord)
+        assert isinstance(absorbed.attachment, QueuedCommandAttachment)
+        assert absorbed.attachment.source_uuid == "asked-mid-turn"
+        assert list(absorbed.attachment.links) == [link]
+        assert absorbed.rendered is not None
+        assert absorbed.rendered[-1].content == LinkText.TEMPLATE.render(link)
+        context = chain[at + 1]
+        assert isinstance(context, MetaRecord)
+        assert context.message.content == "the app shows three orders"
+        assert served.agent.outcomes == [TurnOutcome.COMPLETED]
 
     async def test_now_message_supersedes_the_turn(self, agents: StandAgents) -> None:
         tools = StandTools()
