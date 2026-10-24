@@ -24,7 +24,7 @@ from __future__ import annotations
 import re
 import uuid
 from abc import abstractmethod
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncGenerator, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, ClassVar, Protocol, TypeAlias
@@ -159,12 +159,20 @@ class HistoryStore(Protocol):
         seq пропускаются, повтор пачки дублей не создаёт."""
 
     @abstractmethod
-    def read(self, session: SessionId) -> AsyncIterator[HistoryLine]:
-        """Строки журнала в порядке seq с первой до последней."""
+    def read(self, session: SessionId) -> AsyncGenerator[HistoryLine, None]:
+        """Строки журнала в порядке seq с первой до последней — потоком:
+        хранилище не держит в памяти журнал целиком. Читатель, бросивший
+        чтение раньше конца, закрывает итератор (aclose), и хранилище
+        отпускает то, на чём читало."""
 
     @abstractmethod
     async def release(self, lease: SessionLease) -> None:
         """Отпускает сессию."""
+
+    @abstractmethod
+    async def close(self) -> None:
+        """Процесс выходит: все захваченные сессии отпущены, соединения
+        хранилища закрыты."""
 
     @abstractmethod
     async def list(self, cursor: str | None, limit: int) -> StoredPage:
@@ -216,12 +224,15 @@ class MemoryHistoryStore(HistoryStore):
     async def append(self, lease: SessionLease, records: Sequence[Record]) -> None:
         return
 
-    async def read(self, session: SessionId) -> AsyncIterator[HistoryLine]:
+    async def read(self, session: SessionId) -> AsyncGenerator[HistoryLine, None]:
         nothing: Sequence[HistoryLine] = ()
         for line in nothing:
             yield line
 
     async def release(self, lease: SessionLease) -> None:
+        return
+
+    async def close(self) -> None:
         return
 
     async def list(self, cursor: str | None, limit: int) -> StoredPage:

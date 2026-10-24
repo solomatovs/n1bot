@@ -1,6 +1,7 @@
 import { debounce } from 'lodash';
-import { useCallback, useContext, useEffect, useRef } from 'react';
+import { useCallback, useContext, useEffect, useMemo, useRef } from 'react';
 import {
+  atom,
   useRecoilState,
   useRecoilValue,
   useResetRecoilState,
@@ -46,12 +47,7 @@ import {
   ITasklistElement,
   IThread
 } from 'src/types';
-import {
-  addMessage,
-  applyTokens,
-  deleteMessageById,
-  updateMessageById
-} from 'src/utils/message';
+import { StepOp, addMessage, applyStepOps } from 'src/utils/message';
 
 import { OutputAudioChunk } from './types/audio';
 
@@ -59,7 +55,17 @@ import { ChainlitContext } from './context';
 import type { IToken } from './useChatData';
 
 // boba: в скрытой вкладке requestAnimationFrame не идёт — пачка уходит таймером
-const TOKEN_FLUSH_HIDDEN_MS = 100;
+const STEP_FLUSH_HIDDEN_MS = 100;
+
+// boba: имена событий сокета, которые шлёт сервер aid сверх событий chainlit
+const HISTORY_LOADED_EVENT = 'history_loaded';
+
+// boba: вкладка открыла тред, и его история ещё воспроизводится: лента
+// показывает загрузку, кнопка отправки неактивна (а не «Стоп» хода)
+export const historyLoadingState = atom<boolean>({
+  key: 'BobaHistoryLoading',
+  default: false
+});
 
 const useChatSession = () => {
   const client = useContext(ChainlitContext);
@@ -90,37 +96,51 @@ const useChatSession = () => {
   const idToResume = useRecoilValue(threadIdToResumeState);
   const setThreadResumeError = useSetRecoilState(resumeThreadErrorState);
   const setFavoriteMessages = useSetRecoilState(favoriteMessagesState);
+  const setHistoryLoading = useSetRecoilState(historyLoadingState);
 
   const [currentThreadId, setCurrentThreadId] =
     useRecoilState(currentThreadIdState);
 
-  // boba: setMessages на каждый stream_token перерисовывал ленту на каждый токен;
-  // токены копятся и применяются одним обновлением раз в кадр отрисовки. Любое
-  // другое событие ленты сначала сбрасывает пачку, порядок кадров сохраняется
-  const pendingTokens = useRef<IToken[]>([]);
-  const tokenFlushScheduled = useRef(false);
+  // boba: setMessages на каждое событие ленты (new_message, update_message,
+  // stream_token…) перерисовывал её на каждое событие: при воспроизведении
+  // истории — сотни перерисовок подряд. События копятся и применяются одним
+  // обновлением раз в кадр отрисовки в порядке прихода; остальные события
+  // сокета сначала сбрасывают пачку
+  const pendingSteps = useRef<StepOp[]>([]);
+  const stepFlushScheduled = useRef(false);
 
-  const flushTokens = useCallback(() => {
-    tokenFlushScheduled.current = false;
-    const batch = pendingTokens.current;
+  const flushSteps = useCallback(() => {
+    stepFlushScheduled.current = false;
+    const batch = pendingSteps.current;
     if (!batch.length) return;
-    pendingTokens.current = [];
-    setMessages((oldMessages) => applyTokens(oldMessages, batch));
+    pendingSteps.current = [];
+    setMessages((oldMessages) => applyStepOps(oldMessages, batch));
   }, [setMessages]);
 
-  const queueToken = useCallback(
-    (token: IToken) => {
-      pendingTokens.current.push(token);
-      if (tokenFlushScheduled.current) return;
-      tokenFlushScheduled.current = true;
+  const queueStep = useCallback(
+    (op: StepOp) => {
+      pendingSteps.current.push(op);
+      if (stepFlushScheduled.current) return;
+      stepFlushScheduled.current = true;
       if (typeof document !== 'undefined' && document.hidden) {
-        setTimeout(flushTokens, TOKEN_FLUSH_HIDDEN_MS);
+        setTimeout(flushSteps, STEP_FLUSH_HIDDEN_MS);
       } else {
-        requestAnimationFrame(flushTokens);
+        requestAnimationFrame(flushSteps);
       }
     },
-    [flushTokens]
+    [flushSteps]
   );
+
+  // boba: профиль треда, выставленный после resume_thread, попадает и в auth
+  // живого сокета: переподключение socket.io после обрыва сети восстанавливает
+  // тред с его профилем, а не с тем, что был до открытия треда
+  useEffect(() => {
+    if (session?.socket) {
+      session.socket.auth['chatProfile'] = chatProfile
+        ? encodeURIComponent(chatProfile)
+        : '';
+    }
+  }, [chatProfile]);
 
   // Use currentThreadId as thread id in websocket header
   useEffect(() => {
@@ -128,6 +148,12 @@ const useChatSession = () => {
       session.socket.auth['threadId'] = currentThreadId || '';
     }
   }, [currentThreadId]);
+
+  // boba: App зовёт connect на каждое изменение своих зависимостей — и когда
+  // профиль треда из resume_thread перезагружает конфиг. Сессию этого треда
+  // сервер уже восстановил с профилем треда, поэтому живой сокет той же сессии
+  // и того же треда не пересоздаётся; clear() меняет sessionId — сокет новый
+  const live = useRef<{ key: string; socket: ReturnType<typeof io> }>();
 
   const _connect = useCallback(
     async ({
@@ -137,6 +163,9 @@ const useChatSession = () => {
       transports?: string[];
       userEnv: Record<string, string>;
     }) => {
+      const key = JSON.stringify([sessionId, idToResume || '', userEnv]);
+      if (live.current?.key === key && live.current.socket.active) return;
+
       const { protocol, host, pathname } = new URL(client.httpEndpoint);
       const uri = `${protocol}//${host}`;
       const path =
@@ -150,6 +179,9 @@ const useChatSession = () => {
         console.error(`Failed to set sticky session cookie: ${err}`);
       }
 
+      // boba: пачка прежнего сокета принадлежит прежнему треду
+      pendingSteps.current = [];
+
       const socket = io(uri, {
         path,
         withCredentials: true,
@@ -162,6 +194,7 @@ const useChatSession = () => {
           chatProfile: chatProfile ? encodeURIComponent(chatProfile) : ''
         }
       });
+      live.current = { key, socket };
       setSession((old) => {
         old?.socket?.removeAllListeners();
         old?.socket?.close();
@@ -235,7 +268,7 @@ const useChatSession = () => {
       });
 
       socket.on('task_end', () => {
-        flushTokens();
+        flushSteps();
         setLoading(false);
       });
 
@@ -291,7 +324,7 @@ const useChatSession = () => {
       });
 
       socket.on('resume_thread', (thread: IThread) => {
-        flushTokens();
+        flushSteps();
         const isReadOnlyView = Boolean(
           (thread as any)?.metadata?.viewer_read_only
         );
@@ -324,47 +357,48 @@ const useChatSession = () => {
       });
 
       socket.on('resume_thread_error', (error?: string) => {
+        setHistoryLoading(false);
         setThreadResumeError(error);
       });
 
+      socket.on(HISTORY_LOADED_EVENT, () => {
+        flushSteps();
+        setHistoryLoading(false);
+      });
+
       socket.on('new_message', (message: IStep) => {
-        flushTokens();
-        setMessages((oldMessages) => addMessage(oldMessages, message));
+        queueStep({ kind: 'add', step: message });
       });
 
       socket.on(
         'first_interaction',
         (event: { interaction: string; thread_id: string }) => {
+          if (event.interaction === 'resume') {
+            setHistoryLoading(true);
+          }
           setFirstUserInteraction(event.interaction);
           setCurrentThreadId(event.thread_id);
         }
       );
 
       socket.on('update_message', (message: IStep) => {
-        flushTokens();
-        setMessages((oldMessages) =>
-          updateMessageById(oldMessages, message.id, message)
-        );
+        queueStep({ kind: 'update', step: message });
       });
 
       socket.on('delete_message', (message: IStep) => {
-        flushTokens();
-        setMessages((oldMessages) =>
-          deleteMessageById(oldMessages, message.id)
-        );
+        queueStep({ kind: 'delete', step: message });
       });
 
       socket.on('stream_start', (message: IStep) => {
-        flushTokens();
-        setMessages((oldMessages) => addMessage(oldMessages, message));
+        queueStep({ kind: 'add', step: message });
       });
 
       socket.on('stream_token', (token: IToken) => {
-        queueToken(token);
+        queueStep({ kind: 'token', token });
       });
 
       socket.on('ask', ({ msg, spec }, callback) => {
-        flushTokens();
+        flushSteps();
         setAskUser({ spec, callback, parentId: msg.parentId });
         // boba: вопрос элементом показывает панель у поля ввода, а шаг его
         // вызова в ленте уже есть — msg ленту не трогает
@@ -528,10 +562,14 @@ const useChatSession = () => {
         }
       });
     },
-    [setSession, sessionId, idToResume, chatProfile, flushTokens, queueToken]
+    [setSession, sessionId, idToResume, chatProfile, flushSteps, queueStep]
   );
 
-  const connect = useCallback(debounce(_connect, 200), [_connect]);
+  // boba: у каждого _connect свой debounce; отложенный вызов прежнего не
+  // отменялся, и после clear() уходили два подключения — первый сокет
+  // закрывался вторым, не успев открыться
+  const connect = useMemo(() => debounce(_connect, 200), [_connect]);
+  useEffect(() => () => connect.cancel(), [connect]);
 
   const disconnect = useCallback(() => {
     if (session?.socket) {

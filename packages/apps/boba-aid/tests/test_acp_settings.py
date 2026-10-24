@@ -2,7 +2,7 @@
 секретов, файл настроек ключами договора запуска в приватном каталоге
 0700/0600 без серверов MCP, хуков, режима сессии и области вызовов, строка
 подключения истории, и
-рукопожатие настоящего `boba acp` v2 по этому файлу — секреты не попадают в
+рукопожатие настоящего `boba --stdio` v2 по этому файлу — секреты не попадают в
 argv и окружение ребёнка, каталог удаляется с процессом."""
 
 from __future__ import annotations
@@ -363,7 +363,7 @@ class TestSettingsFile:
 
 
 class TestAgentHandshake:
-    """Настоящий `boba acp` v2 принимает файл и держит секреты только в нём."""
+    """Настоящий `boba --stdio` v2 принимает файл и держит секреты только в нём."""
 
     async def test_agent_initializes_and_leaks_nothing(
         self, tmp_path: Path, stand: Stand, model: FakeModel
@@ -738,7 +738,7 @@ async def tls_model(tmp_path: Path) -> AsyncIterator[FakeModel]:
 
 class TestLaunchConfig:
     """Конфиг запуска — единственный канал настроек чата для агента: профиль
-    чата и [agent] доходят до настоящего `boba acp` файлом настроек и
+    чата и [agent] доходят до настоящего `boba --stdio` файлом настроек и
     действуют на его запросы к модели и серверам."""
 
     NO_SERVERS: ClassVar[McpServersConfig] = McpServersConfig(servers={})

@@ -57,7 +57,7 @@ from boba.config import bind
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
 from boba.history.jsonl import JsonlHistoryStore
-from boba.history.postgres import PostgresHistoryStore
+from boba.history.postgres import PostgresHistoryStore, SessionLocks
 from boba.stand.agent import (
     Collected,
     FakeServer,
@@ -203,11 +203,20 @@ class Stores:
 
     def new(self) -> PostgresHistoryStore:
         """Хранилище процесса без владельца: видит все сессии."""
-        return PostgresHistoryStore(self._postgres, self._schema, None, self._pool)
+        locks = SessionLocks(self._postgres)
+        return PostgresHistoryStore(
+            self._postgres, self._schema, None, locks, self._pool
+        )
 
     def owned(self, owner: str) -> PostgresHistoryStore:
         """Хранилище процесса, запущенного службой от имени owner."""
-        return PostgresHistoryStore(self._postgres, self._schema, owner, self._pool)
+        return PostgresHistoryStore(
+            self._postgres,
+            self._schema,
+            owner,
+            SessionLocks(self._postgres),
+            self._pool,
+        )
 
 
 @pytest.fixture
@@ -896,10 +905,14 @@ class TestCutoverTable:
                 expected = await self._layout(conn, schema)
                 built = await self._layout(conn, cutover)
                 unowned = await listed(
-                    PostgresHistoryStore(postgres, cutover, None, pool)
+                    PostgresHistoryStore(
+                        postgres, cutover, None, SessionLocks(postgres), pool
+                    )
                 )
                 owned = await listed(
-                    PostgresHistoryStore(postgres, cutover, "alice", pool)
+                    PostgresHistoryStore(
+                        postgres, cutover, "alice", SessionLocks(postgres), pool
+                    )
                 )
             finally:
                 await conn.execute(
@@ -917,7 +930,9 @@ class TestCutoverTable:
         self, postgres: PostgresConfig, cutover: str, pool: AsyncPostgresPool
     ) -> None:
         """Первое обращение хранилища к схеме переноса применяет файлы схемы."""
-        await PostgresHistoryStore(postgres, cutover, None, pool).list(None, 1)
+        await PostgresHistoryStore(
+            postgres, cutover, None, SessionLocks(postgres), pool
+        ).list(None, 1)
 
     async def _layout(
         self, conn: AsyncConnection[Any], schema: str

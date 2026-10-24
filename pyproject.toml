@@ -48,7 +48,6 @@ pythonpath = [
     "packages/core/boba-toolkit/src",
     "packages/apps/boba-aid/src",
     "packages/apps/boba-mcp/src",
-    "packages/apps/boba-agent-service/src",
     "packages/tools/boba-tool-shell/src",
     "packages/tools/boba-tool-canvas/src",
     "packages/tools/boba-tool-chart/src",
@@ -86,8 +85,8 @@ markers = [
     "load: нагрузка и аварийные завершения песочницы; минуты и десятки процессов. Запускать вручную: `pytest -m load`. По умолчанию исключаются.",
     "failif(condition, reason): обязательное окружение теста с подписью skipif. При истинном условии тест не пропускается, а падает с причиной.",
     "perf: замер времени на живом хосте с абсолютными порогами; в полном прогоне идёт отдельной фазой в одиночку, когда параллельные наборы закончились.",
-    "binary: проверка собранного бинарника release/<версия>/bin/boba, а не кода. В обычный прогон не входит; запускать `pytest -m binary` после `make -C build boba-bin`.",
-    "binary_onnx: проверка бинарника boba-onnx с рантаймом onnxruntime-genai. Запускать `pytest -m binary_onnx` после `make -C build boba-bin BIN_ONNX=1`.",
+    "binary: проверка собранного агента release/<версия>/bin/boba.dist, а не кода. В обычный прогон не входит; запускать `pytest -m binary` после `make -C build boba-bin`.",
+    "binary_onnx: проверка агента boba-onnx.dist с рантаймом onnxruntime-genai. Запускать `pytest -m binary_onnx` после `make -C build boba-bin BIN_ONNX=1`.",
 ]
 
 [tool.pyright]
@@ -149,7 +148,6 @@ extraPaths = [
     "packages/core/boba-toolkit/src",
     "packages/apps/boba-aid/src",
     "packages/apps/boba-mcp/src",
-    "packages/apps/boba-agent-service/src",
     "packages/tools/boba-tool-shell/src",
     "packages/tools/boba-tool-canvas/src",
     "packages/tools/boba-tool-chart/src",
@@ -254,7 +252,6 @@ members = [
     "packages/core/*",
     "packages/apps/boba-aid",
     "packages/apps/boba-mcp",
-    "packages/apps/boba-agent-service",
     "packages/apps/boba-cli",
     "packages/apps/ix/*",
     "packages/tools/*",
@@ -282,7 +279,6 @@ boba-connection-broker = { workspace = true }
 boba-mcp-client = { workspace = true }
 boba-mcp-adapter = { workspace = true }
 boba-mcp = { workspace = true }
-boba-agent-service = { workspace = true }
 boba-tool-describer = { workspace = true }
 boba-runtime = { workspace = true }
 boba-auth = { workspace = true }
