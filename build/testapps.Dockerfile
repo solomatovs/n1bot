@@ -3,21 +3,27 @@
 # 1.x (legacy-server.mjs) в четырёх редакциях на 3110-3113 и серверы fastmcp[apps]
 # (apps_server.py) на 3120-3122 с рендерером Prefab статикой на 3124 (serve.sh). Пакеты npm
 # ставит npm ci по package-lock.json из реестра npm образа nodejs, dist рендерера — npm pack
-# по пину; python — дерево образа python, пакеты по requirements.txt из реестра pypi
-# (PIP_INDEX_URL — индекс закрытого контура). Контекст — каталог tests/services/testapps.
-# Собирает make testapps
+# по пину; python — дерево образа python, пакеты по requirements.txt из реестра pypi.
+# CA и pip.conf закрытого контура — те же, что у образа сборки BASE_IMAGE (build/conf).
+# Контекст — каталог tests/services/testapps. Собирает make testapps
 ARG NODE_IMAGE=dmp/nodejs:22
 ARG PYTHON_IMAGE=dmp/python:3.11-dist
+ARG BASE_IMAGE=boba-base:3.11
 
 FROM ${PYTHON_IMAGE} AS python-dist
+
+FROM ${BASE_IMAGE} AS site-conf
 
 FROM ${NODE_IMAGE}
 
 # область кэша make offline-check; npm не спрашивает реестр о своей новой версии
 ARG CACHE_SCOPE
-ARG PIP_INDEX_URL=
 ARG PREFAB_UI_VERSION=0.20.2
-ENV npm_config_update_notifier=false
+ENV npm_config_update_notifier=false PIP_CERT=/etc/ssl/certs/ca-certificates.crt
+
+COPY --from=site-conf /etc/ssl/certs/                  /etc/ssl/certs/
+COPY --from=site-conf /usr/local/share/ca-certificates/ /usr/local/share/ca-certificates/
+COPY --from=site-conf /etc/pip.conf                    /etc/pip.conf
 
 WORKDIR /srv
 COPY package.json package-lock.json /srv/
@@ -32,7 +38,7 @@ RUN npm pack "@prefecthq/prefab-ui@${PREFAB_UI_VERSION}" --silent --pack-destina
 
 COPY --from=python-dist /opt/python/usr/local /python
 COPY requirements.txt /srv/
-RUN env ${PIP_INDEX_URL:+PIP_INDEX_URL=$PIP_INDEX_URL} LD_LIBRARY_PATH=/python/lib PYTHONHOME=/python \
+RUN LD_LIBRARY_PATH=/python/lib PYTHONHOME=/python \
         /python/bin/python3 -m pip install --no-cache-dir --disable-pip-version-check \
         -r /srv/requirements.txt \
     && LD_LIBRARY_PATH=/python/lib PYTHONHOME=/python /python/bin/python3 -c \
