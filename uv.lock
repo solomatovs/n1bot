@@ -2901,16 +2901,36 @@ dependencies = [
 
 [package.optional-dependencies]
 payload = [
+    { name = "charset-normalizer", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "lxml", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "odfpy", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "openpyxl", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "pandas", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "pillow", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "pyarrow", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "pypdf", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "python-docx", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "python-pptx", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "pyyaml", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "xlrd", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "boba-toolkit", editable = "packages/core/boba-toolkit" },
+    { name = "charset-normalizer", marker = "extra == 'payload'", specifier = ">=3.4,<4" },
+    { name = "lxml", marker = "extra == 'payload'", specifier = ">=5.0,<7" },
+    { name = "odfpy", marker = "extra == 'payload'", specifier = ">=1.4,<2" },
     { name = "openpyxl", marker = "extra == 'payload'", specifier = ">=3.1,<4" },
     { name = "pandas", marker = "extra == 'payload'", specifier = ">=2,<3" },
+    { name = "pillow", marker = "extra == 'payload'", specifier = ">=10" },
+    { name = "pyarrow", marker = "extra == 'payload'", specifier = ">=25,<26" },
     { name = "pydantic", specifier = ">=2.12,<3" },
+    { name = "pypdf", marker = "extra == 'payload'", specifier = ">=6,<7" },
+    { name = "python-docx", marker = "extra == 'payload'", specifier = ">=1.2,<2" },
+    { name = "python-pptx", marker = "extra == 'payload'", specifier = ">=1,<2" },
+    { name = "pyyaml", marker = "extra == 'payload'", specifier = ">=6,<7" },
+    { name = "xlrd", marker = "extra == 'payload'", specifier = ">=2,<3" },
 ]
 provides-extras = ["payload"]
 
@@ -3478,6 +3498,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/60/8b/32f9823da46cde7df2087faa08cd98d01b908f8dcab982cdba9c84e85355/decorator-5.3.1.tar.gz", hash = "sha256:4cbcdd55a6efadb9dbea26b858f4fb3264567b52d69ca0d25b721b553f60ea82", size = 58084, upload-time = "2026-05-18T06:03:28.057Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/05/7f/798705f5296a58ca505d600456748d1be48078eac8a7050d8a98bc9edb89/decorator-5.3.1-py3-none-any.whl", hash = "sha256:f47fe6fdbd2edd623ecfe36875d37aba411624e2670dd395dddae1358689bb3c", size = 10365, upload-time = "2026-05-18T06:03:26.517Z" },
+]
+
+[[package]]
+name = "defusedxml"
+version = "0.7.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/0f/d5/c66da9b79e5bdb124974bfe172b4daf3c984ebd9c2a06e2b8a4dc7331c72/defusedxml-0.7.1.tar.gz", hash = "sha256:1bb3032db185915b62d7c6209c5a8792be6a32ab2fedacc84e01b52c51aa3e69", size = 75520, upload-time = "2021-03-08T10:59:26.269Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/07/6c/aa3f2f849e01cb6a001cd8554a88d4c77c5c1a31c95bdf1cf9301e6d9ef4/defusedxml-0.7.1-py2.py3-none-any.whl", hash = "sha256:a352e7e428770286cc899e2542b6cdaedb2b4953ff269a210103ec58f6198a61", size = 25604, upload-time = "2021-03-08T10:59:24.45Z" },
 ]
 
 [[package]]
@@ -4748,6 +4777,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/1a/9c/c531f2293b91265d8b48e9b329f54fdd7ffae73cb4134ea10cca4237e9cc/numpy-2.4.6-pp311-pypy311_pp73-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:5dbbdb29840ca3d91ee0fece42fc29278886d908280bfec0a5846c6f901a3eb0", size = 15798374, upload-time = "2026-05-18T23:37:02.674Z" },
     { url = "https://files.pythonhosted.org/packages/1a/b0/413077f6b1153ed3cba361401c6783bbad6114804a000cc22eb71c13e190/numpy-2.4.6-pp311-pypy311_pp73-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:8ad03c0965fb3c692200e74d458ca28c1dbb4ce96f9a479a8aa041ad5fabca02", size = 16747286, upload-time = "2026-05-18T23:37:06.327Z" },
 ]
+
+[[package]]
+name = "odfpy"
+version = "1.4.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "defusedxml", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/97/73/8ade73f6749177003f7ce3304f524774adda96e6aaab30ea79fd8fda7934/odfpy-1.4.1.tar.gz", hash = "sha256:db766a6e59c5103212f3cc92ec8dd50a0f3a02790233ed0b52148b70d3c438ec", size = 717045, upload-time = "2020-01-18T16:55:48.852Z" }
 
 [[package]]
 name = "omegaconf"
@@ -6136,6 +6174,15 @@ wheels = [
 [package.optional-dependencies]
 crypto = [
     { name = "cryptography", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+
+[[package]]
+name = "pypdf"
+version = "6.21.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/06/28/081f1cbcca7042441dafc8de00f48ba60853f89e5bff92c5f26477346d81/pypdf-6.21.2.tar.gz", hash = "sha256:0a3e1c5c886a1be03646c16a04827cc166c2a0575c971b26a4bf89686551c2d4", size = 7144571, upload-time = "2026-10-21T16:44:55.272Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/1b/4d/c9d2d67f204eff463237a1a8f5e25a6923b7b1043982b91fcaf104c8ef60/pypdf-6.21.2-py3-none-any.whl", hash = "sha256:1d44d1a3a200f25062adff0085b02040e4646431ac2ccac22e42679e91466084", size = 407766, upload-time = "2026-10-21T16:44:53.626Z" },
 ]
 
 [[package]]

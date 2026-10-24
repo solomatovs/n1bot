@@ -517,6 +517,41 @@ class TestBashTool:
         if result.ok:
             raise AssertionError("not result.ok")
 
+    async def test_reading_utilities_are_installed(
+        self, bash_tool, workspace_image
+    ) -> None:
+        """Утилиты и python-модули чтения файлов из декларации boba-tool-shell
+        есть в корне песочницы bash."""
+        result = await Call.result(
+            bash_tool,
+            command=(
+                'missing=""; for tool in pdftotext pandoc catdoc antiword unrtf '
+                "xmllint sqlite3 xz bzip2 unzip 7z file curl jq; do "
+                'command -v "$tool" > /dev/null || missing="$missing $tool"; done; '
+                'test -z "$missing" || { echo "missing:$missing"; exit 1; }; '
+                'python3 -c "import pandas, openpyxl, xlrd, docx, pptx, odf, '
+                'pypdf, pyarrow, lxml, charset_normalizer, yaml, PIL"'
+            ),
+        )
+
+        if not result.ok:
+            raise AssertionError(
+                "bash sandbox root: expected the reading tools and python modules "
+                f"declared by boba-tool-shell, got exit {result.exit_code}: "
+                f"{result.stdout!r} {result.stderr!r}"
+            )
+
+    async def test_pdf_reads_with_pdftotext(self, bash_tool, workspace_pdf) -> None:
+        """PDF из образа пользователя читается poppler'ом постранично."""
+        result = await Call.ok(
+            bash_tool, command=f"pdftotext -f 2 -l 2 {workspace_pdf} -"
+        )
+
+        if "Beta page two" not in result.stdout:
+            raise AssertionError(f"pdftotext page 2: {result.stdout!r}")
+        if "Alpha page one" in result.stdout:
+            raise AssertionError(f"pdftotext read page 1 too: {result.stdout!r}")
+
 
 class TestDocTools:
     """doc: ридеры boba-doc читают документ из образа пользователя."""

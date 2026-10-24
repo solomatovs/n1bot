@@ -21,6 +21,16 @@ bash = "boba.tool.shell.plugin:MANIFEST"
 payload = [
     "pandas>=2,<3",
     "openpyxl>=3.1,<4",
+    "xlrd>=2,<3",
+    "python-docx>=1.2,<2",
+    "python-pptx>=1,<2",
+    "odfpy>=1.4,<2",
+    "pypdf>=6,<7",
+    "pyarrow>=25,<26",
+    "lxml>=5.0,<7",
+    "charset-normalizer>=3.4,<4",
+    "pyyaml>=6,<7",
+    "pillow>=10",
 ]
 
 [tool.setuptools.packages.find]
@@ -29,4 +39,33 @@ include = ["boba*"]
 namespaces = true
 
 [tool.boba.sandbox]
-imports = ["pandas", "openpyxl"]
+imports = [
+    "pandas",
+    "openpyxl",
+    "xlrd",
+    "docx",
+    "pptx",
+    "odf",
+    "pypdf",
+    "pyarrow",
+    "lxml",
+    "charset_normalizer",
+    "yaml",
+    "PIL",
+]
+apt = [
+    "unzip",
+    "p7zip-full",
+    "file",
+    "curl",
+    "jq",
+    "poppler-utils",
+    "catdoc",
+    "antiword",
+    "unrtf",
+    "pandoc",
+    "libxml2-utils",
+    "sqlite3",
+    "xz-utils",
+    "bzip2",
+]
