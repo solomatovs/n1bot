@@ -126,12 +126,17 @@ def look_llm_port() -> Iterator[int]:
 
 
 @pytest.fixture(scope="session")
+def look_db() -> StandDatabase:
+    """База стендов вида: тесты сеют в неё треды своего пользователя."""
+    return StandDatabase(StandApp.AID, StandNames().of_tree(LookStand.DATABASE))
+
+
+@pytest.fixture(scope="session")
 def look_stands(
-    tmp_path_factory: pytest.TempPathFactory, look_llm_port: int
+    tmp_path_factory: pytest.TempPathFactory, look_llm_port: int, look_db: StandDatabase
 ) -> Iterator[LookStand]:
-    database = StandDatabase(StandApp.AID, StandNames().of_tree(LookStand.DATABASE))
     stands = LookStand(
-        tmp_path_factory.mktemp("look-stand"), look_llm_port, database.prepare()
+        tmp_path_factory.mktemp("look-stand"), look_llm_port, look_db.prepare()
     )
     try:
         yield stands

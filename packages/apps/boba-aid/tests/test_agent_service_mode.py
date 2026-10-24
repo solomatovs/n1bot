@@ -1,7 +1,8 @@
 """Агент чата в режиме службы: [agent.process] называет адрес службы агента
 (`boba serve` на стенде в цикле теста) и вход proxy; вкладка входит в
 службу от имени своего пользователя, профиль агента выбирается настройкой
-сессии `model` по имени профиля чата, ход идёт сессией службы, закрытие
+сессии `model` по имени профиля чата, ход идёт сессией службы и каждая
+запись истории приходит `session_info_update` с `updatedAt`, закрытие
 вкладки закрывает её. Удаление треда удаляет сессию через службу от имени
 пользователя треда, сохранённого со слоем чата; профиль, которого служба не
 предлагает, — отказ с понятной причиной."""
@@ -9,12 +10,14 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from datetime import datetime
 from importlib.resources import files
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 import pytest
+from acp.experimental.v2 import schema
 from acp_stand import AgentHistoryStand, AgentStand, FakeModel, RecordingUpdates
 from aid_stand import NoConnectionStore, RelayStand, TabSession
 from pydantic import SecretStr
@@ -243,6 +246,18 @@ class TestServiceMode:
             assert session_id is not None
         finally:
             await agent.close()
+
+        # служба, как и `boba --stdio`, сообщает о каждой записи истории
+        activity: list[datetime] = []
+        for _, update in updates.updates:
+            if not isinstance(update, schema.SessionInfoUpdate):
+                continue
+
+            if update.updated_at is not None:
+                activity.append(update.updated_at)
+
+        assert activity, updates.updates
+        assert activity == sorted(activity)
 
         await service.sessions_drop_to(0)
 

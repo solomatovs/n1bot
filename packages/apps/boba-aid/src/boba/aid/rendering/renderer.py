@@ -161,6 +161,8 @@ class SignalType:
     SIGNIN_REFRESH: ClassVar[str] = "boba:signin-refresh"
     COMPOSER_RESTORE: ClassVar[str] = "boba:composer-restore"
     """Тексты вопросов, снятых остановкой хода, — обратно в поле ввода."""
+    THREAD_ACTIVITY: ClassVar[str] = "boba:thread-activity"
+    """Новое время активности треда из базы — панели тредов."""
 
 
 class CatchUp(BaseModel):
