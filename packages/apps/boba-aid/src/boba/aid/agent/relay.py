@@ -778,7 +778,7 @@ class McpRelay:
         RequestError — нет регистрации serverId, requestId уже в работе либо
             сервер за регистрацией не дал исхода.
         """
-        self._registrations.of(message.server_id)
+        registration = self._registrations.of(message.server_id)
         active = (message.server_id, message.request_id)
         if active in self._active:
             msg = (
@@ -838,10 +838,7 @@ class McpRelay:
             error = ErrorData(code=mt.INVALID_PARAMS, message=text)
             return McpErrorOutcome(error=error)
         except (McpClientError, AuthenticationError) as exc:
-            msg = (
-                f"mcp/message {message.method!r} to server {message.server_id!r} "
-                f"got no MCP outcome: {exc}"
-            )
+            msg = f"{message.method} to MCP server {registration.server!r}: {exc}"
             raise RequestError(AcpErrorCode.BACKEND_FAILED, msg) from exc
         except ToolServersError as exc:
             msg = (

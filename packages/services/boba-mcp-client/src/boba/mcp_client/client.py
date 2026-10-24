@@ -92,7 +92,11 @@ from mcp.client.subscriptions import (
     listen,
 )
 from mcp.server.apps import APP_MIME_TYPE, EXTENSION_ID
-from mcp.shared._httpx_utils import create_mcp_http_client
+from mcp.shared._httpx_utils import (
+    MCP_DEFAULT_SSE_READ_TIMEOUT,
+    MCP_DEFAULT_TIMEOUT,
+    create_mcp_http_client,
+)
 from mcp.shared._stream_protocols import ReadStream, WriteStream
 from mcp.shared.auth import (
     AuthorizationCodeResult,
@@ -671,7 +675,39 @@ McpAuth = Annotated[
 ]
 
 
-ResponseHook = Callable[[httpx2.Response], Awaitable[None]]
+class HttpWatch(Protocol):
+    """Наблюдатель HTTP-клиента транспорта: каждый ответ сервера и каждый
+    запрос, оставшийся без ответа (соединение не открылось или оборвалось).
+    Реализует HttpRefusals порта; транспорт HTTP ставит его своему клиенту."""
+
+    @abstractmethod
+    async def seen(self, response: httpx2.Response) -> None: ...
+
+    @abstractmethod
+    def failed(self, request: httpx2.Request, error: httpx2.TransportError) -> None: ...
+
+
+class WatchedTransport(httpx2.AsyncBaseTransport):
+    """Реализация AsyncBaseTransport httpx поверх штатного: запрос, на
+    который соединение не дало ответа, называет наблюдателю (HttpWatch) до
+    того, как SDK mcp заменит причину безликим «Connection closed». Создаёт
+    транспорт streamable HTTP на каждое подключение."""
+
+    def __init__(self, inner: httpx2.AsyncBaseTransport, watch: HttpWatch) -> None:
+        self._inner = inner
+        self._watch = watch
+
+    async def handle_async_request(self, request: httpx2.Request) -> httpx2.Response:
+        try:
+            return await self._inner.handle_async_request(request)
+        except httpx2.TransportError as exc:
+            self._watch.failed(request, exc)
+            raise
+
+    async def aclose(self) -> None:
+        await self._inner.aclose()
+
+
 """Наблюдатель ответов HTTP-клиента транспорта."""
 
 
@@ -679,9 +715,9 @@ class Transport(Protocol):
     """Транспорт MCP-сервера: открывает потоки сообщений сессии."""
 
     @abstractmethod
-    def opened(self, seen: ResponseHook) -> AbstractAsyncContextManager[Streams]:
+    def opened(self, watch: HttpWatch) -> AbstractAsyncContextManager[Streams]:
         """Потоки сессии; открыты, пока открыт контекст. Транспорт HTTP
-        показывает seen каждый ответ сервера."""
+        показывает watch каждый ответ сервера и каждый запрос без ответа."""
 
     @abstractmethod
     def on_behalf_of(self, caller: McpCaller) -> Transport:
@@ -717,8 +753,11 @@ class HttpRefusal:
 
     Создаётся учётом отказов порта (HttpRefusals) на каждый запрос и на
     согласование версии соединения и видит ответы только своего запроса.
-    Библиотека mcp заменяет ответ с отказом (401, 403, 502) безликой ошибкой
-    протокола; text() возвращает в текст ошибки адрес и статус. Отказ на
+    Библиотека mcp заменяет ответ с отказом (401, 403, 502), тело не того
+    вида (страница HTML) и несостоявшееся соединение безликой ошибкой
+    протокола; text() возвращает в текст ошибки адрес, статус, вид тела или
+    причину соединения. Ответ без тела MCP (JSON или поток событий) либо
+    без ответа вовсе — чужой (foreign): это не ответ сервера MCP. Отказ на
     GET не считается: им сервер без потока уведомлений отвечает исправной
     сессии. 404 на запрос с Mcp-Session-Id — сервер забыл сессию
     (forgotten); 400 — отказ, по телу которого порт узнаёт в сервере
@@ -726,31 +765,90 @@ class HttpRefusal:
     """
 
     REQUEST: ClassVar[str] = "POST"
+    CONTENT_TYPE: ClassVar[str] = "content-type"
+    MCP_BODIES: ClassVar[tuple[str, ...]] = ("application/json", "text/event-stream")
+    """Виды тела ответа сервера MCP по streamable HTTP."""
+    ANSWERED_STATUSES: ClassVar[frozenset[int]] = frozenset(
+        {HTTPStatus.BAD_REQUEST, HTTPStatus.NOT_FOUND}
+    )
+    """Отказы, с которыми сервер MCP отдаёт ошибку JSON-RPC телом."""
 
     def __init__(self, causes: ErrorCauses) -> None:
         self._causes = causes
         self._last: str | None = None
         self._bad_request = False
         self._forgotten = False
+        self._foreign = False
 
     def seen(self, response: httpx2.Response) -> None:
         request = response.request
         if request.method != self.REQUEST:
             return
 
+        body = response.headers.get(self.CONTENT_TYPE, "")
+        mcp_body = body.lower().startswith(self.MCP_BODIES)
         if response.status_code < HTTPStatus.BAD_REQUEST:
             self._last = None
             self._bad_request = False
+            self._foreign = False
+            if response.status_code == HTTPStatus.ACCEPTED:
+                return
+
+            if mcp_body:
+                return
+
+            self._foreign = True
+            self._last = (
+                f"{request.method} {request.url}: expected a reply of the MCP "
+                f"server, got HTTP {response.status_code} "
+                f"{response.reason_phrase} with body {self._shown(body)}"
+            )
             return
 
         if response.status_code == HTTPStatus.NOT_FOUND:
             self._forgotten = MCP_SESSION_ID in request.headers
 
         self._bad_request = response.status_code == HTTPStatus.BAD_REQUEST
+        # ошибку JSON-RPC сервер MCP вправе вернуть телом с 400 или 404
+        self._foreign = True
+        if mcp_body and response.status_code in self.ANSWERED_STATUSES:
+            self._foreign = False
         self._last = (
             f"{request.method} {request.url}: expected a reply of the MCP server, "
-            f"got HTTP {response.status_code} {response.reason_phrase}"
+            f"got HTTP {response.status_code} {response.reason_phrase} with body "
+            f"{self._shown(body)}"
         )
+
+    def failed(self, request: httpx2.Request, error: httpx2.TransportError) -> None:
+        if request.method != self.REQUEST:
+            return
+
+        self._foreign = True
+        self._last = (
+            f"{request.method} {request.url}: expected a reply of the MCP server, "
+            f"got no answer: {type(error).__name__}: {error}"
+        )
+
+    @staticmethod
+    def _shown(body: str) -> str:
+        if not body:
+            return "of no content type"
+
+        return body
+
+    def foreign(self) -> str:
+        """Чем был последний ответ запроса, если это не ответ сервера MCP:
+        отказ HTTP без тела JSON, страница не того вида или ответа нет вовсе
+        (адрес, статус, вид тела либо причина соединения); пусто — ответ
+        был ответом сервера MCP."""
+        last = self._last
+        if not self._foreign:
+            return ""
+
+        if last is None:
+            return ""
+
+        return last
 
     def forgotten(self) -> bool:
         """Сервер ответил запросу 404 в своей сессии: сессии больше нет."""
@@ -770,8 +868,8 @@ class HttpRefusal:
         return f"{last}; {causes}"
 
 
-class HttpRefusals:
-    """Учёт отказов HTTP подключений порта по запросам.
+class HttpRefusals(HttpWatch):
+    """Учёт отказов HTTP подключений порта по запросам; реализация HttpWatch.
 
     Создаётся портом McpToolServer; seen() транспорт HTTP ставит
     наблюдателем ответов своего HTTP-клиента. Каждый запрос порта и каждое
@@ -792,6 +890,13 @@ class HttpRefusals:
             return
 
         refusal.seen(response)
+
+    def failed(self, request: httpx2.Request, error: httpx2.TransportError) -> None:
+        refusal = self._current.get()
+        if refusal is None:
+            return
+
+        refusal.failed(request, error)
 
     @contextmanager
     def watching(self) -> Iterator[HttpRefusal]:
@@ -827,10 +932,14 @@ class HttpEndpoint(HttpAddress):
         return self.url()
 
     @asynccontextmanager
-    async def opened(self, seen: ResponseHook) -> AsyncGenerator[Streams, None]:
+    async def opened(self, watch: HttpWatch) -> AsyncGenerator[Streams, None]:
         auth = self.auth.httpx_auth(self.url())
-        async with create_mcp_http_client(auth=auth) as http:
-            http.event_hooks["response"].append(seen)
+        timeout = httpx2.Timeout(MCP_DEFAULT_TIMEOUT, read=MCP_DEFAULT_SSE_READ_TIMEOUT)
+        transport = WatchedTransport(httpx2.AsyncHTTPTransport(), watch)
+        async with httpx2.AsyncClient(
+            auth=auth, timeout=timeout, transport=transport
+        ) as http:
+            http.event_hooks["response"].append(watch.seen)
             async with streamable_http_client(self.url(), http_client=http) as streams:
                 yield streams
 
@@ -846,7 +955,7 @@ class SseEndpoint(HttpAddress):
         return self.url()
 
     @asynccontextmanager
-    async def opened(self, seen: ResponseHook) -> AsyncGenerator[Streams, None]:
+    async def opened(self, watch: HttpWatch) -> AsyncGenerator[Streams, None]:
         auth = self.auth.httpx_auth(self.url())
         async with sse_client(self.url(), auth=auth) as streams:
             yield streams
@@ -874,7 +983,7 @@ class StdioCommand(BaseModel):
         return self
 
     @asynccontextmanager
-    async def opened(self, seen: ResponseHook) -> AsyncGenerator[Streams, None]:
+    async def opened(self, watch: HttpWatch) -> AsyncGenerator[Streams, None]:
         env: dict[str, str] | None = None
         if self.env:
             env = dict(self.env)
@@ -1397,7 +1506,7 @@ class McpConnection:
         stop = self._stop
         with self._refusals.watching() as refusal:
             try:
-                async with self._transport.opened(self._refusals.seen) as streams:
+                async with self._transport.opened(self._refusals) as streams:
                     read, write = streams
                     dispatcher = JSONRPCDispatcher(read, write)
                     session = IdentifiedSession(
@@ -2501,6 +2610,11 @@ class McpToolServer(McpToolPort):
                 "session of the client (HTTP 404 with Mcp-Session-Id); the next "
                 f"request opens a new session: {refusal.text(error)}"
             )
+            raise McpClientError(msg) from error
+
+        if reason := refusal.foreign():
+            await connection.close()
+            msg = f"{self._label}: {action} got no answer of the MCP server: {reason}"
             raise McpClientError(msg) from error
 
         if error.error.code == mt.CONNECTION_CLOSED:
