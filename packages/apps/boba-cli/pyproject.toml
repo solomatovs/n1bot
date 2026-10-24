@@ -49,6 +49,9 @@ dev = [
     "pytest>=9.1,<10",
 ]
 
+[tool.boba.unimported]
+websockets = "протокол WebSocket сервера uvicorn: boba serve принимает ACP по WebSocket"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["boba*"]
