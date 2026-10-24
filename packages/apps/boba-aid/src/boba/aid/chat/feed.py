@@ -53,9 +53,8 @@ class TextClip:
 
 class QuestionBody(BaseModel):
     """Тело вопроса хода в шине: текст, вложения блоками resource_link — те же,
-    что приходят в воспроизведении, — автор — имя шага вопроса во всех
-    вкладках, — и shown: рисуется ли вопрос (вызов команды самого агента —
-    нет, ход рисует её итог).
+    что приходят в воспроизведении, — и автор — имя шага вопроса во всех
+    вкладках.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -63,7 +62,6 @@ class QuestionBody(BaseModel):
     text: str
     links: tuple[schema.ResourceContentBlock, ...] = ()
     author: str = ""
-    shown: bool
 
 
 class TurnFeed:

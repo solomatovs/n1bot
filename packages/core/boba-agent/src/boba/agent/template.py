@@ -44,6 +44,8 @@ class AgentTemplateFile(StrEnum):
     COMPACTION_FAILED = "compact/compaction_failed.txt"
     THREAD_EXHAUSTED = "compact/thread_exhausted.txt"
     MANUAL_COMPACTION_FAILED = "compact/manual_compaction_failed.txt"
+    LOCAL_COMMAND_CAVEAT = "compact/local_command_caveat.txt"
+    COMPACTED = "compact/compacted.txt"
     THREAD_EXHAUSTED_TITLE = "compact/thread_exhausted_title.txt"
 
     ENVIRONMENT = "attachments/environment.txt"

@@ -108,9 +108,7 @@ class Question(BaseModel):
     вложения к сообщению и признак правки. Строится из сообщения chainlit
     (Questions) или разбором события правки edit_message вкладки — по
     алиасам полей; edited — правка шага key: ход ведёт ветка `session/fork`
-    до этого вопроса; agent_command — вызов команды самого агента
-    (ThreadAgent.routed): его строку лента не рисует, ход рисует итог
-    команды.
+    до этого вопроса.
     """
 
     model_config = ConfigDict(frozen=True, extra="ignore", validate_by_name=True)
@@ -119,14 +117,10 @@ class Question(BaseModel):
     text: str = Field(validation_alias=AliasPath("message", "output"))
     links: tuple[schema.ResourceContentBlock, ...] = ()
     edited: bool = False
-    agent_command: bool = False
 
     def body(self, author: str = "") -> QuestionBody:
         """Тело вопроса для шины; author — имя шага вопроса во всех вкладках."""
-        shown = not self.agent_command
-        return QuestionBody(
-            text=self.text, links=self.links, author=author, shown=shown
-        )
+        return QuestionBody(text=self.text, links=self.links, author=author)
 
 
 class Questions:
@@ -1031,12 +1025,11 @@ class ThreadAgent:
         if question.edited:
             return question
 
-        routed = await self._menu.routed(question.key, question.text, command)
-        if routed is None:
+        text = await self._menu.routed(question.key, question.text, command)
+        if text is None:
             return None
 
-        update = {"text": routed.text, "agent_command": routed.agent_command}
-        return question.model_copy(update=update)
+        return question.model_copy(update={"text": text})
 
     async def _restart(self) -> None:
         """Замена процесса под замком вкладки перед ходом: файл настроек

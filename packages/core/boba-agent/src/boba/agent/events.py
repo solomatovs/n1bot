@@ -19,7 +19,7 @@ from typing import Protocol, TypeAlias
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from boba.agent.control import CanUseToolRequest
-from boba.agent.records import CompactTrigger, PermissionMode, Record, Usage
+from boba.agent.records import PermissionMode, Record, Usage
 
 __all__ = [
     "AgentEvent",
@@ -160,14 +160,10 @@ class CompactionStatus(StrEnum):
 class CompactionEvent(EventModel):
     """Сжатие разговора: начато, состоялось с пересказом, не удалось с
     причиной или прервано. `compaction_id` — uuid записи пересказа: по нему
-    воспроизведение истории выдаёт то же сжатие; у сжатия по команде это id
-    элемента очереди команды."""
+    воспроизведение истории выдаёт то же сжатие."""
 
     compaction_id: str
     status: CompactionStatus
-    trigger: CompactTrigger
-    """Порог или переполнение (auto) либо команда пользователя (manual)."""
-
     summary: str
     """Пересказ состоявшегося сжатия; у остальных стадий пусто."""
 

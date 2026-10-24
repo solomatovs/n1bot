@@ -530,7 +530,6 @@ class TestBreakers:
         "failure",
         [
             SummaryName.TOOL_CALL,
-            SummaryName.NO_BLOCK,
             SummaryName.EMPTY,
             SummaryName.LONG,
             SummaryName.LENGTH,
@@ -883,12 +882,26 @@ class TestInvokedSkills:
         assert SKILL_BODY in after
 
 
+CAVEAT = (
+    "<local-command-caveat>The command below was run directly in Boba, not sent "
+    "to you as a request, and its output goes straight to the user. It's recorded "
+    "here as context for later messages.</local-command-caveat>"
+)
+"""Пометка локальной команды для модели — как в эталоне
+(texts/compact/local_command_records_manual.txt), с именем агента."""
+
+
 class TestManual:
     """Сжатие по команде пользователя: элемент очереди compact — свой ход
     без записи вопроса; указания пользователя уходят в инструкцию блоком
     «Additional Instructions:»; граница — с триггером manual."""
 
     NOTE: ClassVar[str] = "Keep only the table names."
+    CALL: ClassVar[str] = (
+        "<command-name>/compact</command-name>\n"
+        "            <command-message>compact</command-message>\n"
+        f"            <command-args>{NOTE}</command-args>"
+    )
 
     async def test_command_compacts_with_the_instructions(
         self, server: FakeServer, agents: StandAgents, tmp_path: Path
@@ -913,8 +926,16 @@ class TestManual:
 
         assert list(served.agent.outcomes) == [TurnOutcome.COMPLETED] * 4
         records = await journal(tmp_path / "history", SESSION)
-        compacted = kinds(records[before:])
-        assert "user" not in compacted[: compacted.index("system:compact_boundary")]
+        written = [r for r in records[before:] if isinstance(r, UserRecord)]
+        caveat, called = written[:2]
+        assert isinstance(caveat, UserRecord)
+        assert caveat.is_meta
+        assert caveat.message.content == CAVEAT
+        assert isinstance(called, UserRecord)
+        assert called.uuid == command.id
+        assert called.message.content == self.CALL
+        boundary_at = records.index(boundaries(records)[0])
+        assert records.index(called) < boundary_at
         found = boundaries(records)
         assert len(found) == 1
         assert found[0].compact_metadata.trigger is CompactTrigger.MANUAL
@@ -928,38 +949,73 @@ class TestManual:
         first_user = WireText().of(after[1]["content"])
         assert first_user is not None
         assert CONTINUED in first_user
-        events = [e for e in sink.of(CompactionEvent) if isinstance(e, CompactionEvent)]
-        statuses = [e.status for e in events]
+        sent_after = json.dumps(after, ensure_ascii=False)
+        assert json.dumps(self.CALL, ensure_ascii=False)[1:-1] in sent_after
+        stdout = "<local-command-stdout>Compacted</local-command-stdout>"
+        assert stdout in sent_after
+        assert sent_after.index(stdout) > sent_after.index(CONTINUED)
+        statuses = [
+            e.status for e in sink.of(CompactionEvent) if isinstance(e, CompactionEvent)
+        ]
         assert statuses == [CompactionStatus.IN_PROGRESS, CompactionStatus.COMPLETED]
-        assert {e.compaction_id for e in events} == {command.id}
-        assert {e.trigger for e in events} == {CompactTrigger.MANUAL}
         conversation = session.conversation()
         assert isinstance(conversation[0], CompactBoundaryRecord)
         assert conversation[0].uuid == found[0].uuid
 
-    async def test_command_without_anything_to_summarize_fails(
+    async def test_reply_without_the_summary_block_is_the_summary(
         self, agents: StandAgents
     ) -> None:
+        """Ответ без блока <summary> — пересказ целиком, без разбора
+        <analysis> (локальные модели блок не пишут)."""
         profile = agents.profile(Protocol.OPENAI, chars_per_token=4)
         served = Served(agents.agent(profile, Collected(), tools=StandTools()))
         session = await served.open(SESSION, resume=False)
 
+        served.agent.queue.enqueue(prompt(call(large(2_000))))
+        await served.agent.settled()
         served.agent.queue.enqueue(prompt(ScenarioName.ANSWER.value))
         await served.agent.settled()
-        served.agent.queue.enqueue(QueueEntry(kind=QueueKind.COMPACT, text=""))
+        served.agent.queue.enqueue(
+            QueueEntry(kind=QueueKind.COMPACT, text=SummaryName.NO_BLOCK.value)
+        )
         await served.agent.settled()
         await served.close()
 
-        assert list(served.agent.outcomes) == [
-            TurnOutcome.COMPLETED,
-            TurnOutcome.API_ERROR,
+        assert served.agent.outcomes[-1] is TurnOutcome.COMPLETED
+        summaries = [
+            r
+            for r in session.conversation()
+            if isinstance(r, UserRecord) and r.is_compact_summary
         ]
+        assert len(summaries) == 1
+        content = summaries[0].message.content
+        assert isinstance(content, str)
+        assert "and no summary block" in content
+        assert "only analysis" not in content
+
+    async def test_command_without_anything_to_summarize_fails(
+        self, agents: StandAgents
+    ) -> None:
+        """В новой сессии пересказывать нечего: вызов команды записан, исход
+        — отказ с причиной."""
+        profile = agents.profile(Protocol.OPENAI, chars_per_token=4)
+        served = Served(agents.agent(profile, Collected(), tools=StandTools()))
+        session = await served.open(SESSION, resume=False)
+
+        command = served.agent.queue.enqueue(
+            QueueEntry(kind=QueueKind.COMPACT, text="")
+        )
+        await served.agent.settled()
+        await served.close()
+
+        assert list(served.agent.outcomes) == [TurnOutcome.API_ERROR]
         records = session.records()
         assert not boundaries(records)
+        users = [r.uuid for r in records if isinstance(r, UserRecord)]
+        assert users[-1] == command.id
         assert synthetic_texts(records) == [
             "Compaction failed: there is nothing to summarize yet: the conversation "
-            "holds fewer than two rounds with a model reply: the part to summarize "
-            "holds no model reply"
+            "holds fewer than two rounds with a model reply: 1 group(s) in total"
         ]
 
 

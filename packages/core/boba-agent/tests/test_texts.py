@@ -5,8 +5,9 @@ from __future__ import annotations
 
 import pytest
 
-from boba.agent.tags import AgentTag, ReplyTag, TagShield
+from boba.agent.tags import AgentTag, LocalCommandText, ReplyTag, TagShield
 from boba.agent.template import AgentTemplate, AgentTemplateFile
+from boba.core.commands import CommandCall
 
 
 class TestAgentTexts:
@@ -159,3 +160,21 @@ class TestReplyTag:
         text = "<details><summary>title</summary>body</details>"
 
         assert TagShield(list(AgentTag)).shield(text) == text
+
+
+class TestLocalCommandText:
+    """Запись вызова локальной команды — как у эталона, и разбор обратно."""
+
+    def test_call_is_written_as_the_reference_and_parsed_back(self) -> None:
+        texts = LocalCommandText()
+        call = CommandCall(name="compact", rest="keep the plan")
+
+        written = texts.call(call)
+
+        assert written == (
+            "<command-name>/compact</command-name>\n"
+            "            <command-message>compact</command-message>\n"
+            "            <command-args>keep the plan</command-args>"
+        )
+        assert texts.parsed(written) == call
+        assert texts.parsed("/compact keep the plan") is None

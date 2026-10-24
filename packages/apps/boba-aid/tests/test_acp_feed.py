@@ -90,7 +90,7 @@ from boba.toolkit.result import (
     VisualResult,
 )
 from boba.toolkit.wire import JournalFeature, JournalRead, McpContent, ResultWire
-from boba.transport.acp.protocol import CompactionTrigger, IdleErrorUpdate, MetaKey
+from boba.transport.acp.protocol import IdleErrorUpdate, MetaKey
 
 APP_ROOT = Path(__file__).resolve().parents[1] / "assets"
 """Корень приложения пакета: его переводы chainlit несут подписи ленты и панели."""
@@ -716,22 +716,20 @@ class TestContainerLabel:
 
 
 COMPACTION = "33333333-3333-3333-3333-333333333333"
+COMMAND = "44444444-4444-4444-4444-444444444444"
+"""Запись вызова `/compact`: её messageId — ключ хода команды."""
 SUMMARY = "This session is being continued from a previous conversation."
 
 
-def _compaction(status: str, trigger: CompactionTrigger) -> SessionUpdate:
-    meta = {MetaKey.TRIGGER.value: trigger.value}
+def _compaction(status: str) -> SessionUpdate:
     if status == "completed":
         return schema.SessionCompactionUpdate(
             compaction_id=COMPACTION,
             status=status,
             summary=[schema.TextContentBlock(text=SUMMARY)],
-            field_meta=meta,
         )
 
-    return schema.SessionCompactionUpdate(
-        compaction_id=COMPACTION, status=status, field_meta=meta
-    )
+    return schema.SessionCompactionUpdate(compaction_id=COMPACTION, status=status)
 
 
 def _deleted(recorded: FakeEmitter) -> set[str]:
@@ -766,8 +764,8 @@ class TestCompactionStep:
         updates = _view(runtime_stand, storage, RemoteJournals())
         updates.begin_turn(QUESTION)
         await updates.view.await_model()
-        await updates.apply(_compaction("in_progress", CompactionTrigger.AUTO))
-        await updates.apply(_compaction("completed", CompactionTrigger.AUTO))
+        await updates.apply(_compaction("in_progress"))
+        await updates.apply(_compaction("completed"))
         await updates.finish_turn()
 
         assert _labels(recorded) == [
@@ -788,7 +786,7 @@ class TestCompactionStep:
     ) -> None:
         updates = _view(runtime_stand, storage, RemoteJournals())
         await updates.apply(_question())
-        await updates.apply(_compaction("completed", CompactionTrigger.AUTO))
+        await updates.apply(_compaction("completed"))
         await updates.finish_turn()
 
         step = recorded.last()[_id(COMPACTION, StepRole.COMPACTION)]
@@ -808,8 +806,8 @@ class TestCompactionStep:
         updates = _view(runtime_stand, storage, RemoteJournals())
         updates.begin_turn(QUESTION)
         await updates.view.await_model()
-        await updates.apply(_compaction("in_progress", CompactionTrigger.AUTO))
-        await updates.apply(_compaction(status, CompactionTrigger.AUTO))
+        await updates.apply(_compaction("in_progress"))
+        await updates.apply(_compaction(status))
         await updates.finish_turn()
 
         gone = _deleted(recorded)
@@ -817,53 +815,49 @@ class TestCompactionStep:
         assert _id(QUESTION, StepRole.PROCESS) in gone
 
     @pytest.mark.anyio
-    async def test_live_manual_compaction_is_the_turn_itself(
+    async def test_compact_command_is_a_turn_without_its_line(
         self,
         runtime_stand: StandRefs,
         storage: LocalStorageClient,
         recorded: FakeEmitter,
     ) -> None:
-        """Ход команды `/compact` вживую — ключом хода служит id сжатия: шаг
-        встаёт под контейнер этого хода, вопроса в ленте нет."""
-        updates = _view(runtime_stand, storage, RemoteJournals())
-        updates.begin_turn(COMPACTION)
-        await updates.view.await_model()
-        await updates.apply(_compaction("in_progress", CompactionTrigger.MANUAL))
-        await updates.apply(_compaction("completed", CompactionTrigger.MANUAL))
-        await updates.finish_turn()
-
-        last = recorded.last()
-        step = last[_id(COMPACTION, StepRole.COMPACTION)]
-        assert step.get(StepField.NAME) == f"✔ {self.COMPACTED}"
-        assert step.get(StepField.PARENT_ID) == _id(COMPACTION, StepRole.PROCESS)
-        assert COMPACTION not in last
-
-    @pytest.mark.anyio
-    async def test_replayed_manual_compaction_opens_its_own_turn(
-        self,
-        runtime_stand: StandRefs,
-        storage: LocalStorageClient,
-        recorded: FakeEmitter,
-    ) -> None:
-        """В истории сжатие по команде идёт после ответа прежнего хода: оно
-        закрывает тот ход и открывает свой, без вопроса."""
+        """Ход `/compact` — вживую и при воспроизведении одинаково: строки
+        вызова нет, шаг сжатия — под контейнером этого хода."""
         updates = _view(runtime_stand, storage, RemoteJournals())
         await updates.apply(_question())
         await updates.apply(_call(CALL, "mcp__boba__pg_query", {"sql": "select 1"}))
         await updates.apply(
             _done(CALL, "1", _result(MarkdownResult(text="one", elapsed_ms=1)))
         )
-        await updates.apply(_compaction("completed", CompactionTrigger.MANUAL))
+        command = schema.UserMessageUpdate(
+            message_id=COMMAND, content=[schema.TextContentBlock(text="/compact")]
+        )
+        await updates.apply(command)
+        await updates.apply(_compaction("completed"))
         await updates.finish_turn()
 
         last = recorded.last()
         step = last[_id(COMPACTION, StepRole.COMPACTION)]
-        assert step.get(StepField.PARENT_ID) == _id(COMPACTION, StepRole.PROCESS)
-        earlier = last[_id(QUESTION, StepRole.PROCESS)]
-        assert earlier.get(StepField.NAME) == TEXTS.text(
-            StepText.DONE_STEPS.value, count=1
-        )
-        assert COMPACTION not in last
+        assert step.get(StepField.NAME) == f"✔ {self.COMPACTED}"
+        assert step.get(StepField.PARENT_ID) == _id(COMMAND, StepRole.PROCESS)
+        assert COMMAND not in last
+        assert QUESTION in last
+
+    @pytest.mark.anyio
+    async def test_live_compact_command_draws_no_line(
+        self,
+        runtime_stand: StandRefs,
+        storage: LocalStorageClient,
+        recorded: FakeEmitter,
+    ) -> None:
+        updates = _view(runtime_stand, storage, RemoteJournals())
+        updates.begin_turn(COMMAND)
+        await updates.question("/compact keep the plan", COMMAND)
+        await updates.question("/compactly done", QUESTION)
+
+        last = recorded.last()
+        assert COMMAND not in last
+        assert QUESTION in last
 
 
 class TestToolApps:
@@ -1591,9 +1585,7 @@ class TestLiveEqualsReplay:
             leave = bus.subscribe(scope, renderer.apply)
             feed = TurnFeed(bus, payloads, scope, QUESTION, LockToken.local())
             try:
-                await feed.started(
-                    QUESTION, QuestionBody(shown=True, text="hello", author="alice")
-                )
+                await feed.started(QUESTION, QuestionBody(text="hello", author="alice"))
                 for update in _turn_updates():
                     await feed.agent_update(update)
 
@@ -1650,9 +1642,7 @@ class TestLiveEqualsReplay:
             leave = bus.subscribe(scope, renderer.apply)
             feed = TurnFeed(bus, payloads, scope, QUESTION, LockToken.local())
             try:
-                body = QuestionBody(
-                    shown=True, text="hello", author="alice", links=(link,)
-                )
+                body = QuestionBody(text="hello", author="alice", links=(link,))
                 await feed.started(QUESTION, body)
                 await feed.finished(TurnOutcome.OK, "")
             finally:
@@ -1717,9 +1707,7 @@ class TestLiveEqualsReplay:
         feed = TurnFeed(bus, payloads, scope, QUESTION, LockToken.local())
         result = _result(MarkdownResult(text=rows, elapsed_ms=12))
         try:
-            await feed.started(
-                QUESTION, QuestionBody(shown=True, text="hello", author="alice")
-            )
+            await feed.started(QUESTION, QuestionBody(text="hello", author="alice"))
             await feed.agent_update(_call(CALL, "mcp__boba__pg_query", {"sql": "1"}))
             await feed.agent_update(_done(CALL, rows, result))
             await feed.finished(TurnOutcome.OK, "")
@@ -1800,7 +1788,7 @@ class TestResultsFromRawOutput:
             leave = bus.subscribe(scope, renderer.apply)
             feed = TurnFeed(bus, payloads, scope, QUESTION, LockToken.local())
             try:
-                await feed.started(QUESTION, QuestionBody(shown=True, text="hello"))
+                await feed.started(QUESTION, QuestionBody(text="hello"))
                 for update in self._updates(thread_id):
                     await feed.agent_update(update)
 
