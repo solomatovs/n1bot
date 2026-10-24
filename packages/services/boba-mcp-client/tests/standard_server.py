@@ -27,7 +27,7 @@ logging), чтобы клиент проверялся на всём: server/dis
 заказов, которые передаёт модель, refresh_orders зовёт только приложение,
 archive_orders — только модель, orders_console открывает то же приложение
 по статусу. Промпт orders_console просит модель вызвать этот инструмент и
-несёт пометку расширения команд io.boba/commands, ведущую в его
+несёт пометку расширения команд com.boba/commands, ведущую в его
 приложение; `--commands` — сервер объявляет само расширение, без флага
 пометку клиент обязан не замечать.
 """
@@ -244,7 +244,7 @@ class StandardServer:
     REFUSAL: ClassVar[dict[str, str]] = {"reason": "the stand refuses"}
     ORDERS: ClassVar[str] = "ui://standard/orders.html"
     CONSOLE: ClassVar[str] = "orders_console"
-    COMMANDS: ClassVar[str] = "io.boba/commands"
+    COMMANDS: ClassVar[str] = "com.boba/commands"
     COMMANDS_SETTINGS: ClassVar[dict[str, Any]] = {"version": "2026-10-24"}
     CONSOLE_MARK: ClassVar[dict[str, Any]] = {
         COMMANDS: {"action": "app", "tool": CONSOLE}
@@ -354,7 +354,7 @@ class StandardServer:
     ) -> tuple[Extension, ...]:
         """Расширения сервера: MCP Apps, с extended — объявленные не по
         моделям клиента, с workspace — файлы workspace под этим каталогом, с
-        commands — расширение команд io.boba/commands."""
+        commands — расширение команд com.boba/commands."""
         extensions: tuple[Extension, ...] = (apps,)
         if extended:
             extensions = (apps, *self.EXTENSIONS)

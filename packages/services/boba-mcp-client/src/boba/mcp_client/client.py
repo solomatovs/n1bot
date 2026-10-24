@@ -1811,8 +1811,7 @@ class CachedMethod(StrEnum):
 class McpDescription:
     """Описание сервера: ответ server/discover (у сервера прежней редакции —
     собранный из его initialize) со сроком свежести и объявленные в нём
-    расширения boba (com.boba/*, io.boba/commands), которые клиент умеет
-    исполнять.
+    расширения com.boba/*, которые клиент умеет исполнять.
 
     Создаёт порт (McpToolServer.described, ChatToolPort чата) на каждое
     обращение из ответа, который тот взял из кэша или у сервера. Любой
@@ -1886,11 +1885,7 @@ class McpDescription:
             return None
 
     def _feature(self, model: type[FeatureModel]) -> FeatureModel | None:
-        extensions = self.result.capabilities.extensions
-        if not extensions:
-            return None
-
-        settings = extensions.get(model.ID)
+        settings = self.features().get(model.ID)
         if settings is None:
             return None
 
@@ -1903,7 +1898,7 @@ class McpDescription:
                 self.label,
                 model.ID,
                 model.__name__,
-                settings,
+                dict(settings),
                 exc,
             )
             return None

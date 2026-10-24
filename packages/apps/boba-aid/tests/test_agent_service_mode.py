@@ -330,7 +330,9 @@ class TestServiceMode:
         for recorded in updates:
             identity = await mode.identity(SignInStand.PROFILE)
             meta = AgentSessionMeta(threads)
-            tabs.append(ThreadAgent(identity, mode.launcher, meta, recorded))
+            tabs.append(
+                ThreadAgent(identity, mode.launcher, meta, recorded, mode.menus)
+            )
 
         try:
             await tabs[0].start()

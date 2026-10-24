@@ -190,7 +190,7 @@ class CommandsFeature(ServerFeature):
     инструкция модели вызвать тот же инструмент.
     """
 
-    ID: ClassVar[str] = "io.boba/commands"
+    ID: ClassVar[str] = "com.boba/commands"
 
     version: CommandsVersion
 
