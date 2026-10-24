@@ -33,6 +33,7 @@ from boba.db.oracle.connection import OracleConfig
 from boba.db.postgres import AsyncPostgresPool, PgQuery, PgQueryBuilder
 from boba.db.postgres.connection.config import PostgresConfig
 from boba.ix_core.database import IxDatabase
+from boba.krb import KerberosWorkspaceConfig
 from boba.runtime.config import RuntimeConfig
 from boba.stand.database import TestDatabase
 from boba.stand.edm import EdmDataset, EdmSource, EdmSources
@@ -151,6 +152,7 @@ class StandDatabase:
         self._schema = runtime.db_schema
         self._cipher = SecretCipher(runtime.connections.cipher.get_secret_value())
         self._types = ConnectionTypes.discover()
+        self._krb = bind(self._built, path="krb", model=KerberosWorkspaceConfig)
 
     @property
     def schema(self) -> str:
@@ -363,7 +365,7 @@ class StandDatabase:
         await StandIxStack().apply(database)
         nodes = await IxPages(database).write(pages)
 
-        indexers = SharedIndexers(database, cache_dir)
+        indexers = SharedIndexers(database, cache_dir, self._krb)
         await indexers.text()
         await indexers.vectors()
 
