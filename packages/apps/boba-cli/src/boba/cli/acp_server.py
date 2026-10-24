@@ -3953,6 +3953,8 @@ class AcpAgent(AcpAgentProtocol):
         finally:
             await self._threads.stop(hosted.thread)
 
+        logger.info("session %s: closed, its thread is stopped", session_id)
+
     async def resume_session(
         self,
         session_id: str,
