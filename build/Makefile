@@ -115,8 +115,11 @@ endif
 
 .DEFAULT_GOAL := help
 
-# цели делят runtime/, build/src и демон docker: по одной за раз, в том числе при make -j
+# цели делят runtime/, build/src и демон docker: по одной за раз, в том числе при make -j.
+# Исключение — ветки all: они пишут разные файлы, и all-branches ведёт их по PARALLEL
+ifeq ($(filter all-branches,$(MAKECMDGOALS)),)
 .NOTPARALLEL:
+endif
 
 # рецепт целиком в одном shell: без -e упавшая команда в середине не свалит цель.
 # Поэтому make -n исполняет рецепты с $(MAKE) целиком — их читают глазами
@@ -335,11 +338,12 @@ SANDBOX_DEV_KRB := $(foreach app,$(SANDBOX_APPS),$(SRC_DIR)/compose/$(app)/conf/
 # одно значение — в conf/local.mk
 JOBS            ?= 4
 
-# сколько образов корней плагинов собирать одновременно (plugin-rootfs-all и недостающие
-# у build): каждая сборка — свой docker build и mke2fs, около 4 ГБ памяти. Лог каждой —
-# в PLUGIN_LOG_DIR, на экран — строка начала и итога
-PLUGIN_JOBS     ?= 1
+# сколько работы идёт одновременно: образов корней плагинов (plugin-rootfs-all и недостающие
+# у build; каждый — свой docker build и mke2fs, около 4 ГБ памяти) и веток all. Лог каждой
+# сборки плагина — в PLUGIN_LOG_DIR, ветки — в ALL_LOG_DIR, на экран — строка начала и итога
+PARALLEL        ?= 10
 PLUGIN_LOG_DIR  := $(RELEASE_DIR)/logs/plugin-rootfs
+ALL_LOG_DIR     := $(RELEASE_DIR)/logs/all
 # устаревшие образы плагинов, которые отметили правила файлов; их собирает build разом
 PLUGIN_STALE    := $(RELEASE_DIR)/logs/plugin-rootfs.stale
 
@@ -637,7 +641,10 @@ define HELP
   models-image          образы данных из скачанных моделей -> runtime/models/<модель>.ext4
   plugin-rootfs-all     образы корней плагинов -> runtime/sandbox/plugins (уезжают в образ mcp)
   test                  собрать оба образа и проверить их: test = build + проверка в образе
-  all                   всё это по порядку, затем фронт для отладки (web) и деревья compose (dev)
+  all                   всё это и фронт для отладки (web): fetch, sandbox и общие стадии образов
+                        первыми, затем ветки по PARALLEL одновременно — плагины, модели, aid с web,
+                        boba, после плагинов и моделей mcp (лог ветки — release/logs/all/<ветка>.log),
+                        в конце деревья compose (dev)
 
 Входы:
   fetch                 tarball'ы bwrap/libfuse/e2fsprogs, uv, исходники chainlit $(CHAINLIT_VERSION),
@@ -649,7 +656,8 @@ define HELP
 Песочница и плагины:
   sandbox               песочница приложений, исполняющих инструменты: $(SANDBOX_APPS)
   plugin-rootfs         образ корня одного плагина: PLUGIN=<пакет>
-  plugin-rootfs-all     образы корней всех плагинов с entry points boba.tools, всегда заново
+  plugin-rootfs-all     образы корней всех плагинов с entry points boba.tools, всегда заново,
+                        по PARALLEL одновременно (лог — release/logs/plugin-rootfs/<пакет>.log)
   models-image          образы данных песочницы ($(MODEL_IMAGES)): ext4 рядом с каталогом модели,
                         секции монтируют их read-only вместо каталога; пересобираются по файлам моделей
 
@@ -704,7 +712,8 @@ define HELP
   sec                   sec.sh, MODE=all|full|sast|sca|rules
 
 Переменные: JOBS=$(JOBS) — заданий на шаг сборки; входит в ключ кэша, другое значение
-пересобирает всё от base — держать одно. NO_CACHE=1, BOBA_TAG, LATEST_TAG (пусто — без
+пересобирает всё от base — держать одно. PARALLEL=$(PARALLEL) — сколько веток all и образов
+корней плагинов собирать одновременно (около 4 ГБ памяти на образ плагина). NO_CACHE=1, BOBA_TAG, LATEST_TAG (пусто — без
 второго тега), BASE_IMAGE, BIN_ONNX=1, PLUGIN, VER, MODE, INSTANCE, INSTALL_ROOT, BUNDLE_OS_LIBS=1, PRUNE_KEEP, PYTHON_VERSION=$(PYTHON_VERSION),
 GLIBC_IMAGE, GCC_IMAGE, PYTHON_IMAGE, NODE_IMAGE, TESTAPPS_NODE_IMAGE. Версии и состав
 входов: UV_VERSION, BWRAP_VERSION, LIBFUSE_VERSION, E2FSPROGS_VERSION, CHAINLIT (файл
@@ -912,11 +921,11 @@ $(SANDBOX_DIR)/plugins/%/rootfs.ext4: $$(call plugin-sources,$$*) $(PLUGIN_ROOT_
 	@mkdir -p "$(dir $(PLUGIN_STALE))"
 	echo "$*" >> "$(PLUGIN_STALE)"
 
-# образы корней плагинов $(1) по PLUGIN_JOBS одновременно; первый упавший останавливает
+# образы корней плагинов $(1) по PARALLEL одновременно; первый упавший останавливает
 # запуск новых и печатает хвост своего лога
 define plugin-rootfs-many
 mkdir -p "$(PLUGIN_LOG_DIR)"
-printf '%s\n' $(1) | xargs -r -P "$(PLUGIN_JOBS)" -I{} bash -c '
+printf '%s\n' $(1) | xargs -r -P "$(PARALLEL)" -I{} bash -c '
     log="$(PLUGIN_LOG_DIR)/{}.log"
     echo "== образ корня плагина {}: лог $$log"
     if ! $(MAKE) -f "$(MAKEFILE)" plugin-rootfs PLUGIN={} > "$$log" 2>&1; then
@@ -1346,12 +1355,48 @@ dev-db:
 
 # --- обслуживание ------------------------------------------------------------------
 
-# всё целиком: артефакты, песочница, образы корней плагинов, фронт для отладки, образы
-# с проверкой и compose-деревья всех приложений
+# всё целиком: артефакты, песочница, образы корней плагинов, образы данных, фронт для
+# отладки, образы с проверкой и compose-деревья всех приложений. Общий этап — fetch,
+# sandbox и стадии Dockerfile до sandbox-base (образ сборки, колёса пакетов) — идёт
+# первым, чтобы ветки не собирали его каждая; затем ветки по PARALLEL одновременно, затем dev
 .PHONY: all
-all: fetch sandbox models-image plugin-rootfs-all web
-	@$(MAKE) -f "$(MAKEFILE)" test APP=
+all: fetch sandbox
+	@echo "== общий этап веток: стадии $(BASE_DIR)/Dockerfile до sandbox-base =="
+	tmp=
+	trap 'rm -rf "$$tmp"' EXIT
+	tmp=$$(mktemp -d)
+	$(call docker-image,sandbox-base,$$tmp/common.iid)
+	$(MAKE) -f "$(MAKEFILE)" -j "$(PARALLEL)" all-branches
 	$(MAKE) -f "$(MAKEFILE)" dev APP=
+
+# ветки all: цели каждой идут одним make по порядку, вывод — в $(ALL_LOG_DIR)/<ветка>.log.
+# Ветки пишут разные файлы: плагины — runtime/sandbox/plugins, модели — runtime/models,
+# aid — assets пакета чата (их контекст docker build не берёт), boba — только демон docker;
+# mcp собирает основу из образов плагинов и моделей и потому ждёт их ветки
+ALL_BRANCHES     := plugins models aid boba mcp
+ALL_GOALS_plugins = plugin-rootfs-all
+ALL_GOALS_models  = models-image
+ALL_GOALS_aid     = web test-aid
+ALL_GOALS_boba    = test-boba
+ALL_GOALS_mcp     = test-mcp
+
+.PHONY: all-branches $(ALL_BRANCHES:%=all-branch-%)
+all-branches: $(ALL_BRANCHES:%=all-branch-%)
+
+all-branch-mcp: all-branch-plugins all-branch-models
+
+# первая упавшая ветка печатает хвост своего лога, и make больше не запускает новых
+$(ALL_BRANCHES:%=all-branch-%): all-branch-%:
+	@mkdir -p "$(ALL_LOG_DIR)"
+	log="$(ALL_LOG_DIR)/$*.log"
+	start=$$SECONDS
+	echo "== ветка $* ($(ALL_GOALS_$*)): лог $$log"
+	if ! $(MAKE) -f "$(MAKEFILE)" $(ALL_GOALS_$*) > "$$log" 2>&1; then
+	    echo "ветка $* не собрана, хвост лога $$log:" >&2
+	    tail -n 40 "$$log" >&2
+	    exit 1
+	fi
+	echo ">>> ветка $* готова за $$(( SECONDS - start )) с"
 
 .PHONY: sec
 sec:

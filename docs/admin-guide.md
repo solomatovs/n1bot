@@ -327,7 +327,7 @@ runtime/
 | `base` | образ сборки `boba-base` с компилятором и uv; его зовёт `fetch` | демон Docker | минуты в первый раз, секунды повторно |
 | `sandbox` | собирает `bwrap` и `fuse2fs`, делает шаблон `workspace.ext4` | `runtime/third`, `runtime/sandbox` | несколько минут, 1 ГБ |
 | `models-image` | ext4-образы весов fastembed и rapidocr из уже скачанных моделей, без сети; песочница монтирует их вместо каталогов, чтобы телу инструмента не был виден путь на хосте; пересобираются, когда меняются файлы моделей; образы и каталоги моделей уезжают в образ mcp | `runtime/models/<модель>.ext4` | минута, 2,2 ГБ |
-| `plugin-rootfs-all` | образ корня файловой системы на каждый плагин инструментов, всегда заново; `build APP=mcp` сам собирает только недостающие и устаревшие; `PLUGIN_JOBS=N` — сколько образов собирать одновременно (около 4 ГБ памяти на каждый), лог каждого — `release/logs/plugin-rootfs/<пакет>.log` | `runtime/sandbox/plugins/<пакет>/rootfs.ext4` | 20–40 минут, 7–8 ГБ |
+| `plugin-rootfs-all` | образ корня файловой системы на каждый плагин инструментов, всегда заново; `build APP=mcp` сам собирает только недостающие и устаревшие; `PARALLEL=N` (по умолчанию 10) — сколько образов собирать одновременно (около 4 ГБ памяти на каждый), лог каждого — `release/logs/plugin-rootfs/<пакет>.log` | `runtime/sandbox/plugins/<пакет>/rootfs.ext4` | 20–40 минут, 7–8 ГБ |
 | `build APP=<приложение>` | образ `boba-aid`, `boba-mcp` или `boba` с тегом `<версия>`; фронт чата образ собирает сам, стадия `boba-bin` кладёт в образ boba агента каталогом `bin/boba.dist` (Nuitka standalone, исполняемый `bin/boba.dist/boba.bin`); в образ mcp уезжают модели, образы корней плагинов и workspace, а недостающие или устаревшие (исходники пакетов плагина, Dockerfile или uv.lock новее образа) он сначала собирает сам | демон Docker | aid — минуты; boba — первая компиляция 15–40 минут; mcp — 5–10 минут |
 | `test APP=<приложение>` | `build`, затем проверка образа без сети: пакеты, точки входа, у mcp — образы плагинов и модели, у aid — файлы, которые .chainlit/config.toml называет в custom_css и default_avatar_file_url, и ход агента с моделью проверки | — | секунды после сборки; печатает `RESULT: ALL OK` |
 | `dev APP=<приложение>` | готовит дерево `compose/<приложение>` | `compose/<приложение>` | секунды |
@@ -336,8 +336,18 @@ runtime/
 | `boba-bin` | агент каталогом `bin/boba.dist` (его берут тесты `test_cli_binary.py`); `BIN_ONNX=1` — каталог `boba-onnx.dist` с рантаймом onnxruntime-genai, тогда `fetch` качает и модели onnx-genai (3,9 ГБ) | `release/<версия>/bin` | без `BIN_ONNX` — из кэша сборки agent; с ним — вторая компиляция |
 
 Цели `build`, `test`, `dev`, `debug`, `release`, `install` и `site-keys` без
-`APP` идут по всем трём приложениям; `make all` выполняет `fetch sandbox
-models-image plugin-rootfs-all web`, затем `test` и `dev` по всем трём.
+`APP` идут по всем трём приложениям. `make all` делает то же, что `fetch
+sandbox models-image plugin-rootfs-all web`, затем `test` и `dev` по всем трём,
+но независимые части ведёт одновременно. Сначала идёт общий этап: `fetch`,
+`sandbox` и стадии Dockerfile до `sandbox-base` (образ сборки, колёса пакетов
+репозитория), чтобы их не собирала каждая ветка. Затем ветки, до `PARALLEL`
+одновременно: образы корней плагинов, образы моделей, фронт с образом aid,
+образ boba; ветка mcp стартует, когда готовы плагины и модели, — её образ
+собран из них. Ветки пишут разные файлы, поэтому друг другу не мешают. Вывод
+каждой — в `release/logs/all/<ветка>.log`, на экран — строки начала и итога.
+Первая упавшая ветка печатает хвост своего лога, новые ветки после неё не
+стартуют, уже идущие доходят до конца, и `make` завершается ошибкой. В конце
+`dev` по всем трём приложениям.
 
 Первая сборка на новой машине:
 
@@ -358,8 +368,10 @@ make -C build test                 # все три образа: сборка и
 попадает в окружение стадии `base` и входит в ключ кэша всех сборочных стадий от
 неё: сборка с другим `JOBS` проходит их заново вместе с шагами apt. Поэтому на
 машине держат одно значение, а если не 4 — записывают его в
-`build/conf/local.mk`. Запускать сборки одновременно нельзя: цели делят каталоги
-`runtime/` и `build/src`; Makefile и при `make -j` ведёт цели по одной.
+`build/conf/local.mk`. Не путать с `PARALLEL` — сколько веток `all` и образов
+корней плагинов идут одновременно: он в ключ кэша не входит. Запускать сборки
+одновременно нельзя: цели делят каталоги `runtime/` и `build/src`; Makefile и
+при `make -j` ведёт цели по одной, параллельны только ветки внутри `all`.
 
 Сеть сборке нужна в трёх местах. Шаги apt стадий `base`, `oracledb-wheel`,
 `bwrap-build`, `fuse2fs-build`, `sandbox-base`, `plugin-root` и `runtime-os`
@@ -420,13 +432,14 @@ VER=X.Y.Z` проставляет во все `pyproject.toml`. Тег обра�
 Сборка долгая, поэтому идёт в своей сессии tmux, а весь её вывод — в один
 лог: обрыв терминала её не остановит. Команды выполняют из корня репозитория.
 
-Полная сборка с нуля — исходники, песочница, модели, образы всех плагинов
-(`PLUGIN_JOBS` — сколько одновременно, около 4 ГБ памяти на каждый), фронт,
-образы и проверка всех трёх приложений:
+Полная сборка с нуля — исходники, песочница, модели, образы всех плагинов,
+фронт, образы и проверка всех трёх приложений. `PARALLEL` (по умолчанию 10) —
+сколько веток и образов плагинов собирать одновременно, около 4 ГБ памяти на
+образ плагина; логи веток — `release/logs/all/<ветка>.log`:
 
 ```
 tmux new-session -d -s build-all \
-  'DOCKER_BUILDKIT=0 make -C build all PLUGIN_JOBS=4 > /tmp/build-all.log 2>&1; echo EXIT=$? >> /tmp/build-all.log'
+  'DOCKER_BUILDKIT=0 make -C build all PARALLEL=10 > /tmp/build-all.log 2>&1; echo EXIT=$? >> /tmp/build-all.log'
 touch /tmp/build-all.log; tail -f /tmp/build-all.log     # конец — строка EXIT=0
 ```
 
@@ -436,7 +449,7 @@ touch /tmp/build-all.log; tail -f /tmp/build-all.log     # конец — стр
 ```
 APP=mcp
 tmux new-session -d -s build-$APP \
-  "DOCKER_BUILDKIT=0 make -C build test APP=$APP PLUGIN_JOBS=4 > /tmp/build-$APP.log 2>&1; echo EXIT=\$? >> /tmp/build-$APP.log"
+  "DOCKER_BUILDKIT=0 make -C build test APP=$APP PARALLEL=10 > /tmp/build-$APP.log 2>&1; echo EXIT=\$? >> /tmp/build-$APP.log"
 touch /tmp/build-$APP.log; tail -f /tmp/build-$APP.log
 ```
 
