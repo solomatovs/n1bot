@@ -527,6 +527,7 @@ dependencies = [
 
 [package.optional-dependencies]
 dev = [
+    { name = "boba-cli", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-confluence", extra = ["html"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-doc", extra = ["readers"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-kerberos", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -555,6 +556,7 @@ requires-dist = [
     { name = "boba-cancellation", editable = "packages/core/boba-cancellation" },
     { name = "boba-canvas", editable = "packages/core/boba-canvas" },
     { name = "boba-chat", editable = "packages/core/boba-chat" },
+    { name = "boba-cli", marker = "extra == 'dev'", editable = "packages/apps/boba-cli" },
     { name = "boba-config", editable = "packages/infra/config/boba-config" },
     { name = "boba-confluence", extras = ["html"], marker = "extra == 'dev'", editable = "packages/infra/format/boba-confluence" },
     { name = "boba-connection-broker", editable = "packages/services/boba-connection-broker" },
