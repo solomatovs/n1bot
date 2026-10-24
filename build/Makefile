@@ -180,7 +180,9 @@ space           := $(empty) $(empty)
 BIN_ONNX           ?=
 BIN_FILE            = $(RELEASE_DIR)/$(VERSION)/bin/boba$(if $(BIN_ONNX),-onnx)
 NUITKA_VERSION     ?= 4.3
-PATCHELF_VERSION   ?= 0.19.1.0
+# patchelf 0.18+ выравнивает новый сегмент по p_align библиотек образа (2 МБ): каждая
+# .so, которой Nuitka правит RPATH, вырастает до 2 МБ; 0.17 добавляет к ней килобайты
+PATCHELF_VERSION   ?= 0.17.2.4
 ZSTANDARD_VERSION  ?= 0.25.0
 ORDERED_SET_VERSION ?= 4.1.0
 BIN_TOOL_ARGS       = --build-arg NUITKA_VERSION=$(NUITKA_VERSION)           \
