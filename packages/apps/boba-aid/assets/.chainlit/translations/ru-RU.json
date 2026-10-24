@@ -99,9 +99,9 @@
             }
         },
         "commands": {
-            "button": "Инструменты",
-            "changeTool": "Сменить инструмент",
-            "availableTools": "Доступные инструменты"
+            "button": "Команды",
+            "changeTool": "Сменить команду",
+            "availableTools": "Доступные команды"
         },
         "speech": {
             "start": "Начать запись",
