@@ -1,4 +1,4 @@
 - dialog "Описание":
   - heading "Описание" [level=2]
-  - heading "Ассистент-BOBA" [level=1]
+  - heading "AID" [level=1]
   - button "Close"

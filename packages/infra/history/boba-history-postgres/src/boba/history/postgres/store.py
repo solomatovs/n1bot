@@ -1,6 +1,6 @@
 """Реализация порта истории агента над Postgres (план, раздел 5.15).
 
-Сессия — строка таблицы `session`, её записи — строки таблицы `history` по
+Сессия — строка таблицы `session`, её записи — строки таблицы `session_records` по
 порядку seq. Каркас, который есть у каждой записи (сессия, seq, вид, время),
 лежит колонками, остальное содержимое записи — документом jsonb; при чтении
 документ собирается обратно таким, каким он лёг бы строкой журнала JSONL.
@@ -101,7 +101,7 @@ class HistoryTable(StrEnum):
     """Имена объектов схемы истории."""
 
     SESSION = "session"
-    HISTORY = "history"
+    SESSION_RECORDS = "session_records"
     LOCK_PREFIX = "boba.history."
 
 
@@ -150,7 +150,7 @@ class ProbeColumn(StrEnum):
 
 @dataclass(frozen=True)
 class HistoryRow:
-    """Запись, разложенная для таблицы history: каркас и остальной документ."""
+    """Запись, разложенная для таблицы session_records: каркас и остальной документ."""
 
     seq: int
     type: str
@@ -159,7 +159,7 @@ class HistoryRow:
 
 
 class RecordFrames:
-    """Раскладка записи журнала по колонкам таблицы history и сборка обратно.
+    """Раскладка записи журнала по колонкам таблицы session_records и сборка обратно.
 
     PostgresHistoryStore держит каркас записи (сессию, seq, вид, время)
     колонками, а остальное — документом record. Этот класс снимает каркас с
@@ -401,7 +401,8 @@ class HeldSession:
 
 
 class PostgresHistoryStore(PostgresTable, HistoryStore):
-    """Реализация HistoryStore над таблицами `session` и `history` схемы Postgres.
+    """Реализация HistoryStore над таблицами `session` и `session_records`
+    схемы Postgres.
 
     Создаёт вход процесса по настройке `history` вида `postgres`; пул берётся
     по конфигу подключения при первом обращении, как у остальных таблиц.
@@ -479,7 +480,7 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
             self._query()
             .add(
                 """
-                insert into {schema}.history
+                insert into {schema}.session_records
                     (session_id, seq, type, recorded_at, record)
                 values
                     (%(session_id)s, %(seq)s, %(type)s, %(recorded_at)s, %(record)s)
@@ -509,7 +510,7 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
                         as recorded_at,
                     h.record
                 from
-                    {schema}.history as h
+                    {schema}.session_records as h
                     join {schema}.session as s on s.id = h.session_id
                 where
                     h.session_id = %(session_id)s
@@ -567,7 +568,7 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
                         select
                             h.recorded_at
                         from
-                            {schema}.history as h
+                            {schema}.session_records as h
                         where
                             h.session_id = s.id
                         order by
@@ -686,7 +687,7 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
                             recorded_at,
                             record
                         from
-                            {schema}.history
+                            {schema}.session_records
                         where
                             session_id = %(source)s
                     """,
@@ -707,7 +708,7 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
                         having
                             count(*) > 0
                     )
-                    insert into {schema}.history
+                    insert into {schema}.session_records
                         (session_id, seq, type, recorded_at, record)
                     select
                         %(target)s,
@@ -819,7 +820,7 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
                 select
                     seq as cut_seq
                 from
-                    {schema}.history
+                    {schema}.session_records
                 where
                     session_id = %(session_id)s
                     and record ->> %(key)s = %(uuid)s
@@ -864,7 +865,7 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
         await self._check_layouts(
             {
                 HistoryTable.SESSION.value: session_columns,
-                HistoryTable.HISTORY.value: history_columns,
+                HistoryTable.SESSION_RECORDS.value: history_columns,
             }
         )
         self._ready = True
@@ -885,7 +886,7 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
                 select
                     coalesce(max(seq), 0) as last_seq
                 from
-                    {schema}.history
+                    {schema}.session_records
                 where
                     session_id = %(session_id)s
                 """,
@@ -937,7 +938,7 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
     def _rows_of(
         self, session: SessionId, records: Iterable[Record]
     ) -> Iterator[Mapping[str, Any]]:
-        """Параметры вставки в history: по строке на запись."""
+        """Параметры вставки в session_records: по строке на запись."""
         for record in records:
             row = self._frames.split(session, record)
             yield {

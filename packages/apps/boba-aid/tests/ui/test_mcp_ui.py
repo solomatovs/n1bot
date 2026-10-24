@@ -156,7 +156,7 @@ def boba_mcp_stand(stand_workdir: Path) -> Iterator[BobaMcpStand]:
 
 @pytest.fixture(scope="module")
 def apps_host(stand_workdir: Path) -> Iterator[AppsHost]:
-    host = AppsHost(stand_workdir / "apps-host")
+    host = AppsHost(stand_workdir / "apps-host", ())
     try:
         host.await_listening()
         yield host

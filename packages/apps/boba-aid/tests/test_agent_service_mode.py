@@ -3,13 +3,15 @@
 службу от имени своего пользователя, профиль агента выбирается настройкой
 сессии `model` по имени профиля чата, ход идёт сессией службы и каждая
 запись истории приходит `session_info_update` с `updatedAt`, закрытие
-вкладки закрывает её. Удаление треда стирает сессию через службу от имени
-владельца треда (логин и роли — из его строки users) и не зависит от
+вкладки закрывает её; две вкладки одного пользователя — два подключения,
+ходы которых идут поочерёдно. Удаление треда стирает сессию через службу от
+имени владельца треда (логин и роли — из его строки users) и не зависит от
 профилей чата в конфиге; профиль, которого служба не предлагает, — отказ с
 понятной причиной."""
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from datetime import datetime
 from importlib.resources import files
@@ -175,6 +177,7 @@ class ServiceModeStand:
         self.launcher = self.launcher_of(
             ChatProfiles({SignInStand.PROFILE: self.profile()})
         )
+        self.menus = self._relays.menus(self._servers)
 
     def launcher_of(self, profiles: ChatProfiles) -> AgentLauncher:
         """Запуск агента при профилях чата profiles в конфиге."""
@@ -224,14 +227,16 @@ class ServiceModeStand:
             {**base, "provider": provider, "model": MODEL}
         )
 
-    async def opened(
-        self, updates: RecordingUpdates
-    ) -> tuple[ThreadIdentity, str]:
+    async def opened(self, updates: RecordingUpdates) -> tuple[ThreadIdentity, str]:
         """Тред с одним ходом через службу: вкладка и id сессии агента;
         обновления хода копятся в updates."""
         identity = await self.identity(SignInStand.PROFILE)
         agent = ThreadAgent(
-            identity, self.launcher, AgentSessionMeta(self._threads), updates
+            identity,
+            self.launcher,
+            AgentSessionMeta(self._threads),
+            updates,
+            self.menus,
         )
         try:
             await agent.start()
@@ -316,12 +321,47 @@ class TestServiceMode:
         await service.sessions_drop_to(0)
         assert await mode.history.rows(session_id) == 0
 
+    async def test_two_tabs_of_one_user_take_turns(
+        self, mode: ServiceModeStand, threads: ThreadsTable
+    ) -> None:
+        """Две вкладки alice — два подключения к службе: серверы чата каждой
+        отвечают своей сессии, ходы вкладок поочерёдно доходят до idle."""
+        updates = (RecordingUpdates(), RecordingUpdates())
+        tabs: list[ThreadAgent] = []
+        for recorded in updates:
+            identity = await mode.identity(SignInStand.PROFILE)
+            meta = AgentSessionMeta(threads)
+            tabs.append(
+                ThreadAgent(identity, mode.launcher, meta, recorded, mode.menus)
+            )
+
+        try:
+            await tabs[0].start()
+            await tabs[0].ask(Question(key="a1", text=ScenarioName.ANSWER.value))
+            await tabs[1].start()
+            for key in ("a2", "a3"):
+                for tab in tabs:
+                    question = Question(
+                        key=f"{key}-{tab.thread_id}", text=ScenarioName.ANSWER.value
+                    )
+                    await asyncio.wait_for(tab.ask(question), 60.0)
+        finally:
+            for tab in tabs:
+                await tab.close()
+
+        assert len(updates[0].finished) == 3, updates[0].updates
+        assert len(updates[1].finished) == 2, updates[1].updates
+
     async def test_profile_the_service_does_not_offer_is_refused(
         self, mode: ServiceModeStand, threads: ThreadsTable
     ) -> None:
         identity = await mode.identity(FOREIGN_PROFILE)
         agent = ThreadAgent(
-            identity, mode.launcher, AgentSessionMeta(threads), RecordingUpdates()
+            identity,
+            mode.launcher,
+            AgentSessionMeta(threads),
+            RecordingUpdates(),
+            mode.menus,
         )
         try:
             await agent.start()

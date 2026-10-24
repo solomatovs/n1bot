@@ -9,6 +9,7 @@
   - button "D"
   - img "logo"
   - textbox "Введите сообщение здесь..."
-  - img
+  - button:
+    - img
   - button [disabled]:
     - img
