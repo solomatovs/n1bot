@@ -699,6 +699,12 @@ class TestContainerLabel:
         await live.finish_turn()
 
         assert _labels(recorded)[-1] == stopped
+        note = TEXTS.text(StepText.STOPPED.value)
+        outputs: list[str] = []
+        for step in recorded.last().values():
+            outputs.append(str(step.get(StepField.OUTPUT)))
+
+        assert not [o for o in outputs if note in o], outputs
 
         replay = _view(runtime_stand, storage, RemoteJournals())
         await replay.apply(_question())
