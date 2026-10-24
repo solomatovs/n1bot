@@ -1,6 +1,6 @@
 """Прогон acp-tck — Test Compatibility Kit протокола ACP
 (https://github.com/agentclientprotocol/acp-tck) с `--protocol-version 2` —
-против процесса `boba acp` (pytest -m integration). TCK сам запускает агента
+против процесса `boba --stdio` (pytest -m integration). TCK сам запускает агента
 отдельным процессом на каждый тест и проверяет рукопожатие, жизненный цикл
 сессии, ход и отмену, гигиену транспорта и JSON-RPC; итог — JSON-отчёт с
 вердиктом. Набор идёт частями по модулям TCK одновременно, вердикт считается
@@ -306,7 +306,7 @@ class TckStand:
             sys.executable,
             "-m",
             self.AGENT_MODULE,
-            "acp",
+            "--stdio",
             "--settings",
             str(self._process.settings_path()),
             "--setting-sources",

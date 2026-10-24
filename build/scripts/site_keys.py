@@ -33,7 +33,12 @@ OVERRIDABLE = [
     "mcp_scheme",
     "mcp_prefix",
     "public_url",
+    "agent_mode",
     "agent_command",
+    "agent_host",
+    "agent_port",
+    "agent_scheme",
+    "agent_prefix",
 ]
 OVERRIDE_NAMES = {"messaging_provider": "MESSAGING"}
 # ключи [env], которые код читает напрямую, без ссылки из конфига: пути песочницы

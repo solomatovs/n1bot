@@ -154,6 +154,7 @@ class HistoryWriter:
 
             await self._store.append(self._lease, pending)
             self._flushed = pending[-1].seq
+            self._session.durable_through(self._flushed)
 
 
 class RecordKeeper:

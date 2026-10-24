@@ -237,7 +237,7 @@ class TestRead:
         path.chmod(0o000)
         store = JsonlHistoryStore(tmp_path)
         try:
-            with pytest.raises(HistoryError, match="Could not read the journal"):
+            with pytest.raises(HistoryError, match="Could not open the journal"):
                 _ = [line async for line in store.read(SESSION)]
         finally:
             path.chmod(0o600)

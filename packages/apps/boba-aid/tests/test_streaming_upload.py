@@ -160,6 +160,8 @@ async def test_upload_lands_in_storage_and_is_served_back(
         raise AssertionError('served.headers["content-length"] == str(len(payload))')
     if served.headers["accept-ranges"] != "bytes":
         raise AssertionError('served.headers["accept-ranges"] == "bytes"')
+    if served.headers["x-content-type-options"] != "nosniff":
+        raise AssertionError(f"the body is not sniffed: {served.headers}")
 
 
 async def test_decomposed_file_name_is_stored_composed(
@@ -228,6 +230,8 @@ async def test_download_honors_range(
         raise AssertionError('partial.headers["content-range"] == f"bytes 10-19/{len(…')
     if partial.headers["content-length"] != "10":
         raise AssertionError('partial.headers["content-length"] == "10"')
+    if partial.headers["x-content-type-options"] != "nosniff":
+        raise AssertionError(f"the window is not sniffed: {partial.headers}")
 
     if tail.status_code != 206:
         raise AssertionError("tail.status_code == 206")

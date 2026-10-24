@@ -1,4 +1,4 @@
-# Сборка boba: образы boba-aid и boba-mcp, образы корней плагинов, агент boba одним файлом,
+# Сборка boba: образы boba-aid и boba-mcp, образы корней плагинов, агент boba каталогом,
 # деревья запуска. Образы собирает классический сборщик docker (DOCKER_BUILDKIT=0).
 # Сеть: в интернет ходит только fetch. Остальные цели — только в реестры через прокси:
 # apt-зеркало из sources.list образов dmp/*, pypi из conf/pip.conf и conf/uv.toml, npm из
@@ -46,10 +46,9 @@ SANDBOX_aid      :=
 MODELS_aid       :=
 PARTS_aid        := app_root/public app_root/public/page.js app_root/public/vendor \
                     app_root/ui/index.html app_root/ui/index.js app_root/mcp-apps/sandbox.html \
-                    app_root/mcp-apps/fonts/inter/files bin/boba
-# агент чата — бинарник boba-bin в bin/boba; локальную модель чат агенту не отдаёт,
-# поэтому рантайм onnxruntime-genai в него не входит
-BUILD_ARGS_aid    = $(BIN_TOOL_ARGS) --build-arg BIN_ONNX=
+                    app_root/mcp-apps/fonts/inter/files
+# агента в образе чата нет: на выкатке чат ходит в службу агента (образ agent, boba serve)
+BUILD_ARGS_aid    =
 # фронт на хосте нужен только отладке чата: образ собирает его сам
 WEB_aid          := web
 
@@ -68,18 +67,20 @@ PARTS_mcp        :=
 BUILD_ARGS_mcp    =
 WEB_mcp          :=
 
-# boba-agent-service — агент по ACP по сети: служба запускает бинарник boba-bin на
-# сессию; песочницы, моделей и фронта нет
-PACKAGES_agent    = boba-agent-service
-IMPORTS_agent    := boba.agent_service.app
-MODULE_agent     := boba.agent_service
+# агент как служба — `boba serve` пакета boba-cli: агент сам слушает ACP по сети,
+# сессии — потоки одного процесса; образ запускает бинарник boba-bin, установка без
+# Docker — модуль интерпретатором; песочницы, моделей и фронта нет
+PACKAGES_agent    = boba-cli
+IMPORTS_agent    := boba.cli.serve
+MODULE_agent     := boba.cli.app serve
+CONF_agent       := boba-cli
 STAGE_agent      := runtime-agent
 HEALTH_agent     := /health
 PORT_agent       := 8660
 PREFIX_agent     :=
 SANDBOX_agent    :=
 MODELS_agent     :=
-PARTS_agent      := bin/boba
+PARTS_agent      := bin/boba.dist/boba.bin
 BUILD_ARGS_agent  = $(BIN_TOOL_ARGS) --build-arg BIN_ONNX=
 WEB_agent        :=
 
@@ -98,8 +99,9 @@ APP_PREFIX        = $(PREFIX_$(APP))
 APP_SANDBOX       = $(SANDBOX_$(APP))
 APP_MODELS        = $(MODELS_$(APP))
 APP_BUILD_ARGS    = $(BUILD_ARGS_$(APP))
-# общий конфиг приложения и его плагины: в пакете приложения, в git
-APP_CONF          = $(SRC_DIR)/packages/apps/boba-$(APP)/conf
+# общий конфиг приложения и его плагины: в пакете приложения, в git; CONF_<app> —
+# пакет, если он назван не по приложению
+APP_CONF          = $(SRC_DIR)/packages/apps/$(or $(CONF_$(APP)),boba-$(APP))/conf
 
 ifneq ($(APP),)
 ifeq ($(filter $(APP),$(APPS)),)
@@ -172,13 +174,14 @@ PRUNE_KEEP      ?= 20GB
 empty           :=
 space           := $(empty) $(empty)
 
-# --- агент boba одним файлом -------------------------------------------------------
+# --- агент boba каталогом standalone -----------------------------------------------
 
-# 1 — агент boba-bin с рантаймом onnxruntime-genai (отдельная компиляция Nuitka, файл
-# bin/boba-onnx), а fetch качает модели onnx-genai. Пусто — без него, как в образе aid:
+# 1 — агент boba-bin с рантаймом onnxruntime-genai (отдельная компиляция Nuitka, каталог
+# bin/boba-onnx.dist), а fetch качает модели onnx-genai. Пусто — без него, как в образе aid:
 # профиль модели onnx агент отвергает на старте
 BIN_ONNX           ?=
-BIN_FILE            = $(RELEASE_DIR)/$(VERSION)/bin/boba$(if $(BIN_ONNX),-onnx)
+BIN_DIST            = $(RELEASE_DIR)/$(VERSION)/bin/boba$(if $(BIN_ONNX),-onnx).dist
+BIN_FILE            = $(BIN_DIST)/boba.bin
 NUITKA_VERSION     ?= 4.3
 PATCHELF_VERSION   ?= 0.19.1.0
 ZSTANDARD_VERSION  ?= 0.25.0
@@ -617,12 +620,12 @@ define HELP
                         его --testapps-image <образ>; TESTAPPS_PIP_INDEX=<url> — индекс pypi контура
 
 Образы — APP=$(subst $(space),|,$(APPS)) либо <цель>-<приложение>, без APP — оба:
-  build                 boba-<приложение>:$(BOBA_TAG) и :latest; в aid — агент bin/boba (Nuitka),
+  build                 boba-<приложение>:$(BOBA_TAG) и :latest; в agent — агент bin/boba.dist (Nuitka),
                         в mcp — образы корней плагинов и workspace из runtime/sandbox
   test                  build, затем проверка в образе без сети: пакеты, точки входа, у mcp —
-                        образы плагинов и модели, у aid — ход агента; итог — RESULT: ALL OK
-  boba-bin              агент отдельным файлом -> release/$(VERSION)/bin/boba; BIN_ONNX=1 —
-                        bin/boba-onnx с рантаймом onnxruntime-genai (вторая компиляция Nuitka)
+                        образы плагинов и модели, у agent — ход агента; итог — RESULT: ALL OK
+  boba-bin              агент каталогом -> release/$(VERSION)/bin/boba.dist; BIN_ONNX=1 —
+                        bin/boba-onnx.dist с рантаймом onnxruntime-genai (вторая компиляция Nuitka)
 
 Деревья запуска (тоже по APP):
   dev                   compose/<приложение>: boba.env, data, .env, юнит песочницы (mcp), владельцы
@@ -951,24 +954,24 @@ offline-check: version-check
 	fi
 	exit $$verdict
 
-# --- агент boba одним файлом -----------------------------------------------------
+# --- агент boba каталогом standalone ---------------------------------------------
 
-# стадия boba-bin компилирует boba-cli Nuitka внутри образа base; образ aid берёт ту же
+# стадия boba-bin компилирует boba-cli Nuitka внутри образа base; образ agent берёт ту же
 # стадию с BIN_ONNX= — при пустом BIN_ONNX здесь компиляция одна на обе цели
 .PHONY: boba-bin
 boba-bin: version-check
 	@$(call check,$(SANDBOX_INPUTS),запусти: make fetch)
-	echo "== агент boba одним файлом: Nuitka $(NUITKA_VERSION), JOBS=$(JOBS), BIN_ONNX=$(BIN_ONNX) =="
+	echo "== агент boba каталогом: Nuitka $(NUITKA_VERSION), JOBS=$(JOBS), BIN_ONNX=$(BIN_ONNX) =="
 	tmp=
 	trap 'rm -rf "$$tmp"' EXIT
 	tmp=$$(mktemp -d)
 	$(call docker-image,boba-bin-out,$$tmp/boba.iid,$(BIN_ARGS))
-	mkdir -p "$(dir $(BIN_FILE))"
-	$(call image-copy,$$(cat "$$tmp/boba.iid"),/boba,$(BIN_FILE))
-	chmod 0755 "$(BIN_FILE)"
+	mkdir -p "$(dir $(BIN_DIST))"
+	rm -rf "$(BIN_DIST)"
+	$(call image-copy,$$(cat "$$tmp/boba.iid"),/boba.dist,$(BIN_DIST))
 	"$(BIN_FILE)" --help > /dev/null
 	"$(BIN_FILE)" self-check
-	echo ">>> агент: $(BIN_FILE) ($$(du -h "$(BIN_FILE)" | cut -f1))"
+	echo ">>> агент: $(BIN_FILE) ($$(du -sh "$(BIN_DIST)" | cut -f1))"
 
 # --- по приложению: образ, проверка, деревья ---------------------------------------
 

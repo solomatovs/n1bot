@@ -317,12 +317,12 @@ runtime/
 | `base` | образ сборки `boba-base` с компилятором и uv; его зовёт `fetch` | демон Docker | минуты в первый раз, секунды повторно |
 | `sandbox` | собирает `bwrap` и `fuse2fs`, делает шаблон `workspace.ext4` | `runtime/third`, `runtime/sandbox` | несколько минут, 1 ГБ |
 | `plugin-rootfs-all` | образ корня файловой системы на каждый плагин инструментов, всегда заново | `runtime/sandbox/plugins/<пакет>/rootfs.ext4` | 20–40 минут, 7–8 ГБ |
-| `build APP=<приложение>` | образ `boba-<приложение>:<версия>`; фронт чата образ собирает сам, стадия `boba-bin` кладёт в образ aid агента одним файлом `bin/boba` (Nuitka); в образ mcp уезжают образы корней плагинов и workspace | демон Docker | aid — минуты, первая компиляция агента — 15–40 минут; mcp — 5–10 минут |
+| `build APP=<приложение>` | образ `boba-<приложение>:<версия>`; фронт чата образ собирает сам, стадия `boba-bin` кладёт в образ aid агента каталогом `bin/boba.dist` (Nuitka standalone, исполняемый `bin/boba.dist/boba.bin`); в образ mcp уезжают образы корней плагинов и workspace | демон Docker | aid — минуты, первая компиляция агента — 15–40 минут; mcp — 5–10 минут |
 | `test APP=<приложение>` | `build`, затем проверка образа без сети: пакеты, точки входа, у mcp — образы плагинов и модели, у aid — файлы, которые .chainlit/config.toml называет в custom_css и default_avatar_file_url, и ход агента с моделью проверки | — | секунды после сборки; печатает `RESULT: ALL OK` |
 | `dev APP=<приложение>` | готовит дерево `compose/<приложение>` | `compose/<приложение>` | секунды |
 | `debug APP=<приложение>` | готовит дерево `debug/<приложение>` и цели VS Code; для aid собирает фронт на хосте (`web`) | `debug/<приложение>`, `.vscode`, `assets` пакета чата | секунды, фронт — минуты в первый раз |
 | `release APP=<приложение>` | дерево установки без Docker из готового образа | `release/<версия>/<экземпляр>` | до минуты; mcp 11 ГБ |
-| `boba-bin` | агент отдельным файлом (его берут тесты `test_cli_binary.py`); `BIN_ONNX=1` — файл `boba-onnx` с рантаймом onnxruntime-genai, тогда `fetch` качает и модели onnx-genai (3,9 ГБ) | `release/<версия>/bin` | без `BIN_ONNX` — из кэша сборки aid; с ним — вторая компиляция |
+| `boba-bin` | агент каталогом `bin/boba.dist` (его берут тесты `test_cli_binary.py`); `BIN_ONNX=1` — каталог `boba-onnx.dist` с рантаймом onnxruntime-genai, тогда `fetch` качает и модели onnx-genai (3,9 ГБ) | `release/<версия>/bin` | без `BIN_ONNX` — из кэша сборки aid; с ним — вторая компиляция |
 
 Цели `build`, `test`, `dev`, `debug`, `release`, `install` и `site-keys` без
 `APP` идут по обоим приложениям; `make all` выполняет `fetch sandbox
@@ -466,7 +466,9 @@ python -m boba.mcp_server --config <общий конфиг> --site <специ�
    секции `[env]`: `BOBA_BASE`, `BOBA_DATA`, `BOBA_PORT`, `BOBA_HOST`,
    `BOBA_URL_PREFIX`, `BOBA_INSTANCE_ID`, `BOBA_APP_ROOT`, `BOBA_CGROUP_BASE`,
    `BOBA_TOOL_LAUNCHER`, `BOBA_MESSAGING`, `BOBA_PUBLIC_URL`, `BOBA_MCP_SCHEME`,
-   `BOBA_MCP_HOST`, `BOBA_MCP_PORT`, `BOBA_MCP_PREFIX`, `BOBA_AGENT_COMMAND`.
+   `BOBA_MCP_HOST`, `BOBA_MCP_PORT`, `BOBA_MCP_PREFIX`, `BOBA_AGENT_MODE`,
+   `BOBA_AGENT_COMMAND`, `BOBA_AGENT_SCHEME`, `BOBA_AGENT_HOST`,
+   `BOBA_AGENT_PORT`, `BOBA_AGENT_PREFIX`.
    Кроме них загрузчик читает только четыре переменные интерпретатора для
    `[interpreter]`.
 
@@ -692,21 +694,44 @@ Chainlit держит вложения сессий в каталоге `.files`
 
 ### Чат, агент и серверы инструментов
 
-На каждую открытую вкладку треда чат запускает процесс агента — команду из
-`[agent.process]` общего конфига: программа `command = "${env.agent_command}"`
-строкой оболочки, за ней `args = ["acp", "--setting-sources", ""]` и
-`--settings <файл>`, который добавляет чат. В образе и релизе агент — один
-файл `bin/boba`, собранный Nuitka из boba-cli (стадия `boba-bin`); путь к нему
-даёт `BOBA_AGENT_COMMAND=${BOBA_BASE}/bin/boba` в `conf/boba.env`, поэтому в
-site.toml ключа нет. Бинарнику не нужны ни `PYTHONPATH`, ни
-`LD_LIBRARY_PATH`: SDK ACP оставляет процессу агента только `HOME`, `LOGNAME`,
-`PATH`, `SHELL`, `TERM` и `USER`. Установка, обновлённая поверх прежней,
-сохраняет свой `conf/boba.env` — в него строку `BOBA_AGENT_COMMAND` нужно
-дописать руками. В отладке `agent_command` задаёт site.toml:
-`"${env.base}/../../.venv/bin/python -m boba.cli.app"`.
+Беседу с моделью ведёт агент boba; чат говорит с ним по протоколу ACP
+версии 2. Каким путём, выбирает ключ `[env] agent_mode` (переменная
+`BOBA_AGENT_MODE`): общий конфиг берёт `[agent] process =
+"${agent_launch.${env.agent_mode}}"`.
 
-С агентом чат говорит по протоколу ACP версии 2 через stdin и stdout
-процесса, сети между ними нет. Процесс получает свой каталог с режимом `0700`
+- `agent_mode = "service"` — выкатка (compose, systemd): чат ходит в службу
+  агента `boba serve` (раздел «Служба агента» ниже) по адресу из
+  `[env] agent_scheme`, `agent_host`, `agent_port`, `agent_prefix`, входом
+  proxy с ключами `site.agent_proxy_secret` и `site.agent_client.secret`.
+  Своего агента в образе чата нет.
+- `agent_mode = "process"` — отладка и стенды: на каждую открытую вкладку
+  треда чат запускает свой процесс агента командой `[env] agent_command`
+  с аргументами `["--stdio", "--setting-sources", ""]` и `--settings
+  <файл>`. В отладке `agent_command` —
+  `"${env.base}/../../.venv/bin/python -m boba.cli.app"`.
+
+Ключи другого режима не нужны: конфиг разрешает только выбранную секцию
+`[agent_launch.*]`. Агент службы — каталог `bin/boba.dist` образа agent,
+собранный Nuitka из boba-cli в режиме standalone (стадия `boba-bin`):
+исполняемый `bin/boba.dist/boba.bin` рядом со своими библиотеками (имя
+`boba` занято каталогом данных пакетов `boba/` в том же каталоге), без
+распаковки на запуске и без записи на диск, поэтому годится и для корня
+только на чтение. Бинарнику не нужны ни `PYTHONPATH`, ни `LD_LIBRARY_PATH`.
+Установка, обновлённая поверх прежней, сохраняет свой `conf/boba.env` —
+строку `BOBA_AGENT_COMMAND` из него нужно убрать: агента в образе чата
+больше нет.
+
+Режимы агента в командной строке: `boba --stdio` — ACP по stdin и stdout для
+запускающей программы (так его запускает чат), `boba serve` — служба по
+сети (ниже), служебные `boba self-check` и `boba settings-schema`. `boba` без
+режима — интерактивный режим для человека; его пока нет, агент говорит
+`the interactive mode is not available yet`, подсказывает режимы и выходит
+с кодом 2. Прежней подкоманды `boba acp` нет: конфиг, в `[agent.process].args`
+которого осталось `"acp"`, получает отказ `invalid choice: 'acp'` при старте
+агента, и строку нужно заменить на `"--stdio"`.
+
+В режиме `process` чат говорит с агентом через stdin и stdout процесса, сети
+между ними нет. Процесс получает свой каталог с режимом `0700`
 под `private_dir` (`${env.data}/agents`), а в нём файл настроек с режимом
 `0600`; каталог удаляется вместе с процессом и при любом несостоявшемся
 запуске. Ответа на рукопожатие чат ждёт `start_timeout_sec`, ответа на метод
@@ -843,13 +868,15 @@ boba-mcp принимает клиентов обеих редакций на о
 
 ### Служба агента
 
-Агент запускается не только дочерним процессом чата, но и отдельной службой
-`boba-agent-service` (образ `boba-agent`, дерево `compose/agent`). Служба
-принимает клиентов ACP версии 2 по сети — streamable HTTP и WebSocket на одном
-адресе `[agent].path` (по умолчанию `/acp`) — и на каждую сессию запускает
-свой процесс агента, тот же бинарник `bin/boba`, что у чата, по stdio. Чат
-ходит в службу входом proxy, люди и другие клиенты — входом local, ldap или
-kerberos, как в boba-mcp.
+Агент запускается не только дочерним процессом чата (`boba --stdio` по stdio,
+процесс на тред), но и службой: тот же агент `bin/boba.dist/boba.bin` командой
+`boba serve --config <config.toml> --site <site.toml>` сам слушает сеть (образ
+`boba-agent`, дерево `compose/agent`, общий конфиг —
+`packages/apps/boba-cli/conf/config.toml`). Служба принимает клиентов ACP
+версии 2 по streamable HTTP и WebSocket на одном адресе `[agent].path` (по
+умолчанию `/acp`); сессии всех подключений идут в одном процессе, у каждой
+сессии — свой поток. Чат ходит в службу входом proxy, люди и другие клиенты —
+входом local, ldap или kerberos, как в boba-mcp.
 
 Договор службы:
 
@@ -858,92 +885,79 @@ kerberos, как в boba-mcp.
   `/authorize`, `/token`, `/register`, страница входа `/login`. Ресурс токена —
   адрес ACP (`public_url` + `path`), его метаданные — по RFC 9728 на
   `/.well-known/oauth-protected-resource<путь ресурса>`. Токен проверяется на
-  каждом HTTP-запросе и на рукопожатии WebSocket, ещё до того, как
-  запускается агент: без токена HTTP отвечает 401 со ссылкой на метаданные,
-  WebSocket закрывается кодом 1008; токен, в котором нет ни одного профиля
-  агента (роли пользователя не дают ни одного `[agent.profiles.*]`), — 403.
-  Запрос с идентификатором чужого подключения (`Acp-Connection-Id`) получает
-  404. В ответе `initialize` служба объявляет способ входа
-  `{"type": "agent", "methodId": "boba-oauth"}` с адресом метаданных в
-  описании; `auth/login` с ним проходит сразу (вход уже проверен транспортом),
-  `auth/logout` закрывает подключение.
-- **Процессы.** Подключение держит свободный процесс для `initialize`,
-  `session/list`, `session/delete` и методов без сессии; `session/new`,
-  `session/resume` и `session/fork` забирают его или запускают новый, и дальше
-  этот процесс обслуживает только свою сессию. `session/close` гасит процесс
-  сессии; закрытие подключения гасит все его процессы; подключение без
-  сообщений, без запросов в работе и без идущего хода дольше
-  `[agent.process].idle_sec` служба закрывает сама. Процесс открытой сессии,
-  вышедший сам, закрывает подключение целиком: клиент переподключается и
-  продолжает сессию `session/resume`. Всего процессов у службы не больше
-  `max_processes`; сверх предела открытие сессии получает ошибку
-  `... the service already runs its limit of N agent processes ...`.
-  Сообщения перекладываются как есть, со своими id запросов в обе стороны:
-  отмена `$/cancel_request` и `session/cancel` доходят до процесса сессии,
-  уведомления `mcp/message` клиента — процессу, чей запрос `mcp/message`
-  идёт.
+  каждом HTTP-запросе и на рукопожатии WebSocket: без токена HTTP отвечает 401
+  со ссылкой на метаданные, WebSocket закрывается кодом 1008; токен, в котором
+  нет ни одного профиля агента (роли пользователя не дают ни одного
+  `[agent.profiles.*]`), — 403. Запрос с идентификатором чужого подключения
+  (`Acp-Connection-Id`) получает 404. В ответе `initialize` служба объявляет
+  способ входа `{"type": "agent", "methodId": "boba-oauth"}` с адресом
+  метаданных в описании; `auth/login` с ним проходит сразу (вход уже проверен
+  транспортом), `auth/logout` закрывает сессии подключения.
+- **Сессии.** Каждое подключение получает свой вход ACP с политикой
+  вошедшего; `session/new`, `session/resume` и `session/fork` открывают сессию
+  в своём потоке, `session/close` и закрытие подключения закрывают его сессии.
+  Сессий у процесса не больше `[agent.settings.sessions].maxOpen`; сверх
+  предела открытие сессии получает ошибку `... its limit is N ...`. Ход одной
+  сессии не ждёт ходов других, отмена `session/cancel` и очередь вопросов —
+  у каждой сессии свои. Подключение HTTP, которое клиент бросил, не закрыв
+  (`DELETE`), — без запросов, без открытого потока `GET` и без идущих ходов
+  дольше `[agent].idle_sec` (в конфиге 1800 с), — служба закрывает вместе с
+  его сессиями и пишет в журнал `connection ... is idle for ...s: closing it`.
+  Подключение WebSocket закрывается с концом сокета.
 - **Профили.** Профиль агента `[agent.profiles.<имя>]` — роли, которым он
-  выдан, и профиль модели агента (`model`: провайдер с адресом и ключом,
-  модель, окно, потолок ответа — ключи `models.<имя>` файла настроек, схема
-  `boba settings-schema`). Процессу служба пишет файл настроек в приватный
-  каталог `0700` под `[agent.process].workdir`: базовый слой
-  `[agent.settings]` (история, системный промпт, права, лимиты, окружение),
-  профили, выданные ролям вошедшего, первый из них по порядку конфига — по
-  умолчанию, и владельца истории `history.owner` — логин вошедшего. Клиент
-  выбирает профиль стандартной настройкой сессии ACP категории `model`
-  (`configOptions`, `session/set_config_option`). Ключи провайдера клиенту не
-  показываются и от клиента не приходят.
-- **Сессии принадлежат пользователю.** История службы — только Postgres
-  (`[agent.settings.history] kind = "postgres"`). Таблица `session` хранит
-  владельца (колонка `owner`, хранилище добавляет её к прежней раскладке само
-  при первом обращении): процесс службы видит, продолжает, ветвит и удаляет
-  только сессии своего пользователя. Сессии без владельца — заведённые
-  процессами чата по stdio или до появления колонки — службе не видны;
-  передать такую сессию пользователю можно, записав его логин в
-  `session.owner`.
+  выдан, и профиль модели агента `model` (ключи `models.<имя>` файла настроек
+  агента, схема `boba settings-schema`): провайдер — общий объект `[llm.main]`
+  ссылкой `provider = "${llm.main}"`, окно и потолок ответа — из
+  `[model_limits.main]`, модель и параметры выборки — свои; `systemPrompt`
+  профиля, если задан, заменяет промпт службы для сессий этого профиля.
+  Вошедшему доступны профили, выданные его ролям, первый из них по порядку
+  конфига — по умолчанию. Клиент выбирает профиль стандартной настройкой
+  сессии ACP категории `model` (`configOptions`, `session/set_config_option`).
+  Ключи провайдера клиенту не показываются и от клиента не приходят.
+- **История и сессии пользователя.** История — Postgres своим подключением
+  `[postgres_history]` (своя роль `site.history_auth.<history_auth_method>`)
+  ссылкой `[agent.history] postgres = "${postgres_history}"`, схема `boba`.
+  Пул соединений истории общий для всех сессий процесса —
+  `[postgres_history.pool]` (`min_size`, `max_size`, `timeout`); сверх пула
+  процесс держит одно соединение замков сессий. Таблица `session` хранит
+  владельца (колонка `owner`): подключение видит, продолжает, ветвит и
+  удаляет только сессии своего пользователя. Сессии без владельца —
+  заведённые процессами чата по stdio — службе не видны; передать такую
+  сессию пользователю можно, записав его логин в `session.owner`.
+- **Память.** История читается потоком: возобновление воспроизводит записи
+  по одной прямо из базы, в памяти сессии остаётся только то, что нужно
+  модели (разговор от последней границы сжатия).
 
-Ключи site.toml службы перечисляет `make site-keys APP=agent`: кроме общих
-(`auth_secret`, `proxy_secret`, `krb_config`, ldap, local, Postgres чата
-`pg_*`, `aid_database`, `pg_auth.password`) это `agent_client.secret` —
+Ключи site.toml службы перечисляет `make site-keys APP=agent`: `auth_secret`,
+`agent_proxy_secret` (ключ утверждений proxy чата), `krb_config`, ldap, local,
+адрес Postgres `pg_*`, `aid_database`, вход роли истории
+`history_auth_method` и `history_auth.<способ>`, `agent_client.secret` —
 секрет доверенного клиента `boba-chat` (`[agent.clients]`), `llm_base_url`,
 `llm_token`, `llm_ssl_verify` и `models.general`, `models.search` профилей.
-История лежит в базе чата в той же схеме `boba`, что у процессов чата, поэтому
-сессии чата видны службе после того, как им назначен владелец. Строка
-подключения истории собирается из роли с паролем `[site.pg_auth.password]`.
 Секция `[env]`: `port = 8660`, `listen_host`, `public_url` (адрес службы за
-nginx с префиксом, например `https://boba.example.com/boba-agent`), `data`;
-`agent_command` даёт `conf/boba.env`.
+nginx с префиксом, например `https://boba.example.com/boba-agent`), `data`.
 
-Чат в режиме службы. Секция `[agent.process]` общего конфига чата вместо
-команды называет адрес ACP службы и вход proxy:
+Чат в режиме службы. В site.toml чата:
 
 ```toml
-[keys]
-    agent_proxy = "${site.agent_proxy_secret}"
+[env]
+    agent_mode   = "service"
+    agent_scheme = "http"
+    agent_host   = "boba-agent"
+    agent_port   = 8660
+    agent_prefix = ""
 
-[service.boba_agent]
-    scheme = "https"
-    host   = "boba.example.com"
-    path   = "/boba-agent"
-
-[agent.process]
-    start_timeout_sec   = 60
-    request_timeout_sec = 120
-    [agent.process.endpoint]
-        service = "${service.boba_agent}"
-        path    = "/acp"
-    [agent.process.auth]
-        auth          = "proxy"
-        client_id     = "boba-chat"
-        client_secret = "${site.agent_client.secret}"
-        secret        = "${keys.agent_proxy}"
-        issuer        = "${service.boba_agent}"
+[site]
+    agent_proxy_secret = "..."   # тот же, что site.agent_proxy_secret службы
+    [site.agent_client]
+        secret = "..."           # тот же, что site.agent_client.secret службы
 ```
 
-`[service.boba_agent]` — адрес службы, её `public_url`: он же `issuer`, а
-путь ACP идёт под ним; `client_secret` — тот же секрет, что у
-службы в `[agent.clients.boba-chat]`, `secret` — ключ утверждений
-`[auth.proxy]` службы. Вкладка входит в службу от имени своего пользователя
+Общий конфиг собирает из них `[service.boba_agent]` и вход `[agent_auth.boba]`
+(клиент `boba-chat`, издатель — сама служба), путь ACP — `/acp` под
+`[service.boba_agent]`. Адрес — тот, по которому чат видит службу (в compose — имя контейнера
+`boba-agent`), и он же издатель токена, поэтому `public_url` службы должен
+с ним совпадать. Вкладка входит в службу от имени своего пользователя
 (логин и роли), открывает в ней сессию треда и выбирает профиль агента с
 именем профиля чата: профиль чата `general` ждёт у службы
 `[agent.profiles.general]`, выданный ролям пользователя, иначе ход
@@ -952,9 +966,8 @@ chat profile 'general' is not among them ...`. Модель, промпт и и�
 этом режиме задаёт служба; `[agent.history]` и пределы модели профилей чата
 по-прежнему нужны слою чата, который хранит пользователя треда: по нему
 удаление треда удаляет сессию агента через службу от имени владельца.
-Подключение, которое служба закрыла (простой, выход процесса), чат
-восстанавливает перед следующим вопросом: новое подключение и
-`session/resume`.
+Подключение, которое закрылось (перезапуск службы), чат восстанавливает перед
+следующим вопросом: новое подключение и `session/resume`.
 
 Развёртывание:
 
@@ -966,7 +979,9 @@ cd compose/agent && docker compose up -d agent
 ```
 
 `make all` собирает и проверяет службу вместе с остальными приложениями.
-Контейнеру `boba-agent` нужны связи с nginx (вход и модель), с Postgres чата
+Образ службы запускает `bin/boba.dist/boba.bin serve` от непривилегированного
+пользователя (`cap_drop: ALL`, `no-new-privileges`); писать ему нужно только в
+`data`. Контейнеру `boba-agent` нужны связи с nginx (вход и модель), с Postgres
 (`postgres-17:5432`), а чату и nginx — с ним (`boba-agent:8660`); в карте
 связей контейнеров это четыре строки (`nginx -> boba-agent:8660`,
 `boba-agent -> nginx:443 postgres-17:5432`, `aid -> boba-agent:8660`,
@@ -2093,8 +2108,9 @@ initialize`.** Вкладка не открывает беседу: `[agent.proc
 
 **`agent process '...' did not start from ...: [Errno 2] No such file or
 directory; check [env].agent_command`.** Программы агента нет по пути из
-`agent_command`: в `conf/boba.env` нет строки `BOBA_AGENT_COMMAND` (установка
-обновлена поверх прежней) либо образ собран без стадии `boba-bin`.
+`agent_command` в режиме `agent_mode = "process"`. На выкатке агента в образе
+чата нет: в site.toml чата должен стоять `agent_mode = "service"` с адресом
+службы агента (раздел 5, «Служба агента»).
 
 **`<метод>: expected the agent to answer within ...s
 ([agent.process].request_timeout_sec), got no answer`.** Агент жив, но не

@@ -12,6 +12,7 @@ import {
   sessionState,
   tasklistState
 } from './state';
+import { historyLoadingState } from './useChatSession';
 
 export interface IToken {
   id: number | string;
@@ -22,6 +23,8 @@ export interface IToken {
 
 const useChatData = () => {
   const loading = useRecoilValue(loadingState);
+  // boba: пока воспроизводится история треда, отправить вопрос нельзя
+  const historyLoading = useRecoilValue(historyLoadingState);
   const elements = useRecoilValue(elementState);
   const tasklists = useRecoilValue(tasklistState);
   const actions = useRecoilValue(actionState);
@@ -38,6 +41,7 @@ const useChatData = () => {
   // boba: идущий ход поле ввода не запирает — сообщение уходит в очередь агента
   const disabled =
     !connected ||
+    historyLoading ||
     askUser?.spec.type === 'file' ||
     askUser?.spec.type === 'action' ||
     askUser?.spec.type === 'element';

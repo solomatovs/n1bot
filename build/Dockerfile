@@ -346,7 +346,7 @@ RUN for path in $(cat /tmp/plugin-data.txt); do mkdir -p "$path"; done \
 RUN mkdir -p "${BOBA_DIR}/conf/krb" ${SANDBOX_DEV_KRB}
 
 
-# --- boba: агент одним файлом (make boba-bin и образ aid) ---------------------------
+# --- boba: агент каталогом standalone (make boba-bin, образы aid и agent) -----------
 
 # boba-cli из колёс репозитория — вход компиляции: правка пакетов вне его закрытия даёт
 # то же дерево, и шаг Nuitka берётся из кэша. Для этого дерево зависит только от
@@ -370,9 +370,12 @@ RUN mkdir -p /opt/bin-site && { [ -z "${NUITKA_VERSION}" ] || { \
         && sed -i '/uv_cache\.json,/d' /opt/bin-site/*.dist-info/RECORD; }; }
 
 
-# boba одним файлом: Nuitka и patchelf из индекса pypi образа; бинарник самодостаточен —
-# gssapi (через транспорт http), данные пакетов и, по флагу BIN_ONNX, рантайм
-# onnxruntime-genai входят целиком; libpython линкуется статически. Данные пакетов boba
+# boba каталогом standalone: Nuitka и patchelf из индекса pypi образа; каталог
+# boba.dist самодостаточен — gssapi (через транспорт http), данные пакетов и, по флагу
+# BIN_ONNX, рантайм onnxruntime-genai входят целиком; libpython линкуется статически.
+# Каталог, а не один файл: onefile на каждом запуске распаковывает себя (163 МБ) во
+# временный каталог, а в режиме кэша читает его целиком и сверяет CRC; каталогу не нужно
+# ни того ни другого, и ему не нужна запись — годится для корня только на чтение. Данные пакетов boba
 # называет опись boba.cli.package_data по RECORD дерева колёс: она же даёт флаги Nuitka
 # и едет в бинарник, а `boba self-check` в конце шага проверяет по ней, что все файлы
 # внутри, — пропущенный каталог данных роняет сборку. onnxruntime_genai
@@ -396,26 +399,27 @@ COPY build/conf/nuitka-boba.yml       /tmp/nuitka-boba.yml
 COPY --from=bin-site /opt/bin-site/   /opt/bin-site/
 
 ENV PYTHONPATH=/opt/bin-site:/opt/bin-tools PATH=/opt/bin-tools/bin:${PATH}
-# сборочные каталоги Nuitka остаются в /tmp и уходят тем же шагом: в /out — только бинарник
+# сборочные каталоги Nuitka остаются в /tmp и уходят тем же шагом: в /out — только каталог
+# boba.dist с исполняемым boba
 RUN [ -z "${NUITKA_VERSION}" ] || { onnx=""; \
     if [ -n "${BIN_ONNX}" ]; then \
         onnx="--include-package=onnxruntime_genai --include-package-data=onnxruntime_genai \
               --include-package=onnxruntime"; \
     fi; \
     python3 -m boba.cli.package_data /opt/bin-site /tmp/package_data.json > /tmp/package_data.flags \
-    && python3 -m nuitka --onefile --static-libpython=yes --output-filename=boba --update-check=never \
+    && python3 -m nuitka --standalone --static-libpython=yes --output-filename=boba.bin --update-check=never \
         --output-dir=/tmp/nuitka --jobs=${JOBS} \
         --user-package-configuration-file=/tmp/nuitka-boba.yml \
         --include-package=gssapi --nofollow-import-to=gssapi.tests --include-distribution-metadata=boba-cli \
         $(cat /tmp/package_data.flags) ${onnx} \
         /opt/bin-site/boba/cli/app.py \
-    && install -m 0755 /tmp/nuitka/boba /out/boba \
+    && mv /tmp/nuitka/app.dist /out/boba.dist \
     && rm -rf /tmp/nuitka /tmp/package_data.json /tmp/package_data.flags \
-    && /out/boba --help > /dev/null \
-    && /out/boba self-check; }
+    && /out/boba.dist/boba.bin --help > /dev/null \
+    && /out/boba.dist/boba.bin self-check; }
 
 
-# бинарник для make boba-bin: make забирает /boba через docker cp
+# каталог агента для make boba-bin: make забирает /boba.dist через docker cp
 FROM scratch AS boba-bin-out
 
 COPY --from=boba-bin /out/  /
@@ -523,21 +527,21 @@ USER ${BOBA_UID}:${BOBA_GID}
 CMD ["-m", "boba.mcp_server", "--config", "/app/boba/conf/config.toml", "--site", "/app/boba/conf/site.toml"]
 
 
-# --- boba-agent-service: агент по ACP по сети --------------------------------------
+# --- агент как служба: boba serve --------------------------------------------------
 
-# образ службы агента: служба на python из app-site и агент одним файлом из стадии
-# boba-bin (его путь — BOBA_AGENT_COMMAND в boba.env), который служба запускает на
-# сессию. Песочницы и моделей нет: агент ходит к модели по сети, инструменты ему дают
-# клиенты по MCP-over-ACP. Общий конфиг внутри, site.toml и данные приходят деревом
-# compose/agent
+# образ службы агента: агент каталогом из стадии boba-bin сам слушает ACP по сети
+# (`boba serve`), сессии всех подключений — потоки одного процесса. app-site — тот же
+# boba-cli модулем: им проверяется образ и работает установка без Docker. Песочницы и
+# моделей нет: агент ходит к модели по сети, инструменты ему дают клиенты по
+# MCP-over-ACP. Общий конфиг внутри, site.toml и данные приходят деревом compose/agent
 FROM runtime-os AS runtime-agent
 
 ARG BOBA_DIR=/app/boba
 ARG BOBA_UID=1000
 ARG BOBA_GID=1000
 
-COPY packages/apps/boba-agent-service/conf/  ${BOBA_DIR}/conf/
-COPY --from=boba-bin /out/                   ${BOBA_DIR}/bin/
+COPY packages/apps/boba-cli/conf/  ${BOBA_DIR}/conf/
+COPY --from=boba-bin /out/         ${BOBA_DIR}/bin/
 
 COPY --from=app-site /opt/app-site          ${BOBA_DIR}/app/
 COPY --from=app-site /opt/app-packages.txt  ${BOBA_DIR}/app/packages.txt
@@ -546,7 +550,8 @@ RUN sed -i "1s|^#!.*python3.*|#!${BOBA_DIR}/third/bin/python3|" ${BOBA_DIR}/app/
 
 EXPOSE 8660
 USER ${BOBA_UID}:${BOBA_GID}
-CMD ["-m", "boba.agent_service", "--config", "/app/boba/conf/config.toml", "--site", "/app/boba/conf/site.toml"]
+ENTRYPOINT ["/app/boba/bin/boba.dist/boba.bin"]
+CMD ["serve", "--config", "/app/boba/conf/config.toml", "--site", "/app/boba/conf/site.toml"]
 
 
 # --- boba-aid: чат -------------------------------------------------------------------
@@ -582,9 +587,9 @@ RUN npm ci --no-audit --no-fund && npm run check && npm run build
 
 
 # образ чата: общий конфиг, ассеты chainlit, vendor-шрифты и стили формул вместо CDN,
-# страница песочницы MCP Apps со шрифтом чата рядом (его берут приложения),
-# агент одним файлом из стадии boba-bin (его путь — BOBA_AGENT_COMMAND в boba.env).
-# Вложения сессий приложение держит в данных ([aid].files_dir), app_root не пишется
+# страница песочницы MCP Apps со шрифтом чата рядом (его берут приложения).
+# Агента в образе нет: чат ходит в службу агента (образ agent). Вложения сессий
+# приложение держит в данных ([aid].files_dir), app_root не пишется
 FROM runtime-os AS runtime-aid
 
 ARG BOBA_DIR=/app/boba
@@ -606,7 +611,6 @@ RUN chown ${BOBA_UID}:${BOBA_GID} ${BOBA_DIR}/app_root \
        ${BOBA_DIR}/app_root/.chainlit ${BOBA_DIR}/app_root/public
 
 COPY packages/apps/boba-aid/conf/  ${BOBA_DIR}/conf/
-COPY --from=boba-bin /out/         ${BOBA_DIR}/bin/
 
 COPY --from=app-site /opt/app-site          ${BOBA_DIR}/app/
 COPY --from=app-site /opt/app-packages.txt  ${BOBA_DIR}/app/packages.txt
