@@ -128,6 +128,8 @@ VERSION         := $(shell $(VERSION_PY) show $(SRC_DIR)/packages)
 # плагины приложения — пакеты с entry points группы boba.tools; списка в extras нет
 PLUGIN_PACKAGES := $(shell $(PYTHON) $(SCRIPTS_DIR)/plugin_rootfs.py list $(SRC_DIR)/packages)
 BOBA_TAG        ?= $(VERSION)
+# второй тег образов base, build и testapps; пусто — только BOBA_TAG
+LATEST_TAG      ?= latest
 
 # экземпляр установки: имя каталога, юнитов и среза. По умолчанию — имя приложения;
 # второй узел того же приложения на одной машине получает своё имя
@@ -168,7 +170,7 @@ GLIBC_IMAGE     ?= dmp/glibc:2.28
 GCC_IMAGE       ?= dmp/gcc:8.5.0
 PYTHON_IMAGE    ?= dmp/python:$(PYTHON_VERSION)-dist
 NODE_IMAGE      ?= dmp/nodejs:20
-BASE_IMAGE      := boba-base:$(PYTHON_VERSION)
+BASE_IMAGE      ?= boba-base:$(PYTHON_VERSION)
 # сколько кэша BuildKit оставляет prune
 PRUNE_KEEP      ?= 20GB
 empty           :=
@@ -641,13 +643,13 @@ define HELP
                         проверку с целью, стадией и хостом. Итог — release/offline-check/report.txt
 
 Тестовые образы (не поставка):
-  testapps              boba-testapps:$(BOBA_TAG) и :latest — серверы MCP для тестов клиента:
+  testapps              boba-testapps:$(BOBA_TAG)$(if $(LATEST_TAG), и :$(LATEST_TAG)) — серверы MCP для тестов клиента:
                         примеры MCP Apps, свой сервер на TypeScript SDK 1.x и серверы fastmcp[apps]
                         с рендерером Prefab статикой; TESTAPPS_TAGS=<образ> — свой тег, тесты берут
                         его --testapps-image <образ>; TESTAPPS_PIP_INDEX=<url> — индекс pypi контура
 
 Образы — APP=$(subst $(space),|,$(APPS)) либо <цель>-<приложение>, без APP — оба:
-  build                 boba-<приложение>:$(BOBA_TAG) и :latest; в agent — агент bin/boba.dist (Nuitka),
+  build                 boba-<приложение>:$(BOBA_TAG)$(if $(LATEST_TAG), и :$(LATEST_TAG)); в agent — агент bin/boba.dist (Nuitka),
                         в mcp — образы корней плагинов и workspace из runtime/sandbox
   test                  build, затем проверка в образе без сети: пакеты, точки входа, у mcp —
                         образы плагинов и модели, у agent — ход агента; итог — RESULT: ALL OK
@@ -680,8 +682,8 @@ define HELP
   sec                   sec.sh, MODE=all|full|sast|sca|rules
 
 Переменные: JOBS=$(JOBS) — заданий на шаг сборки; входит в ключ кэша, другое значение
-пересобирает всё от base — держать одно. NO_CACHE=1, BOBA_TAG, BIN_ONNX=1, PLUGIN, VER,
-MODE, INSTANCE, INSTALL_ROOT, BUNDLE_OS_LIBS=1, PRUNE_KEEP, PYTHON_VERSION=$(PYTHON_VERSION),
+пересобирает всё от base — держать одно. NO_CACHE=1, BOBA_TAG, LATEST_TAG (пусто — без
+второго тега), BASE_IMAGE, BIN_ONNX=1, PLUGIN, VER, MODE, INSTANCE, INSTALL_ROOT, BUNDLE_OS_LIBS=1, PRUNE_KEEP, PYTHON_VERSION=$(PYTHON_VERSION),
 GLIBC_IMAGE, GCC_IMAGE, PYTHON_IMAGE, NODE_IMAGE, TESTAPPS_NODE_IMAGE. Версии и состав
 входов: UV_VERSION, BWRAP_VERSION, LIBFUSE_VERSION, E2FSPROGS_VERSION, CHAINLIT (файл
 UPSTREAM), KATEX_VERSION, INTER_VERSION, MERMAID_VERSION, ORACLEDB_VERSION, NUITKA_VERSION,
@@ -812,7 +814,7 @@ $(WEBASSETS_DIR)/mermaid/mermaid.min.js:
 base: $(UV_BIN)
 	@$(VERSION_PY) python-check $(SRC_DIR)/packages $(PYTHON_VERSION)
 	echo "== образ сборки $(BASE_IMAGE) =="
-	$(call docker-stage,base,$(BASE_IMAGE),--tag boba-base:latest)
+	$(call docker-stage,base,$(BASE_IMAGE),$(if $(LATEST_TAG),--tag boba-base:$(LATEST_TAG)))
 
 # --- песочница и плагины ---------------------------------------------------------
 
@@ -900,7 +902,7 @@ models-image: version-check
 TESTAPPS_DIR        := $(SRC_DIR)/tests/services/testapps
 TESTAPPS_NODE_IMAGE ?= dmp/nodejs:22
 TESTAPPS_PIP_INDEX  ?=
-TESTAPPS_TAGS       ?= boba-testapps:$(BOBA_TAG) boba-testapps:latest
+TESTAPPS_TAGS       ?= boba-testapps:$(BOBA_TAG) $(if $(LATEST_TAG),boba-testapps:$(LATEST_TAG))
 
 .PHONY: testapps
 testapps:
@@ -1054,7 +1056,7 @@ build: version-check
 	    $(call sandbox-image,$$tmp/runtime-sandbox.iid)
 	fi
 	echo "== образ $(IMAGE), релиз внутри него лежит в $(DEST_DIR) =="
-	$(call docker-stage,$(APP_STAGE),$(IMAGE),--tag boba-$(APP):latest $(APP_ARGS) $(if $(APP_SANDBOX),--build-arg SANDBOX_IMAGE=$(SANDBOX_IMAGE)))
+	$(call docker-stage,$(APP_STAGE),$(IMAGE),$(if $(LATEST_TAG),--tag boba-$(APP):$(LATEST_TAG)) $(APP_ARGS) $(if $(APP_SANDBOX),--build-arg SANDBOX_IMAGE=$(SANDBOX_IMAGE)))
 	echo ">>> образ готов: $(IMAGE); проверка: make test APP=$(APP)"
 
 # проверка образа тем же окружением, что уедет в compose и systemd: шаблон conf/boba.env
