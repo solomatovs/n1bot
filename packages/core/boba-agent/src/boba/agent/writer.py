@@ -36,6 +36,7 @@ from boba.agent.records import (
     ApiRequestRecord,
     AssistantRecord,
     CompactBoundaryRecord,
+    CompactionRecord,
     Record,
     UserRecord,
 )
@@ -188,7 +189,10 @@ class RecordKeeper:
     async def added(self, record: Record) -> None:
         """Запись, уже добавленная в сессию кем-то другим."""
         self._writer.notify()
-        if isinstance(record, UserRecord | AssistantRecord | CompactBoundaryRecord):
+        if isinstance(
+            record,
+            UserRecord | AssistantRecord | CompactBoundaryRecord | CompactionRecord,
+        ):
             await self._sink.emit(RecordEvent(record=record))
 
     async def emit(self, event: AgentEvent) -> None:

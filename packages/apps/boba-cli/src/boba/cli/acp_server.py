@@ -104,8 +104,6 @@ from boba.agent.control import (
 )
 from boba.agent.events import (
     AgentEvent,
-    CompactionEvent,
-    CompactionStatus,
     ControlCancelEvent,
     ControlRequestEvent,
     ErrorEvent,
@@ -141,6 +139,8 @@ from boba.agent.queue import QueueEntry, QueueKind, QueuePriority, QueueRefusedE
 from boba.agent.records import (
     AssistantRecord,
     ChainRecord,
+    CompactionPhase,
+    CompactionRecord,
     PermissionMode,
     Record,
     TextBlock,
@@ -469,6 +469,71 @@ class ModeCard:
     description: str
 
 
+class CompactionUpdateStatus(StrEnum):
+    """Стадии `compaction_update` ACP."""
+
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class OpenCompactions:
+    """Сжатия воспроизведения, начатые записью и ещё не кончившиеся: агент
+    мог остановиться посреди пересказа, и в истории осталось только начало.
+    Такое сжатие закрывается неудачей, когда за ним идёт вопрос человека или
+    кончается история — кроме идущего сейчас (live): его итог придёт вживую.
+    Создаёт воспроизведение (AcpAgent) на каждый проход."""
+
+    def __init__(self) -> None:
+        self._open: list[str] = []
+
+    def before(self, record: ChainRecord) -> Sequence[str]:
+        """Сжатия, которые закрывает вопрос человека record."""
+        if not isinstance(record, UserRecord):
+            return ()
+
+        if record.human_text() is None:
+            return ()
+
+        unfinished = list(self._open)
+        self._open.clear()
+
+        return unfinished
+
+    def after(self, record: ChainRecord) -> None:
+        if isinstance(record, CompactionRecord):
+            self._follow(record)
+            return
+
+        if not isinstance(record, UserRecord):
+            return
+
+        if not record.is_compact_summary:
+            return
+
+        if record.uuid in self._open:
+            self._open.remove(record.uuid)
+
+    def unfinished(self, live: bool) -> Sequence[str]:
+        """Сжатия без конца в конце истории; live — последнее из них ещё
+        идёт."""
+        unfinished = list(self._open)
+        self._open.clear()
+        if live and unfinished:
+            unfinished.pop()
+
+        return unfinished
+
+    def _follow(self, record: CompactionRecord) -> None:
+        if record.phase is CompactionPhase.STARTED:
+            self._open.append(record.compaction_id)
+            return
+
+        if record.compaction_id in self._open:
+            self._open.remove(record.compaction_id)
+
+
 class SessionCommand(StrEnum):
     """Команды сессии агента: имя команды без косой черты."""
 
@@ -701,6 +766,17 @@ class AcpMapping:
     )
     """Тексты маркеров остановки хода, которые ядро пишет записью user."""
 
+    COMPACTION_STATUSES: ClassVar[Mapping[CompactionPhase, CompactionUpdateStatus]] = {
+        CompactionPhase.STARTED: CompactionUpdateStatus.IN_PROGRESS,
+        CompactionPhase.FAILED: CompactionUpdateStatus.FAILED,
+        CompactionPhase.CANCELLED: CompactionUpdateStatus.CANCELLED,
+    }
+    INTERRUPTED: ClassVar[str] = (
+        "the compaction did not finish: the agent stopped before it wrote the "
+        "summary; run /compact again"
+    )
+    """Причина у сжатия, чьё начало есть в истории, а конца нет."""
+
     def __init__(self) -> None:
         self._titles = ToolTitles()
         self._templates = AgentTemplate()
@@ -830,11 +906,15 @@ class AcpMapping:
         вживую: маркер остановки — `cancelled`, запись об отказе модели —
         idle с ошибкой; прочие синтетические записи агента (заглушки) не
         воспроизводятся, оборванный ответ — воспроизводится; служебные
-        сообщения, пересказы сжатия, вложения и границы сжатия в ленту не
-        идут."""
+        сообщения, вложения и границы сжатия в ленту не идут; записи хода
+        сжатия и пересказ — его стадиями `compaction_update`, как вживую."""
+        if isinstance(record, CompactionRecord):
+            yield self.compaction(record)
+            return
+
         if isinstance(record, UserRecord):
             if record.is_compact_summary:
-                yield self.replayed_compaction(record)
+                yield self.compacted(record)
                 return
 
             yield from self.user_updates(record)
@@ -981,26 +1061,21 @@ class AcpMapping:
 
         return schema.SessionInfoUpdate(updated_at=updated_at)
 
-    def compaction(self, event: CompactionEvent) -> schema.SessionCompactionUpdate:
-        """Ход сжатия: стадия, у состоявшегося — пересказ, у неудачного —
-        причина; id — uuid записи пересказа."""
-        summary: list[ContentBlock] | None = None
-        if event.summary:
-            summary = [schema.TextContentBlock(text=event.summary)]
-
+    def compaction(self, record: CompactionRecord) -> schema.SessionCompactionUpdate:
+        """Запись хода сжатия → его стадия: начато, не удалось с причиной,
+        прервано."""
         error: str | None = None
-        if event.error:
-            error = event.error
+        if record.error:
+            error = record.error
+
+        status = self.COMPACTION_STATUSES[record.phase]
 
         return schema.SessionCompactionUpdate(
-            compaction_id=event.compaction_id,
-            status=event.status.value,
-            summary=summary,
-            error=error,
+            compaction_id=record.compaction_id, status=status.value, error=error
         )
 
-    def replayed_compaction(self, record: UserRecord) -> schema.SessionCompactionUpdate:
-        """Пересказ из истории — то же состоявшееся сжатие, что вживую."""
+    def compacted(self, record: UserRecord) -> schema.SessionCompactionUpdate:
+        """Пересказ — состоявшееся сжатие с ним; id сжатия — uuid пересказа."""
         content = record.message.content
         if not isinstance(content, str):
             msg = (
@@ -1009,14 +1084,20 @@ class AcpMapping:
             )
             raise RuntimeError(msg)
 
-        event = CompactionEvent(
+        return schema.SessionCompactionUpdate(
             compaction_id=record.uuid,
-            status=CompactionStatus.COMPLETED,
-            summary=content,
-            error="",
+            status=CompactionUpdateStatus.COMPLETED.value,
+            summary=[schema.TextContentBlock(text=content)],
         )
 
-        return self.compaction(event)
+    def interrupted(self, compaction_id: str) -> schema.SessionCompactionUpdate:
+        """Сжатие, у которого в истории есть начало и нет конца: агент
+        остановился раньше, чем записал итог."""
+        return schema.SessionCompactionUpdate(
+            compaction_id=compaction_id,
+            status=CompactionUpdateStatus.FAILED.value,
+            error=self.INTERRUPTED,
+        )
 
     def turn_notice(self, event: NoticeEvent) -> schema.SessionNotice:
         return schema.SessionNotice(
@@ -2953,8 +3034,8 @@ class SessionRelay(EventSink):
         if isinstance(event, ToolStartedEvent):
             return [self._mapping.tool_started(event)]
 
-        if isinstance(event, CompactionEvent | NoticeEvent):
-            return self._marks(event)
+        if isinstance(event, NoticeEvent):
+            return [self._mapping.turn_notice(event)]
 
         if isinstance(event, ToolProgressEvent):
             return [self._mapping.tool_progress(event)]
@@ -2986,22 +3067,21 @@ class SessionRelay(EventSink):
 
             return updates
 
+        if isinstance(record, CompactionRecord):
+            return [self._mapping.compaction(record)]
+
         if isinstance(record, UserRecord):
+            if record.is_compact_summary:
+                return self._compacted(record)
+
             self._inserted(record.uuid)
             return list(self._mapping.user_updates(record))
 
         return ()
 
-    def _marks(self, event: CompactionEvent | NoticeEvent) -> Sequence[Update]:
-        """Пометки хода: пометка пользователю; сжатие, после состоявшегося —
-        с новой заполненностью."""
-        if isinstance(event, NoticeEvent):
-            return [self._mapping.turn_notice(event)]
-
-        updates: list[Update] = [self._mapping.compaction(event)]
-        if event.status is not CompactionStatus.COMPLETED:
-            return updates
-
+    def _compacted(self, summary: UserRecord) -> Sequence[Update]:
+        """Состоявшееся сжатие и заполненность после него."""
+        updates: list[Update] = [self._mapping.compacted(summary)]
         usage = self._usage()
         if usage is not None:
             updates.append(usage)
@@ -4091,12 +4171,13 @@ class AcpAgent(AcpAgentProtocol):
         """
         stored = SessionId(value=session_id)
         hints: ToolHintSource = held.hints
+        opened = OpenCompactions()
         replayed = 0
         last = 0
         try:
             async with aclosing(self._assembly.history(stored)) as records:
                 async for record in records:
-                    await self._replay_record(held, record, hints)
+                    await self._replay_record(held, record, hints, opened)
                     replayed += 1
                     last = record.seq
         except HistoryError as exc:
@@ -4104,21 +4185,38 @@ class AcpAgent(AcpAgentProtocol):
                 {ErrorDataKey.DETAILS.value: str(exc)}
             ) from exc
 
+        live = False
         if isinstance(held, AcpSession):
             for record in held.agent.session.since(last):
                 if not isinstance(record, ChainRecord):
                     continue
 
-                await self._replay_record(held, record, hints)
+                await self._replay_record(held, record, hints, opened)
                 replayed += 1
+
+            live = held.agent.session.state is SessionState.COMPACTING
+
+        for compaction_id in opened.unfinished(live):
+            await held.relay.notify(self._mapping.interrupted(compaction_id))
 
         logger.info("session %s: %d record(s) replayed", session_id, replayed)
 
     async def _replay_record(
-        self, held: HeldSession, record: ChainRecord, hints: ToolHintSource
+        self,
+        held: HeldSession,
+        record: ChainRecord,
+        hints: ToolHintSource,
+        opened: OpenCompactions,
     ) -> None:
+        """Уведомления записи; вопрос человека сперва закрывает сжатия, у
+        которых в истории нет конца."""
+        for compaction_id in opened.before(record):
+            await held.relay.notify(self._mapping.interrupted(compaction_id))
+
         for update in self._mapping.replayed(record, hints):
             await held.relay.notify(update)
+
+        opened.after(record)
 
     async def _open_stored(
         self,

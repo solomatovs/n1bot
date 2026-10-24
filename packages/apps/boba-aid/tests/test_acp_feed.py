@@ -719,6 +719,7 @@ COMPACTION = "33333333-3333-3333-3333-333333333333"
 COMMAND = "44444444-4444-4444-4444-444444444444"
 """Запись вызова `/compact`: её messageId — ключ хода команды."""
 SUMMARY = "This session is being continued from a previous conversation."
+REASON = "the summary reply is empty"
 
 
 def _compaction(status: str) -> SessionUpdate:
@@ -727,6 +728,11 @@ def _compaction(status: str) -> SessionUpdate:
             compaction_id=COMPACTION,
             status=status,
             summary=[schema.TextContentBlock(text=SUMMARY)],
+        )
+
+    if status == "failed":
+        return schema.SessionCompactionUpdate(
+            compaction_id=COMPACTION, status=status, error=REASON
         )
 
     return schema.SessionCompactionUpdate(compaction_id=COMPACTION, status=status)
@@ -795,14 +801,24 @@ class TestCompactionStep:
         assert _labels(recorded)[-1] == TEXTS.text(StepText.DONE_STEPS.value, count=1)
 
     @pytest.mark.anyio
-    @pytest.mark.parametrize("status", ["failed", "cancelled"])
-    async def test_compaction_that_did_not_happen_leaves_no_step(
+    @pytest.mark.parametrize(
+        ("status", "title", "output"),
+        [
+            ("failed", f"✖ {TEXTS.text(StepText.COMPACTION_FAILED.value)}", REASON),
+            ("cancelled", f"⊘ {TEXTS.text(StepText.COMPACTION_STOPPED.value)}", ""),
+        ],
+    )
+    async def test_compaction_that_did_not_happen_shows_its_outcome(  # noqa: PLR0913 — исход сжатия задают параметры
         self,
         runtime_stand: StandRefs,
         storage: LocalStorageClient,
         recorded: FakeEmitter,
         status: str,
+        title: str,
+        output: str,
     ) -> None:
+        """Неудача — шаг с причиной, прерванное — пометка остановки: оба
+        записаны в историю и видны так же, как вживую."""
         updates = _view(runtime_stand, storage, RemoteJournals())
         updates.begin_turn(QUESTION)
         await updates.view.await_model()
@@ -810,9 +826,26 @@ class TestCompactionStep:
         await updates.apply(_compaction(status))
         await updates.finish_turn()
 
-        gone = _deleted(recorded)
-        assert _id(COMPACTION, StepRole.COMPACTION) in gone
-        assert _id(QUESTION, StepRole.PROCESS) in gone
+        step = recorded.last()[_id(COMPACTION, StepRole.COMPACTION)]
+        assert step.get(StepField.NAME) == title
+        assert step.get(StepField.OUTPUT) == output
+
+    @pytest.mark.anyio
+    async def test_compaction_open_at_the_end_of_the_turn_is_stopped(
+        self,
+        runtime_stand: StandRefs,
+        storage: LocalStorageClient,
+        recorded: FakeEmitter,
+    ) -> None:
+        updates = _view(runtime_stand, storage, RemoteJournals())
+        updates.begin_turn(QUESTION)
+        await updates.view.await_model()
+        await updates.apply(_compaction("in_progress"))
+        await updates.finish_turn()
+
+        step = recorded.last()[_id(COMPACTION, StepRole.COMPACTION)]
+        stopped = TEXTS.text(StepText.COMPACTION_STOPPED.value)
+        assert step.get(StepField.NAME) == f"⊘ {stopped}"
 
     @pytest.mark.anyio
     async def test_compact_command_is_a_turn_without_its_line(

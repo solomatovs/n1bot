@@ -361,6 +361,8 @@ class CompactionState(StrEnum):
 
     IN_PROGRESS = "in_progress"
     COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 @dataclass(frozen=True)
@@ -495,33 +497,40 @@ class UpdateView:
         )
 
     async def _compaction(self, update: schema.SessionCompactionUpdate) -> None:
-        """Сжатие разговора шагом хода: идёт — «сжимаю», состоялось — пересказ
-        под шагом (история отдаёт сразу состоявшееся), не удалось или
-        прервано — шаг убирается: в истории его нет."""
+        """Сжатие разговора шагом хода по его стадиям — вживую и в истории
+        одинаково: идёт — «сжимаю», состоялось — пересказ под шагом, не
+        удалось — причина под шагом, прервано — пометка остановки."""
         key = update.compaction_id
         step = self._compactions.pop(key, None)
-        if update.status == CompactionState.IN_PROGRESS.value:
-            if step is None:
-                step = await self._view.compaction_started(key)
-
-            self._compactions[key] = step
-            return
-
-        if update.status != CompactionState.COMPLETED.value:
-            if step is not None:
-                await self._view.compaction_dropped(step)
-
-            return
-
         if step is None:
             step = await self._view.compaction_started(key)
 
-        await self._view.compaction_finished(step, self._summary_text(update))
+        if update.status == CompactionState.IN_PROGRESS.value:
+            self._compactions[key] = step
+            return
+
+        if update.status == CompactionState.COMPLETED.value:
+            await self._view.compaction_finished(step, self._summary_text(update))
+            return
+
+        if update.status == CompactionState.CANCELLED.value:
+            await self._view.compaction_stopped(step)
+            return
+
+        error = update.error
+        if error is None:
+            error = ""
+
+        await self._view.compaction_failed(step, error)
 
     @staticmethod
     def _summary_text(update: schema.SessionCompactionUpdate) -> str:
         parts: list[str] = []
-        for block in update.summary or ():
+        summary = update.summary
+        if summary is None:
+            return ""
+
+        for block in summary:
             if isinstance(block, schema.TextContentBlock):
                 parts.append(block.text)
 
@@ -585,7 +594,7 @@ class UpdateView:
             await self._view.question_finished(step, card, key)
 
         for compaction in list(self._compactions.values()):
-            await self._view.compaction_dropped(compaction)
+            await self._view.compaction_stopped(compaction)
 
         self._steps.clear()
         self._compactions.clear()
