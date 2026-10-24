@@ -3,11 +3,11 @@ connection       = "${postgres}"
 tools            = [
     "kb_vector_search",
     "kb_fts_search",
-    "kb_catalog2",
-    "kb_fts_search2",
-    "kb_trgm_search2",
-    "kb_vector_search2",
-    "kb_node2"
+    # "kb_catalog2",
+    # "kb_fts_search2",
+    # "kb_trgm_search2",
+    # "kb_vector_search2",
+    # "kb_node2",
 ]
 collection       = "kb_confluence"
 db_schema        = "ix"
