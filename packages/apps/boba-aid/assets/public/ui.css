@@ -37,6 +37,25 @@ button.bg-primary {
           box-shadow 150ms ease;
 }
 
+/* Кнопки-иконки нижней строки поля ввода (ComposerIconButton overlay):
+   одна область нажатия и один размер значка у всех. */
+
+:root {
+  --composer-button-size: 36px;
+  --composer-icon-size: 22px;
+}
+
+#message-composer .composer-icon-button {
+  width: var(--composer-button-size);
+  height: var(--composer-button-size);
+  padding: 0;
+}
+
+#message-composer .composer-icon-button svg {
+  width: var(--composer-icon-size);
+  height: var(--composer-icon-size);
+}
+
 /* Цвета светлой темы Consta.
    Тёмная тема сохраняет свои значения. */
 

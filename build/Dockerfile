@@ -279,8 +279,9 @@ COPY --from=plugin-site /opt/site          /usr/local/lib/python${PYTHON_VERSION
 COPY --from=plugin-site /opt/code-sandbox  /usr/src
 
 
-# общая база корней плагинов: glibc, нативные зависимости, одинаковые у всех
-# плагинов, libstdc++ сборочного gcc и python. Одна на все плагины и версии
+# общая база корней плагинов: glibc, библиотеки интерпретатора python и kerberos,
+# libstdc++ сборочного gcc и python. Одна на все плагины и версии; утилиты и
+# нативные пакеты тела объявляет плагин ключом apt декларации
 FROM ${GLIBC_IMAGE} AS sandbox-base
 
 ARG CACHE_SCOPE
@@ -290,10 +291,9 @@ ARG LIBSTDCXX_OLD=6.0.22
 COPY --from=site-conf /certs/  /
 
 RUN apt-get update && apt-get install -y --no-install-recommends        \
-        unzip p7zip-full file curl jq                                   \
         libssl1.1 libffi6 libsqlite3-0 libbz2-1.0 liblzma5 libreadline7 \
         libncurses5 zlib1g                                              \
-        libkrb5-3 libgssapi-krb5-2 krb5-user                            \
+        libkrb5-3 libgssapi-krb5-2                                      \
     && rm -rf /var/lib/apt/lists/*
 
 RUN rm -f /usr/lib/x86_64-linux-gnu/libstdc++.so.6 /usr/lib/x86_64-linux-gnu/libstdc++.so.${LIBSTDCXX_OLD}
@@ -305,7 +305,8 @@ RUN ldconfig
 RUN rm -rf /usr/share/man /usr/share/doc /usr/share/info /usr/share/locale \
            /usr/share/lintian /var/cache/* /var/log/*
 
-RUN mkdir -p /usr/src /workspace /mnt/pgsock
+# /etc/krb5.conf — точка бинда krb5.conf из [sandbox] binds сетевых секций
+RUN mkdir -p /usr/src /workspace /mnt/pgsock && touch /etc/krb5.conf
 
 
 # корень одного плагина поверх базы: apt и оверлей из декларации, точки монтирования.
