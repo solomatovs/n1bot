@@ -1,4 +1,4 @@
-"""Процесс `boba acp` на стенде клиентом ACP v2 (ClientConnection пакета
+"""Процесс `boba --stdio` на стенде клиентом ACP v2 (ClientConnection пакета
 boba-transport-acp): модель — FakeLlmApp, инструменты — регистрация
 MCP-over-ACP на стороне клиента (StandRegistration), которая отвечает на
 mcp/message сама, без библиотеки MCP. Сценарии: рукопожатие с
@@ -31,7 +31,7 @@ import signal
 import stat
 import sys
 import time
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, ClassVar, TypeVar
@@ -755,7 +755,7 @@ def result_text(update: schema.SessionToolCallUpdate) -> str:
 
 
 class AcpProcess:
-    """Запущенный `boba acp`: соединение клиента ACP v2 поверх его stdio,
+    """Запущенный `boba --stdio`: соединение клиента ACP v2 поверх его stdio,
     сырые строки stdout и stderr в списках. Команда по умолчанию — модуль из
     venv; бинарник передаётся явно."""
 
@@ -854,7 +854,7 @@ class AcpProcess:
         }
         self._process = await asyncio.create_subprocess_exec(
             *self._command,
-            "acp",
+            "--stdio",
             "--settings",
             str(self.settings_path()),
             "--setting-sources",
@@ -967,15 +967,6 @@ class AcpProcess:
                 return
 
             self.stderr.append(raw.decode("utf-8", errors="replace").rstrip("\n"))
-
-
-@pytest.fixture
-async def boba(model: FakeModel, tmp_path: Path) -> AsyncIterator[AcpProcess]:
-    process = AcpProcess(tmp_path, model)
-    try:
-        yield process
-    finally:
-        await process.kill()
 
 
 async def handshake(

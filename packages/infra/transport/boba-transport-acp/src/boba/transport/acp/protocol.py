@@ -366,18 +366,20 @@ class AgentSide:
     """Сторона агента ACP v2 на AgentSideConnection.attach SDK. На чужую версию и
     рукопожатие v1 отвечает своей, уведомление mcp/message отдаёт получателю его
     активного запроса, остальное — роутеру SDK; шлёт запрос mcp/message и idle
-    с ошибкой."""
+    с ошибкой. listening — соединение само читает транспорт (так его ждёт
+    сервер HTTP SDK); иначе чтение ведёт serve (stdio, WebSocket)."""
 
     def __init__(
         self,
         agent_factory: Callable[[AgentSide, AgentSideConnection], object],
         info: schema.Implementation,
         transport: Transport,
+        listening: bool = False,
     ) -> None:
         self._info = info
         self._receivers: dict[str, Callable[[McpMessage], Awaitable[None]]] = {}
         self._outcomes: TypeAdapter[McpOutcome] = TypeAdapter(McpOutcome)
-        self._connection = Connection(self, transport, listening=False)
+        self._connection = Connection(self, transport, listening=listening)
         _, self._router = AgentSideConnection.attach(
             functools.partial(agent_factory, self), self._connection
         )
@@ -464,6 +466,11 @@ class AgentSide:
                 f"Could not tell the client that session '{notification.session_id}' "
                 f"stopped with an error because the ACP connection is gone: {exc}."
             ) from exc
+
+    @property
+    def connection(self) -> Connection:
+        """Соединение SDK этой стороны: его отдаёт роутер сервера сети."""
+        return self._connection
 
     async def serve(self) -> None:
         """Читает соединение до конца потока и закрывает его."""

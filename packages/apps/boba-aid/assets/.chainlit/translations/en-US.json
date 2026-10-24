@@ -364,6 +364,9 @@
             "collapse": "Collapse",
             "expand": "Expand",
             "close": "Close"
+        },
+        "history": {
+            "loading": "Loading the conversation…"
         }
     }
 }
