@@ -1,4 +1,6 @@
 - textbox "Введите сообщение здесь..."
-- img
+- button "Прикрепить файлы" [disabled]:
+  - img
+- button "Команды" [disabled]
 - button [disabled]:
   - img

@@ -9,9 +9,9 @@
 - article: "Разбейте таблицу по месяцам даты заказа: запросы отчётов читают один месяц, а старые партиции можно отсоединять целиком."
 - article: Какие подключения мне доступны?
 - img "Avatar for AID"
-- article: Смотрю подключения.
-- img "Avatar for AID"
 - heading "✔ connection_list · Смотрю подключения · 0 мс" [level=3]:
   - button "✔ connection_list · Смотрю подключения · 0 мс"
+- img "Avatar for AID"
+- article: Смотрю подключения.
 - img "Avatar for AID"
 - article

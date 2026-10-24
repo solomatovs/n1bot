@@ -7,7 +7,8 @@
 - img: csv
 - text: table.csv
 - textbox "Введите сообщение здесь...": Посмотри эти файлы
-- button:
+- button "Прикрепить файлы":
   - img
+- button "Команды"
 - button:
   - img
