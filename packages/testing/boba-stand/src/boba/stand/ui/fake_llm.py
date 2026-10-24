@@ -419,11 +419,12 @@ class Played:
 
 class ToolSearchWord(StrEnum):
     """Слова отложенных инструментов агента: имя инструмента поиска, выбор
-    по именам и заголовок списка отложенных во вложении."""
+    по именам, заголовок списка отложенных во вложении и вид строки-имени."""
 
     TOOL = "ToolSearch"
     SELECT = "select:"
     HEAD = "The following deferred tools are now available via ToolSearch."
+    NAME = r"[A-Za-z0-9_.-]+"
 
 
 class OfferedTools:
@@ -449,6 +450,7 @@ class OfferedTools:
             if signable:
                 self._signable.add(name)
 
+        self._tool_name = re.compile(ToolSearchWord.NAME.value)
         self._deferred = list(self._announced(payload))
 
     def named(self, tool: str) -> str:
@@ -568,6 +570,8 @@ class OfferedTools:
             yield from self._listed_deferred(content)
 
     def _listed_deferred(self, content: str) -> Iterator[str]:
+        """Строки-имена под заголовком списка отложенных; список кончается
+        первой строкой, которая не имя инструмента."""
         listing = False
         for line in content.splitlines():
             name = line.strip()
@@ -575,12 +579,14 @@ class OfferedTools:
                 listing = True
                 continue
 
-            if not name:
+            if not listing:
+                continue
+
+            if self._tool_name.fullmatch(name) is None:
                 listing = False
                 continue
 
-            if listing:
-                yield name
+            yield name
 
     @staticmethod
     def _listed(payload: Mapping[str, Any]) -> Iterator[tuple[str, bool]]:
