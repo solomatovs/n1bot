@@ -15,12 +15,15 @@ import pytest
 from aid_stand import RecordingSink
 from chainlit.config import config as chainlit_config
 from chainlit.context import ChainlitContext, context_var
-from chainlit.step import StepDict
+from chainlit.message import Message
+from chainlit.step import Step, StepDict
 
 from boba.aid.chat.ui_text import UiText
 from boba.aid.domain.fields import StepField
 from boba.aid.rendering.chat_view import (
     ChatView,
+    FeedMessage,
+    FeedStep,
     LiveSink,
     StepElapsed,
     StepKind,
@@ -778,3 +781,57 @@ class TestCallViewOfACard:
             raise AssertionError(f"a tool without views is shown raw: {step.input!r}")
         if '"cfg": "internal"' not in step.input:
             raise AssertionError(f"every argument is shown: {step.input!r}")
+
+
+class TestFeedStepsMatchChainlit:
+    """Шаг и ответ ленты собираются без паузы конструктора chainlit, но тем
+    же набором полей и с тем же словарём отправки: новая версия chainlit,
+    добавившая поле, роняет тест, а не ленту."""
+
+    STEP_ID = "33333333-3333-3333-3333-333333333333"
+
+    def test_step_has_the_fields_of_chainlit_step(self) -> None:
+        recorded = FakeContext(THREAD)
+        token = context_var.set(cast("ChainlitContext", recorded))
+        try:
+            upstream = Step(
+                name="tool",
+                type="tool",
+                id=self.STEP_ID,
+                parent_id=TURN,
+                thread_id=THREAD,
+                default_open=False,
+                auto_collapse=True,
+            )
+            ours = FeedStep(
+                name="tool",
+                type="tool",
+                id=self.STEP_ID,
+                parent_id=TURN,
+                thread_id=THREAD,
+                default_open=False,
+                auto_collapse=True,
+            )
+        finally:
+            context_var.reset(token)
+
+        assert sorted(vars(ours)) == sorted(vars(upstream))
+        expected = upstream.to_dict()
+        got = ours.to_dict()
+        for stamp in ("createdAt", "start", "end"):
+            expected.pop(stamp, None)
+            got.pop(stamp, None)
+
+        assert got == expected
+
+    def test_answer_has_the_fields_of_chainlit_message(self) -> None:
+        recorded = FakeContext(THREAD)
+        token = context_var.set(cast("ChainlitContext", recorded))
+        try:
+            upstream = Message(content="", id=self.STEP_ID)
+            ours = FeedMessage(id=self.STEP_ID)
+        finally:
+            context_var.reset(token)
+
+        assert sorted(vars(ours)) == sorted(vars(upstream))
+        assert ours.to_dict() == upstream.to_dict()

@@ -6,6 +6,7 @@ import { v4 as uuidv4 } from 'uuid';
 
 import {
   currentThreadIdState,
+  historyLoadingState,
   threadHistoryState,
   useAuth,
   useChatData,
@@ -14,6 +15,7 @@ import {
 } from '@chainlit/react-client';
 
 import Alert from '@/components/Alert';
+import { Loader } from '@/components/Loader';
 import { TaskList } from '@/components/Tasklist';
 import { Translator } from 'components/i18n';
 import { useTranslation } from 'components/i18n/Translator';
@@ -160,6 +162,7 @@ const Chat = () => {
   // boba: useChatMessages подписывал всю страницу на messagesState — перерисовка
   // сайдбара и композера на каждый токен; здесь нужен только id треда
   const threadId = useRecoilValue(currentThreadIdState);
+  const historyLoading = useRecoilValue(historyLoadingState);
 
   useEffect(() => {
     const currentPage = new URL(window.location.href);
@@ -223,6 +226,18 @@ const Chat = () => {
               autoScrollRef={autoScrollRef}
             />
             <MessagesContainer navigate={navigate} />
+            {historyLoading ? (
+              <div
+                id="history-loading"
+                role="status"
+                className="flex items-center justify-center gap-2 py-6 text-muted-foreground"
+              >
+                <Loader className="!size-5" />
+                <span>
+                  <Translator path="aid.history.loading" />
+                </span>
+              </div>
+            ) : null}
           </div>
         </ScrollContainer>
         <div
