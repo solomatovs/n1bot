@@ -677,7 +677,7 @@ class TestRefusals:
 
         assert reply.status_code == httpx2.codes.UNAUTHORIZED
         challenge = reply.headers["www-authenticate"]
-        assert "oauth-protected-resource/acp" in challenge
+        assert "oauth-protected-resource/boba/acp" in challenge
 
         with pytest.raises(InvalidStatus) as refused:
             await create_websocket_stream(stand.ws_url())

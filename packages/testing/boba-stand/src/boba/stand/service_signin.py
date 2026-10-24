@@ -106,7 +106,7 @@ class FakeServiceProcess:
         / "service_stand.py"
     )
     HOST: ClassVar[str] = "127.0.0.1"
-    ENDPOINT: ClassVar[str] = "/mcp/service"
+    ENDPOINT: ClassVar[str] = "/service"
     METADATA: ClassVar[str] = "/.well-known/oauth-authorization-server"
     WAIT_SEC: ClassVar[float] = 60.0
     POLL_SEC: ClassVar[float] = 0.2

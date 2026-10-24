@@ -117,7 +117,7 @@ class AgentServiceConfig(BaseModel):
 
     endpoint: HttpRoute = Field(
         description=(
-            "Адрес ACP службы: сервис [service.boba_agent] (схема, хост, порт и "
+            "Адрес ACP службы: сервис [service.boba] (схема, хост, порт и "
             "префикс) и путь ACP под ним ([agent].path службы)."
         )
     )

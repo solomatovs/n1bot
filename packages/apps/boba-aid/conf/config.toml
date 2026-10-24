@@ -60,7 +60,7 @@
         retry_attempts    = 3
         retry_backoff_sec = 1.0
         retry_statuses    = { 429 = 5 }
-        auth              = { method = "bearer", token = "${site.llm_token}" }
+        auth              = "${site.llm_auth.${site.llm_auth_method}}"
 
 [model_limits.main]
     context_window    = 128000
@@ -76,7 +76,7 @@
     mcp                     = ["boba_general"]
     provider                = "${llm.main}"
     model                   = "${site.models.general}"
-    system_prompt           = "Ты ассистент BOBA"
+    system_prompt           = "${site.profiles.general.system_prompt}"
     limits                  = "${model_limits.main}"
     [profiles.general.sampling]
         temperature      = 1.0
@@ -94,7 +94,7 @@
     mcp                   = ["boba_base", "boba_search"]
     provider              = "${llm.main}"
     model                 = "${site.models.search}"
-    system_prompt         = "Ты поисковый ассистент BOBA: ищешь ответы в Confluence и базе знаний и отвечаешь со ссылками на источники"
+    system_prompt         = "${site.profiles.search.system_prompt}"
     limits                  = "${model_limits.main}"
     [profiles.search.sampling]
         temperature      = 1.0
@@ -126,7 +126,7 @@
     host              = "${site.pg_host}"
     hostaddr          = "${site.pg_addr}"
     port              = "${site.pg_port}"
-    dbname            = "${site.aid_database}"
+    dbname            = "${site.pg_database}"
     sslmode           = "${site.pg_sslmode}"
     application_name  = "boba-aid"
     connect_timeout   = 10
@@ -146,11 +146,11 @@
     host             = "${site.pg_host}"
     hostaddr         = "${site.pg_addr}"
     port             = "${site.pg_port}"
-    dbname           = "${site.aid_database}"
+    dbname           = "${site.pg_database}"
     sslmode          = "${site.pg_sslmode}"
     application_name = "boba-agent"
     connect_timeout  = 10
-    auth             = "${site.history_auth.${site.history_auth_method}}"
+    auth             = "${site.pg_history_auth.${site.pg_history_auth_method}}"
     [postgres_history.pool]
         min_size = 2
         max_size = 8
@@ -183,10 +183,10 @@
     start_timeout_sec   = 60
     request_timeout_sec = 120
     [agent_launch.service.endpoint]
-        service = "${service.boba_agent}"
+        service = "${service.boba}"
         path    = "/acp"
 
-[service.boba_agent]
+[service.boba]
     scheme = "${env.agent_scheme}"
     host   = "${env.agent_host}"
     port   = "${env.agent_port}"
@@ -197,7 +197,7 @@
     client_id     = "boba-chat"
     client_secret = "${keys.agent_client}"
     secret        = "${keys.agent_proxy}"
-    issuer        = "${service.boba_agent}"
+    issuer        = "${service.boba}"
 
 [service.boba_mcp]
     scheme = "${env.mcp_scheme}"
@@ -214,7 +214,7 @@
     [mcp.servers.boba_base.endpoint]
         transport = "streamable-http"
         service   = "${service.boba_mcp}"
-        path      = "/mcp/base"
+        path      = "/base"
         auth      = "${mcp_auth.boba}"
 
 [mcp.servers.boba_general]
@@ -222,7 +222,7 @@
     [mcp.servers.boba_general.endpoint]
         transport = "streamable-http"
         service   = "${service.boba_mcp}"
-        path      = "/mcp/general"
+        path      = "/general"
         auth      = "${mcp_auth.boba}"
 
 [mcp.servers.boba_search]
@@ -230,7 +230,7 @@
     [mcp.servers.boba_search.endpoint]
         transport = "streamable-http"
         service   = "${service.boba_mcp}"
-        path      = "/mcp/search"
+        path      = "/search"
         auth      = "${mcp_auth.boba}"
 
 [mcp_auth.boba]

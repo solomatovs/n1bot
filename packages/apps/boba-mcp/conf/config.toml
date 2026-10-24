@@ -19,9 +19,9 @@
 [mcp]
     host = "${env.listen_host}"
     port = "${env.port}"
-    path = "/mcp"
     shutdown_timeout_sec = 5
     public_url = "${env.public_url}"
+    url_prefix = "${env.url_prefix}"
     [mcp.limits]
         max_runs    = 8
         max_waiting = 32
@@ -89,7 +89,7 @@
     host              = "${site.pg_host}"
     hostaddr          = "${site.pg_addr}"
     port              = "${site.pg_port}"
-    dbname            = "${site.aid_database}"
+    dbname            = "${site.pg_database}"
     sslmode           = "${site.pg_sslmode}"
     application_name  = "boba-mcp"
     connect_timeout   = 10
@@ -156,6 +156,7 @@
     host                = "${site.confluence.host}"
     path                = "${site.confluence.path}"
     port                = "${site.confluence.port}"
+    auth                = "${site.confluence_auth.${site.confluence_auth_method}}"
     timeout_sec         = 30.0
     ssl_verify          = false
     retry_attempts      = 3

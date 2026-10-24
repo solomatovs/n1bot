@@ -20,7 +20,7 @@ from typing import Annotated, Self
 
 import uvicorn
 from mcp.shared.auth import OAuthClientInformationFull
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import ConfigDict, Field, StringConstraints
 
 from boba.auth.credentials import NoRefresh
 from boba.auth.proxy import ProxyAssertions
@@ -40,6 +40,7 @@ from boba.oauth.server import (
     AuthServer,
     RegisteredClients,
     SealedValues,
+    ServiceAddress,
     ServiceAuth,
     ServiceTokens,
     TrustedClient,
@@ -57,28 +58,23 @@ __all__ = ["McpAppConfig", "McpEntry", "McpHost", "McpSection"]
 logger = logging.getLogger(__name__)
 
 
-class McpSection(BaseModel):
-    """Секция [mcp]: адрес сервиса, общий путь endpoint'ов MCP, пределы
+class McpSection(ServiceAddress):
+    """Секция [mcp]: адрес сервиса и его префикс (ServiceAddress), пределы
     запусков, endpoint'ы и доверенные клиенты. Endpoint
     [mcp.endpoints.<имя>] — набор инструментов (tools), роли, которым он
     доступен (roles), и правила предложения соединений (connections);
-    отвечает на `{path}/{имя}`. Вход — секции [auth.*]."""
+    отвечает на `{url_prefix}/{имя}`. Вход — секции [auth.*]."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     host: str = Field(min_length=1)
     port: int = Field(gt=0, lt=65536)
-    path: str = Field(min_length=1)
     shutdown_timeout_sec: int = Field(gt=0)
     """Сколько остановка ждёт, пока клиенты закроют соединения сами; дальше
     соединения рвутся, и сервис гасит запуски и зиготы. Без срока остановка
     ждала бы keep-alive соединений прокси бесконечно и не доходила до
     завершения запусков."""
     limits: RunLimits
-    public_url: str = Field(min_length=1)
-    """Адрес сервиса, каким его видят клиенты (за nginx — с префиксом): от
-    него строятся метаданные OAuth, адреса входа и издатель токена. Вне
-    localhost — только https."""
     endpoints: dict[str, McpEndpoint] = Field(min_length=1)
     clients: dict[str, TrustedClient]
     """Доверенные клиенты OAuth по client_id: им разрешён вход proxy."""
@@ -196,7 +192,6 @@ class McpHost:
                 section.endpoints,
                 self._container.resolved(providers.connection_params),
                 section.limits,
-                section.path,
                 self._config.storage,
             )
             stop = ProcessStop()
@@ -248,7 +243,7 @@ class McpHost:
         sealed = SealedValues(session.auth_secret, ServiceMark.SEALED_SALT)
         resources: dict[str, str] = {}
         for name in section.endpoints:
-            resources[name] = f"{public_url}{section.path}/{name}"
+            resources[name] = f"{public_url}/{name}"
 
         server = AuthServer(
             public_url,

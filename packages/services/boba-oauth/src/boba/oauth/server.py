@@ -40,7 +40,7 @@ import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, ClassVar, TypeVar
+from typing import Any, ClassVar, Self, TypeVar
 from urllib.parse import urlencode, urlsplit
 from uuid import uuid4
 
@@ -79,10 +79,11 @@ from pydantic import (
     Field,
     SecretStr,
     ValidationError,
+    model_validator,
 )
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse, Response
-from starlette.routing import Route
+from starlette.routing import BaseRoute, Mount, Route
 
 from boba.auth import SignIns
 from boba.auth.proxy import AssertionRejectedError, ProxyAssertions
@@ -142,6 +143,35 @@ class TokenClaims(BaseModel):
     login: str = Field(min_length=1)
     roles: frozenset[str]
     metadata: Mapping[str, object]
+
+
+class ServiceAddress(BaseModel):
+    """Адрес службы для клиентов: публичный адрес и префикс пути.
+
+    База секции службы ([mcp] у boba-mcp, [agent] у службы агента). Служба
+    сама отвечает под url_prefix, прокси передаёт путь как есть; от
+    public_url строятся метаданные OAuth, адреса входа и издатель токена,
+    поэтому его путь обязан совпадать с префиксом.
+    """
+
+    public_url: str = Field(min_length=1)
+    """Адрес службы, каким его видят клиенты, с префиксом. Вне localhost —
+    только https."""
+    url_prefix: str = Field(pattern=r"^(/[^/]+)*$")
+    """Префикс путей службы: пусто либо `/имя`, без `/` в конце."""
+
+    @model_validator(mode="after")
+    def _prefix_of_public_url(self) -> Self:
+        path = urlsplit(self.public_url).path.rstrip("/")
+        if path != self.url_prefix:
+            msg = (
+                f"public_url {self.public_url!r} has the path {path!r}, expected "
+                f"the url_prefix {self.url_prefix!r}: the service answers under "
+                "url_prefix and builds its OAuth addresses from public_url"
+            )
+            raise ValueError(msg)
+
+        return self
 
 
 class TrustedClient(BaseModel):
@@ -551,9 +581,9 @@ class AuthServer(OAuthProvider):
 
     Создаётся сборкой процесса службы из способов входа SignIns, выпуска
     токенов ServiceTokens, проверки утверждений proxy, клиентов
-    RegisteredClients и адресов её ресурсов; его маршруты (метаданные,
-    /authorize, /token, /register) служба ставит в корень приложения,
-    страницы входа — LoginPages. Вход человека:
+    RegisteredClients и адресов её ресурсов; его маршруты (/authorize,
+    /token, /register) служба ставит под своим префиксом, метаданные — в
+    корень хоста (ServiceAuth.app_routes), страницы входа — LoginPages. Вход человека:
     authorize() отдаёт адрес страницы входа с начатым входом, та зовёт
     signed_in() и получает адрес возврата с кодом. Вход proxy:
     exchange_identity_assertion(). Вход человека продлевается токеном
@@ -1100,7 +1130,8 @@ class ServiceAuth:
 
     Создаётся сборкой процесса службы (boba-mcp, служба агента) с её именем
     на странице входа и ресурсами по именам; сборка приложения берёт
-    провайдер авторизации на каждый ресурс и маршруты входа для корня.
+    провайдер авторизации на каждый ресурс и маршруты приложения под
+    префиксом службы (app_routes).
     """
 
     def __init__(
@@ -1118,8 +1149,8 @@ class ServiceAuth:
         self._resources = dict(resources)
 
     def published(self) -> str:
-        """Префикс пути, под которым служба видна клиентам: путь публичного
-        адреса; без прокси — пустой."""
+        """Префикс пути, под которым служба отвечает: путь публичного адреса
+        (равен url_prefix секции службы, ServiceAddress); в корне — пустой."""
         return urlsplit(self._public_url).path.rstrip("/")
 
     def resource(self, name: str, scopes: Sequence[str]) -> RemoteAuthProvider:
@@ -1132,20 +1163,23 @@ class ServiceAuth:
             base_url=self._public_url,
         )
 
-    def routes(self) -> list[Route]:
-        """Маршруты входа для корня приложения: сервер авторизации, его
-        метаданные по пути издателя и страницы входа."""
-        routes = self._server.get_routes()
-        taken: set[str] = set()
-        for route in routes:
-            taken.add(route.path)
+    def app_routes(
+        self, discovery: Sequence[BaseRoute], served: Sequence[BaseRoute]
+    ) -> list[BaseRoute]:
+        """Маршруты приложения службы под её префиксом.
 
-        for route in self._server.get_well_known_routes():
-            if route.path in taken:
-                continue
+        Метаданные (RFC 8414, RFC 9728) клиент ищет от корня хоста по пути с
+        префиксом внутри — они стоят в корне: метаданные сервера авторизации и
+        discovery ресурсов службы. Всё остальное — сервер авторизации, страницы
+        входа и served службы — отвечает под префиксом публичного адреса:
+        прокси передаёт путь как есть.
+        """
+        mounted: list[BaseRoute] = list(self._server.get_routes())
+        mounted.extend(self._pages.routes())
+        mounted.extend(served)
 
-            routes.append(route)
-
-        routes.extend(self._pages.routes())
+        routes: list[BaseRoute] = list(self._server.get_well_known_routes())
+        routes.extend(discovery)
+        routes.append(Mount(self.published(), routes=mounted))
 
         return routes

@@ -1073,11 +1073,11 @@ class McpEndpoints:
 
     Создаётся сборкой процесса. Endpoint — набор инструментов, роли,
     которым он выдан, и правила предложения соединений; каждый отвечает
-    отдельным MCP-сервером на пути `{base_path}/{имя}`. Токен без области
+    отдельным MCP-сервером на пути `/{имя}` под префиксом сервиса. Токен без области
     endpoint'а получает 403 от входа fastmcp (EndpointTokens). Реестр
     инструментов, соединения инструментов, запуски, журналы и предел запусков
     у endpoint'ов общие. app() — приложение ASGI со всеми endpoint'ами,
-    маршрутами входа и пробой готовности.
+    маршрутами входа и пробой готовности под префиксом сервиса.
     """
 
     HEALTH: ClassVar[str] = "/health"
@@ -1101,16 +1101,15 @@ class McpEndpoints:
         endpoints: Mapping[str, McpEndpoint],
         params: SealedConnectionParams,
         limits: RunLimits,
-        base_path: str,
         storage: LocalStorageConfig,
     ) -> None:
-        # маршруты входа стоят в корне: сервер авторизации — вне endpoint'ов
-        self._routes: list[BaseRoute] = list(auth.routes())
+        self._auth = auth
+        self._discovery: list[BaseRoute] = []
         self._endpoints: list[EndpointApp] = []
         self._servers: list[McpServer] = []
         slots = RunLimitMiddleware(limits, self.OPERATIONS)
         for profile in sorted(registry.access.profiles()):
-            path = f"{base_path}/{profile}"
+            path = f"/{profile}"
             provider = auth.resource(profile, [profile])
             server = McpServer(
                 registry,
@@ -1128,8 +1127,7 @@ class McpEndpoints:
             served = server.mcp().http_app(path=path, stateless_http=True)
             self._servers.append(server)
             self._endpoints.append(EndpointApp(path, served, served))
-            # метаданные ресурса клиент ищет от корня хоста, а не под endpoint'ом
-            self._routes.extend(provider.get_well_known_routes(path))
+            self._discovery.extend(provider.get_well_known_routes(path))
 
     def end_subscriptions(self) -> None:
         """Штатный конец потоков subscriptions/listen всех endpoint'ов: при
@@ -1145,11 +1143,11 @@ class McpEndpoints:
         return paths
 
     def app(self) -> Starlette:
-        routes: list[BaseRoute] = [
+        served: list[BaseRoute] = [
             Route(self.HEALTH, self._health, methods=["GET"]),
-            *self._routes,
             Mount("/", app=self._dispatch),
         ]
+        routes = self._auth.app_routes(self._discovery, served)
 
         return Starlette(routes=routes, lifespan=self._lifespan)
 
@@ -1158,16 +1156,20 @@ class McpEndpoints:
         return JSONResponse({"endpoints": list(self.paths())})
 
     async def _dispatch(self, scope: AsgiScope, receive: Receive, send: Send) -> None:
-        """Запрос — endpoint'у, чей это путь; чужой путь — 404."""
+        """Запрос — endpoint'у, чей это путь под префиксом сервиса; чужой путь — 404."""
+        path = scope["path"].removeprefix(scope["root_path"])
         for endpoint in self._endpoints:
-            if not endpoint.serves(scope["path"]):
+            if not endpoint.serves(path):
                 continue
 
             await endpoint.app(scope, receive, send)
             return
 
         known = ", ".join(self.paths())
-        message = f"404 Not Found: no mcp endpoint at {scope['path']}; known: {known}"
+        message = (
+            f"404 Not Found: no mcp endpoint at {scope['path']}; known: {known} "
+            f"under the prefix {scope['root_path']!r}"
+        )
         await JSONResponse({"error": message}, status_code=404)(scope, receive, send)
 
     @asynccontextmanager

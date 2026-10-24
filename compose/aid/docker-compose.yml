@@ -10,7 +10,7 @@ services:
     cpus: 4
     pids_limit: 512
     restart: unless-stopped
-    image: boba-aid:0.0.26.dev4
+    image: boba-aid:0.0.30.dev1
     hostname: aid
     container_name: aid
     networks:
@@ -31,41 +31,6 @@ services:
       - ./data:/app/boba/data:rw
     ports:
       - "8501"
-  aid2:
-    init: true
-    user: "${BOBA_USER}"
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
-    mem_limit: 4g
-    cpus: 4
-    pids_limit: 512
-    restart: unless-stopped
-    image: boba-aid:0.0.26.dev4
-    hostname: aid2
-    container_name: aid2
-    networks:
-      default:
-        ipv4_address: ${BOBA_ADDRESS_2}
-    env_file: ./conf/boba.env
-    command:
-      - -m
-      - boba.aid.main
-      - --config
-      - /app/boba/conf/config.toml
-      - --site
-      - /app/boba/conf/site.toml
-    environment:
-      BOBA_INSTANCE_ID: node2
-    volumes:
-      - ./conf2/site.toml:/app/boba/conf/site.toml:ro
-      - ./conf2/krb:/app/boba/conf/krb:ro
-      - ./conf2/krb/krb5.conf:/etc/krb5.conf:ro
-      - ./data:/app/boba/data:rw
-    ports:
-      - "8501"
-
 networks:
   default:
     name: ${BOBA_NETWORK}

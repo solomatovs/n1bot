@@ -1,5 +1,5 @@
 - alert:
-  - text: "Агент не принял вход этого чата, поэтому чат не может ответить. Перезагрузите страницу, чтобы войти заново; если не получится, сообщите администратору. agent service at http://127.0.0.1:0/acp, initialize: No authorization server metadata at configured issuer http://127.0.0.1:0/"
+  - text: "The agent didn't accept the sign-in of this chat, so the chat can't answer. Reload the page to sign in again; if it keeps failing, let the administrator know. agent service at http://127.0.0.1:0/boba/acp, initialize: No authorization server metadata at configured issuer http://127.0.0.1:0/boba"
   - button "Повторить"
 - textbox "Введите сообщение здесь..."
 - button "Прикрепить файлы" [disabled]:
