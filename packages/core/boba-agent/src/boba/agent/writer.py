@@ -31,9 +31,11 @@ from boba.agent.events import AgentEvent, EventSink, RecordEvent
 from boba.agent.history import HistoryError, HistoryStore, SessionLease
 from boba.agent.ids import Clock, IdMint
 from boba.agent.records import (
+    ApiErrorRecord,
     ApiRequestRecord,
     AssistantRecord,
     CompactBoundaryRecord,
+    InformationalRecord,
     Record,
     UserRecord,
 )
@@ -159,8 +161,18 @@ class HistoryWriter:
 
 class RecordKeeper:
     """Добавляет записи в сессию, будит писателя и показывает наружу записи
-    разговора. Создаёт агент на сессию; им пользуются цикл хода и
+    разговора и пометки для человека (повтор запроса к модели, состояние
+    серверов MCP). Создаёт агент на сессию; им пользуются цикл хода и
     исполнитель инструментов."""
+
+    SHOWN: ClassVar[tuple[type[Record], ...]] = (
+        UserRecord,
+        AssistantRecord,
+        CompactBoundaryRecord,
+        ApiErrorRecord,
+        InformationalRecord,
+    )
+    """Записи, о которых узнаёт порт событий."""
 
     def __init__(
         self, session: Session, writer: HistoryWriter, sink: EventSink
@@ -183,7 +195,7 @@ class RecordKeeper:
     async def added(self, record: Record) -> None:
         """Запись, уже добавленная в сессию кем-то другим."""
         self._writer.notify()
-        if isinstance(record, UserRecord | AssistantRecord | CompactBoundaryRecord):
+        if isinstance(record, self.SHOWN):
             await self._sink.emit(RecordEvent(record=record))
 
     async def emit(self, event: AgentEvent) -> None:

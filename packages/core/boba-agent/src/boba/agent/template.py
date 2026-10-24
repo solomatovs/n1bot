@@ -60,6 +60,13 @@ class AgentTemplateFile(StrEnum):
     QUEUED_NOTIFICATION = "attachments/queued_notification.txt"
     QUEUED_NOTIFICATION_WITH_USER = "attachments/queued_notification_with_user.txt"
 
+    TURN_INTERRUPTED_NOTICE = "notices/turn_interrupted.txt"
+    MCP_UNAVAILABLE_NOTICE = "notices/mcp_unavailable.txt"
+    MCP_LOST_NOTICE = "notices/mcp_lost.txt"
+    MCP_BACK_NOTICE = "notices/mcp_back.txt"
+    MODEL_RETRY_NOTICE = "notices/model_retry.txt"
+    SERVING_STOPPED_NOTICE = "notices/serving_stopped.txt"
+
     USER_REJECTED = "tools/user_rejected.txt"
     USER_REJECTED_SAID = "tools/user_rejected_said.txt"
     USER_REJECTED_RESULT = "tools/user_rejected_result.txt"

@@ -20,7 +20,9 @@ from boba.agent.records import (
     CompactBoundaryRecord,
     CompactMetadata,
     CompactTrigger,
+    InformationalRecord,
     MessageOrigin,
+    NoticeLevel,
     OriginKind,
     PermissionBehavior,
     PermissionMode,
@@ -156,7 +158,12 @@ SAMPLES: dict[str, Record] = {
         ),
     ),
     "api-error": ApiErrorRecord(
-        **chained(), error="boom", retry_attempt=1, max_retries=3
+        **chained(), error="boom", retry_in_ms=2000, retry_attempt=1, max_retries=3
+    ),
+    "informational": InformationalRecord(
+        **chained(),
+        content="MCP server 'stand' answers again, its tools are back in the session.",
+        level=NoticeLevel.INFO,
     ),
     "boundary": CompactBoundaryRecord(
         **chained(),

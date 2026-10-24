@@ -297,8 +297,9 @@ class TestApiErrors:
         ]
         first_turn = session.records()[:failed_at]
         errors = [r for r in first_turn if isinstance(r, ApiErrorRecord)]
-        assert [e.retry_attempt for e in errors] == [1, 2, 3, 4]
+        assert [e.retry_attempt for e in errors] == [1, 2, 3]
         assert all(e.max_retries == 3 for e in errors)
+        assert [e.retry_in_ms for e in errors] == [0, 0, 0]
         synthetic = first_turn[-1]
         assert isinstance(synthetic, AssistantRecord)
         assert synthetic.is_api_error_message
