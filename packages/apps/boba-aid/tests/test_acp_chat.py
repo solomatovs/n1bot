@@ -795,26 +795,6 @@ class ChatRows:
 
         return int(row[0])
 
-    async def chat_settings_rows(self, thread_id: str) -> int:
-        pool = AsyncPostgresPool(self._postgres)
-        await pool.open()
-        try:
-            async with pool.connection() as conn:
-                cursor = await conn.execute(
-                    sql.SQL(
-                        "select count(*) from {}.agent_chat_settings "
-                        "where thread_id = %s"
-                    ).format(sql.Identifier(self._schema)),
-                    (thread_id,),
-                )
-                row = await cursor.fetchone()
-        finally:
-            await pool.close()
-
-        assert row is not None
-
-        return int(row[0])
-
 
 @pytest.fixture
 def rows(
@@ -865,7 +845,7 @@ class TestConversation:
         meta = await rows.thread_meta(tab.thread_id)
         assert meta is not None
         assert meta.get(ThreadMetaField.AGENT_SESSION), meta
-        assert await rows.chat_settings_rows(tab.thread_id) == 1
+        assert meta.get(ThreadMetaField.CHAT_PROFILE) == PROFILE, meta
 
         complaints = app.complaints(since)
         assert not complaints, complaints
@@ -1690,7 +1670,6 @@ class TestHistory:
         assert response.status_code == 200, (response.text[:300], app.tail(60))
 
         assert await rows.thread_meta(tab.thread_id) is None
-        assert await rows.chat_settings_rows(tab.thread_id) == 0
         assert await rows.history_rows(session_id) == 0
         await tab.close()
 

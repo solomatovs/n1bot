@@ -93,12 +93,12 @@ class FeedRows(Protocol):
 
 
 class ThreadDeletionListener(Protocol):
-    """Кому сообщать об удаляемом треде: слой данных зовёт до снятия строк с
-    metadata треда; отказ слушателя оставляет тред. Реализует ThreadDeleter
-    клиента агента."""
+    """Кому сообщать об удаляемом треде: слой данных зовёт до снятия строк со
+    строкой треда как есть (владелец, metadata); отказ слушателя оставляет
+    тред. Реализует ThreadDeleter клиента агента."""
 
     @abstractmethod
-    async def thread_deleted(self, thread_id: str, meta: Mapping[str, Any]) -> None:
+    async def thread_deleted(self, thread: StoredThread) -> None:
         """Тред удаляется вместе с элементами и оценками."""
 
 
@@ -452,7 +452,7 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership, FeedRows):
         stored = await self._threads.get(tid)
         if stored is not None:
             for listener in self._deletion_listeners:
-                await listener.thread_deleted(thread_id, stored.meta)
+                await listener.thread_deleted(stored)
 
             await self._delete_files(stored)
 

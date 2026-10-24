@@ -1,5 +1,5 @@
-"""Настройки агента: модель файла настроек глазами чата, слой чата в
-Postgres, сборка файла из слоя чата и приватный каталог процесса.
+"""Настройки агента: модель файла настроек глазами чата, его сборка из
+профиля чата и конфига [agent] и приватный каталог процесса.
 
 Файл настроек — договор запуска агента: чат пишет в него то, чему в ACP
 нет пути, — провайдера и модель профиля, системный промпт, хранилище
@@ -10,15 +10,13 @@ Postgres, сборка файла из слоя чата и приватный �
 разрешений и профиль модели сессии чат выставляет по ACP (`configOptions`,
 `session/set_config_option`), серверы MCP объявляет в методах сессии.
 
-Слой чата собирается из профиля чата и конфига [agent] при каждом запуске
-агента треда и сохраняется в таблицу `agent_chat_settings` схемы чата: по нему
-удаление треда поднимает короткий процесс `session/delete`. Пользователь
-настроек агента не меняет. Секреты в таблице шифруются SecretCipher, в файле
-лежат открыто под правами 0600.
+Файл собирается из текущего профиля чата и конфига [agent] при каждом
+запуске процесса агента, в том числе короткого процесса `session/delete` при
+удалении треда. Пользователь настроек агента не меняет. Секреты лежат в файле
+открыто под правами 0600.
 
 Ошибки:
 AgentSettingsError — профиль чата нельзя превратить в профиль модели агента.
-DataUnavailableError — таблица настроек недоступна (PgTable).
 PostgresError — билет kerberos-роли истории не получен.
 """
 
@@ -32,9 +30,7 @@ from collections.abc import Mapping, Sequence
 from enum import IntEnum, StrEnum
 from pathlib import Path
 from typing import Any, ClassVar, Literal
-from uuid import UUID
 
-from psycopg.types.json import Jsonb
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -52,23 +48,17 @@ from boba.aid.agent.config import (
     PostgresAgentHistory,
 )
 from boba.chat.profiles import ChatProfileConfig, ReasoningReturn
-from boba.connections.secrets import SecretCipher
 from boba.core.secrets import SecretReveal
-from boba.db.postgres import PostgresPool
-from boba.db.postgres.connection import LibpqConnection, PostgresConfig
+from boba.db.postgres.connection import LibpqConnection
 from boba.mcp_client.client import McpServersConfig
-from boba.runtime.table import PgTable
 from boba.transport.http import HttpTransportConfig
 from boba.transport.http.connection import BearerAuth, HttpConnection
 
 __all__ = [
-    "AgentOwner",
     "AgentProviderKind",
     "AgentSettingsError",
-    "AgentSettingsTable",
     "AgentWorkdir",
     "AgentWorkdirs",
-    "ChatAgentSettings",
     "HistoryEnvironment",
     "HistoryPoolFile",
     "McpFile",
@@ -114,14 +104,12 @@ class AgentProviderKind(StrEnum):
 
 class FileModel(BaseModel):
     """Основа моделей файла настроек агента: ключи файла — camelCase по
-    договору запуска, имена полей тоже принимаются (так читается слой чата
-    из таблицы), лишние ключи сохранённой строки отбрасываются. document()
-    даёт дамп ключами файла с открытыми секретами: обычный дамп пишет
-    SecretStr звёздочками, под ключом контекста SecretReveal поле отдаёт
-    значение."""
+    договору запуска, чат строит модели именами полей. document() даёт дамп
+    ключами файла с открытыми секретами: обычный дамп пишет SecretStr
+    звёздочками, под ключом контекста SecretReveal поле отдаёт значение."""
 
     model_config = ConfigDict(
-        alias_generator=to_camel, populate_by_name=True, extra="ignore", frozen=True
+        alias_generator=to_camel, populate_by_name=True, extra="forbid", frozen=True
     )
 
     def document(self) -> dict[str, object]:
@@ -219,31 +207,6 @@ class SettingsFile(FileModel):
     system_prompt_file: str = Field(min_length=1)
 
 
-class AgentOwner(BaseModel):
-    """Пользователь треда глазами службы агента: логин и роли, с которыми
-    чат входит в службу от его имени (вход proxy)."""
-
-    model_config = ConfigDict(frozen=True, extra="ignore")
-
-    login: str = Field(min_length=1)
-    roles: tuple[str, ...]
-
-
-class ChatAgentSettings(BaseModel):
-    """Слой чата: профиль модели агента и системный промпт профиля одного
-    треда и его пользователь. Из него собирается файл настроек процесса, а в
-    режиме службы — вход в неё при удалении треда; лишние ключи сохранённой
-    строки при чтении отбрасываются. owner None — строка записана до режима
-    службы: процессу владелец не нужен."""
-
-    model_config = ConfigDict(frozen=True, extra="ignore")
-
-    model_name: str = Field(min_length=1)
-    model: ModelFile
-    system_prompt: str
-    owner: AgentOwner | None = None
-
-
 class RemoteProviderView(BaseModel):
     """Удалённый провайдер профиля чата глазами агента: вид, соединение и
     транспорт процесса."""
@@ -262,19 +225,6 @@ class ProfileModelSpecs:
     профиля ([model_limits.<имя>]).
 
     Создаёт его запуск агента (AgentLauncher)."""
-
-    def chat_settings(
-        self, name: str, profile: ChatProfileConfig, owner: AgentOwner
-    ) -> ChatAgentSettings:
-        """Ошибки:
-        AgentSettingsError — провайдер профиля не удалённый по http или без адреса.
-        """
-        return ChatAgentSettings(
-            model_name=name,
-            model=self.model(name, profile),
-            system_prompt=profile.system_prompt,
-            owner=owner,
-        )
 
     def model(self, name: str, profile: ChatProfileConfig) -> ModelFile:
         """Ошибки:
@@ -327,95 +277,8 @@ class ProfileModelSpecs:
         )
 
 
-class SettingsColumn(StrEnum):
-    """Колонки таблиц настроек."""
-
-    USER_ID = "user_id"
-    THREAD_ID = "thread_id"
-    PROFILE = "profile"
-    SETTINGS = "settings"
-    UPDATED_AT = "updated_at"
-
-
-class AgentSettingsTable(PgTable):
-    """Слой чата настроек агента в Postgres чата: строка на тред, секреты
-    строки зашифрованы. Пишет её запуск агента (AgentLauncher), читает и
-    стирает удаление треда (ThreadDeleter)."""
-
-    def __init__(
-        self,
-        postgres: PostgresConfig,
-        db_schema: str,
-        cipher: SecretCipher,
-        pool: PostgresPool | None = None,
-    ) -> None:
-        super().__init__(postgres, db_schema, pool)
-        self._cipher = cipher
-
-    async def chat_layer(self, thread_id: UUID) -> ChatAgentSettings | None:
-        """Слой чата; None — у треда ещё нет своего слоя."""
-        query = (
-            self._query()
-            .add(
-                """
-                select settings
-                from {schema}.agent_chat_settings
-                where thread_id = %(thread_id)s
-                """,
-                thread_id=thread_id,
-            )
-            .build()
-        )
-        row = await self._row(query, "agent chat settings")
-        if row is None:
-            return None
-
-        return self._parse(
-            ChatAgentSettings, self._cipher.decrypt(row[SettingsColumn.SETTINGS.value])
-        )
-
-    async def save_chat_layer(
-        self, thread_id: UUID, user_id: UUID, profile: str, settings: ChatAgentSettings
-    ) -> None:
-        query = (
-            self._query()
-            .add(
-                """
-                insert into {schema}.agent_chat_settings
-                    (thread_id, user_id, profile, settings)
-                values (%(thread_id)s, %(user_id)s, %(profile)s, %(settings)s)
-                on conflict (thread_id) do update set
-                    settings = excluded.settings,
-                    updated_at = now()
-                """,
-                thread_id=thread_id,
-                user_id=user_id,
-                profile=profile,
-                settings=Jsonb(self._cipher.encrypt(settings)),
-            )
-            .build()
-        )
-
-        await self._execute(query, "save agent chat settings")
-
-    async def delete_chat_layer(self, thread_id: UUID) -> None:
-        query = (
-            self._query()
-            .add(
-                """
-                delete from {schema}.agent_chat_settings
-                where thread_id = %(thread_id)s
-                """,
-                thread_id=thread_id,
-            )
-            .build()
-        )
-
-        await self._execute(query, "delete agent chat settings")
-
-
 class SettingsFileBuilder:
-    """Файл настроек агента из слоя чата и конфига: к профилю модели чата
+    """Файл настроек агента из профиля модели и конфига: к профилю модели чата
     добавляются политика запуска `allowBypass` (режим сессии чат выставляет
     по ACP), история, инструменты «всегда загружать» [agent.tools], срок
     вызова инструментов — наибольший
@@ -432,15 +295,17 @@ class SettingsFileBuilder:
 
     def build(
         self,
-        chat: ChatAgentSettings,
+        name: str,
+        model: ModelFile,
         mcp: McpFile | None,
         env: Mapping[str, str],
     ) -> SettingsFile:
-        """Файл процесса агента по слою чата; mcp None — процесс не зовёт
-        инструментов серверов (короткий процесс удаления сессии)."""
+        """Файл процесса агента с единственным профилем модели name; mcp None
+        — процесс не зовёт инструментов серверов (короткий процесс удаления
+        сессии)."""
         return SettingsFile(
-            model=chat.model_name,
-            models={chat.model_name: chat.model},
+            model=name,
+            models={name: model},
             permissions=PermissionsFile(allow_bypass=True),
             history=self._history,
             mcp=mcp,
