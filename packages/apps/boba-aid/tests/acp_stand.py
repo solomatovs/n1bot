@@ -334,6 +334,9 @@ class RecordingUpdates(TurnRenderer):
 
         return turn
 
+    def connected(self) -> bool:
+        return True
+
     async def cleared(self) -> None:
         return
 
