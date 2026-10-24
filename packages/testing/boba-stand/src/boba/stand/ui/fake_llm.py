@@ -74,8 +74,8 @@ __all__ = [
     "TurnScript",
     "UsageBook",
     "UsageCounts",
-    "WireText",
     "WindowSettings",
+    "WireText",
 ]
 
 
