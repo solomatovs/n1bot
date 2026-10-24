@@ -82,9 +82,8 @@ class QueuedLook:
         GROUP,
         "qi4-answered",
         "Вопрос из очереди получил свой ход после первого ответа",
-        "вопрос первого хода наверху, его ответ целиком, под ним пузырь "
-        "вопроса из очереди и ответ на него; кружка и курсора нет; на узком "
-        "окне пузырь вопроса из очереди внизу, ниже видна кнопка «↓»",
+        "пузырь вопроса из очереди наверху ленты, под ним ответ на него; "
+        "кружка и курсора нет; ход первого вопроса — выше, за краем кадра",
         (QueuedFixes.INPUT,),
     )
     ANSWERED_AGAIN: ClassVar[LookState] = LookState(
@@ -213,13 +212,13 @@ def test_message_during_the_turn_look(
         feed.shown(TalkText.STATUS)
         feed.no_pulse()
         look_pages.settle(page)
-        look.frame(queue.feed(TalkQuestion.STEPS), QueuedLook.ANSWERED, theme, size)
+        look.frame(queue.feed(TalkQuestion.STATUS), QueuedLook.ANSWERED, theme, size)
 
         feed.reload()
         feed.shown(TalkText.STATUS)
         look_pages.settle(page)
         look.frame(
-            queue.feed(TalkQuestion.STEPS), QueuedLook.ANSWERED_AGAIN, theme, size
+            queue.feed(TalkQuestion.STATUS), QueuedLook.ANSWERED_AGAIN, theme, size
         )
         look.same_as(QueuedLook.ANSWERED_AGAIN, QueuedLook.ANSWERED, theme, size)
 
