@@ -35,6 +35,7 @@ import logging
 from abc import abstractmethod
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any, Protocol, TypeAlias
 
 import mcp_types as mt
@@ -326,6 +327,13 @@ class JournalRegistry(Protocol):
         """Адрес журнала вызова call_id треда."""
 
 
+class CompactionState(StrEnum):
+    """Стадии compaction_update ACP, которые различает лента."""
+
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+
+
 @dataclass(frozen=True)
 class TurnEnding:
     """Чем кончился ход по его idle: исход для итога хода в шине и пометка
@@ -374,6 +382,8 @@ class UpdateView:
         self._thought_id: str | None = None
         self._answer_id: str | None = None
         self._steps: dict[str, Step] = {}
+        self._compactions: dict[str, Step] = {}
+        """Идущее сжатие → его шаг: в истории остаётся только состоявшееся."""
         self._asked: dict[str, Mapping[str, Any]] = {}
         """Идущий вызов-вопрос пользователю → его ввод: по нему рисуется
         запись ответа."""
@@ -404,6 +414,7 @@ class UpdateView:
         self._thought_id = None
         self._answer_id = None
         self._steps.clear()
+        self._compactions.clear()
         self._asked.clear()
         self._called.clear()
         self._groups.clear()
@@ -442,9 +453,46 @@ class UpdateView:
             await self._ended(update)
             return
 
+        if isinstance(update, schema.SessionCompactionUpdate):
+            await self._compaction(update)
+            return
+
         logger.debug(
             "thread %s: update %s is not drawn", self._thread_id, type(update).__name__
         )
+
+    async def _compaction(self, update: schema.SessionCompactionUpdate) -> None:
+        """Сжатие разговора шагом хода: идёт — «сжимаю», состоялось — пересказ
+        под шагом (история отдаёт сразу состоявшееся), не удалось или
+        прервано — шаг убирается: в истории его нет."""
+        key = update.compaction_id
+        step = self._compactions.pop(key, None)
+        if update.status == CompactionState.IN_PROGRESS.value:
+            if step is None:
+                step = await self._view.compaction_started(key)
+
+            self._compactions[key] = step
+            return
+
+        if update.status != CompactionState.COMPLETED.value:
+            if step is not None:
+                await self._view.compaction_dropped(step)
+
+            return
+
+        if step is None:
+            step = await self._view.compaction_started(key)
+
+        await self._view.compaction_finished(step, self._summary_text(update))
+
+    @staticmethod
+    def _summary_text(update: schema.SessionCompactionUpdate) -> str:
+        parts: list[str] = []
+        for block in update.summary or ():
+            if isinstance(block, schema.TextContentBlock):
+                parts.append(block.text)
+
+        return "\n\n".join(parts)
 
     def ending(self, idle: schema.IdleSessionStateUpdate) -> TurnEnding:
         """Исход хода и пометка ленты по его idle."""
@@ -503,7 +551,11 @@ class UpdateView:
             card = self._cards.asked(asked, None, True)
             await self._view.question_finished(step, card, key)
 
+        for compaction in list(self._compactions.values()):
+            await self._view.compaction_dropped(compaction)
+
         self._steps.clear()
+        self._compactions.clear()
         self._groups.clear()
         await self._view.finish_turn()
         self._turn_key = None

@@ -114,6 +114,12 @@ class StepText(StrEnum):
     FINISHED = "aid.feed.unfinished"
     """Выход вызова, который не закончился к концу хода."""
 
+    COMPACTING = "aid.feed.compacting"
+    """Агент пересказывает разговор, чтобы он поместился в окно модели."""
+
+    COMPACTED = "aid.feed.compacted"
+    """Разговор сжат; под шагом — пересказ, который получила модель."""
+
     NO_ROWS = "aid.feed.noRows"
     """Пустая таблица результата."""
 
@@ -275,6 +281,7 @@ class StepRole(StrEnum):
 
     QUESTION = "question"
     QUESTION_CARD = "question-card"
+    COMPACTION = "compaction"
 
 
 class StepMeta(StrEnum):
@@ -1784,6 +1791,46 @@ class ChatView:
             return
 
         element.id = element_id
+
+    async def compaction_started(self, key: str) -> Step:
+        """Шаг сжатия разговора под контейнером хода, пока агент
+        пересказывает; он же — текущее действие хода."""
+        await self.seal_answer()
+        label = self.label(StepText.COMPACTING)
+        step = await self._child(
+            StepStatus.IDLE.title(label), StepKind.TOOL, key, StepRole.COMPACTION
+        )
+        step.start = utc_now()
+        await self._sink.put(step)
+        await self.follow(step)
+
+        return step
+
+    async def compaction_finished(self, step: Step, summary: str) -> None:
+        """Сжатие состоялось: шаг закрыт, в нём — пересказ (свёрнут)."""
+        ended = utc_now()
+        step.start = ended
+        step.end = ended
+        step.name = StepStatus.DONE.title(self.label(StepText.COMPACTED))
+        step.output = summary
+        step.language = StepLanguage.TEXT.value
+        await self._sink.put(step)
+        await self._relabel(step.id, step.name)
+
+    async def compaction_dropped(self, step: Step) -> None:
+        """Сжатие не состоялось: его следа в истории нет, и шаг уходит из
+        ленты; контейнер, в котором больше ничего нет, — тоже."""
+        self._turn.steps -= 1
+        await self._sink.drop(step)
+        container = self._turn.container
+        if container is None:
+            return
+
+        if self._turn.steps:
+            return
+
+        await self._sink.drop(container)
+        self._turn.container = None
 
     async def tool_stopped(self, step: Step) -> None:
         """Инструмент не доработал: ход кончился раньше вызова, приложение

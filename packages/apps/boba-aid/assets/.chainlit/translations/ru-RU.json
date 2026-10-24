@@ -293,6 +293,8 @@
             "tool": "инструмент",
             "stoppedByUser": "остановлено пользователем",
             "unfinished": "ход закончился раньше вызова",
+            "compacting": "Сжимаю контекст…",
+            "compacted": "Контекст сжат",
             "elapsedMs": "{{ms}} мс",
             "elapsedSec": "{{sec}} с",
             "elapsedMin": "{{min}} мин {{sec}} с",

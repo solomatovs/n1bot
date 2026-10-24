@@ -715,6 +715,104 @@ class TestContainerLabel:
         assert _labels(recorded)[-1] == stopped
 
 
+COMPACTION = "33333333-3333-3333-3333-333333333333"
+SUMMARY = "This session is being continued from a previous conversation."
+
+
+def _compaction(status: str) -> SessionUpdate:
+    if status == "completed":
+        return schema.SessionCompactionUpdate(
+            compaction_id=COMPACTION,
+            status=status,
+            summary=[schema.TextContentBlock(text=SUMMARY)],
+        )
+
+    return schema.SessionCompactionUpdate(compaction_id=COMPACTION, status=status)
+
+
+def _deleted(recorded: FakeEmitter) -> set[str]:
+    """Шаги, чей последний кадр — удаление."""
+    last: dict[str, str] = {}
+    for kind, step in recorded.frames:
+        last[str(step.get(StepField.ID, ""))] = kind
+
+    gone: set[str] = set()
+    for step_id, kind in last.items():
+        if kind == "delete_message":
+            gone.add(step_id)
+
+    return gone
+
+
+class TestCompactionStep:
+    """Сжатие разговора — шаг хода: «сжимаю» вживую, «контекст сжат» с
+    пересказом под шагом — вживую и при воспроизведении одинаково; сжатие,
+    которое не состоялось, из ленты уходит (в истории его нет)."""
+
+    COMPACTING: ClassVar[str] = TEXTS.text(StepText.COMPACTING.value)
+    COMPACTED: ClassVar[str] = TEXTS.text(StepText.COMPACTED.value)
+
+    @pytest.mark.anyio
+    async def test_live_compaction_is_a_step_with_the_summary(
+        self,
+        runtime_stand: StandRefs,
+        storage: LocalStorageClient,
+        recorded: FakeEmitter,
+    ) -> None:
+        updates = _view(runtime_stand, storage, RemoteJournals())
+        updates.begin_turn(QUESTION)
+        await updates.view.await_model()
+        await updates.apply(_compaction("in_progress"))
+        await updates.apply(_compaction("completed"))
+        await updates.finish_turn()
+
+        assert _labels(recorded) == [
+            f"○ {self.COMPACTING}",
+            f"✔ {self.COMPACTED}",
+            TEXTS.text(StepText.DONE_STEPS.value, count=1),
+        ]
+        step = recorded.last()[_id(COMPACTION, StepRole.COMPACTION)]
+        assert step.get(StepField.NAME) == f"✔ {self.COMPACTED}"
+        assert step.get(StepField.OUTPUT) == SUMMARY
+
+    @pytest.mark.anyio
+    async def test_replay_draws_the_same_step(
+        self,
+        runtime_stand: StandRefs,
+        storage: LocalStorageClient,
+        recorded: FakeEmitter,
+    ) -> None:
+        updates = _view(runtime_stand, storage, RemoteJournals())
+        await updates.apply(_question())
+        await updates.apply(_compaction("completed"))
+        await updates.finish_turn()
+
+        step = recorded.last()[_id(COMPACTION, StepRole.COMPACTION)]
+        assert step.get(StepField.NAME) == f"✔ {self.COMPACTED}"
+        assert step.get(StepField.OUTPUT) == SUMMARY
+        assert _labels(recorded)[-1] == TEXTS.text(StepText.DONE_STEPS.value, count=1)
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("status", ["failed", "cancelled"])
+    async def test_compaction_that_did_not_happen_leaves_no_step(
+        self,
+        runtime_stand: StandRefs,
+        storage: LocalStorageClient,
+        recorded: FakeEmitter,
+        status: str,
+    ) -> None:
+        updates = _view(runtime_stand, storage, RemoteJournals())
+        updates.begin_turn(QUESTION)
+        await updates.view.await_model()
+        await updates.apply(_compaction("in_progress"))
+        await updates.apply(_compaction(status))
+        await updates.finish_turn()
+
+        gone = _deleted(recorded)
+        assert _id(COMPACTION, StepRole.COMPACTION) in gone
+        assert _id(QUESTION, StepRole.PROCESS) in gone
+
+
 class TestToolApps:
     """Инструмент с приложением MCP Apps у сервера с секцией apps: карточка
     приложения — своё сообщение основной ленты под контейнером хода с
