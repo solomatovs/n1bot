@@ -834,7 +834,8 @@ dependencies = [
     { name = "psycopg", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "pydantic", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "starlette", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-    { name = "uvicorn", extra = ["standard"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "uvicorn", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "websockets", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
 ]
 
 [package.optional-dependencies]
@@ -845,7 +846,6 @@ dev = [
     { name = "httpx2", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "omegaconf", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "pytest", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-    { name = "websockets", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
 ]
 
 [package.metadata]
@@ -880,8 +880,8 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.12,<3" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.1,<10" },
     { name = "starlette", specifier = ">=1.0,<2" },
-    { name = "uvicorn", extras = ["standard"], specifier = ">=0.35,<1" },
-    { name = "websockets", marker = "extra == 'dev'", specifier = ">=15,<16" },
+    { name = "uvicorn", specifier = ">=0.35,<1" },
+    { name = "websockets", specifier = ">=15,<16" },
 ]
 provides-extras = ["dev"]
 
