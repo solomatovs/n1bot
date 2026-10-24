@@ -36,20 +36,23 @@ from boba.agent.loader import HistoryLoader, LoadReport
 from boba.agent.queue import QueueEntry, QueueKind
 from boba.agent.records import (
     AssistantMessage,
-    AssistantRecord,
     AttachmentRecord,
     ChainRecord,
     CompactBoundaryRecord,
+    NoticeLevel,
     PermissionBehavior,
     PermissionMode,
     PermissionRule,
+    PromptRecord,
     Record,
     RecordCodec,
+    ReplyRecord,
     ReplyStopReason,
     TextBlock,
+    TurnEndRecord,
+    TurnOutcome,
     Usage,
     UserMessage,
-    UserRecord,
 )
 from boba.agent.session import Session
 from boba.agent.template import AgentTemplate
@@ -95,30 +98,28 @@ def kinds(records: Sequence[Record] | Sequence[ChainRecord]) -> list[str]:
 
 
 class Journal:
-    """Записи сессии для контрактных тестов: пары user/assistant с seq."""
+    """Записи сессии для контрактных тестов: пары user/assistant с seq и
+    концы ходов."""
 
     def __init__(self, session_id: SessionId) -> None:
         self._session = Session(session_id)
         self._ids = IdMint()
 
-    def user(
-        self, text: str, tool_use_result: object = None, stamp: str = STAMP
-    ) -> UserRecord:
+    def user(self, text: str, stamp: str = STAMP) -> PromptRecord:
         return self._session.add(
-            UserRecord(
+            PromptRecord(
                 uuid=self._ids.uuid(),
                 parent_uuid=self._session.last_chain_uuid(),
                 timestamp=stamp,
                 session_id=self._session.id.value,
                 version=VERSION,
                 message=UserMessage(content=text),
-                tool_use_result=tool_use_result,
             )
         )
 
-    def assistant(self, text: str) -> AssistantRecord:
+    def assistant(self, text: str) -> ReplyRecord:
         return self._session.add(
-            AssistantRecord(
+            ReplyRecord(
                 uuid=self._ids.uuid(),
                 parent_uuid=self._session.last_chain_uuid(),
                 timestamp=STAMP,
@@ -132,6 +133,25 @@ class Journal:
                     usage=Usage(input_tokens=10, output_tokens=5),
                 ),
                 request_id=self._ids.request_id(),
+            )
+        )
+
+    def turn_end(self) -> TurnEndRecord:
+        return self._session.add(
+            TurnEndRecord(
+                uuid=self._ids.uuid(),
+                parent_uuid=self._session.last_chain_uuid(),
+                timestamp=STAMP,
+                session_id=self._session.id.value,
+                version=VERSION,
+                outcome=TurnOutcome.COMPLETED,
+                notice="",
+                level=NoticeLevel.ERROR,
+                detail="",
+                error="",
+                usage=Usage(),
+                num_turns=1,
+                duration_ms=1,
             )
         )
 
@@ -347,8 +367,10 @@ class TestContract:
         journal = Journal(SESSION)
         first = journal.user("one")
         reply = journal.assistant("two")
+        ended = journal.turn_end()
         second = journal.user("three")
         journal.assistant("four")
+        journal.turn_end()
         records = list(journal.records())
         lease = await store.acquire(SESSION)
         try:
@@ -360,20 +382,20 @@ class TestContract:
 
         copied = await store.copy(SESSION, branch, second.uuid)
 
-        assert copied == 2
+        assert copied == 3
         documents = await read_all(store, branch)
-        assert [d["seq"] for d in documents] == [1, 2]
-        assert [d["uuid"] for d in documents] == [first.uuid, reply.uuid]
+        assert [d["seq"] for d in documents] == [1, 2, 3]
+        assert [d["uuid"] for d in documents] == [first.uuid, reply.uuid, ended.uuid]
         assert documents == [
-            {**d, "sessionId": branch.value} for d in source_before[:2]
+            {**d, "sessionId": branch.value} for d in source_before[:3]
         ]
         assert await read_all(store, SESSION) == source_before
 
         session, report = await loaded(stores.new(), branch)
         assert report.repaired == []
-        assert report.stored_seq == 2
+        assert report.stored_seq == 3
         expected = [
-            r.model_copy(update={"session_id": branch.value}) for r in records[:2]
+            r.model_copy(update={"session_id": branch.value}) for r in records[:3]
         ]
         assert list(session.records()) == expected
 
@@ -383,8 +405,8 @@ class TestContract:
         finally:
             await stores.new().release(held)
 
-        assert whole == 4
-        assert len(await read_all(store, SessionId(value="history-pg-whole"))) == 4
+        assert whole == 6
+        assert len(await read_all(store, SessionId(value="history-pg-whole"))) == 6
         assert (
             await store.copy(SESSION, SessionId(value="history-pg-empty"), first.uuid)
             == 0
@@ -402,7 +424,7 @@ class TestContract:
         with pytest.raises(HistoryError, match="already has records"):
             await store.copy(SESSION, branch, None)
 
-        assert len(await read_all(store, branch)) == 2
+        assert len(await read_all(store, branch)) == 3
         listed = [s.session.value for s in (await store.list(None, 10)).sessions]
         assert listed == ["history-pg-1", "history-pg-branch", "history-pg-whole"]
 
@@ -621,6 +643,7 @@ class TestAgent:
             "user",
             "assistant",
             "assistant",
+            "system",
         ]
         after_request = server.requests()[-1]["messages"]
         assert isinstance(last_request, list)
@@ -691,6 +714,8 @@ class TestLargeJournal:
         for _ in range(25_000):
             journal.user(text)
             journal.assistant(text)
+
+        journal.turn_end()
 
         records = list(journal.records())
         size = sum(len(RecordCodec().line(r)) for r in records[:1000]) * (

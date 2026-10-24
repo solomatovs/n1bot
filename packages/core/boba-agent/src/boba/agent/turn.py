@@ -60,11 +60,7 @@ from boba.agent.compaction import (
     SummaryPressure,
     TokenEstimator,
 )
-from boba.agent.events import (
-    EventSink,
-    ResultEvent,
-    TurnOutcome,
-)
+from boba.agent.events import EventSink, ResultEvent
 from boba.agent.ids import Clock, IdMint
 from boba.agent.profile import CompactionSettings, ModelProfile, TurnLimits
 from boba.agent.queue import InputQueue, QueueItem, QueueKind, Taken
@@ -72,25 +68,30 @@ from boba.agent.records import (
     ApiErrorRecord,
     AssistantBlock,
     AssistantMessage,
-    AssistantRecord,
+    CommandOutputRecord,
+    CommandRecord,
     CompactionPhase,
     CompactionRecord,
     CompactTrigger,
     InformationalRecord,
-    MessageOrigin,
+    InterruptRecord,
+    MetaRecord,
     NoticeLevel,
-    OriginKind,
+    PromptRecord,
     Record,
+    ReplyRecord,
     ReplyStopReason,
-    Synthetic,
+    TaskNotificationRecord,
     TextBlock,
     ThinkingBlock,
     ToolReferenceBlock,
     ToolResultBlock,
+    ToolResultRecord,
     ToolUseBlock,
+    TurnEndRecord,
+    TurnOutcome,
     Usage,
     UserMessage,
-    UserRecord,
 )
 from boba.agent.session import Session, SessionState
 from boba.agent.tags import AgentTag, LocalCommandText
@@ -156,6 +157,16 @@ class Progress:
     limit_hits: int = 0
     usage: Usage = field(default_factory=Usage)
     tracking: CompactTracking = field(default_factory=CompactTracking)
+    notice: TurnNotice = field(default_factory=lambda: TurnNotice(text="", detail=""))
+    """Слова человеку о причине конца хода; пусто — ход кончился штатно."""
+
+
+@dataclass(frozen=True)
+class TurnNotice:
+    """Пометка конца хода: слова человеку и короткая техническая причина."""
+
+    text: str
+    detail: str
 
 
 @dataclass(frozen=True)
@@ -234,7 +245,7 @@ class TurnLoop:
         self._builder = builder
         self._budget = SkillBudget(profile.context_window, profile.chars_per_token)
         self._asking = ModelAsk(model, self._sink)
-        estimator = TokenEstimator(profile)
+        estimator = TokenEstimator(profile, self._templates)
         self._estimator = estimator
         self._gate = CompactGate(
             ContextMeter(estimator),
@@ -294,35 +305,42 @@ class TurnLoop:
         return ContextUsage(used=fill.tokens, size=self._profile.effective_window())
 
     async def run(self, taken: Taken, cancellation: RunCancellation) -> ResultEvent:
-        """Ход по взятому из очереди; итог отдаётся, а не объявляется: конец хода
-        объявляет агент, когда записи сброшены и сессия уже свободна."""
+        """Ход по взятому из очереди; последняя запись хода — turn_end с
+        исходом. Итог отдаётся, а не объявляется: конец хода объявляет агент,
+        когда записи сброшены и сессия уже свободна."""
         started = time.monotonic()
+        self._last_failure = ""
         progress = Progress()
         if taken.head.kind is QueueKind.COMPACT:
-            outcome = await self._manual_compact(taken.head, cancellation)
+            outcome = await self._manual_compact(taken.head, progress, cancellation)
         else:
             outcome = await self._turn(taken, progress, cancellation)
 
         duration = int((time.monotonic() - started) * self.MILLIS)
-        prompt_ids: list[str] = []
-        for item in taken.items:
-            prompt_ids.append(item.id)
-
         error = ""
-        if outcome.has_reason:
+        if outcome.refused:
             error = self._last_failure
 
+        turn_end = self._keeper.add_unannounced(
+            TurnEndRecord(
+                uuid=self._ids.uuid(),
+                parent_uuid=self._session.last_chain_uuid(),
+                timestamp=self._clock.now(),
+                session_id=self._session.id.value,
+                version=self._version,
+                outcome=outcome,
+                notice=progress.notice.text,
+                level=NoticeLevel.ERROR,
+                detail=progress.notice.detail,
+                error=error,
+                usage=progress.usage,
+                num_turns=progress.steps,
+                duration_ms=duration,
+            )
+        )
         await self._writer.flush()
 
-        return ResultEvent(
-            outcome=outcome,
-            session_id=self._session.id.value,
-            usage=progress.usage,
-            num_turns=progress.steps,
-            duration_ms=duration,
-            prompt_ids=prompt_ids,
-            error=error,
-        )
+        return ResultEvent(turn_end=turn_end)
 
     async def _turn(
         self, taken: Taken, progress: Progress, cancellation: RunCancellation
@@ -343,14 +361,14 @@ class TurnLoop:
                 return outcome
 
     async def _manual_compact(
-        self, command: QueueItem, cancellation: RunCancellation
+        self, command: QueueItem, progress: Progress, cancellation: RunCancellation
     ) -> TurnOutcome:
         """Сжатие по команде пользователя `/compact <указания>`: вызов
         пишется в разговор записями локальной команды — пометка о ней и сам
         вызов с uuid элемента очереди, — затем пересказ с указаниями из
         текста команды и запись её вывода. Вызов остаётся хвостом после
-        пересказа, модель видит его в следующих запросах. Неудача — запись
-        об ошибке с причиной, как у отказа модели."""
+        пересказа, модель видит его в следующих запросах. Неудача — пометка
+        конца хода с причиной, как у отказа модели."""
         await self._write_command(command)
         snapshot = self._snapshot_in_use()
         fill = self._gate.measure(self._session.conversation(), snapshot)
@@ -368,13 +386,22 @@ class TurnLoop:
 
         if isinstance(compacted, NotSummarized):
             text = self._templates.read(AgentTemplateFile.MANUAL_COMPACTION_FAILED)
-            await self._write_api_failure(
-                text.format(detail=compacted.brief()), compacted.describe()
+            progress.notice = TurnNotice(
+                text=text.format(detail=compacted.brief()), detail=compacted.describe()
             )
             return TurnOutcome.API_ERROR
 
         output = self._templates.read(AgentTemplateFile.COMPACTED)
-        await self._write_user(AgentTag.LOCAL_COMMAND_STDOUT.wrap(output), None)
+        await self._keeper.add(
+            CommandOutputRecord(
+                uuid=self._ids.uuid(),
+                parent_uuid=self._session.last_chain_uuid(),
+                timestamp=self._clock.now(),
+                session_id=self._session.id.value,
+                version=self._version,
+                message=UserMessage(content=AgentTag.LOCAL_COMMAND_STDOUT.wrap(output)),
+            )
+        )
 
         return TurnOutcome.COMPLETED
 
@@ -387,26 +414,13 @@ class TurnLoop:
         )
 
         call = CommandCall(name=command.kind.value, rest=command.text)
-        record = UserRecord(
+        record = CommandRecord(
             uuid=command.id,
             parent_uuid=self._session.last_chain_uuid(),
             timestamp=self._clock.now(),
             session_id=self._session.id.value,
             version=self._version,
             message=UserMessage(content=self._commands.call(call)),
-            origin=MessageOrigin(kind=OriginKind.HUMAN),
-        )
-        await self._keeper.add(record)
-
-    async def _write_user(self, text: str, is_meta: bool | None) -> None:
-        record = UserRecord(
-            uuid=self._ids.uuid(),
-            parent_uuid=self._session.last_chain_uuid(),
-            timestamp=self._clock.now(),
-            session_id=self._session.id.value,
-            version=self._version,
-            message=UserMessage(content=text),
-            is_meta=is_meta,
         )
         await self._keeper.add(record)
 
@@ -450,14 +464,14 @@ class TurnLoop:
             return await self._output_limited(asked, progress)
 
         if isinstance(asked, Overflowed):
-            await self._write_api_error(self._unretried(asked.error), 0, 0)
+            self._last_failure = asked.error
 
-            return await self._too_long_outcome(progress.tracking)
+            return self._too_long_outcome(progress)
 
         if isinstance(asked, Failed):
             failed = asked.attempt
-            await self._write_api_failure(
-                self._troubles.failed(failed.trouble), failed.detail
+            progress.notice = TurnNotice(
+                text=self._troubles.failed(failed.trouble), detail=failed.detail
             )
             return TurnOutcome.API_ERROR
 
@@ -477,8 +491,9 @@ class TurnLoop:
         fill = self._gate.measure(self._session.conversation(), snapshot)
         decision = self._gate.decide(fill, tracking)
         if decision is GateDecision.RAPID_REFILL:
-            await self._write_api_failure(
-                self._templates.read(AgentTemplateFile.WINDOW_THRASHING_NOTICE), None
+            progress.notice = TurnNotice(
+                text=self._templates.read(AgentTemplateFile.WINDOW_THRASHING_NOTICE),
+                detail="",
             )
             return TurnOutcome.RAPID_REFILL_BREAKER
 
@@ -501,34 +516,32 @@ class TurnLoop:
 
             tracking.failed(compacted)
 
-        return await self._blocked(fill, tracking)
+        return self._blocked(fill, progress)
 
-    async def _blocked(
-        self, fill: Fill, tracking: CompactTracking
-    ) -> TurnOutcome | None:
-        """Блокирующий предел: записи и исход, если сжатие не помогло."""
+    def _blocked(self, fill: Fill, progress: Progress) -> TurnOutcome | None:
+        """Блокирующий предел: исход, если сжатие не помогло."""
         if fill.level is not FillLevel.BLOCKED:
             return None
 
-        if tracking.compacted:
+        if progress.tracking.compacted:
             return None
 
-        text = self._too_long(tracking)
-        await self._write_api_error(self._unretried(text), 0, 0)
+        self._last_failure = self._too_long(progress.tracking)
 
-        return await self._too_long_outcome(tracking)
+        return self._too_long_outcome(progress)
 
-    async def _too_long_outcome(self, tracking: CompactTracking) -> TurnOutcome:
-        """Конец хода запросом больше окна: запись агента человеку — окно
-        полно, а если сжатие в этом ходе не удалось — что оно не помогло, с
-        короткой причиной."""
+    def _too_long_outcome(self, progress: Progress) -> TurnOutcome:
+        """Конец хода запросом больше окна: пометка человеку — окно полно, а
+        если сжатие в этом ходе не удалось — что оно не помогло, с короткой
+        причиной."""
+        tracking = progress.tracking
         notice = self._templates.read(AgentTemplateFile.WINDOW_FULL_NOTICE)
-        detail: str | None = None
+        detail = ""
         if tracking.last_failure:
             notice = self._templates.read(AgentTemplateFile.WINDOW_UNSHORTENED_NOTICE)
             detail = tracking.last_reason
 
-        await self._write_api_failure(notice, detail)
+        progress.notice = TurnNotice(text=notice, detail=detail)
         if tracking.breaker_open:
             return TurnOutcome.COMPACT_FAILURE_BREAKER
 
@@ -741,8 +754,9 @@ class TurnLoop:
         await self._write_partial(asked.partial, ReplyStopReason.MAX_TOKENS, False)
         if progress.limit_hits > self._limits.output_limit_retries:
             self._last_failure = asked.error
-            await self._write_api_failure(
-                self._templates.read(AgentTemplateFile.OUTPUT_LIMIT_NOTICE), None
+            progress.notice = TurnNotice(
+                text=self._templates.read(AgentTemplateFile.OUTPUT_LIMIT_NOTICE),
+                detail="",
             )
             return TurnOutcome.OUTPUT_LIMIT
 
@@ -790,10 +804,6 @@ class TurnLoop:
 
         return Errored("the model returned an empty reply", LlmTrouble.EMPTY, "")
 
-    def _unretried(self, error: str) -> Errored:
-        """Отказ без повтора: окно модели, текст для журнала."""
-        return Errored(error, LlmTrouble.UNKNOWN, "")
-
     def _is_empty(self, reply: ChatReply) -> bool:
         if reply.tool_calls:
             return False
@@ -825,7 +835,7 @@ class TurnLoop:
             record = self._attachments.environment(
                 self._session.last_chain_uuid(),
                 self._environment,
-                announced.environment(),
+                announced.environment_snapshot(),
             )
             if record is not None:
                 await self._keeper.add(record)
@@ -898,7 +908,7 @@ class TurnLoop:
         record = self._attachments.instructions(
             self._session.last_chain_uuid(),
             self._catalog.connected(),
-            announced.instructions(),
+            announced.announced_instructions(),
         )
         if record is None:
             return
@@ -933,7 +943,7 @@ class TurnLoop:
         """Дата, если сменилась; снимок, если его нет в доступной истории."""
         announced = Announced(self._session.conversation())
         today = self._attachments.today()
-        known = announced.date()
+        known = announced.date_text()
         if known != today:
             record = self._attachments.date(
                 self._session.last_chain_uuid(), today, known is not None
@@ -988,28 +998,43 @@ class TurnLoop:
         await self._keeper.add(record)
 
     async def _write_prompt(self, taken: Taken) -> None:
-        origin = MessageOrigin(kind=OriginKind.HUMAN)
-        is_meta: bool | None = None
-        if taken.head.kind is QueueKind.TASK_NOTIFICATION:
-            origin = MessageOrigin(kind=OriginKind.TASK_NOTIFICATION)
-            is_meta = True
-
         # uuid записи — идентификатор головного элемента очереди: его либо дал
         # отправитель (и потом ссылается на запись по нему), либо отчеканила очередь
-        record = UserRecord(
-            uuid=taken.head.id,
+        message = UserMessage(content=taken.content)
+        if taken.head.kind is QueueKind.TASK_NOTIFICATION:
+            await self._keeper.add(
+                TaskNotificationRecord(
+                    uuid=taken.head.id,
+                    parent_uuid=self._session.last_chain_uuid(),
+                    timestamp=self._clock.now(),
+                    session_id=self._session.id.value,
+                    version=self._version,
+                    message=message,
+                )
+            )
+            return
+
+        await self._keeper.add(
+            PromptRecord(
+                uuid=taken.head.id,
+                parent_uuid=self._session.last_chain_uuid(),
+                timestamp=self._clock.now(),
+                session_id=self._session.id.value,
+                version=self._version,
+                message=message,
+            )
+        )
+
+    async def _write_meta(self, text: str) -> None:
+        record = MetaRecord(
+            uuid=self._ids.uuid(),
             parent_uuid=self._session.last_chain_uuid(),
             timestamp=self._clock.now(),
             session_id=self._session.id.value,
             version=self._version,
-            message=UserMessage(content=taken.content),
-            is_meta=is_meta,
-            origin=origin,
+            message=UserMessage(content=text),
         )
         await self._keeper.add(record)
-
-    async def _write_meta(self, text: str) -> None:
-        await self._write_user(text, True)
 
     async def _write_reply(
         self, reply: ChatReply, stop_reason: ReplyStopReason, aborted: bool = False
@@ -1047,7 +1072,7 @@ class TurnLoop:
 
         planned: list[PlannedCall] = []
         for index, (block, wire_id) in enumerate(blocks):
-            record = AssistantRecord(
+            record = ReplyRecord(
                 uuid=self._ids.uuid(),
                 parent_uuid=self._session.last_chain_uuid(),
                 timestamp=self._clock.now(),
@@ -1083,7 +1108,7 @@ class TurnLoop:
                 content=self._result_content(result),
                 is_error=is_error,
             )
-            record = UserRecord(
+            record = ToolResultRecord(
                 uuid=self._ids.uuid(),
                 parent_uuid=self._session.last_chain_uuid(),
                 timestamp=self._clock.now(),
@@ -1093,6 +1118,7 @@ class TurnLoop:
                 tool_use_result=result.stored,
                 source_tool_assistant_uuid=result.call.assistant_uuid,
                 tool_denial_kind=result.denial,
+                status=result.status,
             )
             await self._keeper.add(record)
 
@@ -1137,13 +1163,8 @@ class TurnLoop:
     async def _write_api_error(
         self, failed: Errored, retry_in_ms: int, attempt: int
     ) -> None:
-        """Запись system api_error: попытка attempt не удалась, повтор через
-        retry_in_ms; attempt 0 — отказ без повтора, его текст пишет следом
-        синтетический ответ."""
-        retries = 0
-        if attempt:
-            retries = self._limits.api_retries
-
+        """Запись system api_error: попытка attempt (с 1) не удалась, повтор
+        через retry_in_ms; отказ без повтора пишет пометка конца хода."""
         record = ApiErrorRecord(
             uuid=self._ids.uuid(),
             parent_uuid=self._session.last_chain_uuid(),
@@ -1153,7 +1174,7 @@ class TurnLoop:
             error=failed.error,
             retry_in_ms=retry_in_ms,
             retry_attempt=attempt,
-            max_retries=retries,
+            max_retries=self._limits.api_retries,
             trouble=failed.trouble,
             detail=failed.detail,
         )
@@ -1175,29 +1196,6 @@ class TurnLoop:
         )
         await self._keeper.add(record)
 
-    async def _write_api_failure(self, text: str, detail: str | None) -> None:
-        """Синтетическая запись об отказе модели: text — слова человеку,
-        detail — короткая техническая причина (None — её нет); модели не
-        отправляется."""
-        record = AssistantRecord(
-            uuid=self._ids.uuid(),
-            parent_uuid=self._session.last_chain_uuid(),
-            timestamp=self._clock.now(),
-            session_id=self._session.id.value,
-            version=self._version,
-            message=AssistantMessage(
-                id=self._ids.message_id(),
-                model=Synthetic.MODEL.value,
-                content=[TextBlock(text=text)],
-                stop_reason=ReplyStopReason.STOP_SEQUENCE,
-                usage=Usage(),
-            ),
-            request_id=self._ids.request_id(),
-            is_api_error_message=True,
-            error=detail,
-        )
-        await self._keeper.add(record)
-
     async def _write_abort(self, aborted: Aborted) -> TurnOutcome:
         """Записи отмены по таблице раздела 5.14 для стадии «ответ идёт»."""
         await self._write_partial(aborted.partial, ReplyStopReason.END_TURN, True)
@@ -1210,7 +1208,7 @@ class TurnLoop:
             by_shutdown = True
             outcome = TurnOutcome.SHUTDOWN
 
-        record = UserRecord(
+        record = InterruptRecord(
             uuid=self._ids.uuid(),
             parent_uuid=self._session.last_chain_uuid(),
             timestamp=self._clock.now(),
@@ -1238,7 +1236,7 @@ class TurnLoop:
             outcome = TurnOutcome.SHUTDOWN
 
         text = self._templates.read(AgentTemplateFile.REQUEST_INTERRUPTED_TOOL_USE)
-        record = UserRecord(
+        record = InterruptRecord(
             uuid=self._ids.uuid(),
             parent_uuid=self._session.last_chain_uuid(),
             timestamp=self._clock.now(),

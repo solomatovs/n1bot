@@ -1,0 +1,521 @@
+[
+ {
+  "model": "fake-model",
+  "messages": [
+   {
+    "role": "system",
+    "content": "You are the stand agent.\n\nAnswer briefly."
+   },
+   {
+    "role": "user",
+    "content": [
+     {
+      "type": "text",
+      "text": "<system-reminder>\nYou are powered by the model fake-model.\n</system-reminder>"
+     },
+     {
+      "type": "text",
+      "text": "<system-reminder>\nToday's date is <today>.\n</system-reminder>"
+     },
+     {
+      "type": "text",
+      "text": "scenario:call {\"name\": \"AskUserQuestion\", \"arguments\": {\"questions\": [{\"question\": \"Which one?\", \"header\": \"Pick\", \"options\": [{\"label\": \"A\", \"description\": \"first\"}, {\"label\": \"A\", \"description\": \"again\"}]}]}}"
+     }
+    ]
+   }
+  ],
+  "stream": true,
+  "stream_options": {
+   "include_usage": true
+  },
+  "tools": [
+   {
+    "type": "function",
+    "function": {
+     "name": "AskUserQuestion",
+     "description": "Используй этот инструмент, только когда работа упёрлась в решение, которое по-настоящему принимает пользователь: его нельзя вывести из запроса, из кода или из разумных умолчаний.\n\nКак пользоваться:\n- пользователь всегда может выбрать «Other» и ответить своим текстом\n- multiSelect: true — когда на вопрос можно выбрать несколько ответов\n- рекомендуемый вариант ставь первым и допиши в конце его метки «(Recommended)»\n\nПредпросмотр:\nНеобязательное поле `preview` у вариантов — для конкретных артефактов, которые пользователю нужно сравнить глазами:\n- макеты интерфейса в ASCII\n- фрагменты кода с разными реализациями\n- варианты схем\n- примеры конфигурации\n\nПредпросмотр рисуется как markdown в моноширинной рамке, многострочный текст поддерживается. Если предпросмотр есть хотя бы у одного варианта, интерфейс показывает варианты списком слева, а предпросмотр — справа. Для простого выбора, где хватает метки и описания, предпросмотр не нужен. Предпросмотр бывает только у вопроса с одиночным выбором (не multiSelect).",
+     "parameters": {
+      "$defs": {
+       "AskOption": {
+        "properties": {
+         "label": {
+          "description": "Текст варианта, который пользователь видит и выбирает: 1–5 слов, ясно называющих выбор.",
+          "title": "Label",
+          "type": "string"
+         },
+         "description": {
+          "description": "Что значит вариант и что будет, если его выбрать: компромиссы и последствия.",
+          "title": "Description",
+          "type": "string"
+         },
+         "preview": {
+          "default": "",
+          "description": "Предпросмотр варианта, который показывается, пока вариант в фокусе:\n   - макет интерфейса, фрагмент кода, вариант схемы или конфигурации\n       когда пользователю нужно сравнить варианты глазами\n   - пусто — простой выбор, где хватает метки и описания\nТолько у вопроса с одиночным выбором; формат — в описании инструмента.",
+          "title": "Preview",
+          "type": "string"
+         }
+        },
+        "required": [
+         "label",
+         "description"
+        ],
+        "title": "AskOption",
+        "type": "object"
+       },
+       "AskQuestion": {
+        "description": "Вопрос пользователю: текст, метка вкладки и варианты ответа.",
+        "properties": {
+         "question": {
+          "description": "Полный текст вопроса: ясный, конкретный, с вопросительным знаком в конце. Пример: «Какую библиотеку взять для форматирования дат?». Вопрос с несколькими ответами формулируется под них: «Какие возможности включить?»",
+          "title": "Question",
+          "type": "string"
+         },
+         "header": {
+          "description": "Короткая метка вопроса на его вкладке, не длиннее 12 знаков: «Вход», «Библиотека», «Подход».",
+          "maxLength": 12,
+          "title": "Header",
+          "type": "string"
+         },
+         "options": {
+          "description": "Варианты ответа, от 2 до 4: каждый — отдельный выбор, при одиночном выборе варианты исключают друг друга. Вариант «Other» со своим текстом интерфейс добавляет сам — в список его не включай.",
+          "items": {
+           "$ref": "#/$defs/AskOption"
+          },
+          "maxItems": 4,
+          "minItems": 2,
+          "title": "Options",
+          "type": "array"
+         },
+         "multiSelect": {
+          "default": false,
+          "description": "Сколько вариантов может выбрать пользователь:\n   - false — один вариант\n   - true — несколько, когда варианты не исключают друг друга\n",
+          "title": "Multiselect",
+          "type": "boolean"
+         }
+        },
+        "required": [
+         "question",
+         "header",
+         "options"
+        ],
+        "title": "AskQuestion",
+        "type": "object"
+       }
+      },
+      "description": "Ввод инструмента «вопрос пользователю»: тексты вопросов различаются,\nметки вариантов различаются внутри вопроса.",
+      "properties": {
+       "questions": {
+        "description": "Вопросы пользователю, от 1 до 4.",
+        "items": {
+         "$ref": "#/$defs/AskQuestion"
+        },
+        "maxItems": 4,
+        "minItems": 1,
+        "title": "Questions",
+        "type": "array"
+       }
+      },
+      "required": [
+       "questions"
+      ],
+      "title": "AskUserQuestionInput",
+      "type": "object"
+     }
+    }
+   },
+   {
+    "type": "function",
+    "function": {
+     "name": "mcp__stand__broken",
+     "description": "stand tool broken",
+     "parameters": {
+      "type": "object",
+      "properties": {}
+     }
+    }
+   },
+   {
+    "type": "function",
+    "function": {
+     "name": "mcp__stand__drop",
+     "description": "stand tool drop",
+     "parameters": {
+      "type": "object",
+      "properties": {}
+     }
+    }
+   },
+   {
+    "type": "function",
+    "function": {
+     "name": "mcp__stand__empty",
+     "description": "stand tool empty",
+     "parameters": {
+      "type": "object",
+      "properties": {}
+     }
+    }
+   },
+   {
+    "type": "function",
+    "function": {
+     "name": "mcp__stand__forged",
+     "description": "stand tool forged",
+     "parameters": {
+      "type": "object",
+      "properties": {}
+     }
+    }
+   },
+   {
+    "type": "function",
+    "function": {
+     "name": "mcp__stand__large",
+     "description": "stand tool large",
+     "parameters": {
+      "type": "object",
+      "properties": {}
+     }
+    }
+   },
+   {
+    "type": "function",
+    "function": {
+     "name": "mcp__stand__lookup",
+     "description": "stand tool lookup",
+     "parameters": {
+      "type": "object",
+      "properties": {}
+     }
+    }
+   },
+   {
+    "type": "function",
+    "function": {
+     "name": "mcp__stand__note",
+     "description": "stand tool note",
+     "parameters": {
+      "type": "object",
+      "properties": {}
+     }
+    }
+   },
+   {
+    "type": "function",
+    "function": {
+     "name": "mcp__stand__query",
+     "description": "stand tool query",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "connection": {
+        "type": "string",
+        "x-boba-connection": "postgres",
+        "description": "Name of the postgres connection to use. Pass the name of one of your own connections, the client seals it.",
+        "contentMediaType": "application/jose",
+        "contentSchema": {
+         "type": "object",
+         "properties": {
+          "kind": {
+           "const": "postgres"
+          }
+         },
+         "required": [
+          "kind"
+         ]
+        }
+       },
+       "statement": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "connection",
+       "statement"
+      ]
+     }
+    }
+   },
+   {
+    "type": "function",
+    "function": {
+     "name": "mcp__stand__sleep",
+     "description": "stand tool sleep",
+     "parameters": {
+      "type": "object",
+      "properties": {}
+     }
+    }
+   }
+  ]
+ },
+ {
+  "model": "fake-model",
+  "messages": [
+   {
+    "role": "system",
+    "content": "You are the stand agent.\n\nAnswer briefly."
+   },
+   {
+    "role": "user",
+    "content": [
+     {
+      "type": "text",
+      "text": "<system-reminder>\nYou are powered by the model fake-model.\n</system-reminder>"
+     },
+     {
+      "type": "text",
+      "text": "<system-reminder>\nToday's date is <today>.\n</system-reminder>"
+     },
+     {
+      "type": "text",
+      "text": "scenario:call {\"name\": \"AskUserQuestion\", \"arguments\": {\"questions\": [{\"question\": \"Which one?\", \"header\": \"Pick\", \"options\": [{\"label\": \"A\", \"description\": \"first\"}, {\"label\": \"A\", \"description\": \"again\"}]}]}}"
+     }
+    ]
+   },
+   {
+    "role": "assistant",
+    "content": "",
+    "tool_calls": [
+     {
+      "id": "call-1",
+      "type": "function",
+      "function": {
+       "name": "AskUserQuestion",
+       "arguments": "{\"questions\": [{\"question\": \"Which one?\", \"header\": \"Pick\", \"options\": [{\"label\": \"A\", \"description\": \"first\"}, {\"label\": \"A\", \"description\": \"again\"}]}]}"
+      }
+     }
+    ]
+   },
+   {
+    "role": "tool",
+    "content": "<tool_use_error>The AskUserQuestion call was not shown to the user: its arguments do not match the tool schema: <root>: Value error, option labels must be unique within each question, got ['A', 'A'] for 'Which one?' [value_error]</tool_use_error>",
+    "tool_call_id": "call-1"
+   }
+  ],
+  "stream": true,
+  "stream_options": {
+   "include_usage": true
+  },
+  "tools": [
+   {
+    "type": "function",
+    "function": {
+     "name": "AskUserQuestion",
+     "description": "Используй этот инструмент, только когда работа упёрлась в решение, которое по-настоящему принимает пользователь: его нельзя вывести из запроса, из кода или из разумных умолчаний.\n\nКак пользоваться:\n- пользователь всегда может выбрать «Other» и ответить своим текстом\n- multiSelect: true — когда на вопрос можно выбрать несколько ответов\n- рекомендуемый вариант ставь первым и допиши в конце его метки «(Recommended)»\n\nПредпросмотр:\nНеобязательное поле `preview` у вариантов — для конкретных артефактов, которые пользователю нужно сравнить глазами:\n- макеты интерфейса в ASCII\n- фрагменты кода с разными реализациями\n- варианты схем\n- примеры конфигурации\n\nПредпросмотр рисуется как markdown в моноширинной рамке, многострочный текст поддерживается. Если предпросмотр есть хотя бы у одного варианта, интерфейс показывает варианты списком слева, а предпросмотр — справа. Для простого выбора, где хватает метки и описания, предпросмотр не нужен. Предпросмотр бывает только у вопроса с одиночным выбором (не multiSelect).",
+     "parameters": {
+      "$defs": {
+       "AskOption": {
+        "properties": {
+         "label": {
+          "description": "Текст варианта, который пользователь видит и выбирает: 1–5 слов, ясно называющих выбор.",
+          "title": "Label",
+          "type": "string"
+         },
+         "description": {
+          "description": "Что значит вариант и что будет, если его выбрать: компромиссы и последствия.",
+          "title": "Description",
+          "type": "string"
+         },
+         "preview": {
+          "default": "",
+          "description": "Предпросмотр варианта, который показывается, пока вариант в фокусе:\n   - макет интерфейса, фрагмент кода, вариант схемы или конфигурации\n       когда пользователю нужно сравнить варианты глазами\n   - пусто — простой выбор, где хватает метки и описания\nТолько у вопроса с одиночным выбором; формат — в описании инструмента.",
+          "title": "Preview",
+          "type": "string"
+         }
+        },
+        "required": [
+         "label",
+         "description"
+        ],
+        "title": "AskOption",
+        "type": "object"
+       },
+       "AskQuestion": {
+        "description": "Вопрос пользователю: текст, метка вкладки и варианты ответа.",
+        "properties": {
+         "question": {
+          "description": "Полный текст вопроса: ясный, конкретный, с вопросительным знаком в конце. Пример: «Какую библиотеку взять для форматирования дат?». Вопрос с несколькими ответами формулируется под них: «Какие возможности включить?»",
+          "title": "Question",
+          "type": "string"
+         },
+         "header": {
+          "description": "Короткая метка вопроса на его вкладке, не длиннее 12 знаков: «Вход», «Библиотека», «Подход».",
+          "maxLength": 12,
+          "title": "Header",
+          "type": "string"
+         },
+         "options": {
+          "description": "Варианты ответа, от 2 до 4: каждый — отдельный выбор, при одиночном выборе варианты исключают друг друга. Вариант «Other» со своим текстом интерфейс добавляет сам — в список его не включай.",
+          "items": {
+           "$ref": "#/$defs/AskOption"
+          },
+          "maxItems": 4,
+          "minItems": 2,
+          "title": "Options",
+          "type": "array"
+         },
+         "multiSelect": {
+          "default": false,
+          "description": "Сколько вариантов может выбрать пользователь:\n   - false — один вариант\n   - true — несколько, когда варианты не исключают друг друга\n",
+          "title": "Multiselect",
+          "type": "boolean"
+         }
+        },
+        "required": [
+         "question",
+         "header",
+         "options"
+        ],
+        "title": "AskQuestion",
+        "type": "object"
+       }
+      },
+      "description": "Ввод инструмента «вопрос пользователю»: тексты вопросов различаются,\nметки вариантов различаются внутри вопроса.",
+      "properties": {
+       "questions": {
+        "description": "Вопросы пользователю, от 1 до 4.",
+        "items": {
+         "$ref": "#/$defs/AskQuestion"
+        },
+        "maxItems": 4,
+        "minItems": 1,
+        "title": "Questions",
+        "type": "array"
+       }
+      },
+      "required": [
+       "questions"
+      ],
+      "title": "AskUserQuestionInput",
+      "type": "object"
+     }
+    }
+   },
+   {
+    "type": "function",
+    "function": {
+     "name": "mcp__stand__broken",
+     "description": "stand tool broken",
+     "parameters": {
+      "type": "object",
+      "properties": {}
+     }
+    }
+   },
+   {
+    "type": "function",
+    "function": {
+     "name": "mcp__stand__drop",
+     "description": "stand tool drop",
+     "parameters": {
+      "type": "object",
+      "properties": {}
+     }
+    }
+   },
+   {
+    "type": "function",
+    "function": {
+     "name": "mcp__stand__empty",
+     "description": "stand tool empty",
+     "parameters": {
+      "type": "object",
+      "properties": {}
+     }
+    }
+   },
+   {
+    "type": "function",
+    "function": {
+     "name": "mcp__stand__forged",
+     "description": "stand tool forged",
+     "parameters": {
+      "type": "object",
+      "properties": {}
+     }
+    }
+   },
+   {
+    "type": "function",
+    "function": {
+     "name": "mcp__stand__large",
+     "description": "stand tool large",
+     "parameters": {
+      "type": "object",
+      "properties": {}
+     }
+    }
+   },
+   {
+    "type": "function",
+    "function": {
+     "name": "mcp__stand__lookup",
+     "description": "stand tool lookup",
+     "parameters": {
+      "type": "object",
+      "properties": {}
+     }
+    }
+   },
+   {
+    "type": "function",
+    "function": {
+     "name": "mcp__stand__note",
+     "description": "stand tool note",
+     "parameters": {
+      "type": "object",
+      "properties": {}
+     }
+    }
+   },
+   {
+    "type": "function",
+    "function": {
+     "name": "mcp__stand__query",
+     "description": "stand tool query",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "connection": {
+        "type": "string",
+        "x-boba-connection": "postgres",
+        "description": "Name of the postgres connection to use. Pass the name of one of your own connections, the client seals it.",
+        "contentMediaType": "application/jose",
+        "contentSchema": {
+         "type": "object",
+         "properties": {
+          "kind": {
+           "const": "postgres"
+          }
+         },
+         "required": [
+          "kind"
+         ]
+        }
+       },
+       "statement": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "connection",
+       "statement"
+      ]
+     }
+    }
+   },
+   {
+    "type": "function",
+    "function": {
+     "name": "mcp__stand__sleep",
+     "description": "stand tool sleep",
+     "parameters": {
+      "type": "object",
+      "properties": {}
+     }
+    }
+   }
+  ]
+ }
+]

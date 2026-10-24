@@ -12,12 +12,7 @@ from typing import ClassVar
 
 import pytest
 
-from boba.agent.events import (
-    RecordEvent,
-    ResultEvent,
-    StreamEvent,
-    TurnOutcome,
-)
+from boba.agent.events import RecordEvent, ResultEvent, StreamEvent
 from boba.agent.history import SessionId
 from boba.agent.ids import IdMint, SystemClock
 from boba.agent.loader import HistoryLoader
@@ -27,11 +22,14 @@ from boba.agent.records import (
     AssistantRecord,
     AttachmentRecord,
     ChainRecord,
+    InterruptRecord,
+    MetaRecord,
+    NoResponseRecord,
     Record,
+    ReplyRecord,
     ReplyStopReason,
-    Synthetic,
-    TextBlock,
-    UserRecord,
+    TurnEndRecord,
+    TurnOutcome,
 )
 from boba.agent.session import Session
 from boba.agent.template import AgentTemplate
@@ -62,6 +60,9 @@ def kinds(records: Sequence[Record] | Sequence[ChainRecord]) -> list[str]:
 
         if isinstance(record, AssistantRecord):
             name = f"assistant:{record.message.content[0].type}"
+
+        if isinstance(record, TurnEndRecord):
+            name = f"system:turn_end:{record.outcome.value}"
 
         names.append(name)
 
@@ -140,11 +141,13 @@ class TestTwoTurns:
             "attachment:date",
             "attachment:prompt_snapshot",
             "assistant:text",
+            "system:turn_end:completed",
             "queue-operation",
             "queue-operation",
             "user",
             "assistant:thinking",
             "assistant:text",
+            "system:turn_end:completed",
         ]
         assert_linked(session.chain())
         assert list(served.agent.outcomes) == [TurnOutcome.COMPLETED] * 2
@@ -152,7 +155,18 @@ class TestTwoTurns:
         assert len(results) == 2
         assert all(isinstance(e, ResultEvent) and e.num_turns == 1 for e in results)
         assert len(sink.of(StreamEvent)) > 0
-        assert len(sink.of(RecordEvent)) == 5
+        announced: list[str] = []
+        for event in sink.of(RecordEvent):
+            assert isinstance(event, RecordEvent)
+            if isinstance(event.record, ChainRecord):
+                announced.append(event.record.uuid)
+
+        expected: list[str] = []
+        for record in session.chain():
+            if not isinstance(record, TurnEndRecord):
+                expected.append(record.uuid)
+
+        assert announced == expected
 
         requests = server.requests()
         assert len(requests) == 2
@@ -217,6 +231,7 @@ class TestResume:
             "user",
             "assistant:thinking",
             "assistant:text",
+            "system:turn_end:completed",
         ]
         assert_linked(session_again.chain())
         after_request = server.requests()[-1]["messages"]
@@ -258,15 +273,15 @@ class TestOutputLimit:
             if isinstance(r, AssistantRecord)
             and r.message.stop_reason is ReplyStopReason.MAX_TOKENS
         ]
-        metas = [r for r in chain if isinstance(r, UserRecord) and r.is_meta]
+        metas = [r for r in chain if isinstance(r, MetaRecord)]
         assert len(partials) == 4
         assert len(metas) == 3
         assert metas[0].message.content.startswith("Output token limit hit.")  # type: ignore[union-attr]
         assert partials[0].message.content[0].type == "text"
         final = chain[-1]
-        assert isinstance(final, AssistantRecord)
-        assert final.is_api_error_message
-        assert final.message.model == Synthetic.MODEL
+        assert isinstance(final, TurnEndRecord)
+        assert final.outcome is TurnOutcome.OUTPUT_LIMIT
+        assert final.notice
         assert len(server.requests()) == 4
         last_messages = server.requests()[-1]["messages"]
         assert isinstance(last_messages, list)
@@ -312,12 +327,10 @@ class TestApiErrors:
         assert [e.retry_in_ms for e in errors] == [0, 0, 0]
         troubles = {e.trouble for e in errors}
         assert troubles == {self.TROUBLES[failure]}, errors
-        synthetic = first_turn[-1]
-        assert isinstance(synthetic, AssistantRecord)
-        assert synthetic.is_api_error_message
-        told = synthetic.message.content[0]
-        assert isinstance(told, TextBlock)
-        assert "so this turn has stopped" in told.text, told.text
+        ended = first_turn[-1]
+        assert isinstance(ended, TurnEndRecord)
+        assert ended.outcome is TurnOutcome.API_ERROR
+        assert "so this turn has stopped" in ended.notice, ended.notice
 
         roles = [m["role"] for m in server.requests()[-1]["messages"]]  # type: ignore[index]
         assert roles in (["system", "user", "assistant"], ["system", "user"])
@@ -354,11 +367,14 @@ class TestCancellation:
 
         assert list(served.agent.outcomes) == [TurnOutcome.ABORTED_STREAMING]
         chain = session.chain()
-        partial = chain[-2]
-        marker = chain[-1]
-        assert isinstance(partial, AssistantRecord)
+        partial = chain[-3]
+        marker = chain[-2]
+        ended = chain[-1]
+        assert isinstance(ended, TurnEndRecord)
+        assert ended.outcome is TurnOutcome.ABORTED_STREAMING
+        assert isinstance(partial, ReplyRecord)
         assert partial.is_aborted_mid_stream
-        assert isinstance(marker, UserRecord)
+        assert isinstance(marker, InterruptRecord)
         assert marker.message.content == "[Request interrupted by user]"
         assert marker.interrupted_by_shutdown is None
         again = await reloaded(tmp_path / "history", SESSION)
@@ -385,8 +401,8 @@ class TestCancellation:
             await server.stop()
 
         assert list(served.agent.outcomes) == [TurnOutcome.SHUTDOWN]
-        marker = session.chain()[-1]
-        assert isinstance(marker, UserRecord)
+        marker = session.chain()[-2]
+        assert isinstance(marker, InterruptRecord)
         assert marker.interrupted_by_shutdown is True
         again = await reloaded(tmp_path / "history", SESSION)
         stored = len(session.records())
@@ -433,7 +449,10 @@ class TestTruncation:
 
             assert all(len(ids) == 1 for ids in by_message.values()), kept
             last = chain[-1]
-            assert isinstance(last, AssistantRecord), (kept, kinds(chain))
+            assert isinstance(last, TurnEndRecord | NoResponseRecord), (
+                kept,
+                kinds(chain),
+            )
 
             store = JsonlHistoryStore(root)
             lease = await store.acquire(SESSION)

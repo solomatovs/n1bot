@@ -24,8 +24,6 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import ClassVar
 
-import mcp_types as mt
-
 from boba.agent.asking import (
     Aborted,
     Errored,
@@ -35,37 +33,37 @@ from boba.agent.asking import (
 )
 from boba.agent.attachments import (
     Announced,
-    AttachmentKind,
     ContextAttachments,
-    DeferredToolsRecordAttachment,
-    EnvironmentSnapshot,
-    InvokedSkill,
-    InvokedSkillsAttachment,
-    PromptSnapshot,
     SkillBudget,
-    SnapshotSkill,
-    SnapshotTool,
     ToolPoolChange,
 )
-from boba.agent.builder import RequestBuilder
+from boba.agent.builder import RequestBuilder, RequestTexts
 from boba.agent.ids import Clock, IdMint
 from boba.agent.profile import CompactionSettings, ModelProfile
 from boba.agent.records import (
-    AssistantRecord,
+    AssistantBlock,
     AttachmentRecord,
     ChainRecord,
     CompactBoundaryRecord,
     CompactMetadata,
+    CompactSummaryRecord,
     CompactTrigger,
-    LinkText,
+    EnvironmentSnapshot,
+    HistoryFold,
+    InvokedSkill,
+    InvokedSkillsAttachment,
+    MetaRecord,
     PreservedMessages,
+    PromptSnapshot,
     Record,
+    RequestFeed,
+    SnapshotSkill,
+    SnapshotTool,
     TextBlock,
     ThinkingBlock,
     ToolResultBlock,
     ToolUseBlock,
     UserMessage,
-    UserRecord,
 )
 from boba.agent.session import Session
 from boba.agent.skills import SkillCallInput, SkillTool
@@ -85,12 +83,14 @@ __all__ = [
     "CompactTracking",
     "Compactor",
     "ContextMeter",
+    "CostFeed",
     "Fill",
     "FillLevel",
     "GateDecision",
     "InvokedSkills",
     "NotSummarized",
     "RoundGrouper",
+    "SkillCalls",
     "Summarized",
     "Summarizer",
     "SummaryAborted",
@@ -102,15 +102,53 @@ __all__ = [
 ]
 
 
+class CostFeed(RequestFeed):
+    """Реализация RequestFeed оценки окна: тексты, которые запись вносит в
+    запрос, — как их видит модель (RequestTexts сборщика), и определения
+    загруженных отложенных инструментов. Строит TokenEstimator на запись."""
+
+    def __init__(self, texts: RequestTexts) -> None:
+        self._texts = texts
+        self.texts: list[str] = []
+
+    def user_text(self, text: str) -> None:
+        self.texts.append(self._texts.user(text))
+
+    def context_text(self, text: str) -> None:
+        self.texts.append(text)
+
+    def reminder(self, text: str) -> None:
+        self.texts.append(text)
+
+    def tool_result(self, block: ToolResultBlock) -> None:
+        self.texts.append(self._texts.result(block))
+
+    def reply_block(self, message_id: str, block: AssistantBlock) -> None:
+        if isinstance(block, ThinkingBlock):
+            self.texts.append(block.thinking)
+            return
+
+        if isinstance(block, TextBlock):
+            self.texts.append(block.text)
+            return
+
+        self.texts.append(block.name)
+        self.texts.append(json.dumps(block.input, ensure_ascii=False))
+
+    def tool_definitions(self, tools: Sequence[SnapshotTool]) -> None:
+        for tool in tools:
+            self.texts.append(tool.text())
+            self.texts.append(json.dumps(tool.schema_, ensure_ascii=False))
+
+
 class TokenEstimator:
     """Оценка записей в токенах без провайдера: знаки, делённые на
-    `chars_per_token` профиля; вызов инструмента — имя и JSON аргументов,
-    вложение — его `rendered`, определения загруженных отложенных
-    инструментов (deferred_tools_record) — как описание инструмента в
-    запросе, прочие записи только для журнала — ноль."""
+    `chars_per_token` профиля, по тому, что запись вносит в запрос к модели
+    (ChainRecord.to_request) — тем же текстом, что уходит модели."""
 
-    def __init__(self, profile: ModelProfile) -> None:
+    def __init__(self, profile: ModelProfile, templates: AgentTemplate) -> None:
         self._profile = profile
+        self._texts = RequestTexts(templates)
 
     def text(self, text: str) -> int:
         return self._profile.estimate(text)
@@ -123,7 +161,10 @@ class TokenEstimator:
         return total
 
     def record(self, record: ChainRecord) -> int:
-        return self.texts(list(self._texts_of(record)))
+        feed = CostFeed(self._texts)
+        record.to_request(feed)
+
+        return self.texts(feed.texts)
 
     def records(self, records: Sequence[ChainRecord]) -> int:
         total = 0
@@ -144,69 +185,6 @@ class TokenEstimator:
         for tool in tools:
             yield tool.text()
             yield json.dumps(tool.schema_, ensure_ascii=False)
-
-    def _texts_of(self, record: ChainRecord) -> Iterator[str]:
-        if isinstance(record, UserRecord):
-            yield from self._user_texts(record)
-            return
-
-        if isinstance(record, AssistantRecord):
-            if record.is_api_error_message:
-                return
-
-            yield from self._assistant_texts(record)
-            return
-
-        if isinstance(record, AttachmentRecord):
-            yield from self._attachment_texts(record)
-
-    def _attachment_texts(self, record: AttachmentRecord) -> Iterator[str]:
-        if record.attachment.type == AttachmentKind.DEFERRED_TOOLS_RECORD.value:
-            entries = DeferredToolsRecordAttachment.model_validate(
-                record.attachment.model_dump()
-            )
-            yield from self._tool_texts(entries.entries)
-            return
-
-        if record.rendered is None:
-            return
-
-        for message in record.rendered:
-            yield message.content
-
-    @staticmethod
-    def _user_texts(record: UserRecord) -> Iterator[str]:
-        content = record.message.content
-        if isinstance(content, str):
-            yield content
-            return
-
-        for block in content:
-            if isinstance(block, ToolResultBlock):
-                yield from block.references()
-                yield block.text()
-                continue
-
-            if isinstance(block, mt.ResourceLink):
-                yield LinkText.TEMPLATE.render(block)
-                continue
-
-            yield block.text
-
-    @staticmethod
-    def _assistant_texts(record: AssistantRecord) -> Iterator[str]:
-        for block in record.message.content:
-            if isinstance(block, ThinkingBlock):
-                yield block.thinking
-                continue
-
-            if isinstance(block, TextBlock):
-                yield block.text
-                continue
-
-            if isinstance(block, ToolUseBlock):
-                yield block.name
-                yield json.dumps(block.input, ensure_ascii=False)
 
 
 @dataclass(frozen=True)
@@ -251,50 +229,38 @@ class ContextMeter:
     ) -> Anchor | None:
         for index in range(len(conversation) - 1, -1, -1):
             record = conversation[index]
-            if isinstance(record, CompactBoundaryRecord):
+            if record.starts_window():
                 if index == 0:
                     return Anchor(tokens=self._estimator.prefix(snapshot), index=index)
 
                 continue
 
-            if not isinstance(record, AssistantRecord):
+            reply = record.model_reply()
+            if reply is None:
                 continue
 
-            if record.is_synthetic():
+            if reply.tokens == 0:
                 continue
-
-            usage = record.message.usage
-            if usage.is_zero():
-                continue
-
-            tokens = (
-                usage.input_tokens
-                + usage.output_tokens
-                + usage.cache_creation_input_tokens
-                + usage.cache_read_input_tokens
-            )
 
             return Anchor(
-                tokens=tokens, index=self._first_of_reply(conversation, index)
+                tokens=reply.tokens,
+                index=self._first_of_reply(conversation, index, reply.message_id),
             )
 
         return None
 
     @staticmethod
-    def _first_of_reply(conversation: Sequence[ChainRecord], index: int) -> int:
-        """Первая запись ответа с тем же `message.id`, что у записи index."""
-        record = conversation[index]
-        if not isinstance(record, AssistantRecord):
-            return index
-
-        message_id = record.message.id
+    def _first_of_reply(
+        conversation: Sequence[ChainRecord], index: int, message_id: str
+    ) -> int:
+        """Первая запись ответа message_id, которому принадлежит запись index."""
         first = index
         for earlier in range(index - 1, -1, -1):
-            candidate = conversation[earlier]
-            if not isinstance(candidate, AssistantRecord):
+            reply = conversation[earlier].model_reply()
+            if reply is None:
                 break
 
-            if candidate.message.id != message_id:
+            if reply.message_id != message_id:
                 break
 
             first = earlier
@@ -431,13 +397,13 @@ class RoundGrouper:
         current: list[ChainRecord] = []
         message_id = ""
         for record in conversation:
-            if self._opens_group(record, message_id):
+            reply = record.model_reply()
+            if reply is not None and reply.message_id != message_id:
                 if current:
                     groups.append(current)
 
                 current = []
-                if isinstance(record, AssistantRecord):
-                    message_id = record.message.id
+                message_id = reply.message_id
 
             current.append(record)
 
@@ -447,19 +413,9 @@ class RoundGrouper:
         return groups
 
     @staticmethod
-    def _opens_group(record: ChainRecord, message_id: str) -> bool:
-        if not isinstance(record, AssistantRecord):
-            return False
-
-        if record.is_synthetic():
-            return False
-
-        return record.message.id != message_id
-
-    @staticmethod
     def has_reply(records: Sequence[ChainRecord]) -> bool:
-        for record in records:
-            if isinstance(record, AssistantRecord) and not record.is_synthetic():
+        for record in records:  # noqa: SIM110
+            if record.model_reply() is not None:
                 return True
 
         return False
@@ -794,10 +750,10 @@ class Summarizer:
         модели; None — после ответа вопросов нет."""
         for index in range(len(conversation) - 1, -1, -1):
             record = conversation[index]
-            if isinstance(record, AssistantRecord) and not record.is_synthetic():
+            if record.model_reply() is not None:
                 return None
 
-            if isinstance(record, UserRecord) and record.human_text() is not None:
+            if record.human_text() is not None:
                 return index
 
         return None
@@ -880,10 +836,10 @@ class Summarizer:
 
         return text
 
-    def _user(self, session: Session, text: str) -> UserRecord:
+    def _user(self, session: Session, text: str) -> MetaRecord:
         """Текст запроса пересказа — инструкция или пометка об усечении — как
-        запись пользователя для сборщика; в сессию не попадает."""
-        return UserRecord(
+        служебная запись пользователя для сборщика; в сессию не попадает."""
+        return MetaRecord(
             uuid=self._ids.uuid(),
             parent_uuid=None,
             timestamp=self._clock.now(),
@@ -899,6 +855,39 @@ class Summarizer:
             flat.extend(group)
 
         return flat
+
+
+class SkillCalls(HistoryFold):
+    """Вызовы скиллов в отрезке разговора по порядку: скиллы прежнего
+    вложения invoked_skills и удачные вызовы инструмента Skill с текстом их
+    результата. Свёртку строит InvokedSkills по пересказанным записям."""
+
+    def __init__(self, records: Sequence[ChainRecord]) -> None:
+        self.invocations: list[tuple[str, str]] = []
+        self._called: dict[str, str] = {}
+        """Идентификатор вызова Skill → имя скилла."""
+        for record in records:
+            record.announce(self)
+
+    def invoked_skills(self, invoked: InvokedSkillsAttachment) -> None:
+        for skill in reversed(invoked.skills):
+            self.invocations.append((skill.name, skill.content))
+
+    def tool_call(self, call: ToolUseBlock) -> None:
+        if call.name != SkillTool.NAME:
+            return
+
+        self._called[call.id] = SkillCallInput.model_validate(call.input).skill
+
+    def tool_result(self, result: ToolResultBlock) -> None:
+        name = self._called.get(result.tool_use_id)
+        if name is None:
+            return
+
+        if result.is_error:
+            return
+
+        self.invocations.append((name, result.text()))
 
 
 class InvokedSkills:
@@ -923,7 +912,7 @@ class InvokedSkills:
 
     def of(self, summarized: Sequence[ChainRecord]) -> Sequence[InvokedSkill]:
         latest: dict[str, str] = {}
-        for name, content in self._invocations(summarized):
+        for name, content in SkillCalls(summarized).invocations:
             latest.pop(name, None)
             latest[name] = content
 
@@ -942,55 +931,6 @@ class InvokedSkills:
 
             left -= len(text)
             yield InvokedSkill(name=name, content=text)
-
-    def _invocations(self, records: Sequence[ChainRecord]) -> Iterator[tuple[str, str]]:
-        """Вызовы скиллов по порядку: прежнее вложение и удачные вызовы Skill."""
-        called: dict[str, str] = {}
-        for record in records:
-            if isinstance(record, AttachmentRecord):
-                yield from self._carried(record)
-                continue
-
-            if isinstance(record, AssistantRecord):
-                called.update(self._calls(record))
-                continue
-
-            if isinstance(record, UserRecord):
-                yield from self._results(record, called)
-
-    @staticmethod
-    def _carried(record: AttachmentRecord) -> Iterator[tuple[str, str]]:
-        if record.attachment.type != AttachmentKind.INVOKED_SKILLS.value:
-            return
-
-        attachment = InvokedSkillsAttachment.model_validate(
-            record.attachment.model_dump()
-        )
-        for skill in reversed(attachment.skills):
-            yield skill.name, skill.content
-
-    @staticmethod
-    def _calls(record: AssistantRecord) -> Iterator[tuple[str, str]]:
-        """Вызовы Skill ответа: id вызова → имя скилла."""
-        for block in record.message.tool_uses():
-            if block.name != SkillTool.NAME:
-                continue
-
-            yield block.id, SkillCallInput.model_validate(block.input).skill
-
-    @staticmethod
-    def _results(
-        record: UserRecord, called: dict[str, str]
-    ) -> Iterator[tuple[str, str]]:
-        for result in record.message.tool_results():
-            name = called.get(result.tool_use_id)
-            if name is None:
-                continue
-
-            if result.is_error:
-                continue
-
-            yield name, result.text()
 
 
 @dataclass(frozen=True)
@@ -1013,7 +953,7 @@ class CompactPack:
 
     records: Sequence[Record]
     post_tokens: int
-    summary: UserRecord
+    summary: CompactSummaryRecord
 
 
 class Compactor:
@@ -1110,7 +1050,7 @@ class Compactor:
 
     def _summary_record(
         self, session: Session, parent: str, summary: Summarized, uuid: str
-    ) -> UserRecord:
+    ) -> CompactSummaryRecord:
         """Пересказ в обёртке; без начала разговора — с оговоркой об этом."""
         text = summary.text
         if summary.head_truncated:
@@ -1122,15 +1062,13 @@ class Compactor:
             summary=text
         )
 
-        return UserRecord(
+        return CompactSummaryRecord(
             uuid=uuid,
             parent_uuid=parent,
             timestamp=self._clock.now(),
             session_id=session.id.value,
             version=self._version,
             message=UserMessage(content=wrapped),
-            is_compact_summary=True,
-            is_visible_in_transcript_only=True,
         )
 
     def _inputs(
