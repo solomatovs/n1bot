@@ -32,6 +32,7 @@ import stat
 import sys
 import time
 from collections.abc import Mapping, Sequence
+from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, ClassVar, TypeVar
@@ -3437,9 +3438,7 @@ class TestServiceUpdates:
             assert len(usage) == 1
             assert usage[0].size == self.SIZE
             assert 0 < usage[0].used < self.SIZE
-            assert [t.title for t in client.of(schema.SessionInfoUpdate)] == [
-                self.TITLE
-            ]
+            assert self._titles(client) == [self.TITLE]
             ending = client.updates_of(session_id)[-3:]
             assert [type(u) for u in ending] == [
                 schema.UsageUpdate,
@@ -3453,7 +3452,7 @@ class TestServiceUpdates:
                 [schema.TextContentBlock(text=ScenarioName.ANSWER.value)],
             )
             assert len(client.of(schema.UsageUpdate)) == 2
-            assert len(client.of(schema.SessionInfoUpdate)) == 1
+            assert self._titles(client) == [self.TITLE]
             ending = client.updates_of(session_id)[-2:]
             assert [type(u) for u in ending] == [
                 schema.UsageUpdate,
@@ -3476,9 +3475,8 @@ class TestServiceUpdates:
                 mcp_servers=[],
                 replay_from=schema.ReplayFromStartVariant(),
             )
-            assert [t.title for t in loader.of(schema.SessionInfoUpdate)] == [
-                self.TITLE
-            ]
+            assert self._titles(loader) == [self.TITLE]
+            assert self._activity(loader) == []
             assert len(loader.of(schema.UsageUpdate)) == 1
             kinds = update_kinds(second.frames, "session/resume")
             assert kinds[-2:] == ["usage_update", "session_info_update"]
@@ -3487,6 +3485,69 @@ class TestServiceUpdates:
             await conn.close()
             await second.close_stdin()
             await second.kill()
+
+    async def test_each_history_write_reports_the_last_activity(
+        self,
+        boba: AcpProcess,
+        registration: StandRegistration,
+        tmp_path: Path,
+    ) -> None:
+        """`updatedAt` приходит после каждого сброса записей в историю, только
+        вперёд, и последнее значение — то же, что `updatedAt` сессии в
+        `session/list`."""
+        client = AcpClient()
+        conn = await boba.start(client, registration)
+        try:
+            await handshake(conn)
+            session = await conn.new_session(cwd=str(tmp_path), mcp_servers=[])
+            session_id = session.session_id
+            question = [schema.TextContentBlock(text=ScenarioName.ANSWER.value)]
+            await boba.turn(client, session_id, question)
+            first = self._activity(client)
+            assert first
+            assert first == sorted(first)
+            assert await self._listed_at(conn, tmp_path, session_id) == first[-1]
+
+            await boba.turn(client, session_id, question)
+            second = self._activity(client)
+            assert len(second) > len(first)
+            assert second == sorted(second)
+            assert second[-1] > first[-1]
+            assert await self._listed_at(conn, tmp_path, session_id) == second[-1]
+        finally:
+            await conn.close()
+            await boba.close_stdin()
+
+        assert await boba.wait() == 0
+
+    @staticmethod
+    def _titles(client: AcpClient) -> list[str]:
+        titles: list[str] = []
+        for info in client.of(schema.SessionInfoUpdate):
+            if info.title is not None:
+                titles.append(info.title)
+
+        return titles
+
+    @staticmethod
+    def _activity(client: AcpClient) -> list[datetime]:
+        stamps: list[datetime] = []
+        for info in client.of(schema.SessionInfoUpdate):
+            if info.updated_at is not None:
+                stamps.append(info.updated_at)
+
+        return stamps
+
+    @staticmethod
+    async def _listed_at(
+        conn: ClientConnection, cwd: Path, session_id: str
+    ) -> datetime | None:
+        listed = await conn.list_sessions(cwd=str(cwd))
+        for info in listed.sessions:
+            if info.session_id == session_id:
+                return info.updated_at
+
+        return None
 
     async def test_compaction_reports_compaction_and_usage(
         self, registration: StandRegistration, tmp_path: Path
