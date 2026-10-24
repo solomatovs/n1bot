@@ -10,12 +10,17 @@ mode из `configOptions` ответа и `session/set_config_option`
 (SessionModeSelector); в службе он прежде выбирает профиль агента настройкой
 категории model (SessionProfileSelector).
 
+Исключения транспорта (httpx, OAuth, HTTP-статусы, разрыв соединения, ответ
+не по схеме) переводит в отказ для человека AgentFailure один переводчик
+LinkFailures; дальше чат знает только виды AgentFailureKind.
+
 Ошибки:
 AgentProcessError — процесс не запустился или вход в службу не состоялся, не
     прошёл рукопожатие (чужая версия ACP, нет серверов type "acp"), не
     ответил на метод сессии в срок, умер или соединение с ним закрыто;
-    служба не предлагает профиль чата.
+    служба не предлагает профиль чата. Несёт AgentFailure.
 AgentRequestError — агент ответил ошибкой JSON-RPC: метод, код, текст, data.
+    Несёт AgentFailure вида REFUSED.
 """
 
 from __future__ import annotations
@@ -28,6 +33,7 @@ from collections.abc import Awaitable, Iterator, Mapping, Sequence
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from enum import StrEnum
+from http import HTTPStatus
 from pathlib import Path
 from typing import Any, ClassVar, Protocol, TypeAlias, TypeVar
 from uuid import UUID
@@ -60,6 +66,8 @@ __all__ = [
     "AcpModeOption",
     "AgentClient",
     "AgentCommand",
+    "AgentFailure",
+    "AgentFailureKind",
     "AgentLink",
     "AgentProcess",
     "AgentProcessError",
@@ -67,6 +75,8 @@ __all__ = [
     "AgentService",
     "ConfigOption",
     "ElicitationReply",
+    "LinkAction",
+    "LinkFailures",
     "ModeChange",
     "PromptBlock",
     "SessionModeSelector",
@@ -86,27 +96,89 @@ ElicitationReply: TypeAlias = (
 )
 
 
+class LinkAction(StrEnum):
+    """Что чат делал с агентом, когда тот отказал, — для текста отказа."""
+
+    STARTING = "starting"
+    INITIALIZE = "initialize"
+    TURN = "the turn"
+
+
+class AgentFailureKind(StrEnum):
+    """Виды отказа агента для человека: по виду чат выбирает текст и способ
+    показа (UserFailures)."""
+
+    START_FAILED = "start-failed"
+    """Процесс агента не запустился."""
+
+    UNREACHABLE = "unreachable"
+    """До службы агента не дошло соединение."""
+
+    SIGN_IN_REFUSED = "sign-in-refused"
+    """Служба не приняла вход чата: 401, 403 или вход OAuth не прошёл."""
+
+    BAD_ANSWER = "bad-answer"
+    """Агент ответил не по ACP: статус 5xx, чужая версия, ответ не по схеме."""
+
+    NO_ANSWER = "no-answer"
+    """Агент не ответил в срок."""
+
+    CONNECTION_LOST = "connection-lost"
+    """Соединение с агентом оборвалось: процесс вышел, служба закрыла
+    соединение."""
+
+    REFUSED = "refused"
+    """Агент жив и ответил на метод ошибкой JSON-RPC."""
+
+    PROFILE_MISSING = "profile-missing"
+    """Агент не может вести профиль чата этой вкладки."""
+
+
+@dataclass(frozen=True)
+class AgentFailure:
+    """Отказ агента словами для человека: вид, собеседник (процесс или
+    служба с адресом), что делалось и что получено — без журналов агента и
+    внутренних путей. Строит LinkFailures и места отказов клиента; читает
+    UserFailures чата."""
+
+    kind: AgentFailureKind
+    peer: str
+    action: str
+    cause: str
+
+
 class AcpClientError(Exception):
     """Основа ошибок клиента ACP."""
 
 
 class AgentProcessError(AcpClientError):
-    """Процесс агента не запустился, не ответил или умер."""
+    """Процесс агента не запустился, не ответил или умер; failure — то же
+    для человека."""
+
+    def __init__(self, message: str, failure: AgentFailure) -> None:
+        super().__init__(message)
+        self.failure = failure
 
 
 class AgentRequestError(AcpClientError):
     """Агент ответил ошибкой JSON-RPC; текст — метод, код, сообщение и
     подробности из `data.details`, когда агент их прислал."""
 
-    def __init__(self, method: str, code: int, message: str, data: Any) -> None:
-        super().__init__(self._text(method, code, message, data))
+    def __init__(
+        self, method: str, code: int, message: str, data: Any, peer: str
+    ) -> None:
+        cause = self._cause(code, message, data)
+        super().__init__(f"{method}: agent answered {cause}")
         self.method = method
         self.code = code
         self.data = data
+        self.failure = AgentFailure(
+            kind=AgentFailureKind.REFUSED, peer=peer, action=method, cause=cause
+        )
 
     @staticmethod
-    def _text(method: str, code: int, message: str, data: Any) -> str:
-        text = f"{method}: agent answered error {code}: {message}"
+    def _cause(code: int, message: str, data: Any) -> str:
+        text = f"error {code}: {message}"
         if not isinstance(data, Mapping):
             return text
 
@@ -115,6 +187,41 @@ class AgentRequestError(AcpClientError):
             return text
 
         return f"{text}: {details}"
+
+
+class LinkFailures:
+    """Перевод исключения соединения с агентом в AgentFailure: единственное
+    место, где чат разбирает чужие типы ошибок транспорта ACP — статусы
+    HTTP, вход OAuth, ошибки httpx и ответ не по схеме. Держат его в поле
+    AgentLink и его наследники."""
+
+    SIGN_IN_STATUSES: ClassVar[frozenset[int]] = frozenset(
+        {HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN}
+    )
+
+    def of(self, peer: str, action: str, exc: BaseException) -> AgentFailure:
+        kind, cause = self._classified(exc)
+
+        return AgentFailure(kind=kind, peer=peer, action=action, cause=cause)
+
+    def _classified(self, exc: BaseException) -> tuple[AgentFailureKind, str]:
+        if isinstance(exc, AcpHttpStatusError):
+            if exc.status_code in self.SIGN_IN_STATUSES:
+                return AgentFailureKind.SIGN_IN_REFUSED, str(exc)
+
+            return AgentFailureKind.BAD_ANSWER, str(exc)
+
+        if isinstance(exc, OAuthFlowError | McpClientError):
+            return AgentFailureKind.SIGN_IN_REFUSED, str(exc)
+
+        if isinstance(exc, httpx2.ConnectError | httpx2.ConnectTimeout):
+            return AgentFailureKind.UNREACHABLE, f"connecting failed: {exc}"
+
+        if isinstance(exc, ValidationError):
+            cause = "the answer does not follow the ACP v2 schema"
+            return AgentFailureKind.BAD_ANSWER, cause
+
+        return AgentFailureKind.CONNECTION_LOST, f"{type(exc).__name__}: {exc}"
 
 
 class SessionUpdates(Protocol):
@@ -356,6 +463,10 @@ class AgentCommand:
     def argv(self, settings_path: Path) -> list[str]:
         return [*self.args, self.SETTINGS_FLAG, str(settings_path)]
 
+    def peer(self) -> str:
+        """Процесс агента для человека: имя программы без пути."""
+        return f"agent process '{Path(self.executable).name}'"
+
 
 class AgentLink:
     """Соединение чата с агентом ACP v2 одной вкладки: рукопожатие и методы
@@ -386,6 +497,7 @@ class AgentLink:
         self._version = version
         self._request_timeout_sec = request_timeout_sec
         self._mode = SessionModeSelector()
+        self._failures = LinkFailures()
         self._stack = AsyncExitStack()
         self._connection: ClientConnection | None = None
         self._forks_by_message = False
@@ -393,7 +505,18 @@ class AgentLink:
 
     @abstractmethod
     def label(self) -> str:
-        """Кто на том конце: процесс с pid или служба с адресом."""
+        """Кто на том конце для журнала: процесс с pid или служба с адресом
+        и пользователем."""
+
+    @abstractmethod
+    def peer(self) -> str:
+        """Кто на том конце для человека: процесс по имени программы или
+        служба с адресом."""
+
+    @abstractmethod
+    def lost(self, action: str) -> AgentFailure:
+        """Собеседник ушёл посреди action: процесс вышел или служба закрыла
+        соединение."""
 
     @abstractmethod
     def alive(self) -> bool:
@@ -440,13 +563,25 @@ class AgentLink:
                 f"{self.label()} did not answer initialize within "
                 f"{start_timeout_sec}s: {self.log_tail()}"
             )
-            raise AgentProcessError(msg) from exc
-        except AcpClientError as exc:
+            failure = AgentFailure(
+                kind=AgentFailureKind.NO_ANSWER,
+                peer=self.peer(),
+                action=LinkAction.INITIALIZE,
+                cause=f"no answer within {start_timeout_sec:g} s",
+            )
+            raise AgentProcessError(msg, failure) from exc
+        except AgentProcessError as exc:
             msg = (
                 f"{self.label()} failed the ACP handshake, this chat speaks ACP "
+                f"version {AcpVersion.V2.value}: {exc}"
+            )
+            raise AgentProcessError(msg, exc.failure) from exc
+        except AgentRequestError as exc:
+            msg = (
+                f"{self.label()} refused the ACP handshake, this chat speaks ACP "
                 f"version {AcpVersion.V2.value}: {exc}: {self.log_tail()}"
             )
-            raise AgentProcessError(msg) from exc
+            raise AgentProcessError(msg, exc.failure) from exc
 
         session = None
         if response.capabilities is not None:
@@ -468,7 +603,16 @@ class AgentLink:
                 "capabilities.session.mcp.acp in initialize, expected it to take "
                 "the MCP servers of the chat as servers of type 'acp'"
             )
-            raise AgentProcessError(msg)
+            failure = AgentFailure(
+                kind=AgentFailureKind.BAD_ANSWER,
+                peer=self.peer(),
+                action=LinkAction.INITIALIZE,
+                cause=(
+                    f"agent {response.info.name!r} does not take the MCP servers "
+                    "of the chat (capabilities.session.mcp.acp)"
+                ),
+            )
+            raise AgentProcessError(msg, failure)
 
         logger.info(
             "%s: agent=%s/%s", self.label(), response.info.name, response.info.version
@@ -547,7 +691,13 @@ class AgentLink:
                 f"question {response.message_id!r}, expected a uuid that becomes "
                 "the id of the question step"
             )
-            raise AgentProcessError(msg) from exc
+            failure = AgentFailure(
+                kind=AgentFailureKind.BAD_ANSWER,
+                peer=self.peer(),
+                action="session/prompt",
+                cause=f"the question id {response.message_id!r} is not a uuid",
+            )
+            raise AgentProcessError(msg, failure) from exc
 
         return response.message_id
 
@@ -557,7 +707,8 @@ class AgentLink:
             await connection.cancel_session(session_id=session_id)
         except ConnectionError as exc:
             msg = f"session/cancel: the agent connection is closed: {exc}"
-            raise AgentProcessError(msg) from exc
+            failure = self._failures.of(self.peer(), "session/cancel", exc)
+            raise AgentProcessError(msg, failure) from exc
 
     async def close_session(self, session_id: str) -> None:
         connection = self._require_connection()
@@ -678,7 +829,13 @@ class AgentLink:
                 f"([agent.process].request_timeout_sec), got no answer: "
                 f"{self.log_tail()}"
             )
-            raise AgentProcessError(msg) from exc
+            failure = AgentFailure(
+                kind=AgentFailureKind.NO_ANSWER,
+                peer=self.peer(),
+                action=method,
+                cause=f"no answer within {limit:g} s",
+            )
+            raise AgentProcessError(msg, failure) from exc
 
     async def _answer_of(self, method: str, call: Awaitable[ModelT]) -> ModelT:
         """Ответ агента на метод method без своего срока.
@@ -690,16 +847,22 @@ class AgentLink:
         try:
             return await call
         except RequestError as exc:
-            raise AgentRequestError(method, exc.code, str(exc), exc.data) from exc
+            raise AgentRequestError(
+                method, exc.code, str(exc), exc.data, self.peer()
+            ) from exc
         except self.LINK_ERRORS as exc:
             msg = (
                 f"{method}: the connection to {self.label()} is closed: {exc}: "
                 f"{self.log_tail()}"
             )
-            raise AgentProcessError(msg) from exc
+            raise AgentProcessError(
+                msg, self._failures.of(self.peer(), method, exc)
+            ) from exc
         except ValidationError as exc:
             msg = f"{method}: the agent answered off the ACP v2 schema: {exc}"
-            raise AgentProcessError(msg) from exc
+            raise AgentProcessError(
+                msg, self._failures.of(self.peer(), method, exc)
+            ) from exc
 
     def _require_connection(self) -> ClientConnection:
         if self._connection is None:
@@ -707,7 +870,7 @@ class AgentLink:
                 f"{self.label()}: an ACP request needs an open connection, got "
                 "none: start() was not called"
             )
-            raise AgentProcessError(msg)
+            raise AgentProcessError(msg, self.lost("an ACP request"))
 
         return self._connection
 
@@ -754,6 +917,22 @@ class AgentProcess(AgentLink):
 
         return f"agent process {self._command.executable!r} (pid {self._process.pid})"
 
+    def peer(self) -> str:
+        return self._command.peer()
+
+    def lost(self, action: str) -> AgentFailure:
+        cause = "the process is not running"
+        if self._process is not None:
+            if self._process.returncode is not None:
+                cause = f"the process exited with code {self._process.returncode}"
+
+        return AgentFailure(
+            kind=AgentFailureKind.CONNECTION_LOST,
+            peer=self.peer(),
+            action=action,
+            cause=cause,
+        )
+
     def alive(self) -> bool:
         """Процесс не вышел и его вывод не кончился: агент, закрывший stdout,
         ответить уже не сможет, хотя процесс ещё жив."""
@@ -795,7 +974,13 @@ class AgentProcess(AgentLink):
                 f"agent process {executable!r}: opening its stderr log "
                 f"{stderr_path} failed: {exc}"
             )
-            raise AgentProcessError(msg) from exc
+            failure = AgentFailure(
+                kind=AgentFailureKind.START_FAILED,
+                peer=self.peer(),
+                action=LinkAction.STARTING,
+                cause=f"its log file cannot be opened: {exc.strerror}",
+            )
+            raise AgentProcessError(msg, failure) from exc
 
         with stderr:
             try:
@@ -813,9 +998,15 @@ class AgentProcess(AgentLink):
                 self._workdir.remove()
                 msg = (
                     f"agent process {executable!r} did not start from "
-                    f"{self._workdir.path}: {exc}; check [env].agent_command"
+                    f"{self._workdir.path}: {exc}; check [agent.process].command"
                 )
-                raise AgentProcessError(msg) from exc
+                failure = AgentFailure(
+                    kind=AgentFailureKind.START_FAILED,
+                    peer=self.peer(),
+                    action=LinkAction.STARTING,
+                    cause=f"{exc.strerror}; check [agent.process].command",
+                )
+                raise AgentProcessError(msg, failure) from exc
 
         self._process = process
         connection = ClientConnection(self._client, self._answer, stdin, stdout)
@@ -859,7 +1050,7 @@ class AgentProcess(AgentLink):
                 f"{self._workdir.path}: its pid and exit need a started process, "
                 "got none: start() was not called"
             )
-            raise AgentProcessError(msg)
+            raise AgentProcessError(msg, self.lost("waiting for the process"))
 
         return self._process
 
@@ -871,8 +1062,9 @@ class SessionProfileSelector:
 
     CATEGORY: ClassVar[str] = "model"
 
-    def __init__(self, profile: str) -> None:
+    def __init__(self, profile: str, peer: str) -> None:
         self._profile = profile
+        self._peer = peer
 
     def change(
         self, session_id: str, options: Sequence[ConfigOption] | None
@@ -884,24 +1076,34 @@ class SessionProfileSelector:
         """
         option = self._option(options)
         if option is None:
-            raise AgentProcessError(self._missing(session_id, []))
+            raise AgentProcessError(*self._missing(session_id, []))
 
         offered = list(SessionModeSelector.values(option))
         if self._profile not in offered:
-            raise AgentProcessError(self._missing(session_id, offered))
+            raise AgentProcessError(*self._missing(session_id, offered))
 
         if option.current_value == self._profile:
             return None
 
         return ModeChange(config_id=option.config_id, value=self._profile)
 
-    def _missing(self, session_id: str, offered: Sequence[str]) -> str:
-        return (
-            f"session {session_id}: the agent service offers model profiles "
-            f"{list(offered)}, the chat profile {self._profile!r} is not among "
-            f"them; declare [agent.profiles.{self._profile}] in the service and "
-            "grant it to the roles of the user"
+    def _missing(
+        self, session_id: str, offered: Sequence[str]
+    ) -> tuple[str, AgentFailure]:
+        cause = (
+            f"it offers model profiles {list(offered)}, the chat profile "
+            f"{self._profile!r} is not among them; declare "
+            f"[agent.profiles.{self._profile}] in the service and grant it to the "
+            "roles of the user"
         )
+        failure = AgentFailure(
+            kind=AgentFailureKind.PROFILE_MISSING,
+            peer=self._peer,
+            action="session/new",
+            cause=cause,
+        )
+
+        return f"session {session_id}: the agent service {cause}", failure
 
     def _option(
         self, options: Sequence[ConfigOption] | None
@@ -956,10 +1158,21 @@ class AgentService(AgentLink):
         self._config = config
         self._caller = caller
         self._url = config.endpoint.url()
-        self._profile = SessionProfileSelector(profile)
+        self._profile = SessionProfileSelector(profile, self.peer())
 
     def label(self) -> str:
         return f"agent service {self._url} [user={self._caller.login}]"
+
+    def peer(self) -> str:
+        return self._config.peer()
+
+    def lost(self, action: str) -> AgentFailure:
+        return AgentFailure(
+            kind=AgentFailureKind.CONNECTION_LOST,
+            peer=self.peer(),
+            action=action,
+            cause="the service closed the connection",
+        )
 
     def alive(self) -> bool:
         if self._connection is None:

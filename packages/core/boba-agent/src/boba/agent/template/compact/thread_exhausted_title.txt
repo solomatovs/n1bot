@@ -1,1 +1,0 @@
-The conversation no longer fits the context window of the model

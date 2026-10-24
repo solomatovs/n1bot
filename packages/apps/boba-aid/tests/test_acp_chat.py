@@ -37,7 +37,7 @@ from psycopg import sql
 from boba.aid.agent.settings import WorkdirFile
 from boba.aid.chat.ui_text import UiText
 from boba.aid.domain.fields import ThreadMetaField
-from boba.aid.rendering.chat_view import StepText
+from boba.aid.rendering.chat_view import StepMeta, StepText
 from boba.aid.rendering.renderer import SignalType
 from boba.canvas.canvas import CanvasAction, CanvasElement, CanvasKind
 from boba.db.postgres import AsyncPostgresPool
@@ -575,13 +575,62 @@ class ChatSocket:
 
         return found
 
-    def errors(self) -> list[str]:
+    def errors(self, since: int = 0) -> list[str]:
+        """Сбои во вкладке по порядку прихода, начиная с события since:
+        пометки агента об ошибке в ленте, всплывающие уведомления и полоса
+        недоступного агента."""
         found: list[str] = []
-        for payload in self.messages("assistant_message"):
+        for event, payload in self.events[since:]:
+            if not isinstance(payload, dict):
+                continue
+
+            if event == "toast":
+                found.append(str(payload.get("message")))
+                continue
+
+            if event == "agent_state":
+                if not payload.get("available"):
+                    found.append(f"{payload.get('text')} ({payload.get('detail')})")
+                continue
+
+            if event not in ("new_message", "update_message", "stream_start"):
+                continue
+
+            if payload.get("type") != "assistant_message":
+                continue
+
             if payload.get("isError"):
-                found.append(str(payload.get("output")))
+                found.append(self._noticed(payload))
 
         return found
+
+    def notices(self) -> list[str]:
+        """Пометки агента в ленте с важностью предупреждения и сведения:
+        текст и короткая причина."""
+        found: list[str] = []
+        for payload in self.messages("assistant_message"):
+            metadata = payload.get("metadata")
+            if not isinstance(metadata, dict):
+                continue
+
+            if metadata.get(StepMeta.NOTICE.value) in ("warning", "info"):
+                found.append(self._noticed(payload))
+
+        return found
+
+    @staticmethod
+    def _noticed(payload: dict[str, Any]) -> str:
+        """Текст блока пометки и его причина, как их видит человек."""
+        text = str(payload.get("output"))
+        metadata = payload.get("metadata")
+        if not isinstance(metadata, dict):
+            return text
+
+        detail = metadata.get(StepMeta.NOTICE_DETAIL.value)
+        if not detail:
+            return text
+
+        return f"{text} ({detail})"
 
     def steps(self) -> dict[str, dict[str, Any]]:
         """Последняя нагрузка каждого шага ленты по id, кроме кружка ожидания."""
@@ -1022,7 +1071,8 @@ class TestConversation:
 class TestUnavailableServer:
     """Сервер MCP профиля не отвечает: агент открывает сессию без его
     инструментов и отвечает на вопрос, а лента хода показывает пометку с
-    именем сервера и причиной."""
+    именем сервера и причиной; пометка — запись агента и видна и после
+    возврата к треду."""
 
     async def test_agent_answers_while_a_server_of_the_profile_is_down(
         self, ghosted: StandProcess, cookie: str
@@ -1032,7 +1082,7 @@ class TestUnavailableServer:
         try:
             await tab.send(f"hello {ScenarioName.THINKING_ANSWER.value}")
             await tab.wait_task_end()
-            notes = tab.errors()
+            notes = tab.notices()
             answers: list[str] = []
             for payload in tab.messages():
                 if payload.get("isError"):
@@ -1044,9 +1094,18 @@ class TestUnavailableServer:
 
         answered = any("answer the question" in answer for answer in answers)
         assert answered, (tab.trace(), ghosted.tail(60))
-        noted = [note for note in notes if "'ghost' is unavailable" in note]
+        noted = [note for note in notes if "'ghost' isn't available" in note]
         assert noted, (notes, ghosted.tail(60))
-        assert "127.0.0.1" in noted[0], noted
+        assert noted[0].endswith("(no connection)"), noted
+
+        again = ChatSocket(ghosted, cookie, tab.thread_id)
+        await again.open(resumed=True)
+        try:
+            replayed = again.notices()
+        finally:
+            await again.end_session()
+
+        assert noted[0] in replayed, (replayed, again.trace())
 
 
 class TestHistory:
@@ -1229,7 +1288,7 @@ class TestHistory:
                 await asyncio.sleep(0.2)
 
             assert tab.errors(), tab.trace()
-            assert "is busy" in tab.errors()[-1], tab.errors()
+            assert "answering in another tab" in tab.errors()[-1], tab.errors()
             # конец обработчика правки, а не хода
             await tab.wait_task_end()
             during = await rows.thread_meta(tab.thread_id)
@@ -1352,7 +1411,7 @@ class TestHistory:
             await editing.wait_task_end()
             refusals = editing.errors()
             assert refusals, editing.trace()
-            assert "reload the thread to edit it" in refusals[-1], refusals
+            assert "Reload the chat and try again" in refusals[-1], refusals
             await editing.wait_event_index("resume_thread", since=reloaded)
 
             await editing.edit(question, f"edited {ScenarioName.ANSWER.value}")
@@ -1400,7 +1459,7 @@ class TestHistory:
                 await asyncio.sleep(0.2)
 
             assert editing.errors(), editing.trace()
-            assert "is busy" in editing.errors()[-1], editing.errors()
+            assert "answering in another tab" in editing.errors()[-1], editing.errors()
             redrawn = await editing.wait_event_index("resume_thread", since=mark)
             replayed = editing.messages("user_message", redrawn)
             assert replayed, editing.trace()[mark:]
@@ -1553,8 +1612,7 @@ class TestHistory:
             await tab.wait_task_end()
             refusals = tab.errors()
             assert refusals, tab.trace()[mark:]
-            assert "cannot branch the conversation" in refusals[-1], refusals
-            assert "boba/upToMessageId" in refusals[-1], refusals
+            assert "can't branch a conversation" in refusals[-1], refusals
             await tab.wait_event_index("resume_thread", since=mark)
             assert await rows.thread_meta(tab.thread_id) == before
         finally:
@@ -1984,15 +2042,10 @@ class TestTabsOfOneThread:
         отказы, пришедшие за это время."""
         deadline = time.monotonic() + TURN_TIMEOUT_SEC
         while time.monotonic() < deadline:
-            refusals: list[str] = []
+            refusals = tab.errors(since)
             answered = False
             for payload in tab.messages(since=since):
-                output = str(payload.get("output"))
-                if payload.get("isError"):
-                    refusals.append(output)
-                    continue
-
-                if self.ANSWERED in output:
+                if self.ANSWERED in str(payload.get("output")):
                     answered = True
 
             if refusals:
@@ -2100,7 +2153,7 @@ class TestTabsOfOneThread:
             await other.send(f"mine {ScenarioName.ANSWER.value}")
             refusals = await self._reply(other, busy)
             assert refusals, other.trace()[busy:]
-            assert "is busy" in refusals[-1], refusals
+            assert "answering in another tab" in refusals[-1], refusals
 
             await first.stop()
             await first.wait_task_end()

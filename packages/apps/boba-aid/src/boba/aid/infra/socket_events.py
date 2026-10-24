@@ -34,7 +34,6 @@ from typing import Any, ClassVar
 
 from chainlit.config import config as chainlit_config
 from chainlit.context import init_ws_context
-from chainlit.message import ErrorMessage
 from chainlit.session import WebsocketSession
 from pydantic import ValidationError
 
@@ -45,6 +44,7 @@ from boba.aid.infra.session import (
     session_source_ref,
 )
 from boba.aid.infra.thread_room import ChatRoomSurface, ThreadLive, ThreadRoom
+from boba.aid.rendering.errors import show_error
 from boba.aid.rendering.renderer import ChatRenderers
 from boba.core.validation import ValidationText
 from boba.identity.errors import InternalServiceError
@@ -270,12 +270,10 @@ class SocketEvents:
         try:
             parsed = Question.model_validate(payload)
         except ValidationError as exc:
-            await ErrorMessage(
-                content=(
-                    f"Edit of a question in thread {session.thread_id}: the event "
-                    f"is not understood: {ValidationText.of(exc)}"
-                )
-            ).send()
+            await show_error(
+                f"Edit of a question in thread {session.thread_id}: the event "
+                f"is not understood: {ValidationText.of(exc)}"
+            )
             return
 
         question = parsed.model_copy(update={"edited": True})

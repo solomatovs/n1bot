@@ -5,9 +5,10 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from itertools import pairwise
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 
@@ -29,12 +30,14 @@ from boba.agent.records import (
     Record,
     ReplyStopReason,
     Synthetic,
+    TextBlock,
     UserRecord,
 )
 from boba.agent.session import Session
 from boba.agent.template import AgentTemplate
 from boba.cancellation import StopReason
 from boba.history.jsonl import JsonlHistoryStore
+from boba.llm.chat import LlmTrouble
 from boba.stand.agent import (
     Collected,
     FakeServer,
@@ -274,6 +277,12 @@ class TestOutputLimit:
 
 
 class TestApiErrors:
+    TROUBLES: ClassVar[Mapping[FailureName, LlmTrouble]] = {
+        FailureName.CUT: LlmTrouble.CUT,
+        FailureName.STATUS_500: LlmTrouble.DOWN,
+        FailureName.HANG: LlmTrouble.DOWN,
+    }
+
     @pytest.mark.parametrize(
         "failure", [FailureName.CUT, FailureName.STATUS_500, FailureName.HANG]
     )
@@ -298,11 +307,17 @@ class TestApiErrors:
         ]
         first_turn = session.records()[:failed_at]
         errors = [r for r in first_turn if isinstance(r, ApiErrorRecord)]
-        assert [e.retry_attempt for e in errors] == [1, 2, 3, 4]
+        assert [e.retry_attempt for e in errors] == [1, 2, 3]
         assert all(e.max_retries == 3 for e in errors)
+        assert [e.retry_in_ms for e in errors] == [0, 0, 0]
+        troubles = {e.trouble for e in errors}
+        assert troubles == {self.TROUBLES[failure]}, errors
         synthetic = first_turn[-1]
         assert isinstance(synthetic, AssistantRecord)
         assert synthetic.is_api_error_message
+        told = synthetic.message.content[0]
+        assert isinstance(told, TextBlock)
+        assert "so this turn has stopped" in told.text, told.text
 
         roles = [m["role"] for m in server.requests()[-1]["messages"]]  # type: ignore[index]
         assert roles in (["system", "user", "assistant"], ["system", "user"])

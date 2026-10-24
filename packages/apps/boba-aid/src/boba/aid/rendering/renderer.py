@@ -41,8 +41,6 @@ from boba.messaging import (
     JournalOpened,
     MessageBus,
     MessageKind,
-    Notice,
-    NoticeLevel,
     PayloadStore,
     ThreadRewound,
     TurnFinished,
@@ -260,7 +258,6 @@ class ChatRenderer:
             MessageKind.AGENT_UPDATE: self._on_agent_update,
             MessageKind.ANSWER_INTERRUPTED: self._on_answer_interrupted,
             MessageKind.TURN_FINISHED: self._on_turn_finished,
-            MessageKind.NOTICE: self._on_notice,
             MessageKind.CANVAS_CHANGED: self._on_canvas_changed,
             MessageKind.JOURNAL_OPENED: self._on_journal_opened,
             MessageKind.THREAD_REWOUND: self._on_thread_rewound,
@@ -301,9 +298,6 @@ class ChatRenderer:
     async def _on_turn_finished(self, message: TurnFinished) -> None:
         await self._finish_turn()
 
-    async def _on_notice(self, message: Notice) -> None:
-        await self._notice(message.level, message.text)
-
     async def _on_canvas_changed(self, message: CanvasChanged) -> None:
         signal = CanvasSignal(
             path=message.path,
@@ -332,17 +326,6 @@ class ChatRenderer:
         await self._updates.finish_turn()
         await self._surface.task_end()
         await self._payloads.purge(self._scope)
-
-    async def _notice(self, level: NoticeLevel, text: str) -> None:
-        if self._turn_key is not None:
-            await self._view.error(text, self._turn_key)
-            return
-
-        if self._surface.context() is None:
-            msg = f"thread {self._thread_id}: notice without a surface: {text}"
-            raise RuntimeError(msg)
-
-        await show_error(text, author=level.value.capitalize())
 
     async def catch_up(self, bus: MessageBus) -> CatchUp:
         """Догоняет область по сохранённым сообщениям шины: применяет всё от

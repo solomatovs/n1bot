@@ -10,12 +10,15 @@ AgentTextError — файла текста нет в данных пакета �
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from enum import StrEnum
 from importlib import resources
 from importlib.abc import Traversable
 from typing import ClassVar
 
-__all__ = ["AgentTemplate", "AgentTemplateFile", "AgentTextError"]
+from boba.llm.chat import LlmTrouble
+
+__all__ = ["AgentTemplate", "AgentTemplateFile", "AgentTextError", "ModelTroubleTexts"]
 
 
 class AgentTextError(Exception):
@@ -40,13 +43,11 @@ class AgentTemplateFile(StrEnum):
     TOOL_RESULT_MISSING = "compact/tool_result_missing.txt"
     NO_CONTENT = "compact/no_content.txt"
     NO_MESSAGE_CONTENT = "compact/no_message_content.txt"
-    THRASHING = "compact/thrashing.txt"
     COMPACTION_FAILED = "compact/compaction_failed.txt"
     THREAD_EXHAUSTED = "compact/thread_exhausted.txt"
     MANUAL_COMPACTION_FAILED = "compact/manual_compaction_failed.txt"
     LOCAL_COMMAND_CAVEAT = "compact/local_command_caveat.txt"
     COMPACTED = "compact/compacted.txt"
-    THREAD_EXHAUSTED_TITLE = "compact/thread_exhausted_title.txt"
 
     ENVIRONMENT = "attachments/environment.txt"
     ENVIRONMENT_UPDATE = "attachments/environment_update.txt"
@@ -70,6 +71,31 @@ class AgentTemplateFile(StrEnum):
     QUEUED_HUMAN = "attachments/queued_human.txt"
     QUEUED_NOTIFICATION = "attachments/queued_notification.txt"
     QUEUED_NOTIFICATION_WITH_USER = "attachments/queued_notification_with_user.txt"
+
+    TURN_INTERRUPTED_NOTICE = "notices/turn_interrupted.txt"
+    MCP_UNAVAILABLE_NOTICE = "notices/mcp_unavailable.txt"
+    MCP_LOST_NOTICE = "notices/mcp_lost.txt"
+    MCP_BACK_NOTICE = "notices/mcp_back.txt"
+    MODEL_RETRY_NOTICE = "notices/model_retry.txt"
+    SERVING_STOPPED_NOTICE = "notices/serving_stopped.txt"
+    WINDOW_FULL_NOTICE = "notices/window_full.txt"
+    WINDOW_UNSHORTENED_NOTICE = "notices/window_unshortened.txt"
+    WINDOW_THRASHING_NOTICE = "notices/window_thrashing.txt"
+    OUTPUT_LIMIT_NOTICE = "notices/output_limit.txt"
+    MODEL_BUSY = "notices/model_busy.txt"
+    MODEL_DOWN = "notices/model_down.txt"
+    MODEL_REJECTED = "notices/model_rejected.txt"
+    MODEL_CUT = "notices/model_cut.txt"
+    MODEL_BLOCKED = "notices/model_blocked.txt"
+    MODEL_EMPTY = "notices/model_empty.txt"
+    MODEL_UNKNOWN = "notices/model_unknown.txt"
+    FAILED_BUSY = "notices/failed_busy.txt"
+    FAILED_DOWN = "notices/failed_down.txt"
+    FAILED_REJECTED = "notices/failed_rejected.txt"
+    FAILED_CUT = "notices/failed_cut.txt"
+    FAILED_BLOCKED = "notices/failed_blocked.txt"
+    FAILED_EMPTY = "notices/failed_empty.txt"
+    FAILED_UNKNOWN = "notices/failed_unknown.txt"
 
     USER_REJECTED = "tools/user_rejected.txt"
     USER_REJECTED_SAID = "tools/user_rejected_said.txt"
@@ -130,3 +156,53 @@ class AgentTemplate:
         self._cache[tpl] = body
 
         return body
+
+
+class ModelTroubleTexts:
+    """Слова для человека о беде с моделью: что случилось при повторе
+    запроса и чем кончился ход, когда повторы исчерпаны, — по виду беды
+    (LlmTrouble), без текста транспорта. Ход пишет ими запись отказа,
+    отображение ACP — пометку повтора; так вживую и в воспроизведении
+    текст один."""
+
+    WHAT: ClassVar[Mapping[LlmTrouble, AgentTemplateFile]] = {
+        LlmTrouble.BUSY: AgentTemplateFile.MODEL_BUSY,
+        LlmTrouble.DOWN: AgentTemplateFile.MODEL_DOWN,
+        LlmTrouble.REJECTED: AgentTemplateFile.MODEL_REJECTED,
+        LlmTrouble.CUT: AgentTemplateFile.MODEL_CUT,
+        LlmTrouble.BLOCKED: AgentTemplateFile.MODEL_BLOCKED,
+        LlmTrouble.EMPTY: AgentTemplateFile.MODEL_EMPTY,
+        LlmTrouble.UNKNOWN: AgentTemplateFile.MODEL_UNKNOWN,
+    }
+    FAILED: ClassVar[Mapping[LlmTrouble, AgentTemplateFile]] = {
+        LlmTrouble.BUSY: AgentTemplateFile.FAILED_BUSY,
+        LlmTrouble.DOWN: AgentTemplateFile.FAILED_DOWN,
+        LlmTrouble.REJECTED: AgentTemplateFile.FAILED_REJECTED,
+        LlmTrouble.CUT: AgentTemplateFile.FAILED_CUT,
+        LlmTrouble.BLOCKED: AgentTemplateFile.FAILED_BLOCKED,
+        LlmTrouble.EMPTY: AgentTemplateFile.FAILED_EMPTY,
+        LlmTrouble.UNKNOWN: AgentTemplateFile.FAILED_UNKNOWN,
+    }
+    ONE_SECOND: ClassVar[float] = 1.0
+
+    def __init__(self, templates: AgentTemplate) -> None:
+        self._templates = templates
+
+    def retry(
+        self, trouble: LlmTrouble, attempt: int, retries: int, seconds: float
+    ) -> str:
+        what = self._templates.read(self.WHAT[trouble])
+        text = self._templates.read(AgentTemplateFile.MODEL_RETRY_NOTICE)
+
+        return text.format(
+            what=what, wait=self._wait(seconds), attempt=attempt, retries=retries
+        )
+
+    def failed(self, trouble: LlmTrouble) -> str:
+        return self._templates.read(self.FAILED[trouble])
+
+    def _wait(self, seconds: float) -> str:
+        if seconds == self.ONE_SECOND:
+            return "1 second"
+
+        return f"{seconds:g} seconds"

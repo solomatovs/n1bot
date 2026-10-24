@@ -25,7 +25,7 @@ import os
 import shutil
 import subprocess
 from collections.abc import Iterator, Mapping, MutableMapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from importlib.metadata import version
 from pathlib import Path
@@ -419,6 +419,12 @@ class NormalRule(StrEnum):
     DURATION = r"· \d+(?:[.,]\d+)? (ms|s|мс|с)(?![A-Za-zА-Яа-яЁё])"
     UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
     LAST_SEEN = r"\d+s ago"
+    LOCAL_PORT = r"127\.0\.0\.1:\d+"
+    """Порт стенда в тексте сбоя: свободный порт выбирается на каждый прогон."""
+
+    SERVER_ID = r"serverId '[A-Za-z0-9_-]+'"
+    """serverId регистрации сервера MCP в тексте сбоя: новый на каждый запуск
+    агента."""
 
     @property
     def replacement(self) -> str:
@@ -427,6 +433,12 @@ class NormalRule(StrEnum):
 
         if self is NormalRule.UUID:
             return "00000000-0000-0000-0000-000000000000"
+
+        if self is NormalRule.LOCAL_PORT:
+            return "127.0.0.1:0"
+
+        if self is NormalRule.SERVER_ID:
+            return "serverId '0'"
 
         return "0s ago"
 
@@ -1123,6 +1135,12 @@ class LookPages:
     вопросом догоняет высоту ленты позже, и прокрутка до него упирается в
     прежний конец ленты. Тест вида зовёт его у сообщения,
     которое ставит наверх кадра."""
+    FEED: ClassVar[str] = (
+        "xpath=ancestor::div"
+        "[contains(concat(' ', @class, ' '), ' overflow-y-auto ')][2]"
+    )
+    """Лента сообщений chainlit (ScrollContainer) от сообщения: внешний блок
+    с областью прокрутки и кнопкой «↓»."""
     TABS: ClassVar[int] = 40
     FOCUSED: ClassVar[str] = "(node) => node === document.activeElement"
     ACTIVE: ClassVar[str] = (
@@ -1314,11 +1332,18 @@ class LookStand:
         """Стенд name с серверами MCP servers (секции [mcp.servers.<имя>]) и
         окном модели context_window: вход local, язык конфига assets; поднят
         по первому запросу."""
+        shape = LookAgentShape(servers=servers, context_window=context_window)
+
+        return self.shaped(name, shape)
+
+    def shaped(self, name: str, shape: LookAgentShape) -> StandProcess:
+        """Стенд name с серверами MCP, окном модели и агентом по shape: вход
+        local, язык конфига assets; поднят по первому запросу."""
         if running := self._served.get(name):
             return running
 
         mcp_servers: dict[str, dict[str, Any]] = {}
-        for server, section in servers.items():
+        for server, section in shape.servers.items():
             mcp_servers[server] = dict(section)
 
         config = WindowStandConfig(
@@ -1329,8 +1354,13 @@ class LookStand:
             db_name=self._database,
             url_prefix="/boba-look",
             mcp_servers=mcp_servers,
-            context_window=context_window,
+            agent_service=dict(shape.service),
+            agent_timeouts_sec=shape.timeouts_sec,
+            context_window=shape.context_window,
         )
+        if shape.process:
+            config = replace(config, agent_process=dict(shape.process))
+
         log_path = self._workdir / f"{name}.log"
         process: StandProcess[StandConfig] = StandProcess(
             config=config, log_path=log_path
@@ -1348,3 +1378,17 @@ class LookStand:
 
         self._running.clear()
         self._served.clear()
+
+
+@dataclass(frozen=True)
+class LookAgentShape:
+    """Серверы MCP и агент стенда вида: process — [agent.process] агента
+    процессом (пусто — агент стенда по умолчанию), service — служба агента
+    (пусто — процесс), timeouts_sec — сроки рукопожатия и ответа агента,
+    context_window — окно модели профилей."""
+
+    servers: Mapping[str, Mapping[str, object]] = field(default_factory=dict)
+    process: Mapping[str, Any] = field(default_factory=dict)
+    service: Mapping[str, Any] = field(default_factory=dict)
+    timeouts_sec: tuple[float, float] = (60.0, 60.0)
+    context_window: int = LookStand.FULL_WINDOW

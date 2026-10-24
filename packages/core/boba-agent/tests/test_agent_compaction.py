@@ -19,9 +19,7 @@ import pytest
 from boba.agent.attachments import ConnectedServer, InvokedSkillsAttachment
 from boba.agent.control import AllowAnswer
 from boba.agent.events import (
-    NoticeEvent,
     RecordEvent,
-    ResultEvent,
     TurnOutcome,
 )
 from boba.agent.history import SessionId, StoredLine
@@ -43,6 +41,7 @@ from boba.agent.records import (
     PermissionRule,
     Record,
     RecordCodec,
+    TextBlock,
     UserRecord,
 )
 from boba.agent.session import Session, SessionState
@@ -209,8 +208,15 @@ def phases(records: Sequence[Record]) -> list[tuple[str, CompactionPhase]]:
 def synthetic_texts(records: Sequence[Record]) -> list[str]:
     texts: list[str] = []
     for record in records:
-        if isinstance(record, AssistantRecord) and record.is_synthetic():
-            texts.append(record.error or "")
+        if not isinstance(record, AssistantRecord):
+            continue
+
+        if not record.is_api_error_message:
+            continue
+
+        for block in record.message.content:
+            if isinstance(block, TextBlock):
+                texts.append(block.text)
 
     return texts
 
@@ -592,24 +598,27 @@ class TestBreakers:
         assert len(summary_requests(plain_server)) == 3
         texts = synthetic_texts(records)
         assert len(texts) == 1
-        notices = [e for e in sink.of(NoticeEvent) if isinstance(e, NoticeEvent)]
+        assert texts[0].startswith(
+            "This conversation no longer fits in the model's memory, and "
+            "shortening it automatically didn't help."
+        )
+        errors: list[str] = []
+        for record in records:
+            if isinstance(record, ApiErrorRecord):
+                errors.append(record.error)
+
         if failure is SummaryName.LONG:
-            assert texts[0].startswith(THREAD_EXHAUSTED)
-            assert "Start a new chat to continue." in texts[0]
-            assert [n.description for n in notices] == texts
+            assert errors[-1].startswith(THREAD_EXHAUSTED), errors
         else:
-            assert texts[0].startswith(
+            assert errors[-1].startswith(
                 "Prompt is too long. Automatic compaction failed:"
-            )
-            assert not notices
+            ), errors
 
         assert kinds(records[-3:]) == [
             "user:tool_result",
             "system:api_error",
             "assistant:synthetic",
         ]
-        ended = [e for e in sink.of(ResultEvent) if isinstance(e, ResultEvent)]
-        assert ended[-1].error == texts[0]
 
     async def test_rapid_refill_trips_the_breaker(
         self, plain_server: FakeServer, plain_agents: StandAgents, tmp_path: Path
@@ -640,7 +649,10 @@ class TestBreakers:
         assert len(summary_requests(plain_server)) == 3
         texts = synthetic_texts(records)
         assert len(texts) == 1
-        assert texts[0].startswith("Autocompact is thrashing")
+        assert texts[0].startswith(
+            "This conversation fills the model's memory again right after each "
+            "shortening"
+        )
         conversation = session.conversation()
         assert isinstance(conversation[0], CompactBoundaryRecord)
         assert conversation[0].uuid == boundaries(records)[-1].uuid
@@ -839,11 +851,23 @@ class TestWindow:
         records = session.records()
         assert len(boundaries(records)) == 1
         texts = synthetic_texts(records)
-        assert texts[0] == "Prompt is too long"
-        assert texts[1].startswith(
-            "Prompt is too long. Automatic compaction failed: the summary request "
-            "does not fit the context window even after dropping the oldest rounds"
-        )
+        assert texts == [
+            "This conversation no longer fits in the model's memory. Start a new "
+            "chat to continue.",
+            "This conversation no longer fits in the model's memory, and shortening "
+            "it automatically didn't help. Start a new chat to continue.",
+        ]
+        causes: list[str | None] = []
+        for record in records:
+            if isinstance(record, AssistantRecord) and record.is_api_error_message:
+                causes.append(record.error)
+
+        assert causes[0] is None
+        assert causes[1] is not None
+        assert causes[1].startswith(
+            "the summary request does not fit the context window even after "
+            "dropping the oldest rounds"
+        ), causes
 
 
 class TestInvokedSkills:
@@ -1037,7 +1061,7 @@ class TestManual:
         assert users[-1] == command.id
         assert synthetic_texts(records) == [
             "Compaction failed: there is nothing to summarize yet: the conversation "
-            "holds fewer than two rounds with a model reply: 1 group(s) in total"
+            "holds fewer than two rounds with a model reply"
         ]
 
 

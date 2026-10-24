@@ -23,7 +23,7 @@ from collections.abc import Collection, Coroutine, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, ClassVar, Protocol
 from urllib.parse import urljoin
 from uuid import UUID
 
@@ -37,12 +37,15 @@ from boba.aid.agent.client import (
     AcpClientError,
     AgentClient,
     AgentCommand,
+    AgentFailure,
+    AgentFailureKind,
     AgentLink,
     AgentProcess,
     AgentProcessError,
     AgentRequestError,
     AgentService,
     ElicitationReply,
+    LinkAction,
     PromptBlock,
     SessionUpdate,
     SessionUpdates,
@@ -702,7 +705,13 @@ class ProcessLinks(AgentLinks):
                 f"thread {thread_id}: writing the agent settings into "
                 f"{workdir.path} failed: {exc}"
             )
-            raise AgentProcessError(msg) from exc
+            failure = AgentFailure(
+                kind=AgentFailureKind.START_FAILED,
+                peer=self._command.peer(),
+                action=LinkAction.STARTING,
+                cause=f"its settings file cannot be written: {exc.strerror}",
+            )
+            raise AgentProcessError(msg, failure) from exc
 
         process = AgentProcess(
             self._command, workdir, client, self._relay, servers, self._version
@@ -754,7 +763,13 @@ class ServiceLinks(AgentLinks):
                 f"deleting the agent session of thread {thread.id}: the thread "
                 "has no owner to sign in to the agent service as"
             )
-            raise AgentProcessError(msg)
+            failure = AgentFailure(
+                kind=AgentFailureKind.START_FAILED,
+                peer=self._service.peer(),
+                action="deleting the thread",
+                cause="the thread has no owner to sign in as",
+            )
+            raise AgentProcessError(msg, failure)
 
         stored = await self._users.stored_by_id(owner)
         if stored is None:
@@ -762,7 +777,13 @@ class ServiceLinks(AgentLinks):
                 f"deleting the agent session of thread {thread.id}: its owner "
                 f"{owner} has no users row to sign in to the agent service as"
             )
-            raise AgentProcessError(msg)
+            failure = AgentFailure(
+                kind=AgentFailureKind.START_FAILED,
+                peer=self._service.peer(),
+                action="deleting the thread",
+                cause="the owner of the thread is not a known user",
+            )
+            raise AgentProcessError(msg, failure)
 
         user = stored.authenticated()
 
@@ -949,6 +970,12 @@ class ThreadAgent:
     любой вкладки треда на любом инстансе ведёт её собственный процесс, а
     ходы разводит замок области треда в приёмнике (TurnRenderer).
     """
+
+    NOT_EDITED: ClassVar[str] = (
+        "The question wasn't edited because the earlier conversation couldn't be "
+        "replaced, so everything stays as it was. Try again when no other tab of "
+        "this chat is answering."
+    )
 
     def __init__(
         self,
@@ -1151,6 +1178,33 @@ class ThreadAgent:
             finally:
                 await self._close_session(self.process)
 
+    async def recover(self) -> None:
+        """Вкладка просит агента заново после сбоя: агент, который вышел или
+        не поднялся, заменяется новым, лента вкладки рисуется заново из его
+        истории.
+
+        Ошибки:
+        AgentProcessError, AgentRequestError — агент снова не поднялся или
+            отказал в `session/resume`.
+        AgentSettingsError, DataUnavailableError — слой чата не собран.
+        InternalServiceError — тред не прочитан.
+        """
+        async with self._gate:
+            self._detached = False
+            if self._launched is None or self._exited():
+                launch = self._launcher.prepare(self._identity)
+                await self._close_process()
+                await self._launch(launch)
+                self._restart_pending = False
+
+            await self._close_session(self.process)
+            self._session_id = None
+            await self._renderer.cleared()
+            try:
+                await self._resume(replay=True)
+            finally:
+                await self._close_session(self.process)
+
     def edited(self, question: Question) -> Question:
         """Вопрос-правка с вложениями правленого вопроса из беседы, которую
         вкладка видела у агента.
@@ -1161,9 +1215,14 @@ class ThreadAgent:
         """
         links = self._questions.links.get(question.key)
         if links is None:
+            logger.warning(
+                "thread %s: edited question %s is not in the loaded conversation",
+                self.thread_id,
+                question.key,
+            )
             msg = (
-                f"The question {question.key} of thread {self.thread_id} is not in "
-                "the conversation this tab has loaded; reload the thread to edit it."
+                "This question isn't in the conversation loaded in this tab, so it "
+                "can't be edited. Reload the chat and try again."
             )
             raise AcpClientError(msg)
 
@@ -1366,11 +1425,13 @@ class ThreadAgent:
         if settled.done():
             return settled.result()
 
+        failure = self.process.lost(LinkAction.TURN)
         msg = (
-            f"thread {self.thread_id}: the agent process exited during the turn "
-            f"of session {turn.session_id}: {self.process.log_tail()}"
+            f"thread {self.thread_id}: {self.process.label()} left during the turn "
+            f"of session {turn.session_id} ({failure.cause}): "
+            f"{self.process.log_tail()}"
         )
-        raise AgentProcessError(msg)
+        raise AgentProcessError(msg, failure)
 
     async def _finish(
         self, turn: StartedTurn, idle: schema.IdleSessionStateUpdate
@@ -1534,13 +1595,16 @@ class ThreadAgent:
         AgentRequestError — агент отказал в `session/fork`.
         """
         if not self.process.forks_by_message():
+            logger.warning(
+                "thread %s: question %s edited, but the agent does not declare %r "
+                "in capabilities.session.fork._meta",
+                self.thread_id,
+                question.key,
+                MetaKey.UP_TO_MESSAGE_ID.value,
+            )
             msg = (
-                f"The question {question.key} of thread {self.thread_id} was "
-                "edited, but the agent of this chat does not declare "
-                f"{MetaKey.UP_TO_MESSAGE_ID.value!r} in "
-                "capabilities.session.fork._meta, so it cannot branch the "
-                "conversation before the edited question; ask the question "
-                "anew as a new message instead of editing it."
+                "This agent can't branch a conversation, so questions can't be "
+                "edited here. Send the question again as a new message instead."
             )
             raise AcpClientError(msg)
 
@@ -1549,24 +1613,25 @@ class ThreadAgent:
         try:
             await self.process.delete_session(current)
         except AgentRequestError as refused:
+            logger.warning(
+                "thread %s: question %s not edited, session %s not deleted: %s",
+                self.thread_id,
+                question.key,
+                current,
+                refused,
+            )
             try:
                 await self.process.delete_session(forked)
             except AgentRequestError as dropped:
-                msg = (
-                    f"The question {question.key} of thread {self.thread_id} was "
-                    f"not edited: the session {current} could not be deleted "
-                    f"({refused}), and its branch {forked} could not be removed "
-                    f"either ({dropped})."
+                logger.error(
+                    "thread %s: branch %s not removed either: %s",
+                    self.thread_id,
+                    forked,
+                    dropped,
                 )
-                raise AcpClientError(msg) from dropped
+                raise AcpClientError(self.NOT_EDITED) from dropped
 
-            msg = (
-                f"The question {question.key} of thread {self.thread_id} was not "
-                f"edited: the session {current} could not be deleted ({refused}), "
-                "so the conversation stays as it was; edit the question again "
-                "when no other tab of this chat is answering or loading it."
-            )
-            raise AcpClientError(msg) from refused
+            raise AcpClientError(self.NOT_EDITED) from refused
 
         await self._meta.remember(self.thread_id, forked, self._identity.profile.name)
         self._session_id = forked
@@ -1786,6 +1851,7 @@ class ThreadAgents:
 
         failures: list[AcpClientError] = []
         reasons: list[str] = []
+        failure: AgentFailure | None = None
         for agent, outcome in zip(agents, outcomes, strict=True):
             if outcome is None:
                 continue
@@ -1795,13 +1861,20 @@ class ThreadAgents:
 
             failures.append(outcome)
             reasons.append(f"thread {agent.thread_id}: {outcome}")
+            if failure is None:
+                failure = AgentFailure(
+                    kind=AgentFailureKind.CONNECTION_LOST,
+                    peer=f"agent of thread {agent.thread_id}",
+                    action=step.value,
+                    cause=str(outcome),
+                )
 
-        if failures:
+        if failure is not None:
             msg = (
                 f"{step.value} the agents of the tab: {len(failures)} of "
                 f"{len(agents)} failed: {'; '.join(reasons)}"
             )
-            raise AgentProcessError(msg) from failures[0]
+            raise AgentProcessError(msg, failure) from failures[0]
 
 
 class ThreadDeleter(ThreadDeletionListener):

@@ -51,6 +51,7 @@ from boba.aid.canvas.tools import CanvasOpener
 from boba.aid.chat.ui_text import UiText
 from boba.aid.domain.fields import ThreadField, ThreadMetaField
 from boba.aid.infra.config import AppConfig
+from boba.aid.infra.notices import TabAction, TabEvent, TabNotices
 from boba.aid.infra.providers import (
     agent_config,
     canvas_opener,
@@ -70,7 +71,6 @@ from boba.aid.infra.session import (
 )
 from boba.aid.infra.socket_events import SocketEvents
 from boba.aid.infra.thread_room import (
-    ChatNotices,
     ChatRoomSurface,
     ThreadLive,
     ThreadRoom,
@@ -82,12 +82,12 @@ from boba.canvas.canvas import CanvasAction, CanvasFileRequest, RenderVerdicts
 from boba.chat.profiles import ChatProfileConfig, ChatProfiles, SelectedProfile
 from boba.chat.threads import DataLayerError
 from boba.identity.context import Scope
-from boba.identity.errors import InternalServiceError, RefusalError
+from boba.identity.errors import RefusalError
 from boba.identity.locks import LockBusyError
 from boba.identity.run import Runs
 from boba.identity.session import Login
 from boba.identity.token import CookieSpec
-from boba.mcp_client.client import McpCaller, McpClientError, McpServers
+from boba.mcp_client.client import FilesHost, McpCaller, McpClientError, McpServers
 from boba.messaging import (
     MessageBus,
     StopRequested,
@@ -111,26 +111,16 @@ class TabText(StrEnum):
         return texts.text(self.value, **values)
 
 
-class TabEvent(StrEnum):
-    """События сокета, которые aid шлёт вкладке сверх событий chainlit; их
-    принимает overlay фронта (useChatSession)."""
-
-    HISTORY_LOADED = "history_loaded"
-    """История треда воспроизведена (или не загрузилась): вкладка снимает
-    индикатор загрузки, который поставила на first_interaction возврата."""
-
-
 class TabAgent:
     """Агент треда вкладки в обработчиках chainlit: поднять под тред,
-    загрузить историю, провести ход. Отказы пути агента (FAILURES) уходят в
-    ленту сообщением об ошибке, а не в общий обработчик ошибок.
+    загрузить историю, провести ход, поднять заново по кнопке повтора.
+    Отказы пути агента (FAILURES) уходят вкладке через TabNotices: агент
+    недоступен — полосой над полем ввода, прочее — всплывающим уведомлением;
+    в ленту они не идут — в истории агента их нет.
 
     Создают обработчики из агентов сессии и профилей на один вызов; вопрос и
     личность вкладки собирают фабрики в его полях.
     """
-
-    AUTHOR: ClassVar[str] = "Agent"
-    """Подпись сообщений об отказах агента в ленте."""
 
     FAILURES: ClassVar[tuple[type[Exception], ...]] = (
         AcpClientError,
@@ -139,13 +129,14 @@ class TabAgent:
         LockBusyError,
         CommandError,
     )
-    """Отказы пути агента, которые уходят в ленту сообщением об ошибке."""
+    """Отказы пути агента, которые уходят вкладке через TabNotices."""
 
     def __init__(self, agents: ThreadAgents, registry: ChatProfiles) -> None:
         self._agents = agents
         self._registry = registry
         self._identities = ThreadIdentities()
         self._questions = Questions()
+        self._notices = TabNotices()
 
     def identity(self, profile: SelectedProfile) -> ThreadIdentity:
         """Личность вкладки текущей сессии с профилем profile."""
@@ -156,13 +147,9 @@ class TabAgent:
     ) -> Question:
         return self._questions.of_message(msg, identity, public_url)
 
-    async def failed(self, content: str) -> None:
-        """Отказ пути агента в ленту сообщением об ошибке."""
-        await cl.ErrorMessage(content=content, author=self.AUTHOR).send()
-
     async def start(self, session: ChainlitSession) -> ThreadAgent | None:
         """Процесс агента под тред вкладки; без выбранного профиля ждём первого
-        хода; None — агент не поднялся, причина в ленте."""
+        хода; None — агент не поднялся, причина — на полосе вкладки."""
         try:
             selected = self._registry.resolve(session.chat_profile, session.sign_in)
         except RefusalError as exc:
@@ -173,21 +160,25 @@ class TabAgent:
 
         identity = self._identities.of(session, selected)
         try:
-            return await self._agents.of(identity)
+            agent = await self._agents.of(identity)
         except self.FAILURES as exc:
             logger.error("thread %s: agent start failed: %s", identity.thread_id, exc)
-            await self.failed(str(exc))
+            await self._notices.failed(exc)
 
             return None
 
+        await self._notices.agent_ready()
+
+        return agent
+
     async def load(self, agent: ThreadAgent) -> None:
         """Агент вкладки загружает сессию треда с воспроизведением истории в
-        ленту; отказ агента уходит в ленту."""
+        ленту; отказ агента — вкладке."""
         try:
             loaded = await agent.resume()
         except self.FAILURES as exc:
             logger.error("thread %s: agent resume failed: %s", agent.thread_id, exc)
-            await self.failed(str(exc))
+            await self._notices.failed(exc)
             return
 
         if not loaded:
@@ -196,6 +187,31 @@ class TabAgent:
                 agent.thread_id,
             )
 
+    async def retry(self, session: ChainlitSession) -> None:
+        """Кнопка повтора на полосе недоступного агента: агент треда, который
+        вкладка уже держит, поднимается заново с лентой из истории; агент,
+        который не поднялся при открытии, — запуском и загрузкой истории.
+        Удача снимает полосу, отказ — снова на ней."""
+        known = None
+        if thread_id := session.thread_id:
+            known = self._agents.of_thread(thread_id)
+
+        if known is None:
+            agent = await self.start(session)
+            if agent is not None:
+                await self.load(agent)
+
+            return
+
+        try:
+            await known.recover()
+        except self.FAILURES as exc:
+            logger.error("thread %s: agent recovery failed: %s", known.thread_id, exc)
+            await self._notices.failed(exc)
+            return
+
+        await self._notices.agent_ready()
+
     async def run(
         self, identity: ThreadIdentity, question: Question, command: str | None
     ) -> None:
@@ -203,10 +219,9 @@ class TabAgent:
         меню) сначала получает реестр команд вкладки, команду чата или
         приложения сервера исполняет вкладка без хода; остальное — агенту
         вкладки `session/prompt`, лента рисуется из его уведомлений через
-        шину. Отказ команды или агента и занятый тред уходят в ленту
-        сообщением об ошибке, а при отказе правки вкладка сначала заново
-        рисует беседу из истории — фронт уже обрезал её ленту; не вышло и
-        это — в сообщении обе причины."""
+        шину. Отказ команды или агента и занятый тред уходят вкладке через
+        TabNotices, а при отказе правки вкладка сначала заново рисует беседу
+        из истории — фронт уже обрезал её ленту."""
         thread_id = identity.thread_id
 
         ThreadRoom.activate(thread_id)
@@ -220,7 +235,7 @@ class TabAgent:
             logger.error(
                 "thread %s: agent of turn %s failed: %s", thread_id, question.key, exc
             )
-            await self.failed(str(exc))
+            await self._notices.failed(exc)
             return
 
         try:
@@ -232,7 +247,7 @@ class TabAgent:
                 question.key,
                 exc,
             )
-            await self.failed(str(exc))
+            await self._notices.failed(exc)
             return
 
         if routed is None:
@@ -246,51 +261,41 @@ class TabAgent:
             await agent.ask(asked)
         except self.FAILURES as exc:
             logger.error("thread %s: turn %s failed: %s", thread_id, question.key, exc)
-            await self.failed(await self._redrawn(agent, question, exc))
+            await self._redrawn(agent, question)
+            await self._notices.failed(exc)
 
-    async def _redrawn(
-        self, agent: ThreadAgent, question: Question, failure: Exception
-    ) -> str:
-        """Текст отказа хода; у правки вкладка сначала заново рисует беседу из
-        истории — фронт уже обрезал её ленту, а свой идущий ход не трогается.
-        Не вышло и это — в тексте обе причины."""
-        thread_id = agent.thread_id
+    async def _redrawn(self, agent: ThreadAgent, question: Question) -> None:
+        """Отказ правки: вкладка заново рисует беседу из истории — фронт уже
+        обрезал её ленту, а свой идущий ход не трогается. Не вышло — причина
+        вкладке."""
         if not question.edited:
-            return str(failure)
+            return
 
         if agent.turn_active():
-            return str(failure)
+            return
 
         try:
             await agent.reload()
         except self.FAILURES as redraw:
-            reason = f"the agent did not replay it: {redraw}"
-            logged = str(redraw)
-        except DataLayerError as redraw:
-            reason = f"the thread was not read: {redraw.view_message().content}"
-            logged = str(redraw)
-        except InternalServiceError as redraw:
             logger.error(
                 "thread %s: redrawing the tab after turn %s failed: %s",
-                thread_id,
+                agent.thread_id,
                 question.key,
-                redraw.internal_detail,
+                redraw,
             )
-            return (
-                f"{failure}\n\nThe conversation was not redrawn after this "
-                "because of an internal error; reload the thread."
+            await self._notices.failed(redraw)
+        except DataLayerError as redraw:
+            logger.error(
+                "thread %s: redrawing the tab after turn %s failed: %s",
+                agent.thread_id,
+                question.key,
+                redraw,
             )
-        else:
-            return str(failure)
-
-        logger.error(
-            "thread %s: redrawing the tab after turn %s failed: %s",
-            thread_id,
-            question.key,
-            logged,
-        )
-
-        return f"{failure}\n\nThe conversation was not redrawn after this: {reason}"
+            await self._notices.toast(
+                "The conversation couldn't be shown again after the failed edit. "
+                "Reload the page to see it.",
+                redraw.view_message().content,
+            )
 
 
 @chainlit_error_ctx_handler
@@ -396,10 +401,11 @@ async def set_chat_profiles(
 class ProfileUploads:
     """Доступность загрузки файлов в профиле для пользователя.
 
-    Создаётся обработчиком set_chat_profiles на один запрос настроек. Файлы
-    пользователя лежат на первом MCP-сервере профиля, объявившем расширение
-    файлов; если такого сервера нет или сервер профиля недоступен, кнопка
-    загрузки в этом профиле скрыта.
+    Создаётся обработчиком set_chat_profiles на один запрос настроек и
+    on_chat_start на старт вкладки. Файлы пользователя лежат на первом
+    MCP-сервере профиля, объявившем расширение файлов; если такого сервера
+    нет или сервер профиля недоступен, кнопка загрузки в этом профиле
+    скрыта, а недоступность сервера вкладка узнаёт уведомлением (explain).
     """
 
     def __init__(self, servers: McpServers, user: cl.User | None) -> None:
@@ -414,23 +420,37 @@ class ProfileUploads:
         )
 
     async def enabled(self, profile: ChatProfileConfig) -> bool:
-        user = self._user
-        if user is None:
+        try:
+            host = await self._host(profile)
+        except McpClientError as exc:
+            logger.warning("file upload is hidden: %s", exc)
             return False
 
+        return host is not None
+
+    async def explain(self, profile: ChatProfileConfig, notices: TabNotices) -> None:
+        """Кнопка загрузки скрыта недоступным сервером профиля — вкладке
+        уведомление с причиной; доступный сервер или профиль без файлов
+        молчат."""
+        try:
+            await self._host(profile)
+        except McpClientError as exc:
+            logger.warning("file upload is hidden: %s", exc)
+            await notices.uploads_off(exc)
+
+    async def _host(self, profile: ChatProfileConfig) -> FilesHost | None:
+        user = self._user
+        if user is None:
+            return None
+
         if not profile.mcp:
-            return False
+            return None
 
         caller = McpCaller(
             login=Login(user.identifier), roles=ChainlitSession.roles_of(user)
         )
-        try:
-            host = await self._servers.files_host(profile.mcp, caller)
-        except McpClientError as exc:
-            logger.warning("file upload is hidden for %s: %s", caller.login, exc)
-            return False
 
-        return host is not None
+        return await self._servers.files_host(profile.mcp, caller)
 
 
 @cl.on_chat_start
@@ -439,6 +459,7 @@ class ProfileUploads:
 async def on_chat_start(
     registry: Annotated[ChatProfiles, Depends(chat_profiles_registry)],
     agents: Annotated[ThreadAgents, Depends(thread_agents, scope="session")],
+    servers: Annotated[McpServers, Depends(mcp_servers)],
 ):
     session = current_session()
 
@@ -469,6 +490,14 @@ async def on_chat_start(
     # процесс агента поднимается вместе с вкладкой: первый вопрос его не ждёт
     if session.thread_id:
         await TabAgent(agents, registry).start(session)
+
+    try:
+        selected = registry.resolve(session.chat_profile, session.sign_in)
+    except RefusalError:
+        return
+
+    uploads = ProfileUploads(servers, session.user)
+    await uploads.explain(selected.config, TabNotices())
 
 
 @cl.on_chat_end
@@ -518,7 +547,12 @@ async def on_stop(
         return
 
     if agent := index.active(thread_id):
-        await agent.stop()
+        try:
+            await agent.stop()
+        except AcpClientError as exc:
+            logger.error("thread %s: stop failed: %s", thread_id, exc)
+            await TabNotices().failed(exc)
+
         return
 
     if runs.stop(thread_id, StopReason.USER_STOP):
@@ -560,7 +594,7 @@ async def on_canvas_open(
     try:
         await canvas.show(request.path, request.mime, scope)
     except RefusalError as exc:
-        await ChatNotices.error(f"Failed to open the canvas: {exc}")
+        await TabNotices().canvas_refused(exc)
 
 
 @cl.action_callback(CanvasAction.CONTENT)
@@ -586,7 +620,7 @@ async def on_canvas_content(
             request.path, request.mime, watch=not request.refresh, scope=scope
         )
     except RefusalError as exc:
-        await ChatNotices.error(f"Failed to open the canvas: {exc}")
+        await TabNotices().canvas_refused(exc)
         return {}
 
     return described.props()
@@ -750,6 +784,18 @@ async def on_app_context(
     agent.app_context(request.call_id, list(request.params.blocks()))
 
     return {}
+
+
+@cl.action_callback(TabAction.RETRY_AGENT)
+@chainlit_error_ctx_handler
+@di_inject
+async def on_agent_retry(
+    action: cl.Action,
+    agents: Annotated[ThreadAgents, Depends(thread_agents, scope="session")],
+    registry: Annotated[ChatProfiles, Depends(chat_profiles_registry)],
+) -> None:
+    """Кнопка повтора на полосе недоступного агента вкладки."""
+    await TabAgent(agents, registry).retry(current_session())
 
 
 @cl.on_chat_resume
