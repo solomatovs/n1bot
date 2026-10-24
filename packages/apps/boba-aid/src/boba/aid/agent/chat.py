@@ -356,6 +356,10 @@ class TurnRenderer(SessionUpdates, Protocol):
         снимаются, текст возвращается в поле ввода в порядке отправки."""
 
     @abstractmethod
+    def connected(self) -> bool:
+        """Сокет вкладки приёмника подключён прямо сейчас."""
+
+    @abstractmethod
     async def cleared(self) -> None:
         """Лента вкладки очищается перед повторным воспроизведением истории.
 
@@ -994,6 +998,9 @@ class ThreadAgent:
         self._restart_pending = False
         self._detached = False
         """Вкладка отключилась: процесс останавливается, как только нет хода."""
+        self._redraw = False
+        """Правка другой вкладки сменила ветку треда, пока эта была отключена:
+        первым делом вернувшейся вкладки её лента рисуется заново."""
         self._contexts: dict[str, Sequence[PromptBlock]] = {}
 
     @property
@@ -1096,6 +1103,7 @@ class ThreadAgent:
         вопрос откроет новую."""
         known = self._session_id
         if replay:
+            self._redraw = False
             known = await self._meta.session_of(self.thread_id)
 
         if known is None:
@@ -1137,13 +1145,36 @@ class ThreadAgent:
         """
         async with self._gate:
             await self._revive()
+            await self._redrawn()
+
+    async def rewound(self) -> None:
+        """Правка другой вкладки сменила ветку треда: подключённая вкладка
+        перерисовывается сразу, отключённая — первым делом, когда вернётся.
+        Ради ленты без зрителя процесс не поднимается и замка вкладки
+        рендерер треда не ждёт.
+
+        Ошибки: как у reload.
+        """
+        if not self._renderer.connected():
+            self._redraw = True
+            logger.info(
+                "thread %s: the tab is disconnected, its feed is redrawn on return",
+                self.thread_id,
+            )
+            return
+
+        await self.reload()
+
+    async def _redrawn(self) -> None:
+        """Лента вкладки заново из сессии треда в threads.meta: под замком
+        вкладки, процесс уже запущен."""
+        await self._close_session(self.process)
+        self._session_id = None
+        await self._renderer.cleared()
+        try:
+            await self._resume(replay=True)
+        finally:
             await self._close_session(self.process)
-            self._session_id = None
-            await self._renderer.cleared()
-            try:
-                await self._resume(replay=True)
-            finally:
-                await self._close_session(self.process)
 
     async def recover(self) -> None:
         """Вкладка просит агента заново после сбоя: агент, который вышел или
@@ -1249,6 +1280,9 @@ class ThreadAgent:
 
         if self._restart_pending:
             await self._restart()
+
+        if self._redraw:
+            await self._redrawn()
 
         turn = await self._renderer.turn_started(question, self._started(question))
         self._active = turn.session_id
@@ -1665,7 +1699,8 @@ class ThreadAgentsIndex(ThreadRewinds):
 
     async def rewound(self, thread_id: str, session_id: str) -> None:
         """Каждый агент треда не на ветке session_id перечитывает её в свою
-        вкладку; правящая вкладка уже на ветке, хвост она обрезала сама.
+        вкладку (отключённая — когда вернётся); правящая вкладка уже на
+        ветке, хвост она обрезала сама.
         Отказ одной вкладки не оставляет без перерисовки остальные.
 
         Ошибки:
@@ -1677,7 +1712,7 @@ class ThreadAgentsIndex(ThreadRewinds):
                 continue
 
             try:
-                await agent.reload()
+                await agent.rewound()
             except (AcpClientError, InternalServiceError, DataLayerError) as exc:
                 logger.error(
                     "thread %s: a tab did not reload branch %s: %s",
