@@ -1,5 +1,5 @@
 - alert:
-  - text: "The agent answered in a way the chat doesn't understand, so the chat can't answer right now. Try again with the button on the right; if it keeps failing, let the administrator know. agent service at http://127.0.0.1:0/acp, initialize: HTTP 502: initialize failed"
+  - text: "The agent answered in a way the chat doesn't understand, so the chat can't answer right now. Try again with the button on the right; if it keeps failing, let the administrator know. agent service at http://127.0.0.1:0/boba/acp, initialize: HTTP 502: initialize failed"
   - button "Повторить"
 - textbox "Введите сообщение здесь..."
 - button "Прикрепить файлы" [disabled]:
