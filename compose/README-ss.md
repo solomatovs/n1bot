@@ -91,7 +91,10 @@ PostgreSQL и прокси (раздел «Сеть»). Отладка чата
 ACP на `/boba/acp`). Каждое приложение само отвечает под своим префиксом, nginx
 передаёт путь как есть, без `rewrite`; метаданные OAuth
 `/.well-known/…/mcp` и `/.well-known/…/boba` идут в свои сервисы. Чат ходит в
-boba-mcp и службу агента тоже через nginx, по https. Конфигурация nginx —
+boba-mcp и службу агента тоже через nginx, по https. Браузер со старой ссылкой
+чата `/boba/…` (заголовок `Sec-Fetch-Dest: document`) nginx уводит ответом 302 на
+`/aid/…` с тем же остатком пути; клиенты службы агента этот заголовок не шлют.
+Конфигурация nginx —
 `/mnt/store/ss/docker/compose/nginx/conf/conf.d/locations/boba.conf`
 (руководство, раздел 14).
 
