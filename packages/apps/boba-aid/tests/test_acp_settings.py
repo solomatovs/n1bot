@@ -54,6 +54,7 @@ from boba.aid.agent.client import (
     AcpClientError,
     AgentClient,
     AgentCommand,
+    AgentFailureKind,
     AgentProcess,
     AgentProcessError,
 )
@@ -91,9 +92,9 @@ from boba.stand.site import Stand
 from boba.stand.ui.fake_llm import FailureName, ScenarioName
 from boba.transport.acp.protocol import (
     AcpErrorCode,
-    IdleErrorUpdate,
     McpMessage,
     McpVersion,
+    StopReason,
 )
 from boba.transport.http import HttpTransportConfig
 
@@ -772,12 +773,21 @@ class TestLaunchConfig:
         }
 
     def _failure(self, updates: RecordingUpdates) -> str:
+        """Причина отказа хода: пометка агента об ошибке перед idle отказом."""
         assert updates.finished, updates.updates
         _, idle = updates.finished[-1]
-        assert isinstance(idle, IdleErrorUpdate), idle
-        assert idle.error is not None, idle
+        assert idle.stop_reason == StopReason.REFUSAL, idle
+        errors: list[str] = []
+        for _, update in updates.updates:
+            if not isinstance(update, schema.SessionNotice):
+                continue
 
-        return idle.error.message
+            if update.severity == "error":
+                errors.append(update.title)
+
+        assert errors, updates.updates
+
+        return errors[-1]
 
     async def test_request_timeout_and_retries_of_the_provider_act(
         self, chat_launch: ChatLaunch, model: FakeModel
@@ -967,7 +977,11 @@ class TestFailedLaunch:
             await servers.stop()
 
         assert "did not start" in str(refused.value)
-        assert "agent_command" in str(refused.value)
+        assert "[agent.process].command" in str(refused.value)
+        failure = refused.value.failure
+        assert failure.kind is AgentFailureKind.START_FAILED, failure
+        assert failure.peer == "agent process 'no-such-agent'", failure
+        assert str(tmp_path) not in failure.cause, failure
         assert list((tmp_path / "agents").iterdir()) == []
 
     async def test_silent_session_request_is_cut_by_request_timeout(

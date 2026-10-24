@@ -33,7 +33,7 @@ from boba.agent.profile import (
 from boba.agent.records import PermissionMode, ToolUseBlock
 from boba.agent.session import Session
 from boba.agent.skills import Skill
-from boba.agent.tools import McpServerSet, ToolServer
+from boba.agent.tools import McpServerSet, ServerNotice, ToolServer
 from boba.connections.sealed import ConnectionOffer, SealedParamSchema
 from boba.core.mcp_names import McpToolNames
 from boba.history.jsonl import JsonlHistoryStore
@@ -354,14 +354,21 @@ class FakeServer:
 
 class StandServers(McpServerSet):
     """Реализация McpServerSet в процессе теста: подключённые серверы с
-    инструкциями задаёт тест полем connected_servers, освежения считаются."""
+    инструкциями задаёт тест полем connected_servers, смены их состояния —
+    полем pending_notices (отдаются первым освежением), освежения
+    считаются."""
 
     def __init__(self, connected: Sequence[ConnectedServer]) -> None:
         self.connected_servers = list(connected)
+        self.pending_notices: list[ServerNotice] = []
         self.refreshes = 0
 
-    async def refreshed(self) -> None:
+    async def refreshed(self) -> Sequence[ServerNotice]:
         self.refreshes += 1
+        taken = list(self.pending_notices)
+        self.pending_notices.clear()
+
+        return taken
 
     def connected(self) -> Sequence[ConnectedServer]:
         return self.connected_servers

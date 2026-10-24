@@ -770,6 +770,13 @@ class StandConfig(StandService):
     умолчанию агент boba.cli.app интерпретатором прогона; тест чужого агента
     ставит свою."""
 
+    agent_service: dict[str, Any] = field(default_factory=dict)
+    """Секция [agent.process] службы агента (адрес ACP и вход proxy): пусто —
+    агент процессом по agent_process."""
+
+    agent_timeouts_sec: tuple[float, float] = (60.0, 60.0)
+    """Сроки рукопожатия и ответа на метод сессии агента чата."""
+
     generation: str = ""
     """Поколение сессий: пустое — случайное на каждый старт процесса; общее у
     двух инстансов стенда даёт им принимать одну и ту же cookie входа."""
@@ -892,19 +899,28 @@ class StandConfig(StandService):
         private_dir = self.workdir / "agents"
         private_dir.mkdir(parents=True, exist_ok=True)
         doc["postgres_history"]["dbname"] = self.db_name
+        start_sec, request_sec = self.agent_timeouts_sec
+        process: dict[str, Any] = {
+            "command": self.agent_process["command"],
+            "args": self.agent_process["args"],
+            "private_dir": str(private_dir),
+            "start_timeout_sec": start_sec,
+            "request_timeout_sec": request_sec,
+            "stop_timeout_sec": 10,
+        }
+        if self.agent_service:
+            process = {
+                **self.agent_service,
+                "start_timeout_sec": start_sec,
+                "request_timeout_sec": request_sec,
+            }
+
         doc["agent"] = {
             "public_url": self.base_url,
             "seal_ttl_sec": 600,
             "question_timeout_sec": 600,
             "settings_table": {"cipher": "${keys.encryption}"},
-            "process": {
-                "command": self.agent_process["command"],
-                "args": self.agent_process["args"],
-                "private_dir": str(private_dir),
-                "start_timeout_sec": 60,
-                "request_timeout_sec": 60,
-                "stop_timeout_sec": 10,
-            },
+            "process": process,
             "history": dict(self.agent_history),
             "tools": tools,
         }
