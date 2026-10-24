@@ -48,8 +48,8 @@ from mcp_types.methods import parse_client_request
 from pydantic import AnyUrl, BaseModel, ConfigDict
 
 from boba.agent.records import (
+    ApiFailureRecord,
     AssistantMessage,
-    AssistantRecord,
     ReplyStopReason,
     Synthetic,
     TextBlock,
@@ -4823,7 +4823,7 @@ class TestRefusalNotices:
     короткой причиной из её error; запись прежних версий, где текст и error
     совпадают, причину не повторяет."""
 
-    def _refusal(self, text: str, error: str | None) -> AssistantRecord:
+    def _refusal(self, text: str, error: str | None) -> ApiFailureRecord:
         message = AssistantMessage(
             id="msg-1",
             model=Synthetic.MODEL.value,
@@ -4831,7 +4831,7 @@ class TestRefusalNotices:
             stop_reason=ReplyStopReason.STOP_SEQUENCE,
             usage=Usage(),
         )
-        return AssistantRecord(
+        return ApiFailureRecord(
             uuid="u-1",
             parent_uuid=None,
             timestamp="2026-10-24T00:00:00.000Z",
@@ -4839,7 +4839,6 @@ class TestRefusalNotices:
             version="0",
             message=message,
             request_id="r-1",
-            is_api_error_message=True,
             error=error,
         )
 

@@ -19,7 +19,7 @@ import uvicorn
 from pydantic import SecretStr
 
 from boba.agent.agent import Agent, AgentParts
-from boba.agent.attachments import ConnectedServer, EnvironmentSnapshot
+from boba.agent.attachments import ConnectedServer
 from boba.agent.events import AgentEvent, ControlRequestEvent, EventSink
 from boba.agent.history import HistoryStore, SessionId
 from boba.agent.ids import Clock, SystemClock
@@ -30,7 +30,7 @@ from boba.agent.profile import (
     ReasoningReturn,
     TurnLimits,
 )
-from boba.agent.records import PermissionMode, ToolUseBlock
+from boba.agent.records import EnvironmentSnapshot, PermissionMode, ToolUseBlock
 from boba.agent.session import Session
 from boba.agent.skills import Skill
 from boba.agent.tools import McpServerSet, ServerNotice, ToolServer

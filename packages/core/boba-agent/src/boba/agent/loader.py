@@ -25,17 +25,19 @@ import logging
 from collections.abc import AsyncGenerator, Iterator, Sequence
 from contextlib import aclosing
 from dataclasses import dataclass, field
-from typing import ClassVar
 
-from boba.agent.attachments import AttachmentKind, EnvironmentAttachment
 from boba.agent.history import BrokenLine, HistoryStore, SessionId, StoredLine
 from boba.agent.ids import Clock, IdMint
 from boba.agent.records import (
     AssistantMessage,
     AssistantRecord,
     AttachmentRecord,
+    CallStatus,
     ChainRecord,
+    EnvironmentAttachment,
     InformationalRecord,
+    InterruptRecord,
+    NoResponseRecord,
     NoticeLevel,
     Record,
     RecordCodec,
@@ -45,6 +47,7 @@ from boba.agent.records import (
     TextBlock,
     ToolDenialKind,
     ToolResultBlock,
+    ToolResultRecord,
     ToolUseBlock,
     Usage,
     UserMessage,
@@ -79,12 +82,6 @@ class DanglingCall:
 
 class HistoryLoader:
     """Строит сессию из записей порта и чинит оборванный ход."""
-
-    STOP_MARKERS: ClassVar[tuple[AgentTemplateFile, ...]] = (
-        AgentTemplateFile.REQUEST_INTERRUPTED,
-        AgentTemplateFile.REQUEST_INTERRUPTED_TOOL_USE,
-    )
-    """Тексты маркеров остановки хода пользователем или выключением."""
 
     def __init__(
         self,
@@ -218,18 +215,7 @@ class HistoryLoader:
         if isinstance(last, AssistantRecord):
             return True
 
-        if not isinstance(last, UserRecord):
-            return False
-
-        content = last.message.content
-        if not isinstance(content, str):
-            return False
-
-        for marker in self.STOP_MARKERS:
-            if content == self._templates.read(marker):
-                return True
-
-        return False
+        return isinstance(last, InterruptRecord)
 
     def _interrupted_notice(self, session: Session) -> InformationalRecord:
         return InformationalRecord(
@@ -263,7 +249,7 @@ class HistoryLoader:
 
         answered: set[str] = set()
         for record in conversation:
-            if not isinstance(record, UserRecord):
+            if not isinstance(record, ToolResultRecord):
                 continue
 
             for result in record.message.tool_results():
@@ -293,13 +279,15 @@ class HistoryLoader:
             if isinstance(record, AssistantRecord) and record.message.id == message_id:
                 yield record
 
-    def _stub_result(self, session: Session, dangling: DanglingCall) -> UserRecord:
+    def _stub_result(
+        self, session: Session, dangling: DanglingCall
+    ) -> ToolResultRecord:
         text = self._templates.read(AgentTemplateFile.INTERRUPTED_TOOL_RESULT)
         block = ToolResultBlock(
             tool_use_id=dangling.call.id, content=text, is_error=True
         )
 
-        return UserRecord(
+        return ToolResultRecord(
             uuid=self._ids.uuid(),
             parent_uuid=session.last_chain_uuid(),
             timestamp=self._clock.now(),
@@ -308,9 +296,10 @@ class HistoryLoader:
             message=UserMessage(content=[block]),
             source_tool_assistant_uuid=dangling.assistant_uuid,
             tool_denial_kind=ToolDenialKind.INTERRUPTED,
+            status=CallStatus.FAILED,
         )
 
-    def _no_response(self, session: Session) -> AssistantRecord:
+    def _no_response(self, session: Session) -> NoResponseRecord:
         text = self._templates.read(AgentTemplateFile.NO_RESPONSE_REQUESTED)
         message = AssistantMessage(
             id=self._ids.message_id(),
@@ -320,7 +309,7 @@ class HistoryLoader:
             usage=Usage(),
         )
 
-        return AssistantRecord(
+        return NoResponseRecord(
             uuid=self._ids.uuid(),
             parent_uuid=session.last_chain_uuid(),
             timestamp=self._clock.now(),
@@ -390,11 +379,8 @@ class SessionDigests:
         return digest
 
     def _working_directory(self, record: AttachmentRecord) -> str | None:
-        if record.attachment.type != AttachmentKind.ENVIRONMENT.value:
+        attachment = record.attachment
+        if not isinstance(attachment, EnvironmentAttachment):
             return None
-
-        attachment = EnvironmentAttachment.model_validate(
-            record.attachment.model_dump()
-        )
 
         return attachment.snapshot.working_directory

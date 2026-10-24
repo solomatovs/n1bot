@@ -25,11 +25,13 @@ from boba.agent.history import SessionId
 from boba.agent.profile import CompactionSettings, ModelProfile, TurnLimits
 from boba.agent.queue import QueueEntry, QueueKind
 from boba.agent.records import (
+    ApiFailureRecord,
     AssistantRecord,
     AttachmentRecord,
     CompactBoundaryRecord,
+    CompactSummaryRecord,
+    MetaRecord,
     ReplyStopReason,
-    UserRecord,
 )
 from boba.config import bind
 from boba.history.jsonl import JsonlHistoryStore
@@ -200,13 +202,12 @@ class TestLocalModel:
             if isinstance(r, AssistantRecord)
             and r.message.stop_reason is ReplyStopReason.MAX_TOKENS
         ]
-        metas = [r for r in chain if isinstance(r, UserRecord) and r.is_meta]
+        metas = [r for r in chain if isinstance(r, MetaRecord)]
         assert len(metas) == 3
         # четыре попытки, в каждой не больше двух блоков: рассуждение и текст
         assert 1 <= len(partials) <= 8
         final = chain[-1]
-        assert isinstance(final, AssistantRecord)
-        assert final.is_api_error_message
+        assert isinstance(final, ApiFailureRecord)
 
     async def test_cyrillic_prompt_crosses_the_threshold_before_the_window(
         self,
@@ -251,15 +252,11 @@ class TestLocalModel:
 
         assert list(served.agent.outcomes) == [TurnOutcome.COMPLETED] * 4
         chain = session.records()
-        assert not any(
-            isinstance(r, AssistantRecord) and r.is_api_error_message for r in chain
-        )
+        assert not any(isinstance(r, ApiFailureRecord) for r in chain)
         boundaries = [r for r in chain if isinstance(r, CompactBoundaryRecord)]
         failures = [m for m in caplog.messages if m.startswith("compaction failed")]
         attempts = [m for m in caplog.messages if m.startswith("compaction:")]
         assert len(boundaries) + len(failures) >= 2, (attempts, failures)
         if boundaries:
-            summaries = [
-                r for r in chain if isinstance(r, UserRecord) and r.is_compact_summary
-            ]
+            summaries = [r for r in chain if isinstance(r, CompactSummaryRecord)]
             assert len(summaries) == len(boundaries)

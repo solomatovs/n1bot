@@ -6,15 +6,15 @@ from __future__ import annotations
 import pytest
 
 from boba.agent.history import MemoryHistoryStore, SessionId, SessionNotFoundError
-from boba.agent.records import UserMessage, UserRecord
+from boba.agent.records import PromptRecord, UserMessage
 
 pytestmark = pytest.mark.anyio
 
 SESSION = SessionId(value="memory-1")
 
 
-def user(seq: int, text: str) -> UserRecord:
-    return UserRecord(
+def user(seq: int, text: str) -> PromptRecord:
+    return PromptRecord(
         uuid=f"u-{seq}",
         parent_uuid=None,
         timestamp="2026-10-11T10:00:00.000Z",

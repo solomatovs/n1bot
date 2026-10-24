@@ -35,34 +35,37 @@ from boba.agent.asking import (
 )
 from boba.agent.attachments import (
     Announced,
-    AttachmentKind,
     ContextAttachments,
-    DeferredToolsRecordAttachment,
-    EnvironmentSnapshot,
-    InvokedSkill,
-    InvokedSkillsAttachment,
-    PromptSnapshot,
     SkillBudget,
-    SnapshotSkill,
-    SnapshotTool,
     ToolPoolChange,
 )
 from boba.agent.builder import RequestBuilder
 from boba.agent.ids import Clock, IdMint
 from boba.agent.profile import CompactionSettings, ModelProfile
 from boba.agent.records import (
+    ApiFailureRecord,
     AssistantRecord,
     AttachmentRecord,
     ChainRecord,
     CompactBoundaryRecord,
     CompactMetadata,
+    CompactSummaryRecord,
     CompactTrigger,
+    DeferredToolsRecordAttachment,
+    EnvironmentSnapshot,
+    InvokedSkill,
+    InvokedSkillsAttachment,
     LinkText,
+    MetaRecord,
     PreservedMessages,
+    PromptSnapshot,
     Record,
+    SnapshotSkill,
+    SnapshotTool,
     TextBlock,
     ThinkingBlock,
     ToolResultBlock,
+    ToolResultRecord,
     ToolUseBlock,
     UserMessage,
     UserRecord,
@@ -150,10 +153,10 @@ class TokenEstimator:
             yield from self._user_texts(record)
             return
 
-        if isinstance(record, AssistantRecord):
-            if record.is_api_error_message:
-                return
+        if isinstance(record, ApiFailureRecord):
+            return
 
+        if isinstance(record, AssistantRecord):
             yield from self._assistant_texts(record)
             return
 
@@ -161,11 +164,8 @@ class TokenEstimator:
             yield from self._attachment_texts(record)
 
     def _attachment_texts(self, record: AttachmentRecord) -> Iterator[str]:
-        if record.attachment.type == AttachmentKind.DEFERRED_TOOLS_RECORD.value:
-            entries = DeferredToolsRecordAttachment.model_validate(
-                record.attachment.model_dump()
-            )
-            yield from self._tool_texts(entries.entries)
+        if isinstance(record.attachment, DeferredToolsRecordAttachment):
+            yield from self._tool_texts(record.attachment.entries)
             return
 
         if record.rendered is None:
@@ -880,10 +880,10 @@ class Summarizer:
 
         return text
 
-    def _user(self, session: Session, text: str) -> UserRecord:
+    def _user(self, session: Session, text: str) -> MetaRecord:
         """Текст запроса пересказа — инструкция или пометка об усечении — как
-        запись пользователя для сборщика; в сессию не попадает."""
-        return UserRecord(
+        служебная запись пользователя для сборщика; в сессию не попадает."""
+        return MetaRecord(
             uuid=self._ids.uuid(),
             parent_uuid=None,
             timestamp=self._clock.now(),
@@ -955,17 +955,15 @@ class InvokedSkills:
                 called.update(self._calls(record))
                 continue
 
-            if isinstance(record, UserRecord):
+            if isinstance(record, ToolResultRecord):
                 yield from self._results(record, called)
 
     @staticmethod
     def _carried(record: AttachmentRecord) -> Iterator[tuple[str, str]]:
-        if record.attachment.type != AttachmentKind.INVOKED_SKILLS.value:
+        attachment = record.attachment
+        if not isinstance(attachment, InvokedSkillsAttachment):
             return
 
-        attachment = InvokedSkillsAttachment.model_validate(
-            record.attachment.model_dump()
-        )
         for skill in reversed(attachment.skills):
             yield skill.name, skill.content
 
@@ -980,7 +978,7 @@ class InvokedSkills:
 
     @staticmethod
     def _results(
-        record: UserRecord, called: dict[str, str]
+        record: ToolResultRecord, called: dict[str, str]
     ) -> Iterator[tuple[str, str]]:
         for result in record.message.tool_results():
             name = called.get(result.tool_use_id)
@@ -1013,7 +1011,7 @@ class CompactPack:
 
     records: Sequence[Record]
     post_tokens: int
-    summary: UserRecord
+    summary: CompactSummaryRecord
 
 
 class Compactor:
@@ -1110,7 +1108,7 @@ class Compactor:
 
     def _summary_record(
         self, session: Session, parent: str, summary: Summarized, uuid: str
-    ) -> UserRecord:
+    ) -> CompactSummaryRecord:
         """Пересказ в обёртке; без начала разговора — с оговоркой об этом."""
         text = summary.text
         if summary.head_truncated:
@@ -1122,15 +1120,13 @@ class Compactor:
             summary=text
         )
 
-        return UserRecord(
+        return CompactSummaryRecord(
             uuid=uuid,
             parent_uuid=parent,
             timestamp=self._clock.now(),
             session_id=session.id.value,
             version=self._version,
             message=UserMessage(content=wrapped),
-            is_compact_summary=True,
-            is_visible_in_transcript_only=True,
         )
 
     def _inputs(

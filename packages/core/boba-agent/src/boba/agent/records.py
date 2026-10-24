@@ -3,9 +3,15 @@
 Формат — журнал (разбор в docs/prompt_assembly):
 записи цепочки `user`, `assistant`, `attachment`, `system`
 связаны `uuid` → `parentUuid`, служебные записи цепочки не имеют.
-Поле `seq` — наше: порядковый номер записи в сессии, его выдаёт сессия при добавлении.
-Запись читается в модель один раз, в загрузчике, дальше по коду ходит модель;
-неизвестное поле известного вида игнорируется, чтобы старый агент читал журнал нового.
+Поля `seq` и `kind` — наши: порядковый номер записи в сессии (его выдаёт
+сессия при добавлении) и вид записи. Вид называет класс модели: по нему
+кодек выбирает модель, и смысл записи (вопрос, результат инструмента,
+маркер остановки, пересказ сжатия…) больше нигде не угадывается по флагам
+и тексту. Поля эталона, которые различают виды (`isMeta`,
+`isCompactSummary`, `isApiErrorMessage`, `origin`), класс вида пишет сам
+постоянными значениями. Запись читается в модель один раз, в загрузчике,
+дальше по коду ходит модель; неизвестное поле известного вида
+игнорируется, чтобы старый агент читал журнал нового.
 
 Содержимое сообщений хранится блоками, а модель получает его в конверте
 порта `ChatTurn`/`ChatReply`; перевод взаимно однозначен и живёт в сборщике
@@ -30,38 +36,70 @@ RecordError — строка не является записью известн
 from __future__ import annotations
 
 import json
+from abc import abstractmethod
 from collections.abc import Mapping, Sequence
 from enum import StrEnum
-from typing import Any, ClassVar, Literal, TypeAlias
+from typing import Annotated, Any, ClassVar, Literal, Self, TypeAlias
 
 import mcp_types as mt
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    TypeAdapter,
+    ValidationError,
+)
 from pydantic.alias_generators import to_camel
 
 from boba.llm.chat import LlmTrouble
 
 __all__ = [
     "ApiErrorRecord",
+    "ApiFailureRecord",
     "ApiRequestRecord",
     "AssistantBlock",
     "AssistantMessage",
     "AssistantRecord",
-    "AttachmentPayload",
+    "AttachmentData",
+    "AttachmentKind",
     "AttachmentRecord",
     "AttachmentRole",
     "BlockType",
+    "CallStatus",
     "ChainRecord",
+    "CommandOutputRecord",
+    "CommandRecord",
     "CompactBoundaryRecord",
     "CompactMetadata",
+    "CompactSummaryRecord",
     "CompactTrigger",
     "CompactionPhase",
     "CompactionRecord",
+    "DateAttachment",
+    "DeferredToolsDeltaAttachment",
+    "DeferredToolsRecordAttachment",
+    "EnvironmentAttachment",
+    "EnvironmentChange",
+    "EnvironmentField",
+    "EnvironmentSnapshot",
+    "HarnessCommandRecord",
     "InformationalRecord",
+    "InterruptRecord",
+    "InvokedSkill",
+    "InvokedSkillsAttachment",
     "KeptNull",
     "LinkText",
+    "MaxTurnsAttachment",
+    "McpInstructionsAttachment",
     "MessageOrigin",
+    "MetaRecord",
+    "ModelAttachment",
+    "ModelIdentity",
+    "NoResponseRecord",
     "NoticeLevel",
     "OriginKind",
+    "PayloadModel",
     "PermissionBehavior",
     "PermissionMode",
     "PermissionModeRecord",
@@ -69,23 +107,33 @@ __all__ = [
     "PermissionRuleOperation",
     "PermissionRuleRecord",
     "PreservedMessages",
+    "PromptRecord",
+    "PromptSnapshot",
     "QueueOperation",
     "QueueOperationRecord",
     "QueueRemoveReason",
+    "QueuedCommandAttachment",
     "Record",
     "RecordCodec",
     "RecordError",
+    "RecordKind",
     "RecordType",
     "RenderedMessage",
+    "ReplyRecord",
     "ReplyStopReason",
     "ServiceRecord",
+    "SkillListingAttachment",
+    "SnapshotSkill",
+    "SnapshotTool",
     "Synthetic",
     "SystemSubtype",
+    "TaskNotificationRecord",
     "TextBlock",
     "ThinkingBlock",
     "ToolDenialKind",
     "ToolReferenceBlock",
     "ToolResultBlock",
+    "ToolResultRecord",
     "ToolUseBlock",
     "Usage",
     "UserBlock",
@@ -128,6 +176,49 @@ class SystemSubtype(StrEnum):
     COMPACT_BOUNDARY = "compact_boundary"
     COMPACTION = "compaction"
     INFORMATIONAL = "informational"
+    HARNESS_COMMAND = "harness_command"
+
+
+class RecordKind(StrEnum):
+    """Вид записи — поле kind: один класс модели на вид."""
+
+    PROMPT = "prompt"
+    TASK_NOTIFICATION = "task_notification"
+    META = "meta"
+    COMMAND = "command"
+    COMMAND_OUTPUT = "command_output"
+    TOOL_RESULT = "tool_result"
+    INTERRUPT = "interrupt"
+    COMPACT_SUMMARY = "compact_summary"
+    REPLY = "reply"
+    NO_RESPONSE = "no_response"
+    API_FAILURE = "api_failure"
+    ATTACHMENT = "attachment"
+    API_ERROR = "api_error"
+    INFORMATIONAL = "informational"
+    COMPACTION = "compaction"
+    COMPACT_BOUNDARY = "compact_boundary"
+    HARNESS_COMMAND = "harness_command"
+    QUEUE_OPERATION = "queue_operation"
+    PERMISSION_MODE = "permission_mode"
+    PERMISSION_RULE = "permission_rule"
+    API_REQUEST = "api_request"
+
+
+class AttachmentKind(StrEnum):
+    """Виды вложений: поле type данных вложения."""
+
+    PROMPT_SNAPSHOT = "prompt_snapshot"
+    MODEL = "model"
+    DATE = "date"
+    ENVIRONMENT = "environment"
+    DEFERRED_TOOLS_DELTA = "deferred_tools_delta"
+    DEFERRED_TOOLS_RECORD = "deferred_tools_record"
+    MCP_INSTRUCTIONS_DELTA = "mcp_instructions_delta"
+    SKILL_LISTING = "skill_listing"
+    INVOKED_SKILLS = "invoked_skills"
+    QUEUED_COMMAND = "queued_command"
+    MAX_TURNS_REACHED = "max_turns_reached"
 
 
 class NoticeLevel(StrEnum):
@@ -169,6 +260,16 @@ class ToolDenialKind(StrEnum):
 
     USER_REJECTED = "user-rejected"
     INTERRUPTED = "interrupted"
+    CANCELLED = "cancelled"
+
+
+class CallStatus(StrEnum):
+    """Исход вызова инструмента в записи результата: выполнен, сорвался
+    (ошибка тела, вызов оборван выключением агента) или отменён без ответа
+    сервера (отказ в разрешении, остановка хода)."""
+
+    COMPLETED = "completed"
+    FAILED = "failed"
     CANCELLED = "cancelled"
 
 
@@ -343,6 +444,18 @@ class UserMessage(MessageModel):
     role: Literal["user"] = "user"
     content: str | Sequence[UserBlock]
 
+    def text(self) -> str:
+        """Текст сообщения: строка как есть, у блоков — тексты подряд."""
+        if isinstance(self.content, str):
+            return self.content
+
+        parts: list[str] = []
+        for block in self.content:
+            if isinstance(block, TextBlock):
+                parts.append(block.text)
+
+        return "".join(parts)
+
     def tool_results(self) -> Sequence[ToolResultBlock]:
         if isinstance(self.content, str):
             return ()
@@ -392,10 +505,205 @@ class MessageOrigin(WireModel):
     kind: OriginKind
 
 
+class PayloadModel(BaseModel):
+    """Основа данных вложения: имена полей на проводе — camelCase."""
+
+    model_config = ConfigDict(
+        alias_generator=to_camel, populate_by_name=True, frozen=True, extra="ignore"
+    )
+
+
+class SnapshotTool(PayloadModel):
+    name: str
+    description: str
+    schema_: dict[str, Any] = Field(default_factory=dict, alias="schema")
+
+    def text(self) -> str:
+        """Текст описания для оценки места в окне."""
+        return f"{self.name}: {self.description}"
+
+
+class SnapshotSkill(PayloadModel):
+    name: str
+    description: str
+
+
+class PromptSnapshot(PayloadModel):
+    """Снимок: системный промпт секциями, инструменты, скиллы, модель, режим."""
+
+    type: Literal[AttachmentKind.PROMPT_SNAPSHOT] = AttachmentKind.PROMPT_SNAPSHOT
+    system_prompt: Sequence[str]
+    tools: Sequence[SnapshotTool] = ()
+    skills: Sequence[SnapshotSkill] = ()
+    model: str
+    system_turns: bool
+
+
+class ModelIdentity(PayloadModel):
+    model_id: str
+
+
+class ModelAttachment(PayloadModel):
+    type: Literal[AttachmentKind.MODEL] = AttachmentKind.MODEL
+    identity: ModelIdentity
+    text: str
+
+
+class DateAttachment(PayloadModel):
+    type: Literal[AttachmentKind.DATE] = AttachmentKind.DATE
+    date: str
+    changed: bool
+
+
+class QueuedCommandAttachment(PayloadModel):
+    """Сообщение, подмешанное посреди хода из очереди (раздел 5.7, путь 2)."""
+
+    type: Literal[AttachmentKind.QUEUED_COMMAND] = AttachmentKind.QUEUED_COMMAND
+    prompt: str
+    source_uuid: str
+    origin: OriginKind
+    is_meta: bool
+
+
+class MaxTurnsAttachment(PayloadModel):
+    """Предел шагов хода достигнут; модели не отправляется."""
+
+    type: Literal[AttachmentKind.MAX_TURNS_REACHED] = AttachmentKind.MAX_TURNS_REACHED
+    max_turns: int
+    turn_count: int
+
+
+class EnvironmentSnapshot(PayloadModel):
+    """Окружение процесса, которое объявляется модели; собирает вход процесса."""
+
+    working_directory: str
+    platform: str
+    shell: str
+    os_version: str
+
+    def same_host(self, other: EnvironmentSnapshot) -> bool:
+        """Платформа, оболочка и ОС не сменились: разницу можно описать полями."""
+        if self.platform != other.platform:
+            return False
+
+        if self.shell != other.shell:
+            return False
+
+        return self.os_version == other.os_version
+
+
+class EnvironmentField(StrEnum):
+    """Поля окружения, у которых бывает разница."""
+
+    WORKING_DIRECTORY = "workingDirectory"
+
+
+class EnvironmentChange(PayloadModel):
+    field: EnvironmentField
+    previous: str = Field(
+        validation_alias=AliasChoices("from", "previous"), serialization_alias="from"
+    )
+
+
+class EnvironmentAttachment(PayloadModel):
+    """Окружение: полный блок при первом появлении, разница полей — потом."""
+
+    type: Literal[AttachmentKind.ENVIRONMENT] = AttachmentKind.ENVIRONMENT
+    snapshot: EnvironmentSnapshot
+    changes: Sequence[EnvironmentChange] | None = None
+
+
+class DeferredToolsDeltaAttachment(PayloadModel):
+    """Изменение набора инструментов относительно объявленного, одними
+    именами: added — отложенные, которые стали доступны через ToolSearch
+    (readded среди них — те, что разговор уже объявлял и потом снимал: их
+    строк в added_lines нет); surfaced — инструменты с полным определением,
+    появившиеся посреди сессии; removed — снятые. tool_search_absent —
+    отложенных не осталось, ToolSearch в запросе нет."""
+
+    type: Literal[AttachmentKind.DEFERRED_TOOLS_DELTA] = (
+        AttachmentKind.DEFERRED_TOOLS_DELTA
+    )
+    added_names: Sequence[str] = ()
+    added_lines: Sequence[str] = ()
+    removed_names: Sequence[str] = ()
+    readded_names: Sequence[str] = ()
+    surfaced_names: Sequence[str] = ()
+    tool_search_absent: bool = False
+
+
+class DeferredToolsRecordAttachment(PayloadModel):
+    """Определения загруженных отложенных инструментов, которые впервые ушли
+    в запрос; модели не отправляется."""
+
+    type: Literal[AttachmentKind.DEFERRED_TOOLS_RECORD] = (
+        AttachmentKind.DEFERRED_TOOLS_RECORD
+    )
+    entries: Sequence[SnapshotTool]
+
+
+class McpInstructionsAttachment(PayloadModel):
+    """Изменение инструкций серверов MCP относительно объявленного: блоки
+    `## <сервер>` появившихся серверов и серверов с новым текстом, имена
+    отключившихся (docs/prompt_assembly, mcp_instructions_delta)."""
+
+    type: Literal[AttachmentKind.MCP_INSTRUCTIONS_DELTA] = (
+        AttachmentKind.MCP_INSTRUCTIONS_DELTA
+    )
+    added_names: Sequence[str] = ()
+    added_blocks: Sequence[str] = ()
+    added_server_instructions: Sequence[str] = ()
+    removed_names: Sequence[str] = ()
+
+
+class SkillListingAttachment(PayloadModel):
+    """Список скиллов: первый раз все, дальше только новые имена."""
+
+    type: Literal[AttachmentKind.SKILL_LISTING] = AttachmentKind.SKILL_LISTING
+    content: str
+    skill_count: int
+    is_initial: bool
+    names: Sequence[str]
+
+
+class InvokedSkill(PayloadModel):
+    """Скилл, вызванный до сжатия, и текст, который модель тогда получила."""
+
+    name: str
+    content: str
+
+
+class InvokedSkillsAttachment(PayloadModel):
+    """Скиллы, вызванные в пересказанной части разговора, — заново после
+    границы сжатия, новые первыми (docs/prompt_assembly, invoked_skills)."""
+
+    type: Literal[AttachmentKind.INVOKED_SKILLS] = AttachmentKind.INVOKED_SKILLS
+    skills: Sequence[InvokedSkill]
+
+
+AttachmentData: TypeAlias = Annotated[
+    PromptSnapshot
+    | ModelAttachment
+    | DateAttachment
+    | QueuedCommandAttachment
+    | MaxTurnsAttachment
+    | EnvironmentAttachment
+    | DeferredToolsDeltaAttachment
+    | DeferredToolsRecordAttachment
+    | McpInstructionsAttachment
+    | SkillListingAttachment
+    | InvokedSkillsAttachment,
+    Field(discriminator="type"),
+]
+"""Данные вложения: модель выбирается по полю type."""
+
+
 class ChainRecord(WireModel):
-    """Общий конверт записей цепочки."""
+    """Общий конверт записей цепочки: вид записи `kind` и связь
+    `uuid` → `parentUuid`."""
 
     type: RecordType
+    kind: RecordKind
     uuid: str
     parent_uuid: str | None
     timestamp: str
@@ -410,72 +718,161 @@ class ChainRecord(WireModel):
 
 
 class UserRecord(ChainRecord):
+    """Основа записей `user`: сообщение роли user. Наследники — виды:
+    вопрос человека, уведомление задачи, служебный текст, вызов и вывод
+    локальной команды, результат инструмента, маркер остановки, пересказ
+    сжатия."""
+
     type: Literal[RecordType.USER] = RecordType.USER
     message: UserMessage
-    is_meta: bool | None = None
-    is_compact_summary: bool | None = None
-    is_visible_in_transcript_only: bool | None = None
+
+    @abstractmethod
+    def human_text(self) -> str | None:
+        """Текст, который человек отправил сам: вопрос или вызов команды;
+        None — запись не от человека."""
+
+
+class PromptRecord(UserRecord):
+    """Вопрос человека; uuid — идентификатор элемента очереди."""
+
+    kind: Literal[RecordKind.PROMPT] = RecordKind.PROMPT
+    origin: MessageOrigin = MessageOrigin(kind=OriginKind.HUMAN)
+
+    def human_text(self) -> str | None:
+        return self.message.text()
+
+
+class TaskNotificationRecord(UserRecord):
+    """Уведомление о задаче, пришедшее очередью: модель видит его как
+    сообщение пользователя, человек — нет."""
+
+    kind: Literal[RecordKind.TASK_NOTIFICATION] = RecordKind.TASK_NOTIFICATION
+    is_meta: Literal[True] = True
+    origin: MessageOrigin = MessageOrigin(kind=OriginKind.TASK_NOTIFICATION)
+
+    def human_text(self) -> str | None:
+        return None
+
+
+class MetaRecord(UserRecord):
+    """Служебный текст для модели от имени пользователя: контекст элемента
+    очереди, просьба продолжить после предела ответа, пометка локальной
+    команды."""
+
+    kind: Literal[RecordKind.META] = RecordKind.META
+    is_meta: Literal[True] = True
+
+    def human_text(self) -> str | None:
+        return None
+
+
+class CommandRecord(UserRecord):
+    """Вызов локальной команды пользователя (`/compact <указания>`) тегами
+    command-name, command-message, command-args; uuid — идентификатор
+    элемента очереди команды."""
+
+    kind: Literal[RecordKind.COMMAND] = RecordKind.COMMAND
+    origin: MessageOrigin = MessageOrigin(kind=OriginKind.HUMAN)
+
+    def human_text(self) -> str | None:
+        return self.message.text()
+
+
+class CommandOutputRecord(UserRecord):
+    """Вывод локальной команды тегом local-command-stdout: им кончается ход
+    команды."""
+
+    kind: Literal[RecordKind.COMMAND_OUTPUT] = RecordKind.COMMAND_OUTPUT
+
+    def human_text(self) -> str | None:
+        return None
+
+
+class ToolResultRecord(UserRecord):
+    """Результат вызова инструмента: блок tool_result, ответ сервера как он
+    пришёл (`toolUseResult`) и исход вызова `status`."""
+
+    kind: Literal[RecordKind.TOOL_RESULT] = RecordKind.TOOL_RESULT
     tool_use_result: Any = None
-    source_tool_assistant_uuid: str | None = Field(
-        default=None,
+    source_tool_assistant_uuid: str = Field(
         validation_alias=AliasChoices(
             "sourceToolAssistantUUID", "source_tool_assistant_uuid"
         ),
         serialization_alias="sourceToolAssistantUUID",
     )
     tool_denial_kind: ToolDenialKind | None = None
-    interrupted_message_id: str | None = None
-    interrupted_by_shutdown: bool | None = None
-    origin: MessageOrigin | None = None
+    status: CallStatus
 
     def human_text(self) -> str | None:
-        """Текст вопроса, пришедшего от человека; None — запись не вопрос:
-        результат инструмента, служебное сообщение, маркер прерывания или
-        пересказ сжатия (у них источника нет)."""
-        if self.origin is None:
-            return None
+        return None
 
-        if self.origin.kind is not OriginKind.HUMAN:
-            return None
 
-        content = self.message.content
-        if isinstance(content, str):
-            return content
+class InterruptRecord(UserRecord):
+    """Маркер остановки хода пользователем или выключением агента: текст
+    по эталону уходит модели, ход им кончается."""
 
-        parts: list[str] = []
-        for block in content:
-            if isinstance(block, TextBlock):
-                parts.append(block.text)
+    kind: Literal[RecordKind.INTERRUPT] = RecordKind.INTERRUPT
+    interrupted_by_shutdown: bool | None = None
 
-        return "".join(parts)
+    def human_text(self) -> str | None:
+        return None
+
+
+class CompactSummaryRecord(UserRecord):
+    """Пересказ сжатия: с него начинается разговор после полной границы;
+    uuid — идентификатор сжатия."""
+
+    kind: Literal[RecordKind.COMPACT_SUMMARY] = RecordKind.COMPACT_SUMMARY
+    is_compact_summary: Literal[True] = True
+    is_visible_in_transcript_only: Literal[True] = True
+
+    def human_text(self) -> str | None:
+        return None
 
 
 class AssistantRecord(ChainRecord):
+    """Основа записей `assistant`: один блок ответа на запись. Наследники —
+    ответ модели, заглушка «ответа нет» и отказ модели."""
+
     type: Literal[RecordType.ASSISTANT] = RecordType.ASSISTANT
     message: AssistantMessage
     api_block_index: int = 0
     request_id: str
-    is_api_error_message: bool | None = None
-    error: str | None = None
-    is_aborted_mid_stream: bool | None = None
-    wire_tool_call_id: str | None = None
 
     def is_synthetic(self) -> bool:
         return self.message.model == Synthetic.MODEL
 
-    def with_zero_usage(self) -> AssistantRecord:
+    def with_zero_usage(self) -> Self:
         """Копия для перенесённого хвоста: учёт обнулён (раздел 5.16 плана)."""
         message = self.message.model_copy(update={"usage": Usage()})
 
         return self.model_copy(update={"message": message})
 
 
-class AttachmentPayload(BaseModel):
-    """Данные вложения: вид и поля по виду (раздел 5.17 плана)."""
+class ReplyRecord(AssistantRecord):
+    """Блок ответа модели; `is_aborted_mid_stream` — ответ оборван
+    остановкой посреди потока, `wire_tool_call_id` — идентификатор вызова
+    у провайдера."""
 
-    model_config = ConfigDict(extra="allow", frozen=True)
+    kind: Literal[RecordKind.REPLY] = RecordKind.REPLY
+    is_aborted_mid_stream: bool | None = None
+    wire_tool_call_id: str | None = None
 
-    type: str
+
+class NoResponseRecord(AssistantRecord):
+    """Синтетический ответ «No response requested.» на разговор, который
+    кончился вопросом без ответа: дописывает загрузчик при починке."""
+
+    kind: Literal[RecordKind.NO_RESPONSE] = RecordKind.NO_RESPONSE
+
+
+class ApiFailureRecord(AssistantRecord):
+    """Отказ модели синтетическим ответом: текст человеку, `error` —
+    короткая техническая причина; модели не отправляется."""
+
+    kind: Literal[RecordKind.API_FAILURE] = RecordKind.API_FAILURE
+    is_api_error_message: Literal[True] = True
+    error: str | None = None
 
 
 class RenderedMessage(WireModel):
@@ -484,7 +881,8 @@ class RenderedMessage(WireModel):
 
 class AttachmentRecord(ChainRecord):
     type: Literal[RecordType.ATTACHMENT] = RecordType.ATTACHMENT
-    attachment: AttachmentPayload
+    kind: Literal[RecordKind.ATTACHMENT] = RecordKind.ATTACHMENT
+    attachment: AttachmentData
     rendered: Sequence[RenderedMessage] | None = None
     rendered_role: AttachmentRole | None = None
 
@@ -494,24 +892,18 @@ class ApiErrorRecord(ChainRecord):
     retry_in_ms."""
 
     type: Literal[RecordType.SYSTEM] = RecordType.SYSTEM
+    kind: Literal[RecordKind.API_ERROR] = RecordKind.API_ERROR
     subtype: Literal[SystemSubtype.API_ERROR] = SystemSubtype.API_ERROR
     error: str
-    retry_in_ms: int = Field(
-        default=0,
-        ge=0,
-        description="Пауза до повтора; журналы прежних версий её не пишут.",
-    )
+    retry_in_ms: int = Field(ge=0)
     retry_attempt: int
     max_retries: int
     level: NoticeLevel = NoticeLevel.ERROR
-    trouble: LlmTrouble = Field(
-        default=LlmTrouble.UNKNOWN,
-        description="Вид беды для текста человеку; прежние журналы его не пишут.",
-    )
-    detail: str = Field(
-        default="",
-        description="Короткая техническая причина: статус и суть ответа провайдера.",
-    )
+    trouble: LlmTrouble
+    """Вид беды для текста человеку."""
+
+    detail: str
+    """Короткая техническая причина: статус и суть ответа провайдера."""
 
 
 class InformationalRecord(ChainRecord):
@@ -520,6 +912,7 @@ class InformationalRecord(ChainRecord):
     её в ходе, где она записана."""
 
     type: Literal[RecordType.SYSTEM] = RecordType.SYSTEM
+    kind: Literal[RecordKind.INFORMATIONAL] = RecordKind.INFORMATIONAL
     subtype: Literal[SystemSubtype.INFORMATIONAL] = SystemSubtype.INFORMATIONAL
     content: str = Field(min_length=1)
     level: NoticeLevel
@@ -564,6 +957,7 @@ class CompactionRecord(ChainRecord):
     причина у неудачи, у остальных фаз пусто."""
 
     type: Literal[RecordType.SYSTEM] = RecordType.SYSTEM
+    kind: Literal[RecordKind.COMPACTION] = RecordKind.COMPACTION
     subtype: Literal[SystemSubtype.COMPACTION] = SystemSubtype.COMPACTION
     compaction_id: str = Field(min_length=1)
     phase: CompactionPhase
@@ -574,6 +968,7 @@ class CompactionRecord(ChainRecord):
 
 class CompactBoundaryRecord(ChainRecord):
     type: Literal[RecordType.SYSTEM] = RecordType.SYSTEM
+    kind: Literal[RecordKind.COMPACT_BOUNDARY] = RecordKind.COMPACT_BOUNDARY
     subtype: Literal[SystemSubtype.COMPACT_BOUNDARY] = SystemSubtype.COMPACT_BOUNDARY
     logical_parent_uuid: str | None
     content: str = "Conversation compacted"
@@ -581,10 +976,23 @@ class CompactBoundaryRecord(ChainRecord):
     compact_metadata: CompactMetadata
 
 
+class HarnessCommandRecord(ChainRecord):
+    """Команда запускающей программы или окно сервера MCP, которые клиент
+    записал в историю сессии: человек видит её в беседе, модели она не
+    уходит. `name` — имя команды, `text` — что человек набрал."""
+
+    type: Literal[RecordType.SYSTEM] = RecordType.SYSTEM
+    kind: Literal[RecordKind.HARNESS_COMMAND] = RecordKind.HARNESS_COMMAND
+    subtype: Literal[SystemSubtype.HARNESS_COMMAND] = SystemSubtype.HARNESS_COMMAND
+    name: str = Field(min_length=1)
+    text: str
+
+
 class ServiceRecord(WireModel):
     """Общий конверт служебных записей: вне цепочки, без uuid."""
 
     type: RecordType
+    kind: RecordKind
     seq: int = Field(default=0, ge=0)
     timestamp: str
     session_id: str
@@ -592,6 +1000,7 @@ class ServiceRecord(WireModel):
 
 class QueueOperationRecord(ServiceRecord):
     type: Literal[RecordType.QUEUE_OPERATION] = RecordType.QUEUE_OPERATION
+    kind: Literal[RecordKind.QUEUE_OPERATION] = RecordKind.QUEUE_OPERATION
     operation: QueueOperation
     content: str | None = None
     reason: QueueRemoveReason | None = None
@@ -600,6 +1009,7 @@ class QueueOperationRecord(ServiceRecord):
 
 class PermissionModeRecord(ServiceRecord):
     type: Literal[RecordType.PERMISSION_MODE] = RecordType.PERMISSION_MODE
+    kind: Literal[RecordKind.PERMISSION_MODE] = RecordKind.PERMISSION_MODE
     permission_mode: PermissionMode
 
 
@@ -610,31 +1020,45 @@ class PermissionRule(WireModel):
 
 class PermissionRuleRecord(ServiceRecord):
     type: Literal[RecordType.PERMISSION_RULE] = RecordType.PERMISSION_RULE
+    kind: Literal[RecordKind.PERMISSION_RULE] = RecordKind.PERMISSION_RULE
     operation: PermissionRuleOperation
     rule: PermissionRule
 
 
 class ApiRequestRecord(ServiceRecord):
     type: Literal[RecordType.API_REQUEST] = RecordType.API_REQUEST
+    kind: Literal[RecordKind.API_REQUEST] = RecordKind.API_REQUEST
     id: str
     request_id: str
     params: Mapping[str, Any]
     digest: str
 
 
-Record: TypeAlias = (
-    UserRecord
-    | AssistantRecord
+Record: TypeAlias = Annotated[
+    PromptRecord
+    | TaskNotificationRecord
+    | MetaRecord
+    | CommandRecord
+    | CommandOutputRecord
+    | ToolResultRecord
+    | InterruptRecord
+    | CompactSummaryRecord
+    | ReplyRecord
+    | NoResponseRecord
+    | ApiFailureRecord
     | AttachmentRecord
     | ApiErrorRecord
-    | CompactBoundaryRecord
-    | CompactionRecord
     | InformationalRecord
+    | CompactionRecord
+    | CompactBoundaryRecord
+    | HarnessCommandRecord
     | QueueOperationRecord
     | PermissionModeRecord
     | PermissionRuleRecord
-    | ApiRequestRecord
-)
+    | ApiRequestRecord,
+    Field(discriminator="kind"),
+]
+"""Запись журнала: модель выбирается по полю kind."""
 
 
 class KeptNull(StrEnum):
@@ -655,40 +1079,32 @@ class KeptNull(StrEnum):
 class RecordCodec:
     """Разбор строки журнала в запись и запись записи в строку.
 
-    Вид определяется полем type, у system — ещё и subtype. Поле со значением
-    None в строку не попадает, кроме ключей KeptNull,
-    так читает prompt_assembly.
+    Вид записи — поле kind: по нему выбирается модель. Поле со значением
+    None в строку не попадает, кроме ключей KeptNull, так читает
+    prompt_assembly.
     """
 
-    TYPE: ClassVar[str] = "type"
-    SUBTYPE: ClassVar[str] = "subtype"
+    KIND: ClassVar[str] = "kind"
 
     def __init__(self) -> None:
-        self._models: dict[RecordType, type[Record]] = {
-            RecordType.USER: UserRecord,
-            RecordType.ASSISTANT: AssistantRecord,
-            RecordType.ATTACHMENT: AttachmentRecord,
-            RecordType.QUEUE_OPERATION: QueueOperationRecord,
-            RecordType.PERMISSION_MODE: PermissionModeRecord,
-            RecordType.PERMISSION_RULE: PermissionRuleRecord,
-            RecordType.API_REQUEST: ApiRequestRecord,
-        }
-        self._system: dict[SystemSubtype, type[Record]] = {
-            SystemSubtype.API_ERROR: ApiErrorRecord,
-            SystemSubtype.COMPACT_BOUNDARY: CompactBoundaryRecord,
-            SystemSubtype.COMPACTION: CompactionRecord,
-            SystemSubtype.INFORMATIONAL: InformationalRecord,
-        }
+        self._records: TypeAdapter[Record] = TypeAdapter(Record)
 
     def parse(self, raw: Mapping[str, Any]) -> Record:
-        model = self._model_of(raw)
+        kind = raw.get(self.KIND)
         try:
-            return model.model_validate(raw)
-        except ValidationError as exc:
+            RecordKind(kind)
+        except ValueError as exc:
+            known = [member.value for member in RecordKind]
             msg = (
-                f"This '{raw.get(self.TYPE)}' record does not have the shape of "
-                f"{model.__name__}: {exc}"
+                f"This record has kind '{kind}', which this agent does not know. "
+                f"Known kinds are {known}."
             )
+            raise RecordError(msg) from exc
+
+        try:
+            return self._records.validate_python(raw)
+        except ValidationError as exc:
+            msg = f"This '{kind}' record does not have the shape of its kind: {exc}"
             raise RecordError(msg) from exc
 
     def line(self, record: Record) -> str:
@@ -720,31 +1136,3 @@ class RecordCodec:
             return items
 
         return value
-
-    def _model_of(self, raw: Mapping[str, Any]) -> type[Record]:
-        kind = raw.get(self.TYPE)
-        try:
-            record_type = RecordType(kind)
-        except ValueError as exc:
-            known = [member.value for member in RecordType]
-            msg = (
-                f"This record has type '{kind}', which this agent does not know. "
-                f"Known types are {known}."
-            )
-            raise RecordError(msg) from exc
-
-        if record_type is not RecordType.SYSTEM:
-            return self._models[record_type]
-
-        subtype = raw.get(self.SUBTYPE)
-        try:
-            system_subtype = SystemSubtype(subtype)
-        except ValueError as exc:
-            known_subtypes = [member.value for member in SystemSubtype]
-            msg = (
-                f"This system record has subtype '{subtype}', which this agent does "
-                f"not know. Known subtypes are {known_subtypes}."
-            )
-            raise RecordError(msg) from exc
-
-        return self._system[system_subtype]

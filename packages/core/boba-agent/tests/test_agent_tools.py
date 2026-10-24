@@ -23,6 +23,7 @@ from boba.agent.records import (
     AssistantRecord,
     AttachmentRecord,
     ChainRecord,
+    InterruptRecord,
     PermissionBehavior,
     PermissionMode,
     PermissionModeRecord,
@@ -31,8 +32,11 @@ from boba.agent.records import (
     QueueOperationRecord,
     QueueRemoveReason,
     Record,
+    ReplyRecord,
+    TaskNotificationRecord,
     ToolDenialKind,
     ToolResultBlock,
+    ToolResultRecord,
     ToolUseBlock,
     UserRecord,
 )
@@ -106,10 +110,10 @@ def results(records: Sequence[Record] | Sequence[ChainRecord]) -> list[ToolResul
 
 def result_records(
     records: Sequence[Record] | Sequence[ChainRecord],
-) -> list[UserRecord]:
-    found: list[UserRecord] = []
+) -> list[ToolResultRecord]:
+    found: list[ToolResultRecord] = []
     for record in records:
-        if isinstance(record, UserRecord) and record.message.tool_results():
+        if isinstance(record, ToolResultRecord):
             found.append(record)
 
     return found
@@ -365,7 +369,7 @@ class TestCalls:
         assert {
             r.wire_tool_call_id
             for r in session.records()
-            if isinstance(r, AssistantRecord) and r.wire_tool_call_id
+            if isinstance(r, ReplyRecord) and r.wire_tool_call_id
         } == {"call_dup"}
         second = server.requests()[1]["messages"]
         assert isinstance(second, list)
@@ -966,8 +970,7 @@ class TestQueueMidTurn:
 
         assert served.agent.outcomes == [TurnOutcome.COMPLETED, TurnOutcome.COMPLETED]
         users = [r for r in session.chain() if isinstance(r, UserRecord)]
-        assert users[1].is_meta is True
-        assert users[1].origin is not None
+        assert isinstance(users[1], TaskNotificationRecord)
         assert users[1].origin.kind.value == "task-notification"
         assert len(server.requests()) == 2
 
@@ -1054,7 +1057,7 @@ class TestCancellation:
         assert record.tool_denial_kind is ToolDenialKind.USER_REJECTED
         assert record.tool_use_result is None
         last = session.chain()[-1]
-        assert isinstance(last, UserRecord)
+        assert isinstance(last, InterruptRecord)
         assert last.interrupted_by_shutdown is True
         again = await reloaded(tmp_path / "history", SESSION)
         assert list(again.records())[: len(session.records())] == list(

@@ -16,7 +16,7 @@ from typing import ClassVar
 
 import pytest
 
-from boba.agent.attachments import ConnectedServer, InvokedSkillsAttachment
+from boba.agent.attachments import ConnectedServer
 from boba.agent.control import AllowAnswer
 from boba.agent.events import (
     RecordEvent,
@@ -29,13 +29,17 @@ from boba.agent.profile import CompactionSettings, ProfileError
 from boba.agent.queue import QueueEntry, QueueKind, QueuePriority
 from boba.agent.records import (
     ApiErrorRecord,
+    ApiFailureRecord,
     AssistantRecord,
     AttachmentRecord,
     ChainRecord,
     CompactBoundaryRecord,
     CompactionPhase,
     CompactionRecord,
+    CompactSummaryRecord,
     CompactTrigger,
+    InvokedSkillsAttachment,
+    MetaRecord,
     PermissionBehavior,
     PermissionMode,
     PermissionRule,
@@ -124,7 +128,7 @@ def kinds(records: Sequence[Record] | Sequence[ChainRecord]) -> list[str]:
             if record.message.tool_results():
                 name = "user:tool_result"
 
-            if record.is_compact_summary:
+            if isinstance(record, CompactSummaryRecord):
                 name = "user:summary"
 
         if isinstance(record, CompactBoundaryRecord):
@@ -150,10 +154,10 @@ def boundaries(records: Sequence[Record]) -> list[CompactBoundaryRecord]:
     return found
 
 
-def summaries(records: Sequence[Record]) -> list[UserRecord]:
-    found: list[UserRecord] = []
+def summaries(records: Sequence[Record]) -> list[CompactSummaryRecord]:
+    found: list[CompactSummaryRecord] = []
     for record in records:
-        if isinstance(record, UserRecord) and record.is_compact_summary:
+        if isinstance(record, CompactSummaryRecord):
             found.append(record)
 
     return found
@@ -208,10 +212,7 @@ def phases(records: Sequence[Record]) -> list[tuple[str, CompactionPhase]]:
 def synthetic_texts(records: Sequence[Record]) -> list[str]:
     texts: list[str] = []
     for record in records:
-        if not isinstance(record, AssistantRecord):
-            continue
-
-        if not record.is_api_error_message:
+        if not isinstance(record, ApiFailureRecord):
             continue
 
         for block in record.message.content:
@@ -859,7 +860,7 @@ class TestWindow:
         ]
         causes: list[str | None] = []
         for record in records:
-            if isinstance(record, AssistantRecord) and record.is_api_error_message:
+            if isinstance(record, ApiFailureRecord):
                 causes.append(record.error)
 
         assert causes[0] is None
@@ -951,7 +952,7 @@ class TestManual:
         сжатия — uuid пересказа."""
         written = [r for r in records[before:] if isinstance(r, UserRecord)]
         caveat, called = written[:2]
-        assert caveat.is_meta
+        assert isinstance(caveat, MetaRecord)
         assert caveat.message.content == CAVEAT
         assert called.uuid == command_id
         assert called.message.content == self.CALL
@@ -1029,9 +1030,7 @@ class TestManual:
 
         assert served.agent.outcomes[-1] is TurnOutcome.COMPLETED
         summaries = [
-            r
-            for r in session.conversation()
-            if isinstance(r, UserRecord) and r.is_compact_summary
+            r for r in session.conversation() if isinstance(r, CompactSummaryRecord)
         ]
         assert len(summaries) == 1
         content = summaries[0].message.content
@@ -1141,7 +1140,7 @@ class TestCancellation:
             for r in records
             if isinstance(r, UserRecord)
             and isinstance(r.message.content, str)
-            and not r.is_compact_summary
+            and not isinstance(r, CompactSummaryRecord)
         ]
         assert [p.message.content for p in prompts] == [
             first,

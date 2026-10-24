@@ -70,27 +70,32 @@ from boba.agent.profile import CompactionSettings, ModelProfile, TurnLimits
 from boba.agent.queue import InputQueue, QueueItem, QueueKind, Taken
 from boba.agent.records import (
     ApiErrorRecord,
+    ApiFailureRecord,
     AssistantBlock,
     AssistantMessage,
-    AssistantRecord,
+    CommandOutputRecord,
+    CommandRecord,
     CompactionPhase,
     CompactionRecord,
     CompactTrigger,
     InformationalRecord,
-    MessageOrigin,
+    InterruptRecord,
+    MetaRecord,
     NoticeLevel,
-    OriginKind,
+    PromptRecord,
     Record,
+    ReplyRecord,
     ReplyStopReason,
     Synthetic,
+    TaskNotificationRecord,
     TextBlock,
     ThinkingBlock,
     ToolReferenceBlock,
     ToolResultBlock,
+    ToolResultRecord,
     ToolUseBlock,
     Usage,
     UserMessage,
-    UserRecord,
 )
 from boba.agent.session import Session, SessionState
 from boba.agent.tags import AgentTag, LocalCommandText
@@ -374,7 +379,16 @@ class TurnLoop:
             return TurnOutcome.API_ERROR
 
         output = self._templates.read(AgentTemplateFile.COMPACTED)
-        await self._write_user(AgentTag.LOCAL_COMMAND_STDOUT.wrap(output), None)
+        await self._keeper.add(
+            CommandOutputRecord(
+                uuid=self._ids.uuid(),
+                parent_uuid=self._session.last_chain_uuid(),
+                timestamp=self._clock.now(),
+                session_id=self._session.id.value,
+                version=self._version,
+                message=UserMessage(content=AgentTag.LOCAL_COMMAND_STDOUT.wrap(output)),
+            )
+        )
 
         return TurnOutcome.COMPLETED
 
@@ -387,26 +401,13 @@ class TurnLoop:
         )
 
         call = CommandCall(name=command.kind.value, rest=command.text)
-        record = UserRecord(
+        record = CommandRecord(
             uuid=command.id,
             parent_uuid=self._session.last_chain_uuid(),
             timestamp=self._clock.now(),
             session_id=self._session.id.value,
             version=self._version,
             message=UserMessage(content=self._commands.call(call)),
-            origin=MessageOrigin(kind=OriginKind.HUMAN),
-        )
-        await self._keeper.add(record)
-
-    async def _write_user(self, text: str, is_meta: bool | None) -> None:
-        record = UserRecord(
-            uuid=self._ids.uuid(),
-            parent_uuid=self._session.last_chain_uuid(),
-            timestamp=self._clock.now(),
-            session_id=self._session.id.value,
-            version=self._version,
-            message=UserMessage(content=text),
-            is_meta=is_meta,
         )
         await self._keeper.add(record)
 
@@ -988,28 +989,43 @@ class TurnLoop:
         await self._keeper.add(record)
 
     async def _write_prompt(self, taken: Taken) -> None:
-        origin = MessageOrigin(kind=OriginKind.HUMAN)
-        is_meta: bool | None = None
-        if taken.head.kind is QueueKind.TASK_NOTIFICATION:
-            origin = MessageOrigin(kind=OriginKind.TASK_NOTIFICATION)
-            is_meta = True
-
         # uuid записи — идентификатор головного элемента очереди: его либо дал
         # отправитель (и потом ссылается на запись по нему), либо отчеканила очередь
-        record = UserRecord(
-            uuid=taken.head.id,
+        message = UserMessage(content=taken.content)
+        if taken.head.kind is QueueKind.TASK_NOTIFICATION:
+            await self._keeper.add(
+                TaskNotificationRecord(
+                    uuid=taken.head.id,
+                    parent_uuid=self._session.last_chain_uuid(),
+                    timestamp=self._clock.now(),
+                    session_id=self._session.id.value,
+                    version=self._version,
+                    message=message,
+                )
+            )
+            return
+
+        await self._keeper.add(
+            PromptRecord(
+                uuid=taken.head.id,
+                parent_uuid=self._session.last_chain_uuid(),
+                timestamp=self._clock.now(),
+                session_id=self._session.id.value,
+                version=self._version,
+                message=message,
+            )
+        )
+
+    async def _write_meta(self, text: str) -> None:
+        record = MetaRecord(
+            uuid=self._ids.uuid(),
             parent_uuid=self._session.last_chain_uuid(),
             timestamp=self._clock.now(),
             session_id=self._session.id.value,
             version=self._version,
-            message=UserMessage(content=taken.content),
-            is_meta=is_meta,
-            origin=origin,
+            message=UserMessage(content=text),
         )
         await self._keeper.add(record)
-
-    async def _write_meta(self, text: str) -> None:
-        await self._write_user(text, True)
 
     async def _write_reply(
         self, reply: ChatReply, stop_reason: ReplyStopReason, aborted: bool = False
@@ -1047,7 +1063,7 @@ class TurnLoop:
 
         planned: list[PlannedCall] = []
         for index, (block, wire_id) in enumerate(blocks):
-            record = AssistantRecord(
+            record = ReplyRecord(
                 uuid=self._ids.uuid(),
                 parent_uuid=self._session.last_chain_uuid(),
                 timestamp=self._clock.now(),
@@ -1083,7 +1099,7 @@ class TurnLoop:
                 content=self._result_content(result),
                 is_error=is_error,
             )
-            record = UserRecord(
+            record = ToolResultRecord(
                 uuid=self._ids.uuid(),
                 parent_uuid=self._session.last_chain_uuid(),
                 timestamp=self._clock.now(),
@@ -1093,6 +1109,7 @@ class TurnLoop:
                 tool_use_result=result.stored,
                 source_tool_assistant_uuid=result.call.assistant_uuid,
                 tool_denial_kind=result.denial,
+                status=result.status,
             )
             await self._keeper.add(record)
 
@@ -1179,7 +1196,7 @@ class TurnLoop:
         """Синтетическая запись об отказе модели: text — слова человеку,
         detail — короткая техническая причина (None — её нет); модели не
         отправляется."""
-        record = AssistantRecord(
+        record = ApiFailureRecord(
             uuid=self._ids.uuid(),
             parent_uuid=self._session.last_chain_uuid(),
             timestamp=self._clock.now(),
@@ -1193,7 +1210,6 @@ class TurnLoop:
                 usage=Usage(),
             ),
             request_id=self._ids.request_id(),
-            is_api_error_message=True,
             error=detail,
         )
         await self._keeper.add(record)
@@ -1210,7 +1226,7 @@ class TurnLoop:
             by_shutdown = True
             outcome = TurnOutcome.SHUTDOWN
 
-        record = UserRecord(
+        record = InterruptRecord(
             uuid=self._ids.uuid(),
             parent_uuid=self._session.last_chain_uuid(),
             timestamp=self._clock.now(),
@@ -1238,7 +1254,7 @@ class TurnLoop:
             outcome = TurnOutcome.SHUTDOWN
 
         text = self._templates.read(AgentTemplateFile.REQUEST_INTERRUPTED_TOOL_USE)
-        record = UserRecord(
+        record = InterruptRecord(
             uuid=self._ids.uuid(),
             parent_uuid=self._session.last_chain_uuid(),
             timestamp=self._clock.now(),

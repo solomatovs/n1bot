@@ -11,19 +11,27 @@ import pytest
 
 from boba.agent.records import (
     ApiErrorRecord,
+    ApiFailureRecord,
     ApiRequestRecord,
     AssistantMessage,
-    AssistantRecord,
-    AttachmentPayload,
     AttachmentRecord,
     AttachmentRole,
+    CallStatus,
+    CommandOutputRecord,
+    CommandRecord,
     CompactBoundaryRecord,
+    CompactionPhase,
+    CompactionRecord,
     CompactMetadata,
+    CompactSummaryRecord,
     CompactTrigger,
+    DateAttachment,
+    HarnessCommandRecord,
     InformationalRecord,
-    MessageOrigin,
+    InterruptRecord,
+    MetaRecord,
+    NoResponseRecord,
     NoticeLevel,
-    OriginKind,
     PermissionBehavior,
     PermissionMode,
     PermissionModeRecord,
@@ -31,22 +39,28 @@ from boba.agent.records import (
     PermissionRuleOperation,
     PermissionRuleRecord,
     PreservedMessages,
+    PromptRecord,
+    PromptSnapshot,
     QueueOperation,
     QueueOperationRecord,
     QueueRemoveReason,
     Record,
     RecordCodec,
     RecordError,
+    RecordKind,
     RenderedMessage,
+    ReplyRecord,
     ReplyStopReason,
+    Synthetic,
+    TaskNotificationRecord,
     TextBlock,
     ThinkingBlock,
     ToolDenialKind,
     ToolResultBlock,
+    ToolResultRecord,
     ToolUseBlock,
     Usage,
     UserMessage,
-    UserRecord,
 )
 from boba.llm.chat import LlmTrouble
 
@@ -78,17 +92,11 @@ def chained() -> Chained:
 
 
 SAMPLES: dict[str, Record] = {
-    "user-text": UserRecord(
-        **chained(),
-        message=UserMessage(content="hello"),
-        origin=MessageOrigin(kind=OriginKind.HUMAN),
+    "prompt": PromptRecord(**chained(), message=UserMessage(content="hello")),
+    "prompt-blocks": PromptRecord(
+        **chained(), message=UserMessage(content=[TextBlock(text="hello")])
     ),
-    "user-text-blocks": UserRecord(
-        **chained(),
-        message=UserMessage(content=[TextBlock(text="hello")]),
-        origin=MessageOrigin(kind=OriginKind.HUMAN),
-    ),
-    "user-link": UserRecord(
+    "prompt-link": PromptRecord(
         **chained(),
         message=UserMessage(
             content=[
@@ -100,28 +108,50 @@ SAMPLES: dict[str, Record] = {
                 ),
             ]
         ),
-        origin=MessageOrigin(kind=OriginKind.HUMAN),
     ),
-    "user-tool-result": UserRecord(
+    "task-notification": TaskNotificationRecord(
+        **chained(), message=UserMessage(content="<task-notification/>")
+    ),
+    "meta": MetaRecord(**chained(), message=UserMessage(content="Output limit hit.")),
+    "command": CommandRecord(
+        **chained(),
+        message=UserMessage(content="<command-name>/compact</command-name>"),
+    ),
+    "command-output": CommandOutputRecord(
+        **chained(),
+        message=UserMessage(
+            content="<local-command-stdout>Compacted</local-command-stdout>"
+        ),
+    ),
+    "tool-result": ToolResultRecord(
         **chained(),
         message=UserMessage(
             content=[ToolResultBlock(tool_use_id="abcDEF123", content="5")]
         ),
         tool_use_result="5",
         source_tool_assistant_uuid="a-1",
+        status=CallStatus.COMPLETED,
     ),
-    "user-stub": UserRecord(
+    "tool-result-stub": ToolResultRecord(
         **chained(),
         message=UserMessage(
             content=[
                 ToolResultBlock(tool_use_id="abcDEF123", content="x", is_error=True)
             ]
         ),
-        tool_use_result="x",
+        source_tool_assistant_uuid="a-1",
         tool_denial_kind=ToolDenialKind.INTERRUPTED,
-        is_meta=True,
+        status=CallStatus.FAILED,
     ),
-    "assistant-thinking": AssistantRecord(
+    "interrupt": InterruptRecord(
+        **chained(),
+        message=UserMessage(content="[Request interrupted by user]"),
+        interrupted_by_shutdown=True,
+    ),
+    "summary": CompactSummaryRecord(
+        **chained(), message=UserMessage(content="This session is being continued")
+    ),
+    "reply-thinking": ReplyRecord(
         **chained(),
         message=AssistantMessage(
             id="msg_a",
@@ -132,7 +162,7 @@ SAMPLES: dict[str, Record] = {
         ),
         request_id="req_a",
     ),
-    "assistant-tool-use": AssistantRecord(
+    "reply-tool-use": ReplyRecord(
         **chained(),
         message=AssistantMessage(
             id="msg_a",
@@ -144,18 +174,41 @@ SAMPLES: dict[str, Record] = {
         request_id="req_a",
         wire_tool_call_id="call_0",
     ),
+    "no-response": NoResponseRecord(
+        **chained(),
+        message=AssistantMessage(
+            id="msg_b",
+            model=Synthetic.MODEL,
+            content=[TextBlock(text="No response requested.")],
+            stop_reason=ReplyStopReason.STOP_SEQUENCE,
+        ),
+        request_id="req_b",
+    ),
+    "api-failure": ApiFailureRecord(
+        **chained(),
+        message=AssistantMessage(
+            id="msg_c",
+            model=Synthetic.MODEL,
+            content=[TextBlock(text="The model is down.")],
+            stop_reason=ReplyStopReason.STOP_SEQUENCE,
+        ),
+        request_id="req_c",
+        error="HTTP 500",
+    ),
     "attachment": AttachmentRecord(
         **chained(),
-        attachment=AttachmentPayload.model_validate(
-            {"type": "date", "date": "2026-10-10", "changed": False}
-        ),
+        attachment=DateAttachment(date="2026-10-10", changed=False),
         rendered=[RenderedMessage(content="Today's date is 2026-10-10.")],
         rendered_role=AttachmentRole.SYSTEM,
     ),
     "snapshot": AttachmentRecord(
         **chained(),
-        attachment=AttachmentPayload.model_validate(
-            {"type": "prompt_snapshot", "systemPrompt": ["be brief"], "tools": []}
+        attachment=PromptSnapshot(
+            system_prompt=["be brief"],
+            tools=[],
+            skills=[],
+            model="fake",
+            system_turns=False,
         ),
     ),
     "api-error": ApiErrorRecord(
@@ -185,6 +238,17 @@ SAMPLES: dict[str, Record] = {
                 anchor_uuid="s-1", uuids=["a-9"], all_uuids=["s-1", "a-9"]
             ),
         ),
+    ),
+    "compaction": CompactionRecord(
+        **chained(),
+        compaction_id="s-1",
+        phase=CompactionPhase.FAILED,
+        trigger=CompactTrigger.MANUAL,
+        command_uuid="c-1",
+        error="the summary reply is empty",
+    ),
+    "harness-command": HarnessCommandRecord(
+        **chained(), name="connections", text="/connections"
     ),
     "queue": QueueOperationRecord(
         timestamp=STAMP,
@@ -229,7 +293,7 @@ class TestRecordCodec:
         assert type(parsed) is type(record)
 
     def test_wire_names_follow_claude_code(self) -> None:
-        line = RecordCodec().line(SAMPLES["user-tool-result"])
+        line = RecordCodec().line(SAMPLES["tool-result"])
         document = json.loads(line)
 
         assert document["parentUuid"] is None
@@ -243,7 +307,7 @@ class TestRecordCodec:
     def test_link_is_written_in_the_standard_resource_link_form(self) -> None:
         """Вложение вопроса — блок resource_link формой MCP/ACP; текст вопроса
         для заголовка и ленты — без ссылки."""
-        record = SAMPLES["user-link"]
+        record = SAMPLES["prompt-link"]
         document = json.loads(RecordCodec().line(record))
 
         assert document["message"]["content"][1] == {
@@ -252,12 +316,12 @@ class TestRecordCodec:
             "uri": "http://chat/canvas/t-1/upload/note.txt",
             "mimeType": "text/plain",
         }
-        assert isinstance(record, UserRecord)
+        assert isinstance(record, PromptRecord)
         assert record.human_text() == "look at this"
         assert [link.name for link in record.message.links()] == ["note.txt"]
 
     def test_assistant_wire_keeps_anthropic_snake_case(self) -> None:
-        document = json.loads(RecordCodec().line(SAMPLES["assistant-tool-use"]))
+        document = json.loads(RecordCodec().line(SAMPLES["reply-tool-use"]))
         message = document["message"]
 
         assert message["stop_reason"] == "tool_use"
@@ -267,25 +331,48 @@ class TestRecordCodec:
         assert document["wireToolCallId"] == "call_0"
 
     def test_unknown_field_is_ignored(self) -> None:
-        document = json.loads(RecordCodec().line(SAMPLES["user-text"]))
+        document = json.loads(RecordCodec().line(SAMPLES["prompt"]))
         document["cwd"] = "/work"
         document["promptId"] = "p"
 
         parsed = RecordCodec().parse(document)
 
-        assert parsed == SAMPLES["user-text"]
+        assert parsed == SAMPLES["prompt"]
 
-    def test_unknown_type_is_an_error(self) -> None:
+    def test_every_kind_has_a_sample(self) -> None:
+        kinds = {record.kind for record in SAMPLES.values()}
+
+        assert kinds == set(RecordKind)
+
+    def test_kind_and_the_reference_flags_are_written(self) -> None:
+        """Вид записи — поле kind; флаги эталона, которые различают виды,
+        класс вида пишет сам."""
+        summary = json.loads(RecordCodec().line(SAMPLES["summary"]))
+        failure = json.loads(RecordCodec().line(SAMPLES["api-failure"]))
+        meta = json.loads(RecordCodec().line(SAMPLES["task-notification"]))
+
+        assert summary["kind"] == "compact_summary"
+        assert summary["isCompactSummary"] is True
+        assert summary["isVisibleInTranscriptOnly"] is True
+        assert failure["kind"] == "api_failure"
+        assert failure["isApiErrorMessage"] is True
+        assert meta["isMeta"] is True
+        assert meta["origin"] == {"kind": "task-notification"}
+
+    def test_unknown_kind_is_an_error(self) -> None:
         with pytest.raises(RecordError, match="last-prompt"):
-            RecordCodec().parse({"type": "last-prompt", "leafUuid": "x"})
+            RecordCodec().parse({"type": "last-prompt", "kind": "last-prompt"})
 
-    def test_unknown_system_subtype_is_an_error(self) -> None:
-        with pytest.raises(RecordError, match="away_summary"):
-            RecordCodec().parse({"type": "system", "subtype": "away_summary"})
+    def test_record_without_kind_is_an_error(self) -> None:
+        document = json.loads(RecordCodec().line(SAMPLES["prompt"]))
+        del document["kind"]
+
+        with pytest.raises(RecordError, match="kind 'None'"):
+            RecordCodec().parse(document)
 
     def test_missing_required_field_is_an_error(self) -> None:
-        document = json.loads(RecordCodec().line(SAMPLES["user-text"]))
+        document = json.loads(RecordCodec().line(SAMPLES["prompt"]))
         del document["message"]
 
-        with pytest.raises(RecordError, match="UserRecord"):
+        with pytest.raises(RecordError, match="'prompt' record"):
             RecordCodec().parse(document)

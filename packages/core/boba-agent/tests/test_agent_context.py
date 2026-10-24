@@ -16,13 +16,7 @@ from typing import ClassVar
 
 import pytest
 
-from boba.agent.attachments import (
-    DeferredToolsDeltaAttachment,
-    EnvironmentSnapshot,
-    SkillBudget,
-    SkillListingAttachment,
-    SnapshotSkill,
-)
+from boba.agent.attachments import SkillBudget
 from boba.agent.events import RecordEvent
 from boba.agent.history import SessionId
 from boba.agent.mcp import ToolCard, ToolHints, ToolReplies, ToolReply
@@ -30,8 +24,13 @@ from boba.agent.profile import ModelProfile
 from boba.agent.queue import QueueEntry, QueueKind
 from boba.agent.records import (
     AttachmentRecord,
+    DeferredToolsDeltaAttachment,
+    EnvironmentSnapshot,
+    ModelAttachment,
     Record,
     RecordCodec,
+    SkillListingAttachment,
+    SnapshotSkill,
     ToolUseBlock,
     UserRecord,
 )
@@ -583,7 +582,8 @@ class TestModelSwitch:
         assert [r["model"] for r in server.requests()] == ["fake-model", self.OTHER]
         announced: list[str] = []
         for record in attachments(session.records(), "model"):
-            announced.append(record.attachment.model_dump()["identity"]["modelId"])
+            assert isinstance(record.attachment, ModelAttachment)
+            announced.append(record.attachment.identity.model_id)
 
         assert announced == ["fake-model", self.OTHER]
 

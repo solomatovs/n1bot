@@ -24,9 +24,9 @@ from boba.agent.records import (
     AssistantRecord,
     ChainRecord,
     CompactBoundaryRecord,
+    CompactSummaryRecord,
     Record,
     ServiceRecord,
-    UserRecord,
 )
 
 __all__ = ["Session", "SessionError", "SessionState"]
@@ -172,7 +172,7 @@ class Session:
             self._by_uuid[record.uuid] = record
 
         self._conversation = None
-        if isinstance(record, UserRecord) and record.is_compact_summary:
+        if isinstance(record, CompactSummaryRecord):
             self._release_compacted()
 
     def _release_compacted(self) -> None:
@@ -263,7 +263,7 @@ class Session:
     def _last_complete_boundary(self, chain: Sequence[ChainRecord]) -> int | None:
         summaries: set[str] = set()
         for record in chain:
-            if isinstance(record, UserRecord) and record.is_compact_summary:
+            if isinstance(record, CompactSummaryRecord):
                 summaries.add(record.uuid)
 
         for index in range(len(chain) - 1, -1, -1):
