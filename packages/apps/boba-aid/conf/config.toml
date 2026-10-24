@@ -167,6 +167,8 @@
         kind     = "postgres"
         schema   = "boba"
         postgres = "${postgres_history}"
+    [agent.tools]
+        always_load = []
 
 [agent_launch.process]
     command             = "${env.agent_command}"
