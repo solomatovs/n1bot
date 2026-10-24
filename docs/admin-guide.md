@@ -466,7 +466,9 @@ python -m boba.mcp_server --config <общий конфиг> --site <специ�
    секции `[env]`: `BOBA_BASE`, `BOBA_DATA`, `BOBA_PORT`, `BOBA_HOST`,
    `BOBA_URL_PREFIX`, `BOBA_INSTANCE_ID`, `BOBA_APP_ROOT`, `BOBA_CGROUP_BASE`,
    `BOBA_TOOL_LAUNCHER`, `BOBA_MESSAGING`, `BOBA_PUBLIC_URL`, `BOBA_MCP_SCHEME`,
-   `BOBA_MCP_HOST`, `BOBA_MCP_PORT`, `BOBA_MCP_PREFIX`, `BOBA_AGENT_COMMAND`.
+   `BOBA_MCP_HOST`, `BOBA_MCP_PORT`, `BOBA_MCP_PREFIX`, `BOBA_AGENT_MODE`,
+   `BOBA_AGENT_COMMAND`, `BOBA_AGENT_SCHEME`, `BOBA_AGENT_HOST`,
+   `BOBA_AGENT_PORT`, `BOBA_AGENT_PREFIX`.
    Кроме них загрузчик читает только четыре переменные интерпретатора для
    `[interpreter]`.
 
@@ -692,23 +694,32 @@ Chainlit держит вложения сессий в каталоге `.files`
 
 ### Чат, агент и серверы инструментов
 
-На каждую открытую вкладку треда чат запускает процесс агента — команду из
-`[agent.process]` общего конфига: программа `command = "${env.agent_command}"`
-строкой оболочки, за ней `args = ["--stdio", "--setting-sources", ""]` и
-`--settings <файл>`, который добавляет чат. В образе и релизе агент — каталог
-`bin/boba.dist`, собранный Nuitka из boba-cli в режиме standalone (стадия
-`boba-bin`): исполняемый `bin/boba.dist/boba.bin` рядом со своими библиотеками
-(имя `boba` занято каталогом данных пакетов `boba/` в том же каталоге),
-без распаковки на запуске и без записи на диск, поэтому годится и для корня
-только на чтение; путь к нему даёт
-`BOBA_AGENT_COMMAND=${BOBA_BASE}/bin/boba.dist/boba.bin` в `conf/boba.env`, поэтому в
-site.toml ключа нет. Бинарнику не нужны ни `PYTHONPATH`, ни
-`LD_LIBRARY_PATH`: SDK ACP оставляет процессу агента только `HOME`, `LOGNAME`,
-`PATH`, `SHELL`, `TERM` и `USER`. Установка, обновлённая поверх прежней,
-сохраняет свой `conf/boba.env` — в нём строку `BOBA_AGENT_COMMAND` нужно
-дописать или поправить руками: агент теперь каталог, путь —
-`bin/boba.dist/boba.bin`, а не прежний файл `bin/boba`. В отладке `agent_command` задаёт site.toml:
-`"${env.base}/../../.venv/bin/python -m boba.cli.app"`.
+Беседу с моделью ведёт агент boba; чат говорит с ним по протоколу ACP
+версии 2. Каким путём, выбирает ключ `[env] agent_mode` (переменная
+`BOBA_AGENT_MODE`): общий конфиг берёт `[agent] process =
+"${agent_launch.${env.agent_mode}}"`.
+
+- `agent_mode = "service"` — выкатка (compose, systemd): чат ходит в службу
+  агента `boba serve` (раздел «Служба агента» ниже) по адресу из
+  `[env] agent_scheme`, `agent_host`, `agent_port`, `agent_prefix`, входом
+  proxy с ключами `site.agent_proxy_secret` и `site.agent_client.secret`.
+  Своего агента в образе чата нет.
+- `agent_mode = "process"` — отладка и стенды: на каждую открытую вкладку
+  треда чат запускает свой процесс агента командой `[env] agent_command`
+  с аргументами `["--stdio", "--setting-sources", ""]` и `--settings
+  <файл>`. В отладке `agent_command` —
+  `"${env.base}/../../.venv/bin/python -m boba.cli.app"`.
+
+Ключи другого режима не нужны: конфиг разрешает только выбранную секцию
+`[agent_launch.*]`. Агент службы — каталог `bin/boba.dist` образа agent,
+собранный Nuitka из boba-cli в режиме standalone (стадия `boba-bin`):
+исполняемый `bin/boba.dist/boba.bin` рядом со своими библиотеками (имя
+`boba` занято каталогом данных пакетов `boba/` в том же каталоге), без
+распаковки на запуске и без записи на диск, поэтому годится и для корня
+только на чтение. Бинарнику не нужны ни `PYTHONPATH`, ни `LD_LIBRARY_PATH`.
+Установка, обновлённая поверх прежней, сохраняет свой `conf/boba.env` —
+строку `BOBA_AGENT_COMMAND` из него нужно убрать: агента в образе чата
+больше нет.
 
 Режимы агента в командной строке: `boba --stdio` — ACP по stdin и stdout для
 запускающей программы (так его запускает чат), `boba serve` — служба по
@@ -719,8 +730,8 @@ site.toml ключа нет. Бинарнику не нужны ни `PYTHONPATH
 которого осталось `"acp"`, получает отказ `invalid choice: 'acp'` при старте
 агента, и строку нужно заменить на `"--stdio"`.
 
-С агентом чат говорит по протоколу ACP версии 2 через stdin и stdout
-процесса, сети между ними нет. Процесс получает свой каталог с режимом `0700`
+В режиме `process` чат говорит с агентом через stdin и stdout процесса, сети
+между ними нет. Процесс получает свой каталог с режимом `0700`
 под `private_dir` (`${env.data}/agents`), а в нём файл настроек с режимом
 `0600`; каталог удаляется вместе с процессом и при любом несостоявшемся
 запуске. Ответа на рукопожатие чат ждёт `start_timeout_sec`, ответа на метод
@@ -926,36 +937,27 @@ boba-mcp принимает клиентов обеих редакций на о
 Секция `[env]`: `port = 8660`, `listen_host`, `public_url` (адрес службы за
 nginx с префиксом, например `https://boba.example.com/boba-agent`), `data`.
 
-Чат в режиме службы. Секция `[agent.process]` общего конфига чата вместо
-команды называет адрес ACP службы и вход proxy:
+Чат в режиме службы. В site.toml чата:
 
 ```toml
-[keys]
-    agent_proxy = "${site.agent_proxy_secret}"
+[env]
+    agent_mode   = "service"
+    agent_scheme = "http"
+    agent_host   = "boba-agent"
+    agent_port   = 8660
+    agent_prefix = ""
 
-[service.boba_agent]
-    scheme = "https"
-    host   = "boba.example.com"
-    path   = "/boba-agent"
-
-[agent.process]
-    start_timeout_sec   = 60
-    request_timeout_sec = 120
-    [agent.process.endpoint]
-        service = "${service.boba_agent}"
-        path    = "/acp"
-    [agent.process.auth]
-        auth          = "proxy"
-        client_id     = "boba-chat"
-        client_secret = "${site.agent_client.secret}"
-        secret        = "${keys.agent_proxy}"
-        issuer        = "${service.boba_agent}"
+[site]
+    agent_proxy_secret = "..."   # тот же, что site.agent_proxy_secret службы
+    [site.agent_client]
+        secret = "..."           # тот же, что site.agent_client.secret службы
 ```
 
-`[service.boba_agent]` — адрес службы, её `public_url`: он же `issuer`, а
-путь ACP идёт под ним; `client_secret` — тот же секрет, что у
-службы в `[agent.clients.boba-chat]`, `secret` — ключ утверждений
-`[auth.proxy]` службы (`site.agent_proxy_secret`). Вкладка входит в службу от имени своего пользователя
+Общий конфиг собирает из них `[service.boba_agent]` и вход `[agent_auth.boba]`
+(клиент `boba-chat`, издатель — сама служба), путь ACP — `/acp` под
+`[service.boba_agent]`. Адрес — тот, по которому чат видит службу (в compose — имя контейнера
+`boba-agent`), и он же издатель токена, поэтому `public_url` службы должен
+с ним совпадать. Вкладка входит в службу от имени своего пользователя
 (логин и роли), открывает в ней сессию треда и выбирает профиль агента с
 именем профиля чата: профиль чата `general` ждёт у службы
 `[agent.profiles.general]`, выданный ролям пользователя, иначе ход
@@ -2106,8 +2108,9 @@ initialize`.** Вкладка не открывает беседу: `[agent.proc
 
 **`agent process '...' did not start from ...: [Errno 2] No such file or
 directory; check [env].agent_command`.** Программы агента нет по пути из
-`agent_command`: в `conf/boba.env` нет строки `BOBA_AGENT_COMMAND` (установка
-обновлена поверх прежней) либо образ собран без стадии `boba-bin`.
+`agent_command` в режиме `agent_mode = "process"`. На выкатке агента в образе
+чата нет: в site.toml чата должен стоять `agent_mode = "service"` с адресом
+службы агента (раздел 5, «Служба агента»).
 
 **`<метод>: expected the agent to answer within ...s
 ([agent.process].request_timeout_sec), got no answer`.** Агент жив, но не

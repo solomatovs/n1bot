@@ -32,11 +32,11 @@ langgraph, само исполняло инструменты в песочни�
 - **Чат** — образ `boba-aid`, контейнер `aid`, порт 8501. Это по-прежнему
   веб-интерфейс на chainlit, в котором пользователь входит, видит свои треды и
   задаёт вопросы. Беседу с моделью он больше не ведёт сам.
-- **Агент** — отдельный процесс, который чат запускает на каждую открытую
-  вкладку треда. Он лежит в образе чата каталогом `bin/boba.dist` (исполняемый `bin/boba.dist/boba.bin`),
-  ведёт беседу с моделью и просит чат исполнить инструменты. Своего контейнера
-  у него нет, настраивать его отдельно не нужно; знать о нём стоит потому, что
-  история бесед теперь принадлежит ему и хранится иначе, чем раньше.
+- **Агент** — служба агента: образ `boba-agent`, контейнер `boba-agent`, порт
+  8660, команда `boba serve`. Она ведёт беседу с моделью и просит чат исполнить
+  инструменты; чат входит в неё от имени пользователя вкладки (вход proxy).
+  Своё site.toml у неё отдельное (`make site-keys APP=agent`), история бесед
+  теперь принадлежит ей и хранится иначе, чем раньше.
 - **Сервис инструментов boba-mcp** — образ `boba-mcp`, контейнер `boba-mcp`,
   порт 8650. Это сервер протокола MCP: он исполняет инструменты (bash, запросы
   к базам, чтение документов, поиск по Confluence и базе знаний) в песочнице и
@@ -150,15 +150,15 @@ make -C build fetch
 ```sh
 make -C build sandbox             # bwrap, fuse2fs, шаблон workspace.ext4 -> runtime/third, runtime/sandbox
 make -C build plugin-rootfs-all   # образ корня файловой системы на каждый плагин инструментов, 20–40 минут
-make -C build test                # образы boba-aid и boba-mcp и их проверка
+make -C build test                # образы boba-aid, boba-mcp и boba-agent и их проверка
 ```
 
-Цель `test` собирает оба образа и проверяет каждый в контейнере без сети:
+Цель `test` собирает три образа и проверяет каждый в контейнере без сети:
 пакеты, точки входа, у сервиса — образы плагинов и модели, у чата — файлы
-статики и пробный ход агента с моделью проверки. Проверка заканчивается
-строкой `RESULT: ALL OK`. Первая сборка образа чата компилирует агента в один
-файл и занимает от 15 до 40 минут; образ сервиса большой (около 9 ГБ), потому
-что несёт в себе образы корней всех плагинов.
+статики, у службы агента — пробный ход агента с моделью проверки. Проверка
+заканчивается строкой `RESULT: ALL OK`. Первая сборка образа службы агента
+компилирует агента Nuitka и занимает от 15 до 40 минут; образ сервиса большой
+(около 9 ГБ), потому что несёт в себе образы корней всех плагинов.
 
 Запускать несколько сборок одновременно нельзя: цели делят каталоги
 `runtime/` и `build/src`. Число заданий компилятора задаёт переменная `JOBS`
@@ -185,9 +185,9 @@ docker images 'boba-*'
 make -C build dev
 ```
 
-Цель без `APP` готовит оба дерева, `compose/aid` и `compose/mcp`: проверяет
-машину, создаёт каталоги `conf/krb` и `data` с подкаталогами, пишет
-`conf/boba.env` (окружение контейнера: порт, префикс, путь к агенту,
+Цель без `APP` готовит три дерева, `compose/aid`, `compose/mcp` и
+`compose/agent`: проверяет машину, создаёт каталоги `conf/krb` и `data` с
+подкаталогами, пишет `conf/boba.env` (окружение контейнера: порт, префикс,
 `KRB5_CONFIG`), для сервиса ставит и запускает пользовательский юнит
 `boba-sandbox@mcp.service` (каталог cgroup песочницы), создаёт `.env`, если его
 нет, проверяет его и расставляет владельцев так, чтобы контейнер читал `conf`
@@ -222,6 +222,7 @@ make -C build dev
 ```sh
 make -C build site-keys APP=aid
 make -C build site-keys APP=mcp
+make -C build site-keys APP=agent
 ```
 
 Каждая строка вывода — ключ и место общего конфига, где он используется
@@ -247,7 +248,9 @@ key 'site.…' not found`, ниже `full_key: …`).
 | `[site.proxy].allowed_clients`, `[site.proxy.local_roles]` | **новые ключи** входа proxy: кто вправе входить в чат по доверенному заголовку и какие локальные роли им даются (раздел 14 руководства). Если таких клиентов нет — пустой список и пустая таблица |
 | `[env]`: `mcp_scheme`, `mcp_host`, `mcp_port`, `mcp_prefix` | **новые ключи**: адрес сервиса boba-mcp глазами чата (ниже) |
 | `[env]`: `messaging_provider`, `instance_id`, `host`, `listen_host`, `data`, `models`, `app_root`, `krb` | `messaging_provider = "postgres"` у compose; `listen_host = "0.0.0.0"`; пути — от `${env.base}`, который в контейнере равен `/app/boba`: `data = "${env.base}/data"`, `app_root = "${env.base}/app_root"`, `krb = "${env.base}/conf/krb"` (таблица «Чем различаются site.toml трёх случаев» в разделе 5 руководства) |
-| `[env]`: `port`, `url_prefix`, `agent_command` | в site.toml писать не нужно: их задаёт `conf/boba.env` переменными `BOBA_PORT`, `BOBA_URL_PREFIX`, `BOBA_AGENT_COMMAND`, который порождает `make dev` |
+| `[env]`: `port`, `url_prefix` | в site.toml писать не нужно: их задаёт `conf/boba.env` переменными `BOBA_PORT`, `BOBA_URL_PREFIX`, который порождает `make dev` |
+| `[env]`: `agent_mode`, `agent_scheme`, `agent_host`, `agent_port`, `agent_prefix` | **новые ключи**: `agent_mode = "service"` и адрес службы агента глазами чата (в compose `http`, `boba-agent`, `8660`, пустой префикс) |
+| `agent_proxy_secret`, `[site.agent_client].secret` | **новые ключи**, общие со службой агента: сгенерировать по разу (`openssl rand -hex 32`) и записать одно и то же значение в site.toml чата и службы |
 
 Из site.toml чата **уходит** всё, что относилось к исполнению инструментов:
 пути `sandbox` и `third`, `cgroup_base`, `tool_launcher`, адреса Confluence и
@@ -732,7 +735,9 @@ psql -d aid -c 'select (select count(*) from boba.history_records) as old_rows, 
 
 ## 7. Запуск и проверка
 
-Порядок: сначала сервис, потом чат. Чат подключается к сервису, когда
+Порядок: сначала сервис и служба агента, потом чат. Чат ходит к агенту только
+в службу `boba-agent` (`agent_mode = "service"` в site.toml чата): без неё
+вопрос вкладки получает отказ входа в службу. Чат подключается к сервису, когда
 пользователь открывает тред; пока сервиса нет, в логе чата появляется `file
 upload is hidden for <логин>: mcp server '…': …`, а у модели нет инструментов
 сервиса.
@@ -749,6 +754,19 @@ docker logs -f boba-mcp
 и `zygote[<плагин>] … ready` на каждый включённый плагин, затем `Uvicorn
 running on http://0.0.0.0:8650`. Строка `clone3 into cgroup refused … falling
 back to fork` при вызовах — не ошибка.
+
+```sh
+cd compose/agent
+docker compose up -d agent
+docker compose ps
+docker logs -f boba-agent
+```
+
+Служба готова, когда `docker compose ps` показывает `Up … (healthy)`, а в логе
+есть строка `boba serve listens on 0.0.0.0:8660, acp at <public_url>/acp`.
+Контейнеру нужны связи с Postgres (история) и с моделью, чату — с ним
+(`aid -> boba-agent:8660`, `aid2 -> boba-agent:8660`): в карте связей
+контейнеров это отдельные строки.
 
 ```sh
 cd compose/aid
@@ -792,7 +810,7 @@ docker logs -f aid
 | `Token exchange failed (401): {"error":"invalid_grant", …}` | `proxy_secret` чата и сервиса различаются |
 | `Token exchange failed (401): {"error":"invalid_client", …}` | `[site.mcp_client].secret` чата и сервиса различаются |
 | `Authorization server metadata issuer mismatch` | ключи `mcp_*` чата и `public_url` сервиса описывают разные адреса |
-| `agent process '…' did not start from …: [Errno 2] No such file or directory; check [env].agent_command` | в `conf/boba.env` нет `BOBA_AGENT_COMMAND` — файл порождён не этой версией `make dev` |
+| `agent process '…' did not start from …: [Errno 2] No such file or directory; check [env].agent_command` | в site.toml чата `agent_mode = "process"` или его нет: на выкатке нужен `agent_mode = "service"` с адресом службы агента |
 | `[postgres] auth '…' cannot be handed to the agent history as a libpq connection string` | способ входа в базу не передаётся агенту строкой libpq: нужен пароль, доверие или Kerberos по keytab или паролю |
 
 Правка site.toml вступает в силу только после пересоздания контейнера:

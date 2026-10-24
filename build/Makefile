@@ -46,10 +46,9 @@ SANDBOX_aid      :=
 MODELS_aid       :=
 PARTS_aid        := app_root/public app_root/public/page.js app_root/public/vendor \
                     app_root/ui/index.html app_root/ui/index.js app_root/mcp-apps/sandbox.html \
-                    app_root/mcp-apps/fonts/inter/files bin/boba.dist/boba.bin
-# агент чата — каталог boba-bin bin/boba.dist; локальную модель чат агенту не отдаёт,
-# поэтому рантайм onnxruntime-genai в него не входит
-BUILD_ARGS_aid    = $(BIN_TOOL_ARGS) --build-arg BIN_ONNX=
+                    app_root/mcp-apps/fonts/inter/files
+# агента в образе чата нет: на выкатке чат ходит в службу агента (образ agent, boba serve)
+BUILD_ARGS_aid    =
 # фронт на хосте нужен только отладке чата: образ собирает его сам
 WEB_aid          := web
 
@@ -621,10 +620,10 @@ define HELP
                         его --testapps-image <образ>; TESTAPPS_PIP_INDEX=<url> — индекс pypi контура
 
 Образы — APP=$(subst $(space),|,$(APPS)) либо <цель>-<приложение>, без APP — оба:
-  build                 boba-<приложение>:$(BOBA_TAG) и :latest; в aid — агент bin/boba.dist (Nuitka),
+  build                 boba-<приложение>:$(BOBA_TAG) и :latest; в agent — агент bin/boba.dist (Nuitka),
                         в mcp — образы корней плагинов и workspace из runtime/sandbox
   test                  build, затем проверка в образе без сети: пакеты, точки входа, у mcp —
-                        образы плагинов и модели, у aid — ход агента; итог — RESULT: ALL OK
+                        образы плагинов и модели, у agent — ход агента; итог — RESULT: ALL OK
   boba-bin              агент каталогом -> release/$(VERSION)/bin/boba.dist; BIN_ONNX=1 —
                         bin/boba-onnx.dist с рантаймом onnxruntime-genai (вторая компиляция Nuitka)
 
@@ -957,7 +956,7 @@ offline-check: version-check
 
 # --- агент boba каталогом standalone ---------------------------------------------
 
-# стадия boba-bin компилирует boba-cli Nuitka внутри образа base; образ aid берёт ту же
+# стадия boba-bin компилирует boba-cli Nuitka внутри образа base; образ agent берёт ту же
 # стадию с BIN_ONNX= — при пустом BIN_ONNX здесь компиляция одна на обе цели
 .PHONY: boba-bin
 boba-bin: version-check

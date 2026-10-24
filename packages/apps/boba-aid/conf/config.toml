@@ -23,11 +23,13 @@
     ]
 
 [keys]
-    encryption = "${site.database_encryption_key}"
-    session    = "${site.auth_secret}"
-    proxy      = "${site.proxy_secret}"
-    mcp_proxy  = "${site.mcp_proxy_secret}"
-    mcp_client = "${site.mcp_client.secret}"
+    encryption   = "${site.database_encryption_key}"
+    session      = "${site.auth_secret}"
+    proxy        = "${site.proxy_secret}"
+    mcp_proxy    = "${site.mcp_proxy_secret}"
+    mcp_client   = "${site.mcp_client.secret}"
+    agent_proxy  = "${site.agent_proxy_secret}"
+    agent_client = "${site.agent_client.secret}"
 
 [connections]
     cipher = "${keys.encryption}"
@@ -158,19 +160,42 @@
     public_url   = "http://127.0.0.1:${env.port}${env.url_prefix}"
     seal_ttl_sec = 600
     question_timeout_sec = 3600
+    process      = "${agent_launch.${env.agent_mode}}"
     [agent.settings_table]
         cipher = "${keys.encryption}"
-    [agent.process]
-        command             = "${env.agent_command}"
-        args                = ["--stdio", "--setting-sources", ""]
-        private_dir         = "${env.data}/agents"
-        start_timeout_sec   = 30
-        request_timeout_sec = 120
-        stop_timeout_sec    = 10
     [agent.history]
         kind     = "postgres"
         schema   = "boba"
         postgres = "${postgres_history}"
+
+[agent_launch.process]
+    command             = "${env.agent_command}"
+    args                = ["--stdio", "--setting-sources", ""]
+    private_dir         = "${env.data}/agents"
+    start_timeout_sec   = 30
+    request_timeout_sec = 120
+    stop_timeout_sec    = 10
+
+[agent_launch.service]
+    auth                = "${agent_auth.boba}"
+    start_timeout_sec   = 60
+    request_timeout_sec = 120
+    [agent_launch.service.endpoint]
+        service = "${service.boba_agent}"
+        path    = "/acp"
+
+[service.boba_agent]
+    scheme = "${env.agent_scheme}"
+    host   = "${env.agent_host}"
+    port   = "${env.agent_port}"
+    path   = "${env.agent_prefix}"
+
+[agent_auth.boba]
+    auth          = "proxy"
+    client_id     = "boba-chat"
+    client_secret = "${keys.agent_client}"
+    secret        = "${keys.agent_proxy}"
+    issuer        = "${service.boba_agent}"
 
 [service.boba_mcp]
     scheme = "${env.mcp_scheme}"
