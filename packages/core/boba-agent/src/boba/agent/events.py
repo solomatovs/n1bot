@@ -2,24 +2,27 @@
 
 Виды событий: первое событие сеанса, кусок ответа с идентификатором
 сообщения, записанная запись разговора, сброс записей в хранилище истории,
-начало исполнения инструмента,
-отчёт сервера о ходе вызова, итог хода с элементами очереди, которые он
-обслужил, ход сжатия разговора, пометка пользователю посреди хода, ошибка
-вне хода, вопрос наружу и его снятие. Как события уходят
-на провод — дело реализации порта (вход процесса); ядро только зовёт `emit`.
+начало исполнения инструмента, отчёт сервера о ходе вызова, конец хода его
+записью turn_end, ошибка вне хода, вопрос наружу и его снятие. Как события
+уходят на провод — дело реализации порта (вход процесса); ядро только зовёт
+`emit`.
 """
 
 from __future__ import annotations
 
 from abc import abstractmethod
 from collections.abc import Mapping, Sequence
-from enum import StrEnum
 from typing import Protocol, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from boba.agent.control import CanUseToolRequest
-from boba.agent.records import PermissionMode, Record, Usage
+from boba.agent.records import (
+    PermissionMode,
+    Record,
+    TurnEndRecord,
+    TurnOutcome,
+)
 
 __all__ = [
     "AgentEvent",
@@ -34,41 +37,7 @@ __all__ = [
     "StreamEvent",
     "ToolProgressEvent",
     "ToolStartedEvent",
-    "TurnOutcome",
 ]
-
-
-class TurnOutcome(StrEnum):
-    """Исходы хода — закрытый перечень раздела 5.13 плана."""
-
-    COMPLETED = "completed"
-    ABORTED_STREAMING = "aborted_streaming"
-    ABORTED_TOOLS = "aborted_tools"
-    API_ERROR = "api_error"
-    BLOCKING_LIMIT = "blocking_limit"
-    RAPID_REFILL_BREAKER = "rapid_refill_breaker"
-    COMPACT_FAILURE_BREAKER = "compact_failure_breaker"
-    MAX_TURNS = "max_turns"
-    OUTPUT_LIMIT = "output_limit"
-    SHUTDOWN = "shutdown"
-
-    @property
-    def is_failure(self) -> bool:
-        """Ход кончился отказом модели: ответа нет, текст причины — в итоге."""
-        return self in (TurnOutcome.API_ERROR, TurnOutcome.OUTPUT_LIMIT)
-
-    @property
-    def has_reason(self) -> bool:
-        """Ход кончился с причиной, которую агент записал текстом: отказ
-        модели, запрос больше окна, срабатывание предохранителей сжатия."""
-        if self.is_failure:
-            return True
-
-        return self in (
-            TurnOutcome.BLOCKING_LIMIT,
-            TurnOutcome.RAPID_REFILL_BREAKER,
-            TurnOutcome.COMPACT_FAILURE_BREAKER,
-        )
 
 
 class EventModel(BaseModel):
@@ -131,17 +100,19 @@ class HistoryWrittenEvent(EventModel):
 
 
 class ResultEvent(EventModel):
-    """Конец хода: исход, учёт и идентификаторы элементов очереди, которые
-    ход обслужил; `error` — причина конца хода, когда она есть
-    (TurnOutcome.has_reason)."""
+    """Конец хода: его запись turn_end, уже сохранённая в истории. Агент
+    шлёт событие, когда сессия свободна; приёмник рисует по записи то же,
+    что воспроизведение истории."""
 
-    outcome: TurnOutcome
-    session_id: str
-    usage: Usage
-    num_turns: int
-    duration_ms: int
-    prompt_ids: Sequence[str] = ()
-    error: str = ""
+    turn_end: TurnEndRecord
+
+    @property
+    def outcome(self) -> TurnOutcome:
+        return self.turn_end.outcome
+
+    @property
+    def num_turns(self) -> int:
+        return self.turn_end.num_turns
 
 
 class ErrorEvent(EventModel):

@@ -68,8 +68,8 @@ where
     or h.record ->> 'kind' not in (
         'prompt', 'task_notification', 'meta', 'command', 'command_output',
         'tool_result', 'interrupt', 'compact_summary', 'reply', 'no_response',
-        'api_failure', 'attachment', 'api_error', 'informational', 'compaction',
-        'compact_boundary', 'harness_command', 'queue_operation',
+        'attachment', 'api_error', 'informational', 'compaction',
+        'compact_boundary', 'harness_command', 'turn_end', 'queue_operation',
         'permission_mode', 'permission_rule', 'api_request'
     )
     or (

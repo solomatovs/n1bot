@@ -20,18 +20,18 @@ from omegaconf import DictConfig
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from boba.agent.agent import Agent, AgentParts
-from boba.agent.events import TurnOutcome
 from boba.agent.history import SessionId
 from boba.agent.profile import CompactionSettings, ModelProfile, TurnLimits
 from boba.agent.queue import QueueEntry, QueueKind
 from boba.agent.records import (
-    ApiFailureRecord,
     AssistantRecord,
     AttachmentRecord,
     CompactBoundaryRecord,
     CompactSummaryRecord,
     MetaRecord,
     ReplyStopReason,
+    TurnEndRecord,
+    TurnOutcome,
 )
 from boba.config import bind
 from boba.history.jsonl import JsonlHistoryStore
@@ -207,7 +207,8 @@ class TestLocalModel:
         # четыре попытки, в каждой не больше двух блоков: рассуждение и текст
         assert 1 <= len(partials) <= 8
         final = chain[-1]
-        assert isinstance(final, ApiFailureRecord)
+        assert isinstance(final, TurnEndRecord)
+        assert final.outcome is TurnOutcome.OUTPUT_LIMIT
 
     async def test_cyrillic_prompt_crosses_the_threshold_before_the_window(
         self,
@@ -252,7 +253,9 @@ class TestLocalModel:
 
         assert list(served.agent.outcomes) == [TurnOutcome.COMPLETED] * 4
         chain = session.records()
-        assert not any(isinstance(r, ApiFailureRecord) for r in chain)
+        assert not any(
+            isinstance(r, TurnEndRecord) and r.outcome.refused for r in chain
+        )
         boundaries = [r for r in chain if isinstance(r, CompactBoundaryRecord)]
         failures = [m for m in caplog.messages if m.startswith("compaction failed")]
         attempts = [m for m in caplog.messages if m.startswith("compaction:")]

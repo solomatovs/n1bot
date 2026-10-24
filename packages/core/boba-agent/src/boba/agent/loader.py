@@ -4,9 +4,10 @@
 Журнал агента — прямая линия без веток, поэтому из алгоритма загрузки
 (docs/prompt_assembly/specs/10_loader.md) берётся только то, что нужно
 линии: пропуск испорченной строки, граница сжатия с перенесённым хвостом,
-починка последнего хода (там же, раздел 2.7): вызовам последнего
-ответа без результата дописывается результат-заглушка, оборванному ходу —
-пометка человеку (запись informational), разговору без ответа на последнее
+починка последнего хода (там же, раздел 2.7). Ход закрыт, если за его
+записями стоит запись turn_end; оборванному ходу вызовам последнего ответа
+без результата дописывается результат-заглушка и конец хода с исходом
+interrupted и пометкой человеку, разговору без ответа на последнее
 сообщение — ответ-заглушка «No response requested.». Дописанные записи
 агент сбрасывает в журнал сразу после открытия сессии. `restore`
 восстанавливает без починки — так читает сессию процесс, который её не
@@ -35,8 +36,7 @@ from boba.agent.records import (
     CallStatus,
     ChainRecord,
     EnvironmentAttachment,
-    InformationalRecord,
-    InterruptRecord,
+    HarnessCommandRecord,
     NoResponseRecord,
     NoticeLevel,
     Record,
@@ -49,6 +49,8 @@ from boba.agent.records import (
     ToolResultBlock,
     ToolResultRecord,
     ToolUseBlock,
+    TurnEndRecord,
+    TurnOutcome,
     Usage,
     UserMessage,
     UserRecord,
@@ -183,56 +185,77 @@ class HistoryLoader:
             return None
 
     def _repair(self, session: Session) -> Iterator[ChainRecord]:
-        """Оборванный ход: вызовам без результата — результат-заглушка, ходу,
-        который агент не довёл до конца, — пометка человеку, разговору без
-        ответа на последнее сообщение — ответ-заглушка. Маркер остановки
-        пользователем — конец хода, а не обрыв: пометки за ним нет."""
+        """Оборванный ход — за его записями нет turn_end: вызовам без
+        результата — результат-заглушка, затем конец хода с пометкой
+        человеку; разговору без ответа на последнее сообщение — ответ-заглушка.
+        Заглушка ответа и команда запускающей программы хода не открывают."""
         conversation = session.conversation()
-        last = self._last_significant(conversation)
-        if last is None:
+        if self._last_significant(conversation) is None:
             return
 
-        dangling = list(self._dangling_calls(conversation))
-        for call in dangling:
-            yield session.add(self._stub_result(session, call))
+        if self._open(conversation):
+            for call in self._dangling_calls(conversation):
+                yield session.add(self._stub_result(session, call))
 
-        interrupted = bool(dangling)
-        if not interrupted:
-            interrupted = not self._ended(last)
+            yield session.add(self._interrupted_end(session))
 
-        if interrupted:
-            yield session.add(self._interrupted_notice(session))
-
-        last = self._last_significant(session.conversation())
-        if isinstance(last, AssistantRecord):
+        if self._answered(session.conversation()):
             return
 
         yield session.add(self._no_response(session))
 
-    def _ended(self, last: ChainRecord) -> bool:
-        """Последняя значимая запись закрывает ход: ответ модели или маркер
-        остановки хода пользователем."""
-        if isinstance(last, AssistantRecord):
+    def _open(self, conversation: Sequence[ChainRecord]) -> bool:
+        """За последним концом хода есть записи хода: ход не закрыт."""
+        for record in reversed(conversation):
+            if isinstance(record, TurnEndRecord):
+                return False
+
+            if isinstance(record, NoResponseRecord | HarnessCommandRecord):
+                continue
+
             return True
 
-        return isinstance(last, InterruptRecord)
+        return False
 
-    def _interrupted_notice(self, session: Session) -> InformationalRecord:
-        return InformationalRecord(
+    def _answered(self, conversation: Sequence[ChainRecord]) -> bool:
+        """Последнее сообщение разговора получило ответ: ответом модели или
+        отказом агента ответить (конец хода с отказом)."""
+        for record in reversed(conversation):
+            if isinstance(record, TurnEndRecord):
+                if record.outcome.refused:
+                    return True
+
+                continue
+
+            if isinstance(record, AssistantRecord):
+                return True
+
+            if isinstance(record, UserRecord | AttachmentRecord):
+                return False
+
+        return True
+
+    def _interrupted_end(self, session: Session) -> TurnEndRecord:
+        return TurnEndRecord(
             uuid=self._ids.uuid(),
             parent_uuid=session.last_chain_uuid(),
             timestamp=self._clock.now(),
             session_id=session.id.value,
             version=self._version,
-            content=self._templates.read(AgentTemplateFile.TURN_INTERRUPTED_NOTICE),
+            outcome=TurnOutcome.INTERRUPTED,
+            notice=self._templates.read(AgentTemplateFile.TURN_INTERRUPTED_NOTICE),
             level=NoticeLevel.WARNING,
             detail="",
+            error="",
+            usage=Usage(),
+            num_turns=0,
+            duration_ms=0,
         )
 
     def _last_significant(
         self, conversation: Sequence[ChainRecord]
     ) -> ChainRecord | None:
-        """Последняя запись, по которой судят о конце хода: не system."""
+        """Последняя запись разговора, которой есть что отвечать: не system."""
         for record in reversed(conversation):
             if isinstance(record, UserRecord | AssistantRecord | AttachmentRecord):
                 return record

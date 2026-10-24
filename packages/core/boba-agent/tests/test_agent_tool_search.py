@@ -17,7 +17,6 @@ from test_agent_compaction import journal
 
 from boba.agent.attachments import Announced
 from boba.agent.builder import RequestBuilder
-from boba.agent.events import TurnOutcome
 from boba.agent.history import SessionId
 from boba.agent.mcp import ToolCard
 from boba.agent.queue import QueueEntry, QueueKind
@@ -31,6 +30,7 @@ from boba.agent.records import (
     SnapshotTool,
     ToolReferenceBlock,
     ToolResultRecord,
+    TurnOutcome,
 )
 from boba.agent.template import AgentTemplate
 from boba.agent.tools import ToolMatcher, ToolSearchInput, ToolSearchOutput
