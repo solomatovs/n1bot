@@ -876,9 +876,12 @@ class StandConfig(StandService):
 
     def _use_agent(self, doc: MutableMapping[str, Any]) -> None:
         """Агент ACP стенда чата: процесс и история по полям стенда,
-        приватные каталоги в рабочем каталоге стенда."""
+        приватные каталоги в рабочем каталоге стенда; инструменты «всегда
+        загружать» — как в конфиге приложения."""
         if "agent" not in doc:
             return
+
+        tools = doc["agent"]["tools"]
 
         private_dir = self.workdir / "agents"
         private_dir.mkdir(parents=True, exist_ok=True)
@@ -897,6 +900,7 @@ class StandConfig(StandService):
                 "stop_timeout_sec": 10,
             },
             "history": dict(self.agent_history),
+            "tools": tools,
         }
 
     @staticmethod
