@@ -64,6 +64,7 @@ dev = [
     "gssapi>=1.9,<2",
     "krb5>=0.7,<1",
     "pillow>=10",
+    "psycopg>=3.3,<4",
     "playwright>=1.47,<2",
     "pytest>=9.1,<10",
     "pyjwt>=2.8,<3",

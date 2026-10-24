@@ -630,6 +630,18 @@ class AcpClient(Client):
 
         return found
 
+    def turn_updates_of(self, session_id: str) -> list[Any]:
+        """Обновления хода сессии без session_info_update: те приходят на
+        каждую запись истории и не входят в последовательность хода."""
+        found: list[Any] = []
+        for update in self.updates_of(session_id):
+            if isinstance(update, schema.SessionInfoUpdate):
+                continue
+
+            found.append(update)
+
+        return found
+
     def of(self, kind: type[U]) -> list[U]:
         found: list[U] = []
         for _, update in self.updates:
@@ -1025,7 +1037,7 @@ class Steps:
         )
         assert idle.stop_reason == StopReason.END_TURN
 
-        updates = client.updates_of(session_id)
+        updates = client.turn_updates_of(session_id)
         assert isinstance(updates[0], schema.RunningSessionStateUpdate)
         echo = updates[1]
         assert isinstance(echo, schema.UserMessageUpdate)
@@ -1150,7 +1162,7 @@ class TestTurnState:
             )
 
             assert idle.stop_reason == StopReason.END_TURN
-            updates = client.updates_of(session_id)
+            updates = client.turn_updates_of(session_id)
             assert isinstance(updates[0], schema.RunningSessionStateUpdate)
             echo = updates[1]
             assert isinstance(echo, schema.UserMessageUpdate)
