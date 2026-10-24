@@ -56,6 +56,7 @@ from boba.aid.agent.commands import AppWindow, MenuCommand
 from boba.aid.agent.config import (
     AgentCommandConfig,
     AgentConfig,
+    AgentLimitsConfig,
     AgentToolsConfig,
     PostgresAgentHistory,
 )
@@ -263,6 +264,7 @@ class AgentStand:
             ),
             history=self._history,
             tools=AgentToolsConfig(always_load=()),
+            limits=AgentLimitsConfig(tool_result_window_share=0.25),
             public_url=public_url,
             seal_ttl_sec=600,
             question_timeout_sec=600,

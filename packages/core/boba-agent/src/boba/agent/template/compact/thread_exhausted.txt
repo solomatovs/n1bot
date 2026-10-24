@@ -1,0 +1,1 @@
+This conversation no longer fits the context window of the model, even after compaction ({detail}). Start a new chat to continue.

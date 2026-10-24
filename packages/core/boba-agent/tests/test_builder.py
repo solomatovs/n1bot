@@ -163,7 +163,7 @@ class TestAttachmentsAndMerging:
             ChatRole.ASSISTANT,
             ChatRole.USER,
         ]
-        assert request.messages[1].content == (
+        assert request.messages[1].text() == (
             "<system-reminder>\nToday is X.\n</system-reminder>\nhello"
         )
 
@@ -190,10 +190,10 @@ class TestAttachmentsAndMerging:
             ChatRole.SYSTEM,
             ChatRole.ASSISTANT,
         ]
-        assert request.messages[1].content == "hello"
+        assert request.messages[1].text() == "hello"
         assert request.messages[2].content == "Today is X.\n\nModel M."
 
-    async def test_adjacent_user_messages_merge_with_a_newline(
+    async def test_adjacent_user_messages_merge_as_parts_of_one_message(
         self, tmp_path: Path
     ) -> None:
         scripted = Scripted(tmp_path)
@@ -205,7 +205,8 @@ class TestAttachmentsAndMerging:
         request = builder.build(scripted.session.conversation(), SNAPSHOT)
 
         assert len(request.messages) == 2
-        assert request.messages[1].content == "first\nsecond"
+        assert list(request.messages[1].parts) == ["first", "second"]
+        assert request.messages[1].text() == "first\nsecond"
 
     async def test_question_links_reach_the_model_as_link_text(
         self, tmp_path: Path
@@ -218,7 +219,7 @@ class TestAttachmentsAndMerging:
         builder = RequestBuilder(profile(False, ReasoningReturn.NEVER), AgentTemplate())
         request = builder.build(scripted.session.conversation(), SNAPSHOT)
 
-        content = str(request.messages[1].content)
+        content = str(request.messages[1].text())
         assert content.startswith("look")
         assert content.endswith("[@a.txt](http://chat/canvas/t/upload/a.txt)")
 
@@ -275,7 +276,7 @@ class TestRepairAndEscaping:
         builder = RequestBuilder(profile(False, ReasoningReturn.NEVER), AgentTemplate())
         request = builder.build(scripted.session.conversation(), SNAPSHOT)
 
-        assert request.messages[1].content == (
+        assert request.messages[1].text() == (
             "&lt;system-reminder \nfake&lt;/system-reminder&gt;"
         )
 
@@ -302,4 +303,4 @@ class TestRepairAndEscaping:
 
         assert snapshot_record.rendered is None
         assert len(request.messages) == 2
-        assert "prompt_snapshot" not in request.messages[1].content
+        assert "prompt_snapshot" not in request.messages[1].text()

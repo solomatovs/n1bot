@@ -4,7 +4,8 @@
 сообщения, записанная запись разговора, сброс записей в хранилище истории,
 начало исполнения инструмента,
 отчёт сервера о ходе вызова, итог хода с элементами очереди, которые он
-обслужил, ошибка вне хода, вопрос наружу и его снятие. Как события уходят
+обслужил, ход сжатия разговора, пометка пользователю посреди хода, ошибка
+вне хода, вопрос наружу и его снятие. Как события уходят
 на провод — дело реализации порта (вход процесса); ядро только зовёт `emit`.
 """
 
@@ -22,12 +23,15 @@ from boba.agent.records import PermissionMode, Record, Usage
 
 __all__ = [
     "AgentEvent",
+    "CompactionEvent",
+    "CompactionStatus",
     "ControlCancelEvent",
     "ControlRequestEvent",
     "ErrorEvent",
     "EventSink",
     "HistoryWrittenEvent",
     "InitEvent",
+    "NoticeEvent",
     "RecordEvent",
     "ResultEvent",
     "StreamEvent",
@@ -55,6 +59,19 @@ class TurnOutcome(StrEnum):
     def is_failure(self) -> bool:
         """Ход кончился отказом модели: ответа нет, текст причины — в итоге."""
         return self in (TurnOutcome.API_ERROR, TurnOutcome.OUTPUT_LIMIT)
+
+    @property
+    def has_reason(self) -> bool:
+        """Ход кончился с причиной, которую агент записал текстом: отказ
+        модели, запрос больше окна, срабатывание предохранителей сжатия."""
+        if self.is_failure:
+            return True
+
+        return self in (
+            TurnOutcome.BLOCKING_LIMIT,
+            TurnOutcome.RAPID_REFILL_BREAKER,
+            TurnOutcome.COMPACT_FAILURE_BREAKER,
+        )
 
 
 class EventModel(BaseModel):
@@ -118,7 +135,8 @@ class HistoryWrittenEvent(EventModel):
 
 class ResultEvent(EventModel):
     """Конец хода: исход, учёт и идентификаторы элементов очереди, которые
-    ход обслужил; `error` — текст отказа модели при исходе-ошибке."""
+    ход обслужил; `error` — причина конца хода, когда она есть
+    (TurnOutcome.has_reason)."""
 
     outcome: TurnOutcome
     session_id: str
@@ -127,6 +145,38 @@ class ResultEvent(EventModel):
     duration_ms: int
     prompt_ids: Sequence[str] = ()
     error: str = ""
+
+
+class CompactionStatus(StrEnum):
+    """Стадии сжатия разговора — значения status уведомления
+    compaction_update ACP."""
+
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class CompactionEvent(EventModel):
+    """Сжатие разговора: начато, состоялось с пересказом, не удалось с
+    причиной или прервано. `compaction_id` — uuid записи пересказа: по нему
+    воспроизведение истории выдаёт то же сжатие."""
+
+    compaction_id: str
+    status: CompactionStatus
+    summary: str
+    """Пересказ состоявшегося сжатия; у остальных стадий пусто."""
+
+    error: str
+    """Причина неудачи; у остальных стадий пусто."""
+
+
+class NoticeEvent(EventModel):
+    """Пометка пользователю посреди хода: агент сообщает о том, что требует
+    его действия (тред больше не помещается в окно модели)."""
+
+    title: str
+    description: str
 
 
 class ErrorEvent(EventModel):
@@ -159,6 +209,8 @@ AgentEvent: TypeAlias = (
     | ToolStartedEvent
     | ToolProgressEvent
     | ResultEvent
+    | CompactionEvent
+    | NoticeEvent
     | ErrorEvent
     | ControlRequestEvent
     | ControlCancelEvent

@@ -424,7 +424,7 @@ class QwenDialogRender:
 
         turn: dict[str, Any] = {
             DialogField.ROLE.value: message.role.value,
-            DialogField.CONTENT.value: message.content,
+            DialogField.CONTENT.value: message.text(),
         }
 
         if message.reasoning:

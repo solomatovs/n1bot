@@ -223,7 +223,9 @@ def apps_host(tmp_path_factory: pytest.TempPathFactory) -> Iterator[AppsHost]:
 
 @pytest.fixture(scope="module")
 def apps_stand(look_stands: LookStand, apps_host: AppsHost) -> StandProcess:
-    return look_stands.served("apps", {"apps": apps_host.drawn()})
+    return look_stands.served(
+        "apps", {"apps": apps_host.drawn()}, LookStand.FULL_WINDOW
+    )
 
 
 def test_app_card_in_the_feed(
