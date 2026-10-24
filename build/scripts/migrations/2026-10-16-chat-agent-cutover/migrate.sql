@@ -4,7 +4,7 @@
 --
 -- Что делает:
 --   * переводит беседы тредов из чекпойнтов langgraph в историю агента
---     (таблицы session и history, сессия на тред с тем же id) и пишет
+--     (таблицы session и session_records, сессия на тред с тем же id) и пишет
 --     каждому треду чата ключ threads.meta.agent_session, по которому чат
 --     находит сессию треда;
 --   * переводит оценки ответов (feedbacks.for_id) на id шагов, которые новый
@@ -1303,7 +1303,7 @@ select * from interrupt_unit
 union all
 select * from tool_unit;
 
--- Записи собираются сразу в раскладке таблицы history: сессия, seq, вид и
+-- Записи собираются сразу в раскладке таблицы session_records: сессия, seq, вид и
 -- время — колонками, остальное — документом record без этих четырёх ключей.
 create table history_migrate.records (
     session_id  text        not null,
@@ -1461,7 +1461,7 @@ where
 
 -- 5. Загрузка.
 --
--- Таблицы истории (session и history) создаёт хранилище агента
+-- Таблицы истории (session и session_records) создаёт хранилище агента
 -- (PostgresHistoryStore) при первом обращении, а перенос пишет в них раньше,
 -- поэтому создаёт их сам теми же определениями из history_tables.sql рядом;
 -- совпадение определений с кодом хранилища проверяет тест
@@ -1471,7 +1471,7 @@ where
 -- Если агент уже вёл историю в старой базе, её схема сначала
 -- переименовывается в схему агента. Агент прежнего выпуска держал всю запись
 -- одной таблицей history_records, документом вместе с сессией, seq, видом и
--- временем; её строки раскладываются по session и history так же, как пишет
+-- временем; её строки раскладываются по session и session_records так же, как пишет
 -- хранилище, а сама таблица удаляется, когда число строк сошлось. Строка,
 -- у которой ключи документа расходятся с колонками или нет времени,
 -- останавливает перенос: при раскладке часть записи пропала бы. Беседа
@@ -1518,7 +1518,7 @@ from
 group by
     session_id;
 
-insert into :"boba_schema".history (session_id, seq, type, recorded_at, record)
+insert into :"boba_schema".session_records (session_id, seq, type, recorded_at, record)
 select
     session_id,
     seq,
@@ -1534,7 +1534,7 @@ select
         select
             count(*)
         from
-            :"boba_schema".history as h
+            :"boba_schema".session_records as h
         where
             exists (select 1 from :"boba_schema".history_records as o where o.session_id = h.session_id)
     ) as old_history_converted
@@ -1582,7 +1582,7 @@ from
 group by
     r.session_id;
 
-insert into :"boba_schema".history (session_id, seq, type, recorded_at, record)
+insert into :"boba_schema".session_records (session_id, seq, type, recorded_at, record)
 select
     r.session_id,
     r.seq,
@@ -1826,7 +1826,7 @@ select
     format('The history holds %s records of the session, %s of them different from the %s built ones.', count(h.seq), count(h.seq) filter (where (h.type, h.recorded_at, h.record) is distinct from (r.type, r.recorded_at, r.record)), l.records)
 from
     history_migrate.loaded as l
-    left join :"boba_schema".history as h
+    left join :"boba_schema".session_records as h
         on h.session_id = l.session_id
     left join history_migrate.records as r
         on r.session_id = h.session_id
@@ -1852,7 +1852,7 @@ from (
             when h.record ->> 'parentUuid' is distinct from lag(h.record ->> 'uuid') over w then 'The parentUuid of the record does not name the previous record.'
         end as problem
     from
-        :"boba_schema".history as h
+        :"boba_schema".session_records as h
         join history_migrate.loaded as l
             on l.session_id = h.session_id
     window w as (partition by h.session_id order by h.seq)

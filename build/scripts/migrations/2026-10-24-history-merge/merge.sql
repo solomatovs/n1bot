@@ -73,7 +73,7 @@ alter table :"boba_schema".session add column if not exists owner text;
 
 create index if not exists session_owner_id_idx on :"boba_schema".session (owner, id);
 
-create table if not exists :"boba_schema".history (
+create table if not exists :"boba_schema".session_records (
     session_id  text        not null references :"boba_schema".session on delete cascade,
     seq         integer     not null,
     type        text        not null,
@@ -440,7 +440,7 @@ insert into merged_sessions select id from inserted;
 create temporary table merged_records (session_id text) on commit drop;
 
 with inserted as (
-    insert into :"boba_schema".history (session_id, seq, type, recorded_at, record)
+    insert into :"boba_schema".session_records (session_id, seq, type, recorded_at, record)
     select
         h.session_id,
         h.seq,
@@ -448,7 +448,7 @@ with inserted as (
         h.recorded_at,
         h.record
     from
-        cutover_boba.history as h
+        cutover_boba.session_records as h
         join merged_sessions as m
             on m.id = h.session_id
     returning session_id
@@ -518,7 +518,7 @@ select 'agent_chat_settings', null, (select count(*) from merged_chat_settings)
 union all
 select 'sessions', (select count(*) from cutover_boba.session), (select count(*) from merged_sessions)
 union all
-select 'history records', (select count(*) from cutover_boba.history), (select count(*) from merged_records);
+select 'history records', (select count(*) from cutover_boba.session_records), (select count(*) from merged_records);
 
 \echo 'Groups:'
 select name, relation, copied, note from group_result order by name, relation nulls first;

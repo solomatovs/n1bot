@@ -2,12 +2,12 @@
 -- таблицы живут в транзакции, которая откатывается. Останавливается с
 -- ошибкой и списком, если:
 --   * тред называет сессию агента (threads.meta.agent_session), а её нет в
---     session или у неё нет ни одной записи в history;
+--     session или у неё нет ни одной записи в session_records;
 --   * итог вызова инструмента в записи (toolUseResult) не ответ tools/call
 --     (нет массива content) или у перенесённого итога его нет вовсе —
 --     normalize.sql его не привёл;
 --   * в старой таблице history_records, если она ещё есть, у сессии больше
---     записей, чем в history: часть истории не перенесена.
+--     записей, чем в session_records: часть истории не перенесена.
 -- Затем выводит итог: треды, треды с сессией и без неё, сессии, записи,
 -- сессии без владельца и сессии, которых не называет ни один тред.
 --
@@ -44,7 +44,7 @@ where
     t.meta ? 'agent_session'
     and not exists (
         select 1
-        from :"boba_schema".history as h
+        from :"boba_schema".session_records as h
         where h.session_id = t.meta ->> 'agent_session'
     );
 
@@ -61,7 +61,7 @@ select
     h.seq,
     left((h.record -> 'toolUseResult')::text, 200) as result
 from
-    :"boba_schema".history as h
+    :"boba_schema".session_records as h
 where
     (
         h.record ? 'toolUseResult'
@@ -91,13 +91,13 @@ select to_regclass(format('%I.history_records', :'boba_schema')) is not null as 
     select
         o.session_id,
         count(*) as old_records,
-        (select count(*) from :"boba_schema".history as h where h.session_id = o.session_id) as new_records
+        (select count(*) from :"boba_schema".session_records as h where h.session_id = o.session_id) as new_records
     from
         :"boba_schema".history_records as o
     group by
         o.session_id
     having
-        count(*) > (select count(*) from :"boba_schema".history as h where h.session_id = o.session_id);
+        count(*) > (select count(*) from :"boba_schema".session_records as h where h.session_id = o.session_id);
 
     select count(*) > 0 as has_short from short_sessions \gset
     \if :has_short
@@ -113,7 +113,7 @@ select
     (select count(*) from :"aid_schema".threads where meta ? 'agent_session') as threads_with_session,
     (select count(*) from :"aid_schema".threads where not coalesce(meta ? 'agent_session', false)) as threads_without_session,
     (select count(*) from :"boba_schema".session) as sessions,
-    (select count(*) from :"boba_schema".history) as records,
+    (select count(*) from :"boba_schema".session_records) as records,
     (select count(*) from :"boba_schema".session where owner is null) as sessions_without_owner,
     (
         select count(*)

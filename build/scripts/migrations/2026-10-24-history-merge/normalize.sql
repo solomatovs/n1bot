@@ -55,9 +55,9 @@
     \set boba_schema boba
 \endif
 
-select to_regclass(format('%I.history', :'boba_schema')) is null as no_history \gset
+select to_regclass(format('%I.session_records', :'boba_schema')) is null as no_history \gset
 \if :no_history
-    \echo 'There is no table' :boba_schema'.history in this database: convert or merge the history first.'
+    \echo 'There is no table' :boba_schema'.session_records in this database: convert or merge the history first.'
     do $$ begin raise exception 'Nothing to normalize without the agent history tables, so nothing was changed.'; end $$;
 \endif
 
@@ -101,7 +101,7 @@ select
         limit 1
     ) as block
 from
-    :"boba_schema".history as h
+    :"boba_schema".session_records as h
 where
     jsonb_typeof(h.record -> 'message' -> 'content') = 'array'
     and (
@@ -196,7 +196,7 @@ from
 where
     form in ('wrapped', 'question', 'dev', 'bare');
 
-update :"boba_schema".history as h
+update :"boba_schema".session_records as h
 set
     record = jsonb_set(h.record, '{toolUseResult}', c.result)
 from
