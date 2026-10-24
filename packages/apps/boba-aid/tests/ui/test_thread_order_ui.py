@@ -1,7 +1,8 @@
 """Порядок тредов в боковой панели — по последней записи истории агента: ход
 поднимает свой тред наверх во всех вкладках пользователя без перезагрузки,
 перезагрузка показывает тот же порядок, открытие старого треда его не меняет;
-прокрутка панели подгружает следующие страницы без повторов и пропусков.
+прокрутка панели подгружает следующие страницы без повторов и пропусков;
+диалог поиска подписывает группы месяцем последней активности треда.
 
 Тесты входят пользователем guest, тредов которого больше никто не трогает:
 панель каждого теста начинается пустой.
@@ -20,6 +21,7 @@ from playwright.sync_api import Locator, expect
 from boba.stand.ui.chat_page import ChatPage, Selector, StepKind
 from boba.stand.ui.database import StandDatabase
 from boba.stand.ui.fake_llm import ScenarioName
+from boba.stand.ui.socket_log import ChatEvent
 from boba.stand.ui.stand import StandProcess
 
 pytestmark = [pytest.mark.ui]
@@ -32,6 +34,9 @@ class ThreadPanel:
     THREADS: ClassVar[str] = '#thread-history [data-sidebar="menu-item"][id^="thread-"]'
     """Пункты тредов: у кнопки меню пункта тоже id thread-options."""
     CONTENT: ClassVar[str] = '[data-sidebar="content"]'
+    SEARCH: ClassVar[str] = "#search-chats-button"
+    SEARCH_GROUP: ClassVar[str] = "[cmdk-group]"
+    SEARCH_HEADING: ClassVar[str] = "[cmdk-group-heading]"
     PAGE: ClassVar[int] = 35
     """BATCH_SIZE страницы панели chainlit."""
 
@@ -117,4 +122,35 @@ def test_scrolling_the_panel_loads_every_thread_once(
 
     panel.scroll_down()
     panel.shows(names)
+    stand_db.drop_threads_of(ThreadPanel.LOGIN)
+
+
+def test_search_groups_threads_by_the_month_of_activity(
+    module_chats: ChatOpener, stand: StandProcess, stand_db: StandDatabase
+) -> None:
+    """Тред, начатый давно, после хода стоит в поиске под текущим месяцем."""
+    chat = module_chats.open(stand, ThreadPanel.LOGIN)
+    stand_db.drop_threads_of(ThreadPanel.LOGIN)
+    marker = uuid4().hex[:8]
+    name = f"search probe {marker}"
+    stand_db.seed_thread(ThreadPanel.LOGIN, name, datetime(2025, 3, 15, 12, tzinfo=UTC))
+
+    chat.open()
+    panel = ThreadPanel(chat)
+    # вопрос уходит, когда сокет вкладки уже на этом треде
+    chat.log.clear()
+    panel.threads.filter(has_text=name).click()
+    chat.page.wait_for_url("**/thread/**", timeout=15_000)
+    chat.await_event(ChatEvent.RESUME_THREAD)
+    chat.ask(f"{ScenarioName.ANSWER.value} search probe {marker}")
+    chat.await_idle()
+    panel.shows([name])
+
+    # список поиска chainlit загружает один раз, при загрузке страницы
+    chat.open()
+    chat.page.locator(ThreadPanel.SEARCH).click()
+    group = chat.page.locator(ThreadPanel.SEARCH_GROUP).filter(has_text=name)
+    now = datetime.now()
+    month = f"{now:%B} {now.year}"
+    expect(group.locator(ThreadPanel.SEARCH_HEADING)).to_have_text(month)
     stand_db.drop_threads_of(ThreadPanel.LOGIN)
