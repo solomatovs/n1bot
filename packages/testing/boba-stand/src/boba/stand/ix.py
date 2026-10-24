@@ -73,7 +73,7 @@ class IxStand(BaseModel):
 
         stand.krb.apply()
 
-        database = StandNames().of(stand.database)
+        database = StandNames().database(stand.database)
 
         return stand.model_copy(update={"database": database})
 

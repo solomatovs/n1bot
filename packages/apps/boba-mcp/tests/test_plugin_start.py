@@ -97,7 +97,7 @@ class BareDatabase:
 
 @pytest.fixture
 async def bare_database(stand_postgres: PostgresConfig) -> AsyncIterator[str]:
-    database = BareDatabase(stand_postgres, StandNames().of("mcp_no_vector"))
+    database = BareDatabase(stand_postgres, StandNames().database("mcp_no_vector"))
     await database.create()
 
     try:
