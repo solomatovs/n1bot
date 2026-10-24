@@ -1,0 +1,1 @@
+The MCP server '{server}' stopped answering, so its tools are unavailable for now. They will come back as soon as it answers again.

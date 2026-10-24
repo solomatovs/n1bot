@@ -1,0 +1,1 @@
+The request to the model didn't go through, so this turn has stopped. Send your message again; if it keeps happening, let the administrator know.

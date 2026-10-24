@@ -359,3 +359,61 @@ button[id^="step-"] {
 :is(input, textarea).border-input:focus-visible {
   border-color: hsl(var(--ring)) !important;
 }
+
+/* =========================================================
+   Пометки агента, ошибка хода и полоса недоступного агента
+   Токены цвета Consta: gpnDefault — светлая, gpnDark — тёмная.
+   ========================================================= */
+
+:root {
+  --color-bg-warning: #f38b00;
+  --color-bg-alert: #eb5757;
+  --color-bg-border: rgba(0, 65, 102, 0.2);
+  --color-bg-ghost: rgba(0, 32, 51, 0.08);
+  --color-typo-secondary: rgba(0, 32, 51, 0.6);
+}
+
+.dark {
+  --color-bg-warning: #f38b00;
+  --color-bg-alert: #fe4343;
+  --color-bg-border: hsla(0, 0%, 100%, 0.2);
+  --color-bg-ghost: rgba(246, 251, 253, 0.1);
+  --color-typo-secondary: hsla(0, 0%, 100%, 0.6);
+}
+
+/* блок: рамка и лёгкий фон цвета важности, текст и кнопка внутри */
+.agent-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  min-width: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--color-bg-border);
+  border-radius: 16px;
+  background-color: var(--color-bg-ghost);
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.agent-notice[data-agent-notice="warning"] {
+  border-color: color-mix(in srgb, var(--color-bg-warning) 40%, transparent);
+  background-color: color-mix(in srgb, var(--color-bg-warning) 10%, transparent);
+}
+
+.agent-notice[data-agent-notice="error"] {
+  border-color: color-mix(in srgb, var(--color-bg-alert) 40%, transparent);
+  background-color: color-mix(in srgb, var(--color-bg-alert) 10%, transparent);
+}
+
+.agent-notice-body {
+  flex-grow: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.agent-notice-detail {
+  margin-top: 2px;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--color-typo-secondary);
+}

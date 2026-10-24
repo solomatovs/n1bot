@@ -627,12 +627,7 @@ class TalkLook:
         (TalkFixes.LOADING,),
     )
 
-    FEED: ClassVar[str] = (
-        "xpath=ancestor::div"
-        "[contains(concat(' ', @class, ' '), ' overflow-y-auto ')][2]"
-    )
-    """Лента сообщений chainlit (ScrollContainer) от сообщения: внешний блок
-    с областью прокрутки и кнопкой «↓»."""
+    FEED: ClassVar[str] = LookPages.FEED
     SCROLLER: ClassVar[str] = (
         "xpath=ancestor::div"
         "[contains(concat(' ', @class, ' '), ' overflow-y-auto ')][1]"
