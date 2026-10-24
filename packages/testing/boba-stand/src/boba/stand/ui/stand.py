@@ -449,7 +449,7 @@ class StandFiles:
 
         self.workdir.mkdir(parents=True, exist_ok=True)
         self.write(doc)
-        StandPlugins(app, sandbox=True).copy_to(self.plugins)
+        StandPlugins(app, StandPlugins.SANDBOXED).copy_to(self.plugins)
 
         return ConfigFiles(config=self.config, site=self.site)
 
@@ -478,8 +478,10 @@ class ServiceStand(StandService):
     session_ttl_sec: int = 300
     """Срок токена доступа: коротким стенд проверяет продление входа."""
     plugins: tuple[str, ...] = ()
-    """Плагины сверх набора стенда без песочницы: тест с соединениями
-    пользователя включает pg, его тела идут процессами хоста."""
+    """Плагины из StandPlugins.SANDBOXED, которые сервис включает, — те, что
+    зовут тесты стенда: тест с соединениями пользователя включает pg, стенд
+    всех инструментов — весь список. Каждая включённая секция песочницы
+    держит свою зиготу, у kb и ingest — с моделью эмбеддингов."""
     agent_auth: StandAgentAuth = StandAgentAuth.PROXY
     """Каким входом чат и его агент ходят на сервис: proxy — от имени
     пользователя вкладки, local — учёткой агента AGENT_LOGIN."""
@@ -640,7 +642,7 @@ class ServiceStand(StandService):
         doc["session"]["session_ttl_sec"] = self.session_ttl_sec
 
         self.files.write(doc)
-        StandPlugins(self.app, self.sandbox, self.plugins).copy_to(self.files.plugins)
+        StandPlugins(self.app, self.plugins).copy_to(self.files.plugins)
 
     def env(self) -> dict[str, str]:
         data_dir = self.data_dir
@@ -673,8 +675,9 @@ class StandPlugins:
     требует файл на каждый установленный плагин.
 
     Создаётся конфигом приложения на запись. У чата файлов плагинов нет:
-    инструменты исполняет сервис boba-mcp; у сервиса без песочницы
-    выключены инструменты, которым нужна она или внешние сервисы.
+    инструменты исполняет сервис boba-mcp. Из SANDBOXED у сервиса включены
+    только названные стендом: остальным нужны песочница или внешние
+    сервисы, а в песочнице каждая секция — своя зигота.
     """
 
     SANDBOXED: ClassVar[tuple[str, ...]] = (
@@ -692,10 +695,9 @@ class StandPlugins:
     )
     """Инструменты, которым нужна песочница или внешние сервисы."""
 
-    def __init__(self, app: StandApp, sandbox: bool, extra: Sequence[str] = ()) -> None:
+    def __init__(self, app: StandApp, enabled: Sequence[str]) -> None:
         self._app = app
-        self._sandbox = sandbox
-        self._extra = frozenset(extra)
+        self._enabled_plugins = frozenset(enabled)
 
     def copy_to(self, target: Path) -> None:
         source = self._app.files().plugins_dir()
@@ -710,10 +712,7 @@ class StandPlugins:
             (target / path.name).write_text(TomlText.dumps(doc), encoding="utf-8")
 
     def _enabled(self, plugin: str) -> bool:
-        if plugin in self._extra:
-            return True
-
-        if self._sandbox:
+        if plugin in self._enabled_plugins:
             return True
 
         return plugin not in self.SANDBOXED
@@ -775,7 +774,8 @@ class StandConfig(StandService):
     двух инстансов стенда даёт им принимать одну и ту же cookie входа."""
 
     service_plugins: tuple[str, ...] = ()
-    """Плагины сервиса boba-mcp стенда сверх набора без песочницы."""
+    """Плагины из StandPlugins.SANDBOXED, которые включает сервис boba-mcp
+    стенда (ServiceStand.plugins)."""
     agent_auth: StandAgentAuth = StandAgentAuth.PROXY
     """Способ входа чата и его агента на сервис boba-mcp стенда."""
     service_token_ttl_sec: int = 300
@@ -878,7 +878,7 @@ class StandConfig(StandService):
         doc["session"]["generation"] = self.generation
 
         self.files.write(doc)
-        StandPlugins(self.app, self.sandbox).copy_to(self.files.plugins)
+        StandPlugins(self.app, ()).copy_to(self.files.plugins)
 
     def _use_agent(self, doc: MutableMapping[str, Any]) -> None:
         """Агент ACP стенда чата: процесс и история по полям стенда,

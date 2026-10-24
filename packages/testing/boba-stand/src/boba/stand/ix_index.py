@@ -4,12 +4,15 @@ cfl-indexer без обхода Confluence и общие индексаторы 
 UI-стенд — после записи своих страниц.
 
 Ошибки наружу — ошибки пакетов ix и драйвера postgres как есть: стенд падает
-на месте.
+на месте; BrokenProcessPool — процесс векторного прохода умер, не ответив.
 """
 
 from __future__ import annotations
 
+import asyncio
+import multiprocessing
 from collections.abc import Sequence
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -32,6 +35,7 @@ from boba.ix_trgm.worker import WorkerConfig as TrgmConfig
 from boba.ix_vector import worker as vector
 from boba.ix_vector.worker import VectorWorker
 from boba.ix_vector.worker import WorkerConfig as VectorConfig
+from boba.krb import KerberosWorkspaceConfig
 from boba.llm.fastembed import FastembedProvider
 from boba.llm.providers import EmbeddingModelConfig, LlmProviders, LlmProviderTypes
 from boba.stand.ix import IxSchemas
@@ -149,9 +153,13 @@ class SharedIndexers:
     }
     RUN: ClassVar[str] = "run"
 
-    def __init__(self, database: IxDatabase, cache_dir: str) -> None:
+    def __init__(
+        self, database: IxDatabase, cache_dir: str, krb: KerberosWorkspaceConfig
+    ) -> None:
         self._database = database
         self._cache_dir = cache_dir
+        self._krb = krb
+        self._spawn = multiprocessing.get_context("spawn")
 
     async def text(self) -> None:
         """Триграммы и полнотекст: без модели, поэтому быстро."""
@@ -172,7 +180,14 @@ class SharedIndexers:
         await FtsWorker(fts_cfg, self._run_dir(fts.__file__)).run()
 
     async def vectors(self) -> None:
-        """Векторы: поднимает модель, поэтому зовётся только там, где проверяется."""
+        """Векторы: поднимает модель, поэтому зовётся только там, где проверяется.
+
+        Проход идёт отдельным процессом: onnxruntime не отдаёт память модели
+        (~1.5 ГБ) и после aclose, и каждый проход оставлял бы её в процессе
+        теста. Чистый процесс (spawn), а не fork: у теста живы потоки
+        браузера и цикла событий; workspace kerberos процесс ставит себе сам
+        из krb — вход в базу ix по keytab идёт через него.
+        """
         cfg = VectorConfig(
             db_schema=self._database.db_schema,
             postgres=self._database.postgres,
@@ -189,12 +204,10 @@ class SharedIndexers:
                 progress_every=64,
             ),
         )
-        providers = LlmProviders(LlmProviderTypes.installed())
-        try:
-            embedder = providers.embedding(cfg.embedding)
-            await VectorWorker(cfg, embedder, self._run_dir(vector.__file__)).run()
-        finally:
-            await providers.aclose()
+        run_dir = self._run_dir(vector.__file__)
+        loop = asyncio.get_running_loop()
+        with ProcessPoolExecutor(max_workers=1, mp_context=self._spawn) as pool:
+            await loop.run_in_executor(pool, index_vectors, cfg, run_dir, self._krb)
 
     def _run_dir(self, module_file: str | None) -> Path:
         if module_file is None:
@@ -202,3 +215,29 @@ class SharedIndexers:
             raise ValueError(msg)
 
         return Path(module_file).resolve().parent / self.RUN
+
+
+class VectorPass:
+    """Векторный проход ix в процессе пула SharedIndexers.vectors: эмбеддер
+    проекта и VectorWorker на один цикл; модель уходит вместе с процессом."""
+
+    def __init__(self, cfg: VectorConfig, run_dir: Path) -> None:
+        self._cfg = cfg
+        self._run_dir = run_dir
+        self._providers = LlmProviders(LlmProviderTypes.installed())
+
+    async def run(self) -> None:
+        try:
+            embedder = self._providers.embedding(self._cfg.embedding)
+            await VectorWorker(self._cfg, embedder, self._run_dir).run()
+        finally:
+            await self._providers.aclose()
+
+
+def index_vectors(
+    cfg: VectorConfig, run_dir: Path, krb: KerberosWorkspaceConfig
+) -> None:
+    """Вход процесса векторного прохода: свой workspace kerberos и свой цикл
+    событий. Функция уровня модуля, потому что её сериализует пул процессов."""
+    krb.apply()
+    asyncio.run(VectorPass(cfg, run_dir).run())
