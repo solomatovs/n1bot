@@ -19,9 +19,10 @@ from chat_ui import OpenChat
 from playwright.sync_api import expect
 
 from boba.aid.chat.ui_text import UiText
+from boba.core.mcp_names import McpToolNames
 from boba.stand.ui.chat_page import ChatPage, Selector, StepKind
 from boba.stand.ui.database import StandDatabase
-from boba.stand.ui.fake_llm import ScenarioName
+from boba.stand.ui.fake_llm import OfferedTools, ScenarioName
 from boba.stand.ui.stand import StandProcess, StandUrl
 
 pytestmark = pytest.mark.ui
@@ -114,14 +115,9 @@ def _last_request(llm_port: int) -> dict[str, Any]:
 
 
 def _tool_names(payload: dict[str, Any]) -> frozenset[str]:
-    """Имена инструментов из запроса провайдеру: их видит LLM."""
-    names: set[str] = set()
-    for tool in payload.get("tools", []):
-        function = tool.get("function", {})
-        if name := function.get("name"):
-            names.add(str(name))
-
-    return frozenset(names)
+    """Имена инструментов, которые знает LLM: предложенные в `tools` и
+    объявленные отложенными, без самого ToolSearch."""
+    return OfferedTools(payload, McpToolNames()).visible()
 
 
 def _system_prompt(payload: dict[str, Any]) -> str:

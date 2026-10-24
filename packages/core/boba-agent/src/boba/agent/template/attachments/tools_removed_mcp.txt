@@ -1,2 +1,2 @@
-The following tools are no longer available (their MCP server disconnected). Do not call them:
+The following {kind}s are no longer available (their MCP server disconnected). {advice}:
 {names}
