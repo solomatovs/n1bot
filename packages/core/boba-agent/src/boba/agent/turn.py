@@ -245,7 +245,7 @@ class TurnLoop:
         self._builder = builder
         self._budget = SkillBudget(profile.context_window, profile.chars_per_token)
         self._asking = ModelAsk(model, self._sink)
-        estimator = TokenEstimator(profile)
+        estimator = TokenEstimator(profile, self._templates)
         self._estimator = estimator
         self._gate = CompactGate(
             ContextMeter(estimator),

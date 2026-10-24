@@ -37,7 +37,7 @@ from __future__ import annotations
 
 import json
 from abc import abstractmethod
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Annotated, Any, ClassVar, Literal, Protocol, Self, TypeAlias
@@ -556,17 +556,14 @@ class PayloadModel(BaseModel):
         alias_generator=to_camel, populate_by_name=True, frozen=True, extra="ignore"
     )
 
-    def window_texts(self, rendered: Sequence[RenderedMessage] | None) -> Iterator[str]:
-        """Тексты вложения в окне модели: зафиксированный текст."""
-        if rendered is None:
-            return
-
-        for message in rendered:
-            yield message.content
-
     def announce(self, fold: HistoryFold) -> None:
         """Что вложение объявляет свёрткам истории; у вложения без
         объявления — ничего."""
+        return
+
+    def request(self, feed: RequestFeed) -> None:
+        """Вклад данных вложения в запрос помимо его текста; у вложения без
+        такого вклада — ничего."""
         return
 
 
@@ -713,14 +710,11 @@ class DeferredToolsRecordAttachment(PayloadModel):
     )
     entries: Sequence[SnapshotTool]
 
-    def window_texts(self, rendered: Sequence[RenderedMessage] | None) -> Iterator[str]:
-        """Определения инструментов: они уходят в запрос списком tools."""
-        for tool in self.entries:
-            yield tool.text()
-            yield json.dumps(tool.schema_, ensure_ascii=False)
-
     def announce(self, fold: HistoryFold) -> None:
         fold.tool_definitions(self)
+
+    def request(self, feed: RequestFeed) -> None:
+        feed.tool_definitions(self.entries)
 
 
 class McpInstructionsAttachment(PayloadModel):
@@ -824,6 +818,11 @@ class RequestFeed(Protocol):
     @abstractmethod
     def reply_block(self, message_id: str, block: AssistantBlock) -> None:
         """Блок ответа модели; блоки одного message_id — одно сообщение."""
+
+    @abstractmethod
+    def tool_definitions(self, tools: Sequence[SnapshotTool]) -> None:
+        """Определения загруженных отложенных инструментов: они уходят в
+        запрос списком tools."""
 
 
 class TurnMark(StrEnum):
@@ -976,8 +975,8 @@ class ChainRecord(WireModel):
     `uuid` → `parentUuid`.
 
     Вид записи сам говорит, чем он участвует в работе агента: что вносит
-    в запрос к модели и где встаёт в нём, сколько текста занимает в окне,
-    ответ ли это модели, с него ли начинается счёт окна. Сборщик запроса,
+    в запрос к модели и где встаёт в нём (по этому же вкладу считается
+    окно), ответ ли это модели, с него ли начинается счёт окна. Сборщик запроса,
     оценка окна, группы сжатия и загрузчик спрашивают запись, а не
     перебирают виды. Реализуют семейства: записи user, assistant,
     attachment и system.
@@ -1005,11 +1004,6 @@ class ChainRecord(WireModel):
     @abstractmethod
     def placement(self) -> Placement:
         """Место записи при перестановке вложений сборщиком."""
-
-    @abstractmethod
-    def window_texts(self) -> Iterator[str]:
-        """Тексты, которыми запись занимает окно модели при оценке без
-        провайдера."""
 
     @abstractmethod
     def model_reply(self) -> ReplyMark | None:
@@ -1081,24 +1075,6 @@ class UserRecord(ChainRecord):
 
     def placement(self) -> Placement:
         return Placement.STAYS
-
-    def window_texts(self) -> Iterator[str]:
-        content = self.message.content
-        if isinstance(content, str):
-            yield content
-            return
-
-        for block in content:
-            if isinstance(block, ToolResultBlock):
-                yield from block.references()
-                yield block.text()
-                continue
-
-            if isinstance(block, mt.ResourceLink):
-                yield LinkText.TEMPLATE.render(block)
-                continue
-
-            yield block.text
 
     def model_reply(self) -> ReplyMark | None:
         return None
@@ -1264,19 +1240,6 @@ class AssistantRecord(ChainRecord):
     def placement(self) -> Placement:
         return Placement.STOPS
 
-    def window_texts(self) -> Iterator[str]:
-        for block in self.message.content:
-            if isinstance(block, ThinkingBlock):
-                yield block.thinking
-                continue
-
-            if isinstance(block, TextBlock):
-                yield block.text
-                continue
-
-            yield block.name
-            yield json.dumps(block.input, ensure_ascii=False)
-
     def model_reply(self) -> ReplyMark | None:
         if self.is_synthetic():
             return None
@@ -1367,7 +1330,9 @@ class AttachmentRecord(ChainRecord):
     def to_request(self, feed: RequestFeed) -> None:
         """Текст, зафиксированный при записи: с ролью user — словами
         пользователя как есть, иначе системным вложением; без текста —
-        ничего (снимок промпта, определения отложенных инструментов)."""
+        ничего (снимок промпта); данные вложения добавляют свой вклад
+        (определения отложенных инструментов)."""
+        self.attachment.request(feed)
         if self.rendered is None:
             return
 
@@ -1380,9 +1345,6 @@ class AttachmentRecord(ChainRecord):
 
     def placement(self) -> Placement:
         return Placement.FLOATS
-
-    def window_texts(self) -> Iterator[str]:
-        return self.attachment.window_texts(self.rendered)
 
     def model_reply(self) -> ReplyMark | None:
         return None
@@ -1426,9 +1388,6 @@ class SystemRecord(ChainRecord):
 
     def placement(self) -> Placement:
         return Placement.STAYS
-
-    def window_texts(self) -> Iterator[str]:
-        return iter(())
 
     def model_reply(self) -> ReplyMark | None:
         return None
