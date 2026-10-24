@@ -335,13 +335,13 @@ class AgentFeed(TurnRenderer):
         schema.SessionPlanRemovedUpdate,
         schema.AvailableCommandsUpdate,
         schema.ConfigOptionUpdate,
-        schema.SessionCompactionUpdate,
         schema.SessionCompactionSummaryChunk,
         schema.RunningSessionStateUpdate,
         schema.RequiresActionSessionStateUpdate,
     )
     """Уведомления сессии, которых в ленте нет: план, команды, настройки
-    сессии, сжатие и состояние идущего хода."""
+    сессии, куски пересказа и состояние идущего хода; сжатие рисуется шагом
+    хода (UpdateView)."""
 
     ABANDONED: ClassVar[str] = "turn failed"
     """Причина в итоге хода, сорвавшегося без ответа агента."""
