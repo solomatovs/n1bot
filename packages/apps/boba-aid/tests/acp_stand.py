@@ -222,7 +222,7 @@ class AgentHistoryStand:
             async with pool.connection() as conn:
                 cursor = await conn.execute(
                     sql.SQL(
-                        "select count(*) from {}.history where session_id = %s"
+                        "select count(*) from {}.session_records where session_id = %s"
                     ).format(sql.Identifier(self.schema())),
                     (session_id,),
                 )
