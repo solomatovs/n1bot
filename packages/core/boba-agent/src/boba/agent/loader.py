@@ -5,11 +5,12 @@
 (docs/prompt_assembly/specs/10_loader.md) берётся только то, что нужно
 линии: пропуск испорченной строки, граница сжатия с перенесённым хвостом,
 починка последнего хода (там же, раздел 2.7): вызовам последнего
-ответа без результата дописывается результат-заглушка, разговору без ответа
-на последнее сообщение — ответ-заглушка «No response requested.». Дописанные
-записи остаются в сессии несброшенными: писатель положит их в журнал перед
-первой записью следующего хода. `restore` восстанавливает без починки — так
-читает сессию процесс, который её не ведёт. SessionDigests собирает по
+ответа без результата дописывается результат-заглушка, оборванному ходу —
+пометка человеку (запись informational), разговору без ответа на последнее
+сообщение — ответ-заглушка «No response requested.». Дописанные записи
+агент сбрасывает в журнал сразу после открытия сессии. `restore`
+восстанавливает без починки — так читает сессию процесс, который её не
+ведёт. SessionDigests собирает по
 записям сводку сессии: рабочий каталог из снимка окружения и первый вопрос
 человека.
 
@@ -24,6 +25,7 @@ import logging
 from collections.abc import AsyncGenerator, Iterator, Sequence
 from contextlib import aclosing
 from dataclasses import dataclass, field
+from typing import ClassVar
 
 from boba.agent.attachments import AttachmentKind, EnvironmentAttachment
 from boba.agent.history import BrokenLine, HistoryStore, SessionId, StoredLine
@@ -33,6 +35,8 @@ from boba.agent.records import (
     AssistantRecord,
     AttachmentRecord,
     ChainRecord,
+    InformationalRecord,
+    NoticeLevel,
     Record,
     RecordCodec,
     RecordError,
@@ -75,6 +79,12 @@ class DanglingCall:
 
 class HistoryLoader:
     """Строит сессию из записей порта и чинит оборванный ход."""
+
+    STOP_MARKERS: ClassVar[tuple[AgentTemplateFile, ...]] = (
+        AgentTemplateFile.REQUEST_INTERRUPTED,
+        AgentTemplateFile.REQUEST_INTERRUPTED_TOOL_USE,
+    )
+    """Тексты маркеров остановки хода пользователем или выключением."""
 
     def __init__(
         self,
@@ -176,19 +186,62 @@ class HistoryLoader:
             return None
 
     def _repair(self, session: Session) -> Iterator[ChainRecord]:
+        """Оборванный ход: вызовам без результата — результат-заглушка, ходу,
+        который агент не довёл до конца, — пометка человеку, разговору без
+        ответа на последнее сообщение — ответ-заглушка. Маркер остановки
+        пользователем — конец хода, а не обрыв: пометки за ним нет."""
         conversation = session.conversation()
         last = self._last_significant(conversation)
         if last is None:
             return
 
-        for dangling in self._dangling_calls(conversation):
-            yield session.add(self._stub_result(session, dangling))
+        dangling = list(self._dangling_calls(conversation))
+        for call in dangling:
+            yield session.add(self._stub_result(session, call))
+
+        interrupted = bool(dangling)
+        if not interrupted:
+            interrupted = not self._ended(last)
+
+        if interrupted:
+            yield session.add(self._interrupted_notice(session))
 
         last = self._last_significant(session.conversation())
         if isinstance(last, AssistantRecord):
             return
 
         yield session.add(self._no_response(session))
+
+    def _ended(self, last: ChainRecord) -> bool:
+        """Последняя значимая запись закрывает ход: ответ модели или маркер
+        остановки хода пользователем."""
+        if isinstance(last, AssistantRecord):
+            return True
+
+        if not isinstance(last, UserRecord):
+            return False
+
+        content = last.message.content
+        if not isinstance(content, str):
+            return False
+
+        for marker in self.STOP_MARKERS:
+            if content == self._templates.read(marker):
+                return True
+
+        return False
+
+    def _interrupted_notice(self, session: Session) -> InformationalRecord:
+        return InformationalRecord(
+            uuid=self._ids.uuid(),
+            parent_uuid=session.last_chain_uuid(),
+            timestamp=self._clock.now(),
+            session_id=session.id.value,
+            version=self._version,
+            content=self._templates.read(AgentTemplateFile.TURN_INTERRUPTED_NOTICE),
+            level=NoticeLevel.WARNING,
+            detail="",
+        )
 
     def _last_significant(
         self, conversation: Sequence[ChainRecord]

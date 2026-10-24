@@ -35,7 +35,7 @@ import logging
 from abc import abstractmethod
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Protocol, TypeAlias
+from typing import Any, ClassVar, Protocol, TypeAlias
 
 import mcp_types as mt
 from acp.experimental.v2 import schema
@@ -43,7 +43,7 @@ from chainlit.step import Step
 from mcp.shared.exceptions import MCPError
 from pydantic import TypeAdapter, ValidationError
 
-from boba.aid.rendering.chat_view import ChatView, StepText
+from boba.aid.rendering.chat_view import ChatView, NoticeLevel, StepText
 from boba.aid.rendering.question import QuestionCard, QuestionCards
 from boba.aid.rendering.tool import AppMeta, ToolAppView
 from boba.core.mcp_names import McpToolNames
@@ -69,7 +69,6 @@ from boba.toolkit.dag import (
 from boba.toolkit.wire import ResultWire
 from boba.transport.acp.protocol import (
     ElicitationRound,
-    IdleErrorUpdate,
     MetaKey,
     StopReason,
     ToolStatus,
@@ -111,13 +110,11 @@ SessionUpdate: TypeAlias = (
     | schema.SessionCompactionSummaryChunk
     | schema.OtherSessionUpdate
     | schema.RunningSessionStateUpdate
-    | IdleErrorUpdate
     | schema.IdleSessionStateUpdate
     | schema.RequiresActionSessionStateUpdate
     | schema.OtherSessionStateUpdate
 )
-"""Уведомление `session/update` v2; idle с ошибкой — до обычного idle, чтобы
-разбор не терял его поле error."""
+"""Уведомление `session/update` v2."""
 
 
 class SessionUpdateCodec:
@@ -354,6 +351,12 @@ class UpdateView:
     открытый журнал.
     """
 
+    EARLY: ClassVar[Mapping[str, StepText]] = {
+        StopReason.MAX_TOKENS: StepText.ENDED_MAX_TOKENS,
+        StopReason.MAX_TURN_REQUESTS: StepText.ENDED_MAX_TURNS,
+    }
+    """Пометки ленты хода, который кончился пределом раньше ответа."""
+
     def __init__(
         self,
         view: ChatView,
@@ -442,6 +445,10 @@ class UpdateView:
             await self._ended(update)
             return
 
+        if isinstance(update, schema.SessionNotice):
+            await self._notice(update)
+            return
+
         logger.debug(
             "thread %s: update %s is not drawn", self._thread_id, type(update).__name__
         )
@@ -459,11 +466,15 @@ class UpdateView:
             note = self._view.label(StepText.STOPPED)
             return TurnEnding(outcome=TurnOutcome.STOPPED, note=note)
 
-        note = f"the turn ended early: {stop_reason}"
-        if isinstance(idle, IdleErrorUpdate):
-            if idle.error is not None:
-                note = f"the turn failed: {idle.error.message}"
+        # причину отказа агент уже прислал пометкой notice перед idle
+        if stop_reason == StopReason.REFUSAL:
+            return TurnEnding(outcome=TurnOutcome.FAILED, note="")
 
+        if early := self.EARLY.get(stop_reason):
+            note = self._view.label(early)
+            return TurnEnding(outcome=TurnOutcome.FAILED, note=note)
+
+        note = self._view.label(StepText.ENDED_EARLY, reason=stop_reason)
         return TurnEnding(outcome=TurnOutcome.FAILED, note=note)
 
     async def _ended(self, idle: schema.IdleSessionStateUpdate) -> None:
@@ -472,6 +483,9 @@ class UpdateView:
         ending = self.ending(idle)
         if ending.outcome is TurnOutcome.STOPPED:
             await self._stopped(ending)
+            return
+
+        if not ending.note:
             return
 
         if ending.outcome is TurnOutcome.FAILED:
@@ -586,6 +600,13 @@ class UpdateView:
     ) -> None:
         """Рассуждение: живой ход шлёт его кусками, воспроизведение — целым
         сообщением; лента пишет и то и другое в шаг сообщения."""
+        if self._withdrawn(update):
+            if update.message_id == self._thought_id:
+                self._thought_id = None
+                await self._view.withdraw_thinking()
+
+            return
+
         text = self._text(update)
         if text is None:
             return
@@ -603,7 +624,15 @@ class UpdateView:
     async def _message_chunk(
         self, update: schema.AgentMessageChunk | schema.AgentMessageUpdate
     ) -> None:
-        """Ответ: кусками в живом ходе, целым сообщением в воспроизведении."""
+        """Ответ: кусками в живом ходе, целым сообщением в воспроизведении;
+        пустая замена — агент снял ответ неудачной попытки."""
+        if self._withdrawn(update):
+            if update.message_id == self._answer_id:
+                self._answer_id = None
+                await self._view.withdraw_answer()
+
+            return
+
         text = self._text(update)
         if text is None:
             return
@@ -614,6 +643,31 @@ class UpdateView:
 
         self._answer_id = update.message_id
         await self._view.stream_answer(text, self._turn_key)
+
+    async def _notice(self, notice: schema.SessionNotice) -> None:
+        """Пометка агента — своим сообщением хода."""
+        detail = ""
+        if notice.description:
+            detail = notice.description
+
+        await self._close_thinking()
+        await self._view.notice(
+            NoticeLevel(notice.severity), notice.title, detail, self._turn_key
+        )
+
+    @staticmethod
+    def _withdrawn(
+        update: schema.AgentThoughtChunk
+        | schema.AgentThoughtUpdate
+        | schema.AgentMessageChunk
+        | schema.AgentMessageUpdate,
+    ) -> bool:
+        """Целое сообщение с пустым содержимым: агент заменил им сообщение
+        неудачной попытки."""
+        if isinstance(update, schema.AgentThoughtChunk | schema.AgentMessageChunk):
+            return False
+
+        return update.content == []
 
     async def _tool_update(self, update: schema.SessionToolCallUpdate) -> None:
         """Вызов: первое уведомление создаёт шаг (у вызова со вложенными

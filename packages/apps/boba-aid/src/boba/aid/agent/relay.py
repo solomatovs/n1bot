@@ -90,6 +90,7 @@ from boba.mcp_client.client import (
     McpServers,
     McpToolPort,
     McpToolServer,
+    McpUnansweredError,
     ProgressHeard,
     QuestionHeard,
 )
@@ -103,6 +104,7 @@ from boba.toolrun.injected import ToolConfigError
 from boba.toolrun.registry import ToolRegistry
 from boba.transport.acp.protocol import (
     AcpErrorCode,
+    ErrorDataKey,
     McpErrorOutcome,
     McpMessage,
     McpOutcome,
@@ -723,6 +725,8 @@ class McpRelay:
     """execution.taskSupport инструмента, который без задачи не исполняется."""
     HELD: ClassVar[str] = "boba-aid/held/"
     """Начало requestState вызова, который ретранслятор держит открытым."""
+    SIGN_IN_EXPIRED: ClassVar[str] = "the sign-in of this chat is no longer valid"
+    """Короткая причина агенту, когда вход пользователя вкладки больше не годен."""
 
     def __init__(  # noqa: PLR0913 — ретранслятор собирается всеми входами процесса
         self,
@@ -769,6 +773,19 @@ class McpRelay:
             "server/discover", mt.RequestParams, self._discover
         )
 
+    def _brief(
+        self, failure: McpClientError | AuthenticationError
+    ) -> Mapping[str, str] | None:
+        """`data` отказа агенту: короткая причина для человека, если она
+        известна; без неё — None, полный текст несёт сообщение отказа."""
+        if isinstance(failure, McpUnansweredError):
+            return {ErrorDataKey.DETAILS.value: failure.brief}
+
+        if isinstance(failure, AuthenticationError):
+            return {ErrorDataKey.DETAILS.value: self.SIGN_IN_EXPIRED}
+
+        return None
+
     async def answer(
         self, message: McpMessage, notify: Callable[[McpMessage], Awaitable[None]]
     ) -> McpOutcome:
@@ -778,7 +795,7 @@ class McpRelay:
         RequestError — нет регистрации serverId, requestId уже в работе либо
             сервер за регистрацией не дал исхода.
         """
-        self._registrations.of(message.server_id)
+        registration = self._registrations.of(message.server_id)
         active = (message.server_id, message.request_id)
         if active in self._active:
             msg = (
@@ -838,11 +855,10 @@ class McpRelay:
             error = ErrorData(code=mt.INVALID_PARAMS, message=text)
             return McpErrorOutcome(error=error)
         except (McpClientError, AuthenticationError) as exc:
-            msg = (
-                f"mcp/message {message.method!r} to server {message.server_id!r} "
-                f"got no MCP outcome: {exc}"
-            )
-            raise RequestError(AcpErrorCode.BACKEND_FAILED, msg) from exc
+            msg = f"{message.method} to MCP server {registration.server!r}: {exc}"
+            raise RequestError(
+                AcpErrorCode.BACKEND_FAILED, msg, self._brief(exc)
+            ) from exc
         except ToolServersError as exc:
             msg = (
                 f"mcp/message {message.method!r} to server {message.server_id!r}: "

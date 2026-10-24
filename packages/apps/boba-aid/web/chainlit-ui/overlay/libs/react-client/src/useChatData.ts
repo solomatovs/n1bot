@@ -12,7 +12,7 @@ import {
   sessionState,
   tasklistState
 } from './state';
-import { historyLoadingState } from './useChatSession';
+import { agentStateState, historyLoadingState } from './useChatSession';
 
 export interface IToken {
   id: number | string;
@@ -25,6 +25,8 @@ const useChatData = () => {
   const loading = useRecoilValue(loadingState);
   // boba: пока воспроизводится история треда, отправить вопрос нельзя
   const historyLoading = useRecoilValue(historyLoadingState);
+  // boba: недоступный агент запирает поле ввода до повтора
+  const agentState = useRecoilValue(agentStateState);
   const elements = useRecoilValue(elementState);
   const tasklists = useRecoilValue(tasklistState);
   const actions = useRecoilValue(actionState);
@@ -42,6 +44,7 @@ const useChatData = () => {
   const disabled =
     !connected ||
     historyLoading ||
+    !agentState.available ||
     askUser?.spec.type === 'file' ||
     askUser?.spec.type === 'action' ||
     askUser?.spec.type === 'element';

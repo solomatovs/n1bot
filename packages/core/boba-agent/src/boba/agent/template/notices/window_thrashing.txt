@@ -1,0 +1,1 @@
+This conversation fills the model's memory again right after each shortening, so it can't go on here. Start a new chat to continue; asking for smaller tool outputs will help.
