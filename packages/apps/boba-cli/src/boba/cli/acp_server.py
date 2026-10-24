@@ -115,7 +115,6 @@ from boba.agent.events import (
     StreamEvent,
     ToolProgressEvent,
     ToolStartedEvent,
-    TurnOutcome,
 )
 from boba.agent.history import (
     HistoryError,
@@ -137,19 +136,20 @@ from boba.agent.permissions import PermissionModeError
 from boba.agent.queue import QueueEntry, QueueKind, QueuePriority, QueueRefusedError
 from boba.agent.records import (
     ApiErrorRecord,
-    AssistantRecord,
+    CallStatus,
     ChainRecord,
     CompactionPhase,
     CompactionRecord,
-    InformationalRecord,
+    CompactSummaryRecord,
+    FeedSink,
     NoticeLevel,
     PermissionMode,
     Record,
-    TextBlock,
-    ThinkingBlock,
     ToolResultBlock,
+    ToolResultRecord,
     ToolUseBlock,
-    UserRecord,
+    TurnEndRecord,
+    TurnOutcome,
 )
 from boba.agent.session import SessionState
 from boba.agent.settings import (
@@ -480,45 +480,28 @@ class CompactionUpdateStatus(StrEnum):
 
 
 class OpenCompactions:
-    """Сжатия воспроизведения, начатые записью и ещё не кончившиеся: агент
-    мог остановиться посреди пересказа, и в истории осталось только начало.
-    Такое сжатие закрывается неудачей, когда за ним идёт вопрос человека или
-    кончается история — кроме идущего сейчас (live): его итог придёт вживую.
-    Создаёт воспроизведение (AcpAgent) на каждый проход."""
+    """Сжатия ленты, начатые записью и ещё не кончившиеся: агент мог
+    остановиться посреди пересказа, и в истории осталось только начало.
+    Такое сжатие закрывается неудачей концом хода или концом истории —
+    кроме идущего сейчас (live): его итог придёт вживую. Ведёт отрисовщик
+    ленты (FeedPainter)."""
 
     def __init__(self) -> None:
         self._open: list[str] = []
 
-    def before(self, record: ChainRecord) -> Sequence[str]:
-        """Сжатия, которые закрывает вопрос человека record."""
-        if not isinstance(record, UserRecord):
-            return ()
-
-        if record.human_text() is None:
-            return ()
-
-        unfinished = list(self._open)
-        self._open.clear()
-
-        return unfinished
-
-    def after(self, record: ChainRecord) -> None:
-        if isinstance(record, CompactionRecord):
-            self._follow(record)
+    def follow(self, record: CompactionRecord) -> None:
+        if record.phase is CompactionPhase.STARTED:
+            self._open.append(record.compaction_id)
             return
 
-        if not isinstance(record, UserRecord):
-            return
+        self.finished(record.compaction_id)
 
-        if not record.is_compact_summary:
-            return
-
-        if record.uuid in self._open:
-            self._open.remove(record.uuid)
+    def finished(self, compaction_id: str) -> None:
+        if compaction_id in self._open:
+            self._open.remove(compaction_id)
 
     def unfinished(self, live: bool) -> Sequence[str]:
-        """Сжатия без конца в конце истории; live — последнее из них ещё
-        идёт."""
+        """Сжатия без конца; live — последнее из них ещё идёт."""
         unfinished = list(self._open)
         self._open.clear()
         if live and unfinished:
@@ -526,13 +509,135 @@ class OpenCompactions:
 
         return unfinished
 
-    def _follow(self, record: CompactionRecord) -> None:
-        if record.phase is CompactionPhase.STARTED:
-            self._open.append(record.compaction_id)
+
+class StreamedReplies:
+    """Ответы модели, которые дошли до клиента кусками вживую: их записи
+    целым сообщением уже не повторяются, а не дошедшие до записи —
+    недописанный ответ неудачной попытки — снимаются пустой заменой. Ведёт
+    живой приёмник сессии (SessionRelay); у воспроизведения истории он
+    пуст."""
+
+    def __init__(self) -> None:
+        self._streamed: dict[str, None] = {}
+        self._recorded: set[str] = set()
+
+    def streamed(self, message_id: str) -> None:
+        self._streamed[message_id] = None
+
+    def confirm(self, message_id: str) -> bool:
+        """Ответ message_id записан; True — его куски уже у клиента."""
+        self._recorded.add(message_id)
+
+        return message_id in self._streamed
+
+    def unrecorded(self) -> Sequence[str]:
+        """Ответы, которые дошли кусками и не записаны; дальше забыты."""
+        lost: list[str] = []
+        for message_id in self._streamed:
+            if message_id not in self._recorded:
+                lost.append(message_id)
+
+        for message_id in lost:
+            del self._streamed[message_id]
+
+        return lost
+
+
+class FeedPainter(FeedSink):
+    """Реализация FeedSink: записи истории → уведомления `session/update`
+    одним кодом для живого хода и для воспроизведения истории. Что показать,
+    говорит запись (ChainRecord.feed), отрисовщик переводит это в ACP через
+    AcpMapping. Живой приёмник (SessionRelay) держит свой отрисовщик на
+    сессию и передаёт ему куски потока, воспроизведение (AcpAgent) создаёт
+    отрисовщик на проход с пустыми кусками."""
+
+    def __init__(
+        self, mapping: AcpMapping, hints: ToolHintSource, stream: StreamedReplies
+    ) -> None:
+        self._mapping = mapping
+        self._hints = hints
+        self._stream = stream
+        self._compactions = OpenCompactions()
+        self._out: list[Update] = []
+
+    def updates(self, record: ChainRecord) -> Sequence[Update]:
+        self._out = []
+        record.feed(self)
+
+        return self._out
+
+    def unfinished(self, live: bool) -> Sequence[Update]:
+        """Сжатия без конца в конце истории — неудачей; live — последнее
+        ещё идёт."""
+        updates: list[Update] = []
+        for compaction_id in self._compactions.unfinished(live):
+            updates.append(self._mapping.interrupted(compaction_id))
+
+        return updates
+
+    def question(
+        self, message_id: str, text: str, links: Sequence[mt.ResourceLink]
+    ) -> None:
+        self._out.append(self._mapping.question(message_id, text, links))
+
+    def thought(self, message_id: str, text: str) -> None:
+        if self._stream.confirm(message_id):
             return
 
-        if record.compaction_id in self._open:
-            self._open.remove(record.compaction_id)
+        content: list[ContentBlock] = [schema.TextContentBlock(text=text)]
+        self._out.append(
+            schema.AgentThoughtUpdate(message_id=message_id, content=content)
+        )
+
+    def message(self, message_id: str, text: str) -> None:
+        if self._stream.confirm(message_id):
+            return
+
+        content: list[ContentBlock] = [schema.TextContentBlock(text=text)]
+        self._out.append(
+            schema.AgentMessageUpdate(message_id=message_id, content=content)
+        )
+
+    def tool_call(self, message_id: str, call: ToolUseBlock) -> None:
+        self._stream.confirm(message_id)
+        hints = self._hints.tool_hints(call.name)
+        self._out.append(self._mapping.tool_call(call, hints))
+
+    def tool_result(self, result: ToolResultBlock, record: ToolResultRecord) -> None:
+        self._out.append(self._mapping.tool_result(result, record))
+
+    def notice(self, level: NoticeLevel, text: str, detail: str) -> None:
+        self._out.append(self._mapping.notice(level, text, detail))
+
+    def model_retry(self, record: ApiErrorRecord) -> None:
+        """Повтор запроса: недописанный ответ попытки снимается, затем
+        пометка с паузой."""
+        self._withdraw()
+        self._out.append(self._mapping.retry(record))
+
+    def compaction(self, record: CompactionRecord) -> None:
+        self._compactions.follow(record)
+        self._out.append(self._mapping.compaction(record))
+
+    def compacted(self, record: CompactSummaryRecord) -> None:
+        self._compactions.finished(record.uuid)
+        self._out.append(self._mapping.compacted(record))
+
+    def turn_ended(self, record: TurnEndRecord) -> None:
+        """Конец хода: сжатия хода без конца — неудачей, недописанный ответ
+        снимается, затем пометка и idle."""
+        self._out.extend(self.unfinished(False))
+        self._withdraw()
+        self._out.extend(self._mapping.turn_ended(record))
+
+    def _withdraw(self) -> None:
+        for message_id in self._stream.unrecorded():
+            self._out.append(
+                schema.AgentThoughtUpdate(message_id=message_id, content=[])
+            )
+            self._out.append(
+                schema.AgentMessageUpdate(message_id=message_id, content=[])
+            )
 
 
 class SessionCommand(StrEnum):
@@ -762,14 +867,16 @@ class AcpMapping:
         TurnOutcome.BLOCKING_LIMIT: StopReason.REFUSAL,
         TurnOutcome.COMPACT_FAILURE_BREAKER: StopReason.REFUSAL,
         TurnOutcome.RAPID_REFILL_BREAKER: StopReason.REFUSAL,
+        TurnOutcome.INTERRUPTED: StopReason.END_TURN,
     }
     MILLIS: ClassVar[float] = 1000.0
 
-    INTERRUPTS: ClassVar[tuple[AgentTemplateFile, ...]] = (
-        AgentTemplateFile.REQUEST_INTERRUPTED,
-        AgentTemplateFile.REQUEST_INTERRUPTED_TOOL_USE,
-    )
-    """Тексты маркеров остановки хода, которые ядро пишет записью user."""
+    CALL_STATUSES: ClassVar[Mapping[CallStatus, ToolStatus]] = {
+        CallStatus.COMPLETED: ToolStatus.COMPLETED,
+        CallStatus.FAILED: ToolStatus.FAILED,
+        CallStatus.CANCELLED: ToolStatus.CANCELLED,
+    }
+    """Исход вызова записи результата → статус вызова ACP."""
 
     COMPACTION_STATUSES: ClassVar[Mapping[CompactionPhase, CompactionUpdateStatus]] = {
         CompactionPhase.STARTED: CompactionUpdateStatus.IN_PROGRESS,
@@ -788,11 +895,20 @@ class AcpMapping:
         self._troubles = ModelTroubleTexts(self._templates)
         self._commands = LocalCommandText()
 
-    def idle(self, result: ResultEvent) -> schema.IdleSessionStateUpdate:
-        """Конец хода по его итогу; причину отказа клиент уже получил
-        пометкой записи об отказе модели."""
-        return schema.IdleSessionStateUpdate(
-            stop_reason=self.STOP_REASONS[result.outcome]
+    def turn_ended(self, record: TurnEndRecord) -> Iterator[Update]:
+        """Конец хода по его записи — одинаково вживую и в воспроизведении:
+        пометка о причине, если она есть, затем `idle` со `stopReason`
+        исхода. Ход, оборванный гибелью агента, кончается штатным idle: его
+        пометка уже говорит, что случилось."""
+        if record.notice:
+            detail = record.detail
+            if detail == record.notice:
+                detail = ""
+
+            yield self.notice(record.level, record.notice, detail)
+
+        yield schema.IdleSessionStateUpdate(
+            stop_reason=self.STOP_REASONS[record.outcome]
         )
 
     def notice(
@@ -818,54 +934,13 @@ class AcpMapping:
             schema.IdleSessionStateUpdate(stop_reason=StopReason.REFUSAL),
         )
 
-    def notices(self, record: ChainRecord) -> Iterator[schema.SessionNotice]:
-        """Пометки человеку, которые несёт запись: повтор запроса к модели,
-        отказ модели, состояние серверов MCP и оборванный ход."""
-        if isinstance(record, InformationalRecord):
-            yield self.notice(record.level, record.content, record.detail)
-            return
-
-        if isinstance(record, ApiErrorRecord):
-            yield from self._retry(record)
-            return
-
-        if not isinstance(record, AssistantRecord):
-            return
-
-        if not record.is_api_error_message:
-            return
-
-        yield self._refusal(record)
-
-    def _refusal(self, record: AssistantRecord) -> schema.SessionNotice:
-        """Отказ модели: слова человеку — текст записи, причина — её error,
-        если он не повторяет текст."""
-        texts: list[str] = []
-        for block in record.message.content:
-            if isinstance(block, TextBlock):
-                texts.append(block.text)
-
-        text = "\n".join(texts)
-        detail = ""
-        if record.error is not None:
-            detail = record.error
-
-        if detail == text:
-            detail = ""
-
-        return self.notice(NoticeLevel.ERROR, text, detail)
-
-    def _retry(self, record: ApiErrorRecord) -> Iterator[schema.SessionNotice]:
-        """Неудачная попытка с повтором; попытка без повтора своей пометки
-        не даёт — причину скажет запись об отказе модели."""
-        if record.retry_attempt == 0:
-            return
-
+    def retry(self, record: ApiErrorRecord) -> schema.SessionNotice:
+        """Неудачная попытка запроса к модели и пауза до повтора."""
         seconds = record.retry_in_ms / self.MILLIS
         text = self._troubles.retry(
             record.trouble, record.retry_attempt, record.max_retries, seconds
         )
-        yield self.notice(NoticeLevel.WARNING, text, record.detail)
+        return self.notice(NoticeLevel.WARNING, text, record.detail)
 
     def tool_kind(self, hints: ToolHints | None) -> ToolKindName:
         """`kind` по пометкам MCP: читающий — read, разрушающий — execute,
@@ -920,154 +995,44 @@ class AcpMapping:
             field_meta=meta,
         )
 
-    def tool_results(
-        self, record: UserRecord
-    ) -> Sequence[schema.SessionToolCallUpdate]:
-        updates: list[schema.SessionToolCallUpdate] = []
-        for block in record.message.tool_results():
-            updates.append(self._tool_result(block, record.tool_use_result))
-
-        return updates
-
-    def user_updates(self, record: UserRecord) -> Iterator[Update]:
-        """Запись `user`: итоги вызовов либо вопрос человека целым
-        сообщением `user_message` с uuid записи как `messageId` — текст, за
-        ним ссылки на вложения блоками resource_link; запись вызова локальной
-        команды — текстом вызова, каким его набрал пользователь; служебные
-        записи в ленту не идут."""
-        results = self.tool_results(record)
-        if results:
-            yield from results
-            return
-
-        text = self.prompt_text(record)
-        if text is None:
-            return
-
-        content: list[ContentBlock] = [schema.TextContentBlock(text=text)]
-        for link in record.message.links():
+    def question(
+        self, message_id: str, text: str, links: Sequence[mt.ResourceLink]
+    ) -> schema.UserMessageUpdate:
+        """Вопрос человека целым сообщением `user_message` с uuid записи как
+        `messageId`: текст, за ним ссылки на вложения блоками resource_link;
+        вызов локальной команды — текстом вызова, каким его набрал
+        пользователь."""
+        content: list[ContentBlock] = [
+            schema.TextContentBlock(text=self.prompt_text(text))
+        ]
+        for link in links:
             dumped = link.model_dump(mode="json", by_alias=True, exclude_none=True)
             content.append(schema.ResourceContentBlock.model_validate(dumped))
 
-        yield schema.UserMessageUpdate(message_id=record.uuid, content=content)
+        return schema.UserMessageUpdate(message_id=message_id, content=content)
 
-    def prompt_text(self, record: UserRecord) -> str | None:
+    def prompt_text(self, text: str) -> str:
         """Текст вопроса человека, каким его видит клиент: запись вызова
-        локальной команды — текстом вызова; None — запись не вопрос."""
-        text = record.human_text()
-        if text is None:
-            return None
-
+        локальной команды — текстом вызова."""
         call = self._commands.parsed(text)
         if call is None:
             return text
 
         return call.text()
 
-    def replayed(self, record: ChainRecord, hints: ToolHintSource) -> Iterator[Update]:
-        """Запись беседы → её уведомления: сообщения целиком (`user_message`,
-        `agent_thought`, `agent_message`), вызовы и их итоги — как в живом
-        ходе, пометки человеку — теми же `notice`, что вживую. Конец хода
-        остановкой или отказом модели — тот же idle, что вживую: маркер
-        остановки — `cancelled`, запись об отказе модели — `refusal`; прочие
-        синтетические записи агента (заглушки) не воспроизводятся,
-        оборванный ответ — воспроизводится; служебные сообщения, вложения и
-        границы сжатия в ленту не идут; записи хода сжатия и пересказ — его
-        стадиями `compaction_update`, как вживую."""
-        yield from self.notices(record)
-        if isinstance(record, CompactionRecord):
-            yield self.compaction(record)
-            return
-
-        if isinstance(record, UserRecord):
-            if record.is_compact_summary:
-                yield self.compacted(record)
-                return
-
-            yield from self.user_updates(record)
-            if self._interrupted(record):
-                yield schema.IdleSessionStateUpdate(stop_reason=StopReason.CANCELLED)
-
-            return
-
-        if isinstance(record, AssistantRecord):
-            yield from self._replayed_assistant(record, hints)
-
-    def _interrupted(self, record: UserRecord) -> bool:
-        """Запись user — маркер остановки хода пользователем или выключением."""
-        content = record.message.content
-        if not isinstance(content, str):
-            return False
-
-        for marker in self.INTERRUPTS:
-            if content == self._templates.read(marker):
-                return True
-
-        return False
-
-    def _failed(self, record: AssistantRecord) -> Iterator[Update]:
-        """Запись агента об отказе модели — конец хода отказом, как idle
-        живого хода; причину уже несёт пометка записи."""
-        if record.is_api_error_message:
-            yield schema.IdleSessionStateUpdate(stop_reason=StopReason.REFUSAL)
-
-    def _replayed_assistant(
-        self, record: AssistantRecord, hints: ToolHintSource
-    ) -> Iterator[Update]:
-        yield from self._failed(record)
-        if record.is_synthetic() and not record.is_aborted_mid_stream:
-            return
-
-        message_id = record.message.id
-        thoughts: list[ContentBlock] = []
-        texts: list[ContentBlock] = []
-        calls: list[ToolUseBlock] = []
-        for block in record.message.content:
-            if isinstance(block, ThinkingBlock):
-                thoughts.append(schema.TextContentBlock(text=block.thinking))
-                continue
-
-            if isinstance(block, TextBlock):
-                texts.append(schema.TextContentBlock(text=block.text))
-                continue
-
-            calls.append(block)
-
-        if thoughts:
-            yield schema.AgentThoughtUpdate(message_id=message_id, content=thoughts)
-
-        if texts:
-            yield schema.AgentMessageUpdate(message_id=message_id, content=texts)
-
-        for block in calls:
-            yield self.tool_call(block, hints.tool_hints(block.name))
-
-    def _tool_result(
-        self, block: ToolResultBlock, stored: Any
+    def tool_result(
+        self, block: ToolResultBlock, record: ToolResultRecord
     ) -> schema.SessionToolCallUpdate:
-        """Итог вызова: текст модели содержимым, ответ tools/call как он
-        записан в `toolUseResult` — `rawOutput`. Без записанного ответа
-        вызов оборван концом хода — `cancelled` без `rawOutput`; заглушка
-        вызова, оборванного выключением агента, — `failed` со своим текстом:
-        исход вызова неизвестен."""
-        status = ToolStatus.COMPLETED
-        if block.is_error:
-            status = ToolStatus.FAILED
-
-        if stored is None:
-            status = ToolStatus.CANCELLED
-
-        stub = self._templates.read(AgentTemplateFile.INTERRUPTED_TOOL_RESULT)
-        if block.text() == stub:
-            status = ToolStatus.FAILED
-
+        """Итог вызова: текст модели содержимым, исход вызова записи —
+        статусом, ответ tools/call как он записан в `toolUseResult` —
+        `rawOutput`."""
         text = schema.TextContentBlock(text=block.text())
 
         return schema.SessionToolCallUpdate(
             tool_call_id=block.tool_use_id,
-            status=status,
+            status=self.CALL_STATUSES[record.status],
             content=[schema.ContentToolCallContent(content=text)],
-            raw_output=stored,
+            raw_output=record.tool_use_result,
         )
 
     def tool_started(self, event: ToolStartedEvent) -> schema.SessionToolCallUpdate:
@@ -1144,7 +1109,7 @@ class AcpMapping:
             compaction_id=record.compaction_id, status=status.value, error=error
         )
 
-    def compacted(self, record: UserRecord) -> schema.SessionCompactionUpdate:
+    def compacted(self, record: CompactSummaryRecord) -> schema.SessionCompactionUpdate:
         """Пересказ — состоявшееся сжатие с ним; id сжатия — uuid пересказа."""
         content = record.message.content
         if not isinstance(content, str):
@@ -2982,7 +2947,7 @@ class SessionMcp(McpServerSet, ToolServer):
         return arguments
 
 
-class SessionRelay(EventSink):
+class SessionRelay(EventSink, ToolHintSource):
     """Реализация EventSink сессии ACP: события ядра → уведомления клиенту.
 
     Создаёт вход на каждую сессию до сборки агента и отдаёт ядру
@@ -3015,8 +2980,8 @@ class SessionRelay(EventSink):
         self._running = False
         self._inserting: dict[str, asyncio.Future[None]] = {}
         """Вопрос `session/prompt` в очереди → ожидание его записи `user`."""
-        self._streamed: str | None = None
-        """messageId ответа, который сейчас стримится и ещё не записан."""
+        self._stream = StreamedReplies()
+        self._painter = FeedPainter(mapping, self, self._stream)
 
     def attach(self, agent: Agent) -> None:
         self._agent = agent
@@ -3068,7 +3033,7 @@ class SessionRelay(EventSink):
         if isinstance(event, ResultEvent):
             await self._send_all(self._turn_summary())
             self._running = False
-            await self._send(self._mapping.idle(event))
+            await self._send_all(self._painter.updates(event.turn_end))
             return
 
         if isinstance(event, ErrorEvent):
@@ -3129,19 +3094,16 @@ class SessionRelay(EventSink):
 
     def _first_prompt(self, conversation: Sequence[ChainRecord]) -> str | None:
         for record in conversation:
-            if not isinstance(record, UserRecord):
-                continue
-
-            text = self._mapping.prompt_text(record)
+            text = record.human_text()
             if text is not None:
-                return text
+                return self._mapping.prompt_text(text)
 
         return None
 
     def _updates(self, event: AgentEvent) -> Sequence[Update] | None:
         """Уведомления хода по событию; None — событие не про ленту."""
         if isinstance(event, StreamEvent):
-            self._streamed = event.message_id
+            self._stream.streamed(event.message_id)
             return self._mapping.chunks(event)
 
         if isinstance(event, RecordEvent):
@@ -3173,67 +3135,33 @@ class SessionRelay(EventSink):
             )
 
     def _record_updates(self, record: Record) -> Sequence[Update]:
+        """Уведомления записи тем же отрисовщиком, что и воспроизведение;
+        запись вопроса решает его вставку, состоявшееся сжатие дополняется
+        заполненностью после него."""
         if not isinstance(record, ChainRecord):
             return ()
 
-        updates: list[Update] = []
-        if self._failed_attempt(record):
-            updates.extend(self._withdrawn())
-
-        updates.extend(self._mapping.notices(record))
-        if isinstance(record, AssistantRecord):
-            self._streamed = None
-            for block in record.message.tool_uses():
-                updates.append(self._mapping.tool_call(block, self._hints(block.name)))
-
-            return updates
-
-        if isinstance(record, CompactionRecord):
-            return [self._mapping.compaction(record)]
-
-        if isinstance(record, UserRecord):
-            if record.is_compact_summary:
-                return self._compacted(record)
-
-            self._inserted(record.uuid)
-            updates.extend(self._mapping.user_updates(record))
-            return updates
+        self._inserted(record.uuid)
+        updates = list(self._painter.updates(record))
+        if self._completes_compaction(updates):
+            usage = self._usage()
+            if usage is not None:
+                updates.append(usage)
 
         return updates
 
     @staticmethod
-    def _failed_attempt(record: ChainRecord) -> bool:
-        """Запись о неудачной попытке запроса к модели: повтор или отказ."""
-        if isinstance(record, ApiErrorRecord):
-            return True
+    def _completes_compaction(updates: Sequence[Update]) -> bool:
+        for update in updates:
+            if not isinstance(update, schema.SessionCompactionUpdate):
+                continue
 
-        if not isinstance(record, AssistantRecord):
-            return False
+            if update.status == CompactionUpdateStatus.COMPLETED.value:
+                return True
 
-        return bool(record.is_api_error_message)
+        return False
 
-    def _withdrawn(self) -> Iterator[Update]:
-        """Неудачная попытка запроса к модели: её недописанный ответ и
-        рассуждение заменяются пустыми — в журнале их нет, и лента клиента
-        совпадёт с воспроизведением."""
-        streamed = self._streamed
-        if streamed is None:
-            return
-
-        self._streamed = None
-        yield schema.AgentThoughtUpdate(message_id=streamed, content=[])
-        yield schema.AgentMessageUpdate(message_id=streamed, content=[])
-
-    def _compacted(self, summary: UserRecord) -> Sequence[Update]:
-        """Состоявшееся сжатие и заполненность после него."""
-        updates: list[Update] = [self._mapping.compacted(summary)]
-        usage = self._usage()
-        if usage is not None:
-            updates.append(usage)
-
-        return updates
-
-    def _hints(self, name: str) -> ToolHints | None:
+    def tool_hints(self, name: str) -> ToolHints | None:
         if self._agent is None:
             return None
 
@@ -3366,7 +3294,9 @@ class SessionRelay(EventSink):
             raise RuntimeError(msg)
 
         request = event.request
-        ask = self._mapping.permission_request(request, self._hints(request.tool_name))
+        ask = self._mapping.permission_request(
+            request, self.tool_hints(request.tool_name)
+        )
         try:
             response = await self._link.request_permission(self._session_id, ask)
             answer = self._mapping.permission_answer(response, request)
@@ -4308,14 +4238,13 @@ class AcpAgent(AcpAgentProtocol):
         RequestError — хранилище отказало (-32603).
         """
         stored = SessionId(value=session_id)
-        hints: ToolHintSource = held.hints
-        opened = OpenCompactions()
+        painter = FeedPainter(self._mapping, held.hints, StreamedReplies())
         replayed = 0
         last = 0
         try:
             async with aclosing(self._assembly.history(stored)) as records:
                 async for record in records:
-                    await self._replay_record(held, record, hints, opened)
+                    await self._replay_record(held, record, painter)
                     replayed += 1
                     last = record.seq
         except HistoryError as exc:
@@ -4329,32 +4258,21 @@ class AcpAgent(AcpAgentProtocol):
                 if not isinstance(record, ChainRecord):
                     continue
 
-                await self._replay_record(held, record, hints, opened)
+                await self._replay_record(held, record, painter)
                 replayed += 1
 
             live = held.agent.session.state is SessionState.COMPACTING
 
-        for compaction_id in opened.unfinished(live):
-            await held.relay.notify(self._mapping.interrupted(compaction_id))
+        for update in painter.unfinished(live):
+            await held.relay.notify(update)
 
         logger.info("session %s: %d record(s) replayed", session_id, replayed)
 
     async def _replay_record(
-        self,
-        held: HeldSession,
-        record: ChainRecord,
-        hints: ToolHintSource,
-        opened: OpenCompactions,
+        self, held: HeldSession, record: ChainRecord, painter: FeedPainter
     ) -> None:
-        """Уведомления записи; вопрос человека сперва закрывает сжатия, у
-        которых в истории нет конца."""
-        for compaction_id in opened.before(record):
-            await held.relay.notify(self._mapping.interrupted(compaction_id))
-
-        for update in self._mapping.replayed(record, hints):
+        for update in painter.updates(record):
             await held.relay.notify(update)
-
-        opened.after(record)
 
     async def _open_stored(
         self,

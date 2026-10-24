@@ -126,7 +126,7 @@ class HistoryColumn(StrEnum):
 class FrameKey(StrEnum):
     """Ключи каркаса в документе записи: в таблице они лежат колонками."""
 
-    TYPE = RecordCodec.TYPE
+    TYPE = LineKey.TYPE.value
     SEQ = LineKey.SEQ.value
     SESSION_ID = LineKey.SESSION_ID.value
     TIMESTAMP = LineKey.TIMESTAMP.value

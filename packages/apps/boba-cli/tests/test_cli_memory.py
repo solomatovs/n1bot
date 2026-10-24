@@ -27,19 +27,18 @@ from test_cli_acp_postgres import PostgresStand
 from boba.agent.history import SessionId
 from boba.agent.records import (
     AssistantMessage,
-    AssistantRecord,
     CompactBoundaryRecord,
     CompactMetadata,
+    CompactSummaryRecord,
     CompactTrigger,
-    MessageOrigin,
-    OriginKind,
     PreservedMessages,
+    PromptRecord,
     Record,
+    ReplyRecord,
     ReplyStopReason,
     TextBlock,
     Usage,
     UserMessage,
-    UserRecord,
 )
 from boba.db.postgres import AsyncPostgresPool
 from boba.stand.ui.fake_llm import ScenarioName
@@ -124,7 +123,7 @@ class LongHistory:
     def _generated(self) -> Iterator[Record]:
         recent: list[str] = []
         for number in range(self._pairs):
-            question = self._user(f"question {number} " + "q" * self.TEXT, human=True)
+            question = self._user(f"question {number} " + "q" * self.TEXT)
             answer = self._assistant(f"answer {number} " + "a" * self.TEXT)
             recent = [question.uuid, answer.uuid]
             yield question
@@ -156,7 +155,7 @@ class LongHistory:
         )
         self._parent = boundary.uuid
         yield boundary
-        summary = UserRecord(
+        summary = CompactSummaryRecord(
             uuid=summary_uuid,
             parent_uuid=self._parent,
             timestamp=STAMP,
@@ -164,17 +163,12 @@ class LongHistory:
             version=VERSION,
             seq=self._next(),
             message=UserMessage(content="summary of the conversation so far"),
-            is_compact_summary=True,
         )
         self._parent = summary.uuid
         yield summary
 
-    def _user(self, text: str, human: bool) -> UserRecord:
-        origin = None
-        if human:
-            origin = MessageOrigin(kind=OriginKind.HUMAN)
-
-        record = UserRecord(
+    def _user(self, text: str) -> PromptRecord:
+        record = PromptRecord(
             uuid=str(uuid.uuid4()),
             parent_uuid=self._parent,
             timestamp=STAMP,
@@ -182,14 +176,13 @@ class LongHistory:
             version=VERSION,
             seq=self._next(),
             message=UserMessage(content=text),
-            origin=origin,
         )
         self._parent = record.uuid
 
         return record
 
-    def _assistant(self, text: str) -> AssistantRecord:
-        record = AssistantRecord(
+    def _assistant(self, text: str) -> ReplyRecord:
+        record = ReplyRecord(
             uuid=str(uuid.uuid4()),
             parent_uuid=self._parent,
             timestamp=STAMP,

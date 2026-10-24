@@ -342,19 +342,6 @@ class AgentFeed(TurnRenderer):
     фабрикой AgentFeeds.
     """
 
-    _SERVICE_UPDATES: ClassVar[tuple[type[SessionUpdate], ...]] = (
-        schema.SessionPlanUpdate,
-        schema.SessionPlanRemovedUpdate,
-        schema.AvailableCommandsUpdate,
-        schema.ConfigOptionUpdate,
-        schema.SessionCompactionSummaryChunk,
-        schema.RunningSessionStateUpdate,
-        schema.RequiresActionSessionStateUpdate,
-    )
-    """Уведомления сессии, которых в ленте нет: план, команды, настройки
-    сессии, куски пересказа и состояние идущего хода; сжатие рисуется шагом
-    хода (UpdateView)."""
-
     ABANDONED: ClassVar[str] = "turn failed"
     """Причина в итоге хода, сорвавшегося без ответа агента."""
     COMMANDS_AUTHOR: ClassVar[str] = "Chat"
@@ -581,7 +568,7 @@ class AgentFeed(TurnRenderer):
             await self._activity(update)
             return
 
-        if isinstance(update, self._SERVICE_UPDATES):
+        if not self._replay.draws(update):
             return
 
         turn = self._turn
