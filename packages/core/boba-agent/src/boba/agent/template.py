@@ -45,7 +45,8 @@ class AgentTemplateFile(StrEnum):
     MODEL_PLAIN = "attachments/model_plain.txt"
     DATE = "attachments/date.txt"
     DATE_CHANGED = "attachments/date_changed.txt"
-    TOOLS_ADDED = "attachments/tools_added.txt"
+    TOOLS_SURFACED = "attachments/tools_surfaced.txt"
+    DEFERRED_ADDED = "attachments/deferred_added.txt"
     TOOLS_READDED = "attachments/tools_readded.txt"
     TOOLS_READDED_MCP = "attachments/tools_readded_mcp.txt"
     TOOLS_REMOVED = "attachments/tools_removed.txt"
@@ -78,6 +79,10 @@ class AgentTemplateFile(StrEnum):
     SKILL_LAUNCHED = "tools/skill_launched.txt"
     NO_SUCH_SKILL = "tools/no_such_skill.txt"
     DENIED_BY_SETTINGS = "tools/denied_by_settings.txt"
+    TOOL_SEARCH = "tools/tool_search.txt"
+    TOOL_LOADED = "tools/tool_loaded.txt"
+    NO_MATCHING_TOOLS = "tools/no_matching_tools.txt"
+    NOT_LOADED = "tools/not_loaded.txt"
 
 
 class AgentTemplate:

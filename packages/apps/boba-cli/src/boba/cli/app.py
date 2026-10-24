@@ -804,6 +804,7 @@ class AgentAssembly(SessionAssembly):
             denied_tools=settings.permissions.deny,
             record_requests=settings.record_requests,
             question_tool=questions,
+            always_load=settings.tools.always_load,
         )
 
 

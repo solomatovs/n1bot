@@ -199,8 +199,8 @@ class TestEditedQuestion:
     Вкладки собирают ленту заново из истории, а контейнер и ответ нового хода
     получают те же id, что у прежнего: лента обязана прислать их новыми
     шагами, а не обновлениями к тому, чего во вкладке уже нет. DOM после
-    правки — тот же полный ход: вопрос, process с рассуждением и
-    инструментом внутри, ответ.
+    правки — тот же полный ход: вопрос, process с рассуждениями, загрузкой
+    отложенного инструмента ToolSearch и самим инструментом внутри, ответ.
     """
 
     CALL: ClassVar[str] = '{"name": "mcp__chat__connection_list", "arguments": {}}'
@@ -222,9 +222,12 @@ class TestEditedQuestion:
         chat.ask(f"{ScenarioName.CALL.value} {self.CALL}")
         chat.await_idle()
         before = self._outline(chat)
+        # отложенный connection_list модель сначала загружает ToolSearch
         expected = [
             StepKind.USER.value,
             StepKind.RUN.value,
+            StepKind.LLM.value,
+            StepKind.TOOL.value,
             StepKind.LLM.value,
             StepKind.TOOL.value,
             StepKind.ASSISTANT.value,

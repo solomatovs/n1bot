@@ -53,6 +53,7 @@ from boba.confluence.parsing import JsonNode
 from boba.confluence.rest import CflRestBuilder
 from boba.connections.base import ConnectionBase
 from boba.connections.manifest import ConnectionTypes
+from boba.core.mcp_names import McpToolNames
 from boba.db.clickhouse.connection import ClickHouseConfig
 from boba.db.postgres.connection import PostgresConfig
 from boba.doc.config import DocConfig
@@ -65,7 +66,7 @@ from boba.stand.site import Stand, StandLayers
 from boba.stand.stream_sinks import SinkSources, StreamSinks
 from boba.stand.ui.chat_page import ChatPage, StepKind
 from boba.stand.ui.database import StandDatabase, StandOracle
-from boba.stand.ui.fake_llm import FakePage, FakeRoute, ScenarioName
+from boba.stand.ui.fake_llm import FakePage, FakeRoute, OfferedTools, ScenarioName
 from boba.stand.ui.socket_log import ChatEvent, StepField
 from boba.stand.ui.stand import (
     StandApp,
@@ -2664,9 +2665,10 @@ class TestStreamTools:
 
 
 class TestCoverage:
-    """Прогон вызвал каждый инструмент, который стенд отдаёт модели.
-    Собственный инструмент агента — вопрос пользователю — вызывают тесты
-    test_question_ui.py."""
+    """Прогон вызвал каждый инструмент, который стенд отдаёт модели полным
+    определением или отложенным. Собственный инструмент агента — вопрос
+    пользователю — вызывают тесты test_question_ui.py, ToolSearch зовёт сама
+    фейковая модель перед вызовом отложенного."""
 
     AGENT_TOOLS: ClassVar[frozenset[str]] = frozenset({"AskUserQuestion"})
 
@@ -2685,9 +2687,7 @@ class TestCoverage:
         if not requests:
             raise AssertionError("fake llm recorded no requests")
 
-        offered: set[str] = set()
-        for spec in requests[-1].get("tools") or []:
-            offered.add(str(spec["function"]["name"]))
+        offered = OfferedTools(requests[-1], McpToolNames()).visible()
 
         called: set[str] = set()
         for tool in Coverage.called | Coverage.nodes:

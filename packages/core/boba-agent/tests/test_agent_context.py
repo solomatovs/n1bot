@@ -17,11 +17,11 @@ from typing import ClassVar
 import pytest
 
 from boba.agent.attachments import (
+    DeferredToolsDeltaAttachment,
     EnvironmentSnapshot,
     SkillBudget,
     SkillListingAttachment,
     SnapshotSkill,
-    ToolsDeltaAttachment,
 )
 from boba.agent.events import RecordEvent
 from boba.agent.history import SessionId
@@ -84,6 +84,15 @@ def messages(server: FakeServer, index: int) -> list[dict[str, object]]:
 
 def other_environment(working_directory: str) -> EnvironmentSnapshot:
     return ENVIRONMENT.model_copy(update={"working_directory": working_directory})
+
+
+def with_extra() -> list[str]:
+    """Все инструменты стенда и extra — с полным определением."""
+    names = ["extra"]
+    for name in StandToolName:
+        names.append(name.full)
+
+    return names
 
 
 class ExtraTools(StandTools):
@@ -228,7 +237,10 @@ class TestToolsDelta:
 
         resumed = Served(
             agents.agent(
-                agents.profile(Protocol.OPENAI), Collected(), tools=ExtraTools()
+                agents.profile(Protocol.OPENAI),
+                Collected(),
+                tools=ExtraTools(),
+                always_load=with_extra(),
             )
         )
         session = await resumed.open(SESSION, resume=True)
@@ -238,14 +250,19 @@ class TestToolsDelta:
         await resumed.agent.settled()
         await resumed.close()
 
-        deltas = attachments(session.records(), "tools_delta")
+        deltas = attachments(session.records(), "deferred_tools_delta")
         assert len(deltas) == 1
-        delta = ToolsDeltaAttachment.model_validate(deltas[0].attachment.model_dump())
-        assert list(delta.added_names) == ["extra"]
+        delta = DeferredToolsDeltaAttachment.model_validate(
+            deltas[0].attachment.model_dump()
+        )
+        assert list(delta.surfaced_names) == ["extra"]
+        assert list(delta.added_names) == []
         assert list(delta.removed_names) == []
+        assert delta.tool_search_absent
         assert deltas[0].rendered is not None
-        assert "The following tools are now available:\nextra: stand tool extra" in (
-            deltas[0].rendered[0].content
+        assert (
+            "The following tools just became available and are ready to use:\nextra"
+            in deltas[0].rendered[0].content
         )
         snapshots = attachments(session.records(), "prompt_snapshot")
         assert len(snapshots) == 2
@@ -267,7 +284,10 @@ class TestToolsDelta:
     ) -> None:
         served = Served(
             agents.agent(
-                agents.profile(Protocol.OPENAI), Collected(), tools=ExtraTools()
+                agents.profile(Protocol.OPENAI),
+                Collected(),
+                tools=ExtraTools(),
+                always_load=with_extra(),
             )
         )
         await served.open(SESSION, resume=False)
@@ -285,7 +305,7 @@ class TestToolsDelta:
         await resumed.agent.settled()
         await resumed.close()
 
-        delta = attachments(session.records(), "tools_delta")[0]
+        delta = attachments(session.records(), "deferred_tools_delta")[0]
         assert delta.rendered is not None
         text = delta.rendered[0].content
         assert "no longer available in this session. Do not call them:\nextra" in text
@@ -317,7 +337,7 @@ class TestToolsDelta:
         session = await again.open(SESSION, resume=True)
         await again.close()
 
-        assert attachments(session.records(), "tools_delta") == []
+        assert attachments(session.records(), "deferred_tools_delta") == []
         assert len(server.requests()) == requests_before
 
     async def test_resume_with_another_system_prompt_warns_and_keeps_the_old(

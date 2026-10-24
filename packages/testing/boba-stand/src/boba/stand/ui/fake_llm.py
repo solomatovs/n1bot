@@ -53,6 +53,7 @@ __all__ = [
     "FakeLlmApp",
     "FakePage",
     "FakeRoute",
+    "OfferedTools",
     "Played",
     "Reply",
     "ReplyBookClient",
@@ -416,6 +417,16 @@ class Played:
         return self.failure is failure
 
 
+class ToolSearchWord(StrEnum):
+    """Слова отложенных инструментов агента: имя инструмента поиска, выбор
+    по именам, заголовок списка отложенных во вложении и вид строки-имени."""
+
+    TOOL = "ToolSearch"
+    SELECT = "select:"
+    HEAD = "The following deferred tools are now available via ToolSearch."
+    NAME = r"[A-Za-z0-9_.-]+"
+
+
 class OfferedTools:
     """Инструменты, которые запрос предлагает модели: по ним стенд называет
     вызовы сценария так, как их видит агент.
@@ -439,19 +450,45 @@ class OfferedTools:
             if signable:
                 self._signable.add(name)
 
+        self._tool_name = re.compile(ToolSearchWord.NAME.value)
+        self._deferred = list(self._announced(payload))
+
     def named(self, tool: str) -> str:
         if tool in self._offered:
             return tool
 
-        found: list[str] = []
-        for offered in self._offered:
-            if self._names.tool_of(offered) == tool:
-                found.append(offered)
+        found = self._by_tool(tool, self._offered)
+        if len(found) == 1:
+            return found[0]
 
-        if len(found) != 1:
+        if found:
             return tool
 
-        return found[0]
+        deferred = self._by_tool(tool, self._deferred)
+        if len(deferred) != 1:
+            return tool
+
+        return deferred[0]
+
+    def deferred(self) -> Sequence[str]:
+        """Отложенные инструменты, объявленные агентом в сообщениях запроса."""
+        return self._deferred
+
+    def visible(self) -> frozenset[str]:
+        """Инструменты, которые знает модель: предложенные полным
+        определением и объявленные отложенными, кроме самого ToolSearch."""
+        names = set(self._offered) | set(self._deferred)
+        names.discard(ToolSearchWord.TOOL.value)
+
+        return frozenset(names)
+
+    def _by_tool(self, tool: str, names: Sequence[str]) -> list[str]:
+        found: list[str] = []
+        for name in names:
+            if self._names.tool_of(name) == tool:
+                found.append(name)
+
+        return found
 
     def script(self, script: TurnScript) -> TurnScript:
         """Тот же ответ с вызовами под предложенными именами и подписью
@@ -478,7 +515,78 @@ class OfferedTools:
         return Scenario(turns=turns)
 
     def played(self, played: Played) -> Played:
-        return replace(played, script=self.script(played.script))
+        """Ответ под предложенными именами; вызов отложенного инструмента,
+        которого нет в запросе, стенд сначала загружает ToolSearch — как
+        модель, которой инструмент объявили одним именем."""
+        script = self.script(played.script)
+        unloaded = list(self._unloaded(script))
+        if not unloaded:
+            return replace(played, script=script)
+
+        query = f"{ToolSearchWord.SELECT.value}{','.join(unloaded)}"
+        digest = hashlib.sha256(query.encode("utf-8")).hexdigest()[:8]
+        search = ToolCallSpec(
+            call_id=f"call_toolsearch_{digest}",
+            name=ToolSearchWord.TOOL.value,
+            arguments=json.dumps({"query": query, "max_results": len(unloaded)}),
+            dictated=True,
+            unsigned=True,
+        )
+        loading = TurnScript(
+            reasoning=f"I will load {', '.join(unloaded)} first", tool_calls=[search]
+        )
+
+        return replace(played, script=loading, finish=FinishReason.TOOL_CALLS)
+
+    def _unloaded(self, script: TurnScript) -> Iterator[str]:
+        """Объявленные отложенными инструменты вызовов, которых нет среди
+        предложенных; без ToolSearch в запросе и в ответе, который сам зовёт
+        ToolSearch, — ничего."""
+        if ToolSearchWord.TOOL.value not in self._offered:
+            return
+
+        for call in script.tool_calls:
+            if call.name == ToolSearchWord.TOOL.value:
+                return
+
+        for call in script.tool_calls:
+            if call.literal:
+                continue
+
+            if call.name in self._offered:
+                continue
+
+            if call.name in self._deferred:
+                yield call.name
+
+    def _announced(self, payload: Mapping[str, Any]) -> Iterator[str]:
+        """Отложенные инструменты, объявленные агентом: строки имён под
+        заголовком списка отложенных до пустой строки."""
+        for message in payload.get("messages") or []:
+            content = message.get("content")
+            if not isinstance(content, str):
+                continue
+
+            yield from self._listed_deferred(content)
+
+    def _listed_deferred(self, content: str) -> Iterator[str]:
+        """Строки-имена под заголовком списка отложенных; список кончается
+        первой строкой, которая не имя инструмента."""
+        listing = False
+        for line in content.splitlines():
+            name = line.strip()
+            if name.startswith(ToolSearchWord.HEAD.value):
+                listing = True
+                continue
+
+            if not listing:
+                continue
+
+            if self._tool_name.fullmatch(name) is None:
+                listing = False
+                continue
+
+            yield name
 
     @staticmethod
     def _listed(payload: Mapping[str, Any]) -> Iterator[tuple[str, bool]]:

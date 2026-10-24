@@ -507,7 +507,7 @@ class TestOwnServerInTheFeed:
                 step.get(StepField.INPUT.value)
             )
 
-        if replayed != {str(live.get(StepField.ID.value)): shown}:
+        if replayed.get(str(live.get(StepField.ID.value))) != shown:
             raise AssertionError(
                 f"the reopened page shows the arguments as the live feed: "
                 f"{replayed!r} != {shown!r}\n{chat.log.describe()}"

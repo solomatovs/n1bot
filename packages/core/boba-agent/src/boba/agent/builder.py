@@ -6,7 +6,12 @@
 соседних сообщений пользователя, два режима подачи системных вложений,
 починка пар вызов — результат, чистка и защита от подделки служебного
 блока (TagShield у текстов пользователя и результатов).
-Инструменты — из снимка, по имени.
+Инструменты — из снимка, по имени, затем загруженные отложенные из истории
+в порядке загрузки с пометкой deferred (docs/prompt_assembly/specs/
+07_system_tools.md, раздел 2.3): провайдер без родных отложенных
+инструментов дописывает их в конец списка, начало списка не меняется.
+Ссылки tool_reference результата уходят строками текста и списком
+tool_references сообщения роли tool.
 """
 
 from __future__ import annotations
@@ -17,7 +22,7 @@ from typing import ClassVar
 
 import mcp_types as mt
 
-from boba.agent.attachments import AttachmentKind, PromptSnapshot
+from boba.agent.attachments import Announced, AttachmentKind, PromptSnapshot
 from boba.agent.profile import ModelProfile, ReasoningReturn
 from boba.agent.records import (
     AssistantRecord,
@@ -166,7 +171,7 @@ class RequestBuilder:
 
         return ChatRequest(
             messages=messages,
-            tools=list(self._tools(snapshot)),
+            tools=list(self._tools(conversation, snapshot)),
             sampling=dict(self._profile.chat.sampling),
             stream=True,
         )
@@ -457,6 +462,7 @@ class RequestBuilder:
                     role=ChatRole.TOOL,
                     content=self._result_text(result),
                     tool_call_id=result.tool_use_id,
+                    tool_references=result.references(),
                 )
             )
 
@@ -474,16 +480,37 @@ class RequestBuilder:
             yield ChatTurn(role=ChatRole.USER, content=self.TEXT_JOIN.join(texts))
 
     def _result_text(self, result: ToolResultBlock) -> str:
+        lines: list[str] = []
+        for name in result.references():
+            lines.append(self._loaded_line(name))
+
         text = self._shield.shield(result.text())
+        if text:
+            lines.append(text)
+
+        joined = self.TEXT_JOIN.join(lines)
         if result.is_error:
-            return AgentTag.TOOL_USE_ERROR.wrap(text)
+            return AgentTag.TOOL_USE_ERROR.wrap(joined)
 
-        return text
+        return joined
 
-    def _tools(self, snapshot: PromptSnapshot) -> Iterator[ToolSpec]:
+    def _loaded_line(self, name: str) -> str:
+        return self._templates.read(AgentTemplateFile.TOOL_LOADED).format(name=name)
+
+    def _tools(
+        self, conversation: Sequence[ChainRecord], snapshot: PromptSnapshot
+    ) -> Iterator[ToolSpec]:
         for tool in sorted(snapshot.tools, key=lambda item: item.name):
             yield ToolSpec(
                 name=tool.name,
                 description=tool.description,
                 parameters=dict(tool.schema_),
+            )
+
+        for tool in Announced(conversation).deferred_loaded():
+            yield ToolSpec(
+                name=tool.name,
+                description=tool.description,
+                parameters=dict(tool.schema_),
+                deferred=True,
             )
