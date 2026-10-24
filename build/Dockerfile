@@ -587,9 +587,9 @@ RUN npm ci --no-audit --no-fund && npm run check && npm run build
 
 
 # образ чата: общий конфиг, ассеты chainlit, vendor-шрифты и стили формул вместо CDN,
-# страница песочницы MCP Apps со шрифтом чата рядом (его берут приложения),
-# агент каталогом из стадии boba-bin (его путь — BOBA_AGENT_COMMAND в boba.env).
-# Вложения сессий приложение держит в данных ([aid].files_dir), app_root не пишется
+# страница песочницы MCP Apps со шрифтом чата рядом (его берут приложения).
+# Агента в образе нет: чат ходит в службу агента (образ agent). Вложения сессий
+# приложение держит в данных ([aid].files_dir), app_root не пишется
 FROM runtime-os AS runtime-aid
 
 ARG BOBA_DIR=/app/boba
@@ -611,7 +611,6 @@ RUN chown ${BOBA_UID}:${BOBA_GID} ${BOBA_DIR}/app_root \
        ${BOBA_DIR}/app_root/.chainlit ${BOBA_DIR}/app_root/public
 
 COPY packages/apps/boba-aid/conf/  ${BOBA_DIR}/conf/
-COPY --from=boba-bin /out/         ${BOBA_DIR}/bin/
 
 COPY --from=app-site /opt/app-site          ${BOBA_DIR}/app/
 COPY --from=app-site /opt/app-packages.txt  ${BOBA_DIR}/app/packages.txt

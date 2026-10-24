@@ -63,9 +63,9 @@ class App(StrEnum):
 
     @property
     def runs_agent(self) -> bool:
-        """В образе приложения есть агент boba: чат запускает его на тред,
-        служба агента и есть он сам (`boba serve`)."""
-        return self is not App.MCP
+        """В образе приложения есть агент boba: служба агента и есть он сам
+        (`boba serve`); чат ходит в неё по сети, своего агента у него нет."""
+        return self is App.AGENT
 
 
 class SandboxOnly(StrEnum):
@@ -103,7 +103,7 @@ class BareEnv(StrEnum):
 @dataclass(frozen=True)
 class Options:
     """Разобранный вызов проверки: приложение, корень релиза в образе, список пакетов
-    boba из образа, файлы моделей OCR и команда агента (только у чата)."""
+    boba из образа, файлы моделей OCR и команда агента (только у службы агента)."""
 
     app: App
     base: Path
@@ -114,10 +114,10 @@ class Options:
 
 
 class OptionsParser:
-    """Разбор аргументов и окружения проверки в Options: список пакетов читается здесь
-    же, команду агента чата называет BOBA_AGENT_COMMAND из conf/boba.env."""
+    """Разбор аргументов проверки в Options: список пакетов читается здесь же, агент
+    службы — исполняемый AGENT_BIN под корнем релиза, его же запускает образ."""
 
-    AGENT_VAR: ClassVar[str] = "BOBA_AGENT_COMMAND"
+    AGENT_BIN: ClassVar[str] = "bin/boba.dist/boba.bin"
 
     def __init__(self) -> None:
         self._parser = argparse.ArgumentParser(prog="bobacheck")
@@ -139,11 +139,7 @@ class OptionsParser:
 
         agent = ""
         if app.runs_agent:
-            agent = os.environ.get(self.AGENT_VAR, "")
-        if app.runs_agent and not agent:
-            self._parser.error(
-                f"у {app.value} нет {self.AGENT_VAR} в окружении: проверь conf/boba.env"
-            )
+            agent = str(args.base / self.AGENT_BIN)
 
         return Options(
             app=app,

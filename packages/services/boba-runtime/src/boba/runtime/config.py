@@ -179,7 +179,12 @@ class EnvOverride(StrEnum):
     MCP_SCHEME = "mcp_scheme"
     MCP_PREFIX = "mcp_prefix"
     PUBLIC_URL = "public_url"
+    AGENT_MODE = "agent_mode"
     AGENT_COMMAND = "agent_command"
+    AGENT_HOST = "agent_host"
+    AGENT_PORT = "agent_port"
+    AGENT_SCHEME = "agent_scheme"
+    AGENT_PREFIX = "agent_prefix"
 
     @property
     def var(self) -> str:
