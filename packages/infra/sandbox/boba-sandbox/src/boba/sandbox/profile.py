@@ -379,6 +379,15 @@ class SandboxLayout:
         """Путь образа пользователя внутри песочницы: каталог образов фиксирован."""
         return SandboxMount.SETUP_IMAGES.under(os.path.basename(image_host))
 
+    DATA_IMAGE_PREFIX: ClassVar[str] = "/tmp/boba-image-"  # noqa: S108  # nosec B108
+    """Точка образа данных во внешнем слое цепочки: рядом с корнем, на той же
+    tmpfs /tmp, и только там — во вложенный слой её приносит бинд."""
+
+    @classmethod
+    def data_image_mount(cls, index: int) -> str:
+        """Точка index-го образа данных профиля во внешнем слое цепочки."""
+        return f"{cls.DATA_IMAGE_PREFIX}{index}"
+
 
 class MountsSpec(BaseModel):
     """Что песочница монтирует и что из этого доезжает до тела инструмента.
@@ -405,8 +414,10 @@ class MountsSpec(BaseModel):
     tmp: int = Field(
         gt=0,
         description=(
-            "Размер /tmp, например `512M`: он приватен вызову и служит "
-            "единственным местом записи для тела без workspace."
+            "Размер /tmp зиготы (tmpfs), например `512M`. У вызова свой "
+            "приватный /tmp на ramfs: tmpfs, смонтированная в userns, печатала "
+            "бы телу uid хоста, поэтому его объём ограничивают память группы "
+            "вызова (group_memory_bytes) и process_file_bytes на файл."
         ),
     )
     workspace: WorkspaceSpec | None = Field(
@@ -416,8 +427,18 @@ class MountsSpec(BaseModel):
             "монтирования. Отсутствие — у секции нет своего workspace."
         ),
     )
+    images: tuple[BindSpec, ...] = Field(
+        default=(),
+        description=(
+            "Ext4-образы данных read-only, формат `образ:точка`, например "
+            "`/app/boba/models/fastembed.ext4:/var/cache/fastembed`. "
+            "Монтируются fuse2fs один раз на жизнь зиготы, как корень: в "
+            "mountinfo тела источник нейтрален, пути хоста нет. Точка обязана "
+            "существовать в образе корня. Отсутствие — образов данных нет."
+        ),
+    )
 
-    @field_validator("ro", "rw", mode="before")
+    @field_validator("ro", "rw", "images", mode="before")
     @classmethod
     def _parse_binds(cls, value: object) -> object:
         if not isinstance(value, (list, tuple)):
@@ -437,6 +458,23 @@ class MountsSpec(BaseModel):
     def _parse_size(cls, value: object) -> object:
         if isinstance(value, str):
             return TmpfsSpec.parse_size(value)
+
+        return value
+
+    @field_validator("images", mode="after")
+    @classmethod
+    def _images_are_static(cls, value: tuple[BindSpec, ...]) -> tuple[BindSpec, ...]:
+        """Образ данных общий на зиготу: переменные вызова в нём некуда подставить."""
+        for spec in value:
+            if "{" not in spec.host and "{" not in spec.target:
+                continue
+
+            msg = (
+                f"sandbox: data image {spec.host}:{spec.target} has a per-call "
+                "variable, but data images are mounted once per zygote; name a "
+                "fixed image path"
+            )
+            raise ValueError(msg)
 
         return value
 
@@ -474,10 +512,28 @@ class LimitsSpec(BaseModel):
 
     process_* ставит себе исполнитель через setrlimit, поэтому они действуют
     на каждый процесс вызова отдельно. group_* приложение выставляет
-    cgroup-leaf'у и считает всю группу разом.
+    cgroup-leaf'у и считает всю группу разом. group_memory_bytes обязателен:
+    /tmp вызова лежит на ramfs, и его объём ограничивает только память группы.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _memory_is_bounded(cls, value: object) -> object:
+        """Без памяти группы /tmp вызова ограничен лишь памятью машины."""
+        if not isinstance(value, Mapping):
+            return value
+
+        if value.get("group_memory_bytes") is not None:
+            return value
+
+        msg = (
+            "sandbox: limits.group_memory_bytes is required, got none: the call's "
+            "/tmp lives on ramfs and only the memory of the call group bounds it; "
+            "set it in [sandbox.limits] of the plugin or in the profile"
+        )
+        raise ValueError(msg)
 
     timeout_sec: int | None = Field(
         default=None,
@@ -514,13 +570,13 @@ class LimitsSpec(BaseModel):
             "OOM killer убьёт их, а не сервер. 0 — не менять."
         ),
     )
-    group_memory_bytes: int | None = Field(
-        default=None,
+    group_memory_bytes: int = Field(
         gt=0,
         description=(
             "Лимит памяти всей группы вызова (cgroup memory.max), байт: в "
-            "отличие от process_memory_bytes не множится на число процессов. "
-            "Отсутствие — не контролируется."
+            "отличие от process_memory_bytes не множится на число процессов и "
+            "ограничивает приватный /tmp вызова на ramfs. Обязателен: нужен "
+            "делегированный host.cgroup_base."
         ),
     )
     group_swap_bytes: int | None = Field(
@@ -692,7 +748,11 @@ class SandboxProfile(BaseModel):
     @model_validator(mode="after")
     def _validate_groups(self) -> Self:
         if self.limits.group_requested() and not self.host.cgroup_base:
-            msg = "sandbox: group limits are set, but host.cgroup_base is empty"
+            msg = (
+                "sandbox: group limits are set, but host.cgroup_base is empty: "
+                "group_memory_bytes needs a delegated cgroup v2 directory for "
+                "the leaf of each call"
+            )
             raise ValueError(msg)
 
         return self

@@ -14,7 +14,7 @@ from uuid import uuid4
 import pytest
 
 from boba.sandbox.cgroup import CgroupError, CgroupManager, GroupLimits
-from boba.sandbox.profile import SandboxProfile
+from boba.sandbox.profile import LimitsSpec, SandboxProfile
 from boba.stand.zygote import ROOTFS_IMAGE, ProfileFields, SandboxCgroup
 from boba.workspace.launcher import ResourceLimits
 
@@ -121,6 +121,7 @@ class TestProfileValidation:
                 "process_cpu_sec": 1,
                 "process_file_bytes": 1,
                 "process_open_files": 1,
+                "group_memory_bytes": 1 << 30,
                 "process_oom_score_adj": 0,
             },
             "run": {
@@ -133,20 +134,27 @@ class TestProfileValidation:
         with pytest.raises(ValueError, match="cgroup_base is empty"):
             self._profile(group_cpu_percent=100)
 
-    def test_any_single_group_field_requires_base(self) -> None:
+    def test_profile_without_cgroup_base_is_refused(self) -> None:
+        """Память группы обязательна, значит обязателен и делегированный cgroup."""
         with pytest.raises(ValueError, match="cgroup_base is empty"):
-            self._profile(group_oom_kill_all=True)
+            self._profile()
+
+    def test_group_memory_is_required(self) -> None:
+        """Временный каталог вызова на ramfs: без памяти группы он не ограничен."""
+        limits = {
+            "timeout_sec": 5,
+            "process_memory_bytes": 1,
+            "process_cpu_sec": 1,
+            "process_file_bytes": 1,
+            "process_open_files": 1,
+            "process_oom_score_adj": 0,
+        }
+        with pytest.raises(ValueError, match="group_memory_bytes is required"):
+            LimitsSpec.model_validate(limits)
 
     def test_cgroup_base_must_be_absolute(self) -> None:
         with pytest.raises(ValueError, match="must be absolute"):
             self._profile(cgroup_base="relative/path", group_cpu_weight=10)
-
-    def test_absent_group_limits_allow_empty_base(self) -> None:
-        profile = self._profile()
-        if profile.limits.group_memory_bytes is not None:
-            raise AssertionError("profile.limits.group_memory_bytes is None")
-        if profile.limits.group_oom_kill_all is not None:
-            raise AssertionError("profile.limits.group_oom_kill_all is None")
 
     def test_zero_is_not_a_switch_anymore(self) -> None:
         """«Выключено» выражается отсутствием параметра, а не нулём."""
@@ -288,10 +296,6 @@ class TestOomScoreAdj:
 
 class TestProbe:
     """Probe называет профиль и параметр, чтобы конфиг можно было поправить."""
-
-    def test_skips_profiles_without_group_limits(self) -> None:
-        profile = TestProfileValidation._profile()
-        CgroupManager.probe_profiles({"default": profile})
 
     def test_names_profile_on_failure(self) -> None:
         profile = TestProfileValidation._profile(
