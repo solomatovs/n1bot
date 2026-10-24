@@ -38,7 +38,6 @@ dependencies = [
     "httpx2>=2.10,<3",
     "mcp>=2.3,<3",
     "anyio>=4,<5",
-    "psycopg>=3.3,<4",
     "python-multipart>=0.0.18,<1",
     "omegaconf>=2.3,<3",
     "plotly>=5.24,<6",
@@ -65,6 +64,7 @@ dev = [
     "gssapi>=1.9,<2",
     "krb5>=0.7,<1",
     "pillow>=10",
+    "psycopg>=3.3,<4",
     "playwright>=1.47,<2",
     "pytest>=9.1,<10",
     "pyjwt>=2.8,<3",
@@ -80,8 +80,6 @@ boba-aid = "boba.aid.infra.entry:cli"
 boba-db-clickhouse = "entry points boba.addresses: адреса clickhouse в соединениях пользователей"
 boba-db-oracle = "entry points boba.connections и boba.addresses: тип соединения oracle"
 
-[tool.setuptools.package-data]
-"boba.aid.agent" = ["schema/*.sql"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
