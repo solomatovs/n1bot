@@ -1742,16 +1742,25 @@ site.toml. Его удобно получить из site.toml дерева comp
 
 | Цель VS Code | Что запускает | Адрес по умолчанию |
 |---|---|---|
-| `Aid: agent` | чат | `http://127.0.0.1:8601/boba-debug/` |
-| `MCP: tools service` | сервис инструментов | `http://localhost:8651/health` |
-| `tool` | один инструмент без сервиса (`boba.runtime.toolcli`) по конфигу boba-mcp | — |
+| `Aid: chat` | чат; при старте спрашивает режим агента (`BOBA_AGENT_MODE`) | `http://127.0.0.1:8601/boba-debug/` |
+| `MCP: tools service` | сервис инструментов; спрашивает исполнение тел (`BOBA_TOOL_LAUNCHER`) | `http://localhost:8651/health` |
+| `Boba: agent service` | служба агента `boba serve` | `http://localhost:8661/health` |
+| `tool` | одно тело инструмента без сервиса (`boba.runtime.toolcli`) по конфигу boba-mcp | — |
+| `Aid: aid + mcp + boba` | три приложения разом | — |
 | `pytest: ...` | тесты | — |
 
 Порты и префиксы — из site.toml отладки. В `launch.json` у каждой цели только
 то, чего в конфигурации быть не может: рабочий каталог `debug/<приложение>`,
-два аргумента с файлами конфигурации и `PATH` с `LD_LIBRARY_PATH` на
+два аргумента с файлами конфигурации, `PATH` с `LD_LIBRARY_PATH` на
 `runtime/third` — там лежат `bwrap`, `fuse2fs` и библиотеки, с которыми собраны
-колёса.
+колёса, — и переменная `BOBA_*` режима, который цель спрашивает при запуске.
+
+Цель `tool` спрашивает строку вызова — модуль инструментов, имя и флаги
+(`boba.tool.pg.tools pg_query --sql "select 1" --offset 0 --limit 10`) — и имя
+файла конфигурации вызова в `.vscode/injected/<имя>.json`. В файле лежат
+внедрённые параметры тела по именам: секция инструмента (`cfg`) и соединение
+пользователя (`connection`), если тело его принимает. Соединение с паролем, а не
+с keytab: учётные данные keytab за пределы приложения не выдаются.
 
 То же в терминале:
 
@@ -1775,13 +1784,23 @@ VS Code запускает отладку от того пользователя
 
 ### Агент чата под отладчиком
 
-Цель `Aid: agent` запускает чат с `subProcess: true`: debugpy подключается к
+Цель `Aid: chat` запускает чат с `subProcess: true`: debugpy подключается к
 дочернему процессу, если его программа — интерпретатор python. Поэтому
 `agent_command` в site.toml отладки — `.venv/bin/python -m boba.cli.app`, а не
 консольный скрипт `boba`: точки останова в boba-cli и boba-agent срабатывают в
 процессе агента вкладки. Чат ждёт рукопожатия `start_timeout_sec` (30 с) и
 ответа на метод сессии `request_timeout_sec`; остановка на точке дольше этих
 сроков обрывает процесс, и следующий вопрос вкладки поднимает новый.
+
+В режиме `service` чат не порождает агента, а ходит в службу цели
+`Boba: agent service` — как на выкатке ходит в контейнер boba. Адрес службы
+стоит в `[env]` site.toml отладочного чата (`agent_scheme = "http"`,
+`agent_host = "localhost"`, `agent_port = 8661`, `agent_prefix = ""`), секреты
+`agent_proxy_secret` и `agent_client.secret` совпадают с site.toml
+`debug/boba`. Сама служба читает `debug/boba/conf/site.toml`: копию site.toml
+дерева compose boba с `port = 8661`, `url_prefix = ""`,
+`public_url = "http://localhost:8661"`, `krb` на `compose/boba/conf/krb` и базой
+отладки.
 
 ### Режимы process и sandbox
 
