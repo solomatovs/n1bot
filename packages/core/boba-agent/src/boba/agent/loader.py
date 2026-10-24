@@ -31,10 +31,10 @@ from boba.agent.history import BrokenLine, HistoryStore, SessionId, StoredLine
 from boba.agent.ids import Clock, IdMint
 from boba.agent.records import (
     AssistantMessage,
-    AttachmentRecord,
     CallStatus,
     ChainRecord,
     EnvironmentAttachment,
+    HistoryFold,
     NoResponseRecord,
     NoticeLevel,
     Record,
@@ -343,6 +343,32 @@ class SessionDigest:
         return self.cwd is not None and self.first_prompt is not None
 
 
+class DigestFold(HistoryFold):
+    """Свёртка сводки сессии по её записям: первый рабочий каталог из
+    снимка окружения и первый вопрос человека. Строит SessionDigests на
+    каждую сессию."""
+
+    def __init__(self) -> None:
+        self.cwd: str | None = None
+        self.first_prompt: str | None = None
+
+    def take(self, record: ChainRecord) -> None:
+        record.announce(self)
+        if self.first_prompt is not None:
+            return
+
+        self.first_prompt = record.human_text()
+
+    def environment(self, environment: EnvironmentAttachment) -> None:
+        if self.cwd is not None:
+            return
+
+        self.cwd = environment.snapshot.working_directory
+
+    def digest(self) -> SessionDigest:
+        return SessionDigest(cwd=self.cwd, first_prompt=self.first_prompt)
+
+
 class SessionDigests:
     """Сводки сессий из порта истории для списка сессий.
 
@@ -359,7 +385,7 @@ class SessionDigests:
         """Ошибки:
         HistoryError — порт истории отказал при чтении.
         """
-        digest = SessionDigest(cwd=None, first_prompt=None)
+        fold = DigestFold()
         async with aclosing(self._store.read(session)) as lines:
             async for line in lines:
                 if not isinstance(line, StoredLine):
@@ -370,28 +396,11 @@ class SessionDigests:
                 except RecordError:
                     continue
 
-                digest = self._absorb(digest, record)
-                if digest.complete():
+                if not isinstance(record, ChainRecord):
+                    continue
+
+                fold.take(record)
+                if fold.digest().complete():
                     break
 
-        return digest
-
-    def _absorb(self, digest: SessionDigest, record: Record) -> SessionDigest:
-        if isinstance(record, ChainRecord) and digest.first_prompt is None:
-            text = record.human_text()
-            if text is not None:
-                return SessionDigest(cwd=digest.cwd, first_prompt=text)
-
-        if isinstance(record, AttachmentRecord) and digest.cwd is None:
-            cwd = self._working_directory(record)
-            if cwd is not None:
-                return SessionDigest(cwd=cwd, first_prompt=digest.first_prompt)
-
-        return digest
-
-    def _working_directory(self, record: AttachmentRecord) -> str | None:
-        attachment = record.attachment
-        if not isinstance(attachment, EnvironmentAttachment):
-            return None
-
-        return attachment.snapshot.working_directory
+        return fold.digest()

@@ -29,7 +29,7 @@ from collections import Counter
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import ClassVar, TypeVar
+from typing import ClassVar
 
 from pydantic import TypeAdapter
 
@@ -41,7 +41,6 @@ from boba.agent.records import (
     AttachmentRecord,
     AttachmentRole,
     ChainRecord,
-    CompactBoundaryRecord,
     DateAttachment,
     DeferredToolsDeltaAttachment,
     DeferredToolsRecordAttachment,
@@ -49,6 +48,7 @@ from boba.agent.records import (
     EnvironmentChange,
     EnvironmentField,
     EnvironmentSnapshot,
+    HistoryFold,
     InvokedSkill,
     InvokedSkillsAttachment,
     MaxTurnsAttachment,
@@ -56,14 +56,13 @@ from boba.agent.records import (
     ModelAttachment,
     ModelIdentity,
     OriginKind,
-    PayloadModel,
     PromptSnapshot,
     QueuedCommandAttachment,
     RenderedMessage,
     SkillListingAttachment,
     SnapshotSkill,
     SnapshotTool,
-    ToolResultRecord,
+    ToolResultBlock,
 )
 from boba.agent.tags import AgentTag
 from boba.agent.template import AgentTemplate, AgentTemplateFile
@@ -76,8 +75,6 @@ __all__ = [
     "SkillBudget",
     "ToolPoolChange",
 ]
-
-P = TypeVar("P", bound=PayloadModel)
 
 
 @dataclass(frozen=True)
@@ -134,45 +131,96 @@ class Wording:
     load: ToolWording
 
 
-class Announced:
-    """Что модели уже объявлено: последние снимок, модель и дата разговора."""
+class Announced(HistoryFold):
+    """Что модели уже объявлено: свёртка разговора — последние снимок
+    промпта, модель, дата и окружение, набор отложенных инструментов,
+    определения загруженных, инструкции серверов MCP, перечисленные скиллы.
+    Каждая запись разговора сама сообщает свёртке, что она объявила
+    (ChainRecord.announce); свёртка только копит. Создают по разговору
+    сессии цикл хода, сборщик запроса, сжатие и агент."""
 
     def __init__(self, conversation: Sequence[ChainRecord]) -> None:
-        self._conversation = conversation
+        self._snapshot: PromptSnapshot | None = None
+        self._model: ModelAttachment | None = None
+        self._date: DateAttachment | None = None
+        self._environment: EnvironmentAttachment | None = None
+        self._deltas: list[DeferredToolsDeltaAttachment] = []
+        self._definitions: dict[str, SnapshotTool] = {}
+        self._discovered: dict[str, None] = {}
+        self._instructions: dict[str, str] = {}
+        self._skills: set[str] = set()
+        for record in conversation:
+            record.announce(self)
+
+    def prompt_snapshot(self, snapshot: PromptSnapshot) -> None:
+        self._snapshot = snapshot
+
+    def model(self, model: ModelAttachment) -> None:
+        self._model = model
+
+    def date(self, date: DateAttachment) -> None:
+        self._date = date
+
+    def environment(self, environment: EnvironmentAttachment) -> None:
+        self._environment = environment
+
+    def tool_delta(self, delta: DeferredToolsDeltaAttachment) -> None:
+        self._deltas.append(delta)
+
+    def tool_definitions(self, definitions: DeferredToolsRecordAttachment) -> None:
+        """Позднее определение заменяет раннее."""
+        for tool in definitions.entries:
+            self._definitions[tool.name] = tool
+
+    def instructions(self, delta: McpInstructionsAttachment) -> None:
+        texts = zip(delta.added_names, delta.added_server_instructions, strict=True)
+        for name, text in texts:
+            self._instructions[name] = text
+
+        for name in delta.removed_names:
+            self._instructions.pop(name, None)
+
+    def skill_listing(self, listing: SkillListingAttachment) -> None:
+        self._skills.update(listing.names)
+
+    def discovered_tools(self, names: Sequence[str]) -> None:
+        for name in names:
+            self._discovered[name] = None
+
+    def tool_result(self, result: ToolResultBlock) -> None:
+        """Ссылки tool_reference результата — загруженные отложенные."""
+        for name in result.references():
+            self._discovered[name] = None
 
     def snapshot(self) -> PromptSnapshot | None:
-        return self._last(PromptSnapshot)
+        return self._snapshot
 
     def model_id(self) -> str | None:
-        model = self._last(ModelAttachment)
-        if model is None:
+        if self._model is None:
             return None
 
-        return model.identity.model_id
+        return self._model.identity.model_id
 
-    def date(self) -> str | None:
-        date = self._last(DateAttachment)
-        if date is None:
+    def date_text(self) -> str | None:
+        if self._date is None:
             return None
 
-        return date.date
+        return self._date.date
 
-    def environment(self) -> EnvironmentSnapshot | None:
-        environment = self._last(EnvironmentAttachment)
-        if environment is None:
+    def environment_snapshot(self) -> EnvironmentSnapshot | None:
+        if self._environment is None:
             return None
 
-        return environment.snapshot
+        return self._environment.snapshot
 
     def inline_names(self) -> frozenset[str] | None:
         """Инструменты, которые уходят полным определением: последний
         снимок; None — снимка в разговоре нет."""
-        snapshot = self.snapshot()
-        if snapshot is None:
+        if self._snapshot is None:
             return None
 
         names: set[str] = set()
-        for tool in snapshot.tools:
+        for tool in self._snapshot.tools:
             names.add(tool.name)
 
         return frozenset(names)
@@ -181,7 +229,7 @@ class Announced:
         """Отложенные инструменты, объявленные модели: свёртка вложений
         deferred_tools_delta разговора."""
         pool: set[str] = set()
-        for delta in self._all(DeferredToolsDeltaAttachment):
+        for delta in self._deltas:
             pool.update(delta.added_names)
             pool.difference_update(delta.removed_names)
 
@@ -200,7 +248,7 @@ class Announced:
         """Имена, которые разговор объявлял и потом снял разницей, а заново
         с тех пор не объявлял."""
         withdrawn: set[str] = set()
-        for delta in self._all(DeferredToolsDeltaAttachment):
+        for delta in self._deltas:
             withdrawn.difference_update(delta.added_names)
             withdrawn.difference_update(delta.surfaced_names)
             withdrawn.update(delta.removed_names)
@@ -210,29 +258,22 @@ class Announced:
     def discovered(self) -> Sequence[str]:
         """Загруженные отложенные инструменты в порядке загрузки: список
         границы сжатия, затем ссылки tool_reference в результатах."""
-        return list(dict.fromkeys(self._discovered_names()))
+        return list(self._discovered)
 
     def recorded(self) -> Mapping[str, SnapshotTool]:
-        """Определения загруженных отложенных, записанные разговором по
-        имени; позднее определение заменяет раннее."""
-        definitions: dict[str, SnapshotTool] = {}
-        for entries in self._all(DeferredToolsRecordAttachment):
-            for tool in entries.entries:
-                definitions[tool.name] = tool
-
-        return definitions
+        """Определения загруженных отложенных, записанные разговором по имени."""
+        return self._definitions
 
     def deferred_loaded(self) -> Sequence[SnapshotTool]:
         """Отложенные инструменты, которые уходят в запрос: загруженные,
         объявленные и записанные, в порядке загрузки."""
         pool = self.deferred_pool()
-        definitions = self.recorded()
         loaded: list[SnapshotTool] = []
-        for name in self.discovered():
+        for name in self._discovered:
             if name not in pool:
                 continue
 
-            tool = definitions.get(name)
+            tool = self._definitions.get(name)
             if tool is None:
                 continue
 
@@ -252,71 +293,25 @@ class Announced:
         """Загруженные и объявленные отложенные, чьих определений разговор
         ещё не записал, в порядке загрузки."""
         pool = self.deferred_pool()
-        definitions = self.recorded()
         missing: list[str] = []
-        for name in self.discovered():
+        for name in self._discovered:
             if name not in pool:
                 continue
 
-            if name in definitions:
+            if name in self._definitions:
                 continue
 
             missing.append(name)
 
         return missing
 
-    def instructions(self) -> Mapping[str, str]:
-        """Объявленные инструкции серверов MCP по имени сервера: свёртка
-        вложений mcp_instructions_delta разговора."""
-        announced: dict[str, str] = {}
-        for delta in self._all(McpInstructionsAttachment):
-            texts = zip(delta.added_names, delta.added_server_instructions, strict=True)
-            for name, text in texts:
-                announced[name] = text
-
-            for name in delta.removed_names:
-                announced.pop(name, None)
-
-        return announced
+    def announced_instructions(self) -> Mapping[str, str]:
+        """Объявленные инструкции серверов MCP по имени сервера."""
+        return self._instructions
 
     def skill_names(self) -> frozenset[str]:
         """Имена скиллов, уже перечисленных модели в этом разговоре."""
-        names: set[str] = set()
-        for listing in self._all(SkillListingAttachment):
-            names.update(listing.names)
-
-        return frozenset(names)
-
-    def _discovered_names(self) -> Iterator[str]:
-        for record in self._conversation:
-            if isinstance(record, CompactBoundaryRecord):
-                yield from record.compact_metadata.pre_compact_discovered_tools
-                continue
-
-            if not isinstance(record, ToolResultRecord):
-                continue
-
-            for result in record.message.tool_results():
-                yield from result.references()
-
-    def _all(self, kind: type[P]) -> Iterator[P]:
-        """Данные вложений вида kind в порядке разговора."""
-        for record in self._conversation:
-            if not isinstance(record, AttachmentRecord):
-                continue
-
-            if isinstance(record.attachment, kind):
-                yield record.attachment
-
-    def _last(self, kind: type[P]) -> P | None:
-        for record in reversed(self._conversation):
-            if not isinstance(record, AttachmentRecord):
-                continue
-
-            if isinstance(record.attachment, kind):
-                return record.attachment
-
-        return None
+        return frozenset(self._skills)
 
 
 class SkillBudget:

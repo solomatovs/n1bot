@@ -21,7 +21,6 @@ from typing import TypeVar
 
 from boba.agent.history import SessionId
 from boba.agent.records import (
-    AssistantRecord,
     ChainRecord,
     CompactBoundaryRecord,
     CompactSummaryRecord,
@@ -254,11 +253,7 @@ class Session:
             if record is None:
                 continue
 
-            if isinstance(record, AssistantRecord):
-                yield record.with_zero_usage()
-                continue
-
-            yield record
+            yield record.carried()
 
     def _last_complete_boundary(self, chain: Sequence[ChainRecord]) -> int | None:
         summaries: set[str] = set()
