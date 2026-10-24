@@ -1,5 +1,6 @@
 """PostgresTable и PostgresSchema на живой базе стенда: файлы схемы под
-замком, запросы, граница ошибок слоя и проверка раскладки.
+замком, запросы, граница ошибок слоя, проверка раскладки и восстановление
+после обрыва соединений на сервере.
 
 pytest -m integration.
 """
@@ -7,12 +8,14 @@ pytest -m integration.
 from __future__ import annotations
 
 import asyncio
+import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import ClassVar
 
 import pytest
 from psycopg import sql
+from psycopg.rows import DictRow
 
 from boba.db.postgres import (
     AdvisoryLock,
@@ -22,6 +25,9 @@ from boba.db.postgres import (
     PostgresSchema,
     PostgresTable,
 )
+from boba.db.postgres.connection import PostgresConfig
+from boba.db.postgres.table import Cursor
+from boba.stand.database import PostgresSessions
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -73,6 +79,31 @@ class NotesTable(PostgresTable):
         query = self._query().add("delete from {schema}.notes").build()
 
         return await self._execute(query, "clear")
+
+    async def add_losing(self, text: str, losses: int) -> list[int]:
+        """Добавляет заметку работой, которая первые losses попыток рвёт своё
+        соединение на сервере; номера сеансов, на которых шли попытки."""
+        backends: list[int] = []
+        terminate = (
+            self._query().add("select pg_terminate_backend(pg_backend_pid())").build()
+        )
+        insert = (
+            self._query()
+            .add("insert into {schema}.notes (text) values (%(text)s)", text=text)
+            .build()
+        )
+
+        async def work(cur: Cursor) -> DictRow | None:
+            backends.append(cur.connection.info.backend_pid)
+            await cur.execute(insert.text, insert.params)
+            if len(backends) <= losses:
+                await cur.execute(terminate.text, terminate.params)
+
+            return None
+
+        await self._transacted(f"insert of {text!r}", work)
+
+        return backends
 
     async def broken(self) -> None:
         query = self._query().add("select 1 from {schema}.no_such_table").build()
@@ -207,3 +238,47 @@ async def test_advisory_lock_serialises_transactions(pool: AsyncPostgresPool) ->
     released.set()
     await holding
     await asyncio.wait_for(waiting, timeout=5)
+
+
+async def test_pool_replaces_connections_terminated_on_the_server(
+    test_postgres: PostgresConfig,
+) -> None:
+    sessions = PostgresSessions(test_postgres)
+    name = f"pool-{uuid.uuid4().hex[:8]}"
+    pool = AsyncPostgresPool(sessions.signed(name))
+    await pool.open()
+    try:
+        async with pool.cursor() as cur:
+            await cur.execute("select pg_backend_pid()")
+            before = await cur.fetchone()
+
+        assert await sessions.terminate(name) >= 1
+
+        async with pool.cursor() as cur:
+            await cur.execute("select pg_backend_pid()")
+            after = await cur.fetchone()
+    finally:
+        await pool.close()
+
+    assert after is not None
+    assert after != before
+
+
+async def test_work_broken_before_commit_is_retried_on_a_new_connection(
+    notes: NotesTable,
+) -> None:
+    backends = await notes.add_losing("survivor", losses=1)
+
+    assert len(backends) == 2
+    assert backends[0] != backends[1]
+    assert await notes.texts() == ["survivor"]
+
+
+async def test_second_loss_becomes_the_layer_error(notes: NotesTable) -> None:
+    with pytest.raises(NotesError) as refused:
+        await notes.add_losing("lost", losses=2)
+
+    text = str(refused.value)
+    assert "notes: insert of 'lost'" in text
+    assert "the connection broke before commit" in text
+    assert await notes.texts() == []

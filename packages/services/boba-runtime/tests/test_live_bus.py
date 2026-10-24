@@ -11,6 +11,7 @@ import pytest
 from psycopg import sql
 
 from boba.db.postgres import AsyncPostgresPool, PgQueryBuilder, PostgresSchema
+from boba.db.postgres.connection import PostgresConfig
 from boba.identity.context import Scope
 from boba.messaging import (
     BusLimit,
@@ -28,6 +29,7 @@ from boba.messaging import (
 from boba.messaging.bus import ListenerState, LiveTable
 from boba.runtime.bus import LiveListener, PgMessageBus, Pointer
 from boba.runtime.config import AppName, RuntimeConfig
+from boba.stand.database import PostgresSessions
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -486,3 +488,43 @@ async def test_start_drops_events_of_retired_kinds(
 
     replayed = await first.replay(scope, after_seq=0)
     assert [envelope.seq for envelope in replayed] == [kept]
+
+
+async def test_bus_survives_all_its_connections_terminated_on_the_server(
+    bus_config: RuntimeConfig, test_database: str, test_postgres: PostgresConfig
+) -> None:
+    """Обрыв на сервере и соединений пула, и соединения LISTEN (как
+    перезапуск Postgres): публикация сразу идёт на новом соединении пула,
+    слушатель переподключается и добирает пропущенное."""
+    sessions = PostgresSessions(test_postgres)
+    name = f"bus-{uuid4().hex[:8]}"
+    cfg = sessions.signed(name)
+    pool = AsyncPostgresPool(cfg)
+    await pool.open()
+    bus = PgMessageBus(
+        cfg, bus_config.db_schema, "node1-aid", AppName.AID, bus_config.cluster
+    )
+    bus._pool_ref = pool
+    schema_dir = files("boba.runtime") / "schema"
+    async with pool.connection() as conn:
+        await PostgresSchema(bus_config.db_schema).apply_files(conn, schema_dir, {})
+
+    await bus.start()
+    try:
+        scope = Scope.chat(str(uuid4()))
+        inbox = Inbox()
+        bus.subscribe(scope, inbox.take)
+        token = LockToken.local()
+        await bus.publish(scope, _token("before"), token)
+        await inbox.wait(1)
+
+        assert await sessions.terminate(name) >= 2
+
+        await bus.publish(scope, _token("after"), token)
+        await bus.listener.wait_listening(WAIT_SEC)
+        await inbox.wait(2)
+    finally:
+        await bus.stop()
+        await pool.close()
+
+    assert inbox.tokens() == ["before", "after"]

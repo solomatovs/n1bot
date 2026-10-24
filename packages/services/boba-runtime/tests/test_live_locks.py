@@ -11,6 +11,7 @@ import pytest
 from psycopg import sql
 
 from boba.db.postgres import AsyncPostgresPool, PgQueryBuilder, PostgresSchema
+from boba.db.postgres.connection import PostgresConfig
 from boba.identity.context import Scope
 from boba.identity.locks import (
     LockBusyError,
@@ -25,6 +26,7 @@ from boba.messaging.bus import LiveTable
 from boba.runtime.bus import PgMessageBus
 from boba.runtime.config import AppName, ClusterConfig, RuntimeConfig
 from boba.runtime.locks import LockReaper, PgLiveLocks
+from boba.stand.database import PostgresSessions
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -215,3 +217,34 @@ async def test_instance_registration_survives_a_postgres_restart(
     )
     assert lock.holder == first.locks.instance
     await first.locks.release(lock.token)
+
+
+async def test_locks_survive_connections_terminated_on_the_server(
+    bus_config: RuntimeConfig, test_database: str, test_postgres: PostgresConfig
+) -> None:
+    """Обрыв всех соединений пула блокировок на сервере (как перезапуск
+    Postgres): следующий захват и пульс идут на новых соединениях пула."""
+    sessions = PostgresSessions(test_postgres)
+    name = f"locks-{uuid4().hex[:8]}"
+    pool = AsyncPostgresPool(sessions.signed(name))
+    await pool.open()
+    stand = await _stand(bus_config, test_database, pool, "node1-aid")
+    try:
+        scope = Scope.chat(str(uuid4()))
+        first = await stand.locks.acquire(
+            scope, LockMode.EXCLUSIVE, LockPurpose.TURN, UUID(int=1)
+        )
+        assert await sessions.terminate(name) >= 1
+
+        assert await stand.locks.heartbeat(first.token)
+        await stand.locks.release(first.token)
+
+        assert await sessions.terminate(name) >= 1
+
+        again = await stand.locks.acquire(
+            scope, LockMode.EXCLUSIVE, LockPurpose.TURN, UUID(int=1)
+        )
+        await stand.locks.release(again.token)
+    finally:
+        await stand.bus.stop()
+        await pool.close()

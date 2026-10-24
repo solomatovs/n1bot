@@ -26,6 +26,13 @@ class _FakeAsyncConnectionPool:
         self.closed = False
         _FakeAsyncConnectionPool.instances.append(self)
 
+    @staticmethod
+    async def check_connection(conn: Any) -> None:
+        return None
+
+    async def check(self) -> None:
+        return None
+
     async def open(self) -> None:
         self.opened = True
 

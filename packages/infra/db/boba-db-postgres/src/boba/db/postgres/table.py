@@ -1,6 +1,7 @@
 """Общее для хранилищ одной схемы postgres: ленивый пул, сборщик запросов со
 схемой стоящим именем, граница ошибок слоя, транзакция с курсором словарей и
-проверка раскладки таблиц.
+проверка раскладки таблиц. Работа транзакцией, у которой соединение
+оборвалось до commit, повторяется один раз на новом соединении пула.
 
 Ошибки:
 PostgresError — пул, соединение или запрос отказали, строка не сложилась в
@@ -10,7 +11,8 @@ PostgresError — пул, соединение или запрос отказа�
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator, Iterable, Mapping
+import logging
+from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable, Mapping
 from contextlib import asynccontextmanager
 from enum import StrEnum
 from typing import Any, ClassVar, TypeVar
@@ -22,7 +24,7 @@ from pydantic import BaseModel, ValidationError
 
 from boba.db.postgres.async_pool import AsyncPostgresPool, PostgresPool
 from boba.db.postgres.connection import PostgresConfig
-from boba.db.postgres.errors import PostgresError
+from boba.db.postgres.errors import PostgresConnectionLostError, PostgresError
 from boba.db.postgres.query import PgQuery, PgQueryBuilder
 from boba.db.postgres.schema import AdvisoryLock, PostgresSchema
 
@@ -32,6 +34,9 @@ Cursor = psycopg.AsyncCursor[DictRow]
 """Курсор словарей, который отдаёт _transaction."""
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
+ResultT = TypeVar("ResultT")
+
+logger = logging.getLogger(__name__)
 
 
 class PostgresTable:
@@ -133,24 +138,69 @@ class PostgresTable:
             ):
                 yield cur
 
+    async def _transacted(
+        self, action: str, work: Callable[[Cursor], Awaitable[ResultT]]
+    ) -> ResultT:
+        """Работа одной транзакцией на соединении из пула. Обрыв соединения
+        посреди работы, до commit, повторяет её один раз на новом соединении:
+        незафиксированная транзакция ушла вместе с соединением. Работа поэтому
+        не делает ничего вне базы; отказ на самом commit не повторяется —
+        исход транзакции неизвестен."""
+        async with self._guarded(action):
+            try:
+                return await self._attempt(work)
+            except PostgresConnectionLostError as exc:
+                logger.warning(
+                    "%s: %s in schema %s, retrying once on a new connection: %s",
+                    self.LABEL,
+                    action,
+                    self._schema.name,
+                    exc,
+                )
+
+            return await self._attempt(work)
+
+    async def _attempt(self, work: Callable[[Cursor], Awaitable[ResultT]]) -> ResultT:
+        pool = await self._pool()
+        async with (
+            pool.connection() as conn,
+            conn.transaction(),
+            conn.cursor(row_factory=dict_row) as cur,
+        ):
+            try:
+                return await work(cur)
+            except psycopg.OperationalError as exc:
+                if not conn.broken:
+                    raise
+
+                msg = f"the connection broke before commit: {exc}"
+                raise PostgresConnectionLostError(msg) from exc
+
     async def _execute(self, query: PgQuery, action: str) -> int:
         """Запрос без выборки; сколько строк он затронул."""
-        async with self._transaction(action) as cur:
+
+        async def work(cur: Cursor) -> int:
             await cur.execute(query.text, query.params)
 
             return cur.rowcount
 
+        return await self._transacted(action, work)
+
     async def _row(self, query: PgQuery, action: str) -> DictRow | None:
-        async with self._transaction(action) as cur:
+        async def work(cur: Cursor) -> DictRow | None:
             await cur.execute(query.text, query.params)
 
             return await cur.fetchone()
 
+        return await self._transacted(action, work)
+
     async def _rows(self, query: PgQuery, action: str) -> list[DictRow]:
-        async with self._transaction(action) as cur:
+        async def work(cur: Cursor) -> list[DictRow]:
             await cur.execute(query.text, query.params)
 
             return await cur.fetchall()
+
+        return await self._transacted(action, work)
 
     def _returning(self, row: DictRow | None, what: str) -> DictRow:
         """Строка после insert/update … returning; её отсутствие — отказ хранилища."""

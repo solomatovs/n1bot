@@ -70,7 +70,7 @@ from boba.stand.agent import (
     StandToolName,
     StandTools,
 )
-from boba.stand.database import TestDatabase
+from boba.stand.database import PostgresSessions, TestDatabase
 from boba.stand.ui.fake_llm import ScenarioName
 from boba.stand.ui.stand import REPO_ROOT
 
@@ -599,6 +599,50 @@ class TestOwners:
 
         await alice.delete(branch)
         assert await listed(alice) == [self.ALICE.value]
+
+
+class TestConnectionLoss:
+    """Обрыв на сервере всех соединений хранилища — пула и соединения замков,
+    как при перезапуске Postgres."""
+
+    async def test_store_reconnects_and_the_held_session_reports_its_lost_lock(
+        self, postgres: PostgresConfig, schema: str
+    ) -> None:
+        sessions = PostgresSessions(postgres)
+        name = f"hist-{uuid.uuid4().hex[:8]}"
+        signed = sessions.signed(name)
+        pool = AsyncPostgresPool(signed)
+        await pool.open()
+        store = PostgresHistoryStore(
+            signed, schema, "alice", SessionLocks(signed), pool
+        )
+        journal = Journal(SESSION)
+        journal.user("one")
+        journal.assistant("two")
+        first = list(journal.records())
+        journal.user("three")
+        everything = list(journal.records())
+        try:
+            lease = await store.acquire(SESSION)
+            await store.append(lease, first)
+
+            assert await sessions.terminate(name) >= 2
+
+            with pytest.raises(HistoryError, match="lost its lock"):
+                await store.append(lease, everything[len(first) :])
+
+            await store.release(lease)
+
+            again = await store.acquire(SESSION)
+            await store.append(again, everything[len(first) :])
+            await store.release(again)
+
+            documents = await read_all(store, SESSION)
+        finally:
+            await store.close()
+            await pool.close()
+
+        assert [d["seq"] for d in documents] == [1, 2, 3]
 
 
 class TestAgent:
