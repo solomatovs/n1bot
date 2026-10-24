@@ -27,14 +27,11 @@ from boba.transport.acp.protocol import (
     AgentSide,
     BatchTransport,
     ClientConnection,
-    IdleErrorNotification,
-    IdleErrorUpdate,
     McpErrorOutcome,
     McpMessage,
     McpOutcome,
     McpResultOutcome,
     McpVersion,
-    StopReason,
     ToolStatus,
 )
 
@@ -374,26 +371,6 @@ class TestMcpMessage:
             await acp_pair.stand_client.cancelled.wait()
 
         assert pending.cancelled()
-
-
-class TestIdleError:
-    async def test_error_reaches_client(self, acp_pair: AcpPair) -> None:
-        error = schema.Error(
-            code=AcpErrorCode.INTERNAL_ERROR,
-            message="The model endpoint refused the request",
-        )
-        stopped = IdleErrorNotification(
-            session_id="session-1",
-            update=IdleErrorUpdate(stop_reason=StopReason.ERROR, error=error),
-        )
-
-        await acp_pair.agent.send_update(stopped)
-
-        async with asyncio.timeout(5):
-            update = await acp_pair.stand_client.updates.get()
-
-        assert isinstance(update, IdleErrorUpdate)
-        assert update.error == error
 
 
 class TestSdkGuard:

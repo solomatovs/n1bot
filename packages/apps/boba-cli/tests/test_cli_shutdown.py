@@ -31,10 +31,12 @@ from boba.runtime.config import ProcessConfig
 from boba.stand.agent import FakeServer
 from boba.stand.agent_service import (
     AgentServiceProcess,
+    ServeAddress,
     ServeStandConfig,
     ServiceProfiles,
 )
 from boba.stand.ui.fake_llm import ScenarioName
+from boba.stand.ui.stand import StandPorts
 
 pytestmark = [pytest.mark.anyio, pytest.mark.integration]
 
@@ -347,12 +349,14 @@ class TestServe:
         profiles = ServiceProfiles(f"http://127.0.0.1:{serve_model.port}/v1").add(
             Profile.MAIN, [ServeRun.ROLES], Profile.MAIN_MODEL
         )
+        port = StandPorts().free()
         config = ServeStandConfig(
             process_config.krb,
             ServeHistory(schema=history.schema, postgres=history.postgres),
             history.layer(ServeRun.SESSIONS),
             profiles,
             600.0,
+            ServeAddress(listen=port, public=port),
         )
         service = AgentServiceProcess(command, tmp_path / "serve", config)
         run = ServeRun(service, backends)

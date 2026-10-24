@@ -15,6 +15,7 @@ from boba.transport.http.transport import (
     ResponseStream,
     RetryPolicy,
     TransportError,
+    TransportFailure,
 )
 
 __all__ = [
@@ -33,4 +34,5 @@ __all__ = [
     "ResponseStream",
     "RetryPolicy",
     "TransportError",
+    "TransportFailure",
 ]

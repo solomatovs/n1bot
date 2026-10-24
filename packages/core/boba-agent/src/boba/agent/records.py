@@ -38,6 +38,8 @@ import mcp_types as mt
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError
 from pydantic.alias_generators import to_camel
 
+from boba.llm.chat import LlmTrouble
+
 __all__ = [
     "ApiErrorRecord",
     "ApiRequestRecord",
@@ -52,9 +54,11 @@ __all__ = [
     "CompactBoundaryRecord",
     "CompactMetadata",
     "CompactTrigger",
+    "InformationalRecord",
     "KeptNull",
     "LinkText",
     "MessageOrigin",
+    "NoticeLevel",
     "OriginKind",
     "PermissionBehavior",
     "PermissionMode",
@@ -120,6 +124,15 @@ class SystemSubtype(StrEnum):
 
     API_ERROR = "api_error"
     COMPACT_BOUNDARY = "compact_boundary"
+    INFORMATIONAL = "informational"
+
+
+class NoticeLevel(StrEnum):
+    """Важность записи system для человека (поле level)."""
+
+    INFO = "info"
+    WARNING = "warning"
+    ERROR = "error"
 
 
 class BlockType(StrEnum):
@@ -474,12 +487,41 @@ class AttachmentRecord(ChainRecord):
 
 
 class ApiErrorRecord(ChainRecord):
+    """Неудачная попытка запроса к модели, за которой следует повтор через
+    retry_in_ms."""
+
     type: Literal[RecordType.SYSTEM] = RecordType.SYSTEM
     subtype: Literal[SystemSubtype.API_ERROR] = SystemSubtype.API_ERROR
     error: str
+    retry_in_ms: int = Field(
+        default=0,
+        ge=0,
+        description="Пауза до повтора; журналы прежних версий её не пишут.",
+    )
     retry_attempt: int
     max_retries: int
-    level: str = "error"
+    level: NoticeLevel = NoticeLevel.ERROR
+    trouble: LlmTrouble = Field(
+        default=LlmTrouble.UNKNOWN,
+        description="Вид беды для текста человеку; прежние журналы его не пишут.",
+    )
+    detail: str = Field(
+        default="",
+        description="Короткая техническая причина: статус и суть ответа провайдера.",
+    )
+
+
+class InformationalRecord(ChainRecord):
+    """Пометка для человека в беседе: сервер MCP пропал или вернулся, ход
+    оборван выключением агента. Модели не отправляется; клиент показывает
+    её в ходе, где она записана."""
+
+    type: Literal[RecordType.SYSTEM] = RecordType.SYSTEM
+    subtype: Literal[SystemSubtype.INFORMATIONAL] = SystemSubtype.INFORMATIONAL
+    content: str = Field(min_length=1)
+    level: NoticeLevel
+    detail: str
+    """Короткая техническая причина под текстом; пусто — причины нет."""
 
 
 class PreservedMessages(WireModel):
@@ -508,7 +550,7 @@ class CompactBoundaryRecord(ChainRecord):
     subtype: Literal[SystemSubtype.COMPACT_BOUNDARY] = SystemSubtype.COMPACT_BOUNDARY
     logical_parent_uuid: str | None
     content: str = "Conversation compacted"
-    level: str = "info"
+    level: NoticeLevel = NoticeLevel.INFO
     compact_metadata: CompactMetadata
 
 
@@ -559,6 +601,7 @@ Record: TypeAlias = (
     | AttachmentRecord
     | ApiErrorRecord
     | CompactBoundaryRecord
+    | InformationalRecord
     | QueueOperationRecord
     | PermissionModeRecord
     | PermissionRuleRecord
@@ -604,6 +647,7 @@ class RecordCodec:
         self._system: dict[SystemSubtype, type[Record]] = {
             SystemSubtype.API_ERROR: ApiErrorRecord,
             SystemSubtype.COMPACT_BOUNDARY: CompactBoundaryRecord,
+            SystemSubtype.INFORMATIONAL: InformationalRecord,
         }
 
     def parse(self, raw: Mapping[str, Any]) -> Record:

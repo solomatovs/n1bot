@@ -1,0 +1,7 @@
+- alert:
+  - text: "The connection to the agent was lost. Reconnect with the button on the right; the answer that was in progress may need to be asked for again. agent service at http://127.0.0.1:0/acp, the turn: the service closed the connection"
+  - button "Повторить"
+- textbox "Введите сообщение здесь..."
+- img
+- button [disabled]:
+  - img

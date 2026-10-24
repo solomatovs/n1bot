@@ -1,0 +1,7 @@
+- alert:
+  - text: "The agent couldn't be started, so the chat can't answer right now. Try again with the button on the right; if it keeps failing, let the administrator know. agent process 'boba-missing', starting: No such file or directory; check [agent.process].command"
+  - button "Повторить"
+- textbox "Введите сообщение здесь..."
+- img
+- button [disabled]:
+  - img

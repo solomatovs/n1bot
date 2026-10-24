@@ -21,6 +21,8 @@ from boba.llm.chat import (
     LlmContextOverflowError,
     LlmError,
     LlmOutputLimitError,
+    LlmServiceError,
+    LlmTrouble,
     ToolSpec,
 )
 from boba.llm.http.ollama import OllamaBackend, OllamaProvider
@@ -585,10 +587,57 @@ class TestErrorKinds:
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(400, json={"error": {"message": "bad tool schema"}})
 
-        with pytest.raises(LlmError) as caught:
+        with pytest.raises(LlmServiceError) as caught:
             await _events(_openai(monkeypatch, handler), REQUEST)
 
-        assert type(caught.value) is LlmError
+        assert caught.value.trouble is LlmTrouble.REJECTED
+        assert caught.value.detail == "HTTP 400 Bad Request: bad tool schema"
+
+    @pytest.mark.parametrize(
+        ("status", "body", "trouble", "detail"),
+        [
+            (
+                429,
+                b'{"error":{"message":"rate limit exceeded","type":"x","code":"y"}}',
+                LlmTrouble.BUSY,
+                "HTTP 429 Too Many Requests: rate limit exceeded",
+            ),
+            (
+                502,
+                b"<html><body>Bad Gateway</body></html>",
+                LlmTrouble.DOWN,
+                "HTTP 502 Bad Gateway",
+            ),
+            (401, b"denied", LlmTrouble.REJECTED, "HTTP 401 Unauthorized"),
+            (
+                503,
+                b'{"error":"model is loading"}',
+                LlmTrouble.DOWN,
+                "HTTP 503 Service Unavailable: model is loading",
+            ),
+        ],
+        ids=["429-json", "502-html", "401-text", "503-ollama"],
+    )
+    async def test_refusal_detail_takes_only_the_standard_message(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        status: int,
+        body: bytes,
+        trouble: LlmTrouble,
+        detail: str,
+    ) -> None:
+        """В короткую причину для человека идёт статус и error.message (или
+        строка error) тела, сырое тело — только в текст для журнала."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(status, content=body)
+
+        with pytest.raises(LlmServiceError) as caught:
+            await _events(_openai(monkeypatch, handler), REQUEST)
+
+        assert caught.value.trouble is trouble
+        assert caught.value.detail == detail
+        assert "{" not in caught.value.detail
 
     async def test_openai_stream_without_finish_is_an_error(
         self, monkeypatch: pytest.MonkeyPatch
