@@ -20,7 +20,9 @@ from boba.agent.records import (
     CompactBoundaryRecord,
     CompactMetadata,
     CompactTrigger,
+    InformationalRecord,
     MessageOrigin,
+    NoticeLevel,
     OriginKind,
     PermissionBehavior,
     PermissionMode,
@@ -46,6 +48,7 @@ from boba.agent.records import (
     UserMessage,
     UserRecord,
 )
+from boba.llm.chat import LlmTrouble
 
 SESSION = "11111111-2222-3333-4444-555555555555"
 STAMP = "2026-10-10T10:00:00.000Z"
@@ -156,7 +159,19 @@ SAMPLES: dict[str, Record] = {
         ),
     ),
     "api-error": ApiErrorRecord(
-        **chained(), error="boom", retry_attempt=1, max_retries=3
+        **chained(),
+        error="boom",
+        retry_in_ms=2000,
+        retry_attempt=1,
+        max_retries=3,
+        trouble=LlmTrouble.BUSY,
+        detail="HTTP 429 Too Many Requests",
+    ),
+    "informational": InformationalRecord(
+        **chained(),
+        content="The MCP server 'stand' isn't available right now.",
+        level=NoticeLevel.WARNING,
+        detail="HTTP 401 Unauthorized",
     ),
     "boundary": CompactBoundaryRecord(
         **chained(),

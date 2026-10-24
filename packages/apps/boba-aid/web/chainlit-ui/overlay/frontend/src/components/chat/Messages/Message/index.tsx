@@ -11,6 +11,7 @@ import {
 import { useLayoutMaxWidth } from 'hooks/useLayoutMaxWidth';
 
 import { Messages } from '..';
+import { AgentNotice, noticeSeverity } from './AgentNotice';
 import { AskActionButtons } from './AskActionButtons';
 import { AskFileButton } from './AskFileButton';
 import { MessageAvatar } from './Avatar';
@@ -50,6 +51,8 @@ const Message = memo(
     // boba: карточка приложения MCP Apps — сообщение без аватара и кнопок:
     // рамка встаёт с края текста ответа, копировать и оценивать в ней нечего
     const isApp = Boolean(message.metadata?.mcpApp);
+    // boba: пометка агента и ошибка хода — блок с рамкой цвета важности
+    const notice = message.metadata?.agentNotice;
     // Only keep tool calls if Chain of Thought is tool_call
     const toolCallSkip =
       isStep && cot === 'tool_call' && message.type !== 'tool';
@@ -103,7 +106,14 @@ const Message = memo(
               id={`step-${message.id}`}
             >
               {/* User message is displayed differently */}
-              {isUserMessage ? (
+              {notice ? (
+                <AgentNotice
+                  severity={noticeSeverity(notice)}
+                  text={message.output}
+                  detail={message.metadata?.noticeDetail}
+                  className="ai-message w-full"
+                />
+              ) : isUserMessage ? (
                 <div className="flex flex-col flex-grow max-w-full">
                   <UserMessage message={message} elements={elements}>
                     {userMessageContent}

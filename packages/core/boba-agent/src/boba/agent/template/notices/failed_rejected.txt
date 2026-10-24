@@ -1,0 +1,1 @@
+The model service keeps turning the request down, so this turn has stopped. If it keeps happening, let the administrator know.

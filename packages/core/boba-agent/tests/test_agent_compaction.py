@@ -34,6 +34,7 @@ from boba.agent.records import (
     PermissionRule,
     Record,
     RecordCodec,
+    TextBlock,
     UserRecord,
 )
 from boba.agent.session import Session, SessionState
@@ -164,8 +165,15 @@ def summary_requests(server: FakeServer) -> list[dict[str, object]]:
 def synthetic_texts(records: Sequence[Record]) -> list[str]:
     texts: list[str] = []
     for record in records:
-        if isinstance(record, AssistantRecord) and record.is_synthetic():
-            texts.append(record.error or "")
+        if not isinstance(record, AssistantRecord):
+            continue
+
+        if not record.is_api_error_message:
+            continue
+
+        for block in record.message.content:
+            if isinstance(block, TextBlock):
+                texts.append(block.text)
 
     return texts
 
@@ -496,7 +504,10 @@ class TestBreakers:
         assert len(summary_requests(plain_server)) == 3
         texts = synthetic_texts(records)
         assert len(texts) == 1
-        assert texts[0].startswith("Prompt is too long. Automatic compaction failed:")
+        assert texts[0].startswith(
+            "This conversation no longer fits in the model's memory, and "
+            "shortening it automatically didn't help."
+        )
         assert kinds(records[-3:]) == [
             "user:tool_result",
             "system:api_error",
@@ -532,7 +543,10 @@ class TestBreakers:
         assert len(summary_requests(plain_server)) == 3
         texts = synthetic_texts(records)
         assert len(texts) == 1
-        assert texts[0].startswith("Autocompact is thrashing")
+        assert texts[0].startswith(
+            "This conversation fills the model's memory again right after each "
+            "shortening"
+        )
         conversation = session.conversation()
         assert isinstance(conversation[0], CompactBoundaryRecord)
         assert conversation[0].uuid == boundaries(records)[-1].uuid

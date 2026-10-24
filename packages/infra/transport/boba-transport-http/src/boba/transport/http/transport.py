@@ -18,9 +18,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import socket
+import ssl
 from collections.abc import AsyncGenerator, AsyncIterator, Iterable, Mapping
 from contextlib import AbstractContextManager, asynccontextmanager, nullcontext
 from dataclasses import dataclass, field
+from enum import StrEnum
 from pathlib import Path
 from typing import Any, ClassVar, Protocol, TypeVar
 
@@ -44,14 +46,31 @@ __all__ = [
     "HttpTransportConfig",
     "ResponseStream",
     "RetryPolicy",
+    "TransportError",
+    "TransportFailure",
 ]
 
 logger = logging.getLogger(__name__)
 
 
+class TransportFailure(StrEnum):
+    """Короткая причина сбоя запроса для человека: её вызывающий кладёт в
+    текст пользователю, полный текст ошибки уходит в журнал."""
+
+    NO_CONNECTION = "no connection"
+    NO_ANSWER = "no answer in time"
+    CERTIFICATE = "the certificate check failed"
+    BROKE_OFF = "the connection broke off"
+    REFUSED = "the server refused the request"
+
+
 class TransportError(Exception):
     """Запрос не выполнен: соединение, TLS, обрыв или пауза тела. Текст
-    называет метод, адрес и причину httpx."""
+    называет метод, адрес и причину httpx; failure — короткая причина."""
+
+    def __init__(self, message: str, failure: TransportFailure) -> None:
+        super().__init__(message)
+        self.failure = failure
 
 
 class HttpStatusError(TransportError):
@@ -59,10 +78,37 @@ class HttpStatusError(TransportError):
     Тело дочитано и лежит в body: вызывающий кладёт его начало в свой текст."""
 
     def __init__(self, message: str, *, status: int, reason: str, body: str) -> None:
-        super().__init__(message)
+        super().__init__(message, TransportFailure.REFUSED)
         self.status = status
         self.reason = reason
         self.body = body
+
+
+class TransportFailures:
+    """Короткая причина по ошибке httpx: срок, сертификат, нет соединения,
+    обрыв. Держат его в поле HttpTransport и ResponseStream."""
+
+    def of(self, exc: BaseException) -> TransportFailure:
+        if isinstance(exc, httpx.TimeoutException | TimeoutError):
+            return TransportFailure.NO_ANSWER
+
+        if not isinstance(exc, httpx.ConnectError):
+            return TransportFailure.BROKE_OFF
+
+        if self._certificate(exc):
+            return TransportFailure.CERTIFICATE
+
+        return TransportFailure.NO_CONNECTION
+
+    def _certificate(self, exc: BaseException) -> bool:
+        cause: BaseException | None = exc
+        while cause is not None:
+            if isinstance(cause, ssl.SSLCertVerificationError):
+                return True
+
+            cause = cause.__cause__ or cause.__context__
+
+        return False
 
 
 class HttpTransportConfig(BaseModel):
@@ -275,6 +321,7 @@ class HttpTransport:
         self._connection = connection
         self._config = config
         self._retry = RetryPolicy(connection)
+        self._failures = TransportFailures()
         # headers/params на клиент не кладём: они целиком per-request
         self._client = httpx.AsyncClient(
             base_url=connection.root_url(),
@@ -444,7 +491,9 @@ class HttpTransport:
             )
             return HttpStatusError(msg, status=status, reason=reason, body=body)
 
-        return TransportError(f"{where}: {type(exc).__name__}: {exc}")
+        return TransportError(
+            f"{where}: {type(exc).__name__}: {exc}", self._failures.of(exc)
+        )
 
     def _build(self, request: HttpRequest) -> httpx.Request:
         return self._client.build_request(
@@ -501,6 +550,7 @@ class ResponseStream(ByteStream):
     def __init__(self, resp: httpx.Response, stall_sec: float) -> None:
         self._resp = resp
         self._stall_sec = stall_sec
+        self._failures = TransportFailures()
 
     def __aiter__(self) -> AsyncIterator[bytes]:
         return self._guarded(self._resp.aiter_bytes())
@@ -524,7 +574,7 @@ class ResponseStream(ByteStream):
                     f"{self._where()}: response body stalled, no data within "
                     f"stream_stall_sec={self._stall_sec}s"
                 )
-                raise TransportError(msg) from exc
+                raise TransportError(msg, TransportFailure.NO_ANSWER) from exc
             except httpx.HTTPError as exc:
                 raise self._broken(exc) from exc
 
@@ -539,7 +589,8 @@ class ResponseStream(ByteStream):
     def _broken(self, exc: httpx.HTTPError) -> TransportError:
         return TransportError(
             f"{self._where()}: reading the response body failed: "
-            f"{type(exc).__name__}: {exc}"
+            f"{type(exc).__name__}: {exc}",
+            self._failures.of(exc),
         )
 
     async def _next(self, pieces: AsyncIterator[T]) -> T | None:

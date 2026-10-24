@@ -1,0 +1,5 @@
+- article: Вопрос под лимитом scenario failure
+- status: "The model is busy right now. Trying again in 1 second (attempt 1 of 3). HTTP 429 Too Many Requests: fake llm: rate limit exceeded, retry later"
+- status: "The model is busy right now. Trying again in 2 seconds (attempt 2 of 3). HTTP 429 Too Many Requests: fake llm: rate limit exceeded, retry later"
+- status: "The model is busy right now. Trying again in 4 seconds (attempt 3 of 3). HTTP 429 Too Many Requests: fake llm: rate limit exceeded, retry later"
+- status: "The model is still busy after several tries, so this turn has stopped. Wait a minute and send your message again. HTTP 429 Too Many Requests: fake llm: rate limit exceeded, retry later"

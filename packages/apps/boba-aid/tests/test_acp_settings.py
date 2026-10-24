@@ -53,6 +53,7 @@ from boba.aid.agent.client import (
     AcpClientError,
     AgentClient,
     AgentCommand,
+    AgentFailureKind,
     AgentProcess,
     AgentProcessError,
 )
@@ -94,9 +95,9 @@ from boba.stand.site import Stand
 from boba.stand.ui.fake_llm import FailureName, ScenarioName
 from boba.transport.acp.protocol import (
     AcpErrorCode,
-    IdleErrorUpdate,
     McpMessage,
     McpVersion,
+    StopReason,
 )
 from boba.transport.http import HttpTransportConfig
 
@@ -481,8 +482,7 @@ class TestForkCut:
             await agent.close()
             await servers.stop()
 
-        assert "cannot branch the conversation" in str(refused.value)
-        assert "boba/upToMessageId" in str(refused.value)
+        assert "can't branch a conversation" in str(refused.value)
 
 
 class ChatLaunch:
@@ -656,12 +656,22 @@ class TestLaunchConfig:
         }
 
     def _failure(self, updates: RecordingUpdates) -> str:
+        """Причина отказа хода: пометка агента об ошибке перед idle отказом —
+        слова человеку и короткая причина."""
         assert updates.finished, updates.updates
         _, idle = updates.finished[-1]
-        assert isinstance(idle, IdleErrorUpdate), idle
-        assert idle.error is not None, idle
+        assert idle.stop_reason == StopReason.REFUSAL, idle
+        errors: list[str] = []
+        for _, update in updates.updates:
+            if not isinstance(update, schema.SessionNotice):
+                continue
 
-        return idle.error.message
+            if update.severity == "error":
+                errors.append(f"{update.title} ({update.description})")
+
+        assert errors, updates.updates
+
+        return errors[-1]
 
     async def test_request_timeout_and_retries_of_the_provider_act(
         self, chat_launch: ChatLaunch, model: FakeModel
@@ -677,7 +687,7 @@ class TestLaunchConfig:
         await agent.ask(Question(key="draft", text=FailureName.HANG.value))
 
         failure = self._failure(updates)
-        assert "timed out" in failure.lower() or "timeout" in failure.lower(), failure
+        assert failure.endswith("(no answer in time)"), failure
         requests = len(model.app.requests)
         assert requests % 2 == 0, requests
         assert requests >= 2, requests
@@ -714,7 +724,8 @@ class TestLaunchConfig:
         await agent.start()
         await agent.ask(Question(key="checking", text=text))
 
-        assert "certificate" in self._failure(refused).lower()
+        failure = self._failure(refused)
+        assert failure.endswith("(the certificate check failed)"), failure
 
     async def test_transport_section_of_the_provider_acts(
         self, chat_launch: ChatLaunch, model: FakeModel, tmp_path: Path
@@ -862,7 +873,11 @@ class TestFailedLaunch:
             await servers.stop()
 
         assert "did not start" in str(refused.value)
-        assert "agent_command" in str(refused.value)
+        assert "[agent.process].command" in str(refused.value)
+        failure = refused.value.failure
+        assert failure.kind is AgentFailureKind.START_FAILED, failure
+        assert failure.peer == "agent process 'no-such-agent'", failure
+        assert str(tmp_path) not in failure.cause, failure
         assert list((tmp_path / "agents").iterdir()) == []
 
     async def test_silent_session_request_is_cut_by_request_timeout(
