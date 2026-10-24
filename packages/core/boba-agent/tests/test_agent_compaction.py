@@ -903,7 +903,9 @@ class TestManual:
         served.agent.queue.enqueue(prompt(ScenarioName.ANSWER.value))
         await served.agent.settled()
         before = len(await journal(tmp_path / "history", SESSION))
-        served.agent.queue.enqueue(QueueEntry(kind=QueueKind.COMPACT, text=self.NOTE))
+        command = served.agent.queue.enqueue(
+            QueueEntry(kind=QueueKind.COMPACT, text=self.NOTE)
+        )
         await served.agent.settled()
         served.agent.queue.enqueue(prompt(ScenarioName.ANSWER.value))
         await served.agent.settled()
@@ -926,10 +928,11 @@ class TestManual:
         first_user = WireText().of(after[1]["content"])
         assert first_user is not None
         assert CONTINUED in first_user
-        statuses = [
-            e.status for e in sink.of(CompactionEvent) if isinstance(e, CompactionEvent)
-        ]
+        events = [e for e in sink.of(CompactionEvent) if isinstance(e, CompactionEvent)]
+        statuses = [e.status for e in events]
         assert statuses == [CompactionStatus.IN_PROGRESS, CompactionStatus.COMPLETED]
+        assert {e.compaction_id for e in events} == {command.id}
+        assert {e.trigger for e in events} == {CompactTrigger.MANUAL}
         conversation = session.conversation()
         assert isinstance(conversation[0], CompactBoundaryRecord)
         assert conversation[0].uuid == found[0].uuid
