@@ -31,7 +31,7 @@ import signal
 import stat
 import sys
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
@@ -715,7 +715,7 @@ class FeedView:
         calls: dict[str, dict[str, Any]] = {}
         for update in updates:
             if isinstance(update, schema.UserMessageUpdate):
-                items.append(("user", update.message_id, self._text_of(update)))
+                items.append(("user", update.message_id, self.text_of(update)))
                 continue
 
             if isinstance(update, schema.AgentThoughtChunk | schema.AgentThoughtUpdate):
@@ -763,7 +763,7 @@ class FeedView:
         return [item[2] for item in rendered if item[0] == "user"]
 
     @staticmethod
-    def _text_of(
+    def text_of(
         update: schema.UserMessageUpdate
         | schema.AgentMessageUpdate
         | schema.AgentThoughtUpdate
@@ -791,7 +791,7 @@ class FeedView:
         | schema.AgentMessageUpdate
         | schema.AgentThoughtUpdate,
     ) -> None:
-        chunk = self._text_of(update)
+        chunk = self.text_of(update)
         if items and items[-1][0] == kind and items[-1][1] == update.message_id:
             items[-1] = (kind, update.message_id, items[-1][2] + chunk)
             return
@@ -827,6 +827,166 @@ def result_text(update: schema.SessionToolCallUpdate) -> str:
     assert isinstance(block, schema.TextContentBlock)
 
     return block.text
+
+
+class Timeline:
+    """Всё, что клиент нарисует по уведомлениям сессии, в порядке появления:
+    вопросы, сообщения (куски склеены, целое сообщение заменяет накопленное,
+    пустое — снимает его), вызовы с конечным состоянием, пометки, концы ходов
+    не штатным исходом и сжатия с итоговой стадией. Живой ход и его
+    воспроизведение обязаны дать одну ленту."""
+
+    def render(self, updates: Sequence[Any]) -> list[tuple[Any, ...]]:
+        items: list[tuple[Any, ...]] = []
+        places: dict[tuple[str, str], int] = {}
+        for update in updates:
+            for key, item, whole in self._items(update):
+                self._place(items, places, key, item, whole)
+
+        return self._shown(items)
+
+    def _items(
+        self, update: Any
+    ) -> Iterator[tuple[tuple[str, str], tuple[Any, ...], bool]]:
+        """Элементы ленты уведомления: ключ места, элемент и заменяет ли он
+        прежний элемент на этом месте целиком."""
+        if isinstance(update, schema.UserMessageUpdate):
+            key = ("user", update.message_id)
+            yield key, (*key, FeedView.text_of(update)), True
+            return
+
+        if isinstance(update, schema.AgentThoughtChunk | schema.AgentMessageChunk):
+            key = (self._kind(update), update.message_id)
+            yield key, (*key, FeedView.text_of(update)), False
+            return
+
+        if isinstance(update, schema.AgentThoughtUpdate | schema.AgentMessageUpdate):
+            key = (self._kind(update), update.message_id)
+            yield key, (*key, FeedView.text_of(update)), True
+            return
+
+        if isinstance(update, schema.SessionToolCallUpdate):
+            key = ("tool", update.tool_call_id)
+            yield key, self._call(update), False
+            return
+
+        if isinstance(update, schema.SessionNotice):
+            key = ("notice", str(id(update)))
+            yield (
+                key,
+                ("notice", update.severity, update.title, update.description),
+                True,
+            )
+            return
+
+        if isinstance(update, schema.IdleSessionStateUpdate):
+            yield from self._idle(update)
+            return
+
+        if isinstance(update, schema.SessionCompactionUpdate):
+            key = ("compaction", update.compaction_id)
+            yield key, (*key, update.status, self._summary(update), update.error), True
+
+    @staticmethod
+    def _kind(
+        update: schema.AgentThoughtChunk
+        | schema.AgentThoughtUpdate
+        | schema.AgentMessageChunk
+        | schema.AgentMessageUpdate,
+    ) -> str:
+        if isinstance(update, schema.AgentThoughtChunk | schema.AgentThoughtUpdate):
+            return "thought"
+
+        return "agent"
+
+    @staticmethod
+    def _idle(
+        update: schema.IdleSessionStateUpdate,
+    ) -> Iterator[tuple[tuple[str, str], tuple[Any, ...], bool]]:
+        if update.stop_reason is None:
+            return
+
+        if update.stop_reason == StopReason.END_TURN:
+            return
+
+        key = ("idle", str(id(update)))
+        yield key, ("idle", str(update.stop_reason)), True
+
+    @staticmethod
+    def _call(update: schema.SessionToolCallUpdate) -> tuple[Any, ...]:
+        text: str | None = None
+        if update.content:
+            text = result_text(update)
+
+        return (
+            "tool",
+            update.tool_call_id,
+            update.name,
+            update.title,
+            update.kind,
+            json.dumps(update.raw_input, sort_keys=True),
+            update.status,
+            text,
+            json.dumps(update.raw_output, sort_keys=True),
+        )
+
+    @staticmethod
+    def _summary(update: schema.SessionCompactionUpdate) -> str:
+        parts: list[str] = []
+        for block in update.summary or ():
+            if isinstance(block, schema.TextContentBlock):
+                parts.append(block.text)
+
+        return "".join(parts)
+
+    def _place(
+        self,
+        items: list[tuple[Any, ...]],
+        places: dict[tuple[str, str], int],
+        key: tuple[str, str],
+        item: tuple[Any, ...],
+        whole: bool,
+    ) -> None:
+        position = places.get(key)
+        if position is None:
+            places[key] = len(items)
+            items.append(item)
+            return
+
+        if whole:
+            items[position] = item
+            return
+
+        items[position] = self._merged(items[position], item)
+
+    @staticmethod
+    def _merged(earlier: tuple[Any, ...], later: tuple[Any, ...]) -> tuple[Any, ...]:
+        """Кусок сообщения дописывается; уведомление вызова меняет то, что
+        несёт: статус, текст, rawOutput."""
+        if earlier[0] != "tool":
+            return (*earlier[:2], earlier[2] + later[2])
+
+        merged = list(earlier)
+        merged[6] = later[6]
+        if later[7] is not None:
+            merged[7] = later[7]
+
+        if later[8] != "null":
+            merged[8] = later[8]
+
+        return tuple(merged)
+
+    @staticmethod
+    def _shown(items: Sequence[tuple[Any, ...]]) -> list[tuple[Any, ...]]:
+        """Сообщение, которое агент снял пустой заменой, в ленте не остаётся."""
+        shown: list[tuple[Any, ...]] = []
+        for item in items:
+            if item[0] in ("agent", "thought") and not item[2]:
+                continue
+
+            shown.append(item)
+
+        return shown
 
 
 class AcpProcess:
@@ -2892,6 +3052,58 @@ class TestHistory:
             if r["type"] == "user" and r.get("origin", {}).get("kind") == "human"
         ]
         assert human == [*self.PROMPTS, ScenarioName.ANSWER.value]
+
+    async def test_live_turns_and_their_replay_draw_the_same_feed(
+        self,
+        boba: AcpProcess,
+        registration: StandRegistration,
+        model: FakeModel,
+        tmp_path: Path,
+    ) -> None:
+        """Ход с вызовом, ход с оборванной попыткой и повтором, ход с
+        отказом модели после повторов, сжатие по команде и ответ после него:
+        воспроизведение даёт ту же ленту, что видел живой клиент, —
+        вопросы, сообщения, итоги вызовов, пометки, концы ходов и сжатия."""
+        client = AcpClient()
+        document = boba.settings_document(mode="bypassPermissions", allow_bypass=True)
+        document["limits"]["apiRetries"] = 1
+        conn = await boba.start(client, registration, document)
+        try:
+            await handshake(conn)
+            session = await conn.new_session(
+                cwd=str(tmp_path), mcp_servers=[StandRegistration.STAND]
+            )
+            session_id = session.session_id
+            large = {"name": "mcp__stand__large", "arguments": {"size": 2000}}
+            cut = f"{ScenarioName.ANSWER.value} {FailureName.CUT.value}"
+            down = f"{ScenarioName.ANSWER.value} {FailureName.STATUS_500.value}"
+            prompts = [
+                call({"name": "mcp__stand__add", "arguments": {"a": 2, "b": 3}}),
+                call(large),
+                [schema.TextContentBlock(text=cut)],
+                [schema.TextContentBlock(text=down)],
+                [schema.TextContentBlock(text="/compact keep the plan")],
+                [schema.TextContentBlock(text=ScenarioName.THINKING_ANSWER.value)],
+            ]
+            for prompt in prompts:
+                await boba.turn(client, session_id, prompt)
+
+            live = client.updates_of(session_id)
+        finally:
+            await conn.close()
+            await boba.close_stdin()
+
+        assert await boba.wait() == 0
+        replayed = await self.replayed(model, registration, tmp_path, session_id)
+
+        timeline = Timeline()
+        drawn = timeline.render(live)
+        assert timeline.render(replayed) == drawn
+        kinds = [item[0] for item in drawn]
+        assert kinds.count("user") == len(prompts)
+        assert "notice" in kinds
+        assert "idle" in kinds
+        assert "compaction" in kinds
 
     @staticmethod
     def turn_ends(
