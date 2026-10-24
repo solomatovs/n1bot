@@ -344,8 +344,9 @@ class UpdateView:
     `begin_turn`/`question` (живой — по TurnStarted из шины, при
     воспроизведении — по `user_message`), уведомления идут в `apply`, конец
     хода — `finish_turn`. Вызов создаёт и меняет одно уведомление
-    `tool_call_update`. idle хода — его конец: остановка дописывается к
-    ответу, сбой встаёт шагом ошибки; живой ход получает idle из шины,
+    `tool_call_update`. idle хода — его конец: остановка хода с шагами —
+    подпись контейнера, без шагов — пометка к ответу; сбой встаёт шагом
+    ошибки; живой ход получает idle из шины,
     история — из воспроизведения агента.
 
     Текущее действие хода для подписи контейнера: начатый вызов, у связки —
@@ -466,14 +467,24 @@ class UpdateView:
         return TurnEnding(outcome=TurnOutcome.FAILED, note=note)
 
     async def _ended(self, idle: schema.IdleSessionStateUpdate) -> None:
-        """Пометка конца хода: остановка — к ответу, сбой — шагом ошибки."""
+        """Пометка конца хода: остановка — подписью контейнера или к ответу,
+        сбой — шагом ошибки."""
         ending = self.ending(idle)
         if ending.outcome is TurnOutcome.STOPPED:
-            await self._view.interrupt_answer(ending.note, self._turn_key)
+            await self._stopped(ending)
             return
 
         if ending.outcome is TurnOutcome.FAILED:
             await self._view.error(ending.note, self._turn_key)
+
+    async def _stopped(self, ending: TurnEnding) -> None:
+        """Остановка хода: у хода с шагами её показывает подпись контейнера,
+        у хода без шагов — пометка к ответу."""
+        self._view.turn_stopped()
+        if self._view.container_step is not None:
+            return
+
+        await self._view.interrupt_answer(ending.note, self._turn_key)
 
     async def finish_turn(self) -> None:
         """Ход закончен любым исходом: открытые вызовы закрываются, кружок

@@ -34,9 +34,11 @@ import uvicorn
 from acp.experimental.v2 import schema
 from aid_stand import NoConnectionStore, RelayStand
 from chainlit.session import WebsocketSession
+from psycopg import sql
 from pydantic import JsonValue, SecretStr
 
 from boba.aid.agent.chat import (
+    AgentLaunch,
     AskedQuestions,
     Question,
     StartedTurn,
@@ -57,7 +59,6 @@ from boba.aid.agent.config import (
 from boba.aid.agent.settings import (
     AgentProviderKind,
     AgentWorkdirs,
-    ChatAgentSettings,
     ModelFile,
     ProviderFile,
     SettingsFileBuilder,
@@ -66,6 +67,7 @@ from boba.aid.rendering.acp_view import SessionUpdate
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.chat.profiles import ReasoningReturn
 from boba.core.mcp_names import McpToolNames
+from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
 from boba.db.postgres.connection.auth import PasswordAuth
 from boba.identity.context import CallContexts
@@ -76,7 +78,6 @@ from boba.mcp_client.client import (
     McpServersConfig,
     StdioCommand,
 )
-from boba.runtime.config import ValueCipherConfig
 from boba.stand.names import StandNames
 from boba.stand.site import Stand
 from boba.stand.ui.fake_llm import (
@@ -141,11 +142,10 @@ class FakeModel:
     def base_url(self) -> str:
         return f"{self._scheme}://127.0.0.1:{self.port}/v1"
 
-    def chat_settings(
-        self, system_prompt: str = "You are the stand agent"
-    ) -> ChatAgentSettings:
-        return ChatAgentSettings(
-            model_name=MODEL_NAME,
+    def launch(self, system_prompt: str = "You are the stand agent") -> AgentLaunch:
+        """Заготовка запуска своего процесса агента с этой моделью."""
+        return AgentLaunch(
+            profile=MODEL_NAME,
             model=ModelFile(
                 provider=ProviderFile(
                     kind=AgentProviderKind.OPENAI,
@@ -166,6 +166,7 @@ class FakeModel:
                 reasoning_return=ReasoningReturn.NEVER,
             ),
             system_prompt=system_prompt,
+            mcp=None,
         )
 
 
@@ -208,12 +209,29 @@ class AgentHistoryStand:
             {"kind": "postgres", "schema": self.schema(), "postgres": self.postgres()}
         )
 
+    async def rows(self, session_id: str) -> int:
+        """Записи сессии session_id в истории агента."""
+        pool = AsyncPostgresPool(self.postgres())
+        await pool.open()
+        try:
+            async with pool.connection() as conn:
+                cursor = await conn.execute(
+                    sql.SQL(
+                        "select count(*) from {}.history where session_id = %s"
+                    ).format(sql.Identifier(self.schema())),
+                    (session_id,),
+                )
+                row = await cursor.fetchone()
+        finally:
+            await pool.close()
+
+        assert row is not None
+
+        return int(row[0])
+
 
 class AgentStand:
     """Конфиг [agent] под тест: модуль агента интерпретатором теста."""
-
-    SETTINGS_CIPHER: ClassVar[str] = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
-    """Ключ шифрования слоя чата стенда: 32 байта в base64."""
 
     def __init__(self, private_dir: Path, history: PostgresAgentHistory) -> None:
         self._private_dir = private_dir
@@ -243,9 +261,6 @@ class AgentStand:
             public_url=public_url,
             seal_ttl_sec=600,
             question_timeout_sec=600,
-            settings_table=ValueCipherConfig.model_validate(
-                {"cipher": self.SETTINGS_CIPHER}
-            ),
         )
 
 
@@ -443,9 +458,10 @@ class Agents:
         servers: Sequence[schema.AcpMcpServer] = (),
     ) -> AgentProcess:
         """Процесс агента с объявлениями servers в каждой сессии."""
-        chat = self._model.chat_settings()
+        launch = self._model.launch()
+        document = self._builder.build(launch.profile, launch.model, None, {})
         workdir = AgentWorkdirs(self._root).create(thread)
-        workdir.write(self._builder.build(chat, None, {}), chat.system_prompt)
+        workdir.write(document, launch.system_prompt)
         questions = AskedQuestions(updates)
         process = AgentProcess(
             self._stand.command(),

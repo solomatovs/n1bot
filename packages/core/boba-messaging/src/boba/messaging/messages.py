@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from enum import StrEnum
 from typing import Annotated, ClassVar, Literal, Self
 from uuid import UUID
@@ -34,6 +35,7 @@ __all__ = [
     "RunStateChanged",
     "SignInRefreshRequested",
     "StopRequested",
+    "ThreadActive",
     "ThreadChanged",
     "ThreadRewound",
     "TurnFinished",
@@ -67,6 +69,7 @@ class MessageKind(StrEnum):
     WORKFLOW_CHANGED = "workflow_changed"
     THREAD_REWOUND = "thread_rewound"
     THREAD_CHANGED = "thread_changed"
+    THREAD_ACTIVE = "thread_active"
     WORKFLOW_DRAFT_CHANGED = "workflow_draft_changed"
     FEEDBACK_CHANGED = "feedback_changed"
 
@@ -304,6 +307,15 @@ class ThreadChanged(Message):
     action: ChangeAction
 
 
+class ThreadActive(Message):
+    """Агент треда thread_id записал историю: updated_at треда в базе сдвинут
+    к updated_at, списки тредов пользователя ставят тред по нему."""
+
+    kind: Literal[MessageKind.THREAD_ACTIVE] = MessageKind.THREAD_ACTIVE
+    thread_id: str = Field(min_length=1)
+    updated_at: datetime
+
+
 class WorkflowDraftChanged(Message):
     """Черновик workflow записан (revision) или сброшен к сохранённому; by_sid —
     сокет вкладки, которая его изменила, чтобы она не применяла своё же изменение.
@@ -354,6 +366,7 @@ AnyMessage = Annotated[
     | RunListChanged
     | ThreadRewound
     | ThreadChanged
+    | ThreadActive
     | WorkflowDraftChanged
     | FeedbackChanged
     | WorkflowChanged,
