@@ -350,6 +350,9 @@ class RetiredThreads:
     """
 
     PROFILE: ClassVar[str] = "retired"
+    UNSAVED: ClassVar[str] = "unsaved"
+    """Метка в meta до ухода вкладки: запись disconnect её заменит, и
+    ожидание не примет за неё профиль, записанный ещё ходом."""
     SAVE_WAIT_SEC: ClassVar[float] = 15.0
 
     def __init__(self, stand_db: StandDatabase) -> None:
@@ -367,7 +370,10 @@ class RetiredThreads:
         return RetiredThread(thread_id=thread_id, probe=probe)
 
     def saved_on_leave(self, chat: ChatPage, thread_id: str, profile: str) -> None:
-        """Вкладка уходит со страницы; в meta треда должен лечь profile."""
+        """Вкладка уходит со страницы; в meta треда должен лечь profile.
+        Профиль, записанный раньше, ожидание не обманет: перед уходом в meta
+        стоит метка, и её заменяет только запись disconnect."""
+        self._db.set_thread_profile(thread_id, self.UNSAVED)
         chat.page.goto("about:blank")
 
         deadline = time.monotonic() + self.SAVE_WAIT_SEC
