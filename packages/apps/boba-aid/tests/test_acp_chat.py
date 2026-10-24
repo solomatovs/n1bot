@@ -662,6 +662,15 @@ class ChatSocket:
             self._task_ends.put_nowait(None)
 
 
+def _stopped_labels(texts: UiText) -> set[str]:
+    """Подписи контейнера остановленного хода с любым разумным числом шагов."""
+    labels: set[str] = set()
+    for count in range(1, 20):
+        labels.add(texts.text(StepText.STOPPED_STEPS.value, count=count))
+
+    return labels
+
+
 @pytest.fixture
 async def tab(app: StandProcess, cookie: str) -> AsyncIterator[ChatSocket]:
     socket = ChatSocket(app, cookie, str(uuid4()))
@@ -891,9 +900,12 @@ class TestConversation:
         await tab.wait_task_end()
 
         assert not tab.errors(), (tab.errors(), app.tail(80))
-        stopped = app_texts.text(StepText.STOPPED.value)
-        notes = [m for m in tab.messages() if stopped in str(m.get("output"))]
-        assert notes, tab.names()
+        labels = _stopped_labels(app_texts)
+        containers = [s for s in tab.steps().values() if s.get("name") in labels]
+        assert containers, tab.frames()
+        note = app_texts.text(StepText.STOPPED.value)
+        notes = [m for m in tab.messages() if note in str(m.get("output"))]
+        assert not notes, "a turn with steps shows its stop in the container label"
 
     async def test_exited_agent_is_replaced_for_the_next_question(
         self, app: StandProcess, tab: ChatSocket
@@ -1053,9 +1065,9 @@ class TestHistory:
     async def test_resumed_tab_keeps_the_stop_and_the_failure_of_turns(
         self, app: StandProcess, cookie: str, app_texts: UiText
     ) -> None:
-        """Пометка остановки у ответа и шаг сбоя модели — часть истории:
-        вкладка, открывшая тред заново, получает те же шаги с тем же текстом,
-        что видела живая."""
+        """Подпись остановленного хода у контейнера и шаг сбоя модели —
+        часть истории: вкладка, открывшая тред заново, получает те же шаги с
+        тем же текстом, что видела живая."""
         tab = ChatSocket(app, cookie, str(uuid4()))
         await tab.open()
         await tab.send(f"go {ScenarioName.LONG.value}")
@@ -1068,11 +1080,11 @@ class TestHistory:
         live = tab.steps()
         await tab.end_session()
 
-        stopped = app_texts.text(StepText.STOPPED.value)
+        labels = _stopped_labels(app_texts)
         marked: list[str] = []
         failed: list[str] = []
         for step_id, step in live.items():
-            if stopped in str(step.get("output")):
+            if step.get("name") in labels:
                 marked.append(step_id)
 
             if step.get("isError"):
@@ -1089,6 +1101,8 @@ class TestHistory:
                 assert step_id in replayed, (step_id, again.trace())
                 shown = replayed[step_id].get("output")
                 assert shown == live[step_id].get("output"), (step_id, shown)
+                named = replayed[step_id].get("name")
+                assert named == live[step_id].get("name"), (step_id, named)
                 assert replayed[step_id].get("isError") == live[step_id].get("isError")
         finally:
             await again.end_session()
