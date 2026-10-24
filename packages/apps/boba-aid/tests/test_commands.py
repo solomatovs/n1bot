@@ -1,6 +1,6 @@
 """Команды «/» вкладки настоящим путём: агент треда (`boba --stdio` с фейковой
 моделью), серверы MCP профиля — обычный сервер на SDK mcp (standard_server.py)
-по HTTP с расширением io.boba/commands и по stdio без него — и реестр команд
+по HTTP с расширением com.boba/commands и по stdio без него — и реестр команд
 вкладки, который рисует меню и окна в приёмник теста.
 
 Проверяется: меню собирается из команд чата, агента (ACP
@@ -81,7 +81,7 @@ pytestmark = pytest.mark.anyio
 SCHEMA = StandNames().of_tree("commands")
 CONNECTIONS_SCHEMA = StandNames().of_tree("commands_conn")
 EXTENDED = "cmds"
-"""Сервер с расширением io.boba/commands и секцией apps."""
+"""Сервер с расширением com.boba/commands и секцией apps."""
 PLAIN = "plain"
 """Тот же сервер без расширения, тоже с секцией apps."""
 CONSOLE = "orders_console"
@@ -464,7 +464,7 @@ class TestRoutes:
     async def test_marked_prompt_of_a_server_with_the_extension_opens_its_app(
         self, tab: CommandsTab, model: FakeModel
     ) -> None:
-        """Сервер и чат объявили io.boba/commands, промпт помечен: вкладка
+        """Сервер и чат объявили com.boba/commands, промпт помечен: вкладка
         сама зовёт tools/call инструмента пометки и показывает его
         приложение; модель не участвует, шаг вопроса снят."""
         name = f"mcp__{EXTENDED}__{CONSOLE}"
