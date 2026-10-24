@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-toolkit"
-version = "0.0.30.dev1"
+version = "0.0.30.dev2"
 description = "Основание инструментов: песочница bwrap, workspace-образы, отмена хода и контракт результата."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-core==0.0.30.dev1",
-    "boba-cancellation==0.0.30.dev1",
+    "boba-core==0.0.30.dev2",
+    "boba-cancellation==0.0.30.dev2",
     "mcp-types>=2.3,<3",
     "pydantic-core>=2.41,<3",
     "pydantic>=2.12,<3",
@@ -20,8 +20,8 @@ arrow = [
     "pyarrow>=25,<26",
 ]
 dev = [
-    "boba-stand==0.0.30.dev1",
-    "boba-stand-core==0.0.30.dev1",
+    "boba-stand==0.0.30.dev2",
+    "boba-stand-core==0.0.30.dev2",
     "pyarrow>=25,<26",
     "pytest>=9.1,<10",
 ]
