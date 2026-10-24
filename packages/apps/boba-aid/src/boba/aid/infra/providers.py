@@ -25,7 +25,6 @@ from boba.aid.agent.chat import (
 from boba.aid.agent.config import AgentConfig
 from boba.aid.agent.feed import AgentFeeds, BusParts
 from boba.aid.agent.relay import ChatTools, McpRegistrations, McpRelay
-from boba.aid.agent.settings import AgentSettingsTable
 from boba.aid.canvas.remote import RemoteJournals
 from boba.aid.canvas.tools import CanvasOpener
 from boba.aid.chat.ui_text import UiText
@@ -42,7 +41,6 @@ from boba.auth import JwtTokens
 from boba.chat.profiles import ChatProfiles, SelectedProfile
 from boba.connection_broker.sealing import CallSealing
 from boba.connection_broker.user_connections import ArmedConnections
-from boba.connections.secrets import SecretCipher
 from boba.db.postgres import AsyncPostgresPool, PostgresSchema
 from boba.identity.api import UserRows
 from boba.identity.context import CallContexts
@@ -159,11 +157,10 @@ def remote_journals() -> RemoteJournals:
 
 class HarnessSchema(StrEnum):
     """Пакеты, чьи файлы schema/*.sql чат применяет в схеме приложения на
-    старте: таблицы чата и шины, соединения и гранты, настройки агента."""
+    старте: таблицы чата и шины, соединения и гранты."""
 
     RUNTIME = "boba.runtime"
     CONNECTIONS = "boba.connection_broker"
-    AGENT_SETTINGS = "boba.aid.agent"
 
 
 async def harness_storage(
@@ -220,17 +217,6 @@ def agent_config(
     return app_config.agent
 
 
-def agent_settings_table(
-    app_config: Annotated[AppConfig, Depends(get_app_config)],
-    pool: Annotated[AsyncPostgresPool, Depends(runtime.postgres_pool)],
-    storage_ready: Annotated[None, Depends(harness_storage)],
-) -> AgentSettingsTable:
-    """Слой чата настроек агента в схеме чата; секреты строк — под ключом
-    [agent.settings_table].cipher."""
-    cipher = SecretCipher(app_config.agent.settings_table.cipher.get_secret_value())
-    return AgentSettingsTable(app_config.postgres, app_config.db_schema, cipher, pool)
-
-
 def mcp_registrations() -> McpRegistrations:
     """Регистрации серверов процессов агента: один реестр на инстанс чата."""
     return McpRegistrations()
@@ -277,19 +263,22 @@ def mcp_relay(  # noqa: PLR0913 — ретранслятор собираетс�
     return McpRelay(registrations, servers, sealing, contexts, chat, canvas, bus, own)
 
 
-def agent_launcher(
+def agent_launcher(  # noqa: PLR0913 — запуск собирается всеми входами процесса
     app_config: Annotated[AppConfig, Depends(get_app_config)],
     config: Annotated[AgentConfig, Depends(agent_config)],
-    table: Annotated[AgentSettingsTable, Depends(agent_settings_table)],
+    profiles: Annotated[ChatProfiles, Depends(chat_profiles_registry)],
+    users: Annotated[UsersTable, Depends(runtime.users_table)],
     registrations: Annotated[McpRegistrations, Depends(mcp_registrations)],
     relay: Annotated[McpRelay, Depends(mcp_relay)],
 ) -> AgentLauncher:
     """Запуск процессов агента: регистрации серверов профиля и чата, файл
-    настроек, рукопожатие; mcp/message процессов отвечает ретранслятор."""
+    настроек по текущему профилю, рукопожатие; mcp/message процессов отвечает
+    ретранслятор. Профили конфига и строки users нужны удалению сессии треда."""
     return AgentLauncher(
         config,
         app_config.mcp,
-        table,
+        profiles,
+        users,
         registrations,
         relay,
         version("boba-aid"),
@@ -309,10 +298,9 @@ def thread_agents_index() -> ThreadAgentsIndex:
 
 def thread_deleter(
     launcher: Annotated[AgentLauncher, Depends(agent_launcher)],
-    table: Annotated[AgentSettingsTable, Depends(agent_settings_table)],
     index: Annotated[ThreadAgentsIndex, Depends(thread_agents_index)],
 ) -> ThreadDeleter:
-    return ThreadDeleter(launcher, table, index)
+    return ThreadDeleter(launcher, index)
 
 
 def agent_feeds(  # noqa: PLR0913 — фабрика собирается всеми входами процесса

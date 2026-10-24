@@ -161,8 +161,6 @@
     seal_ttl_sec = 600
     question_timeout_sec = 3600
     process      = "${agent_launch.${env.agent_mode}}"
-    [agent.settings_table]
-        cipher = "${keys.encryption}"
     [agent.history]
         kind     = "postgres"
         schema   = "boba"
