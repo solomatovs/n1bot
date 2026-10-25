@@ -573,25 +573,26 @@ class Tunnel:
         left: tuple[asyncio.StreamReader, asyncio.StreamWriter],
         right: tuple[asyncio.StreamReader, asyncio.StreamWriter],
     ) -> None:
-        await asyncio.gather(
-            self._pump(left[0], right[1]), self._pump(right[0], left[1])
-        )
+        await asyncio.gather(self._pump(left, right), self._pump(right, left))
         right[1].close()
         left[1].close()
 
     async def _pump(
-        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+        self,
+        source: tuple[asyncio.StreamReader, asyncio.StreamWriter],
+        target: tuple[asyncio.StreamReader, asyncio.StreamWriter],
     ) -> None:
         try:
-            while chunk := await reader.read(self.CHUNK):
-                writer.write(chunk)
-                await writer.drain()
+            while chunk := await source[0].read(self.CHUNK):
+                target[1].write(chunk)
+                await target[1].drain()
 
-            if writer.can_write_eof():
-                writer.write_eof()
+            if target[1].can_write_eof():
+                target[1].write_eof()
         except ConnectionError:
-            # сброс одной из сторон — конец туннеля; закрывает его join
-            return
+            # сброс одной стороны рвёт обе: иначе другая ждёт ответа, которого не будет
+            source[1].transport.abort()
+            target[1].transport.abort()
 
 
 class ProxyServer:
