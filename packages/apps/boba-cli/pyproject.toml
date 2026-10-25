@@ -4,27 +4,27 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-cli"
-version = "0.0.30.dev5"
+version = "0.0.30.dev6"
 description = "Boba cli: процесс агента — режимы boba --stdio (Agent Client Protocol через стандартные потоки) и boba serve (агент как служба по сети с входом OAuth)."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-core==0.0.30.dev5",
+    "boba-core==0.0.30.dev6",
     "agent-client-protocol==1.0.0rc3",
-    "boba-agent==0.0.30.dev5",
-    "boba-cancellation==0.0.30.dev5",
-    "boba-history-jsonl==0.0.30.dev5",
-    "boba-history-postgres==0.0.30.dev5",
-    "boba-db-postgres==0.0.30.dev5",
-    "boba-llm==0.0.30.dev5",
-    "boba-llm-http==0.0.30.dev5",
-    "boba-llm-onnx==0.0.30.dev5",
-    "boba-transport-acp==0.0.30.dev5",
-    "boba-access==0.0.30.dev5",
-    "boba-auth==0.0.30.dev5",
-    "boba-identity==0.0.30.dev5",
-    "boba-ldap==0.0.30.dev5",
-    "boba-oauth==0.0.30.dev5",
-    "boba-runtime==0.0.30.dev5",
+    "boba-agent==0.0.30.dev6",
+    "boba-cancellation==0.0.30.dev6",
+    "boba-history-jsonl==0.0.30.dev6",
+    "boba-history-postgres==0.0.30.dev6",
+    "boba-db-postgres==0.0.30.dev6",
+    "boba-llm==0.0.30.dev6",
+    "boba-llm-http==0.0.30.dev6",
+    "boba-llm-onnx==0.0.30.dev6",
+    "boba-transport-acp==0.0.30.dev6",
+    "boba-access==0.0.30.dev6",
+    "boba-auth==0.0.30.dev6",
+    "boba-identity==0.0.30.dev6",
+    "boba-ldap==0.0.30.dev6",
+    "boba-oauth==0.0.30.dev6",
+    "boba-runtime==0.0.30.dev6",
     "fastmcp-slim[server]>=4.0,<5",
     "httpx>=0.28,<1",
     "mcp>=2.3,<3",
@@ -41,9 +41,9 @@ boba = "boba.cli.app:cli"
 
 [project.optional-dependencies]
 dev = [
-    "boba-stand==0.0.30.dev5",
-    "boba-config==0.0.30.dev5",
-    "boba-krb==0.0.30.dev5",
+    "boba-stand==0.0.30.dev6",
+    "boba-config==0.0.30.dev6",
+    "boba-krb==0.0.30.dev6",
     "httpx2>=2.10,<3",
     "omegaconf>=2.3,<3",
     "pytest>=9.1,<10",

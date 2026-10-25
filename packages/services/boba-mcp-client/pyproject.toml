@@ -4,16 +4,16 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-mcp-client"
-version = "0.0.30.dev5"
+version = "0.0.30.dev6"
 description = "Boba mcp client: подключения к любому MCP-серверу — streamable HTTP, SSE или stdio, списки инструментов и вызовы с ответом сервера как есть."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-core==0.0.30.dev5",
-    "boba-toolkit==0.0.30.dev5",
-    "boba-canvas==0.0.30.dev5",
-    "boba-auth==0.0.30.dev5",
-    "boba-sandbox==0.0.30.dev5",
-    "boba-connections==0.0.30.dev5",
+    "boba-core==0.0.30.dev6",
+    "boba-toolkit==0.0.30.dev6",
+    "boba-canvas==0.0.30.dev6",
+    "boba-auth==0.0.30.dev6",
+    "boba-sandbox==0.0.30.dev6",
+    "boba-connections==0.0.30.dev6",
     "mcp>=2.3,<3",
     "anyio>=4,<5",
     "httpx2>=2.10,<3",
@@ -22,10 +22,10 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "boba-stand==0.0.30.dev5",
-    "boba-db-postgres==0.0.30.dev5",
-    "boba-runtime==0.0.30.dev5",
-    "boba-config==0.0.30.dev5",
+    "boba-stand==0.0.30.dev6",
+    "boba-db-postgres==0.0.30.dev6",
+    "boba-runtime==0.0.30.dev6",
+    "boba-config==0.0.30.dev6",
     "httpx>=0.28,<1",
     "pytest>=9.1,<10",
     "pytest-xdist>=3.6,<4",
