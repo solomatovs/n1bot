@@ -26,7 +26,7 @@ ContextAttachments строит записи, но в сессию их не к�
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import ClassVar
@@ -261,10 +261,6 @@ class Announced(HistoryFold):
         границы сжатия, затем ссылки tool_reference в результатах."""
         return list(self._discovered)
 
-    def recorded(self) -> Mapping[str, SnapshotTool]:
-        """Определения загруженных отложенных, записанные разговором по имени."""
-        return self._definitions
-
     def deferred_loaded(self) -> Sequence[SnapshotTool]:
         """Отложенные инструменты, которые уходят в запрос: загруженные,
         объявленные и записанные, в порядке загрузки."""
@@ -290,21 +286,32 @@ class Announced(HistoryFold):
 
         return frozenset(names)
 
-    def deferred_unrecorded(self) -> Sequence[str]:
-        """Загруженные и объявленные отложенные, чьих определений разговор
-        ещё не записал, в порядке загрузки."""
+    def deferred_selected(self) -> Sequence[str]:
+        """Загруженные и объявленные отложенные в порядке загрузки, записаны
+        их определения или нет."""
         pool = self.deferred_pool()
-        missing: list[str] = []
+        selected: list[str] = []
         for name in self._discovered:
             if name not in pool:
                 continue
 
-            if name in self._definitions:
+            selected.append(name)
+
+        return selected
+
+    def unrecorded(self, tools: Iterable[SnapshotTool]) -> Iterator[SnapshotTool]:
+        """Определения, которых разговор не записал: нового имени или
+        записанного иначе."""
+        for tool in tools:
+            recorded = self._definitions.get(tool.name)
+            if recorded is None:
+                yield tool
                 continue
 
-            missing.append(name)
+            if recorded.same(tool):
+                continue
 
-        return missing
+            yield tool
 
     def announced_instructions(self) -> Mapping[str, str]:
         """Объявленные инструкции серверов MCP по имени сервера."""

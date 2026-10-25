@@ -18,7 +18,6 @@ from test_agent_compaction import journal
 from boba.agent.attachments import Announced
 from boba.agent.builder import RequestBuilder
 from boba.agent.history import SessionId
-from boba.agent.mcp import ToolCard
 from boba.agent.queue import QueueEntry, QueueKind
 from boba.agent.records import (
     AttachmentRecord,
@@ -136,29 +135,6 @@ async def agents(server: FakeServer, tmp_path: Path) -> AsyncIterator[StandAgent
         yield stand
     finally:
         await stand.aclose()
-
-
-class RenamedTools(StandTools):
-    """Сервер стенда, у которого после перезапуска сменилось описание lookup."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        cards: list[ToolCard] = []
-        for card in self._cards:
-            if card.name != StandToolName.LOOKUP.full:
-                cards.append(card)
-                continue
-
-            cards.append(
-                ToolCard(
-                    name=card.name,
-                    description="stand tool lookup, described anew",
-                    parameters=card.parameters,
-                    hints=card.hints,
-                )
-            )
-
-        self._cards = cards
 
 
 class TestDeferredConversation:
@@ -388,8 +364,10 @@ class TestResume:
     async def test_resume_sends_the_same_tools_byte_for_byte(
         self, server: FakeServer, agents: StandAgents
     ) -> None:
-        """Возобновление собирает запрос из истории: определение lookup —
-        записанное, хотя сервер описывает его уже иначе."""
+        """Возобновление собирает запрос из истории: тот же сервер — те же
+        байты и ни одной новой записи определений. Сервер, описавший
+        инструмент иначе, — новая запись (test_request_replay,
+        TestDefinitionChanges)."""
         served = Served(
             agents.agent(
                 agents.profile(Protocol.OPENAI),
@@ -408,7 +386,7 @@ class TestResume:
             agents.agent(
                 agents.profile(Protocol.OPENAI),
                 Collected(),
-                tools=RenamedTools(),
+                tools=StandTools(),
                 always_load=(),
             )
         )

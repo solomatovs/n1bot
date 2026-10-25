@@ -53,6 +53,7 @@ from pydantic import (
 )
 from pydantic.alias_generators import to_camel
 
+from boba.agent.profile import ReasoningReturn
 from boba.llm.chat import LlmTrouble
 
 __all__ = [
@@ -581,6 +582,13 @@ class SnapshotTool(PayloadModel):
         """Текст описания для оценки места в окне."""
         return f"{self.name}: {self.description}"
 
+    def same(self, other: SnapshotTool) -> bool:
+        """То же определение на проводе: сравнение по JSON, где кортеж и
+        список схемы — одно и то же."""
+        return self.model_dump(mode="json", by_alias=True) == other.model_dump(
+            mode="json", by_alias=True
+        )
+
 
 class SnapshotSkill(PayloadModel):
     name: str
@@ -588,7 +596,10 @@ class SnapshotSkill(PayloadModel):
 
 
 class PromptSnapshot(PayloadModel):
-    """Снимок: системный промпт секциями, инструменты, скиллы, модель, режим."""
+    """Снимок: системный промпт секциями, инструменты, скиллы, модель и
+    форма запроса — подача вложений (system_turns) и возврат рассуждений
+    (reasoning_return). Сборщик берёт форму отсюда, а не из профиля: запрос
+    повторяется по истории, смена профиля пишется новым снимком."""
 
     type: Literal[AttachmentKind.PROMPT_SNAPSHOT] = AttachmentKind.PROMPT_SNAPSHOT
     system_prompt: Sequence[str]
@@ -596,6 +607,13 @@ class PromptSnapshot(PayloadModel):
     skills: Sequence[SnapshotSkill] = ()
     model: str
     system_turns: bool
+    reasoning_return: ReasoningReturn = ReasoningReturn.NEVER
+
+    def same(self, other: PromptSnapshot) -> bool:
+        """Тот же снимок на проводе: сравнение по JSON."""
+        return self.model_dump(mode="json", by_alias=True) == other.model_dump(
+            mode="json", by_alias=True
+        )
 
     def announce(self, fold: HistoryFold) -> None:
         fold.prompt_snapshot(self)

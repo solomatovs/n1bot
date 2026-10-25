@@ -659,7 +659,8 @@ class TurnLoop:
             today=self._attachments.today(),
         )
         pack = self._compactor.pack(self._session, summarized, compact_job)
-        fit = self._estimator.prefix(self._fresh_snapshot()) + pack.post_tokens
+        fresh = self._fresh_snapshot(self._system_prompt)
+        fit = self._estimator.prefix(fresh) + pack.post_tokens
         window = self._profile.effective_window()
         if fit > window:
             detail = (
@@ -718,7 +719,7 @@ class TurnLoop:
         """Снимок, по которому пойдёт запрос: из истории либо свежий."""
         snapshot = Announced(self._session.conversation()).snapshot()
         if snapshot is None:
-            return self._fresh_snapshot()
+            return self._fresh_snapshot(self._system_prompt)
 
         return snapshot
 
@@ -856,16 +857,15 @@ class TurnLoop:
             await self._keeper.add(record)
 
         await self._announce_tools(announced)
+        await self._renew_snapshot(announced)
         await self._announce_instructions(announced)
         await self._announce_skills(announced)
 
     async def _announce_tools(self, announced: Announced) -> None:
         """Набор инструментов изменился относительно объявленного: разница
-        именами вложением deferred_tools_delta; набор с полным определением
-        сменился — новый снимок. Без снимка в разговоре его объявит
-        `_announce_context`, а вложение называет только отложенные.
-        Отложенный, которого разговор уже объявлял и снимал, объявляется
-        вернувшимся."""
+        именами вложением deferred_tools_delta. Без снимка в разговоре
+        вложение называет только отложенные. Отложенный, которого разговор
+        уже объявлял и снимал, объявляется вернувшимся."""
         inline: list[str] = []
         for tool in self._catalog.inline():
             inline.append(tool.name)
@@ -893,23 +893,30 @@ class TurnLoop:
             surfaced=surfaced,
             search=bool(deferred),
         )
-        if not change.empty():
-            record = self._attachments.deferred_delta(
-                self._session.last_chain_uuid(), change
-            )
-            await self._keeper.add(record)
-
-        if inline_known is None:
+        if change.empty():
             return
 
-        if inline_known == frozenset(inline):
-            return
-
-        await self._keeper.add(
-            self._attachments.snapshot(
-                self._session.last_chain_uuid(), self._fresh_snapshot()
-            )
+        record = self._attachments.deferred_delta(
+            self._session.last_chain_uuid(), change
         )
+        await self._keeper.add(record)
+
+    async def _renew_snapshot(self, announced: Announced) -> None:
+        """Снимок разговора разошёлся с живым: определения инструментов с
+        полным определением (имя, описание, схема), форма запроса профиля,
+        модель, скиллы — новый снимок с прежним системным промптом. Запрос
+        собирается из снимка, и любая смена видна в истории записью. Без
+        снимка в разговоре его запишет `_announce_context`."""
+        snapshot = announced.snapshot()
+        if snapshot is None:
+            return
+
+        renewed = self._fresh_snapshot(snapshot.system_prompt)
+        if renewed.same(snapshot):
+            return
+
+        record = self._attachments.snapshot(self._session.last_chain_uuid(), renewed)
+        await self._keeper.add(record)
 
     async def _announce_instructions(self, announced: Announced) -> None:
         """Инструкции подключённых серверов MCP относительно объявленных в
@@ -939,13 +946,14 @@ class TurnLoop:
         )
         await self._keeper.add(record)
 
-    def _fresh_snapshot(self) -> PromptSnapshot:
+    def _fresh_snapshot(self, system_prompt: Sequence[str]) -> PromptSnapshot:
         return PromptSnapshot(
-            system_prompt=self._system_prompt,
+            system_prompt=system_prompt,
             tools=self._catalog.inline(),
             skills=self._skills,
             model=self._profile.model_id,
             system_turns=self._profile.system_turns,
+            reasoning_return=self._profile.reasoning_return,
         )
 
     async def _announce_context(self) -> PromptSnapshot:
@@ -961,7 +969,7 @@ class TurnLoop:
 
         snapshot = announced.snapshot()
         if snapshot is None:
-            snapshot = self._fresh_snapshot()
+            snapshot = self._fresh_snapshot(self._system_prompt)
             record = self._attachments.snapshot(
                 self._session.last_chain_uuid(), snapshot
             )
@@ -977,27 +985,37 @@ class TurnLoop:
         return snapshot
 
     async def _record_deferred(self) -> None:
-        """Определения загруженных отложенных инструментов, которых история
-        ещё не записала, — записью deferred_tools_record из живого набора:
-        запрос собирается из истории, и возобновление шлёт те же байты.
-        Инструмент, которого в живом наборе уже нет, не записывается и в
-        запрос не уходит."""
-        missing = Announced(self._session.conversation()).deferred_unrecorded()
-        if not missing:
+        """Загруженные отложенные, чьё живое определение история не
+        записала или записала иначе, — записью deferred_tools_record до
+        запроса: запрос собирается из истории, и возобновление шлёт те же
+        байты. Инструмент, которого в живом наборе уже нет, не
+        записывается; в запрос уходит записанное определение, пока разница
+        набора не снимет его."""
+        announced = Announced(self._session.conversation())
+        selected = announced.deferred_selected()
+        if not selected:
             return
 
         live: dict[str, SnapshotTool] = {}
         for tool in self._catalog.deferred():
             live[tool.name] = tool
 
-        entries: list[SnapshotTool] = []
-        for name in missing:
+        current: list[SnapshotTool] = []
+        for name in selected:
             tool = live.get(name)
             if tool is None:
                 continue
 
-            entries.append(tool)
+            current.append(tool)
 
+        await self._record_definitions(announced, current)
+
+    async def _record_definitions(
+        self, announced: Announced, tools: Sequence[SnapshotTool]
+    ) -> None:
+        """Определения, которых разговор не записал, — одной записью
+        deferred_tools_record; записанное так же не повторяется."""
+        entries = list(announced.unrecorded(tools))
         if not entries:
             return
 
@@ -1106,7 +1124,10 @@ class TurnLoop:
         return planned
 
     async def _write_results(self, results: Sequence[CallResult]) -> None:
-        """Результаты — по записи `user` на вызов, в порядке вызовов."""
+        """Результаты — по записи `user` на вызов, в порядке вызовов; за
+        ними — определения инструментов, которые загрузил ToolSearch, какими
+        их нашёл поиск: история знает их раньше следующего запроса, в том
+        числе запроса пересказа."""
         for result in results:
             is_error: bool | None = None
             if result.is_error:
@@ -1131,18 +1152,29 @@ class TurnLoop:
             )
             await self._keeper.add(record)
 
+        loaded: dict[str, SnapshotTool] = {}
+        for result in results:
+            for tool in result.loaded:
+                loaded[tool.name] = tool
+
+        if not loaded:
+            return
+
+        announced = Announced(self._session.conversation())
+        await self._record_definitions(announced, list(loaded.values()))
+
     @staticmethod
     def _result_content(
         result: CallResult,
     ) -> str | Sequence[TextBlock | ToolReferenceBlock]:
         """Текст результата; у результата со ссылками — блоки tool_reference,
         затем текст, если он есть."""
-        if not result.references:
+        if not result.loaded:
             return result.text
 
         blocks: list[TextBlock | ToolReferenceBlock] = []
-        for name in result.references:
-            blocks.append(ToolReferenceBlock(tool_name=name))
+        for tool in result.loaded:
+            blocks.append(ToolReferenceBlock(tool_name=tool.name))
 
         if result.text:
             blocks.append(TextBlock(text=result.text))
