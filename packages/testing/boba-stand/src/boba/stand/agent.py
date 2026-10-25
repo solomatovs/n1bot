@@ -445,6 +445,7 @@ class StandAgents:
         store: HistoryStore | None = None,
         always_load: Sequence[str] | None = None,
         record_requests: bool = False,
+        verify_requests: bool = True,
     ) -> Agent:
         """Агент на стенде; always_load None — все инструменты StandTools
         уходят полным определением: проверки, которые не про отложенные
@@ -452,7 +453,8 @@ class StandAgents:
         между повторами и с результатом инструмента до целого окна: тесты
         сжатия переполняют малое окно стенда одним большим результатом.
         record_requests — каждый запрос к модели пишется в журнал записью
-        api-request."""
+        api-request; verify_requests — перед отправкой запрос пересобирается
+        из журнала, прочитанного из хранилища, и сверяется с отправляемым."""
         if limits is None:
             limits = TurnLimits(
                 retry_delays_sec=(0.0, 0.0, 0.0), tool_result_window_share=1.0
@@ -487,6 +489,7 @@ class StandAgents:
             clock=clock,
             always_load=always_load,
             record_requests=record_requests,
+            verify_requests=verify_requests,
         )
 
         return Agent(parts)
