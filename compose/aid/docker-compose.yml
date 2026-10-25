@@ -31,6 +31,7 @@ services:
       - ./data:/app/boba/data:rw
     ports:
       - "8501"
+      - "8502"
 networks:
   default:
     name: ${BOBA_NETWORK}

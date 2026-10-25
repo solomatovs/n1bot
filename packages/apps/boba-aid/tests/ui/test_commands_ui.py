@@ -51,8 +51,8 @@ CONSOLE = f"mcp__{SERVER}__orders_console"
 
 
 @pytest.fixture(scope="module")
-def commands_host(stand_workdir: Path) -> Iterator[AppsHost]:
-    host = AppsHost(stand_workdir / "commands-host", ["--commands"])
+def commands_host() -> Iterator[AppsHost]:
+    host = AppsHost(["--commands"])
     try:
         host.await_listening()
         yield host

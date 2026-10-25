@@ -398,7 +398,7 @@ class TestToolSource:
     REQUEST: ClassVar[ToolSourceRequest] = ToolSourceRequest(
         session_id="s-1",
         tool_call_id="call-1",
-        server_id="boba_general",
+        server_id="aid_all",
         name="pg_query",
         arguments={"sql": "select 1"},
     )

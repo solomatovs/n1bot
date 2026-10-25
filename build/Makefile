@@ -47,8 +47,8 @@ PREFIX_aid       := /aid
 SANDBOX_aid      :=
 MODELS_aid       :=
 PARTS_aid        := app_root/public app_root/public/page.js app_root/public/vendor \
-                    app_root/ui/index.html app_root/ui/index.js app_root/mcp-apps/sandbox.html \
-                    app_root/mcp-apps/fonts/inter/files
+                    app_root/public/vendor/inter/files \
+                    app_root/ui/index.html app_root/ui/index.js app_root/mcp-apps/sandbox.html
 # агента в образе чата нет: на выкатке чат ходит в службу агента (образ boba, boba serve)
 BUILD_ARGS_aid    =
 # фронт на хосте нужен только отладке чата: образ собирает его сам
