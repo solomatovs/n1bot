@@ -1,7 +1,7 @@
 - listbox "Suggestions":
   - group:
     - option "connections Show the connections granted to you" [selected]
-    - option "compact Compact the conversation into a summary — optional instructions for the summary"
+    - option "compact Compact the conversation into a summary — instructions"
     - option "mcp__cmds__greet Greets a person in the given style. — name style (plain|poem|pirate)"
     - option "mcp__cmds__ask_prompt Asks the client for more input instead of the messages."
     - option "mcp__cmds__orders_console Opens the orders console with the orders of the given status. — status"
