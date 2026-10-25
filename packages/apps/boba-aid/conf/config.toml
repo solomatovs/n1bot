@@ -317,7 +317,7 @@
 [session]
     auth_secret     = "${keys.session}"
     cookie          = "access_token"
-    cookie_samesite = "none"
+    cookie_samesite = "lax"
     session_ttl_sec = 86400
     session_max_sec = 604800
     generation      = ""
