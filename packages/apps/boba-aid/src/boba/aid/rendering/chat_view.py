@@ -833,6 +833,8 @@ class ChatView:
     """
 
     NAMESPACE: ClassVar[UUID] = UUID("6f9b1f4e-2f1a-4c1a-9a2f-1d3b5c7e9a11")
+    COMMANDS_AUTHOR: ClassVar[str] = "Chat"
+    """Подпись итогов команд, которые исполнила вкладка."""
     TEXT_FAMILY: ClassVar[str] = "text/"
     """Начало MIME текстовых ресурсов: неизвестный текст рисуется блоком кода."""
     TREE_BYTES: ClassVar[int] = 1 << 20
@@ -1090,6 +1092,53 @@ class ChatView:
         await self._sink.put(step)
         await self._pulse.bump()
         return step
+
+    async def command_text(self, text: str, key: str) -> Step:
+        """Итог команды, которую исполнила вкладка, текстом markdown —
+        сообщением основной ленты от имени чата под строкой вызова key."""
+        step = self._step(
+            self.COMMANDS_AUTHOR,
+            StepKind.ASSISTANT,
+            parent_id=None,
+            step_id=self.derive_id(self._thread_id, key, StepRole.ANSWER),
+        )
+        step.output = text
+        await self._sink.put(step)
+        await self._pulse.bump()
+        return step
+
+    async def command_app(
+        self,
+        app: ToolAppView,
+        key: str,
+        arguments: Mapping[str, Any],
+        result: Mapping[str, Any],
+        resource: Mapping[str, Any],
+    ) -> Step:
+        """Приложение, которое открыла команда вкладки, — сообщением основной
+        ленты с элементом ToolApp сразу с итогом вызова и ресурсом
+        приложения: элемент рисует его без resources/read."""
+        message = self._step(
+            self.COMMANDS_AUTHOR,
+            StepKind.ASSISTANT,
+            parent_id=None,
+            step_id=self.derive_id(self._thread_id, key, StepRole.APP_MESSAGE),
+        )
+        message.output = ""
+        message.metadata = {StepMeta.APP.value: True}
+        if self._sink.emits_elements:
+            element = self._elements.app(app, key, arguments)
+            element.thread_id = self._thread_id
+            if element_id := self.derive_id(self._thread_id, key, StepRole.APP):
+                element.id = element_id
+
+            element.props[AppProp.RESULT.value] = dict(result)
+            element.props[AppProp.RESOURCE.value] = dict(resource)
+            message.elements = [element]
+
+        await self._sink.put(message)
+        await self._pulse.bump()
+        return message
 
     async def error(self, text: str, key: str | None = None) -> Step:
         """Ошибка хода — тем же блоком, что пометка агента с важностью

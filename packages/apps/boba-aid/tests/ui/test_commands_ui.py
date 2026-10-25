@@ -6,9 +6,11 @@
 на своём источнике (AppsHost). Проверяется то, что видит пользователь:
 набранная «/» только что открытого чата открывает меню с командами чата,
 агента и сервера (подсказка аргументов — в описании); выбранная команда
-сервера открывает приложение карточкой во вкладке без хода модели и без
-строки вопроса в ленте; команда чата показывает таблицу соединений; команда
-агента `/compact` — ход без строки вопроса с шагом сжатия.
+сервера — строка вызова и карточка приложения без хода модели; после
+перезагрузки треда та же карточка рисуется из записи истории, вкладка не
+читает ресурс приложения у сервера; команда чата — строка вызова и таблица
+соединений, и после перезагрузки тоже; команда агента `/compact` — строка
+вызова и ход с шагом сжатия.
 
 Ошибки: своих не выпускает; расхождение — падение теста.
 """
@@ -24,7 +26,7 @@ import httpx
 import pytest
 from acp_stand import AppsHost
 from chat_ui import BOOT_TIMEOUT_SEC, OpenChat
-from playwright.sync_api import FrameLocator, Locator, Page, expect
+from playwright.sync_api import FrameLocator, Locator, Page, Request, WebSocket, expect
 
 from boba.stand.ui.chat_page import ChatPage, Selector, StepKind
 from boba.stand.ui.fake_llm import (
@@ -33,6 +35,7 @@ from boba.stand.ui.fake_llm import (
     ScenarioName,
     SummaryBook,
 )
+from boba.stand.ui.socket_log import StepField
 from boba.stand.ui.stand import (
     StandApp,
     StandConfig,
@@ -129,6 +132,35 @@ class CommandMenu:
         return card.frame_locator("iframe").first.frame_locator("iframe")
 
 
+class AppReads:
+    """Запросы вкладки к серверной части чата, которые просят ресурс
+    приложения (действие mcp_app_read) — по сокету и по HTTP; ведётся с
+    открытия треда."""
+
+    ACTION: ClassVar[str] = "mcp_app_read"
+
+    def __init__(self, page: Page) -> None:
+        self.seen: list[str] = []
+        page.on("websocket", self._socket)
+        page.on("request", self._request)
+
+    def _socket(self, socket: WebSocket) -> None:
+        socket.on("framesent", self._frame)
+
+    def _frame(self, payload: str | bytes) -> None:
+        text = str(payload)
+        if self.ACTION in text:
+            self.seen.append(text[:200])
+
+    def _request(self, request: Request) -> None:
+        body = request.post_data
+        if body is None:
+            return
+
+        if self.ACTION in body:
+            self.seen.append(f"{request.method} {request.url}: {body[:200]}")
+
+
 def model_requests(llm_port: int) -> int:
     """Сколько запросов получила фейковая модель."""
     reply = httpx.get(StandUrl.of(llm_port, FakeRoute.REQUESTS.value), timeout=5.0)
@@ -137,6 +169,7 @@ def model_requests(llm_port: int) -> int:
 
 
 class TestCommandMenu:
+    CONSOLE_OPEN: ClassVar[str] = "the orders console is open for new orders"
     COMPACTING: ClassVar[re.Pattern[str]] = re.compile(
         "Сжимаю контекст|Compacting the conversation"
     )
@@ -168,9 +201,10 @@ class TestCommandMenu:
     def test_app_command_opens_the_app_in_the_tab_without_the_model(
         self, commands_stand: StandProcess, open_chat: OpenChat, llm_port: int
     ) -> None:
-        """Выбранная команда сервера с расширением — карточка приложения
-        сразу с итогом вызова; модель вызова не видела, строки вопроса в
-        ленте нет."""
+        """Выбранная команда сервера с расширением — строка вызова и карточка
+        приложения сразу с итогом вызова; модель вызова не видела. Тред,
+        открытый заново другой вкладкой, рисует ту же карточку с тем же
+        итогом из записи истории — без запроса ресурса приложения."""
         menu = CommandMenu(open_chat(commands_stand, ""))
         menu.typed("orders_console")
         menu.item(CONSOLE).wait_for(timeout=CommandMenu.WAIT_MS)
@@ -179,18 +213,33 @@ class TestCommandMenu:
         menu.run(CONSOLE, "new")
         card = menu.card()
         result = menu.app(card).locator("#result")
-        result.get_by_text("the orders console is open for new orders").wait_for(
-            timeout=CommandMenu.WAIT_MS
-        )
+        result.get_by_text(self.CONSOLE_OPEN).wait_for(timeout=CommandMenu.WAIT_MS)
 
         questions = menu.chat.steps_of(StepKind.USER.value)
-        assert questions.count() == 0, menu.chat.dom()
+        expect(questions).to_have_count(1)
+        expect(questions.first).to_contain_text(f"/{CONSOLE} new")
         assert model_requests(llm_port) == asked
+
+        thread_id = menu.chat.log.thread_id()
+        shown = menu.chat.log.last_step(StepKind.ASSISTANT.value)
+        assert shown is not None, menu.chat.log.describe()
+        again = open_chat(commands_stand, "")
+        reads = AppReads(again.page)
+        again.open_thread(thread_id, str(shown[StepField.ID.value]))
+        reopened = CommandMenu(again)
+        replayed = reopened.app(reopened.card()).locator("#result")
+        replayed.get_by_text(self.CONSOLE_OPEN).wait_for(timeout=CommandMenu.WAIT_MS)
+
+        lines = again.steps_of(StepKind.USER.value)
+        expect(lines).to_have_count(1)
+        expect(lines.first).to_contain_text(f"/{CONSOLE} new")
+        assert reads.seen == [], reads.seen
 
     def test_chat_command_shows_the_connections_of_the_user(
         self, commands_stand: StandProcess, open_chat: OpenChat
     ) -> None:
-        """connections — таблица соединений пользователя сообщением вкладки."""
+        """connections — строка вызова и таблица соединений пользователя; тред,
+        открытый заново, показывает их же."""
         menu = CommandMenu(open_chat(commands_stand, ""))
         menu.typed("connections")
         menu.item("connections").wait_for(timeout=CommandMenu.WAIT_MS)
@@ -200,12 +249,23 @@ class TestCommandMenu:
         shown.wait_for(timeout=CommandMenu.WAIT_MS)
 
         questions = menu.chat.steps_of(StepKind.USER.value)
-        assert questions.count() == 0, menu.chat.dom()
+        expect(questions).to_have_count(1)
+        expect(questions.first).to_contain_text("/connections")
 
-    def test_compact_command_compacts_without_the_question_line(
+        thread_id = menu.chat.log.thread_id()
+        table = menu.chat.log.last_step(StepKind.ASSISTANT.value)
+        assert table is not None, menu.chat.log.describe()
+        again = open_chat(commands_stand, "")
+        again.open_thread(thread_id, str(table[StepField.ID.value]))
+        again.page.get_by_text("Your connections").wait_for(timeout=CommandMenu.WAIT_MS)
+        lines = again.steps_of(StepKind.USER.value)
+        expect(lines).to_have_count(1)
+        expect(lines.first).to_contain_text("/connections")
+
+    def test_compact_command_shows_its_line_and_compacts(
         self, commands_stand: StandProcess, open_chat: OpenChat, llm_port: int
     ) -> None:
-        """`/compact` из меню — ход агента без строки вопроса: пока агент
+        """`/compact` из меню — строка вызова и ход агента: пока агент
         пересказывает, контейнер хода подписан «сжимаю», после — шаг
         «контекст сжат»."""
         book = ReplyBookClient(StandUrl.of(llm_port))
@@ -232,4 +292,5 @@ class TestCommandMenu:
         expect(step).to_contain_text(self.COMPACTED)
 
         questions = menu.chat.steps_of(StepKind.USER.value)
-        assert questions.count() == 2, menu.chat.dom()
+        expect(questions).to_have_count(3)
+        expect(questions.last).to_contain_text("/compact")

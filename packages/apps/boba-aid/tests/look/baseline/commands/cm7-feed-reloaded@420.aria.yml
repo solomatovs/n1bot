@@ -1,0 +1,13 @@
+- article: scenario
+- img "Avatar for AID"
+- article: "Here is a plain streamed answer: about the request step by step checking tables joins filters and the expected shape of the answer before calling any tool the model reasons about the request step by step"
+- article: /mcp__cmds__orders_console new
+- text: cmds · orders_console
+- button "На весь экран"
+- button "Свернуть"
+- iframe
+- article: /connections
+- img "Avatar for Chat"
+- article: Your connections
+- article: no connections are granted to you
+- button

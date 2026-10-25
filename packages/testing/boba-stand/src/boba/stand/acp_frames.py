@@ -25,6 +25,8 @@ class Frames:
     """
 
     SCHEMA: ClassVar[Path] = Path(__file__).parent / "acp_schema/schema.unstable.json"
+    EXTENSION: ClassVar[str] = "_"
+    """Начало имени метода расширения ACP."""
 
     def __init__(self) -> None:
         self.events: list[StreamEvent] = []
@@ -108,6 +110,11 @@ class Frames:
                 payload = message["params"]
 
             if payload is None:
+                continue
+
+            # метод расширения (имя с `_`) своего определения в схеме не имеет:
+            # его кадр пускает корневая схема через Ext*
+            if method.startswith(self.EXTENSION):
                 continue
 
             # корневая схема пускает любые params через Ext*, поэтому сверяем ещё и

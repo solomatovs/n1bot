@@ -50,6 +50,13 @@ another process», пока замок занят; когда держатель
 записи; ошибка вне хода уходит `notice`. Точка
 среза `session/fork` — расширение `_meta["boba/upToMessageId"]`.
 
+Расширение записи команд клиента (BobaExtension): агент объявляет его в
+`capabilities._meta` ответа initialize; запрос `_boba/session/record` пишет
+в историю команду, которую клиент исполнил сам, — вне хода сразу, в ходе на
+ближайшей границе шага, — и отвечает, когда её уведомления ушли: запись
+отдаётся `user_message` с набранным текстом и `_boba/command_outcome` с
+итогом, вживую и при воспроизведении одинаково, модели она не уходит.
+
 Ошибки:
 RequestError — ошибка JSON-RPC клиенту: параметры запроса (-32602),
     неизвестная сессия (-32002), сборка, хранилище, серверы MCP или сессия у
@@ -142,6 +149,7 @@ from boba.agent.records import (
     CompactionRecord,
     CompactSummaryRecord,
     FeedSink,
+    HarnessCommandRecord,
     NoticeLevel,
     PermissionMode,
     Record,
@@ -149,6 +157,7 @@ from boba.agent.records import (
     ToolResultRecord,
     ToolUseBlock,
     TurnEndRecord,
+    TurnMark,
     TurnOutcome,
 )
 from boba.agent.session import SessionState
@@ -167,6 +176,7 @@ from boba.agent.tools import (
     ToolServer,
 )
 from boba.agent.turn import ContextUsage
+from boba.agent.writer import ClientCommand
 from boba.cancellation import StopReason as CoreStopReason
 from boba.cli.threads import LoopCall, LoopThread, SessionLimitError, SessionThreads
 from boba.core.commands import CommandArgument, CommandArgumentsError, CommandLines
@@ -177,6 +187,9 @@ from boba.transport.acp.protocol import (
     AcpTransportError,
     AcpVersion,
     AgentSide,
+    BobaExtension,
+    CommandOutcome,
+    CommandOutcomeUpdate,
     ElicitationRound,
     ErrorDataKey,
     McpErrorOutcome,
@@ -184,6 +197,7 @@ from boba.transport.acp.protocol import (
     McpOutcome,
     McpVersion,
     MetaKey,
+    SessionRecordRequest,
     StopReason,
     ToolStatus,
 )
@@ -284,6 +298,7 @@ Update: TypeAlias = (
     | schema.RequiresActionSessionStateUpdate
     | schema.IdleSessionStateUpdate
     | schema.AvailableCommandsUpdate
+    | schema.OtherSessionUpdate
 )
 
 
@@ -630,6 +645,11 @@ class FeedPainter(FeedSink):
         self._withdraw()
         self._out.extend(self._mapping.turn_ended(record))
 
+    def harness_command(self, record: HarnessCommandRecord) -> None:
+        """Команда клиента: набранный текст вопросом, затем её итог."""
+        self._out.append(self._mapping.question(record.uuid, record.text, ()))
+        self._out.append(self._mapping.command_outcome(record))
+
     def _withdraw(self) -> None:
         for message_id in self._stream.unrecorded():
             self._out.append(
@@ -894,6 +914,7 @@ class AcpMapping:
         self._templates = AgentTemplate()
         self._troubles = ModelTroubleTexts(self._templates)
         self._commands = LocalCommandText()
+        self._outcomes: TypeAdapter[CommandOutcome] = TypeAdapter(CommandOutcome)
 
     def turn_ended(self, record: TurnEndRecord) -> Iterator[Update]:
         """Конец хода по его записи — одинаково вживую и в воспроизведении:
@@ -1124,6 +1145,27 @@ class AcpMapping:
             status=CompactionUpdateStatus.COMPLETED.value,
             summary=[schema.TextContentBlock(text=content)],
         )
+
+    def command_outcome(
+        self, record: HarnessCommandRecord
+    ) -> schema.OtherSessionUpdate:
+        """Итог команды клиента уведомлением `_boba/command_outcome` с uuid
+        записи; итог — каким клиент его записал."""
+        try:
+            outcome = self._outcomes.validate_python(record.outcome)
+        except ValidationError as exc:
+            msg = (
+                f"The command record {record.uuid} ({record.text!r}) holds an "
+                f"outcome off the {BobaExtension.SESSION_RECORD.value} form: "
+                f"{ValidationText.of(exc)}. This is a bug."
+            )
+            raise RuntimeError(msg) from exc
+
+        update = CommandOutcomeUpdate(
+            message_id=record.uuid, command=record.name, outcome=outcome
+        )
+
+        return update.wire()
 
     def interrupted(self, compaction_id: str) -> schema.SessionCompactionUpdate:
         """Сжатие, у которого в истории есть начало и нет конца: агент
@@ -3053,11 +3095,30 @@ class SessionRelay(EventSink, ToolHintSource):
         if not updates:
             return
 
+        if self._outside(event):
+            await self._send_all(updates)
+            return
+
         if not self._running:
             self._running = True
             await self._send(schema.RunningSessionStateUpdate())
 
         await self._send_all(updates)
+
+    def _outside(self, event: AgentEvent) -> bool:
+        """Запись вне хода (команда клиента), пришедшая между ходами: ход
+        ею не начинается."""
+        if self._running:
+            return False
+
+        if not isinstance(event, RecordEvent):
+            return False
+
+        record = event.record
+        if not isinstance(record, ChainRecord):
+            return False
+
+        return record.turn_mark() is TurnMark.OUTSIDE
 
     def _turn_summary(self) -> Sequence[Update]:
         """Уведомления по итогу хода: заполненность и, однажды, заголовок."""
@@ -3639,6 +3700,46 @@ class AcpSession:
 
         return schema.PromptResponse(message_id=item.id)
 
+    async def record(self, request: SessionRecordRequest) -> None:
+        """Команда, которую клиент исполнил сам, — записью истории с uuid
+        messageId: вне хода сразу, в ходе на ближайшей границе шага или
+        перед его концом; ответ — когда её уведомления ушли клиенту.
+
+        Ошибки:
+        RequestError — обслуживание сессии остановилось (-32603), запись
+            снята до записи закрытием сессии (-32800).
+        """
+        if self._serving.done():
+            details = (
+                f"session {self._session_id} no longer records commands: its "
+                f"agent stopped, the command {request.text!r} is not recorded; "
+                "open a new session"
+            )
+            raise RequestError.internal_error({ErrorDataKey.DETAILS.value: details})
+
+        outcome = request.outcome.model_dump(
+            mode="json", by_alias=True, exclude_none=True
+        )
+        command = ClientCommand(
+            message_id=request.message_id,
+            name=request.command,
+            text=request.text,
+            outcome=outcome,
+        )
+        inserted = self._relay.insertion(request.message_id)
+        try:
+            await self.agent.record_command(command)
+        except HistoryError as exc:
+            self._relay.refuse(
+                request.message_id,
+                RequestError.internal_error({ErrorDataKey.DETAILS.value: str(exc)}),
+            )
+            raise RequestError.internal_error(
+                {ErrorDataKey.DETAILS.value: str(exc)}
+            ) from exc
+
+        await inserted
+
     async def flush(self) -> None:
         """Сбрасывает несброшенные записи сессии в хранилище.
 
@@ -3851,10 +3952,14 @@ class AcpAgent(AcpAgentProtocol):
         if self._auth_methods:
             methods = list(self._auth_methods)
 
+        offered = schema.AgentCapabilities(
+            session=session, field_meta={BobaExtension.SESSION_RECORD.value: True}
+        )
+
         return schema.InitializeResponse(
             protocol_version=AcpVersion.V2,
             info=self._info,
-            capabilities=schema.AgentCapabilities(session=session),
+            capabilities=offered,
             auth_methods=methods,
         )
 
@@ -4047,6 +4152,35 @@ class AcpAgent(AcpAgentProtocol):
         session = await self._claimed(session_id, hosted)
 
         return await hosted.thread.run(session.prompt(asked))
+
+    async def handle_extension_request(self, method: str, params: Any) -> Any:
+        """Методы расширений: `_boba/session/record` — команда клиента в
+        историю сессии; ответ — пустой объект.
+
+        Ошибки:
+        RequestError — метод не объявлен (-32601), параметры не по форме
+            (-32602), сессия неизвестна (-32002), её держит другой процесс
+            или запись не легла (-32603).
+        """
+        if method != BobaExtension.SESSION_RECORD.value:
+            raise RequestError.method_not_found(method)
+
+        try:
+            request = SessionRecordRequest.model_validate(params)
+        except ValidationError as exc:
+            details = (
+                f"{method}: expected sessionId, messageId, command, text and an "
+                f"outcome of kind text, app or failed: {ValidationText.of(exc)}"
+            )
+            raise RequestError.invalid_params(
+                {ErrorDataKey.DETAILS.value: details}
+            ) from exc
+
+        hosted = self._session(request.session_id)
+        session = await self._claimed(request.session_id, hosted)
+        await hosted.thread.run(session.record(request))
+
+        return {}
 
     async def _claimed(self, session_id: str, hosted: HostedSession) -> AcpSession:
         """Сессия, которая ведёт ходы: наблюдатель берёт замок и открывает

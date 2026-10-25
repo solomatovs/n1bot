@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import base64
 import json
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar, cast
 from urllib.parse import urlsplit
@@ -33,6 +33,7 @@ from boba.aid.domain.keys import CanvasFileUrl
 from boba.aid.rendering.acp_view import (
     SessionUpdate,
     SessionUpdateCodec,
+    ToolCards,
     ToolMedia,
     UpdateView,
 )
@@ -50,7 +51,7 @@ from boba.canvas.canvas import CanvasAction, CanvasElement, CanvasRegistry
 from boba.canvas.keys import ObjectKey, ScopeDir, WorkspaceKey
 from boba.identity.context import Scope
 from boba.mcp_adapter import JournalUris
-from boba.mcp_client.client import McpServerApps
+from boba.mcp_client.client import McpDescription, McpServerApps
 from boba.messaging import (
     JournalOpened,
     LockToken,
@@ -90,7 +91,14 @@ from boba.toolkit.result import (
     VisualResult,
 )
 from boba.toolkit.wire import JournalFeature, JournalRead, McpContent, ResultWire
-from boba.transport.acp.protocol import MetaKey
+from boba.transport.acp.protocol import (
+    CommandApp,
+    CommandFailure,
+    CommandOutcome,
+    CommandOutcomeUpdate,
+    CommandText,
+    MetaKey,
+)
 
 APP_ROOT = Path(__file__).resolve().parents[1] / "assets"
 """Корень приложения пакета: его переводы chainlit несут подписи ленты и панели."""
@@ -848,14 +856,15 @@ class TestCompactionStep:
         assert step.get(StepField.NAME) == f"⊘ {stopped}"
 
     @pytest.mark.anyio
-    async def test_compact_command_is_a_turn_without_its_line(
+    async def test_compact_command_is_a_turn_with_its_line(
         self,
         runtime_stand: StandRefs,
         storage: LocalStorageClient,
         recorded: FakeEmitter,
     ) -> None:
-        """Ход `/compact` — вживую и при воспроизведении одинаково: строки
-        вызова нет, шаг сжатия — под контейнером этого хода."""
+        """Ход `/compact` — вживую и при воспроизведении одинаково: строка
+        вызова тем текстом, что набрал пользователь, шаг сжатия — под
+        контейнером этого хода."""
         updates = _view(runtime_stand, storage, RemoteJournals())
         await updates.apply(_question())
         await updates.apply(_call(CALL, "mcp__boba__pg_query", {"sql": "select 1"}))
@@ -873,23 +882,7 @@ class TestCompactionStep:
         step = last[_id(COMPACTION, StepRole.COMPACTION)]
         assert step.get(StepField.NAME) == f"✔ {self.COMPACTED}"
         assert step.get(StepField.PARENT_ID) == _id(COMMAND, StepRole.PROCESS)
-        assert COMMAND not in last
-        assert QUESTION in last
-
-    @pytest.mark.anyio
-    async def test_live_compact_command_draws_no_line(
-        self,
-        runtime_stand: StandRefs,
-        storage: LocalStorageClient,
-        recorded: FakeEmitter,
-    ) -> None:
-        updates = _view(runtime_stand, storage, RemoteJournals())
-        updates.begin_turn(COMMAND)
-        await updates.question("/compact keep the plan", COMMAND)
-        await updates.question("/compactly done", QUESTION)
-
-        last = recorded.last()
-        assert COMMAND not in last
+        assert last[COMMAND].get(StepField.OUTPUT) == "/compact"
         assert QUESTION in last
 
 
@@ -1963,6 +1956,115 @@ class TestElementIdsWithoutKey:
 
         assert len(ids) == 4, recorded.elements
         assert len(set(ids)) == 4, ids
+
+
+class SilentCards(ToolCards):
+    """Реализация ToolCards, у которой ничего нельзя спросить: лента команды
+    вкладки обязана рисоваться из записи, без карточек и описаний серверов."""
+
+    def __init__(self, apps: Mapping[str, McpServerApps]) -> None:
+        self._apps = apps
+
+    async def card(self, server: str, tool: str) -> mt.Tool | None:
+        raise AssertionError(f"the feed asked server {server} for the card {tool}")
+
+    async def described(self, server: str) -> McpDescription | None:
+        raise AssertionError(f"the feed asked server {server} for its description")
+
+    def apps(self, server: str) -> McpServerApps | None:
+        return self._apps.get(server)
+
+
+class TestTabCommands:
+    """Команда, которую исполнила вкладка, — строка вызова и итог из записи
+    агента (`_boba/command_outcome`): текст — сообщением чата, приложение —
+    карточкой ToolApp сразу с итогом и ресурсом, отказ — ошибкой; серверу
+    лента ничего не шлёт."""
+
+    APP: ClassVar[CommandApp] = CommandApp(
+        server="standard",
+        tool=TestToolApps.ORDERS,
+        arguments={"status": "new"},
+        result=mt.CallToolResult(content=[mt.TextContent(text="console open")]),
+        resource=mt.ReadResourceResult(
+            contents=[
+                mt.TextResourceContents(
+                    uri="ui://standard/orders.html",
+                    mime_type="text/html;profile=mcp-app",
+                    text="<!doctype html><p>orders</p>",
+                    _meta={"ui": {"csp": {"connectDomains": []}}},
+                )
+            ]
+        ),
+    )
+
+    async def _drawn(
+        self, storage: LocalStorageClient, command: str, outcome: CommandOutcome
+    ) -> None:
+        """Строка вызова и итог — через кодек шины, как у другой вкладки."""
+        media = ToolMedia(SilentCards({"standard": TestToolApps.SANDBOX}))
+        view = ChatView(THREAD, LiveSink(), "u-1", storage, TEXTS, user_name="a")
+        updates = UpdateView(view, THREAD, RemoteJournals(), media)
+        codec = SessionUpdateCodec()
+        line = schema.UserMessageUpdate(
+            message_id=COMMAND, content=[schema.TextContentBlock(text=f"/{command}")]
+        )
+        wire = CommandOutcomeUpdate(
+            message_id=COMMAND, command=command, outcome=outcome
+        ).wire()
+        await updates.apply(codec.decode(codec.encode(line)))
+        await updates.apply(codec.decode(codec.encode(wire)))
+        await updates.finish_turn()
+
+    @pytest.mark.anyio
+    async def test_text_outcome_is_a_message_of_the_chat(
+        self, storage: LocalStorageClient, recorded: FakeEmitter
+    ) -> None:
+        text = "**Your connections**\n\n_none yet_"
+        await self._drawn(storage, "connections", CommandText(text=text))
+
+        last = recorded.last()
+        shown = last[_id(COMMAND, StepRole.ANSWER)]
+        assert last[COMMAND].get(StepField.OUTPUT) == "/connections"
+        assert shown.get(StepField.OUTPUT) == text
+        assert shown.get(StepField.NAME) == ChatView.COMMANDS_AUTHOR
+        assert shown.get(StepField.PARENT_ID) is None
+
+    @pytest.mark.anyio
+    async def test_app_outcome_is_the_card_with_the_result_and_the_resource(
+        self, storage: LocalStorageClient, recorded: FakeEmitter
+    ) -> None:
+        name = "mcp__standard__orders_console"
+        await self._drawn(storage, name, self.APP)
+
+        apps = [e for e in recorded.elements if e.get("name") == "ToolApp"]
+        message = recorded.last()[_id(COMMAND, StepRole.APP_MESSAGE)]
+        assert len(apps) == 1, recorded.elements
+        props = apps[0]["props"]
+        assert apps[0]["id"] == _id(COMMAND, StepRole.APP)
+        assert props["tool"] == TestToolApps.TOOL
+        assert props["input"] == {"status": "new"}
+        assert props["call_id"] == COMMAND
+        assert props["sandbox_url"] == str(TestToolApps.SANDBOX.sandbox_url)
+        assert props["result"] == self.APP.result.model_dump(
+            mode="json", by_alias=True, exclude_none=True
+        )
+        assert props["resource"] == self.APP.resource.model_dump(
+            mode="json", by_alias=True, exclude_none=True
+        )
+        assert message.get(StepField.PARENT_ID) is None
+        assert message.get(StepField.METADATA) == {StepMeta.APP.value: True}
+
+    @pytest.mark.anyio
+    async def test_failed_outcome_is_an_error(
+        self, storage: LocalStorageClient, recorded: FakeEmitter
+    ) -> None:
+        error = "The command /connections did not run: your connections were not read."
+        await self._drawn(storage, "connections", CommandFailure(error=error))
+
+        shown = recorded.last()[_id(COMMAND, StepRole.ERROR)]
+        assert shown.get(StepField.OUTPUT) == error
+        assert shown.get(StepField.IS_ERROR) is True
 
 
 class TestCodecAndResults:

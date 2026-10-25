@@ -11,6 +11,7 @@
 RecordKeeper — единственная дверь, через которую ход и исполнитель
 инструментов добавляют записи: запись уходит в сессию, писатель просыпается,
 записи разговора и граница сжатия показываются наружу событием.
+ClientCommands пишет команды, которые клиент исполнил сам, на границах хода.
 RequestRecorder чеканит идентификатор каждого запроса к модели и, если запись
 запросов включена, кладёт служебную запись `api-request` с телом запроса и
 его дайджестом (план, раздел 5.18).
@@ -27,13 +28,16 @@ import asyncio
 import hashlib
 import json
 import logging
-from typing import ClassVar, TypeVar
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import Any, ClassVar, TypeVar
 
 from boba.agent.events import AgentEvent, EventSink, HistoryWrittenEvent, RecordEvent
 from boba.agent.history import HistoryError, HistoryStore, SessionLease
 from boba.agent.ids import Clock, IdMint
 from boba.agent.records import (
     ApiRequestRecord,
+    HarnessCommandRecord,
     Record,
 )
 from boba.agent.session import Session
@@ -41,7 +45,13 @@ from boba.llm.chat import ChatRequest
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["HistoryWriter", "RecordKeeper", "RequestRecorder"]
+__all__ = [
+    "ClientCommand",
+    "ClientCommands",
+    "HistoryWriter",
+    "RecordKeeper",
+    "RequestRecorder",
+]
 
 R = TypeVar("R", bound=Record)
 
@@ -200,6 +210,71 @@ class RecordKeeper:
 
     async def emit(self, event: AgentEvent) -> None:
         await self._sink.emit(event)
+
+
+@dataclass(frozen=True)
+class ClientCommand:
+    """Команда, которую клиент исполнил сам: uuid её записи (его даёт
+    клиент), имя, набранный текст и итог в форме клиента."""
+
+    message_id: str
+    name: str
+    text: str
+    outcome: Mapping[str, Any]
+
+
+class ClientCommands:
+    """Записи команд клиента (HarnessCommandRecord) в историю сессии на
+    границах хода: вне хода команда пишется сразу, посреди хода ждёт
+    ближайшей границы шага, а не дождавшаяся её пишется перед концом хода.
+    Так запись не встаёт между вызовом инструмента и его итогом, и лента
+    видит команду между шагами — вживую и в истории одинаково. Создаёт
+    агент на сессию, команду ему отдаёт вход (Agent.record_command), границы
+    отмечает цикл хода (TurnLoop)."""
+
+    def __init__(self, keeper: RecordKeeper, clock: Clock, version: str) -> None:
+        self._keeper = keeper
+        self._clock = clock
+        self._version = version
+        self._held: list[ClientCommand] = []
+        self._in_turn = False
+
+    async def add(self, command: ClientCommand) -> None:
+        if self._in_turn:
+            self._held.append(command)
+            return
+
+        await self._write(command)
+
+    def opened(self) -> None:
+        """Ход начался: команды ждут его границ."""
+        self._in_turn = True
+
+    async def boundary(self) -> None:
+        """Граница шага: ждущие команды пишутся по порядку прихода."""
+        while self._held:
+            await self._write(self._held.pop(0))
+
+    async def closed(self) -> None:
+        """Ход кончается: ждущие команды пишутся до его конца, следующие —
+        сразу."""
+        self._in_turn = False
+        await self.boundary()
+
+    async def _write(self, command: ClientCommand) -> None:
+        session = self._keeper.session
+        await self._keeper.add(
+            HarnessCommandRecord(
+                uuid=command.message_id,
+                parent_uuid=session.last_chain_uuid(),
+                timestamp=self._clock.now(),
+                session_id=session.id.value,
+                version=self._version,
+                name=command.name,
+                text=command.text,
+                outcome=dict(command.outcome),
+            )
+        )
 
 
 class RequestRecorder:

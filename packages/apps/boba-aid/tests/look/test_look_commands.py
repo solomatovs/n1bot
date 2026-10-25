@@ -6,7 +6,9 @@
 по HTTP, объявивший расширение com.boba/commands, с секцией apps и страницей
 песочницы на своём источнике. Первый ход — обычный ответ фейковой модели:
 с открытием сессии агент объявляет свои команды. Кадр меню — само меню над
-полем ввода; кадры окон — карточка приложения и сообщение таблицы.
+полем ввода; кадры окон — карточка приложения и сообщение таблицы, вживую и
+после перезагрузки треда: окна команд рисуются из записи истории агента
+пиксель в пиксель так же.
 """
 
 from __future__ import annotations
@@ -26,9 +28,10 @@ from aid_look import (
     LookState,
     LookTheme,
 )
-from playwright.sync_api import Error, FrameLocator, Locator, Page
+from playwright.sync_api import Error, FrameLocator, Locator, Page, WebSocket
 
 from boba.stand.ui.fake_llm import ScenarioName
+from boba.stand.ui.socket_log import SocketLog
 from boba.stand.ui.stand import StandProcess
 
 pytestmark = [pytest.mark.ui, pytest.mark.look]
@@ -54,17 +57,47 @@ class CommandsLook:
         GROUP,
         "cm2-app",
         "Команда сервера открыла его приложение карточкой во вкладке",
-        "строки вопроса «new» в ленте нет; карточка «cmds · orders_console» с "
-        "кнопками, приложение показывает итог «the orders console is open for "
-        "new orders»; модель не отвечала",
+        "карточка «cmds · orders_console» с кнопками, приложение показывает "
+        "итог «the orders console is open for new orders»; модель не отвечала",
         (),
     )
     CONNECTIONS: ClassVar[LookState] = LookState(
         GROUP,
         "cm3-connections",
         "Команда чата connections: соединения пользователя во вкладке",
-        "сообщение «Your connections» жирным и пометка курсивом, если "
-        "соединений нет; строки вопроса в ленте нет",
+        "сообщение «Your connections» жирным и пометка курсивом, если соединений нет",
+        (),
+    )
+    APP_AGAIN: ClassVar[LookState] = LookState(
+        GROUP,
+        "cm4-app-reloaded",
+        "Карточка приложения команды после перезагрузки треда",
+        "кадр тот же, что «Команда сервера открыла его приложение»: карточка "
+        "собрана из записи истории, ресурс приложения у сервера не читался",
+        (),
+    )
+    FEED: ClassVar[LookState] = LookState(
+        GROUP,
+        "cm6-feed",
+        "Лента с командами: строки вызовов и их итоги",
+        "строка вызова «/mcp__cmds__orders_console new» справа, под ней карточка "
+        "приложения от имени Chat; ниже строка «/connections» и сообщение "
+        "«Your connections»",
+        (),
+    )
+    FEED_AGAIN: ClassVar[LookState] = LookState(
+        GROUP,
+        "cm7-feed-reloaded",
+        "Та же лента после перезагрузки треда",
+        "кадр тот же, что «Лента с командами»: строки вызовов и итоги пришли из "
+        "истории агента",
+        (),
+    )
+    CONNECTIONS_AGAIN: ClassVar[LookState] = LookState(
+        GROUP,
+        "cm5-connections-reloaded",
+        "Таблица connections после перезагрузки треда",
+        "кадр тот же, что «Команда чата connections»: сообщение из записи истории",
         (),
     )
 
@@ -77,16 +110,23 @@ class CommandsLook:
 
 
 class CommandsTab:
-    """Вкладка вида глазами теста: меню «/», выбор команды и окна команд.
-    Ошибки страницы чата копятся с открытия."""
+    """Вкладка вида глазами теста: меню «/», выбор команды, окна команд и
+    тот же тред, открытый заново (тред — по журналу сокета). Ошибки
+    страницы чата копятся с открытия."""
 
-    def __init__(self, page: Page) -> None:
+    def __init__(self, page: Page, base_url: str) -> None:
         self._page = page
+        self._base_url = base_url
+        self._log = SocketLog()
         self.errors: list[str] = []
         page.on("pageerror", self._failed)
+        page.on("websocket", self._watch)
 
     def _failed(self, error: Error) -> None:
         self.errors.append(str(error))
+
+    def _watch(self, socket: WebSocket) -> None:
+        socket.on("framereceived", self._log.accept)
 
     def turn(self) -> None:
         """Ход с обычным ответом: агент открыл сессию и объявил команды."""
@@ -136,6 +176,25 @@ class CommandsTab:
 
         return shown
 
+    def reload(self) -> None:
+        """Тот же тред, открытый заново: лента собирается из истории агента."""
+        thread_id = self._log.thread_id()
+        self._page.goto(
+            f"{self._base_url}/thread/{thread_id}", wait_until="domcontentloaded"
+        )
+        self._page.locator(CommandsLook.INPUT).wait_for(timeout=CommandsLook.WAIT_MS)
+        self._page.wait_for_load_state("networkidle")
+
+    def feed(self) -> Locator:
+        """Лента, прокрученная к строке вызова команды сервера."""
+        line = self._page.locator(
+            '[data-step-type="user_message"]', has_text=f"/{CONSOLE} new"
+        ).last
+        line.wait_for(timeout=CommandsLook.WAIT_MS)
+        line.evaluate(LookPages.TOP)
+
+        return line.locator(LookPages.FEED)
+
     def blur(self) -> None:
         """Меню закрыто: поле ввода очищено."""
         self._page.locator(CommandsLook.INPUT).fill("")
@@ -170,7 +229,7 @@ def test_commands_menu_and_windows(
     for size in LookSize:
         for theme in LookTheme:
             page = look_pages.open(theme, size)
-            tab = CommandsTab(page)
+            tab = CommandsTab(page, commands_stand.config.base_url)
             look_pages.sign_in(page, commands_stand, CommandsLook.LOGIN_USER)
             tab.turn()
 
@@ -191,6 +250,31 @@ def test_commands_menu_and_windows(
             look_pages.settle(page)
             table.evaluate(LookPages.TOP)
             look.frame(table, CommandsLook.CONNECTIONS, theme, size)
+
+            tab.blur()
+            feed = tab.feed()
+            look_pages.settle(page)
+            look.frame(feed, CommandsLook.FEED, theme, size)
+
+            tab.reload()
+            card = tab.card()
+            look_pages.settle(page)
+            card.evaluate(LookPages.TOP)
+            look.frame(card, CommandsLook.APP_AGAIN, theme, size)
+            look.same_as(CommandsLook.APP_AGAIN, CommandsLook.APP, theme, size)
+
+            table = tab.table()
+            look_pages.settle(page)
+            table.evaluate(LookPages.TOP)
+            look.frame(table, CommandsLook.CONNECTIONS_AGAIN, theme, size)
+            look.same_as(
+                CommandsLook.CONNECTIONS_AGAIN, CommandsLook.CONNECTIONS, theme, size
+            )
+
+            feed = tab.feed()
+            look_pages.settle(page)
+            look.frame(feed, CommandsLook.FEED_AGAIN, theme, size)
+            look.same_as(CommandsLook.FEED_AGAIN, CommandsLook.FEED, theme, size)
             tab.check_clean()
 
     look.verify()

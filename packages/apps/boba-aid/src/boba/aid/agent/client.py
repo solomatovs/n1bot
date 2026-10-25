@@ -54,11 +54,13 @@ from boba.aid.rendering.acp_view import SessionUpdate
 from boba.mcp_client.client import McpCaller, McpClientError
 from boba.transport.acp.protocol import (
     AcpVersion,
+    BobaExtension,
     ClientConnection,
     ErrorDataKey,
     McpMessage,
     McpOutcome,
     MetaKey,
+    SessionRecordRequest,
 )
 
 __all__ = [
@@ -502,6 +504,8 @@ class AgentLink:
         self._connection: ClientConnection | None = None
         self._forks_by_message = False
         """Агент объявил срез ветки session/fork по messageId вопроса."""
+        self._records_commands = False
+        """Агент объявил расширение записи команд клиента в историю."""
 
     @abstractmethod
     def label(self) -> str:
@@ -592,6 +596,7 @@ class AgentLink:
             mcp = session.mcp
 
         self._forks_by_message = self._cuts_forks(session)
+        self._records_commands = self._keeps_commands(response.capabilities)
 
         acp = None
         if mcp is not None:
@@ -746,6 +751,38 @@ class AgentLink:
             declared = cut.get(MetaKey.UP_TO_MESSAGE_ID.value)
 
         return declared is True
+
+    @staticmethod
+    def _keeps_commands(capabilities: schema.AgentCapabilities | None) -> bool:
+        """Объявил ли агент в `capabilities._meta` расширение записи команд
+        клиента `_boba/session/record`."""
+        if capabilities is None:
+            return False
+
+        meta = capabilities.field_meta
+        if meta is None:
+            return False
+
+        return meta.get(BobaExtension.SESSION_RECORD.value) is True
+
+    def records_commands(self) -> bool:
+        """Агент пишет в историю команды, которые чат исполнил сам."""
+        return self._records_commands
+
+    async def record(self, request: SessionRecordRequest) -> None:
+        """Команда, которую чат исполнил сам, — в историю сессии агента
+        `_boba/session/record`. Агент отвечает, когда запись легла и её
+        уведомления ушли: посреди хода — на границе шага, поэтому срока у
+        ответа нет, как у `session/prompt`.
+
+        Ошибки:
+        AgentRequestError — агент отказал в записи.
+        AgentProcessError — агент ушёл или соединение закрыто.
+        """
+        connection = self._require_connection()
+        method = BobaExtension.SESSION_RECORD.value
+        params = request.model_dump(mode="json", by_alias=True, exclude_none=True)
+        await self._answer_of(method, connection.send_extension_request(method, params))
 
     def forks_by_message(self) -> bool:
         """Агент объявил в `capabilities.session.fork._meta`, что режет ветку

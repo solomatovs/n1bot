@@ -68,13 +68,16 @@ class ToolAppView(BaseModel):
 
 
 class AppProp(StrEnum):
-    """Поля props элемента ToolApp сверх ToolAppView: вызов, его аргументы
-    и исход — итог tools/call либо причина, по которой итога не будет."""
+    """Поля props элемента ToolApp сверх ToolAppView: вызов, его аргументы,
+    исход — итог tools/call либо причина, по которой итога не будет, — и
+    ресурс приложения (итог resources/read), если он уже известен: тогда
+    элемент сам его не читает."""
 
     CALL_ID = "call_id"
     INPUT = "input"
     RESULT = "result"
     CANCELLED = "cancelled"
+    RESOURCE = "resource"
 
 
 class ElementName(StrEnum):
