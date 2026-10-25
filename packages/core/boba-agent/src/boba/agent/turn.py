@@ -103,7 +103,12 @@ from boba.agent.tools import (
     PlannedCall,
     ToolRunner,
 )
-from boba.agent.writer import HistoryWriter, RecordKeeper, RequestRecorder
+from boba.agent.writer import (
+    ClientCommands,
+    HistoryWriter,
+    RecordKeeper,
+    RequestRecorder,
+)
 from boba.cancellation import RunCancellation, StopReason
 from boba.core.commands import CommandCall
 from boba.llm.chat import (
@@ -207,8 +212,10 @@ class TurnLoop:
         environment: EnvironmentSnapshot | None,
         agent_name: str,
         recorder: RequestRecorder,
+        client_commands: ClientCommands,
     ) -> None:
         self._recorder = recorder
+        self._client_commands = client_commands
         self._request_id = ""
         self._message_id = ""
         self._keeper = keeper
@@ -311,11 +318,13 @@ class TurnLoop:
         started = time.monotonic()
         self._last_failure = ""
         progress = Progress()
+        self._client_commands.opened()
         if taken.head.kind is QueueKind.COMPACT:
             outcome = await self._manual_compact(taken.head, progress, cancellation)
         else:
             outcome = await self._turn(taken, progress, cancellation)
 
+        await self._client_commands.closed()
         duration = int((time.monotonic() - started) * self.MILLIS)
         error = ""
         if outcome.refused:
@@ -1141,8 +1150,10 @@ class TurnLoop:
         return blocks
 
     async def _absorb(self) -> None:
-        """Элементы `now` и `next` из очереди — вложениями в разговор, за
-        ними служебный контекст элементов, как у вопроса хода."""
+        """Граница шага: команды клиента, ждавшие её, затем элементы `now` и
+        `next` из очереди — вложениями в разговор, за ними служебный
+        контекст элементов, как у вопроса хода."""
+        await self._client_commands.boundary()
         items = self._queue.absorb()
         if not items:
             return

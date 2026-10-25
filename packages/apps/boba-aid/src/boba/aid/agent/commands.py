@@ -9,14 +9,18 @@
 именами (HarnessCommands). Реестр вкладки CommandMenu собирает их в меню и
 ведёт вызов: команду сервера, который согласовал расширение com.boba/commands
 и пометил промпт как открывающий приложение, вкладка исполняет сама —
-tools/call инструмента и его приложение MCP Apps; команду чата — её
-обработчик; всё остальное уходит агенту текстом вопроса `/<имя> <аргументы>`.
-Окна, которые команда открыла во вкладке, агент и модель не видят, в
-историю они не пишутся.
+tools/call инструмента и его приложение MCP Apps целиком (карточка, итог,
+ресурс приложения); команду чата — её обработчик; всё остальное уходит
+агенту текстом вопроса `/<имя> <аргументы>`. Исполненная вкладкой команда —
+итог (ExecutedCommand), который агент треда пишет в историю агента
+расширением `_boba/session/record`: модель его не видит, лента рисует его
+вживую и при воспроизведении одинаково. Агент без расширения — команд,
+которые исполняет вкладка, в меню нет, и вызов их отказывает.
 
 Ошибки:
-CommandError — команду не исполнить: сервер недоступен, аргументы не
-    разложить, сервер или чат отказали в вызове.
+CommandError — команду не исполнить: агент не пишет команд вкладки в
+    историю, сервер недоступен, аргументы не разложить, сервер или чат
+    отказали в вызове.
 """
 
 from __future__ import annotations
@@ -27,8 +31,7 @@ from abc import abstractmethod
 from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
-from typing import Any, ClassVar, Protocol
-from uuid import uuid4
+from typing import ClassVar, Protocol
 
 import mcp_types as mt
 from acp.experimental.v2 import schema
@@ -37,7 +40,7 @@ from mcp.shared.subscriptions import PromptsListChanged
 from pydantic import ValidationError
 
 from boba.aid.agent.relay import McpRegistration, McpRelay
-from boba.aid.rendering.tool import AppMeta, ToolAppView
+from boba.aid.rendering.tool import AppMeta
 from boba.connection_broker.tools import GrantedConnections
 from boba.connection_broker.user_connections import StoreRef
 from boba.connections.stored import ConnectionStoreError
@@ -51,18 +54,25 @@ from boba.core.mcp_names import McpToolNames
 from boba.core.validation import ValidationText
 from boba.identity.errors import AuthenticationError
 from boba.mcp_client.client import McpCaller, McpClientError, McpServers, McpToolServer
-from boba.toolkit.result import TableResult
+from boba.toolkit.result import MarkdownTable, NoteLine, TableResult
 from boba.toolkit.wire import CommandAction, CommandsFeature, PromptCommand
+from boba.transport.acp.protocol import (
+    BobaExtension,
+    CommandApp,
+    CommandFailure,
+    CommandOutcome,
+    CommandText,
+)
 
 __all__ = [
     "AgentCommands",
-    "AppWindow",
     "CommandBoard",
     "CommandError",
     "CommandIcon",
     "CommandMenu",
     "CommandMenus",
     "CommandSource",
+    "ExecutedCommand",
     "HarnessCommand",
     "HarnessCommands",
     "McpCommands",
@@ -96,36 +106,21 @@ class MenuCommand:
 
 
 @dataclass(frozen=True)
-class AppWindow:
-    """Приложение MCP Apps, которое открыла команда сервера: приложение
-    инструмента, ключ вызова, его аргументы и итог tools/call по форме MCP."""
+class ExecutedCommand:
+    """Команда, которую исполнила вкладка: вызов и итог для истории агента.
+    Строит реестр вкладки CommandMenu, в историю пишет агент треда."""
 
-    view: ToolAppView
-    call_id: str
-    arguments: Mapping[str, Any]
-    result: Mapping[str, Any]
+    call: CommandCall
+    outcome: CommandOutcome
 
 
 class CommandBoard(Protocol):
-    """Вкладка глазами реестра команд: меню поля ввода, окна команд и шаг
-    вопроса-команды. Реализует приёмник потока вкладки AgentFeed (feed.py)."""
+    """Вкладка глазами реестра команд: меню поля ввода. Реализует приёмник
+    потока вкладки AgentFeed (feed.py)."""
 
     @abstractmethod
     async def offered(self, commands: Sequence[MenuCommand]) -> None:
         """Меню поля ввода вкладки — эти команды, полным списком."""
-
-    @abstractmethod
-    async def app_opened(self, window: AppWindow) -> None:
-        """Приложение команды сервера — во вкладку, мимо истории агента."""
-
-    @abstractmethod
-    async def table_shown(self, title: str, table: TableResult) -> None:
-        """Таблица команды чата — во вкладку, мимо истории агента."""
-
-    @abstractmethod
-    async def taken(self, step_id: str) -> None:
-        """Вопрос-команду исполнила вкладка: его шаг step_id снимается — в
-        ленте остаётся только то, что видела модель."""
 
 
 class CommandSource(Protocol):
@@ -196,9 +191,10 @@ class McpCommands(CommandSource):
     ответил, — его команд в меню нет, а вызов отказывает с причиной;
     перечитывание после его возвращения вернёт их. Вызов промпта, который
     сервер пометил расширением com.boba/commands как открывающий приложение,
-    — tools/call названного инструмента от имени пользователя и его
-    приложение во вкладке; без согласованного расширения или без секции
-    apps у сервера — вопрос агенту, который раскроет промпт для модели.
+    — tools/call названного инструмента от имени пользователя, итог которого
+    вкладка показывает приложением целиком (CommandApp); без согласованного
+    расширения или без секции apps у сервера — вопрос агенту, который
+    раскроет промпт для модели.
     """
 
     UNREAD: ClassVar[str] = "its prompts were not read yet"
@@ -293,9 +289,17 @@ class McpCommands(CommandSource):
         following.cancel()
         await asyncio.gather(following, return_exceptions=True)
 
-    async def run(self, call: CommandCall, board: CommandBoard) -> str | None:
-        """Вызов промпта сервера: приложение — во вкладку (None), иначе текст
-        вопроса агенту.
+    def opens_app(self, name: str) -> bool:
+        """Команда name открывает приложение во вкладке, а не уходит модели."""
+        prompt = self._prompt(name)
+        if prompt is None:
+            return False
+
+        return self._marked(prompt) is not None
+
+    async def run(self, call: CommandCall) -> str | CommandApp:
+        """Вызов промпта сервера: приложение целиком либо текст вопроса
+        агенту.
 
         Ошибки:
         CommandError — сервер недоступен, аргументы не разложить или сервер
@@ -317,10 +321,7 @@ class McpCommands(CommandSource):
         if marked is None:
             return call.text()
 
-        window = await self._opened(call, prompt, marked)
-        await board.app_opened(window)
-
-        return None
+        return await self._opened(call, prompt, marked)
 
     def _prompt(self, name: str) -> mt.Prompt | None:
         for prompt in self._read.prompts:
@@ -364,9 +365,9 @@ class McpCommands(CommandSource):
 
     async def _opened(
         self, call: CommandCall, prompt: mt.Prompt, marked: PromptCommand
-    ) -> AppWindow:
+    ) -> CommandApp:
         """tools/call инструмента пометки от имени пользователя вкладки и
-        приложение этого инструмента.
+        приложение этого инструмента целиком: карточка, итог и ресурс.
 
         Ошибки:
         CommandError — аргументы не разложить, сервер отказал или у
@@ -378,7 +379,7 @@ class McpCommands(CommandSource):
             raise CommandError(f"{exc}.") from exc
 
         try:
-            view = await self._view(call, marked)
+            card, resource_uri = await self._card(call, marked)
         except MCPError as exc:
             msg = (
                 f"The command /{call.name} did not open its app: the MCP server "
@@ -409,14 +410,44 @@ class McpCommands(CommandSource):
             )
             raise CommandError(msg) from exc
 
-        dumped = result.model_dump(mode="json", by_alias=True, exclude_none=True)
+        resource = await self._resource(call, resource_uri)
 
-        return AppWindow(
-            view=view, call_id=uuid4().hex, arguments=arguments, result=dumped
+        return CommandApp(
+            server=self.server,
+            tool=card,
+            arguments=dict(arguments),
+            result=result,
+            resource=resource,
         )
 
-    async def _view(self, call: CommandCall, marked: PromptCommand) -> ToolAppView:
-        """Приложение инструмента пометки по его карточке.
+    async def _resource(self, call: CommandCall, uri: str) -> mt.ReadResourceResult:
+        """Ресурс приложения целиком (resources/read) от имени пользователя
+        вкладки.
+
+        Ошибки:
+        CommandError — сервер отказал или недоступен.
+        """
+        params = mt.ReadResourceRequestParams(uri=uri)
+        try:
+            return await self._relay.app_read(self._registration, params)
+        except MCPError as exc:
+            msg = (
+                f"The command /{call.name} did not open its app: the MCP server "
+                f"{self.server!r} refused resources/read of {uri}: "
+                f"{exc.error.message}"
+            )
+            raise CommandError(msg) from exc
+        except (McpClientError, AuthenticationError) as exc:
+            msg = (
+                f"The command /{call.name} did not open its app: resources/read "
+                f"of {uri} on the MCP server {self.server!r} failed: {exc}"
+            )
+            raise CommandError(msg) from exc
+
+    async def _card(
+        self, call: CommandCall, marked: PromptCommand
+    ) -> tuple[mt.Tool, str]:
+        """Карточка инструмента пометки и адрес ресурса его приложения.
 
         Ошибки:
         CommandError — у сервера нет такого инструмента или у инструмента
@@ -462,20 +493,14 @@ class McpCommands(CommandSource):
             )
             raise CommandError(msg)
 
-        apps = self._servers.apps(self.server)
-        if apps is None:
+        if self._servers.apps(self.server) is None:
             msg = (
                 f"The command /{call.name} did not open its app: the chat draws "
                 f"no apps of the MCP server {self.server!r}."
             )
             raise CommandError(msg)
 
-        return ToolAppView(
-            server=self.server,
-            tool=card,
-            resource_uri=resource,
-            sandbox_url=str(apps.sandbox_url),
-        )
+        return card, resource
 
     async def _followed(self, changed: Callable[[], Awaitable[None]]) -> None:
         """Поток смены промптов: подтверждённый поток и каждая смена —
@@ -630,7 +655,8 @@ class HarnessCommands(CommandSource):
     агент о них не знает. connections — соединения, выданные пользователю
     вкладки, таблицей во вкладке: тот же каталог хранилища соединений чата
     (GrantedConnections), что модель читает инструментом connection_list.
-    Создаёт фабрика CommandMenus на реестр вкладки."""
+    Итог — markdown, каким его увидел пользователь. Создаёт фабрика
+    CommandMenus на реестр вкладки."""
 
     CARDS: ClassVar[Mapping[HarnessCommand, str]] = {
         HarnessCommand.CONNECTIONS: "Show the connections granted to you",
@@ -658,7 +684,7 @@ class HarnessCommands(CommandSource):
     def owns(self, name: str) -> bool:
         return name in self.CARDS
 
-    async def run(self, call: CommandCall, board: CommandBoard) -> None:
+    async def run(self, call: CommandCall) -> CommandText:
         """Ошибки:
         CommandError — вход не годен или соединения не прочитаны.
         """
@@ -677,7 +703,32 @@ class HarnessCommands(CommandSource):
             )
             raise CommandError(msg) from exc
 
-        await board.table_shown(self.TITLE, table)
+        return CommandText(text=self._markdown(table))
+
+    def _markdown(self, table: TableResult) -> str:
+        rows: list[dict[str, str]] = []
+        for row in table.rows:
+            cells: dict[str, str] = {}
+            for key, value in row.items():
+                cells[key] = self._cell(value)
+
+            rows.append(cells)
+
+        parts = [f"**{self.TITLE}**"]
+        if rows:
+            parts.append(MarkdownTable.render(rows))
+
+        if table.note:
+            parts.append(NoteLine.render(table.note))
+
+        return "\n\n".join(parts)
+
+    @staticmethod
+    def _cell(value: object) -> str:
+        if value is None:
+            return ""
+
+        return str(value)
 
 
 class CommandMenu:
@@ -690,7 +741,10 @@ class CommandMenu:
     команда агента в меню не попадает, причина — в логе; команды серверов
     всегда с приставкой своего сервера и ни с чем не сталкиваются. Вызов —
     выбранная в меню команда (command сообщения chainlit, текст — её
-    аргументы) либо набранный текст `/<имя> <аргументы>`.
+    аргументы) либо набранный текст `/<имя> <аргументы>`. Команды, которые
+    исполняет вкладка (чата и приложения серверов), есть в меню, только
+    если агент пишет их в историю (records, расширение `_boba/session/
+    record`); отказ такой команды — тоже её итог для истории.
     """
 
     def __init__(
@@ -707,11 +761,14 @@ class CommandMenu:
         self._names = McpToolNames()
         self._offered: list[MenuCommand] | None = None
         self._reading: asyncio.Task[None] | None = None
+        self._records = False
 
-    async def start(self) -> None:
-        """Меню — во вкладку сразу с командами чата; серверы читаются и
-        открывают потоки смены промптов отдельной задачей, их команды меню
-        получает по мере ответа."""
+    async def start(self, records: bool) -> None:
+        """Меню — во вкладку сразу с командами чата, если агент пишет команды
+        вкладки в историю (records); серверы читаются и открывают потоки
+        смены промптов отдельной задачей, их команды меню получает по мере
+        ответа."""
+        self._records = records
         await self._offer()
         self._read_later(self._servers)
 
@@ -731,34 +788,70 @@ class CommandMenu:
 
         self._read_later(stale)
 
-    async def routed(self, step_id: str, text: str, command: str | None) -> str | None:
-        """Вопрос вкладки step_id с текстом text и выбранной в меню командой
-        command: текст вопроса агенту либо None — команду исполнила вкладка,
-        шаг вопроса снят.
+    async def routed(self, text: str, command: str | None) -> str | ExecutedCommand:
+        """Вопрос вкладки с текстом text и выбранной в меню командой command:
+        текст вопроса агенту либо команда, которую исполнила вкладка, с её
+        итогом — и отказ, если команду не исполнить.
 
         Ошибки:
-        CommandError — команду сервера или чата не исполнить.
+        CommandError — агент не пишет команд вкладки в историю, а вызвана
+            такая команда; без записи в историю сервер недоступен.
         """
         call = self._call(text, command)
         if call is None:
             return text
 
         if self._harness.owns(call.name):
-            await self._harness.run(call, self._board)
-            await self._board.taken(step_id)
-            return None
+            self._require_records(call)
+            return await self._executed(call, self._harness.run(call))
 
         server = self._server_of(call.name)
         if server is None:
             return call.text()
 
-        asked = await server.run(call, self._board)
-        if asked is not None:
+        if self._records:
+            return await self._executed(call, server.run(call))
+
+        if server.opens_app(call.name):
+            self._require_records(call)
+
+        asked = await server.run(call)
+        if isinstance(asked, str):
             return asked
 
-        await self._board.taken(step_id)
+        # промпт стал открывать приложение между проверкой и вызовом
+        self._require_records(call)
+        return ExecutedCommand(call=call, outcome=asked)
 
-        return None
+    async def _executed(
+        self, call: CommandCall, run: Awaitable[str | CommandOutcome]
+    ) -> str | ExecutedCommand:
+        """Исход команды call: текст вопроса агенту либо итог для истории,
+        отказ — тоже итог."""
+        try:
+            done = await run
+        except CommandError as exc:
+            return ExecutedCommand(call=call, outcome=CommandFailure(error=str(exc)))
+
+        if isinstance(done, str):
+            return done
+
+        return ExecutedCommand(call=call, outcome=done)
+
+    def _require_records(self, call: CommandCall) -> None:
+        """Ошибки:
+        CommandError — агент не пишет команд вкладки в историю.
+        """
+        if self._records:
+            return
+
+        msg = (
+            f"The command /{call.name} did not run: the agent of this chat does "
+            f"not keep the commands the chat runs itself in its history (ACP "
+            f"extension {BobaExtension.SESSION_RECORD.value}), so the chat does "
+            "not offer them."
+        )
+        raise CommandError(msg)
 
     async def close(self) -> None:
         reading = self._reading
@@ -820,7 +913,9 @@ class CommandMenu:
         await self._board.offered(merged)
 
     def _merged(self) -> Iterator[MenuCommand]:
-        yield from self._harness.commands()
+        if self._records:
+            yield from self._harness.commands()
+
         for command in self._agent.commands():
             if self._harness.owns(command.name):
                 logger.warning(
@@ -833,7 +928,20 @@ class CommandMenu:
             yield command
 
         for server in self._servers:
-            yield from server.commands()
+            yield from self._offered_of(server)
+
+    def _offered_of(self, server: McpCommands) -> Iterator[MenuCommand]:
+        """Команды сервера в меню: открывающие приложение — только если агент
+        пишет их в историю."""
+        for command in server.commands():
+            if self._records:
+                yield command
+                continue
+
+            if server.opens_app(command.name):
+                continue
+
+            yield command
 
 
 class CommandMenus:

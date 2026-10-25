@@ -4,12 +4,14 @@
 при возобновлении восстанавливает её загрузчиком, сворачивает режим
 разрешений под потолок параметров запуска, проверяет профиль и запускает
 писатель; `serve` ждёт очередь и ведёт ходы один за другим, элемент `now`
-посреди хода прерывает его; `answer` отдаёт ответ на вопрос наружу;
-`set_permission_mode` меняет режим записью, `available_modes` перечисляет
-режимы под потолком запуска; `set_model` переключает профиль модели между
-ходами; `interrupt` останавливает текущий ход; `close` гасит ход,
-сбрасывает журнал и отпускает сессию; `tool_hints` и `context_usage`
-отдают приёмнику событий пометки инструмента и заполненность контекста.
+посреди хода прерывает его; `record_command` пишет в историю команду,
+которую клиент исполнил сам, на ближайшей границе хода; `answer` отдаёт
+ответ на вопрос наружу; `set_permission_mode` меняет режим записью,
+`available_modes` перечисляет режимы под потолком запуска; `set_model`
+переключает профиль модели между ходами; `interrupt` останавливает
+текущий ход; `close` гасит ход, сбрасывает журнал и отпускает сессию;
+`tool_hints` и `context_usage` отдают приёмнику событий пометки
+инструмента и заполненность контекста.
 Переходы состояний — план, раздел 5.18.
 
 Ошибки:
@@ -80,7 +82,13 @@ from boba.agent.tools import (
     ToolTexts,
 )
 from boba.agent.turn import ContextUsage, TurnLoop
-from boba.agent.writer import HistoryWriter, RecordKeeper, RequestRecorder
+from boba.agent.writer import (
+    ClientCommand,
+    ClientCommands,
+    HistoryWriter,
+    RecordKeeper,
+    RequestRecorder,
+)
 from boba.cancellation import RunCancellation, StopReason
 from boba.llm.chat import ChatModel
 
@@ -202,6 +210,7 @@ class Agent:
         self._turns: TurnLoop | None = None
         self._tools: AgentTools | None = None
         self._questions: ControlQuestions | None = None
+        self._client_commands: ClientCommands | None = None
         self._current: RunCancellation | None = None
         self._stopping = False
         self._idle = asyncio.Event()
@@ -294,6 +303,8 @@ class Agent:
         recorder = RequestRecorder(
             keeper, wiring.ids, wiring.clock, parts.record_requests
         )
+        client_commands = ClientCommands(keeper, wiring.clock, parts.version)
+        self._client_commands = client_commands
         attachments = ContextAttachments(
             wiring.templates, wiring.ids, wiring.clock, parts.version, session_id.value
         )
@@ -319,6 +330,7 @@ class Agent:
             parts.environment,
             parts.agent_name,
             recorder,
+            client_commands,
         )
 
         await parts.sink.emit(
@@ -577,6 +589,23 @@ class Agent:
             raise HistoryError(msg)
 
         return self._questions.answer(request_id, answer)
+
+    async def record_command(self, command: ClientCommand) -> None:
+        """Команда, которую клиент исполнил сам, — записью истории: вне хода
+        сразу, посреди хода на ближайшей границе шага или перед его концом.
+
+        Ошибки:
+        HistoryError — сессия ещё не открыта.
+        """
+        client_commands = self._client_commands
+        if client_commands is None:
+            msg = (
+                f"The agent session is not open yet, so the command "
+                f"{command.text!r} is not recorded. Call open() before recording."
+            )
+            raise HistoryError(msg)
+
+        await client_commands.add(command)
 
     async def serve(self) -> None:
         """Обслуживает очередь до `close()`: ход за ходом, между ними — ожидание."""

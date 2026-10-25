@@ -1,5 +1,9 @@
 """Провод ACP v2 (alpha.8) агента и клиента поверх SDK acp.experimental.v2.
 
+Расширение записи команд клиента (BobaExtension): клиент пишет в историю
+сессии команду, которую исполнил сам, запросом `_boba/session/record`, агент
+отдаёт её итог уведомлением `session/update` вида `_boba/command_outcome`.
+
 Ошибки:
 RequestError (acp.exceptions) — собеседник ответил ошибкой ACP (коды AcpErrorCode)
     или агент выбрал версию, которой клиент не знает.
@@ -54,7 +58,14 @@ __all__ = [
     "AcpVersion",
     "AgentSide",
     "BatchTransport",
+    "BobaExtension",
     "ClientConnection",
+    "CommandApp",
+    "CommandFailure",
+    "CommandKind",
+    "CommandOutcome",
+    "CommandOutcomeUpdate",
+    "CommandText",
     "ElicitationRound",
     "ErrorDataKey",
     "McpErrorOutcome",
@@ -63,6 +74,7 @@ __all__ = [
     "McpResultOutcome",
     "McpVersion",
     "MetaKey",
+    "SessionRecordRequest",
     "StopReason",
     "ToolStatus",
 ]
@@ -185,6 +197,90 @@ class ElicitationRound(BaseModel):
     content: dict[str, str | int | float | bool | list[str]] = Field(
         default_factory=dict
     )
+
+
+class BobaExtension(StrEnum):
+    """Расширение ACP «записи команд клиента»: имя метода запроса клиента и
+    вид уведомления `session/update` агента. Агент объявляет расширение
+    ключом SESSION_RECORD (true) в `capabilities._meta` ответа initialize;
+    клиент без объявления команд, которые исполняет сам, не предлагает."""
+
+    SESSION_RECORD = "_boba/session/record"
+    COMMAND_OUTCOME = "_boba/command_outcome"
+
+
+class CommandKind(StrEnum):
+    """Виды итога команды клиента."""
+
+    TEXT = "text"
+    APP = "app"
+    FAILED = "failed"
+
+
+class CommandText(BaseModel):
+    """Итог команды клиента текстом markdown, каким его увидел пользователь."""
+
+    kind: Literal[CommandKind.TEXT] = CommandKind.TEXT
+    text: str
+
+
+class CommandApp(BaseModel):
+    """Приложение MCP Apps, которое открыла команда клиента, целиком на
+    момент вызова: сервер, карточка инструмента, аргументы и итог tools/call,
+    ресурс приложения (resources/read со всеми contents и их _meta). По нему
+    приложение рисуется снова без обращения к серверу."""
+
+    kind: Literal[CommandKind.APP] = CommandKind.APP
+    server: str = Field(min_length=1)
+    tool: mcp_types.Tool
+    arguments: dict[str, Any]
+    result: mcp_types.CallToolResult
+    resource: mcp_types.ReadResourceResult
+
+
+class CommandFailure(BaseModel):
+    """Команда клиента не исполнилась: причина для пользователя."""
+
+    kind: Literal[CommandKind.FAILED] = CommandKind.FAILED
+    error: str = Field(min_length=1)
+
+
+CommandOutcome: TypeAlias = Annotated[
+    CommandText | CommandApp | CommandFailure, Field(discriminator="kind")
+]
+"""Итог команды клиента по виду kind."""
+
+
+class SessionRecordRequest(BaseModel):
+    """Параметры `_boba/session/record`: команда, которую клиент исполнил
+    сам, — messageId записи (его даёт клиент), имя команды, набранный текст
+    `/<имя> <аргументы>` и итог. Агент отвечает, когда запись легла в
+    историю сессии и её уведомления ушли клиенту."""
+
+    session_id: Annotated[str, Field(alias="sessionId", min_length=1)]
+    message_id: Annotated[str, Field(alias="messageId", min_length=1)]
+    command: Annotated[str, Field(min_length=1)]
+    text: str
+    outcome: CommandOutcome
+
+
+class CommandOutcomeUpdate(BaseModel):
+    """Уведомление `session/update` вида `_boba/command_outcome`: итог
+    команды записи messageId. Агент шлёт его вслед за `user_message` той же
+    записи — вживую и при воспроизведении истории одинаково."""
+
+    session_update: Annotated[
+        Literal[BobaExtension.COMMAND_OUTCOME], Field(alias="sessionUpdate")
+    ] = BobaExtension.COMMAND_OUTCOME
+    message_id: Annotated[str, Field(alias="messageId", min_length=1)]
+    command: Annotated[str, Field(min_length=1)]
+    outcome: CommandOutcome
+
+    def wire(self) -> schema.OtherSessionUpdate:
+        """Уведомление видом расширения в общем конверте схемы SDK."""
+        dumped = self.model_dump(mode="json", by_alias=True, exclude_none=True)
+
+        return schema.OtherSessionUpdate.model_validate(dumped)
 
 
 class McpMessage(BaseModel):

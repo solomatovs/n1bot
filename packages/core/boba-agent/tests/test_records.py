@@ -238,7 +238,10 @@ SAMPLES: dict[str, Record] = {
         error="the summary reply is empty",
     ),
     "harness-command": HarnessCommandRecord(
-        **chained(), name="connections", text="/connections"
+        **chained(),
+        name="connections",
+        text="/connections",
+        outcome={"kind": "text", "text": "**Your connections**"},
     ),
     "turn-end": TurnEndRecord(
         **chained(),

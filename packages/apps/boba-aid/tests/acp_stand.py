@@ -52,7 +52,7 @@ from boba.aid.agent.client import (
     AgentProcess,
     ElicitationReply,
 )
-from boba.aid.agent.commands import AppWindow, MenuCommand
+from boba.aid.agent.commands import MenuCommand
 from boba.aid.agent.config import (
     AgentCommandConfig,
     AgentConfig,
@@ -93,7 +93,6 @@ from boba.stand.ui.fake_llm import (
     ReplyTurn,
 )
 from boba.stand.ui.stand import REPO_ROOT, StandPorts
-from boba.toolkit.result import TableResult
 
 API_KEY = "sk-aid-acp-test-secret"
 MODEL_NAME = "stand-model"
@@ -275,8 +274,8 @@ class RecordingUpdates(TurnRenderer):
     """Реализация TurnRenderer для тестов транспорта и агента треда: копит
     уведомления, итоги, формы вопросов пользователю и messageId вопросов; ход
     начинает ответом агента на вопрос, форму — ответом из replies (без него
-    — отмена). Как вкладка реестра команд копит меню, открытые окна команд и
-    снятые шаги вопросов-команд; меню нужного вида ждёт menu."""
+    — отмена). Как вкладка реестра команд копит меню; меню нужного вида ждёт
+    menu."""
 
     MENU_TIMEOUT_SEC: ClassVar[float] = 60.0
 
@@ -292,24 +291,12 @@ class RecordingUpdates(TurnRenderer):
         self.inserted_questions: list[str] = []
         self.withdrawn_questions: list[str] = []
         self.menus: list[list[MenuCommand]] = []
-        self.windows: list[AppWindow] = []
-        self.tables: list[tuple[str, TableResult]] = []
-        self.taken_steps: list[str] = []
         self._offered = asyncio.Condition()
 
     async def offered(self, commands: Sequence[MenuCommand]) -> None:
         async with self._offered:
             self.menus.append(list(commands))
             self._offered.notify_all()
-
-    async def app_opened(self, window: AppWindow) -> None:
-        self.windows.append(window)
-
-    async def table_shown(self, title: str, table: TableResult) -> None:
-        self.tables.append((title, table))
-
-    async def taken(self, step_id: str) -> None:
-        self.taken_steps.append(step_id)
 
     async def menu(
         self, wanted: Callable[[Sequence[str]], bool], since: int

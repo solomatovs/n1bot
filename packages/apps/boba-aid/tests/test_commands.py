@@ -7,15 +7,19 @@
 `available_commands_update`) и промптов серверов под полными именами и
 следует за сменой промптов; вызов каждого вида уходит владельцу — команда
 агента и промпт сервера без расширения агенту вопросом, помеченный промпт
-сервера с расширением — tools/call и приложение во вкладке, команда чата —
-таблица во вкладке; имя чата зарезервировано; недоступный сервер уходит из
-меню и отказывает понятно, вернувшийся — возвращается; окна команд не
-доходят ни до модели, ни до истории агента.
+сервера с расширением — tools/call и приложение целиком (карточка, итог,
+ресурс), команда чата — таблица; исполненная вкладкой команда и её отказ —
+запись истории агента (`_boba/session/record`), её эхо приходит вкладке
+вживую и при воспроизведении, модель её не видит; запись посреди хода
+ложится на границе шага; агент без расширения — таких команд нет в меню и
+вызов отказывает; имя чата зарезервировано; недоступный сервер уходит из
+меню и отказывает понятно, вернувшийся — возвращается.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import socket
 import subprocess
 import sys
@@ -49,6 +53,7 @@ from boba.aid.agent.chat import (
     ThreadIdentity,
 )
 from boba.aid.agent.commands import CommandError, CommandIcon, MenuCommand
+from boba.aid.agent.relay import ChatTools
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.chat.profiles import ChatProfileConfig, SelectedProfile
 from boba.connection_broker.store import ConnectionStore
@@ -74,6 +79,14 @@ from boba.stand.signin import SignInStand
 from boba.stand.site import Stand
 from boba.stand.ui.fake_llm import ScenarioName
 from boba.stand.ui.stand import REPO_ROOT, StandPorts
+from boba.transport.acp.protocol import (
+    BobaExtension,
+    CommandApp,
+    CommandFailure,
+    CommandOutcome,
+    CommandOutcomeUpdate,
+    CommandText,
+)
 from boba.transport.http import HttpTransportConfig
 
 pytestmark = pytest.mark.anyio
@@ -362,6 +375,54 @@ def lacks(prefix: str) -> Any:
     return wanted
 
 
+def user_lines(updates: RecordingUpdates) -> list[tuple[str, str]]:
+    """Строки вопросов ленты по порядку: (messageId, текст)."""
+    lines: list[tuple[str, str]] = []
+    for _, update in updates.updates:
+        if not isinstance(update, schema.UserMessageUpdate):
+            continue
+
+        texts: list[str] = []
+        for block in update.content or ():
+            if isinstance(block, schema.TextContentBlock):
+                texts.append(block.text)
+
+        lines.append((update.message_id, "".join(texts)))
+
+    return lines
+
+
+def outcomes(updates: RecordingUpdates) -> list[CommandOutcomeUpdate]:
+    """Итоги команд вкладки, которые агент отдал лентой, по порядку."""
+    found: list[CommandOutcomeUpdate] = []
+    for _, update in updates.updates:
+        if not isinstance(update, schema.OtherSessionUpdate):
+            continue
+
+        if update.session_update != BobaExtension.COMMAND_OUTCOME.value:
+            continue
+
+        dumped = update.model_dump(mode="json", by_alias=True)
+        found.append(CommandOutcomeUpdate.model_validate(dumped))
+
+    return found
+
+
+def outcome_of(updates: RecordingUpdates, command: str) -> CommandOutcome:
+    """Итог последней записи команды command; запись — за строкой вызова с
+    тем же messageId."""
+    found = outcomes(updates)
+    lines = dict(user_lines(updates))
+    for update in reversed(found):
+        if update.command != command:
+            continue
+
+        assert update.message_id in lines, (update, lines)
+        return update.outcome
+
+    raise AssertionError(f"no outcome of /{command} among {found}")
+
+
 def last_menu(updates: RecordingUpdates) -> dict[str, MenuCommand]:
     commands: dict[str, MenuCommand] = {}
     for command in updates.menus[-1]:
@@ -455,7 +516,7 @@ class TestMenu:
         menu = tab.menus.menu(registration, updates)
         clash = schema.AvailableCommand(name="connections", description="agent's")
         own = schema.AvailableCommand(name="review", description="review the diff")
-        await menu.start()
+        await menu.start(True)
 
         await menu.heard(
             schema.AvailableCommandsUpdate(available_commands=[clash, own])
@@ -465,6 +526,35 @@ class TestMenu:
         listed = updates.menus[-1]
         assert RecordingUpdates.names(listed) == ["connections", "review"]
         assert listed[0].icon is CommandIcon.HARNESS
+
+    async def test_agent_without_the_record_extension_gets_no_tab_commands(
+        self, tab: CommandsTab
+    ) -> None:
+        """Агент не объявил `_boba/session/record`: команд, которые исполняет
+        вкладка, в меню нет — ни команды чата, ни промпта, открывающего
+        приложение, — а набранный вызов отказывает, а не уходит модели;
+        обычный промпт сервера остаётся вопросом агенту."""
+        updates = RecordingUpdates()
+        registration = tab.identity.registration(ChatTools.NAME)
+        menu = tab.menus.menu(registration, updates)
+        console = f"mcp__{EXTENDED}__{CONSOLE}"
+        greet = f"mcp__{EXTENDED}__greet"
+        await menu.start(False)
+        try:
+            names = await updates.menu(has(greet), 0)
+            with pytest.raises(CommandError, match="does not keep the commands"):
+                await menu.routed("", "connections")
+
+            with pytest.raises(CommandError, match="does not keep the commands"):
+                await menu.routed(f"/{console} new", None)
+
+            asked = await menu.routed("plain", greet)
+        finally:
+            await menu.close()
+
+        assert "connections" not in names, names
+        assert console not in names, names
+        assert asked == f"/{greet} plain", asked
 
 
 class TestRoutes:
@@ -490,14 +580,15 @@ class TestRoutes:
         assert given.text == "/compact keep the sql", given
         assert typed.text == "/compact now", typed
         assert plain.text == "hello", plain
-        assert tab.updates.taken_steps == []
+        assert outcomes(tab.updates) == []
 
     async def test_marked_prompt_of_a_server_with_the_extension_opens_its_app(
         self, tab: CommandsTab, model: FakeModel
     ) -> None:
         """Сервер и чат объявили com.boba/commands, промпт помечен: вкладка
-        сама зовёт tools/call инструмента пометки и показывает его
-        приложение; модель не участвует, шаг вопроса снят."""
+        сама зовёт tools/call инструмента пометки и читает ресурс его
+        приложения; приложение целиком — запись истории агента, её эхо —
+        строка вызова и итог; модель не участвует, шаг вопроса уступил эху."""
         name = f"mcp__{EXTENDED}__{CONSOLE}"
         await tab.updates.menu(has(name), 0)
         asked = len(model.app.requests)
@@ -509,18 +600,26 @@ class TestRoutes:
 
         assert chosen is None
         assert typed is None
-        assert tab.updates.taken_steps == ["q1", "q2"]
+        assert tab.updates.inserted_questions == ["q1", "q2"]
         assert len(model.app.requests) == asked
-        first, second = tab.updates.windows
-        assert first.view.server == EXTENDED
-        assert first.view.tool.name == CONSOLE
-        assert first.view.resource_uri == ORDERS_APP
-        assert first.arguments == {"status": "new"}
-        assert second.arguments == {"status": "shipped"}
-        result = mt.CallToolResult.model_validate(first.result)
-        shown = result.content[0]
+        lines = [text for _, text in user_lines(tab.updates)]
+        assert lines == [f"/{name} new", f"/{name} shipped"], lines
+        first, second = outcomes(tab.updates)
+        assert isinstance(first.outcome, CommandApp)
+        assert isinstance(second.outcome, CommandApp)
+        app = first.outcome
+        assert app.server == EXTENDED
+        assert app.tool.name == CONSOLE
+        assert app.arguments == {"status": "new"}
+        assert second.outcome.arguments == {"status": "shipped"}
+        shown = app.result.content[0]
         assert isinstance(shown, mt.TextContent)
         assert shown.text == "the orders console is open for new orders"
+        page = app.resource.contents[0]
+        assert isinstance(page, mt.TextResourceContents)
+        assert str(page.uri) == ORDERS_APP
+        assert page.mime_type == "text/html;profile=mcp-app"
+        assert "<html" in page.text.lower(), page.text[:200]
 
     async def test_marked_prompt_of_a_server_without_the_extension_goes_to_the_model(
         self, tab: CommandsTab, model: FakeModel
@@ -536,7 +635,7 @@ class TestRoutes:
         await tab.agent.ask(routed)
 
         assert routed.text == f"/{name} {status}"
-        assert tab.updates.windows == []
+        assert outcomes(tab.updates) == []
         assert ModelRequests(model).saw(
             "Open the orders console for the orders with status new"
         ), ModelRequests(model).read()
@@ -548,9 +647,9 @@ class TestRoutes:
         store: ConnectionStore,
         test_postgres: PostgresConfig,
     ) -> None:
-        """connections — соединения, выданные пользователю, таблицей во
-        вкладке тем же инструментом чата, что видит модель; агент и модель
-        не участвуют."""
+        """connections — соединения, выданные пользователю, таблицей тем же
+        каталогом чата, что видит модель, записью истории агента; модель
+        не участвует."""
         name = f"orders-{uuid4().hex[:8]}"
         roles = StoredRole.by_name(await store.roles())
         connection_id = await store.add(name, test_postgres)
@@ -560,28 +659,66 @@ class TestRoutes:
         routed = await tab.agent.routed(Question(key="q1", text=""), "connections")
 
         assert routed is None
-        assert tab.updates.taken_steps == ["q1"]
+        assert tab.updates.inserted_questions == ["q1"]
         assert len(model.app.requests) == asked
-        title, table = tab.updates.tables[-1]
-        names: list[str] = []
-        for row in table.rows:
-            names.append(str(row["name"]))
-
-        assert title == "Your connections"
-        assert name in names, table
+        shown = outcome_of(tab.updates, "connections")
+        assert isinstance(shown, CommandText)
+        assert shown.text.startswith("**Your connections**"), shown
+        assert name in shown.text, shown
 
     async def test_wrong_arguments_of_an_app_command_are_refused(
         self, tab: CommandsTab
     ) -> None:
-        """Обязательный аргумент промпта не назван — отказ с причиной, окна
-        нет."""
+        """Обязательный аргумент промпта не назван — отказ с причиной
+        записью истории вместо приложения."""
         name = f"mcp__{EXTENDED}__{CONSOLE}"
         await tab.updates.menu(has(name), 0)
 
-        with pytest.raises(CommandError, match="argument 'status' is required"):
-            await tab.agent.routed(Question(key="q1", text=""), name)
+        routed = await tab.agent.routed(Question(key="q1", text=""), name)
 
-        assert tab.updates.windows == []
+        assert routed is None
+        refused = outcome_of(tab.updates, name)
+        assert isinstance(refused, CommandFailure), refused
+        assert "argument 'status' is required" in refused.error, refused
+
+    async def test_command_during_a_turn_joins_it_at_the_step_boundary(
+        self, tab: CommandsTab
+    ) -> None:
+        """Команда посреди вызова инструмента ложится в историю после его
+        итога; ход вкладки кончается одним idle и не ждёт лишнего."""
+        slow = {"name": f"mcp__{PLAIN}__sleep_for", "arguments": {"seconds": 1.5}}
+        question = f"{ScenarioName.CALL.value} {json.dumps(slow)}"
+        turn = asyncio.create_task(tab.turn(question))
+        await self.started_call(tab.updates)
+
+        routed = await tab.agent.routed(Question(key="q9", text=""), "connections")
+        await turn
+
+        assert routed is None
+        assert len(tab.updates.finished) == 1, tab.updates.finished
+        order: list[str] = []
+        for _, update in tab.updates.updates:
+            if isinstance(update, schema.SessionToolCallUpdate):
+                if update.status == "completed":
+                    order.append("tool")
+
+            if isinstance(update, schema.OtherSessionUpdate):
+                order.append("command")
+
+        assert order.count("command") == 1, order
+        assert order[-1] == "command", order
+        assert order[0] == "tool", order
+
+    @staticmethod
+    async def started_call(updates: RecordingUpdates) -> None:
+        """Ждёт начала вызова инструмента в ходе."""
+        async with asyncio.timeout(60.0):
+            while True:
+                for _, update in updates.updates:
+                    if isinstance(update, schema.SessionToolCallUpdate):
+                        return
+
+                await asyncio.sleep(0.05)
 
 
 class TestUnavailableServer:
@@ -598,8 +735,10 @@ class TestUnavailableServer:
         left = len(tab.updates.menus)
         await asyncio.to_thread(extended.stop)
         await tab.updates.menu(lacks(f"mcp__{EXTENDED}__"), left)
-        with pytest.raises(CommandError, match=f"MCP server '{EXTENDED}' is unavail"):
-            await tab.agent.routed(Question(key="q1", text="new"), greet)
+        await tab.agent.routed(Question(key="q1", text="new"), greet)
+        refused = outcome_of(tab.updates, greet)
+        assert isinstance(refused, CommandFailure), refused
+        assert f"MCP server '{EXTENDED}' is unavail" in refused.error, refused
 
         back = len(tab.updates.menus)
         await asyncio.to_thread(extended.start)
@@ -610,17 +749,21 @@ class TestUnavailableServer:
 
 
 class TestHistory:
-    async def test_windows_of_commands_stay_out_of_the_agent_history(
-        self, tab: CommandsTab, model: FakeModel
+    async def test_commands_of_the_tab_replay_as_they_were_shown(
+        self, tab: CommandsTab, model: FakeModel, extended: HttpStandard
     ) -> None:
-        """Окна команд чата и приложений сервера модель не видела — в
-        истории агента их нет: воспроизведение треда другой вкладке несёт
-        только настоящий ход."""
+        """Команды чата и приложения сервера — в истории агента: другая
+        вкладка получает воспроизведением те же строки вызовов и те же итоги,
+        что пришли вживую, — приложение целиком, даже когда сервера уже нет;
+        модель их не видела."""
         name = f"mcp__{EXTENDED}__{CONSOLE}"
         await tab.updates.menu(has(name), 0)
         await tab.agent.routed(Question(key="q1", text=""), "connections")
         await tab.agent.routed(Question(key="q2", text="new"), name)
         await tab.turn(f"hello {ScenarioName.ANSWER.value}")
+        live_lines = [text for _, text in user_lines(tab.updates)]
+        live = outcomes(tab.updates)
+        await asyncio.to_thread(extended.stop)
 
         replayed = RecordingUpdates()
         other = tab.opened(replayed)
@@ -630,17 +773,15 @@ class TestHistory:
         finally:
             await other.close()
 
-        texts: list[str] = []
-        for _, update in replayed.updates:
-            if not isinstance(update, schema.UserMessageUpdate):
-                continue
-
-            for block in update.content or ():
-                if isinstance(block, schema.TextContentBlock):
-                    texts.append(block.text)
-
         assert loaded
-        assert texts == [f"hello {ScenarioName.ANSWER.value}"], texts
+        lines = [text for _, text in user_lines(replayed)]
+        assert lines == live_lines, lines
+        assert lines == [
+            "/connections",
+            f"/{name} new",
+            f"hello {ScenarioName.ANSWER.value}",
+        ], lines
+        assert outcomes(replayed) == live
         seen = ModelRequests(model)
         assert not seen.saw("the orders console is open"), seen.read()
         assert not seen.saw("Your connections"), seen.read()

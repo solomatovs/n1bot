@@ -20,7 +20,11 @@ FeedView), до ответа; без `replayFrom` — без воспроизв�
 ответах, `set_config_option` с уведомлением, смена профиля модели между
 ходами и отказ при идущем ходе. Служебные уведомления: `usage_update`,
 `compaction_update`, `session_info_update`. Ветвление: `session/fork` с
-`boba/upToMessageId`, без ключа, срез на первом вопросе, отказы."""
+`boba/upToMessageId`, без ключа, срез на первом вопросе, отказы. Команды
+клиента: расширение `_boba/session/record` объявлено в initialize, запись
+вне хода и посреди хода отдаётся `user_message` и `_boba/command_outcome`,
+модели не уходит, воспроизведение отдаёт её так же; отказы на чужие
+параметры, сессию и метод."""
 
 from __future__ import annotations
 
@@ -36,6 +40,7 @@ from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, ClassVar, TypeVar
+from uuid import uuid4
 
 import mcp_types as mt
 import pytest
@@ -71,7 +76,12 @@ from boba.stand.ui.stand import StandPorts
 from boba.transport.acp.protocol import (
     AcpErrorCode,
     AcpVersion,
+    BobaExtension,
     ClientConnection,
+    CommandApp,
+    CommandOutcome,
+    CommandOutcomeUpdate,
+    CommandText,
     ErrorDataKey,
     McpErrorOutcome,
     McpMessage,
@@ -79,6 +89,7 @@ from boba.transport.acp.protocol import (
     McpResultOutcome,
     McpVersion,
     MetaKey,
+    SessionRecordRequest,
     StopReason,
     ToolStatus,
 )
@@ -4939,3 +4950,245 @@ class TestTurnEndNotices:
         assert [(notice.title, notice.description) for notice in notices] == [
             (error, None)
         ]
+
+
+class TestClientCommands:
+    """Команды, которые клиент исполнил сам, в истории сессии агента."""
+
+    CONNECTIONS: ClassVar[CommandText] = CommandText(
+        text="**Your connections**\n\n_none yet_"
+    )
+    APP_HTML: ClassVar[str] = "<!doctype html><p id='result'>orders</p>"
+
+    def app(self) -> CommandApp:
+        """Приложение команды целиком: карточка, итог и ресурс с _meta."""
+        uri = "ui://standard/orders.html"
+        resource = mt.TextResourceContents(
+            uri=uri,
+            mime_type="text/html;profile=mcp-app",
+            text=self.APP_HTML,
+            _meta={"ui": {"csp": {"connectDomains": ["https://example.org"]}}},
+        )
+
+        return CommandApp(
+            server="stand",
+            tool=mt.Tool(
+                name="orders_console",
+                description="Opens the orders console",
+                input_schema={"type": "object"},
+                _meta={"ui": {"resourceUri": uri}},
+            ),
+            arguments={"status": "new"},
+            result=mt.CallToolResult(content=[mt.TextContent(text="console open")]),
+            resource=mt.ReadResourceResult(contents=[resource]),
+        )
+
+    async def record(
+        self,
+        conn: ClientConnection,
+        session_id: str,
+        text: str,
+        outcome: CommandOutcome,
+    ) -> str:
+        """Запись команды; возвращает её messageId."""
+        message_id = str(uuid4())
+        request = SessionRecordRequest(
+            session_id=session_id,
+            message_id=message_id,
+            command=text.removeprefix("/").split(" ")[0],
+            text=text,
+            outcome=outcome,
+        )
+        params = request.model_dump(mode="json", by_alias=True, exclude_none=True)
+        answer = await conn.send_extension_request(
+            BobaExtension.SESSION_RECORD.value, params
+        )
+        assert answer == {}, answer
+
+        return message_id
+
+    @staticmethod
+    def commands(updates: Sequence[Any]) -> list[tuple[str, str, Any]]:
+        """Строки вызовов и итоги команд по порядку: (вид, messageId, тело)."""
+        seen: list[tuple[str, str, Any]] = []
+        for update in updates:
+            if isinstance(update, schema.UserMessageUpdate):
+                texts: list[str] = []
+                for block in update.content or ():
+                    if isinstance(block, schema.TextContentBlock):
+                        texts.append(block.text)
+
+                seen.append(("user", update.message_id, "".join(texts)))
+                continue
+
+            if not isinstance(update, schema.OtherSessionUpdate):
+                continue
+
+            dumped = update.model_dump(mode="json", by_alias=True)
+            outcome = CommandOutcomeUpdate.model_validate(dumped)
+            seen.append(("outcome", outcome.message_id, outcome.outcome))
+
+        return seen
+
+    async def test_command_is_shown_live_and_in_the_replay_but_not_to_the_model(
+        self,
+        boba: AcpProcess,
+        registration: StandRegistration,
+        model: FakeModel,
+        tmp_path: Path,
+    ) -> None:
+        """Агент объявил расширение; команда между ходами — `user_message` с
+        набранным текстом и итог `_boba/command_outcome` без `running`;
+        приложение доходит целиком (карточка, итог, ресурс с _meta); модель
+        следующего хода команд не видит; воспроизведение отдаёт их так же."""
+        client = AcpClient()
+        conn = await boba.start(client, registration)
+        try:
+            response = await handshake(conn)
+            assert response.capabilities is not None
+            meta = response.capabilities.field_meta
+            assert meta == {BobaExtension.SESSION_RECORD.value: True}, meta
+
+            session = await conn.new_session(
+                cwd=str(tmp_path), mcp_servers=[StandRegistration.STAND]
+            )
+            session_id = session.session_id
+            await boba.turn(
+                client,
+                session_id,
+                [schema.TextContentBlock(text=ScenarioName.ANSWER.value)],
+            )
+            before = len(client.updates_of(session_id))
+            table = await self.record(
+                conn, session_id, "/connections", self.CONNECTIONS
+            )
+            app = await self.record(
+                conn, session_id, "/mcp__stand__orders_console new", self.app()
+            )
+            between = client.updates_of(session_id)[before:]
+            await boba.turn(
+                client,
+                session_id,
+                [schema.TextContentBlock(text=ScenarioName.ANSWER.value)],
+            )
+            live = self.commands(client.updates_of(session_id))
+        finally:
+            await conn.close()
+            await boba.close_stdin()
+
+        assert await boba.wait() == 0
+        running: list[Any] = []
+        for update in between:
+            if isinstance(update, schema.RunningSessionStateUpdate):
+                running.append(update)
+
+        assert running == [], between
+        shown = [entry for entry in live if entry[1] in (table, app)]
+        assert shown == [
+            ("user", table, "/connections"),
+            ("outcome", table, self.CONNECTIONS),
+            ("user", app, "/mcp__stand__orders_console new"),
+            ("outcome", app, self.app()),
+        ], shown
+
+        sent = json.dumps(model.app.requests[-1]["messages"], ensure_ascii=False)
+        assert "/connections" not in sent
+        assert "Your connections" not in sent
+        assert "orders_console" not in sent
+        kinds: list[str] = []
+        for record in boba.journal(session_id):
+            kinds.append(str(record.get("kind")))
+
+        assert kinds.count("harness_command") == 2, kinds
+
+        again = AcpProcess(tmp_path, model)
+        replaying = AcpClient()
+        conn = await again.start(replaying, registration)
+        try:
+            await handshake(conn)
+            await conn.resume_session(
+                cwd=str(tmp_path),
+                session_id=session_id,
+                mcp_servers=[StandRegistration.STAND],
+                replay_from=schema.ReplayFromStartVariant(),
+            )
+            replayed = self.commands(replaying.updates_of(session_id))
+        finally:
+            await conn.close()
+            await again.close_stdin()
+            await again.kill()
+
+        assert replayed == live
+
+    async def test_command_during_a_turn_waits_for_the_step_boundary(
+        self,
+        boba: AcpProcess,
+        registration: StandRegistration,
+        tmp_path: Path,
+    ) -> None:
+        """Команда посреди вызова инструмента ложится после его итога, до
+        ответа модели того же хода; ход кончается одним idle."""
+        client = AcpClient()
+        document = boba.settings_document(mode="bypassPermissions", allow_bypass=True)
+        conn = await boba.start(client, registration, document)
+        try:
+            await handshake(conn)
+            session = await conn.new_session(
+                cwd=str(tmp_path), mcp_servers=[StandRegistration.STAND]
+            )
+            session_id = session.session_id
+            slow = {
+                "name": "mcp__stand__progress",
+                "arguments": {"steps": 1, "seconds": 1.0},
+            }
+            first = await conn.prompt(session_id=session_id, prompt=[*call(slow)])
+            recording = asyncio.create_task(
+                self.record(conn, session_id, "/connections", self.CONNECTIONS)
+            )
+            await asyncio.sleep(0.3)
+            assert not recording.done()
+
+            recorded = await recording
+            ended = await client.idle(session_id)
+            assert ended.stop_reason == StopReason.END_TURN
+            order = TestQueueAndCancel.order(client.updates_of(session_id))
+            idles = order.count("idle")
+        finally:
+            await conn.close()
+            await boba.close_stdin()
+
+        assert await boba.wait() == 0
+        assert order[:3] == [first.message_id, "tool", recorded], order
+        assert idles == 1, order
+
+    async def test_refusals(
+        self, boba: AcpProcess, registration: StandRegistration, tmp_path: Path
+    ) -> None:
+        """Чужие параметры — -32602, неизвестная сессия — -32002, чужой
+        метод расширения — -32601."""
+        client = AcpClient()
+        conn = await boba.start(client, registration)
+        try:
+            await handshake(conn)
+            session = await conn.new_session(
+                cwd=str(tmp_path), mcp_servers=[StandRegistration.STAND]
+            )
+            method = BobaExtension.SESSION_RECORD.value
+            with pytest.raises(RequestError) as bad:
+                await conn.send_extension_request(
+                    method, {"sessionId": session.session_id, "messageId": "m"}
+                )
+
+            with pytest.raises(RequestError) as unknown:
+                await self.record(conn, "no-such-session", "/x", self.CONNECTIONS)
+
+            with pytest.raises(RequestError) as foreign:
+                await conn.send_extension_request("_boba/unknown", {})
+        finally:
+            await conn.close()
+            await boba.close_stdin()
+
+        assert bad.value.code == AcpErrorCode.INVALID_PARAMS
+        assert "outcome" in json.dumps(bad.value.data), bad.value.data
+        assert unknown.value.code == AcpErrorCode.RESOURCE_NOT_FOUND
+        assert foreign.value.code == AcpErrorCode.METHOD_NOT_FOUND

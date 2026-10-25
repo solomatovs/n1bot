@@ -929,6 +929,10 @@ class FeedSink(Protocol):
     def turn_ended(self, record: TurnEndRecord) -> None:
         """Конец хода."""
 
+    @abstractmethod
+    def harness_command(self, record: HarnessCommandRecord) -> None:
+        """Команда, которую исполнил клиент, и её итог."""
+
 
 class HistoryFold:
     """Основа свёрток истории: проход по записям разговора, в котором каждая
@@ -1539,17 +1543,24 @@ class CompactBoundaryRecord(SystemRecord):
 
 class HarnessCommandRecord(SystemRecord):
     """Команда запускающей программы или окно сервера MCP, которые клиент
-    записал в историю сессии: человек видит её в беседе, модели она не
-    уходит. `name` — имя команды, `text` — что человек набрал."""
+    исполнил сам и записал в историю сессии: человек видит её в беседе,
+    модели она не уходит. `name` — имя команды, `text` — что человек
+    набрал, `outcome` — итог команды в форме клиента (текст, приложение
+    целиком, отказ), как он пришёл: агент его не разбирает, лента отдаёт
+    клиенту как есть."""
 
     type: Literal[RecordType.SYSTEM] = RecordType.SYSTEM
     kind: Literal[RecordKind.HARNESS_COMMAND] = RecordKind.HARNESS_COMMAND
     subtype: Literal[SystemSubtype.HARNESS_COMMAND] = SystemSubtype.HARNESS_COMMAND
     name: str = Field(min_length=1)
     text: str
+    outcome: dict[str, Any]
 
     def turn_mark(self) -> TurnMark:
         return TurnMark.OUTSIDE
+
+    def feed(self, sink: FeedSink) -> None:
+        sink.harness_command(self)
 
 
 class TurnEndRecord(SystemRecord):

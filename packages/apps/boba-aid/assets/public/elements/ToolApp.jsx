@@ -377,8 +377,17 @@ export default function ToolApp() {
     params,
   });
 
+  // ресурс из записи команды уже несёт приложение целиком: сервер не читается
   useEffect(() => {
     if (!isolated) return undefined;
+    if (props.resource) {
+      try {
+        setApp(appOf(props.resource));
+      } catch (failed) {
+        setError(failed.message);
+      }
+      return undefined;
+    }
     let dropped = false;
     ask("mcp_app_read", request({ uri: props.resource_uri }))
       .then((read) => {
@@ -390,7 +399,7 @@ export default function ToolApp() {
     return () => {
       dropped = true;
     };
-  }, [props.server, props.resource_uri, isolated]);
+  }, [props.server, props.resource_uri, props.resource, isolated]);
 
   useEffect(() => {
     if (mode !== FULLSCREEN) return undefined;

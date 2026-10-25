@@ -3,7 +3,9 @@
 остановка, замена вышедшего процесса или закрытого подключения, удаление
 сессии с тредом; поток сессии уходит приёмнику TurnRenderer, который
 создаёт фабрика TurnRenderers (feed.py). Команды «/» вкладки ведёт реестр
-CommandMenu (commands.py): вопрос-команду он отдаёт владельцу.
+CommandMenu (commands.py): вопрос-команду он отдаёт владельцу, а команду,
+которую исполнила вкладка, агент треда пишет в историю агента расширением
+`_boba/session/record` — её эхо рисуется, как любое уведомление сессии.
 
 Ошибки:
 AcpClientError и наследники — процесс или ответ агента (client.py).
@@ -26,7 +28,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import urljoin
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import chainlit as cl
 import mcp_types as mt
@@ -51,7 +53,12 @@ from boba.aid.agent.client import (
     SessionUpdate,
     SessionUpdates,
 )
-from boba.aid.agent.commands import CommandBoard, CommandMenu, CommandMenus
+from boba.aid.agent.commands import (
+    CommandBoard,
+    CommandMenu,
+    CommandMenus,
+    ExecutedCommand,
+)
 from boba.aid.agent.config import AgentCommandConfig, AgentConfig, AgentServiceConfig
 from boba.aid.agent.relay import ChatTools, McpRegistration, McpRegistrations, McpRelay
 from boba.aid.agent.settings import (
@@ -77,7 +84,11 @@ from boba.identity.errors import InternalServiceError
 from boba.mcp_client.client import McpCaller, McpServersConfig
 from boba.runtime.threads import ThreadsTable
 from boba.toolkit.result import BlockAudience, ContentMime, JsonBlock
-from boba.transport.acp.protocol import AcpErrorCode, MetaKey
+from boba.transport.acp.protocol import (
+    AcpErrorCode,
+    MetaKey,
+    SessionRecordRequest,
+)
 
 __all__ = [
     "AgentLaunch",
@@ -449,9 +460,11 @@ class TurnEnd:
 
     Вопрос очереди ждёт от отправки `session/prompt` до ответа и эха его
     `user_message` — в любом порядке — либо до отказа; idle до этого —
-    граница между ходами агента, а не конец хода вкладки. Создаёт
-    AskedQuestions на ход, вопросы очереди отмечает ThreadAgent; снятые до
-    вставки вопросы копятся в порядке отправки (withdrawn).
+    граница между ходами агента, а не конец хода вкладки. Команда вкладки,
+    которую агент пишет в историю по ходу, держит конец хода до ответа на
+    запись; её эхо хода не начинает и idle не отменяет. Создаёт
+    AskedQuestions на ход, вопросы очереди и команды отмечает ThreadAgent;
+    снятые до вставки вопросы копятся в порядке отправки (withdrawn).
     """
 
     def __init__(self) -> None:
@@ -461,7 +474,25 @@ class TurnEnd:
         self._withdrawn: list[Question] = []
         self._unechoed: set[str] = set()
         self._echoed: set[str] = set()
+        self._recording: set[str] = set()
+        self._recorded: set[str] = set()
         self._idle: schema.IdleSessionStateUpdate | None = None
+
+    def recording(self, message_id: str) -> bool:
+        """Команда вкладки с id записи message_id уходит в историю идущего
+        хода; False — ход уже кончился."""
+        if self.settled.done():
+            return False
+
+        self._recording.add(message_id)
+        self._recorded.add(message_id)
+
+        return True
+
+    def recorded(self, message_id: str) -> None:
+        """Агент ответил на запись команды message_id."""
+        self._recording.discard(message_id)
+        self._settle()
 
     def sent(self, question: Question) -> bool:
         """Вопрос уходит в очередь сессии идущего хода; False — ход уже
@@ -496,6 +527,9 @@ class TurnEnd:
 
     def update(self, update: SessionUpdate) -> None:
         if isinstance(update, schema.UserMessageUpdate):
+            if update.message_id in self._recorded:
+                return
+
             self._echoed.add(update.message_id)
             self._unechoed.discard(update.message_id)
             self._idle = None
@@ -521,6 +555,9 @@ class TurnEnd:
             return
 
         if self._sending:
+            return
+
+        if self._recording:
             return
 
         if self._unechoed:
@@ -1071,7 +1108,7 @@ class ThreadAgent:
             await self._launch(self._launcher.prepare(self._identity))
             await self._opened_ahead()
 
-        await self._menu.start()
+        await self._menu.start(self.process.records_commands())
 
     async def _opened_ahead(self) -> None:
         """Новая сессия треду, у которого в threads.meta её нет; агент её не
@@ -1102,20 +1139,105 @@ class ThreadAgent:
     async def routed(self, question: Question, command: str | None) -> Question | None:
         """Вопрос вкладки с выбранной в меню командой command — владельцу
         команды: вопрос агенту (с текстом `/<имя> <аргументы>`, если это
-        вызов команды) либо None — команду исполнила вкладка, шаг вопроса
-        снят. Вопрос-правка идёт агенту как есть.
+        вызов команды) либо None — команду исполнила вкладка, она записана
+        в историю агента и шаг вопроса уступил её эху. Вопрос-правка идёт
+        агенту как есть.
 
         Ошибки:
-        CommandError — команду сервера или чата не исполнить.
+        CommandError — команду, которую исполняет вкладка, агент в историю
+            не пишет; без записи сервер недоступен.
+        AgentRequestError — агент отказал в записи команды.
+        AgentProcessError — агент ушёл, не записав команду.
         """
         if question.edited:
             return question
 
-        text = await self._menu.routed(question.key, question.text, command)
-        if text is None:
-            return None
+        routed = await self._menu.routed(question.text, command)
+        if isinstance(routed, str):
+            return question.model_copy(update={"text": routed})
 
-        return question.model_copy(update={"text": text})
+        await self._record(question, routed)
+
+        return None
+
+    async def _record(self, question: Question, executed: ExecutedCommand) -> None:
+        """Команда, которую исполнила вкладка, — записью истории агента с
+        новым id: во время хода вкладки — в его сессию (агент запишет её на
+        границе шага), между ходами — в сессию треда, открытую на время
+        записи, как для хода. Шаг вопроса снимается после записи — эхо уже
+        нарисовано под id записи."""
+        message_id = str(uuid4())
+        while True:
+            async with self._gate:
+                current = self._current
+                if current is None:
+                    await self._record_between_turns(question, executed, message_id)
+                    break
+
+                recording = current.ending.recording(message_id)
+
+            if recording:
+                await self._record_in_turn(current, executed, message_id)
+                break
+
+            await self._closed.wait()
+
+        await self._renderer.inserted(question)
+
+    async def _record_in_turn(
+        self, turn: StartedTurn, executed: ExecutedCommand, message_id: str
+    ) -> None:
+        request = self._record_request(turn.session_id, executed, message_id)
+        try:
+            await self.process.record(request)
+        finally:
+            turn.ending.recorded(message_id)
+
+        logger.info(
+            "thread %s: command /%s is recorded in the running turn as %s",
+            self.thread_id,
+            executed.call.name,
+            message_id,
+        )
+
+    async def _record_between_turns(
+        self, question: Question, executed: ExecutedCommand, message_id: str
+    ) -> None:
+        """Запись под замком вкладки: вышедший процесс заменяется, сессия
+        треда открывается без ленты и закрывается после записи."""
+        await self._revive()
+        if self._exited():
+            self._restart_pending = True
+
+        if self._restart_pending:
+            await self._restart()
+
+        session_id = await self._session_for(question)
+        request = self._record_request(session_id, executed, message_id)
+        try:
+            await self.process.record(request)
+        finally:
+            await self._close_session(self.process)
+
+        logger.info(
+            "thread %s: command /%s is recorded in session %s as %s",
+            self.thread_id,
+            executed.call.name,
+            session_id,
+            message_id,
+        )
+
+    @staticmethod
+    def _record_request(
+        session_id: str, executed: ExecutedCommand, message_id: str
+    ) -> SessionRecordRequest:
+        return SessionRecordRequest(
+            session_id=session_id,
+            message_id=message_id,
+            command=executed.call.name,
+            text=executed.call.text(),
+            outcome=executed.outcome,
+        )
 
     async def _restart(self) -> None:
         """Замена процесса под замком вкладки перед ходом: файл настроек

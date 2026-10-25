@@ -23,10 +23,13 @@
 ответа — строка «Question(s)» с
 мигающей точкой, после итога — запись ответа той же панелью только для
 чтения; вопросы сервера MCP, заданные в вызове (раунды в `_meta`
-результата), — такими же записями рядом с итогом вызова. Строку вызова
-команды, итог которой ход рисует своим шагом (`/compact` — шаг сжатия),
-лента не рисует ни вживую, ни при воспроизведении: агент отдаёт запись
-вызова тем же текстом, что набрал пользователь (QuestionLines).
+результата), — такими же записями рядом с итогом вызова. Вызов команды
+агента (`/compact`) — строкой вопроса тем текстом, что набрал пользователь,
+её итог — шаг хода. Команда, которую исполнила вкладка (команда чата,
+приложение сервера), приходит записью агента: `user_message` с набранным
+текстом и уведомление расширения `_boba/command_outcome` с итогом — текстом,
+приложением целиком (карточка, итог вызова, ресурс приложения) или отказом;
+лента рисует его из уведомления, без запросов к серверу.
 
 Ошибки:
 ValidationError — тело уведомления из шины не по схеме ACP v2.
@@ -50,7 +53,6 @@ from pydantic import TypeAdapter, ValidationError
 from boba.aid.rendering.chat_view import ChatView, NoticeLevel, StepText
 from boba.aid.rendering.question import QuestionCard, QuestionCards
 from boba.aid.rendering.tool import AppMeta, ToolAppView
-from boba.core.commands import CommandLines
 from boba.core.mcp_names import McpToolNames
 from boba.mcp_client.client import (
     JournalLinks,
@@ -73,6 +75,11 @@ from boba.toolkit.dag import (
 )
 from boba.toolkit.wire import ResultWire
 from boba.transport.acp.protocol import (
+    BobaExtension,
+    CommandApp,
+    CommandFailure,
+    CommandOutcomeUpdate,
+    CommandText,
     ElicitationRound,
     MetaKey,
     StopReason,
@@ -331,31 +338,6 @@ class JournalRegistry(Protocol):
     @abstractmethod
     def remember(self, thread_id: str, call_id: str, address: JournalAddress) -> None:
         """Адрес журнала вызова call_id треда."""
-
-
-class SilentCommand(StrEnum):
-    """Команды агента, строку вызова которых лента не рисует: итог такой
-    команды — свой шаг хода."""
-
-    COMPACT = "compact"
-
-
-class QuestionLines:
-    """Рисовать ли строку вопроса: вызов команды из SilentCommand — нет.
-    Решает по тексту вопроса: вживую это набранный вызов, в истории —
-    запись вызова, которую агент отдаёт тем же текстом. Держит его
-    переводчик ленты (UpdateView)."""
-
-    def __init__(self) -> None:
-        self._lines = CommandLines()
-        self._silent = frozenset(SilentCommand)
-
-    def shown(self, text: str) -> bool:
-        call = self._lines.parsed(text)
-        if call is None:
-            return True
-
-        return call.name not in self._silent
 
 
 class CompactionState(StrEnum):
@@ -911,7 +893,6 @@ class UpdateView:
             schema.SessionInfoUpdate,
             schema.UsageUpdate,
             schema.SessionCompactionSummaryChunk,
-            schema.OtherSessionUpdate,
             schema.RunningSessionStateUpdate,
             schema.RequiresActionSessionStateUpdate,
             schema.OtherSessionStateUpdate,
@@ -931,7 +912,8 @@ class UpdateView:
         self._view = view
         self._thread_id = thread_id
         self._parts = CallParts(view, thread_id, journals, media)
-        self._lines = QuestionLines()
+        self._media = media
+        self._names = McpToolNames()
         self._turn_key: str | None = None
         self._thought_id: str | None = None
         self._answer_id: str | None = None
@@ -949,6 +931,7 @@ class UpdateView:
             schema.IdleSessionStateUpdate: self._ended,
             schema.SessionNotice: self._notice,
             schema.SessionCompactionUpdate: self._compaction,
+            schema.OtherSessionUpdate: self._extension,
         }
         self._check_registry()
 
@@ -990,10 +973,7 @@ class UpdateView:
         links: Sequence[schema.ResourceContentBlock] = (),
     ) -> None:
         """Вопрос пользователя: шаг с id, который вопросу дал агент, и его
-        вложения; строку вызова команды из SilentCommand — нет."""
-        if not self._lines.shown(text):
-            return
-
+        вложения."""
         await self._view.question(text, key, name=author, links=links)
 
     async def apply(self, update: SessionUpdate) -> None:
@@ -1032,6 +1012,59 @@ class UpdateView:
             f"{sorted(extra)}"
         )
         raise TypeError(msg)
+
+    async def _extension(self, update: schema.OtherSessionUpdate) -> None:
+        """Уведомление вида расширения: итог команды, которую исполнила
+        вкладка, — под её строкой вопроса; прочие виды лента не рисует.
+
+        Ошибки:
+        ValidationError — итог команды не по форме расширения.
+        """
+        if update.session_update != BobaExtension.COMMAND_OUTCOME.value:
+            logger.debug(
+                "thread %s: update %s is not drawn",
+                self._thread_id,
+                update.session_update,
+            )
+            return
+
+        dumped = update.model_dump(mode="json", by_alias=True, exclude_none=True)
+        command = CommandOutcomeUpdate.model_validate(dumped)
+        outcome = command.outcome
+        key = command.message_id
+        if isinstance(outcome, CommandText):
+            await self._view.command_text(outcome.text, key)
+            return
+
+        if isinstance(outcome, CommandFailure):
+            await self._view.error(outcome.error, key)
+            return
+
+        await self._command_app(command.command, outcome, key)
+
+    async def _command_app(self, name: str, outcome: CommandApp, key: str) -> None:
+        """Приложение команды name из её записи: карточка, итог и ресурс —
+        снимок на момент вызова, у сервера ничего не спрашивается. Чат
+        больше не рисует приложений сервера (нет секции apps) — пометка
+        с причиной."""
+        full = self._names.full(outcome.server, outcome.tool.name)
+        app = self._media.app(full, outcome.tool)
+        if app is None:
+            text = (
+                f"The app of /{name} is not shown: the chat no longer draws the "
+                f"apps of the MCP server {outcome.server!r}."
+            )
+            await self._view.error(text, key)
+            return
+
+        result = outcome.result.model_dump(
+            mode="json", by_alias=True, exclude_none=True
+        )
+
+        resource = outcome.resource.model_dump(
+            mode="json", by_alias=True, exclude_none=True
+        )
+        await self._view.command_app(app, key, outcome.arguments, result, resource)
 
     async def _compaction(self, update: schema.SessionCompactionUpdate) -> None:
         """Сжатие разговора шагом хода по его стадиям — вживую и в истории
