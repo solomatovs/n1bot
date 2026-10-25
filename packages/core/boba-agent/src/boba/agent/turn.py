@@ -252,7 +252,7 @@ class TurnLoop:
         self._builder = builder
         self._budget = SkillBudget(profile.context_window, profile.chars_per_token)
         self._asking = ModelAsk(model, self._sink)
-        estimator = TokenEstimator(profile, self._templates)
+        estimator = TokenEstimator(profile)
         self._estimator = estimator
         self._gate = CompactGate(
             ContextMeter(estimator),
@@ -1167,17 +1167,22 @@ class TurnLoop:
     def _result_content(
         result: CallResult,
     ) -> str | Sequence[TextBlock | ToolReferenceBlock]:
-        """Текст результата; у результата со ссылками — блоки tool_reference,
-        затем текст, если он есть."""
+        """Текст результата таким, каким его видит модель: у ошибки — в
+        обёртке tool_use_error; у результата со ссылками — блоки
+        tool_reference, затем текст, если он есть."""
+        text = result.text
+        if result.is_error:
+            text = AgentTag.TOOL_USE_ERROR.wrap(text)
+
         if not result.loaded:
-            return result.text
+            return text
 
         blocks: list[TextBlock | ToolReferenceBlock] = []
         for tool in result.loaded:
             blocks.append(ToolReferenceBlock(tool_name=tool.name))
 
-        if result.text:
-            blocks.append(TextBlock(text=result.text))
+        if text:
+            blocks.append(TextBlock(text=text))
 
         return blocks
 

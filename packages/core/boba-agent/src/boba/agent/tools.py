@@ -1275,16 +1275,17 @@ class ToolTexts:
         tools: Sequence[SnapshotTool],
         structured: Mapping[str, Any],
     ) -> CallResult:
-        """Итог поиска инструментов: ссылки на загруженные и их определения;
-        клиенту — их строки текстом."""
+        """Итог поиска инструментов: ссылки на загруженные и их определения,
+        модели и клиенту — их строки текстом."""
         template = self._templates.read(AgentTemplateFile.TOOL_LOADED)
         lines: list[str] = []
         for tool in tools:
             lines.append(template.format(name=tool.name))
 
-        reply = self._replies.made("\n".join(lines), structured, False)
+        text = "\n".join(lines)
+        reply = self._replies.made(text, structured, False)
 
-        return CallResult(call=call, text="", reply=reply, loaded=tools)
+        return CallResult(call=call, text=text, reply=reply, loaded=tools)
 
     def answered(
         self, call: PlannedCall, text: str, structured: Mapping[str, Any] | None

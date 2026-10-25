@@ -27,11 +27,11 @@ from boba.agent.records import (
     DeferredToolsRecordAttachment,
     Record,
     SnapshotTool,
+    TextBlock,
     ToolReferenceBlock,
     ToolResultRecord,
     TurnOutcome,
 )
-from boba.agent.template import AgentTemplate
 from boba.agent.tools import ToolMatcher, ToolSearchInput, ToolSearchOutput
 from boba.stand.agent import (
     Collected,
@@ -162,7 +162,7 @@ class TestDeferredConversation:
 
         snapshot = Announced(session.conversation()).snapshot()
         assert snapshot is not None
-        built = RequestBuilder(agents.profile(protocol), AgentTemplate()).build(
+        built = RequestBuilder(agents.profile(protocol)).build(
             session.conversation(), snapshot
         )
         assert built.tools[-1].name == StandToolName.LOOKUP.full
@@ -202,7 +202,8 @@ class TestDeferredConversation:
         assert len(found) == 2
         searched = found[0].message.tool_results()[0]
         assert list(searched.content) == [
-            ToolReferenceBlock(tool_name=StandToolName.LOOKUP.full)
+            ToolReferenceBlock(tool_name=StandToolName.LOOKUP.full),
+            TextBlock(text=f"Tool loaded: {StandToolName.LOOKUP.full}"),
         ]
         output = ToolSearchOutput.model_validate(
             found[0].tool_use_result["structuredContent"]
