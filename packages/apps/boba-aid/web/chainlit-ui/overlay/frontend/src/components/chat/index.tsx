@@ -44,13 +44,14 @@ const Chat = () => {
   const navigate = useNavigate();
 
   // boba: accept без значения в конфиге — любые файлы, как и на сервере
-  // chainlit; список категорий отсекал файлы без MIME или вне этих категорий
+  // chainlit; список категорий отсекал файлы без MIME или вне этих категорий.
+  // Незаданный accept сервер шлёт null, а null в types роняет showOpenFilePicker
   const fileSpec = useMemo(
     () => ({
       max_size_mb:
         config?.features?.spontaneous_file_upload?.max_size_mb || 500,
       max_files: config?.features?.spontaneous_file_upload?.max_files || 20,
-      accept: config?.features?.spontaneous_file_upload?.accept
+      accept: config?.features?.spontaneous_file_upload?.accept ?? {}
     }),
     [config]
   );
