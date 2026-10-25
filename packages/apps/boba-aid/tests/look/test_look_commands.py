@@ -14,7 +14,6 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
-from pathlib import Path
 from typing import ClassVar
 
 import pytest
@@ -205,8 +204,8 @@ class CommandsTab:
 
 
 @pytest.fixture(scope="module")
-def commands_host(tmp_path_factory: pytest.TempPathFactory) -> Iterator[AppsHost]:
-    host = AppsHost(Path(tmp_path_factory.mktemp("look-commands")), ["--commands"])
+def commands_host() -> Iterator[AppsHost]:
+    host = AppsHost(["--commands"])
     try:
         host.await_listening()
         yield host

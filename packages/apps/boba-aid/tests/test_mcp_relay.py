@@ -875,7 +875,7 @@ class TestAppRequests:
     chat приложению отказывают, отказ уходит приложению ошибкой JSON-RPC."""
 
     SANDBOX: ClassVar[McpServerApps] = McpServerApps.model_validate(
-        {"sandbox_url": "http://localhost:8123/mcp-apps/sandbox.html"}
+        {"chat_url": "http://127.0.0.1:8122/aid/", "port": 8123}
     )
 
     @pytest.fixture

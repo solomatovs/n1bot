@@ -3,7 +3,8 @@
 Стенд поднимается с MCP-серверами: обычным (официальный SDK, stdio),
 который о boba не знает, своим boba-mcp отдельным процессом по HTTP и тем же
 обычным сервером по HTTP дважды — с секцией apps (его приложения рисуются в
-песочнице на localhost, чат открыт на 127.0.0.1) и без неё. Второй стенд —
+песочнице, которую чат отдаёт сам на своём порту того же хоста 127.0.0.1) и
+без неё. Второй стенд —
 с официальными примерами MCP Apps редакции 2025-11-25 из контейнера
 boba-testapps, у каждого своя песочница: чат согласует с ними initialize.
 Серверы получает агент треда (`session/new.mcpServers`); фейковая модель
@@ -30,11 +31,13 @@ import time
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
+from http import HTTPStatus
 from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar
 from urllib.parse import urlencode, urlsplit, urlunsplit
 from uuid import uuid4
 
+import httpx
 import pytest
 from acp_stand import AppsHost, OrdersBook, SandboxHost
 from chat_ui import BOOT_TIMEOUT_SEC, AppReads, OpenChat
@@ -157,8 +160,8 @@ def boba_mcp_stand(stand_workdir: Path) -> Iterator[BobaMcpStand]:
 
 
 @pytest.fixture(scope="module")
-def apps_host(stand_workdir: Path) -> Iterator[AppsHost]:
-    host = AppsHost(stand_workdir / "apps-host", ())
+def apps_host() -> Iterator[AppsHost]:
+    host = AppsHost(())
     try:
         host.await_listening()
         yield host
@@ -736,10 +739,10 @@ class TestToolApps:
 
 
 @pytest.fixture
-def lone_host(stand_workdir: Path) -> Iterator[AppsHost]:
+def lone_host() -> Iterator[AppsHost]:
     """Свой стандартный сервер с секцией apps: тест останавливает его сервер
     MCP, песочница остаётся."""
-    host = AppsHost(stand_workdir / "lone-host", ())
+    host = AppsHost(())
     try:
         host.await_listening()
         yield host
@@ -875,8 +878,10 @@ class TestToolAppLook:
         proxy = card.frame_locator("iframe").first.locator("iframe").first
 
         src = str(outer.get_attribute("src"))
-        if not src.startswith("http://localhost:"):
-            raise AssertionError(f"the sandbox is on the origin of the server: {src}")
+        sandbox = StandUrl.of(mcp_stand.config.mcp_servers["apps"]["apps"]["port"], "/")
+        page = urlsplit(src)
+        if urlunsplit((page.scheme, page.netloc, page.path, "", "")) != sandbox:
+            raise AssertionError(f"the sandbox is on the port of the server: {src}")
 
         if (
             outer.get_attribute("sandbox")
@@ -897,10 +902,7 @@ class TestToolAppLook:
             )
 
         font_src = re.search(r"font-src ([^;]*)", srcdoc)
-        sandbox = urlsplit(src)
-        if font_src is None or f"http://localhost:{sandbox.port}" not in font_src.group(
-            1
-        ):
+        if font_src is None or sandbox.rstrip("/") not in font_src.group(1):
             raise AssertionError(
                 f"the app takes fonts from the sandbox host: {srcdoc[:400]}"
             )
@@ -1194,9 +1196,9 @@ class TestSandboxPage:
     def _loaded(
         browser: Browser, stand: StandProcess, html: str, csp: dict[str, Any] | None
     ) -> Page:
-        sandbox = stand.config.mcp_servers["apps"]["apps"]["sandbox_url"]
+        sandbox = StandUrl.of(stand.config.mcp_servers["apps"]["apps"]["port"], "/")
         page = browser.new_page()
-        page.goto(str(sandbox))
+        page.goto(sandbox)
         page.evaluate(
             "([html, csp]) => window.postMessage({jsonrpc: '2.0', method: "
             "'ui/notifications/sandbox-resource-ready', params: {html, csp}}, '*')",
@@ -1247,15 +1249,14 @@ class TestSandboxPage:
     def test_domains_over_the_chat_origin_leave_the_csp(
         self, mcp_stand: StandProcess, browser: Browser
     ) -> None:
-        sandbox = str(mcp_stand.config.mcp_servers["apps"]["apps"]["sandbox_url"])
-        port = urlsplit(sandbox).port
+        port = mcp_stand.config.mcp_servers["apps"]["apps"]["port"]
         csp = {
             "connectDomains": [
                 "*",
                 "http://*",
-                "http://localhost",
-                f"http://localhost:{port}",
-                "http://localhost:*",
+                f"http://{StandUrl.HOST}",
+                f"http://{StandUrl.HOST}:{port}",
+                f"http://{StandUrl.HOST}:*",
                 "https://cdn.example.com",
             ]
         }
@@ -1268,7 +1269,155 @@ class TestSandboxPage:
         connect = re.search(r"connect-src ([^;]*)", srcdoc)
 
         assert connect is not None, srcdoc
-        assert connect.group(1).split() == ["'self'", "https://cdn.example.com"]
+        assert connect.group(1).split() == ["https://cdn.example.com"]
+
+
+class SandboxProbe(StrEnum):
+    """Пробы скрипта приложения в iframe песочницы: чтение кук, запрос и
+    отправка формы. Запрос и форма отвечают директивой CSP, которая их
+    остановила (none — нарушения не было за пять секунд)."""
+
+    COOKIE = """() => {
+      try {
+        return "read: " + document.cookie;
+      } catch (error) {
+        return error.name;
+      }
+    }"""
+    FETCH = """async (target) => {
+      const violated = new Promise((resolve) => {
+        document.addEventListener(
+          "securitypolicyviolation",
+          (event) => resolve(event.effectiveDirective),
+          { once: true },
+        );
+        setTimeout(() => resolve("none"), 5000);
+      });
+      let outcome = "reached";
+      try {
+        await fetch(target, { credentials: "include", mode: "no-cors" });
+      } catch (error) {
+        outcome = error.name;
+      }
+      return [outcome, await violated];
+    }"""
+    FORM = """(target) => new Promise((resolve) => {
+      document.addEventListener(
+        "securitypolicyviolation",
+        (event) => resolve(event.effectiveDirective),
+        { once: true },
+      );
+      setTimeout(() => resolve("none"), 5000);
+      const form = document.createElement("form");
+      form.method = "post";
+      form.action = target;
+      document.body.appendChild(form);
+      form.submit();
+    })"""
+
+
+class TestSandboxOrigin:
+    """Песочницу приложений отдаёт сам чат на своём порту того же хоста, без
+    nginx: браузер ходит в aid напрямую. Куки хоста по портам не разделены,
+    поэтому изоляцию держат непрозрачный источник приложения и CSP: скрипт
+    приложения не читает document.cookie, его запросы к чату и к порту
+    песочницы и формы в чат останавливает CSP. Порт песочницы отдаёт только
+    страницу-прокси и шрифт, встроить страницу может только чат."""
+
+    PROBE: ClassVar[str] = "sandbox-probe=visible"
+    FONTS: ClassVar[Path] = (
+        Path(__file__).parents[2] / "assets" / "public" / "vendor" / "inter" / "files"
+    )
+
+    @staticmethod
+    def _sandbox(stand: StandProcess) -> str:
+        return StandUrl.of(stand.config.mcp_servers["apps"]["apps"]["port"], "/")
+
+    @staticmethod
+    def _chat_origin(stand: StandProcess) -> str:
+        chat = urlsplit(stand.config.base_url)
+        return urlunsplit((chat.scheme, chat.netloc, "", "", ""))
+
+    def test_app_neither_reads_cookies_nor_reaches_the_chat(
+        self, mcp_stand: StandProcess, open_chat: OpenChat, llm_port: int
+    ) -> None:
+        chat = open_chat(mcp_stand, "")
+        name, value = self.PROBE.split("=")
+        chat.page.context.add_cookies(
+            [{"name": name, "value": value, "url": mcp_stand.config.base_url}]
+        )
+        orders = OrdersApp(chat, llm_port)
+        card = orders.ask()
+
+        handle = orders.outer(card).element_handle()
+        proxy = handle.content_frame()
+        if proxy is None:
+            raise AssertionError("the card holds the frame of the sandbox page")
+
+        page = urlsplit(proxy.url)
+        served = urlunsplit((page.scheme, page.netloc, page.path, "", ""))
+        if served != self._sandbox(mcp_stand):
+            raise AssertionError(f"the chat serves the sandbox page: {proxy.url}")
+
+        app = proxy.child_frames[0]
+        shared = str(proxy.evaluate(SandboxProbe.COOKIE.value))
+        read = app.evaluate(SandboxProbe.COOKIE.value)
+        targets = [mcp_stand.config.base_url + "/", self._sandbox(mcp_stand)]
+        fetched: list[list[str]] = []
+        for target in targets:
+            fetched.append(app.evaluate(SandboxProbe.FETCH.value, target))
+
+        posted = app.evaluate(SandboxProbe.FORM.value, mcp_stand.config.base_url + "/")
+
+        assert self.PROBE in shared, "cookies of the host reach every port of it"
+        assert read == "SecurityError"
+        assert fetched == [["TypeError", "connect-src"], ["TypeError", "connect-src"]]
+        assert posted == "form-action"
+        orders.check_clean()
+
+    def test_sandbox_port_serves_only_its_page_and_fonts(
+        self, mcp_stand: StandProcess
+    ) -> None:
+        prefix = mcp_stand.config.url_prefix
+        faces = sorted(self.FONTS.glob("*.woff2"))
+        if not faces:
+            raise AssertionError(f"no Inter fonts in {self.FONTS}: make -C build web")
+
+        with httpx.Client(base_url=self._sandbox(mcp_stand), timeout=30.0) as client:
+            page = client.get("/")
+            font = client.get(f"/fonts/inter/files/{faces[0].name}")
+            posted = client.post("/")
+            foreign: list[int] = []
+            for path in (f"{prefix}/", f"{prefix}/login", f"{prefix}/auth/config"):
+                foreign.append(client.get(path).status_code)
+
+        policy = (
+            f"frame-ancestors {self._chat_origin(mcp_stand)}; "
+            "form-action 'none'; object-src 'none'"
+        )
+
+        assert page.status_code == HTTPStatus.OK
+        assert "<title>MCP Apps sandbox</title>" in page.text
+        assert page.headers["content-security-policy"] == policy
+        assert "set-cookie" not in page.headers
+        assert font.status_code == HTTPStatus.OK
+        assert font.headers["access-control-allow-origin"] == "*"
+        assert posted.status_code == HTTPStatus.METHOD_NOT_ALLOWED
+        assert foreign == [HTTPStatus.NOT_FOUND] * 3
+
+    def test_only_the_chat_frames_the_sandbox(
+        self, mcp_stand: StandProcess, browser: Browser
+    ) -> None:
+        page = browser.new_page()
+        try:
+            with page.expect_console_message(
+                lambda message: "frame-ancestors" in message.text, timeout=10_000
+            ) as refused:
+                page.set_content(f'<iframe src="{self._sandbox(mcp_stand)}"></iframe>')
+        finally:
+            page.close()
+
+        assert self._chat_origin(mcp_stand) in refused.value.text
 
 
 class TestServerQuestion:
@@ -1694,8 +1843,8 @@ def example_stand(
     """Стенд чата с официальными примерами MCP Apps из npm (сегменты
     клиентов и отладка) в контейнере boba-testapps, у каждого — своя
     песочница на своём источнике."""
-    segments = SandboxHost(stand_workdir / "sandbox-segments")
-    debug = SandboxHost(stand_workdir / "sandbox-debug")
+    segments = SandboxHost()
+    debug = SandboxHost()
     config = StandConfig(
         workdir=stand_workdir / "chat-examples",
         app=StandApp.AID,
@@ -1714,8 +1863,6 @@ def example_stand(
         yield process
     finally:
         process.stop()
-        segments.stop()
-        debug.stop()
 
 
 class ExampleBook(StrEnum):
@@ -2214,22 +2361,14 @@ def fastmcp_stand(  # noqa: PLR0913 — стенд собирается из ф�
     песочница на своём источнике. Виды отображения проверяются одинаково
     против чужого сервера и против своего."""
     servers: dict[str, dict[str, Any]] = {}
-    hosts: list[SandboxHost] = []
     for name, port in (
         ("prefab", AppServer.PREFAB),
         ("notes", AppServer.NOTES),
         ("genui", AppServer.GENUI),
     ):
-        host = SandboxHost(stand_workdir / f"sandbox-{name}")
-        hosts.append(host)
-        servers[name] = host.drawn(apps_slot.host, port.value)
+        servers[name] = SandboxHost().drawn(apps_slot.host, port.value)
 
-    own = SandboxHost(stand_workdir / "sandbox-boba")
-    hosts.append(own)
-    servers["boba"] = {
-        **boba_mcp_stand.server(),
-        "apps": {"sandbox_url": own.sandbox_url},
-    }
+    servers["boba"] = {**boba_mcp_stand.server(), "apps": SandboxHost().apps()}
     config = StandConfig(
         workdir=stand_workdir / "chat-fastmcp",
         app=StandApp.AID,
@@ -2245,8 +2384,6 @@ def fastmcp_stand(  # noqa: PLR0913 — стенд собирается из ф�
         yield process
     finally:
         process.stop()
-        for host in hosts:
-            host.stop()
 
 
 @pytest.mark.xdist_group("fastmcp")
@@ -2510,8 +2647,7 @@ class TestFastmcpApps:
         """Разрешение clipboardWrite из списка секции apps сервера попадает
         в allow внутреннего iframe; prefersBorder=false снимает рамку
         карточки."""
-        host = SandboxHost(stand_workdir / "sandbox-permitted")
-        server = host.drawn(apps_slot.host, AppServer.PREFAB.value)
+        server = SandboxHost().drawn(apps_slot.host, AppServer.PREFAB.value)
         server["apps"]["permissions"] = ["clipboardWrite"]
         config = StandConfig(
             workdir=stand_workdir / "chat-permitted",
@@ -2533,7 +2669,6 @@ class TestFastmcpApps:
             border = card.evaluate("(el) => getComputedStyle(el).borderTopWidth")
         finally:
             process.stop()
-            host.stop()
 
         assert allow is not None, "the inner iframe carries allow"
         assert "clipboard-write" in allow, allow

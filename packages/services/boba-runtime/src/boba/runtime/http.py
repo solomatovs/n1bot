@@ -11,7 +11,8 @@ ServerStartError — приложение сервера не поднялось
 
 import html
 import logging
-from collections.abc import Mapping
+import socket
+from collections.abc import Mapping, Sequence
 from types import FrameType
 from typing import ClassVar
 
@@ -396,16 +397,21 @@ class SignalledServer(uvicorn.Server):
         self._stop = stop
         self._closers = ProcessClosers()
 
-    async def serve_until_stopped(self) -> None:
-        """Слушает адрес до сигнала остановки и возвращается штатно.
+    async def serve_until_stopped(self, sockets: Sequence[socket.socket] = ()) -> None:
+        """Слушает адрес настроек uvicorn либо готовые сокеты sockets до
+        сигнала остановки и возвращается штатно.
 
         Ошибки:
         ServerStartError — приложение не поднялось.
         """
         self._stop.install()
 
+        listeners: list[socket.socket] | None = None
+        if sockets:
+            listeners = list(sockets)
+
         try:
-            await self.serve()
+            await self.serve(listeners)
         finally:
             await self._closers.close_all()
 

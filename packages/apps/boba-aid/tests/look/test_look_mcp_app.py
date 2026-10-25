@@ -15,7 +15,6 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import dataclass
-from pathlib import Path
 from typing import ClassVar
 
 import pytest
@@ -212,8 +211,8 @@ class FeedTurn:
 
 
 @pytest.fixture(scope="module")
-def apps_host(tmp_path_factory: pytest.TempPathFactory) -> Iterator[AppsHost]:
-    host = AppsHost(Path(tmp_path_factory.mktemp("look-apps")), ())
+def apps_host() -> Iterator[AppsHost]:
+    host = AppsHost(())
     try:
         host.await_listening()
         yield host

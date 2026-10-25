@@ -1,7 +1,10 @@
 """Сборка приложения aid поверх FastAPI chainlit: авторизация, DI и отдача файлов.
 
 Ошибки:
-ConfigError — серверу с приложениями MCP Apps разрешён CORS-доступ к чату.
+ConfigError — серверу с приложениями MCP Apps разрешён CORS-доступ к чату
+    либо в app_root нет страницы-прокси песочницы.
+ServerStartError — порт чата или песочницы не удалось занять либо приложение
+    не поднялось.
 RuntimeError — провайдер контейнера отдал не тот компонент.
 """
 
@@ -10,8 +13,8 @@ import logging
 import logging.config
 from collections.abc import AsyncGenerator, Sequence
 from contextlib import asynccontextmanager
+from enum import StrEnum
 from pathlib import Path
-from typing import ClassVar
 from urllib.parse import urljoin
 
 import uvicorn
@@ -30,6 +33,7 @@ from boba.aid.infra.config import (
     AppConfig,
 )
 from boba.aid.infra.log_context import RequestUserMiddleware, UserLogContext
+from boba.aid.infra.sandbox import AidListeners
 from boba.aid.infra.session import (
     ChainlitSessions,
     SessionContainers,
@@ -102,8 +106,9 @@ def run_app(files: ConfigFiles):
         if c.aid.ws_ping_timeout:
             ws_ping_timeout = c.aid.ws_ping_timeout
 
+        listeners = AidListeners(c, app)
         uv_config = uvicorn.Config(
-            app,
+            listeners,
             host=c.aid.host,
             port=c.aid.port,
             ws=c.aid.ws_protocol,
@@ -119,9 +124,18 @@ def run_app(files: ConfigFiles):
             timeout_graceful_shutdown=c.aid.shutdown_timeout_sec,
         )
         server = SignalledServer(uv_config, ProcessStop())
-        await server.serve_until_stopped()
+        await server.serve_until_stopped(listeners.sockets())
 
     asyncio.run(start())
+
+
+class SandboxOrigin(StrEnum):
+    """Источники, которые в allow_origins chainlit открыли бы API чата
+    приложениям песочницы: любой и непрозрачный — им представляется
+    iframe приложения без allow-same-origin."""
+
+    ANY = "*"
+    OPAQUE = "null"
 
 
 class SandboxCors:
@@ -129,11 +143,9 @@ class SandboxCors:
 
     Скрипт песочницы приложений сервера не должен ходить в API чата с куками
     пользователя: при секции apps у любого сервера allow_origins chainlit не
-    содержит ни "*", ни источника песочницы. Создаёт run_app со списком
-    allow_origins, который chainlit разобрал из своего конфига.
+    содержит ни "*", ни "null", ни источника песочницы. Создаёт run_app со
+    списком allow_origins, который chainlit разобрал из своего конфига.
     """
-
-    ANY: ClassVar[str] = "*"
 
     def __init__(self, allowed: Sequence[str]) -> None:
         self._allowed = allowed
@@ -148,7 +160,7 @@ class SandboxCors:
                 continue
 
             origin = apps.origin()
-            for opened in (self.ANY, origin):
+            for opened in (*SandboxOrigin, origin):
                 if opened not in self._allowed:
                     continue
 

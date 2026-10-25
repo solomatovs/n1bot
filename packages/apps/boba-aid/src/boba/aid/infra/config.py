@@ -17,7 +17,7 @@ from boba.aid.agent.config import AgentConfig
 from boba.auth.config import AuthConfig
 from boba.chat.profiles import ChatProfileConfig
 from boba.krb import KerberosWorkspaceConfig
-from boba.mcp_client.client import McpServerApps, McpServersConfig
+from boba.mcp_client.client import McpServersConfig
 from boba.runtime.config import RuntimeConfig
 
 LOGGING_CONFIG: dict[str, Any] = {
@@ -216,24 +216,30 @@ class AppConfig(RuntimeConfig):
 
     @model_validator(mode="after")
     def _sandboxes_off_the_chat(self) -> Self:
-        """Песочница приложений сервера не на источнике чата: иначе скрипт
-        приложения видит куки входа и страницу чата. Источник адреса чата
-        (agent.public_url) считается тем же правилом, что источник
-        песочницы."""
-        chat = McpServerApps.model_validate({"sandbox_url": self.agent.public_url})
+        """Песочница приложений сервера не на источнике чата и не на его
+        порту: иначе скрипт приложения достаёт до страницы чата, а сокет
+        песочницы не поднимется рядом с сокетом чата."""
         for name, server in self.mcp.servers.items():
             apps = server.apps
             if apps is None:
                 continue
 
-            if apps.origin() != chat.origin():
+            if apps.port == self.aid.port:
+                msg = (
+                    f"[mcp.servers.{name}.apps] port {apps.port} is the port the "
+                    f"chat itself listens on ([aid].port {self.aid.port}); give the "
+                    "sandbox of the server a port of its own"
+                )
+                raise ValueError(msg)
+
+            if apps.origin() != apps.chat_origin():
                 continue
 
             msg = (
-                f"[mcp.servers.{name}.apps] sandbox_url {apps.sandbox_url} is on "
-                f"origin {apps.origin()} of the chat itself ([agent].public_url "
-                f"{self.agent.public_url}); serve the sandbox page from another "
-                "host name or port, so that the apps cannot reach the chat"
+                f"[mcp.servers.{name}.apps] port {apps.port} puts the sandbox on "
+                f"origin {apps.origin()} of the chat page itself (chat_url "
+                f"{apps.chat_url}); give the sandbox a port other than the port "
+                "of the chat in the browser, so that the apps cannot reach the chat"
             )
             raise ValueError(msg)
 

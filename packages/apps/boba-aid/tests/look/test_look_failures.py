@@ -641,8 +641,8 @@ class ServiceStand:
 
 
 @pytest.fixture(scope="module")
-def faulty(tmp_path_factory: pytest.TempPathFactory) -> Iterator[FaultyServer]:
-    host = AppsHost(tmp_path_factory.mktemp("look-failures-apps"), ())
+def faulty() -> Iterator[FaultyServer]:
+    host = AppsHost(())
     server = FaultyServer(host)
     try:
         host.await_listening()

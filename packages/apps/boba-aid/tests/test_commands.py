@@ -157,8 +157,8 @@ class HttpStandard:
             process.kill()
             process.wait(timeout=self.STOP_SEC)
 
-    def config(self, sandbox: str) -> McpServerConfig:
-        """Запись сервера с секцией apps и песочницей sandbox."""
+    def config(self, sandbox: int) -> McpServerConfig:
+        """Запись сервера с секцией apps и песочницей на порту sandbox."""
         endpoint = HttpEndpoint.model_validate(
             {
                 "transport": "streamable-http",
@@ -175,7 +175,9 @@ class HttpStandard:
         return McpServerConfig(
             endpoint=endpoint,
             limits=McpServerLimits(connect_timeout_sec=20.0, call_timeout_sec=60.0),
-            apps=McpServerApps.model_validate({"sandbox_url": sandbox}),
+            apps=McpServerApps.model_validate(
+                {"chat_url": "http://127.0.0.1:8122/aid/", "port": sandbox}
+            ),
         )
 
 
@@ -333,11 +335,11 @@ async def tab(  # noqa: PLR0913 — вкладка собирается из ф�
     plain = standard.model_copy(
         update={
             "apps": McpServerApps.model_validate(
-                {"sandbox_url": f"http://localhost:{StandPorts().free()}/sandbox.html"}
+                {"chat_url": "http://127.0.0.1:8122/aid/", "port": 8124}
             )
         }
     )
-    sandbox = f"http://localhost:{StandPorts().free()}/sandbox.html"
+    sandbox = 8123
     servers = McpServersConfig(
         servers={EXTENDED: extended.config(sandbox), PLAIN: plain}
     )
