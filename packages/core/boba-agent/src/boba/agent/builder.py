@@ -8,6 +8,8 @@
 соседних сообщений пользователя, два режима подачи системных вложений,
 починка пар вызов — результат, чистка и защита от подделки служебного
 блока (TagShield у текстов пользователя и результатов).
+Форма запроса — подача вложений и возврат рассуждений — из снимка: запрос
+повторяется по истории байт в байт, из профиля берётся только сэмплинг.
 Инструменты — из снимка, по имени, затем загруженные отложенные из истории
 в порядке загрузки с пометкой deferred (docs/prompt_assembly/specs/
 07_system_tools.md, раздел 2.3): провайдер без родных отложенных
@@ -226,13 +228,13 @@ class RequestBuilder:
     def build(
         self, conversation: Sequence[ChainRecord], snapshot: PromptSnapshot
     ) -> ChatRequest:
-        feed = Feed(self._texts, self._profile.system_turns)
+        feed = Feed(self._texts, snapshot.system_turns)
         for record in self._reordered(conversation):
             record.to_request(feed)
 
         feed.flush_system()
         turns = self._repaired(self._cleaned(feed.turns))
-        self._mark_reasoning(turns)
+        self._mark_reasoning(turns, snapshot.reasoning_return)
 
         messages: list[ChatTurn] = [
             ChatTurn(
@@ -389,9 +391,8 @@ class RequestBuilder:
 
         repaired.insert(position, UserTurn(results=stubs))
 
-    def _mark_reasoning(self, turns: Sequence[Turn]) -> None:
-        """Какие ответы уходят с рассуждениями — по `reasoning_return` профиля."""
-        policy = self._profile.reasoning_return
+    def _mark_reasoning(self, turns: Sequence[Turn], policy: ReasoningReturn) -> None:
+        """Какие ответы уходят с рассуждениями — по `reasoning_return` снимка."""
         if policy is ReasoningReturn.NEVER:
             return
 
