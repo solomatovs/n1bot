@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-core"
-version = "0.0.30.dev5"
+version = "0.0.30.dev6"
 description = "Boba core: нейтральные соглашения, общие для harness, серверов MCP и агента — текст ошибки валидации без входных данных, раскрытие секретов при дампе, форма имён инструментов серверов MCP."
 requires-python = ">=3.11,<4"
 dependencies = [
@@ -14,7 +14,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "boba-stand==0.0.30.dev5",
+    "boba-stand==0.0.30.dev6",
     "pytest>=9.1,<10",
 ]
 

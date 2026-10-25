@@ -4,19 +4,19 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-tool-knowledge"
-version = "0.0.30.dev5"
+version = "0.0.30.dev6"
 description = "База знаний: поиск по схеме ix (словарь, fts/trgm/vector, чтение объекта) и старый поиск по чанкам в песочнице."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-core==0.0.30.dev5",
-    "boba-toolkit==0.0.30.dev5",
-    "boba-confluence==0.0.30.dev5",
-    "boba-db-postgres==0.0.30.dev5",
-    "boba-db-pgvector==0.0.30.dev5",
-    "boba-indexing==0.0.30.dev5",
-    "boba-ix-core==0.0.30.dev5",
-    "boba-kbdoc==0.0.30.dev5",
-    "boba-llm==0.0.30.dev5",
+    "boba-core==0.0.30.dev6",
+    "boba-toolkit==0.0.30.dev6",
+    "boba-confluence==0.0.30.dev6",
+    "boba-db-postgres==0.0.30.dev6",
+    "boba-db-pgvector==0.0.30.dev6",
+    "boba-indexing==0.0.30.dev6",
+    "boba-ix-core==0.0.30.dev6",
+    "boba-kbdoc==0.0.30.dev6",
+    "boba-llm==0.0.30.dev6",
     "psycopg>=3.3,<4",
     "pydantic>=2.12,<3",
 ]
@@ -26,12 +26,12 @@ kb = "boba.tool.kb.plugin:KB"
 
 [project.optional-dependencies]
 dev = [
-    "boba-runtime==0.0.30.dev5",
-    "boba-llm-fastembed==0.0.30.dev5",
-    "boba-sandbox==0.0.30.dev5",
-    "boba-config==0.0.30.dev5",
-    "boba-stand==0.0.30.dev5",
-    "boba-tool-postgres==0.0.30.dev5",
+    "boba-runtime==0.0.30.dev6",
+    "boba-llm-fastembed==0.0.30.dev6",
+    "boba-sandbox==0.0.30.dev6",
+    "boba-config==0.0.30.dev6",
+    "boba-stand==0.0.30.dev6",
+    "boba-tool-postgres==0.0.30.dev6",
     "numpy>=1.26,<3",
     "omegaconf>=2.3,<3",
     "pytest>=9.1,<10",
