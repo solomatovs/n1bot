@@ -31,6 +31,7 @@ payload = [
     "charset-normalizer>=3.4,<4",
     "pyyaml>=6,<7",
     "pillow>=10",
+    "pillow-heif>=1,<2",
 ]
 
 [tool.setuptools.packages.find]
@@ -52,6 +53,7 @@ imports = [
     "charset_normalizer",
     "yaml",
     "PIL",
+    "pillow_heif",
 ]
 apt = [
     "unzip",
@@ -68,4 +70,6 @@ apt = [
     "sqlite3",
     "xz-utils",
     "bzip2",
+    "imagemagick",
+    "ffmpeg",
 ]
