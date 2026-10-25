@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import AsyncIterator, Callable, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import aclosing
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,7 +27,7 @@ from boba.agent.builder import RequestBuilder
 from boba.agent.history import SessionId, StoredLine
 from boba.agent.ids import IdMint, SystemClock
 from boba.agent.loader import HistoryLoader
-from boba.agent.mcp import ToolCard, ToolReplies
+from boba.agent.mcp import ToolCard, ToolReplies, ToolReply
 from boba.agent.profile import ModelProfile, TurnLimits
 from boba.agent.queue import QueueEntry, QueueKind
 from boba.agent.records import (
@@ -37,17 +37,19 @@ from boba.agent.records import (
     DeferredToolsDeltaAttachment,
     DeferredToolsRecordAttachment,
     McpInstructionsAttachment,
+    NoticeLevel,
     PromptSnapshot,
     ReasoningReturn,
     Record,
     RecordCodec,
     ToolResultRecord,
+    ToolUseBlock,
     TurnEndRecord,
     TurnOutcome,
 )
 from boba.agent.skills import Skill, SkillTool
 from boba.agent.template import AgentTemplate, AgentTemplateFile
-from boba.agent.tools import ToolSearchTool
+from boba.agent.tools import ServerNotice, ToolSearchTool
 from boba.agent.writer import ClientCommand, RequestReplay, RequestReplayError
 from boba.core.mcp_names import McpToolNames
 from boba.history.jsonl import JsonlHistoryStore
@@ -738,3 +740,164 @@ class TestServerRenamed:
         sent_names = [tool["function"]["name"] for tool in sent_tools]
         assert not [n for n in sent_names if self.OLD in n], sent_names
         assert await checked(records, tmp_path / "replay") == (3, 0)
+
+
+class FlakyServer(StandTools):
+    """Сервер стенда, который пропадает и возвращается с другим набором:
+    отключённый не предлагает инструментов, как вход процесса агента;
+    вызов sleep посреди хода снимает с сервера инструмент large — так
+    сервер меняет список уведомлением, пока ход идёт."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.connected = True
+
+    def tools(self) -> Sequence[ToolCard]:
+        if not self.connected:
+            return ()
+
+        return self._cards
+
+    def without(self, name: StandToolName) -> None:
+        cards: list[ToolCard] = []
+        for card in self._cards:
+            if card.name == name.full:
+                continue
+
+            cards.append(card)
+
+        self._cards = cards
+
+    async def _run(self, call: ToolUseBlock) -> ToolReply:
+        if call.name == StandToolName.SLEEP.full:
+            self.without(StandToolName.LARGE)
+
+        return await super()._run(call)
+
+
+def tool_names(request: Mapping[str, object]) -> list[str]:
+    tools = request["tools"]
+    assert isinstance(tools, list)
+    names: list[str] = []
+    for tool in tools:
+        names.append(tool["function"]["name"])
+
+    return names
+
+
+class TestServerReconnected:
+    async def test_every_reconnection_is_compared_with_history(
+        self, server: FakeServer, agents: StandAgents, tmp_path: Path
+    ) -> None:
+        """Сервер оборвался и вернулся с другим набором, потом сменил список
+        посреди хода: каждый раз агент сверяет объявленное сервером с
+        историей, пишет разницу инструментов и инструкций и собирает
+        следующий запрос по ней; переподключение без разницы записей не
+        добавляет. Каждый запрос повторяется из истории."""
+        flaky = FlakyServer()
+        connected = ConnectedServer(
+            name=StandServer.NAME.value, instructions=INSTRUCTIONS
+        )
+        servers = StandServers([connected])
+        served = Served(
+            agents.agent(
+                openai(agents),
+                Collected(),
+                tools=flaky,
+                servers=servers,
+                record_requests=True,
+            )
+        )
+        await served.open(SESSION, resume=False)
+        root = tmp_path / "history"
+        served.agent.queue.enqueue(prompt(call(StandToolName.LOOKUP.full, {})))
+        await served.agent.settled()
+
+        flaky.connected = False
+        servers.connected_servers = []
+        servers.pending_notices.append(
+            ServerNotice(level=NoticeLevel.WARNING, text="stand dropped", detail="")
+        )
+        dropped_at = len(await journal(root))
+        served.agent.queue.enqueue(prompt(ScenarioName.ANSWER.value))
+        await served.agent.settled()
+
+        flaky.connected = True
+        flaky.without(StandToolName.DROP)
+        servers.connected_servers = [connected]
+        servers.pending_notices.append(
+            ServerNotice(level=NoticeLevel.INFO, text="stand is back", detail="")
+        )
+        back_at = len(await journal(root))
+        served.agent.queue.enqueue(prompt(ScenarioName.ANSWER.value))
+        await served.agent.settled()
+
+        same_at = len(await journal(root))
+        servers.pending_notices.append(
+            ServerNotice(level=NoticeLevel.INFO, text="stand is back", detail="")
+        )
+        served.agent.queue.enqueue(prompt(ScenarioName.ANSWER.value))
+        await served.agent.settled()
+
+        midturn_at = len(await journal(root))
+        served.agent.queue.enqueue(
+            prompt(call(StandToolName.SLEEP.full, {"seconds": 0}))
+        )
+        await served.agent.settled()
+        await served.close()
+
+        records = await journal(root)
+        self._check_history(records, (dropped_at, back_at, same_at, midturn_at))
+        self._check_requests(server.requests())
+        assert await checked(records, tmp_path / "replay") == (7, 0)
+
+    def _check_history(
+        self, records: Sequence[Record], marks: tuple[int, int, int, int]
+    ) -> None:
+        """Разница после обрыва, после возвращения с другим набором, ни одной
+        после возвращения без перемен и одна — после смены списка посреди
+        хода."""
+        dropped_at, back_at, same_at, midturn_at = marks
+        stand = StandServer.NAME.value
+        dropped = self._deltas(records[dropped_at:back_at])
+        assert len(dropped) == 1
+        assert len(dropped[0].removed_names) == len(StandToolName)
+        assert self._instructions(records[dropped_at:back_at]) == [((), (stand,))]
+        back = self._deltas(records[back_at:same_at])
+        assert len(back) == 1
+        assert StandToolName.DROP.full not in back[0].surfaced_names
+        assert StandToolName.LOOKUP.full in back[0].surfaced_names
+        assert self._instructions(records[back_at:same_at]) == [((stand,), ())]
+        assert self._deltas(records[same_at:midturn_at]) == []
+        assert self._instructions(records[same_at:midturn_at]) == []
+        midturn = self._deltas(records[midturn_at:])
+        assert [list(d.removed_names) for d in midturn] == [[StandToolName.LARGE.full]]
+
+    @staticmethod
+    def _check_requests(requests: Sequence[Mapping[str, object]]) -> None:
+        assert not [n for n in tool_names(requests[2]) if n.startswith("mcp__")]
+        assert StandToolName.DROP.full not in tool_names(requests[3])
+        assert StandToolName.LOOKUP.full in tool_names(requests[3])
+        assert StandToolName.LARGE.full in tool_names(requests[5])
+        assert StandToolName.LARGE.full not in tool_names(requests[6])
+
+    @staticmethod
+    def _deltas(records: Sequence[Record]) -> list[DeferredToolsDeltaAttachment]:
+        found: list[DeferredToolsDeltaAttachment] = []
+        for record in attachments(records, AttachmentKind.DEFERRED_TOOLS_DELTA):
+            assert isinstance(record.attachment, DeferredToolsDeltaAttachment)
+            found.append(record.attachment)
+
+        return found
+
+    @staticmethod
+    def _instructions(
+        records: Sequence[Record],
+    ) -> list[tuple[tuple[str, ...], tuple[str, ...]]]:
+        found: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
+        for record in attachments(records, AttachmentKind.MCP_INSTRUCTIONS_DELTA):
+            delta = record.attachment
+            assert isinstance(delta, McpInstructionsAttachment)
+            found.append((tuple(delta.added_names), tuple(delta.removed_names)))
+
+        return found
