@@ -615,6 +615,7 @@ boba-mcp failed: InterpolationKeyError: Interpolation key 'site.mcp_proxy_secret
     pg_auth_method = "kerberos"
 
     confluence_auth_method = "negotiate"
+    mail_auth_method       = "password"
 
     auth_secret      = "..."
     mcp_proxy_secret = "..."
@@ -644,10 +645,13 @@ boba-mcp failed: InterpolationKeyError: Interpolation key 'site.mcp_proxy_secret
         server    = "mail.example.com"
         port      = 587
         use_tls   = true
-        user      = "boba-mail"
-        password  = "..."
         sender    = "boba@example.com"
         recipient = "boba-reports@example.com"
+
+    [site.mail_auth.password]
+        method   = "password"
+        user     = "boba-mail"
+        password = "..."
 
     [site.models]
         embedding = "intfloat/multilingual-e5-large"
@@ -679,13 +683,18 @@ OAuth и издатель токенов. Тот же префикс стоит 
 В site.toml достаточно таблицы выбранного способа; таблицы других способов
 можно держать рядом, тогда переход на другой способ — правка одного ключа.
 Имя таблицы выбирает администратор, способ задаёт поле `method` внутри неё.
+`make site-keys APP=<приложение>` после перечня ключей печатает для каждой
+такой таблицы все значения `method` и обязательные поля каждого способа —
+перечень строится из моделей, которые эти таблицы проверяют.
 
 | Подключение | Ключ выбора | Таблицы | Где |
 |---|---|---|---|
 | PostgreSQL, схемы `aid` и `mcp` | `pg_auth_method` | `[site.pg_auth.<имя>]` | чат, boba-mcp |
 | PostgreSQL, история агента (роль истории) | `pg_history_auth_method` | `[site.pg_history_auth.<имя>]` | чат (режим `process`), служба агента |
-| языковая модель чата | `llm_auth_method` | `[site.llm_auth.<имя>]` | чат |
+| языковая модель | `llm_auth_method` | `[site.llm_auth.<имя>]` | чат (режим `process`), служба агента |
 | Confluence | `confluence_auth_method` | `[site.confluence_auth.<имя>]` | boba-mcp |
+| каталог LDAP (служебный поиск ролей) | `ldap_auth_method` | `[site.ldap_auth.<имя>]` | чат, служба агента |
+| почта SMTP | `mail_auth_method` | `[site.mail_auth.<имя>]` | boba-mcp |
 
 Значения `method` у PostgreSQL (обе роли):
 
@@ -749,12 +758,46 @@ SPNEGO с вложенной таблицей `kerberos` (те же `kerberos_ke
         keytab    = "${env.krb}/boba-svc.keytab"
 ```
 
-Без выбора способа остаются три подключения. Служба агента ходит к модели
-только с API-ключом и берёт его из `[site.llm_auth.bearer].token`: провайдер
-агента другого входа не умеет, поэтому таблица `bearer` в её site.toml нужна
-всегда. Каталог LDAP — простой bind учёткой `ldap_bind_user` и паролем
-`ldap_bind_password`; почта — вход SMTP логином `[site.mail].user` и паролем
-`password`.
+Вход к модели агент получает таблицей `auth` провайдера в своём файле
+настроек. Служба агента собирает её сама из `[site.llm_auth.<llm_auth_method>]`
+и умеет любой из пяти способов. В режиме `process` таблицу пишет чат в файл
+настроек процесса агента, и `negotiate` так не передать: kerberos-креды
+остаются у чата, и чат отказывает в запуске агента с причиной в тексте;
+для входа kerberos к модели агент запускают службой со своим keytab.
+
+Каталог LDAP: служебный bind поиска ролей (входы kerberos и proxy, роли
+входа ldap) — `simple` учёткой и паролем либо `anonymous` для каталога,
+который отдаёт записи без входа. Вход пользователя ldap — всегда его
+собственный simple bind по шаблону `bind_dn_template`.
+
+```toml
+[site.ldap_auth.simple]
+    method   = "simple"
+    user     = 'EXAMPLE\boba-reader'
+    password = "..."
+
+[site.ldap_auth.anonymous]
+    method = "anonymous"
+```
+
+Почта: `password` — вход SMTP AUTH логином и паролем, `none` — сервер
+принимает письма без входа.
+
+```toml
+[site.mail_auth.password]
+    method   = "password"
+    user     = "boba-mail"
+    password = "..."
+
+[site.mail_auth.none]
+    method = "none"
+```
+
+Базы и сайты пользователей (PostgreSQL, ClickHouse, Oracle, HTTP-сайты
+плагина `web`) — соединения пользователей: способ входа задаёт поле `method`
+таблицы `auth` самого соединения, общего ключа выбора у них нет. Источники
+индексаторов ix описаны так же — у каждого своя таблица `auth`
+(README пакетов `ch-meta-scraper`, `ora-meta-scraper`).
 
 Системные промпты профилей — часть развёртывания: у каждого профиля чата и
 службы агента обязательный ключ `[site.profiles.<профиль>] system_prompt`
@@ -1122,8 +1165,9 @@ boba-mcp принимает клиентов обеих редакций на о
 адрес Postgres `pg_host`, `pg_addr`, `pg_port`, `pg_database`, `pg_sslmode`,
 вход роли истории `pg_history_auth_method` и `pg_history_auth.<способ>`,
 `agent_client.secret` — секрет доверенного клиента `boba-chat`
-(`[agent.clients]`), `llm_base_url`, `llm_auth.bearer.token`,
-`llm_ssl_verify`, `models.general`, `models.search`, пределы
+(`[agent.clients]`), `llm_base_url`, вход к модели `llm_auth_method` и
+`llm_auth.<способ>`, служебный bind каталога `ldap_auth_method` и
+`ldap_auth.<способ>`, `llm_ssl_verify`, `models.general`, `models.search`, пределы
 `model_limits.<профиль>.context_window` и `.max_output_tokens` и промпты
 `profiles.general.system_prompt`, `profiles.search.system_prompt`. Секция
 `[env]`: `port = 8660`, `listen_host`, `url_prefix`, `public_url`, `data`.
@@ -2625,12 +2669,12 @@ nginx нужны оба блока `location` каждого сервиса (р�
 | PostgreSQL, схемы `aid` и `mcp`, индекс `ix` | 5432 | чат: пул `[postgres]`, шина сообщений; плагины boba-mcp `describer`, `kb`, `ingest` — подключением `[postgres]` сервиса | у плагинов — да | `site.pg_host`, `pg_addr`, `pg_port`, `pg_database`, `pg_sslmode`; вход — `pg_auth_method` и `[site.pg_auth.*]` |
 | PostgreSQL, история агента `boba` | тот же сервер | процесс агента в режиме `process` (из контейнера чата) либо служба агента | нет | те же `pg_host`, `pg_port`, `pg_database`; вход — `pg_history_auth_method` и `[site.pg_history_auth.*]` (раздел 5, «Схемы хранения») |
 | базы пользователей: PostgreSQL, ClickHouse (HTTP-интерфейс, обычно 8123, с TLS — 8443), Oracle (listener, обычно 1521) | свой у каждой базы | плагины `pg`, `ch`, `ora` boba-mcp | да | в соединении пользователя: оно хранится у чата в схеме `aid` и приходит в сервис запечатанным; соединения сервера — `[site.connections.<имя>]` site.toml сервиса (раздел 5, «Соединения сервера») |
-| LDAP, Active Directory | 389, ldaps — 636 | чат: вход ldap и роли входов kerberos и proxy; служба агента: вход ldap | нет | `site.ldap_url`, `ldap_base_dn`, `ldap_bind_user`, `ldap_bind_password` |
+| LDAP, Active Directory | 389, ldaps — 636 | чат: вход ldap и роли входов kerberos и proxy; служба агента: вход ldap | нет | `site.ldap_url`, `ldap_base_dn`; служебный bind — `ldap_auth_method` и `[site.ldap_auth.*]` |
 | Kerberos KDC | 88, TCP и UDP | чат: билеты по keytab для входа в Postgres и роли истории, делегирование (S4U) билета пользователя к его базам; служба агента: роль истории; boba-mcp: вход в Postgres по keytab; плагины с биндом `krb5.conf` — билеты служб по выданному им билету | да, у плагинов с `krb5.conf` | `[realms]` файла `krb5.conf` (`site.krb_config`, каталог `conf/krb`) |
-| языковая модель, OpenAI-совместимый API | 443 | процесс агента в режиме `process` (из контейнера чата) либо служба агента; сам чат к модели не ходит | нет | чат: `site.llm_host`, `llm_path`, `llm_ssl_verify`, вход — `llm_auth_method` и `[site.llm_auth.*]`, прокси — `[agent_http].proxy` либо `HTTPS_PROXY` окружения при `trust_env = true`; служба: `site.llm_base_url`, `[site.llm_auth.bearer].token`, `llm_ssl_verify` |
+| языковая модель, OpenAI-совместимый API | 443 | процесс агента в режиме `process` (из контейнера чата) либо служба агента; сам чат к модели не ходит | нет | чат: `site.llm_host`, `llm_path`, `llm_ssl_verify`, вход — `llm_auth_method` и `[site.llm_auth.*]`, прокси — `[agent_http].proxy` либо `HTTPS_PROXY` окружения при `trust_env = true`; служба: `site.llm_base_url`, `llm_ssl_verify`, вход — `llm_auth_method` и `[site.llm_auth.*]` |
 | Confluence | 443 | плагины `confluence` и `ingest` boba-mcp | да | `[site.confluence]`: `host`, `port`, `path`; прокси — `[http].proxy` общего конфига сервиса |
 | интернет | 80, 443 | плагин `web` (`web_fetch_page`, `web_grep_page`): адрес называет модель | да | прокси — `[http].proxy` общего конфига сервиса |
-| почтовый сервер, SMTP | 587 | плагин `mail` | да; в поставке плагин выключен | `[site.mail]`: `server`, `port`, `use_tls` |
+| почтовый сервер, SMTP | 587 | плагин `mail` | да; в поставке плагин выключен | `[site.mail]`: `server`, `port`, `use_tls`; вход — `mail_auth_method` и `[site.mail_auth.*]` |
 
 Билет службы `HTTP/<krb_domain>` для входа kerberos в чат браузер получает у
 KDC сам, со своей рабочей станции; чат принимает его своим keytab
@@ -3455,8 +3499,7 @@ curl -s -b cookies.txt -X POST "$B/logout"
     [auth.kerberos.roles.ldap]
         server        = "${site.ldap_url}"
         base_dn       = "${site.ldap_base_dn}"
-        bind_dn       = "${site.ldap_bind_user}"
-        bind_password = "${site.ldap_bind_password}"
+        auth          = "${site.ldap_auth.${site.ldap_auth_method}}"
                 [auth.kerberos.roles.ldap.mapping]
             member_of = "${site.ldap_roles.memberof}"
 ```
@@ -3526,8 +3569,7 @@ boba без пароля и без раздачи `auth_secret`. Бэкенд п
     [auth.proxy.roles.ldap]
         server        = "${site.ldap_url}"
         base_dn       = "${site.ldap_base_dn}"
-        bind_dn       = "${site.ldap_bind_user}"
-        bind_password = "${site.ldap_bind_password}"
+        auth          = "${site.ldap_auth.${site.ldap_auth_method}}"
                 [auth.proxy.roles.ldap.mapping]
             member_of = "${site.ldap_roles.memberof}"
     [auth.proxy.roles.header]

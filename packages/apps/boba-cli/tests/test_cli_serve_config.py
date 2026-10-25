@@ -33,8 +33,7 @@ SITE = """
     agent_proxy_secret  = "site-agent-proxy-secret-of-the-stand"
     ldap_url            = "ldaps://dc.example.com:3269"
     ldap_base_dn        = "DC=example,DC=com"
-    ldap_bind_user      = "reader@example.com"
-    ldap_bind_password  = "reader-password"
+    ldap_auth_method    = "simple"
     ldap_netbios        = "EXAMPLE"
     pg_host             = "pg.example.com"
     pg_addr             = "10.0.0.5"
@@ -42,6 +41,7 @@ SITE = """
     pg_database         = "aid"
     pg_sslmode          = "disable"
     pg_history_auth_method = "password"
+    llm_auth_method     = "bearer"
     llm_base_url        = "https://llm.example.com/v1"
     llm_ssl_verify      = true
     [site.agent_client]
@@ -66,6 +66,10 @@ SITE = """
         method   = "password"
         user     = "boba_history"
         password = "history-password"
+    [site.ldap_auth.simple]
+        method   = "simple"
+        user     = "reader@example.com"
+        password = "reader-password"
     [site.ldap_roles.memberof]
         "CN=boba,DC=example,DC=com" = ["read"]
     [site.ldap_roles.dn]
