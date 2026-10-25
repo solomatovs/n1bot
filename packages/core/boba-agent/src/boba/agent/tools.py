@@ -140,6 +140,13 @@ class ToolServer(Protocol):
         исключение; наверх идёт только отмена.
         """
 
+    @abstractmethod
+    async def source(self, call: ToolUseBlock) -> Mapping[str, Any] | None:
+        """Что клиенту нужно, чтобы показать вызов call, на момент вызова —
+        в форме клиента; ядро его не разбирает и кладёт в запись вызова.
+        None — у вызова источника нет. Сбой — тоже None: вызов идёт и без
+        источника."""
+
 
 @dataclass(frozen=True)
 class PlannedCall:
@@ -766,6 +773,16 @@ class AgentTools(DeferredCatalog):
             return None
 
         return card.hints
+
+    async def source(self, call: ToolUseBlock) -> Mapping[str, Any] | None:
+        """Источник вызова у сервера; у собственного инструмента его нет."""
+        if self.own(call.name) is not None:
+            return None
+
+        if self._server is None:
+            return None
+
+        return await self._server.source(call)
 
     def own(self, name: str) -> OwnTool | None:
         """Собственный инструмент по имени. ToolSearch находится всегда: его

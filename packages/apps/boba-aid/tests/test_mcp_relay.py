@@ -32,6 +32,7 @@ from mcp.shared.exceptions import MCPError
 
 from boba.aid.agent.relay import ChatTools, McpRegistration, McpRegistrations, McpRelay
 from boba.aid.canvas.tools import CanvasOpener
+from boba.aid.rendering.tool import AppResource, ToolSource
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.connection_broker.sealing import McpServerInfo
 from boba.connection_broker.store import ConnectionStore
@@ -72,6 +73,7 @@ from boba.transport.acp.protocol import (
     McpOutcome,
     McpResultOutcome,
     McpVersion,
+    ToolSourceRequest,
 )
 
 pytestmark = pytest.mark.anyio
@@ -964,6 +966,73 @@ class TestAppRequests:
         assert "is not a server of profile" in called.value.error.message
         assert reading.value.error.code == mt.INVALID_PARAMS
 
+    def _request(
+        self, stand: RelayStand, tab: TabSession, server: str, name: str
+    ) -> ToolSourceRequest:
+        """Запрос источника вызова name сервера server от агента вкладки."""
+        registration = self._of(tab, server, self.PROFILE_SERVERS)
+        server_id = stand.registrations.register(registration, [server])[0].server_id
+
+        return ToolSourceRequest(
+            session_id="s-1",
+            tool_call_id="call-1",
+            server_id=server_id,
+            name=name,
+            arguments={"rows": []},
+        )
+
+    async def test_source_of_an_app_call_holds_the_card_and_the_whole_resource(
+        self, relay: McpRelay, relay_stand: RelayStand, tab: TabSession
+    ) -> None:
+        """Источник вызова инструмента с приложением у сервера с секцией apps:
+        карточка, описание сервера и ресурс приложения целиком с _meta — по
+        нему лента нарисует вызов, не спрашивая сервер."""
+        request = self._request(relay_stand, tab, "apps", "orders")
+
+        reply = await relay.source(request)
+
+        source = ToolSource.model_validate(reply.source)
+        assert source.server == "apps"
+        assert source.tool.name == "orders"
+        assert source.tool.meta is not None
+        assert source.tool.meta["ui"]["resourceUri"] == "ui://standard/orders.html"
+        assert source.description.capabilities.tools is not None
+        assert source.nodes == []
+        assert isinstance(source.app, AppResource), source.app
+        (content,) = source.app.resource.contents
+        assert content.mime_type == APP_MIME_TYPE
+        assert content.meta is not None
+        assert content.meta["ui"]["csp"] == {
+            "resourceDomains": ["https://cdn.example.com"]
+        }
+
+    async def test_source_of_a_server_without_apps_has_no_resource(
+        self, relay: McpRelay, relay_stand: RelayStand, tab: TabSession
+    ) -> None:
+        request = self._request(relay_stand, tab, "standard", "orders")
+
+        reply = await relay.source(request)
+
+        source = ToolSource.model_validate(reply.source)
+        assert source.tool.name == "orders"
+        assert source.app is None
+
+    async def test_source_of_an_unknown_tool_or_server_is_an_external_error(
+        self, relay: McpRelay, relay_stand: RelayStand, tab: TabSession
+    ) -> None:
+        unknown = self._request(relay_stand, tab, "apps", "no_such_tool")
+        ghost = unknown.model_copy(update={"server_id": "ghost"})
+
+        with pytest.raises(RequestError) as refused:
+            await relay.source(unknown)
+
+        with pytest.raises(RequestError) as unregistered:
+            await relay.source(ghost)
+
+        assert refused.value.code == AcpErrorCode.BACKEND_FAILED
+        assert "lists no tool 'no_such_tool'" in str(refused.value)
+        assert unregistered.value.code == AcpErrorCode.UNKNOWN_SERVER
+
     async def test_app_reads_the_resources_of_its_server(
         self, relay: McpRelay, tab: TabSession
     ) -> None:
@@ -1346,6 +1415,48 @@ class TestRelaySealing:
         assert isinstance(called, McpResultOutcome), called
 
         return mt.CallToolResult.model_validate(called.result)
+
+    async def test_source_of_a_workflow_call_holds_the_cards_of_its_nodes(
+        self,
+        service_process: ServiceProcess,
+        store: ConnectionStore,
+        call_stand: CallStand,
+        tab: TabSession,
+    ) -> None:
+        """Источник вызова инструмента со вложенными вызовами несёт карточки
+        инструментов его узлов: по ним лента рисует вход каждого узла."""
+        credentials = KerberosCredentialSource(None, NoRefresh())
+        stand = RelayStand(lambda: store, lambda: credentials, call_stand.contexts)
+        servers = McpServers(service_process.servers())
+        relay = stand.relay(servers)
+        registration = tab.registration(uuid4(), SignInStand.PROFILE)
+        server_id = stand.registrations.register(registration, ["boba"])[0].server_id
+        node = {"key": "n0", "tool": "fake_connection_host", "args": {}}
+        request = ToolSourceRequest(
+            session_id="s-1",
+            tool_call_id="call-1",
+            server_id=server_id,
+            name="workflow",
+            arguments={"nodes": [node, node]},
+        )
+        try:
+            reply = None
+            for _ in range(150):
+                try:
+                    reply = await relay.source(request)
+                except RequestError:
+                    await asyncio.sleep(0.2)
+                    continue
+
+                break
+        finally:
+            await servers.stop()
+
+        assert reply is not None, "the service stand gave no source within 30s"
+        source = ToolSource.model_validate(reply.source)
+        assert source.tool.name == "workflow"
+        assert [card.name for card in source.nodes] == ["fake_connection_host"]
+        assert source.app is None
 
     async def test_thread_is_hidden_from_the_model_and_filled_by_the_relay(
         self,

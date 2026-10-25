@@ -91,6 +91,8 @@ from boba.transport.acp.protocol import (
     MetaKey,
     SessionRecordRequest,
     StopReason,
+    ToolSourceReply,
+    ToolSourceRequest,
     ToolStatus,
 )
 
@@ -196,8 +198,9 @@ class StandRegistration:
     ошибка -33001. Описание и страницы списка несут срок свежести ttl_ms;
     drop() молча убирает инструмент из списка; unreachable — сервер за
     регистрацией недоступен, любой запрос получает внешнюю ошибку -33002,
-    как от чата без связи с сервером. Копит запросы и requestId отменённых
-    ответов."""
+    как от чата без связи с сервером. На `_boba/tool_source` отвечает
+    источником с именем сервера, инструмента и аргументами. Копит запросы,
+    запросы источников и requestId отменённых ответов."""
 
     STAND: ClassVar[schema.AcpMcpServer] = schema.AcpMcpServer(
         name="stand", server_id="stand:3f9c2a"
@@ -305,6 +308,7 @@ class StandRegistration:
         self._listed: list[mt.Tool] = list(self.TOOLS)
         self.connection: ClientConnection | None = None
         self.received: list[McpMessage] = []
+        self.sourced: list[ToolSourceRequest] = []
         self.cancelled: list[str] = []
         self.unreachable = False
 
@@ -355,6 +359,16 @@ class StandRegistration:
             return McpErrorOutcome(error=ErrorData(code=-32601, message=missing))
 
         return await self._call(message, request)
+
+    async def source(self, request: ToolSourceRequest) -> ToolSourceReply:
+        self.sourced.append(request)
+        source = {
+            "server": self.STAND.name,
+            "tool": request.name,
+            "arguments": request.arguments,
+        }
+
+        return ToolSourceReply(source=source)
 
     def drop(self, tool: RegisteredTool) -> None:
         """Инструмент tool уходит из списка без уведомления клиента."""
@@ -1158,7 +1172,12 @@ class AcpProcess:
         stdin = self.process.stdin
         assert stdin is not None
         connection = ClientConnection(
-            client, registration.answer, stdin, self._reader, observers=[self.frames]
+            client,
+            registration.answer,
+            registration.source,
+            stdin,
+            self._reader,
+            observers=[self.frames],
         )
         registration.connection = connection
         self._connection = connection
@@ -1237,15 +1256,21 @@ class AcpProcess:
 
 
 async def handshake(
-    conn: ClientConnection, forms: bool = False
+    conn: ClientConnection, forms: bool = False, sources: bool = False
 ) -> schema.InitializeResponse:
-    """Рукопожатие; forms — клиент объявляет формы `elicitation.form`."""
-    capabilities = schema.ClientCapabilities()
+    """Рукопожатие; forms — клиент объявляет формы `elicitation.form`,
+    sources — расширение источника вызова `_boba/tool_source`."""
+    elicitation = None
     if forms:
         elicitation = schema.ElicitationCapabilities(
             form=schema.ElicitationFormCapabilities()
         )
-        capabilities = schema.ClientCapabilities(elicitation=elicitation)
+
+    meta = None
+    if sources:
+        meta = {BobaExtension.TOOL_SOURCE.value: True}
+
+    capabilities = schema.ClientCapabilities(elicitation=elicitation, field_meta=meta)
 
     return await conn.initialize(
         protocol_version=AcpVersion.V2,
@@ -4950,6 +4975,118 @@ class TestTurnEndNotices:
         assert [(notice.title, notice.description) for notice in notices] == [
             (error, None)
         ]
+
+
+class TestToolSource:
+    """Источник вызова: клиенту с расширением `_boba/tool_source` агент
+    перед записью вызова инструмента его сервера шлёт запрос и кладёт ответ
+    в запись вызова; источник едет содержимым первого уведомления вызова и
+    вживую, и в воспроизведении истории, без нового запроса к клиенту.
+    Клиент без расширения запроса не получает."""
+
+    ADD: ClassVar[dict[str, Any]] = {
+        "name": "mcp__stand__add",
+        "arguments": {"a": 2, "b": 3},
+    }
+
+    @staticmethod
+    def sources(updates: Sequence[Any]) -> list[Any]:
+        """Содержимое `_boba/tool_source` первых уведомлений вызовов."""
+        found: list[Any] = []
+        for update in updates:
+            if not isinstance(update, schema.SessionToolCallUpdate):
+                continue
+
+            if update.status != ToolStatus.PENDING:
+                continue
+
+            content = update.content
+            if content is None:
+                found.append(None)
+                continue
+
+            for item in content:
+                found.append(item.model_dump(mode="json", by_alias=True))
+
+        return found
+
+    async def test_source_is_kept_with_the_call_and_replayed(
+        self,
+        boba: AcpProcess,
+        registration: StandRegistration,
+        model: FakeModel,
+        tmp_path: Path,
+    ) -> None:
+        client = AcpClient()
+        document = boba.settings_document(mode="bypassPermissions", allow_bypass=True)
+        conn = await boba.start(client, registration, document)
+        try:
+            await handshake(conn, sources=True)
+            session = await conn.new_session(
+                cwd=str(tmp_path), mcp_servers=[StandRegistration.STAND]
+            )
+            session_id = session.session_id
+            _, idle = await boba.turn(client, session_id, call(self.ADD))
+            assert idle.stop_reason == StopReason.END_TURN
+        finally:
+            await conn.close()
+            await boba.close_stdin()
+
+        assert await boba.wait() == 0
+
+        (asked,) = registration.sourced
+        start = client.of(schema.SessionToolCallUpdate)[0]
+        assert asked.tool_call_id == start.tool_call_id
+        assert asked.session_id == session_id
+        assert asked.server_id == StandRegistration.STAND.server_id
+        assert asked.name == RegisteredTool.ADD.value
+        assert asked.arguments == {"a": 2, "b": 3}
+        source = {
+            "type": BobaExtension.TOOL_SOURCE.value,
+            "source": {"server": "stand", "tool": "add", "arguments": {"a": 2, "b": 3}},
+        }
+        assert self.sources(client.updates_of(session_id)) == [source]
+
+        second = AcpProcess(tmp_path, model)
+        replay = AcpClient()
+        document = second.settings_document(mode="bypassPermissions", allow_bypass=True)
+        conn = await second.start(replay, registration, document)
+        try:
+            await handshake(conn)
+            await conn.resume_session(
+                cwd=str(tmp_path),
+                session_id=session_id,
+                mcp_servers=[StandRegistration.STAND],
+                replay_from=schema.ReplayFromStartVariant(),
+            )
+        finally:
+            await conn.close()
+            await second.close_stdin()
+            await second.kill()
+
+        assert self.sources(replay.updates_of(session_id)) == [source]
+        assert len(registration.sourced) == 1
+
+    async def test_client_without_the_extension_is_not_asked(
+        self, boba: AcpProcess, registration: StandRegistration, tmp_path: Path
+    ) -> None:
+        client = AcpClient()
+        document = boba.settings_document(mode="bypassPermissions", allow_bypass=True)
+        conn = await boba.start(client, registration, document)
+        try:
+            await handshake(conn)
+            session = await conn.new_session(
+                cwd=str(tmp_path), mcp_servers=[StandRegistration.STAND]
+            )
+            _, idle = await boba.turn(client, session.session_id, call(self.ADD))
+            assert idle.stop_reason == StopReason.END_TURN
+        finally:
+            await conn.close()
+            await boba.close_stdin()
+            await boba.kill()
+
+        assert registration.sourced == []
+        assert self.sources(client.updates_of(session.session_id)) == [None]
 
 
 class TestClientCommands:

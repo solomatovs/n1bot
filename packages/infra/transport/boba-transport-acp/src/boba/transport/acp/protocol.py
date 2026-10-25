@@ -3,6 +3,9 @@
 Расширение записи команд клиента (BobaExtension): клиент пишет в историю
 сессии команду, которую исполнил сам, запросом `_boba/session/record`, агент
 отдаёт её итог уведомлением `session/update` вида `_boba/command_outcome`.
+Расширение источника вызова: агент спрашивает клиента запросом
+`_boba/tool_source`, что сохранить в истории для показа вызова инструмента
+сервера клиента, и отдаёт ответ содержимым вызова вида `_boba/tool_source`.
 
 Ошибки:
 RequestError (acp.exceptions) — собеседник ответил ошибкой ACP (коды AcpErrorCode)
@@ -37,6 +40,7 @@ from pydantic import Field, TypeAdapter, ValidationError
 from acp import schema as v1_schema
 from acp._transport import Transport
 from acp.connection import Connection, JsonValue
+from acp.exceptions import RequestError
 from acp.experimental import v2
 from acp.experimental.v2 import (
     AgentSideConnection,
@@ -76,6 +80,9 @@ __all__ = [
     "MetaKey",
     "SessionRecordRequest",
     "StopReason",
+    "ToolSourceContent",
+    "ToolSourceReply",
+    "ToolSourceRequest",
     "ToolStatus",
 ]
 
@@ -200,13 +207,23 @@ class ElicitationRound(BaseModel):
 
 
 class BobaExtension(StrEnum):
-    """Расширение ACP «записи команд клиента»: имя метода запроса клиента и
-    вид уведомления `session/update` агента. Агент объявляет расширение
-    ключом SESSION_RECORD (true) в `capabilities._meta` ответа initialize;
-    клиент без объявления команд, которые исполняет сам, не предлагает."""
+    """Расширения ACP boba: имена методов, вид уведомления `session/update` и
+    вид содержимого вызова.
+
+    Запись команд клиента: агент объявляет её ключом SESSION_RECORD (true) в
+    `capabilities._meta` ответа initialize; клиент без объявления команд,
+    которые исполняет сам, не предлагает; итог команды агент отдаёт
+    уведомлением COMMAND_OUTCOME.
+
+    Источник вызова: клиент объявляет его ключом TOOL_SOURCE (true) в
+    `clientCapabilities._meta` запроса initialize; агент перед записью
+    вызова инструмента сервера, который клиент дал записью `type: "acp"`,
+    спрашивает клиента запросом TOOL_SOURCE и отдаёт его ответ в первом
+    уведомлении вызова содержимым вида TOOL_SOURCE."""
 
     SESSION_RECORD = "_boba/session/record"
     COMMAND_OUTCOME = "_boba/command_outcome"
+    TOOL_SOURCE = "_boba/tool_source"
 
 
 class CommandKind(StrEnum):
@@ -281,6 +298,42 @@ class CommandOutcomeUpdate(BaseModel):
         dumped = self.model_dump(mode="json", by_alias=True, exclude_none=True)
 
         return schema.OtherSessionUpdate.model_validate(dumped)
+
+
+class ToolSourceRequest(BaseModel):
+    """Параметры запроса `_boba/tool_source` агента клиенту: вызов
+    toolCallId сессии sessionId инструмента name сервера serverId (записи
+    `type: "acp"` клиента) с аргументами arguments, который агент сейчас
+    запишет и исполнит. Клиент отвечает ToolSourceReply."""
+
+    session_id: Annotated[str, Field(alias="sessionId", min_length=1)]
+    tool_call_id: Annotated[str, Field(alias="toolCallId", min_length=1)]
+    server_id: Annotated[str, Field(alias="serverId", min_length=1)]
+    name: Annotated[str, Field(min_length=1)]
+    arguments: dict[str, Any]
+
+
+class ToolSourceReply(BaseModel):
+    """Ответ клиента на `_boba/tool_source`: что сохранить для показа
+    вызова, в форме клиента. Агент его не разбирает: кладёт в историю
+    записью вызова и отдаёт обратно содержимым ToolSourceContent."""
+
+    source: dict[str, Any]
+
+
+class ToolSourceContent(BaseModel):
+    """Содержимое вызова вида `_boba/tool_source`: источник вызова, каким
+    его дал клиент. Агент шлёт его в первом уведомлении `tool_call` вызова
+    — вживую и при воспроизведении истории одинаково."""
+
+    type: Literal[BobaExtension.TOOL_SOURCE] = BobaExtension.TOOL_SOURCE
+    source: dict[str, Any]
+
+    def wire(self) -> schema.OtherToolCallContent:
+        """Содержимое видом расширения в общем конверте схемы SDK."""
+        dumped = self.model_dump(mode="json", by_alias=True, exclude_none=True)
+
+        return schema.OtherToolCallContent.model_validate(dumped)
 
 
 class McpMessage(BaseModel):
@@ -535,6 +588,34 @@ class AgentSide:
                 f"{shown}, expected an object with 'result' or 'error': {exc}"
             ) from exc
 
+    async def tool_source(self, request: ToolSourceRequest) -> ToolSourceReply:
+        """Запрос `_boba/tool_source` клиенту: источник вызова для истории.
+
+        Ошибки:
+        RequestError — клиент ответил ошибкой ACP.
+        AcpTransportError — соединение закрыто или ответ не по форме.
+        """
+        method = BobaExtension.TOOL_SOURCE.value
+        params = request.model_dump(mode="json", by_alias=True, exclude_none=True)
+        try:
+            raw = await self._connection.send_request(method, params)
+        except ConnectionError as exc:
+            raise AcpTransportError(
+                f"Could not send {method} for call '{request.tool_call_id}' of "
+                f"tool '{request.name}' to the client because the ACP connection "
+                f"is gone: {exc}."
+            ) from exc
+
+        try:
+            return ToolSourceReply.model_validate(raw)
+        except ValidationError as exc:
+            shown = repr(raw)[:200]
+            raise AcpTransportError(
+                f"The client answered {method} for call '{request.tool_call_id}' "
+                f"of tool '{request.name}' with {shown}, expected an object with "
+                f"'source': {exc}"
+            ) from exc
+
     @property
     def connection(self) -> Connection:
         """Соединение SDK этой стороны: его отдаёт роутер сервера сети."""
@@ -548,19 +629,21 @@ class AgentSide:
 
 class ClientConnection(ClientSideConnection):
     """Наследник ClientSideConnection SDK на его закрытых именах. Запрос
-    mcp/message отдаёт answer, остальное — роутеру SDK; notify шлёт
-    уведомление mcp/message."""
+    mcp/message отдаёт answer, запрос `_boba/tool_source` — source,
+    остальное — роутеру SDK; notify шлёт уведомление mcp/message."""
 
     def __init__(
         self,
         client: Client,
         answer: Callable[[McpMessage], Awaitable[McpOutcome]],
+        source: Callable[[ToolSourceRequest], Awaitable[ToolSourceReply]],
         input_stream: asyncio.StreamWriter | Transport,
         output_stream: asyncio.StreamReader | None,
         **connection_kwargs: Any,
     ) -> None:
         self._client = client
         self._answer = answer
+        self._source = source
         self._state = InitializationState()
         self._router = _ClientRouter(client, self._state)
         self._conn = open_connection(
@@ -577,7 +660,32 @@ class ClientConnection(ClientSideConnection):
             outcome = await self._answer(McpMessage.model_validate(params))
             return outcome.model_dump(mode="json", by_alias=True, exclude_unset=True)
 
+        source_request = not is_notification and method == BobaExtension.TOOL_SOURCE
+        if source_request:
+            return await self._sourced(params)
+
         return await self._router(method, params, is_notification)
+
+    async def _sourced(self, params: JsonValue | None) -> JsonValue:
+        """Ответ на `_boba/tool_source` обработчиком source.
+
+        Ошибки:
+        RequestError — параметры не по форме запроса (-32602).
+        """
+        try:
+            request = ToolSourceRequest.model_validate(params)
+        except ValidationError as exc:
+            details = (
+                f"{BobaExtension.TOOL_SOURCE.value}: expected sessionId, "
+                f"toolCallId, serverId, name and arguments: {exc}"
+            )
+            raise RequestError.invalid_params(
+                {ErrorDataKey.DETAILS.value: details}
+            ) from exc
+
+        reply = await self._source(request)
+
+        return reply.model_dump(mode="json", by_alias=True, exclude_none=True)
 
     def connected(self) -> bool:
         """Соединение живо: SDK не видел конца потока агента и его не закрывали."""

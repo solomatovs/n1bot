@@ -20,6 +20,7 @@ boba-testapps, у каждого своя песочница: чат согла�
 from __future__ import annotations
 
 import base64
+import io
 import json
 import re
 import socket
@@ -36,7 +37,8 @@ from uuid import uuid4
 
 import pytest
 from acp_stand import AppsHost, OrdersBook, SandboxHost
-from chat_ui import BOOT_TIMEOUT_SEC, OpenChat
+from chat_ui import BOOT_TIMEOUT_SEC, AppReads, OpenChat
+from PIL import Image, ImageChops
 from playwright.sync_api import (
     Browser,
     ConsoleMessage,
@@ -731,6 +733,122 @@ class TestToolApps:
 
         if orders.cards().count():
             raise AssertionError("a server without apps draws no card")
+
+
+@pytest.fixture
+def lone_host(stand_workdir: Path) -> Iterator[AppsHost]:
+    """Свой стандартный сервер с секцией apps: тест останавливает его сервер
+    MCP, песочница остаётся."""
+    host = AppsHost(stand_workdir / "lone-host", ())
+    try:
+        host.await_listening()
+        yield host
+    finally:
+        host.stop()
+
+
+@pytest.fixture
+def lone_stand(
+    stand_workdir: Path,
+    llm_port: int,
+    fake_llm: None,
+    stand_database: str,
+    lone_host: AppsHost,
+) -> Iterator[StandProcess]:
+    """Стенд чата с одним сервером apps на своём хосте lone_host."""
+    config = StandConfig(
+        workdir=stand_workdir / "chat-lone",
+        app=StandApp.AID,
+        app_port=StandPorts().free(),
+        llm_port=llm_port,
+        db_name=stand_database,
+        url_prefix="/boba-lone",
+        mcp_servers={"apps": lone_host.drawn()},
+    )
+    process = StandProcess(config=config, log_path=stand_workdir / "lone-app.log")
+    try:
+        process.start(boot_timeout_sec=BOOT_TIMEOUT_SEC)
+        yield process
+    finally:
+        process.stop()
+
+
+class TestToolAppFromHistory:
+    """Тред с вызовом инструмента-приложения открыт заново, когда сервера
+    MCP уже нет: карточка, приложение и его кадр те же, что вживую, — они
+    рисуются из источника вызова в истории агента; вкладка ресурс
+    приложения не просит, а чат не спрашивает сервер."""
+
+    SHOTS: ClassVar[int] = 20
+    PAUSE_MS: ClassVar[int] = 100
+
+    def _shot(self, card: Locator) -> bytes:
+        """Кадр карточки, когда он устоялся: два снимка подряд равны."""
+        previous = card.screenshot(animations="disabled", caret="hide", scale="css")
+        for _ in range(self.SHOTS):
+            card.page.wait_for_timeout(self.PAUSE_MS)
+            current = card.screenshot(animations="disabled", caret="hide", scale="css")
+            if current == previous:
+                return current
+
+            previous = current
+
+        raise AssertionError(f"the card {card} did not settle in {self.SHOTS} shots")
+
+    SMOOTHING: ClassVar[int] = 2
+    """Разница канала, которую даёт сглаживание нативных элементов формы
+    (стрелка select) в другой вкладке: это ещё тот же кадр."""
+
+    def _changed(
+        self, expected: bytes, actual: bytes
+    ) -> tuple[int, int, int, int] | None:
+        """Область, где кадры различаются пикселями сильнее сглаживания;
+        None — кадр тот же."""
+        old = Image.open(io.BytesIO(expected)).convert("RGB")
+        new = Image.open(io.BytesIO(actual)).convert("RGB")
+        if old.size != new.size:
+            return (0, 0, new.width, new.height)
+
+        delta = ImageChops.difference(old, new).convert("L")
+
+        return delta.point(self._over).getbbox()
+
+    def _over(self, value: int) -> int:
+        if value > self.SMOOTHING:
+            return 255
+
+        return 0
+
+    def test_card_comes_back_from_the_history_without_the_server(
+        self,
+        lone_stand: StandProcess,
+        lone_host: AppsHost,
+        open_chat: OpenChat,
+        llm_port: int,
+    ) -> None:
+        orders = OrdersApp(open_chat(lone_stand, ""), llm_port)
+        live = orders.ask()
+        call_id = str(live.get_attribute("data-mcp-app"))
+        orders.inner(live).locator("#result").get_by_text(OrdersApp.SHOWN).wait_for()
+        frame = self._shot(live)
+        answer = orders.chat.log.last_step(StepKind.ASSISTANT.value)
+        assert answer is not None, orders.chat.log.describe()
+        thread_id = str(answer.get(StepField.THREAD_ID.value))
+
+        lone_host.stop_server()
+        again = open_chat(lone_stand, "")
+        reads = AppReads(again.page)
+        reopened = OrdersApp(again, llm_port)
+        again.open_thread(thread_id, str(answer[StepField.ID.value]))
+        card = again.page.locator(f'[data-mcp-app="{call_id}"]')
+        card.wait_for(timeout=60_000)
+        inner = reopened.drawn(card, "3 of 3 orders")
+        inner.locator("#result").get_by_text(OrdersApp.SHOWN).wait_for()
+
+        changed = self._changed(frame, self._shot(card))
+        assert changed is None, f"the replayed card differs in {changed}"
+        assert reads.seen == [], reads.seen
+        reopened.check_clean()
 
 
 class TestToolAppLook:

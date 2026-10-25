@@ -4,8 +4,10 @@ stdio своего процесса (AgentProcess) или по сети со с�
 уведомления, вопросы разрешений и формы `elicitation/create` агента уходят
 приёмнику с явным интерфейсом SessionUpdates, который заменяет рендерер
 ленты, а запросы mcp/message — ретранслятору (McpRelay). Клиент объявляет
-агенту формы (`elicitation.form`). Режим разрешений каждой открытой сессии
-(`session/new|resume|fork`) клиент выставляет по ACP: настройка категории
+агенту формы (`elicitation.form`) и расширение источника вызова
+`_boba/tool_source`: запрос агента о нём отвечает ретранслятор. Режим
+разрешений каждой открытой сессии (`session/new|resume|fork`) клиент
+выставляет по ACP: настройка категории
 mode из `configOptions` ответа и `session/set_config_option`
 (SessionModeSelector); в службе он прежде выбирает профиль агента настройкой
 категории model (SessionProfileSelector).
@@ -61,6 +63,8 @@ from boba.transport.acp.protocol import (
     McpOutcome,
     MetaKey,
     SessionRecordRequest,
+    ToolSourceReply,
+    ToolSourceRequest,
 )
 
 __all__ = [
@@ -832,6 +836,9 @@ class AgentLink:
     async def _answer(self, message: McpMessage) -> McpOutcome:
         return await self._relay.answer(message, self._require_connection().notify)
 
+    async def _source(self, request: ToolSourceRequest) -> ToolSourceReply:
+        return await self._relay.source(request)
+
     async def _initialize(self) -> schema.InitializeResponse:
         """Рукопожатие v2: версию ответа проверяет SDK.
 
@@ -845,13 +852,17 @@ class AgentLink:
         elicitation = schema.ElicitationCapabilities(
             form=schema.ElicitationFormCapabilities()
         )
+        capabilities = schema.ClientCapabilities(
+            elicitation=elicitation,
+            field_meta={BobaExtension.TOOL_SOURCE.value: True},
+        )
 
         return await self._answer_of(
             "initialize",
             connection.initialize(
                 protocol_version=AcpVersion.V2.value,
                 info=info,
-                capabilities=schema.ClientCapabilities(elicitation=elicitation),
+                capabilities=capabilities,
             ),
         )
 
@@ -1053,7 +1064,9 @@ class AgentProcess(AgentLink):
                 raise AgentProcessError(msg, failure) from exc
 
         self._process = process
-        connection = ClientConnection(self._client, self._answer, stdin, stdout)
+        connection = ClientConnection(
+            self._client, self._answer, self._source, stdin, stdout
+        )
         # соединение закрывается раньше процесса: выход из стека — в обратном порядке
         self._stack.push_async_callback(connection.close)
         try:
@@ -1245,7 +1258,9 @@ class AgentService(AgentLink):
         http = httpx2.AsyncClient(auth=auth, timeout=timeout)
         self._stack.push_async_callback(http.aclose)
         transport = create_http_stream(self._url, client=http)
-        connection = ClientConnection(self._client, self._answer, transport, None)
+        connection = ClientConnection(
+            self._client, self._answer, self._source, transport, None
+        )
         self._stack.push_async_callback(connection.close)
         try:
             return await self._handshake(connection, self._config.start_timeout_sec)

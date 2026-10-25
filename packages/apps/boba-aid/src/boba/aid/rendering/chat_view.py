@@ -1113,11 +1113,10 @@ class ChatView:
         key: str,
         arguments: Mapping[str, Any],
         result: Mapping[str, Any],
-        resource: Mapping[str, Any],
     ) -> Step:
         """Приложение, которое открыла команда вкладки, — сообщением основной
-        ленты с элементом ToolApp сразу с итогом вызова и ресурсом
-        приложения: элемент рисует его без resources/read."""
+        ленты с элементом ToolApp сразу с итогом вызова; ресурс приложения
+        несёт app."""
         message = self._step(
             self.COMMANDS_AUTHOR,
             StepKind.ASSISTANT,
@@ -1133,7 +1132,6 @@ class ChatView:
                 element.id = element_id
 
             element.props[AppProp.RESULT.value] = dict(result)
-            element.props[AppProp.RESOURCE.value] = dict(resource)
             message.elements = [element]
 
         await self._sink.put(message)
