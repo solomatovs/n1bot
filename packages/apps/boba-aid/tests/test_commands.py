@@ -832,7 +832,7 @@ class TestRenamedServer:
         вкладка открывает ту же сессию, и при подключении агент пишет одну
         запись команд — снятые старые имена и новые команды; меню и запрос
         модели знают только новое имя, а беседа до переименования на месте."""
-        sandbox = f"http://localhost:{StandPorts().free()}/sandbox.html"
+        sandbox = StandPorts().free()
         thread_id = str(uuid4())
         first = CommandsTab(
             tmp_path / "old",
