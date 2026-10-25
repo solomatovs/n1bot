@@ -1020,6 +1020,10 @@ class ThreadAgent:
         self._session_id: str | None = None
         self._open = False
         """Сессия _session_id открыта у процесса и держит замок истории."""
+        self._unclaimed = False
+        """Сессию _session_id вкладка открыла до первого вопроса, и в
+        threads.meta её ещё нет: первый вопрос её туда пишет, закрытие без
+        вопроса удаляет её у агента."""
         self._active: str | None = None
         self._current: StartedTurn | None = None
         """Ход вкладки от начала до отпущенного замка области."""
@@ -1060,12 +1064,40 @@ class ThreadAgent:
         return self._active is not None
 
     async def start(self) -> None:
-        """Процесс агента и меню команд вкладки; сессия открывается позже, и
-        команды агента меню получит с её открытием."""
+        """Процесс агента и меню команд вкладки. Треду без сессии агента
+        вкладка сразу открывает новую: агент объявляет команды только своей
+        сессии, и меню получает их с открытием вкладки."""
         async with self._gate:
             await self._launch(self._launcher.prepare(self._identity))
+            await self._opened_ahead()
 
         await self._menu.start()
+
+    async def _opened_ahead(self) -> None:
+        """Новая сессия треду, у которого в threads.meta её нет; агент её не
+        открыл — процесс закрывается, и вкладка получает отказ.
+
+        Ошибки:
+        AcpClientError — агент отказал в `session/new`.
+        """
+        known = await self._meta.session_of(self.thread_id)
+        if known is not None:
+            return
+
+        try:
+            opened = await self.process.open_session()
+        except AcpClientError:
+            await self._close_process()
+            raise
+
+        self._session_id = opened.session_id
+        self._open = True
+        self._unclaimed = True
+        logger.info(
+            "thread %s: agent session %s opened with the tab",
+            self.thread_id,
+            opened.session_id,
+        )
 
     async def routed(self, question: Question, command: str | None) -> Question | None:
         """Вопрос вкладки с выбранной в меню командой command — владельцу
@@ -1596,11 +1628,25 @@ class ThreadAgent:
             return
 
         self._open = False
+        unclaimed = self._unclaimed
+        if unclaimed:
+            self._session_id = None
+            self._unclaimed = False
+
         if not process.alive():
             return
 
         await process.close_session(session_id)
         logger.info("thread %s: agent session %s closed", self.thread_id, session_id)
+        if not unclaimed:
+            return
+
+        await process.delete_session(session_id)
+        logger.info(
+            "thread %s: agent session %s deleted, the tab asked nothing in it",
+            self.thread_id,
+            session_id,
+        )
 
     async def _session_for(self, question: Question) -> str:
         """Сессия хода: ветвь до вопроса при его правке, сессия треда — уже
@@ -1613,12 +1659,23 @@ class ThreadAgent:
             return await self._branch(question, current)
 
         if self._open:
+            await self._claimed(current)
             return current
 
         if await self._resume(replay=False):
             return current
 
         return await self._created()
+
+    async def _claimed(self, session_id: str) -> None:
+        """Сессия, открытая вкладкой заранее, пишется в threads.meta с первым
+        вопросом."""
+        if not self._unclaimed:
+            return
+
+        profile = self._identity.profile.name
+        await self._meta.remember(self.thread_id, session_id, profile)
+        self._unclaimed = False
 
     async def _created(self) -> str:
         """Новая сессия треда: её id запоминается в threads.meta."""
