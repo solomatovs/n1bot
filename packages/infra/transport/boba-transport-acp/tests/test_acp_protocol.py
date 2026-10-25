@@ -32,6 +32,9 @@ from boba.transport.acp.protocol import (
     McpOutcome,
     McpResultOutcome,
     McpVersion,
+    ToolSourceContent,
+    ToolSourceReply,
+    ToolSourceRequest,
     ToolStatus,
 )
 
@@ -59,13 +62,15 @@ class StandAgent(Agent):
 
 class StandClient(Client):
     """Клиент стенда: копит обновления, отвечает на mcp/message из replies и
-    отмечает отмену ответа в cancelled."""
+    отмечает отмену ответа в cancelled; на `_boba/tool_source` отвечает
+    источником с именем инструмента и копит запросы в sourced."""
 
     def __init__(self) -> None:
         self.updates: asyncio.Queue[object] = asyncio.Queue()
         self.questions: asyncio.Queue[McpMessage] = asyncio.Queue()
         self.replies: asyncio.Queue[McpOutcome | RequestError] = asyncio.Queue()
         self.cancelled = asyncio.Event()
+        self.sourced: list[ToolSourceRequest] = []
 
     async def session_update(
         self, session_id: str, update: object, **kwargs: Any
@@ -95,6 +100,11 @@ class StandClient(Client):
 
         return reply
 
+    async def source(self, request: ToolSourceRequest) -> ToolSourceReply:
+        self.sourced.append(request)
+
+        return ToolSourceReply(source={"tool": request.name})
+
 
 @dataclass(frozen=True)
 class AcpPair:
@@ -116,7 +126,12 @@ async def acp_pair() -> AsyncIterator[AcpPair]:
     serving = asyncio.create_task(agent.serve())
 
     client = ClientConnection(
-        stand_client, stand_client.answer, client_end, None, observers=[frames]
+        stand_client,
+        stand_client.answer,
+        stand_client.source,
+        client_end,
+        None,
+        observers=[frames],
     )
     await client.initialize(protocol_version=AcpVersion.V2, info=info)
 
@@ -281,7 +296,9 @@ class TestVersionNegotiation:
         raw = Connection(self._reply_version_3, agent_end, listening=False)
         reading = asyncio.create_task(raw.main_loop())
 
-        client = ClientConnection(stand_client, stand_client.answer, client_end, None)
+        client = ClientConnection(
+            stand_client, stand_client.answer, stand_client.source, client_end, None
+        )
         info = schema.Implementation(name="boba-transport-acp-tests", version="0")
         with pytest.raises(RequestError):
             await client.initialize(protocol_version=AcpVersion.V2, info=info)
@@ -371,6 +388,45 @@ class TestMcpMessage:
             await acp_pair.stand_client.cancelled.wait()
 
         assert pending.cancelled()
+
+
+class TestToolSource:
+    """Расширение источника вызова: запрос агента `_boba/tool_source` доходит
+    до обработчика клиента, ответ возвращается агенту как есть; содержимое
+    вызова того же вида проходит схему уведомления SDK."""
+
+    REQUEST: ClassVar[ToolSourceRequest] = ToolSourceRequest(
+        session_id="s-1",
+        tool_call_id="call-1",
+        server_id="boba_general",
+        name="pg_query",
+        arguments={"sql": "select 1"},
+    )
+
+    async def test_request_reaches_client_and_source_returns(
+        self, acp_pair: AcpPair
+    ) -> None:
+        reply = await acp_pair.agent.tool_source(self.REQUEST)
+
+        assert reply == ToolSourceReply(source={"tool": "pg_query"})
+        assert acp_pair.stand_client.sourced == [self.REQUEST]
+
+    async def test_source_rides_the_tool_call_as_its_content(self) -> None:
+        content = ToolSourceContent(source={"tool": "pg_query"}).wire()
+        update = schema.SessionToolCallUpdate(
+            tool_call_id="call-1", status=ToolStatus.PENDING, content=[content]
+        )
+
+        dumped = update.model_dump(mode="json", by_alias=True, exclude_none=True)
+        parsed = schema.SessionToolCallUpdate.model_validate(dumped)
+
+        assert parsed.content is not None
+        (item,) = parsed.content
+        assert isinstance(item, schema.OtherToolCallContent)
+        assert item.model_dump(mode="json") == {
+            "type": "_boba/tool_source",
+            "source": {"tool": "pg_query"},
+        }
 
 
 class TestSdkGuard:

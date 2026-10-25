@@ -307,6 +307,8 @@ PAGE_SRCS       := $(shell find $(WEB_PROJECT)/src -type f) \
 UI_DIST         := $(ASSETS_DIR)/ui
 UI_ELEMENTS     := $(ASSETS_DIR)/public/elements
 UI_SRCS         := $(shell find $(UI_DIR) $(UI_ELEMENTS) -type f) $(SCRIPTS_DIR)/chainlit_ui.sh
+# store pnpm цели chainlit-ui: живёт между сборками, из реестра качается только недостающее
+PNPM_STORE      ?= $(DEPS_DIR)/pnpm-store
 
 # --- что кладут sandbox и release ------------------------------------------------
 
@@ -718,8 +720,9 @@ define HELP
 GLIBC_IMAGE, GCC_IMAGE, PYTHON_IMAGE, NODE_IMAGE, TESTAPPS_NODE_IMAGE. Версии и состав
 входов: UV_VERSION, BWRAP_VERSION, LIBFUSE_VERSION, E2FSPROGS_VERSION, CHAINLIT (файл
 UPSTREAM), KATEX_VERSION, INTER_VERSION, MERMAID_VERSION, ORACLEDB_VERSION, NUITKA_VERSION,
-RAPIDOCR_LANGS, EMBED_MODELS, ONNX_MODELS, SANDBOX_WS_SIZE (размер workspace). PYTHON — python хоста
-для скриптов сборки (.venv). Значения для машины — в conf/local.mk.
+RAPIDOCR_LANGS, EMBED_MODELS, ONNX_MODELS, SANDBOX_WS_SIZE (размер workspace), PNPM_STORE
+(store pnpm цели chainlit-ui между сборками). PYTHON — python хоста для скриптов сборки
+(.venv). Значения для машины — в conf/local.mk.
 
 Сеть: в интернет ходит только fetch, остальные цели — только в реестры. apt — зеркало из
 sources.list образов dmp/*: стадии base, oracledb-wheel, bwrap-build, fuse2fs-build,
@@ -982,9 +985,9 @@ testapps: base
 # передаёт соединения через unix-сокет в OFFLINE_DIR прокси, который стоит в сети docker
 # по умолчанию и пускает только хосты реестров из конфигурации сборки (conf/pip.conf,
 # conf/uv.toml, sources.list и npm config образов). Между контейнерами нет ни одного
-# сетевого пакета: только файл сокета. Кэш сборщика — своя область CACHE_SCOPE: каждый шаг
-# исполняется заново один раз. Журналы и итог — в OFFLINE_DIR: allow.jsonl, proxy.jsonl,
-# dns.jsonl, marks.jsonl, build.log, report.txt
+# сетевого пакета: только файл сокета. Кэш сборщика — своя область CACHE_SCOPE, store pnpm —
+# пустой в OFFLINE_DIR: каждый шаг исполняется и качает заново один раз. Журналы и итог —
+# в OFFLINE_DIR: allow.jsonl, proxy.jsonl, dns.jsonl, marks.jsonl, build.log, report.txt
 OFFLINE_TARGETS ?= sandbox models-image plugin-rootfs-all chainlit-ui web test testapps boba-bin
 OFFLINE_DIR     ?= $(RELEASE_DIR)/offline-check
 OFFLINE_NAME    := boba-offline-check
@@ -1042,6 +1045,7 @@ offline-check: version-check
 	    for target in $(OFFLINE_TARGETS); do
 	        echo "== offline-check: make $$target =="
 	        $(MAKE) -f "$(MAKEFILE)" "$$target" BUILD_NETWORK="container:$(OFFLINE_NAME)-jail" CACHE_SCOPE="$$scope" \
+	            PNPM_STORE="$(OFFLINE_DIR)/pnpm-store" \
 	            http_proxy="$$proxy" https_proxy="$$proxy" HTTP_PROXY="$$proxy" HTTPS_PROXY="$$proxy" \
 	            no_proxy= NO_PROXY= || exit $$?
 	    done
@@ -1314,11 +1318,11 @@ $(PAGE_JS): $(PAGE_SRCS)
 # пересобирается, когда overlay, UPSTREAM, тарболл или скрипт новее сборки
 $(UI_DIST)/index.html: $(UI_SRCS) $(CHAINLIT_TARBALL)
 	@echo "== UI chainlit $(CHAINLIT_VERSION) (фронт + copilot) с overlay: $(NODE_IMAGE) -> $(UI_DIST) =="
-	mkdir -p "$(UI_DIST)"
+	mkdir -p "$(UI_DIST)" "$(PNPM_STORE)"
 	docker run --rm $(NETWORK_OPT) $(PROXY_ENV) $(NODE_CA_OPTS) --entrypoint /bin/sh -u "$(RUN_OWNER)" \
-	    -v "$(DEPS_DIR):/deps:ro" -v "$(SCRIPTS_DIR):/scripts:ro" -v "$(UI_DIR):/ui:ro" \
-	    -v "$(UI_ELEMENTS):/elements:ro" -v "$(UI_DIST):/out" $(NODE_IMAGE) \
-	    /scripts/chainlit_ui.sh "/deps/$(notdir $(CHAINLIT_TARBALL))" /ui/overlay /elements /out
+	    -v "$(CHAINLIT_TARBALL):/deps/$(notdir $(CHAINLIT_TARBALL)):ro" -v "$(SCRIPTS_DIR):/scripts:ro" \
+	    -v "$(UI_DIR):/ui:ro" -v "$(UI_ELEMENTS):/elements:ro" -v "$(UI_DIST):/out" -v "$(PNPM_STORE):/store" \
+	    $(NODE_IMAGE) /scripts/chainlit_ui.sh build "/deps/$(notdir $(CHAINLIT_TARBALL))" /ui/overlay /elements /out /store
 	touch "$@"
 	ls -la "$(UI_DIST)/assets" | head -5
 
@@ -1423,5 +1427,5 @@ prune:
 clean:
 	@echo "== чистка: release, артефакты fetch, собранный фронт, runtime/third и runtime/sandbox =="
 	rm -rf $(RELEASE_DIR) $(DEPS_DIR)/uv $(WEBASSETS_DIR) $(ORACLEDB_DIR) $(FETCH_CONSTRAINTS) \
-	       $(DEPS_DIR)/*.tar.xz $(DEPS_DIR)/*.tar.gz $(PAGE_JS) $(ASSETS_VENDOR) $(UI_DIST) \
+	       $(DEPS_DIR)/*.tar.xz $(DEPS_DIR)/*.tar.gz $(PNPM_STORE) $(PAGE_JS) $(ASSETS_VENDOR) $(UI_DIST) \
 	       $(THIRD_DIR) $(SANDBOX_DIR)

@@ -49,6 +49,7 @@ from boba.stand.ui.stand import StandPorts
 from boba.transport.acp.protocol import (
     AcpErrorCode,
     AcpVersion,
+    BobaExtension,
     ClientConnection,
     McpErrorOutcome,
     McpMessage,
@@ -56,6 +57,8 @@ from boba.transport.acp.protocol import (
     McpResultOutcome,
     McpVersion,
     StopReason,
+    ToolSourceReply,
+    ToolSourceRequest,
 )
 
 pytestmark = pytest.mark.anyio
@@ -127,6 +130,14 @@ class StandTools:
         reply = mt.CallToolResult(content=[mt.TextContent(text=str(total))])
 
         return McpResultOutcome(result=reply.model_dump(**self.WIRE))
+
+    async def source(self, request: ToolSourceRequest) -> ToolSourceReply:
+        """Клиент стенда расширения источника не объявляет: запрос — ошибка.
+
+        Ошибки:
+        RequestError — метод не объявлен (-32601).
+        """
+        raise RequestError.method_not_found(BobaExtension.TOOL_SOURCE.value)
 
 
 class StandClient(Client):
@@ -239,7 +250,9 @@ class Connected:
     def __init__(self, transport: Any, tools: StandTools) -> None:
         self.client = StandClient()
         self.tools = tools
-        self.conn = ClientConnection(self.client, tools.answer, transport, None)
+        self.conn = ClientConnection(
+            self.client, tools.answer, tools.source, transport, None
+        )
 
     async def initialize(self) -> schema.InitializeResponse:
         return await self.conn.initialize(

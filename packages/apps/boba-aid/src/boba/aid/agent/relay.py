@@ -13,7 +13,8 @@ RequestError (acp.exceptions) — ошибка доставки MCP-over-ACP:
     оборвал поток подписки, имена инструментов сервера chat совпали либо
     вход пользователя вкладки больше не годен, исхода MCP нет.
 Запросы приложений MCP Apps (app_call, app_read) ошибок наружу не выпускают:
-app_answer отдаёт приложению ошибку JSON-RPC с причиной.
+app_answer отдаёт приложению ошибку JSON-RPC с причиной. Источник вызова
+(source) отказывает теми же RequestError: UNKNOWN_SERVER и BACKEND_FAILED.
 """
 
 from __future__ import annotations
@@ -63,7 +64,13 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 from boba.aid.canvas.tools import CanvasOpener
 from boba.aid.infra.session import LiveSignIn
-from boba.aid.rendering.tool import AppMeta
+from boba.aid.rendering.tool import (
+    AppMeta,
+    AppResource,
+    AppSource,
+    AppUnread,
+    ToolSource,
+)
 from boba.cancellation import RunCancellation, StopReason
 from boba.canvas.canvas import CanvasScope
 from boba.connection_broker.sealing import CallSealing, McpServerInfo
@@ -104,11 +111,14 @@ from boba.toolrun.injected import ToolConfigError
 from boba.toolrun.registry import ToolRegistry
 from boba.transport.acp.protocol import (
     AcpErrorCode,
+    BobaExtension,
     ErrorDataKey,
     McpErrorOutcome,
     McpMessage,
     McpOutcome,
     McpResultOutcome,
+    ToolSourceReply,
+    ToolSourceRequest,
 )
 
 __all__ = [
@@ -1280,6 +1290,147 @@ class McpRelay:
             return self.app_refusal(error)
 
         return result.model_dump(mode="json", by_alias=True, exclude_none=True)
+
+    async def source(self, request: ToolSourceRequest) -> ToolSourceReply:
+        """Источник вызова инструмента для истории агента (запрос
+        `_boba/tool_source`): то, по чему лента нарисует вызов, не спрашивая
+        сервер, — карточка инструмента и описание сервера из ответов порта
+        (от личности чата, как их читает лента), карточки инструментов узлов
+        вложенного вызова и ресурс приложения MCP Apps у сервера с секцией
+        apps. Ресурс, который сервер не отдал, ложится причиной: вызов
+        исполняется и без него.
+
+        Ошибки:
+        RequestError — serverId не выдан этим чатом либо снят
+            (UNKNOWN_SERVER); сервер недоступен, отказал, не знает
+            инструмента или вход пользователя вкладки больше не годен
+            (BACKEND_FAILED).
+        """
+        registration = self._registrations.of(request.server_id)
+        what = (
+            f"{BobaExtension.TOOL_SOURCE.value} of call {request.tool_call_id} of "
+            f"tool {request.name!r} on MCP server {registration.server!r}"
+        )
+        try:
+            source = await self._source(registration, request)
+        except MCPError as exc:
+            msg = f"{what}: the server refused: {exc.error.message}"
+            raise RequestError(AcpErrorCode.BACKEND_FAILED, msg) from exc
+        except (McpClientError, AuthenticationError) as exc:
+            msg = f"{what}: {exc}"
+            raise RequestError(
+                AcpErrorCode.BACKEND_FAILED, msg, self._brief(exc)
+            ) from exc
+
+        dumped = source.model_dump(mode="json", by_alias=True, exclude_none=True)
+
+        return ToolSourceReply(source=dumped)
+
+    async def _source(
+        self, registration: McpRegistration, request: ToolSourceRequest
+    ) -> ToolSource:
+        """Ошибки:
+        MCPError — сервер отказал, не знает инструмента или _meta.ui его
+            карточки не по форме MCP Apps.
+        McpClientError — сервер недоступен.
+        AuthenticationError — вход пользователя вкладки больше не годен.
+        """
+        context = registration.context()
+        port = await self._port(registration, context)
+        listed = await port.tools(McpServers.OWN)
+        described = await port.described(McpServers.OWN)
+        cards = self._named(iter(listed.tools))
+        card = cards.get(request.name)
+        if card is None:
+            msg = (
+                f"mcp server {registration.server!r} lists no tool "
+                f"{request.name!r}; its tools are {sorted(cards)}"
+            )
+            raise MCPError(code=mt.INVALID_PARAMS, message=msg)
+
+        nodes = list(self._node_cards(described, request, cards))
+        app = await self._app_resource(registration, card)
+
+        return ToolSource(
+            server=registration.server,
+            tool=card,
+            description=described.result,
+            nodes=nodes,
+            app=app,
+        )
+
+    @staticmethod
+    def _node_cards(
+        described: McpDescription,
+        request: ToolSourceRequest,
+        cards: Mapping[str, mt.Tool],
+    ) -> Iterator[mt.Tool]:
+        """Карточки инструментов, которые зовут узлы вызова, если сервер
+        объявил инструмент несущим вложенные вызовы; вызов не по форме узлов
+        лента рисует одним шагом — карточек нет."""
+        nested = described.nested_calls()
+        if nested is None:
+            return
+
+        if nested.tool != request.name:
+            return
+
+        try:
+            calls = nested.calls(request.arguments)
+        except StreamPlanError as exc:
+            logger.info(
+                "mcp relay: call %s has no node cards: %s", request.tool_call_id, exc
+            )
+            return
+
+        seen: set[str] = set()
+        for call in calls:
+            if call.tool in seen:
+                continue
+
+            seen.add(call.tool)
+            if card := cards.get(call.tool):
+                yield card
+
+    async def _app_resource(
+        self, registration: McpRegistration, card: mt.Tool
+    ) -> AppSource | None:
+        """Ресурс приложения инструмента card на момент вызова; None — чат не
+        рисует приложений сервера либо у инструмента приложения нет.
+
+        Ошибки:
+        MCPError — _meta.ui карточки не по форме MCP Apps.
+        """
+        if self._servers.apps(registration.server) is None:
+            return None
+
+        try:
+            config = self._apps.of(card)
+        except ValidationError as exc:
+            msg = (
+                f"mcp server {registration.server!r}: tool {card.name!r} carries "
+                f"_meta.ui that is not an MCP Apps tool config: "
+                f"{ValidationText.of(exc)}"
+            )
+            raise MCPError(code=mt.INTERNAL_ERROR, message=msg) from exc
+
+        if config is None:
+            return None
+
+        uri = config.resource_uri
+        if uri is None:
+            return None
+
+        params = mt.ReadResourceRequestParams(uri=uri)
+        what = f"resources/read of {uri} on MCP server {registration.server!r}"
+        try:
+            read = await self.app_read(registration, params)
+        except MCPError as exc:
+            return AppUnread(error=f"{what} was refused: {exc.error.message}")
+        except (McpClientError, AuthenticationError) as exc:
+            return AppUnread(error=f"{what} failed: {exc}")
+
+        return AppResource(resource=read)
 
     def app_refusal(self, error: ErrorData) -> dict[str, Any]:
         """Отказ на запрос приложения в ответе действия: элемент приложения
