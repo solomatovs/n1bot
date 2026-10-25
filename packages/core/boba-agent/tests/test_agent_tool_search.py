@@ -162,9 +162,7 @@ class TestDeferredConversation:
 
         snapshot = Announced(session.conversation()).snapshot()
         assert snapshot is not None
-        built = RequestBuilder(agents.profile(protocol)).build(
-            session.conversation(), snapshot
-        )
+        built = RequestBuilder().build(session.conversation(), snapshot)
         assert built.tools[-1].name == StandToolName.LOOKUP.full
         assert built.tools[-1].deferred
         assert not built.tools[0].deferred

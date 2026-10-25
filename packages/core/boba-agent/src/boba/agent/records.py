@@ -53,7 +53,6 @@ from pydantic import (
 )
 from pydantic.alias_generators import to_camel
 
-from boba.agent.profile import ReasoningReturn
 from boba.llm.chat import LlmTrouble
 
 __all__ = [
@@ -117,6 +116,7 @@ __all__ = [
     "QueueOperationRecord",
     "QueueRemoveReason",
     "QueuedCommandAttachment",
+    "ReasoningReturn",
     "Record",
     "RecordCodec",
     "RecordError",
@@ -550,6 +550,14 @@ class RenderedMessage(WireModel):
     content: str
 
 
+class ReasoningReturn(StrEnum):
+    """Возвращать ли модели её рассуждения прошлых ответов."""
+
+    NEVER = "never"
+    TURN = "turn"
+    ALWAYS = "always"
+
+
 class PayloadModel(BaseModel):
     """Основа данных вложения: имена полей на проводе — camelCase."""
 
@@ -596,10 +604,11 @@ class SnapshotSkill(PayloadModel):
 
 
 class PromptSnapshot(PayloadModel):
-    """Снимок: системный промпт секциями, инструменты, скиллы, модель и
-    форма запроса — подача вложений (system_turns) и возврат рассуждений
-    (reasoning_return). Сборщик берёт форму отсюда, а не из профиля: запрос
-    повторяется по истории, смена профиля пишется новым снимком."""
+    """Снимок: системный промпт секциями, инструменты, скиллы и профиль
+    модели — её имя, подача вложений (system_turns), возврат рассуждений
+    (reasoning_return) и сэмплинг. Сборщик берёт всё это отсюда, а не из
+    профиля конфига: запрос повторяется по истории, смена профиля пишется
+    новым снимком."""
 
     type: Literal[AttachmentKind.PROMPT_SNAPSHOT] = AttachmentKind.PROMPT_SNAPSHOT
     system_prompt: Sequence[str]
@@ -608,6 +617,7 @@ class PromptSnapshot(PayloadModel):
     model: str
     system_turns: bool
     reasoning_return: ReasoningReturn = ReasoningReturn.NEVER
+    sampling: dict[str, Any] = Field(default_factory=dict)
 
     def same(self, other: PromptSnapshot) -> bool:
         """Тот же снимок на проводе: сравнение по JSON."""

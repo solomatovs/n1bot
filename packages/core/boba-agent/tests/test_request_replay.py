@@ -25,7 +25,7 @@ from boba.agent.attachments import Announced, ConnectedServer
 from boba.agent.builder import RequestBuilder
 from boba.agent.history import SessionId, StoredLine
 from boba.agent.mcp import ToolCard, ToolReplies
-from boba.agent.profile import ModelProfile, ReasoningReturn, TurnLimits
+from boba.agent.profile import ModelProfile, TurnLimits
 from boba.agent.queue import QueueEntry, QueueKind
 from boba.agent.records import (
     ApiRequestRecord,
@@ -33,6 +33,7 @@ from boba.agent.records import (
     AttachmentRecord,
     DeferredToolsRecordAttachment,
     PromptSnapshot,
+    ReasoningReturn,
     Record,
     RecordCodec,
     ToolResultRecord,
@@ -328,7 +329,7 @@ class Replay:
 
     def __init__(self, profile: ModelProfile) -> None:
         self._templates = AgentTemplate()
-        self._builder = RequestBuilder(profile)
+        self._builder = RequestBuilder()
         self._instruction = self._templates.read(
             AgentTemplateFile.SUMMARIZE_INSTRUCTION
         )
@@ -511,8 +512,8 @@ class TestDefinitionChanges:
         self, server: FakeServer, agents: StandAgents, tmp_path: Path
     ) -> None:
         """Смена профиля между ходами меняет форму запроса — подачу
-        вложений и возврат рассуждений: она пишется новым снимком, и
-        сборщик берёт её из снимка, а не из профиля."""
+        вложений, возврат рассуждений и сэмплинг: она пишется новым
+        снимком, и сборщик берёт её из снимка, а не из профиля."""
         first = openai(agents)
         served = Served(
             agents.agent(first, Collected(), tools=StandTools(), record_requests=True)
@@ -520,9 +521,11 @@ class TestDefinitionChanges:
         await served.open(SESSION, resume=False)
         served.agent.queue.enqueue(prompt(ScenarioName.THINKING_ANSWER.value))
         await served.agent.settled()
-        second = agents.profile(
+        shaped = agents.profile(
             Protocol.OPENAI, system_turns=True, reasoning=ReasoningReturn.ALWAYS
         )
+        chat = shaped.chat.model_copy(update={"sampling": {"temperature": 0.2}})
+        second = shaped.model_copy(update={"chat": chat})
         served.agent.set_model(second, agents.model(second))
         served.agent.queue.enqueue(prompt(ScenarioName.ANSWER.value))
         await served.agent.settled()
@@ -530,10 +533,11 @@ class TestDefinitionChanges:
 
         records = await journal(tmp_path / "history")
         written = snapshots(records)
-        assert [(s.system_turns, s.reasoning_return) for s in written] == [
-            (False, ReasoningReturn.NEVER),
-            (True, ReasoningReturn.ALWAYS),
+        assert [(s.system_turns, s.reasoning_return, s.sampling) for s in written] == [
+            (False, ReasoningReturn.NEVER, {}),
+            (True, ReasoningReturn.ALWAYS, {"temperature": 0.2}),
         ]
+        assert server.requests()[-1]["temperature"] == 0.2
         messages = server.requests()[-1]["messages"]
         assert isinstance(messages, list)
         assert [m["role"] for m in messages].count("system") > 1

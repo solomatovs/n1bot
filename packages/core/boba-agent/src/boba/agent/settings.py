@@ -23,8 +23,8 @@ from pydantic import (
 from pydantic.alias_generators import to_camel
 from pydantic.json_schema import models_json_schema
 
-from boba.agent.profile import CompactionSettings, ReasoningReturn, TurnLimits
-from boba.agent.records import PermissionMode
+from boba.agent.profile import CompactionSettings, TurnLimits
+from boba.agent.records import PermissionMode, ReasoningReturn
 from boba.core.secrets import SecretRevealing
 
 __all__ = [

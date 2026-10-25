@@ -38,7 +38,6 @@ from boba.agent.attachments import (
     EnvironmentSnapshot,
     SnapshotSkill,
 )
-from boba.agent.builder import RequestBuilder
 from boba.agent.compaction import SummaryInstruction
 from boba.agent.control import ControlQuestions, PermissionAnswer
 from boba.agent.events import EventSink, InitEvent
@@ -315,7 +314,6 @@ class Agent:
             parts.limits,
             parts.compaction,
             parts.model,
-            self._request_builder(parts.profile),
             attachments,
             runner,
             wiring.templates,
@@ -544,11 +542,8 @@ class Agent:
             raise SessionError(msg)
 
         self._check_profile(profile, turns.system_prompt, tools)
-        turns.set_model(profile, model, self._request_builder(profile))
+        turns.set_model(profile, model)
         self._bound.set_profile(profile)
-
-    def _request_builder(self, profile: ModelProfile) -> RequestBuilder:
-        return RequestBuilder(profile)
 
     def _check_profile(
         self, profile: ModelProfile, system_prompt: Sequence[str], tools: AgentTools
