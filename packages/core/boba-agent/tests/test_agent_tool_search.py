@@ -15,11 +15,13 @@ from typing import Any, ClassVar
 import pytest
 from test_agent_compaction import journal
 
-from boba.agent.attachments import Announced
 from boba.agent.builder import RequestBuilder
 from boba.agent.history import SessionId
+from boba.agent.ids import IdMint, SystemClock
+from boba.agent.loader import HistoryLoader
 from boba.agent.queue import QueueEntry, QueueKind
 from boba.agent.records import (
+    Announced,
     AttachmentRecord,
     ChainRecord,
     CompactBoundaryRecord,
@@ -32,7 +34,9 @@ from boba.agent.records import (
     ToolResultRecord,
     TurnOutcome,
 )
+from boba.agent.template import AgentTemplate
 from boba.agent.tools import ToolMatcher, ToolSearchInput, ToolSearchOutput
+from boba.history.jsonl import JsonlHistoryStore
 from boba.stand.agent import (
     Collected,
     FakeServer,
@@ -140,7 +144,11 @@ async def agents(server: FakeServer, tmp_path: Path) -> AsyncIterator[StandAgent
 class TestDeferredConversation:
     @pytest.mark.parametrize("protocol", list(Protocol))
     async def test_names_then_select_then_definition_then_call(
-        self, server: FakeServer, agents: StandAgents, protocol: Protocol
+        self,
+        server: FakeServer,
+        agents: StandAgents,
+        protocol: Protocol,
+        tmp_path: Path,
     ) -> None:
         """Модель видит отложенные одними именами, загружает lookup через
         ToolSearch `select:`, со следующего запроса определение lookup стоит
@@ -160,9 +168,14 @@ class TestDeferredConversation:
         self.check_requests(server.requests(), stand)
         assert served.agent.outcomes == [TurnOutcome.COMPLETED]
 
-        snapshot = Announced(session.conversation()).snapshot()
-        assert snapshot is not None
-        built = RequestBuilder().build(session.conversation(), snapshot)
+        loader = HistoryLoader(
+            JsonlHistoryStore(tmp_path / "history"),
+            AgentTemplate(),
+            IdMint(),
+            SystemClock(),
+            "0",
+        )
+        built = RequestBuilder().build(await loader.stored(SESSION))
         assert built.tools[-1].name == StandToolName.LOOKUP.full
         assert built.tools[-1].deferred
         assert not built.tools[0].deferred

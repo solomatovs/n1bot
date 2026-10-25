@@ -32,15 +32,15 @@ from boba.agent.asking import (
     Overflowed,
 )
 from boba.agent.attachments import (
-    Announced,
     ContextAttachments,
     SkillBudget,
     ToolPoolChange,
 )
-from boba.agent.builder import RequestBuilder, RequestTexts
+from boba.agent.builder import RequestBuilder
 from boba.agent.ids import Clock, IdMint
 from boba.agent.profile import CompactionSettings, ModelProfile
 from boba.agent.records import (
+    Announced,
     AssistantBlock,
     AttachmentRecord,
     ChainRecord,
@@ -52,13 +52,14 @@ from boba.agent.records import (
     HistoryFold,
     InvokedSkill,
     InvokedSkillsAttachment,
-    MetaRecord,
     PreservedMessages,
     PromptSnapshot,
     Record,
     RequestFeed,
+    RequestTexts,
     SnapshotSkill,
     SnapshotTool,
+    SummaryRequestRecord,
     TextBlock,
     ThinkingBlock,
     ToolResultBlock,
@@ -70,7 +71,7 @@ from boba.agent.skills import SkillCallInput, SkillTool
 from boba.agent.tags import ReplyTag
 from boba.agent.template import AgentTemplate, AgentTemplateFile
 from boba.agent.tools import AgentTools
-from boba.agent.writer import RequestRecorder
+from boba.agent.writer import HistoryWriter, RecordKeeper, RequestRecorder
 from boba.cancellation import RunCancellation, StopReason
 from boba.llm.chat import ChatReply, ChatRequest, ContextOverflowSigns
 
@@ -104,7 +105,7 @@ __all__ = [
 
 class CostFeed(RequestFeed):
     """Реализация RequestFeed оценки окна: тексты, которые запись вносит в
-    запрос, — как их видит модель (RequestTexts сборщика), и определения
+    запрос, — как их видит модель (RequestTexts), и определения
     загруженных отложенных инструментов. Строит TokenEstimator на запись."""
 
     def __init__(self, texts: RequestTexts) -> None:
@@ -533,12 +534,12 @@ class SummaryPressure:
 
 @dataclass(frozen=True)
 class SummaryJob:
-    """Один пересказ: сессия, разговор после границы, снимок промпта,
-    остановка хода и повод сжатия."""
+    """Один пересказ: id сжатия, сессия, разговор после границы, остановка
+    хода и повод сжатия."""
 
+    compaction_id: str
     session: Session
     conversation: Sequence[ChainRecord]
-    snapshot: PromptSnapshot
     cancellation: RunCancellation
     pressure: SummaryPressure
 
@@ -578,8 +579,12 @@ class Summarizer:
         clock: Clock,
         version: str,
         recorder: RequestRecorder,
+        keeper: RecordKeeper,
+        writer: HistoryWriter,
     ) -> None:
         self._recorder = recorder
+        self._keeper = keeper
+        self._writer = writer
         self._ask = ask
         self._builder = builder
         self._templates = templates
@@ -630,7 +635,7 @@ class Summarizer:
             if not self._grouper.has_reply(head):
                 return await self._last_resort(job, overflow)
 
-            request = self._request(job, head, 0)
+            request = await self._request(job, head, 0)
             outcome = await self._attempt(request, job.cancellation)
             if isinstance(outcome, str):
                 kept = self._flat(groups[cut:])
@@ -670,7 +675,7 @@ class Summarizer:
             if not self._grouper.has_reply(head):
                 return self._nothing_left(overflow)
 
-            request = self._request(job, head, dropped)
+            request = await self._request(job, head, dropped)
             outcome = await self._attempt(request, job.cancellation)
             if isinstance(outcome, str):
                 return Summarized(
@@ -773,21 +778,34 @@ class Summarizer:
             f"{overflow} (no part with a model reply is left to summarize)",
         )
 
-    def _request(
+    async def _request(
         self, job: SummaryJob, head: Sequence[ChainRecord], dropped: int
     ) -> ChatRequest:
-        """Запрос пересказа отрезка; после отброшенных групп отрезок
-        начинается ответом модели, и перед ним встаёт пометка об усечении."""
-        sent: list[ChainRecord] = []
+        """Запрос пересказа отрезка head: в историю пишется запись запроса
+        пересказа — отрезок, пометка об усечении после отброшенных групп
+        (отрезок тогда начинается ответом модели) и инструкция готовым
+        текстом, — и запрос собирается по истории, которая ею кончается."""
+        preface: list[str] = []
         if dropped:
-            marker = self._templates.read(AgentTemplateFile.TRUNCATED_FOR_RETRY)
-            sent.append(self._user(job.session, marker))
+            preface.append(self._templates.read(AgentTemplateFile.TRUNCATED_FOR_RETRY))
 
-        sent.extend(head)
-        instruction = self._instruction.text(job.pressure.instructions)
-        sent.append(self._user(job.session, instruction))
+        session = job.session
+        record = SummaryRequestRecord(
+            uuid=self._ids.uuid(),
+            parent_uuid=session.last_chain_uuid(),
+            timestamp=self._clock.now(),
+            session_id=session.id.value,
+            version=self._version,
+            compaction_id=job.compaction_id,
+            first_uuid=head[0].uuid,
+            last_uuid=head[-1].uuid,
+            preface=preface,
+            instruction=self._instruction.text(job.pressure.instructions),
+        )
+        await self._keeper.add(record)
+        history = await self._writer.stored()
 
-        return self._builder.summary(sent, job.conversation, job.snapshot)
+        return self._builder.build(history)
 
     async def _attempt(
         self, request: ChatRequest, cancellation: RunCancellation
@@ -835,18 +853,6 @@ class Summarizer:
             return NotSummarized(SummaryFailure.EMPTY, detail)
 
         return text
-
-    def _user(self, session: Session, text: str) -> MetaRecord:
-        """Текст запроса пересказа — инструкция или пометка об усечении — как
-        служебная запись пользователя для сборщика; в сессию не попадает."""
-        return MetaRecord(
-            uuid=self._ids.uuid(),
-            parent_uuid=None,
-            timestamp=self._clock.now(),
-            session_id=session.id.value,
-            version=self._version,
-            message=UserMessage(content=text),
-        )
 
     @staticmethod
     def _flat(groups: Sequence[Sequence[ChainRecord]]) -> list[ChainRecord]:

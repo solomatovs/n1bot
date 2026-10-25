@@ -1,8 +1,8 @@
 """Запрос к модели собирается из истории заново байт в байт: агент пишет
-каждый запрос записью api-request с digest, тест восстанавливает сессию из
-записей журнала, стоящих до неё, собирает основной запрос сборщиком и
-сравнивает digest. Запросы пересказа собираются с инструкцией, которой в
-истории нет, — их digest не проверяется, но они считаются. Сценарии идут
+каждый запрос записью api-request с digest, тест кладёт записи журнала,
+стоящие до неё, в новое хранилище, читает их загрузчиком, собирает запрос
+сборщиком и сравнивает digest — и у основных запросов, и у запросов
+пересказа: их отрезок и инструкция тоже лежат в истории. Сценарии идут
 по всему, что входит в запрос: инструменты серверов MCP и их инструкции,
 отложенные инструменты и ToolSearch, скиллы, контекст приложения MCP Apps
 и команды, которые клиент исполнил сам, промпты серверов MCP; смена
@@ -21,9 +21,11 @@ from pathlib import Path
 import mcp_types as mt
 import pytest
 
-from boba.agent.attachments import Announced, ConnectedServer
+from boba.agent.attachments import ConnectedServer
 from boba.agent.builder import RequestBuilder
 from boba.agent.history import SessionId, StoredLine
+from boba.agent.ids import IdMint, SystemClock
+from boba.agent.loader import HistoryLoader
 from boba.agent.mcp import ToolCard, ToolReplies
 from boba.agent.profile import ModelProfile, TurnLimits
 from boba.agent.queue import QueueEntry, QueueKind
@@ -40,7 +42,6 @@ from boba.agent.records import (
     TurnEndRecord,
     TurnOutcome,
 )
-from boba.agent.session import Session
 from boba.agent.skills import Skill, SkillTool
 from boba.agent.template import AgentTemplate, AgentTemplateFile
 from boba.agent.tools import ToolSearchTool
@@ -325,23 +326,26 @@ async def agents(server: FakeServer, tmp_path: Path) -> AsyncIterator[StandAgent
 
 
 class Replay:
-    """Сборка основного запроса по записям журнала до записи api-request."""
+    """Сборка запроса по записям журнала до записи api-request: записи
+    ложатся в отдельное хранилище, историю читает загрузчик — так же, как её
+    прочтёт возобновление."""
 
-    def __init__(self, profile: ModelProfile) -> None:
-        self._templates = AgentTemplate()
+    def __init__(self, root: Path) -> None:
+        self._root = root
         self._builder = RequestBuilder()
-        self._instruction = self._templates.read(
+        self._instruction = AgentTemplate().read(
             AgentTemplateFile.SUMMARIZE_INSTRUCTION
         )
 
-    def digest(self, before: Sequence[Record]) -> str:
-        session = Session(SESSION)
-        session.restore(before)
-        conversation = session.conversation()
-        snapshot = Announced(conversation).snapshot()
-        assert snapshot is not None
+    async def digest(self, before: Sequence[Record], index: int) -> str:
+        store = JsonlHistoryStore(self._root / f"replay-{index}")
+        lease = await store.acquire(SESSION)
+        await store.append(lease, before)
+        await store.release(lease)
+        loader = HistoryLoader(store, AgentTemplate(), IdMint(), SystemClock(), "0")
+        history = await loader.stored(SESSION)
 
-        return self._digest_of(self._builder.build(conversation, snapshot))
+        return self._digest_of(self._builder.build(history))
 
     def is_summary(self, record: ApiRequestRecord) -> bool:
         """Запрос пересказа: последнее сообщение несёт инструкцию пересказа."""
@@ -369,22 +373,23 @@ async def journal(root: Path) -> list[Record]:
     return records
 
 
-def checked(records: Sequence[Record], profile: ModelProfile) -> tuple[int, int]:
-    """Каждый основной запрос журнала собран заново из записей до него с
-    тем же digest; итог — число основных запросов и запросов пересказа."""
-    replay = Replay(profile)
+async def checked(records: Sequence[Record], root: Path) -> tuple[int, int]:
+    """Каждый запрос журнала — основной и пересказа — собран заново из
+    записей до него с тем же digest; итог — число основных запросов и
+    запросов пересказа."""
+    replay = Replay(root)
     main = 0
     summaries = 0
     for index, record in enumerate(records):
         if not isinstance(record, ApiRequestRecord):
             continue
 
+        assert await replay.digest(records[:index], index) == record.digest, index
         if replay.is_summary(record):
             summaries += 1
             continue
 
         main += 1
-        assert replay.digest(records[:index]) == record.digest, index
 
     return main, summaries
 
@@ -470,7 +475,7 @@ class TestRequestsFromHistory:
         await served.close()
 
         records = await journal(tmp_path / "history")
-        assert checked(records, profile) == (
+        assert await checked(records, tmp_path / "replay") == (
             scenario.main_requests,
             scenario.summary_requests,
         ), name
@@ -506,7 +511,7 @@ class TestDefinitionChanges:
             described(requests[1], lookup) == f"stand tool {StandToolName.LOOKUP.value}"
         )
         assert described(requests[-1], lookup) == REDESCRIBED
-        assert checked(records, profile) == (3, 0)
+        assert await checked(records, tmp_path / "replay") == (3, 0)
 
     async def test_a_new_request_shape_of_the_profile_is_a_new_snapshot(
         self, server: FakeServer, agents: StandAgents, tmp_path: Path
@@ -541,7 +546,7 @@ class TestDefinitionChanges:
         messages = server.requests()[-1]["messages"]
         assert isinstance(messages, list)
         assert [m["role"] for m in messages].count("system") > 1
-        assert checked(records, first) == (2, 0)
+        assert await checked(records, tmp_path / "replay") == (2, 0)
 
     async def test_a_search_records_what_it_loaded_before_any_request(
         self, server: FakeServer, agents: StandAgents, tmp_path: Path
@@ -603,4 +608,4 @@ class TestDefinitionChanges:
         assert (
             described(server.requests()[-1], StandToolName.LOOKUP.full) == REDESCRIBED
         )
-        assert checked(records, profile) == (2, 0)
+        assert await checked(records, tmp_path / "replay") == (2, 0)

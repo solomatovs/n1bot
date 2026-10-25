@@ -35,7 +35,7 @@ from typing import Any, ClassVar, Protocol, Self
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from boba.agent.attachments import Announced, ConnectedServer, SnapshotTool
+from boba.agent.attachments import ConnectedServer, SnapshotTool
 from boba.agent.control import (
     AllowAnswer,
     CanUseToolRequest,
@@ -63,6 +63,7 @@ from boba.agent.permissions import (
 )
 from boba.agent.profile import ModelProfile, TurnLimits
 from boba.agent.records import (
+    Announced,
     CallStatus,
     NoticeLevel,
     PermissionBehavior,

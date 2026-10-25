@@ -32,7 +32,6 @@ from boba.agent.asking import (
     Partial,
 )
 from boba.agent.attachments import (
-    Announced,
     ContextAttachments,
     EnvironmentSnapshot,
     PromptSnapshot,
@@ -65,6 +64,7 @@ from boba.agent.ids import Clock, IdMint
 from boba.agent.profile import CompactionSettings, ModelProfile, TurnLimits
 from boba.agent.queue import InputQueue, QueueItem, QueueKind, Taken
 from boba.agent.records import (
+    Announced,
     ApiErrorRecord,
     AssistantBlock,
     AssistantMessage,
@@ -266,6 +266,8 @@ class TurnLoop:
             self._clock,
             self._version,
             self._recorder,
+            self._keeper,
+            self._writer,
         )
         self._compactor = Compactor(
             self._attachments,
@@ -383,9 +385,7 @@ class TurnLoop:
             excess=None,
             instructions=command.text,
         )
-        compacted = await self._compact(
-            fill, snapshot, pressure, cancellation, command.id
-        )
+        compacted = await self._compact(fill, pressure, cancellation, command.id)
         if isinstance(compacted, SummaryAborted):
             return self._abort_outcome(compacted.reason)
 
@@ -447,8 +447,8 @@ class TurnLoop:
         if guarded is not None:
             return guarded
 
-        snapshot = await self._announce_context()
-        request = self._builder.build(self._session.conversation(), snapshot)
+        await self._announce_context()
+        request = self._builder.build(await self._writer.stored())
         asked = await self._ask(request, cancellation)
         if isinstance(asked, Overflowed):
             recovered = await self._recover_overflow(asked, progress, cancellation)
@@ -509,9 +509,7 @@ class TurnLoop:
                 excess=None,
                 instructions="",
             )
-            compacted = await self._compact(
-                fill, snapshot, pressure, cancellation, None
-            )
+            compacted = await self._compact(fill, pressure, cancellation, None)
             if isinstance(compacted, SummaryAborted):
                 return self._abort_outcome(compacted.reason)
 
@@ -585,7 +583,7 @@ class TurnLoop:
             excess=self._overflow_signs.excess(asked.error),
             instructions="",
         )
-        compacted = await self._compact(fill, snapshot, pressure, cancellation, None)
+        compacted = await self._compact(fill, pressure, cancellation, None)
         if isinstance(compacted, SummaryAborted):
             return self._abort_outcome(compacted.reason)
 
@@ -594,28 +592,30 @@ class TurnLoop:
             return asked
 
         progress.tracking.succeeded()
-        snapshot = await self._announce_context()
-        request = self._builder.build(self._session.conversation(), snapshot)
+        await self._announce_context()
+        request = self._builder.build(await self._writer.stored())
 
         return await self._ask(request, cancellation)
 
     async def _compact(
         self,
         fill: Fill,
-        snapshot: PromptSnapshot,
         pressure: SummaryPressure,
         cancellation: RunCancellation,
         command_uuid: str | None,
     ) -> CompactResult:
         """Пересказ и пачка записей. Ход сжатия пишется в историю записями
         compaction: начато, не удалось с причиной, прервано; состоявшееся —
-        граница и пересказ с uuid, равным id сжатия. command_uuid — запись
-        вызова `/compact` у сжатия по команде."""
+        граница и пересказ с uuid, равным id сжатия. Запрос пересказа
+        собирается из истории, поэтому снимок промпта пишется до него, если
+        разговор его ещё не несёт. command_uuid — запись вызова `/compact` у
+        сжатия по команде."""
         started = time.monotonic()
+        await self._record_snapshot()
         job = SummaryJob(
+            compaction_id=self._ids.uuid(),
             session=self._session,
             conversation=self._session.conversation(),
-            snapshot=snapshot,
             cancellation=cancellation,
             pressure=pressure,
         )
@@ -625,7 +625,7 @@ class TurnLoop:
             return unready
 
         phase = CompactionStep(
-            compaction_id=self._ids.uuid(),
+            compaction_id=job.compaction_id,
             trigger=pressure.trigger,
             command_uuid=command_uuid,
         )
@@ -953,8 +953,9 @@ class TurnLoop:
             sampling=self._profile.chat.sampling,
         )
 
-    async def _announce_context(self) -> PromptSnapshot:
-        """Дата, если сменилась; снимок, если его нет в доступной истории."""
+    async def _announce_context(self) -> None:
+        """Дата, если сменилась; снимок, если его нет в доступной истории;
+        определения загруженных отложенных."""
         announced = Announced(self._session.conversation())
         today = self._attachments.today()
         known = announced.date_text()
@@ -964,22 +965,27 @@ class TurnLoop:
             )
             await self._keeper.add(record)
 
-        snapshot = announced.snapshot()
-        if snapshot is None:
-            snapshot = self._fresh_snapshot(self._system_prompt)
-            record = self._attachments.snapshot(
-                self._session.last_chain_uuid(), snapshot
-            )
-            await self._keeper.add(record)
-        elif snapshot.system_prompt != self._system_prompt:
-            logger.warning(
-                "turn: the system prompt of the launch differs from the snapshot in "
-                "history; the request follows the snapshot"
-            )
-
+        await self._record_snapshot()
         await self._record_deferred()
 
-        return snapshot
+    async def _record_snapshot(self) -> None:
+        """Снимок промпта в разговоре: без него запрос из истории не собрать
+        (новая сессия, разговор сразу после сжатия). Снимок с другим
+        системным промптом остаётся: запрос идёт по нему."""
+        snapshot = Announced(self._session.conversation()).snapshot()
+        if snapshot is None:
+            fresh = self._fresh_snapshot(self._system_prompt)
+            record = self._attachments.snapshot(self._session.last_chain_uuid(), fresh)
+            await self._keeper.add(record)
+            return
+
+        if snapshot.system_prompt == self._system_prompt:
+            return
+
+        logger.warning(
+            "turn: the system prompt of the launch differs from the snapshot in "
+            "history; the request follows the snapshot"
+        )
 
     async def _record_deferred(self) -> None:
         """Загруженные отложенные, чьё живое определение история не

@@ -31,7 +31,7 @@ from typing import Any, ClassVar, Protocol, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
-from boba.agent.records import Record
+from boba.agent.records import Announced, ChainRecord, Record
 
 __all__ = [
     "BrokenLine",
@@ -45,6 +45,7 @@ __all__ = [
     "SessionId",
     "SessionLease",
     "SessionNotFoundError",
+    "StoredHistory",
     "StoredLine",
     "StoredPage",
     "StoredSession",
@@ -144,6 +145,29 @@ class StoredPage:
 
     sessions: Sequence[StoredSession]
     next_cursor: str | None
+
+
+class StoredHistory:
+    """Разговор сессии из записей, которые хранилище уже подтвердило, и
+    свёртка «что объявлено» по нему: единственный вход сборщика запроса к
+    модели (RequestBuilder.build). Так запрос собирается только из истории
+    — того, что лежит в хранилище и повторится после возобновления.
+    Создают его только писатель истории по сброшенным записям
+    (HistoryWriter.stored) и чтение журнала из хранилища
+    (HistoryLoader.stored); тест зависимостей пакета следит, чтобы больше
+    его никто не создавал."""
+
+    def __init__(self, conversation: Sequence[ChainRecord]) -> None:
+        self._conversation = list(conversation)
+        self._announced = Announced(self._conversation)
+
+    @property
+    def conversation(self) -> Sequence[ChainRecord]:
+        return self._conversation
+
+    @property
+    def announced(self) -> Announced:
+        return self._announced
 
 
 class HistoryStore(Protocol):
