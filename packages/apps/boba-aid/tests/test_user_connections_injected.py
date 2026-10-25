@@ -58,7 +58,7 @@ STAND = Stand.required()
 KRB5_CONF = Path(STAND.krb_config)
 SERVICE_KEYTAB = Path(STAND.krb_http_keytab)
 SERVICE_PRINCIPAL = STAND.service_principal
-SERVICE_USER = STAND.krb_pg_user
+SERVICE_USER = STAND.pg_krb_user
 READER_PRINCIPAL = STAND.reader_principal
 """Второй пользователь стенда: учётка ldap-bind, её пароль лежит в конфиге."""
 

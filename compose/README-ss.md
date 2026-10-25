@@ -18,7 +18,9 @@
 лежат только `site.toml`, `boba.env` и `krb/`. Вход во все внешние системы
 стенда — kerberos (`pg_auth_method`, `pg_history_auth_method` — `kerberos`),
 к модели — токен (`llm_auth_method = "bearer"`), Confluence — без входа
-(`confluence_auth_method = "none"`). В VS Code её запускают цели `launch.json` «Aid: chat» (чат, агент дочерним
+(`confluence_auth_method = "none"`), каталог LDAP — служебный simple bind
+(`ldap_auth_method = "simple"`), почта — логин SMTP (`mail_auth_method =
+"password"`). В VS Code её запускают цели `launch.json` «Aid: chat» (чат, агент дочерним
 процессом или службой), «MCP: tools service» (boba-mcp, тела процессом или в
 песочнице), «Boba: agent service» (`boba serve`), «Aid: aid + mcp + boba» (все
 три сразу), «tool» (одно тело через `boba.runtime.toolcli`) и «pytest: …».

@@ -8,10 +8,10 @@
 объединяются. Итог — одна модель EffectiveSettings, из которой строятся
 профиль модели, пределы, режим и сроки ожидания серверов MCP для ядра.
 Серверы MCP приходят только по протоколу (`session/new`).
-Секреты — ключ провайдера `apiKey` и строка подключения `dsn` — лежат
+Секреты — вход провайдера `auth` и строка подключения `dsn` — лежат
 значениями в файле настроек; такой файл принимается только с правами
 не шире 0600, а в строке аргумента секреты запрещены. Чтение секрета по имени
-переменной (`apiKeyEnv`, `dsnEnv`) остаётся для ручного запуска; окружение
+переменной (ключ API `apiKeyEnv`, `dsnEnv`) остаётся для ручного запуска; окружение
 процесса читается только здесь, минимальный профиль без файлов —
 из `BOBA_LLM_*`. Режим разрешений и право на обход в аргументах не
 передаются: это ключ `permissions` файла.
@@ -58,6 +58,7 @@ from boba.agent.settings import (
     PermissionSettings,
     PostgresHistorySettings,
     ProviderKind,
+    ProviderLogin,
     ProviderSettings,
     SecretKey,
     SessionsJson,
@@ -473,10 +474,7 @@ class ProfileBuilder:
 
     def _connection(self, name: str, provider: ProviderSettings) -> dict[str, Any]:
         url = self._url(name, provider)
-        auth: dict[str, Any] = {"method": "none"}
-        if token := self._token(name, provider):
-            auth = {"method": "bearer", "token": token}
-
+        auth = self._auth(name, provider)
         connection: dict[str, Any] = {
             "scheme": url.scheme,
             "host": url.host,
@@ -494,14 +492,14 @@ class ProfileBuilder:
 
         return connection
 
-    def _token(self, name: str, provider: ProviderSettings) -> SecretStr | None:
-        """Ключ провайдера: значение из файла, иначе из названной переменной;
-        профиль без того и другого ходит без ключа."""
-        if provider.api_key is not None:
-            return provider.api_key
+    def _auth(self, name: str, provider: ProviderSettings) -> Mapping[str, Any]:
+        """Вход провайдера: таблица `auth` из файла, иначе ключ bearer из
+        названной переменной; профиль без того и другого ходит без входа."""
+        if provider.auth is not None:
+            return provider.auth
 
         if provider.api_key_env is None:
-            return None
+            return {ProviderLogin.METHOD_KEY.value: ProviderLogin.ANONYMOUS.value}
 
         token = self._env.get(provider.api_key_env)
         if not token:
@@ -512,7 +510,10 @@ class ProfileBuilder:
             )
             raise SettingsError(msg)
 
-        return SecretStr(token)
+        return {
+            ProviderLogin.METHOD_KEY.value: ProviderLogin.BEARER.value,
+            ProviderLogin.TOKEN_KEY.value: token,
+        }
 
     def _url(self, name: str, provider: ProviderSettings) -> WebAddress:
         base_url = provider.base_url

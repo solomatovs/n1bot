@@ -72,7 +72,7 @@ class ServiceProfiles:
                 "provider": {
                     "kind": "openai",
                     "baseUrl": self._base_url,
-                    "apiKey": self.API_KEY,
+                    "auth": {"method": "bearer", "token": self.API_KEY},
                 },
                 "model": model,
                 "contextWindow": 32000,
