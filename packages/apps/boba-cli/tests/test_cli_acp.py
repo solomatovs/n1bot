@@ -3767,7 +3767,7 @@ class TestSessionCommands:
         compact = commands[0]
         assert compact.name == "compact"
         assert isinstance(compact.input, schema.TextAvailableCommandInput)
-        assert compact.input.hint == "optional instructions for the summary"
+        assert compact.input.hint == "instructions"
         assert await boba.wait() == 0
 
 
@@ -5047,7 +5047,10 @@ class TestClientCommands:
             response = await handshake(conn)
             assert response.capabilities is not None
             meta = response.capabilities.field_meta
-            assert meta == {BobaExtension.SESSION_RECORD.value: True}, meta
+            assert meta == {
+                BobaExtension.SESSION_RECORD.value: True,
+                BobaExtension.COMMANDS.value: True,
+            }, meta
 
             session = await conn.new_session(
                 cwd=str(tmp_path), mcp_servers=[StandRegistration.STAND]

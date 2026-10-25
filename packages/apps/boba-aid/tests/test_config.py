@@ -74,7 +74,7 @@ class TestAppsSandbox:
         reason=(
             "no server of profile general has a section [mcp.servers.<name>.apps]: "
             "the deployment has no second host name for the sandbox origin, so "
-            "the chat draws no apps of boba_general (plan item 5)"
+            "the chat draws no apps of aid_all (plan item 5)"
         ),
     )
     def test_prod_profile_general_serves_apps_from_their_own_origin(

@@ -474,7 +474,6 @@ class ZygoteLaunchers(SectionLaunchers):
 
         return SandboxProfile.model_validate(data)
 
-
     @staticmethod
     def _images(section: str, entries: tuple[str, ...]) -> list[str]:
         """Образы данных секции: каждая запись — явная пара образ:точка."""

@@ -672,8 +672,47 @@ boba-mcp failed: InterpolationKeyError: Interpolation key 'site.mcp_proxy_secret
 `url_prefix`, иначе сервис не стартует: от `public_url` строятся адреса входа
 OAuth и издатель токенов. Тот же префикс стоит в `BOBA_URL_PREFIX` файла
 `conf/boba.env`, по нему проверяет готовность HEALTHCHECK образа. Endpoint'ы MCP
-отвечают на `{url_prefix}/{имя}` — в примере `/mcp/base`, `/mcp/general`,
+отвечают на `{url_prefix}/{имя}` — в примере `/mcp/chat`, `/mcp/all`,
 `/mcp/search`.
+
+#### Промпты endpoint'ов
+
+Промпты сервиса лежат файлами рядом с общим конфигом:
+`conf/prompts/<endpoint>/<имя>.toml`, по файлу на промпт; имя промпта — имя
+файла без `.toml`, каталог — имя endpoint'а из `[mcp.endpoints.*]`. Клиенты
+получают их стандартными запросами MCP `prompts/list` и `prompts/get`; в чате
+промпт — команда `/mcp__<сервер>__<имя>`. В поставке один промпт —
+`conf/prompts/all/sql_review.toml` (разбор SQL-выражения на endpoint'е `all`).
+
+```toml
+description = "Review an SQL statement: correctness, performance and safety"
+
+[arguments.sql]
+description = "The SQL statement to review"
+required    = true
+
+[arguments.dialect]
+description = "The SQL dialect: postgres, clickhouse, oracle"
+required    = false
+
+[[messages]]
+role = "user"
+text = """Review the SQL statement below.
+
+Dialect: {dialect}
+
+{sql}"""
+```
+
+`description` — что делает промпт, его видит пользователь в меню команд.
+Каждый аргумент — таблица `[arguments.<имя>]` с `description` и `required`;
+аргументы в вызове команды идут в порядке таблиц. `[[messages]]` — сообщения
+по порядку, `role` — `user` или `assistant`, в `text` аргумент подставляется
+по `{<имя>}`, не названный необязательный — пустой строкой, фигурная скобка
+текстом пишется удвоенной (`{{`, `}}`). Файл не по формату, каталог с именем,
+которого нет среди endpoint'ов, или `{...}` с неизвестным аргументом
+останавливают старт сервиса с путём файла и причиной. Список промптов
+читается на старте: новый файл или правка видны после перезапуска сервиса.
 
 #### Способ входа во внешние системы
 
@@ -1041,16 +1080,16 @@ boba-mcp это `[mcp_auth.boba]` — вход proxy клиентом `boba-chat
 целиком ссылкой: адрес boba-mcp `[service.boba_mcp]` (схема, хост, порт и
 префикс из `[env].mcp_*`; он же издатель входа proxy), сроки
 `[mcp_limits.boba]`, вход `[mcp_auth.boba]`. Путь записи — имя endpoint'а
-сервиса под его префиксом: при `mcp_prefix = "/mcp"` сервер `boba_base`
-отвечает на `/mcp/base`:
+сервиса под его префиксом: при `mcp_prefix = "/mcp"` сервер `aid_chat`
+отвечает на `/mcp/chat`:
 
 ```toml
-[mcp.servers.boba_base]
+[mcp.servers.aid_chat]
     limits = "${mcp_limits.boba}"
-    [mcp.servers.boba_base.endpoint]
+    [mcp.servers.aid_chat.endpoint]
         transport = "streamable-http"
         service   = "${service.boba_mcp}"
-        path      = "/base"
+        path      = "/chat"
         auth      = "${mcp_auth.boba}"
 ```
 
@@ -1520,7 +1559,7 @@ docker logs -f boba-mcp
 отвечает на первый запрос агента о списке инструментов. Пока сервис
 недоступен, в логе чата стоит `file upload is hidden for <логин>: mcp server
 '<первый сервер профиля>': ...`, запрос агента получает отказ `mcp/message 'tools/list' to
-server '...' got no MCP outcome: mcp server 'boba_general': ...`, и
+server '...' got no MCP outcome: mcp server 'aid_all': ...`, и
 инструментов сервиса у модели нет. После текста `mcp server '<имя>':` идёт
 причина: адрес сервера и что не удалось — подключиться, договориться о
 протоколе, получить список инструментов.
@@ -2485,7 +2524,7 @@ ValueError: Could not load model ...`**. В каталоге `cache_dir` про�
 пользователем: их удаляют и собирают заново.
 
 **Чат отвечает, но инструментов сервиса нет; в логе `mcp server
-'boba_general': ...`, у агента — отказ `mcp/message 'tools/list' to server
+'aid_all': ...`, у агента — отказ `mcp/message 'tools/list' to server
 '...' got no MCP outcome`.** Сервис не запущен либо адрес в ключах `mcp_*`
 site.toml чата не совпадает с `public_url` сервиса. Сообщение `Authorization
 server metadata issuer mismatch` говорит о втором: имя, схема, порт и путь
@@ -2590,7 +2629,7 @@ ACP и MCP на схеме — логические связи, по сети о
 | Программа | Порт и путь по умолчанию | Где задаётся | Протокол | Кто подключается | Публичный |
 |---|---|---|---|---|---|
 | aid (чат) | 8501, префикс `/aid` | `[env] port`, `url_prefix`, адрес прослушивания `listen_host`; в compose и установке порт и префикс задают `BOBA_PORT` и `BOBA_URL_PREFIX` в `conf/boba.env` | HTTP: страницы и API chainlit, вход (kerberos по заголовку `Negotiate`, ldap, local, proxy на `{префикс}/auth/proxy`), файлы панели `{префикс}/canvas/…`; WebSocket socket.io на `{префикс}/ws/socket.io` | браузеры через nginx; бэкенд партнёра входом proxy (раздел 15, «Вход по доверенному заголовку»); проба здоровья | да, через nginx |
-| boba-mcp | 8650, префикс `/mcp`; endpoint'ы `/mcp/base`, `/mcp/general`, `/mcp/search` | `[env] port`, `url_prefix`, `listen_host`, `public_url`; `BOBA_PORT` и `BOBA_URL_PREFIX` в `conf/boba.env`; имена endpoint'ов — `[mcp.endpoints.*]` общего конфига сервиса | MCP streamable-http (POST, поток SSE на GET, DELETE); OAuth: `{префикс}/token`, `{префикс}/authorize`, `{префикс}/register`, метаданные `/.well-known/oauth-authorization-server{префикс}` и `/.well-known/oauth-protected-resource{префикс}/<endpoint>` от корня хоста; файлы `{префикс}/<endpoint>/files/…` и журналы `{префикс}/<endpoint>/journals/…`; `{префикс}/health` | чат через nginx (вход proxy клиентом `boba-chat`); проба здоровья | да, через nginx |
+| boba-mcp | 8650, префикс `/mcp`; endpoint'ы `/mcp/chat`, `/mcp/all`, `/mcp/search` | `[env] port`, `url_prefix`, `listen_host`, `public_url`; `BOBA_PORT` и `BOBA_URL_PREFIX` в `conf/boba.env`; имена endpoint'ов — `[mcp.endpoints.*]` общего конфига сервиса | MCP streamable-http (POST, поток SSE на GET, DELETE); OAuth: `{префикс}/token`, `{префикс}/authorize`, `{префикс}/register`, метаданные `/.well-known/oauth-authorization-server{префикс}` и `/.well-known/oauth-protected-resource{префикс}/<endpoint>` от корня хоста; файлы `{префикс}/<endpoint>/files/…` и журналы `{префикс}/<endpoint>/journals/…`; `{префикс}/health` | чат через nginx (вход proxy клиентом `boba-chat`); проба здоровья | да, через nginx |
 | boba (служба агента) | 8660, префикс `/boba`; ACP на `/boba/acp` | `[env] port`, `url_prefix`, `listen_host`, `public_url`; `BOBA_PORT` и `BOBA_URL_PREFIX` в `conf/boba.env`; путь — `[agent].path` общего конфига `boba-cli` | ACP версии 2: streamable HTTP и WebSocket на одном пути; OAuth 2.1: `{префикс}/authorize`, `{префикс}/token`, `{префикс}/register`, страница входа `{префикс}/login`, метаданные `/.well-known/…{префикс}…` от корня хоста; `{префикс}/health` | чат в режиме `service` и люди, другие клиенты ACP — через nginx; проба здоровья | да, через nginx |
 | nginx | 443, TLS | конфигурация nginx (раздел 14) | HTTPS, WebSocket | браузеры, клиенты ACP; чат, если ходит к сервисам по публичному имени | да |
 | страница песочницы MCP Apps | 443 на отдельном имени хоста | блок `server` nginx (раздел 14, «Страница песочницы MCP Apps»); адрес — `[site.<сервер>].sandbox_url` site.toml чата | HTTPS, статика: `sandbox.html` и шрифт | браузер: iframe в странице чата | да |
@@ -2876,12 +2915,12 @@ proxy_read_timeout 86400s;
   путь запроса целиком, вместе с префиксом: все три приложения ждут именно
   его. Ни `rewrite`, ни `proxy_pass http://адрес/;` не нужны.
 - **Два `location` у boba-mcp и у службы агента.** Первый — сам сервис под
-  своим префиксом: endpoint'ы MCP `/mcp/base`, `/mcp/general`, `/mcp/search`,
+  своим префиксом: endpoint'ы MCP `/mcp/chat`, `/mcp/all`, `/mcp/search`,
   адрес ACP `/boba/acp`, вход OAuth `<префикс>/authorize`, `<префикс>/token`,
   `<префикс>/register`, страница входа `<префикс>/login`. Второй нужен
   клиентам: метаданные ресурса (RFC 9728) и сервера авторизации (RFC 8414)
   они ищут от корня хоста, по путям
-  `/.well-known/oauth-protected-resource/mcp/general`,
+  `/.well-known/oauth-protected-resource/mcp/all`,
   `/.well-known/oauth-authorization-server/mcp` и
   `/.well-known/openid-configuration/mcp` (у службы — с `/boba`), и путь уходит
   в сервис как есть. Без второго блока клиент не находит сервер авторизации и
@@ -3083,12 +3122,12 @@ site.toml сервиса обязано быть одним и тем же; та
 чата и службы агента. Расхождение видно при первом подключении чата к
 сервису — в логе чата и в ошибке вызова инструмента boba-mcp:
 
-- разный `mcp_proxy_secret` — `mcp server 'boba_general': ... Token exchange
+- разный `mcp_proxy_secret` — `mcp server 'aid_all': ... Token exchange
   failed (401): {"error":"invalid_grant","error_description":"identity
   assertion of client 'boba-chat' for ...: expected an HS256 JWT under
   [auth.proxy].secret, got Signature verification failed"}`; тот же текст
   сервис пишет в свой лог;
-- разный секрет клиента — `mcp server 'boba_general': ... Token exchange
+- разный секрет клиента — `mcp server 'aid_all': ... Token exchange
   failed (401): {"error":"invalid_client","error_description":"Invalid
   client_secret"}`.
 

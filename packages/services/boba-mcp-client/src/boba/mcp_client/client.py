@@ -2024,11 +2024,6 @@ class McpDescription:
         None — сервер такого не объявил."""
         return self._feature(NestedCallsFeature)
 
-    def commands(self) -> CommandsFeature | None:
-        """Расширение команд пользователя: сервер помечает промпты, которые
-        открывают его приложение; None — сервер его не объявил."""
-        return self._feature(CommandsFeature)
-
     def links(self) -> JournalLinks | None:
         """Адреса каналов журнала по шаблону, объявленному сервером; None —
         журнала нет либо шаблон не по RFC 6570 (причина в логе)."""

@@ -79,7 +79,7 @@ class StandServerName(StrEnum):
     CHAT = "chat"
     """Собственные инструменты чата в его процессе."""
 
-    SERVICE = "boba_{endpoint}"
+    SERVICE = "aid_{endpoint}"
     """Endpoint сервиса boba-mcp: у каждого профиля чата свой."""
 
     def of(self, endpoint: str) -> str:
@@ -97,7 +97,7 @@ class StandToolNames:
     """
 
     CHAT_TOOLS: ClassVar[tuple[str, ...]] = ("connection_list", "connection_search")
-    ENDPOINT: ClassVar[str] = "general"
+    ENDPOINT: ClassVar[str] = "all"
     """Endpoint профиля по умолчанию: отдаёт все инструменты сервиса."""
 
     def __init__(self) -> None:
@@ -514,11 +514,16 @@ class ServiceStand(StandService):
     """Клиент OAuth чата стенда у сервера авторизации сервиса."""
 
     ENDPOINTS: ClassVar[Mapping[str, Sequence[str]]] = {
-        "general": ("*",),
+        "all": ("*",),
         "search": ("diagram_save", "canvas_open"),
     }
-    """Endpoint'ы стенда по профилям чата: general — все инструменты,
-    search — узкий набор."""
+    """Endpoint'ы стенда: all — все инструменты, search — узкий набор."""
+
+    PROFILE_ENDPOINTS: ClassVar[Mapping[str, str]] = {
+        "general": "all",
+        "search": "search",
+    }
+    """Endpoint сервиса у каждого профиля чата стенда."""
 
     SEALING: ClassVar[Mapping[str, Any]] = {
         "roles": ["*"],
@@ -1096,9 +1101,9 @@ class StandConfig(StandService):
         servers: dict[str, dict[str, Any]] = {}
         own: dict[str, str] = {}
         if service is not None:
-            for endpoint in service.ENDPOINTS:
-                own[endpoint] = service.server_name(endpoint)
-                servers[own[endpoint]] = service.server(endpoint)
+            for name, endpoint in service.PROFILE_ENDPOINTS.items():
+                own[name] = service.server_name(endpoint)
+                servers[own[name]] = service.server(endpoint)
 
         servers.update(self.mcp_servers)
         doc["mcp"] = {"servers": servers}

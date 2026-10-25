@@ -25,17 +25,17 @@
     [mcp.limits]
         max_runs    = 8
         max_waiting = 32
-    [mcp.endpoints.base]
+    [mcp.endpoints.chat]
         roles = ["*"]
         tools = ["canvas_open", "send_file", "diagram_save"]
-        [[mcp.endpoints.base.connections]]
+        [[mcp.endpoints.chat.connections]]
             roles  = ["*"]
             client = "sealing"
             offer  = ["sealed"]
-    [mcp.endpoints.general]
+    [mcp.endpoints.all]
         roles = ["*"]
         tools = ["*"]
-        [[mcp.endpoints.general.connections]]
+        [[mcp.endpoints.all.connections]]
             roles  = ["*"]
             client = "sealing"
             offer  = ["sealed"]

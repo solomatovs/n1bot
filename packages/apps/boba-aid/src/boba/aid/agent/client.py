@@ -60,6 +60,7 @@ from boba.transport.acp.protocol import (
     McpMessage,
     McpOutcome,
     MetaKey,
+    SessionCommandsRequest,
     SessionRecordRequest,
 )
 
@@ -754,8 +755,9 @@ class AgentLink:
 
     @staticmethod
     def _keeps_commands(capabilities: schema.AgentCapabilities | None) -> bool:
-        """Объявил ли агент в `capabilities._meta` расширение записи команд
-        клиента `_boba/session/record`."""
+        """Объявил ли агент в `capabilities._meta` расширение команд сессии:
+        запись команд клиента `_boba/session/record` и команды сессии
+        целиком `_boba/commands`."""
         if capabilities is None:
             return False
 
@@ -763,17 +765,24 @@ class AgentLink:
         if meta is None:
             return False
 
-        return meta.get(BobaExtension.SESSION_RECORD.value) is True
+        if meta.get(BobaExtension.SESSION_RECORD.value) is not True:
+            return False
+
+        return meta.get(BobaExtension.COMMANDS.value) is True
 
     def records_commands(self) -> bool:
-        """Агент пишет в историю команды, которые чат исполнил сам."""
+        """Агент ведёт команды сессии в истории: пишет команды, которые чат
+        исполнил сам, и объявление команд чата, и объявляет все команды
+        сессии целиком."""
         return self._records_commands
 
-    async def record(self, request: SessionRecordRequest) -> None:
-        """Команда, которую чат исполнил сам, — в историю сессии агента
-        `_boba/session/record`. Агент отвечает, когда запись легла и её
-        уведомления ушли: посреди хода — на границе шага, поэтому срока у
-        ответа нет, как у `session/prompt`.
+    async def record(
+        self, request: SessionRecordRequest | SessionCommandsRequest
+    ) -> None:
+        """Команда, которую чат исполнил сам, или объявление команд чата — в
+        историю сессии агента `_boba/session/record`. Агент отвечает, когда
+        запись легла и её уведомления ушли: посреди хода — на границе шага,
+        поэтому срока у ответа нет, как у `session/prompt`.
 
         Ошибки:
         AgentRequestError — агент отказал в записи.
@@ -851,7 +860,10 @@ class AgentLink:
             connection.initialize(
                 protocol_version=AcpVersion.V2.value,
                 info=info,
-                capabilities=schema.ClientCapabilities(elicitation=elicitation),
+                capabilities=schema.ClientCapabilities(
+                    elicitation=elicitation,
+                    field_meta={BobaExtension.COMMANDS.value: True},
+                ),
             ),
         )
 

@@ -106,6 +106,7 @@ from boba.mcp_server.files import (
     RouteCallers,
     ServerRefusal,
 )
+from boba.mcp_server.prompts import FilePrompt, FilePrompts
 from boba.oauth.server import ServiceAuth
 from boba.runtime.storage import LocalStorageConfig, StorageFactory
 from boba.toolkit.channels import JournalChannels, ToolChannel
@@ -866,7 +867,8 @@ class McpServer(Middleware):
     потоками subscriptions/listen над шиной CallerBus. Ответы на
     согласование (эпоху выбирает SDK тем, какой крючок зовёт) объявляют
     ровно это: список инструментов не меняется (он зависит только от ролей
-    токена, а реестр собран на старте), промптов, логов и подсказок нет.
+    токена, а реестр собран на старте), промпты — файлы каталога endpoint'а
+    (FilePrompts), их список тоже не меняется, логов и подсказок нет.
     Расширение команд пользователя (CommandsFeature) объявлено: промпт,
     который открывает приложение сервиса, несёт пометку PromptCommand.meta().
     Подсказки кэша — по природе ответа: описание зависит только от конфига
@@ -894,8 +896,11 @@ class McpServer(Middleware):
         storage: LocalStorageConfig,
         path: str,
         published: str,
+        prompts: Sequence[FilePrompt],
     ) -> None:
         self._name = f"{self.NAME}/{profile}"
+        self._prompts = FilePrompts(prompts)
+        self._prompted = bool(prompts)
         self._auth = auth
         self._subjects = TokenSubjects(profile)
         self._limits = limits
@@ -946,6 +951,9 @@ class McpServer(Middleware):
         providers: list[Provider] = [self._provider]
         if self._journaled:
             providers.append(self._listing)
+
+        if self._prompted:
+            providers.append(self._prompts)
 
         server = FastMCP(
             self._name,
@@ -1001,16 +1009,23 @@ class McpServer(Middleware):
         return initialized.model_copy(update={"capabilities": capabilities})
 
     def _capabilities(self, listened: bool) -> mt.ServerCapabilities:
-        """Инструменты без смены списка и ресурсы журналов; подписка и смена
-        списка — только с потоками subscriptions/listen (listened)."""
+        """Инструменты без смены списка, промпты файлов endpoint'а без смены
+        списка и ресурсы журналов; подписка и смена списка ресурсов — только
+        с потоками subscriptions/listen (listened)."""
         resources: mt.ResourcesCapability | None = None
         if self._journaled:
             resources = mt.ResourcesCapability(
                 subscribe=listened, list_changed=listened
             )
 
+        prompts: mt.PromptsCapability | None = None
+        if self._prompted:
+            prompts = mt.PromptsCapability(list_changed=False)
+
         return mt.ServerCapabilities(
-            tools=mt.ToolsCapability(list_changed=False), resources=resources
+            tools=mt.ToolsCapability(list_changed=False),
+            prompts=prompts,
+            resources=resources,
         )
 
     def close(self) -> None:
@@ -1102,6 +1117,7 @@ class McpEndpoints:
         params: SealedConnectionParams,
         limits: RunLimits,
         storage: LocalStorageConfig,
+        prompts: Mapping[str, Sequence[FilePrompt]],
     ) -> None:
         self._auth = auth
         self._discovery: list[BaseRoute] = []
@@ -1123,6 +1139,7 @@ class McpEndpoints:
                 storage,
                 path,
                 auth.published(),
+                prompts.get(profile, ()),
             )
             served = server.mcp().http_app(path=path, stateless_http=True)
             self._servers.append(server)

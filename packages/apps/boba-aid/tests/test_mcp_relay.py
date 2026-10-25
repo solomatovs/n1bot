@@ -1636,7 +1636,7 @@ class TestRegistrations:
         registrations = McpRegistrations()
         registration = TabSession().registration(uuid4(), SignInStand.PROFILE)
 
-        servers = registrations.register(registration, ["boba_general", "chat"])
+        servers = registrations.register(registration, ["aid_all", "chat"])
         ids: list[str] = []
         for server in servers:
             ids.append(server.server_id)
@@ -1647,7 +1647,7 @@ class TestRegistrations:
             names.append(server.name)
             kinds.append(server.type)
 
-        assert names == ["boba_general", "chat"]
+        assert names == ["aid_all", "chat"]
         assert kinds == ["acp", "acp"]
         assert len(set(ids)) == 2
         for server in servers:

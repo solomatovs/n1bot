@@ -95,8 +95,8 @@ PostgreSQL и прокси (раздел «Сеть»). Отладка чата
 (руководство, раздел 12).
 
 Снаружи приложения отдаёт контейнер `nginx`: `https://loshara.com/aid/` — чат
-(контейнер `aid`), `/mcp/` — boba-mcp (`/mcp/health`, серверы `/mcp/base`,
-`/mcp/general`, `/mcp/search`), `/boba/` — служба агента (`/boba/health`,
+(контейнер `aid`), `/mcp/` — boba-mcp (`/mcp/health`, серверы `/mcp/chat`,
+`/mcp/all`, `/mcp/search`), `/boba/` — служба агента (`/boba/health`,
 ACP на `/boba/acp`). Каждое приложение само отвечает под своим префиксом, nginx
 передаёт путь как есть, без `rewrite`; метаданные OAuth
 `/.well-known/…/mcp` и `/.well-known/…/boba` идут в свои сервисы. Чат ходит в
