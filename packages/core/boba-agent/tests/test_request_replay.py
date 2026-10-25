@@ -17,6 +17,7 @@ from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import aclosing
 from dataclasses import dataclass
 from pathlib import Path
+from typing import ClassVar
 
 import mcp_types as mt
 import pytest
@@ -33,7 +34,9 @@ from boba.agent.records import (
     ApiRequestRecord,
     AttachmentKind,
     AttachmentRecord,
+    DeferredToolsDeltaAttachment,
     DeferredToolsRecordAttachment,
+    McpInstructionsAttachment,
     PromptSnapshot,
     ReasoningReturn,
     Record,
@@ -46,6 +49,7 @@ from boba.agent.skills import Skill, SkillTool
 from boba.agent.template import AgentTemplate, AgentTemplateFile
 from boba.agent.tools import ToolSearchTool
 from boba.agent.writer import ClientCommand, RequestReplay, RequestReplayError
+from boba.core.mcp_names import McpToolNames
 from boba.history.jsonl import JsonlHistoryStore
 from boba.llm.chat import ChatRequest
 from boba.stand.agent import (
@@ -632,3 +636,105 @@ class TestReplayCheck:
         drifted = built.model_copy(update={"sampling": {"temperature": 0.7}})
         with pytest.raises(RequestReplayError, match=r"request\.sampling\.temperature"):
             await replay.check(SESSION, drifted)
+
+
+class RenamedServer(StandTools):
+    """Сервер стенда под именем, которое тест меняет посреди сессии: имена
+    инструментов модели — `mcp__<имя>__<инструмент>`."""
+
+    def __init__(self, name: str) -> None:
+        super().__init__()
+        self._stand = list(self._cards)
+        self._names = McpToolNames()
+        self.rename(name)
+
+    def rename(self, name: str) -> None:
+        cards: list[ToolCard] = []
+        for card in self._stand:
+            tool = self._names.tool_of(card.name)
+            cards.append(
+                ToolCard(
+                    name=self._names.full(name, tool),
+                    description=card.description,
+                    parameters=card.parameters,
+                    hints=card.hints,
+                )
+            )
+
+        self._cards = cards
+
+
+class TestServerRenamed:
+    OLD: ClassVar[str] = "boba_general"
+    NEW: ClassVar[str] = "aid_general"
+
+    async def test_a_renamed_server_reaches_the_model_through_history_only(
+        self, server: FakeServer, agents: StandAgents, tmp_path: Path
+    ) -> None:
+        """Сервер boba_general переименован в aid_general посреди сессии:
+        история получает разницу — старые имена инструментов (и с полным
+        определением, и отложенные) сняты, новые объявлены, инструкции
+        старого сервера сняты, нового — объявлены; следующий запрос несёт
+        только новые имена и повторяется из истории байт в байт."""
+        names = McpToolNames()
+        tools = RenamedServer(self.OLD)
+        servers = StandServers(
+            [ConnectedServer(name=self.OLD, instructions=INSTRUCTIONS)]
+        )
+        inline = names.full(self.OLD, StandToolName.LOOKUP.value)
+        served = Served(
+            agents.agent(
+                openai(agents),
+                Collected(),
+                tools=tools,
+                servers=servers,
+                always_load=(inline,),
+                record_requests=True,
+            )
+        )
+        await served.open(SESSION, resume=False)
+        note = names.full(self.OLD, StandToolName.NOTE.value)
+        query = f"select:{note}"
+        served.agent.queue.enqueue(
+            prompt(call(ToolSearchTool.NAME, {"query": query, "max_results": 5}))
+        )
+        await served.agent.settled()
+        before = len(await journal(tmp_path / "history"))
+
+        tools.rename(self.NEW)
+        servers.connected_servers = [
+            ConnectedServer(name=self.NEW, instructions=INSTRUCTIONS)
+        ]
+        served.agent.queue.enqueue(prompt(ScenarioName.ANSWER.value))
+        await served.agent.settled()
+        await served.close()
+
+        records = await journal(tmp_path / "history")
+        after = records[before:]
+        deltas = attachments(after, AttachmentKind.DEFERRED_TOOLS_DELTA)
+        assert len(deltas) == 1
+        delta = deltas[0].attachment
+        assert isinstance(delta, DeferredToolsDeltaAttachment)
+        old_prefix = names.server_prefix(self.OLD)
+        new_prefix = names.server_prefix(self.NEW)
+        assert inline in delta.removed_names
+        assert note in delta.removed_names
+        assert all(n.startswith(old_prefix) for n in delta.removed_names)
+        assert all(n.startswith(new_prefix) for n in delta.added_names)
+        assert len(delta.added_names) == len(StandToolName)
+        renewed = snapshots(after)
+        assert len(renewed) == 1
+        assert [t.name for t in renewed[0].tools if t.name.startswith("mcp__")] == []
+        announced = attachments(after, AttachmentKind.MCP_INSTRUCTIONS_DELTA)
+        assert len(announced) == 1
+        instructions = announced[0].attachment
+        assert isinstance(instructions, McpInstructionsAttachment)
+        assert list(instructions.added_names) == [self.NEW]
+        assert list(instructions.removed_names) == [self.OLD]
+
+        last = server.requests()[-1]
+        sent_tools = last["tools"]
+        assert isinstance(sent_tools, list)
+        sent_names = [tool["function"]["name"] for tool in sent_tools]
+        assert not [n for n in sent_names if self.OLD in n], sent_names
+        assert await checked(records, tmp_path / "replay") == (3, 0)

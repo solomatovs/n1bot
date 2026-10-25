@@ -852,10 +852,19 @@ class TurnLoop:
             )
             await self._keeper.add(record)
 
+        await self._announce_catalog(announced)
+        await self._announce_skills(announced)
+
+    async def _announce_catalog(self, announced: Announced) -> None:
+        """Набор инструментов и инструкции серверов MCP относительно
+        объявленного в истории: разница имён отложенных и с полным
+        определением, новый снимок при смене определений, разница
+        инструкций. Сервер, сменивший имя или список посреди сессии, виден
+        модели только так — записями истории, из которых собирается
+        запрос."""
         await self._announce_tools(announced)
         await self._renew_snapshot(announced)
         await self._announce_instructions(announced)
-        await self._announce_skills(announced)
 
     async def _announce_tools(self, announced: Announced) -> None:
         """Набор инструментов изменился относительно объявленного: разница
@@ -954,8 +963,11 @@ class TurnLoop:
         )
 
     async def _announce_context(self) -> None:
-        """Дата, если сменилась; снимок, если его нет в доступной истории;
-        определения загруженных отложенных."""
+        """Перед каждым запросом: смена набора инструментов и инструкций
+        серверов, случившаяся посреди хода; дата, если сменилась; снимок,
+        если его нет в доступной истории; определения загруженных
+        отложенных."""
+        await self._announce_catalog(Announced(self._session.conversation()))
         announced = Announced(self._session.conversation())
         today = self._attachments.today()
         known = announced.date_text()
