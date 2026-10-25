@@ -34,7 +34,7 @@ pytestmark = [
 ]
 
 needs_ch_keytab = pytest.mark.failif(
-    not STAND.krb_ch_keytab, reason="в конфиге стенда нет keytab clickhouse"
+    not STAND.ch_krb_keytab, reason="в конфиге стенда нет keytab clickhouse"
 )
 
 
@@ -76,7 +76,7 @@ def _keytab() -> KeytabAuth:
     return KeytabAuth(
         method="kerberos_keytab",
         principal=STAND.service_principal,
-        keytab=STAND.krb_ch_keytab,
+        keytab=STAND.ch_krb_keytab,
         service=STAND.ch_krbsrvname,
     )
 
@@ -97,7 +97,7 @@ async def test_password_auth_logs_in_as_its_own_user() -> None:
 @needs_ch_keytab
 async def test_keytab_auth_logs_in_as_the_service_principal() -> None:
     """method = kerberos_keytab: пользователя сервер берёт из заголовка Negotiate."""
-    if await _current_user(_profile(_keytab())) != STAND.krb_ch_user:
+    if await _current_user(_profile(_keytab())) != STAND.ch_krb_user:
         raise AssertionError("keytab auth must log in as the service principal")
 
 
@@ -133,7 +133,7 @@ async def test_ticket_auth_logs_in_as_the_ticket_owner() -> None:
         source, STAND.ch_spn
     )
 
-    if await _current_user(_profile(ticket)) != STAND.krb_ch_user:
+    if await _current_user(_profile(ticket)) != STAND.ch_krb_user:
         raise AssertionError("ticket auth must log in as the ticket owner")
 
 

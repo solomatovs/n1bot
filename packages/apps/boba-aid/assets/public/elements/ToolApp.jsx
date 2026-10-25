@@ -26,6 +26,8 @@ export const updatesInPlace = true;
 
 const TEXT = "aid.app";
 const APP_MIME = "text/html;profile=mcp-app";
+// вид ресурса приложения, не прочитанного на момент вызова (AppResourceKind)
+const UNREAD = "failed";
 const METHOD_NOT_FOUND = -32601;
 const INVALID_PARAMS = -32602;
 const HOST_INFO = { name: "boba-aid", version: "1" };
@@ -377,29 +379,21 @@ export default function ToolApp() {
     params,
   });
 
-  // ресурс из записи команды уже несёт приложение целиком: сервер не читается
+  // ресурс приложения на момент вызова пришёл из истории: сервер не читается;
+  // у вызова он один, и новые props вызова (итог, отмена) приложение не пересоздают
   useEffect(() => {
-    if (!isolated) return undefined;
-    if (props.resource) {
-      try {
-        setApp(appOf(props.resource));
-      } catch (failed) {
-        setError(failed.message);
-      }
-      return undefined;
+    if (!isolated) return;
+    const source = props.resource;
+    if (source.kind === UNREAD) {
+      setError(source.error);
+      return;
     }
-    let dropped = false;
-    ask("mcp_app_read", request({ uri: props.resource_uri }))
-      .then((read) => {
-        if (!dropped) setApp(appOf(read));
-      })
-      .catch((failed) => {
-        if (!dropped) setError(failed.message);
-      });
-    return () => {
-      dropped = true;
-    };
-  }, [props.server, props.resource_uri, props.resource, isolated]);
+    try {
+      setApp(appOf(source.resource));
+    } catch (failed) {
+      setError(failed.message);
+    }
+  }, [props.server, props.call_id, props.resource_uri, isolated]);
 
   useEffect(() => {
     if (mode !== FULLSCREEN) return undefined;

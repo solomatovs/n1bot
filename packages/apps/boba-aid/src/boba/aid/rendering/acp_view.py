@@ -11,7 +11,12 @@
 виду и MIME, ссылки на каналы журнала (по шаблону расширения журнала
 сервера) дают адрес журнала вызова. Журнал идущего вызова лента узнаёт
 сообщением шины JournalOpened: его шлёт ретранслятор чата, узнав журнал
-уведомлением сервера в потоке вызова. Вызов инструмента, который сервер
+уведомлением сервера в потоке вызова. Что лента знает об инструменте
+сервера — карточку, описание сервера, карточки инструментов узлов и ресурс
+приложения, — она берёт из источника вызова (ToolSource) в первом
+уведомлении `tool_call`, сервер не спрашивает: источник на момент вызова
+собрал чат по запросу агента `_boba/tool_source`, агент хранит его в
+истории. Вызов инструмента, который сервер
 объявил несущим вложенные вызовы (NestedCallsFeature), рисуется шагами его
 узлов: ход узла приходит с ключом узла в `_meta`, итог узла — его блоки по
 записи списка узлов в structuredContent (NestedCallsOutput). У инструмента
@@ -47,17 +52,20 @@ from typing import Any, ClassVar, Protocol, TypeAlias, get_args
 import mcp_types as mt
 from acp.experimental.v2 import schema
 from chainlit.step import Step
-from mcp.shared.exceptions import MCPError
 from pydantic import TypeAdapter, ValidationError
 
 from boba.aid.rendering.chat_view import ChatView, NoticeLevel, StepText
 from boba.aid.rendering.question import QuestionCard, QuestionCards
-from boba.aid.rendering.tool import AppMeta, ToolAppView
+from boba.aid.rendering.tool import (
+    AppMeta,
+    AppResource,
+    AppSource,
+    ToolAppView,
+    ToolSource,
+)
 from boba.core.mcp_names import McpToolNames
 from boba.mcp_client.client import (
     JournalLinks,
-    McpCaller,
-    McpClientError,
     McpDescription,
     McpServerApps,
     McpServers,
@@ -83,20 +91,21 @@ from boba.transport.acp.protocol import (
     ElicitationRound,
     MetaKey,
     StopReason,
+    ToolSourceContent,
     ToolStatus,
 )
 
 __all__ = [
+    "AppSections",
     "CallPainter",
     "CallParts",
     "JournalRegistry",
     "NestedCall",
     "PlainCall",
     "QuestionCall",
-    "ServerCards",
+    "ServerApps",
     "SessionUpdate",
     "SessionUpdateCodec",
-    "ToolCards",
     "ToolMedia",
     "TurnEnding",
     "UpdateView",
@@ -152,126 +161,85 @@ class SessionUpdateCodec:
         return self._adapter.validate_python(raw)
 
 
-class ToolCards(Protocol):
-    """Откуда лента треда берёт карточки инструментов и описания серверов
-    профиля. Реализация — ServerCards: порты McpServers владельца треда."""
-
-    @abstractmethod
-    async def card(self, server: str, tool: str) -> mt.Tool | None:
-        """Карточка инструмента tool сервера server; None — такого у
-        сервера нет либо сервер не ответил."""
-
-    @abstractmethod
-    async def described(self, server: str) -> McpDescription | None:
-        """Описание сервера server; None — сервер не назван либо не
-        ответил."""
+class AppSections(Protocol):
+    """Какие серверы профиля рисуют приложения MCP Apps: секции apps
+    настроек чата. Реализация — ServerApps над McpServers чата."""
 
     @abstractmethod
     def apps(self, server: str) -> McpServerApps | None:
         """Секция apps сервера server; None — его приложения не рисуются."""
 
 
-class ServerCards(ToolCards):
-    """Реализация ToolCards портами McpServers пользователя, чей это тред.
-
+class ServerApps(AppSections):
+    """Реализация AppSections секциями apps серверов McpServers чата.
     Создаётся на тред тем, кто рисует его ленту (приёмник агента вкладки,
-    рендерер шины треда). Карточку и описание даёт порт сервера через свой
-    кэш ответов: свежие по сроку сервера и из списка только этого
-    пользователя — списки с cacheScope private у разных пользователей не
-    смешиваются. Сервер, который не ответил, — вызов рисуется без карточки,
-    причина в логе.
-    """
+    рендерер шины треда)."""
 
-    def __init__(self, servers: McpServers, caller: McpCaller) -> None:
+    def __init__(self, servers: McpServers) -> None:
         self._servers = servers
-        self._caller = caller
-
-    async def card(self, server: str, tool: str) -> mt.Tool | None:
-        if not self._servers.served(server):
-            return None
-
-        port = await self._servers.port(server, self._caller)
-        try:
-            listed = await port.tools(McpServers.OWN)
-        except (McpClientError, MCPError) as exc:
-            logger.warning(
-                "mcp server %s gave no tool list to %s, tool %s is drawn "
-                "without its card: %s",
-                server,
-                self._caller.login,
-                tool,
-                exc,
-            )
-            return None
-
-        for listed_tool in listed.tools:
-            if listed_tool.name == tool:
-                return listed_tool
-
-        return None
-
-    async def described(self, server: str) -> McpDescription | None:
-        if not self._servers.served(server):
-            return None
-
-        port = await self._servers.port(server, self._caller)
-        try:
-            return await port.described(McpServers.OWN)
-        except (McpClientError, MCPError) as exc:
-            logger.warning(
-                "mcp server %s gave no description to %s, its calls are drawn "
-                "without nested calls and journals: %s",
-                server,
-                self._caller.login,
-                exc,
-            )
-            return None
 
     def apps(self, server: str) -> McpServerApps | None:
         return self._servers.apps(server)
 
 
 class ToolMedia:
-    """Что лента треда знает об инструментах серверов профиля по полным
-    именам: типы содержимого аргументов (по ним рисуется вход шага: sql,
-    bash, json), вложенные вызовы, которые объявил сервер (по ним вызов
-    рисуется шагами узлов), адреса каналов журнала вызовов сервера (по ним
-    у шага кнопка журнала) и приложения MCP Apps инструментов сервера с
-    секцией apps (по ним у вызова карточка приложения).
+    """Что лента треда знает о вызове инструмента сервера по его источнику
+    (ToolSource) — снимку на момент вызова в первом уведомлении: типы
+    содержимого аргументов (по ним рисуется вход шага: sql, bash, json),
+    вложенные вызовы, которые объявил сервер (по ним вызов рисуется шагами
+    узлов), адреса каналов журнала вызовов сервера (по ним у шага кнопка
+    журнала) и приложение MCP Apps инструмента сервера с секцией apps (по
+    нему у вызова карточка). Сервер лента не спрашивает: вызов без
+    источника рисуется одним шагом без карточки.
 
-    Создаётся на тред вместе с его лентой (UpdateView); своих списков не
-    держит: карточку и описание сервера всякий раз даёт источник карточек
-    треда (ToolCards).
+    Создаётся на тред вместе с его лентой (UpdateView); секции apps даёт
+    AppSections треда.
     """
 
-    def __init__(self, cards: ToolCards) -> None:
-        self._cards = cards
+    def __init__(self, apps: AppSections) -> None:
+        self._apps = apps
         self._views = CallViews()
         self._names = McpToolNames()
         self._app_meta = AppMeta()
 
-    async def card(self, name: str) -> mt.Tool | None:
-        """Карточка инструмента по полному имени; None — имя не инструмента
-        сервера либо сервер его не знает."""
-        owner = self._names.parse(name)
-        if owner is None:
+    def source(self, update: schema.SessionToolCallUpdate) -> ToolSource | None:
+        """Источник вызова из содержимого `_boba/tool_source` уведомления;
+        None — агент источника не дал.
+
+        Ошибки:
+        ValidationError — содержимое не по форме источника.
+        """
+        if update.content is None:
             return None
 
-        return await self._cards.card(owner.server, owner.tool)
+        for item in update.content:
+            if not isinstance(item, schema.OtherToolCallContent):
+                continue
+
+            if item.type != BobaExtension.TOOL_SOURCE.value:
+                continue
+
+            dumped = item.model_dump(mode="json", by_alias=True, exclude_none=True)
+            content = ToolSourceContent.model_validate(dumped)
+
+            return ToolSource.model_validate(content.source)
+
+        return None
 
     def media(self, card: mt.Tool) -> Mapping[str, str]:
         """Типы аргументов инструмента по его карточке."""
         return self._views.media_of(card.input_schema)
 
-    def app(self, name: str, card: mt.Tool) -> ToolAppView | None:
-        """Приложение MCP Apps инструмента name по его карточке card; None —
-        у сервера нет секции apps либо у инструмента нет
-        _meta.ui.resourceUri."""
-        owner = self._names.parse(name)
-        if owner is None:
+    def app(
+        self, server: str, card: mt.Tool, resource: AppSource | None
+    ) -> ToolAppView | None:
+        """Приложение MCP Apps инструмента card сервера server с ресурсом
+        на момент вызова; None — ресурса нет, у сервера нет секции apps либо
+        у инструмента нет _meta.ui.resourceUri."""
+        if resource is None:
             return None
 
-        apps = self._cards.apps(owner.server)
+        apps = self._apps.apps(server)
         if apps is None:
             return None
 
@@ -281,7 +249,7 @@ class ToolMedia:
             logger.warning(
                 "mcp server %s: tool %s carries _meta.ui that is not an MCP "
                 "Apps tool config, its calls are drawn without the app: %s",
-                owner.server,
+                server,
                 card.name,
                 exc,
             )
@@ -294,41 +262,43 @@ class ToolMedia:
             return None
 
         return ToolAppView(
-            server=owner.server,
+            server=server,
             tool=card,
             resource_uri=config.resource_uri,
+            resource=resource,
             sandbox_url=str(apps.sandbox_url),
         )
 
-    async def nested(self, name: str) -> NestedCallsFeature | None:
-        """Объявление вложенных вызовов для вызова инструмента name; None —
-        сервер его не объявил либо name не его инструмент со вложенными
+    def nested(self, source: ToolSource) -> NestedCallsFeature | None:
+        """Объявление вложенных вызовов для инструмента источника; None —
+        сервер его не объявил либо это не его инструмент со вложенными
         вызовами."""
-        owner = self._names.parse(name)
-        if owner is None:
-            return None
-
-        described = await self._cards.described(owner.server)
-        if described is None:
-            return None
-
-        nested = described.nested_calls()
+        nested = self._described(source).nested_calls()
         if nested is None:
             return None
 
-        if nested.tool != owner.tool:
+        if nested.tool != source.tool.name:
             return None
 
         return nested
 
-    async def links(self, server: str) -> JournalLinks | None:
-        """Ссылки на журнал вызовов сервера; None — сервер журнала не
-        объявил."""
-        described = await self._cards.described(server)
-        if described is None:
-            return None
+    def links(self, source: ToolSource) -> JournalLinks | None:
+        """Ссылки на журнал вызовов сервера источника; None — сервер журнала
+        не объявил."""
+        return self._described(source).links()
 
-        return described.links()
+    def node_card(self, source: ToolSource, name: str) -> mt.Tool | None:
+        """Карточка инструмента узла вложенного вызова по его полному имени
+        name; None — её в источнике нет."""
+        for card in source.nodes:
+            if self._names.full(source.server, card.name) == name:
+                return card
+
+        return None
+
+    @staticmethod
+    def _described(source: ToolSource) -> McpDescription:
+        return McpDescription(f"MCP server {source.server!r}", source.description)
 
 
 class JournalRegistry(Protocol):
@@ -387,30 +357,38 @@ class CallParts:
             list[ElicitationRound]
         )
 
-    async def step(self, name: str, args: Mapping[str, Any], key: str) -> Step:
-        """Шаг нового вызова инструмента name с аргументами args под ключом key."""
-        media: Mapping[str, str] | None = None
-        app: ToolAppView | None = None
-        card = await self._media.card(name)
-        if card is not None:
-            media = self._media.media(card)
-            app = self._media.app(name, card)
+    async def step(
+        self, name: str, args: Mapping[str, Any], key: str, source: ToolSource | None
+    ) -> Step:
+        """Шаг нового вызова инструмента name с аргументами args под ключом
+        key: вход — по карточке источника, карточка приложения — по его
+        ресурсу; без источника — шаг без них."""
+        if source is None:
+            return await self.view.tool_started(name, args, key, None, None)
+
+        media = self._media.media(source.tool)
+        app = self._media.app(source.server, source.tool, source.app)
 
         return await self.view.tool_started(name, args, key, media, app)
 
-    async def nested(
-        self, name: str, call_id: str, args: Mapping[str, Any]
-    ) -> NestedGroup | None:
-        """Объявление сервера и узлы вызова call_id инструмента name под
-        ключами подшагов, с полными именами инструментов, как их называет
-        ретранслятор; None — сервер вложенных вызовов для name не объявил
-        либо вызов не по объявленной форме, и он рисуется одним шагом."""
-        nested = await self._media.nested(name)
-        if nested is None:
-            return None
+    async def node_step(self, node: DagNode, source: ToolSource) -> Step:
+        """Подшаг узла вложенного вызова: вход — по карточке его инструмента
+        из источника вызова."""
+        media: Mapping[str, str] | None = None
+        if card := self._media.node_card(source, node.tool):
+            media = self._media.media(card)
 
-        owner = self._names.parse(name)
-        if owner is None:
+        return await self.view.tool_started(node.tool, node.args, node.key, media, None)
+
+    def nested(
+        self, source: ToolSource, call_id: str, args: Mapping[str, Any]
+    ) -> NestedGroup | None:
+        """Объявление сервера и узлы вызова call_id под ключами подшагов, с
+        полными именами инструментов, как их называет ретранслятор; None —
+        сервер вложенных вызовов для инструмента источника не объявил либо
+        вызов не по объявленной форме, и он рисуется одним шагом."""
+        nested = self._media.nested(source)
+        if nested is None:
             return None
 
         try:
@@ -420,14 +398,14 @@ class CallParts:
                 "thread %s: call %s of %s is drawn as one step: %s",
                 self.thread_id,
                 call_id,
-                name,
+                source.tool.name,
                 exc,
             )
             return None
 
         nodes: list[DagNode] = []
         for node in nested.keyed(call_id, calls):
-            full = self._names.full(owner.server, node.tool)
+            full = self._names.full(source.server, node.tool)
             nodes.append(node.model_copy(update={"tool": full}))
 
         return nested, nodes
@@ -460,6 +438,7 @@ class CallParts:
         update: schema.SessionToolCallUpdate,
         status: ToolStatus,
         name: str,
+        source: ToolSource | None,
     ) -> None:
         """Итог вызова инструмента name шагу step: ответ сервера MCP из
         `rawOutput`; без него отменённый вызов — остановка, сорванный —
@@ -468,7 +447,7 @@ class CallParts:
         call_id = update.tool_call_id
         reply = self.reply(update)
         if reply is not None:
-            shown, journals = await self.journaled(reply, name)
+            shown, journals = self.journaled(reply, source)
             # журналов несколько только у связки: любой из них — чужого узла
             journal: JournalAddress | None = None
             if len(journals) == 1:
@@ -514,17 +493,16 @@ class CallParts:
 
         await self.view.tool_finished(step, reply, key, elapsed_ms)
 
-    async def journaled(
-        self, reply: mt.CallToolResult, name: str
+    def journaled(
+        self, reply: mt.CallToolResult, source: ToolSource | None
     ) -> tuple[mt.CallToolResult, Mapping[str, JournalAddress]]:
-        """Ответ инструмента name без ссылок на каналы журнала и адреса
-        журналов вызовов по идентификаторам вызовов на сервере: ссылка
-        журнала — кнопка у шага, а не блок выхода."""
-        owner = self._names.parse(name)
-        if owner is None:
+        """Ответ вызова с источником source без ссылок на каналы журнала и
+        адреса журналов вызовов по идентификаторам вызовов на сервере:
+        ссылка журнала — кнопка у шага, а не блок выхода."""
+        if source is None:
             return reply, {}
 
-        links = await self._media.links(owner.server)
+        links = self._media.links(source)
         if links is None:
             return reply, {}
 
@@ -541,7 +519,7 @@ class CallParts:
                 continue
 
             journals[read.node] = JournalAddress(
-                server=owner.server, run=read.run, call=read.node
+                server=source.server, run=read.run, call=read.node
             )
 
         return reply.model_copy(update={"content": shown}), journals
@@ -648,11 +626,19 @@ class PlainCall(CallPainter):
     """Реализация CallPainter для обычного вызова: один шаг, ход работы —
     строкой шага, итог — ответом сервера."""
 
-    def __init__(self, parts: CallParts, step: Step, name: str, call_id: str) -> None:
+    def __init__(
+        self,
+        parts: CallParts,
+        step: Step,
+        name: str,
+        call_id: str,
+        source: ToolSource | None,
+    ) -> None:
         self._parts = parts
         self._step = step
         self._name = name
         self._call_id = call_id
+        self._source = source
 
     async def progressed(self, update: schema.SessionToolCallUpdate) -> None:
         progress = self._parts.content_text(update)
@@ -664,7 +650,7 @@ class PlainCall(CallPainter):
     async def finished(
         self, update: schema.SessionToolCallUpdate, status: ToolStatus
     ) -> None:
-        await self._parts.result(self._step, update, status, self._name)
+        await self._parts.result(self._step, update, status, self._name, self._source)
 
     async def stopped(self) -> None:
         await self._parts.view.tool_stopped(self._step)
@@ -685,17 +671,19 @@ class NestedCall(CallPainter):
     ключу узла в `_meta`, итог узла — его блоки по записи списка узлов
     (NestedCallsOutput)."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 — отрисовщик собирается всеми частями вызова
         self,
         parts: CallParts,
         name: str,
         call_id: str,
         group: NestedGroup,
         steps: Mapping[str, Step],
+        source: ToolSource,
     ) -> None:
         self._parts = parts
         self._name = name
         self._call_id = call_id
+        self._source = source
         self._nested, self._nodes = group
         self._steps = dict(steps)
         """Ключ узла → подшаг, у которого ещё нет итога."""
@@ -733,7 +721,7 @@ class NestedCall(CallPainter):
         journals: Mapping[str, JournalAddress] = {}
         reply = self._parts.reply(update)
         if reply is not None:
-            _, journals = await self._parts.journaled(reply, self._name)
+            _, journals = self._parts.journaled(reply, self._source)
             try:
                 replied = NestedCallsOutput.model_validate(reply.structured_content)
             except ValidationError as exc:
@@ -753,7 +741,7 @@ class NestedCall(CallPainter):
             step = self._steps.pop(node.key)
             entry = entries.get(node.title)
             if entry is None:
-                await self._parts.result(step, update, status, self._name)
+                await self._parts.result(step, update, status, self._name, self._source)
                 continue
 
             if reply is None:
@@ -913,7 +901,6 @@ class UpdateView:
         self._thread_id = thread_id
         self._parts = CallParts(view, thread_id, journals, media)
         self._media = media
-        self._names = McpToolNames()
         self._turn_key: str | None = None
         self._thought_id: str | None = None
         self._answer_id: str | None = None
@@ -1047,8 +1034,8 @@ class UpdateView:
         снимок на момент вызова, у сервера ничего не спрашивается. Чат
         больше не рисует приложений сервера (нет секции apps) — пометка
         с причиной."""
-        full = self._names.full(outcome.server, outcome.tool.name)
-        app = self._media.app(full, outcome.tool)
+        resource = AppResource(resource=outcome.resource)
+        app = self._media.app(outcome.server, outcome.tool, resource)
         if app is None:
             text = (
                 f"The app of /{name} is not shown: the chat no longer draws the "
@@ -1060,11 +1047,7 @@ class UpdateView:
         result = outcome.result.model_dump(
             mode="json", by_alias=True, exclude_none=True
         )
-
-        resource = outcome.resource.model_dump(
-            mode="json", by_alias=True, exclude_none=True
-        )
-        await self._view.command_app(app, key, outcome.arguments, result, resource)
+        await self._view.command_app(app, key, outcome.arguments, result)
 
     async def _compaction(self, update: schema.SessionCompactionUpdate) -> None:
         """Сжатие разговора шагом хода по его стадиям — вживую и в истории
@@ -1321,21 +1304,36 @@ class UpdateView:
             return QuestionCall(self._parts, step, args, call_id)
 
         name = self._tool_name(update)
-        group = await self._parts.nested(name, call_id, args)
+        source = self._media.source(update)
+        if source is None:
+            return await self._plain(name, args, call_id, None)
+
+        group = self._parts.nested(source, call_id, args)
         if group is None:
-            step = await self._parts.step(name, args, call_id)
-            await self._view.follow(step)
-            return PlainCall(self._parts, step, name, call_id)
+            return await self._plain(name, args, call_id, source)
 
         steps: dict[str, Step] = {}
         for node in group[1]:
-            steps[node.key] = await self._parts.step(node.tool, node.args, node.key)
+            steps[node.key] = await self._parts.node_step(node, source)
 
         ordered = list(steps.values())
         if ordered:
             await self._view.follow(ordered[0])
 
-        return NestedCall(self._parts, name, call_id, group, steps)
+        return NestedCall(self._parts, name, call_id, group, steps, source)
+
+    async def _plain(
+        self,
+        name: str,
+        args: Mapping[str, Any],
+        call_id: str,
+        source: ToolSource | None,
+    ) -> CallPainter:
+        """Обычный вызов одним шагом."""
+        step = await self._parts.step(name, args, call_id, source)
+        await self._view.follow(step)
+
+        return PlainCall(self._parts, step, name, call_id, source)
 
     async def _close_thinking(self) -> None:
         if self._thought_id is None:

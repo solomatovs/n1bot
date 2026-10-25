@@ -37,8 +37,7 @@
 [ldap]
     server        = "${site.ldap_url}"
     base_dn       = "${site.ldap_base_dn}"
-    bind_dn       = "${site.ldap_bind_user}"
-    bind_password = "${site.ldap_bind_password}"
+    auth          = "${site.ldap_auth.${site.ldap_auth_method}}"
     [ldap.mapping]
         member_of = "${site.ldap_roles.memberof}"
         dn        = "${site.ldap_roles.dn}"

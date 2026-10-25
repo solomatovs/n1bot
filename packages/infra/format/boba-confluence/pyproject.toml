@@ -4,14 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-confluence"
-version = "0.0.30.dev4"
+version = "0.0.30.dev5"
 description = "Boba Confluence format: REST-DTO, адреса и пагинатор REST, разбор JSON и HTML Confluence."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-indexing==0.0.30.dev4",
-    "boba-connections==0.0.30.dev4",
-    "boba-toolkit==0.0.30.dev4",
-    "boba-transport-http==0.0.30.dev4",
+    "boba-indexing==0.0.30.dev5",
+    "boba-connections==0.0.30.dev5",
+    "boba-toolkit==0.0.30.dev5",
+    "boba-transport-http==0.0.30.dev5",
     "httpx>=0.28,<1",
     "pydantic>=2.12,<3",
 ]
@@ -22,10 +22,10 @@ confluence = "boba.confluence.address:ConfluenceAddresses"
 [project.optional-dependencies]
 html = [
     "beautifulsoup4>=4.12,<5",
-    "boba-doc[readers]==0.0.30.dev4",
+    "boba-doc[readers]==0.0.30.dev5",
 ]
 dev = [
-    "boba-stand==0.0.30.dev4",
+    "boba-stand==0.0.30.dev5",
     "pytest>=9.1,<10",
 ]
 

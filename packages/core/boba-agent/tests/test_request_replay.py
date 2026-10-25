@@ -1,28 +1,57 @@
 """Запрос к модели собирается из истории заново байт в байт: агент пишет
-каждый запрос записью api-request с digest, тест восстанавливает сессию из
-записей журнала, стоящих до неё, собирает основной запрос сборщиком и
-сравнивает digest. Запросы пересказа собираются с инструкцией, которой в
-истории нет, — их digest не проверяется, но они считаются."""
+каждый запрос записью api-request с digest, тест кладёт записи журнала,
+стоящие до неё, в новое хранилище, читает их загрузчиком, собирает запрос
+сборщиком и сравнивает digest — и у основных запросов, и у запросов
+пересказа: их отрезок и инструкция тоже лежат в истории. Сценарии идут
+по всему, что входит в запрос: инструменты серверов MCP и их инструкции,
+отложенные инструменты и ToolSearch, скиллы, контекст приложения MCP Apps
+и команды, которые клиент исполнил сам, промпты серверов MCP; смена
+определения инструмента или формы запроса профиля между ходами пишется
+новой записью, и запрос по-прежнему повторяется из истории."""
 
 from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import AsyncIterator, Callable, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import aclosing
 from dataclasses import dataclass
 from pathlib import Path
+from typing import ClassVar
 
+import mcp_types as mt
 import pytest
 
-from boba.agent.attachments import Announced
+from boba.agent.attachments import ConnectedServer
 from boba.agent.builder import RequestBuilder
 from boba.agent.history import SessionId, StoredLine
-from boba.agent.profile import ModelProfile, ReasoningReturn
+from boba.agent.ids import IdMint, SystemClock
+from boba.agent.loader import HistoryLoader
+from boba.agent.mcp import ToolCard, ToolReplies, ToolReply
+from boba.agent.profile import ModelProfile, TurnLimits
 from boba.agent.queue import QueueEntry, QueueKind
-from boba.agent.records import ApiRequestRecord, Record, RecordCodec
-from boba.agent.session import Session
+from boba.agent.records import (
+    ApiRequestRecord,
+    AttachmentKind,
+    AttachmentRecord,
+    DeferredToolsDeltaAttachment,
+    DeferredToolsRecordAttachment,
+    McpInstructionsAttachment,
+    NoticeLevel,
+    PromptSnapshot,
+    ReasoningReturn,
+    Record,
+    RecordCodec,
+    ToolResultRecord,
+    ToolUseBlock,
+    TurnEndRecord,
+    TurnOutcome,
+)
+from boba.agent.skills import Skill, SkillTool
 from boba.agent.template import AgentTemplate, AgentTemplateFile
+from boba.agent.tools import ServerNotice, ToolSearchTool
+from boba.agent.writer import ClientCommand, RequestReplay, RequestReplayError
+from boba.core.mcp_names import McpToolNames
 from boba.history.jsonl import JsonlHistoryStore
 from boba.llm.chat import ChatRequest
 from boba.stand.agent import (
@@ -31,6 +60,8 @@ from boba.stand.agent import (
     Protocol,
     Served,
     StandAgents,
+    StandServer,
+    StandServers,
     StandToolName,
     StandTools,
 )
@@ -41,25 +72,93 @@ pytestmark = pytest.mark.anyio
 SESSION = SessionId(value="request-replay-1")
 
 
+APP_TEXT = "The user picked rows 3 and 5 in the table app."
+APP_DATA = '{\n  "selected": [\n    3,\n    5\n  ]\n}'
+INSTRUCTIONS = "Use the stand tools for lookups."
+SKILL = Skill(
+    name="deploy",
+    description="Use deploy for deploy work",
+    content="# deploy\n\nDo the deploy steps.",
+)
+REDESCRIBED = "stand tool lookup, described anew"
+
+
 @dataclass(frozen=True)
 class Scenario:
-    """Ход разговора сценария: что ставится в очередь по порядку, профиль
-    модели и сколько запросов должно получиться."""
+    """Ход разговора сценария: что ставится в очередь по порядку (и какие
+    команды клиент исполнил сам между ходами), профиль модели, части
+    агента и сколько запросов должно получиться. always_load None — все
+    инструменты стенда уходят полным определением."""
 
-    entries: Sequence[QueueEntry]
+    entries: Sequence[QueueEntry | ClientCommand]
     profile: Callable[[StandAgents], ModelProfile]
     main_requests: int
     summary_requests: int
+    always_load: Sequence[str] | None = None
+    skills: Sequence[Skill] = ()
+    servers: Sequence[ConnectedServer] = ()
 
 
 def prompt(text: str) -> QueueEntry:
     return QueueEntry(kind=QueueKind.PROMPT, text=text)
 
 
-def call(name: StandToolName, arguments: dict[str, object]) -> str:
-    spec = {"name": name.full, "arguments": arguments}
+def call(name: str, arguments: dict[str, object]) -> str:
+    spec = {"name": name, "arguments": arguments}
 
     return f"{ScenarioName.CALL.value} {json.dumps(spec)}"
+
+
+def search(name: StandToolName) -> str:
+    query = f"select:{name.full}"
+
+    return call(ToolSearchTool.NAME, {"query": query, "max_results": 5})
+
+
+def with_app_context() -> QueueEntry:
+    """Вопрос вкладки с контекстом приложения MCP Apps (ui/update-model-context:
+    текст и структурные данные — блоками только для модели) и ссылкой на
+    файл пользователя."""
+    link = mt.ResourceLink(
+        name="rows.csv", uri="file:///workspace/rows.csv", mime_type="text/csv"
+    )
+
+    return QueueEntry(
+        kind=QueueKind.PROMPT,
+        text=ScenarioName.ANSWER.value,
+        links=[link],
+        context=[APP_TEXT, APP_DATA],
+    )
+
+
+def app_command() -> ClientCommand:
+    """Окно приложения MCP, которое чат открыл сам и записал в историю."""
+    return ClientCommand(
+        message_id="app-command-1",
+        name=StandToolName.LOOKUP.full,
+        text=f"/{StandToolName.LOOKUP.full}",
+        outcome={"content": [{"type": "text", "text": "lookup done"}]},
+    )
+
+
+def with_server_prompt() -> QueueEntry:
+    """Вопрос командой промпта сервера MCP: текст prompts/get идёт
+    служебным контекстом вопроса."""
+    reply = mt.GetPromptResult(
+        description="Review the change",
+        messages=[
+            mt.PromptMessage(role="user", content=mt.TextContent(text="Review: X")),
+            mt.PromptMessage(
+                role="assistant", content=mt.TextContent(text="I will review X.")
+            ),
+        ],
+    )
+
+    return QueueEntry(
+        kind=QueueKind.PROMPT,
+        text=ScenarioName.ANSWER.value,
+        context=[ToolReplies().prompt(reply)],
+    )
 
 
 def openai(agents: StandAgents) -> ModelProfile:
@@ -88,8 +187,8 @@ SCENARIOS = {
     ),
     "tools": Scenario(
         entries=(
-            prompt(call(StandToolName.LOOKUP, {"key": "a"})),
-            prompt(call(StandToolName.BROKEN, {})),
+            prompt(call(StandToolName.LOOKUP.full, {"key": "a"})),
+            prompt(call(StandToolName.BROKEN.full, {})),
             prompt(ScenarioName.ANSWER.value),
         ),
         profile=openai,
@@ -113,7 +212,7 @@ SCENARIOS = {
     ),
     "auto_compaction": Scenario(
         entries=(
-            prompt(call(StandToolName.LARGE, {"size": 24_000, "fill": "x"})),
+            prompt(call(StandToolName.LARGE.full, {"size": 24_000, "fill": "x"})),
             prompt(ScenarioName.ANSWER.value),
             prompt(ScenarioName.ANSWER.value),
         ),
@@ -123,7 +222,7 @@ SCENARIOS = {
     ),
     "manual_compaction": Scenario(
         entries=(
-            prompt(call(StandToolName.LARGE, {"size": 2_000, "fill": "x"})),
+            prompt(call(StandToolName.LARGE.full, {"size": 2_000, "fill": "x"})),
             prompt(ScenarioName.ANSWER.value),
             QueueEntry(kind=QueueKind.COMPACT, text="Keep the rows."),
             prompt(ScenarioName.ANSWER.value),
@@ -132,7 +231,85 @@ SCENARIOS = {
         main_requests=4,
         summary_requests=1,
     ),
+    "mcp_tools": Scenario(
+        entries=(
+            prompt(
+                call(
+                    StandToolName.QUERY.full,
+                    {"connection": "pg", "statement": "select 1"},
+                )
+            ),
+            prompt(call(StandToolName.LOOKUP.full, {"key": "a"})),
+            prompt(ScenarioName.ANSWER.value),
+        ),
+        profile=openai,
+        main_requests=5,
+        summary_requests=0,
+        servers=(
+            ConnectedServer(name=StandServer.NAME.value, instructions=INSTRUCTIONS),
+        ),
+    ),
+    "tool_search": Scenario(
+        entries=(
+            prompt(search(StandToolName.LOOKUP)),
+            prompt(call(StandToolName.LOOKUP.full, {"key": "a"})),
+            prompt(ScenarioName.ANSWER.value),
+        ),
+        profile=openai,
+        main_requests=5,
+        summary_requests=0,
+        always_load=(),
+    ),
+    "skills": Scenario(
+        entries=(
+            prompt(call(SkillTool.NAME, {"skill": SKILL.name})),
+            prompt(ScenarioName.ANSWER.value),
+        ),
+        profile=openai,
+        main_requests=3,
+        summary_requests=0,
+        skills=(SKILL,),
+    ),
+    "app_context": Scenario(
+        entries=(
+            with_app_context(),
+            app_command(),
+            prompt(ScenarioName.ANSWER.value),
+        ),
+        profile=openai,
+        main_requests=2,
+        summary_requests=0,
+    ),
+    "server_prompt": Scenario(
+        entries=(with_server_prompt(), prompt(ScenarioName.ANSWER.value)),
+        profile=system_turns,
+        main_requests=2,
+        summary_requests=0,
+    ),
 }
+
+
+class RedescribedTools(StandTools):
+    """Сервер стенда, который посреди сессии меняет описание lookup, не
+    меняя имени."""
+
+    def redescribe(self) -> None:
+        cards: list[ToolCard] = []
+        for card in self._cards:
+            if card.name != StandToolName.LOOKUP.full:
+                cards.append(card)
+                continue
+
+            cards.append(
+                ToolCard(
+                    name=card.name,
+                    description=REDESCRIBED,
+                    parameters=card.parameters,
+                    hints=card.hints,
+                )
+            )
+
+        self._cards = cards
 
 
 @pytest.fixture
@@ -155,23 +332,26 @@ async def agents(server: FakeServer, tmp_path: Path) -> AsyncIterator[StandAgent
 
 
 class Replay:
-    """Сборка основного запроса по записям журнала до записи api-request."""
+    """Сборка запроса по записям журнала до записи api-request: записи
+    ложатся в отдельное хранилище, историю читает загрузчик — так же, как её
+    прочтёт возобновление."""
 
-    def __init__(self, profile: ModelProfile) -> None:
-        self._templates = AgentTemplate()
-        self._builder = RequestBuilder(profile, self._templates)
-        self._instruction = self._templates.read(
+    def __init__(self, root: Path) -> None:
+        self._root = root
+        self._builder = RequestBuilder()
+        self._instruction = AgentTemplate().read(
             AgentTemplateFile.SUMMARIZE_INSTRUCTION
         )
 
-    def digest(self, before: Sequence[Record]) -> str:
-        session = Session(SESSION)
-        session.restore(before)
-        conversation = session.conversation()
-        snapshot = Announced(conversation).snapshot()
-        assert snapshot is not None
+    async def digest(self, before: Sequence[Record], index: int) -> str:
+        store = JsonlHistoryStore(self._root / f"replay-{index}")
+        lease = await store.acquire(SESSION)
+        await store.append(lease, before)
+        await store.release(lease)
+        loader = HistoryLoader(store, AgentTemplate(), IdMint(), SystemClock(), "0")
+        history = await loader.stored(SESSION)
 
-        return self._digest_of(self._builder.build(conversation, snapshot))
+        return self._digest_of(self._builder.build(history))
 
     def is_summary(self, record: ApiRequestRecord) -> bool:
         """Запрос пересказа: последнее сообщение несёт инструкцию пересказа."""
@@ -199,6 +379,74 @@ async def journal(root: Path) -> list[Record]:
     return records
 
 
+async def checked(records: Sequence[Record], root: Path) -> tuple[int, int]:
+    """Каждый запрос журнала — основной и пересказа — собран заново из
+    записей до него с тем же digest; итог — число основных запросов и
+    запросов пересказа."""
+    replay = Replay(root)
+    main = 0
+    summaries = 0
+    for index, record in enumerate(records):
+        if not isinstance(record, ApiRequestRecord):
+            continue
+
+        assert await replay.digest(records[:index], index) == record.digest, index
+        if replay.is_summary(record):
+            summaries += 1
+            continue
+
+        main += 1
+
+    return main, summaries
+
+
+def attachments(
+    records: Sequence[Record], kind: AttachmentKind
+) -> list[AttachmentRecord]:
+    found: list[AttachmentRecord] = []
+    for record in records:
+        if not isinstance(record, AttachmentRecord):
+            continue
+
+        if record.attachment.type != kind:
+            continue
+
+        found.append(record)
+
+    return found
+
+
+def snapshots(records: Sequence[Record]) -> list[PromptSnapshot]:
+    found: list[PromptSnapshot] = []
+    for record in attachments(records, AttachmentKind.PROMPT_SNAPSHOT):
+        assert isinstance(record.attachment, PromptSnapshot)
+        found.append(record.attachment)
+
+    return found
+
+
+def definitions(records: Sequence[Record]) -> list[DeferredToolsRecordAttachment]:
+    found: list[DeferredToolsRecordAttachment] = []
+    for record in attachments(records, AttachmentKind.DEFERRED_TOOLS_RECORD):
+        assert isinstance(record.attachment, DeferredToolsRecordAttachment)
+        found.append(record.attachment)
+
+    return found
+
+
+def described(request: dict[str, object], name: str) -> str:
+    """Описание инструмента name в теле запроса к модели."""
+    tools = request["tools"]
+    assert isinstance(tools, list)
+    for tool in tools:
+        function = tool["function"]
+        if function["name"] == name:
+            return function["description"]
+
+    msg = f"request tools: expected {name!r} among them"
+    raise AssertionError(msg)
+
+
 class TestRequestsFromHistory:
     @pytest.mark.parametrize("name", list(SCENARIOS))
     async def test_every_request_is_rebuilt_from_the_records_before_it(
@@ -206,32 +454,450 @@ class TestRequestsFromHistory:
     ) -> None:
         scenario = SCENARIOS[name]
         profile = scenario.profile(agents)
+        servers = None
+        if scenario.servers:
+            servers = StandServers(scenario.servers)
+
         served = Served(
-            agents.agent(profile, Collected(), tools=StandTools(), record_requests=True)
+            agents.agent(
+                profile,
+                Collected(),
+                tools=StandTools(),
+                servers=servers,
+                skills=scenario.skills,
+                always_load=scenario.always_load,
+                record_requests=True,
+            )
         )
         await served.open(SESSION, resume=False)
         for entry in scenario.entries:
+            if isinstance(entry, ClientCommand):
+                await served.agent.record_command(entry)
+                continue
+
             served.agent.queue.enqueue(entry)
             await served.agent.settled()
 
         await served.close()
 
         records = await journal(tmp_path / "history")
-        replay = Replay(profile)
-        main = 0
-        summaries = 0
-        for index, record in enumerate(records):
-            if not isinstance(record, ApiRequestRecord):
-                continue
-
-            if replay.is_summary(record):
-                summaries += 1
-                continue
-
-            main += 1
-            assert replay.digest(records[:index]) == record.digest, (name, index)
-
-        assert (main, summaries) == (
+        assert await checked(records, tmp_path / "replay") == (
             scenario.main_requests,
             scenario.summary_requests,
+        ), name
+
+
+class TestDefinitionChanges:
+    async def test_a_tool_described_anew_is_a_new_snapshot(
+        self, server: FakeServer, agents: StandAgents, tmp_path: Path
+    ) -> None:
+        """Сервер сменил описание инструмента с полным определением, не
+        меняя имени: следующий ход пишет новый снимок с прежним системным
+        промптом, и запрос несёт новое описание."""
+        profile = openai(agents)
+        tools = RedescribedTools()
+        served = Served(
+            agents.agent(profile, Collected(), tools=tools, record_requests=True)
         )
+        await served.open(SESSION, resume=False)
+        served.agent.queue.enqueue(prompt(call(StandToolName.LOOKUP.full, {})))
+        await served.agent.settled()
+        tools.redescribe()
+        served.agent.queue.enqueue(prompt(ScenarioName.ANSWER.value))
+        await served.agent.settled()
+        await served.close()
+
+        records = await journal(tmp_path / "history")
+        written = snapshots(records)
+        assert len(written) == 2
+        assert written[1].system_prompt == written[0].system_prompt
+        lookup = StandToolName.LOOKUP.full
+        requests = server.requests()
+        assert (
+            described(requests[1], lookup) == f"stand tool {StandToolName.LOOKUP.value}"
+        )
+        assert described(requests[-1], lookup) == REDESCRIBED
+        assert await checked(records, tmp_path / "replay") == (3, 0)
+
+    async def test_a_new_request_shape_of_the_profile_is_a_new_snapshot(
+        self, server: FakeServer, agents: StandAgents, tmp_path: Path
+    ) -> None:
+        """Смена профиля между ходами меняет форму запроса — подачу
+        вложений, возврат рассуждений и сэмплинг: она пишется новым
+        снимком, и сборщик берёт её из снимка, а не из профиля."""
+        first = openai(agents)
+        served = Served(
+            agents.agent(first, Collected(), tools=StandTools(), record_requests=True)
+        )
+        await served.open(SESSION, resume=False)
+        served.agent.queue.enqueue(prompt(ScenarioName.THINKING_ANSWER.value))
+        await served.agent.settled()
+        shaped = agents.profile(
+            Protocol.OPENAI, system_turns=True, reasoning=ReasoningReturn.ALWAYS
+        )
+        chat = shaped.chat.model_copy(update={"sampling": {"temperature": 0.2}})
+        second = shaped.model_copy(update={"chat": chat})
+        served.agent.set_model(second, agents.model(second))
+        served.agent.queue.enqueue(prompt(ScenarioName.ANSWER.value))
+        await served.agent.settled()
+        await served.close()
+
+        records = await journal(tmp_path / "history")
+        written = snapshots(records)
+        assert [(s.system_turns, s.reasoning_return, s.sampling) for s in written] == [
+            (False, ReasoningReturn.NEVER, {}),
+            (True, ReasoningReturn.ALWAYS, {"temperature": 0.2}),
+        ]
+        assert server.requests()[-1]["temperature"] == 0.2
+        messages = server.requests()[-1]["messages"]
+        assert isinstance(messages, list)
+        assert [m["role"] for m in messages].count("system") > 1
+        assert await checked(records, tmp_path / "replay") == (2, 0)
+
+    async def test_a_search_records_what_it_loaded_before_any_request(
+        self, server: FakeServer, agents: StandAgents, tmp_path: Path
+    ) -> None:
+        """ToolSearch загрузил lookup, и ход кончился раньше следующего
+        запроса: определение уже записано тем, каким его нашёл поиск. При
+        возобновлении сервер описывает lookup иначе — это новая запись, и
+        запрос собирается из истории."""
+        profile = openai(agents)
+        limits = TurnLimits(
+            max_turns=1, retry_delays_sec=(0.0, 0.0, 0.0), tool_result_window_share=1.0
+        )
+        served = Served(
+            agents.agent(
+                profile,
+                Collected(),
+                limits=limits,
+                tools=StandTools(),
+                always_load=(),
+                record_requests=True,
+            )
+        )
+        await served.open(SESSION, resume=False)
+        served.agent.queue.enqueue(prompt(search(StandToolName.LOOKUP)))
+        await served.agent.settled()
+        await served.close()
+
+        cut = await journal(tmp_path / "history")
+        ends = [r for r in cut if isinstance(r, TurnEndRecord)]
+        assert [end.outcome for end in ends] == [TurnOutcome.MAX_TURNS]
+        results = [r for r in cut if isinstance(r, ToolResultRecord)]
+        assert len(results) == 1
+        loaded = definitions(cut[cut.index(results[0]) :])
+        assert len(loaded) == 1
+        assert [(t.name, t.description) for t in loaded[0].entries] == [
+            (StandToolName.LOOKUP.full, f"stand tool {StandToolName.LOOKUP.value}")
+        ]
+
+        tools = RedescribedTools()
+        tools.redescribe()
+        resumed = Served(
+            agents.agent(
+                profile,
+                Collected(),
+                tools=tools,
+                always_load=(),
+                record_requests=True,
+            )
+        )
+        await resumed.open(SESSION, resume=True)
+        resumed.agent.queue.enqueue(prompt(ScenarioName.ANSWER.value))
+        await resumed.agent.settled()
+        await resumed.close()
+
+        records = await journal(tmp_path / "history")
+        recorded = definitions(records)
+        assert [t.description for t in recorded[-1].entries] == [REDESCRIBED]
+        assert len(recorded) == 2
+        assert (
+            described(server.requests()[-1], StandToolName.LOOKUP.full) == REDESCRIBED
+        )
+        assert await checked(records, tmp_path / "replay") == (2, 0)
+
+
+class TestReplayCheck:
+    async def test_a_request_unlike_the_journal_names_the_part(
+        self, server: FakeServer, agents: StandAgents, tmp_path: Path
+    ) -> None:
+        """Сверка перед отправкой ловит запрос, который зависит от того, чего
+        нет в истории: ошибка называет разошедшуюся часть тела."""
+        served = Served(agents.agent(openai(agents), Collected()))
+        await served.open(SESSION, resume=False)
+        served.agent.queue.enqueue(prompt(ScenarioName.ANSWER.value))
+        await served.agent.settled()
+        await served.close()
+
+        store = JsonlHistoryStore(tmp_path / "history")
+        loader = HistoryLoader(store, AgentTemplate(), IdMint(), SystemClock(), "0")
+        replay = RequestReplay(loader, True)
+        built = RequestBuilder().build(await loader.stored(SESSION))
+        await replay.check(SESSION, built)
+
+        drifted = built.model_copy(update={"sampling": {"temperature": 0.7}})
+        with pytest.raises(RequestReplayError, match=r"request\.sampling\.temperature"):
+            await replay.check(SESSION, drifted)
+
+
+class RenamedServer(StandTools):
+    """Сервер стенда под именем, которое тест меняет посреди сессии: имена
+    инструментов модели — `mcp__<имя>__<инструмент>`."""
+
+    def __init__(self, name: str) -> None:
+        super().__init__()
+        self._stand = list(self._cards)
+        self._names = McpToolNames()
+        self.rename(name)
+
+    def rename(self, name: str) -> None:
+        cards: list[ToolCard] = []
+        for card in self._stand:
+            tool = self._names.tool_of(card.name)
+            cards.append(
+                ToolCard(
+                    name=self._names.full(name, tool),
+                    description=card.description,
+                    parameters=card.parameters,
+                    hints=card.hints,
+                )
+            )
+
+        self._cards = cards
+
+
+class TestServerRenamed:
+    OLD: ClassVar[str] = "boba_general"
+    NEW: ClassVar[str] = "aid_general"
+
+    async def test_a_renamed_server_reaches_the_model_through_history_only(
+        self, server: FakeServer, agents: StandAgents, tmp_path: Path
+    ) -> None:
+        """Сервер boba_general переименован в aid_general посреди сессии:
+        история получает разницу — старые имена инструментов (и с полным
+        определением, и отложенные) сняты, новые объявлены, инструкции
+        старого сервера сняты, нового — объявлены; следующий запрос несёт
+        только новые имена и повторяется из истории байт в байт."""
+        names = McpToolNames()
+        tools = RenamedServer(self.OLD)
+        servers = StandServers(
+            [ConnectedServer(name=self.OLD, instructions=INSTRUCTIONS)]
+        )
+        inline = names.full(self.OLD, StandToolName.LOOKUP.value)
+        served = Served(
+            agents.agent(
+                openai(agents),
+                Collected(),
+                tools=tools,
+                servers=servers,
+                always_load=(inline,),
+                record_requests=True,
+            )
+        )
+        await served.open(SESSION, resume=False)
+        note = names.full(self.OLD, StandToolName.NOTE.value)
+        query = f"select:{note}"
+        served.agent.queue.enqueue(
+            prompt(call(ToolSearchTool.NAME, {"query": query, "max_results": 5}))
+        )
+        await served.agent.settled()
+        before = len(await journal(tmp_path / "history"))
+
+        tools.rename(self.NEW)
+        servers.connected_servers = [
+            ConnectedServer(name=self.NEW, instructions=INSTRUCTIONS)
+        ]
+        served.agent.queue.enqueue(prompt(ScenarioName.ANSWER.value))
+        await served.agent.settled()
+        await served.close()
+
+        records = await journal(tmp_path / "history")
+        after = records[before:]
+        deltas = attachments(after, AttachmentKind.DEFERRED_TOOLS_DELTA)
+        assert len(deltas) == 1
+        delta = deltas[0].attachment
+        assert isinstance(delta, DeferredToolsDeltaAttachment)
+        old_prefix = names.server_prefix(self.OLD)
+        new_prefix = names.server_prefix(self.NEW)
+        assert inline in delta.removed_names
+        assert note in delta.removed_names
+        assert all(n.startswith(old_prefix) for n in delta.removed_names)
+        assert all(n.startswith(new_prefix) for n in delta.added_names)
+        assert len(delta.added_names) == len(StandToolName)
+        renewed = snapshots(after)
+        assert len(renewed) == 1
+        assert [t.name for t in renewed[0].tools if t.name.startswith("mcp__")] == []
+        announced = attachments(after, AttachmentKind.MCP_INSTRUCTIONS_DELTA)
+        assert len(announced) == 1
+        instructions = announced[0].attachment
+        assert isinstance(instructions, McpInstructionsAttachment)
+        assert list(instructions.added_names) == [self.NEW]
+        assert list(instructions.removed_names) == [self.OLD]
+
+        last = server.requests()[-1]
+        sent_tools = last["tools"]
+        assert isinstance(sent_tools, list)
+        sent_names = [tool["function"]["name"] for tool in sent_tools]
+        assert not [n for n in sent_names if self.OLD in n], sent_names
+        assert await checked(records, tmp_path / "replay") == (3, 0)
+
+
+class FlakyServer(StandTools):
+    """Сервер стенда, который пропадает и возвращается с другим набором:
+    отключённый не предлагает инструментов, как вход процесса агента;
+    вызов sleep посреди хода снимает с сервера инструмент large — так
+    сервер меняет список уведомлением, пока ход идёт."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.connected = True
+
+    def tools(self) -> Sequence[ToolCard]:
+        if not self.connected:
+            return ()
+
+        return self._cards
+
+    def without(self, name: StandToolName) -> None:
+        cards: list[ToolCard] = []
+        for card in self._cards:
+            if card.name == name.full:
+                continue
+
+            cards.append(card)
+
+        self._cards = cards
+
+    async def _run(self, call: ToolUseBlock) -> ToolReply:
+        if call.name == StandToolName.SLEEP.full:
+            self.without(StandToolName.LARGE)
+
+        return await super()._run(call)
+
+
+def tool_names(request: Mapping[str, object]) -> list[str]:
+    tools = request["tools"]
+    assert isinstance(tools, list)
+    names: list[str] = []
+    for tool in tools:
+        names.append(tool["function"]["name"])
+
+    return names
+
+
+class TestServerReconnected:
+    async def test_every_reconnection_is_compared_with_history(
+        self, server: FakeServer, agents: StandAgents, tmp_path: Path
+    ) -> None:
+        """Сервер оборвался и вернулся с другим набором, потом сменил список
+        посреди хода: каждый раз агент сверяет объявленное сервером с
+        историей, пишет разницу инструментов и инструкций и собирает
+        следующий запрос по ней; переподключение без разницы записей не
+        добавляет. Каждый запрос повторяется из истории."""
+        flaky = FlakyServer()
+        connected = ConnectedServer(
+            name=StandServer.NAME.value, instructions=INSTRUCTIONS
+        )
+        servers = StandServers([connected])
+        served = Served(
+            agents.agent(
+                openai(agents),
+                Collected(),
+                tools=flaky,
+                servers=servers,
+                record_requests=True,
+            )
+        )
+        await served.open(SESSION, resume=False)
+        root = tmp_path / "history"
+        served.agent.queue.enqueue(prompt(call(StandToolName.LOOKUP.full, {})))
+        await served.agent.settled()
+
+        flaky.connected = False
+        servers.connected_servers = []
+        servers.pending_notices.append(
+            ServerNotice(level=NoticeLevel.WARNING, text="stand dropped", detail="")
+        )
+        dropped_at = len(await journal(root))
+        served.agent.queue.enqueue(prompt(ScenarioName.ANSWER.value))
+        await served.agent.settled()
+
+        flaky.connected = True
+        flaky.without(StandToolName.DROP)
+        servers.connected_servers = [connected]
+        servers.pending_notices.append(
+            ServerNotice(level=NoticeLevel.INFO, text="stand is back", detail="")
+        )
+        back_at = len(await journal(root))
+        served.agent.queue.enqueue(prompt(ScenarioName.ANSWER.value))
+        await served.agent.settled()
+
+        same_at = len(await journal(root))
+        servers.pending_notices.append(
+            ServerNotice(level=NoticeLevel.INFO, text="stand is back", detail="")
+        )
+        served.agent.queue.enqueue(prompt(ScenarioName.ANSWER.value))
+        await served.agent.settled()
+
+        midturn_at = len(await journal(root))
+        served.agent.queue.enqueue(
+            prompt(call(StandToolName.SLEEP.full, {"seconds": 0}))
+        )
+        await served.agent.settled()
+        await served.close()
+
+        records = await journal(root)
+        self._check_history(records, (dropped_at, back_at, same_at, midturn_at))
+        self._check_requests(server.requests())
+        assert await checked(records, tmp_path / "replay") == (7, 0)
+
+    def _check_history(
+        self, records: Sequence[Record], marks: tuple[int, int, int, int]
+    ) -> None:
+        """Разница после обрыва, после возвращения с другим набором, ни одной
+        после возвращения без перемен и одна — после смены списка посреди
+        хода."""
+        dropped_at, back_at, same_at, midturn_at = marks
+        stand = StandServer.NAME.value
+        dropped = self._deltas(records[dropped_at:back_at])
+        assert len(dropped) == 1
+        assert len(dropped[0].removed_names) == len(StandToolName)
+        assert self._instructions(records[dropped_at:back_at]) == [((), (stand,))]
+        back = self._deltas(records[back_at:same_at])
+        assert len(back) == 1
+        assert StandToolName.DROP.full not in back[0].surfaced_names
+        assert StandToolName.LOOKUP.full in back[0].surfaced_names
+        assert self._instructions(records[back_at:same_at]) == [((stand,), ())]
+        assert self._deltas(records[same_at:midturn_at]) == []
+        assert self._instructions(records[same_at:midturn_at]) == []
+        midturn = self._deltas(records[midturn_at:])
+        assert [list(d.removed_names) for d in midturn] == [[StandToolName.LARGE.full]]
+
+    @staticmethod
+    def _check_requests(requests: Sequence[Mapping[str, object]]) -> None:
+        assert not [n for n in tool_names(requests[2]) if n.startswith("mcp__")]
+        assert StandToolName.DROP.full not in tool_names(requests[3])
+        assert StandToolName.LOOKUP.full in tool_names(requests[3])
+        assert StandToolName.LARGE.full in tool_names(requests[5])
+        assert StandToolName.LARGE.full not in tool_names(requests[6])
+
+    @staticmethod
+    def _deltas(records: Sequence[Record]) -> list[DeferredToolsDeltaAttachment]:
+        found: list[DeferredToolsDeltaAttachment] = []
+        for record in attachments(records, AttachmentKind.DEFERRED_TOOLS_DELTA):
+            assert isinstance(record.attachment, DeferredToolsDeltaAttachment)
+            found.append(record.attachment)
+
+        return found
+
+    @staticmethod
+    def _instructions(
+        records: Sequence[Record],
+    ) -> list[tuple[tuple[str, ...], tuple[str, ...]]]:
+        found: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
+        for record in attachments(records, AttachmentKind.MCP_INSTRUCTIONS_DELTA):
+            delta = record.attachment
+            assert isinstance(delta, McpInstructionsAttachment)
+            found.append((tuple(delta.added_names), tuple(delta.removed_names)))
+
+        return found

@@ -1,4 +1,10 @@
-"""Сборщик запроса: разговор и снимок промпта → `ChatRequest` порта модели.
+"""Сборщик запроса: история сессии → `ChatRequest` порта модели.
+
+Единственный вход — StoredHistory: разговор из записей, которые уже лежат в
+хранилище. Ни конфига, ни каталога инструментов, ни часов, ни файлов
+сборщик не знает — тест зависимостей пакета держит его импорты в пределах
+записей, истории и типов тела запроса. Разговор, который кончается записью
+запроса пересказа, даёт запрос пересказа её отрезка.
 
 Алгоритм — docs/prompt_assembly/specs/06_messages_algorithm.md, доведённый до
 формы `ChatTurn` (план, раздел 5.12). Что вносит в запрос каждая запись и
@@ -7,13 +13,19 @@
 склейка ответа по `message.id`, слияние
 соседних сообщений пользователя, два режима подачи системных вложений,
 починка пар вызов — результат, чистка и защита от подделки служебного
-блока (TagShield у текстов пользователя и результатов).
+блока (RequestTexts у текстов пользователя и результатов).
+Профиль модели — подача вложений, возврат рассуждений, сэмплинг — из
+снимка: запрос повторяется по истории байт в байт, конфига сборщик не знает.
 Инструменты — из снимка, по имени, затем загруженные отложенные из истории
 в порядке загрузки с пометкой deferred (docs/prompt_assembly/specs/
 07_system_tools.md, раздел 2.3): провайдер без родных отложенных
 инструментов дописывает их в конец списка, начало списка не меняется.
 Ссылки tool_reference результата уходят строками текста и списком
 tool_references сообщения роли tool.
+
+Ошибки:
+RequestBuildError — в истории нет снимка промпта: запрос не из чего собрать.
+RecordError — запрос пересказа называет отрезок, которого нет в разговоре.
 """
 
 from __future__ import annotations
@@ -22,25 +34,28 @@ from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from typing import ClassVar
 
-from boba.agent.attachments import Announced
-from boba.agent.profile import ModelProfile, ReasoningReturn
+from boba.agent.history import StoredHistory
 from boba.agent.records import (
     AssistantBlock,
     ChainRecord,
     Placement,
     PromptSnapshot,
+    ReasoningReturn,
     RequestFeed,
+    RequestTexts,
     SnapshotTool,
     TextBlock,
     ThinkingBlock,
     ToolResultBlock,
     ToolUseBlock,
 )
-from boba.agent.tags import AgentTag, TagShield
-from boba.agent.template import AgentTemplate, AgentTemplateFile
 from boba.llm.chat import ChatRequest, ChatRole, ChatTurn, ToolCall, ToolSpec
 
-__all__ = ["RequestBuilder", "RequestTexts"]
+__all__ = ["RequestBuildError", "RequestBuilder"]
+
+
+class RequestBuildError(Exception):
+    """Из истории не собрать запрос к модели."""
 
 
 @dataclass
@@ -81,40 +96,6 @@ class SystemTurn:
 Turn = UserTurn | AssistantTurn | SystemTurn
 
 
-class RequestTexts:
-    """Тексты записи, какими их видит модель: слова пользователя с
-    обезвреженными служебными тегами и результат инструмента — строки о
-    загруженных отложенных инструментах, обезвреженный текст, у ошибки —
-    обёртка tool_use_error. Им пользуются сборщик запроса и оценка окна,
-    чтобы окно считалось по тому же тексту, что уходит модели."""
-
-    TEXT_JOIN: ClassVar[str] = "\n"
-
-    def __init__(self, templates: AgentTemplate) -> None:
-        self._templates = templates
-        self._shield = TagShield([AgentTag.SYSTEM_REMINDER, AgentTag.TOOL_USE_ERROR])
-
-    def user(self, text: str) -> str:
-        return self._shield.shield(text)
-
-    def result(self, result: ToolResultBlock) -> str:
-        lines: list[str] = []
-        for name in result.references():
-            lines.append(
-                self._templates.read(AgentTemplateFile.TOOL_LOADED).format(name=name)
-            )
-
-        text = self._shield.shield(result.text())
-        if text:
-            lines.append(text)
-
-        joined = self.TEXT_JOIN.join(lines)
-        if result.is_error:
-            return AgentTag.TOOL_USE_ERROR.wrap(joined)
-
-        return joined
-
-
 class Feed(RequestFeed):
     """Реализация RequestFeed сборщика: накопитель сообщений в порядке
     подачи (шаги 4–5 разбора 06). Записи отдают сюда свои части, накопитель
@@ -137,7 +118,7 @@ class Feed(RequestFeed):
 
     def reminder(self, text: str) -> None:
         if self._system_turns:
-            self.pending_system.append(AgentTag.SYSTEM_REMINDER.unwrap_block(text))
+            self.pending_system.append(self._texts.system(text))
             return
 
         self.last_user().reminders.append(text)
@@ -213,26 +194,42 @@ class Feed(RequestFeed):
 
 
 class RequestBuilder:
-    """Строит `ChatRequest` из разговора и действующего снимка."""
+    """Строит `ChatRequest` по истории сессии: основной запрос хода и запрос
+    пересказа сжатия. Создаёт цикл хода без параметров — всё, из чего
+    собирается запрос, лежит в истории."""
 
     SECTION_JOIN: ClassVar[str] = "\n\n"
     TEXT_JOIN: ClassVar[str] = "\n"
 
-    def __init__(self, profile: ModelProfile, templates: AgentTemplate) -> None:
-        self._profile = profile
-        self._templates = templates
-        self._texts = RequestTexts(templates)
+    def __init__(self) -> None:
+        self._texts = RequestTexts()
 
-    def build(
-        self, conversation: Sequence[ChainRecord], snapshot: PromptSnapshot
-    ) -> ChatRequest:
-        feed = Feed(self._texts, self._profile.system_turns)
-        for record in self._reordered(conversation):
+    def build(self, history: StoredHistory) -> ChatRequest:
+        """Запрос по истории: основной либо, если разговор кончается записью
+        запроса пересказа, пересказ её отрезка с её пометками и инструкцией;
+        системный промпт, профиль и инструменты — у обоих из снимка и
+        записей всего разговора.
+
+        Ошибки:
+        RequestBuildError — в истории нет снимка промпта.
+        RecordError — запрос пересказа называет отрезок, которого нет.
+        """
+        snapshot = history.announced.snapshot()
+        if snapshot is None:
+            msg = (
+                "The request to the model cannot be built: the stored history "
+                f"of {len(history.conversation)} record(s) holds no prompt "
+                "snapshot, and the request is built from history only."
+            )
+            raise RequestBuildError(msg)
+
+        feed = Feed(self._texts, snapshot.system_turns)
+        for record in self._reordered(self._sent(history.conversation)):
             record.to_request(feed)
 
         feed.flush_system()
-        turns = self._repaired(self._cleaned(feed.turns))
-        self._mark_reasoning(turns)
+        turns = self._cleaned(self._repaired(feed.turns))
+        self._mark_reasoning(turns, snapshot.reasoning_return)
 
         messages: list[ChatTurn] = [
             ChatTurn(
@@ -245,24 +242,23 @@ class RequestBuilder:
 
         return ChatRequest(
             messages=messages,
-            tools=list(self._tools(conversation, snapshot)),
-            sampling=dict(self._profile.chat.sampling),
+            tools=list(self._tools(history, snapshot)),
+            sampling=dict(snapshot.sampling),
             stream=True,
         )
 
-    def summary(
-        self,
-        sent: Sequence[ChainRecord],
-        conversation: Sequence[ChainRecord],
-        snapshot: PromptSnapshot,
-    ) -> ChatRequest:
-        """Запрос пересказа: сообщения — отрезок с инструкцией, инструменты —
-        те же, что у основного запроса по всему разговору: загруженные
-        отложенные записаны и в отброшенных лестницей группах, и в хвосте."""
-        request = self.build(sent, snapshot)
-        tools = list(self._tools(conversation, snapshot))
+    @staticmethod
+    def _sent(conversation: Sequence[ChainRecord]) -> Sequence[ChainRecord]:
+        """Записи, которые идут сообщениями: весь разговор либо записи
+        запроса пересказа, которым разговор кончается."""
+        if not conversation:
+            return conversation
 
-        return request.model_copy(update={"tools": tools})
+        asked = conversation[-1].summary_request()
+        if asked is None:
+            return conversation
+
+        return asked.sent(conversation)
 
     def _reordered(self, records: Sequence[ChainRecord]) -> list[ChainRecord]:
         """Вложения встают сразу после ближайшего выше ответа или результата
@@ -287,9 +283,9 @@ class RequestBuilder:
         return reversed_out
 
     def _cleaned(self, turns: Sequence[Turn]) -> list[Turn]:
-        """Пустые ответы и осиротевшие рассуждения — по таблице разбора 06, §6."""
+        """Ответы без текста и вызовов — пустые и с одними рассуждениями —
+        не уходят: заглушек сборщик не пишет."""
         kept: list[Turn] = []
-        last_assistant = self._last_assistant(turns)
         for turn in turns:
             if not isinstance(turn, AssistantTurn):
                 kept.append(turn)
@@ -298,31 +294,22 @@ class RequestBuilder:
             has_text = bool(self.SECTION_JOIN.join(turn.texts).strip())
             if has_text or turn.calls:
                 kept.append(turn)
-                continue
-
-            if turn is last_assistant and turn.thinking:
-                text = self._templates.read(AgentTemplateFile.NO_MESSAGE_CONTENT)
-                turn.texts = [text]
-                kept.append(turn)
 
         return kept
 
-    def _last_assistant(self, turns: Sequence[Turn]) -> AssistantTurn | None:
-        for turn in reversed(turns):
-            if isinstance(turn, AssistantTurn):
-                return turn
-
-        return None
-
     def _repaired(self, turns: Sequence[Turn]) -> list[Turn]:
-        """Пары вызов — результат: вызову без результата — заглушка, результат
-        без вызова и повторный идентификатор выбрасываются."""
+        """Пары вызов — результат: вызов без результата снимается с ответа,
+        результат без вызова и повторный идентификатор выбрасываются.
+        Результат каждому вызову пишут ход и загрузчик, так что снимать
+        приходится только в испорченной истории."""
         repaired: list[Turn] = []
         pending: dict[str, ToolUseBlock] = {}
+        caller: AssistantTurn | None = None
         for turn in turns:
             if isinstance(turn, AssistantTurn):
-                self._close_pending(repaired, pending)
+                self._drop_pending(caller, pending)
                 pending = self._unique_calls(turn)
+                caller = turn
                 repaired.append(turn)
                 continue
 
@@ -334,7 +321,7 @@ class RequestBuilder:
 
             repaired.append(turn)
 
-        self._close_pending(repaired, pending)
+        self._drop_pending(caller, pending)
 
         return repaired
 
@@ -363,35 +350,28 @@ class RequestBuilder:
 
         return known
 
-    def _close_pending(
-        self, repaired: list[Turn], pending: dict[str, ToolUseBlock]
+    def _drop_pending(
+        self, caller: AssistantTurn | None, pending: dict[str, ToolUseBlock]
     ) -> None:
-        """Вызовы без результата закрываются заглушкой первой среди результатов."""
+        """Вызовы ответа caller, оставшиеся без результата, снимаются с него."""
+        if caller is None:
+            return
+
         if not pending:
             return
 
-        stubs: list[ToolResultBlock] = []
-        text = self._templates.read(AgentTemplateFile.TOOL_RESULT_MISSING)
-        for call_id in pending:
-            stub = ToolResultBlock(tool_use_id=call_id, content=text, is_error=True)
-            stubs.append(stub)
+        answered: list[ToolUseBlock] = []
+        for call in caller.calls:
+            if call.id in pending:
+                continue
 
+            answered.append(call)
+
+        caller.calls = answered
         pending.clear()
-        if repaired and isinstance(repaired[-1], UserTurn):
-            repaired[-1].results = [*stubs, *repaired[-1].results]
-            return
 
-        position = len(repaired)
-        for index in range(len(repaired) - 1, -1, -1):
-            if isinstance(repaired[index], AssistantTurn):
-                position = index + 1
-                break
-
-        repaired.insert(position, UserTurn(results=stubs))
-
-    def _mark_reasoning(self, turns: Sequence[Turn]) -> None:
-        """Какие ответы уходят с рассуждениями — по `reasoning_return` профиля."""
-        policy = self._profile.reasoning_return
+    def _mark_reasoning(self, turns: Sequence[Turn], policy: ReasoningReturn) -> None:
+        """Какие ответы уходят с рассуждениями — по `reasoning_return` снимка."""
         if policy is ReasoningReturn.NEVER:
             return
 
@@ -468,7 +448,7 @@ class RequestBuilder:
             yield ChatTurn(role=ChatRole.USER, parts=texts)
 
     def _tools(
-        self, conversation: Sequence[ChainRecord], snapshot: PromptSnapshot
+        self, history: StoredHistory, snapshot: PromptSnapshot
     ) -> Iterator[ToolSpec]:
         for tool in sorted(snapshot.tools, key=lambda item: item.name):
             yield ToolSpec(
@@ -477,7 +457,7 @@ class RequestBuilder:
                 parameters=dict(tool.schema_),
             )
 
-        for tool in Announced(conversation).deferred_loaded():
+        for tool in history.announced.deferred_loaded():
             yield ToolSpec(
                 name=tool.name,
                 description=tool.description,

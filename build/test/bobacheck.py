@@ -315,7 +315,7 @@ class AgentTurn:
         provider = {
             "kind": "openai",
             "baseUrl": f"http://127.0.0.1:{port}/v1",
-            "apiKey": "check",
+            "auth": {"method": "bearer", "token": "check"},
         }
         model = {
             "provider": provider,

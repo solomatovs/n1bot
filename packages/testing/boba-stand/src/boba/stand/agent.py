@@ -13,7 +13,7 @@ import asyncio
 from collections.abc import Mapping, Sequence
 from enum import StrEnum
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import uvicorn
 from pydantic import SecretStr
@@ -24,13 +24,13 @@ from boba.agent.events import AgentEvent, ControlRequestEvent, EventSink
 from boba.agent.history import HistoryStore, SessionId
 from boba.agent.ids import Clock, SystemClock
 from boba.agent.mcp import ToolCard, ToolHints, ToolReplies, ToolReply
-from boba.agent.profile import (
-    CompactionSettings,
-    ModelProfile,
+from boba.agent.profile import CompactionSettings, ModelProfile, TurnLimits
+from boba.agent.records import (
+    EnvironmentSnapshot,
+    PermissionMode,
     ReasoningReturn,
-    TurnLimits,
+    ToolUseBlock,
 )
-from boba.agent.records import EnvironmentSnapshot, PermissionMode, ToolUseBlock
 from boba.agent.session import Session
 from boba.agent.skills import Skill
 from boba.agent.tools import McpServerSet, ServerNotice, ToolServer
@@ -260,6 +260,10 @@ class StandTools(ToolServer):
 
         return pending
 
+    async def source(self, call: ToolUseBlock) -> Mapping[str, Any] | None:
+        """Клиента у стенда нет: источника вызова тоже."""
+        return None
+
     async def _run(self, call: ToolUseBlock) -> ToolReply:
         name = StandToolName(self._names.tool_of(call.name))
         if name is StandToolName.SLEEP:
@@ -445,6 +449,7 @@ class StandAgents:
         store: HistoryStore | None = None,
         always_load: Sequence[str] | None = None,
         record_requests: bool = False,
+        verify_requests: bool = True,
     ) -> Agent:
         """Агент на стенде; always_load None — все инструменты StandTools
         уходят полным определением: проверки, которые не про отложенные
@@ -452,7 +457,8 @@ class StandAgents:
         между повторами и с результатом инструмента до целого окна: тесты
         сжатия переполняют малое окно стенда одним большим результатом.
         record_requests — каждый запрос к модели пишется в журнал записью
-        api-request."""
+        api-request; verify_requests — перед отправкой запрос пересобирается
+        из журнала, прочитанного из хранилища, и сверяется с отправляемым."""
         if limits is None:
             limits = TurnLimits(
                 retry_delays_sec=(0.0, 0.0, 0.0), tool_result_window_share=1.0
@@ -487,6 +493,7 @@ class StandAgents:
             clock=clock,
             always_load=always_load,
             record_requests=record_requests,
+            verify_requests=verify_requests,
         )
 
         return Agent(parts)

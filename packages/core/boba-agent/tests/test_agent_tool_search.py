@@ -15,12 +15,13 @@ from typing import Any, ClassVar
 import pytest
 from test_agent_compaction import journal
 
-from boba.agent.attachments import Announced
 from boba.agent.builder import RequestBuilder
 from boba.agent.history import SessionId
-from boba.agent.mcp import ToolCard
+from boba.agent.ids import IdMint, SystemClock
+from boba.agent.loader import HistoryLoader
 from boba.agent.queue import QueueEntry, QueueKind
 from boba.agent.records import (
+    Announced,
     AttachmentRecord,
     ChainRecord,
     CompactBoundaryRecord,
@@ -28,12 +29,14 @@ from boba.agent.records import (
     DeferredToolsRecordAttachment,
     Record,
     SnapshotTool,
+    TextBlock,
     ToolReferenceBlock,
     ToolResultRecord,
     TurnOutcome,
 )
 from boba.agent.template import AgentTemplate
 from boba.agent.tools import ToolMatcher, ToolSearchInput, ToolSearchOutput
+from boba.history.jsonl import JsonlHistoryStore
 from boba.stand.agent import (
     Collected,
     FakeServer,
@@ -138,33 +141,14 @@ async def agents(server: FakeServer, tmp_path: Path) -> AsyncIterator[StandAgent
         await stand.aclose()
 
 
-class RenamedTools(StandTools):
-    """Сервер стенда, у которого после перезапуска сменилось описание lookup."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        cards: list[ToolCard] = []
-        for card in self._cards:
-            if card.name != StandToolName.LOOKUP.full:
-                cards.append(card)
-                continue
-
-            cards.append(
-                ToolCard(
-                    name=card.name,
-                    description="stand tool lookup, described anew",
-                    parameters=card.parameters,
-                    hints=card.hints,
-                )
-            )
-
-        self._cards = cards
-
-
 class TestDeferredConversation:
     @pytest.mark.parametrize("protocol", list(Protocol))
     async def test_names_then_select_then_definition_then_call(
-        self, server: FakeServer, agents: StandAgents, protocol: Protocol
+        self,
+        server: FakeServer,
+        agents: StandAgents,
+        protocol: Protocol,
+        tmp_path: Path,
     ) -> None:
         """Модель видит отложенные одними именами, загружает lookup через
         ToolSearch `select:`, со следующего запроса определение lookup стоит
@@ -184,11 +168,14 @@ class TestDeferredConversation:
         self.check_requests(server.requests(), stand)
         assert served.agent.outcomes == [TurnOutcome.COMPLETED]
 
-        snapshot = Announced(session.conversation()).snapshot()
-        assert snapshot is not None
-        built = RequestBuilder(agents.profile(protocol), AgentTemplate()).build(
-            session.conversation(), snapshot
+        loader = HistoryLoader(
+            JsonlHistoryStore(tmp_path / "history"),
+            AgentTemplate(),
+            IdMint(),
+            SystemClock(),
+            "0",
         )
+        built = RequestBuilder().build(await loader.stored(SESSION))
         assert built.tools[-1].name == StandToolName.LOOKUP.full
         assert built.tools[-1].deferred
         assert not built.tools[0].deferred
@@ -226,7 +213,8 @@ class TestDeferredConversation:
         assert len(found) == 2
         searched = found[0].message.tool_results()[0]
         assert list(searched.content) == [
-            ToolReferenceBlock(tool_name=StandToolName.LOOKUP.full)
+            ToolReferenceBlock(tool_name=StandToolName.LOOKUP.full),
+            TextBlock(text=f"Tool loaded: {StandToolName.LOOKUP.full}"),
         ]
         output = ToolSearchOutput.model_validate(
             found[0].tool_use_result["structuredContent"]
@@ -388,8 +376,10 @@ class TestResume:
     async def test_resume_sends_the_same_tools_byte_for_byte(
         self, server: FakeServer, agents: StandAgents
     ) -> None:
-        """Возобновление собирает запрос из истории: определение lookup —
-        записанное, хотя сервер описывает его уже иначе."""
+        """Возобновление собирает запрос из истории: тот же сервер — те же
+        байты и ни одной новой записи определений. Сервер, описавший
+        инструмент иначе, — новая запись (test_request_replay,
+        TestDefinitionChanges)."""
         served = Served(
             agents.agent(
                 agents.profile(Protocol.OPENAI),
@@ -408,7 +398,7 @@ class TestResume:
             agents.agent(
                 agents.profile(Protocol.OPENAI),
                 Collected(),
-                tools=RenamedTools(),
+                tools=StandTools(),
                 always_load=(),
             )
         )

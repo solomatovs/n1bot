@@ -2,13 +2,17 @@
 # UI chainlit из исходников тега с overlay поверх (web/chainlit-ui): все пакеты
 # workspace — react-client, app (фронт) и copilot (виджет), как pnpm build у upstream.
 # custom_build в chainlit заменяет весь UI: и фронт, и copilot ищутся в одном каталоге.
-# Зависимости pnpm ставит из реестра npm образа nodejs (в закрытом контуре — nexus);
-# store лежит в $WORK/store и живёт один запуск: стадия Dockerfile удаляет его тем же шагом.
+# Зависимости pnpm ставит из реестра npm образа nodejs (в закрытом контуре — nexus) в
+# store <store>, который живёт между сборками: цель make монтирует его каталогом хоста,
+# стадия Dockerfile заполняет режимом store отдельным слоем от тарболла и манифестов
+# overlay. Из реестра качается только то, чего в store нет.
 # Элементы chainlit (public/elements) грузятся во время работы, поэтому tailwind видит
 # их копией в frontend/elements, и их классы попадают в CSS сборки. В <out>/.source-digest
 # ложатся версия тега и хеши overlay, элементов и самого скрипта: по ним тест вида узнаёт,
 # что сборка устарела.
-#   chainlit_ui.sh <src.tar.gz> <overlay> <elements> <out>
+#   chainlit_ui.sh build <src.tar.gz> <overlay> <elements> <out> <store>
+#   chainlit_ui.sh store <src.tar.gz> <manifests> <store>
+# <manifests> — дерево overlay только с package.json и pnpm-lock.yaml.
 # Запускается в образе nodejs (node + pnpm), как стадией Dockerfile, так и целью make.
 set -eu
 
@@ -16,18 +20,36 @@ export HOME=/tmp HUSKY=0 CYPRESS_INSTALL_BINARY=0
 # закрытый контур: pnpm и npm не спрашивают реестр о своей новой версии, pnpm не качает
 # версию из packageManager тега — работает та, что в образе nodejs
 export npm_config_update_notifier=false npm_config_manage_package_manager_versions=false
-PNPM_OPTS="--frozen-lockfile --config.package-manager-strict=false --filter @chainlit/react-client --filter @chainlit/app --filter @chainlit/copilot"
+# загрузок на каждый из трёх проектов; при 16 по умолчанию реестр рвёт часть соединений
+NETWORK_CONCURRENCY=8
+PNPM_OPTS="--frozen-lockfile --network-concurrency=$NETWORK_CONCURRENCY --config.package-manager-strict=false --filter @chainlit/react-client --filter @chainlit/app --filter @chainlit/copilot"
 WORK="${UI_WORK:-/tmp/chainlit-ui}"
+USAGE="вызов: chainlit_ui.sh build <src.tar.gz> <overlay> <elements> <out> <store> | store <src.tar.gz> <manifests> <store>"
 
-if [ $# -ne 4 ]; then
-    echo "вызов: chainlit_ui.sh <src.tar.gz> <overlay> <elements> <out>" >&2
+if [ $# -lt 1 ]; then
+    echo "$USAGE" >&2
     exit 2
 fi
 
+MODE="$1"
+shift
+case "$MODE:$#" in
+    build:5)
+        ELEMENTS="$3"
+        OUT="$4"
+        STORE="$5"
+        ;;
+    store:3)
+        STORE="$3"
+        ;;
+    *)
+        echo "$USAGE" >&2
+        exit 2
+        ;;
+esac
+
 SRC_TARBALL="$1"
 OVERLAY="$2"
-ELEMENTS="$3"
-OUT="$4"
 SCRIPT="$(readlink -f "$0")"
 
 unpack_sources() {
@@ -74,15 +96,25 @@ check_ui() {
     done
 }
 
-rm -rf "$WORK/src"
-mkdir -p "$WORK/store"
-unpack_sources "$SRC_TARBALL"
-cp -a "$OVERLAY/." "$WORK/src/"
+# исходники тега с overlay поверх и зависимости из store; недостающие — из реестра
+install_sources() {
+    rm -rf "$WORK/src"
+    unpack_sources "$SRC_TARBALL"
+    cp -a "$OVERLAY/." "$WORK/src/"
+    mkdir -p "$STORE"
+    (cd "$WORK/src" && pnpm install --store-dir "$STORE" $PNPM_OPTS)
+}
+
+install_sources
+if [ "$MODE" = store ]; then
+    rm -rf "$WORK/src"
+    exit 0
+fi
+
 mkdir -p "$WORK/src/frontend/elements"
 cp -a "$ELEMENTS/." "$WORK/src/frontend/elements/"
 cd "$WORK/src"
 
-pnpm install --store-dir "$WORK/store" $PNPM_OPTS
 pnpm --filter @chainlit/react-client run build
 pnpm --filter @chainlit/react-client run type-check
 pnpm --filter @chainlit/app run type-check

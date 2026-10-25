@@ -93,6 +93,7 @@ from boba.stand.ui.fake_llm import (
     ReplyTurn,
 )
 from boba.stand.ui.stand import REPO_ROOT, StandPorts
+from boba.transport.http.connection import BearerAuth
 
 API_KEY = "sk-aid-acp-test-secret"
 MODEL_NAME = "stand-model"
@@ -155,7 +156,7 @@ class FakeModel:
                 provider=ProviderFile(
                     kind=AgentProviderKind.OPENAI,
                     base_url=self.base_url(),
-                    api_key=SecretStr(API_KEY),
+                    auth=BearerAuth(method="bearer", token=SecretStr(API_KEY)),
                     timeout_sec=120.0,
                     ssl_verify=True,
                     retry_attempts=1,
@@ -697,9 +698,12 @@ class AppsHost:
         return self._sandbox.drawn(self.HOST, self._mcp_port)
 
     def stop(self) -> None:
-        """Сервер, у которого ещё открыты потоки чата, сам не выходит: после
-        срока его снимает kill."""
         self._sandbox.stop()
+        self.stop_server()
+
+    def stop_server(self) -> None:
+        """Только сервер MCP, песочница остаётся. Сервер, у которого ещё
+        открыты потоки чата, сам не выходит: после срока его снимает kill."""
         self._server.terminate()
         try:
             self._server.wait(timeout=self.STOP_SEC)

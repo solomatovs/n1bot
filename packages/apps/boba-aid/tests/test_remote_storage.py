@@ -16,11 +16,9 @@ import pytest
 from aid_stand import NoTabs, OwnerRows, ServiceProcess
 
 from boba.aid.data.remote_storage import FileOwners, RemoteStorageClient
-from boba.aid.rendering.acp_view import ServerCards, ToolMedia
 from boba.canvas.keys import ObjectKey, ScopeDir
 from boba.canvas.storage import StorageError, StorageNotFoundError
 from boba.chat.profiles import ChatProfileConfig, ChatProfiles
-from boba.core.mcp_names import McpToolNames
 from boba.identity.api import StoredUser
 from boba.identity.session import Login, UserMetadataField
 from boba.mcp_client.client import McpCaller, McpServers, McpToolServer
@@ -187,32 +185,3 @@ class TestRemoteStorage:
             raise AssertionError(f"the journal of the call lies in {runs[0]}")
 
         return runs[0]
-
-
-class TestThreadCards:
-    """Карточки инструментов ленты треда — у порта владельца треда через
-    кэш ответов: список с cacheScope private одного пользователя не рисует
-    вызовы другого."""
-
-    async def test_cards_of_one_user_are_not_drawn_for_another(
-        self, servers: McpServers
-    ) -> None:
-        wide = ToolMedia(
-            ServerCards(servers, McpCaller(login="ivanov", roles=frozenset({"dev"})))
-        )
-        weak = ToolMedia(
-            ServerCards(servers, McpCaller(login="petrov", roles=frozenset({"weak"})))
-        )
-        names = McpToolNames()
-        progress = names.full("boba", "fake_progress")
-        echo = names.full("boba", "fake_echo")
-
-        wide_card = await wide.card(progress)
-        weak_card = await weak.card(progress)
-        weak_echo = await weak.card(echo)
-        links = await weak.links("boba")
-
-        assert wide_card is not None
-        assert weak_card is None
-        assert weak_echo is not None
-        assert links is not None

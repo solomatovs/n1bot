@@ -19,7 +19,7 @@ import logging
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from boba.agent.asking import (
     Aborted,
@@ -32,7 +32,6 @@ from boba.agent.asking import (
     Partial,
 )
 from boba.agent.attachments import (
-    Announced,
     ContextAttachments,
     EnvironmentSnapshot,
     PromptSnapshot,
@@ -65,6 +64,7 @@ from boba.agent.ids import Clock, IdMint
 from boba.agent.profile import CompactionSettings, ModelProfile, TurnLimits
 from boba.agent.queue import InputQueue, QueueItem, QueueKind, Taken
 from boba.agent.records import (
+    Announced,
     ApiErrorRecord,
     AssistantBlock,
     AssistantMessage,
@@ -197,7 +197,6 @@ class TurnLoop:
         limits: TurnLimits,
         compaction: CompactionSettings,
         model: ChatModel,
-        builder: RequestBuilder,
         attachments: ContextAttachments,
         tools: ToolRunner,
         templates: AgentTemplate,
@@ -240,19 +239,17 @@ class TurnLoop:
         self._commands = LocalCommandText()
         self._last_failure = ""
         self._overflow_signs = ContextOverflowSigns()
-        self._bind_model(profile, model, builder)
+        self._builder = RequestBuilder()
+        self._bind_model(profile, model)
 
-    def _bind_model(
-        self, profile: ModelProfile, model: ChatModel, builder: RequestBuilder
-    ) -> None:
-        """Части, которые зависят от профиля модели: сборщик запроса, бюджет
-        скиллов, обращение к модели, оценка заполненности, пересказ и пачка
-        сжатия. Собираются на старте и заново при смене модели."""
+    def _bind_model(self, profile: ModelProfile, model: ChatModel) -> None:
+        """Части, которые зависят от профиля модели: бюджет скиллов,
+        обращение к модели, оценка заполненности, пересказ и пачка сжатия.
+        Собираются на старте и заново при смене модели."""
         self._profile = profile
-        self._builder = builder
         self._budget = SkillBudget(profile.context_window, profile.chars_per_token)
         self._asking = ModelAsk(model, self._sink)
-        estimator = TokenEstimator(profile, self._templates)
+        estimator = TokenEstimator(profile)
         self._estimator = estimator
         self._gate = CompactGate(
             ContextMeter(estimator),
@@ -262,13 +259,15 @@ class TurnLoop:
         )
         self._summarizer = Summarizer(
             self._asking,
-            builder,
+            self._builder,
             self._templates,
             estimator,
             self._ids,
             self._clock,
             self._version,
             self._recorder,
+            self._keeper,
+            self._writer,
         )
         self._compactor = Compactor(
             self._attachments,
@@ -284,13 +283,12 @@ class TurnLoop:
             self._catalog,
         )
 
-    def set_model(
-        self, profile: ModelProfile, model: ChatModel, builder: RequestBuilder
-    ) -> None:
+    def set_model(self, profile: ModelProfile, model: ChatModel) -> None:
         """Смена профиля модели между ходами: следующий запрос идёт новой
-        модели с её окном и сэмплингом; вложение `model` объявит смену в
-        начале следующего хода. Вызывающий проверяет, что ход не идёт."""
-        self._bind_model(profile, model, builder)
+        модели с её окном; вложение `model` и новый снимок с её сэмплингом
+        и формой запроса объявят смену в начале следующего хода. Вызывающий
+        проверяет, что ход не идёт."""
+        self._bind_model(profile, model)
 
     @property
     def profile(self) -> ModelProfile:
@@ -387,9 +385,7 @@ class TurnLoop:
             excess=None,
             instructions=command.text,
         )
-        compacted = await self._compact(
-            fill, snapshot, pressure, cancellation, command.id
-        )
+        compacted = await self._compact(fill, pressure, cancellation, command.id)
         if isinstance(compacted, SummaryAborted):
             return self._abort_outcome(compacted.reason)
 
@@ -451,8 +447,8 @@ class TurnLoop:
         if guarded is not None:
             return guarded
 
-        snapshot = await self._announce_context()
-        request = self._builder.build(self._session.conversation(), snapshot)
+        await self._announce_context()
+        request = self._builder.build(await self._writer.stored())
         asked = await self._ask(request, cancellation)
         if isinstance(asked, Overflowed):
             recovered = await self._recover_overflow(asked, progress, cancellation)
@@ -513,9 +509,7 @@ class TurnLoop:
                 excess=None,
                 instructions="",
             )
-            compacted = await self._compact(
-                fill, snapshot, pressure, cancellation, None
-            )
+            compacted = await self._compact(fill, pressure, cancellation, None)
             if isinstance(compacted, SummaryAborted):
                 return self._abort_outcome(compacted.reason)
 
@@ -589,7 +583,7 @@ class TurnLoop:
             excess=self._overflow_signs.excess(asked.error),
             instructions="",
         )
-        compacted = await self._compact(fill, snapshot, pressure, cancellation, None)
+        compacted = await self._compact(fill, pressure, cancellation, None)
         if isinstance(compacted, SummaryAborted):
             return self._abort_outcome(compacted.reason)
 
@@ -598,28 +592,30 @@ class TurnLoop:
             return asked
 
         progress.tracking.succeeded()
-        snapshot = await self._announce_context()
-        request = self._builder.build(self._session.conversation(), snapshot)
+        await self._announce_context()
+        request = self._builder.build(await self._writer.stored())
 
         return await self._ask(request, cancellation)
 
     async def _compact(
         self,
         fill: Fill,
-        snapshot: PromptSnapshot,
         pressure: SummaryPressure,
         cancellation: RunCancellation,
         command_uuid: str | None,
     ) -> CompactResult:
         """Пересказ и пачка записей. Ход сжатия пишется в историю записями
         compaction: начато, не удалось с причиной, прервано; состоявшееся —
-        граница и пересказ с uuid, равным id сжатия. command_uuid — запись
-        вызова `/compact` у сжатия по команде."""
+        граница и пересказ с uuid, равным id сжатия. Запрос пересказа
+        собирается из истории, поэтому снимок промпта пишется до него, если
+        разговор его ещё не несёт. command_uuid — запись вызова `/compact` у
+        сжатия по команде."""
         started = time.monotonic()
+        await self._record_snapshot()
         job = SummaryJob(
+            compaction_id=self._ids.uuid(),
             session=self._session,
             conversation=self._session.conversation(),
-            snapshot=snapshot,
             cancellation=cancellation,
             pressure=pressure,
         )
@@ -629,7 +625,7 @@ class TurnLoop:
             return unready
 
         phase = CompactionStep(
-            compaction_id=self._ids.uuid(),
+            compaction_id=job.compaction_id,
             trigger=pressure.trigger,
             command_uuid=command_uuid,
         )
@@ -659,7 +655,8 @@ class TurnLoop:
             today=self._attachments.today(),
         )
         pack = self._compactor.pack(self._session, summarized, compact_job)
-        fit = self._estimator.prefix(self._fresh_snapshot()) + pack.post_tokens
+        fresh = self._fresh_snapshot(self._system_prompt)
+        fit = self._estimator.prefix(fresh) + pack.post_tokens
         window = self._profile.effective_window()
         if fit > window:
             detail = (
@@ -718,7 +715,7 @@ class TurnLoop:
         """Снимок, по которому пойдёт запрос: из истории либо свежий."""
         snapshot = Announced(self._session.conversation()).snapshot()
         if snapshot is None:
-            return self._fresh_snapshot()
+            return self._fresh_snapshot(self._system_prompt)
 
         return snapshot
 
@@ -855,17 +852,25 @@ class TurnLoop:
             )
             await self._keeper.add(record)
 
-        await self._announce_tools(announced)
-        await self._announce_instructions(announced)
+        await self._announce_catalog(announced)
         await self._announce_skills(announced)
+
+    async def _announce_catalog(self, announced: Announced) -> None:
+        """Набор инструментов и инструкции серверов MCP относительно
+        объявленного в истории: разница имён отложенных и с полным
+        определением, новый снимок при смене определений, разница
+        инструкций. Сервер, сменивший имя или список посреди сессии, виден
+        модели только так — записями истории, из которых собирается
+        запрос."""
+        await self._announce_tools(announced)
+        await self._renew_snapshot(announced)
+        await self._announce_instructions(announced)
 
     async def _announce_tools(self, announced: Announced) -> None:
         """Набор инструментов изменился относительно объявленного: разница
-        именами вложением deferred_tools_delta; набор с полным определением
-        сменился — новый снимок. Без снимка в разговоре его объявит
-        `_announce_context`, а вложение называет только отложенные.
-        Отложенный, которого разговор уже объявлял и снимал, объявляется
-        вернувшимся."""
+        именами вложением deferred_tools_delta. Без снимка в разговоре
+        вложение называет только отложенные. Отложенный, которого разговор
+        уже объявлял и снимал, объявляется вернувшимся."""
         inline: list[str] = []
         for tool in self._catalog.inline():
             inline.append(tool.name)
@@ -893,23 +898,30 @@ class TurnLoop:
             surfaced=surfaced,
             search=bool(deferred),
         )
-        if not change.empty():
-            record = self._attachments.deferred_delta(
-                self._session.last_chain_uuid(), change
-            )
-            await self._keeper.add(record)
-
-        if inline_known is None:
+        if change.empty():
             return
 
-        if inline_known == frozenset(inline):
-            return
-
-        await self._keeper.add(
-            self._attachments.snapshot(
-                self._session.last_chain_uuid(), self._fresh_snapshot()
-            )
+        record = self._attachments.deferred_delta(
+            self._session.last_chain_uuid(), change
         )
+        await self._keeper.add(record)
+
+    async def _renew_snapshot(self, announced: Announced) -> None:
+        """Снимок разговора разошёлся с живым: определения инструментов с
+        полным определением (имя, описание, схема), форма запроса профиля,
+        модель, скиллы — новый снимок с прежним системным промптом. Запрос
+        собирается из снимка, и любая смена видна в истории записью. Без
+        снимка в разговоре его запишет `_announce_context`."""
+        snapshot = announced.snapshot()
+        if snapshot is None:
+            return
+
+        renewed = self._fresh_snapshot(snapshot.system_prompt)
+        if renewed.same(snapshot):
+            return
+
+        record = self._attachments.snapshot(self._session.last_chain_uuid(), renewed)
+        await self._keeper.add(record)
 
     async def _announce_instructions(self, announced: Announced) -> None:
         """Инструкции подключённых серверов MCP относительно объявленных в
@@ -939,17 +951,23 @@ class TurnLoop:
         )
         await self._keeper.add(record)
 
-    def _fresh_snapshot(self) -> PromptSnapshot:
+    def _fresh_snapshot(self, system_prompt: Sequence[str]) -> PromptSnapshot:
         return PromptSnapshot(
-            system_prompt=self._system_prompt,
+            system_prompt=system_prompt,
             tools=self._catalog.inline(),
             skills=self._skills,
             model=self._profile.model_id,
             system_turns=self._profile.system_turns,
+            reasoning_return=self._profile.reasoning_return,
+            sampling=self._profile.chat.sampling,
         )
 
-    async def _announce_context(self) -> PromptSnapshot:
-        """Дата, если сменилась; снимок, если его нет в доступной истории."""
+    async def _announce_context(self) -> None:
+        """Перед каждым запросом: смена набора инструментов и инструкций
+        серверов, случившаяся посреди хода; дата, если сменилась; снимок,
+        если его нет в доступной истории; определения загруженных
+        отложенных."""
+        await self._announce_catalog(Announced(self._session.conversation()))
         announced = Announced(self._session.conversation())
         today = self._attachments.today()
         known = announced.date_text()
@@ -959,45 +977,60 @@ class TurnLoop:
             )
             await self._keeper.add(record)
 
-        snapshot = announced.snapshot()
-        if snapshot is None:
-            snapshot = self._fresh_snapshot()
-            record = self._attachments.snapshot(
-                self._session.last_chain_uuid(), snapshot
-            )
-            await self._keeper.add(record)
-        elif snapshot.system_prompt != self._system_prompt:
-            logger.warning(
-                "turn: the system prompt of the launch differs from the snapshot in "
-                "history; the request follows the snapshot"
-            )
-
+        await self._record_snapshot()
         await self._record_deferred()
 
-        return snapshot
+    async def _record_snapshot(self) -> None:
+        """Снимок промпта в разговоре: без него запрос из истории не собрать
+        (новая сессия, разговор сразу после сжатия). Снимок с другим
+        системным промптом остаётся: запрос идёт по нему."""
+        snapshot = Announced(self._session.conversation()).snapshot()
+        if snapshot is None:
+            fresh = self._fresh_snapshot(self._system_prompt)
+            record = self._attachments.snapshot(self._session.last_chain_uuid(), fresh)
+            await self._keeper.add(record)
+            return
+
+        if snapshot.system_prompt == self._system_prompt:
+            return
+
+        logger.warning(
+            "turn: the system prompt of the launch differs from the snapshot in "
+            "history; the request follows the snapshot"
+        )
 
     async def _record_deferred(self) -> None:
-        """Определения загруженных отложенных инструментов, которых история
-        ещё не записала, — записью deferred_tools_record из живого набора:
-        запрос собирается из истории, и возобновление шлёт те же байты.
-        Инструмент, которого в живом наборе уже нет, не записывается и в
-        запрос не уходит."""
-        missing = Announced(self._session.conversation()).deferred_unrecorded()
-        if not missing:
+        """Загруженные отложенные, чьё живое определение история не
+        записала или записала иначе, — записью deferred_tools_record до
+        запроса: запрос собирается из истории, и возобновление шлёт те же
+        байты. Инструмент, которого в живом наборе уже нет, не
+        записывается; в запрос уходит записанное определение, пока разница
+        набора не снимет его."""
+        announced = Announced(self._session.conversation())
+        selected = announced.deferred_selected()
+        if not selected:
             return
 
         live: dict[str, SnapshotTool] = {}
         for tool in self._catalog.deferred():
             live[tool.name] = tool
 
-        entries: list[SnapshotTool] = []
-        for name in missing:
+        current: list[SnapshotTool] = []
+        for name in selected:
             tool = live.get(name)
             if tool is None:
                 continue
 
-            entries.append(tool)
+            current.append(tool)
 
+        await self._record_definitions(announced, current)
+
+    async def _record_definitions(
+        self, announced: Announced, tools: Sequence[SnapshotTool]
+    ) -> None:
+        """Определения, которых разговор не записал, — одной записью
+        deferred_tools_record; записанное так же не повторяется."""
+        entries = list(announced.unrecorded(tools))
         if not entries:
             return
 
@@ -1081,6 +1114,7 @@ class TurnLoop:
 
         planned: list[PlannedCall] = []
         for index, (block, wire_id) in enumerate(blocks):
+            source = await self._source(block, aborted)
             record = ReplyRecord(
                 uuid=self._ids.uuid(),
                 parent_uuid=self._session.last_chain_uuid(),
@@ -1098,6 +1132,7 @@ class TurnLoop:
                 request_id=request_id,
                 is_aborted_mid_stream=mid_stream,
                 wire_tool_call_id=wire_id,
+                tool_source=source,
             )
             written = await self._keeper.add(record)
             if isinstance(block, ToolUseBlock):
@@ -1105,8 +1140,28 @@ class TurnLoop:
 
         return planned
 
+    async def _source(
+        self, block: AssistantBlock, aborted: bool
+    ) -> dict[str, Any] | None:
+        """Источник показа вызова у его сервера; у оборванного ответа вызовы
+        не исполняются, и источник не спрашивается."""
+        if not isinstance(block, ToolUseBlock):
+            return None
+
+        if aborted:
+            return None
+
+        source = await self._catalog.source(block)
+        if source is None:
+            return None
+
+        return dict(source)
+
     async def _write_results(self, results: Sequence[CallResult]) -> None:
-        """Результаты — по записи `user` на вызов, в порядке вызовов."""
+        """Результаты — по записи `user` на вызов, в порядке вызовов; за
+        ними — определения инструментов, которые загрузил ToolSearch, какими
+        их нашёл поиск: история знает их раньше следующего запроса, в том
+        числе запроса пересказа."""
         for result in results:
             is_error: bool | None = None
             if result.is_error:
@@ -1131,21 +1186,37 @@ class TurnLoop:
             )
             await self._keeper.add(record)
 
+        loaded: dict[str, SnapshotTool] = {}
+        for result in results:
+            for tool in result.loaded:
+                loaded[tool.name] = tool
+
+        if not loaded:
+            return
+
+        announced = Announced(self._session.conversation())
+        await self._record_definitions(announced, list(loaded.values()))
+
     @staticmethod
     def _result_content(
         result: CallResult,
     ) -> str | Sequence[TextBlock | ToolReferenceBlock]:
-        """Текст результата; у результата со ссылками — блоки tool_reference,
-        затем текст, если он есть."""
-        if not result.references:
-            return result.text
+        """Текст результата таким, каким его видит модель: у ошибки — в
+        обёртке tool_use_error; у результата со ссылками — блоки
+        tool_reference, затем текст, если он есть."""
+        text = result.text
+        if result.is_error:
+            text = AgentTag.TOOL_USE_ERROR.wrap(text)
+
+        if not result.loaded:
+            return text
 
         blocks: list[TextBlock | ToolReferenceBlock] = []
-        for name in result.references:
-            blocks.append(ToolReferenceBlock(tool_name=name))
+        for tool in result.loaded:
+            blocks.append(ToolReferenceBlock(tool_name=tool.name))
 
-        if result.text:
-            blocks.append(TextBlock(text=result.text))
+        if text:
+            blocks.append(TextBlock(text=text))
 
         return blocks
 

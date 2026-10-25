@@ -50,6 +50,7 @@ from boba.agent.records import (
     RenderedMessage,
     ReplyRecord,
     ReplyStopReason,
+    SummaryRequestRecord,
     Synthetic,
     TaskNotificationRecord,
     TextBlock,
@@ -174,6 +175,7 @@ SAMPLES: dict[str, Record] = {
         api_block_index=1,
         request_id="req_a",
         wire_tool_call_id="call_0",
+        tool_source={"server": "stand", "tool": {"name": "add"}},
     ),
     "no-response": NoResponseRecord(
         **chained(),
@@ -242,6 +244,14 @@ SAMPLES: dict[str, Record] = {
         name="connections",
         text="/connections",
         outcome={"kind": "text", "text": "**Your connections**"},
+    ),
+    "summary-request": SummaryRequestRecord(
+        **chained(),
+        compaction_id="c-1",
+        first_uuid="u-1",
+        last_uuid="u-2",
+        preface=["[earlier conversation truncated for compaction retry]"],
+        instruction="Summarize the conversation.",
     ),
     "turn-end": TurnEndRecord(
         **chained(),
@@ -333,6 +343,7 @@ class TestRecordCodec:
         assert message["usage"]["cache_read_input_tokens"] == 0
         assert document["apiBlockIndex"] == 1
         assert document["wireToolCallId"] == "call_0"
+        assert document["toolSource"] == {"server": "stand", "tool": {"name": "add"}}
 
     def test_unknown_field_is_ignored(self) -> None:
         document = json.loads(RecordCodec().line(SAMPLES["prompt"]))

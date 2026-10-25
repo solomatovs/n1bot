@@ -28,7 +28,7 @@ from boba.toolrun.hosted import PluginSection, ToolInputs
 from boba.toolrun.injected import InjectedConfig
 
 STAND = Stand.required()
-KEYTAB = Path(STAND.krb_pg_keytab)
+KEYTAB = Path(STAND.pg_krb_keytab)
 KRB5_CONF = Path(STAND.krb_config)
 
 pytestmark = pytest.mark.anyio

@@ -14,12 +14,17 @@ RecordKeeper — единственная дверь, через которую 
 ClientCommands пишет команды, которые клиент исполнил сам, на границах хода.
 RequestRecorder чеканит идентификатор каждого запроса к модели и, если запись
 запросов включена, кладёт служебную запись `api-request` с телом запроса и
-его дайджестом (план, раздел 5.18).
+его дайджестом (план, раздел 5.18). До неё RequestReplay, если сверка
+включена (тесты, отладка), пересобирает запрос из журнала, прочитанного из
+хранилища заново, и сверяет дайджест.
 
 Ошибки:
-HistoryError — поднимает только `flush(strict=True)` при завершении, когда
-    журнал так и не удалось сбросить; фоновая задача ошибки не выпускает.
+HistoryError — поднимают `flush(strict=True)` при завершении, когда журнал
+    так и не удалось сбросить, и `stored()` перед запросом к модели;
+    фоновая задача ошибки не выпускает.
 SessionError — нарушен порядок записей сессии (ошибка ядра).
+RequestReplayError — запрос к модели не совпал с пересобранным из журнала
+    или из журнала не собирается; в тексте — первая расходящаяся часть.
 """
 
 from __future__ import annotations
@@ -32,13 +37,22 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, ClassVar, TypeVar
 
+from boba.agent.builder import RequestBuilder, RequestBuildError
 from boba.agent.events import AgentEvent, EventSink, HistoryWrittenEvent, RecordEvent
-from boba.agent.history import HistoryError, HistoryStore, SessionLease
+from boba.agent.history import (
+    HistoryError,
+    HistoryStore,
+    SessionId,
+    SessionLease,
+    StoredHistory,
+)
 from boba.agent.ids import Clock, IdMint
+from boba.agent.loader import HistoryLoader
 from boba.agent.records import (
     ApiRequestRecord,
     HarnessCommandRecord,
     Record,
+    RecordError,
 )
 from boba.agent.session import Session
 from boba.llm.chat import ChatRequest
@@ -51,6 +65,8 @@ __all__ = [
     "HistoryWriter",
     "RecordKeeper",
     "RequestRecorder",
+    "RequestReplay",
+    "RequestReplayError",
 ]
 
 R = TypeVar("R", bound=Record)
@@ -120,6 +136,19 @@ class HistoryWriter:
         self._last_error = ""
 
         return True
+
+    async def stored(self) -> StoredHistory:
+        """Разговор по записям, которые хранилище подтвердило: несброшенное
+        сбрасывается сейчас, и запрос к модели собирается только из того,
+        что уже лежит в журнале.
+
+        Ошибки:
+        HistoryError — хранилище отказало, запрос из истории не собрать.
+        """
+        while self.unflushed:
+            await self.flush(strict=True)
+
+        return StoredHistory(self._session.conversation())
 
     async def stop(self) -> None:
         """Последняя попытка сброса и остановка задачи."""
@@ -277,26 +306,153 @@ class ClientCommands:
         )
 
 
+class RequestReplayError(Exception):
+    """Запрос к модели расходится с пересобранным из журнала."""
+
+
+class RequestReplay:
+    """Сверка запроса к модели с журналом: перед отправкой запрос
+    пересобирается сборщиком (RequestBuilder) из истории, прочитанной из
+    хранилища заново (HistoryLoader.stored), — так, как его соберёт
+    возобновление, — и тела сравниваются. Расхождение — ошибка с первой
+    разошедшейся частью тела. Включают тесты и отладка; выключенная сверка
+    ничего не читает. Держит RequestRecorder."""
+
+    ABSENT: ClassVar[str] = "<absent>"
+    SHOWN: ClassVar[int] = 200
+    """Сколько знаков значения показывает текст ошибки."""
+
+    def __init__(self, loader: HistoryLoader, enabled: bool) -> None:
+        self._loader = loader
+        self._enabled = enabled
+        self._builder = RequestBuilder()
+
+    async def check(self, session: SessionId, request: ChatRequest) -> None:
+        """Ошибки:
+        RequestReplayError — запрос не совпал с пересобранным или из журнала
+            не собирается.
+        HistoryError — хранилище отказало при чтении журнала.
+        """
+        if not self._enabled:
+            return
+
+        history = await self._loader.stored(session)
+        try:
+            rebuilt = self._builder.build(history)
+        except RequestBuildError as exc:
+            msg = (
+                f"The model request of session {session.value} cannot be rebuilt "
+                f"from its stored journal: {exc}"
+            )
+            raise RequestReplayError(msg) from exc
+        except RecordError as exc:
+            msg = (
+                f"The model request of session {session.value} cannot be rebuilt: "
+                f"the stored journal is damaged: {exc}"
+            )
+            raise RequestReplayError(msg) from exc
+
+        sent = request.model_dump(mode="json", exclude_none=True)
+        again = rebuilt.model_dump(mode="json", exclude_none=True)
+        if sent == again:
+            return
+
+        part = self._first_difference(sent, again, "request")
+        msg = (
+            f"The model request of session {session.value} differs from the one "
+            f"rebuilt from its stored journal at {part.path}: sent {part.sent!r}, "
+            f"rebuilt {part.rebuilt!r}. Something the request depends on is not "
+            "in the history."
+        )
+        raise RequestReplayError(msg)
+
+    def _first_difference(self, sent: Any, rebuilt: Any, path: str) -> Difference:
+        """Первая расходящаяся часть тел: путь ключей и индексов и оба значения."""
+        if isinstance(sent, dict) and isinstance(rebuilt, dict):
+            return self._mapping_difference(sent, rebuilt, path)
+
+        if isinstance(sent, list) and isinstance(rebuilt, list):
+            return self._list_difference(sent, rebuilt, path)
+
+        return Difference(
+            path=path, sent=self._brief(sent), rebuilt=self._brief(rebuilt)
+        )
+
+    def _mapping_difference(
+        self, sent: dict[str, Any], rebuilt: dict[str, Any], path: str
+    ) -> Difference:
+        keys = sorted(set(sent) | set(rebuilt))
+        for key in keys:
+            left = sent.get(key, self.ABSENT)
+            right = rebuilt.get(key, self.ABSENT)
+            if left == right:
+                continue
+
+            return self._first_difference(left, right, f"{path}.{key}")
+
+        return Difference(path=path, sent="", rebuilt="")
+
+    def _list_difference(
+        self, sent: list[Any], rebuilt: list[Any], path: str
+    ) -> Difference:
+        for index, (left, right) in enumerate(zip(sent, rebuilt, strict=False)):
+            if left == right:
+                continue
+
+            return self._first_difference(left, right, f"{path}[{index}]")
+
+        return Difference(
+            path=f"{path} length", sent=str(len(sent)), rebuilt=str(len(rebuilt))
+        )
+
+    def _brief(self, value: Any) -> str:
+        text = json.dumps(value, ensure_ascii=False)
+
+        return text[: self.SHOWN]
+
+
+@dataclass(frozen=True)
+class Difference:
+    """Первая расходящаяся часть тела запроса: путь и оба значения коротко."""
+
+    path: str
+    sent: str
+    rebuilt: str
+
+
 class RequestRecorder:
-    """Идентификатор запроса к модели и его запись в журнал по флагу."""
+    """Идентификатор запроса к модели, сверка его с журналом (RequestReplay)
+    и запись в журнал по флагу."""
 
     def __init__(
-        self, keeper: RecordKeeper, ids: IdMint, clock: Clock, enabled: bool
+        self,
+        keeper: RecordKeeper,
+        ids: IdMint,
+        clock: Clock,
+        enabled: bool,
+        replay: RequestReplay,
     ) -> None:
         self._keeper = keeper
         self._ids = ids
         self._clock = clock
         self._enabled = enabled
+        self._replay = replay
 
     async def record(self, request: ChatRequest) -> str:
-        """Возвращает идентификатор запроса; запись — только когда включена."""
+        """Возвращает идентификатор запроса; сверка с журналом и запись —
+        только когда включены.
+
+        Ошибки:
+        RequestReplayError — запрос не совпал с пересобранным из журнала.
+        """
         request_id = self._ids.request_id()
+        session = self._keeper.session
+        await self._replay.check(session.id, request)
         if not self._enabled:
             return request_id
 
         params = request.model_dump(mode="json", exclude_none=True)
         canonical = json.dumps(params, ensure_ascii=False, sort_keys=True)
-        session = self._keeper.session
         await self._keeper.add(
             ApiRequestRecord(
                 timestamp=self._clock.now(),

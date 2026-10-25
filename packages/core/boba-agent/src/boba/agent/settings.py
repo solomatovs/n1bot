@@ -18,13 +18,15 @@ from pydantic import (
     ConfigDict,
     Field,
     SecretStr,
+    SerializationInfo,
+    field_serializer,
     model_validator,
 )
 from pydantic.alias_generators import to_camel
 from pydantic.json_schema import models_json_schema
 
-from boba.agent.profile import CompactionSettings, ReasoningReturn, TurnLimits
-from boba.agent.records import PermissionMode
+from boba.agent.profile import CompactionSettings, TurnLimits
+from boba.agent.records import PermissionMode, ReasoningReturn
 from boba.core.secrets import SecretRevealing
 
 __all__ = [
@@ -40,6 +42,7 @@ __all__ = [
     "PermissionSettings",
     "PostgresHistorySettings",
     "ProviderKind",
+    "ProviderLogin",
     "ProviderSettings",
     "SecretKey",
     "SessionsJson",
@@ -74,8 +77,18 @@ class SecretKey(StrEnum):
     """Ключи файла настроек, под которыми лежат секреты."""
 
     PROVIDER = "provider"
-    API_KEY = "apiKey"
+    AUTH = "auth"
     DSN = "dsn"
+
+
+class ProviderLogin(StrEnum):
+    """Таблица `auth` провайдера: ключи способа входа и ключа API, способы
+    без секрета и по ключу из переменной `apiKeyEnv`."""
+
+    METHOD_KEY = "method"
+    TOKEN_KEY = "token"  # noqa: S105 — имя ключа таблицы, не секрет
+    ANONYMOUS = "none"
+    BEARER = "bearer"
 
 
 class SettingsModel(SecretRevealing):
@@ -89,17 +102,19 @@ class SettingsModel(SecretRevealing):
 
 
 class ProviderSettings(SettingsModel):
-    """Провайдер модели: вид, адрес, ключ значением либо именем переменной,
-    для локальной модели — каталог весов; у удалённого — поведение запросов:
-    срок, проверка TLS, повторы и таблица транспорта процесса.
+    """Провайдер модели: вид, адрес, вход — таблицей `auth` либо ключом из
+    переменной `apiKeyEnv`, для локальной модели — каталог весов; у
+    удалённого — поведение запросов: срок, проверка TLS, повторы и таблица
+    транспорта процесса.
 
-    Таблица `transport` лежит как есть, ключами HttpTransportConfig
-    (snake_case): её проверяет модель провайдера при сборке профиля, как и
-    `sampling` уходит в запрос без разбора здесь."""
+    Таблицы `auth` и `transport` лежат как есть, ключами HTTP-соединения
+    (`method` и поля способа: none, basic, bearer, digest, negotiate) и
+    HttpTransportConfig (snake_case): их проверяет модель провайдера при
+    сборке профиля, как и `sampling` уходит в запрос без разбора здесь."""
 
     kind: ProviderKind
     base_url: str | None = None
-    api_key: SecretStr | None = None
+    auth: Mapping[str, Any] | None = None
     api_key_env: str | None = Field(default=None, min_length=1)
     model_dir: str | None = None
     timeout_sec: float = Field(default=120.0, gt=0)
@@ -112,16 +127,32 @@ class ProviderSettings(SettingsModel):
 
     @model_validator(mode="after")
     def _one_key_source(self) -> ProviderSettings:
-        by_value = self.api_key is not None
+        by_table = self.auth is not None
         by_variable = self.api_key_env is not None
-        if by_value and by_variable:
+        if by_table and by_variable:
             msg = (
-                "'apiKey' and 'apiKeyEnv' are both set; keep one: the key itself "
-                "in a file with mode 0600, or the name of the variable that holds it."
+                "'auth' and 'apiKeyEnv' are both set; keep one: the login table "
+                "in a file with mode 0600, or the name of the variable that holds "
+                "the API key."
             )
             raise ValueError(msg)
 
         return self
+
+    @field_serializer("auth", when_used="json")
+    def _dump_auth(
+        self, value: Mapping[str, Any] | None, info: SerializationInfo
+    ) -> Mapping[str, Any] | None:
+        """Таблица входа целиком — только в revealed(); иначе один способ."""
+        if value is None:
+            return None
+
+        context = info.context
+        if isinstance(context, Mapping) and context.get(self.REVEAL_CONTEXT):
+            return value
+
+        method = value.get(ProviderLogin.METHOD_KEY.value)
+        return {ProviderLogin.METHOD_KEY.value: method}
 
 
 class ModelSettings(SettingsModel):
@@ -309,10 +340,14 @@ class SettingsLayer(SettingsModel):
             if not isinstance(provider, Mapping):
                 continue
 
-            if provider.get(SecretKey.API_KEY.value) is None:
+            auth = provider.get(SecretKey.AUTH.value)
+            if not isinstance(auth, Mapping):
                 continue
 
-            yield f"models.{name}.{SecretKey.PROVIDER.value}.{SecretKey.API_KEY.value}"
+            if auth.get(ProviderLogin.METHOD_KEY.value) == ProviderLogin.ANONYMOUS:
+                continue
+
+            yield f"models.{name}.{SecretKey.PROVIDER.value}.{SecretKey.AUTH.value}"
 
 
 class SettingsSchema:

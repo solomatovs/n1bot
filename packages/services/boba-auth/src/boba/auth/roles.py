@@ -208,11 +208,7 @@ class LdapRoles(RoleProvider):
         return frozenset(self._rules.admit(found))
 
     async def request(self, value: str) -> ADUserEntry:
-        binding = DirectoryBinding(
-            server=self._config.server,
-            bind_dn=self._config.bind_dn,
-            bind_password=self._config.bind_password,
-        )
+        binding = DirectoryBinding(server=self._config.server, auth=self._config.auth)
         search = DirectorySearch(
             base_dn=self._config.base_dn,
             filter=self._lookup.render(value),
@@ -234,8 +230,8 @@ class LdapRoles(RoleProvider):
             raise ExternalServiceError("ldap", message) from e
         except LDAPInvalidCredentialsError as e:
             detail = (
-                f"{self._action} of {value!r}: service bind as "
-                f"{self._config.bind_dn} on {server} rejected: {e}"
+                f"{self._action} of {value!r}: service "
+                f"{self._config.auth.trace()} on {server} rejected: {e}"
             )
             raise InternalServiceError(internal_detail=detail, user_detail=None) from e
         except LDAPError as e:

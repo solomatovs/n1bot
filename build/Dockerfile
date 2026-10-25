@@ -558,10 +558,9 @@ CMD ["serve", "--config", "/app/boba/conf/config.toml", "--site", "/app/boba/con
 
 # --- boba-aid: чат -------------------------------------------------------------------
 
-# UI chainlit (фронт + copilot) из исходников тега с overlay web/chainlit-ui поверх;
-# зависимости pnpm берёт из реестра npm образа nodejs. Store pnpm живёт только в этом
-# шаге и удаляется, в слой попадает лишь /out/ui
-FROM ${NODE_IMAGE} AS chainlit-ui-build
+# store pnpm для UI chainlit из реестра npm образа nodejs: слой зависит только от тарболла
+# тега и манифестов overlay, поэтому правка исходников overlay его не перекачивает
+FROM ${NODE_IMAGE} AS chainlit-ui-store
 
 ARG CACHE_SCOPE
 ARG CHAINLIT_VERSION
@@ -569,10 +568,20 @@ ARG CHAINLIT_VERSION
 COPY --from=site-conf /certs/  /
 COPY build/scripts/chainlit_ui.sh                   /tmp/chainlit_ui.sh
 COPY build/src/chainlit-${CHAINLIT_VERSION}.tar.gz  /tmp/chainlit.tar.gz
+COPY packages/apps/boba-aid/web/chainlit-ui/overlay/frontend/package.json \
+     packages/apps/boba-aid/web/chainlit-ui/overlay/frontend/pnpm-lock.yaml  /tmp/manifests/frontend/
+
+RUN sh /tmp/chainlit_ui.sh store /tmp/chainlit.tar.gz /tmp/manifests /pnpm-store
+
+
+# UI chainlit (фронт + copilot) из исходников тега с overlay web/chainlit-ui поверх;
+# зависимости — из store стадии chainlit-ui-store, в слой попадает лишь /out/ui
+FROM chainlit-ui-store AS chainlit-ui-build
+
 COPY packages/apps/boba-aid/web/chainlit-ui/overlay/  /tmp/overlay/
 COPY packages/apps/boba-aid/assets/public/elements/   /tmp/elements/
 
-RUN sh /tmp/chainlit_ui.sh /tmp/chainlit.tar.gz /tmp/overlay /tmp/elements /out/ui \
+RUN sh /tmp/chainlit_ui.sh build /tmp/chainlit.tar.gz /tmp/overlay /tmp/elements /out/ui /pnpm-store \
     && rm -rf /tmp/chainlit-ui
 
 

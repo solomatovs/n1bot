@@ -15,12 +15,14 @@ from __future__ import annotations
 
 from abc import abstractmethod
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Annotated, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 __all__ = [
     "ADUserEntry",
+    "AnonymousBind",
+    "DirectoryAuth",
     "DirectoryBinding",
     "DirectorySearch",
     "LDAPAccessDeniedError",
@@ -29,6 +31,7 @@ __all__ = [
     "LDAPInvalidCredentialsError",
     "LDAPServerUnavailableError",
     "LDAPUserNotFoundError",
+    "SimpleBind",
     "UserDirectory",
 ]
 
@@ -66,14 +69,43 @@ class ADUserEntry:
     member_of: list[str]
 
 
+class SimpleBind(BaseModel):
+    """Простой bind учёткой и паролем: пользователь входа либо служебная учётка
+    поиска; у AD учётка — DOMAIN\\user, UPN или DN."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    method: Literal["simple"]
+    user: str = Field(min_length=1)
+    password: SecretStr
+
+    def trace(self) -> str:
+        return f"simple bind as {self.user!r}"
+
+
+class AnonymousBind(BaseModel):
+    """Анонимный bind: каталог, который отдаёт записи без входа."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    method: Literal["anonymous"]
+
+    def trace(self) -> str:
+        return "anonymous bind"
+
+
+DirectoryAuth = Annotated[SimpleBind | AnonymousBind, Field(discriminator="method")]
+"""Способ входа в каталог по полю method."""
+
+
 class DirectoryBinding(BaseModel):
-    """Кем и куда подключаться: сервер и bind-учётка (пользователь либо сервисная)."""
+    """Кем и куда подключаться: сервер и способ bind'а (пользователь либо
+    служебная учётка)."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     server: str = Field(min_length=1)
-    bind_dn: str = Field(min_length=1)
-    bind_password: SecretStr
+    auth: DirectoryAuth
 
 
 class DirectorySearch(BaseModel):

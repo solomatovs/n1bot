@@ -265,7 +265,7 @@ class TestTruncatedJournal:
         results = stub.message.tool_results()
         assert len(results) == 1
         assert results[0].is_error is True
-        assert results[0].text().startswith("[Tool call interrupted:")
+        assert results[0].text().startswith("<tool_use_error>[Tool call interrupted:")
         calls = [r for r in cut.records if isinstance(r, AssistantRecord)]
         second_call = calls[2].message.tool_uses()[0]
         assert results[0].tool_use_id == second_call.id

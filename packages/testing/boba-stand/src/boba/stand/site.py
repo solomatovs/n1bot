@@ -12,12 +12,14 @@ StandError — конфиг приложения не найден или не �
 from __future__ import annotations
 
 import tomllib
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, ClassVar
 
 from omegaconf import OmegaConf
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError
 
+from boba.identity.directory import SimpleBind
 from boba.runtime.config import (
     AppLayers,
     ConfigFiles,
@@ -77,10 +79,14 @@ class Stand(BaseModel):
         ),
     )
     ldap_base_dn: str = ""
-    ldap_bind_user: str = Field(
-        default="", description="Второй пользователь стенда, DOMAIN\\user."
+    ldap_auth_method: str = Field(
+        default="",
+        description=(
+            "Выбранный служебный bind каталога; его учётка (simple) — второй "
+            "пользователь стенда."
+        ),
     )
-    ldap_bind_password: SecretStr = SecretStr("")
+    ldap_auth: Mapping[str, Mapping[str, Any]] = Field(default_factory=dict)
 
     krb_domain: str
     krb_realm: str
@@ -92,13 +98,13 @@ class Stand(BaseModel):
             "kerberos) — тесты входа падают."
         ),
     )
-    krb_pg_user: str
-    krb_pg_keytab: str
-    krb_ch_user: str = Field(
+    pg_krb_user: str
+    pg_krb_keytab: str
+    ch_krb_user: str = Field(
         default="",
         description="Принципал clickhouse по keytab; пусто — тесты падают.",
     )
-    krb_ch_keytab: str = ""
+    ch_krb_keytab: str = ""
 
     developer: str = Field(
         pattern=r"^[a-z][a-z0-9_]*$",
@@ -188,17 +194,39 @@ class Stand(BaseModel):
     @property
     def service_principal(self) -> str:
         """Принципал приложения: им подписан keytab сервисных соединений."""
-        return f"{self.krb_pg_user}@{self.krb_realm}"
+        return f"{self.pg_krb_user}@{self.krb_realm}"
+
+    @property
+    def reader_bind(self) -> SimpleBind:
+        """Второй пользователь стенда: учётка служебного simple bind'а каталога
+        [site.ldap_auth.<ldap_auth_method>], DOMAIN\\user и пароль."""
+        table = self.ldap_auth.get(self.ldap_auth_method)
+        if table is None:
+            msg = (
+                f"stand: [{self.SECTION}] has no table "
+                f"ldap_auth.{self.ldap_auth_method} named by ldap_auth_method, the "
+                "second stand user is its simple bind"
+            )
+            raise StandError(msg)
+
+        try:
+            return SimpleBind.model_validate(table)
+        except ValidationError as exc:
+            msg = (
+                f"stand: [{self.SECTION}].ldap_auth.{self.ldap_auth_method} must be "
+                f"a simple bind with user and password for the second stand user: {exc}"
+            )
+            raise StandError(msg) from exc
 
     @property
     def reader_principal(self) -> str:
-        """Второй пользователь стенда: DOMAIN\\user из ldap-bind в форме user@REALM."""
-        _, _, name = self.ldap_bind_user.rpartition(self.NETBIOS_SEPARATOR)
+        """Второй пользователь стенда в форме user@REALM."""
+        _, _, name = self.reader_bind.user.rpartition(self.NETBIOS_SEPARATOR)
         return f"{name}@{self.krb_realm}"
 
     @property
     def reader_password(self) -> SecretStr:
-        return self.ldap_bind_password
+        return self.reader_bind.password
 
     @property
     def pg_spn(self) -> str:

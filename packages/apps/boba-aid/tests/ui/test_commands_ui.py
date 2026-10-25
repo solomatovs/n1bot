@@ -25,8 +25,8 @@ from typing import ClassVar
 import httpx
 import pytest
 from acp_stand import AppsHost
-from chat_ui import BOOT_TIMEOUT_SEC, OpenChat
-from playwright.sync_api import FrameLocator, Locator, Page, Request, WebSocket, expect
+from chat_ui import BOOT_TIMEOUT_SEC, AppReads, OpenChat
+from playwright.sync_api import FrameLocator, Locator, Page, expect
 
 from boba.stand.ui.chat_page import ChatPage, Selector, StepKind
 from boba.stand.ui.fake_llm import (
@@ -130,35 +130,6 @@ class CommandMenu:
 
     def app(self, card: Locator) -> FrameLocator:
         return card.frame_locator("iframe").first.frame_locator("iframe")
-
-
-class AppReads:
-    """Запросы вкладки к серверной части чата, которые просят ресурс
-    приложения (действие mcp_app_read) — по сокету и по HTTP; ведётся с
-    открытия треда."""
-
-    ACTION: ClassVar[str] = "mcp_app_read"
-
-    def __init__(self, page: Page) -> None:
-        self.seen: list[str] = []
-        page.on("websocket", self._socket)
-        page.on("request", self._request)
-
-    def _socket(self, socket: WebSocket) -> None:
-        socket.on("framesent", self._frame)
-
-    def _frame(self, payload: str | bytes) -> None:
-        text = str(payload)
-        if self.ACTION in text:
-            self.seen.append(text[:200])
-
-    def _request(self, request: Request) -> None:
-        body = request.post_data
-        if body is None:
-            return
-
-        if self.ACTION in body:
-            self.seen.append(f"{request.method} {request.url}: {body[:200]}")
 
 
 def model_requests(llm_port: int) -> int:
