@@ -45,7 +45,7 @@ from boba.agent.records import (
 from boba.agent.skills import Skill, SkillTool
 from boba.agent.template import AgentTemplate, AgentTemplateFile
 from boba.agent.tools import ToolSearchTool
-from boba.agent.writer import ClientCommand
+from boba.agent.writer import ClientCommand, RequestReplay, RequestReplayError
 from boba.history.jsonl import JsonlHistoryStore
 from boba.llm.chat import ChatRequest
 from boba.stand.agent import (
@@ -609,3 +609,26 @@ class TestDefinitionChanges:
             described(server.requests()[-1], StandToolName.LOOKUP.full) == REDESCRIBED
         )
         assert await checked(records, tmp_path / "replay") == (2, 0)
+
+
+class TestReplayCheck:
+    async def test_a_request_unlike_the_journal_names_the_part(
+        self, server: FakeServer, agents: StandAgents, tmp_path: Path
+    ) -> None:
+        """Сверка перед отправкой ловит запрос, который зависит от того, чего
+        нет в истории: ошибка называет разошедшуюся часть тела."""
+        served = Served(agents.agent(openai(agents), Collected()))
+        await served.open(SESSION, resume=False)
+        served.agent.queue.enqueue(prompt(ScenarioName.ANSWER.value))
+        await served.agent.settled()
+        await served.close()
+
+        store = JsonlHistoryStore(tmp_path / "history")
+        loader = HistoryLoader(store, AgentTemplate(), IdMint(), SystemClock(), "0")
+        replay = RequestReplay(loader, True)
+        built = RequestBuilder().build(await loader.stored(SESSION))
+        await replay.check(SESSION, built)
+
+        drifted = built.model_copy(update={"sampling": {"temperature": 0.7}})
+        with pytest.raises(RequestReplayError, match=r"request\.sampling\.temperature"):
+            await replay.check(SESSION, drifted)

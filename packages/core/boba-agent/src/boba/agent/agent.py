@@ -91,6 +91,7 @@ from boba.agent.writer import (
     HistoryWriter,
     RecordKeeper,
     RequestRecorder,
+    RequestReplay,
 )
 from boba.cancellation import RunCancellation, StopReason
 from boba.llm.chat import ChatModel
@@ -132,6 +133,7 @@ class AgentParts:
         record_requests: bool = False,
         question_tool: bool = True,
         always_load: Sequence[str] = (),
+        verify_requests: bool = False,
     ) -> None:
         self.profile = profile
         self.limits = limits
@@ -158,6 +160,10 @@ class AgentParts:
             allowed=frozenset(allowed_tools), denied=frozenset(denied_tools)
         )
         self.record_requests = record_requests
+        self.verify_requests = verify_requests
+        """Перед каждым запросом к модели пересобрать его из журнала,
+        прочитанного из хранилища заново, и сверить дайджест: расхождение —
+        ошибка с названием части. Включают тесты и отладка."""
         self.question_tool = question_tool
         """Предлагать ли модели собственный инструмент «вопрос пользователю»:
         запускающая программа без формы для вопросов его не показывает."""
@@ -304,7 +310,20 @@ class Agent:
             parts.static_rules,
         )
         recorder = RequestRecorder(
-            keeper, wiring.ids, wiring.clock, parts.record_requests
+            keeper,
+            wiring.ids,
+            wiring.clock,
+            parts.record_requests,
+            RequestReplay(
+                HistoryLoader(
+                    parts.store,
+                    wiring.templates,
+                    wiring.ids,
+                    wiring.clock,
+                    parts.version,
+                ),
+                parts.verify_requests,
+            ),
         )
         client_commands = ClientCommands(keeper, wiring.clock, parts.version)
         self._client_commands = client_commands

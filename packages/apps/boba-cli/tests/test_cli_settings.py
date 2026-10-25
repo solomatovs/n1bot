@@ -426,7 +426,10 @@ class TestMemoryHistory:
         store = MemoryHistoryStore()
         profile = agents.profile(Protocol.OPENAI)
         try:
-            served = Served(agents.agent(profile, Collected(), store=store))
+            # память не хранит журнала: пересобрать запрос не из чего
+            served = Served(
+                agents.agent(profile, Collected(), store=store, verify_requests=False)
+            )
             session = await served.open(SESSION, resume=False)
             served.agent.queue.enqueue(
                 QueueEntry(kind=QueueKind.PROMPT, text=ScenarioName.ANSWER.value)
