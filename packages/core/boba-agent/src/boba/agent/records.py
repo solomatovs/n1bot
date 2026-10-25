@@ -978,8 +978,11 @@ class FeedSink(Protocol):
         """Текст ответа модели."""
 
     @abstractmethod
-    def tool_call(self, message_id: str, call: ToolUseBlock) -> None:
-        """Вызов инструмента в ответе модели."""
+    def tool_call(
+        self, message_id: str, call: ToolUseBlock, source: Mapping[str, Any] | None
+    ) -> None:
+        """Вызов инструмента в ответе модели и его источник для показа,
+        каким его дал клиент; None — источника нет."""
 
     @abstractmethod
     def tool_result(self, result: ToolResultBlock, record: ToolResultRecord) -> None:
@@ -1325,12 +1328,16 @@ class CompactSummaryRecord(UserRecord):
 
 class AssistantRecord(ChainRecord):
     """Основа записей `assistant`: один блок ответа на запись. Наследники —
-    ответ модели и заглушка «ответа нет»."""
+    ответ модели и заглушка «ответа нет». `tool_source` блока tool_use —
+    то, что клиент попросил сохранить для показа вызова инструмента своего
+    сервера, в форме клиента: агент его не разбирает, лента отдаёт клиенту
+    как есть; у прочих блоков и вызовов без источника его нет."""
 
     type: Literal[RecordType.ASSISTANT] = RecordType.ASSISTANT
     message: AssistantMessage
     api_block_index: int = 0
     request_id: str
+    tool_source: dict[str, Any] | None = None
 
     def is_synthetic(self) -> bool:
         return self.message.model == Synthetic.MODEL
@@ -1395,7 +1402,7 @@ class AssistantRecord(ChainRecord):
                 sink.message(message_id, block.text)
                 continue
 
-            sink.tool_call(message_id, block)
+            sink.tool_call(message_id, block, self.tool_source)
 
 
 class ReplyRecord(AssistantRecord):

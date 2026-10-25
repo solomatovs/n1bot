@@ -25,6 +25,7 @@ from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 import mcp_types as mt
 import pytest
+from acp.experimental.v2 import schema
 from chainlit.context import ChainlitContext
 from chainlit.session import WebsocketSession
 from chainlit.step import Step, StepDict
@@ -52,9 +53,10 @@ from boba.aid.infra.session import (
     current_session,
 )
 from boba.aid.infra.thread_room import ThreadSurfaces
-from boba.aid.rendering.acp_view import ToolCards
+from boba.aid.rendering.acp_view import AppSections
 from boba.aid.rendering.chat_view import ChatSink, ChatView, StepRole
 from boba.aid.rendering.renderer import NoSurface, RenderSurface, TabSurfaces
+from boba.aid.rendering.tool import AppMeta, AppSource, AppUnread, ToolSource
 from boba.auth import JwtTokens
 from boba.cancellation import RunCancellation
 from boba.canvas.canvas import CanvasSignal, SignalTransport
@@ -116,7 +118,12 @@ from boba.toolkit.dag import (
 )
 from boba.toolkit.mcp import McpResults
 from boba.toolkit.result import ToolResultBase
-from boba.transport.acp.protocol import McpErrorOutcome, McpMessage, McpVersion
+from boba.transport.acp.protocol import (
+    McpErrorOutcome,
+    McpMessage,
+    McpVersion,
+    ToolSourceContent,
+)
 from boba.workspace.binaries import TrustedBinaries
 from boba.workspace.launcher import MountingConfig, ReadWindow
 
@@ -576,40 +583,125 @@ class OwnerRows(UserRows):
         raise NotImplementedError
 
 
-class KnownCards(ToolCards):
-    """Реализация ToolCards тестов ленты: карточки, описания и секции apps
-    серверов заданы тестом; сервера без них лента не знает."""
+class KnownSources(AppSections):
+    """Серверы тестов ленты: карточки инструментов, расширения описаний,
+    ресурсы приложений и секции apps заданы тестом. Как реализация
+    AppSections даёт ленте секции apps; call собирает первое уведомление
+    вызова с источником (ToolSource) так, как его собрал бы ретранслятор:
+    карточка инструмента (у незнакомого инструмента известного сервера —
+    пустая схема), описание сервера, карточки инструментов узлов вложенного
+    вызова и ресурс приложения. Вызов инструмента незнакомого сервера
+    источника не несёт."""
 
     def __init__(
         self,
         tools: Mapping[str, Sequence[mt.Tool]],
         described: Mapping[str, mt.ServerCapabilities],
         apps: Mapping[str, McpServerApps],
+        resources: Mapping[str, AppSource] | None = None,
     ) -> None:
         self._tools = tools
         self._described = described
         self._apps = apps
+        self._resources: Mapping[str, AppSource] = {}
+        if resources is not None:
+            self._resources = resources
 
-    async def card(self, server: str, tool: str) -> mt.Tool | None:
+        self._names = McpToolNames()
+        self._app_meta = AppMeta()
+
+    def apps(self, server: str) -> McpServerApps | None:
+        return self._apps.get(server)
+
+    def call(
+        self, call_id: str, name: str, args: Mapping[str, Any]
+    ) -> schema.SessionToolCallUpdate:
+        """Первое уведомление вызова name с источником, если сервер знаком."""
+        update = schema.SessionToolCallUpdate(
+            tool_call_id=call_id,
+            name=name,
+            title=f"{name} {dict(args)}",
+            status="pending",
+            raw_input=dict(args),
+        )
+        source = self.source(name, args)
+        if source is None:
+            return update
+
+        dumped = source.model_dump(mode="json", by_alias=True, exclude_none=True)
+        content = ToolSourceContent(source=dumped).wire()
+
+        return update.model_copy(update={"content": [content]})
+
+    def source(self, name: str, args: Mapping[str, Any]) -> ToolSource | None:
+        owner = self._names.parse(name)
+        if owner is None:
+            return None
+
+        cards = self._cards(owner.server)
+        capabilities = self._described.get(owner.server)
+        if cards is None and capabilities is None:
+            return None
+
+        if capabilities is None:
+            capabilities = mt.ServerCapabilities()
+
+        described = mt.DiscoverResult(
+            supported_versions=["2026-07-28"], capabilities=capabilities
+        )
+        tool = self._card(owner.server, owner.tool)
+
+        return ToolSource(
+            server=owner.server,
+            tool=tool,
+            description=described,
+            nodes=list(self._nodes(owner.server, described, owner.tool, args)),
+            app=self._app(owner.server, tool),
+        )
+
+    def _cards(self, server: str) -> Sequence[mt.Tool] | None:
+        return self._tools.get(server)
+
+    def _card(self, server: str, tool: str) -> mt.Tool:
         for known in self._tools.get(server, ()):
             if known.name == tool:
                 return known
 
-        return None
+        return mt.Tool(name=tool, input_schema={"type": "object"})
 
-    async def described(self, server: str) -> McpDescription | None:
-        capabilities = self._described.get(server)
-        if capabilities is None:
+    def _nodes(
+        self,
+        server: str,
+        described: mt.DiscoverResult,
+        tool: str,
+        args: Mapping[str, Any],
+    ) -> Iterator[mt.Tool]:
+        nested = McpDescription(server, described).nested_calls()
+        if nested is None:
+            return
+
+        if nested.tool != tool:
+            return
+
+        for node in nested.calls(dict(args)):
+            yield self._card(server, node.tool)
+
+    def _app(self, server: str, tool: mt.Tool) -> AppSource | None:
+        if server not in self._apps:
             return None
 
-        result = mt.DiscoverResult(
-            supported_versions=["2026-07-28"], capabilities=capabilities
-        )
+        config = self._app_meta.of(tool)
+        if config is None:
+            return None
 
-        return McpDescription(f"stand server {server!r}", result)
+        uri = config.resource_uri
+        if uri is None:
+            return None
 
-    def apps(self, server: str) -> McpServerApps | None:
-        return self._apps.get(server)
+        if resource := self._resources.get(uri):
+            return resource
+
+        return AppUnread(error=f"the stand has no resource {uri}")
 
 
 class PerCallStreams(RemoteStreams):

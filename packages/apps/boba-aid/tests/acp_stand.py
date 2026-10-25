@@ -721,9 +721,12 @@ class AppsHost:
         return self._sandbox.drawn(self.HOST, self._mcp_port)
 
     def stop(self) -> None:
-        """Сервер, у которого ещё открыты потоки чата, сам не выходит: после
-        срока его снимает kill."""
         self._sandbox.stop()
+        self.stop_server()
+
+    def stop_server(self) -> None:
+        """Только сервер MCP, песочница остаётся. Сервер, у которого ещё
+        открыты потоки чата, сам не выходит: после срока его снимает kill."""
         self._server.terminate()
         try:
             self._server.wait(timeout=self.STOP_SEC)

@@ -13,7 +13,7 @@ import asyncio
 from collections.abc import Mapping, Sequence
 from enum import StrEnum
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import uvicorn
 from pydantic import SecretStr
@@ -260,6 +260,10 @@ class StandTools(ToolServer):
             pending.append(asyncio.ensure_future(self._run(call)))
 
         return pending
+
+    async def source(self, call: ToolUseBlock) -> Mapping[str, Any] | None:
+        """Клиента у стенда нет: источника вызова тоже."""
+        return None
 
     async def _run(self, call: ToolUseBlock) -> ToolReply:
         name = StandToolName(self._names.tool_of(call.name))

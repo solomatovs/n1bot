@@ -1,7 +1,8 @@
 """Элементы ленты, которым нужен объект chainlit: график plotly из фигуры
 блока ответа, карточка вьювера канваса, карточка приложения MCP Apps в
 ленте и вопрос агента пользователю, а также разбор настроек MCP Apps
-инструмента из его _meta.ui.
+инструмента из его _meta.ui и источник вызова инструмента (ToolSource) —
+то, по чему лента рисует вызов без обращения к серверу.
 
 Ошибки: своих не выпускает.
 """
@@ -10,16 +11,27 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from enum import StrEnum
-from typing import Any, ClassVar
+from typing import Annotated, Any, ClassVar, Literal, TypeAlias
 
 import chainlit as cl
 import mcp_types as mt
 from fastmcp.apps.config import AppConfig
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from boba.toolkit.result import VisualResult
 
-__all__ = ["AppMeta", "AppProp", "ChatElements", "ElementName", "ToolAppView"]
+__all__ = [
+    "AppMeta",
+    "AppProp",
+    "AppResource",
+    "AppResourceKind",
+    "AppSource",
+    "AppUnread",
+    "ChatElements",
+    "ElementName",
+    "ToolAppView",
+    "ToolSource",
+]
 
 
 class AppMeta:
@@ -51,33 +63,80 @@ class AppMeta:
         return AppConfig.model_validate(ui)
 
 
+class AppResourceKind(StrEnum):
+    """Виды ресурса приложения в источнике вызова."""
+
+    READ = "read"
+    FAILED = "failed"
+
+
+class AppResource(BaseModel):
+    """Ресурс приложения MCP Apps на момент вызова — итог resources/read со
+    всеми contents и их _meta: по нему приложение рисуется без сервера."""
+
+    kind: Literal[AppResourceKind.READ] = AppResourceKind.READ
+    resource: mt.ReadResourceResult
+
+
+class AppUnread(BaseModel):
+    """Ресурс приложения на момент вызова не прочитан: причина для человека,
+    её показывает карточка приложения."""
+
+    kind: Literal[AppResourceKind.FAILED] = AppResourceKind.FAILED
+    error: str = Field(min_length=1)
+
+
+AppSource: TypeAlias = Annotated[AppResource | AppUnread, Field(discriminator="kind")]
+"""Ресурс приложения в источнике вызова по виду kind."""
+
+
+class ToolSource(BaseModel):
+    """Источник вызова инструмента сервера MCP на момент вызова: всё, по
+    чему лента рисует вызов, не спрашивая сервер, — имя сервера профиля,
+    карточка инструмента, описание сервера (server/discover с его
+    расширениями журнала и вложенных вызовов), карточки инструментов, которые
+    зовут узлы вложенного вызова, и ресурс приложения MCP Apps (None — у
+    инструмента нет приложения либо чат не рисует приложений сервера).
+
+    Собирает ретранслятор (McpRelay.source) по запросу агента
+    `_boba/tool_source`; агент хранит его в истории и отдаёт содержимым
+    первого уведомления вызова, ленту по нему рисует UpdateView — вживую и
+    при воспроизведении одинаково.
+    """
+
+    server: str = Field(min_length=1)
+    tool: mt.Tool
+    description: mt.DiscoverResult
+    nodes: list[mt.Tool] = Field(default_factory=list)
+    app: AppSource | None = None
+
+
 class ToolAppView(BaseModel):
     """Приложение MCP Apps инструмента: сервер профиля, описание
     инструмента на сервере (имя — в шапке карточки, описание целиком —
-    toolInfo контекста хоста), адрес ui:// ресурса приложения и
+    toolInfo контекста хоста), адрес ui:// ресурса приложения, ресурс
+    целиком на момент вызова (или причина, по которой его нет) и
     страница-прокси песочницы сервера. Знает его показ ленты (ToolMedia) по
     секции apps сервера и _meta.ui инструмента; элемент карточки строит
-    ChatElements.app."""
+    ChatElements.app и рисует ресурс без resources/read."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     server: str
     tool: mt.Tool
     resource_uri: str
+    resource: AppSource
     sandbox_url: str
 
 
 class AppProp(StrEnum):
-    """Поля props элемента ToolApp сверх ToolAppView: вызов, его аргументы,
-    исход — итог tools/call либо причина, по которой итога не будет, — и
-    ресурс приложения (итог resources/read), если он уже известен: тогда
-    элемент сам его не читает."""
+    """Поля props элемента ToolApp сверх ToolAppView: вызов, его аргументы
+    и исход — итог tools/call либо причина, по которой итога не будет."""
 
     CALL_ID = "call_id"
     INPUT = "input"
     RESULT = "result"
     CANCELLED = "cancelled"
-    RESOURCE = "resource"
 
 
 class ElementName(StrEnum):

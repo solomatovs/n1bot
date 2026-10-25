@@ -77,7 +77,7 @@ from boba.aid.chat.ui_text import UiText
 from boba.aid.data.data_layer import FeedRows
 from boba.aid.domain.fields import StepField
 from boba.aid.rendering.acp_view import (
-    ServerCards,
+    ServerApps,
     SessionUpdate,
     ToolMedia,
     UpdateView,
@@ -90,7 +90,7 @@ from boba.cancellation import RunCancellation
 from boba.identity.context import Scope
 from boba.identity.errors import InternalServiceError
 from boba.identity.locks import LiveLocks, LockKeeper, LockMode, LockPurpose
-from boba.mcp_client.client import McpCaller, McpServers
+from boba.mcp_client.client import McpServers
 from boba.messaging import MessageBus, PayloadStore, TurnOutcome
 from boba.runtime.storage import StorageClient
 from boba.transport.acp.protocol import ErrorDataKey
@@ -736,11 +736,11 @@ class AgentFeed(TurnRenderer):
 
 class AgentFeeds(TurnRenderers):
     """Фабрика приёмников потока: на агента треда — переводчик воспроизведения
-    во вкладке, поверхность рассылки треда и шина инстанса. Карточки
-    инструментов серверов профиля (вид аргументов, журнал) переводчик берёт
-    у портов клиента MCP чата от имени владельца треда (ServerCards); сервер,
-    который не ответил, — его вызовы рисуются без карточек, о самом сервере
-    пользователю сообщает агент. Срок ответа на вопрос агента — из [agent].
+    во вкладке, поверхность рассылки треда и шина инстанса. Вызовы
+    инструментов переводчик рисует по их источникам из истории агента, без
+    запросов к серверам; из настроек чата он берёт только секции apps
+    серверов (ServerApps).
+    Срок ответа на вопрос агента — из [agent].
     Создаётся провайдером процесса.
     """
 
@@ -768,8 +768,7 @@ class AgentFeeds(TurnRenderers):
         """Ошибки:
         InternalServiceError — у текущей сессии chainlit нет сокета.
         """
-        caller = McpCaller(login=identity.login, roles=identity.roles)
-        media = ToolMedia(ServerCards(self._servers, caller))
+        media = ToolMedia(ServerApps(self._servers))
         anchor = self._surfaces.anchor()
         view = ChatView(
             identity.thread_id,

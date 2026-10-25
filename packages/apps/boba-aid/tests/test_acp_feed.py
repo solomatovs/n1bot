@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import base64
 import json
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar, cast
 from urllib.parse import urlsplit
@@ -17,7 +17,7 @@ import chainlit.data as chainlit_data
 import mcp_types as mt
 import pytest
 from acp.experimental.v2 import schema
-from aid_stand import KnownCards, Seed, get_bytes
+from aid_stand import KnownSources, Seed, get_bytes
 from chainlit.context import ChainlitContext, context_var
 from chainlit.step import StepDict
 from pydantic import AnyUrl
@@ -33,7 +33,6 @@ from boba.aid.domain.keys import CanvasFileUrl
 from boba.aid.rendering.acp_view import (
     SessionUpdate,
     SessionUpdateCodec,
-    ToolCards,
     ToolMedia,
     UpdateView,
 )
@@ -47,11 +46,12 @@ from boba.aid.rendering.chat_view import (
     StepText,
 )
 from boba.aid.rendering.renderer import ChatRenderer, NoSurface
+from boba.aid.rendering.tool import AppResource, AppSource
 from boba.canvas.canvas import CanvasAction, CanvasElement, CanvasRegistry
 from boba.canvas.keys import ObjectKey, ScopeDir, WorkspaceKey
 from boba.identity.context import Scope
 from boba.mcp_adapter import JournalUris
-from boba.mcp_client.client import McpDescription, McpServerApps
+from boba.mcp_client.client import McpServerApps
 from boba.messaging import (
     JournalOpened,
     LockToken,
@@ -254,13 +254,9 @@ def _thought(text: str, message_id: str) -> SessionUpdate:
 
 
 def _call(call_id: str, name: str, args: dict[str, Any]) -> SessionUpdate:
-    return schema.SessionToolCallUpdate(
-        tool_call_id=call_id,
-        name=name,
-        title=f"{name} {args}",
-        status="pending",
-        raw_input=dict(args),
-    )
+    """Первое уведомление вызова; у инструмента сервера boba — с источником,
+    в котором сервер объявил журнал (STAND)."""
+    return STAND.call(call_id, name, args)
 
 
 def _asked_call(call_id: str, args: dict[str, Any]) -> SessionUpdate:
@@ -384,6 +380,10 @@ def _declared(*features: ServerFeature) -> mt.ServerCapabilities:
     return mt.ServerCapabilities(extensions=extensions)
 
 
+STAND = KnownSources({}, {"boba": _declared(JOURNAL)}, {})
+"""Серверы ленты по умолчанию: boba с журналом вызовов."""
+
+
 def _labels(recorded: FakeEmitter) -> list[str]:
     """Подписи контейнера хода QUESTION по кадрам ленты, по порядку."""
     container = _id(QUESTION, StepRole.PROCESS)
@@ -401,9 +401,7 @@ def _view(
     runtime_stand: StandRefs, storage: LocalStorageClient, journals: RemoteJournals
 ) -> UpdateView:
     view = ChatView(THREAD, LiveSink(), "u-1", storage, TEXTS, user_name="alice")
-    media = ToolMedia(KnownCards({}, {"boba": _declared(JOURNAL)}, {}))
-
-    return UpdateView(view, THREAD, journals, media)
+    return UpdateView(view, THREAD, journals, ToolMedia(STAND))
 
 
 class TestUpdateViewIds:
@@ -548,7 +546,8 @@ class TestUpdateViewIds:
             },
         }
         query = mt.Tool(name="pg_query", input_schema=arguments)
-        media = ToolMedia(KnownCards({"boba": [query]}, {}, {}))
+        cards = KnownSources({"boba": [query]}, {}, {})
+        media = ToolMedia(cards)
         view = ChatView(
             THREAD,
             LiveSink(),
@@ -560,7 +559,8 @@ class TestUpdateViewIds:
         updates = UpdateView(view, THREAD, RemoteJournals(), media)
         updates.begin_turn(QUESTION)
 
-        await updates.apply(_call(CALL, "mcp__boba__pg_query", {"sql": "select 1"}))
+        call = cards.call(CALL, "mcp__boba__pg_query", {"sql": "select 1"})
+        await updates.apply(call)
 
         step = recorded.last()[_id(CALL, StepRole.TOOL)]
         assert str(step.get(StepField.NAME)).endswith("pg_query")
@@ -903,6 +903,18 @@ class TestToolApps:
     SANDBOX: ClassVar[McpServerApps] = McpServerApps.model_validate(
         {"sandbox_url": "http://localhost:8123/mcp-apps/sandbox.html"}
     )
+    URI: ClassVar[str] = "ui://standard/orders.html"
+    RESOURCE: ClassVar[AppResource] = AppResource(
+        resource=mt.ReadResourceResult(
+            contents=[
+                mt.TextResourceContents(
+                    uri=URI,
+                    mime_type="text/html;profile=mcp-app",
+                    text="<!doctype html><p>orders</p>",
+                )
+            ]
+        )
+    )
     ROWS: ClassVar[list[dict[str, Any]]] = [
         {"id": 7, "customer": "Acme", "status": "new", "total": 120.5}
     ]
@@ -925,13 +937,14 @@ class TestToolApps:
         if apps is not None:
             known["standard"] = apps
 
-        media = ToolMedia(KnownCards({"standard": [self.ORDERS]}, {}, known))
+        resources: dict[str, AppSource] = {self.URI: self.RESOURCE}
+        cards = KnownSources({"standard": [self.ORDERS]}, {}, known, resources)
         view = ChatView(THREAD, LiveSink(), "u-1", storage, TEXTS, user_name="a")
-        updates = UpdateView(view, THREAD, RemoteJournals(), media)
+        updates = UpdateView(view, THREAD, RemoteJournals(), ToolMedia(cards))
         updates.begin_turn(QUESTION)
 
         args = {"rows": self.ROWS, "intent": "Заказы магазина"}
-        await updates.apply(_call(CALL, "mcp__standard__orders", args))
+        await updates.apply(cards.call(CALL, "mcp__standard__orders", args))
 
         return updates
 
@@ -960,6 +973,9 @@ class TestToolApps:
                 mode="json", by_alias=True, exclude_none=True
             ),
             "resource_uri": "ui://standard/orders.html",
+            "resource": self.RESOURCE.model_dump(
+                mode="json", by_alias=True, exclude_none=True
+            ),
             "sandbox_url": "http://localhost:8123/mcp-apps/sandbox.html",
             "call_id": CALL,
             "input": {"rows": self.ROWS},
@@ -1132,7 +1148,7 @@ class TestQuestionRecords:
         self, storage: LocalStorageClient, media: ToolMedia | None = None
     ) -> UpdateView:
         if media is None:
-            media = ToolMedia(KnownCards({}, {}, {}))
+            media = ToolMedia(KnownSources({}, {}, {}))
 
         view = ChatView(THREAD, LiveSink(), "u-1", storage, TEXTS, user_name="a")
         updates = UpdateView(view, THREAD, RemoteJournals(), media)
@@ -1350,8 +1366,30 @@ class TestQuestionRecords:
 
 class TestNestedCallSteps:
     """Вызов инструмента, который сервер объявил несущим вложенные вызовы,
-    рисуется подшагами узлов: имя — инструмент и подпись узла, ход — по
-    ключу узла в `_meta`, итог — по записи узла в structuredContent."""
+    рисуется подшагами узлов: имя — инструмент и подпись узла, вход — по
+    карточке инструмента узла из источника вызова, ход — по ключу узла в
+    `_meta`, итог — по записи узла в structuredContent."""
+
+    NESTED: ClassVar[KnownSources] = KnownSources(
+        {
+            "boba": [
+                mt.Tool(
+                    name="pg_stream_out",
+                    input_schema={
+                        "type": "object",
+                        "properties": {
+                            "sql": {
+                                "type": "string",
+                                "contentMediaType": "application/sql",
+                            }
+                        },
+                    },
+                )
+            ]
+        },
+        {"boba": _declared(JOURNAL, CallDag().feature())},
+        {},
+    )
 
     NODES: ClassVar[list[dict[str, Any]]] = [
         {
@@ -1373,11 +1411,9 @@ class TestNestedCallSteps:
         journals: RemoteJournals,
         nested: bool,
     ) -> UpdateView:
-        features: list[ServerFeature] = [JOURNAL]
+        media = ToolMedia(STAND)
         if nested:
-            features.append(CallDag().feature())
-
-        media = ToolMedia(KnownCards({}, {"boba": _declared(*features)}, {}))
+            media = ToolMedia(self.NESTED)
         view = ChatView(
             THREAD,
             LiveSink(),
@@ -1430,7 +1466,9 @@ class TestNestedCallSteps:
         updates = self._updates(runtime_stand, storage, RemoteJournals(), True)
         updates.begin_turn(QUESTION)
 
-        await updates.apply(_call(CALL, "mcp__boba__workflow", {"nodes": self.NODES}))
+        await updates.apply(
+            self.NESTED.call(CALL, "mcp__boba__workflow", {"nodes": self.NODES})
+        )
 
         steps = recorded.last()
         assert _id(CALL, StepRole.TOOL) not in steps
@@ -1438,7 +1476,7 @@ class TestNestedCallSteps:
         sink = steps[_id(f"{CALL}_1", StepRole.TOOL)]
         assert " pg_stream_out · copy orders out" in str(source.get(StepField.NAME))
         assert " ch_stream_in · load orders" in str(sink.get(StepField.NAME))
-        assert "select 1" in str(source.get("input"))
+        assert str(source.get("input")).startswith("```sql\nselect 1\n```")
 
     @pytest.mark.anyio
     async def test_progress_goes_to_the_node_named_in_meta(
@@ -1449,7 +1487,9 @@ class TestNestedCallSteps:
     ) -> None:
         updates = self._updates(runtime_stand, storage, RemoteJournals(), True)
         updates.begin_turn(QUESTION)
-        await updates.apply(_call(CALL, "mcp__boba__workflow", {"nodes": self.NODES}))
+        await updates.apply(
+            self.NESTED.call(CALL, "mcp__boba__workflow", {"nodes": self.NODES})
+        )
 
         text = schema.TextContentBlock(text="connecting to clickhouse")
         progress = schema.SessionToolCallUpdate(
@@ -1478,7 +1518,9 @@ class TestNestedCallSteps:
         updates = self._updates(runtime_stand, storage, RemoteJournals(), True)
         updates.begin_turn(QUESTION)
         await updates.view.await_model()
-        await updates.apply(_call(CALL, "mcp__boba__workflow", {"nodes": self.NODES}))
+        await updates.apply(
+            self.NESTED.call(CALL, "mcp__boba__workflow", {"nodes": self.NODES})
+        )
         text = schema.TextContentBlock(text="connecting to clickhouse")
         progress = schema.SessionToolCallUpdate(
             tool_call_id=CALL,
@@ -1506,7 +1548,9 @@ class TestNestedCallSteps:
         journals = RemoteJournals()
         updates = self._updates(runtime_stand, storage, journals, True)
         updates.begin_turn(QUESTION)
-        await updates.apply(_call(CALL, "mcp__boba__workflow", {"nodes": self.NODES}))
+        await updates.apply(
+            self.NESTED.call(CALL, "mcp__boba__workflow", {"nodes": self.NODES})
+        )
 
         opened = _journal_opened(CALL, "srv-call_1", "sink")
         await updates.journal_opened(opened)
@@ -1526,7 +1570,9 @@ class TestNestedCallSteps:
         journals = RemoteJournals()
         updates = self._updates(runtime_stand, storage, journals, True)
         updates.begin_turn(QUESTION)
-        await updates.apply(_call(CALL, "mcp__boba__workflow", {"nodes": self.NODES}))
+        await updates.apply(
+            self.NESTED.call(CALL, "mcp__boba__workflow", {"nodes": self.NODES})
+        )
 
         await updates.apply(
             self._failed(CALL, _result(self._workflow(), ["srv-call_0", "srv-call_1"]))
@@ -1552,7 +1598,9 @@ class TestNestedCallSteps:
     ) -> None:
         updates = self._updates(runtime_stand, storage, RemoteJournals(), True)
         updates.begin_turn(QUESTION)
-        await updates.apply(_call(CALL, "mcp__boba__workflow", {"nodes": self.NODES}))
+        await updates.apply(
+            self.NESTED.call(CALL, "mcp__boba__workflow", {"nodes": self.NODES})
+        )
 
         refusal = ErrorResult(
             message="stream plan: channel c has no readers", error_kind="x"
@@ -1805,7 +1853,10 @@ class TestResultsFromRawOutput:
             renderer = ChatRenderer(
                 thread_id,
                 UpdateView(
-                    view, thread_id, RemoteJournals(), ToolMedia(KnownCards({}, {}, {}))
+                    view,
+                    thread_id,
+                    RemoteJournals(),
+                    ToolMedia(KnownSources({}, {}, {})),
                 ),
                 payloads,
                 NoSurface(),
@@ -1829,7 +1880,7 @@ class TestResultsFromRawOutput:
         try:
             view = ChatView(thread_id, LiveSink(), seeded.user.id, storage, TEXTS)
             replay = UpdateView(
-                view, thread_id, RemoteJournals(), ToolMedia(KnownCards({}, {}, {}))
+                view, thread_id, RemoteJournals(), ToolMedia(KnownSources({}, {}, {}))
             )
             await replay.apply(_question())
             for update in self._updates(thread_id):
@@ -1958,23 +2009,6 @@ class TestElementIdsWithoutKey:
         assert len(set(ids)) == 4, ids
 
 
-class SilentCards(ToolCards):
-    """Реализация ToolCards, у которой ничего нельзя спросить: лента команды
-    вкладки обязана рисоваться из записи, без карточек и описаний серверов."""
-
-    def __init__(self, apps: Mapping[str, McpServerApps]) -> None:
-        self._apps = apps
-
-    async def card(self, server: str, tool: str) -> mt.Tool | None:
-        raise AssertionError(f"the feed asked server {server} for the card {tool}")
-
-    async def described(self, server: str) -> McpDescription | None:
-        raise AssertionError(f"the feed asked server {server} for its description")
-
-    def apps(self, server: str) -> McpServerApps | None:
-        return self._apps.get(server)
-
-
 class TestTabCommands:
     """Команда, которую исполнила вкладка, — строка вызова и итог из записи
     агента (`_boba/command_outcome`): текст — сообщением чата, приложение —
@@ -2002,7 +2036,7 @@ class TestTabCommands:
         self, storage: LocalStorageClient, command: str, outcome: CommandOutcome
     ) -> None:
         """Строка вызова и итог — через кодек шины, как у другой вкладки."""
-        media = ToolMedia(SilentCards({"standard": TestToolApps.SANDBOX}))
+        media = ToolMedia(KnownSources({}, {}, {"standard": TestToolApps.SANDBOX}))
         view = ChatView(THREAD, LiveSink(), "u-1", storage, TEXTS, user_name="a")
         updates = UpdateView(view, THREAD, RemoteJournals(), media)
         codec = SessionUpdateCodec()
@@ -2049,7 +2083,8 @@ class TestTabCommands:
         assert props["result"] == self.APP.result.model_dump(
             mode="json", by_alias=True, exclude_none=True
         )
-        assert props["resource"] == self.APP.resource.model_dump(
+        resource = AppResource(resource=self.APP.resource)
+        assert props["resource"] == resource.model_dump(
             mode="json", by_alias=True, exclude_none=True
         )
         assert message.get(StepField.PARENT_ID) is None
@@ -2267,7 +2302,7 @@ class TestBlockDrawings:
     ) -> None:
         view = ChatView(THREAD, LiveSink(), "u-1", storage, TEXTS)
         updates = UpdateView(
-            view, THREAD, RemoteJournals(), ToolMedia(KnownCards({}, {}, {}))
+            view, THREAD, RemoteJournals(), ToolMedia(KnownSources({}, {}, {}))
         )
         await updates.apply(_question())
         await updates.apply(_call(CALL, name, {}))
