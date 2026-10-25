@@ -17,8 +17,8 @@ services:
     restart: unless-stopped
     stop_grace_period: 30s
     image: boba-mcp:0.0.30.dev5
-    hostname: boba-mcp
-    container_name: boba-mcp
+    hostname: mcp
+    container_name: mcp
     networks:
       default:
         ipv4_address: ${BOBA_ADDRESS}
