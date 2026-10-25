@@ -16,9 +16,9 @@ import asyncio
 from collections.abc import Generator
 from contextlib import contextmanager
 from enum import StrEnum
-from typing import ClassVar
+from typing import Any, ClassVar
 
-from ldap3 import AUTO_BIND_DEFAULT, NONE, Connection, Server
+from ldap3 import ANONYMOUS, AUTO_BIND_DEFAULT, NONE, SIMPLE, Connection, Server
 from ldap3.core.exceptions import (
     LDAPBindError,
     LDAPCommunicationError,
@@ -36,6 +36,7 @@ from ldap3.core.exceptions import (
 
 from boba.identity.directory import (
     ADUserEntry,
+    DirectoryAuth,
     DirectoryBinding,
     DirectorySearch,
     LDAPAccessDeniedError,
@@ -44,6 +45,7 @@ from boba.identity.directory import (
     LDAPInvalidCredentialsError,
     LDAPServerUnavailableError,
     LDAPUserNotFoundError,
+    SimpleBind,
     UserDirectory,
 )
 
@@ -96,7 +98,8 @@ class Ldap3Directory(UserDirectory):
     @contextmanager
     def _bound(self, binding: DirectoryBinding) -> Generator[Connection, None, None]:
         connection: Connection | None = None
-        where = f"ldap {binding.server} as {binding.bind_dn!r}"
+        where = f"ldap {binding.server} with {binding.auth.trace()}"
+        credentials = self._credentials(binding.auth)
         try:
             server = Server(
                 host=binding.server,
@@ -105,8 +108,7 @@ class Ldap3Directory(UserDirectory):
             )
             with Connection(
                 server=server,
-                user=binding.bind_dn,
-                password=binding.bind_password.get_secret_value(),
+                **credentials,
                 auto_bind=AUTO_BIND_DEFAULT,
                 # без raise_exceptions ошибки search'а молча дают пустой результат
                 raise_exceptions=True,
@@ -144,3 +146,15 @@ class Ldap3Directory(UserDirectory):
         finally:
             if connection is not None:
                 connection.unbind()
+
+    @staticmethod
+    def _credentials(auth: DirectoryAuth) -> dict[str, Any]:
+        """Аргументы Connection по способу bind'а."""
+        if isinstance(auth, SimpleBind):
+            return {
+                "user": auth.user,
+                "password": auth.password.get_secret_value(),
+                "authentication": SIMPLE,
+            }
+
+        return {"authentication": ANONYMOUS}

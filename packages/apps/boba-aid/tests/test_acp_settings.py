@@ -230,7 +230,7 @@ class TestSettingsFile:
         provider = body["models"][launch.profile]["provider"]
         assert provider["kind"] == "openai"
         assert provider["baseUrl"] == model.base_url()
-        assert provider["apiKey"] == API_KEY
+        assert provider["auth"] == {"method": "bearer", "token": API_KEY}
         assert body["models"][launch.profile]["contextWindow"] == 32000
         assert body["permissions"] == {"allowBypass": True}
         assert body["history"]["kind"] == "postgres"

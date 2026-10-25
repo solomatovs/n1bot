@@ -27,6 +27,7 @@ from boba.identity.directory import (
     LDAPInvalidCredentialsError,
     LDAPServerUnavailableError,
     LDAPUserNotFoundError,
+    SimpleBind,
     UserDirectory,
 )
 from boba.identity.errors import (
@@ -111,11 +112,9 @@ class LdapSignIn(PasswordSignIn):
 
     async def sign_in(self, username: str, password: str) -> SignedIn | None:
         # личность подтверждаем bind'ом под пользователем
-        binding = DirectoryBinding(
-            server=self._config.server,
-            bind_dn=LoginTemplate.render(self._config.bind_dn_template, username),
-            bind_password=SecretStr(password),
-        )
+        bind_user = LoginTemplate.render(self._config.bind_dn_template, username)
+        auth = SimpleBind(method="simple", user=bind_user, password=SecretStr(password))
+        binding = DirectoryBinding(server=self._config.server, auth=auth)
         search = DirectorySearch(
             base_dn=self._config.base_dn,
             filter=LoginTemplate.render(self._config.user_filter, username),
@@ -141,12 +140,12 @@ class LdapSignIn(PasswordSignIn):
             self._logger.warning(
                 "ldap sign-in of %r: bind as %s on %s rejected: %s",
                 username,
-                binding.bind_dn,
+                bind_user,
                 server,
                 e,
             )
             message = (
-                f"Invalid username or password: bind as {binding.bind_dn} "
+                f"Invalid username or password: bind as {bind_user} "
                 f"on {server} rejected"
             )
             raise AuthenticationError(message) from e
