@@ -19,12 +19,11 @@ from chainlit.types import ThreadDict
 from boba.aid.domain.fields import StepField, ThreadField
 from boba.aid.infra import providers
 from boba.aid.infra.session import (
-    ChainlitSession,
     SocketSend,
     current_session,
     session_source_ref,
 )
-from boba.aid.rendering.acp_view import ServerCards, ToolMedia, UpdateView
+from boba.aid.rendering.acp_view import ServerApps, ToolMedia, UpdateView
 from boba.aid.rendering.chat_view import ChatView, LiveSink
 from boba.aid.rendering.renderer import (
     ChatRenderers,
@@ -37,7 +36,6 @@ from boba.canvas.canvas import CanvasSignal, SignalTransport
 from boba.identity.context import Scope
 from boba.identity.errors import InternalServiceError
 from boba.identity.locks import LockMode
-from boba.mcp_client.client import McpCaller
 from boba.messaging import (
     CanvasChanged,
     Envelope,
@@ -280,10 +278,7 @@ class ChatRoomSurface(RenderSurface):
         storage = root.resolved(providers.storage_provider)
         texts = root.resolved(providers.feed_text)
         servers = root.resolved(providers.mcp_servers)
-        # роли из metadata пользователя: рендерер живёт дольше токена вкладки
-        roles = ChainlitSession.roles_of(session.user)
-        caller = McpCaller(login=session.identifier, roles=roles)
-        media = ToolMedia(ServerCards(servers, caller))
+        media = ToolMedia(ServerApps(servers))
         view = ChatView(thread_id, LiveSink(), str(owner), storage, texts)
 
         return ChatRenderers.ensure(

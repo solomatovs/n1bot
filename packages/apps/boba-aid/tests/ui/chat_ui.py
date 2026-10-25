@@ -16,6 +16,7 @@ from playwright.sync_api import (
     ConsoleMessage,
     Error,
     Page,
+    Request,
     ViewportSize,
     WebSocket,
 )
@@ -127,3 +128,32 @@ class ChatOpener:
             context.close()
 
         self.contexts.clear()
+
+
+class AppReads:
+    """Запросы вкладки к серверной части чата, которые просят ресурс
+    приложения (действие mcp_app_read) — по сокету и по HTTP; ведётся с
+    открытия треда."""
+
+    ACTION: ClassVar[str] = "mcp_app_read"
+
+    def __init__(self, page: Page) -> None:
+        self.seen: list[str] = []
+        page.on("websocket", self._socket)
+        page.on("request", self._request)
+
+    def _socket(self, socket: WebSocket) -> None:
+        socket.on("framesent", self._frame)
+
+    def _frame(self, payload: str | bytes) -> None:
+        text = str(payload)
+        if self.ACTION in text:
+            self.seen.append(text[:200])
+
+    def _request(self, request: Request) -> None:
+        body = request.post_data
+        if body is None:
+            return
+
+        if self.ACTION in body:
+            self.seen.append(f"{request.method} {request.url}: {body[:200]}")

@@ -56,6 +56,12 @@ another process», пока замок занят; когда держатель
 ближайшей границе шага, — и отвечает, когда её уведомления ушли: запись
 отдаётся `user_message` с набранным текстом и `_boba/command_outcome` с
 итогом, вживую и при воспроизведении одинаково, модели она не уходит.
+Расширение источника вызова: клиент, объявивший `_boba/tool_source` в
+`clientCapabilities._meta` initialize, перед записью каждого вызова
+инструмента своего сервера получает запрос `_boba/tool_source` и отвечает,
+что сохранить для показа вызова; ответ ложится в запись вызова и уходит
+содержимым первого уведомления `tool_call` — вживую и при воспроизведении
+одинаково.
 
 Ошибки:
 RequestError — ошибка JSON-RPC клиенту: параметры запроса (-32602),
@@ -199,6 +205,8 @@ from boba.transport.acp.protocol import (
     MetaKey,
     SessionRecordRequest,
     StopReason,
+    ToolSourceContent,
+    ToolSourceRequest,
     ToolStatus,
 )
 
@@ -255,6 +263,12 @@ ContentBlock: TypeAlias = (
     | schema.ResourceContentBlock
     | schema.EmbeddedResourceContentBlock
     | schema.OtherContentBlock
+)
+ToolCallContent: TypeAlias = (
+    schema.ContentToolCallContent
+    | schema.DiffToolCallContent
+    | schema.TerminalToolCallContent
+    | schema.OtherToolCallContent
 )
 McpServerBlock: TypeAlias = (
     schema.HttpMcpServer
@@ -613,10 +627,12 @@ class FeedPainter(FeedSink):
             schema.AgentMessageUpdate(message_id=message_id, content=content)
         )
 
-    def tool_call(self, message_id: str, call: ToolUseBlock) -> None:
+    def tool_call(
+        self, message_id: str, call: ToolUseBlock, source: Mapping[str, Any] | None
+    ) -> None:
         self._stream.confirm(message_id)
         hints = self._hints.tool_hints(call.name)
-        self._out.append(self._mapping.tool_call(call, hints))
+        self._out.append(self._mapping.tool_call(call, hints, source))
 
     def tool_result(self, result: ToolResultBlock, record: ToolResultRecord) -> None:
         self._out.append(self._mapping.tool_result(result, record))
@@ -998,13 +1014,22 @@ class AcpMapping:
         return updates
 
     def tool_call(
-        self, block: ToolUseBlock, hints: ToolHints | None
+        self,
+        block: ToolUseBlock,
+        hints: ToolHints | None,
+        source: Mapping[str, Any] | None,
     ) -> schema.SessionToolCallUpdate:
         """Первое уведомление вызова; у вопроса пользователю (AskUserQuestion)
-        в `_meta` — признак MetaKey.QUESTION, по нему клиент рисует вопрос."""
+        в `_meta` — признак MetaKey.QUESTION, по нему клиент рисует вопрос;
+        источник вызова, который дал клиент, — содержимым вида
+        `_boba/tool_source`."""
         meta: dict[str, Any] | None = None
         if block.name == AskUserQuestionTool.NAME:
             meta = {MetaKey.QUESTION.value: True}
+
+        content: list[ToolCallContent] | None = None
+        if source is not None:
+            content = [ToolSourceContent(source=dict(source)).wire()]
 
         return schema.SessionToolCallUpdate(
             tool_call_id=block.id,
@@ -1012,6 +1037,7 @@ class AcpMapping:
             title=self._titles.title(block.name, block.input),
             kind=self.tool_kind(hints),
             status=ToolStatus.PENDING,
+            content=content,
             raw_input=dict(block.input),
             field_meta=meta,
         )
@@ -1529,6 +1555,33 @@ class ClientLink:
         self._side = side
         self._connection = connection
         self._home = home
+        self._sources = False
+        """Клиент объявил расширение источника вызова в initialize."""
+
+    def declared(self, capabilities: schema.ClientCapabilities | None) -> None:
+        """Что клиент объявил в `clientCapabilities._meta` initialize:
+        расширение источника вызова `_boba/tool_source`."""
+        if capabilities is None:
+            return
+
+        meta = capabilities.field_meta
+        if meta is None:
+            return
+
+        self._sources = meta.get(BobaExtension.TOOL_SOURCE.value) is True
+
+    async def tool_source(self, request: ToolSourceRequest) -> dict[str, Any] | None:
+        """Источник вызова у клиента; None — клиент расширения не объявил.
+
+        Ошибки:
+        AcpTransportError, RequestError — как у AgentSide.tool_source.
+        """
+        if not self._sources:
+            return None
+
+        reply = await self._home.run(self._side.tool_source(request))
+
+        return reply.source
 
     async def mcp_request(
         self,
@@ -2317,6 +2370,49 @@ class AcpToolServer(ToolServer):
 
         return pending
 
+    async def source(self, call: ToolUseBlock) -> Mapping[str, Any] | None:
+        """Источник вызова у клиента запросом `_boba/tool_source` в срок
+        списка. Клиент без расширения — None; отказ или молчание клиента —
+        тоже None с причиной в журнале: вызов исполняется и без источника,
+        клиент нарисует его без него."""
+        request = ToolSourceRequest(
+            session_id=self._relay.session_id,
+            tool_call_id=call.id,
+            server_id=self._server.server_id,
+            name=self._names.tool_of(call.name),
+            arguments=dict(call.input),
+        )
+        limit = self._limits.list_timeout_sec
+        try:
+            async with asyncio.timeout(limit):
+                return await self._link.tool_source(request)
+        except TimeoutError:
+            logger.warning(
+                "mcp: %s: the client gave no source of call %s within %s s, the "
+                "call is kept without it",
+                self._what(call),
+                call.id,
+                limit,
+            )
+        except RequestError as exc:
+            logger.warning(
+                "mcp: %s: the client refused the source of the call with ACP "
+                "error %s %s: %r; the call is kept without it",
+                self._what(call),
+                exc.code,
+                exc,
+                exc.data,
+            )
+        except AcpTransportError as exc:
+            logger.warning(
+                "mcp: %s: the source of the call got no answer: %s; the call is "
+                "kept without it",
+                self._what(call),
+                exc,
+            )
+
+        return None
+
     async def _call(self, call: ToolUseBlock) -> ToolReply:
         """Вызов `tools/call` с раундами ввода: просьбу сервера о вводе
         (input_required) агент задаёт пользователю формами и повторяет вызов
@@ -2620,6 +2716,10 @@ class McpResourceTools(ToolServer):
 
         return pending
 
+    async def source(self, call: ToolUseBlock) -> Mapping[str, Any] | None:
+        """Инструменты ресурсов — свои у агента: источника у их вызова нет."""
+        return None
+
     async def _call(self, call: ToolUseBlock) -> ToolReply:
         """Один вызов; наружу идёт только отмена (контракт ToolServer)."""
         try:
@@ -2830,6 +2930,15 @@ class SessionMcp(McpServerSet, ToolServer):
             ordered.append(pending[position])
 
         return ordered
+
+    async def source(self, call: ToolUseBlock) -> Mapping[str, Any] | None:
+        """Источник вызова у того сервера, чей это инструмент."""
+        servers = list(self._offering())
+        owner = self._owner(servers, call.name)
+        if owner is None:
+            return None
+
+        return await servers[owner].source(call)
 
     def _offering(self) -> Iterator[ToolServer]:
         yield from self._servers
@@ -3055,6 +3164,10 @@ class SessionRelay(EventSink, ToolHintSource):
     def elicits(self) -> bool:
         """Клиент объявил формы `elicitation.form`."""
         return self._elicits
+
+    @property
+    def session_id(self) -> str:
+        return self._session_id
 
     async def notify(self, update: Update) -> None:
         """Уведомление вне хода: смена настроек сессии."""
@@ -3939,6 +4052,8 @@ class AcpAgent(AcpAgentProtocol):
 
         if elicitation is not None:
             self._elicits = elicitation.form is not None
+
+        self._linked().declared(capabilities)
         session = schema.SessionCapabilities(
             prompt=schema.PromptCapabilities(),
             mcp=schema.McpCapabilities(acp=schema.McpAcpCapabilities()),

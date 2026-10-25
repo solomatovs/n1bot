@@ -19,7 +19,7 @@ import logging
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from boba.agent.asking import (
     Aborted,
@@ -1081,6 +1081,7 @@ class TurnLoop:
 
         planned: list[PlannedCall] = []
         for index, (block, wire_id) in enumerate(blocks):
+            source = await self._source(block, aborted)
             record = ReplyRecord(
                 uuid=self._ids.uuid(),
                 parent_uuid=self._session.last_chain_uuid(),
@@ -1098,12 +1099,30 @@ class TurnLoop:
                 request_id=request_id,
                 is_aborted_mid_stream=mid_stream,
                 wire_tool_call_id=wire_id,
+                tool_source=source,
             )
             written = await self._keeper.add(record)
             if isinstance(block, ToolUseBlock):
                 planned.append(PlannedCall(block=block, assistant_uuid=written.uuid))
 
         return planned
+
+    async def _source(
+        self, block: AssistantBlock, aborted: bool
+    ) -> dict[str, Any] | None:
+        """Источник показа вызова у его сервера; у оборванного ответа вызовы
+        не исполняются, и источник не спрашивается."""
+        if not isinstance(block, ToolUseBlock):
+            return None
+
+        if aborted:
+            return None
+
+        source = await self._catalog.source(block)
+        if source is None:
+            return None
+
+        return dict(source)
 
     async def _write_results(self, results: Sequence[CallResult]) -> None:
         """Результаты — по записи `user` на вызов, в порядке вызовов."""
