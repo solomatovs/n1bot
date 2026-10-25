@@ -4,14 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-db-oracle"
-version = "0.0.30.dev6"
+version = "0.0.30.dev7"
 description = "Boba Oracle: тип соединения OracleConfig (пароль или wallet), адреса объектов, thin-клиент python-oracledb."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-core==0.0.30.dev6",
+    "boba-core==0.0.30.dev7",
     "pydantic>=2.12,<3",
-    "boba-toolkit==0.0.30.dev6",
-    "boba-connections==0.0.30.dev6",
+    "boba-toolkit==0.0.30.dev7",
+    "boba-connections==0.0.30.dev7",
 ]
 
 [project.entry-points."boba.connections"]
@@ -22,13 +22,13 @@ oracle = "boba.db.oracle.address:OraAddresses"
 
 [project.optional-dependencies]
 payload = [
-    "boba-toolkit[arrow]==0.0.30.dev6",
+    "boba-toolkit[arrow]==0.0.30.dev7",
     "oracledb==26.0.0+boba.1",
     "pyarrow>=25,<26",
 ]
 dev = [
-    "boba-db-postgres==0.0.30.dev6",
-    "boba-stand==0.0.30.dev6",
+    "boba-db-postgres==0.0.30.dev7",
+    "boba-stand==0.0.30.dev7",
     "pytest>=9.1,<10",
 ]
 

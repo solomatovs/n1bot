@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-mcp-adapter"
-version = "0.0.30.dev6"
+version = "0.0.30.dev7"
 description = "Boba mcp adapter: карточки инструментов порта ToolServer как инструменты сервера fastmcp — общий слой boba-mcp и ретранслятора чата."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-toolkit==0.0.30.dev6",
+    "boba-toolkit==0.0.30.dev7",
     "fastmcp-slim[server]>=4.0,<5",
     "mcp-types>=2.3,<3",
     "pydantic>=2.12,<3",
@@ -16,7 +16,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "boba-stand-core==0.0.30.dev6",
+    "boba-stand-core==0.0.30.dev7",
     "pytest>=9.1,<10",
 ]
 

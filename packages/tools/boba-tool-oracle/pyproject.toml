@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-tool-oracle"
-version = "0.0.30.dev6"
+version = "0.0.30.dev7"
 description = "Oracle-инструменты: запрос, описание словаря через all_* и насосы перекачки потоком Arrow; соединение и запрос идут из песочницы."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-core==0.0.30.dev6",
-    "boba-toolkit==0.0.30.dev6",
-    "boba-db-oracle==0.0.30.dev6",
+    "boba-core==0.0.30.dev7",
+    "boba-toolkit==0.0.30.dev7",
+    "boba-db-oracle==0.0.30.dev7",
     "pydantic>=2.12,<3",
 ]
 
@@ -19,14 +19,14 @@ ora = "boba.tool.ora.plugin:MANIFEST"
 
 [project.optional-dependencies]
 payload = [
-    "boba-db-oracle[payload]==0.0.30.dev6",
+    "boba-db-oracle[payload]==0.0.30.dev7",
 ]
 dev = [
-    "boba-runtime==0.0.30.dev6",
+    "boba-runtime==0.0.30.dev7",
     "omegaconf>=2.3,<3",
-    "boba-db-oracle[payload]==0.0.30.dev6",
-    "boba-stand==0.0.30.dev6",
-    "boba-stand-core==0.0.30.dev6",
+    "boba-db-oracle[payload]==0.0.30.dev7",
+    "boba-stand==0.0.30.dev7",
+    "boba-stand-core==0.0.30.dev7",
     "pytest>=9.1,<10",
 ]
 
