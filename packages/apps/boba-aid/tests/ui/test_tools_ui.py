@@ -29,7 +29,7 @@ import httpx
 import mcp_types as mt
 import pytest
 from aid_stand import AppLanguage
-from chat_ui import ChatOpener
+from chat_ui import ChatOpener, PageWatch
 from pydantic import BaseModel, ConfigDict
 
 from boba.aid.chat.ui_text import UiText
@@ -2612,6 +2612,31 @@ class TestCoverage:
             raise AssertionError(
                 f"called tools the stand does not offer: {sorted(unknown)}"
             )
+
+
+class TestPaperClip:
+    """Скрепка поля ввода открывает окно выбора файла, и выбранный файл ложится
+    плашкой в поле ввода без ошибок в консоли вкладки."""
+
+    BUTTON: ClassVar[str] = "#upload-button"
+    ATTACHMENTS: ClassVar[str] = "#message-composer #attachments > *"
+    WAIT_MS: ClassVar[float] = 30_000
+
+    def test_paper_clip_attaches_a_chosen_file(
+        self, feed: ToolFeed, tmp_path: Path
+    ) -> None:
+        watch = PageWatch(feed.chat.page)
+        note = tmp_path / "clip-note.txt"
+        note.write_text("attached through the file chooser", encoding="utf-8")
+
+        with feed.chat.page.expect_file_chooser(timeout=self.WAIT_MS) as chooser:
+            feed.chat.page.locator(self.BUTTON).click()
+
+        chooser.value.set_files(str(note))
+        plates = feed.chat.page.locator(self.ATTACHMENTS)
+        plates.filter(has_text=note.name).wait_for(timeout=self.WAIT_MS)
+
+        assert not watch.complaints, watch.complaints
 
 
 class TestSecondTab:

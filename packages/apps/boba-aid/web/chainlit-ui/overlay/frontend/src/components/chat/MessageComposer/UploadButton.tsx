@@ -33,7 +33,8 @@ export const UploadButton = ({
     spec: fileSpec,
     onResolved: (payloads: File[]) => onFileUpload(payloads),
     onError: onFileUploadError,
-    options: { noDrag: true }
+    // окно выбора через input: его открывает и перехватывает любой браузер
+    options: { noDrag: true, useFsAccessApi: false }
   });
 
   if (!upload) return null;
