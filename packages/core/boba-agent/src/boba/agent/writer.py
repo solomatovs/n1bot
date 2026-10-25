@@ -17,8 +17,9 @@ RequestRecorder чеканит идентификатор каждого зап�
 его дайджестом (план, раздел 5.18).
 
 Ошибки:
-HistoryError — поднимает только `flush(strict=True)` при завершении, когда
-    журнал так и не удалось сбросить; фоновая задача ошибки не выпускает.
+HistoryError — поднимают `flush(strict=True)` при завершении, когда журнал
+    так и не удалось сбросить, и `stored()` перед запросом к модели;
+    фоновая задача ошибки не выпускает.
 SessionError — нарушен порядок записей сессии (ошибка ядра).
 """
 
@@ -33,7 +34,7 @@ from dataclasses import dataclass
 from typing import Any, ClassVar, TypeVar
 
 from boba.agent.events import AgentEvent, EventSink, HistoryWrittenEvent, RecordEvent
-from boba.agent.history import HistoryError, HistoryStore, SessionLease
+from boba.agent.history import HistoryError, HistoryStore, SessionLease, StoredHistory
 from boba.agent.ids import Clock, IdMint
 from boba.agent.records import (
     ApiRequestRecord,
@@ -120,6 +121,19 @@ class HistoryWriter:
         self._last_error = ""
 
         return True
+
+    async def stored(self) -> StoredHistory:
+        """Разговор по записям, которые хранилище подтвердило: несброшенное
+        сбрасывается сейчас, и запрос к модели собирается только из того,
+        что уже лежит в журнале.
+
+        Ошибки:
+        HistoryError — хранилище отказало, запрос из истории не собрать.
+        """
+        while self.unflushed:
+            await self.flush(strict=True)
+
+        return StoredHistory(self._session.conversation())
 
     async def stop(self) -> None:
         """Последняя попытка сброса и остановка задачи."""

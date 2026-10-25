@@ -33,7 +33,6 @@ from collections.abc import Sequence
 from typing import ClassVar
 
 from boba.agent.attachments import (
-    Announced,
     ContextAttachments,
     EnvironmentSnapshot,
     SnapshotSkill,
@@ -64,7 +63,12 @@ from boba.agent.profile import (
     TurnLimits,
 )
 from boba.agent.queue import InputQueue, QueueRemoveReason
-from boba.agent.records import PermissionMode, PermissionModeRecord, TurnOutcome
+from boba.agent.records import (
+    Announced,
+    PermissionMode,
+    PermissionModeRecord,
+    TurnOutcome,
+)
 from boba.agent.session import Session, SessionError, SessionState
 from boba.agent.skills import Skill, SkillTool
 from boba.agent.template import AgentTemplate

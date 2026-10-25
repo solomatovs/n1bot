@@ -1,4 +1,10 @@
-"""Сборщик запроса: разговор и снимок промпта → `ChatRequest` порта модели.
+"""Сборщик запроса: история сессии → `ChatRequest` порта модели.
+
+Единственный вход — StoredHistory: разговор из записей, которые уже лежат в
+хранилище. Ни конфига, ни каталога инструментов, ни часов, ни файлов
+сборщик не знает — тест зависимостей пакета держит его импорты в пределах
+записей, истории и типов тела запроса. Разговор, который кончается записью
+запроса пересказа, даёт запрос пересказа её отрезка.
 
 Алгоритм — docs/prompt_assembly/specs/06_messages_algorithm.md, доведённый до
 формы `ChatTurn` (план, раздел 5.12). Что вносит в запрос каждая запись и
@@ -7,7 +13,7 @@
 склейка ответа по `message.id`, слияние
 соседних сообщений пользователя, два режима подачи системных вложений,
 починка пар вызов — результат, чистка и защита от подделки служебного
-блока (TagShield у текстов пользователя и результатов).
+блока (RequestTexts у текстов пользователя и результатов).
 Профиль модели — подача вложений, возврат рассуждений, сэмплинг — из
 снимка: запрос повторяется по истории байт в байт, конфига сборщик не знает.
 Инструменты — из снимка, по имени, затем загруженные отложенные из истории
@@ -16,6 +22,10 @@
 инструментов дописывает их в конец списка, начало списка не меняется.
 Ссылки tool_reference результата уходят строками текста и списком
 tool_references сообщения роли tool.
+
+Ошибки:
+RequestBuildError — в истории нет снимка промпта: запрос не из чего собрать.
+RecordError — запрос пересказа называет отрезок, которого нет в разговоре.
 """
 
 from __future__ import annotations
@@ -24,7 +34,7 @@ from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from typing import ClassVar
 
-from boba.agent.attachments import Announced
+from boba.agent.history import StoredHistory
 from boba.agent.records import (
     AssistantBlock,
     ChainRecord,
@@ -32,16 +42,20 @@ from boba.agent.records import (
     PromptSnapshot,
     ReasoningReturn,
     RequestFeed,
+    RequestTexts,
     SnapshotTool,
     TextBlock,
     ThinkingBlock,
     ToolResultBlock,
     ToolUseBlock,
 )
-from boba.agent.tags import AgentTag, TagShield
 from boba.llm.chat import ChatRequest, ChatRole, ChatTurn, ToolCall, ToolSpec
 
-__all__ = ["RequestBuilder", "RequestTexts"]
+__all__ = ["RequestBuildError", "RequestBuilder"]
+
+
+class RequestBuildError(Exception):
+    """Из истории не собрать запрос к модели."""
 
 
 @dataclass
@@ -82,28 +96,6 @@ class SystemTurn:
 Turn = UserTurn | AssistantTurn | SystemTurn
 
 
-class RequestTexts:
-    """Тексты записи, какими их видит модель: слова пользователя и
-    результат инструмента с обезвреженными служебными тегами. Шаблоны
-    агента сюда не входят: строки о загруженных инструментах и обёртку
-    tool_use_error запись несёт готовым текстом с момента записи, и
-    результат-ошибка уже обезврежен обёрткой. Им пользуются сборщик
-    запроса и оценка окна, чтобы окно считалось по тому же тексту, что
-    уходит модели."""
-
-    def __init__(self) -> None:
-        self._shield = TagShield([AgentTag.SYSTEM_REMINDER, AgentTag.TOOL_USE_ERROR])
-
-    def user(self, text: str) -> str:
-        return self._shield.shield(text)
-
-    def result(self, result: ToolResultBlock) -> str:
-        if result.is_error:
-            return result.text()
-
-        return self._shield.shield(result.text())
-
-
 class Feed(RequestFeed):
     """Реализация RequestFeed сборщика: накопитель сообщений в порядке
     подачи (шаги 4–5 разбора 06). Записи отдают сюда свои части, накопитель
@@ -126,7 +118,7 @@ class Feed(RequestFeed):
 
     def reminder(self, text: str) -> None:
         if self._system_turns:
-            self.pending_system.append(AgentTag.SYSTEM_REMINDER.unwrap_block(text))
+            self.pending_system.append(self._texts.system(text))
             return
 
         self.last_user().reminders.append(text)
@@ -202,7 +194,9 @@ class Feed(RequestFeed):
 
 
 class RequestBuilder:
-    """Строит `ChatRequest` из разговора и действующего снимка."""
+    """Строит `ChatRequest` по истории сессии: основной запрос хода и запрос
+    пересказа сжатия. Создаёт цикл хода без параметров — всё, из чего
+    собирается запрос, лежит в истории."""
 
     SECTION_JOIN: ClassVar[str] = "\n\n"
     TEXT_JOIN: ClassVar[str] = "\n"
@@ -210,11 +204,27 @@ class RequestBuilder:
     def __init__(self) -> None:
         self._texts = RequestTexts()
 
-    def build(
-        self, conversation: Sequence[ChainRecord], snapshot: PromptSnapshot
-    ) -> ChatRequest:
+    def build(self, history: StoredHistory) -> ChatRequest:
+        """Запрос по истории: основной либо, если разговор кончается записью
+        запроса пересказа, пересказ её отрезка с её пометками и инструкцией;
+        системный промпт, профиль и инструменты — у обоих из снимка и
+        записей всего разговора.
+
+        Ошибки:
+        RequestBuildError — в истории нет снимка промпта.
+        RecordError — запрос пересказа называет отрезок, которого нет.
+        """
+        snapshot = history.announced.snapshot()
+        if snapshot is None:
+            msg = (
+                "The request to the model cannot be built: the stored history "
+                f"of {len(history.conversation)} record(s) holds no prompt "
+                "snapshot, and the request is built from history only."
+            )
+            raise RequestBuildError(msg)
+
         feed = Feed(self._texts, snapshot.system_turns)
-        for record in self._reordered(conversation):
+        for record in self._reordered(self._sent(history.conversation)):
             record.to_request(feed)
 
         feed.flush_system()
@@ -232,24 +242,23 @@ class RequestBuilder:
 
         return ChatRequest(
             messages=messages,
-            tools=list(self._tools(conversation, snapshot)),
+            tools=list(self._tools(history, snapshot)),
             sampling=dict(snapshot.sampling),
             stream=True,
         )
 
-    def summary(
-        self,
-        sent: Sequence[ChainRecord],
-        conversation: Sequence[ChainRecord],
-        snapshot: PromptSnapshot,
-    ) -> ChatRequest:
-        """Запрос пересказа: сообщения — отрезок с инструкцией, инструменты —
-        те же, что у основного запроса по всему разговору: загруженные
-        отложенные записаны и в отброшенных лестницей группах, и в хвосте."""
-        request = self.build(sent, snapshot)
-        tools = list(self._tools(conversation, snapshot))
+    @staticmethod
+    def _sent(conversation: Sequence[ChainRecord]) -> Sequence[ChainRecord]:
+        """Записи, которые идут сообщениями: весь разговор либо записи
+        запроса пересказа, которым разговор кончается."""
+        if not conversation:
+            return conversation
 
-        return request.model_copy(update={"tools": tools})
+        asked = conversation[-1].summary_request()
+        if asked is None:
+            return conversation
+
+        return asked.sent(conversation)
 
     def _reordered(self, records: Sequence[ChainRecord]) -> list[ChainRecord]:
         """Вложения встают сразу после ближайшего выше ответа или результата
@@ -439,7 +448,7 @@ class RequestBuilder:
             yield ChatTurn(role=ChatRole.USER, parts=texts)
 
     def _tools(
-        self, conversation: Sequence[ChainRecord], snapshot: PromptSnapshot
+        self, history: StoredHistory, snapshot: PromptSnapshot
     ) -> Iterator[ToolSpec]:
         for tool in sorted(snapshot.tools, key=lambda item: item.name):
             yield ToolSpec(
@@ -448,7 +457,7 @@ class RequestBuilder:
                 parameters=dict(tool.schema_),
             )
 
-        for tool in Announced(conversation).deferred_loaded():
+        for tool in history.announced.deferred_loaded():
             yield ToolSpec(
                 name=tool.name,
                 description=tool.description,
