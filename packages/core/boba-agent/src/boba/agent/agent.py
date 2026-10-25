@@ -33,12 +33,10 @@ from collections.abc import Sequence
 from typing import ClassVar
 
 from boba.agent.attachments import (
-    Announced,
     ContextAttachments,
     EnvironmentSnapshot,
     SnapshotSkill,
 )
-from boba.agent.builder import RequestBuilder
 from boba.agent.compaction import SummaryInstruction
 from boba.agent.control import ControlQuestions, PermissionAnswer
 from boba.agent.events import EventSink, InitEvent
@@ -65,7 +63,12 @@ from boba.agent.profile import (
     TurnLimits,
 )
 from boba.agent.queue import InputQueue, QueueRemoveReason
-from boba.agent.records import PermissionMode, PermissionModeRecord, TurnOutcome
+from boba.agent.records import (
+    Announced,
+    PermissionMode,
+    PermissionModeRecord,
+    TurnOutcome,
+)
 from boba.agent.session import Session, SessionError, SessionState
 from boba.agent.skills import Skill, SkillTool
 from boba.agent.template import AgentTemplate
@@ -88,6 +91,7 @@ from boba.agent.writer import (
     HistoryWriter,
     RecordKeeper,
     RequestRecorder,
+    RequestReplay,
 )
 from boba.cancellation import RunCancellation, StopReason
 from boba.llm.chat import ChatModel
@@ -129,6 +133,7 @@ class AgentParts:
         record_requests: bool = False,
         question_tool: bool = True,
         always_load: Sequence[str] = (),
+        verify_requests: bool = False,
     ) -> None:
         self.profile = profile
         self.limits = limits
@@ -155,6 +160,10 @@ class AgentParts:
             allowed=frozenset(allowed_tools), denied=frozenset(denied_tools)
         )
         self.record_requests = record_requests
+        self.verify_requests = verify_requests
+        """Перед каждым запросом к модели пересобрать его из журнала,
+        прочитанного из хранилища заново, и сверить дайджест: расхождение —
+        ошибка с названием части. Включают тесты и отладка."""
         self.question_tool = question_tool
         """Предлагать ли модели собственный инструмент «вопрос пользователю»:
         запускающая программа без формы для вопросов его не показывает."""
@@ -301,7 +310,20 @@ class Agent:
             parts.static_rules,
         )
         recorder = RequestRecorder(
-            keeper, wiring.ids, wiring.clock, parts.record_requests
+            keeper,
+            wiring.ids,
+            wiring.clock,
+            parts.record_requests,
+            RequestReplay(
+                HistoryLoader(
+                    parts.store,
+                    wiring.templates,
+                    wiring.ids,
+                    wiring.clock,
+                    parts.version,
+                ),
+                parts.verify_requests,
+            ),
         )
         client_commands = ClientCommands(keeper, wiring.clock, parts.version)
         self._client_commands = client_commands
@@ -315,7 +337,6 @@ class Agent:
             parts.limits,
             parts.compaction,
             parts.model,
-            self._request_builder(parts.profile),
             attachments,
             runner,
             wiring.templates,
@@ -522,8 +543,8 @@ class Agent:
 
     def set_model(self, profile: ModelProfile, model: ChatModel) -> None:
         """Переключает профиль модели для следующих ходов; принимается,
-        пока агент свободен. Снимок в истории не меняется: смену модели
-        объявит вложение `model` в начале следующего хода.
+        пока агент свободен. Смену модели объявит вложение `model` в начале
+        следующего хода, смену формы запроса — новый снимок промпта там же.
 
         Ошибки:
         SessionError — ход идёт, модель менять поздно.
@@ -544,11 +565,8 @@ class Agent:
             raise SessionError(msg)
 
         self._check_profile(profile, turns.system_prompt, tools)
-        turns.set_model(profile, model, self._request_builder(profile))
+        turns.set_model(profile, model)
         self._bound.set_profile(profile)
-
-    def _request_builder(self, profile: ModelProfile) -> RequestBuilder:
-        return RequestBuilder(profile, self._wiring.templates)
 
     def _check_profile(
         self, profile: ModelProfile, system_prompt: Sequence[str], tools: AgentTools

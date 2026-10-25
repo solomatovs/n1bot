@@ -25,6 +25,7 @@ from boba.identity.admission import (
     RoleMappingConfig,
     RoleRules,
 )
+from boba.identity.directory import SimpleBind
 from boba.identity.errors import AuthorizationError
 from boba.identity.session import UserLogin
 from boba.identity.signin import PasswordSignIn
@@ -174,8 +175,9 @@ async def test_kerberos_providers_join_principal_and_directory_roles() -> None:
     ldap = LdapRolesConfig(
         server="ldaps://dc.example.com:636",
         base_dn="DC=example,DC=com",
-        bind_dn="cn=svc",
-        bind_password=SecretStr(FakeSecret.LDAP_BIND),
+        auth=SimpleBind(
+            method="simple", user="cn=svc", password=SecretStr(FakeSecret.LDAP_BIND)
+        ),
         mapping=DirectoryRolesConfig(
             member_of=RoleMappingConfig({"CN=Devs,OU=G": ["dev"]})
         ),

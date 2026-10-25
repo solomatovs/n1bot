@@ -1,7 +1,8 @@
 """Вход по паролю через AD стенда: живой LDAP.
 
-Второй пользователь стенда (ldap_bind_user) входит своим паролем; роли ему
-не обязательны — проверяется сам путь bind + поиск + допуск, а не состав групп.
+Второй пользователь стенда (учётка служебного bind каталога) входит своим
+паролем; роли ему не обязательны — проверяется сам путь bind + поиск +
+допуск, а не состав групп.
 """
 
 from __future__ import annotations
@@ -29,7 +30,7 @@ pytestmark = [
 
 
 def _reader_login() -> str:
-    _, _, name = STAND.ldap_bind_user.rpartition(Stand.NETBIOS_SEPARATOR)
+    _, _, name = STAND.reader_bind.user.rpartition(Stand.NETBIOS_SEPARATOR)
 
     return name
 
@@ -50,7 +51,7 @@ def _ldap_sign_in(raw_config: DictConfig) -> PasswordSignIn:
 
 async def test_reader_signs_in_with_the_directory_password(raw_config: Any) -> None:
     signed = await _ldap_sign_in(raw_config).sign_in(
-        _reader_login(), STAND.ldap_bind_password.get_secret_value()
+        _reader_login(), STAND.reader_bind.password.get_secret_value()
     )
 
     assert signed is not None

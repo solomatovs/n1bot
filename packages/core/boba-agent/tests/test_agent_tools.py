@@ -286,7 +286,9 @@ class TestCalls:
         await served.close()
 
         found = results(session.records())
-        assert [r.text() for r in found] == ["Error: No such tool available: nope"]
+        assert [r.text() for r in found] == [
+            "<tool_use_error>Error: No such tool available: nope</tool_use_error>"
+        ]
         assert found[0].is_error is True
         assert tools.calls == []
 
@@ -447,8 +449,10 @@ class TestPermissions:
             "resultType": "complete",
         }
         text = record.message.tool_results()[0].text()
-        assert text.startswith("The user doesn't want to proceed with this tool use.")
-        assert text.endswith("the user said: not now")
+        assert text.startswith(
+            "<tool_use_error>The user doesn't want to proceed with this tool use."
+        )
+        assert text.endswith("the user said: not now</tool_use_error>")
         assert tools.calls == []
         assert served.agent.outcomes == [TurnOutcome.COMPLETED]
 
@@ -609,8 +613,8 @@ class TestPermissions:
         found = results(session.records())
         assert found[1].is_error is True
         assert found[1].text() == (
-            "The permission classifier denied the call of mcp__stand__drop: "
-            "scripted for mcp__stand__drop"
+            "<tool_use_error>The permission classifier denied the call of "
+            "mcp__stand__drop: scripted for mcp__stand__drop</tool_use_error>"
         )
         assert len(classifier.questions) == 2
         del classifier_fails
@@ -632,7 +636,8 @@ class TestPermissions:
 
         text = results(other_session.records())[0].text()
         assert text.startswith(
-            "The permission classifier could not decide on the call of mcp__stand__note"
+            "<tool_use_error>The permission classifier could not decide on the call of "
+            "mcp__stand__note"
         )
         assert [c.name for c in tools.calls] == [
             "mcp__stand__note",
@@ -771,7 +776,7 @@ class TestAskUserQuestion:
         assert (
             first.message.tool_results()[0]
             .text()
-            .startswith("The user doesn't want to proceed")
+            .startswith("<tool_use_error>The user doesn't want to proceed")
         )
         assert first.tool_use_result == {
             "content": [{"type": "text", "text": "User rejected tool use"}],
@@ -852,7 +857,11 @@ class TestAskUserQuestion:
 
         found = results(session.records())
         assert "plan mode" in found[0].text()
-        assert found[1].text().startswith("The user doesn't want to proceed")
+        assert (
+            found[1]
+            .text()
+            .startswith("<tool_use_error>The user doesn't want to proceed")
+        )
 
 
 class TestQueueMidTurn:
@@ -997,7 +1006,9 @@ class TestQueueMidTurn:
         assert (
             record.message.tool_results()[0]
             .text()
-            .startswith("[Tool call did not complete: the turn was ended")
+            .startswith(
+                "<tool_use_error>[Tool call did not complete: the turn was ended"
+            )
         )
         texts = [
             r.message.content
@@ -1165,7 +1176,7 @@ class TestResume:
         assert (
             stub.message.tool_results()[0]
             .text()
-            .startswith("[Tool call interrupted: the session ended")
+            .startswith("<tool_use_error>[Tool call interrupted: the session ended")
         )
         assert resumed.agent.outcomes == [TurnOutcome.COMPLETED]
         assert_linked(session.chain())

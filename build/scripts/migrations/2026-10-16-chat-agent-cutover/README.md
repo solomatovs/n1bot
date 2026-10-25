@@ -27,9 +27,9 @@
 ## Роли базы
 
 Подключение истории агента — отдельный объект `[postgres_history]` конфига
-чата со своим входом `site.history_auth.<history_auth_method>`. На стенде
+чата со своим входом `site.pg_history_auth.<pg_history_auth_method>`. На стенде
 разработки и в развёртывании по умолчанию это та же учётка, что у чата
-(`boba-svc`): ключи `[site.history_auth.*]` повторяют `[site.pg_auth.*]`, и
+(`boba-svc`): ключи `[site.pg_history_auth.*]` повторяют `[site.pg_auth.*]`, и
 шаг 6 не нужен. Развести роли — по желанию администратора: тогда история
 принадлежит своей роли, и чат её не читает. Роли заводит администратор
 кластера до перехода.
@@ -37,7 +37,7 @@
 | роль | кто входит | чем владеет | права | где задаётся вход |
 |---|---|---|---|---|
 | роль чата (`boba-svc`) | чат и сервис boba-mcp | схемами `aid` и `mcp` и их таблицами | `connect` и `create` на базу; на схему `boba` прав нет | `[postgres]` конфигов чата и boba-mcp: `site.pg_auth.<pg_auth_method>` |
-| роль истории (`boba_history`) | агент | схемой `boba`, таблицами `session` и `session_records` | `connect` на базу | `[postgres_history]` конфига чата: `site.history_auth.<history_auth_method>`; в режиме службы агента — её конфиг |
+| роль истории (`boba_history`) | агент | схемой `boba`, таблицами `session` и `session_records` | `connect` на базу | `[postgres_history]` конфига чата: `site.pg_history_auth.<pg_history_auth_method>`; в режиме службы агента — её конфиг |
 
 Роль истории — обычная роль с правом входа, не суперпользователь. Паролем:
 
@@ -199,8 +199,8 @@ create role boba_history login;
    среды разработчика; индексаторы — своими
    конфигами) со схемами
    `aid`/`boba`/`mcp`, вписать в site.toml чата вход истории
-   (`history_auth_method` и `[site.history_auth.password]` или
-   `[site.history_auth.kerberos]`: учётка чата либо, если роли разведены, роль
+   (`pg_history_auth_method` и `[site.pg_history_auth.password]` или
+   `[site.pg_history_auth.kerberos]`: учётка чата либо, если роли разведены, роль
    истории) и запустить. На старте приложение само создаёт
    таблицы шины и настроек агента и применяет свои миграции на месте.
 9. Проверить: список тредов, старый тред с вложением, с итогами инструментов, с

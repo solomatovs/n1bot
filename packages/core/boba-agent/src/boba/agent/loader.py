@@ -27,7 +27,13 @@ from collections.abc import AsyncGenerator, Iterator, Sequence
 from contextlib import aclosing
 from dataclasses import dataclass, field
 
-from boba.agent.history import BrokenLine, HistoryStore, SessionId, StoredLine
+from boba.agent.history import (
+    BrokenLine,
+    HistoryStore,
+    SessionId,
+    StoredHistory,
+    StoredLine,
+)
 from boba.agent.ids import Clock, IdMint
 from boba.agent.records import (
     AssistantMessage,
@@ -54,6 +60,7 @@ from boba.agent.records import (
     UserMessage,
 )
 from boba.agent.session import Session
+from boba.agent.tags import AgentTag
 from boba.agent.template import AgentTemplate, AgentTemplateFile
 
 logger = logging.getLogger(__name__)
@@ -138,6 +145,15 @@ class HistoryLoader:
         report.stored_seq = session.last_seq
 
         return report
+
+    async def stored(self, session: SessionId) -> StoredHistory:
+        """Разговор сессии, прочитанный из хранилища заново, без починки:
+        по нему запрос к модели пересобирается так, как его соберёт
+        возобновление."""
+        restored = Session(session)
+        await self.restore(restored)
+
+        return StoredHistory(restored.conversation())
 
     async def records(self, session: SessionId) -> AsyncGenerator[ChainRecord, None]:
         """Записи цепочки сессии из журнала потоком, по одной, без починки и
@@ -295,7 +311,9 @@ class HistoryLoader:
     ) -> ToolResultRecord:
         text = self._templates.read(AgentTemplateFile.INTERRUPTED_TOOL_RESULT)
         block = ToolResultBlock(
-            tool_use_id=dangling.call.id, content=text, is_error=True
+            tool_use_id=dangling.call.id,
+            content=AgentTag.TOOL_USE_ERROR.wrap(text),
+            is_error=True,
         )
 
         return ToolResultRecord(

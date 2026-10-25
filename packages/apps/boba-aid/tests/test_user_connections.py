@@ -83,7 +83,7 @@ def service_pg(service_raw_config: Any) -> PostgresConfig:
 
 STAND = Stand.required()
 SERVICE_PRINCIPAL = STAND.service_principal
-SERVICE_USER = STAND.krb_pg_user
+SERVICE_USER = STAND.pg_krb_user
 CH_URL = f"http://{STAND.ch_addr}:{STAND.ch_port}"
 
 
@@ -94,7 +94,7 @@ def sso(tmp_path: Path) -> tuple[SsoTickets, str]:
         KeytabAuth(
             method="kerberos_keytab",
             principal=SERVICE_PRINCIPAL,
-            keytab=STAND.krb_pg_keytab,
+            keytab=STAND.pg_krb_keytab,
         )
     )
     credentials.ensure()

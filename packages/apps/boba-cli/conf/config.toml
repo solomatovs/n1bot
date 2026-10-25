@@ -17,8 +17,7 @@
 [ldap]
     server        = "${site.ldap_url}"
     base_dn       = "${site.ldap_base_dn}"
-    bind_dn       = "${site.ldap_bind_user}"
-    bind_password = "${site.ldap_bind_password}"
+    auth          = "${site.ldap_auth.${site.ldap_auth_method}}"
     [ldap.mapping]
         member_of = "${site.ldap_roles.memberof}"
         dn        = "${site.ldap_roles.dn}"
@@ -40,7 +39,7 @@
 [llm.main]
     kind            = "openai"
     baseUrl         = "${site.llm_base_url}"
-    apiKey          = "${site.llm_auth.bearer.token}"
+    auth            = "${site.llm_auth.${site.llm_auth_method}}"
     sslVerify       = "${site.llm_ssl_verify}"
     timeoutSec      = 600
     retryAttempts   = 3

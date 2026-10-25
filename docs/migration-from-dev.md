@@ -239,7 +239,8 @@ key 'site.…' not found`, ниже `full_key: …`).
 | `pg_host`, `pg_addr`, `pg_port`, `pg_sslmode`, `pg_auth_method`, `[site.pg_auth.kerberos]` или `[site.pg_auth.password]` | как у dev: та же база данных, та же учётка |
 | `pg_history_auth_method`, `[site.pg_history_auth.password]` или `[site.pg_history_auth.kerberos]` | **новые ключи**: вход истории агента. По умолчанию — та же учётка, что `pg_auth` (значения повторяют `[site.pg_auth.*]`); если роли разводятся — своя роль истории (пароль либо свой принципал с keytab в `conf/krb`), шаг 4.6 |
 | `pg_database` | **другое значение**: имя новой базы (`"aid"`) вместо базы dev |
-| `ldap_*`, `[site.ldap_roles.*]`, `krb_domain`, `krb_realm`, `krb_config`, `krb_http_keytab`, `krb_ccache_http`, `[site.local_auth.*]` | как у dev: вход пользователей не менялся |
+| `ldap_url`, `ldap_base_dn`, `ldap_netbios`, `[site.ldap_roles.*]`, `krb_domain`, `krb_realm`, `krb_config`, `krb_http_keytab`, `krb_ccache_http`, `[site.local_auth.*]` | как у dev: вход пользователей не менялся |
+| `ldap_auth_method = "simple"`, `[site.ldap_auth.simple]` (`method = "simple"`, `user`, `password`) | **новые ключи** вместо `ldap_bind_user` и `ldap_bind_password` dev: служебный bind каталога, учётка и пароль — прежние |
 | `llm_host`, `llm_path`, `llm_ssl_verify`, `[site.models].general`, `[site.models].search` | как у dev: сервер модели и имена моделей профилей |
 | `llm_auth_method`, `[site.llm_auth.bearer]` (`method = "bearer"`, `token`) | **новые ключи**: вход к модели; токен — прежний `llm_token` dev. Другие способы входа — раздел 5 руководства, «Способ входа во внешние системы» |
 | `[site.profiles.general].system_prompt`, `[site.profiles.search].system_prompt` | **новые ключи**: системные промпты профилей чата |
@@ -267,7 +268,8 @@ key 'site.…' not found`, ниже `full_key: …`).
 | `pg_*`, `[site.pg_auth.*]`, `pg_database`, `krb_config` | те же, что у чата: одна база, одна сервисная учётка |
 | `proxy_secret`, `[site.mcp_client].secret` | те же значения, что в site.toml чата |
 | `auth_secret` | **свой**, не тот, что у чата: `openssl rand -base64 48`. Им сервис подписывает собственные токены; совпадать с чатом он не должен |
-| `[site.confluence]`, `[site.mail]`, `[site.models].embedding` | из конфигурации dev: раньше эти значения нужны были чату |
+| `[site.confluence]`, `[site.mail]` (`server`, `port`, `use_tls`, `sender`, `recipient`), `[site.models].embedding` | из конфигурации dev: раньше эти значения нужны были чату |
+| `mail_auth_method`, `[site.mail_auth.<способ>]` | **новые ключи**: вход SMTP (`none` или `password` с `user` и `password` — прежние `[site.mail].user` и `password`) |
 | `confluence_auth_method`, `[site.confluence_auth.<способ>]` | **новые ключи**: вход в Confluence (`none`, `basic`, `bearer`, `digest`, `negotiate`) |
 | `[env]`: `port = 8650`, `url_prefix = "/mcp"`, `listen_host = "0.0.0.0"`, `tool_launcher = "sandbox"`, `cgroup_base = "/cgroup/boba-sandbox-mcp"` | как в примере site.toml сервиса в разделе 5 руководства («Первый site.toml») |
 | `[env]`: `data`, `sandbox`, `third`, `models`, `krb` | `"${env.base}/data"`, `"${env.base}/sandbox"`, `"${env.base}/third"`, `"${env.base}/models"`, `"${env.base}/conf/krb"` |

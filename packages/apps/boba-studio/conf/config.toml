@@ -210,8 +210,7 @@
     [auth.kerberos.roles.ldap]
         server          = "${site.ldap_url}"
         base_dn         = "${site.ldap_base_dn}"
-        bind_dn         = "${site.ldap_bind_user}"
-        bind_password   = "${site.ldap_bind_password}"
+        auth            = "${site.ldap_auth.${site.ldap_auth_method}}"
         [auth.kerberos.roles.ldap.mapping]
             member_of   = "${role.ldap.memberof}"
             dn          = "${role.ldap.dn}"
@@ -251,8 +250,7 @@
     [auth.proxy.roles.ldap]
         server        = "${site.ldap_url}"
         base_dn       = "${site.ldap_base_dn}"
-        bind_dn       = "${site.ldap_bind_user}"
-        bind_password = "${site.ldap_bind_password}"
+        auth          = "${site.ldap_auth.${site.ldap_auth_method}}"
         [auth.proxy.roles.ldap.mapping]
             member_of = "${role.ldap.memberof}"
             dn        = "${role.ldap.dn}"
